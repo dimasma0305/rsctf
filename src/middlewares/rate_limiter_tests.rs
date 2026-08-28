@@ -581,6 +581,26 @@ fn verdict_recovery_has_a_distinct_bounded_identity_budget() {
 }
 
 #[test]
+fn honeypot_policies_are_distinct_bounded_distributed_buckets() {
+    assert!(matches!(
+        Policy::HoneypotHttp.kind(),
+        Kind::Bucket {
+            capacity: 120.0,
+            refill_per_sec: 2.0,
+        }
+    ));
+    assert!(matches!(
+        Policy::HoneypotTcp.kind(),
+        Kind::Bucket {
+            capacity: 30.0,
+            refill_per_sec: 0.5,
+        }
+    ));
+    assert!(redis_key(Policy::HoneypotHttp, "source").starts_with("rl:tb:21:"));
+    assert!(redis_key(Policy::HoneypotTcp, "source").starts_with("rl:tb:22:"));
+}
+
+#[test]
 fn proxy_open_churn_has_distinct_subject_and_nat_budgets() {
     assert!(matches!(
         Policy::ProxyOpen.kind(),

@@ -156,6 +156,7 @@ pub fn start_image_cleanup(
                     free_before = report.available_bytes_before,
                     free_after = report.available_bytes_after,
                     pressure = report.pressure_mode,
+                    backlog = report.candidate_backlog,
                     notes = report.messages.len(),
                     "cron: completed independently leased Docker storage cleanup"
                 ),

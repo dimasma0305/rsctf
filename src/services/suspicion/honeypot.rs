@@ -3,9 +3,8 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use dashmap::DashMap;
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
@@ -17,11 +16,8 @@ const MAX_PENDING_BUCKETS: usize = 1_024;
 const MAX_BATCH_BUCKETS: usize = 256;
 const FLUSH_INTERVAL: Duration = Duration::from_millis(250);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
-const SOURCE_WINDOW_SECONDS: u64 = 60;
-const HTTP_SOURCE_LIMIT: u64 = 120;
-const TCP_SOURCE_LIMIT: u64 = 30;
-const MAX_SOURCE_WINDOWS: usize = 8_192;
 const RETENTION_DAYS: i32 = 7;
+static ADMISSION_DROPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy)]
 pub enum HoneypotRouteClass {
@@ -57,7 +53,8 @@ struct Bucket {
 pub(crate) struct HoneypotQueue {
     sender: mpsc::Sender<Observation>,
     receiver: Mutex<Option<mpsc::Receiver<Observation>>>,
-    dropped: Arc<AtomicU64>,
+    dropped_since_flush: Arc<AtomicU64>,
+    dropped_total: Arc<AtomicU64>,
 }
 
 impl HoneypotQueue {
@@ -70,15 +67,21 @@ impl HoneypotQueue {
         Self {
             sender,
             receiver: Mutex::new(Some(receiver)),
-            dropped: Arc::new(AtomicU64::new(0)),
+            dropped_since_flush: Arc::new(AtomicU64::new(0)),
+            dropped_total: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    fn record_drop(&self) {
+        self.dropped_since_flush.fetch_add(1, Ordering::Relaxed);
+        self.dropped_total.fetch_add(1, Ordering::Relaxed);
     }
 
     fn enqueue(&self, observation: Observation) -> bool {
         if self.sender.try_send(observation).is_ok() {
             true
         } else {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.record_drop();
             false
         }
     }
@@ -91,59 +94,21 @@ impl HoneypotQueue {
     }
 }
 
-#[derive(Default)]
-struct SourceWindow {
-    epoch: AtomicU64,
-    count: AtomicU64,
-}
-
-static SOURCE_WINDOWS: std::sync::LazyLock<DashMap<String, Arc<SourceWindow>>> =
-    std::sync::LazyLock::new(DashMap::new);
-
-fn unix_second() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
-}
-
 /// Cheap, silent admission used before authentication or database work. The
 /// response stays an ordinary 404 whether an observation is sampled or kept.
-pub fn admit_honeypot_source(source: &str, route: HoneypotRouteClass) -> bool {
+/// Redis shares the source budget across replicas when configured; its bounded
+/// local fallback preserves availability during a Redis outage.
+pub async fn admit_honeypot_source(source: &str, route: HoneypotRouteClass) -> bool {
     let source = source.chars().take(64).collect::<String>();
-    let epoch = unix_second() / SOURCE_WINDOW_SECONDS;
-    if !SOURCE_WINDOWS.contains_key(&source) && SOURCE_WINDOWS.len() >= MAX_SOURCE_WINDOWS {
-        SOURCE_WINDOWS
-            .retain(|_, window| window.epoch.load(Ordering::Acquire).saturating_add(1) >= epoch);
-        // A spray of fresh source identities must not turn this best-effort
-        // sensor into an unbounded allocation. Existing sources continue to
-        // be metered while new identities are silently ignored at capacity.
-        if SOURCE_WINDOWS.len() >= MAX_SOURCE_WINDOWS {
-            return false;
-        }
+    let admitted = crate::middlewares::rate_limiter::admit_honeypot_source(
+        &source,
+        matches!(route, HoneypotRouteClass::Tcp),
+    )
+    .await;
+    if !admitted {
+        ADMISSION_DROPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
     }
-    let window = SOURCE_WINDOWS
-        .entry(source)
-        .or_insert_with(|| Arc::new(SourceWindow::default()))
-        .clone();
-    let observed = window.epoch.load(Ordering::Acquire);
-    if observed != epoch
-        && window
-            .epoch
-            .compare_exchange(observed, epoch, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-    {
-        window.count.store(0, Ordering::Release);
-    }
-    let limit = match route {
-        HoneypotRouteClass::Http => HTTP_SOURCE_LIMIT,
-        HoneypotRouteClass::Tcp => TCP_SOURCE_LIMIT,
-    };
-    window
-        .count
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-            (count < limit).then_some(count + 1)
-        })
-        .is_ok()
+    admitted
 }
 
 pub fn enqueue_honeypot_hit(
@@ -308,9 +273,11 @@ async fn run_writer(
     pool: sqlx::PgPool,
     mut receiver: mpsc::Receiver<Observation>,
     mut shutdown: watch::Receiver<bool>,
-    dropped: Arc<AtomicU64>,
+    dropped_since_flush: Arc<AtomicU64>,
+    dropped_total: Arc<AtomicU64>,
 ) {
     let mut pending = HashMap::new();
+    let mut last_admission_dropped = 0;
     let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -324,16 +291,30 @@ async fn run_writer(
             observation = receiver.recv() => match observation {
                 Some(observation) => {
                     if !merge(&mut pending, observation) {
-                        dropped.fetch_add(1, Ordering::Relaxed);
+                        dropped_since_flush.fetch_add(1, Ordering::Relaxed);
+                        dropped_total.fetch_add(1, Ordering::Relaxed);
                     }
                 }
                 None => break,
             },
             _ = ticker.tick() => {
                 let _ = flush(&pool, &mut pending).await;
-                let dropped_count = dropped.swap(0, Ordering::Relaxed);
+                let dropped_count = dropped_since_flush.swap(0, Ordering::Relaxed);
                 if dropped_count > 0 {
-                    tracing::warn!(dropped = dropped_count, "honeypot telemetry observations sampled at capacity");
+                    tracing::warn!(
+                        dropped = dropped_count,
+                        dropped_total = dropped_total.load(Ordering::Relaxed),
+                        "honeypot telemetry observations sampled at capacity"
+                    );
+                }
+                let admission_dropped = ADMISSION_DROPPED_TOTAL.load(Ordering::Relaxed);
+                if admission_dropped > last_admission_dropped {
+                    tracing::warn!(
+                        dropped = admission_dropped - last_admission_dropped,
+                        dropped_total = admission_dropped,
+                        "honeypot observations sampled by distributed source admission"
+                    );
+                    last_admission_dropped = admission_dropped;
                 }
             },
         }
@@ -343,7 +324,8 @@ async fn run_writer(
     }
     while let Ok(observation) = receiver.try_recv() {
         if !merge(&mut pending, observation) {
-            dropped.fetch_add(1, Ordering::Relaxed);
+            dropped_since_flush.fetch_add(1, Ordering::Relaxed);
+            dropped_total.fetch_add(1, Ordering::Relaxed);
         }
     }
     let _ = flush(&pool, &mut pending).await;
@@ -355,13 +337,14 @@ pub fn start_honeypot_writer(
 ) -> tokio::task::JoinHandle<()> {
     let receiver = state.honeypot_telemetry.take_receiver();
     let pool = state.pg().clone();
-    let dropped = Arc::clone(&state.honeypot_telemetry.dropped);
+    let dropped_since_flush = Arc::clone(&state.honeypot_telemetry.dropped_since_flush);
+    let dropped_total = Arc::clone(&state.honeypot_telemetry.dropped_total);
     tokio::spawn(async move {
         let Some(receiver) = receiver else {
             tracing::warn!("honeypot telemetry writer started more than once");
             return;
         };
-        run_writer(pool, receiver, shutdown, dropped).await;
+        run_writer(pool, receiver, shutdown, dropped_since_flush, dropped_total).await;
     })
 }
 
@@ -408,7 +391,8 @@ mod tests {
         let queue = HoneypotQueue::with_capacity(1);
         assert!(queue.enqueue(observation("/.env")));
         assert!(!queue.enqueue(observation("/.git/config")));
-        assert_eq!(queue.dropped.load(Ordering::Relaxed), 1);
+        assert_eq!(queue.dropped_since_flush.load(Ordering::Relaxed), 1);
+        assert_eq!(queue.dropped_total.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -420,13 +404,13 @@ mod tests {
         assert_eq!(pending.values().next().unwrap().count, 2);
     }
 
-    #[test]
-    fn source_admission_is_fail_fast() {
+    #[tokio::test]
+    async fn source_admission_is_fail_fast_and_bounded() {
         let source = format!("test-source-{}", Uuid::new_v4());
-        for _ in 0..HTTP_SOURCE_LIMIT {
-            assert!(admit_honeypot_source(&source, HoneypotRouteClass::Http));
+        for _ in 0..120 {
+            assert!(admit_honeypot_source(&source, HoneypotRouteClass::Http).await);
         }
-        assert!(!admit_honeypot_source(&source, HoneypotRouteClass::Http));
+        assert!(!admit_honeypot_source(&source, HoneypotRouteClass::Http).await);
     }
 
     #[tokio::test]

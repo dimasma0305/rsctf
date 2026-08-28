@@ -1,3 +1,8 @@
+use super::inspection::{
+    cache_entry_expired, inspect_flows_bounded, inspect_flows_bounded_cancellable,
+    parse_work_units, FlowCacheEntry, FLOW_CACHE_TTL, FLOW_PARSE_WORK_UNITS,
+    FLOW_PARSE_WORK_UNIT_BYTES, MAX_RETAINED_PAYLOAD_BYTES,
+};
 use super::*;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -93,6 +98,46 @@ fn bounded_flow_reader_enforces_file_and_cardinality_limits() {
 }
 
 #[test]
+fn inspection_work_is_weighted_and_never_exceeds_the_global_budget() {
+    assert_eq!(parse_work_units(0), 1);
+    assert_eq!(parse_work_units(FLOW_PARSE_WORK_UNIT_BYTES), 1);
+    assert_eq!(parse_work_units(FLOW_PARSE_WORK_UNIT_BYTES + 1), 2);
+    assert_eq!(parse_work_units(u64::MAX), FLOW_PARSE_WORK_UNITS);
+}
+
+#[test]
+fn cancelled_blocking_parse_stops_before_consuming_capture_rows() {
+    let path = scratch("cancelled-inspection");
+    let source = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 50001);
+    let destination = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80);
+    write_capture(
+        &path,
+        &[TrafficPacket::new(source, destination, b"request".to_vec())],
+    )
+    .unwrap();
+    let cancelled = AtomicBool::new(true);
+    let error = inspect_flows_bounded_cancellable(
+        &path,
+        u64::MAX,
+        10,
+        MAX_RETAINED_PAYLOAD_BYTES,
+        Some(&cancelled),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("superseded"));
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn completed_flow_indexes_expire_from_the_process_cache() {
+    let entry = FlowCacheEntry {
+        inserted_at: Instant::now() - FLOW_CACHE_TTL - Duration::from_millis(1),
+        cell: tokio::sync::OnceCell::new(),
+    };
+    assert!(cache_entry_expired(&entry, Instant::now()));
+}
+
+#[test]
 fn inspected_flow_merges_directions_and_retains_real_payload_detail() {
     let path = scratch("inspected-detail");
     let team = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 42000);
@@ -144,6 +189,33 @@ async fn immutable_file_version_is_parsed_once_and_shared() {
         .await
         .unwrap();
     assert!(Arc::ptr_eq(&first, &second));
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn replaced_file_version_never_reuses_the_stale_index() {
+    let path = scratch("replaced-index");
+    let a = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 50000);
+    let b = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80);
+    write_capture(&path, &[TrafficPacket::new(a, b, b"one".to_vec())]).unwrap();
+    let first = inspect_flows_cached(path.clone(), u64::MAX, 10)
+        .await
+        .unwrap();
+
+    write_capture(
+        &path,
+        &[
+            TrafficPacket::new(a, b, b"replacement-one".to_vec()),
+            TrafficPacket::new(a, b, b"replacement-two".to_vec()),
+        ],
+    )
+    .unwrap();
+    let replacement = inspect_flows_cached(path.clone(), u64::MAX, 10)
+        .await
+        .unwrap();
+
+    assert!(!Arc::ptr_eq(&first, &replacement));
+    assert_eq!(replacement[0].packets_out, 2);
     let _ = std::fs::remove_file(path);
 }
 

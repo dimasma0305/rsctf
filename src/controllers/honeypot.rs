@@ -73,7 +73,9 @@ async fn bait(
     if crate::services::suspicion::admit_honeypot_source(
         source,
         crate::services::suspicion::HoneypotRouteClass::Http,
-    ) {
+    )
+    .await
+    {
         let user_agent = headers
             .get(header::USER_AGENT)
             .and_then(|value| value.to_str().ok());

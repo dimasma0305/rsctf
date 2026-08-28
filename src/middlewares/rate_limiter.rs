@@ -178,6 +178,12 @@ pub enum Policy {
     /// Per-session Event-VPN challenge/proof bootstrap budget. Appended to
     /// preserve every shipped Redis policy discriminant.
     EventVpnMint,
+    /// Silent distributed admission for unauthenticated HTTP honeypot hits.
+    /// Appended to preserve every shipped Redis policy discriminant.
+    HoneypotHttp,
+    /// Silent distributed admission for raw TCP honeypot connections.
+    /// Appended to preserve every shipped Redis policy discriminant.
+    HoneypotTcp,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -276,6 +282,14 @@ impl Policy {
             Policy::EventVpnMint => Kind::Bucket {
                 capacity: 6.0,
                 refill_per_sec: 0.2,
+            },
+            Policy::HoneypotHttp => Kind::Bucket {
+                capacity: 120.0,
+                refill_per_sec: 2.0,
+            },
+            Policy::HoneypotTcp => Kind::Bucket {
+                capacity: 30.0,
+                refill_per_sec: 0.5,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {
@@ -889,6 +903,18 @@ async fn check_weighted_async(policy: Policy, key: String, cost: u32) -> Result<
         Some(distributed) => distributed.check_weighted(policy, &key, cost).await,
         None => check_weighted(policy, key, cost),
     }
+}
+
+/// Silent source admission for decoy routes. Multi-replica deployments use
+/// the configured Redis limiter; a Redis outage falls back to the same bounded
+/// local policy without changing the plausible honeypot response.
+pub(crate) async fn admit_honeypot_source(source: &str, tcp: bool) -> bool {
+    let policy = if tcp {
+        Policy::HoneypotTcp
+    } else {
+        Policy::HoneypotHttp
+    };
+    check_async(policy, source.to_owned()).await.is_ok()
 }
 
 /// Enforce the team-scoped A&D lookup/byte work budget after authentication has

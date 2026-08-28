@@ -10,6 +10,7 @@ use bollard::image::{PruneImagesOptions, RemoveImageOptions};
 use bollard::models::BuildPruneResponse;
 use bollard::Docker;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use futures::StreamExt;
 use serde::Serialize;
 
 use crate::app_state::SharedState;
@@ -24,6 +25,7 @@ const CLEANUP_RETRY_SECONDS: i64 = 60;
 const CLEANUP_PASS_BUDGET: Duration = Duration::from_secs(120);
 const DOCKER_CALL_BUDGET: Duration = Duration::from_secs(15);
 const CLEANUP_BATCH_SIZE: i64 = 32;
+const CLEANUP_CONCURRENCY: usize = 4;
 const DOCKER_API_VERSION: &str = "v1.45";
 const GIB: u64 = 1024 * 1024 * 1024;
 
@@ -113,7 +115,16 @@ pub struct ImageCleanupReport {
     pub available_bytes_after: u64,
     pub minimum_free_bytes: u64,
     pub pressure_mode: bool,
+    /// Ownership rows deferred to a later bounded pass. Candidates inspected
+    /// during this pass but retained are not counted as backlog.
+    pub candidate_backlog: u64,
     pub messages: Vec<String>,
+}
+
+fn candidate_backlog(total_candidates: i64, inspected_candidates: usize) -> u64 {
+    u64::try_from(total_candidates)
+        .unwrap_or_default()
+        .saturating_sub(u64::try_from(inspected_candidates).unwrap_or(u64::MAX))
 }
 
 pub(crate) fn lazy_build_eligible(
@@ -624,6 +635,15 @@ pub async fn cleanup(st: &SharedState, policy: &ContainerPolicy) -> AppResult<Im
         .fetch_all(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    let total_candidates: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)::bigint
+             FROM "BuildImageOwnerships"
+            WHERE installation_scope = $1"#,
+    )
+    .bind(&scope)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     let references = sqlx::query_as::<_, ChallengeReference>(CHALLENGE_REFERENCES_SQL)
         .fetch_all(st.pg())
         .await
@@ -646,21 +666,31 @@ pub async fn cleanup(st: &SharedState, policy: &ContainerPolicy) -> AppResult<Im
         .map(|image_id| image_id.to_ascii_lowercase())
         .collect::<HashSet<_>>();
     let mut seen = HashSet::new();
-    for candidate in candidates {
-        if !seen.insert(candidate.canonical_ref.clone()) {
-            continue;
-        }
-        match evict_one(
-            st,
-            &docker,
-            &candidate,
-            &references,
-            &live_image_ids,
-            cutoff,
-            before.low_storage,
-        )
-        .await
-        {
+    let candidates = candidates
+        .into_iter()
+        .filter(|candidate| seen.insert(candidate.canonical_ref.clone()))
+        .collect::<Vec<_>>();
+    report.candidate_backlog = candidate_backlog(total_candidates, candidates.len());
+    let mut outcomes = futures::stream::iter(candidates.iter())
+        .map(|candidate| {
+            let canonical_ref = candidate.canonical_ref.clone();
+            async move {
+                let outcome = evict_one(
+                    st,
+                    &docker,
+                    candidate,
+                    &references,
+                    &live_image_ids,
+                    cutoff,
+                    before.low_storage,
+                )
+                .await;
+                (canonical_ref, outcome)
+            }
+        })
+        .buffer_unordered(CLEANUP_CONCURRENCY);
+    while let Some((canonical_ref, outcome)) = outcomes.next().await {
+        match outcome {
             Ok(Some((bytes, message))) => {
                 report.images_removed += 1;
                 report.image_bytes_evicted = report.image_bytes_evicted.saturating_add(bytes);
@@ -669,7 +699,7 @@ pub async fn cleanup(st: &SharedState, policy: &ContainerPolicy) -> AppResult<Im
             Ok(None) => {}
             Err(error) => report
                 .messages
-                .push(format!("{} was retained: {error}", candidate.canonical_ref)),
+                .push(format!("{canonical_ref} was retained: {error}")),
         }
     }
 
@@ -870,5 +900,12 @@ mod tests {
             ]),
             (75, 50),
         );
+    }
+
+    #[test]
+    fn cleanup_reports_only_candidates_deferred_to_a_later_pass() {
+        assert_eq!(candidate_backlog(100, CLEANUP_BATCH_SIZE as usize), 68);
+        assert_eq!(candidate_backlog(3, 3), 0);
+        assert_eq!(candidate_backlog(-1, 3), 0);
     }
 }

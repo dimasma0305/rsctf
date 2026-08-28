@@ -156,7 +156,9 @@ async fn run_listener(
                     if !crate::services::suspicion::admit_honeypot_source(
                         &peer.ip().to_string(),
                         crate::services::suspicion::HoneypotRouteClass::Tcp,
-                    ) {
+                    )
+                    .await
+                    {
                         continue;
                     }
                     connections.spawn(handle_connection(

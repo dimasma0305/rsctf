@@ -1694,6 +1694,8 @@ export interface GameInfoModel {
   vpnDeviceSharingTelemetryEnabled?: boolean;
   /** Optimistic concurrency revision for the complete editable game configuration. */
   configurationRevision?: number;
+  /** Revision of the challenge and flag definitions in this game. */
+  challengeConfigurationRevision?: number;
   /** Stable idempotency identity for one settings save intent. */
   operationId?: string | null;
   /**
@@ -1709,6 +1711,10 @@ export interface GameInfoModel {
 export interface GameCloneModel {
   /** Stable across retries of the same user action. */
   operationId: string;
+  /** Game configuration revision observed when the clone action opened. */
+  expectedSourceRevision: number;
+  /** Challenge/flag revision observed when the clone action opened. */
+  expectedChallengeRevision: number;
   title: string;
   /** @format int64 */
   startTimeUtc: number;
@@ -2311,6 +2317,7 @@ export interface ImageCleanupReport {
   availableBytesAfter: number
   minimumFreeBytes: number
   pressureMode: boolean
+  candidateBacklog: number
   messages: string[]
 }
 

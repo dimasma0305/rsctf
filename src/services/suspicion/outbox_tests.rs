@@ -44,6 +44,17 @@ fn games_share_the_configured_competitive_end_and_delayed_final_seal() {
     assert!(RECONCILE_GAMES_SQL.contains("reconciliation.sealed_at_utc IS NULL"));
     assert!(!RECONCILE_GAMES_SQL.contains("practice_mode"));
     assert!(!RECONCILE_GAMES_SQL.contains("Utc::now"));
+    assert!(RECONCILE_GAME_CONCURRENCY > 1);
+    assert!(RECONCILE_GAME_CONCURRENCY < 32);
+    assert!(RECONCILE_PASS_DEADLINE > GAME_RECONCILE_DEADLINE);
+}
+
+#[test]
+fn live_reconciliation_uses_incremental_submission_jobs() {
+    let source = include_str!("outbox.rs");
+    assert!(source.contains("ReconciliationSnapshot::BarrierBackedFinal"));
+    assert!(source.contains("durable per-submission outbox"));
+    assert!(source.contains("buffer_unordered(RECONCILE_GAME_CONCURRENCY)"));
 }
 
 #[test]

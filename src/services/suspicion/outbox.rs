@@ -5,6 +5,7 @@
 //! lease recoverable and detector/event uniqueness makes every replay safe.
 
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use sea_orm::DatabaseConnection;
 use serde_json::Value;
 use uuid::Uuid;
@@ -23,6 +24,8 @@ const DEFAULT_RECONCILE_SECONDS: u64 = 30;
 const DEFAULT_FINALIZE_GRACE_SECONDS: u64 = 360;
 const MAX_RECONCILE_SECONDS: u64 = 3600;
 const GAME_RECONCILE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25);
+const RECONCILE_PASS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+const RECONCILE_GAME_CONCURRENCY: usize = 4;
 const GAME_RECONCILE_LEASE_SECONDS: i64 = 45;
 const DIRTY_ABNORMAL_SOLVE: i64 = 1 << 0;
 const DIRTY_STATISTICAL: i64 = 1 << 1;
@@ -718,7 +721,14 @@ async fn reconcile_one_game(
             errors.push("in-window suspicion evaluation jobs remain incomplete".to_string());
             return Ok::<_, AppError>((errors, inserted));
         }
-        if claim.dirty_mask & DIRTY_ABNORMAL_SOLVE != 0 {
+        // Live submission-derived rules are evaluated incrementally by the
+        // durable per-submission outbox. Reloading every accepted and wrong
+        // submission here would make idle cost grow for no new evidence. The
+        // authoritative barrier-backed pass still rebuilds the full reference
+        // snapshot after intake closes.
+        if snapshot == super::detectors::ReconciliationSnapshot::BarrierBackedFinal
+            && claim.dirty_mask & DIRTY_ABNORMAL_SOLVE != 0
+        {
             if let Err(error) = super::cheat_checks::run_abnormal_solve_checks_for_snapshot(
                 state, game_id, snapshot,
             )
@@ -799,17 +809,30 @@ pub async fn reconcile_games(state: &SharedState) -> AppResult<usize> {
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
-    let mut reconciled = 0;
-    for (game_id, seal) in games {
-        match reconcile_one_game(state, game_id, seal, finalize_grace_seconds).await {
-            Ok(Some(_)) => reconciled += 1,
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(game = game_id, %error, "suspicion game reconciliation failed");
+    let pass = async {
+        let mut work = futures::stream::iter(games)
+            .map(|(game_id, seal)| async move {
+                (
+                    game_id,
+                    reconcile_one_game(state, game_id, seal, finalize_grace_seconds).await,
+                )
+            })
+            .buffer_unordered(RECONCILE_GAME_CONCURRENCY);
+        let mut reconciled = 0;
+        while let Some((game_id, result)) = work.next().await {
+            match result {
+                Ok(Some(_)) => reconciled += 1,
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(game = game_id, %error, "suspicion game reconciliation failed");
+                }
             }
         }
-    }
-    Ok(reconciled)
+        reconciled
+    };
+    tokio::time::timeout(RECONCILE_PASS_DEADLINE, pass)
+        .await
+        .map_err(|_| AppError::unavailable("Suspicion reconciliation pass timed out"))
 }
 
 #[derive(Debug, Clone)]

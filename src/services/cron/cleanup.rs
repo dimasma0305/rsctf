@@ -7,7 +7,6 @@ use crate::app_state::SharedState;
 use crate::utils::error::AppResult;
 
 const FILE_CLEANUP_BUDGET: Duration = Duration::from_secs(8);
-const IMAGE_CLEANUP_BUDGET: Duration = Duration::from_secs(15);
 const DATABASE_CLEANUP_BUDGET: Duration = Duration::from_secs(2);
 
 const EPHEMERAL_OPERATION_PURGE_SQL: &str = r#"
@@ -154,39 +153,6 @@ pub(super) async fn run(state: &SharedState) {
             Err(error) => tracing::warn!(%error, "cron: checker revision GC failed"),
         }
     }
-
-    if let Some(result) = within_budget(
-        "docker_image_cleanup",
-        IMAGE_CLEANUP_BUDGET,
-        crate::services::image_storage::scheduled_cleanup(state),
-    )
-    .await
-    {
-        match result {
-            Ok(Some(report)) if report.images_removed > 0 || report.cache_bytes_reclaimed > 0 => {
-                tracing::info!(
-                    images = report.images_removed,
-                    image_bytes = report.image_bytes_evicted,
-                    cache_bytes = report.cache_bytes_reclaimed,
-                    dangling_bytes = report.dangling_bytes_reclaimed,
-                    free_before = report.available_bytes_before,
-                    free_after = report.available_bytes_after,
-                    pressure = report.pressure_mode,
-                    "cron: completed bounded Docker storage cleanup"
-                );
-                for message in report.messages {
-                    tracing::warn!(%message, "cron: Docker storage cleanup note");
-                }
-            }
-            Ok(Some(report)) => {
-                for message in report.messages {
-                    tracing::warn!(%message, "cron: Docker storage cleanup note");
-                }
-            }
-            Ok(None) => {}
-            Err(error) => tracing::warn!(%error, "cron: Docker storage cleanup failed"),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -214,5 +180,11 @@ mod tests {
         );
         assert!(EPHEMERAL_OPERATION_PURGE_SQL.contains("deleted_credentials"));
         assert!(EPHEMERAL_OPERATION_PURGE_SQL.contains("deleted_observations"));
+    }
+
+    #[test]
+    fn latency_sensitive_cleanup_chain_does_not_run_image_maintenance() {
+        let source = include_str!("cleanup.rs");
+        assert!(!source.contains("image_storage::scheduled_cleanup"));
     }
 }
