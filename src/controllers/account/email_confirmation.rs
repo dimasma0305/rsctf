@@ -260,6 +260,16 @@ pub(super) async fn resend_pending_confirmation(
         database_now,
         operation_id,
     );
+    link_attempts::stage_registration(
+        &mut transaction,
+        &token,
+        pending.user_id,
+        &link_attempts::value_digest(pending.security_stamp),
+        &link_attempts::value_digest(pending.normalized_email),
+        database_now + chrono::Duration::seconds(EMAIL_CONFIRMATION_TTL_SECS),
+    )
+    .await?;
+    link_attempts::activate_registration_locked(&mut transaction, &token, pending.user_id).await?;
     enqueue_confirmation(
         st,
         &mut transaction,
@@ -329,6 +339,21 @@ async fn confirm_token(
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    let link = link_attempts::lock_registration(
+        &mut transaction,
+        &model.token,
+        claims.user_id,
+        &hex::encode(claims.security_stamp_hash),
+        &hex::encode(claims.email_hash),
+    )
+    .await?;
+    if let Some(name) = link.safe_result {
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(name);
+    }
     let policy = anti_cheat::lock_and_load_account_policy(&mut transaction, config).await?;
     if !verify_email_domain(&email, &policy.email_domain_list) {
         return Err(AppError::bad_request("Email domain is not allowed"));
@@ -415,11 +440,20 @@ async fn confirm_token(
             "Invalid or expired email-confirmation token",
         ));
     }
+    let name = name.unwrap_or_default();
+    link_attempts::complete(
+        &mut transaction,
+        &model.token,
+        claims.user_id,
+        "registration",
+        &name,
+    )
+    .await?;
     transaction
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(name.unwrap_or_default())
+    Ok(name)
 }
 
 /// `POST /api/account/verify` -> `void`.
@@ -576,6 +610,20 @@ mod tests {
                  account_id UUID NOT NULL,
                  purpose SMALLINT NOT NULL,
                  superseded_at_utc TIMESTAMPTZ
+               );
+               CREATE TABLE "AccountLinkAttempts" (
+                 token_digest TEXT PRIMARY KEY,
+                 purpose TEXT NOT NULL,
+                 account_id UUID NOT NULL,
+                 security_generation_digest TEXT NOT NULL,
+                 destination_digest TEXT NOT NULL,
+                 expires_at_utc TIMESTAMPTZ NOT NULL,
+                 active BOOLEAN NOT NULL DEFAULT TRUE,
+                 terminal_result SMALLINT,
+                 safe_result TEXT,
+                 issued_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                 issued_sequence BIGSERIAL NOT NULL,
+                 completed_at_utc TIMESTAMPTZ
                );"#,
         )
         .execute(&pool)
@@ -637,6 +685,21 @@ mod tests {
             token,
             email: crate::utils::codec::base64_encode(b"pending@example.test"),
         };
+        let mut link_tx = pool.begin().await.unwrap();
+        link_attempts::stage_registration(
+            &mut link_tx,
+            &model.token,
+            user_id,
+            &link_attempts::value_digest("stamp-a"),
+            &link_attempts::value_digest("PENDING@EXAMPLE.TEST"),
+            Utc::now() + chrono::Duration::hours(1),
+        )
+        .await
+        .unwrap();
+        link_attempts::activate_registration_locked(&mut link_tx, &model.token, user_id)
+            .await
+            .unwrap();
+        link_tx.commit().await.unwrap();
         assert!(confirm_token(&pool, &config, &model).await.is_err());
         let after_failure: (bool, String) = sqlx::query_as(
             r#"SELECT email_confirmed,security_stamp
@@ -659,7 +722,10 @@ mod tests {
             confirm_token(&pool, &config, &model).await.unwrap(),
             "pending"
         );
-        assert!(confirm_token(&pool, &config, &model).await.is_err());
+        assert_eq!(
+            confirm_token(&pool, &config, &model).await.unwrap(),
+            "pending"
+        );
 
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

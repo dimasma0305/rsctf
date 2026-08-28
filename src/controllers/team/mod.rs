@@ -34,7 +34,9 @@ mod models;
 mod profile;
 mod revocation;
 mod roster_policy;
-pub(crate) use account_lifecycle::{create_team_rows, transfer_captain_locked};
+#[cfg(test)]
+pub(crate) use account_lifecycle::create_team_rows;
+pub(crate) use account_lifecycle::{create_team_rows_replay, transfer_captain_locked};
 pub use avatar::avatar;
 pub use invite::{invite_code, update_invite_token};
 pub use membership_reads::{get_team_selector, get_teams_info};
@@ -185,12 +187,20 @@ pub async fn create_team(
 ) -> AppResult<RequestResponse<TeamInfoModel>> {
     let name = model.name.unwrap_or_default().trim().to_string();
     validate_team_profile(Some(&name), model.bio.as_deref())?;
-    let team_id = create_team_rows(
+    let request_digest = crate::utils::codec::sha256_str(
+        &serde_json::to_string(&(name.as_str(), model.bio.as_deref()))
+            .map_err(|error| AppError::internal(error.to_string()))?,
+    );
+    let operation = model
+        .operation_id
+        .map(|operation_id| (operation_id, request_digest.as_str()));
+    let team_id = create_team_rows_replay(
         st.pg(),
         user.id,
         &user.security_stamp,
         &name,
         model.bio.as_deref(),
+        operation,
     )
     .await?;
     let team = load_team(&st, team_id).await?;

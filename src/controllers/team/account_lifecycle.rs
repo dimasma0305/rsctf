@@ -10,12 +10,24 @@ use crate::utils::error::{AppError, AppResult};
 /// Atomically revalidate the authenticated captain, enforce the captain limit,
 /// and create both ownership rows. The exact JWT stamp binds this durable
 /// mutation to the principal that passed authentication before any lock wait.
+#[cfg(test)]
 pub(crate) async fn create_team_rows(
     pool: &sqlx::PgPool,
     creator_id: Uuid,
     expected_security_stamp: &str,
     name: &str,
     bio: Option<&str>,
+) -> AppResult<i32> {
+    create_team_rows_replay(pool, creator_id, expected_security_stamp, name, bio, None).await
+}
+
+pub(crate) async fn create_team_rows_replay(
+    pool: &sqlx::PgPool,
+    creator_id: Uuid,
+    expected_security_stamp: &str,
+    name: &str,
+    bio: Option<&str>,
+    operation: Option<(Uuid, &str)>,
 ) -> AppResult<i32> {
     let mut transaction = pool
         .begin()
@@ -26,6 +38,25 @@ pub(crate) async fn create_team_rows(
     // rolling-upgrade TeamMembers fence rejects only legacy public joins.
     anti_cheat::mark_identity_neutral_insert(&mut transaction).await?;
     lock_acting_account(&mut transaction, creator_id, expected_security_stamp).await?;
+
+    if let Some((operation_id, digest)) = operation {
+        if let Some(result_id) = crate::services::create_operations::claim(
+            &mut transaction,
+            creator_id,
+            "team",
+            0,
+            operation_id,
+            digest,
+        )
+        .await?
+        {
+            let team_id = result_id
+                .parse::<i32>()
+                .map_err(|_| AppError::internal("invalid retained team create result"))?;
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(team_id);
+        }
+    }
 
     let captained: i64 =
         sqlx::query_scalar(r#"SELECT COUNT(*)::bigint FROM "Teams" WHERE captain_id = $1"#)
@@ -56,6 +87,17 @@ pub(crate) async fn create_team_rows(
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
+    if let Some((operation_id, _)) = operation {
+        crate::services::create_operations::complete(
+            &mut transaction,
+            creator_id,
+            "team",
+            0,
+            operation_id,
+            &team_id.to_string(),
+        )
+        .await?;
+    }
     transaction.commit().await.map_err(database_error)?;
     Ok(team_id)
 }

@@ -3,7 +3,7 @@ import { useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiContentSaveOutline, mdiDeleteOutline, mdiFileCheckOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router'
 import { useSWRConfig } from 'swr'
@@ -47,32 +47,64 @@ const PostEdit: FC = () => {
 
   const [tags, setTags] = useState<string[]>([])
   const [disabled, setDisabled] = useState(false)
+  const saveOwnerRef = useRef<AbortController | null>(null)
+  const createOperationIdRef = useRef<string | null>(null)
   const [hasChanged, setHasChanged] = useState(false)
 
   const modals = useModals()
 
   const isMobile = useIsMobile()
 
-  const onUpdate = async () => {
+  useEffect(() => {
+    saveOwnerRef.current?.abort()
+    saveOwnerRef.current = null
+    createOperationIdRef.current = null
+    setDisabled(false)
+    return () => {
+      saveOwnerRef.current?.abort()
+      saveOwnerRef.current = null
+    }
+  }, [postId])
+
+  useEffect(() => {
+    if (postId === 'new' && !saveOwnerRef.current) createOperationIdRef.current = null
+  }, [post, postId])
+
+  const onUpdate = async (): Promise<boolean> => {
+    if (saveOwnerRef.current) return false
+    const owner = new AbortController()
+    saveOwnerRef.current = owner
     if (postId === 'new') {
+      const operationId = createOperationIdRef.current ?? crypto.randomUUID()
+      createOperationIdRef.current = operationId
       setDisabled(true)
 
       try {
-        const res = await api.edit.editAddPost(post)
-        api.info.mutateInfoGetLatestPosts()
-        api.info.mutateInfoGetPosts()
-        void invalidatePostPageCaches(mutateCache)
+        const res = await api.edit.editAddPost({ ...post, operationId }, { signal: owner.signal })
+        if (saveOwnerRef.current !== owner) return false
+        await Promise.all([
+          api.info.mutateInfoGetLatestPosts(),
+          api.info.mutateInfoGetPosts(),
+          invalidatePostPageCaches(mutateCache),
+        ])
+        if (saveOwnerRef.current !== owner) return false
         showNotification({
           color: 'teal',
           message: t('post.notification.created'),
           icon: <Icon path={mdiCheck} size={24} />,
         })
+        createOperationIdRef.current = null
         setHasChanged(false)
         navigate(`/posts/${res.data}/edit`)
+        return true
       } catch (e) {
-        showErrorMsg(e, t)
+        if (saveOwnerRef.current === owner && !owner.signal.aborted) showErrorMsg(e, t)
+        return false
       } finally {
-        setDisabled(false)
+        if (saveOwnerRef.current === owner) {
+          saveOwnerRef.current = null
+          setDisabled(false)
+        }
       }
     } else if (postId?.length === 8) {
       setDisabled(true)
@@ -82,23 +114,34 @@ const PostEdit: FC = () => {
         // Ideally, the pin/unpin functionality should be handled by a separate API endpoint.
         const { isPinned: _, ...postWithoutPin } = post
 
-        const res = await api.edit.editUpdatePost(postId, postWithoutPin)
-        api.info.mutateInfoGetPost(postId, res.data)
-        api.info.mutateInfoGetLatestPosts()
-        api.info.mutateInfoGetPosts()
-        void invalidatePostPageCaches(mutateCache)
+        const res = await api.edit.editUpdatePost(postId, postWithoutPin, { signal: owner.signal })
+        if (saveOwnerRef.current !== owner) return false
+        await Promise.all([
+          api.info.mutateInfoGetPost(postId, res.data),
+          api.info.mutateInfoGetLatestPosts(),
+          api.info.mutateInfoGetPosts(),
+          invalidatePostPageCaches(mutateCache),
+        ])
+        if (saveOwnerRef.current !== owner) return false
         showNotification({
           color: 'teal',
           message: t('post.notification.saved'),
           icon: <Icon path={mdiCheck} size={24} />,
         })
         setHasChanged(false)
+        return true
       } catch (e) {
-        showErrorMsg(e, t)
+        if (saveOwnerRef.current === owner && !owner.signal.aborted) showErrorMsg(e, t)
+        return false
       } finally {
-        setDisabled(false)
+        if (saveOwnerRef.current === owner) {
+          saveOwnerRef.current = null
+          setDisabled(false)
+        }
       }
     }
+    saveOwnerRef.current = null
+    return false
   }
 
   const onDelete = async () => {
@@ -145,11 +188,13 @@ const PostEdit: FC = () => {
   const titlePart = (
     <>
       <TextInput
+        disabled={disabled}
         label={t('post.label.title')}
         value={post.title ?? ''}
         onChange={(e) => setPost({ ...post, title: e.currentTarget.value })}
       />
       <TagsInput
+        disabled={disabled}
         label={t('post.label.tag')}
         data={tags.map((o) => ({ value: o, label: o })) || []}
         placeholder={t('post.label.add_tag')}
@@ -202,9 +247,8 @@ const PostEdit: FC = () => {
                         modals.openConfirmModal({
                           title: t('post.content.updated.title'),
                           children: <Text size="sm">{t('post.content.updated.content')}</Text>,
-                          onConfirm: () => {
-                            onUpdate()
-                            navigate(`/posts/${postId}`)
+                          onConfirm: async () => {
+                            if (await onUpdate()) navigate(`/posts/${postId}`)
                           },
                         })
                       } else {
@@ -227,6 +271,7 @@ const PostEdit: FC = () => {
           </Group>
           {isMobile ? titlePart : <SimpleGrid cols={2}>{titlePart}</SimpleGrid>}
           <Textarea
+            disabled={disabled}
             label={
               <Group gap="sm">
                 <Text size="sm">{t('post.label.summary')}</Text>
@@ -242,6 +287,7 @@ const PostEdit: FC = () => {
             maxRows={5}
           />
           <Textarea
+            disabled={disabled}
             label={
               <Group gap="sm">
                 <Text size="sm">{t('post.label.content')}</Text>

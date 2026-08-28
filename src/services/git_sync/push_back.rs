@@ -344,6 +344,22 @@ pub async fn push_file(
     token: &str,
     message: &str,
 ) -> AppResult<()> {
+    push_files(dest, &[rel_path], repo_url, token, message).await
+}
+
+/// Commit and push a bounded set of already-written challenge manifests as one
+/// repository change. Each explicit path is staged independently; unrelated
+/// checkout files are never swept into the commit.
+pub async fn push_files(
+    dest: &Path,
+    rel_paths: &[&str],
+    repo_url: &str,
+    token: &str,
+    message: &str,
+) -> AppResult<()> {
+    if rel_paths.is_empty() {
+        return Ok(());
+    }
     let repo_url = super::validate_binding_repo_url(repo_url)?;
     if token.is_empty() {
         return Err(AppError::internal("git_sync: push requires an auth token"));
@@ -364,7 +380,9 @@ pub async fn push_file(
 
     // Stage ONLY the explicit path — never a wholesale add that could sweep up
     // build artifacts a prior import wrote. "--" so a '-'-leading path isn't an opt.
-    super::run_git(dest, &["add", "--", rel_path]).await?;
+    for rel_path in rel_paths {
+        super::run_git(dest, &["add", "--", rel_path]).await?;
+    }
 
     // No-op detection: an "edit" that wrote back identical yaml stages nothing —
     // skip the commit+push so history doesn't accrue empty commits.
@@ -388,7 +406,7 @@ pub async fn push_file(
     }
     let refspec = format!("HEAD:refs/heads/{dest_ref}");
     super::git::run_git_network(dest, &auth_url, &["push", "--", &auth_url, &refspec]).await?;
-    tracing::info!(dir = %dest.display(), rel = %rel_path, branch = %dest_ref, "git_sync: pushed file");
+    tracing::info!(dir = %dest.display(), files = rel_paths.len(), branch = %dest_ref, "git_sync: pushed files");
     Ok(())
 }
 
@@ -408,6 +426,7 @@ mod tests {
     fn challenge(challenge_type: ChallengeType) -> game_challenge::Model {
         game_challenge::Model {
             id: 7,
+            revision: 1,
             game_id: 42,
             title: "Example Service".to_string(),
             content: "Description".to_string(),

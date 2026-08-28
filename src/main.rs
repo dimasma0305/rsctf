@@ -653,6 +653,10 @@ fn start_background_services(
                 "challenge import worker",
                 rsctf::controllers::edit::start_import_job_worker(state.clone(), shutdown.clone()),
             ));
+            required.push(RequiredTask::Unit(
+                "repository binding scheduler",
+                rsctf::services::git_sync::start_scheduler(state.clone(), shutdown.clone()),
+            ));
             if rsctf::services::ad_vpn::enabled() {
                 required.push(RequiredTask::Unit(
                     "A&D network reconcile",

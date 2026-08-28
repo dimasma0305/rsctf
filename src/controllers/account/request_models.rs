@@ -1,7 +1,7 @@
 //! Account request models whose wire contract differs from the legacy shared
 //! request module.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use uuid::Uuid;
 
 /// Credentials plus the optional browser-fingerprint proof collected by the SPA.
@@ -63,13 +63,6 @@ pub struct RecoveryModel {
     /// Stable identity retained when the client did not receive a response.
     #[serde(default)]
     pub operation_id: Option<Uuid>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(super) struct EmailChangeTicket {
-    pub user_id: Uuid,
-    pub new_email: String,
-    pub security_stamp: String,
 }
 
 #[cfg(test)]

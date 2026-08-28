@@ -2,7 +2,7 @@ import { Button, Text } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router'
 import { AccountView } from '@Components/AccountView'
@@ -16,6 +16,7 @@ const Verify: FC = () => {
   const token = sp.get('token')
   const email = sp.get('email')
   const [disabled, setDisabled] = useState(false)
+  const submitOwnerRef = useRef<AbortController | null>(null)
   let decodeEmail = ''
   try {
     decodeEmail = email ? window.atob(email) : ''
@@ -27,10 +28,24 @@ const Verify: FC = () => {
 
   usePageTitle(t('account.title.verify'))
 
+  useEffect(() => {
+    submitOwnerRef.current?.abort()
+    submitOwnerRef.current = null
+    setDisabled(false)
+    return () => {
+      submitOwnerRef.current?.abort()
+      submitOwnerRef.current = null
+    }
+  }, [location.search])
+
   const verify = async (event: React.SyntheticEvent) => {
     event.preventDefault()
+    if (submitOwnerRef.current) return
+    const owner = new AbortController()
+    submitOwnerRef.current = owner
 
     if (!token || !email) {
+      submitOwnerRef.current = null
       showNotification({
         color: 'red',
         title: t('account.notification.verify.failed'),
@@ -43,7 +58,8 @@ const Verify: FC = () => {
     setDisabled(true)
 
     try {
-      await api.account.accountVerify({ token, email })
+      await api.account.accountVerify({ token, email }, { signal: owner.signal })
+      if (submitOwnerRef.current !== owner) return
       showNotification({
         color: 'teal',
         title: t('account.notification.verify.success'),
@@ -52,6 +68,7 @@ const Verify: FC = () => {
       })
       navigate('/account/login')
     } catch {
+      if (submitOwnerRef.current !== owner || owner.signal.aborted) return
       showNotification({
         color: 'red',
         title: t('account.notification.verify.failed'),
@@ -59,7 +76,10 @@ const Verify: FC = () => {
         icon: <Icon path={mdiClose} size={1} />,
       })
     } finally {
-      setDisabled(false)
+      if (submitOwnerRef.current === owner) {
+        submitOwnerRef.current = null
+        setDisabled(false)
+      }
     }
   }
 

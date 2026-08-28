@@ -616,16 +616,45 @@ pub(crate) async fn load_challenge(
         .ok_or_else(|| AppError::not_found("Challenge not found"))
 }
 
-/// Load one challenge through the caller's retained domain transaction.
-/// `to_jsonb` keeps the mapping aligned with the SeaORM entity while avoiding
-/// a nested pool checkout under the per-game advisory lock.
+/// Load one challenge through the caller's retained domain transaction. Using
+/// JSON keeps the raw SQL projection aligned with the entity without checking
+/// out another pooled connection while a game-control lock is held.
 pub(crate) async fn load_challenge_locked(
     connection: &mut sqlx::PgConnection,
     game_id: i32,
     challenge_id: i32,
 ) -> AppResult<game_challenge::Model> {
     let row = sqlx::query_scalar::<_, serde_json::Value>(
-        r#"SELECT to_jsonb(challenge)
+        r#"SELECT (to_jsonb(challenge) - 'Type') || jsonb_build_object(
+                       'type', CASE challenge."Type"
+                           WHEN 0 THEN 'StaticAttachment' WHEN 1 THEN 'StaticContainer'
+                           WHEN 2 THEN 'DynamicAttachment' WHEN 3 THEN 'DynamicContainer'
+                           WHEN 4 THEN 'AttackDefense' WHEN 5 THEN 'KingOfTheHill' END,
+                       'category', CASE challenge.category
+                           WHEN 0 THEN 'Misc' WHEN 1 THEN 'Crypto' WHEN 2 THEN 'Pwn'
+                           WHEN 3 THEN 'Web' WHEN 4 THEN 'Reverse' WHEN 5 THEN 'Blockchain'
+                           WHEN 6 THEN 'Forensics' WHEN 7 THEN 'Hardware' WHEN 8 THEN 'Mobile'
+                           WHEN 9 THEN 'PPC' WHEN 10 THEN 'AI' WHEN 11 THEN 'Pentest'
+                           WHEN 12 THEN 'OSINT' END,
+                       'review_status', CASE challenge.review_status
+                           WHEN 0 THEN 'Active' WHEN 1 THEN 'Pending' WHEN 2 THEN 'Rejected' END,
+                       'build_status', CASE challenge.build_status
+                           WHEN 0 THEN 'None' WHEN 1 THEN 'Success' WHEN 2 THEN 'Failed'
+                           WHEN 3 THEN 'Building' WHEN 4 THEN 'NotApplicable'
+                           WHEN 5 THEN 'Queued' WHEN 6 THEN 'MissingDockerfile' END,
+                       'score_curve', CASE challenge.score_curve
+                           WHEN 0 THEN 'Standard' WHEN 1 THEN 'Linear'
+                           WHEN 2 THEN 'Logarithmic' END,
+                       'network_mode', CASE challenge.network_mode
+                           WHEN 0 THEN 'Open' WHEN 32 THEN 'Isolated' WHEN 255 THEN 'Custom' END,
+                       'variant_mode', CASE challenge.variant_mode
+                           WHEN 0 THEN 'Disabled' WHEN 1 THEN 'PerParticipation' END,
+                       'variant_generator_build_status', CASE challenge.variant_generator_build_status
+                           WHEN 0 THEN 'None' WHEN 1 THEN 'Success' WHEN 2 THEN 'Failed'
+                           WHEN 3 THEN 'Building' WHEN 4 THEN 'NotApplicable'
+                           WHEN 5 THEN 'Queued' WHEN 6 THEN 'MissingDockerfile' END,
+                       'solve_receipt_mode', CASE challenge.solve_receipt_mode
+                           WHEN 0 THEN 'Disabled' WHEN 1 THEN 'Optional' WHEN 2 THEN 'Required' END)
              FROM "GameChallenges" challenge
             WHERE challenge.id = $1 AND challenge.game_id = $2"#,
     )

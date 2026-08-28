@@ -1003,6 +1003,13 @@ pub async fn global_middleware(
         .as_deref()
         .is_some_and(crate::services::ad::api_token::is_well_formed)
         && route_supports_ad_bearer(req.uri().path());
+    // Once a bearer enters the versioned personal-token namespace it must get
+    // that namespace's definitive grammar/authentication decision. Malformed
+    // or oversized PATs are never retried as browser JWTs.
+    let attempted_personal = !attempted_ad
+        && credential.as_deref().is_some_and(|token| {
+            token.starts_with(crate::controllers::api_token::PERSONAL_TOKEN_PREFIX)
+        });
     let verified_ad = if attempted_ad {
         match authenticate_ad_bearer(
             &st,
@@ -1023,14 +1030,35 @@ pub async fn global_middleware(
         req.extensions_mut()
             .insert(crate::services::ad::api_token::RejectedTeamToken);
     }
+    let verified_personal = if attempted_personal {
+        match crate::controllers::api_token::authenticate(
+            &st,
+            credential
+                .as_deref()
+                .expect("attempted personal token is present"),
+        )
+        .await
+        {
+            Ok(credential) => Some(credential),
+            Err(error) => return error.into_response(),
+        }
+    } else {
+        None
+    };
     // A syntactically valid A&D credential has already received its definitive
     // DB decision above. Do not reinterpret a rejected one as a session JWT.
-    let verified_session = if attempted_ad {
+    let verified_session = if attempted_ad || attempted_personal {
         None
     } else {
         credential.and_then(|token| st.token.verify(&token).ok())
     };
     if let Some(verified) = verified_ad {
+        let key = verified.partition_key.clone();
+        req.extensions_mut().insert(verified);
+        if let Err(retry_after) = check_authenticated_async(key, ip).await {
+            return too_many_requests(retry_after);
+        }
+    } else if let Some(verified) = verified_personal {
         let key = verified.partition_key.clone();
         req.extensions_mut().insert(verified);
         if let Err(retry_after) = check_authenticated_async(key, ip).await {

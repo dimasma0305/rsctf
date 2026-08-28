@@ -2,7 +2,7 @@ import { Button, Center, Stack, Text, Textarea, TextInput, Title, useMantineThem
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiCloseCircle } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { AccessibleModal, AccessibleModalProps } from '@Components/AccessibleModal'
 import { showErrorMsg } from '@Utils/Shared'
@@ -18,15 +18,35 @@ export const TeamCreateModal: FC<TeamCreateModalProps> = (props) => {
   const { disallowCreate, mutate, onTeamReady, ...modalProps } = props
   const [createTeam, setCreateTeam] = useState<TeamUpdateModel>({ name: '', bio: '' })
   const [disabled, setDisabled] = useState(false)
+  const createOwnerRef = useRef<AbortController | null>(null)
+  const operationIdRef = useRef<string | null>(null)
   const theme = useMantineTheme()
 
   const { t } = useTranslation()
 
+  useEffect(() => {
+    if (!createOwnerRef.current) operationIdRef.current = null
+  }, [createTeam.name, createTeam.bio])
+
+  useEffect(
+    () => () => {
+      createOwnerRef.current?.abort()
+      createOwnerRef.current = null
+    },
+    []
+  )
+
   const onCreateTeam = async () => {
+    if (createOwnerRef.current || !(createTeam.name?.trim().length ?? 0)) return
+    const owner = new AbortController()
+    createOwnerRef.current = owner
+    const operationId = operationIdRef.current ?? crypto.randomUUID()
+    operationIdRef.current = operationId
     setDisabled(true)
 
     try {
-      const res = await api.team.teamCreateTeam(createTeam)
+      const res = await api.team.teamCreateTeam({ ...createTeam, operationId }, { signal: owner.signal })
+      if (createOwnerRef.current !== owner) return
       showNotification({
         color: 'teal',
         title: t('team.notification.create.success.title'),
@@ -34,18 +54,29 @@ export const TeamCreateModal: FC<TeamCreateModalProps> = (props) => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
       setCreateTeam({ name: '', bio: '' })
+      operationIdRef.current = null
       onTeamReady?.()
       mutate()
       modalProps.onClose()
     } catch (e) {
-      showErrorMsg(e, t)
+      if (createOwnerRef.current === owner && !owner.signal.aborted) showErrorMsg(e, t)
     } finally {
-      setDisabled(false)
+      if (createOwnerRef.current === owner) {
+        createOwnerRef.current = null
+        setDisabled(false)
+      }
     }
   }
 
+  const handleClose = () => {
+    if (createOwnerRef.current) return
+    operationIdRef.current = null
+    setCreateTeam({ name: '', bio: '' })
+    modalProps.onClose()
+  }
+
   return (
-    <AccessibleModal {...modalProps}>
+    <AccessibleModal {...modalProps} onClose={handleClose} closeOnClickOutside={!disabled} closeOnEscape={!disabled}>
       {disallowCreate ? (
         <Stack gap="lg" p={40} ta="center">
           <Center>

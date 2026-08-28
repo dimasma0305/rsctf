@@ -5,7 +5,7 @@ import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
 import { showErrorMsg } from '@Utils/Shared'
@@ -18,6 +18,8 @@ interface GameCreateModalProps extends ModalProps {
 export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
   const { onAddGame, ...modalProps } = props
   const [disabled, setDisabled] = useState(false)
+  const createOwnerRef = useRef<AbortController | null>(null)
+  const operationIdRef = useRef<string | null>(null)
   const navigate = useNavigate()
   const [title, setTitle] = useInputState('')
   const [start, setStart] = useInputState(dayjs())
@@ -25,7 +27,20 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
 
   const { t } = useTranslation()
 
+  useEffect(() => {
+    if (!createOwnerRef.current) operationIdRef.current = null
+  }, [title, start, end])
+
+  useEffect(
+    () => () => {
+      createOwnerRef.current?.abort()
+      createOwnerRef.current = null
+    },
+    []
+  )
+
   const onCreate = async () => {
+    if (createOwnerRef.current) return
     if (!title || end < start) {
       showNotification({
         color: 'red',
@@ -36,34 +51,68 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
       return
     }
 
+    const owner = new AbortController()
+    createOwnerRef.current = owner
+    const operationId = operationIdRef.current ?? crypto.randomUUID()
+    operationIdRef.current = operationId
     setDisabled(true)
 
     try {
-      const res = await api.edit.editAddGame({
-        title,
-        start: start.valueOf(),
-        end: end.valueOf(),
-      })
+      const res = await api.edit.editAddGame(
+        {
+          operationId,
+          title,
+          start: start.valueOf(),
+          end: end.valueOf(),
+        },
+        { signal: owner.signal }
+      )
+      if (createOwnerRef.current !== owner) return
       showNotification({
         color: 'teal',
         message: t('admin.notification.games.created'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
+      operationIdRef.current = null
       onAddGame(res.data)
       navigate(`/admin/games/${res.data.id}/info`)
     } catch (e) {
-      showErrorMsg(e, t)
-      setDisabled(false)
+      if (createOwnerRef.current === owner && !owner.signal.aborted) showErrorMsg(e, t)
+    } finally {
+      if (createOwnerRef.current === owner) {
+        createOwnerRef.current = null
+        setDisabled(false)
+      }
     }
   }
 
+  const handleClose = () => {
+    if (createOwnerRef.current) return
+    operationIdRef.current = null
+    modalProps.onClose()
+  }
+
   return (
-    <Modal size="min(36rem, calc(100vw - 2rem))" title={t('admin.button.games.new')} {...modalProps}>
-      <Stack>
+    <Modal
+      size="min(36rem, calc(100vw - 2rem))"
+      title={t('admin.button.games.new')}
+      {...modalProps}
+      onClose={handleClose}
+      closeOnClickOutside={!disabled}
+      closeOnEscape={!disabled}
+    >
+      <Stack
+        component="form"
+        onSubmit={(event) => {
+          event.preventDefault()
+          void onCreate()
+        }}
+      >
         <TextInput
           label={t('admin.content.games.info.title.label')}
           type="text"
           required
+          disabled={disabled}
           w="100%"
           value={title}
           onChange={setTitle}
@@ -74,6 +123,7 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
           value={start.toDate()}
           valueFormat="L LT"
           clearable={false}
+          disabled={disabled}
           onChange={(e) => {
             const newDate = dayjs(e)
             setStart(newDate)
@@ -90,6 +140,7 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
           valueFormat="L LT"
           value={end.toDate()}
           clearable={false}
+          disabled={disabled}
           onChange={(e) => {
             setEnd(dayjs(e))
           }}
@@ -97,7 +148,7 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
           required
         />
         <Group grow m="auto" w="100%">
-          <Button fullWidth disabled={disabled} onClick={onCreate}>
+          <Button type="submit" fullWidth disabled={disabled}>
             {t('admin.button.games.new')}
           </Button>
         </Group>

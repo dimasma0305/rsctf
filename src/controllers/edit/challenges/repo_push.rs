@@ -7,10 +7,9 @@ use crate::services::git_sync;
 
 struct PushPayload {
     binding_id: i32,
-    repo_url: String,
     token: String,
     challenge_id: i32,
-    title: String,
+    revision: i64,
     manifest: std::path::PathBuf,
     relative_manifest: String,
     yaml: String,
@@ -31,19 +30,179 @@ enum DatabaseSnapshot {
 /// Enqueue identifiers only. Every queued edit re-reads the current durable
 /// state after acquiring the checkout lock, so delayed tasks cannot push an old
 /// in-memory challenge snapshot after a newer save.
-pub(super) fn spawn(st: SharedState, game_id: i32, challenge_id: i32) {
-    tokio::spawn(async move {
-        if let Err(error) = push_latest(&st, game_id, challenge_id).await {
-            tracing::warn!(
-                game = game_id,
-                challenge = challenge_id,
-                %error,
-                "push-back: failed (best-effort; edit already committed)"
-            );
-        }
-    });
+pub(super) async fn enqueue_locked(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+    challenge_id: i32,
+    revision: i64,
+) -> AppResult<()> {
+    sqlx::query(
+        r#"INSERT INTO "RepoBindingPushJobs"
+                  (binding_id, challenge_id, game_id, requested_revision)
+           SELECT game.repo_binding_id, $2, game.id, $3
+             FROM "Games" game
+             JOIN "RepoBindings" binding ON binding.id = game.repo_binding_id
+            WHERE game.id = $1 AND binding.push_on_edit = TRUE
+           ON CONFLICT (binding_id, challenge_id) DO UPDATE
+             SET requested_revision = GREATEST(
+                     "RepoBindingPushJobs".requested_revision,
+                     EXCLUDED.requested_revision),
+                 game_id = EXCLUDED.game_id,
+                 updated_at_utc = clock_timestamp(),
+                 last_error = NULL"#,
+    )
+    .bind(game_id)
+    .bind(challenge_id)
+    .bind(revision)
+    .execute(connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(())
 }
 
+pub(crate) struct ClaimedRepoPushBatch {
+    pub binding_id: i32,
+    pub lease_token: Uuid,
+    jobs: Vec<(i32, i32, i64)>,
+}
+
+const MAX_FILES_PER_PUSH: i64 = 64;
+
+pub(crate) async fn claim_jobs(
+    pool: &sqlx::PgPool,
+    limit: i64,
+) -> AppResult<Vec<ClaimedRepoPushBatch>> {
+    let token = Uuid::new_v4();
+    let binding_ids = sqlx::query_scalar::<_, i32>(
+        r#"WITH due AS (
+               SELECT binding.id
+                 FROM "RepoBindings" binding
+                WHERE (binding.push_lease_until IS NULL
+                       OR binding.push_lease_until <= clock_timestamp())
+                  AND EXISTS (
+                      SELECT 1 FROM "RepoBindingPushJobs" job
+                       WHERE job.binding_id = binding.id
+                         AND job.updated_at_utc <= clock_timestamp()
+                  )
+                ORDER BY binding.id
+                FOR UPDATE SKIP LOCKED
+                LIMIT $1
+           )
+           UPDATE "RepoBindings" binding
+              SET push_lease_token = $2,
+                  push_lease_until = clock_timestamp() + INTERVAL '5 minutes'
+             FROM due
+            WHERE binding.id = due.id
+           RETURNING binding.id"#,
+    )
+    .bind(limit.clamp(1, 8))
+    .bind(token)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if binding_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query_as::<_, (i32, i32, i32, i64)>(
+        r#"SELECT binding_id, game_id, challenge_id, requested_revision
+             FROM (
+                 SELECT job.*,
+                        row_number() OVER (
+                            PARTITION BY binding_id
+                            ORDER BY updated_at_utc, challenge_id
+                        ) AS position
+                   FROM "RepoBindingPushJobs" job
+                  WHERE binding_id = ANY($1)
+                    AND updated_at_utc <= clock_timestamp()
+             ) bounded
+            WHERE position <= $2
+            ORDER BY binding_id, position"#,
+    )
+    .bind(&binding_ids)
+    .bind(MAX_FILES_PER_PUSH)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut jobs = std::collections::BTreeMap::<i32, Vec<(i32, i32, i64)>>::new();
+    for (binding_id, game_id, challenge_id, revision) in rows {
+        jobs.entry(binding_id)
+            .or_default()
+            .push((game_id, challenge_id, revision));
+    }
+    Ok(binding_ids
+        .into_iter()
+        .filter_map(|binding_id| {
+            jobs.remove(&binding_id).map(|jobs| ClaimedRepoPushBatch {
+                binding_id,
+                lease_token: token,
+                jobs,
+            })
+        })
+        .collect())
+}
+
+pub(crate) async fn run_claimed_job(
+    st: &SharedState,
+    batch: ClaimedRepoPushBatch,
+) -> AppResult<()> {
+    let result = push_batch(st, &batch).await;
+    let mut transaction = st
+        .pg()
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    match &result {
+        Ok(pushed) => {
+            for (challenge_id, pushed_revision) in pushed {
+                sqlx::query(
+                    r#"DELETE FROM "RepoBindingPushJobs"
+                    WHERE binding_id = $1 AND challenge_id = $2
+                      AND requested_revision <= $3"#,
+                )
+                .bind(batch.binding_id)
+                .bind(challenge_id)
+                .bind(pushed_revision)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+            }
+        }
+        Err(error) => {
+            let challenge_ids = batch.jobs.iter().map(|job| job.1).collect::<Vec<_>>();
+            sqlx::query(
+                r#"UPDATE "RepoBindingPushJobs"
+                      SET attempts = attempts + 1,
+                          last_error = $3,
+                          updated_at_utc = clock_timestamp() + make_interval(
+                              secs => LEAST(3600, 15 * (1 << LEAST(attempts, 7))))
+                    WHERE binding_id = $1 AND challenge_id = ANY($2)"#,
+            )
+            .bind(batch.binding_id)
+            .bind(&challenge_ids)
+            .bind(error.to_string().chars().take(2_000).collect::<String>())
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        }
+    }
+    sqlx::query(
+        r#"UPDATE "RepoBindings"
+              SET push_lease_token = NULL, push_lease_until = NULL
+            WHERE id = $1 AND push_lease_token = $2"#,
+    )
+    .bind(batch.binding_id)
+    .bind(batch.lease_token)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    result.map(|_| ())
+}
+
+#[cfg(test)]
 async fn current_binding_id(st: &SharedState, game_id: i32) -> AppResult<Option<i32>> {
     sqlx::query_scalar(r#"SELECT repo_binding_id FROM "Games" WHERE id = $1"#)
         .bind(game_id)
@@ -53,83 +212,91 @@ async fn current_binding_id(st: &SharedState, game_id: i32) -> AppResult<Option<
         .map_err(|error| AppError::internal(error.to_string()))
 }
 
-async fn push_latest(st: &SharedState, game_id: i32, challenge_id: i32) -> AppResult<()> {
-    // A concurrent rebind can change the checkout root between the cheap lookup
-    // and the fenced snapshot. Retry a bounded number of times on that rare path.
-    for _ in 0..3 {
-        let Some(binding_id) = current_binding_id(st, game_id).await? else {
-            return Ok(());
-        };
-        let dest = std::path::PathBuf::from(&st.config.storage_root)
-            .join("repos")
-            .join(binding_id.to_string());
-        let _checkout = git_sync::lock_checkout_distributed(st.pg(), &dest).await?;
-        let Some(initial_binding) = repo_binding::Entity::find_by_id(binding_id)
-            .one(&st.db)
-            .await?
-        else {
-            return Ok(());
-        };
-        if !initial_binding.push_on_edit {
-            return Ok(());
-        }
-        let Some(token) = initial_binding
-            .github_token
-            .as_deref()
-            .filter(|token| !token.is_empty())
-            .map(str::to_string)
-        else {
-            tracing::info!(binding = binding_id, "push-back: no token; skipping");
-            return Ok(());
-        };
-        let repo_url = git_sync::validate_binding_repo_url(&initial_binding.repo_url)?;
-        let git_ref = git_sync::validate_git_ref(initial_binding.git_ref.as_deref())?;
-        let auth_url = git_sync::GitCredentials::new(token).apply(&repo_url);
-        git_sync::sync_repo(&auth_url, git_ref.as_deref(), &dest).await?;
+async fn push_batch(st: &SharedState, batch: &ClaimedRepoPushBatch) -> AppResult<Vec<(i32, i64)>> {
+    let dest = std::path::PathBuf::from(&st.config.storage_root)
+        .join("repos")
+        .join(batch.binding_id.to_string());
+    let _checkout = git_sync::lock_checkout_distributed(st.pg(), &dest).await?;
+    let Some(initial_binding) = repo_binding::Entity::find_by_id(batch.binding_id)
+        .one(&st.db)
+        .await?
+    else {
+        return Ok(batch.jobs.iter().map(|job| (job.1, i64::MAX)).collect());
+    };
+    if !initial_binding.push_on_edit {
+        return Ok(batch.jobs.iter().map(|job| (job.1, i64::MAX)).collect());
+    }
+    let Some(token) = initial_binding
+        .github_token
+        .as_deref()
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+    else {
+        return Err(AppError::conflict(
+            "repository push-back is enabled but no write token is configured",
+        ));
+    };
+    let repo_url = git_sync::validate_binding_repo_url(&initial_binding.repo_url)?;
+    let git_ref = git_sync::validate_git_ref(initial_binding.git_ref.as_deref())?;
+    let auth_url = git_sync::GitCredentials::new(token).apply(&repo_url);
+    git_sync::sync_repo(&auth_url, git_ref.as_deref(), &dest).await?;
 
+    let mut payloads = Vec::with_capacity(batch.jobs.len());
+    let mut completed = Vec::with_capacity(batch.jobs.len());
+    for (game_id, challenge_id, _) in &batch.jobs {
         match snapshot_after_checkout(
             st,
-            game_id,
-            challenge_id,
-            binding_id,
+            *game_id,
+            *challenge_id,
+            batch.binding_id,
             &initial_binding,
             &dest,
         )
         .await?
         {
-            SnapshotResult::Retry => continue,
-            SnapshotResult::Skip => return Ok(()),
-            SnapshotResult::Ready(payload) => {
-                tokio::fs::write(&payload.manifest, &payload.yaml)
-                    .await
-                    .map_err(|error| {
-                        AppError::internal(format!(
-                            "push-back: write {}: {error}",
-                            payload.manifest.display()
-                        ))
-                    })?;
-                let message = format!("chore: update {} from rsctf admin edit", payload.title);
-                git_sync::push_file(
-                    &dest,
-                    &payload.relative_manifest,
-                    &payload.repo_url,
-                    &payload.token,
-                    &message,
-                )
-                .await?;
-                tracing::info!(
-                    binding = payload.binding_id,
-                    challenge = payload.challenge_id,
-                    yaml = %payload.relative_manifest,
-                    "push-back: pushed latest database state"
-                );
-                return Ok(());
+            SnapshotResult::Retry => {
+                return Err(AppError::conflict(
+                    "repository binding changed while push-back was queued",
+                ));
             }
+            SnapshotResult::Skip => completed.push((*challenge_id, i64::MAX)),
+            SnapshotResult::Ready(payload) => payloads.push(payload),
         }
     }
-    Err(AppError::conflict(
-        "repository binding changed repeatedly while push-back was queued",
-    ))
+    for payload in &payloads {
+        tokio::fs::write(&payload.manifest, &payload.yaml)
+            .await
+            .map_err(|error| {
+                AppError::internal(format!(
+                    "push-back: write {}: {error}",
+                    payload.manifest.display()
+                ))
+            })?;
+    }
+    if !payloads.is_empty() {
+        let paths = payloads
+            .iter()
+            .map(|payload| payload.relative_manifest.as_str())
+            .collect::<Vec<_>>();
+        git_sync::push_files(
+            &dest,
+            &paths,
+            &repo_url,
+            payloads[0].token.as_str(),
+            &format!("chore: update {} challenge(s) from rsctf", payloads.len()),
+        )
+        .await?;
+        for payload in payloads {
+            tracing::info!(
+                binding = payload.binding_id,
+                challenge = payload.challenge_id,
+                yaml = %payload.relative_manifest,
+                "push-back: pushed latest database state"
+            );
+            completed.push((payload.challenge_id, payload.revision));
+        }
+    }
+    Ok(completed)
 }
 
 /// The checkout is already serialized and current. Take the same short
@@ -175,7 +342,10 @@ async fn snapshot_after_checkout(
             return Ok(DatabaseSnapshot::Retry);
         }
         let Some(binding_json) = sqlx::query_scalar::<_, serde_json::Value>(
-            r#"SELECT to_jsonb(binding) FROM "RepoBindings" binding WHERE id = $1"#,
+            r#"SELECT to_jsonb(binding) || jsonb_build_object(
+                       'status', CASE binding.status
+                           WHEN 0 THEN 'Active' WHEN 1 THEN 'Paused' END)
+                 FROM "RepoBindings" binding WHERE id = $1"#,
         )
         .bind(expected_binding_id)
         .fetch_optional(&mut **game_lock.transaction_mut())
@@ -260,10 +430,9 @@ async fn snapshot_after_checkout(
         git_sync::serialize_challenge_preserving_source(&challenge, &flag_texts, &source_yaml)?;
     Ok(SnapshotResult::Ready(PushPayload {
         binding_id: binding.id,
-        repo_url: git_sync::validate_binding_repo_url(&binding.repo_url)?,
         token,
         challenge_id: challenge.id,
-        title: challenge.title.clone(),
+        revision: challenge.revision,
         manifest,
         relative_manifest,
         yaml,

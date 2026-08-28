@@ -98,13 +98,21 @@ pub(crate) async fn update_repo_binding_record(
         model.git_ref = Set(crate::services::git_sync::validate_git_ref(Some(&value))?);
     }
     if let Some(value) = m.interval_seconds {
-        model.interval_seconds = Set(value.max(0));
+        model.interval_seconds = Set(validate_scan_interval(value)?);
+        model.next_scan_utc = Set(Some(Utc::now() + Duration::seconds(value as i64)));
     }
     if let Some(value) = m.status {
-        model.status = Set(if value == "Active" {
-            RepoWatchStatus::Active
-        } else {
-            RepoWatchStatus::Paused
+        model.status = Set(match value.as_str() {
+            "Active" => {
+                model.next_scan_utc = Set(Some(Utc::now()));
+                RepoWatchStatus::Active
+            }
+            "Paused" => RepoWatchStatus::Paused,
+            _ => {
+                return Err(AppError::bad_request(
+                    "Repository status must be Active or Paused",
+                ))
+            }
         });
     }
     if let Some(value) = m.github_token {
@@ -177,21 +185,21 @@ pub(crate) async fn record_scan_completion(
     ran_at: DateTime<Utc>,
     commit_sha: Option<String>,
     message: String,
-    next_scan: DateTime<Utc>,
+    interval_seconds: i32,
 ) -> AppResult<()> {
     let updated = sqlx::query(
         r#"UPDATE "RepoBindings"
               SET last_scan_utc = $2,
                   last_commit_sha = COALESCE($3, last_commit_sha),
                   last_scan_message = $4,
-                  next_scan_utc = $5
+                  next_scan_utc = clock_timestamp() + make_interval(secs => $5)
             WHERE id = $1"#,
     )
     .bind(id)
     .bind(ran_at)
     .bind(commit_sha)
     .bind(message)
-    .bind(next_scan)
+    .bind(interval_seconds)
     .execute(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;

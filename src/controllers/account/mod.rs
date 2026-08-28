@@ -62,6 +62,7 @@ fn registration_disposition(
 mod avatar;
 mod bootstrap;
 mod email_confirmation;
+mod link_attempts;
 mod profile_bounds;
 mod recovery;
 mod request_models;
@@ -71,7 +72,6 @@ pub use email_confirmation::verify;
 use profile_bounds::load_user;
 pub(crate) use profile_bounds::validate_profile_fields;
 pub use recovery::*;
-use request_models::EmailChangeTicket;
 pub use request_models::{
     AccountVerifyModel, LoginModel, MailChangeModel, PasswordResetModel, RecoveryModel,
 };
@@ -460,14 +460,25 @@ pub async fn register(
             .fetch_one(&mut *txn)
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-        Some(email_confirmation::token_for_registration(
+        let token = email_confirmation::token_for_registration(
             st.config.as_ref(),
             id,
             &norm_email,
             &security_stamp,
             database_now,
             mail_operation_id,
-        ))
+        );
+        link_attempts::stage_registration(
+            &mut txn,
+            &token,
+            id,
+            &link_attempts::value_digest(&security_stamp),
+            &link_attempts::value_digest(&norm_email),
+            database_now + chrono::Duration::minutes(15),
+        )
+        .await?;
+        link_attempts::activate_registration_locked(&mut txn, &token, id).await?;
+        Some(token)
     } else {
         None
     };

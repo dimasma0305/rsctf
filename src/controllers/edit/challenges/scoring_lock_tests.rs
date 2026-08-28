@@ -8,6 +8,7 @@ use crate::utils::enums::{
 fn challenge() -> game_challenge::Model {
     game_challenge::Model {
         id: 672,
+        revision: 1,
         game_id: 19,
         title: "Kuta".into(),
         content: String::new(),

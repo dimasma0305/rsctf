@@ -273,6 +273,23 @@ async fn live_user(parts: &mut Parts, app: &SharedState) -> Result<CurrentUser, 
     if let Some(user) = parts.extensions.get::<CurrentUser>() {
         return Ok(user.clone());
     }
+    if let Some(personal) = parts
+        .extensions
+        .get::<crate::controllers::api_token::VerifiedPersonalToken>()
+    {
+        if personal.audience != "admin_api" {
+            return Err(AppError::Forbidden);
+        }
+        let user = personal.user.clone();
+        if let Some(activity) = parts
+            .extensions
+            .get::<crate::middlewares::user_activity::RequestActivityContext>()
+        {
+            activity.mark_authenticated(user.id);
+        }
+        parts.extensions.insert(user.clone());
+        return Ok(user);
+    }
     // A verified participation token is intentionally not a user session. The
     // optional-user extractor should not spend another HMAC verification trying
     // to reinterpret it as a JWT.

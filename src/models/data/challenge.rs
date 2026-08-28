@@ -17,6 +17,8 @@ pub mod game_challenge {
         #[sea_orm(primary_key)]
         pub id: i32,
         pub game_id: i32,
+        /// Optimistic-concurrency revision for operator edits.
+        pub revision: i64,
 
         // --- Challenge base ---
         pub title: String,

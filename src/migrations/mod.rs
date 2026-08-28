@@ -171,6 +171,11 @@ mod m0187_blob_deletion_operations;
 mod m0190_traffic_archive_admission;
 mod m0191_game_configuration_operations;
 mod m0192_team_profile_operations;
+mod m0195_challenge_mutation_recovery;
+mod m0196_resource_create_operations;
+mod m0197_account_link_attempts;
+mod m0198_personal_api_tokens;
+mod m0199_repo_binding_scheduler;
 mod m0205_account_activity_indexes;
 mod m0206_joined_challenge_catalog_indexes;
 mod m0207_participation_provision_jobs;
@@ -195,6 +200,8 @@ pub(crate) use m0115_flag_egress_feed_cursor::UP_SQL as FLAG_EGRESS_FEED_CURSOR_
 pub(crate) use m0116_game_event_feed_pending::UP_SQL as GAME_EVENT_FEED_PENDING_SQL;
 #[cfg(test)]
 pub(crate) use m0175_mail_outbox::UP_SQL as MAIL_OUTBOX_SQL;
+#[cfg(test)]
+pub(crate) use m0196_resource_create_operations::UP_SQL as RESOURCE_CREATE_OPERATIONS_SQL;
 #[cfg(test)]
 pub(crate) use m0207_participation_provision_jobs::UP_SQL as PARTICIPATION_PROVISION_JOBS_SQL;
 
@@ -361,6 +368,11 @@ impl MigratorTrait for Migrator {
             Box::new(m0190_traffic_archive_admission::Migration),
             Box::new(m0191_game_configuration_operations::Migration),
             Box::new(m0192_team_profile_operations::Migration),
+            Box::new(m0195_challenge_mutation_recovery::Migration),
+            Box::new(m0196_resource_create_operations::Migration),
+            Box::new(m0197_account_link_attempts::Migration),
+            Box::new(m0198_personal_api_tokens::Migration),
+            Box::new(m0199_repo_binding_scheduler::Migration),
             Box::new(m0205_account_activity_indexes::Migration),
             Box::new(m0206_joined_challenge_catalog_indexes::Migration),
             Box::new(m0207_participation_provision_jobs::Migration),
@@ -509,7 +521,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 52..],
+            &names[names.len() - 57..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -560,6 +572,11 @@ mod tests {
                 "m0190_traffic_archive_admission",
                 "m0191_game_configuration_operations",
                 "m0192_team_profile_operations",
+                "m0195_challenge_mutation_recovery",
+                "m0196_resource_create_operations",
+                "m0197_account_link_attempts",
+                "m0198_personal_api_tokens",
+                "m0199_repo_binding_scheduler",
                 "m0205_account_activity_indexes",
                 "m0206_joined_challenge_catalog_indexes",
                 "m0207_participation_provision_jobs",

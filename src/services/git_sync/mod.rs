@@ -64,10 +64,12 @@ use sea_orm::{
 };
 
 mod checker;
+mod scheduler;
 use checker::{
     checker_dest_dir, checker_source_dir, cleanup_unpublished_checker, prepare_checker_venv,
     validate_checker_source,
 };
+pub use scheduler::start as start_scheduler;
 mod checker_gc;
 pub(crate) use checker_gc::acquire_checker_execution_lease;
 pub use checker_gc::collect_stale_checker_revisions;
@@ -991,7 +993,7 @@ pub use attach::repair_missing_attachments;
 use attach::sync_attachment;
 mod push_back;
 pub(crate) use push_back::serialize_challenge_preserving_source;
-pub use push_back::{push_file, serialize_challenge};
+pub use push_back::{push_file, push_files, serialize_challenge};
 
 #[cfg(test)]
 mod tests;

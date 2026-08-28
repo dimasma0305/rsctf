@@ -7,6 +7,35 @@ pub async fn add_post(
     AdminUser(user): AdminUser,
     Json(model): Json<PostEditModel>,
 ) -> AppResult<RequestResponse<String>> {
+    let mut digest_model = model.clone();
+    digest_model.operation_id = None;
+    let request_digest = sha256_str(
+        &serde_json::to_string(&digest_model)
+            .map_err(|error| AppError::internal(error.to_string()))?,
+    );
+    let mut transaction = st
+        .pg()
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some(operation_id) = model.operation_id {
+        if let Some(id) = crate::services::create_operations::claim(
+            &mut transaction,
+            user.id,
+            "post",
+            0,
+            operation_id,
+            &request_digest,
+        )
+        .await?
+        {
+            transaction
+                .commit()
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+            return Ok(RequestResponse::ok(id));
+        }
+    }
     let now = Utc::now();
     // Post.UpdateKeyWithHash: sha256("{title}:{iso}:{uuid}")[4..12].
     let title = model.title.clone().unwrap_or_default();
@@ -18,22 +47,38 @@ pub async fn add_post(
     );
     let id = sha256_str(&seed)[4..12].to_string();
 
-    let tags = model
-        .tags
-        .as_ref()
-        .map(|t| serde_json::to_value(t).unwrap_or(JsonValue::Null));
-
-    let am = post::ActiveModel {
-        id: Set(id.clone()),
-        title: Set(title),
-        summary: Set(model.summary.unwrap_or_default()),
-        content: Set(model.content.unwrap_or_default()),
-        is_pinned: Set(model.is_pinned.unwrap_or(false)),
-        tags: Set(tags),
-        author_id: Set(Some(user.id)),
-        update_time_utc: Set(now),
-    };
-    am.insert(&st.db).await?;
+    let tags = model.tags.as_ref().map(sqlx::types::Json);
+    sqlx::query(
+        r#"INSERT INTO "Posts"
+                  (id, title, summary, content, is_pinned, tags, author_id, update_time_utc)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"#,
+    )
+    .bind(&id)
+    .bind(title)
+    .bind(model.summary.unwrap_or_default())
+    .bind(model.content.unwrap_or_default())
+    .bind(model.is_pinned.unwrap_or(false))
+    .bind(tags)
+    .bind(user.id)
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some(operation_id) = model.operation_id {
+        crate::services::create_operations::complete(
+            &mut transaction,
+            user.id,
+            "post",
+            0,
+            operation_id,
+            &id,
+        )
+        .await?;
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(RequestResponse::ok(id))
 }
 

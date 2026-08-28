@@ -1267,6 +1267,13 @@ export interface ApiToken {
   creator?: string | null;
 }
 
+/** Bounded page of managed API tokens. */
+export interface ArrayResponseOfApiToken {
+  data: ApiToken[]
+  length: number
+  total: number
+}
+
 /** API token creation model. */
 export interface ApiTokenCreateModel {
   /**
@@ -1492,6 +1499,8 @@ export interface SequenceSuspectDetail {
 
 /** Post item (Edit) */
 export interface PostEditModel {
+  /** Stable create identity used to recover an ambiguous response. */
+  operationId?: string;
   /**
    * Post title
    * @maxLength 50
@@ -1546,6 +1555,8 @@ export interface PostDetailModel {
 
 /** Game information (Edit) */
 export interface GameInfoModel {
+  /** Stable create identity used to recover an ambiguous response. */
+  operationId?: string;
   /**
    * Game ID
    * @format int32
@@ -1928,6 +1939,8 @@ export interface ChallengeEditDetailModel {
    * @format int32
    */
   id?: number;
+  /** Optimistic-concurrency revision. */
+  revision: number;
   /**
    * Challenge title
    * @minLength 1
@@ -2110,6 +2123,8 @@ export interface FlagInfoModel {
 
 /** Basic challenge information (Edit) */
 export interface ChallengeInfoModel {
+  /** Stable create identity used to recover an ambiguous response. */
+  operationId?: string;
   /**
    * Challenge ID
    * @format int32
@@ -2301,6 +2316,8 @@ export interface ImageCleanupReport {
 
 /** Challenge update information (Edit) */
 export interface ChallengeUpdateModel {
+  /** Revision returned by the last authoritative challenge read. */
+  expectedRevision?: number | null;
   /**
    * Challenge title
    * @minLength 1
@@ -3751,6 +3768,10 @@ export interface RepoBindingInfoModel {
   tokenStatus?: TokenStatus
   /** Live progress message from the scanner — non-null while a scan is running. */
   currentActivity?: string | null
+  /** Durable challenge edits still waiting for repository push-back. */
+  pendingPushes: number
+  /** Latest bounded push-back failure, if the backlog is retrying. */
+  lastPushError?: string | null
   /**
    * When true, admin edits to challenges owned by this binding get
    * serialized back to challenge.yml and pushed upstream as commits.
@@ -3758,6 +3779,13 @@ export interface RepoBindingInfoModel {
    */
   pushOnEdit?: boolean
   games: RepoBindingGameSummary[]
+}
+
+/** Bounded page of repository bindings. */
+export interface ArrayResponseOfRepoBindingInfoModel {
+  data: RepoBindingInfoModel[]
+  length: number
+  total: number
 }
 
 /** Body for POST /api/Admin/RepoBindings */
@@ -3801,6 +3829,13 @@ export interface RepoBindingScanHistoryModel {
   challengesUpdated: number
   failures: number
   messages?: string | null
+}
+
+/** Bounded page of repository scan history. */
+export interface ArrayResponseOfRepoBindingScanHistoryModel {
+  data: RepoBindingScanHistoryModel[]
+  length: number
+  total: number
 }
 
 /** One file inside the audit archive */
@@ -4395,6 +4430,8 @@ export interface HashPowChallenge {
 
 /** Team information update */
 export interface TeamUpdateModel {
+  /** Stable create identity used to recover an ambiguous response. */
+  operationId?: string;
   /**
    * Team name
    * @maxLength 255
@@ -6128,24 +6165,33 @@ export class Api<
      * @name AdminListRepoBindings
      * @request GET:/api/admin/repobindings
      */
-    adminListRepoBindings: (params: RequestParams = {}) =>
-      this.request<RepoBindingInfoModel[], RequestResponse>({
+    adminListRepoBindings: (
+      query?: { count?: number; skip?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfRepoBindingInfoModel, RequestResponse>({
         path: `/api/admin/repobindings`,
         method: "GET",
+        query,
         format: "json",
         ...params,
       }),
 
-    useAdminListRepoBindings: (options?: SWRConfiguration, doFetch: boolean = true) =>
-      useSWR<RepoBindingInfoModel[], RequestResponse>(
-        doFetch ? `/api/admin/repobindings` : null,
+    useAdminListRepoBindings: (
+      query?: { count?: number; skip?: number },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfRepoBindingInfoModel, RequestResponse>(
+        doFetch ? [`/api/admin/repobindings`, query] : null,
         options,
       ),
 
     mutateAdminListRepoBindings: (
-      data?: RepoBindingInfoModel[] | Promise<RepoBindingInfoModel[]>,
+      query?: { count?: number; skip?: number },
+      data?: ArrayResponseOfRepoBindingInfoModel | Promise<ArrayResponseOfRepoBindingInfoModel>,
       options?: MutatorOptions,
-    ) => mutate<RepoBindingInfoModel[]>(`/api/admin/repobindings`, data, options),
+    ) => mutate<ArrayResponseOfRepoBindingInfoModel>([`/api/admin/repobindings`, query], data, options),
 
     /**
      * @description Register a new repo binding (immediately scans for .gzevent manifests)
@@ -6186,10 +6232,15 @@ export class Api<
      * @name AdminGetRepoBindingScans
      * @request GET:/api/admin/repobindings/{id}/scans
      */
-    adminGetRepoBindingScans: (id: number, params: RequestParams = {}) =>
-      this.request<RepoBindingScanHistoryModel[], RequestResponse>({
+    adminGetRepoBindingScans: (
+      id: number,
+      query?: { count?: number; skip?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfRepoBindingScanHistoryModel, RequestResponse>({
         path: `/api/admin/repobindings/${id}/scans`,
         method: "GET",
+        query,
         format: "json",
         ...params,
       }),
@@ -6522,10 +6573,14 @@ export class Api<
      * @summary Lists all API tokens.
      * @request GET:/api/tokens
      */
-    apiTokenListTokens: (params: RequestParams = {}) =>
-      this.request<ApiToken[], RequestResponse>({
+    apiTokenListTokens: (
+      query?: { count?: number; skip?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfApiToken, RequestResponse>({
         path: `/api/tokens`,
         method: "GET",
+        query,
         format: "json",
         ...params,
       }),
@@ -6538,11 +6593,12 @@ export class Api<
      * @request GET:/api/tokens
      */
     useApiTokenListTokens: (
+      query?: { count?: number; skip?: number },
       options?: SWRConfiguration,
       doFetch: boolean = true,
     ) =>
-      useSWR<ApiToken[], RequestResponse>(
-        doFetch ? `/api/tokens` : null,
+      useSWR<ArrayResponseOfApiToken, RequestResponse>(
+        doFetch ? [`/api/tokens`, query] : null,
         options,
       ),
 
@@ -6555,9 +6611,10 @@ export class Api<
      * @request GET:/api/tokens
      */
     mutateApiTokenListTokens: (
-      data?: ApiToken[] | Promise<ApiToken[]>,
+      query?: { count?: number; skip?: number },
+      data?: ArrayResponseOfApiToken | Promise<ArrayResponseOfApiToken>,
       options?: MutatorOptions,
-    ) => mutate<ApiToken[]>(`/api/tokens`, data, options),
+    ) => mutate<ArrayResponseOfApiToken>([`/api/tokens`, query], data, options),
 
     /**
      * No description

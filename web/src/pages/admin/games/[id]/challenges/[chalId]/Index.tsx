@@ -147,6 +147,7 @@ const GameChallengeEdit: FC = () => {
   const [disabled, setDisabled] = useState(false)
   const rolloutPromiseRef = useRef<Promise<void> | null>(null)
   const rolloutAbortRef = useRef<AbortController | null>(null)
+  const saveOwnerRef = useRef<AbortController | null>(null)
 
   const [minRate, setMinRate] = useState((challenge?.minScoreRate ?? DEFAULT_JEOPARDY_MIN_SCORE_RATE) * 100)
   const [category, setCategory] = useState<string | null>(challenge?.category ?? ChallengeCategory.Misc)
@@ -241,6 +242,16 @@ const GameChallengeEdit: FC = () => {
     }
   }, [challenge])
 
+  useEffect(() => {
+    saveOwnerRef.current?.abort()
+    saveOwnerRef.current = null
+    setDisabled(false)
+    return () => {
+      saveOwnerRef.current?.abort()
+      saveOwnerRef.current = null
+    }
+  }, [numId, numCId])
+
   // Recompute dirty against the saved baseline whenever any tracked edit state changes.
   useEffect(() => {
     setDirty(
@@ -295,10 +306,16 @@ const GameChallengeEdit: FC = () => {
     candidate: ChallengeUpdateModel,
     noFeedback?: boolean
   ): Promise<ChallengeEditDetailModel | null> => {
+    if (saveOwnerRef.current || !challenge) return null
+    const owner = new AbortController()
+    saveOwnerRef.current = owner
     const update = { ...candidate }
     if (isJeopardyContainer && workloadEditorEnabled) {
       const workloadSpec = validateWorkloadEditor(true)
-      if (!workloadSpec) return null
+      if (!workloadSpec) {
+        saveOwnerRef.current = null
+        return null
+      }
       const workloadIsUnchanged = savedWorkloadRef.current.enabled && savedWorkloadRef.current.text === workloadJson
       if (workloadIsUnchanged) {
         delete update.workloadSpec
@@ -310,11 +327,18 @@ const GameChallengeEdit: FC = () => {
     setDisabled(true)
 
     try {
-      const res = await api.edit.editUpdateGameChallenge(numId, numCId, {
-        ...update,
-        deadlineUtc: deadline ? deadline.valueOf() : 0,
-        isEnabled: undefined,
-      })
+      const res = await api.edit.editUpdateGameChallenge(
+        numId,
+        numCId,
+        {
+          ...update,
+          expectedRevision: challenge.revision,
+          deadlineUtc: deadline ? deadline.valueOf() : 0,
+          isEnabled: undefined,
+        },
+        { signal: owner.signal }
+      )
+      if (saveOwnerRef.current !== owner) return null
       if (!noFeedback) {
         showNotification({
           color: 'teal',
@@ -326,12 +350,13 @@ const GameChallengeEdit: FC = () => {
       mutateChals()
       return res.data
     } catch (e) {
-      showErrorMsg(e, t)
+      if (saveOwnerRef.current === owner && !owner.signal.aborted) showErrorMsg(e, t)
       if (noFeedback) setDisabled(false)
       return null
     } finally {
-      if (!noFeedback) {
-        setDisabled(false)
+      if (saveOwnerRef.current === owner) {
+        saveOwnerRef.current = null
+        if (!noFeedback) setDisabled(false)
       }
     }
   }

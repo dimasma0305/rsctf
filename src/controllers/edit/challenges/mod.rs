@@ -4,11 +4,15 @@ use super::*;
 mod attachments;
 mod audit;
 mod bulk;
+mod create;
 mod deletion;
 #[cfg(test)]
 mod deletion_tests;
 mod hints;
 mod lifecycle;
+mod mutation_recovery;
+#[cfg(test)]
+mod mutation_recovery_tests;
 mod repo_push;
 mod review;
 mod scoring;
@@ -23,19 +27,21 @@ pub use audit::{
     list_challenge_build_statuses, rebuild_challenge,
 };
 pub use bulk::mutate_challenges_bulk;
+pub use create::add_challenge;
 pub(crate) use deletion::reject_pending_mutation;
 pub(crate) use lifecycle::destroy_challenge_containers;
 use lifecycle::destroy_test_container_locked;
+use mutation_recovery::update_challenge_row_locked;
 #[cfg(test)]
 pub(crate) use repo_push::commit_latest_to_checkout_for_test;
+pub(crate) use repo_push::{
+    claim_jobs as claim_repo_push_jobs, run_claimed_job as run_claimed_repo_push_job,
+};
 pub use review::{approve_challenge, list_pending_challenges, reject_challenge};
 pub(crate) use workload::execute_workload_rollout_job;
 pub use workload::rollout_workloads;
 
-const INSERTABLE_GAME_SQL: &str =
-    r#"SELECT NOT deletion_pending FROM "Games" WHERE id = $1 FOR SHARE"#;
 const MAX_EDIT_CHALLENGES: u64 = 2_048;
-
 // ============================================================================
 //  Game challenges
 // ============================================================================
@@ -84,78 +90,6 @@ pub async fn get_challenges(
         })
         .collect();
     Ok(RequestResponse::ok(data))
-}
-
-/// `POST /api/edit/games/{id}/challenges`
-pub async fn add_challenge(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-    Path(id): Path<i32>,
-    Json(model): Json<ChallengeInfoModel>,
-) -> AppResult<RequestResponse<ChallengeEditDetailModel>> {
-    manager_or_admin(&st, &user, id).await?;
-    load_game(&st, id).await?;
-
-    // Every challenge kind shares the game deletion/control domain. A game
-    // whose hard-delete fence committed must not gain a new child while its
-    // external teardown is running.
-    let mut engine_control =
-        Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?);
-    let control = engine_control
-        .as_mut()
-        .expect("new challenge holds the game control lock");
-    let game_accepts_children = sqlx::query_scalar::<_, bool>(INSERTABLE_GAME_SQL)
-        .bind(id)
-        .fetch_optional(&mut **control.transaction_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?
-        .ok_or_else(|| AppError::not_found("Game not found"))?;
-    if !game_accepts_children {
-        return Err(AppError::conflict("Game is being deleted"));
-    }
-    if model.challenge_type == ChallengeType::KingOfTheHill {
-        super::games::validate_koth_game_shape_locked(control.transaction_mut(), id).await?;
-    }
-
-    let am = game_challenge::ActiveModel {
-        game_id: Set(id),
-        title: Set(model.title),
-        content: Set(String::new()),
-        category: Set(model.category),
-        challenge_type: Set(model.challenge_type),
-        is_enabled: Set(false),
-        submission_limit: Set(crate::utils::scoring::DEFAULT_CHALLENGE_SUBMISSION_LIMIT),
-        accepted_count: Set(0),
-        submission_count: Set(0),
-        review_status: Set(ChallengeReviewStatus::Active),
-        build_status: Set(ChallengeBuildStatus::None),
-        original_score: Set(crate::utils::scoring::DEFAULT_JEOPARDY_ORIGINAL_SCORE),
-        min_score_rate: Set(crate::utils::scoring::DEFAULT_JEOPARDY_MIN_SCORE_RATE),
-        difficulty: Set(crate::utils::scoring::DEFAULT_JEOPARDY_DIFFICULTY),
-        score_curve: Set(ScoreCurve::Standard),
-        // RSCTF `Challenge.NetworkMode` defaults to `Open`.
-        network_mode: Set(Some(NetworkMode::Open)),
-        enable_traffic_capture: Set(false),
-        enable_shared_container: Set(false),
-        disable_blood_bonus: Set(true),
-        ad_allow_egress: Set(false),
-        ad_allow_self_reset: Set(false),
-        ad_ssh_requires_flag: Set(false),
-        ad_self_hosted: Set(false),
-        ..Default::default()
-    };
-    let created = am.insert(&st.db).await?;
-    seed_division_configs(control.transaction_mut(), id, created.id).await?;
-    if let Some(control) = engine_control {
-        control
-            .release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    }
-    flush_game_scoreboards(&st, id).await;
-    Ok(RequestResponse::ok(
-        ChallengeEditDetailModel::from_challenge(&st, &created, Vec::new()).await?,
-    ))
 }
 
 /// `GET /api/edit/games/{id}/challenges/{cId}`
@@ -231,6 +165,9 @@ pub async fn update_challenge(
     Json(model): Json<ChallengeUpdateModel>,
 ) -> AppResult<RequestResponse<ChallengeEditDetailModel>> {
     manager_or_admin(&st, &user, id).await?;
+    let expected_revision = model.expected_revision.ok_or_else(|| {
+        AppError::bad_request("Challenge revision is required; reload the editor before saving")
+    })?;
     let game = load_game(&st, id).await?;
     // Every runtime eligibility/topology mutation and its possible cleanup
     // shares this outer challenge fence. Cleanup may take per-runtime
@@ -246,10 +183,19 @@ pub async fn update_challenge(
     };
     let mut engine_control =
         Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?);
-    let mut workload_lock =
-        workload::acquire_update_lock_for_model(st.pg(), id, c_id, &model).await?;
-    let challenge = load_challenge(&st, id, c_id).await?;
-    deletion::reject_pending_mutation(st.pg(), id, c_id).await?;
+    let control = engine_control
+        .as_mut()
+        .expect("challenge update holds the game control lock");
+    if workload::update_changes_runtime_definition(&model) {
+        crate::utils::single_flight::acquire_transaction_advisory_lock(
+            control.transaction_mut(),
+            &crate::services::challenge_workloads::definition_lock_key(id, c_id),
+        )
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    let challenge = load_challenge_locked(control.transaction_mut(), id, c_id).await?;
+    deletion::reject_pending_mutation(&mut **control.transaction_mut(), id, c_id).await?;
     let ch_type = challenge.challenge_type;
     crate::utils::scoring::validate_challenge_scoring(
         model.original_score.unwrap_or(challenge.original_score),
@@ -268,9 +214,6 @@ pub async fn update_challenge(
     // A normal submit locks Games before its challenge-scoped grading lock.
     // Preserve that order here so the global boundary and this challenge's
     // policy are both linearizable without a lock inversion.
-    let control = engine_control
-        .as_mut()
-        .expect("challenge update holds the game control lock");
     let competition_scoring_started =
         competition_scoring_started_locked(control.transaction_mut(), id).await?;
     crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id).await?;
@@ -323,15 +266,28 @@ pub async fn update_challenge(
         && (was_shared_managed != requested_shared_managed
             || was_ad_self_hosted != requested_ad_self_hosted);
     let transition_definition = if active_topology_flip {
-        Some(lifecycle::runtime_definition_snapshot(st.pg(), c_id, challenge.challenge_type).await?)
+        Some(
+            lifecycle::runtime_definition_snapshot_locked(
+                control.transaction_mut(),
+                c_id,
+                challenge.challenge_type,
+            )
+            .await?,
+        )
     } else {
         None
     };
 
     // Guard: enabling a non-dynamic challenge with no flags is rejected.
     if model.is_enabled == Some(true) && !challenge.is_enabled && !ch_type.is_dynamic() {
-        let flags = load_flags(&st, c_id).await?;
-        if flags.is_empty() {
+        let has_flag: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(SELECT 1 FROM "FlagContexts" WHERE challenge_id = $1)"#,
+        )
+        .bind(c_id)
+        .fetch_one(&mut **control.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if !has_flag {
             return Err(AppError::bad_request(
                 "Cannot enable a challenge that has no flag",
             ));
@@ -425,7 +381,7 @@ pub async fn update_challenge(
         )
         .bind(c_id)
         .bind(id)
-        .execute(st.pg())
+        .execute(&mut **control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         if fenced.rows_affected() != 1 {
@@ -433,7 +389,6 @@ pub async fn update_challenge(
                 "Challenge eligibility changed; retry the topology update",
             ));
         }
-        workload::release_update_lock(workload_lock.take()).await?;
         if let Some(lock) = engine_control.take() {
             lock.release()
                 .await
@@ -456,18 +411,33 @@ pub async fn update_challenge(
             ));
         }
         engine_control = Some(reacquired_engine);
-        workload_lock = workload::acquire_update_lock_for_model(st.pg(), id, c_id, &model).await?;
+        crate::utils::single_flight::acquire_transaction_advisory_lock(
+            engine_control
+                .as_mut()
+                .expect("reacquired challenge update holds game control")
+                .transaction_mut(),
+            &crate::services::challenge_workloads::definition_lock_key(id, c_id),
+        )
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     }
 
     let update_base = if active_topology_flip {
-        let current = load_challenge(&st, id, c_id).await?;
+        let control = engine_control
+            .as_mut()
+            .expect("reacquired challenge update holds game control");
+        let current = load_challenge_locked(control.transaction_mut(), id, c_id).await?;
         if current.is_enabled {
             return Err(AppError::conflict(
                 "Challenge topology fence changed during cleanup; retry the update",
             ));
         }
-        let current_definition =
-            lifecycle::runtime_definition_snapshot(st.pg(), c_id, current.challenge_type).await?;
+        let current_definition = lifecycle::runtime_definition_snapshot_locked(
+            control.transaction_mut(),
+            c_id,
+            current.challenge_type,
+        )
+        .await?;
         if transition_definition.as_ref() != Some(&current_definition) {
             return Err(AppError::conflict(
                 "Challenge runtime definition changed during cleanup; review the repository update and retry. The challenge remains disabled",
@@ -729,7 +699,16 @@ pub async fn update_challenge(
         am.receipt_verifier_identity = Set((!value.is_empty()).then(|| value.to_owned()));
     }
 
-    let updated = am.update(&st.db).await?;
+    let mut updated = am.try_into_model()?;
+    updated.revision = update_challenge_row_locked(
+        engine_control
+            .as_mut()
+            .expect("challenge update holds the game control lock")
+            .transaction_mut(),
+        &updated,
+        expected_revision,
+    )
+    .await?;
     seed_division_configs(
         engine_control
             .as_mut()
@@ -739,23 +718,40 @@ pub async fn update_challenge(
         c_id,
     )
     .await?;
-    workload::release_update_lock(workload_lock.take()).await?;
-    if ch_type == ChallengeType::KingOfTheHill && !updated.is_enabled {
-        crate::services::ad_engine::clear_challenge_control(&st.db, id, c_id).await?;
-    }
+    repo_push::enqueue_locked(
+        engine_control
+            .as_mut()
+            .expect("challenge update holds the game control lock")
+            .transaction_mut(),
+        id,
+        c_id,
+        updated.revision,
+    )
+    .await?;
     if let Some(lock) = engine_control {
         lock.release()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    if ch_type == ChallengeType::KingOfTheHill && !updated.is_enabled {
+        if let Err(error) =
+            crate::services::ad_engine::clear_challenge_control(&st.db, id, c_id).await
+        {
+            tracing::warn!(game = id, challenge = c_id, %error, "post-commit KotH control cleanup failed");
+        }
     }
     if (was_ad_self_hosted || updated.ad_self_hosted)
         && (!updated.ad_self_hosted
             || !updated.is_enabled
             || updated.review_status != ChallengeReviewStatus::Active)
     {
-        st.byoc.disconnect_challenge(&st.db, c_id).await?;
+        if let Err(error) = st.byoc.disconnect_challenge(&st.db, c_id).await {
+            tracing::warn!(game = id, challenge = c_id, revision = updated.revision, %error, "post-commit BYOC reconciliation failed");
+        }
     }
-    crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+    if let Err(error) = crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await {
+        tracing::warn!(game = id, challenge = c_id, revision = updated.revision, %error, "post-commit VPN reconciliation failed");
+    }
     flush_game_scoreboards(&st, id).await;
 
     // Tear down containers stranded by this edit (RSCTF `UpdateGameChallenge`):
@@ -788,21 +784,26 @@ pub async fn update_challenge(
             publish_time_utc: Set(Utc::now()),
             ..Default::default()
         };
-        let notice = notice.insert(&st.db).await?;
-
-        // Broadcast to the user hub's `ReceivedGameNotice` so clients refresh
-        // (same envelope as blood/normal notices: type/values/id/time).
-        st.publish_event(
-            "ReceivedGameNotice",
-            Some(id),
-            serde_json::json!({
-                "type": notice.notice_type,
-                "values": notice.values,
-                "id": notice.id,
-                "time": notice.publish_time_utc,
-            })
-            .to_string(),
-        );
+        match notice.insert(&st.db).await {
+            Ok(notice) => {
+                // Broadcast to the user hub's `ReceivedGameNotice` so clients refresh
+                // (same envelope as blood/normal notices: type/values/id/time).
+                st.publish_event(
+                    "ReceivedGameNotice",
+                    Some(id),
+                    serde_json::json!({
+                        "type": notice.notice_type,
+                        "values": notice.values,
+                        "id": notice.id,
+                        "time": notice.publish_time_utc,
+                    })
+                    .to_string(),
+                );
+            }
+            Err(error) => {
+                tracing::warn!(game = id, challenge = c_id, revision = updated.revision, %error, "post-commit new-challenge notice failed")
+            }
+        }
     }
 
     // A new/changed hint on a live, enabled challenge is announced as a NewHint
@@ -820,40 +821,40 @@ pub async fn update_challenge(
             publish_time_utc: Set(Utc::now()),
             ..Default::default()
         };
-        let notice = notice.insert(&st.db).await?;
-
-        st.publish_event(
-            "ReceivedGameNotice",
-            Some(id),
-            serde_json::json!({
-                "type": notice.notice_type,
-                "values": notice.values,
-                "id": notice.id,
-                "time": notice.publish_time_utc,
-            })
-            .to_string(),
-        );
+        match notice.insert(&st.db).await {
+            Ok(notice) => st.publish_event(
+                "ReceivedGameNotice",
+                Some(id),
+                serde_json::json!({
+                    "type": notice.notice_type,
+                    "values": notice.values,
+                    "id": notice.id,
+                    "time": notice.publish_time_utc,
+                })
+                .to_string(),
+            ),
+            Err(error) => {
+                tracing::warn!(game = id, challenge = c_id, revision = updated.revision, %error, "post-commit new-hint notice failed")
+            }
+        }
     }
 
     if let Some(lock) = runtime_transition {
-        lock.release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    }
-
-    // Repo push-back (RSCTF `EditController.TryPushBackAsync`): when this
-    // challenge's game is repo-bound and the binding opts into `push_on_edit`,
-    // regenerate `challenge.yml` from the updated row and git-push it upstream.
-    // Fire-and-forget + best-effort — a slow or failed push must never extend or
-    // fail the operator's edit-save round trip.
-    if game.repo_binding_id.is_some() {
-        repo_push::spawn(st.clone(), id, c_id);
+        if let Err(error) = lock.release().await {
+            tracing::warn!(game = id, challenge = c_id, revision = updated.revision, %error, "post-commit runtime-transition release failed");
+        }
     }
 
     let flags = if updated.challenge_type == ChallengeType::DynamicContainer {
         Vec::new()
     } else {
-        load_flags(&st, c_id).await?
+        match load_flags(&st, c_id).await {
+            Ok(flags) => flags,
+            Err(error) => {
+                tracing::warn!(game = id, challenge = c_id, revision = updated.revision, %error, "post-commit challenge response omitted flags");
+                Vec::new()
+            }
+        }
     };
     Ok(RequestResponse::ok(
         ChallengeEditDetailModel::from_challenge(&st, &updated, flags).await?,

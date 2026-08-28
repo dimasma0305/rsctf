@@ -17,7 +17,6 @@ use crate::services::worker::{parse_worker_handle, WorkerContainerManager, Worke
 use crate::services::worker_store::DefinitionUpdateOutcome;
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
-use crate::utils::single_flight::PgAdvisoryLock;
 
 const ROLLOUT_TIMEOUT: Duration = Duration::from_secs(90);
 const ROLLOUT_POLL_INITIAL: Duration = Duration::from_millis(200);
@@ -339,43 +338,6 @@ fn ensure_expected_identity(actual: &str, expected: Option<&str>) -> AppResult<(
         return Err(AppError::conflict(
             "the saved workload changed; save again before rolling it out",
         ));
-    }
-    Ok(())
-}
-
-pub(super) async fn acquire_update_lock(
-    pool: &sqlx::PgPool,
-    game_id: i32,
-    challenge_id: i32,
-    workload_changes: bool,
-) -> AppResult<Option<PgAdvisoryLock>> {
-    if !workload_changes {
-        return Ok(None);
-    }
-    Ok(Some(
-        crate::services::challenge_workloads::acquire_definition_lock(pool, game_id, challenge_id)
-            .await?,
-    ))
-}
-
-pub(super) async fn acquire_update_lock_for_model(
-    pool: &sqlx::PgPool,
-    game_id: i32,
-    challenge_id: i32,
-    model: &super::ChallengeUpdateModel,
-) -> AppResult<Option<PgAdvisoryLock>> {
-    acquire_update_lock(
-        pool,
-        game_id,
-        challenge_id,
-        update_changes_runtime_definition(model),
-    )
-    .await
-}
-
-pub(super) async fn release_update_lock(lock: Option<PgAdvisoryLock>) -> AppResult<()> {
-    if let Some(lock) = lock {
-        lock.release().await?;
     }
     Ok(())
 }

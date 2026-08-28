@@ -24,15 +24,14 @@ fn email_domain_validation_requires_one_complete_address() {
 }
 
 #[test]
-fn email_change_ticket_is_bound_to_the_security_stamp() {
-    let ticket = EmailChangeTicket {
-        user_id: Uuid::nil(),
-        new_email: "new@example.test".to_string(),
-        security_stamp: "stamp-1".to_string(),
-    };
-    let encoded = serde_json::to_vec(&ticket).unwrap();
-    let decoded: EmailChangeTicket = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(decoded.security_stamp, "stamp-1");
+fn email_change_ticket_digests_bind_but_do_not_disclose_values() {
+    let stamp = link_attempts::value_digest("stamp-1");
+    let destination = link_attempts::value_digest("NEW@EXAMPLE.TEST");
+    assert_eq!(stamp.len(), 64);
+    assert_eq!(destination.len(), 64);
+    assert_ne!(stamp, destination);
+    assert!(!stamp.contains("stamp-1"));
+    assert!(!destination.contains("EXAMPLE"));
 }
 
 #[tokio::test]

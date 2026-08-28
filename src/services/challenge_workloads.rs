@@ -592,6 +592,7 @@ mod tests {
     fn legacy_challenge() -> game_challenge::Model {
         game_challenge::Model {
             id: 7,
+            revision: 1,
             game_id: 42,
             title: "Legacy hill".into(),
             content: String::new(),

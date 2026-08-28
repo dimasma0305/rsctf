@@ -9,6 +9,7 @@ import {
   Group,
   Loader,
   NumberInput,
+  Pagination,
   Paper,
   SimpleGrid,
   Stack,
@@ -33,21 +34,58 @@ import {
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { showErrorMsg } from '@Utils/Shared'
-import api, { RepoBindingInfoModel, RepoBindingScanHistoryModel, RepoBindingScanResultModel } from '@Api'
+import api, {
+  ArrayResponseOfRepoBindingInfoModel,
+  ArrayResponseOfRepoBindingScanHistoryModel,
+  RepoBindingInfoModel,
+  RepoBindingScanResultModel,
+} from '@Api'
 
 dayjs.extend(relativeTime)
 
+const BINDING_PAGE_SIZE = 20
+const HISTORY_PAGE_SIZE = 20
+const SCHEDULER_WAKE_DELAY_MS = 15_250
+
 const RepoBindings: FC = () => {
   const { t } = useTranslation()
-  // 3s refresh keeps the CurrentActivity field live during a running
-  // scan without hammering the backend. Idle pages get a stable
-  // response from the DB query and SWR dedupes; cost is negligible.
-  const { data: bindings, mutate } = api.admin.useAdminListRepoBindings({ refreshInterval: 3000 })
+  const [bindingPage, setBindingPage] = useState(1)
+  const bindingQuery = { count: BINDING_PAGE_SIZE, skip: (bindingPage - 1) * BINDING_PAGE_SIZE }
+  const { data: bindingPageData, mutate } = api.admin.useAdminListRepoBindings(bindingQuery, {
+    keepPreviousData: false,
+    refreshInterval: (latest) =>
+      (latest as ArrayResponseOfRepoBindingInfoModel | undefined)?.data.some((binding) => binding.currentActivity)
+        ? 3000
+        : 0,
+  })
+  const bindings = bindingPageData?.data
+  const bindingPageCount = Math.max(1, Math.ceil((bindingPageData?.total ?? 0) / BINDING_PAGE_SIZE))
+
+  useEffect(() => {
+    if (bindingPage <= bindingPageCount) return
+    setBindingPage(bindingPageCount)
+  }, [bindingPage, bindingPageCount])
+
+  // Idle pages make no periodic requests. Wake once at the earliest scheduled
+  // scan so the first claimed lease can enable the short active-only poll.
+  useEffect(() => {
+    const next = bindings
+      ?.filter((binding) => binding.status === 'Active' && binding.nextScanUtc)
+      .map((binding) => dayjs(binding.nextScanUtc).valueOf())
+      .filter((time) => Number.isFinite(time) && time > Date.now())
+      .sort((left, right) => left - right)[0]
+    if (!next) return
+    const timer = window.setTimeout(
+      () => void mutate(),
+      Math.min(next - Date.now() + SCHEDULER_WAKE_DELAY_MS, 2_147_483_647)
+    )
+    return () => window.clearTimeout(timer)
+  }, [bindings, mutate])
 
   const [repoUrl, setRepoUrl] = useState('')
   const [refValue, setRefValue] = useState('')
@@ -57,7 +95,21 @@ const RepoBindings: FC = () => {
   const [busy, setBusy] = useState(false)
   const [lastResult, setLastResult] = useState<RepoBindingScanResultModel | null>(null)
   const [historyTarget, setHistoryTarget] = useState<RepoBindingInfoModel | null>(null)
-  const [history, setHistory] = useState<RepoBindingScanHistoryModel[] | null>(null)
+  const [history, setHistory] = useState<ArrayResponseOfRepoBindingScanHistoryModel | null>(null)
+  const [historyPage, setHistoryPage] = useState(1)
+  const historyOwner = useRef<{ generation: number; controller: AbortController | null }>({
+    generation: 0,
+    controller: null,
+  })
+
+  useEffect(
+    () => () => {
+      historyOwner.current.generation += 1
+      historyOwner.current.controller?.abort()
+      historyOwner.current.controller = null
+    },
+    []
+  )
 
   const flash = (r: RepoBindingScanResultModel) => {
     setLastResult(r)
@@ -110,15 +162,36 @@ const RepoBindings: FC = () => {
     }
   }
 
-  const onOpenHistory = async (b: RepoBindingInfoModel) => {
+  const loadHistory = async (b: RepoBindingInfoModel, page: number) => {
+    const generation = historyOwner.current.generation + 1
+    historyOwner.current.generation = generation
+    historyOwner.current.controller?.abort()
+    const controller = new AbortController()
+    historyOwner.current.controller = controller
     setHistoryTarget(b)
     setHistory(null)
     try {
-      const resp = await api.admin.adminGetRepoBindingScans(b.id)
+      const resp = await api.admin.adminGetRepoBindingScans(
+        b.id,
+        {
+          count: HISTORY_PAGE_SIZE,
+          skip: (page - 1) * HISTORY_PAGE_SIZE,
+        },
+        { signal: controller.signal }
+      )
+      if (controller.signal.aborted || historyOwner.current.generation !== generation) return
       setHistory(resp.data)
     } catch (e) {
+      if (controller.signal.aborted || historyOwner.current.generation !== generation) return
       showErrorMsg(e, t)
+    } finally {
+      if (historyOwner.current.generation === generation) historyOwner.current.controller = null
     }
+  }
+
+  const onOpenHistory = (b: RepoBindingInfoModel) => {
+    setHistoryPage(1)
+    void loadHistory(b, 1)
   }
 
   const onTogglePause = async (b: RepoBindingInfoModel) => {
@@ -470,6 +543,19 @@ const RepoBindings: FC = () => {
                       </Group>
                     )}
 
+                    {b.pendingPushes > 0 && !b.currentActivity && (
+                      <Text
+                        size="xs"
+                        c={b.lastPushError ? 'orange' : 'dimmed'}
+                        ff="monospace"
+                        lineClamp={2}
+                        title={b.lastPushError ?? undefined}
+                      >
+                        {b.pendingPushes} repository push{b.pendingPushes === 1 ? '' : 'es'} queued
+                        {b.lastPushError ? ` · ${b.lastPushError}` : ''}
+                      </Text>
+                    )}
+
                     {b.lastScanMessage && (
                       <Text size="xs" c="dimmed" lineClamp={2} ff="monospace" title={b.lastScanMessage}>
                         {b.lastScanMessage}
@@ -478,6 +564,15 @@ const RepoBindings: FC = () => {
                   </Stack>
                 </Paper>
               ))}
+              {bindingPageCount > 1 && (
+                <Pagination
+                  value={bindingPage}
+                  onChange={setBindingPage}
+                  total={bindingPageCount}
+                  aria-label={t('common.pagination.label', 'Repository binding pages')}
+                  style={{ alignSelf: 'flex-end' }}
+                />
+              )}
             </Stack>
           )}
         </Stack>
@@ -487,8 +582,12 @@ const RepoBindings: FC = () => {
         size="min(64rem, calc(100vw - 2rem))"
         opened={historyTarget != null}
         onClose={() => {
+          historyOwner.current.generation += 1
+          historyOwner.current.controller?.abort()
+          historyOwner.current.controller = null
           setHistoryTarget(null)
           setHistory(null)
+          setHistoryPage(1)
         }}
         title={
           <Stack gap={0}>
@@ -507,13 +606,13 @@ const RepoBindings: FC = () => {
           <Center py="xl">
             <Text c="dimmed">{t('admin.content.repo_binding.history_loading')}</Text>
           </Center>
-        ) : history.length === 0 ? (
+        ) : history.data.length === 0 ? (
           <Center py="xl">
             <Text c="dimmed">{t('admin.content.repo_binding.history_empty')}</Text>
           </Center>
         ) : (
           <Stack gap="sm">
-            {history.map((row) => (
+            {history.data.map((row) => (
               <Paper key={row.id} p="sm" withBorder>
                 <Stack gap={6}>
                   <Group justify="space-between" wrap="wrap">
@@ -567,6 +666,18 @@ const RepoBindings: FC = () => {
                 </Stack>
               </Paper>
             ))}
+            {history.total > HISTORY_PAGE_SIZE && historyTarget && (
+              <Pagination
+                value={historyPage}
+                onChange={(page) => {
+                  setHistoryPage(page)
+                  void loadHistory(historyTarget, page)
+                }}
+                total={Math.max(1, Math.ceil(history.total / HISTORY_PAGE_SIZE))}
+                aria-label={t('common.pagination.label', 'Repository scan history pages')}
+                style={{ alignSelf: 'flex-end' }}
+              />
+            )}
           </Stack>
         )}
       </Modal>

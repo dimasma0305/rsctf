@@ -66,6 +66,9 @@ pub mod api_token {
         pub expires_at: Option<DateTime<Utc>>,
         pub last_used_at: Option<DateTime<Utc>>,
         pub is_revoked: bool,
+        pub audience: String,
+        #[serde(skip_serializing)]
+        pub security_stamp_hash: Option<String>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

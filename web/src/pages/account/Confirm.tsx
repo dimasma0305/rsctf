@@ -2,7 +2,7 @@ import { Button, Text } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router'
 import { AccountView } from '@Components/AccountView'
@@ -16,6 +16,7 @@ const Confirm: FC = () => {
   const token = sp.get('token')
   const email = sp.get('email')
   const [disabled, setDisabled] = useState(false)
+  const submitOwnerRef = useRef<AbortController | null>(null)
   const { t } = useTranslation()
   // A corrupted/truncated link can carry a non-base64 email param; window.atob then
   // throws synchronously during render and white-screens the page. Decode safely and
@@ -29,10 +30,24 @@ const Confirm: FC = () => {
 
   usePageTitle(t('account.title.confirm'))
 
+  useEffect(() => {
+    submitOwnerRef.current?.abort()
+    submitOwnerRef.current = null
+    setDisabled(false)
+    return () => {
+      submitOwnerRef.current?.abort()
+      submitOwnerRef.current = null
+    }
+  }, [location.search])
+
   const verify = async (event: React.SyntheticEvent) => {
     event.preventDefault()
+    if (submitOwnerRef.current) return
+    const owner = new AbortController()
+    submitOwnerRef.current = owner
 
     if (!token || !email) {
+      submitOwnerRef.current = null
       showNotification({
         color: 'red',
         title: t('account.notification.confirm.failed'),
@@ -45,7 +60,8 @@ const Confirm: FC = () => {
     setDisabled(true)
 
     try {
-      await api.account.accountMailChangeConfirm({ token, email })
+      await api.account.accountMailChangeConfirm({ token, email }, { signal: owner.signal })
+      if (submitOwnerRef.current !== owner) return
       showNotification({
         color: 'teal',
         title: t('account.notification.confirm.success'),
@@ -54,6 +70,7 @@ const Confirm: FC = () => {
       })
       navigate('/')
     } catch {
+      if (submitOwnerRef.current !== owner || owner.signal.aborted) return
       showNotification({
         color: 'red',
         title: t('account.notification.confirm.failed'),
@@ -61,7 +78,10 @@ const Confirm: FC = () => {
         icon: <Icon path={mdiClose} size={1} />,
       })
     } finally {
-      setDisabled(false)
+      if (submitOwnerRef.current === owner) {
+        submitOwnerRef.current = null
+        setDisabled(false)
+      }
     }
   }
 

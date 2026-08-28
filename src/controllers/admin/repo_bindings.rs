@@ -3,11 +3,31 @@
 use super::*;
 use crate::utils::enums::ChallengeBuildStatus;
 
+mod listing;
 mod mutations;
+mod scheduler;
+pub use listing::{list_repo_bindings, repo_binding_scans};
 pub(crate) use mutations::{
     commit_already_applied, delete_repo_binding_record, record_scan_completion,
     update_bound_game_manifest_path, update_repo_binding_record,
 };
+pub(crate) use scheduler::{claim_repo_scan, run_claimed_repo_scan};
+
+const MIN_SCAN_INTERVAL_SECONDS: i32 = 60;
+const MAX_SCAN_INTERVAL_SECONDS: i32 = 86_400;
+const BINDING_LIST_LIMIT: u64 = 100;
+const SCAN_HISTORY_LIMIT: u64 = 100;
+const SCAN_HISTORY_RETENTION: i64 = 1_000;
+const SCAN_LEASE_SECONDS: i32 = 15 * 60;
+
+fn validate_scan_interval(value: i32) -> AppResult<i32> {
+    if !(MIN_SCAN_INTERVAL_SECONDS..=MAX_SCAN_INTERVAL_SECONDS).contains(&value) {
+        return Err(AppError::bad_request(format!(
+            "Repository scan interval must be between {MIN_SCAN_INTERVAL_SECONDS} and {MAX_SCAN_INTERVAL_SECONDS} seconds"
+        )));
+    }
+    Ok(value)
+}
 
 /// RSCTF `RepoBindingScanResultModel`.
 #[derive(Debug, Serialize)]
@@ -41,6 +61,8 @@ pub struct RepoBindingInfoModel {
     pub has_git_hub_token: bool,
     pub token_status: String,
     pub current_activity: Option<String>,
+    pub pending_pushes: i64,
+    pub last_push_error: Option<String>,
     pub push_on_edit: bool,
     pub games: Vec<Value>,
 }
@@ -234,8 +256,23 @@ async fn to_repo_info(st: &SharedState, m: repo_binding::Model) -> AppResult<Rep
             })
         })
         .collect();
+    Ok(to_repo_info_with_games(m, games, 0, None))
+}
+
+fn to_repo_info_with_games(
+    m: repo_binding::Model,
+    games: Vec<Value>,
+    pending_pushes: i64,
+    push_error: Option<String>,
+) -> RepoBindingInfoModel {
     let has_token = m.github_token.as_deref().is_some_and(|t| !t.is_empty());
-    Ok(RepoBindingInfoModel {
+    let scanning = m
+        .scan_lease_until
+        .is_some_and(|lease_until| lease_until > Utc::now());
+    let pushing = m
+        .push_lease_until
+        .is_some_and(|lease_until| lease_until > Utc::now());
+    RepoBindingInfoModel {
         id: m.id,
         repo_url: m.repo_url,
         r#ref: m.git_ref,
@@ -252,26 +289,18 @@ async fn to_repo_info(st: &SharedState, m: repo_binding::Model) -> AppResult<Rep
         last_scan_message: m.last_scan_message,
         has_git_hub_token: has_token,
         token_status: if has_token { "Ok" } else { "NotConfigured" }.to_string(),
-        current_activity: None,
+        current_activity: if scanning {
+            Some("Scanning repository".to_string())
+        } else if pushing {
+            Some("Pushing challenge updates".to_string())
+        } else {
+            None
+        },
+        pending_pushes,
+        last_push_error: push_error,
         push_on_edit: m.push_on_edit,
         games,
-    })
-}
-
-/// `GET /api/admin/repobindings` — every configured binding, newest first.
-pub async fn list_repo_bindings(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-) -> AppResult<RequestResponse<Vec<RepoBindingInfoModel>>> {
-    let rows = repo_binding::Entity::find()
-        .order_by_desc(repo_binding::Column::Id)
-        .all(&st.db)
-        .await?;
-    let mut out = Vec::with_capacity(rows.len());
-    for r in rows {
-        out.push(to_repo_info(&st, r).await?);
     }
-    Ok(RequestResponse::ok(out))
 }
 
 /// `POST /api/admin/repobindings` — register a repo, optionally scanning at once.
@@ -283,7 +312,7 @@ pub async fn create_repo_binding(
     let repo_url = crate::services::git_sync::validate_binding_repo_url(&m.repo_url)?;
     let git_ref = crate::services::git_sync::validate_git_ref(m.r#ref.as_deref())?;
     let now = Utc::now();
-    let interval = m.interval_seconds.unwrap_or(3600).max(0);
+    let interval = validate_scan_interval(m.interval_seconds.unwrap_or(3600))?;
     let am = repo_binding::ActiveModel {
         repo_url: Set(repo_url),
         git_ref: Set(git_ref),
@@ -361,34 +390,6 @@ pub async fn scan_repo_binding(
     ))
 }
 
-/// `GET /api/admin/repobindings/{id}/scans` — scan history, newest first.
-pub async fn repo_binding_scans(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-    Path(id): Path<i32>,
-) -> AppResult<RequestResponse<Vec<RepoBindingScanHistoryModel>>> {
-    let rows = repo_binding_scan::Entity::find()
-        .filter(repo_binding_scan::Column::BindingId.eq(id))
-        .order_by_desc(repo_binding_scan::Column::Id)
-        .all(&st.db)
-        .await?;
-    let data = rows
-        .into_iter()
-        .map(|s| RepoBindingScanHistoryModel {
-            id: s.id,
-            ran_at_utc: s.ran_at_utc,
-            commit_sha: s.commit_sha,
-            games_created: s.games_created,
-            games_updated: s.games_updated,
-            challenges_imported: s.challenges_imported,
-            challenges_updated: s.challenges_updated,
-            failures: s.failures,
-            messages: s.messages,
-        })
-        .collect();
-    Ok(RequestResponse::ok(data))
-}
-
 /// Run a real scan: clone/fetch the repo, read HEAD, discover challenge manifests,
 /// record a truthful scan row + update the binding. Reports the actual manifest
 /// count (never faked all-zeros); full per-game import is bounded by the manifests'
@@ -401,12 +402,22 @@ async fn run_repo_scan_cancellation_safe(
     // Awaiting a spawned task preserves the synchronous response when the client
     // stays connected, while dropping the JoinHandle on disconnect detaches the
     // scan instead of cancelling it halfway through the event tree.
-    tokio::spawn(async move { run_repo_scan(&st, id).await })
+    let token = claim_repo_scan(st.pg(), Some(id), 1)
+        .await?
+        .into_iter()
+        .next()
+        .map(|(_, token)| token)
+        .ok_or_else(|| AppError::conflict("Repository scan is paused or already active"))?;
+    tokio::spawn(async move { run_claimed_repo_scan(&st, id, token, true).await })
         .await
         .map_err(|error| AppError::internal(format!("repository scan task failed: {error}")))?
 }
 
-async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanResultModel> {
+async fn run_repo_scan(
+    st: &SharedState,
+    id: i32,
+    allow_paused: bool,
+) -> AppResult<RepoBindingScanResultModel> {
     let dest = std::path::PathBuf::from(&st.config.storage_root)
         .join("repos")
         .join(id.to_string());
@@ -421,6 +432,9 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("Repo binding not found"))?;
+    if binding.status != RepoWatchStatus::Active && !allow_paused {
+        return Err(AppError::conflict("Repository binding is paused"));
+    }
     let now = Utc::now();
     let repo_url = crate::services::git_sync::validate_binding_repo_url(&binding.repo_url)?;
     let git_ref = crate::services::git_sync::validate_git_ref(binding.git_ref.as_deref())?;
@@ -832,17 +846,24 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
         ..Default::default()
     };
     scan.insert(&st.db).await?;
+    sqlx::query(
+        r#"DELETE FROM "RepoBindingScans"
+            WHERE binding_id = $1
+              AND id NOT IN (
+                    SELECT id FROM "RepoBindingScans"
+                     WHERE binding_id = $1
+                     ORDER BY id DESC
+                     LIMIT $2
+              )"#,
+    )
+    .bind(id)
+    .bind(SCAN_HISTORY_RETENTION)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
 
     let interval = binding.interval_seconds;
-    record_scan_completion(
-        st,
-        id,
-        now,
-        commit_sha,
-        messages.join("; "),
-        now + Duration::seconds(interval as i64),
-    )
-    .await?;
+    record_scan_completion(st, id, now, commit_sha, messages.join("; "), interval).await?;
 
     Ok(RepoBindingScanResultModel {
         games_created,

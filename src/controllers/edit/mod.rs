@@ -20,7 +20,7 @@ use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, Set,
+    QuerySelect, Set, TryIntoModel,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -82,9 +82,10 @@ fn default_blood_bonus() -> i64 {
 //  DTOs
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostEditModel {
+    pub operation_id: Option<Uuid>,
     pub title: Option<String>,
     pub summary: Option<String>,
     pub content: Option<String>,
@@ -129,9 +130,12 @@ impl PostDetailModel {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeInfoModel {
+    /// Stable client mutation identity. Legacy callers may omit it, but only
+    /// identified operations can be reconciled after an ambiguous response.
+    pub operation_id: Option<Uuid>,
     #[serde(default)]
     pub title: String,
     #[serde(default = "default_category")]
@@ -152,6 +156,8 @@ fn default_score_curve() -> ScoreCurve {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeUpdateModel {
+    /// Revision returned by the last authoritative challenge read.
+    pub expected_revision: Option<i64>,
     pub title: Option<String>,
     pub content: Option<String>,
     pub flag_template: Option<String>,
@@ -306,6 +312,7 @@ impl ChallengeSummaryModel {
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeEditDetailModel {
     pub id: i32,
+    pub revision: i64,
     pub title: String,
     pub content: String,
     pub category: ChallengeCategory,
@@ -411,12 +418,21 @@ impl ChallengeEditDetailModel {
                 .and_then(|cont| serde_json::to_value(ContainerInfoModel::from(&cont)).ok()),
             None => None,
         };
-        let workload_identity = crate::services::challenge_workloads::from_challenge(c)?
-            .map(|spec| crate::services::challenge_workloads::workload_identity(&spec))
-            .transpose()?;
+        let workload_identity = match crate::services::challenge_workloads::from_challenge(c)
+            .and_then(|spec| {
+                spec.map(|spec| crate::services::challenge_workloads::workload_identity(&spec))
+                    .transpose()
+            }) {
+            Ok(identity) => identity,
+            Err(error) => {
+                tracing::warn!(challenge = c.id, %error, "challenge response omitted an invalid workload identity");
+                None
+            }
+        };
         let storage_quota_enforced = st.containers.storage_quota_enforced().await;
         Ok(Self {
             id: c.id,
+            revision: c.revision,
             title: c.title.clone(),
             content: c.content.clone(),
             category: c.category,
@@ -963,6 +979,7 @@ pub use ad::*;
 pub use builds::backfill_build_records;
 pub(crate) use builds::*;
 pub use challenges::*;
+pub(crate) use challenges::{claim_repo_push_jobs, run_claimed_repo_push_job};
 pub use divisions::*;
 pub use flags::*;
 pub use games::*;
