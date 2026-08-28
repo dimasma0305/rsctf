@@ -12,6 +12,9 @@ use super::{
     WorkerSession, WorkerStoreError,
 };
 
+#[cfg(test)]
+mod enrollment_tests;
+
 const ENROLLMENT_CLAIM_SECONDS: i64 = 120;
 
 #[derive(FromRow)]

@@ -651,8 +651,9 @@ impl WorkerStore {
         Ok(ids)
     }
 
-    /// Delay the next periodic retry after a command was queued or the exact
-    /// workload already occupied its bounded in-flight slot. A superseded
+    /// Delay the next periodic retry after a command was queued, the exact
+    /// workload already occupied its bounded in-flight slot, or the durable
+    /// session has not reached this process's live registry yet. A superseded
     /// session or generation cannot postpone current work.
     pub async fn mark_dispatched(
         &self,

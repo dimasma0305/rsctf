@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use rsctf_worker_protocol::{EnrollmentRequest, EnrollmentResponse};

@@ -272,6 +272,10 @@ fn seed_reconnect_entropy(agent_scope: &str) {
     }
 }
 
+async fn wait_for_operator_restart() {
+    std::future::pending::<()>().await;
+}
+
 fn retry_after(
     response: &tokio_tungstenite::tungstenite::http::Response<Option<Vec<u8>>>,
 ) -> Option<Duration> {
@@ -385,9 +389,16 @@ pub async fn run_agent() {
             error!(
                 state = failure.state.as_deref().unwrap_or("terminal"),
                 error = %failure.message,
-                "tunnel authorization is terminal; stopping the agent"
+                "tunnel authorization is terminal; quarantining until the container or configuration is deliberately restarted"
             );
-            return;
+            // Generated Compose bundles use `restart: unless-stopped`. Exiting
+            // here, even successfully, would immediately restart the
+            // container and turn a revoked/closed/incompatible capability into
+            // the exact reconnect flood this terminal state is meant to stop.
+            // Remaining alive but idle makes the quarantine operator-visible
+            // and lets Docker cancellation interrupt it promptly.
+            wait_for_operator_restart().await;
+            unreachable!("terminal BYOC quarantine only ends through process cancellation");
         };
         warn!(
             state = failure.state.as_deref().unwrap_or("transient"),
@@ -782,6 +793,15 @@ mod websocket_stream_tests {
             assert!(failure.terminal);
             assert!(ReconnectPolicy::default().delay(&failure).is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn terminal_quarantine_does_not_exit_into_compose_restart_policy() {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), wait_for_operator_restart())
+                .await
+                .is_err()
+        );
     }
 
     #[test]

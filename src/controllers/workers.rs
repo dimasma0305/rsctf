@@ -416,16 +416,69 @@ pub async fn enroll_worker(
     };
 
     let csr_pem = request.csr_pem;
+    let operation_id = request.operation_id;
+    let operation_state = st.clone();
+    let mut operation = tokio::spawn(async move {
+        let result = finish_enrollment_operation(
+            operation_state,
+            issuer,
+            operation_id,
+            token_hash,
+            worker_id,
+            csr_pem,
+            signer_permit,
+        )
+        .await;
+        if let Err(error) = &result {
+            tracing::warn!(%worker_id, %operation_id, %error, "worker enrollment operation failed");
+        }
+        result
+    });
+    match tokio::time::timeout(ENROLLMENT_SIGN_TIMEOUT, &mut operation).await {
+        Ok(Ok(Ok(response))) => Ok(worker_secret_response(Json(response))),
+        Ok(Ok(Err(error))) => Err(error),
+        Ok(Err(error)) => {
+            st.worker_store
+                .fail_enrollment(operation_id)
+                .await
+                .map_err(store_error)?;
+            Err(AppError::internal(format!(
+                "worker enrollment owner task failed: {error}"
+            )))
+        }
+        Err(_) => {
+            // Dropping a JoinHandle detaches rather than aborts its task. The
+            // exact durable operation therefore keeps owning the signer and
+            // commits the replayable response after this HTTP deadline. An
+            // agent retry joins `InProgress` or recovers `Completed`; it never
+            // manufactures a second key/CSR after a lost response.
+            Ok(retry_response(
+                AppError::unavailable("Worker certificate signing timed out"),
+                2,
+            ))
+        }
+    }
+}
+
+async fn finish_enrollment_operation(
+    st: SharedState,
+    issuer: Arc<crate::services::worker_pki::WorkerIssuer>,
+    operation_id: Uuid,
+    token_hash: [u8; 32],
+    worker_id: Uuid,
+    csr_pem: String,
+    signer_permit: tokio::sync::OwnedSemaphorePermit,
+) -> AppResult<EnrollmentResponse> {
     let signing_issuer = issuer.clone();
     let signing = tokio::task::spawn_blocking(move || {
         let _signer_permit = signer_permit;
         signing_issuer.issue(worker_id, &csr_pem)
     });
-    let issued = match tokio::time::timeout(ENROLLMENT_SIGN_TIMEOUT, signing).await {
-        Ok(Ok(Ok(issued))) => issued,
-        Ok(Ok(Err(error))) => {
+    let issued = match signing.await {
+        Ok(Ok(issued)) => issued,
+        Ok(Err(error)) => {
             st.worker_store
-                .reject_enrollment(request.operation_id)
+                .reject_enrollment(operation_id)
                 .await
                 .map_err(store_error)?;
             tracing::warn!(%worker_id, %error, "worker CSR rejected");
@@ -433,27 +486,16 @@ pub async fn enroll_worker(
                 "Invalid worker certificate signing request",
             ));
         }
-        Ok(Err(error)) => {
+        Err(error) => {
             st.worker_store
-                .fail_enrollment(request.operation_id)
+                .fail_enrollment(operation_id)
                 .await
                 .map_err(store_error)?;
             return Err(AppError::internal(format!(
                 "worker certificate task failed: {error}"
             )));
         }
-        Err(_) => {
-            // `spawn_blocking` cannot be cancelled. Keep the durable claim in
-            // Signing until its lease expires so an immediate retry cannot
-            // run a second signer for the same operation while this job still
-            // owns the aggregate permit.
-            return Ok(retry_response(
-                AppError::unavailable("Worker certificate signing timed out"),
-                2,
-            ));
-        }
     };
-
     let response = EnrollmentResponse {
         worker_id,
         control_address: issuer.public_endpoint().to_owned(),
@@ -468,7 +510,7 @@ pub async fn enroll_worker(
     let enrolled = st
         .worker_store
         .complete_enrollment(
-            request.operation_id,
+            operation_id,
             token_hash,
             WorkerCertificate {
                 fingerprint_sha256: issued.fingerprint_sha256,
@@ -479,7 +521,10 @@ pub async fn enroll_worker(
         )
         .await
         .map_err(store_error)?
-        .ok_or(AppError::Unauthorized)?;
+        .ok_or_else(|| {
+            tracing::warn!(%worker_id, %operation_id, "worker enrollment claim was invalidated before certificate commit");
+            AppError::Unauthorized
+        })?;
     if enrolled.id != worker_id {
         return Err(AppError::internal(
             "enrollment token resolved to a different worker",
@@ -492,7 +537,7 @@ pub async fn enroll_worker(
         service.registry().disconnect(worker_id).await;
     }
 
-    Ok(worker_secret_response(Json(response)))
+    Ok(response)
 }
 
 /// Enrollment tokens and newly-issued certificate material are one-time

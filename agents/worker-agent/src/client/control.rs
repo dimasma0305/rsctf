@@ -457,9 +457,27 @@ fn spawn_heartbeats(
         };
         let mut heartbeat_count = 0_u64;
         let mut consecutive_probe_failures = 0_u8;
+        let mut last_probe_error = None;
+        let mut probe_tasks = tokio::task::JoinSet::new();
         let mut usage_tasks = tokio::task::JoinSet::new();
         loop {
             interval.tick().await;
+            while let Some(result) = probe_tasks.try_join_next() {
+                match result {
+                    Ok(Ok(())) => {
+                        consecutive_probe_failures = 0;
+                        last_probe_error = None;
+                    }
+                    Ok(Err(error)) => {
+                        consecutive_probe_failures = consecutive_probe_failures.saturating_add(1);
+                        last_probe_error = Some(error);
+                    }
+                    Err(error) => {
+                        consecutive_probe_failures = consecutive_probe_failures.saturating_add(1);
+                        last_probe_error = Some(format!("Docker health probe task failed: {error}"));
+                    }
+                }
+            }
             while let Some(result) = usage_tasks.try_join_next() {
                 match result {
                     Ok(Ok(sample)) => usage = sample,
@@ -467,20 +485,19 @@ fn spawn_heartbeats(
                     Err(error) => tracing::warn!(%error, "Docker usage sampler task failed"),
                 }
             }
-            let probe_error = match tokio::time::timeout(RUNTIME_PROBE_TIMEOUT, runtime.probe()).await {
-                Ok(Ok(())) => {
-                    consecutive_probe_failures = 0;
-                    None
-                }
-                Ok(Err(error)) => {
-                    consecutive_probe_failures = consecutive_probe_failures.saturating_add(1);
-                    Some(error.to_string())
-                }
-                Err(_) => {
-                    consecutive_probe_failures = consecutive_probe_failures.saturating_add(1);
-                    Some("Docker health probe timed out".to_string())
-                }
-            };
+            // A Docker ping must never own heartbeat progress. Keep exactly
+            // one bounded sampler and report the last known state while it is
+            // pending, even when the heartbeat interval/lease is shorter than
+            // the daemon timeout.
+            if probe_tasks.is_empty() {
+                let probe_runtime = runtime.clone();
+                probe_tasks.spawn(async move {
+                    tokio::time::timeout(RUNTIME_PROBE_TIMEOUT, probe_runtime.probe())
+                        .await
+                        .map_err(|_| "Docker health probe timed out".to_string())?
+                        .map_err(|error| error.to_string())
+                });
+            }
             // Usage is informational in protocol revision 1. Sample it at one
             // sixth the heartbeat rate, cache the last value, and never fence
             // routes because one O(containers) inventory call failed.
@@ -494,9 +511,9 @@ fn spawn_heartbeats(
                 });
             }
             heartbeat_count = heartbeat_count.saturating_add(1);
-            let runtime_healthy = consecutive_probe_failures < 3;
+            let runtime_healthy = consecutive_probe_failures == 0;
             let runtime_error = (!runtime_healthy).then(|| {
-                probe_error
+                last_probe_error
                     .clone()
                     .unwrap_or_else(|| "Docker health probe failed".to_string())
             });
@@ -514,6 +531,7 @@ fn spawn_heartbeats(
                 .await
                 .is_err()
             {
+                probe_tasks.abort_all();
                 usage_tasks.abort_all();
                 return;
             }
@@ -572,12 +590,82 @@ fn unix_millis() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
     use rsctf_worker_protocol::{
-        CommandErrorCode, InventoryItem, ObservedWorkloadState, ReplicaStatus, WorkloadFence,
+        CommandErrorCode, EnsureAbsent, EnsureWorkload, InteractiveExecRequest, InventoryItem,
+        ObservedWorkloadState, Platform, ReplicaStatus, ResourceUsage, RuntimeDescriptor,
+        TcpProxyRequest, WorkerCapabilities, WorkerCapacity, WorkloadFence, WriteFlag,
     };
     use tokio::sync::oneshot;
 
     use super::*;
+    use crate::runtime::WorkerRuntime;
+
+    struct HangingProbeRuntime;
+
+    #[async_trait]
+    impl WorkerRuntime for HangingProbeRuntime {
+        fn descriptor(&self) -> RuntimeDescriptor {
+            unreachable!()
+        }
+
+        fn capabilities(&self) -> WorkerCapabilities {
+            unreachable!()
+        }
+
+        fn platform(&self) -> Platform {
+            unreachable!()
+        }
+
+        async fn probe(&self) -> Result<(), RuntimeError> {
+            std::future::pending().await
+        }
+
+        async fn capacity(&self) -> Result<WorkerCapacity, RuntimeError> {
+            unreachable!()
+        }
+
+        async fn usage(&self) -> Result<ResourceUsage, RuntimeError> {
+            Ok(ResourceUsage {
+                reserved_cpu_millis: 0,
+                reserved_memory_bytes: 0,
+                running_workloads: 0,
+            })
+        }
+
+        async fn inventory(&self) -> Result<Vec<InventoryItem>, RuntimeError> {
+            unreachable!()
+        }
+
+        async fn ensure_workload(
+            &self,
+            _command: EnsureWorkload,
+        ) -> Result<WorkloadStatus, RuntimeError> {
+            unreachable!()
+        }
+
+        async fn ensure_absent(
+            &self,
+            _command: EnsureAbsent,
+        ) -> Result<WorkloadStatus, RuntimeError> {
+            unreachable!()
+        }
+
+        async fn write_flag(&self, _command: WriteFlag) -> Result<WorkloadStatus, RuntimeError> {
+            unreachable!()
+        }
+
+        async fn open_tcp(
+            &self,
+            _request: &TcpProxyRequest,
+        ) -> Result<tokio::net::TcpStream, RuntimeError> {
+            unreachable!()
+        }
+
+        async fn open_exec(&self, _request: &InteractiveExecRequest) -> Result<(), RuntimeError> {
+            unreachable!()
+        }
+    }
 
     fn item() -> InventoryItem {
         InventoryItem {
@@ -624,6 +712,22 @@ mod tests {
             detail: Some("x".repeat(MAX_CONTROL_FRAME)),
         });
         assert!(inventory_pages(vec![oversized]).is_err());
+    }
+
+    #[tokio::test]
+    async fn hung_runtime_probe_never_owns_heartbeat_progress() {
+        let (outbound, mut received) = mpsc::channel(8);
+        let task = spawn_heartbeats(7, 10, Arc::new(HangingProbeRuntime), outbound);
+
+        for _ in 0..3 {
+            let envelope = tokio::time::timeout(Duration::from_millis(100), received.recv())
+                .await
+                .expect("heartbeat must not wait for Docker probe timeout")
+                .expect("heartbeat owner remains live");
+            assert!(matches!(envelope.body, ControlMessage::Heartbeat(_)));
+        }
+        task.abort();
+        let _ = task.await;
     }
 
     #[tokio::test]

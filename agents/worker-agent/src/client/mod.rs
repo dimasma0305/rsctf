@@ -186,8 +186,14 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
         )
         .await;
         readiness.clear().await?;
-        if result.as_ref().is_err_and(ClientError::is_terminal) {
-            return result;
+        if let Some(error) = result.as_ref().err().filter(|error| error.is_terminal()) {
+            // The shipped systemd unit uses Restart=on-failure. Returning an
+            // error would restart revoked, incompatible, or misconfigured
+            // identities every five seconds forever. A clean stop is the
+            // explicit quarantined state; an operator restarts the unit after
+            // replacing its credentials or configuration.
+            tracing::error!(%error, "worker control session is terminal; stopping without supervisor reconnect");
+            return Ok(());
         }
         if connected_at.elapsed() >= Duration::from_secs(60) {
             backoff.reset();
@@ -329,5 +335,13 @@ mod tests {
         ] {
             assert!(matches!(result, Err(ClientError::Configuration(_))));
         }
+    }
+
+    #[test]
+    fn terminal_control_failures_enter_supervisor_quarantine() {
+        assert!(ClientError::Protocol("unsupported revision".into()).is_terminal());
+        assert!(ClientError::Configuration("invalid worker identity".into()).is_terminal());
+        assert!(!ClientError::Transport("connection reset".into()).is_terminal());
+        assert!(!ClientError::Tls(crate::tls::TlsConnectorError::ConnectTimeout).is_terminal());
     }
 }
