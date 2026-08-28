@@ -510,12 +510,19 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
               const cooldown = hill.cooldownParticipants
               const isApiArena = hill.claimSource === 'Api'
               return (
-                <Table.Tr key={hill.challengeId} style={{ opacity: hill.isEnabled ? 1 : 0.5 }}>
+                <Table.Tr key={hill.challengeId}>
                   <Table.Td>
                     <Stack gap={2}>
-                      <Text fw="bold" size="sm">
-                        {hill.title}
-                      </Text>
+                      <Group gap={4} wrap="wrap">
+                        <Text fw="bold" size="sm">
+                          {hill.title}
+                        </Text>
+                        {!hill.isEnabled && (
+                          <Badge size="xs" color="gray" variant="outline">
+                            {t('common.content.disabled', 'Disabled')}
+                          </Badge>
+                        )}
+                      </Group>
                       <Group gap={4}>
                         {hill.resetReceiptId != null && (
                           <Badge size="xs" color="gray" variant="light">
@@ -805,7 +812,9 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
 
       <Stack gap="xs">
         <Group gap="xs" align="center">
-          <Title order={5}>{t('admin.content.ad_ops.koth.leaderboard', 'Official KotH leaderboard')}</Title>
+          <Title order={3} size="h5">
+            {t('admin.content.ad_ops.koth.leaderboard', 'Official KotH leaderboard')}
+          </Title>
         </Group>
         {koth.teams.length === 0 || enabledHills.length === 0 ? (
           <Text size="sm" c="dimmed">
