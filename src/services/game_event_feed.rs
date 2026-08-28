@@ -554,9 +554,17 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        // Re-running the forward migration must preserve the installed trigger
-        // and existing cursor allocation.
+        sqlx::raw_sql(crate::migrations::GAME_EVENT_FEED_PENDING_SQL)
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Re-running both the shipped migration SQL and its forward repair
+        // must preserve the installed trigger and existing cursor allocation.
         sqlx::raw_sql(crate::migrations::GAME_EVENT_FEED_CURSOR_SQL)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(crate::migrations::GAME_EVENT_FEED_PENDING_SQL)
             .execute(&pool)
             .await
             .unwrap();

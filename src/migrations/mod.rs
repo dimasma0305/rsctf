@@ -153,6 +153,8 @@ pub(crate) use m0111_game_event_feed_cursor::UP_SQL as GAME_EVENT_FEED_CURSOR_SQ
 pub(crate) use m0114_submission_feed_cursor::UP_SQL as SUBMISSION_FEED_CURSOR_SQL;
 #[cfg(test)]
 pub(crate) use m0115_flag_egress_feed_cursor::UP_SQL as FLAG_EGRESS_FEED_CURSOR_SQL;
+#[cfg(test)]
+pub(crate) use m0116_game_event_feed_pending::UP_SQL as GAME_EVENT_FEED_PENDING_SQL;
 
 pub struct Migrator;
 

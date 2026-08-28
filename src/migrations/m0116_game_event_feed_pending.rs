@@ -11,7 +11,7 @@ use sea_orm_migration::sea_orm::ConnectionTrait;
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
-const UP_SQL: &str = r#"
+pub(crate) const UP_SQL: &str = r#"
 -- Remove indexes created by an unreleased transient-row queue implementation.
 DROP INDEX IF EXISTS ix_gameevents_pending_feed_age;
 DROP INDEX IF EXISTS ix_gameevents_pending_feed_cursor;
