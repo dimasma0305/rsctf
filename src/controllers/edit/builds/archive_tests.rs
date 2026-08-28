@@ -1,6 +1,7 @@
 use super::*;
 use crate::models::internal::configs::RuntimeRole;
 use crate::services::container::ContainerBackendKind;
+use std::io::Write;
 
 #[test]
 fn archive_builds_use_buildkit_dockerfiles() {

@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Write;
 
 #[test]
 fn game_export_admits_before_projection_or_blob_loading() {

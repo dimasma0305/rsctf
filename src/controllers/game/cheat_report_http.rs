@@ -29,13 +29,17 @@ fn cheat_report_etag(version: &str) -> String {
     )
 }
 
+fn normalize_weak_etag(value: &str) -> &str {
+    let value = value.trim();
+    value.strip_prefix("W/").unwrap_or(value)
+}
+
 fn if_none_match(headers: &HeaderMap, etag: &str) -> bool {
-    let weak = |value: &str| value.trim().strip_prefix("W/").unwrap_or(value.trim());
     headers.get_all(header::IF_NONE_MATCH).iter().any(|value| {
         value.to_str().is_ok_and(|value| {
             value.split(',').any(|candidate| {
                 let candidate = candidate.trim();
-                candidate == "*" || weak(candidate) == weak(etag)
+                candidate == "*" || normalize_weak_etag(candidate) == normalize_weak_etag(etag)
             })
         })
     })

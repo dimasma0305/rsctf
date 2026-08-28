@@ -180,6 +180,7 @@ fn flag_offsets(payload: &[u8]) -> Vec<usize> {
     offsets
 }
 
+#[cfg(test)]
 pub(super) fn inspect_flows_bounded(
     path: &Path,
     max_file_bytes: u64,
