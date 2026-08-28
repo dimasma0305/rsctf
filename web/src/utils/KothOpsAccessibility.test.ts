@@ -12,5 +12,7 @@ test('KotH operations preserve semantic heading order without changing visual sc
 
 test('disabled hills stay readable and expose a textual state', () => {
   assert.doesNotMatch(panel, /opacity: hill\.isEnabled/)
-  assert.match(panel, /!hill\.isEnabled[\s\S]*common\.content\.disabled/)
+  assert.match(panel, /!displayedEnabled[\s\S]*common\.content\.disabled/)
+  assert.match(panel, /checked=\{displayedEnabled\}/)
+  assert.match(panel, /aria-busy=\{pendingEnabled !== undefined\}/)
 })

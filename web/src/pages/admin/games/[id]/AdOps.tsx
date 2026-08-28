@@ -866,7 +866,8 @@ const AdOps: FC = () => {
   const { t } = useTranslation()
   const modals = useModals()
   const [busy, setBusy] = useState(false)
-  const [busyHill, setBusyHill] = useState<number | null>(null)
+  const [pendingHillStates, setPendingHillStates] = useState<Map<number, boolean>>(new Map())
+  const [pendingScoringPaused, setPendingScoringPaused] = useState<boolean | null>(null)
   const resetJobsRef = useRef(new Map<number, Promise<void>>())
   const resetAbortRef = useRef(new Map<number, AbortController>())
   const [resettingServices, setResettingServices] = useState<Set<number>>(new Set())
@@ -946,11 +947,12 @@ const AdOps: FC = () => {
   const toggleHill = async (hill: AdminKothHill) => {
     const active = hillCommandRef.current.get(hill.challengeId)
     if (active) return active
+    const desiredEnabled = !hill.isEnabled
     const command = (async () => {
-      setBusyHill(hill.challengeId)
+      setPendingHillStates((current) => new Map(current).set(hill.challengeId, desiredEnabled))
       try {
         await api.edit.editAdToggleChallenge(numId, hill.challengeId, {
-          enabled: !hill.isEnabled,
+          enabled: desiredEnabled,
           revision: hill.controlRevision,
         })
         await mutateKoth()
@@ -958,7 +960,11 @@ const AdOps: FC = () => {
         await mutateKoth()
         showErrorMsg(e, t)
       } finally {
-        setBusyHill(null)
+        setPendingHillStates((current) => {
+          const next = new Map(current)
+          next.delete(hill.challengeId)
+          return next
+        })
         hillCommandRef.current.delete(hill.challengeId)
       }
     })()
@@ -1088,11 +1094,13 @@ const AdOps: FC = () => {
     if (scoringCommandRef.current) return scoringCommandRef.current
     const snapshot = showKoth ? koth : state
     if (!snapshot) return
+    const desiredPaused = !snapshot.scoringPaused
     const command = (async () => {
       setBusy(true)
+      setPendingScoringPaused(desiredPaused)
       try {
         const { data } = await api.edit.editAdToggleScoringPause(numId, {
-          paused: !snapshot.scoringPaused,
+          paused: desiredPaused,
           revision: snapshot.controlRevision,
         })
         showNotification({
@@ -1108,6 +1116,7 @@ const AdOps: FC = () => {
         showErrorMsg(e, t)
       } finally {
         setBusy(false)
+        setPendingScoringPaused(null)
         scoringCommandRef.current = null
       }
     })()
@@ -1205,6 +1214,7 @@ const AdOps: FC = () => {
   // While paused, freeze the countdown at the pause instant — the round isn't
   // burning time (resume shifts its end forward), so the timer must stop too.
   const scoringPaused = showKoth ? (koth?.scoringPaused ?? false) : adState.scoringPaused
+  const displayedScoringPaused = pendingScoringPaused ?? scoringPaused
   const scoringPausedAt = showKoth ? koth?.scoringPausedAt : adState.scoringPausedAt
   const currentRound = showKoth ? koth?.latestRound : adState.currentRound
   const roundEndsAt = showKoth ? koth?.currentRoundEndsAt : adState.roundEndsAt
@@ -1411,16 +1421,21 @@ const AdOps: FC = () => {
                 {t('admin.button.ad_ops.ensure_containers', 'Ensure containers')}
               </Button>
               <Button
-                leftSection={<Icon path={scoringPaused ? mdiPlayCircle : mdiPauseCircleOutline} size={0.9} />}
+                leftSection={<Icon path={displayedScoringPaused ? mdiPlayCircle : mdiPauseCircleOutline} size={0.9} />}
                 variant="default"
-                color={scoringPaused ? 'teal' : 'orange'}
+                color={displayedScoringPaused ? 'teal' : 'orange'}
                 size={isMobile ? 'xs' : 'sm'}
                 disabled={busy}
+                aria-busy={pendingScoringPaused !== null}
                 onClick={toggleScoringPause}
               >
-                {scoringPaused
-                  ? t('admin.button.ad_ops.resume_scoring', 'Resume scoring')
-                  : t('admin.button.ad_ops.pause_scoring', 'Pause scoring')}
+                {pendingScoringPaused === true
+                  ? t('admin.button.ad_ops.pausing_scoring', 'Pausing scoring…')
+                  : pendingScoringPaused === false
+                    ? t('admin.button.ad_ops.resuming_scoring', 'Resuming scoring…')
+                    : scoringPaused
+                      ? t('admin.button.ad_ops.resume_scoring', 'Resume scoring')
+                      : t('admin.button.ad_ops.pause_scoring', 'Pause scoring')}
               </Button>
             </Group>
           </Group>
@@ -1488,7 +1503,7 @@ const AdOps: FC = () => {
               koth={koth}
               onShell={openShell}
               onToggleHill={toggleHill}
-              busyHill={busyHill}
+              pendingHillStates={pendingHillStates}
               onMutate={() => mutateKoth()}
             />
           ) : adState.teams.length === 0 ? (
