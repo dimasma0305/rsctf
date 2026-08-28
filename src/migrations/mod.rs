@@ -142,6 +142,8 @@ mod m0119_koth_observation_idempotency;
 mod m0120_player_credential_operations;
 mod m0133_ad_control_revisions;
 mod m0135_control_plane_jobs;
+#[cfg(test)]
+pub(crate) use m0135_control_plane_jobs::UP_SQL as CONTROL_PLANE_JOBS_UP_SQL;
 mod m0143_challenge_import_jobs;
 mod m0144_worker_workload_quarantine;
 mod m0153_game_notice_delivery;

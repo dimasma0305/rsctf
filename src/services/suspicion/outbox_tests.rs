@@ -135,9 +135,12 @@ async fn scheduler_closes_intake_after_grace_and_waits_for_every_job() {
               clock_timestamp() - INTERVAL '61 seconds'),
           (5, clock_timestamp() - INTERVAL '2 hours',
               clock_timestamp() - INTERVAL '61 seconds');
-        INSERT INTO "SuspicionReconciliationState"
-          (game_id, evidence_closed_at_utc, sealed_at_utc, attempts)
-        VALUES (4, clock_timestamp(), clock_timestamp(), 1);
+        INSERT INTO "SuspicionReconciliationState" (game_id)
+          SELECT id FROM "Games";
+        UPDATE "SuspicionReconciliationState"
+           SET evidence_closed_at_utc = clock_timestamp(),
+               sealed_at_utc = clock_timestamp(), attempts = 1
+         WHERE game_id = 4;
         "#,
     )
     .execute(&pool)

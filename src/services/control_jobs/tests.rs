@@ -1,4 +1,6 @@
 use super::*;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use std::str::FromStr;
 
 #[test]
 fn enqueue_bounds_are_applied_before_postgres() {
@@ -47,20 +49,45 @@ fn terminal_retention_is_bounded_and_cascades_from_jobs() {
 }
 
 #[tokio::test]
-#[ignore = "requires migrated disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+#[ignore = "requires disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn postgres_coalesces_retries_and_recovers_one_expired_lease() {
     let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
         .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
         .connect(&database_url)
         .await
         .unwrap();
-    let game_id: i32 = sqlx::query_scalar(r#"SELECT id FROM "Games" ORDER BY id LIMIT 1"#)
-        .fetch_one(&pool)
+    let schema = format!("control_jobs_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+        .execute(&admin)
         .await
-        .expect("the disposable database needs one game");
-    sqlx::query(r#"DELETE FROM "ControlPlaneJobs" WHERE kind = 'BuildBatch'"#)
+        .unwrap();
+    let options = PgConnectOptions::from_str(&database_url)
+        .unwrap()
+        .options([("search_path", schema.as_str())]);
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        r#"
+        CREATE TABLE "Games" (id INTEGER PRIMARY KEY);
+        CREATE TABLE "GameChallenges" (id INTEGER PRIMARY KEY);
+        CREATE TABLE "Participations" (id INTEGER PRIMARY KEY);
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(crate::migrations::CONTROL_PLANE_JOBS_UP_SQL)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let game_id = 1;
+    sqlx::query(r#"INSERT INTO "Games" (id) VALUES ($1)"#)
+        .bind(game_id)
         .execute(&pool)
         .await
         .unwrap();
@@ -180,4 +207,10 @@ async fn postgres_coalesces_retries_and_recovers_one_expired_lease() {
         .execute(&pool)
         .await
         .unwrap();
+    pool.close().await;
+    sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
 }

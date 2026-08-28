@@ -107,6 +107,7 @@ impl AttachmentHarness {
         .execute(&pool)
         .await
         .unwrap();
+        crate::services::blob_refs::test_support::install_operation_tables(&pool).await;
         Self {
             admin,
             pool,

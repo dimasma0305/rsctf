@@ -15,6 +15,7 @@ const QUEUE_CAPACITY: usize = 2_048;
 const MAX_PENDING_BUCKETS: usize = 1_024;
 const MAX_BATCH_BUCKETS: usize = 256;
 const FLUSH_INTERVAL: Duration = Duration::from_millis(250);
+const ACQUIRE_TIMEOUT: Duration = Duration::from_millis(50);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const RETENTION_DAYS: i32 = 7;
 static ADMISSION_DROPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -249,9 +250,17 @@ async fn flush(pool: &sqlx::PgPool, pending: &mut HashMap<BucketKey, Bucket>) ->
         .collect::<Vec<_>>();
     let counts = batch.iter().map(|row| row.count).collect::<Vec<_>>();
     let last_hits = batch.iter().map(|row| row.last_hit).collect::<Vec<_>>();
-    let Some(mut connection) = pool.try_acquire() else {
-        restore_failed_batch(pending, batch);
-        return false;
+    let mut connection = match tokio::time::timeout(ACQUIRE_TIMEOUT, pool.acquire()).await {
+        Ok(Ok(connection)) => connection,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "honeypot telemetry connection acquisition failed");
+            restore_failed_batch(pending, batch);
+            return false;
+        }
+        Err(_) => {
+            restore_failed_batch(pending, batch);
+            return false;
+        }
     };
     let write = sqlx::query(
         r#"INSERT INTO "HoneypotHitBuckets" (

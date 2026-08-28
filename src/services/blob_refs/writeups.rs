@@ -236,6 +236,57 @@ fn writeup_operation_root(name: &str) -> Option<uuid::Uuid> {
         .filter(|operation_id| !operation_id.is_nil())
 }
 
+async fn preflight_writeup_eligibility(
+    pool: &PgPool,
+    caller: crate::services::live_roster::LiveParticipationIdentity<'_>,
+) -> AppResult<()> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(database_error)?;
+    crate::utils::single_flight::acquire_transaction_advisory_lock_shared(
+        &mut transaction,
+        &crate::services::live_roster::lock_key(caller.team_id),
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !crate::services::live_roster::participation_caller_is_live_on(
+        &mut *transaction,
+        caller.user_id,
+        caller.expected_security_stamp,
+        caller.game_id,
+        caller.team_id,
+        caller.participation_id,
+        true,
+    )
+    .await?
+    {
+        return Err(AppError::conflict(
+            "Writeup participation is no longer eligible",
+        ));
+    }
+    let game_eligible: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM "Games"
+                WHERE id = $1
+                  AND deletion_pending = FALSE
+                  AND start_time_utc <= clock_timestamp()
+                  AND writeup_required = TRUE
+                  AND clock_timestamp() <= writeup_deadline
+           )"#,
+    )
+    .bind(caller.game_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if !game_eligible {
+        return Err(AppError::conflict(
+            "Writeup submission is no longer eligible",
+        ));
+    }
+    transaction.commit().await.map_err(database_error)?;
+    Ok(())
+}
+
 pub(crate) async fn store_and_replace_writeup(
     pool: &PgPool,
     storage: &dyn BlobStorage,
@@ -243,6 +294,10 @@ pub(crate) async fn store_and_replace_writeup(
     name: &str,
     bytes: &[u8],
 ) -> AppResult<(StoredBlob, Option<String>)> {
+    // Reject stale sessions and committed deletion/deadline fences before
+    // touching object storage. The retained check below remains authoritative
+    // for changes that race this intentionally short preflight transaction.
+    preflight_writeup_eligibility(pool, caller).await?;
     // Player-facing storage names embed the required request UUID. Older
     // internal callers without that suffix retain independent one-shot stages.
     let operation_root = writeup_operation_root(name).unwrap_or_else(uuid::Uuid::new_v4);
