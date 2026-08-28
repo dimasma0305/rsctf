@@ -33,7 +33,7 @@ import {
   mdiTrashCanOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { Dispatch, FC, SetStateAction, useMemo, useState } from 'react'
+import { Dispatch, FC, SetStateAction, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { BloodBonusModel } from '@Components/admin/BloodBonusModel'
@@ -41,8 +41,15 @@ import { ChallengeCreateModal } from '@Components/admin/ChallengeCreateModal'
 import { ChallengeEditCard } from '@Components/admin/ChallengeEditCard'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
 import { showErrorMsg } from '@Utils/Shared'
+import {
+  controlJobResultCount,
+  createOperationId,
+  startControlJob,
+  waitForControlJob,
+} from '@Utils/ControlJobs'
 import { ChallengeCategoryItem, ChallengeCategoryList, useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { useEditChallenges } from '@Hooks/useEdit'
+import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import api, { ChallengeInfoModel, ChallengeCategory, ChallengeType } from '@Api'
 
 // Engine = the scoring family, a separate filter axis from category (Web/Pwn/…).
@@ -67,10 +74,49 @@ const GameChallengeEdit: FC = () => {
   const [engine, setEngine] = useState<EngineFilter>('all')
   const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
   const [disabled, setDisabled] = useState(false)
+  const bulkBuildFlight = useRef<Promise<void> | null>(null)
+  const bulkBuildAbort = useRef(new AbortController())
 
   const { t } = useTranslation()
 
+  useEffect(() => () => bulkBuildAbort.current.abort(), [])
+
   const { challenges, mutate } = useEditChallenges(numId)
+  const buildPollingActive = challenges?.some(
+    (challenge) =>
+      matchesEngine(challenge.type, engine) &&
+      (!category || challenge.category === category) &&
+      (challenge.buildStatus === 'Queued' || challenge.buildStatus === 'Building')
+  ) ?? false
+  const buildStatusesQuery = api.edit.useEditGetChallengeBuildStatuses(
+    numId,
+    CompletionPollSWRConfig,
+    buildPollingActive
+  )
+
+  useCompletionPolling({
+    key: buildPollingActive ? `/api/edit/games/${numId}/challenges/buildstatuses` : '',
+    phase: `game:${numId}`,
+    enabled: buildPollingActive,
+    data: buildStatusesQuery.data,
+    error: buildStatusesQuery.error,
+    isValidating: buildStatusesQuery.isValidating,
+    mutate: buildStatusesQuery.mutate,
+    successDelay: () => 2_000,
+  })
+
+  useEffect(() => {
+    if (!buildStatusesQuery.data) return
+    const statuses = new Map(buildStatusesQuery.data.map((status) => [status.challengeId, status]))
+    void mutate(
+      (current) =>
+        current?.map((challenge) => {
+          const status = challenge.id == null ? undefined : statuses.get(challenge.id)
+          return status ? { ...challenge, buildStatus: status.buildStatus } : challenge
+        }),
+      { revalidate: false }
+    )
+  }, [buildStatusesQuery.data, mutate])
 
   // Two independent filter axes, both active at once: engine (scoring family)
   // then category (Web/Pwn/…).
@@ -261,21 +307,38 @@ const GameChallengeEdit: FC = () => {
       children: (
         <Text size="sm">{t('admin.content.games.challenges.bulk_rebuild_confirm', { count: failedBuildCount })}</Text>
       ),
-      onConfirm: async () => {
-        setDisabled(true)
-        try {
-          const resp = await api.admin.adminBulkRebuildFailed(numId)
-          showNotification({
-            color: 'teal',
-            message: t('admin.notification.builds.bulk_enqueued', { count: resp.data.enqueued }),
-            icon: <Icon path={mdiCheck} size={1} />,
-          })
-          mutate()
-        } catch (e) {
-          showErrorMsg(e, t)
-        } finally {
-          setDisabled(false)
-        }
+      onConfirm: () => {
+        if (bulkBuildFlight.current) return bulkBuildFlight.current
+        const operationId = createOperationId()
+        const task = (async () => {
+          setDisabled(true)
+          try {
+            const job = await startControlJob(
+              operationId,
+              () =>
+                api.admin.adminBulkRebuildFailed(numId, operationId, {
+                  signal: bulkBuildAbort.current.signal,
+                }),
+              bulkBuildAbort.current.signal
+            )
+            const completed = await waitForControlJob(job, bulkBuildAbort.current.signal)
+            showNotification({
+              color: 'teal',
+              message: t('admin.notification.builds.bulk_enqueued', {
+                count: controlJobResultCount(completed, 'enqueued'),
+              }),
+              icon: <Icon path={mdiCheck} size={1} />,
+            })
+            await Promise.all([mutate(), buildStatusesQuery.mutate()])
+          } catch (e) {
+            if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+          } finally {
+            setDisabled(false)
+            bulkBuildFlight.current = null
+          }
+        })()
+        bulkBuildFlight.current = task
+        return task
       },
       confirmProps: { color: 'orange' },
     })

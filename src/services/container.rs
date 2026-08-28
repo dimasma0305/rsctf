@@ -141,7 +141,7 @@ fn scoped_operation_id(scope: &str, operation_id: Option<&str>) -> Option<String
     operation_id.map(|operation_id| format!("{scope}\0{operation_id}"))
 }
 
-fn managed_container_filters(scope: &str) -> HashMap<String, Vec<String>> {
+pub(crate) fn managed_container_filters(scope: &str) -> HashMap<String, Vec<String>> {
     HashMap::from([(
         "label".to_string(),
         vec![

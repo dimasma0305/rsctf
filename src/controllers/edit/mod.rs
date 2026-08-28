@@ -726,6 +726,10 @@ pub fn router() -> Router<SharedState> {
             get(test_container::import_jobs::get_job),
         )
         .route(
+            "/api/edit/games/{id}/challenges/buildstatuses",
+            get(list_challenge_build_statuses),
+        )
+        .route(
             "/api/edit/games/{id}/challenges/{cId}",
             get(get_challenge)
                 .put(update_challenge)
@@ -745,7 +749,15 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/auditmeta",
-            get(get_challenge_audit_meta),
+            limited(Policy::Query, get(get_challenge_audit_meta)),
+        )
+        .route(
+            "/api/edit/games/{id}/challenges/{cId}/auditarchive",
+            limited(Policy::Query, get(download_challenge_audit_archive)),
+        )
+        .route(
+            "/api/edit/games/{id}/challenges/{cId}/buildstatus",
+            get(get_challenge_build_status),
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/rebuild",

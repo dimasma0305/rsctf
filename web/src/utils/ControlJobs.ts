@@ -7,6 +7,23 @@ const MAX_WAIT_MS = 15 * 60_000
 
 export const createOperationId = (): string => crypto.randomUUID()
 
+export const startControlJob = async (
+  operationId: string,
+  start: () => Promise<{ data: ControlJobModel }>,
+  signal?: AbortSignal
+): Promise<ControlJobModel> => {
+  try {
+    return (await start()).data
+  } catch (startError) {
+    if (signal?.aborted) throw startError
+    try {
+      return (await api.eventSecurity.getControlJobByOperation(operationId, { signal })).data
+    } catch {
+      throw startError
+    }
+  }
+}
+
 const abortError = () => new DOMException('Control-job polling was cancelled', 'AbortError')
 
 const delay = (milliseconds: number, signal?: AbortSignal): Promise<void> =>

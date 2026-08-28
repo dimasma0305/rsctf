@@ -31,8 +31,9 @@ import {
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
-import { FC, ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import { FC, ReactNode, useCallback, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import useSWR from 'swr'
 import { Empty } from '@Components/Empty'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { WorkerDialogs } from '@Components/admin/workers/WorkerDialogs'
@@ -46,6 +47,7 @@ import {
   WorkerState,
 } from '@Components/admin/workers/types'
 import { showErrorMsg } from '@Utils/Shared'
+import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import {
   workerInstallCommand,
   workerUninstallCommand,
@@ -100,8 +102,6 @@ const formatCpu = (cpuMillis: number): string => {
 
 const Workers: FC = () => {
   const { t } = useTranslation()
-  const [workers, setWorkers] = useState<Worker[]>([])
-  const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [createOpened, setCreateOpened] = useState(false)
@@ -112,26 +112,43 @@ const Workers: FC = () => {
   const [deleteTarget, setDeleteTarget] = useState<Worker | null>(null)
   const [deleteConfirmation, setDeleteConfirmation] = useState('')
 
-  const loadWorkers = useCallback(async () => {
-    try {
+  const workerKey = '/api/admin/workers?count=500'
+  const workerQuery = useSWR<Worker[]>(
+    workerKey,
+    async () => {
       const response = await api.request<Worker[]>({
         path: '/api/admin/workers',
         method: 'GET',
         format: 'json',
+        query: { count: 500 },
       })
-      setWorkers(response.data)
-    } catch (error) {
-      showErrorMsg(error, t)
-    } finally {
-      setLoading(false)
-    }
-  }, [t])
+      return response.data
+    },
+    CompletionPollSWRConfig
+  )
+  const workers = workerQuery.data ?? []
+  const loading = workerQuery.data === undefined && workerQuery.error === undefined
+  const refreshFlight = useRef<Promise<Worker[] | undefined> | null>(null)
+  const refreshWorkersOwned = useCallback(() => {
+    if (refreshFlight.current) return refreshFlight.current
+    if (workerQuery.isValidating) return Promise.resolve(workerQuery.data)
+    const flight = workerQuery.mutate().finally(() => {
+      if (refreshFlight.current === flight) refreshFlight.current = null
+    })
+    refreshFlight.current = flight
+    return flight
+  }, [workerQuery.data, workerQuery.isValidating, workerQuery.mutate])
 
-  useEffect(() => {
-    void loadWorkers()
-    const timer = window.setInterval(() => void loadWorkers(), 10_000)
-    return () => window.clearInterval(timer)
-  }, [loadWorkers])
+  useCompletionPolling({
+    key: workerKey,
+    phase: 'worker-inventory',
+    enabled: true,
+    data: workerQuery.data,
+    error: workerQuery.error,
+    isValidating: workerQuery.isValidating,
+    mutate: refreshWorkersOwned as typeof workerQuery.mutate,
+    successDelay: () => 10_000,
+  })
 
   const installCommands = useMemo<WorkerInstallCommands>(() => {
     const origin =
@@ -179,8 +196,13 @@ const Workers: FC = () => {
 
   const refreshWorkers = async () => {
     setRefreshing(true)
-    await loadWorkers()
-    setRefreshing(false)
+    try {
+      await refreshWorkersOwned()
+    } catch (error) {
+      showErrorMsg(error, t)
+    } finally {
+      setRefreshing(false)
+    }
   }
 
   const createWorker = async () => {
@@ -197,7 +219,7 @@ const Workers: FC = () => {
       setName('')
       setCreateOpened(false)
       setEnrollment(response.data.enrollment)
-      await loadWorkers()
+      await refreshWorkersOwned()
     } catch (error) {
       showErrorMsg(error, t)
     } finally {
@@ -231,7 +253,7 @@ const Workers: FC = () => {
         format: 'json',
         body: { state },
       })
-      await loadWorkers()
+      await refreshWorkersOwned()
     } catch (error) {
       showErrorMsg(error, t)
     } finally {
@@ -265,7 +287,7 @@ const Workers: FC = () => {
       })
       setDeleteTarget(null)
       setDeleteConfirmation('')
-      await loadWorkers()
+      await refreshWorkersOwned()
     } catch (error) {
       showErrorMsg(error, t)
     } finally {
@@ -431,6 +453,16 @@ const Workers: FC = () => {
       }
     >
       <Stack gap="lg">
+        {workerQuery.error && (
+          <Paper withBorder p="sm" role="alert">
+            <Text size="sm" c="red">
+              {t(
+                'admin.workers.inventory.refresh_failed',
+                'Worker inventory could not be refreshed. The last successful snapshot is still shown; use Refresh to retry now.'
+              )}
+            </Text>
+          </Paper>
+        )}
         <SimpleGrid cols={{ base: 2, md: 4 }} spacing="md">
           <SummaryMetric
             label={t('admin.workers.summary.total', 'Registered')}

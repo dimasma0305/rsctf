@@ -3686,6 +3686,45 @@ export interface ChallengeAuditModel {
   lastBuildLog?: string | null
 }
 
+/** Compact mutable challenge-build state. Source archive inspection is a separate immutable read. */
+export interface ChallengeBuildStatusModel {
+  challengeId: number
+  buildStatus: ChallengeBuildStatus
+  lastBuildLog?: string | null
+  archiveAvailable: boolean
+  archiveVersion?: string | null
+}
+
+/** Compact parent-list state; logs and archive metadata belong to the detail resource. */
+export interface ChallengeBuildListStatusModel {
+  challengeId: number
+  buildStatus: ChallengeBuildStatus
+}
+
+export type ControlJobStatus = "Queued" | "Running" | "Succeeded" | "Failed" | "Cancelled";
+
+export interface ControlJobModel {
+  id: string;
+  kind: string;
+  scopeKey: string;
+  gameId: number;
+  challengeId?: number | null;
+  operationId: string;
+  fingerprint: string;
+  status: ControlJobStatus;
+  progressCurrent: number;
+  progressTotal: number;
+  requestedGeneration: number;
+  result?: Record<string, unknown> | null;
+  error?: string | null;
+  /** @format uint64 */
+  createdAtUtc: number;
+  /** @format uint64 */
+  updatedAtUtc: number;
+  /** @format uint64 */
+  finishedAtUtc?: number | null;
+}
+
 /** Row returned by GET .../PendingChallenges (includes Pending + Rejected) */
 export interface PendingChallengeModel {
   id: number
@@ -6138,10 +6177,11 @@ export class Api<
      * @name AdminBulkRebuildFailed
      * @request POST:/api/admin/games/{gameId}/bulkrebuild
      */
-    adminBulkRebuildFailed: (gameId: number, params: RequestParams = {}) =>
-      this.request<BulkRebuildResultModel, RequestResponse>({
+    adminBulkRebuildFailed: (gameId: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/admin/games/${gameId}/bulkrebuild`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),
@@ -6277,10 +6317,11 @@ export class Api<
      * @name AdminReenqueueBuild
      * @request POST:/api/admin/builds/{auditId}/reenqueue
      */
-    adminReenqueueBuild: (auditId: number, params: RequestParams = {}) =>
-      this.request<ChallengeAuditModel, RequestResponse>({
+    adminReenqueueBuild: (auditId: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/admin/builds/${auditId}/reenqueue`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),
@@ -8052,6 +8093,59 @@ export class Api<
       }),
 
     /**
+     * @description Compact build status for one challenge. Does not load or parse the retained source archive.
+     * @tags Edit
+     * @name EditGetChallengeBuildStatus
+     * @request GET:/api/edit/games/{id}/challenges/{cId}/buildstatus
+     */
+    editGetChallengeBuildStatus: (
+      id: number,
+      cId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeBuildStatusModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/buildstatus`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useEditGetChallengeBuildStatus: (
+      id: number,
+      cId: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ChallengeBuildStatusModel, RequestResponse>(
+        doFetch ? `/api/edit/games/${id}/challenges/${cId}/buildstatus` : null,
+        options,
+      ),
+
+    /**
+     * @description Compact build-status inventory for all active challenges in one event.
+     * @tags Edit
+     * @name EditGetChallengeBuildStatuses
+     * @request GET:/api/edit/games/{id}/challenges/buildstatuses
+     */
+    editGetChallengeBuildStatuses: (id: number, params: RequestParams = {}) =>
+      this.request<ChallengeBuildListStatusModel[], RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/buildstatuses`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useEditGetChallengeBuildStatuses: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ChallengeBuildListStatusModel[], RequestResponse>(
+        doFetch ? `/api/edit/games/${id}/challenges/buildstatuses` : null,
+        options,
+      ),
+
+    /**
      * @description Re-run the auto-build pipeline against a challenge's persisted archive.
      * @tags Edit
      * @name EditRebuildChallengeImage
@@ -8060,11 +8154,13 @@ export class Api<
     editRebuildChallengeImage: (
       id: number,
       cId: number,
+      operationId: string,
       params: RequestParams = {},
     ) =>
-      this.request<ChallengeAuditModel, RequestResponse>({
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${cId}/rebuild`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),

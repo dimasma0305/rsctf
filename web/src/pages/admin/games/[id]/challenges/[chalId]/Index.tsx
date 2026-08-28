@@ -54,8 +54,9 @@ import {
   ChallengeCategoryList,
 } from '@Utils/Shared'
 import { createDefaultJeopardyWorkloadSpec, formatWorkloadSpec, parseJeopardyWorkloadSpec } from '@Utils/WorkloadSpec'
-import { controlJobResultCount, createOperationId, waitForControlJob } from '@Utils/ControlJobs'
+import { controlJobResultCount, createOperationId, startControlJob, waitForControlJob } from '@Utils/ControlJobs'
 import { useEditChallenge, useEditChallenges } from '@Hooks/useEdit'
+import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import { useAdminGame, useGameStatus } from '@Hooks/useGame'
 import api, {
   ChallengeBuildStatus,
@@ -336,6 +337,8 @@ const GameChallengeEdit: FC = () => {
   }
 
   const [building, setBuilding] = useState(false)
+  const buildFlight = useRef<Promise<void> | null>(null)
+  const buildAbort = useRef(new AbortController())
   const inFlightBuild = challenge?.buildStatus === 'Queued' || challenge?.buildStatus === 'Building'
   const isBuildable =
     (challenge?.type === 'StaticContainer' ||
@@ -344,33 +347,76 @@ const GameChallengeEdit: FC = () => {
       challenge?.type === 'KingOfTheHill') &&
     challenge?.buildStatus !== 'NotApplicable'
 
-  // While a build is in flight, the worker streams the docker output
-  // to Challenge.LastBuildLog every ~2s. Re-fetch on the same cadence
-  // so the inline log section below updates live.
-  useEffect(() => {
-    if (!inFlightBuild) return
-    const timer = window.setInterval(() => {
-      mutate()
-    }, 2000)
-    return () => window.clearInterval(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inFlightBuild])
+  const buildStatusQuery = api.edit.useEditGetChallengeBuildStatus(
+    numId,
+    numCId,
+    CompletionPollSWRConfig,
+    inFlightBuild
+  )
+  useCompletionPolling({
+    key: inFlightBuild ? `/api/edit/games/${numId}/challenges/${numCId}/buildstatus` : '',
+    phase: `challenge:${numId}:${numCId}`,
+    enabled: inFlightBuild,
+    data: buildStatusQuery.data,
+    error: buildStatusQuery.error,
+    isValidating: buildStatusQuery.isValidating,
+    mutate: buildStatusQuery.mutate,
+    successDelay: () => 2_000,
+  })
 
-  const onBuildNow = async () => {
-    setBuilding(true)
-    try {
-      await api.edit.editRebuildChallengeImage(numId, numCId)
-      showNotification({
-        color: 'teal',
-        message: t('admin.notification.builds.enqueued'),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-      mutate()
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setBuilding(false)
-    }
+  useEffect(() => {
+    const status = buildStatusQuery.data
+    if (!status) return
+    void mutate(
+      (current) =>
+        current
+          ? { ...current, buildStatus: status.buildStatus, lastBuildLog: status.lastBuildLog ?? null }
+          : current,
+      { revalidate: false }
+    )
+    void mutateChals(
+      (current) =>
+        current?.map((item) =>
+          item.id === numCId
+            ? { ...item, buildStatus: status.buildStatus, lastBuildLog: status.lastBuildLog ?? null }
+            : item
+        ),
+      { revalidate: false }
+    )
+  }, [buildStatusQuery.data, mutate, mutateChals, numCId])
+
+  useEffect(() => () => buildAbort.current.abort(), [])
+
+  const onBuildNow = () => {
+    if (buildFlight.current) return buildFlight.current
+    const operationId = createOperationId()
+    const task = (async () => {
+      setBuilding(true)
+      try {
+        const job = await startControlJob(
+          operationId,
+          () =>
+            api.edit.editRebuildChallengeImage(numId, numCId, operationId, {
+              signal: buildAbort.current.signal,
+            }),
+          buildAbort.current.signal
+        )
+        showNotification({
+          color: 'teal',
+          message: t('admin.notification.builds.enqueued'),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+        await waitForControlJob(job, buildAbort.current.signal)
+        await Promise.all([mutate(), mutateChals(), buildStatusQuery.mutate()])
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+      } finally {
+        setBuilding(false)
+        buildFlight.current = null
+      }
+    })()
+    buildFlight.current = task
+    return task
   }
 
   const onConfirmDelete = async () => {
