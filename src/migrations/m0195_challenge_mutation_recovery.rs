@@ -8,10 +8,13 @@ pub struct Migration;
 
 pub(crate) const UP_SQL: &str = r#"
 ALTER TABLE "GameChallenges"
-    ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1;
--- Fresh installations derive m0001 from the current entity, so the column may
--- already exist without the migration default when this forward step runs.
-ALTER TABLE "GameChallenges" ALTER COLUMN revision SET DEFAULT 1;
+    ADD COLUMN IF NOT EXISTS revision BIGINT;
+UPDATE "GameChallenges"
+   SET revision = 1
+ WHERE revision IS NULL;
+ALTER TABLE "GameChallenges"
+    ALTER COLUMN revision SET DEFAULT 1,
+    ALTER COLUMN revision SET NOT NULL;
 
 CREATE TABLE IF NOT EXISTS "ChallengeCreateOperations" (
     actor_id UUID NOT NULL,

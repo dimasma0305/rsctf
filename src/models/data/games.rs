@@ -35,6 +35,7 @@ pub mod game {
         pub blood_bonus_value: i64,
         pub repo_binding_id: Option<i32>,
         pub event_manifest_path: Option<String>,
+        #[sea_orm(default_value = 1)]
         pub challenge_configuration_revision: i64,
 
         // --- Event VPN access and bounded anti-cheat telemetry ---
@@ -46,6 +47,7 @@ pub mod game {
         pub vpn_device_sharing_telemetry_enabled: bool,
         #[serde(skip)]
         pub vpn_policy_revision: i64,
+        #[sea_orm(default_value = 0)]
         pub configuration_revision: i64,
 
         // --- Attack-Defense / KotH engine tunables ---
@@ -62,6 +64,7 @@ pub mod game {
         pub ad_scoring_paused: bool,
         pub ad_scoring_paused_at: Option<DateTime<Utc>>,
         /// Optimistic-concurrency fence for live scoring desired-state commands.
+        #[sea_orm(default_value = 1)]
         pub ad_control_revision: i64,
         /// Number of A&D ticks grouped into one scoring epoch (`1..=64`).
         pub ad_epoch_ticks: i32,

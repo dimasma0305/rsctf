@@ -18,6 +18,7 @@ pub mod game_challenge {
         pub id: i32,
         pub game_id: i32,
         /// Optimistic-concurrency revision for operator edits.
+        #[sea_orm(default_value = 1)]
         pub revision: i64,
 
         // --- Challenge base ---
@@ -30,6 +31,7 @@ pub mod game_challenge {
         pub hints: Option<Json>,
         pub is_enabled: bool,
         /// Optimistic-concurrency fence for A&D/KotH enabled-state commands.
+        #[sea_orm(default_value = 1)]
         pub ad_control_revision: i64,
         pub deadline_utc: Option<DateTime<Utc>>,
         pub submission_limit: i32,

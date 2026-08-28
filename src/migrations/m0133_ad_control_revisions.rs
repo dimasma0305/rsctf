@@ -5,10 +5,22 @@ use sea_orm_migration::prelude::*;
 
 pub(crate) const UP_SQL: &str = r#"
 ALTER TABLE "Games"
-    ADD COLUMN IF NOT EXISTS ad_control_revision BIGINT NOT NULL DEFAULT 1;
+    ADD COLUMN IF NOT EXISTS ad_control_revision BIGINT;
+UPDATE "Games"
+   SET ad_control_revision = 1
+ WHERE ad_control_revision IS NULL;
+ALTER TABLE "Games"
+    ALTER COLUMN ad_control_revision SET DEFAULT 1,
+    ALTER COLUMN ad_control_revision SET NOT NULL;
 
 ALTER TABLE "GameChallenges"
-    ADD COLUMN IF NOT EXISTS ad_control_revision BIGINT NOT NULL DEFAULT 1;
+    ADD COLUMN IF NOT EXISTS ad_control_revision BIGINT;
+UPDATE "GameChallenges"
+   SET ad_control_revision = 1
+ WHERE ad_control_revision IS NULL;
+ALTER TABLE "GameChallenges"
+    ALTER COLUMN ad_control_revision SET DEFAULT 1,
+    ALTER COLUMN ad_control_revision SET NOT NULL;
 
 DO $$
 BEGIN
@@ -68,6 +80,18 @@ mod tests {
         assert!(UP_SQL.contains("Games\"\n    ADD COLUMN IF NOT EXISTS ad_control_revision"));
         assert!(
             UP_SQL.contains("GameChallenges\"\n    ADD COLUMN IF NOT EXISTS ad_control_revision")
+        );
+        assert_eq!(
+            UP_SQL
+                .matches("ALTER COLUMN ad_control_revision SET DEFAULT 1")
+                .count(),
+            2
+        );
+        assert_eq!(
+            UP_SQL
+                .matches("ALTER COLUMN ad_control_revision SET NOT NULL")
+                .count(),
+            2
         );
         assert!(UP_SQL.contains("BETWEEN 1 AND 9007199254740991"));
     }

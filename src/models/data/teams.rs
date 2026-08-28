@@ -14,6 +14,7 @@ pub mod team {
         pub bio: Option<String>,
         pub avatar_hash: Option<String>,
         pub locked: bool,
+        #[sea_orm(default_value = 0)]
         pub profile_revision: i64,
         /// Durable fail-closed marker while multi-stage deletion tears down
         /// credentials and workloads. Internal only; not part of the API DTO.

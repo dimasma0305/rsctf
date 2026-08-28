@@ -32,6 +32,7 @@ async fn operator_test_pool() -> sqlx::PgPool {
           id INTEGER PRIMARY KEY,
           ad_scoring_paused BOOLEAN NOT NULL,
           ad_scoring_paused_at TIMESTAMPTZ NULL,
+          ad_control_revision BIGINT NOT NULL DEFAULT 1,
           start_time_utc TIMESTAMPTZ NOT NULL,
           end_time_utc TIMESTAMPTZ NOT NULL
         );
@@ -104,7 +105,10 @@ async fn operator_test_pool() -> sqlx::PgPool {
 
 async fn seed_live_projection(pool: &sqlx::PgPool) {
     sqlx::raw_sql(
-        r#"INSERT INTO "Games" VALUES (
+        r#"INSERT INTO "Games"
+             (id, ad_scoring_paused, ad_scoring_paused_at,
+              start_time_utc, end_time_utc)
+           VALUES (
              1, FALSE, NULL, '2026-08-27 08:00:00+00', '2026-08-27 10:00:00+00'
            );
            INSERT INTO "AdRounds" VALUES

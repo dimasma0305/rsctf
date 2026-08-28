@@ -7,7 +7,13 @@ pub struct Migration;
 
 pub(crate) const UP_SQL: &str = r#"
 ALTER TABLE "Games"
-    ADD COLUMN IF NOT EXISTS challenge_configuration_revision BIGINT NOT NULL DEFAULT 1;
+    ADD COLUMN IF NOT EXISTS challenge_configuration_revision BIGINT;
+UPDATE "Games"
+   SET challenge_configuration_revision = 1
+ WHERE challenge_configuration_revision IS NULL;
+ALTER TABLE "Games"
+    ALTER COLUMN challenge_configuration_revision SET DEFAULT 1,
+    ALTER COLUMN challenge_configuration_revision SET NOT NULL;
 
 DO $$ BEGIN
     IF NOT EXISTS (
@@ -130,6 +136,8 @@ mod tests {
 
     #[test]
     fn batch_identity_and_work_are_strictly_bounded() {
+        assert!(UP_SQL.contains("ALTER COLUMN challenge_configuration_revision SET DEFAULT 1"));
+        assert!(UP_SQL.contains("ALTER COLUMN challenge_configuration_revision SET NOT NULL"));
         assert!(UP_SQL.contains("PRIMARY KEY (game_id, operation_id)"));
         assert!(UP_SQL.contains("CARDINALITY(challenge_ids) BETWEEN 1 AND 100"));
         assert!(UP_SQL.contains("jsonb_array_length(result) <= 100"));

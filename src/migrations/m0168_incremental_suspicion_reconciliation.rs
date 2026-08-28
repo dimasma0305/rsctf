@@ -7,11 +7,25 @@ pub struct Migration;
 
 const UP_SQL: &str = r#"
 ALTER TABLE "SuspicionReconciliationState"
-  ADD COLUMN IF NOT EXISTS dirty_generation BIGINT NOT NULL DEFAULT 1,
-  ADD COLUMN IF NOT EXISTS completed_generation BIGINT NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS dirty_mask BIGINT NOT NULL DEFAULT 63,
+  ADD COLUMN IF NOT EXISTS dirty_generation BIGINT,
+  ADD COLUMN IF NOT EXISTS completed_generation BIGINT,
+  ADD COLUMN IF NOT EXISTS dirty_mask BIGINT,
   ADD COLUMN IF NOT EXISTS lease_token UUID NULL,
   ADD COLUMN IF NOT EXISTS lease_expires_at_utc TIMESTAMPTZ NULL;
+UPDATE "SuspicionReconciliationState"
+   SET dirty_generation = COALESCE(dirty_generation, 1),
+       completed_generation = COALESCE(completed_generation, 0),
+       dirty_mask = COALESCE(dirty_mask, 63)
+ WHERE dirty_generation IS NULL
+    OR completed_generation IS NULL
+    OR dirty_mask IS NULL;
+ALTER TABLE "SuspicionReconciliationState"
+  ALTER COLUMN dirty_generation SET DEFAULT 1,
+  ALTER COLUMN dirty_generation SET NOT NULL,
+  ALTER COLUMN completed_generation SET DEFAULT 0,
+  ALTER COLUMN completed_generation SET NOT NULL,
+  ALTER COLUMN dirty_mask SET DEFAULT 63,
+  ALTER COLUMN dirty_mask SET NOT NULL;
 
 CREATE INDEX IF NOT EXISTS ix_suspicion_reconciliation_dirty
   ON "SuspicionReconciliationState"(game_id, dirty_generation, completed_generation)
@@ -107,6 +121,9 @@ mod tests {
 
     #[test]
     fn dirty_work_is_indexed_and_claimed_by_generation() {
+        assert!(UP_SQL.contains("ALTER COLUMN dirty_generation SET DEFAULT 1"));
+        assert!(UP_SQL.contains("ALTER COLUMN completed_generation SET DEFAULT 0"));
+        assert!(UP_SQL.contains("ALTER COLUMN dirty_mask SET DEFAULT 63"));
         assert!(UP_SQL.contains("dirty_generation > completed_generation"));
         assert!(UP_SQL
             .contains("dirty_mask = \"SuspicionReconciliationState\".dirty_mask | target_mask"));
