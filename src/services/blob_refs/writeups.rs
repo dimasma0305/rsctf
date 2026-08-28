@@ -227,6 +227,15 @@ pub(super) async fn replace_writeup(
 /// Store and atomically replace a participation writeup under the distributed
 /// content-hash lock. The final eligibility snapshot and reference swap share
 /// the game-to-participation lock order used by hard deletion.
+fn writeup_operation_root(name: &str) -> Option<uuid::Uuid> {
+    let stem = name.strip_suffix(".pdf")?;
+    let suffix = stem.as_bytes().get(stem.len().checked_sub(36)?..)?;
+    std::str::from_utf8(suffix)
+        .ok()
+        .and_then(|value| uuid::Uuid::parse_str(value).ok())
+        .filter(|operation_id| !operation_id.is_nil())
+}
+
 pub(crate) async fn store_and_replace_writeup(
     pool: &PgPool,
     storage: &dyn BlobStorage,
@@ -234,10 +243,17 @@ pub(crate) async fn store_and_replace_writeup(
     name: &str,
     bytes: &[u8],
 ) -> AppResult<(StoredBlob, Option<String>)> {
+    // Player-facing storage names embed the required request UUID. Older
+    // internal callers without that suffix retain independent one-shot stages.
+    let operation_root = writeup_operation_root(name).unwrap_or_else(uuid::Uuid::new_v4);
     let staged = stage_blob(
         pool,
         storage,
-        uuid::Uuid::new_v4(),
+        scoped_operation_id(
+            operation_root,
+            &format!("writeup:{}:{}", caller.game_id, caller.participation_id),
+            0,
+        ),
         &format!("writeup:{}:{}", caller.game_id, caller.participation_id),
         Some(caller.user_id),
         name,
@@ -276,11 +292,39 @@ pub(crate) async fn store_and_replace_writeup(
         &staged.blob.hash,
     )
     .await?;
-    let new_id = publish_staged_blob(&mut transaction, &staged).await?;
-    let deleted_hash =
+    let same_content = old
+        .as_ref()
+        .is_some_and(|(_, hash)| hash == &staged.blob.hash);
+    let deleted_hash = if same_content {
+        staged
+            .consume_with_existing_reference(&mut transaction)
+            .await?;
+        None
+    } else {
+        let new_id = publish_staged_blob(&mut transaction, &staged).await?;
         replace_writeup_locked(&mut transaction, caller.participation_id, old, new_id)
             .await
-            .map_err(database_error)?;
+            .map_err(database_error)?
+    };
     transaction.commit().await.map_err(database_error)?;
     Ok((staged.blob, deleted_hash))
+}
+
+#[cfg(test)]
+mod operation_identity_tests {
+    use super::writeup_operation_root;
+
+    #[test]
+    fn server_writeup_name_recovers_the_exact_nonzero_operation() {
+        let expected = uuid::Uuid::new_v4();
+        assert_eq!(
+            writeup_operation_root(&format!("Writeup-1-2-{expected}.pdf")),
+            Some(expected)
+        );
+        assert_eq!(writeup_operation_root("writeup.pdf"), None);
+        assert_eq!(
+            writeup_operation_root("Writeup-1-2-00000000-0000-0000-0000-000000000000.pdf"),
+            None
+        );
+    }
 }

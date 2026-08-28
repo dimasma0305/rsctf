@@ -746,9 +746,11 @@ const MAX_LOGO_BYTES: usize = crate::utils::upload::IMAGE_FILE_BYTES;
 /// to 640/256 px; here the original bytes are used for both.
 pub async fn logo_upload(
     State(st): State<SharedState>,
-    _admin: AdminUser,
+    AdminUser(admin): AdminUser,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> AppResult<MessageResponse> {
+    let operation_root = crate::utils::upload::required_operation_id(&headers)?;
     let _upload_reservation =
         crate::utils::upload::reserve_buffered(crate::utils::upload::IMAGE_BODY_BYTES)?;
     let mut data: Option<(String, Vec<u8>)> = None;
@@ -779,9 +781,9 @@ pub async fn logo_upload(
     let staged = crate::services::blob_refs::stage_blob(
         st.pg(),
         st.storage.as_ref(),
-        uuid::Uuid::new_v4(),
+        crate::services::blob_refs::scoped_operation_id(operation_root, "platform-branding", 0),
         "platform-branding",
-        None,
+        Some(admin.id),
         &name,
         &bytes,
     )
@@ -796,8 +798,8 @@ pub async fn logo_upload(
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let old_hashes: std::collections::BTreeSet<String> = sqlx::query_scalar(
-        r#"SELECT value
+    let old_entries: Vec<(String, String)> = sqlx::query_as(
+        r#"SELECT config_key, value
              FROM "Configs"
             WHERE config_key IN ('GlobalConfig:LogoHash', 'GlobalConfig:FaviconHash')
               AND value IS NOT NULL
@@ -805,30 +807,52 @@ pub async fn logo_upload(
     )
     .fetch_all(&mut *transaction)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .into_iter()
-    .collect();
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let old_hashes = old_entries
+        .iter()
+        .map(|(_, hash)| hash.clone())
+        .collect::<std::collections::BTreeSet<_>>();
     crate::services::blob_refs::lock_direct_hashes_locked(
         &mut transaction,
         std::iter::once(staged.blob.hash.as_str()).chain(old_hashes.iter().map(String::as_str)),
     )
     .await?;
-    crate::services::blob_refs::publish_staged_blob(&mut transaction, &staged).await?;
-    let blob = staged.blob;
-    for key in ["GlobalConfig:LogoHash", "GlobalConfig:FaviconHash"] {
+    let blob = staged.blob.clone();
+    let new_hash = blob.hash.clone();
+    let unchanged = old_entries.len() == 2
+        && old_entries
+            .iter()
+            .all(|(_, old_hash)| old_hash == &new_hash);
+    if unchanged {
+        staged
+            .consume_with_existing_reference(&mut transaction)
+            .await?;
+    } else {
+        crate::services::blob_refs::publish_staged_blob(&mut transaction, &staged).await?;
+        for key in ["GlobalConfig:LogoHash", "GlobalConfig:FaviconHash"] {
+            sqlx::query(
+                r#"INSERT INTO "Configs" (config_key, value, cache_keys)
+                   VALUES ($1, $2, NULL)
+                   ON CONFLICT (config_key) DO UPDATE SET value = EXCLUDED.value"#,
+            )
+            .bind(key)
+            .bind(&blob.hash)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        }
+        for old_hash in &old_hashes {
+            crate::services::blob_refs::release_direct_hash_locked(&mut transaction, old_hash)
+                .await?;
+        }
         sqlx::query(
-            r#"INSERT INTO "Configs" (config_key, value, cache_keys)
-               VALUES ($1, $2, NULL)
-               ON CONFLICT (config_key) DO UPDATE SET value = EXCLUDED.value"#,
+            r#"UPDATE "PlatformSettingsState"
+                  SET revision = revision + 1, updated_at = clock_timestamp()
+                WHERE singleton = 1"#,
         )
-        .bind(key)
-        .bind(&blob.hash)
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    }
-    for old_hash in &old_hashes {
-        crate::services::blob_refs::release_direct_hash_locked(&mut transaction, old_hash).await?;
     }
     transaction
         .commit()
@@ -836,6 +860,9 @@ pub async fn logo_upload(
         .map_err(|error| AppError::internal(error.to_string()))?;
 
     for old_hash in old_hashes {
+        if old_hash == new_hash {
+            continue;
+        }
         if let Err(error) = crate::services::blob_refs::purge_if_unreferenced(
             st.pg(),
             st.storage.as_ref(),

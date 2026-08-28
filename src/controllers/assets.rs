@@ -11,7 +11,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use bytes::Bytes;
@@ -42,22 +41,15 @@ pub struct LocalFileResult {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetUploadQuery {
-    /// Stable client identity for an atomic upload/consume flow. Omitting it
-    /// preserves the legacy standalone-reference contract.
+    /// Stable client identity for an atomic upload/consume flow.
     pub operation_id: Option<Uuid>,
 }
 
-fn upload_part_operation(root: Uuid, ordinal: usize) -> Uuid {
-    let mut digest = Sha256::new();
-    digest.update(root.as_bytes());
-    digest.update(ordinal.to_be_bytes());
-    let digest = digest.finalize();
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    // Mark the derived value as an RFC 4122 variant/version-4-shaped opaque id.
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Uuid::from_bytes(bytes)
+fn required_asset_upload_operation_id(query: &AssetUploadQuery) -> AppResult<Uuid> {
+    query
+        .operation_id
+        .filter(|operation_id| !operation_id.is_nil())
+        .ok_or_else(|| AppError::bad_request("operationId is required"))
 }
 
 pub fn router() -> Router<SharedState> {
@@ -83,6 +75,9 @@ pub async fn upload(
     Query(query): Query<AssetUploadQuery>,
     mut multipart: Multipart,
 ) -> AppResult<Json<Vec<LocalFileResult>>> {
+    // Reject legacy unowned uploads before reading a potentially large body.
+    // Every stored blob must now have a replayable consumer identity.
+    let operation_root = required_asset_upload_operation_id(&query)?;
     let _upload_reservation =
         crate::utils::upload::reserve_buffered(crate::utils::upload::ASSET_BODY_BYTES)?;
     let mut uploads = Vec::new();
@@ -130,38 +125,28 @@ pub async fn upload(
     // later oversized part must not leave the earlier parts persisted.
     let mut results = Vec::with_capacity(uploads.len());
     for (ordinal, (name, bytes)) in uploads.into_iter().enumerate() {
-        let (blob, upload_id) = match query.operation_id {
-            Some(root) => {
-                let upload_id = upload_part_operation(root, ordinal);
-                let staged = crate::services::blob_refs::stage_blob(
-                    st.pg(),
-                    st.storage.as_ref(),
-                    upload_id,
-                    &format!("asset-upload:{root}:{ordinal}"),
-                    Some(user.id),
-                    &name,
-                    &bytes,
-                )
-                .await?;
-                (staged.blob, Some(upload_id))
-            }
-            None => {
-                let (blob, _) = crate::services::blob_refs::store_and_acquire(
-                    st.pg(),
-                    st.storage.as_ref(),
-                    &name,
-                    &bytes,
-                )
-                .await?;
-                (blob, None)
-            }
-        };
+        let upload_id = crate::services::blob_refs::scoped_operation_id(
+            operation_root,
+            "asset-upload",
+            ordinal as u64,
+        );
+        let staged = crate::services::blob_refs::stage_blob(
+            st.pg(),
+            st.storage.as_ref(),
+            upload_id,
+            &format!("asset-upload:{operation_root}:{ordinal}"),
+            Some(user.id),
+            &name,
+            &bytes,
+        )
+        .await?;
+        let blob = staged.blob;
 
         results.push(LocalFileResult {
             hash: blob.hash,
             name,
             size: blob.size,
-            upload_id,
+            upload_id: Some(upload_id),
         });
     }
 
@@ -659,21 +644,25 @@ mod tests {
     use axum::http::{header, StatusCode};
 
     use super::{
-        asset_response, content_type_for, parse_byte_range, signed_download_response,
-        upload_part_operation, AssetCachePolicy,
+        asset_response, content_type_for, parse_byte_range, required_asset_upload_operation_id,
+        signed_download_response, AssetCachePolicy, AssetUploadQuery,
     };
     use uuid::Uuid;
 
     #[test]
-    fn multipart_operation_derivation_is_stable_and_ordered() {
-        let root = Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap();
+    fn generic_upload_requires_a_stable_operation_identity() {
+        assert!(required_asset_upload_operation_id(&AssetUploadQuery::default()).is_err());
+        assert!(required_asset_upload_operation_id(&AssetUploadQuery {
+            operation_id: Some(Uuid::nil()),
+        })
+        .is_err());
+        let expected = Uuid::new_v4();
         assert_eq!(
-            upload_part_operation(root, 0),
-            upload_part_operation(root, 0)
-        );
-        assert_ne!(
-            upload_part_operation(root, 0),
-            upload_part_operation(root, 1)
+            required_asset_upload_operation_id(&AssetUploadQuery {
+                operation_id: Some(expected),
+            })
+            .unwrap(),
+            expected
         );
     }
 

@@ -1,5 +1,6 @@
 //! Writeup submission state + PDF upload, with ref-counted blob helpers.
 use super::*;
+use axum::http::HeaderMap;
 
 // ---------------------------------------------------------------------------
 // Writeup
@@ -40,9 +41,11 @@ pub async fn get_writeup(
 pub async fn submit_writeup(
     State(st): State<SharedState>,
     user: CurrentUser,
+    headers: HeaderMap,
     Path(id): Path<i32>,
     mut multipart: Multipart,
 ) -> AppResult<StatusCode> {
+    let operation_id = crate::utils::upload::required_operation_id(&headers)?;
     // Resolve participation and policy before accepting a large body. Multipart
     // construction is lazy, so this does not buffer the upload while the checks
     // run and prevents an arbitrary authenticated account from consuming the
@@ -103,10 +106,8 @@ pub async fn submit_writeup(
     }
 
     let name = format!(
-        "Writeup-{}-{}-{}.pdf",
-        ctx.game.id,
-        ctx.participation.team_id,
-        now.format("%Y%m%d-%H.%M.%S")
+        "Writeup-{}-{}-{operation_id}.pdf",
+        ctx.game.id, ctx.participation.team_id
     );
     let (_blob, deleted_hash) = crate::services::blob_refs::store_and_replace_writeup(
         st.pg(),

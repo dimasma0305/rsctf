@@ -6545,11 +6545,11 @@ export class Api<
       data: {
         files?: File[] | null;
       },
-      query?: {
+      query: {
         /** Unified filename */
         filename?: string | null;
         /** Stable identity for a replayable upload/consume flow. */
-        operationId?: string | null;
+        operationId: string;
       },
       params: RequestParams = {},
     ) =>

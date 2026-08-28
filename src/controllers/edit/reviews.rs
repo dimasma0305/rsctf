@@ -1,14 +1,17 @@
 //! edit: poster/admins/reviews (see edit/mod.rs for the router + shared DTOs/helpers).
 use super::*;
+use axum::http::HeaderMap;
 
 /// `PUT /api/edit/games/{id}/poster` — multipart image upload stored to blob
 /// storage; the returned string is the poster asset URL.
 pub async fn update_poster(
     State(st): State<SharedState>,
     user: CurrentUser,
+    headers: HeaderMap,
     Path(id): Path<i32>,
     mut multipart: Multipart,
 ) -> AppResult<RequestResponse<String>> {
+    let operation_root = crate::utils::upload::required_operation_id(&headers)?;
     manager_or_admin(&st, &user, id).await?;
     let game = load_game(&st, id).await?;
     let _upload_reservation =
@@ -40,7 +43,11 @@ pub async fn update_poster(
     let staged = crate::services::blob_refs::stage_blob(
         st.pg(),
         st.storage.as_ref(),
-        uuid::Uuid::new_v4(),
+        crate::services::blob_refs::scoped_operation_id(
+            operation_root,
+            &format!("game-poster:{id}"),
+            0,
+        ),
         &format!("game-poster:{id}"),
         Some(user.id),
         "poster",
@@ -64,23 +71,34 @@ pub async fn update_poster(
         std::iter::once(staged.blob.hash.as_str()).chain(old_hash.as_deref()),
     )
     .await?;
-    crate::services::blob_refs::publish_staged_blob(control.transaction_mut(), &staged).await?;
-    let blob = staged.blob;
-    sqlx::query(r#"UPDATE "Games" SET poster_hash = $2 WHERE id = $1"#)
-        .bind(game.id)
-        .bind(&blob.hash)
-        .execute(&mut **control.transaction_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some(old_hash) = old_hash.as_deref() {
-        crate::services::blob_refs::release_direct_hash_locked(control.transaction_mut(), old_hash)
+    let blob = staged.blob.clone();
+    let replaced_hash = if old_hash.as_deref() == Some(blob.hash.as_str()) {
+        staged
+            .consume_with_existing_reference(control.transaction_mut())
             .await?;
-    }
+        None
+    } else {
+        crate::services::blob_refs::publish_staged_blob(control.transaction_mut(), &staged).await?;
+        sqlx::query(r#"UPDATE "Games" SET poster_hash = $2 WHERE id = $1"#)
+            .bind(game.id)
+            .bind(&blob.hash)
+            .execute(&mut **control.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        if let Some(old_hash) = old_hash.as_deref() {
+            crate::services::blob_refs::release_direct_hash_locked(
+                control.transaction_mut(),
+                old_hash,
+            )
+            .await?;
+        }
+        old_hash
+    };
     control
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some(old_hash) = old_hash {
+    if let Some(old_hash) = replaced_hash {
         if let Err(error) = crate::services::blob_refs::purge_if_unreferenced(
             st.pg(),
             st.storage.as_ref(),
