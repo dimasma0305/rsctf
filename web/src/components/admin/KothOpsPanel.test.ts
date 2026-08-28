@@ -136,7 +136,11 @@ test('KotH dialogs reject reversed reads, expose retryable errors, and mutate on
   const root = createRoot(container)
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-  const render = async (gameId: number, currentHills: AdminKothHill[]) => {
+  const render = async (
+    gameId: number,
+    currentHills: AdminKothHill[],
+    pendingHillStates: ReadonlyMap<number, boolean> = new Map()
+  ) => {
     await act(async () => {
       root.render(
         createElement(
@@ -150,7 +154,7 @@ test('KotH dialogs reject reversed reads, expose retryable errors, and mutate on
               koth: state(currentHills),
               onShell: () => undefined,
               onToggleHill: () => undefined,
-              busyHill: null,
+              pendingHillStates,
               onMutate: async () => {
                 mutateCount += 1
               },
@@ -271,6 +275,14 @@ test('KotH dialogs reject reversed reads, expose retryable errors, and mutate on
 
     await render(7, [hills[1]])
     assert.doesNotMatch(browser.document.body.textContent ?? '', /Leaderboard scoring — Hill A/)
+
+    await render(7, [hills[0]], new Map([[1, false]]))
+    const pendingSwitch = row('Hill A')?.querySelector<HTMLInputElement>('input[type="checkbox"]')
+    assert.ok(pendingSwitch)
+    assert.equal(pendingSwitch.checked, false, 'the switch must render the requested disabled state while pending')
+    assert.equal(pendingSwitch.disabled, true)
+    assert.equal(pendingSwitch.getAttribute('aria-busy'), 'true')
+    assert.match(row('Hill A')?.textContent ?? '', /Disabled/)
     assert.equal(warning.mock.callCount(), 0)
   } finally {
     api.request = originalRequest

@@ -29,7 +29,17 @@ fn decide_desired_state(
     expected_revision: i64,
     resource: &str,
 ) -> AppResult<DesiredStateDecision> {
-    if desired == current {
+    // A command observed at the current revision is an ordinary no-op when its
+    // desired value is already authoritative. A command observed at exactly
+    // the preceding revision is the one safe lost-response replay: one real
+    // boolean transition necessarily produced the current value and revision.
+    //
+    // Do not accept older matching values. After two or more transitions the
+    // same boolean can recur, but that does not make the old command a replay
+    // of the latest transition.
+    let exact_replay =
+        desired == current && expected_revision.checked_add(1) == Some(current_revision);
+    if desired == current && (expected_revision == current_revision || exact_replay) {
         return Ok(DesiredStateDecision::AlreadyCurrent);
     }
     if expected_revision != current_revision {
@@ -356,6 +366,26 @@ mod desired_state_tests {
             decide_desired_state(true, 8, true, 7, "resource").unwrap(),
             DesiredStateDecision::AlreadyCurrent
         );
+    }
+
+    #[test]
+    fn current_state_noop_requires_the_current_revision() {
+        assert_eq!(
+            decide_desired_state(true, 8, true, 8, "resource").unwrap(),
+            DesiredStateDecision::AlreadyCurrent
+        );
+    }
+
+    #[test]
+    fn matching_value_from_an_older_generation_is_not_a_replay() {
+        let error = decide_desired_state(true, 10, true, 7, "resource").unwrap_err();
+        assert_eq!(error.status(), axum::http::StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn future_revision_is_rejected_even_when_the_value_matches() {
+        let error = decide_desired_state(true, 8, true, 9, "resource").unwrap_err();
+        assert_eq!(error.status(), axum::http::StatusCode::CONFLICT);
     }
 
     #[test]
