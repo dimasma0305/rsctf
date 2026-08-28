@@ -133,6 +133,9 @@ export const GameNoticePanel: FC = () => {
     url: `/hub/user?game=${numId}`,
     ownerKey: noticeScope,
     handlers: {
+      ReceivedGameNoticeChanged: () => {
+        void fetchNotices().catch(() => undefined)
+      },
       ReceivedGameNotice: (raw) => {
         const message = raw as GameNotice
         const liveRows = currentListSnapshotRows(noticeScope, newNotices.current) ?? []

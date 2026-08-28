@@ -71,6 +71,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git libpcap0.8 iptables ipset iproute2 wireguard-tools \
        python3 python3-venv \
     && rm -rf /var/lib/apt/lists/*
+# Docker copies this ownership into a newly-created named volume, allowing the
+# non-root event-sensor sidecar to durably spool acknowledged batches.
+RUN install -d -o 65532 -g 65532 -m 0700 /var/lib/rsctf-event-sensor/spool
 ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE
 ARG RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH
 LABEL org.opencontainers.image.rsctf.byoc-agent="${RSCTF_DEFAULT_BYOC_AGENT_IMAGE}"

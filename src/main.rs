@@ -595,6 +595,23 @@ fn start_background_services(
             "flag-egress feed cursor reconciler",
             rsctf::services::flag_egress_feed::start_reconciler(state.clone(), shutdown.clone()),
         ));
+        required.push(RequiredTask::Unit(
+            "normal-notice delivery reconciler",
+            rsctf::services::notice_delivery::start_reconciler(state.clone(), shutdown.clone()),
+        ));
+        required.push(RequiredTask::Unit(
+            "solve-receipt lifecycle reconciler",
+            rsctf::services::event_security::start_receipt_maintenance(
+                state.clone(),
+                shutdown.clone(),
+            ),
+        ));
+    }
+    if owns_proxy_observation_writer(role) {
+        required.push(RequiredTask::Unit(
+            "flag-egress observation writer",
+            rsctf::services::flag_egress_observations::start_writer(state, shutdown.clone()),
+        ));
     }
     if owns_suspicion_reconciliation(role) {
         required.push(RequiredTask::Unit(
@@ -775,6 +792,13 @@ fn owns_feed_reconciliation(role: RuntimeRole) -> bool {
     )
 }
 
+fn owns_proxy_observation_writer(role: RuntimeRole) -> bool {
+    matches!(
+        role,
+        RuntimeRole::All | RuntimeRole::Development | RuntimeRole::Control | RuntimeRole::Network
+    )
+}
+
 fn should_run_migrations(role: RuntimeRole, combined_migrations_disabled: bool) -> bool {
     role == RuntimeRole::Migrate
         || role == RuntimeRole::Development
@@ -923,6 +947,21 @@ mod startup_tests {
         assert!(!owns_feed_reconciliation(RuntimeRole::Web));
         assert!(!owns_feed_reconciliation(RuntimeRole::Network));
         assert!(!owns_feed_reconciliation(RuntimeRole::Migrate));
+    }
+
+    #[test]
+    fn proxy_observation_writer_follows_the_stateful_proxy_surface() {
+        for role in [
+            RuntimeRole::All,
+            RuntimeRole::Development,
+            RuntimeRole::Control,
+            RuntimeRole::Network,
+        ] {
+            assert!(owns_proxy_observation_writer(role));
+        }
+        assert!(!owns_proxy_observation_writer(RuntimeRole::Web));
+        assert!(!owns_proxy_observation_writer(RuntimeRole::Engine));
+        assert!(!owns_proxy_observation_writer(RuntimeRole::Migrate));
     }
 
     #[test]

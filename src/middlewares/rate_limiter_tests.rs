@@ -555,6 +555,26 @@ fn verdict_recovery_has_a_distinct_bounded_identity_budget() {
         .remove(&(Policy::Verdict, key));
 }
 
+#[test]
+fn proxy_open_churn_has_distinct_subject_and_nat_budgets() {
+    assert!(matches!(
+        Policy::ProxyOpen.kind(),
+        Kind::Bucket {
+            capacity: 32.0,
+            refill_per_sec: 4.0,
+        }
+    ));
+    assert!(matches!(
+        Policy::ProxySourceOpen.kind(),
+        Kind::Bucket {
+            capacity: 512.0,
+            refill_per_sec: 32.0,
+        }
+    ));
+    assert!(redis_key(Policy::ProxyOpen, "partition").starts_with("rl:tb:13:"));
+    assert!(redis_key(Policy::ProxySourceOpen, "partition").starts_with("rl:tb:14:"));
+}
+
 /// Two `DistributedLimiter` instances = two replicas sharing one Redis. Proves
 /// the whole point of the distributed limiter: N nodes enforce ONE combined
 /// quota, not N independent ones (two in-process stores would each admit `limit`,

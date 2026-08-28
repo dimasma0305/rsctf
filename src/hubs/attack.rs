@@ -4,19 +4,20 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use futures::{SinkExt, StreamExt};
-use tokio::sync::broadcast::{error::RecvError, Receiver};
-use tokio::time::{interval, Duration};
+use tokio::sync::broadcast::error::RecvError;
+use tokio::time::{interval, Duration, Instant};
 
 use crate::app_state::{HubEvent, SharedState};
 use crate::hubs::{admission, signalr};
 use crate::middlewares::rate_limiter::{limited, Policy};
+use crate::services::event_bus::EventReceiver;
 
 pub fn router() -> Router<SharedState> {
     Router::new()
@@ -53,7 +54,7 @@ async fn attack_hub(
     ) else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
-    let rx = st.events.subscribe();
+    let rx = st.events.subscribe_game(scope.game_id);
     signalr::bounded_upgrade(ws)
         .on_upgrade(move |s| {
             signalr::serve(
@@ -91,7 +92,7 @@ async fn attack_ws(
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
 
-    let rx = st.events.subscribe();
+    let rx = st.events.subscribe_game(scope.game_id);
     signalr::bounded_upgrade(ws)
         .on_upgrade(move |s| {
             serve_raw(s, rx, scope.game_id, scope.authorization, connection_permit)
@@ -106,7 +107,7 @@ async fn attack_ws(
 /// keepalive `ping` every 25s so a reverse proxy can't idle-drop the socket.
 async fn serve_raw(
     socket: WebSocket,
-    mut rx: Receiver<HubEvent>,
+    mut rx: EventReceiver,
     game_id: i32,
     authorization: Option<signalr::HubAuthorization>,
     _connection_permit: admission::ConnectionPermit,
@@ -123,16 +124,40 @@ async fn serve_raw(
 
     // Keepalive interval (~25s), matching AttackStreamService's idle ping cadence.
     let mut keepalive = interval(Duration::from_secs(25));
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     keepalive.tick().await; // consume the immediate first tick
+    let idle = tokio::time::sleep(Duration::from_secs(90));
+    tokio::pin!(idle);
+    let mut inbound = signalr::InboundBudget::new();
 
     loop {
         tokio::select! {
-            // Consume-only feed: ignore client input, observe the close handshake.
             msg = ws_rx.next() => match msg {
-                Some(Ok(Message::Text(_)))
-                | Some(Ok(Message::Binary(_)))
-                | Some(Ok(Message::Ping(_)))
-                | Some(Ok(Message::Pong(_))) => {}
+                Some(Ok(Message::Text(value))) => {
+                    let _ = inbound.admit(value.len());
+                    let _ = tx.send(Message::Close(Some(CloseFrame {
+                        code: close_code::POLICY,
+                        reason: "raw attack feed is read-only".into(),
+                    }))).await;
+                    break;
+                }
+                Some(Ok(Message::Binary(value))) => {
+                    let _ = inbound.admit(value.len());
+                    let _ = tx.send(Message::Close(Some(CloseFrame {
+                        code: close_code::POLICY,
+                        reason: "raw attack feed is read-only".into(),
+                    }))).await;
+                    break;
+                }
+                Some(Ok(Message::Ping(value))) => {
+                    idle.as_mut().reset(Instant::now() + Duration::from_secs(90));
+                    if !inbound.admit(value.len()) { break; }
+                    if tx.send(Message::Pong(value)).await.is_err() { break; }
+                }
+                Some(Ok(Message::Pong(value))) => {
+                    idle.as_mut().reset(Instant::now() + Duration::from_secs(90));
+                    if !inbound.admit(value.len()) { break; }
+                }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
             },
             ev = rx.recv() => match ev {
@@ -152,7 +177,10 @@ async fn serve_raw(
                         }
                     }
                 }
-                Err(RecvError::Lagged(_)) => {} // slow reader: skip dropped frames, keep going
+                Err(RecvError::Lagged(skipped)) => {
+                    tracing::warn!(game_id, skipped, "raw attack feed lost events; forcing authoritative reconnect");
+                    break;
+                }
                 Err(RecvError::Closed) => break,
             },
             _ = keepalive.tick() => {
@@ -162,6 +190,13 @@ async fn serve_raw(
                 if tx.send(Message::Text("{\"kind\":\"ping\"}".to_string().into())).await.is_err() {
                     break;
                 }
+            }
+            _ = &mut idle => {
+                let _ = tx.send(Message::Close(Some(CloseFrame {
+                    code: close_code::POLICY,
+                    reason: "raw attack feed idle timeout".into(),
+                }))).await;
+                break;
             }
         }
     }

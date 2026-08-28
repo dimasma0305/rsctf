@@ -42,13 +42,13 @@ async fn user_hub(
     ) else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
-    let rx = st.events.subscribe();
+    let rx = st.events.subscribe_game(scope.game_id);
     signalr::bounded_upgrade(ws)
         .on_upgrade(move |s| {
             signalr::serve(
                 s,
                 rx,
-                &["ReceivedGameNotice"],
+                &["ReceivedGameNotice", "ReceivedGameNoticeChanged"],
                 Some(scope.game_id),
                 scope.authorization,
                 connection_permit,

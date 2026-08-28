@@ -53,7 +53,10 @@ async fn monitor_hub(
                 },
                 None => None,
             };
-            let rx = st.events.subscribe();
+            let rx = game_id.map_or_else(
+                || st.events.subscribe_global(),
+                |id| st.events.subscribe_game(id),
+            );
             let Some(connection_permit) = admission::try_connection_permit(
                 admission::client_key(&headers, peer.ip()),
                 game_id.map_or(admission::Scope::Global, admission::Scope::Game),

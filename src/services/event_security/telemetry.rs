@@ -1,7 +1,7 @@
 use chrono::{DateTime, Timelike, Utc};
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::app_state::SharedState;
@@ -107,6 +107,7 @@ pub struct FlagTransportInput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetryBatch {
+    pub batch_id: Uuid,
     pub game_id: i32,
     #[serde(default)]
     pub flows: Vec<FlowBucketInput>,
@@ -124,7 +125,7 @@ pub struct TelemetryBatch {
     pub sensor_dropped_bytes: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetryIngestResult {
     pub accepted_rows: usize,
@@ -545,12 +546,60 @@ pub async fn ingest_batch(
     batch: &TelemetryBatch,
 ) -> AppResult<TelemetryIngestResult> {
     batch.validate()?;
+    if batch.batch_id.is_nil() {
+        return Err(AppError::bad_request("Invalid telemetry batch ID"));
+    }
     let estimated = batch.estimated_bytes()?;
+    let fingerprint: [u8; 32] = sha2::Sha256::digest(
+        serde_json::to_vec(batch)
+            .map_err(|error| AppError::internal(format!("encode telemetry batch: {error}")))?,
+    )
+    .into();
     let mut transaction = st
         .pg()
         .begin()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    let claimed = sqlx::query_scalar::<_, Uuid>(
+        r#"INSERT INTO "EventTelemetryBatches"
+                (batch_id, game_id, request_fingerprint)
+           VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING batch_id"#,
+    )
+    .bind(batch.batch_id)
+    .bind(batch.game_id)
+    .bind(fingerprint.as_slice())
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if claimed.is_none() {
+        let replay = sqlx::query_as::<_, (i32, Vec<u8>, Option<serde_json::Value>)>(
+            r#"SELECT game_id, request_fingerprint, result
+                 FROM "EventTelemetryBatches" WHERE batch_id = $1 FOR UPDATE"#,
+        )
+        .bind(batch.batch_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        let Some((game_id, stored_fingerprint, result)) = replay else {
+            return Err(AppError::conflict(
+                "Telemetry batch is already being processed",
+            ));
+        };
+        if game_id != batch.game_id || stored_fingerprint.as_slice() != fingerprint.as_slice() {
+            return Err(AppError::conflict(
+                "Telemetry batch ID was reused with different content",
+            ));
+        }
+        let result = result
+            .ok_or_else(|| AppError::unavailable("Telemetry batch result is not yet available"))?;
+        let result = serde_json::from_value(result)
+            .map_err(|error| AppError::internal(format!("decode telemetry replay: {error}")))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(result);
+    }
     let policy: Option<(bool, bool, bool, bool, bool)> = sqlx::query_as(
         r#"SELECT vpn_behavior_telemetry_enabled, vpn_flag_scan_enabled,
                   vpn_provider_dns_telemetry_enabled,
@@ -566,16 +615,18 @@ pub async fn ingest_batch(
         return Err(AppError::not_found("Game not found"));
     };
     if !(policy.0 || policy.1 || policy.2 || policy.3 || policy.4) {
-        transaction
-            .rollback()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        return Ok(TelemetryIngestResult {
+        let result = TelemetryIngestResult {
             accepted_rows: 0,
             duplicate_or_invalid_rows: batch.row_count(),
             dropped_for_quota: false,
             logical_bytes: 0,
-        });
+        };
+        complete_batch(&mut transaction, batch.batch_id, &result).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(result);
     }
     if batch.sensor_dropped_rows > 0 {
         sqlx::query(
@@ -626,16 +677,18 @@ pub async fn ingest_batch(
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-        transaction
-            .commit()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        return Ok(TelemetryIngestResult {
+        let result = TelemetryIngestResult {
             accepted_rows: 0,
             duplicate_or_invalid_rows: 0,
             dropped_for_quota: true,
             logical_bytes: 0,
-        });
+        };
+        complete_batch(&mut transaction, batch.batch_id, &result).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(result);
     }
 
     let flow_count = insert_flows(&mut transaction, batch.game_id, &batch.flows).await?;
@@ -675,16 +728,40 @@ pub async fn ingest_batch(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     }
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(TelemetryIngestResult {
+    let result = TelemetryIngestResult {
         accepted_rows: accepted,
         duplicate_or_invalid_rows: batch.row_count().saturating_sub(accepted),
         dropped_for_quota: false,
         logical_bytes: actual,
-    })
+    };
+    complete_batch(&mut transaction, batch.batch_id, &result).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(result)
+}
+
+async fn complete_batch(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    batch_id: Uuid,
+    result: &TelemetryIngestResult,
+) -> AppResult<()> {
+    sqlx::query(
+        r#"UPDATE "EventTelemetryBatches"
+              SET result = $2, completed_at_utc = clock_timestamp()
+            WHERE batch_id = $1"#,
+    )
+    .bind(batch_id)
+    .bind(
+        serde_json::to_value(result).map_err(|error| {
+            AppError::internal(format!("encode telemetry ingest result: {error}"))
+        })?,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(())
 }
 
 pub async fn purge_game_telemetry(
@@ -787,6 +864,7 @@ mod tests {
     #[test]
     fn invalid_bucket_and_raw_values_are_rejected_before_database_work() {
         let batch = TelemetryBatch {
+            batch_id: Uuid::new_v4(),
             game_id: 1,
             flows: vec![FlowBucketInput {
                 user_id: Uuid::nil(),

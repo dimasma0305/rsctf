@@ -7,10 +7,12 @@ use uuid::Uuid;
 
 use super::{database_error, is_unique_violation, WorkerStore};
 use super::{
-    AuthenticatedWorker, CreateWorker, PlatformOs, ResourceReservation, SessionFence,
-    WorkerAdministrativeState, WorkerCertificate, WorkerInventory, WorkerNode, WorkerSession,
-    WorkerStoreError,
+    AuthenticatedWorker, CreateWorker, EnrollmentClaim, PlatformOs, ResourceReservation,
+    SessionFence, WorkerAdministrativeState, WorkerCertificate, WorkerInventory, WorkerNode,
+    WorkerSession, WorkerStoreError,
 };
+
+const ENROLLMENT_CLAIM_SECONDS: i64 = 120;
 
 #[derive(FromRow)]
 struct WorkerNodeRow {
@@ -84,6 +86,206 @@ fn lease_seconds(duration: Duration) -> Result<i64, WorkerStoreError> {
 }
 
 impl WorkerStore {
+    /// Claims a one-use token before any CSR parsing/signing work. Exact
+    /// ambiguous retries recover the original durable response; a competing
+    /// operation or CSR never reaches the signer.
+    pub async fn claim_enrollment(
+        &self,
+        operation_id: Uuid,
+        token_hash: [u8; 32],
+        csr_digest: [u8; 32],
+    ) -> Result<EnrollmentClaim, WorkerStoreError> {
+        let mut tx = crate::utils::database::begin_sqlx_transaction(&self.pool)
+            .await
+            .map_err(database_error)?;
+        let inserted = sqlx::query_scalar::<_, Uuid>(
+            r#"INSERT INTO "WorkerEnrollmentOperations"
+                    (operation_id, worker_id, token_hash, csr_digest, state,
+                     claim_expires_at)
+               SELECT $1, id, $2, $3, 'Signing',
+                      clock_timestamp() + ($4 * interval '1 second')
+                 FROM "WorkerNodes"
+                WHERE enrollment_token_hash = $2
+                  AND enrollment_token_used_at IS NULL
+                  AND enrollment_token_expires_at > clock_timestamp()
+            ON CONFLICT DO NOTHING
+              RETURNING worker_id"#,
+        )
+        .bind(operation_id)
+        .bind(token_hash.as_slice())
+        .bind(csr_digest.as_slice())
+        .bind(ENROLLMENT_CLAIM_SECONDS)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        if let Some(worker_id) = inserted {
+            tx.commit().await.map_err(database_error)?;
+            return Ok(EnrollmentClaim::Claimed { worker_id });
+        }
+
+        let existing =
+            sqlx::query_as::<_, (Uuid, Uuid, Vec<u8>, Vec<u8>, String, Option<Value>, bool)>(
+                r#"SELECT operation_id, worker_id, token_hash, csr_digest, state,
+                      response, claim_expires_at <= clock_timestamp()
+                 FROM "WorkerEnrollmentOperations"
+                WHERE operation_id = $1 OR token_hash = $2
+                FOR UPDATE"#,
+            )
+            .bind(operation_id)
+            .bind(token_hash.as_slice())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        let Some((stored_operation, worker_id, stored_token, stored_csr, state, response, expired)) =
+            existing
+        else {
+            tx.rollback().await.map_err(database_error)?;
+            return Ok(EnrollmentClaim::Invalid);
+        };
+        if stored_operation != operation_id
+            || stored_token.as_slice() != token_hash.as_slice()
+            || stored_csr.as_slice() != csr_digest.as_slice()
+        {
+            tx.rollback().await.map_err(database_error)?;
+            return Ok(EnrollmentClaim::Invalid);
+        }
+        if state == "Completed" {
+            let response = response.ok_or_else(|| {
+                WorkerStoreError::InvalidStoredData(
+                    "completed worker enrollment has no response".to_owned(),
+                )
+            })?;
+            tx.commit().await.map_err(database_error)?;
+            return Ok(EnrollmentClaim::Completed {
+                worker_id,
+                response,
+            });
+        }
+        if state == "Failed" {
+            tx.rollback().await.map_err(database_error)?;
+            return Ok(EnrollmentClaim::Invalid);
+        }
+        if state == "Signing" && !expired {
+            tx.commit().await.map_err(database_error)?;
+            return Ok(EnrollmentClaim::InProgress);
+        }
+        sqlx::query(
+            r#"UPDATE "WorkerEnrollmentOperations"
+                  SET state = 'Signing',
+                      claim_expires_at = clock_timestamp() + ($2 * interval '1 second')
+                WHERE operation_id = $1"#,
+        )
+        .bind(operation_id)
+        .bind(ENROLLMENT_CLAIM_SECONDS)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        tx.commit().await.map_err(database_error)?;
+        Ok(EnrollmentClaim::Claimed { worker_id })
+    }
+
+    pub async fn fail_enrollment(&self, operation_id: Uuid) -> Result<(), WorkerStoreError> {
+        sqlx::query(
+            r#"UPDATE "WorkerEnrollmentOperations"
+                  SET state = 'Retryable', claim_expires_at = clock_timestamp()
+                WHERE operation_id = $1 AND state = 'Signing'"#,
+        )
+        .bind(operation_id)
+        .execute(&self.pool)
+        .await
+        .map_err(database_error)?;
+        Ok(())
+    }
+
+    pub async fn reject_enrollment(&self, operation_id: Uuid) -> Result<(), WorkerStoreError> {
+        sqlx::query(
+            r#"UPDATE "WorkerEnrollmentOperations"
+                  SET state = 'Failed', claim_expires_at = clock_timestamp()
+                WHERE operation_id = $1 AND state = 'Signing'"#,
+        )
+        .bind(operation_id)
+        .execute(&self.pool)
+        .await
+        .map_err(database_error)?;
+        Ok(())
+    }
+
+    /// Consumes the token, fences its old session, and stores the exact public
+    /// response in the same transaction so a lost HTTP response is recoverable.
+    pub async fn complete_enrollment(
+        &self,
+        operation_id: Uuid,
+        token_hash: [u8; 32],
+        certificate: WorkerCertificate,
+        response: Value,
+    ) -> Result<Option<AuthenticatedWorker>, WorkerStoreError> {
+        let mut tx = crate::utils::database::begin_sqlx_transaction(&self.pool)
+            .await
+            .map_err(database_error)?;
+        let row = sqlx::query_as::<_, (Uuid, String, DateTime<Utc>)>(
+            r#"UPDATE "WorkerNodes" AS worker
+                  SET enrollment_token_hash = NULL,
+                      enrollment_token_expires_at = NULL,
+                      enrollment_token_used_at = clock_timestamp(),
+                      certificate_fingerprint_sha256 = $3,
+                      certificate_serial = $4,
+                      certificate_expires_at = $5,
+                      session_id = NULL,
+                      session_epoch = CASE WHEN session_id IS NULL THEN session_epoch ELSE session_epoch + 1 END,
+                      boot_id = NULL, connected_at = NULL, lease_expires_at = NULL,
+                      updated_at = clock_timestamp()
+                 FROM "WorkerEnrollmentOperations" AS operation
+                WHERE operation.operation_id = $1
+                  AND operation.token_hash = $2
+                  AND operation.state = 'Signing'
+                  AND operation.worker_id = worker.id
+                  AND worker.enrollment_token_hash = $2
+                  AND worker.enrollment_token_used_at IS NULL
+            RETURNING worker.id, worker.administrative_state, worker.certificate_expires_at"#,
+        )
+        .bind(operation_id)
+        .bind(token_hash.as_slice())
+        .bind(certificate.fingerprint_sha256.as_slice())
+        .bind(certificate.serial.trim())
+        .bind(certificate.expires_at)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        let Some((id, state, certificate_expires_at)) = row else {
+            tx.rollback().await.map_err(database_error)?;
+            return Ok(None);
+        };
+        sqlx::query(
+            r#"UPDATE "WorkerWorkloads"
+                  SET observed_state = 'Lost', observed_session_epoch = NULL,
+                      observed_message = 'worker certificate replaced',
+                      observed_at = clock_timestamp(), ready_at = NULL,
+                      updated_at = clock_timestamp()
+                WHERE worker_id = $1 AND observed_state <> 'Absent'"#,
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            r#"UPDATE "WorkerEnrollmentOperations"
+                  SET state = 'Completed', response = $2,
+                      completed_at = clock_timestamp(), claim_expires_at = clock_timestamp()
+                WHERE operation_id = $1"#,
+        )
+        .bind(operation_id)
+        .bind(response)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        tx.commit().await.map_err(database_error)?;
+        Ok(Some(AuthenticatedWorker {
+            id,
+            administrative_state: WorkerAdministrativeState::parse(&state)?,
+            certificate_expires_at,
+        }))
+    }
+
     /// Register a disabled-by-certificate worker identity with a one-use token.
     pub async fn create_worker(
         &self,

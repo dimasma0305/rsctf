@@ -20,6 +20,8 @@ use crate::tls::MtlsConnector;
 const OUTBOUND_QUEUE: usize = 256;
 const INVENTORY_PAGE_SIZE: usize = 100;
 const INVENTORY_PAYLOAD_BUDGET: usize = MAX_CONTROL_FRAME - 4 * 1024;
+const RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+const RUNTIME_USAGE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct OperationDispatcher {
@@ -455,26 +457,41 @@ fn spawn_heartbeats(
         };
         let mut heartbeat_count = 0_u64;
         let mut consecutive_probe_failures = 0_u8;
+        let mut usage_tasks = tokio::task::JoinSet::new();
         loop {
             interval.tick().await;
-            let probe_error = match runtime.probe().await {
-                Ok(()) => {
+            while let Some(result) = usage_tasks.try_join_next() {
+                match result {
+                    Ok(Ok(sample)) => usage = sample,
+                    Ok(Err(error)) => tracing::warn!(%error, "Docker usage sample failed"),
+                    Err(error) => tracing::warn!(%error, "Docker usage sampler task failed"),
+                }
+            }
+            let probe_error = match tokio::time::timeout(RUNTIME_PROBE_TIMEOUT, runtime.probe()).await {
+                Ok(Ok(())) => {
                     consecutive_probe_failures = 0;
                     None
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     consecutive_probe_failures = consecutive_probe_failures.saturating_add(1);
                     Some(error.to_string())
+                }
+                Err(_) => {
+                    consecutive_probe_failures = consecutive_probe_failures.saturating_add(1);
+                    Some("Docker health probe timed out".to_string())
                 }
             };
             // Usage is informational in protocol revision 1. Sample it at one
             // sixth the heartbeat rate, cache the last value, and never fence
             // routes because one O(containers) inventory call failed.
-            if heartbeat_count.is_multiple_of(6) {
-                match runtime.usage().await {
-                    Ok(sample) => usage = sample,
-                    Err(error) => tracing::warn!(%error, "Docker usage sample failed"),
-                }
+            if heartbeat_count.is_multiple_of(6) && usage_tasks.is_empty() {
+                let sampler = runtime.clone();
+                usage_tasks.spawn(async move {
+                    tokio::time::timeout(RUNTIME_USAGE_TIMEOUT, sampler.usage())
+                        .await
+                        .map_err(|_| "Docker usage sample timed out".to_string())?
+                        .map_err(|error| error.to_string())
+                });
             }
             heartbeat_count = heartbeat_count.saturating_add(1);
             let runtime_healthy = consecutive_probe_failures < 3;
@@ -497,6 +514,7 @@ fn spawn_heartbeats(
                 .await
                 .is_err()
             {
+                usage_tasks.abort_all();
                 return;
             }
         }

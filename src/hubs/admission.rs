@@ -8,7 +8,9 @@
 
 use std::hash::Hash;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::http::HeaderMap;
 use dashmap::mapref::entry::Entry;
@@ -19,6 +21,8 @@ const MAX_CONNECTIONS: usize = 2_048;
 const MAX_CONNECTIONS_PER_CLIENT: usize = 128;
 const MAX_CONNECTIONS_PER_GAME: usize = 1_024;
 const MAX_GLOBAL_SCOPE_CONNECTIONS: usize = 256;
+const MAX_INBOUND_FRAMES_PER_SECOND: u64 = 8_192;
+const MAX_INBOUND_BYTES_PER_SECOND: u64 = 32 * 1024 * 1024;
 
 static CONNECTIONS: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONNECTIONS)));
@@ -26,6 +30,9 @@ static CLIENT_CONNECTIONS: LazyLock<Arc<DashMap<String, usize>>> =
     LazyLock::new(|| Arc::new(DashMap::new()));
 static SCOPE_CONNECTIONS: LazyLock<Arc<DashMap<Scope, usize>>> =
     LazyLock::new(|| Arc::new(DashMap::new()));
+static INBOUND_WINDOW_SECOND: AtomicU64 = AtomicU64::new(0);
+static INBOUND_WINDOW_FRAMES: AtomicU64 = AtomicU64::new(0);
+static INBOUND_WINDOW_BYTES: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum Scope {
@@ -159,6 +166,28 @@ pub(super) fn try_connection_permit(client_key: String, scope: Scope) -> Option<
 pub(super) fn client_key(headers: &HeaderMap, peer: IpAddr) -> String {
     crate::services::anti_cheat::client_ip(headers, Some(peer))
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Cheap process-wide abuse backstop for application frames received after a
+/// read-only feed is admitted. A one-second fixed window is deliberately
+/// lock-free; per-connection token buckets apply the finer fairness boundary.
+pub(super) fn try_inbound_frame(bytes: usize) -> bool {
+    let second = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let observed = INBOUND_WINDOW_SECOND.load(Ordering::Acquire);
+    if observed != second
+        && INBOUND_WINDOW_SECOND
+            .compare_exchange(observed, second, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    {
+        INBOUND_WINDOW_FRAMES.store(0, Ordering::Release);
+        INBOUND_WINDOW_BYTES.store(0, Ordering::Release);
+    }
+    let frames = INBOUND_WINDOW_FRAMES.fetch_add(1, Ordering::AcqRel) + 1;
+    let bytes = INBOUND_WINDOW_BYTES.fetch_add(bytes as u64, Ordering::AcqRel) + bytes as u64;
+    frames <= MAX_INBOUND_FRAMES_PER_SECOND && bytes <= MAX_INBOUND_BYTES_PER_SECOND
 }
 
 #[cfg(test)]

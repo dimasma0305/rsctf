@@ -204,6 +204,15 @@ where
     Option::<T>::deserialize(deserializer).map(Some)
 }
 
+fn present_optional_millis<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<DateTime<Utc>>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    crate::utils::datetime::millis_opt::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlagInfoModel {
@@ -514,8 +523,10 @@ pub struct GameCloneModel {
 pub struct GameNoticeModel {
     #[serde(default)]
     pub content: String,
-    #[serde(default, with = "crate::utils::datetime::millis_opt")]
-    pub publish_at: Option<DateTime<Utc>>,
+    pub operation_id: Uuid,
+    /// Missing preserves the existing schedule; explicit null publishes now.
+    #[serde(default, deserialize_with = "present_optional_millis")]
+    pub publish_at: Option<Option<DateTime<Utc>>>,
 }
 
 #[derive(Debug, Deserialize)]

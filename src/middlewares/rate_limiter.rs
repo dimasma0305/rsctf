@@ -43,6 +43,9 @@ use tokio::sync::Semaphore;
 
 use crate::app_state::SharedState;
 
+mod proxy_open;
+pub(crate) use proxy_open::{admit_proxy_open, admit_proxy_participation};
+
 static AUTHENTICATED_IP_BACKSTOP_PER_MINUTE: LazyLock<u32> = LazyLock::new(|| {
     std::env::var("RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE")
         .ok()
@@ -158,6 +161,12 @@ pub enum Policy {
     TeamSignature,
     /// Tight per-source admission for anonymous stateless HashPoW issuance.
     PowChallenge,
+    /// Distributed churn budget for authenticated proxy subjects, workloads,
+    /// and participations. Appended to preserve shipped discriminants.
+    ProxyOpen,
+    /// Higher-capacity NAT/source backstop for proxy-open churn.
+    /// Appended to preserve shipped discriminants.
+    ProxySourceOpen,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -241,6 +250,14 @@ impl Policy {
             Policy::PowChallenge => Kind::Bucket {
                 capacity: 8.0,
                 refill_per_sec: 0.2,
+            },
+            Policy::ProxyOpen => Kind::Bucket {
+                capacity: 32.0,
+                refill_per_sec: 4.0,
+            },
+            Policy::ProxySourceOpen => Kind::Bucket {
+                capacity: 512.0,
+                refill_per_sec: 32.0,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {

@@ -52,7 +52,7 @@ use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser};
 use crate::models::data::{container, game_instance, participation, user_participation};
 use crate::services::live_roster::LiveParticipationIdentity;
 use crate::services::worker::WorkerHandle;
-use crate::utils::enums::{ParticipationStatus, Role};
+use crate::utils::enums::ParticipationStatus;
 use rsctf_worker_protocol::{
     DataStreamRequest, TcpProxyRequest, ValidatedWorkloadSpec, WorkloadFence,
 };
@@ -68,8 +68,8 @@ mod transport;
 
 use access_log::log_container_access_on;
 use authorization::{
-    game_proxy_scope_is_valid, game_proxy_session_is_valid, try_acquire_game_proxy_open_fence,
-    GameProxyOpenFence, GameProxyTargetIdentity,
+    exercise_lease_is_valid, game_proxy_scope_is_valid, game_proxy_session_is_valid,
+    try_acquire_game_proxy_open_fence, GameProxyOpenFence, GameProxyTargetIdentity,
 };
 use capability::{
     issue_instance_capability, issue_noinstance_capability, proxy_instance_latency_probe,
@@ -129,16 +129,31 @@ async fn proxy_for_instance(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     let user = proxy_user(&st, user, capability, id, false).await;
-    // Resolve the target BEFORE accepting the upgrade so a rejected/absent
-    // container just closes cleanly (never 500).
-    let access = resolve_instance_target(&st, MaybeUser(user), id).await;
-
     // Capture the connecting IP + User-Agent the same way the rest of rsctf does,
     // BEFORE the upgrade consumes the request. Used only for the access-event row
     // (best-effort forensics), never for access control.
     let remote_ip =
         crate::services::anti_cheat::client_ip(&headers, Some(peer.ip())).unwrap_or_default();
     let admission_source = remote_ip.parse().unwrap_or_else(|_| peer.ip());
+    if let Some(subject) = user.as_ref().map(|user| user.id) {
+        if let Some(response) =
+            crate::middlewares::rate_limiter::admit_proxy_open(subject, &remote_ip, id, None).await
+        {
+            return response;
+        }
+    }
+    // Only admitted opens resolve container and participation state.
+    let access = resolve_instance_target(&st, MaybeUser(user), id).await;
+    if let Some(participation_id) = access.as_ref().and_then(|access| match &access.owner {
+        InstanceOwner::Game(game) => Some(game.accessing_participation_id),
+        InstanceOwner::Exercise(_) => None,
+    }) {
+        if let Some(response) =
+            crate::middlewares::rate_limiter::admit_proxy_participation(participation_id).await
+        {
+            return response;
+        }
+    }
     let event_vpn_source = remote_ip.parse::<Ipv4Addr>().ok();
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
@@ -276,6 +291,7 @@ async fn proxy_for_instance(
             };
             run_or_close(st_log, socket, endpoint, scan, lease, admission, open_fence).await;
         })
+        .into_response()
 }
 
 /// `GET /api/proxy/noinst/{id}` — TCP-over-WebSocket proxy to an admin test
@@ -291,10 +307,17 @@ async fn proxy_for_noinstance(
     ws: WebSocketUpgrade,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let source = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()))
-        .and_then(|source| source.parse().ok())
-        .unwrap_or_else(|| peer.ip());
+    let remote_ip =
+        crate::services::anti_cheat::client_ip(&headers, Some(peer.ip())).unwrap_or_default();
+    let source = remote_ip.parse().unwrap_or_else(|_| peer.ip());
     let principal = proxy_user(&st, user, capability, id, true).await;
+    if let Some(subject) = principal.as_ref().map(|user| user.id) {
+        if let Some(response) =
+            crate::middlewares::rate_limiter::admit_proxy_open(subject, &remote_ip, id, None).await
+        {
+            return response;
+        }
+    }
     let admission = match principal.as_ref() {
         Some(principal) => {
             st.proxy_admission
@@ -828,10 +851,9 @@ enum LeaseOwner {
 }
 
 async fn wait_for_revocation(lease: InstanceLease) {
-    let mut tick = tokio::time::interval(Duration::from_secs(5));
-    tick.tick().await;
+    let jitter = Duration::from_millis(u64::from(lease.user_id.as_bytes()[0]) * 4);
     loop {
-        tick.tick().await;
+        tokio::time::sleep(Duration::from_secs(5) + jitter).await;
         let lease_valid = match &lease.owner {
             LeaseOwner::Game {
                 game_id,

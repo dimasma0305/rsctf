@@ -144,6 +144,10 @@ mod m0133_ad_control_revisions;
 mod m0135_control_plane_jobs;
 mod m0143_challenge_import_jobs;
 mod m0144_worker_workload_quarantine;
+mod m0153_game_notice_delivery;
+mod m0154_worker_enrollment_operations;
+mod m0155_receipt_variant_lifecycle;
+mod m0156_event_sensor_batches;
 mod m0165_image_cleanup_lease;
 mod m0166_honeypot_buckets;
 mod m0167_game_clone_operations;
@@ -309,6 +313,10 @@ impl MigratorTrait for Migrator {
             Box::new(m0135_control_plane_jobs::Migration),
             Box::new(m0143_challenge_import_jobs::Migration),
             Box::new(m0144_worker_workload_quarantine::Migration),
+            Box::new(m0153_game_notice_delivery::Migration),
+            Box::new(m0154_worker_enrollment_operations::Migration),
+            Box::new(m0155_receipt_variant_lifecycle::Migration),
+            Box::new(m0156_event_sensor_batches::Migration),
             Box::new(m0165_image_cleanup_lease::Migration),
             Box::new(m0166_honeypot_buckets::Migration),
             Box::new(m0167_game_clone_operations::Migration),
@@ -463,7 +471,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 31..],
+            &names[names.len() - 35..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -487,6 +495,10 @@ mod tests {
                 "m0135_control_plane_jobs",
                 "m0143_challenge_import_jobs",
                 "m0144_worker_workload_quarantine",
+                "m0153_game_notice_delivery",
+                "m0154_worker_enrollment_operations",
+                "m0155_receipt_variant_lifecycle",
+                "m0156_event_sensor_batches",
                 "m0165_image_cleanup_lease",
                 "m0166_honeypot_buckets",
                 "m0167_game_clone_operations",

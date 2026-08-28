@@ -61,6 +61,8 @@ pub struct AppState {
     /// Non-blocking, bounded aggregation handoff for unauthenticated decoy
     /// telemetry. Honeypot responses never await PostgreSQL.
     pub(crate) honeypot_telemetry: crate::services::suspicion::HoneypotQueue,
+    pub(crate) flag_egress_observations: crate::services::flag_egress_observations::Queue,
+    pub(crate) event_sensor_snapshot: crate::services::event_security::SensorSnapshotCache,
 }
 
 /// One real-time message: which client hub method to invoke, which game it
@@ -173,6 +175,8 @@ impl AppState {
             user_activity: crate::middlewares::user_activity::ActivityQueue::new(),
             feed_publication: crate::services::feed_publication::PublicationQueue::new(),
             honeypot_telemetry: crate::services::suspicion::HoneypotQueue::new(),
+            flag_egress_observations: Default::default(),
+            event_sensor_snapshot: crate::services::event_security::SensorSnapshotCache::new(),
         })
     }
 

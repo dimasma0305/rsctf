@@ -6,8 +6,8 @@
 //! token plus CSR for a client-only certificate signed by the worker CA.
 
 use axum::extract::{Path, Query, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, PRAGMA};
-use axum::http::StatusCode;
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, PRAGMA, RETRY_AFTER};
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
@@ -16,13 +16,15 @@ use rsctf_worker_protocol::{EnrollmentRequest, EnrollmentResponse};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::sync::{Arc, LazyLock};
 use uuid::Uuid;
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::AdminUser;
 use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::services::worker_store::{
-    CreateWorker, WorkerAdministrativeState, WorkerCertificate, WorkerNode, WorkerStoreError,
+    CreateWorker, EnrollmentClaim, WorkerAdministrativeState, WorkerCertificate, WorkerNode,
+    WorkerStoreError,
 };
 use crate::utils::codec::random_token;
 use crate::utils::error::{AppError, AppResult};
@@ -36,6 +38,9 @@ const WORKER_SECRET_CACHE_CONTROL: &str = "private, no-store";
 const DEFAULT_WORKER_PAGE_SIZE: u64 = 200;
 const MAX_WORKER_PAGE_SIZE: u64 = 500;
 const MAX_WORKER_PAGE_OFFSET: u64 = 100_000;
+const ENROLLMENT_SIGN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+static ENROLLMENT_SIGNERS: LazyLock<Arc<tokio::sync::Semaphore>> =
+    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(4)));
 const WORKER_BOOTSTRAP: &str = include_str!("../../scripts/bootstrap-worker.sh");
 const WINDOWS_WORKER_BOOTSTRAP: &str = include_str!("../../scripts/bootstrap-worker.ps1");
 
@@ -367,32 +372,110 @@ pub async fn enroll_worker(
     validate_enrollment_request(&request)?;
     let issuer = require_issuer(&st)?.clone();
     let token_hash = hash_enrollment_token(&request.token);
-    let worker_id = st
+    let csr_digest: [u8; 32] = Sha256::digest(request.csr_pem.as_bytes()).into();
+    let worker_id = match st
         .worker_store
-        .resolve_enrollment_token(token_hash)
+        .claim_enrollment(request.operation_id, token_hash, csr_digest)
         .await
         .map_err(store_error)?
-        .ok_or(AppError::Unauthorized)?;
+    {
+        EnrollmentClaim::Claimed { worker_id } => worker_id,
+        EnrollmentClaim::Completed {
+            worker_id,
+            response,
+        } => {
+            let response: EnrollmentResponse =
+                serde_json::from_value(response).map_err(|error| {
+                    AppError::internal(format!("invalid enrollment replay: {error}"))
+                })?;
+            if response.worker_id != worker_id {
+                return Err(AppError::internal(
+                    "worker enrollment replay identity mismatch",
+                ));
+            }
+            return Ok(worker_secret_response(Json(response)));
+        }
+        EnrollmentClaim::InProgress => {
+            return Ok(retry_response(
+                AppError::unavailable("Worker enrollment is already in progress"),
+                2,
+            ));
+        }
+        EnrollmentClaim::Invalid => return Err(AppError::Unauthorized),
+    };
+
+    let signer_permit = match Arc::clone(&ENROLLMENT_SIGNERS).try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            st.worker_store
+                .fail_enrollment(request.operation_id)
+                .await
+                .map_err(store_error)?;
+            return Ok(retry_response(AppError::TooManyRequests, 2));
+        }
+    };
 
     let csr_pem = request.csr_pem;
     let signing_issuer = issuer.clone();
-    let issued = tokio::task::spawn_blocking(move || signing_issuer.issue(worker_id, &csr_pem))
-        .await
-        .map_err(|error| AppError::internal(format!("worker certificate task failed: {error}")))?
-        .map_err(|error| {
+    let signing = tokio::task::spawn_blocking(move || {
+        let _signer_permit = signer_permit;
+        signing_issuer.issue(worker_id, &csr_pem)
+    });
+    let issued = match tokio::time::timeout(ENROLLMENT_SIGN_TIMEOUT, signing).await {
+        Ok(Ok(Ok(issued))) => issued,
+        Ok(Ok(Err(error))) => {
+            st.worker_store
+                .reject_enrollment(request.operation_id)
+                .await
+                .map_err(store_error)?;
             tracing::warn!(%worker_id, %error, "worker CSR rejected");
-            AppError::bad_request("Invalid worker certificate signing request")
-        })?;
+            return Err(AppError::bad_request(
+                "Invalid worker certificate signing request",
+            ));
+        }
+        Ok(Err(error)) => {
+            st.worker_store
+                .fail_enrollment(request.operation_id)
+                .await
+                .map_err(store_error)?;
+            return Err(AppError::internal(format!(
+                "worker certificate task failed: {error}"
+            )));
+        }
+        Err(_) => {
+            // `spawn_blocking` cannot be cancelled. Keep the durable claim in
+            // Signing until its lease expires so an immediate retry cannot
+            // run a second signer for the same operation while this job still
+            // owns the aggregate permit.
+            return Ok(retry_response(
+                AppError::unavailable("Worker certificate signing timed out"),
+                2,
+            ));
+        }
+    };
+
+    let response = EnrollmentResponse {
+        worker_id,
+        control_address: issuer.public_endpoint().to_owned(),
+        data_address: issuer.public_endpoint().to_owned(),
+        server_name: issuer.server_name().to_owned(),
+        certificate_pem: issued.certificate_pem,
+        ca_pem: issued.ca_certificate_pem,
+    };
+    let durable_response = serde_json::to_value(&response)
+        .map_err(|error| AppError::internal(format!("encode enrollment response: {error}")))?;
 
     let enrolled = st
         .worker_store
-        .enroll_certificate(
+        .complete_enrollment(
+            request.operation_id,
             token_hash,
             WorkerCertificate {
                 fingerprint_sha256: issued.fingerprint_sha256,
                 serial: issued.serial,
                 expires_at: issued.expires_at,
             },
+            durable_response,
         )
         .await
         .map_err(store_error)?
@@ -409,14 +492,7 @@ pub async fn enroll_worker(
         service.registry().disconnect(worker_id).await;
     }
 
-    Ok(worker_secret_response(Json(EnrollmentResponse {
-        worker_id,
-        control_address: issuer.public_endpoint().to_owned(),
-        data_address: issuer.public_endpoint().to_owned(),
-        server_name: issuer.server_name().to_owned(),
-        certificate_pem: issued.certificate_pem,
-        ca_pem: issued.ca_certificate_pem,
-    })))
+    Ok(worker_secret_response(Json(response)))
 }
 
 /// Enrollment tokens and newly-issued certificate material are one-time
@@ -430,6 +506,15 @@ fn worker_secret_response(body: impl IntoResponse) -> Response {
         body,
     )
         .into_response()
+}
+
+fn retry_response(error: AppError, seconds: u16) -> Response {
+    let mut response = worker_secret_response(error);
+    response.headers_mut().insert(
+        RETRY_AFTER,
+        HeaderValue::from_str(&seconds.to_string()).expect("retry delay is valid ASCII"),
+    );
+    response
 }
 
 fn require_issuer(
@@ -454,6 +539,9 @@ fn validate_worker_name(name: String) -> AppResult<String> {
 }
 
 fn validate_enrollment_request(request: &EnrollmentRequest) -> AppResult<()> {
+    if request.operation_id.is_nil() {
+        return Err(AppError::bad_request("Invalid worker enrollment operation"));
+    }
     if request.token.is_empty() || request.token.len() > MAX_ENROLLMENT_TOKEN_CHARS {
         return Err(AppError::Unauthorized);
     }
@@ -567,6 +655,7 @@ mod tests {
         assert!(validate_worker_name("x".repeat(MAX_WORKER_NAME_CHARS + 1)).is_err());
 
         let oversized = EnrollmentRequest {
+            operation_id: Uuid::new_v4(),
             token: "x".repeat(MAX_ENROLLMENT_TOKEN_CHARS + 1),
             csr_pem: "csr".into(),
         };

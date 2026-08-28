@@ -8,6 +8,7 @@
 //! outage may be dropped.
 
 use std::collections::{HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,6 +20,7 @@ use uuid::Uuid;
 use crate::app_state::HubEvent;
 
 const LOCAL_QUEUE_CAPACITY: usize = 512;
+const GAME_QUEUE_SHARDS: usize = 64;
 const OUTBOUND_QUEUE_CAPACITY: usize = 512;
 const DEDUP_CAPACITY: usize = 4_096;
 const MAX_WIRE_BYTES: usize = 256 * 1024;
@@ -35,8 +37,93 @@ pub const DEFAULT_REDIS_CHANNEL: &str = "rsctf:hub-events:v1";
 /// publisher queue when distributed fanout is enabled.
 #[derive(Clone)]
 pub struct EventBus {
-    local: broadcast::Sender<HubEvent>,
+    local: Arc<LocalFanout>,
     distributed: Option<DistributedPublisher>,
+}
+
+/// A bounded set of process-local queues. Game-scoped sockets subscribe only
+/// to one stable shard plus the small broadcast-to-all queue, so a 100-flag
+/// burst in one event cannot evict notices or monitor updates in every other
+/// event. The legacy `all` queue remains for the few internal control listeners
+/// that intentionally consume multiple targets.
+struct LocalFanout {
+    all: broadcast::Sender<HubEvent>,
+    global: broadcast::Sender<HubEvent>,
+    games: [broadcast::Sender<HubEvent>; GAME_QUEUE_SHARDS],
+    lagged_receivers: AtomicU64,
+    distributed_drops: AtomicU64,
+}
+
+impl LocalFanout {
+    fn new() -> Self {
+        let (all, _) = broadcast::channel(LOCAL_QUEUE_CAPACITY);
+        let (global, _) = broadcast::channel(LOCAL_QUEUE_CAPACITY);
+        let games = std::array::from_fn(|_| broadcast::channel(LOCAL_QUEUE_CAPACITY).0);
+        Self {
+            all,
+            global,
+            games,
+            lagged_receivers: AtomicU64::new(0),
+            distributed_drops: AtomicU64::new(0),
+        }
+    }
+
+    fn game_shard(game_id: i32) -> usize {
+        (game_id.unsigned_abs() as usize) % GAME_QUEUE_SHARDS
+    }
+
+    fn publish(&self, event: HubEvent) {
+        let _ = self.all.send(event.clone());
+        match event.game_id {
+            Some(game_id) => {
+                let _ = self.games[Self::game_shard(game_id)].send(event);
+            }
+            None => {
+                let _ = self.global.send(event);
+            }
+        }
+    }
+
+    fn record_distributed_drop(&self, reason: &'static str) {
+        let dropped = self
+            .distributed_drops
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        if dropped.is_power_of_two() {
+            tracing::warn!(
+                dropped,
+                reason,
+                "remote hub fanout lost data; clients must reconcile from HTTP"
+            );
+        }
+    }
+}
+
+/// Receiver used by public hubs. A game-scoped feed merges only its stable
+/// event shard with true global broadcasts; unrelated game queues never enter
+/// its bounded history.
+pub struct EventReceiver {
+    scoped: broadcast::Receiver<HubEvent>,
+    global: Option<broadcast::Receiver<HubEvent>>,
+    fanout: Arc<LocalFanout>,
+}
+
+impl EventReceiver {
+    pub async fn recv(&mut self) -> Result<HubEvent, broadcast::error::RecvError> {
+        let result = match self.global.as_mut() {
+            Some(global) => {
+                tokio::select! {
+                    result = self.scoped.recv() => result,
+                    result = global.recv() => result,
+                }
+            }
+            None => self.scoped.recv().await,
+        };
+        if matches!(result, Err(broadcast::error::RecvError::Lagged(_))) {
+            self.fanout.lagged_receivers.fetch_add(1, Ordering::Relaxed);
+        }
+        result
+    }
 }
 
 #[derive(Clone)]
@@ -104,6 +191,7 @@ fn known_target(target: &str) -> Option<&'static str> {
         "ReceivedAttack" => Some("ReceivedAttack"),
         "ReceivedGameEvent" => Some("ReceivedGameEvent"),
         "ReceivedGameNotice" => Some("ReceivedGameNotice"),
+        "ReceivedGameNoticeChanged" => Some("ReceivedGameNoticeChanged"),
         "ReceivedFlagEgress" => Some("ReceivedFlagEgress"),
         "ReceivedLog" => Some("ReceivedLog"),
         "ReceivedSubmissions" => Some("ReceivedSubmissions"),
@@ -149,9 +237,8 @@ impl InboundDedup {
 impl EventBus {
     /// Process-local event delivery, matching the historical single-node behavior.
     pub fn local() -> Self {
-        let (local, _) = broadcast::channel(LOCAL_QUEUE_CAPACITY);
         Self {
-            local,
+            local: Arc::new(LocalFanout::new()),
             distributed: None,
         }
     }
@@ -169,12 +256,17 @@ impl EventBus {
         tokio::runtime::Handle::try_current()
             .map_err(|_| anyhow::anyhow!("distributed event bus requires a Tokio runtime"))?;
         let client = redis::Client::open(redis_url)?;
-        let (local, _) = broadcast::channel(LOCAL_QUEUE_CAPACITY);
+        let local = Arc::new(LocalFanout::new());
         let (outbound, outbound_rx) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
         let origin = Uuid::new_v4();
         let channel = channel.to_string();
 
-        let publisher = tokio::spawn(run_publisher(client.clone(), channel.clone(), outbound_rx));
+        let publisher = tokio::spawn(run_publisher(
+            client.clone(),
+            channel.clone(),
+            outbound_rx,
+            local.clone(),
+        ));
         let subscriber = tokio::spawn(run_subscriber(client, channel, origin, local.clone()));
         let tasks = Arc::new(TaskSet {
             handles: vec![publisher.abort_handle(), subscriber.abort_handle()],
@@ -191,7 +283,23 @@ impl EventBus {
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<HubEvent> {
-        self.local.subscribe()
+        self.local.all.subscribe()
+    }
+
+    pub fn subscribe_game(&self, game_id: i32) -> EventReceiver {
+        EventReceiver {
+            scoped: self.local.games[LocalFanout::game_shard(game_id)].subscribe(),
+            global: Some(self.local.global.subscribe()),
+            fanout: self.local.clone(),
+        }
+    }
+
+    pub fn subscribe_global(&self) -> EventReceiver {
+        EventReceiver {
+            scoped: self.local.global.subscribe(),
+            global: None,
+            fanout: self.local.clone(),
+        }
     }
 
     /// Publish locally, then offer the same event to other replicas. A full or
@@ -202,10 +310,10 @@ impl EventBus {
             .distributed
             .as_ref()
             .map(|distributed| WireEvent::from_hub(distributed.origin, &event));
-        let _ = self.local.send(event);
+        self.local.publish(event);
         if let (Some(distributed), Some(wire)) = (&self.distributed, wire) {
             if distributed.outbound.try_send(wire).is_err() {
-                tracing::debug!("dropping remote hub event: publisher queue unavailable");
+                self.local.record_distributed_drop("outbound_queue_full");
             }
         }
     }
@@ -225,14 +333,17 @@ async fn run_publisher(
     client: redis::Client,
     channel: String,
     mut outbound: mpsc::Receiver<WireEvent>,
+    local: Arc<LocalFanout>,
 ) {
     let mut connection: Option<redis::aio::ConnectionManager> = None;
     while let Some(event) = outbound.recv().await {
         let Ok(payload) = serde_json::to_vec(&event) else {
+            local.record_distributed_drop("encode_failed");
             continue;
         };
         if payload.len() > MAX_WIRE_BYTES {
             tracing::debug!(bytes = payload.len(), "dropping oversized remote hub event");
+            local.record_distributed_drop("wire_size_exceeded");
             continue;
         }
 
@@ -255,6 +366,7 @@ async fn run_publisher(
             };
         }
         let Some(mut active) = connection.take() else {
+            local.record_distributed_drop("redis_unavailable");
             continue;
         };
         let result = tokio::time::timeout(
@@ -269,9 +381,11 @@ async fn run_publisher(
             Ok(Ok(_)) => connection = Some(active),
             Ok(Err(error)) => {
                 tracing::debug!(%error, "hub event publish failed; reconnecting on next event");
+                local.record_distributed_drop("redis_publish_failed");
             }
             Err(_) => {
                 tracing::debug!("hub event publish timed out; reconnecting on next event");
+                local.record_distributed_drop("redis_publish_timeout");
             }
         }
     }
@@ -281,7 +395,7 @@ async fn run_subscriber(
     client: redis::Client,
     channel: String,
     origin: Uuid,
-    local: broadcast::Sender<HubEvent>,
+    local: Arc<LocalFanout>,
 ) {
     let mut dedup = InboundDedup::new(origin);
     let mut retry = REDIS_RETRY_MIN;
@@ -327,7 +441,7 @@ async fn run_subscriber(
                 continue;
             }
             if let Some(event) = event.into_hub() {
-                let _ = local.send(event);
+                local.publish(event);
             }
         }
 
@@ -551,6 +665,32 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn game_shards_isolate_unrelated_bursts_and_keep_global_events() {
+        let bus = EventBus::local();
+        let mut game_seven = bus.subscribe_game(7);
+        let mut game_eight = bus.subscribe_game(8);
+
+        for cursor in 0..(LOCAL_QUEUE_CAPACITY * 2) {
+            bus.publish(received_game_event(7, cursor as i32, cursor as i64));
+        }
+        bus.publish(received_game_event(8, 1, 1));
+        bus.publish(received_log_event());
+
+        let received = [
+            game_eight.recv().await.unwrap(),
+            game_eight.recv().await.unwrap(),
+        ];
+        assert!(received.iter().any(|event| event.game_id == Some(8)));
+        assert!(received.iter().any(|event| event.target == "ReceivedLog"));
+
+        assert!(matches!(
+            game_seven.recv().await,
+            Err(broadcast::error::RecvError::Lagged(_))
+        ));
+        assert_eq!(bus.local.lagged_receivers.load(Ordering::Relaxed), 1);
     }
 
     /// Run explicitly with `RSCTF_TEST_REDIS_URL=redis://... cargo test

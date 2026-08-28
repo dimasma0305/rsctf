@@ -5,6 +5,8 @@
 //! observations, and hashes of exact platform-issued dynamic flags. It never
 //! writes a pcap, DNS name, raw endpoint, or packet payload.
 
+mod event_sensor_spool;
+
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
@@ -25,6 +27,8 @@ use tokio::sync::{mpsc, watch};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
+use event_sensor_spool::{drain_spool, enqueue_batch, DrainError, DurableSpool};
+
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
@@ -42,6 +46,7 @@ struct Config {
     token: String,
     interface: String,
     asn_file: Option<String>,
+    spool_dir: std::path::PathBuf,
 }
 
 impl Config {
@@ -62,6 +67,9 @@ impl Config {
             asn_file: std::env::var("RSCTF_EVENT_SENSOR_ASN_FILE")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
+            spool_dir: std::env::var_os("RSCTF_EVENT_SENSOR_SPOOL_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| "/var/lib/rsctf-event-sensor/spool".into()),
         })
     }
 }
@@ -626,6 +634,7 @@ fn completed_batches(state: &mut CaptureState, now: DateTime<Utc>) -> Vec<Teleme
 
 fn empty_batch(game_id: i32) -> TelemetryBatch {
     TelemetryBatch {
+        batch_id: Uuid::new_v4(),
         game_id,
         flows: Vec::new(),
         dns_providers: Vec::new(),
@@ -858,22 +867,15 @@ async fn fetch_snapshot(
         .await?)
 }
 
-async fn upload_batch(
-    client: &reqwest::Client,
-    config: &Config,
-    batch: &TelemetryBatch,
-) -> anyhow::Result<()> {
-    client
-        .post(format!(
-            "{}/api/internal/event-security/telemetry",
-            config.api
-        ))
-        .bearer_auth(&config.token)
-        .json(batch)
-        .send()
-        .await?
-        .error_for_status()?;
-    Ok(())
+fn terminal_snapshot_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<reqwest::Error>()
+        .and_then(reqwest::Error::status)
+        .is_some_and(|status| {
+            status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN
+                || status == reqwest::StatusCode::NOT_FOUND
+        })
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -887,12 +889,16 @@ async fn main() -> anyhow::Result<()> {
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(10))
         .build()?;
+    let mut spool = DurableSpool::open(config.spool_dir.clone()).await?;
+    let mut pending_dropped_rows = 0_u64;
+    let mut pending_dropped_bytes = 0_u64;
     let initial = loop {
         match fetch_snapshot(&client, &config)
             .await
             .and_then(CompiledSnapshot::build)
         {
             Ok(snapshot) => break Arc::new(snapshot),
+            Err(error) if terminal_snapshot_error(&error) => return Err(error),
             Err(error) => {
                 tracing::warn!(%error, "event sensor initial snapshot unavailable; retrying");
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -919,17 +925,26 @@ async fn main() -> anyhow::Result<()> {
                         snapshot = Arc::new(next);
                         let _ = snapshot_tx.send(snapshot.clone());
                     }
+                    Err(error) if terminal_snapshot_error(&error) => return Err(error),
                     Err(error) => tracing::warn!(%error, "event sensor snapshot refresh failed"),
                 }
                 for batch in network_observations(&config, &snapshot, &prefixes).await {
-                    if let Err(error) = upload_batch(&client, &config, &batch).await {
-                        tracing::warn!(%error, game_id = batch.game_id, "event sensor endpoint telemetry upload failed");
+                    enqueue_batch(&mut spool, &mut pending_dropped_rows, &mut pending_dropped_bytes, batch).await?;
+                }
+                if let Err(error) = drain_spool(&client, &config.api, &config.token, &mut spool).await {
+                    if matches!(&error, DrainError::Permanent(_)) {
+                        return Err(error.into());
                     }
+                    tracing::warn!(%error, "event sensor telemetry spool remains pending");
                 }
             }
             Some(batch) = batch_rx.recv() => {
-                if let Err(error) = upload_batch(&client, &config, &batch).await {
-                    tracing::warn!(%error, game_id = batch.game_id, "event sensor aggregate upload failed");
+                enqueue_batch(&mut spool, &mut pending_dropped_rows, &mut pending_dropped_bytes, batch).await?;
+                if let Err(error) = drain_spool(&client, &config.api, &config.token, &mut spool).await {
+                    if matches!(&error, DrainError::Permanent(_)) {
+                        return Err(error.into());
+                    }
+                    tracing::warn!(%error, "event sensor aggregate spool remains pending");
                 }
             }
         }
@@ -937,59 +952,5 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn ipv4_udp(payload: &[u8], source: [u8; 4], destination: [u8; 4]) -> Vec<u8> {
-        let mut packet = vec![0u8; 20 + 8];
-        packet[0] = 0x45;
-        packet[9] = 17;
-        packet[12..16].copy_from_slice(&source);
-        packet[16..20].copy_from_slice(&destination);
-        packet[20..22].copy_from_slice(&12345u16.to_be_bytes());
-        packet[22..24].copy_from_slice(&53u16.to_be_bytes());
-        packet.extend_from_slice(payload);
-        packet
-    }
-
-    #[test]
-    fn parser_never_retains_or_emits_raw_packet_data() {
-        let packet = ipv4_udp(b"secret-payload", [10, 13, 0, 2], [1, 1, 1, 1]);
-        let parsed = parse_packet(&packet).unwrap();
-        assert_eq!(parsed.payload, b"secret-payload");
-        let mut tail = Vec::new();
-        append_tail(&mut tail, &vec![b'x'; 512]);
-        assert_eq!(tail.len(), MAX_FLOW_TAIL);
-        assert!(std::mem::size_of::<FlowBucketInput>() < 256);
-    }
-
-    #[test]
-    fn dns_parser_is_bounded_and_suffix_classifier_is_safe() {
-        let mut dns = vec![0u8; 12];
-        dns[5] = 1;
-        dns.extend_from_slice(&[3, b'a', b'p', b'i', 6]);
-        dns.extend_from_slice(b"openai");
-        dns.extend_from_slice(&[3]);
-        dns.extend_from_slice(b"com");
-        dns.extend_from_slice(&[0, 0, 1, 0, 1]);
-        assert_eq!(
-            parse_dns_question(&dns, false).as_deref(),
-            Some("api.openai.com")
-        );
-        assert!(provider_category("api.openai.com").is_some());
-    }
-
-    #[test]
-    fn sensor_api_url_requires_exact_loopback_http_or_https() {
-        assert_eq!(
-            validate_api_url("http://127.0.0.1:8080/").unwrap(),
-            "http://127.0.0.1:8080"
-        );
-        assert!(validate_api_url("http://[::1]:8080").is_ok());
-        assert!(validate_api_url("https://sensor.example.test/internal").is_ok());
-        assert!(validate_api_url("http://127.0.0.1.attacker.test").is_err());
-        assert!(validate_api_url("http://10.13.0.1:8080").is_err());
-        assert!(validate_api_url("https://user:secret@sensor.example.test").is_err());
-        assert!(validate_api_url("https://sensor.example.test?token=leak").is_err());
-    }
-}
+#[path = "rsctf_event_sensor_tests.rs"]
+mod tests;

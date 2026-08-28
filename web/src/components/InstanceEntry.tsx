@@ -18,7 +18,7 @@ import { Icon } from '@mdi/react'
 import { WsrxState } from '@xdsec/wsrx'
 import dayjs from 'dayjs'
 import duration from 'dayjs/plugin/duration'
-import { FC, useCallback, useEffect, useState } from 'react'
+import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HandleWsrxError, useWsrx } from '@Components/WsrxProvider'
 import { isInstanceExtensionWindowOpen, runInstanceExtension } from '@Utils/InstanceLifecycle'
@@ -164,33 +164,89 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const isWsrxUsable = isPlatformProxy && wsrxState === WsrxState.Usable
   const [proxyEntryMode, setProxyEntryMode] = useState<ProxyEntryMode>('wsrx')
   const [wsrxRemoteEntry, setWsrxRemoteEntry] = useState('')
+  const [pendingWsrxRemoteEntry, setPendingWsrxRemoteEntry] = useState('')
+  const [pendingCapabilityExpiresAt, setPendingCapabilityExpiresAt] = useState<number | null>(null)
   const [capabilityExpiresAt, setCapabilityExpiresAt] = useState<number | null>(null)
   const [capabilityAttempt, setCapabilityAttempt] = useState(0)
   const [tunnelRequestComplete, setTunnelRequestComplete] = useState(false)
   const [tunnelRequestFailed, setTunnelRequestFailed] = useState(false)
   const [tunnelRetrying, setTunnelRetrying] = useState(false)
+  const renewalOwner = useRef(false)
+  const capabilityGeneration = useRef(0)
+  const remoteEntryRef = useRef(wsrxRemoteEntry)
+  const capabilityExpiryRef = useRef(capabilityExpiresAt)
+  const proxyModeRef = useRef(proxyEntryMode)
+  const wsrxUsableRef = useRef(isWsrxUsable)
+  remoteEntryRef.current = wsrxRemoteEntry
+  capabilityExpiryRef.current = capabilityExpiresAt
+  proxyModeRef.current = proxyEntryMode
+  wsrxUsableRef.current = isWsrxUsable
 
   useEffect(() => {
+    capabilityGeneration.current += 1
+    renewalOwner.current = false
     setWsrxRemoteEntry('')
+    setPendingWsrxRemoteEntry('')
+    setPendingCapabilityExpiresAt(null)
     setCapabilityExpiresAt(null)
     setTunnelRequestComplete(false)
     setTunnelRequestFailed(false)
+    setTunnelRetrying(false)
+  }, [instanceEntry, isPlatformProxy])
+
+  useEffect(() => {
     if (!isPlatformProxy || !instanceEntry) return
 
+    const generation = ++capabilityGeneration.current
     let active = true
     const requestCapability = async () => {
-      try {
-        const response = isPreview
-          ? await api.proxy.proxyIssueNoInstanceCapability(instanceEntry)
-          : await api.proxy.proxyIssueInstanceCapability(instanceEntry)
-        if (active) {
-          setWsrxRemoteEntry(getProxyEntry(instanceEntry, isPreview, response.data.token))
-          setCapabilityExpiresAt(response.data.expiresAt)
-        }
-      } catch (err) {
-        if (active) {
-          setTunnelRequestFailed(true)
-          HandleWsrxError(err, t)
+      renewalOwner.current = true
+      setTunnelRetrying(capabilityAttempt > 0)
+      let delay = 250
+      for (let attempt = 0; attempt < 6 && active && generation === capabilityGeneration.current; attempt += 1) {
+        try {
+          const response = isPreview
+            ? await api.proxy.proxyIssueNoInstanceCapability(instanceEntry)
+            : await api.proxy.proxyIssueInstanceCapability(instanceEntry)
+          if (!active || generation !== capabilityGeneration.current) return
+          const candidate = getProxyEntry(instanceEntry, isPreview, response.data.token)
+          if (remoteEntryRef.current && proxyModeRef.current === 'wsrx' && wsrxUsableRef.current) {
+            setPendingWsrxRemoteEntry(candidate)
+            setPendingCapabilityExpiresAt(response.data.expiresAt)
+          } else {
+            setWsrxRemoteEntry(candidate)
+            setCapabilityExpiresAt(response.data.expiresAt)
+            renewalOwner.current = false
+            setTunnelRetrying(false)
+          }
+          setTunnelRequestFailed(false)
+          return
+        } catch (err) {
+          const response = (err as {
+            response?: {
+              status?: number
+              headers?: { get?: (name: string) => unknown; 'retry-after'?: unknown }
+            }
+          })?.response
+          const status = response?.status
+          const terminal = status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429
+          const oldPathStillValid =
+            capabilityExpiryRef.current === null || getServerNowMilliseconds() < capabilityExpiryRef.current
+          if (terminal || !oldPathStillValid || attempt === 5) {
+            if (!remoteEntryRef.current) setTunnelRequestFailed(true)
+            HandleWsrxError(err, t)
+            renewalOwner.current = false
+            setTunnelRetrying(false)
+            return
+          }
+          const jitter = Math.max(50, Math.floor((delay * (generation % 17 + 1)) / 18))
+          const retryAfterValue = response?.headers?.get?.('retry-after') ?? response?.headers?.['retry-after']
+          const retryAfterSeconds = Number.parseInt(String(retryAfterValue ?? ''), 10)
+          const retryAfter = Number.isFinite(retryAfterSeconds)
+            ? Math.min(Math.max(retryAfterSeconds, 0) * 1000, 10_000)
+            : jitter
+          await new Promise<void>((resolve) => window.setTimeout(resolve, retryAfter))
+          delay = Math.min(delay * 2, 10_000)
         }
       }
     }
@@ -198,13 +254,92 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     requestCapability()
     return () => {
       active = false
+      if (capabilityGeneration.current === generation) capabilityGeneration.current += 1
+      renewalOwner.current = false
     }
   }, [capabilityAttempt, instanceEntry, isPlatformProxy, isPreview, t])
 
   const localTraffic = wsrxInstances.find((traffic) => traffic.remote === wsrxRemoteEntry)
+  const pendingTraffic = wsrxInstances.find((traffic) => traffic.remote === pendingWsrxRemoteEntry)
+
+  useEffect(() => {
+    if (!pendingWsrxRemoteEntry || !isWsrxUsable || proxyEntryMode !== 'wsrx') return
+    let active = true
+    const prepare = async () => {
+      try {
+        await wsrx.add({
+          label,
+          remote: pendingWsrxRemoteEntry,
+          local: wsrxOptions.allowLan ? '0.0.0.0:0' : '127.0.0.1:0',
+        })
+      } catch (err) {
+        if (active) {
+          const retryGeneration = capabilityGeneration.current
+          const canRetry =
+            capabilityExpiryRef.current === null || getServerNowMilliseconds() < capabilityExpiryRef.current
+          setPendingWsrxRemoteEntry('')
+          setPendingCapabilityExpiresAt(null)
+          renewalOwner.current = canRetry
+          setTunnelRetrying(canRetry)
+          HandleWsrxError(err, t)
+          if (canRetry) {
+            const retryDelay = Math.min(1000 * 2 ** Math.min(capabilityAttempt, 4), 10_000)
+            window.setTimeout(() => {
+              if (capabilityGeneration.current === retryGeneration) {
+                setCapabilityAttempt((attempt) => attempt + 1)
+              }
+            }, retryDelay)
+          }
+        }
+      }
+    }
+    void prepare()
+    return () => {
+      active = false
+    }
+  }, [capabilityAttempt, isWsrxUsable, label, pendingWsrxRemoteEntry, proxyEntryMode, t, wsrx, wsrxOptions.allowLan])
+
+  useEffect(() => {
+    if (!pendingWsrxRemoteEntry || !pendingTraffic || pendingTraffic.latency < 0) return
+    const oldLocal = localTraffic?.local
+    setWsrxRemoteEntry(pendingWsrxRemoteEntry)
+    setPendingWsrxRemoteEntry('')
+    setCapabilityExpiresAt(pendingCapabilityExpiresAt)
+    setTunnelRequestComplete(true)
+    renewalOwner.current = false
+    setTunnelRetrying(false)
+    if (oldLocal) {
+      window.setTimeout(() => void wsrx.delete(oldLocal).catch((err) => HandleWsrxError(err, t)), 10_000)
+    }
+  }, [localTraffic?.local, pendingCapabilityExpiresAt, pendingTraffic, pendingWsrxRemoteEntry, t, wsrx])
+
+  const pendingCheckExpired = wsrxReadinessExpired.has(pendingWsrxRemoteEntry)
+  useEffect(() => {
+    if (!pendingWsrxRemoteEntry || !pendingCheckExpired) return
+    const retryGeneration = capabilityGeneration.current
+    const pendingLocal = pendingTraffic?.local
+    const canRetry = capabilityExpiryRef.current === null || getServerNowMilliseconds() < capabilityExpiryRef.current
+    setPendingWsrxRemoteEntry('')
+    setPendingCapabilityExpiresAt(null)
+    renewalOwner.current = canRetry
+    setTunnelRetrying(canRetry)
+    if (pendingLocal) void wsrx.delete(pendingLocal).catch((err) => HandleWsrxError(err, t))
+    if (canRetry) {
+      const retryDelay = Math.min(1000 * 2 ** Math.min(capabilityAttempt, 4), 10_000)
+      window.setTimeout(() => {
+        if (capabilityGeneration.current === retryGeneration) {
+          setCapabilityAttempt((attempt) => attempt + 1)
+        }
+      }, retryDelay)
+    }
+  }, [capabilityAttempt, pendingCheckExpired, pendingTraffic?.local, pendingWsrxRemoteEntry, t, wsrx])
 
   useEffect(() => {
     if (!wsrxRemoteEntry || !isWsrxUsable) return
+    if (localTraffic?.local) {
+      setTunnelRequestComplete(true)
+      return
+    }
 
     const localAddr = wsrxOptions.allowLan ? '0.0.0.0:0' : '127.0.0.1:0'
     let active = true
@@ -233,7 +368,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     return () => {
       active = false
     }
-  }, [capabilityAttempt, isWsrxUsable, label, retryWsrxReadiness, t, wsrx, wsrxOptions.allowLan, wsrxRemoteEntry])
+  }, [capabilityAttempt, isWsrxUsable, label, localTraffic?.local, retryWsrxReadiness, t, wsrx, wsrxOptions.allowLan, wsrxRemoteEntry])
 
   const tunnelCheckExpired = wsrxReadinessExpired.has(wsrxRemoteEntry)
 
@@ -254,25 +389,13 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const canOpenEntry = canUseEntry && !isWssMode
 
   const onRefreshProxyEntry = useCallback(async () => {
-    if (!isPlatformProxy || tunnelRetrying) return
+    if (!isPlatformProxy || renewalOwner.current) return
 
+    renewalOwner.current = true
     setTunnelRetrying(true)
-    setWsrxRemoteEntry('')
-    setCapabilityExpiresAt(null)
-    setTunnelRequestComplete(false)
-    setTunnelRequestFailed(false)
-    if (wsrxState === WsrxState.Usable && localTraffic?.local) {
-      try {
-        await wsrx.delete(localTraffic.local)
-      } catch (err) {
-        HandleWsrxError(err, t)
-      }
-    }
-
     if (proxyEntryMode === 'wsrx' && wsrxState !== WsrxState.Usable) doWsrxConnect()
     setCapabilityAttempt((attempt) => attempt + 1)
-    setTunnelRetrying(false)
-  }, [doWsrxConnect, isPlatformProxy, localTraffic?.local, proxyEntryMode, t, tunnelRetrying, wsrx, wsrxState])
+  }, [doWsrxConnect, isPlatformProxy, proxyEntryMode, wsrxState])
 
   useServerClockTimeout(
     () => void onRefreshProxyEntry(),

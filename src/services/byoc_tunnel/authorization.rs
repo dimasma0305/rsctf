@@ -93,7 +93,12 @@ pub(super) async fn live_tunnel_authorized(
     challenge_id: i32,
     token: &str,
 ) -> bool {
-    live_tunnel_authorized_on(st.pg(), game_id, participation_id, challenge_id, token).await
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        live_tunnel_authorized_on(st.pg(), game_id, participation_id, challenge_id, token),
+    )
+    .await
+    .unwrap_or(false)
 }
 
 #[cfg(test)]

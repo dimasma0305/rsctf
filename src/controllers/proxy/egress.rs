@@ -1,20 +1,17 @@
 //! Best-effort flag-egress detection for proxied game containers.
 
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use uuid::Uuid;
 
 use crate::app_state::SharedState;
-use crate::models::data::{flag_context, game_instance};
-use crate::services::event_bus::EventBus;
+use crate::services::flag_egress_observations::{Observation, ObservationKey, Queue};
 
 use super::{GameAccess, InstanceAccess};
 
-/// Context for the in-tunnel flag-egress scan. Cloneable so the
-/// fire-and-forget recorder task can own a copy.
+/// Context for the in-tunnel flag-egress scan. Cloneable so the bounded
+/// observation queue can own a copy without retaining the proxy session.
 #[derive(Clone)]
 pub(super) struct EgressScan {
-    pool: sqlx::PgPool,
-    events: EventBus,
+    queue: Queue,
     /// The owning team's current flag bytes for this challenge.
     pub(super) flag: Vec<u8>,
     game_id: i32,
@@ -85,26 +82,6 @@ impl RollingFlagMatcher {
     }
 }
 
-const RECORD_FLAG_EGRESS_SQL: &str = r#"
-    INSERT INTO "FlagEgressEvents"
-        (game_id, participation_id, challenge_id, container_id,
-         remote_ip, remote_port, hit_count, first_seen_utc, last_seen_utc)
-    VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $7)
-    ON CONFLICT
-        (game_id, participation_id, challenge_id,
-         (COALESCE(container_id::TEXT, ''::TEXT)), remote_ip, remote_port)
-    DO UPDATE SET
-        hit_count = LEAST(
-            "FlagEgressEvents".hit_count::BIGINT + 1,
-            2147483647
-        )::INTEGER,
-        last_seen_utc = GREATEST(
-            "FlagEgressEvents".last_seen_utc,
-            EXCLUDED.last_seen_utc
-        )
-    RETURNING id
-"#;
-
 /// Load the owning team's flag for a proxied instance. `None` disables the
 /// scan when there is no per-team flag or the context cannot be resolved.
 pub(super) async fn build_egress_scan(
@@ -113,25 +90,25 @@ pub(super) async fn build_egress_scan(
     game: &GameAccess,
     remote_ip: String,
 ) -> Option<EgressScan> {
-    let instance = game_instance::Entity::find()
-        .filter(game_instance::Column::ParticipationId.eq(game.owner_participation_id))
-        .filter(game_instance::Column::ChallengeId.eq(game.challenge_id))
-        .one(&st.db)
-        .await
-        .ok()
-        .flatten()?;
-    let flag = flag_context::Entity::find_by_id(instance.flag_id?)
-        .one(&st.db)
-        .await
-        .ok()
-        .flatten()?
-        .flag;
+    let flag = sqlx::query_scalar::<_, String>(
+        r#"SELECT flag.flag
+             FROM "GameInstances" instance
+             JOIN "FlagContexts" flag ON flag.id = instance.flag_id
+            WHERE instance.participation_id = $1
+              AND instance.challenge_id = $2
+              AND instance.container_id = $3"#,
+    )
+    .bind(game.owner_participation_id)
+    .bind(game.challenge_id)
+    .bind(access.container_id)
+    .fetch_optional(st.pg())
+    .await
+    .ok()??;
     if flag.is_empty() {
         return None;
     }
     Some(EgressScan {
-        pool: st.pg().clone(),
-        events: st.events.clone(),
+        queue: st.flag_egress_observations.clone(),
         flag: flag.into_bytes(),
         game_id: game.game_id,
         participation_id: game.owner_participation_id,
@@ -141,49 +118,25 @@ pub(super) async fn build_egress_scan(
     })
 }
 
-/// Windowed best-effort upsert of a `FlagEgressEvent`.
-pub(super) async fn record_flag_egress(scan: &EgressScan) {
-    let Ok(mut transaction) = scan.pool.begin().await else {
-        return;
-    };
-    let Ok(true) = crate::services::participation_evidence::lock_audit_insert_scope(
-        &mut transaction,
-        scan.game_id,
-        Some(scan.challenge_id),
-        &[scan.participation_id],
-    )
-    .await
-    else {
-        return;
-    };
-    let now = chrono::Utc::now();
-    let event_id = sqlx::query_scalar::<_, i32>(RECORD_FLAG_EGRESS_SQL)
-        .bind(scan.game_id)
-        .bind(scan.participation_id)
-        .bind(scan.challenge_id)
-        .bind(scan.container_id)
-        .bind(&scan.remote_ip)
-        .bind(0_i32)
-        .bind(now)
-        .fetch_one(&mut *transaction)
-        .await;
-    let Ok(event_id) = event_id else {
-        return;
-    };
-    if transaction.commit().await.is_err() {
-        return;
-    }
-    if let Err(error) =
-        crate::services::flag_egress_feed::publish_committed_on(&scan.pool, &scan.events, event_id)
-            .await
-    {
-        tracing::debug!(event_id, %error, "committed flag-egress event could not be published");
+/// Non-blocking handoff to the single supervised batch writer.
+pub(super) fn record_flag_egress(scan: &EgressScan) {
+    if !scan.queue.enqueue(Observation {
+        key: ObservationKey {
+            game_id: scan.game_id,
+            participation_id: scan.participation_id,
+            challenge_id: scan.challenge_id,
+            container_id: scan.container_id,
+            remote_ip: scan.remote_ip.clone(),
+        },
+        observed_at: chrono::Utc::now(),
+    }) {
+        crate::services::flag_egress_observations::record_queue_drop();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RollingFlagMatcher, RECORD_FLAG_EGRESS_SQL};
+    use super::RollingFlagMatcher;
 
     #[test]
     fn matches_a_flag_at_every_read_boundary() {
@@ -208,14 +161,5 @@ mod tests {
             assert!(!matcher.contains(flag, b"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"));
             assert!(matcher.overlap.len() < flag.len());
         }
-    }
-
-    #[test]
-    fn atomic_upsert_keys_forensic_usage_by_remote_endpoint() {
-        assert!(RECORD_FLAG_EGRESS_SQL.contains("INSERT INTO \"FlagEgressEvents\""));
-        assert!(RECORD_FLAG_EGRESS_SQL.contains("(COALESCE(container_id::TEXT, ''::TEXT))"));
-        assert!(RECORD_FLAG_EGRESS_SQL.contains("ON CONFLICT"));
-        assert!(RECORD_FLAG_EGRESS_SQL.contains("hit_count::BIGINT + 1"));
-        assert!(RECORD_FLAG_EGRESS_SQL.contains("RETURNING id"));
     }
 }

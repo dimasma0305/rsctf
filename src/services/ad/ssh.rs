@@ -30,10 +30,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::app_state::SharedState;
-use crate::models::data::{
-    ad_ssh_key, ad_team_service, config, game, game_challenge, participation, team, team_member,
-    user,
-};
+use crate::models::data::{ad_ssh_key, ad_team_service, config};
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationStatus, Role};
 
 /// Per-team SSH shell throttle. An interactive bastion isn't throughput-bound; the
@@ -42,6 +39,9 @@ use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationSta
 /// keyed by participation.
 const MAX_CONCURRENT_SHELLS: usize = 5;
 const MAX_SHELLS_PER_MINUTE: usize = 30;
+const MAX_GLOBAL_SHELLS: usize = 256;
+static GLOBAL_SHELLS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(MAX_GLOBAL_SHELLS)));
 
 #[derive(Default)]
 struct TeamShells {
@@ -56,6 +56,8 @@ static SHELL_THROTTLE: std::sync::LazyLock<
 /// connection handler so an abruptly-dropped connection (kill -9) still frees it.
 struct ShellSlot {
     pid: i32,
+    #[allow(dead_code)]
+    global: tokio::sync::OwnedSemaphorePermit,
 }
 impl Drop for ShellSlot {
     fn drop(&mut self) {
@@ -68,6 +70,9 @@ impl Drop for ShellSlot {
 
 /// Reserve a shell slot for a team, enforcing the concurrent + per-minute caps.
 fn acquire_shell_slot(pid: i32) -> Result<ShellSlot, &'static str> {
+    let global = Arc::clone(&GLOBAL_SHELLS)
+        .try_acquire_owned()
+        .map_err(|_| "the SSH service is busy — retry shortly")?;
     let now = std::time::Instant::now();
     let mut map = SHELL_THROTTLE.lock().unwrap_or_else(|e| e.into_inner());
     let ts = map.entry(pid).or_default();
@@ -81,7 +86,7 @@ fn acquire_shell_slot(pid: i32) -> Result<ShellSlot, &'static str> {
     }
     ts.active += 1;
     ts.recent.push_back(now);
-    Ok(ShellSlot { pid })
+    Ok(ShellSlot { pid, global })
 }
 
 const HOST_KEY_CFG: &str = "Ad:Ssh:HostKey";
@@ -226,67 +231,58 @@ async fn load_host_key(st: &SharedState) -> PrivateKey {
 /// authentication, before opening a shell, and periodically while it is open so
 /// deleting a key, rejecting a participation, banning a member, ending a game, or
 /// disabling a challenge revokes access without waiting for the TCP session to end.
+#[derive(sqlx::FromRow)]
+struct SshAccess {
+    game_id: i32,
+    ad_self_hosted: bool,
+}
+
+const SSH_ACCESS_SQL: &str = concat!(
+    r#"SELECT challenge.game_id, challenge.ad_self_hosted
+         FROM "AdSshKeys" ssh_key
+         JOIN "Participations" participation
+           ON participation.id = ssh_key.participation_id
+         JOIN "Games" game ON game.id = participation.game_id
+         JOIN "Teams" team ON team.id = participation.team_id
+         JOIN "GameChallenges" challenge
+           ON challenge.id = $3 AND challenge.game_id = game.id
+        WHERE ssh_key.id = $1 AND ssh_key.participation_id = $2
+          AND participation.id = $2 AND participation.status = $4
+          AND game.deletion_pending = FALSE
+          AND game.start_time_utc <= statement_timestamp()
+          AND statement_timestamp() <= game.end_time_utc
+          AND "#,
+    crate::services::ad::roster::shared_credential_team_predicate_sql!("team", "$5"),
+    r#"
+          AND challenge."Type" = $6
+          AND challenge.is_enabled = TRUE
+          AND challenge.deletion_pending = FALSE
+          AND challenge.review_status = $7
+        LIMIT 1"#
+);
+
 async fn validate_ssh_access(
     st: &SharedState,
     key_id: i32,
     participation_id: i32,
     challenge_id: i32,
-) -> Result<game_challenge::Model, &'static str> {
-    ad_ssh_key::Entity::find_by_id(key_id)
-        .one(&st.db)
-        .await
-        .map_err(|_| "database error")?
-        .filter(|key| key.participation_id == participation_id)
-        .ok_or("SSH key has been revoked")?;
-
-    let part = participation::Entity::find_by_id(participation_id)
-        .one(&st.db)
-        .await
-        .map_err(|_| "database error")?
-        .filter(|part| part.status == ParticipationStatus::Accepted)
-        .ok_or("team is not accepted for this game")?;
-    let game = game::Entity::find_by_id(part.game_id)
-        .one(&st.db)
-        .await
-        .map_err(|_| "database error")?
-        .filter(|game| game.is_active(chrono::Utc::now()))
-        .ok_or("game is not active")?;
-    let challenge = game_challenge::Entity::find_by_id(challenge_id)
-        .one(&st.db)
-        .await
-        .map_err(|_| "database error")?
-        .filter(|challenge| {
-            challenge.game_id == game.id
-                && challenge.challenge_type == ChallengeType::AttackDefense
-                && challenge.is_enabled
-                && challenge.review_status == ChallengeReviewStatus::Active
-        })
-        .ok_or("challenge is not available for SSH")?;
-
-    let team = team::Entity::find_by_id(part.team_id)
-        .one(&st.db)
-        .await
-        .map_err(|_| "database error")?
-        .ok_or("team no longer exists")?;
-    let mut member_ids: std::collections::BTreeSet<uuid::Uuid> = team_member::Entity::find()
-        .filter(team_member::Column::TeamId.eq(team.id))
-        .all(&st.db)
-        .await
-        .map_err(|_| "database error")?
-        .into_iter()
-        .map(|member| member.user_id)
-        .collect();
-    member_ids.insert(team.captain_id);
-    let roster = user::Entity::find()
-        .filter(user::Column::Id.is_in(member_ids.iter().copied()))
-        .all(&st.db)
-        .await
-        .map_err(|_| "database error")?;
-    if roster.len() != member_ids.len() || roster.iter().any(|member| member.role == Role::Banned) {
-        return Err("team roster is not eligible for SSH");
-    }
-
-    Ok(challenge)
+) -> Result<SshAccess, &'static str> {
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        sqlx::query_as::<_, SshAccess>(SSH_ACCESS_SQL)
+            .bind(key_id)
+            .bind(participation_id)
+            .bind(challenge_id)
+            .bind(ParticipationStatus::Accepted as i16)
+            .bind(Role::Banned as i16)
+            .bind(ChallengeType::AttackDefense as i16)
+            .bind(ChallengeReviewStatus::Active as i16)
+            .fetch_optional(st.pg()),
+    )
+    .await
+    .map_err(|_| "database timeout")?
+    .map_err(|_| "database error")?
+    .ok_or("SSH authorization has been revoked")
 }
 
 #[derive(Clone)]
@@ -440,6 +436,7 @@ impl BastionHandler {
         let st = self.st.clone();
         tokio::spawn(async move {
             let mut lease = tokio::time::interval(Duration::from_secs(15));
+            lease.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             lease.tick().await;
             loop {
                 tokio::select! {
@@ -503,6 +500,7 @@ impl BastionHandler {
         tokio::spawn(async move {
             let mut buf = [0u8; 8192];
             let mut lease = tokio::time::interval(Duration::from_secs(15));
+            lease.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             lease.tick().await;
             loop {
                 tokio::select! {
@@ -666,5 +664,30 @@ impl Handler for BastionHandler {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_ssh_lease_is_one_bounded_roster_aware_query() {
+        assert!(!SSH_ACCESS_SQL.contains(';'));
+        assert!(SSH_ACCESS_SQL.contains("LIMIT 1"));
+        for gate in [
+            "ssh_key.participation_id = $2",
+            "participation.status = $4",
+            "game.deletion_pending = FALSE",
+            "game.start_time_utc <= statement_timestamp()",
+            "statement_timestamp() <= game.end_time_utc",
+            "NOT team.deletion_pending",
+            "account.id IS NULL OR account.role = $5",
+            "challenge.deletion_pending = FALSE",
+            "challenge.review_status = $7",
+        ] {
+            assert!(SSH_ACCESS_SQL.contains(gate), "SSH lease lost gate: {gate}");
+        }
+        assert_eq!(MAX_GLOBAL_SHELLS, 256);
     }
 }

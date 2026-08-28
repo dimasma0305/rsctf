@@ -1692,6 +1692,10 @@ export interface GameNoticeModel {
    * @minLength 1
    */
   content: string;
+  /** Stable identity retained when an ambiguous mutation is retried. */
+  operationId: string;
+  /** Explicit null clears an existing schedule and publishes immediately. */
+  publishAt?: number | null;
 }
 
 export interface Division {

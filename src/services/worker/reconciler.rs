@@ -84,6 +84,12 @@ async fn prune_terminal_workloads(store: &WorkerStore) {
     if deleted > 0 {
         tracing::info!(deleted, "pruned terminal worker workload history");
     }
+    if let Err(error) = store
+        .delete_expired_enrollment_operations(completed_before, MAINTENANCE_BATCH_SIZE)
+        .await
+    {
+        tracing::warn!(%error, "worker enrollment recovery cleanup failed");
+    }
 }
 
 async fn fence_orphaned_containers(store: &WorkerStore) {
