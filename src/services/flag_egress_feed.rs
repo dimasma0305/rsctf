@@ -1,15 +1,20 @@
 //! Durable admin Flag Egress feed and best-effort real-time publication.
 //!
-//! A row identity remains stable across windowed upserts. `feed_cursor` changes
-//! after every committed insert or update, so HTTP snapshots, reconnect pages,
-//! and SignalR pushes can share one DTO without timestamp-derived identities.
+//! A row identity remains stable across windowed upserts. Every visible state
+//! has a checkpoint-safe `feed_cursor`; states awaiting cursor reconciliation
+//! stay hidden from HTTP and SignalR until they can no longer fall behind a
+//! checkpoint. All delivery paths share one timestamp-independent DTO.
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::app_state::{HubEvent, SharedState};
 use crate::services::event_bus::EventBus;
+
+mod reconcile;
+pub use reconcile::start_reconciler;
 
 pub const MAX_FLAG_EGRESS_PAGE: i64 = 100;
 pub const MAX_FLAG_EGRESS_BACKFILL: i64 = 100;
@@ -22,7 +27,7 @@ const MAX_FLAG_EGRESS_SEARCH_INSPECT_CHARS: usize = 512;
 pub struct FlagEgressEventModel {
     /// Stable aggregate-row identity used for de-duplication.
     pub id: i32,
-    /// Commit/update-ordered cursor used for reconnect recovery.
+    /// Monotonic checkpoint-safe cursor used for reconnect recovery.
     pub cursor: i64,
     pub game_id: i32,
     pub participation_id: i32,
@@ -116,6 +121,13 @@ const BACKFILL_SUFFIX: &str = r#"
 const COMMITTED_SUFFIX: &str = r#"
      WHERE event.id = $1
        AND event.feed_cursor IS NOT NULL
+"#;
+
+const COMMITTED_BATCH_SUFFIX: &str = r#"
+     WHERE event.game_id = $1
+       AND event.id = ANY($2)
+       AND event.feed_cursor IS NOT NULL
+     ORDER BY event.feed_cursor ASC
 "#;
 
 fn projection_with(suffix: &str) -> String {
@@ -238,6 +250,84 @@ pub async fn latest_cursor(pool: &sqlx::PgPool, game_id: i32) -> anyhow::Result<
     .await?)
 }
 
+pub(super) async fn committed_by_ids_on(
+    connection: &mut PgConnection,
+    game_id: i32,
+    event_ids: &[i32],
+    max_batch: usize,
+) -> anyhow::Result<Vec<FlagEgressEventModel>> {
+    if event_ids.len() > max_batch {
+        anyhow::bail!("flag-egress publish batch exceeds {max_batch} rows");
+    }
+    if event_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = projection_with(COMMITTED_BATCH_SUFFIX);
+    Ok(sqlx::query_as::<_, FlagEgressEventModel>(&sql)
+        .bind(game_id)
+        .bind(event_ids)
+        .fetch_all(connection)
+        .await?)
+}
+
+pub(super) fn publish_messages(events: &EventBus, messages: Vec<FlagEgressEventModel>) {
+    for message in messages {
+        let game_id = message.game_id;
+        match serde_json::to_string(&message) {
+            Ok(payload) => events.publish(HubEvent {
+                target: "ReceivedFlagEgress",
+                game_id: Some(game_id),
+                payload,
+            }),
+            Err(error) => tracing::warn!(
+                game = game_id,
+                event = message.id,
+                %error,
+                "flag-egress feed row could not be serialized"
+            ),
+        }
+    }
+}
+
+async fn committed_or_pending_on(
+    connection: &mut PgConnection,
+    event_id: i32,
+) -> anyhow::Result<Option<FlagEgressEventModel>> {
+    let sql = projection_with(COMMITTED_SUFFIX);
+    if let Some(message) = sqlx::query_as::<_, FlagEgressEventModel>(&sql)
+        .bind(event_id)
+        .fetch_optional(&mut *connection)
+        .await?
+    {
+        return Ok(Some(message));
+    }
+    let pending: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS (
+             SELECT 1 FROM "FlagEgressFeedPending" WHERE event_id = $1
+           )"#,
+    )
+    .bind(event_id)
+    .fetch_one(&mut *connection)
+    .await?;
+    if pending {
+        tracing::debug!(
+            event = event_id,
+            "flag-egress feed cursor assignment remains pending"
+        );
+        return Ok(None);
+    }
+    // Close the race where a reconciler assigned and removed the pending row
+    // between the first projection and the queue check.
+    if let Some(message) = sqlx::query_as::<_, FlagEgressEventModel>(&sql)
+        .bind(event_id)
+        .fetch_optional(&mut *connection)
+        .await?
+    {
+        return Ok(Some(message));
+    }
+    anyhow::bail!("committed flag-egress row is unavailable for publication")
+}
+
 /// Publish one already-committed row. PostgreSQL remains authoritative when
 /// the bounded best-effort projection cannot acquire a connection promptly.
 pub async fn publish_committed_on(
@@ -248,22 +338,15 @@ pub async fn publish_committed_on(
     let mut connection = pool
         .try_acquire()
         .ok_or_else(|| anyhow::anyhow!("flag-egress publish skipped while SQL pool is busy"))?;
-    let committed_sql = projection_with(COMMITTED_SUFFIX);
     let message = tokio::time::timeout(
         std::time::Duration::from_millis(500),
-        sqlx::query_as::<_, FlagEgressEventModel>(&committed_sql)
-            .bind(event_id)
-            .fetch_optional(&mut *connection),
+        committed_or_pending_on(&mut connection, event_id),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("flag-egress publish projection timed out"))??
-    .ok_or_else(|| anyhow::anyhow!("committed flag-egress row is unavailable"))?;
-    let game_id = message.game_id;
-    events.publish(HubEvent {
-        target: "ReceivedFlagEgress",
-        game_id: Some(game_id),
-        payload: serde_json::to_string(&message)?,
-    });
+    .map_err(|_| anyhow::anyhow!("flag-egress publish projection timed out"))??;
+    if let Some(message) = message {
+        publish_messages(events, vec![message]);
+    }
     Ok(())
 }
 
@@ -273,10 +356,46 @@ pub async fn publish_committed(st: &SharedState, event_id: i32) -> anyhow::Resul
 
 #[cfg(test)]
 mod tests {
+    use super::reconcile::{
+        assign_pending_on, pending_game_ids, ASSIGN_PENDING_SQL, CURSOR_LOCK_NAMESPACE,
+        FIRST_PENDING_GAME_SQL, MAX_ASSIGNMENTS_PER_GAME, NEXT_PENDING_GAME_SQL,
+    };
     use super::*;
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
     use std::str::FromStr;
     use std::time::Duration;
+
+    async fn upsert_test_event(
+        pool: &sqlx::PgPool,
+        game_id: i32,
+        participation_id: i32,
+        challenge_id: i32,
+        remote_port: i32,
+    ) -> i32 {
+        let mut transaction = pool.begin().await.unwrap();
+        let event_id = sqlx::query_scalar(
+            r#"INSERT INTO "FlagEgressEvents"
+                   (game_id, participation_id, challenge_id, container_id,
+                    remote_ip, remote_port, hit_count, first_seen_utc, last_seen_utc)
+               VALUES ($1, $2, $3, NULL, '192.0.2.10', $4, 1,
+                       clock_timestamp(), clock_timestamp())
+               ON CONFLICT
+                   (game_id, participation_id, challenge_id,
+                    (COALESCE(container_id::TEXT, ''::TEXT)), remote_ip, remote_port)
+               DO UPDATE SET hit_count = "FlagEgressEvents".hit_count + 1,
+                             last_seen_utc = EXCLUDED.last_seen_utc
+               RETURNING id"#,
+        )
+        .bind(game_id)
+        .bind(participation_id)
+        .bind(challenge_id)
+        .bind(remote_port)
+        .fetch_one(&mut *transaction)
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        event_id
+    }
 
     #[test]
     fn shared_wire_model_is_camel_case_numeric_and_one_way() {
@@ -341,6 +460,17 @@ mod tests {
             pattern.trim_matches('%').chars().count(),
             MAX_FLAG_EGRESS_SEARCH_CHARS
         );
+    }
+
+    #[test]
+    fn pending_reconciliation_is_nonblocking_bounded_and_fair() {
+        assert!(ASSIGN_PENDING_SQL.contains("FOR UPDATE OF queue, event SKIP LOCKED"));
+        assert!(ASSIGN_PENDING_SQL.contains("LIMIT $2"));
+        assert!(ASSIGN_PENDING_SQL.contains("DELETE FROM \"FlagEgressFeedPending\""));
+        assert!(!NEXT_PENDING_GAME_SQL.contains("IS NULL OR"));
+        assert!(NEXT_PENDING_GAME_SQL.contains("game_id > $1"));
+        assert!(FIRST_PENDING_GAME_SQL.contains("ORDER BY game_id, event_id"));
+        assert!(NEXT_PENDING_GAME_SQL.contains("LIMIT 1"));
     }
 
     #[tokio::test]
@@ -408,16 +538,7 @@ mod tests {
             .await
             .unwrap();
 
-        let first_id: i32 = sqlx::query_scalar(
-            r#"INSERT INTO "FlagEgressEvents"
-                   (game_id, participation_id, challenge_id, container_id,
-                    remote_ip, remote_port, hit_count, first_seen_utc, last_seen_utc)
-               VALUES (7, 11, 21, NULL, '192.0.2.10', 0, 1, now(), now())
-               RETURNING id"#,
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let first_id = upsert_test_event(&pool, 7, 11, 21, 0).await;
         let first_cursor = latest_cursor(&pool, 7).await.unwrap();
         assert!(first_cursor > 0);
 
@@ -435,21 +556,7 @@ mod tests {
         assert_eq!(pushed["cursor"], first_cursor);
         assert!(pushed["lastSeenUtc"].is_i64());
 
-        let updated_id: i32 = sqlx::query_scalar(
-            r#"INSERT INTO "FlagEgressEvents"
-                   (game_id, participation_id, challenge_id, container_id,
-                    remote_ip, remote_port, hit_count, first_seen_utc, last_seen_utc)
-               VALUES (7, 11, 21, NULL, '192.0.2.10', 0, 1, now(), now())
-               ON CONFLICT
-                   (game_id, participation_id, challenge_id,
-                    (COALESCE(container_id::TEXT, ''::TEXT)), remote_ip, remote_port)
-               DO UPDATE SET hit_count = "FlagEgressEvents".hit_count + 1,
-                             last_seen_utc = EXCLUDED.last_seen_utc
-               RETURNING id"#,
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let updated_id = upsert_test_event(&pool, 7, 11, 21, 0).await;
         assert_eq!(updated_id, first_id);
         let second_cursor = latest_cursor(&pool, 7).await.unwrap();
         assert!(second_cursor > first_cursor);
@@ -464,6 +571,173 @@ mod tests {
         assert_eq!(filtered.total, 1);
         assert_eq!(filtered.events.len(), 1);
         assert_eq!(filtered.events[0].team_name, "Alpha");
+
+        // Holding the same-game cursor fence must not hold proxy commits
+        // hostage. Both an aggregate update and a distinct endpoint commit
+        // with NULL cursors and durable queue rows.
+        let mut blocker = pool.begin().await.unwrap();
+        sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
+            .bind(CURSOR_LOCK_NAMESPACE)
+            .bind(7_i32)
+            .execute(&mut *blocker)
+            .await
+            .unwrap();
+        let concurrent_commits = async {
+            tokio::join!(
+                upsert_test_event(&pool, 7, 11, 21, 0),
+                upsert_test_event(&pool, 7, 11, 21, 1),
+            )
+        };
+        let (pending_update_id, pending_insert_id) =
+            tokio::time::timeout(Duration::from_secs(2), concurrent_commits)
+                .await
+                .expect("flag-egress proxy commits waited behind the cursor fence");
+        assert_eq!(pending_update_id, first_id);
+        assert_ne!(pending_insert_id, first_id);
+
+        // Updating a row that is already pending must remain nonblocking and
+        // retain one queue identity without recursively firing NULL updates.
+        let repeated_pending_id = tokio::time::timeout(
+            Duration::from_secs(2),
+            upsert_test_event(&pool, 7, 11, 21, 0),
+        )
+        .await
+        .expect("a repeated pending Flag Egress update did not commit");
+        assert_eq!(repeated_pending_id, first_id);
+        let pending_rows: Vec<(i32, Option<i64>)> = sqlx::query_as(
+            r#"SELECT event.id, event.feed_cursor
+                 FROM "FlagEgressEvents" event
+                 JOIN "FlagEgressFeedPending" queue ON queue.event_id = event.id
+                WHERE queue.game_id = 7
+                ORDER BY event.id"#,
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending_rows.len(), 2);
+        assert!(pending_rows.iter().all(|(_, cursor)| cursor.is_none()));
+        assert!(pending_rows.iter().any(|(id, _)| *id == first_id));
+        assert!(pending_rows.iter().any(|(id, _)| *id == pending_insert_id));
+
+        let hidden_pending = page(&pool, 7, None, 0, 100).await.unwrap();
+        assert_eq!(hidden_pending.total, 0);
+        assert!(hidden_pending.events.is_empty());
+        publish_committed_on(&pool, &bus, first_id).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), received.recv())
+                .await
+                .is_err()
+        );
+        blocker.rollback().await.unwrap();
+
+        // A later visible commit may safely advance the checkpoint. Pending
+        // states get fresh cursors above it, so `after = checkpoint` recovers
+        // both without a permanent gap.
+        let visible_after_pending = upsert_test_event(&pool, 7, 11, 21, 2).await;
+        let checkpoint = latest_cursor(&pool, 7).await.unwrap();
+        assert!(checkpoint > second_cursor);
+        assert!(backfill_after(&pool, 7, checkpoint, 100)
+            .await
+            .unwrap()
+            .events
+            .is_empty());
+
+        let first_worker = {
+            let pool = pool.clone();
+            async move {
+                let mut connection = pool.acquire().await.unwrap();
+                assign_pending_on(&mut connection, 7, MAX_ASSIGNMENTS_PER_GAME)
+                    .await
+                    .unwrap()
+            }
+        };
+        let second_worker = {
+            let pool = pool.clone();
+            async move {
+                let mut connection = pool.acquire().await.unwrap();
+                assign_pending_on(&mut connection, 7, MAX_ASSIGNMENTS_PER_GAME)
+                    .await
+                    .unwrap()
+            }
+        };
+        let (first_assigned, second_assigned) = tokio::join!(first_worker, second_worker);
+        let assigned = first_assigned
+            .into_iter()
+            .chain(second_assigned)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(assigned.len(), 2);
+        assert!(assigned.contains(&first_id));
+        assert!(assigned.contains(&pending_insert_id));
+        let pending_after_assignment: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*)::bigint FROM "FlagEgressFeedPending" WHERE game_id = 7"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending_after_assignment, 0);
+
+        let recovered = backfill_after(&pool, 7, checkpoint, 100).await.unwrap();
+        assert_eq!(recovered.events.len(), 2);
+        assert!(recovered
+            .events
+            .iter()
+            .all(|event| event.cursor > checkpoint));
+        assert_eq!(
+            recovered
+                .events
+                .iter()
+                .find(|event| event.id == first_id)
+                .unwrap()
+                .hit_count,
+            4
+        );
+        let assigned_ids = assigned.into_iter().collect::<Vec<_>>();
+        let mut connection = pool.acquire().await.unwrap();
+        let recovered_messages = committed_by_ids_on(
+            &mut connection,
+            7,
+            &assigned_ids,
+            MAX_ASSIGNMENTS_PER_GAME as usize,
+        )
+        .await
+        .unwrap();
+        publish_messages(&bus, recovered_messages);
+        let mut published = std::collections::HashSet::new();
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(1), received.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(event.target, "ReceivedFlagEgress");
+            assert_eq!(event.game_id, Some(7));
+            let payload: serde_json::Value = serde_json::from_str(&event.payload).unwrap();
+            published.insert(payload["id"].as_i64().unwrap() as i32);
+        }
+        assert_eq!(
+            published,
+            std::collections::HashSet::from([first_id, pending_insert_id])
+        );
+
+        // Rotation is game-fair even if the current game remains non-empty.
+        let other_game_id = upsert_test_event(&pool, 8, 12, 22, 0).await;
+        sqlx::query(
+            r#"INSERT INTO "FlagEgressFeedPending" (event_id, game_id)
+               VALUES ($1, 7), ($2, 8)"#,
+        )
+        .bind(visible_after_pending)
+        .bind(other_game_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut last_game_id = Some(7);
+        let fair_games = pending_game_ids(&pool, &mut last_game_id).await.unwrap();
+        assert_eq!(fair_games.first(), Some(&8));
+        assert!(fair_games.contains(&7));
+        sqlx::query(r#"DELETE FROM "FlagEgressFeedPending" WHERE event_id = ANY($1)"#)
+            .bind([visible_after_pending, other_game_id])
+            .execute(&pool)
+            .await
+            .unwrap();
 
         sqlx::query(
             r#"INSERT INTO "FlagEgressEvents"

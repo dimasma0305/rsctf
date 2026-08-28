@@ -591,6 +591,10 @@ fn start_background_services(
             "submission feed cursor reconciler",
             rsctf::services::submission_feed::start_reconciler(state.clone(), shutdown.clone()),
         ));
+        required.push(RequiredTask::Unit(
+            "flag-egress feed cursor reconciler",
+            rsctf::services::flag_egress_feed::start_reconciler(state.clone(), shutdown.clone()),
+        ));
     }
     if owns_suspicion_reconciliation(role) {
         required.push(RequiredTask::Unit(

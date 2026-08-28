@@ -1,7 +1,7 @@
 //! Admin Flag-Egress feed — `GET /api/admin/Games/{id}/FlagEgress`.
 //!
 //! Lists the bounded, searchable flag-egress aggregates for a game and exposes
-//! a commit/update-ordered reconnect cursor. The proxy publishes the exact same
+//! a checkpoint-safe reconnect cursor. The proxy publishes the exact same
 //! camelCase DTO after a successful commit.
 
 use super::*;

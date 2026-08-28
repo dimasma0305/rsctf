@@ -3278,7 +3278,7 @@ export interface GameEventBackfill {
 export interface FlagEgressEventModel {
   /** Stable aggregate-row identity. @format int32 */
   id: number;
-  /** Commit/update-ordered reconnect cursor. */
+  /** Monotonic checkpoint-safe reconnect cursor. */
   cursor: number;
   /** @format int32 */
   gameId: number;
