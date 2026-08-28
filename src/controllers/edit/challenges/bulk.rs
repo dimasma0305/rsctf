@@ -293,7 +293,7 @@ async fn complete_desired_state(
     }
 
     if !changed_ids.is_empty() {
-        sqlx::query(
+        let progress = sqlx::query(
             r#"UPDATE "GameChallenges" SET is_enabled = $3
                 WHERE game_id = $1 AND id = ANY($2)"#,
         )
@@ -303,6 +303,11 @@ async fn complete_desired_state(
         .execute(&mut **control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+        if progress.rows_affected() != changed_ids.len() as u64 {
+            return Err(AppError::conflict(
+                "A selected challenge changed during the bulk mutation",
+            ));
+        }
     }
     let result_revision = sqlx::query_scalar::<_, i64>(
         r#"SELECT challenge_configuration_revision FROM "Games" WHERE id = $1"#,
@@ -418,7 +423,7 @@ async fn validate_delete_job(
     st: &SharedState,
     game_id: i32,
     request: &BulkChallengeMutationRequest,
-) -> AppResult<(i64, bool)> {
+) -> AppResult<(i64, Option<Uuid>)> {
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, game_id).await?;
     let revision = sqlx::query_scalar::<_, i64>(
         r#"SELECT challenge_configuration_revision FROM "Games"
@@ -443,7 +448,7 @@ async fn validate_delete_job(
             .release()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-        return Ok((revision, false));
+        return Ok((revision, None));
     }
     if revision != request.expected_revision {
         drop(control);
@@ -468,14 +473,16 @@ async fn validate_delete_job(
             "Every selected challenge must belong to this event",
         ));
     }
+    let lease_token = Uuid::new_v4();
     let claimed = sqlx::query(
         r#"UPDATE "BulkChallengeMutationOperations"
-              SET state = 1,
+              SET state = 1, lease_token = $3,
                   lease_expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
             WHERE game_id = $1 AND operation_id = $2 AND state = 0"#,
     )
     .bind(game_id)
     .bind(request.operation_id)
+    .bind(lease_token)
     .execute(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -483,27 +490,40 @@ async fn validate_delete_job(
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok((revision, claimed.rows_affected() == 1))
+    Ok((
+        revision,
+        (claimed.rows_affected() == 1).then_some(lease_token),
+    ))
 }
 
-fn spawn_delete_job(st: SharedState, game_id: i32, operation_id: Uuid) {
+fn spawn_delete_job(st: SharedState, game_id: i32, operation_id: Uuid, lease_token: Uuid) {
     tokio::spawn(async move {
-        if let Err(error) = run_delete_job(&st, game_id, operation_id).await {
+        if let Err(error) = run_delete_job(&st, game_id, operation_id, lease_token).await {
             tracing::error!(%error, game_id, %operation_id, "bulk challenge deletion paused");
         }
     });
 }
 
-async fn run_delete_job(st: &SharedState, game_id: i32, operation_id: Uuid) -> AppResult<()> {
-    let (challenge_ids, completed): (Vec<i32>, serde_json::Value) = sqlx::query_as(
+async fn run_delete_job(
+    st: &SharedState,
+    game_id: i32,
+    operation_id: Uuid,
+    lease_token: Uuid,
+) -> AppResult<()> {
+    let operation: Option<(Vec<i32>, serde_json::Value)> = sqlx::query_as(
         r#"SELECT challenge_ids, result FROM "BulkChallengeMutationOperations"
-            WHERE game_id = $1 AND operation_id = $2 AND state = 1"#,
+            WHERE game_id = $1 AND operation_id = $2 AND state = 1
+              AND lease_token = $3"#,
     )
     .bind(game_id)
     .bind(operation_id)
-    .fetch_one(st.pg())
+    .bind(lease_token)
+    .fetch_optional(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some((challenge_ids, completed)) = operation else {
+        return Ok(());
+    };
     let mut outcomes: Vec<BulkChallengeOutcome> =
         serde_json::from_value(completed).map_err(|error| AppError::internal(error.to_string()))?;
     let completed_ids = outcomes
@@ -538,18 +558,23 @@ async fn run_delete_job(st: &SharedState, game_id: i32, operation_id: Uuid) -> A
         outcomes.push(outcome);
         let result = serde_json::to_value(&outcomes)
             .map_err(|error| AppError::internal(error.to_string()))?;
-        sqlx::query(
+        let progress = sqlx::query(
             r#"UPDATE "BulkChallengeMutationOperations"
                   SET result = $3,
                       lease_expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
-                WHERE game_id = $1 AND operation_id = $2 AND state = 1"#,
+                WHERE game_id = $1 AND operation_id = $2 AND state = 1
+                  AND lease_token = $4"#,
         )
         .bind(game_id)
         .bind(operation_id)
         .bind(result)
+        .bind(lease_token)
         .execute(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+        if progress.rows_affected() != 1 {
+            return Ok(());
+        }
     }
     let revision = sqlx::query_scalar::<_, i64>(
         r#"SELECT challenge_configuration_revision FROM "Games" WHERE id = $1"#,
@@ -560,12 +585,15 @@ async fn run_delete_job(st: &SharedState, game_id: i32, operation_id: Uuid) -> A
     .map_err(|error| AppError::internal(error.to_string()))?;
     sqlx::query(
         r#"UPDATE "BulkChallengeMutationOperations"
-              SET state = 2, result_revision = $3, completed_at_utc = clock_timestamp()
-            WHERE game_id = $1 AND operation_id = $2 AND state = 1"#,
+              SET state = 2, result_revision = $3, lease_token = NULL,
+                  completed_at_utc = clock_timestamp()
+            WHERE game_id = $1 AND operation_id = $2 AND state = 1
+              AND lease_token = $4"#,
     )
     .bind(game_id)
     .bind(operation_id)
     .bind(revision)
+    .bind(lease_token)
     .execute(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -616,26 +644,29 @@ pub async fn mutate_challenges_bulk(
     }
 
     let revision = if state == 0 {
-        let (revision, claimed) = validate_delete_job(&st, game_id, &request).await?;
-        if claimed {
-            spawn_delete_job(st.clone(), game_id, request.operation_id);
+        let (revision, lease_token) = validate_delete_job(&st, game_id, &request).await?;
+        if let Some(lease_token) = lease_token {
+            spawn_delete_job(st.clone(), game_id, request.operation_id, lease_token);
         }
         revision
     } else {
         if may_claim {
+            let lease_token = Uuid::new_v4();
             let claimed = sqlx::query(
                 r#"UPDATE "BulkChallengeMutationOperations"
-                      SET lease_expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
+                      SET lease_token = $3,
+                          lease_expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
                     WHERE game_id = $1 AND operation_id = $2 AND state = 1
                       AND lease_expires_at_utc <= clock_timestamp()"#,
             )
             .bind(game_id)
             .bind(request.operation_id)
+            .bind(lease_token)
             .execute(st.pg())
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
             if claimed.rows_affected() == 1 {
-                spawn_delete_job(st.clone(), game_id, request.operation_id);
+                spawn_delete_job(st.clone(), game_id, request.operation_id, lease_token);
             }
         }
         result_revision.unwrap_or(request.expected_revision)

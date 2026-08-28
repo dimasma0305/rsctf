@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS "BulkChallengeMutationOperations" (
     result             JSONB NOT NULL DEFAULT '[]'::jsonb
         CHECK (jsonb_typeof(result) = 'array' AND jsonb_array_length(result) <= 100),
     result_revision    BIGINT NULL CHECK (result_revision IS NULL OR result_revision >= 1),
+    lease_token        UUID NULL,
     lease_expires_at_utc TIMESTAMPTZ NOT NULL
         DEFAULT (clock_timestamp() + INTERVAL '5 minutes'),
     completed_at_utc   TIMESTAMPTZ NULL,
@@ -82,7 +83,10 @@ CREATE TABLE IF NOT EXISTS "BulkChallengeMutationOperations" (
         FOREIGN KEY (actor_user_id) REFERENCES "AspNetUsers"(id) ON DELETE RESTRICT,
     CONSTRAINT ck_bulk_challenge_mutation_completion
         CHECK ((state = 2 AND completed_at_utc IS NOT NULL AND result_revision IS NOT NULL)
-               OR (state <> 2 AND completed_at_utc IS NULL))
+               OR (state <> 2 AND completed_at_utc IS NULL)),
+    CONSTRAINT ck_bulk_challenge_mutation_lease
+        CHECK ((state = 1 AND lease_token IS NOT NULL)
+               OR (state <> 1 AND lease_token IS NULL))
 );
 
 CREATE INDEX IF NOT EXISTS ix_bulk_challenge_mutations_retention
