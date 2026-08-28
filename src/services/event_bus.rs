@@ -54,6 +54,7 @@ struct LocalFanout {
     lagged_receivers: AtomicU64,
     distributed_drops: AtomicU64,
     distributed_loss_generation: AtomicU64,
+    subscriber_gaps: AtomicU64,
 }
 
 impl LocalFanout {
@@ -67,6 +68,7 @@ impl LocalFanout {
             lagged_receivers: AtomicU64::new(0),
             distributed_drops: AtomicU64::new(0),
             distributed_loss_generation: AtomicU64::new(0),
+            subscriber_gaps: AtomicU64::new(0),
         }
     }
 
@@ -105,6 +107,24 @@ impl LocalFanout {
                 "remote hub fanout lost data; clients must reconcile from HTTP"
             );
         }
+    }
+
+    fn force_resync_after_subscriber_gap(&self) {
+        let gaps = self
+            .subscriber_gaps
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        if gaps.is_power_of_two() {
+            tracing::warn!(
+                gaps,
+                "Redis hub subscription recovered after possible data loss; forcing client resync"
+            );
+        }
+        self.publish(HubEvent {
+            target: RESYNC_TARGET,
+            game_id: None,
+            payload: serde_json::json!({ "subscriberGap": gaps }).to_string(),
+        });
     }
 }
 
@@ -482,6 +502,7 @@ async fn run_subscriber(
 ) {
     let mut dedup = InboundDedup::new(origin);
     let mut retry = REDIS_RETRY_MIN;
+    let mut requires_resync = false;
     loop {
         let connected =
             tokio::time::timeout(REDIS_CONNECT_TIMEOUT, client.get_async_pubsub()).await;
@@ -489,12 +510,14 @@ async fn run_subscriber(
             Ok(Ok(pubsub)) => pubsub,
             Ok(Err(error)) => {
                 tracing::debug!(%error, "hub event subscriber could not connect to Redis");
+                requires_resync = true;
                 tokio::time::sleep(retry).await;
                 retry = retry.saturating_mul(2).min(REDIS_RETRY_MAX);
                 continue;
             }
             Err(_) => {
                 tracing::debug!("hub event subscriber Redis connection timed out");
+                requires_resync = true;
                 tokio::time::sleep(retry).await;
                 retry = retry.saturating_mul(2).min(REDIS_RETRY_MAX);
                 continue;
@@ -503,12 +526,17 @@ async fn run_subscriber(
         let subscribed = tokio::time::timeout(REDIS_IO_TIMEOUT, pubsub.subscribe(&channel)).await;
         if !matches!(subscribed, Ok(Ok(()))) {
             tracing::debug!("hub event Redis subscription failed");
+            requires_resync = true;
             tokio::time::sleep(retry).await;
             retry = retry.saturating_mul(2).min(REDIS_RETRY_MAX);
             continue;
         }
 
         retry = REDIS_RETRY_MIN;
+        if requires_resync {
+            local.force_resync_after_subscriber_gap();
+            requires_resync = false;
+        }
         let mut messages = pubsub.on_message();
         while let Some(message) = messages.next().await {
             let Ok(payload) = message.get_payload::<Vec<u8>>() else {
@@ -529,6 +557,7 @@ async fn run_subscriber(
         }
 
         tracing::debug!("hub event Redis subscription ended; reconnecting");
+        requires_resync = true;
         tokio::time::sleep(retry).await;
     }
 }
@@ -781,14 +810,14 @@ mod tests {
     async fn distributed_loss_marker_forces_authoritative_resync() {
         let bus = EventBus::local();
         let mut receiver = bus.subscribe_game(7);
-        bus.local
-            .publish(WireEvent::resync(Uuid::new_v4(), 3).into_hub().unwrap());
+        bus.local.force_resync_after_subscriber_gap();
 
         assert!(matches!(
             receiver.recv().await,
             Err(broadcast::error::RecvError::Lagged(0))
         ));
         assert_eq!(bus.local.lagged_receivers.load(Ordering::Relaxed), 1);
+        assert_eq!(bus.local.subscriber_gaps.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
