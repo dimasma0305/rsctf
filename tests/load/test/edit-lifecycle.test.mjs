@@ -711,6 +711,12 @@ test('KotH recovery acceptance faults a scoped durable phase and proves receipt/
       positives.indexOf("call('edit_koth_recover'"),
     'the durable fault and stopped runtime must precede public recovery',
   );
+  assert.match(positives, /retryConflict: isTransientKothRecoveryConflict/);
+  assert.match(source, /title === 'replacement container is still transitioning'/);
+  assert.match(source, /title === 'checker exit 2'/);
+  assert.match(source, /title === 'checker timed out'/);
+  assert.match(source, /attempt <= 20/);
+  assert.match(source, /await sleep\(500\)/);
   assert.match(positives, /recovered\.model\.resetPhase === 'Active'/);
   assert.match(positives, /replacementHill\.backendId !== oldHill\.backendId/);
   assert.match(positives, /docker\(\['container', 'inspect', oldHill\.backendId\]\)\.status !== 0/);

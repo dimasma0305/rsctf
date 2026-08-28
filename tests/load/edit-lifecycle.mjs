@@ -49,7 +49,7 @@ import {
 import {
   assertSafeAdminTarget,
 } from './admin-lifecycle.js';
-import { docker, mintJwt, PG, RSCTF, runK6, sql, TARGET } from './lib.mjs';
+import { docker, mintJwt, PG, RSCTF, runK6, sleep, sql, TARGET } from './lib.mjs';
 import { countContainerFatalLogs } from './log-audit.mjs';
 import {
   acquireExclusiveProcessLock,
@@ -219,6 +219,7 @@ async function call(id, {
   headers = {},
   baseUrl = TARGET,
   label = id,
+  retryConflict,
 } = {}) {
   const operation = operationById.get(id);
   if (!operation) throw new Error(`unknown edit operation ${id}`);
@@ -238,14 +239,19 @@ async function call(id, {
     requestBody = JSON.stringify(body);
   }
   const started = performance.now();
-  const response = await rawRequest(operation.method, path, {
-    baseUrl,
-    jwt,
-    ip: `10.254.${Math.floor(requestIndex / 240) % 240}.${(requestIndex++ % 240) + 1}`,
-    headers: requestHeaders,
-    body: requestBody,
-    timeoutMs: 180_000,
-  });
+  let response;
+  for (let attempt = 1; attempt <= 20; attempt += 1) {
+    response = await rawRequest(operation.method, path, {
+      baseUrl,
+      jwt,
+      ip: `10.254.${Math.floor(requestIndex / 240) % 240}.${(requestIndex++ % 240) + 1}`,
+      headers: requestHeaders,
+      body: requestBody,
+      timeoutMs: 180_000,
+    });
+    if (!retryConflict?.(response) || attempt === 20) break;
+    await sleep(500);
+  }
   expectStatus(response, operation.expectedStatuses, label);
   const model = responseBody(response, operation);
   validateEditResponse(operation, {
@@ -258,6 +264,19 @@ async function call(id, {
   timings.push({ id, ms: elapsed });
   console.log(`  ✓ ${id} (${response.status}, ${elapsed} ms)`);
   return { model, response, path };
+}
+
+function isTransientKothRecoveryConflict(response) {
+  if (response.status !== 409) return false;
+  let title;
+  try {
+    title = JSON.parse(response.text).title;
+  } catch {
+    return false;
+  }
+  return title === 'replacement container is still transitioning' ||
+    title === 'checker exit 2' ||
+    title === 'checker timed out';
 }
 
 async function uncatalogued(method, path, { body, jwt = A.adminJwt(), expected = 200 } = {}) {
@@ -1450,7 +1469,10 @@ async function positiveReadAndMutationSurface() {
   state.kothRecovery.runtimeStopped = true;
   saveRecovery();
 
-  const recovered = await call('edit_koth_recover', { jwt: identities.managerJwt });
+  const recovered = await call('edit_koth_recover', {
+    jwt: identities.managerJwt,
+    retryConflict: isTransientKothRecoveryConflict,
+  });
   requireCondition(
     recovered.model.challengeId === context.kothChallengeId &&
       recovered.model.cycleNumber === cycleBefore.cycleNumber &&
