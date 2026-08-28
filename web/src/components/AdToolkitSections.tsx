@@ -25,9 +25,10 @@ import {
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { clearLegacyAdTokenStorage } from '@Utils/AdTokenMemory'
+import { adTokenViewerScope, isCurrentAdTokenViewer } from '@Utils/AdTokenScope'
 import {
   claimPlayerCredentialOperation,
   clearPlayerCredentialOperation,
@@ -43,7 +44,13 @@ import misc from '@Styles/Misc.module.css'
 
 const adTokenRequests = new Map<
   number,
-  Promise<{ token: string; revision: number; operation: PlayerCredentialOperation }>
+  Promise<{
+    token: string
+    revision: number
+    participationId: number
+    teamId: number
+    operation: PlayerCredentialOperation
+  }>
 >()
 
 const claimAdTokenOperation = async (gameId: number, revision: number) => {
@@ -58,7 +65,13 @@ const claimAdTokenOperation = async (gameId: number, revision: number) => {
 const rotateAdTokenOnce = (
   gameId: number,
   revision: number
-): Promise<{ token: string; revision: number; operation: PlayerCredentialOperation }> => {
+): Promise<{
+  token: string
+  revision: number
+  participationId: number
+  teamId: number
+  operation: PlayerCredentialOperation
+}> => {
   const active = adTokenRequests.get(gameId)
   if (active) return active
   const request = (async () => {
@@ -73,7 +86,13 @@ const rotateAdTokenOnce = (
         throw new Error('A stale credential response was ignored')
       }
       clearPlayerCredentialOperation(window.localStorage, key, operation.operationId)
-      return { token: data.token, revision: data.revision, operation }
+      return {
+        token: data.token,
+        revision: data.revision,
+        participationId: data.participationId,
+        teamId: data.teamId,
+        operation,
+      }
     } catch (error) {
       if ((error as { response?: { status?: number } })?.response?.status === 409) {
         clearPlayerCredentialOperation(window.localStorage, key, operation.operationId)
@@ -110,6 +129,9 @@ export const useAdToken = (gameId: number, onRotated?: () => void, enabled: bool
   const { t } = useTranslation()
   const { user } = useUser()
   const { adTokenHint, mutate: mutateHint } = useAdTokenHint(gameId, enabled)
+  const currentScope = adTokenViewerScope(adTokenHint)
+  const currentScopeRef = useRef(currentScope)
+  currentScopeRef.current = currentScope
 
   const [rotating, setRotating] = useState(false)
   const [freshToken, setFreshToken] = useState<string | null>(null)
@@ -119,12 +141,23 @@ export const useAdToken = (gameId: number, onRotated?: () => void, enabled: bool
     clearLegacyAdTokenStorage()
     setFreshToken(null)
     closeTokenModal()
-  }, [gameId, user?.userId, closeTokenModal])
+  }, [gameId, user?.userId, adTokenHint?.participationId, adTokenHint?.teamId, closeTokenModal])
 
   const onRotate = async () => {
+    if (!adTokenHint) return
     setRotating(true)
     try {
-      const { token } = await rotateAdTokenOnce(gameId, adTokenHint?.revision ?? 0)
+      const requestedScope = adTokenViewerScope(adTokenHint)
+      const { token, participationId, teamId } = await rotateAdTokenOnce(gameId, adTokenHint?.revision ?? 0)
+      if (
+        !isCurrentAdTokenViewer(
+          requestedScope,
+          { participationId, teamId },
+          currentScopeRef.current
+        )
+      ) {
+        throw new Error('A credential response for a previous participation was ignored')
+      }
       setFreshToken(token)
       openTokenModal()
       await mutateHint()

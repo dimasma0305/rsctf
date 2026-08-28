@@ -8,6 +8,8 @@ use super::*;
 pub struct AdTokenGenerateResultModel {
     pub token: String,
     pub hint: String,
+    pub participation_id: i32,
+    pub team_id: i32,
     pub operation_id: uuid::Uuid,
     pub revision: i64,
     #[serde(with = "crate::utils::datetime::millis")]
@@ -28,6 +30,8 @@ pub struct AdTokenHintModel {
     pub last_used_at: Option<DateTime<Utc>>,
     pub can_manage: bool,
     pub revision: i64,
+    pub participation_id: i32,
+    pub team_id: i32,
 }
 
 /// `GET /api/Game/{id}/Ad/Token` — the caller team's API-token hint (never the
@@ -58,6 +62,8 @@ pub async fn get_token(
             last_used_at: None,
             can_manage: true,
             revision,
+            participation_id: part.id,
+            team_id: part.team_id,
         },
         Some(t) => AdTokenHintModel {
             exists: true,
@@ -67,6 +73,8 @@ pub async fn get_token(
             last_used_at: t.last_used_at_utc,
             can_manage: true,
             revision,
+            participation_id: part.id,
+            team_id: part.team_id,
         },
     };
     Ok(RequestResponse::ok(model))
@@ -137,6 +145,8 @@ pub async fn rotate_token(
     let result = AdTokenGenerateResultModel {
         token: plaintext,
         hint,
+        participation_id: part.id,
+        team_id: part.team_id,
         operation_id,
         revision: result_revision,
         rotated_at: now,

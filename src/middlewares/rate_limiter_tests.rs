@@ -46,6 +46,21 @@ fn ad_bearer_authentication_is_limited_to_dual_auth_routes() {
 }
 
 #[test]
+fn every_ad_bearer_rejection_quota_runs_before_authentication_sql() {
+    let source = include_str!("rate_limiter/global.rs");
+    let function = &source[source.find("async fn authenticate_ad_bearer").unwrap()..];
+    let source_admission = function.find("Policy::AdBearerSourceAdmission").unwrap();
+    let digest_admission = function.find("Policy::AdBearerAdmission").unwrap();
+    let identity_admission = function.find("check_authenticated_async").unwrap();
+    let query = function
+        .find("api_token::authenticate(st.pg(), token)")
+        .unwrap();
+    assert!(source_admission < query);
+    assert!(digest_admission < query);
+    assert!(identity_admission < query);
+}
+
+#[test]
 fn pre_database_admission_has_tight_bounded_buckets() {
     let Kind::Bucket {
         capacity: token_capacity,

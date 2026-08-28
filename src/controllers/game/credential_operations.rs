@@ -3,10 +3,8 @@
 use aes_gcm::aead::consts::U12;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
-use axum::body::{Body, Bytes};
 use axum::extract::{FromRequest, Request};
-use axum::http::header;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::Json;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -51,10 +49,11 @@ pub struct CredentialMutationRequest {
     pub(crate) expected_revision: i64,
 }
 
-/// Backwards-compatible request extractor. New clients send a revision-fenced
-/// JSON body; legacy empty requests still work but cannot recover across a lost
-/// response until they upgrade.
-pub struct CredentialMutationInput(pub(crate) Option<CredentialMutationRequest>);
+/// A required, revision-fenced identity for a recoverable credential mutation.
+/// Empty legacy requests are deliberately rejected: a server-generated ID
+/// cannot be retried after the caller loses the response.
+#[derive(Debug)]
+pub struct CredentialMutationInput(pub(crate) CredentialMutationRequest);
 
 impl<S> FromRequest<S> for CredentialMutationInput
 where
@@ -63,19 +62,10 @@ where
     type Rejection = Response;
 
     async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
-        let headers = request.headers().clone();
-        let bytes = Bytes::from_request(request, state)
+        Json::<CredentialMutationRequest>::from_request(request, state)
             .await
-            .map_err(|rejection| rejection.into_response())?;
-        if bytes.is_empty() && headers.get(header::CONTENT_TYPE).is_none() {
-            return Ok(Self(None));
-        }
-        let mut json_request = Request::new(Body::from(bytes));
-        *json_request.headers_mut() = headers;
-        Json::<CredentialMutationRequest>::from_request(json_request, state)
-            .await
-            .map(|Json(request)| Self(Some(request)))
-            .map_err(|rejection| rejection.into_response())
+            .map(|Json(request)| Self(request))
+            .map_err(|rejection| axum::response::IntoResponse::into_response(rejection))
     }
 }
 
@@ -275,17 +265,16 @@ pub(crate) async fn reserve<T: DeserializeOwned>(
     st: &SharedState,
     connection: &mut sqlx::PgConnection,
     scope: CredentialScope,
-    request: Option<CredentialMutationRequest>,
+    request: CredentialMutationRequest,
 ) -> AppResult<CredentialReservation<T>> {
-    if request.is_some_and(|request| {
-        request.operation_id.is_nil()
-            || !(0..=MAX_CREDENTIAL_REVISION).contains(&request.expected_revision)
-    }) {
+    if request.operation_id.is_nil()
+        || !(0..=MAX_CREDENTIAL_REVISION).contains(&request.expected_revision)
+    {
         return Err(AppError::bad_request(
             "operationId must be opaque and expectedRevision must be a valid revision",
         ));
     }
-    purge_expired_operations(connection, request.map(|request| request.operation_id)).await?;
+    purge_expired_operations(connection, Some(request.operation_id)).await?;
 
     sqlx::query(
         r#"INSERT INTO "PlayerCredentialRevisions"
@@ -312,12 +301,8 @@ pub(crate) async fn reserve<T: DeserializeOwned>(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
 
-    let operation_id = request
-        .map(|request| request.operation_id)
-        .unwrap_or_else(Uuid::new_v4);
-    let expected_revision = request
-        .map(|request| request.expected_revision)
-        .unwrap_or(current);
+    let operation_id = request.operation_id;
+    let expected_revision = request.expected_revision;
 
     if let Some(row) = sqlx::query_as::<_, StoredOperationRow>(
         r#"SELECT participation_id, game_id, actor_user_id, credential_kind,
@@ -473,7 +458,11 @@ pub(crate) async fn complete<T: Serialize>(
 
 #[cfg(test)]
 mod tests {
-    use super::{operation_aad, CredentialKind, CredentialScope};
+    use axum::body::Body;
+    use axum::extract::FromRequest;
+    use axum::http::{header, Request};
+
+    use super::{operation_aad, CredentialKind, CredentialMutationInput, CredentialScope};
 
     #[test]
     fn recovery_ciphertext_is_bound_to_exact_actor_scope_and_revision() {
@@ -499,5 +488,26 @@ mod tests {
                 4,
             )
         );
+    }
+
+    #[tokio::test]
+    async fn credential_mutations_reject_missing_operation_identity() {
+        let request = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let rejection = CredentialMutationInput::from_request(request, &())
+            .await
+            .expect_err("empty legacy mutations must not receive a server-generated ID");
+        assert!(rejection.status().is_client_error());
+
+        let request = Request::builder()
+            .uri("/")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"operationId":"00000000-0000-4000-8000-000000000001","expectedRevision":3}"#,
+            ))
+            .unwrap();
+        let parsed = CredentialMutationInput::from_request(request, &())
+            .await
+            .expect("a stable operation identity is accepted");
+        assert_eq!(parsed.0.expected_revision, 3);
     }
 }

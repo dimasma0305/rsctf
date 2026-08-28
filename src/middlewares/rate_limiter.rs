@@ -33,15 +33,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::extract::{ConnectInfo, Request, State as AxumState};
+use axum::extract::{ConnectInfo, Request};
 use axum::http::{header, HeaderValue};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::MethodRouter;
 use sha2::{Digest, Sha256};
-use tokio::sync::Semaphore;
 
 use crate::app_state::SharedState;
+
+mod global;
+use global::check_authenticated_local;
+pub use global::global_middleware;
+#[cfg(test)]
+use global::{
+    globally_limited_path, route_supports_ad_bearer, AD_AUTH_CONCURRENCY, AD_AUTH_QUERY_TIMEOUT,
+};
 
 mod proxy_open;
 pub(crate) use proxy_open::{admit_proxy_open, admit_proxy_participation};
@@ -900,193 +907,9 @@ pub(crate) async fn admit_ad_submit(
         .map(too_many_requests)
 }
 
-fn check_authenticated_local(identity: String, ip: String) -> Result<(), u64> {
-    check(Policy::Global, identity)?;
-    check(Policy::GlobalIpBackstop, ip)
-}
-
-/// Check the two post-verification authenticated ceilings. Distributed mode
-/// combines them into one Redis RTT; local mode intentionally keeps the original
-/// ordered pair of in-memory checks.
-async fn check_authenticated_async(identity: String, ip: String) -> Result<(), u64> {
-    match DISTRIBUTED.get() {
-        Some(d) => d.check_authenticated(&identity, &ip).await,
-        None => check_authenticated_local(identity, ip),
-    }
-}
-
-const AD_AUTH_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
-const AD_AUTH_CONCURRENCY: usize = 32;
-static AD_AUTH_ADMISSION: LazyLock<std::sync::Arc<Semaphore>> =
-    LazyLock::new(|| std::sync::Arc::new(Semaphore::new(AD_AUTH_CONCURRENCY)));
-
-fn route_supports_ad_bearer(path: &str) -> bool {
-    let segments: Vec<_> = path.trim_matches('/').split('/').collect();
-    matches!(
-        segments.as_slice(),
-        ["api", "Game", game_id, "Ad", "Submit" | "Targets"]
-            | ["api", "Game", game_id, "Ad", "Koth", "Token" | "Hills"]
-            | ["api", "game", game_id, "ad", "targets"]
-            if game_id.parse::<i32>().is_ok_and(|id| id > 0)
-    )
-}
-
-async fn authenticate_ad_bearer(
-    st: &SharedState,
-    token: &str,
-    ip: &str,
-) -> Result<Option<crate::services::ad::api_token::VerifiedTeamToken>, Response> {
-    if let Err(retry_after) = check_async(Policy::AdBearerSourceAdmission, ip.to_owned()).await {
-        return Err(too_many_requests(retry_after));
-    }
-    let digest = crate::services::ad::api_token::hash(token);
-    if let Err(retry_after) =
-        check_async(Policy::AdBearerAdmission, format!("presented:{digest}")).await
-    {
-        return Err(too_many_requests(retry_after));
-    }
-    let permit = AD_AUTH_ADMISSION
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| too_many_requests(1))?;
-    let result = tokio::time::timeout(
-        AD_AUTH_QUERY_TIMEOUT,
-        crate::services::ad::api_token::authenticate(st.pg(), token),
-    )
-    .await;
-    drop(permit);
-    match result {
-        Ok(Ok(credential)) => Ok(credential),
-        Ok(Err(error)) => Err(error.into_response()),
-        Err(_) => Err(crate::utils::error::AppError::unavailable(
-            "A&D credential verification timed out; retry later",
-        )
-        .into_response()),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Middleware / decorator API
 // ---------------------------------------------------------------------------
-
-/// The always-on Global sliding window, layered once over the whole router in
-/// `server.rs`. API calls and content-addressed blob downloads are admitted;
-/// health checks and static SPA assets are not. Asset hashes are caller chosen,
-/// so leaving `/assets` outside this cheap source budget would let anonymous
-/// rotating misses reach authorization SQL without consuming rate quota.
-///
-/// Layer it **after** CORS so `OPTIONS` preflights don't consume quota:
-/// ```ignore
-/// .layer(axum::middleware::from_fn(rate_limiter::global_middleware))
-/// ```
-pub async fn global_middleware(
-    AxumState(st): AxumState<SharedState>,
-    mut req: Request,
-    next: Next,
-) -> Response {
-    let path = req.uri().path();
-    if !globally_limited_path(path) {
-        return next.run(req).await;
-    }
-    let ip = client_ip(&req);
-    let credential = crate::middlewares::privilege_authentication::session_token(req.headers());
-    if credential.is_some() {
-        // This high source ceiling is deliberately separate from per-account
-        // fairness. It bounds signature/DB work from rotating invalid bearer
-        // floods while leaving ordinary shared-NAT event traffic unaffected.
-        if let Err(retry_after) = check_async(Policy::CredentialIpAdmission, ip.clone()).await {
-            return too_many_requests(retry_after);
-        }
-    }
-
-    let attempted_ad = credential
-        .as_deref()
-        .is_some_and(crate::services::ad::api_token::is_well_formed)
-        && route_supports_ad_bearer(req.uri().path());
-    // Once a bearer enters the versioned personal-token namespace it must get
-    // that namespace's definitive grammar/authentication decision. Malformed
-    // or oversized PATs are never retried as browser JWTs.
-    let attempted_personal = !attempted_ad
-        && credential.as_deref().is_some_and(|token| {
-            token.starts_with(crate::controllers::api_token::PERSONAL_TOKEN_PREFIX)
-        });
-    let verified_ad = if attempted_ad {
-        match authenticate_ad_bearer(
-            &st,
-            credential
-                .as_deref()
-                .expect("attempted A&D token is present"),
-            &ip,
-        )
-        .await
-        {
-            Ok(credential) => credential,
-            Err(response) => return response,
-        }
-    } else {
-        None
-    };
-    if attempted_ad && verified_ad.is_none() {
-        req.extensions_mut()
-            .insert(crate::services::ad::api_token::RejectedTeamToken);
-    }
-    let verified_personal = if attempted_personal {
-        match crate::controllers::api_token::authenticate(
-            &st,
-            credential
-                .as_deref()
-                .expect("attempted personal token is present"),
-        )
-        .await
-        {
-            Ok(credential) => Some(credential),
-            Err(error) => return error.into_response(),
-        }
-    } else {
-        None
-    };
-    // A syntactically valid A&D credential has already received its definitive
-    // DB decision above. Do not reinterpret a rejected one as a session JWT.
-    let verified_session = if attempted_ad || attempted_personal {
-        None
-    } else {
-        credential.and_then(|token| st.token.verify(&token).ok())
-    };
-    if let Some(verified) = verified_ad {
-        let key = verified.partition_key.clone();
-        req.extensions_mut().insert(verified);
-        if let Err(retry_after) = check_authenticated_async(key, ip).await {
-            return too_many_requests(retry_after);
-        }
-    } else if let Some(verified) = verified_personal {
-        let key = verified.partition_key.clone();
-        req.extensions_mut().insert(verified);
-        if let Err(retry_after) = check_authenticated_async(key, ip).await {
-            return too_many_requests(retry_after);
-        }
-    } else if let Some(claims) = verified_session {
-        let key = session_partition_key(&claims);
-        req.extensions_mut()
-            .insert(crate::middlewares::privilege_authentication::VerifiedSessionClaims(claims));
-        req.extensions_mut()
-            .insert(VerifiedSessionPartitionKey(key.clone()));
-        // Reject an overactive account before recording it in the larger
-        // shared-source backstop. This bounds backstop memory by traffic that
-        // already passed its per-account quota.
-        if let Err(retry_after) = check_authenticated_async(key, ip).await {
-            return too_many_requests(retry_after);
-        }
-    } else {
-        if let Err(retry_after) = check_async(Policy::Global, ip).await {
-            return too_many_requests(retry_after);
-        }
-    }
-    next.run(req).await
-}
-
-fn globally_limited_path(path: &str) -> bool {
-    path.starts_with("/api") || path.starts_with("/assets/")
-}
 
 /// Decorate a single route handler with a named policy — the axum analogue of
 /// RSCTF's `[EnableRateLimiting(policy)]` attribute:
