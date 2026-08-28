@@ -48,14 +48,45 @@ pub(crate) async fn enqueue_challenge_build_job(
 
 pub(crate) async fn execute_build_batch_job(
     st: &SharedState,
-    job: &crate::services::control_jobs::ControlJobModel,
+    claimed: &crate::services::control_jobs::ClaimedControlJob,
 ) -> AppResult<serde_json::Value> {
     const PAGE_SIZE: i64 = 64;
     const MAX_CANDIDATES: usize = 256;
+    let job = &claimed.model;
+    let total = sqlx::query_scalar::<_, i64>(
+        r#"SELECT LEAST(COUNT(*), $2) FROM "GameChallenges"
+            WHERE game_id = $1 AND deletion_pending = FALSE
+              AND build_status IN ($3, $4)"#,
+    )
+    .bind(job.game_id)
+    .bind(i64::try_from(MAX_CANDIDATES).unwrap_or(i64::MAX))
+    .bind(ChallengeBuildStatus::Failed as i16)
+    .bind(ChallengeBuildStatus::MissingDockerfile as i16)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let progress_total = i32::try_from(total.max(1)).unwrap_or(i32::MAX);
+    crate::services::control_jobs::set_progress(
+        st.pg(),
+        job.id,
+        claimed.lease_token,
+        0,
+        progress_total,
+    )
+    .await?;
     let mut cursor = 0;
     let mut enqueued = 0usize;
     let mut skipped = 0usize;
     while enqueued + skipped < MAX_CANDIDATES {
+        if crate::services::control_jobs::cancellation_requested(
+            st.pg(),
+            job.id,
+            claimed.lease_token,
+        )
+        .await?
+        {
+            break;
+        }
         let remaining = MAX_CANDIDATES - enqueued - skipped;
         let page = sqlx::query_scalar::<_, i32>(
             r#"SELECT id FROM "GameChallenges"
@@ -105,6 +136,17 @@ pub(crate) async fn execute_build_batch_job(
             } else {
                 skipped += 1;
             }
+            let current = i32::try_from(enqueued.saturating_add(skipped))
+                .unwrap_or(progress_total)
+                .min(progress_total);
+            crate::services::control_jobs::set_progress(
+                st.pg(),
+                job.id,
+                claimed.lease_token,
+                current,
+                progress_total,
+            )
+            .await?;
         }
     }
     Ok(serde_json::json!({

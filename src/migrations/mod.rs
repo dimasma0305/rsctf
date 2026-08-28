@@ -188,6 +188,7 @@ mod m0221_team_invite_reconcile_claims;
 mod m0226_ad_challenge_state_effects;
 mod m0227_challenge_update_operations;
 mod m0229_challenge_import_staging_admission;
+mod m0232_control_job_cancellation;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -219,6 +220,8 @@ pub(crate) use m0226_ad_challenge_state_effects::UP_SQL as AD_CHALLENGE_STATE_EF
 pub(crate) use m0227_challenge_update_operations::UP_SQL as CHALLENGE_UPDATE_OPERATIONS_SQL;
 #[cfg(test)]
 pub(crate) use m0229_challenge_import_staging_admission::UP_SQL as CHALLENGE_IMPORT_STAGING_SQL;
+#[cfg(test)]
+pub(crate) use m0232_control_job_cancellation::UP_SQL as CONTROL_JOB_CANCELLATION_SQL;
 
 pub struct Migrator;
 
@@ -398,6 +401,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0226_ad_challenge_state_effects::Migration),
             Box::new(m0227_challenge_update_operations::Migration),
             Box::new(m0229_challenge_import_staging_admission::Migration),
+            Box::new(m0232_control_job_cancellation::Migration),
         ]
     }
 }
@@ -543,7 +547,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 61..],
+            &names[names.len() - 65..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -609,6 +613,7 @@ mod tests {
                 "m0226_ad_challenge_state_effects",
                 "m0227_challenge_update_operations",
                 "m0229_challenge_import_staging_admission",
+                "m0232_control_job_cancellation",
             ]
         );
     }

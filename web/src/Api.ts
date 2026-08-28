@@ -2917,6 +2917,7 @@ export interface ControlJobModel {
   requestedGeneration: number;
   result?: Record<string, unknown> | null;
   error?: string | null;
+  cancellationRequested: boolean;
   /** @format uint64 */
   createdAtUtc: number;
   /** @format uint64 */
@@ -10179,6 +10180,14 @@ export class Api<
         ...params,
       }),
 
+    gameAdCancelResetJob: (id: number, jobId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/ResetJobs/${jobId}`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
     gameAdResetJobByOperation: (id: number, operationId: string, params: RequestParams = {}) =>
       this.request<ControlJobModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/ResetJobs/Operations/${operationId}`,
@@ -11595,6 +11604,14 @@ export class Api<
       this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/jobs/${jobId}`,
         method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    cancelControlJob: (jobId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/edit/jobs/${jobId}`,
+        method: "POST",
         format: "json",
         ...params,
       }),

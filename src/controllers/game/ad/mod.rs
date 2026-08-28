@@ -61,7 +61,10 @@ fn common_router() -> Router<SharedState> {
             "/api/Game/{id}/Ad/ResetJobs/Operations/{operationId}",
             get(reset_job_by_operation),
         )
-        .route("/api/Game/{id}/Ad/ResetJobs/{jobId}", get(reset_job_status))
+        .route(
+            "/api/Game/{id}/Ad/ResetJobs/{jobId}",
+            get(reset_job_status).post(cancel_reset_job),
+        )
         .route(
             "/api/Game/{id}/Ad/Services/{adTeamServiceId}/Snapshot",
             limited(Policy::Container, get(download_snapshot)),

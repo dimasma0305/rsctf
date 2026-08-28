@@ -197,7 +197,10 @@ pub fn router() -> Router<SharedState> {
             limited(Policy::Concurrency, post(test_email)),
         )
         // --- Bulk rebuild ---
-        .route("/api/admin/games/{gameId}/bulkrebuild", post(bulk_rebuild))
+        .route(
+            "/api/admin/games/{gameId}/bulkrebuild",
+            limited(Policy::Concurrency, post(bulk_rebuild)),
+        )
         // --- Anti-cheat ---
         .route("/api/admin/anticheatblocks", get(list_anti_cheat_blocks))
         .route(
@@ -254,7 +257,7 @@ pub fn router() -> Router<SharedState> {
         .route("/api/admin/builds/{auditId}", delete(delete_build))
         .route(
             "/api/admin/builds/{auditId}/reenqueue",
-            post(reenqueue_build),
+            limited(Policy::Concurrency, post(reenqueue_build)),
         )
         // --- Repo bindings ---
         .route(

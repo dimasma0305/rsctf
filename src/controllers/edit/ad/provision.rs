@@ -162,10 +162,11 @@ pub async fn ad_ensure_containers(
 
 pub(crate) async fn run_ad_reconcile_job(
     st: &SharedState,
-    game_id: i32,
+    claimed: &crate::services::control_jobs::ClaimedControlJob,
     ensure_vpn: bool,
     ensure_koth: bool,
 ) -> AppResult<(i32, i32)> {
+    let game_id = claimed.model.game_id;
     let game = load_game(st, game_id).await?;
     let (has_managed_ad, has_engine_challenge): (bool, bool) = sqlx::query_as(
         r#"SELECT
@@ -205,9 +206,28 @@ pub(crate) async fn run_ad_reconcile_job(
             .await?;
     }
     const PARTICIPATION_PAGE_SIZE: i64 = 64;
+    let participation_total: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM "Participations" WHERE game_id = $1 AND status = $2"#,
+    )
+    .bind(game_id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let progress_total = i32::try_from(participation_total.max(1)).unwrap_or(i32::MAX);
+    crate::services::control_jobs::set_progress(
+        st.pg(),
+        claimed.model.id,
+        claimed.lease_token,
+        0,
+        progress_total,
+    )
+    .await?;
     let mut cursor = 0;
     let mut launched = 0i32;
     let mut failures = 0i32;
+    let mut examined = 0i32;
+    let mut cancelled = false;
     loop {
         let participation_ids = sqlx::query_scalar::<_, i32>(
             r#"SELECT id FROM "Participations"
@@ -225,13 +245,38 @@ pub(crate) async fn run_ad_reconcile_job(
             break;
         }
         for participation_id in participation_ids {
+            if crate::services::control_jobs::cancellation_requested(
+                st.pg(),
+                claimed.model.id,
+                claimed.lease_token,
+            )
+            .await?
+            {
+                cancelled = true;
+                break;
+            }
             cursor = participation_id;
             let (page_launched, page_failures) =
                 ensure_ad_containers(st, &game, Some(participation_id), ensure_vpn, false, false)
                     .await?;
             launched = launched.saturating_add(page_launched);
             failures = failures.saturating_add(page_failures);
+            examined = examined.saturating_add(1).min(progress_total);
+            crate::services::control_jobs::set_progress(
+                st.pg(),
+                claimed.model.id,
+                claimed.lease_token,
+                examined,
+                progress_total,
+            )
+            .await?;
         }
+        if cancelled {
+            break;
+        }
+    }
+    if cancelled {
+        return Ok((launched, failures));
     }
     if ensure_vpn || has_managed_ad {
         crate::services::ad_vpn::reconcile_for_deployment(&st.db).await?;

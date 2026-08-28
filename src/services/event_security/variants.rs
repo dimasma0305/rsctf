@@ -462,9 +462,10 @@ async fn complete_target_claim(
 
 pub async fn generate_event_variants_for_job(
     st: &SharedState,
-    game_id: i32,
-    job_id: Uuid,
+    claimed: &crate::services::control_jobs::ClaimedControlJob,
 ) -> AppResult<usize> {
+    let game_id = claimed.model.game_id;
+    let job_id = claimed.model.id;
     // Leave enough headroom for the active two-run target and container cleanup
     // before the outer 14-minute control-job lease deadline can cancel us.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(12 * 60);
@@ -472,19 +473,48 @@ pub async fn generate_event_variants_for_job(
     let docker = Docker::connect_with_local_defaults()
         .map_err(|error| AppError::unavailable(format!("Docker is unavailable: {error}")))?;
     let mut generated = 0;
+    let mut examined = 0i32;
     loop {
         let targets = load_targets(st, game_id).await?;
         if targets.is_empty() {
             break;
         }
+        let page_len = i32::try_from(targets.len()).unwrap_or(i32::MAX);
+        let progress_total = examined.saturating_add(page_len).max(1);
+        crate::services::control_jobs::set_progress(
+            st.pg(),
+            job_id,
+            claimed.lease_token,
+            examined,
+            progress_total,
+        )
+        .await?;
         let mut claimed_in_page = 0;
         for target in targets {
+            if crate::services::control_jobs::cancellation_requested(
+                st.pg(),
+                job_id,
+                claimed.lease_token,
+            )
+            .await?
+            {
+                return Ok(generated);
+            }
             if tokio::time::Instant::now() >= deadline {
                 return Err(AppError::unavailable(
                     "Variant generation reached its bounded deadline; retry to continue remaining targets",
                 ));
             }
             if !claim_target(st, &target, job_id).await? {
+                examined = examined.saturating_add(1);
+                crate::services::control_jobs::set_progress(
+                    st.pg(),
+                    job_id,
+                    claimed.lease_token,
+                    examined.min(progress_total),
+                    progress_total,
+                )
+                .await?;
                 continue;
             }
             claimed_in_page += 1;
@@ -532,6 +562,15 @@ pub async fn generate_event_variants_for_job(
             .map_err(|error| AppError::internal(error.to_string()))?;
             generated += usize::try_from(inserted.rows_affected()).unwrap_or(usize::MAX);
             complete_target_claim(st, &target, job_id).await?;
+            examined = examined.saturating_add(1);
+            crate::services::control_jobs::set_progress(
+                st.pg(),
+                job_id,
+                claimed.lease_token,
+                examined.min(progress_total),
+                progress_total,
+            )
+            .await?;
         }
         if claimed_in_page == 0 {
             return Err(AppError::conflict(

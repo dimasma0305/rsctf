@@ -700,6 +700,25 @@ pub async fn reset_job_status(
     Ok(RequestResponse::ok(job))
 }
 
+pub async fn cancel_reset_job(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+    Path((id, job_id)): Path<(i32, uuid::Uuid)>,
+) -> AppResult<RequestResponse<crate::services::control_jobs::ControlJobModel>> {
+    let part = resolve_participation(&st, &user, id).await?;
+    crate::services::control_jobs::get_ad_reset_for_participation(
+        st.pg(),
+        id,
+        part.id,
+        Some(job_id),
+        None,
+    )
+    .await?
+    .ok_or_else(|| AppError::not_found("Reset job not found"))?;
+    let job = crate::services::control_jobs::request_cancellation(st.pg(), job_id).await?;
+    Ok(RequestResponse::ok(job))
+}
+
 pub async fn reset_job_by_operation(
     State(st): State<SharedState>,
     user: CurrentUser,

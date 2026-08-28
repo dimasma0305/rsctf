@@ -189,11 +189,10 @@ async fn apply_claimed(st: &SharedState, effect: &ClaimedEffect) -> AppResult<()
     let current = match current {
         Ok(current) => current,
         Err(error) => {
-            let released = runtime
-                .release()
-                .await
-                .map_err(|release_error| AppError::internal(release_error.to_string()));
-            return Err::<(), _>(error).and(released);
+            if let Err(release_error) = runtime.release().await {
+                tracing::warn!(%release_error, "runtime transition lock release failed after state-effect read error");
+            }
+            return Err(error);
         }
     };
 
