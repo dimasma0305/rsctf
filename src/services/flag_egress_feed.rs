@@ -88,18 +88,22 @@ const PAGE_SUFFIX: &str = r#"
 
 const COUNT_SQL: &str = r#"
     SELECT COUNT(*)::bigint
-      FROM "FlagEgressEvents" event
-      LEFT JOIN "Participations" participation ON participation.id = event.participation_id
-      LEFT JOIN "Teams" team ON team.id = participation.team_id
-      LEFT JOIN "GameChallenges" challenge ON challenge.id = event.challenge_id
-     WHERE event.game_id = $1
-       AND event.feed_cursor IS NOT NULL
-       AND (
-            $2::text IS NULL
-            OR LOWER(COALESCE(team.name, '')) LIKE $2 ESCAPE '\'
-            OR LOWER(COALESCE(challenge.title, '')) LIKE $2 ESCAPE '\'
-            OR LOWER(event.remote_ip) LIKE $2 ESCAPE '\'
-       )
+      FROM (
+        SELECT 1
+          FROM "FlagEgressEvents" event
+          LEFT JOIN "Participations" participation ON participation.id = event.participation_id
+          LEFT JOIN "Teams" team ON team.id = participation.team_id
+          LEFT JOIN "GameChallenges" challenge ON challenge.id = event.challenge_id
+         WHERE event.game_id = $1
+           AND event.feed_cursor IS NOT NULL
+           AND (
+                $2::text IS NULL
+                OR LOWER(COALESCE(team.name, '')) LIKE $2 ESCAPE '\'
+                OR LOWER(COALESCE(challenge.title, '')) LIKE $2 ESCAPE '\'
+                OR LOWER(event.remote_ip) LIKE $2 ESCAPE '\'
+           )
+         LIMIT $3
+      ) bounded_events
 "#;
 
 const BACKFILL_SUFFIX: &str = r#"
@@ -161,7 +165,11 @@ fn page_offset(skip: u64) -> i64 {
     skip.min(MAX_FLAG_EGRESS_SKIP) as i64
 }
 
-/// Return one bounded newest-first page and its filtered total.
+fn total_limit(page_size: i64) -> i64 {
+    MAX_FLAG_EGRESS_SKIP as i64 + page_size
+}
+
+/// Return one bounded newest-first page and its bounded filtered total.
 pub async fn page(
     pool: &sqlx::PgPool,
     game_id: i32,
@@ -177,6 +185,7 @@ pub async fn page(
     let total = sqlx::query_scalar::<_, i64>(COUNT_SQL)
         .bind(game_id)
         .bind(search.as_deref())
+        .bind(total_limit(limit))
         .fetch_one(pool)
         .await?;
     let page_sql = projection_with(PAGE_SUFFIX);
@@ -306,9 +315,12 @@ mod tests {
         assert!(BACKFILL_SUFFIX.contains("event.feed_cursor > $2"));
         assert!(BACKFILL_SUFFIX.contains("LIMIT $3"));
         assert!(PAGE_SUFFIX.contains("LIKE $2 ESCAPE '\\'"));
+        assert!(COUNT_SQL.contains("LIMIT $3"));
         assert_eq!(page_offset(42), 42);
         assert_eq!(page_offset(MAX_FLAG_EGRESS_SKIP), 10_000);
         assert_eq!(page_offset(u64::MAX), 10_000);
+        assert_eq!(total_limit(50), 10_050);
+        assert_eq!(total_limit(MAX_FLAG_EGRESS_PAGE), 10_100);
     }
 
     #[test]
@@ -452,6 +464,27 @@ mod tests {
         assert_eq!(filtered.total, 1);
         assert_eq!(filtered.events.len(), 1);
         assert_eq!(filtered.events[0].team_name, "Alpha");
+
+        sqlx::query(
+            r#"INSERT INTO "FlagEgressEvents"
+                   (game_id, participation_id, challenge_id, container_id,
+                    remote_ip, remote_port, hit_count, first_seen_utc, last_seen_utc)
+               SELECT 8, 12, 22, NULL, '198.51.100.10', number, 1,
+                      now() - make_interval(secs => number),
+                      now() - make_interval(secs => number)
+                 FROM generate_series(1, 10101) number"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let bounded = page(&pool, 8, None, 0, 50).await.unwrap();
+        assert_eq!(bounded.total, 10_050);
+        assert_eq!(bounded.events.len(), 50);
+        let last_page = page(&pool, 8, None, MAX_FLAG_EGRESS_SKIP, 50)
+            .await
+            .unwrap();
+        assert_eq!(last_page.total, 10_050);
+        assert_eq!(last_page.events.len(), 50);
 
         pool.close().await;
         let cleanup = format!(r#"DROP SCHEMA "{schema}" CASCADE"#);
