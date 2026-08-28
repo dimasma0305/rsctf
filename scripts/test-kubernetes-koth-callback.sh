@@ -113,12 +113,25 @@ kubectl wait --namespace rsctf-challenges \
 callback_url='http://rsctf-network.rsctf-system.svc:8080/echo?msg=callback-ok'
 unrelated_url='http://rsctf-web.rsctf-system.svc:8080/echo?msg=unexpected'
 
-callback_response="$(kubectl exec --namespace rsctf-challenges callback-client -- \
-  curl --fail --silent --show-error --connect-timeout 2 --max-time 5 "$callback_url")"
-grep -Fq 'callback-ok' <<<"$callback_response"
-kubectl exec --namespace rsctf-challenges callback-client -- \
-  curl --fail --silent --show-error --connect-timeout 2 --max-time 5 \
-  "$unrelated_url" >/dev/null
+preflight_ready=0
+for _ in $(seq 1 30); do
+  if callback_response="$(kubectl exec --namespace rsctf-challenges callback-client -- \
+    curl --fail --silent --show-error --connect-timeout 2 --max-time 5 "$callback_url")" \
+    && grep -Fq 'callback-ok' <<<"$callback_response" \
+    && kubectl exec --namespace rsctf-challenges callback-client -- \
+      curl --fail --silent --connect-timeout 2 --max-time 5 \
+      "$unrelated_url" >/dev/null 2>&1; then
+    preflight_ready=1
+    break
+  fi
+  sleep 1
+done
+
+if [[ "$preflight_ready" != 1 ]]; then
+  echo 'callback Services did not both become reachable before policy enforcement' >&2
+  kubectl get pods,services,endpointslices --all-namespaces -o wide >&2
+  exit 1
+fi
 
 if kubectl exec --namespace rsctf-challenges callback-client -- \
   curl --fail --silent --connect-timeout 2 --max-time 5 \
