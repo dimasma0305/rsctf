@@ -1,6 +1,7 @@
 //! Team API-token endpoints (get/rotate/revoke) + Bearer-token resolution.
 
 use super::*;
+use axum::response::Response;
 
 /// `AdTokenGenerateResultModel` — `POST Ad/Token` response (plaintext once).
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -88,7 +89,7 @@ pub async fn rotate_token(
     user: CurrentUser,
     Path(id): Path<i32>,
     crate::controllers::game::credential_operations::CredentialMutationInput(request): crate::controllers::game::credential_operations::CredentialMutationInput,
-) -> AppResult<RequestResponse<AdTokenGenerateResultModel>> {
+) -> AppResult<Response> {
     let part = resolve_participation(&st, &user, id).await?;
     let mut roster = super::vpn::acquire_roster_access(&st, &user, &part).await?;
     let scope = crate::controllers::game::credential_operations::CredentialScope {
@@ -98,7 +99,9 @@ pub async fn rotate_token(
         actor_user_id: user.id,
         kind: crate::controllers::game::credential_operations::CredentialKind::AdToken,
     };
-    let reservation = crate::controllers::game::credential_operations::reserve(
+    let reservation: crate::controllers::game::credential_operations::CredentialReservation<
+        AdTokenGenerateResultModel,
+    > = crate::controllers::game::credential_operations::reserve(
         &st,
         roster.transaction_mut(),
         scope,
@@ -110,7 +113,11 @@ pub async fn rotate_token(
             result,
         ) => {
             roster.release().await?;
-            return Ok(RequestResponse::ok(result));
+            return Ok(
+                crate::controllers::game::credential_operations::private_credential_response(
+                    result,
+                ),
+            );
         }
         crate::controllers::game::credential_operations::CredentialReservation::Fresh {
             operation_id,
@@ -163,7 +170,7 @@ pub async fn rotate_token(
     .await?;
     roster.release().await?;
 
-    Ok(RequestResponse::ok(result))
+    Ok(crate::controllers::game::credential_operations::private_credential_response(result))
 }
 
 /// `DELETE /api/Game/{id}/Ad/Token` — revoke the caller team's token. Subsequent

@@ -2,7 +2,11 @@
 
 use super::*;
 use axum::extract::State as AxumState;
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use tokio::sync::Semaphore;
+
+use crate::app_state::SharedState;
 
 pub(super) fn check_authenticated_local(identity: String, ip: String) -> Result<(), u64> {
     check(Policy::Global, identity)?;
@@ -20,6 +24,10 @@ pub(super) const AD_AUTH_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
 pub(super) const AD_AUTH_CONCURRENCY: usize = 32;
 static AD_AUTH_ADMISSION: LazyLock<std::sync::Arc<Semaphore>> =
     LazyLock::new(|| std::sync::Arc::new(Semaphore::new(AD_AUTH_CONCURRENCY)));
+pub(super) const PERSONAL_TOKEN_AUTH_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
+pub(super) const PERSONAL_TOKEN_AUTH_CONCURRENCY: usize = 16;
+static PERSONAL_TOKEN_AUTH_ADMISSION: LazyLock<std::sync::Arc<Semaphore>> =
+    LazyLock::new(|| std::sync::Arc::new(Semaphore::new(PERSONAL_TOKEN_AUTH_CONCURRENCY)));
 
 pub(super) fn route_supports_ad_bearer(path: &str) -> bool {
     let segments: Vec<_> = path.trim_matches('/').split('/').collect();
@@ -72,8 +80,48 @@ async fn authenticate_ad_bearer(
     }
 }
 
+async fn authenticate_personal_bearer(
+    st: &SharedState,
+    token: &str,
+    ip: &str,
+) -> Result<crate::controllers::api_token::VerifiedPersonalToken, Response> {
+    if let Err(retry_after) = check_async(Policy::PersonalTokenSourceAdmission, ip.to_owned()).await
+    {
+        return Err(too_many_requests(retry_after));
+    }
+    let digest = crate::utils::codec::sha256_str(token);
+    if let Err(retry_after) = check_async(
+        Policy::PersonalTokenAdmission,
+        format!("presented:{digest}"),
+    )
+    .await
+    {
+        return Err(too_many_requests(retry_after));
+    }
+    let permit = PERSONAL_TOKEN_AUTH_ADMISSION
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| too_many_requests(1))?;
+    let result = tokio::time::timeout(
+        PERSONAL_TOKEN_AUTH_QUERY_TIMEOUT,
+        crate::controllers::api_token::authenticate(st, token),
+    )
+    .await;
+    drop(permit);
+    match result {
+        Ok(Ok(credential)) => Ok(credential),
+        Ok(Err(error)) => Err(error.into_response()),
+        Err(_) => Err(crate::utils::error::AppError::retryable_unavailable(
+            "API token verification timed out; retry later",
+            1,
+        )
+        .into_response()),
+    }
+}
+
 /// Authentication-aware global admission layered once over API and asset
-/// routes. A&D bearers receive every rate decision before authentication SQL.
+/// routes. Managed and A&D bearers receive bounded admission before their
+/// authentication SQL.
 pub async fn global_middleware(
     AxumState(st): AxumState<SharedState>,
     mut req: Request,
@@ -120,11 +168,12 @@ pub async fn global_middleware(
             .insert(crate::services::ad::api_token::RejectedTeamToken);
     }
     let verified_personal = if attempted_personal {
-        match crate::controllers::api_token::authenticate(
+        match authenticate_personal_bearer(
             &st,
             credential
                 .as_deref()
                 .expect("attempted personal token is present"),
+            &ip,
         )
         .await
         {

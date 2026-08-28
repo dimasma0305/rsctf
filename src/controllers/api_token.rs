@@ -5,6 +5,8 @@
 //! only its SHA-256 hash is ever persisted in `ApiTokens.token_hash`.
 
 use axum::extract::{Path, Query, State};
+use axum::http::{header, HeaderValue};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Duration, Utc};
@@ -21,6 +23,8 @@ use crate::utils::shared::{ArrayResponse, MessageResponse, PageParams, RequestRe
 
 pub(crate) const PERSONAL_TOKEN_PREFIX: &str = "rsctf_pat_v1_";
 const MAX_PERSONAL_TOKEN_BYTES: usize = 128;
+const PERSONAL_TOKEN_SECRET_BYTES: usize = 32;
+const PERSONAL_TOKEN_SECRET_CHARS: usize = 43;
 const MAX_TOKENS_PER_OWNER: i64 = 32;
 const LIST_LIMIT: i64 = 100;
 const NEGATIVE_LOOKUP_TTL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -36,7 +40,7 @@ pub(crate) fn is_well_formed(token: &str) -> bool {
     let Some(secret) = token.strip_prefix(PERSONAL_TOKEN_PREFIX) else {
         return false;
     };
-    !secret.is_empty()
+    secret.len() == PERSONAL_TOKEN_SECRET_CHARS
         && token.len() <= MAX_PERSONAL_TOKEN_BYTES
         && secret
             .bytes()
@@ -76,7 +80,7 @@ pub(crate) async fn authenticate(
                   account.user_name, account.security_stamp
              FROM "ApiTokens" token
              JOIN "AspNetUsers" account ON account.id = token.creator_id
-            WHERE token.token_hash = $1"#,
+            WHERE token.token_hash = $1 AND token.is_revoked = FALSE"#,
     )
     .bind(hash)
     .fetch_optional(st.pg())
@@ -138,10 +142,22 @@ mod tests {
 
     #[test]
     fn personal_token_grammar_is_versioned_bounded_and_non_overlapping() {
-        assert!(is_well_formed("rsctf_pat_v1_abc_DEF-123"));
+        let valid = format!(
+            "{PERSONAL_TOKEN_PREFIX}{}",
+            "a".repeat(PERSONAL_TOKEN_SECRET_CHARS)
+        );
+        assert!(is_well_formed(&valid));
         assert!(!is_well_formed("rsctf_ad_v1_abc"));
         assert!(!is_well_formed("header.payload.signature"));
         assert!(!is_well_formed("rsctf_pat_v1_"));
+        assert!(!is_well_formed(&format!(
+            "{PERSONAL_TOKEN_PREFIX}{}",
+            "a".repeat(PERSONAL_TOKEN_SECRET_CHARS - 1)
+        )));
+        assert!(!is_well_formed(&format!(
+            "{PERSONAL_TOKEN_PREFIX}{}",
+            "a".repeat(PERSONAL_TOKEN_SECRET_CHARS + 1)
+        )));
         assert!(!is_well_formed(&format!(
             "{PERSONAL_TOKEN_PREFIX}{}",
             "a".repeat(MAX_PERSONAL_TOKEN_BYTES)
@@ -203,6 +219,48 @@ pub struct ApiTokenResponse {
     /// The plaintext bearer secret. Store it now; it cannot be retrieved later.
     pub token: String,
     pub info: ApiToken,
+}
+
+fn private_token_response(model: ApiTokenResponse) -> Response {
+    let mut response = RequestResponse::ok(model).into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    response
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+
+    #[test]
+    fn generated_plaintext_is_private_and_non_cacheable() {
+        let response = private_token_response(ApiTokenResponse {
+            token: format!(
+                "{PERSONAL_TOKEN_PREFIX}{}",
+                "a".repeat(PERSONAL_TOKEN_SECRET_CHARS)
+            ),
+            info: ApiToken {
+                id: Uuid::nil(),
+                name: "automation".to_string(),
+                creator_id: Some(Uuid::nil()),
+                created_at: Utc::now(),
+                expires_at: None,
+                last_used_at: None,
+                is_revoked: false,
+                creator: Some("admin".to_string()),
+            },
+        });
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "private, no-store"
+        );
+        assert_eq!(response.headers().get(header::PRAGMA).unwrap(), "no-cache");
+    }
 }
 
 pub fn router() -> Router<SharedState> {
@@ -269,7 +327,7 @@ pub async fn generate_token(
     State(st): State<SharedState>,
     AdminUser(user): AdminUser,
     Json(model): Json<ApiTokenCreateModel>,
-) -> AppResult<RequestResponse<ApiTokenResponse>> {
+) -> AppResult<Response> {
     let name = model.name.trim().to_string();
     if name.is_empty() {
         return Err(AppError::bad_request("Token name is required"));
@@ -280,7 +338,10 @@ pub async fn generate_token(
         ));
     }
 
-    let secret = format!("{PERSONAL_TOKEN_PREFIX}{}", random_token(32));
+    let secret = format!(
+        "{PERSONAL_TOKEN_PREFIX}{}",
+        random_token(PERSONAL_TOKEN_SECRET_BYTES)
+    );
     let token_hash = sha256_str(&secret);
 
     let now = Utc::now();
@@ -375,7 +436,7 @@ pub async fn generate_token(
         creator: Some(user.name),
     };
 
-    Ok(RequestResponse::ok(ApiTokenResponse {
+    Ok(private_token_response(ApiTokenResponse {
         token: secret,
         info: saved,
     }))
@@ -477,3 +538,7 @@ pub async fn restore_token(
         .await;
     Ok(MessageResponse::ok("Token restored"))
 }
+
+#[cfg(test)]
+#[path = "api_token_tests.rs"]
+mod postgres_tests;

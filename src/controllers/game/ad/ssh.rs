@@ -1,6 +1,7 @@
 //! SSH key endpoints (get/upload/generate/delete) + Ed25519/OpenSSH helpers.
 
 use super::*;
+use axum::response::Response;
 
 /// Body for `POST /api/Game/{id}/Ad/Ssh/Key` (`AdSshKeyUploadModel`).
 #[derive(Debug, Default, Deserialize)]
@@ -165,7 +166,7 @@ pub async fn generate_ssh_key(
     user: CurrentUser,
     Path(id): Path<i32>,
     crate::controllers::game::credential_operations::CredentialMutationInput(request): crate::controllers::game::credential_operations::CredentialMutationInput,
-) -> AppResult<RequestResponse<AdSshKeyGeneratedModel>> {
+) -> AppResult<Response> {
     let part = resolve_participation(&st, &user, id).await?;
     let mut roster = super::vpn::acquire_roster_access(&st, &user, &part).await?;
     let scope = crate::controllers::game::credential_operations::CredentialScope {
@@ -175,7 +176,9 @@ pub async fn generate_ssh_key(
         actor_user_id: user.id,
         kind: crate::controllers::game::credential_operations::CredentialKind::AdSsh,
     };
-    let reservation = crate::controllers::game::credential_operations::reserve(
+    let reservation: crate::controllers::game::credential_operations::CredentialReservation<
+        AdSshKeyGeneratedModel,
+    > = crate::controllers::game::credential_operations::reserve(
         &st,
         roster.transaction_mut(),
         scope,
@@ -187,7 +190,11 @@ pub async fn generate_ssh_key(
             result,
         ) => {
             roster.release().await?;
-            return Ok(RequestResponse::ok(result));
+            return Ok(
+                crate::controllers::game::credential_operations::private_credential_response(
+                    result,
+                ),
+            );
         }
         crate::controllers::game::credential_operations::CredentialReservation::Fresh {
             operation_id,
@@ -239,7 +246,7 @@ pub async fn generate_ssh_key(
     .await?;
     roster.release().await?;
 
-    Ok(RequestResponse::ok(result))
+    Ok(crate::controllers::game::credential_operations::private_credential_response(result))
 }
 
 const SSH_FINGERPRINT_INDEX: &str = "ux_adsshkeys_fingerprint";

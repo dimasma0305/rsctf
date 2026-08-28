@@ -113,3 +113,58 @@ async fn public_verifier_budget_is_shared_across_replicas() {
         .await
         .unwrap();
 }
+
+/// Two independent nodes must still share one rotating-invalid PAT source
+/// budget. The test is opt-in because it needs disposable Redis.
+#[tokio::test]
+async fn personal_token_source_budget_is_shared_across_replicas() {
+    let Ok(url) = std::env::var("RSCTF_TEST_REDIS_URL") else {
+        return;
+    };
+    let connect = || async {
+        redis::Client::open(url.as_str())
+            .unwrap()
+            .get_connection_manager()
+            .await
+            .unwrap()
+    };
+    let node_a = DistributedLimiter {
+        conn: connect().await,
+    };
+    let node_b = DistributedLimiter {
+        conn: connect().await,
+    };
+    let mut admin = connect().await;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let partition = format!("personal-token-source-{nonce}");
+    let key = redis_key(Policy::PersonalTokenSourceAdmission, &partition);
+    redis::cmd("DEL")
+        .arg(&key)
+        .query_async::<()>(&mut admin)
+        .await
+        .unwrap();
+
+    let Kind::Bucket { capacity, .. } = Policy::PersonalTokenSourceAdmission.kind() else {
+        panic!("personal-token source admission must use a bucket")
+    };
+    let mut allowed = 0_u32;
+    for index in 0..(capacity as u32 + 40) {
+        let node = if index % 2 == 0 { &node_a } else { &node_b };
+        if node
+            .check(Policy::PersonalTokenSourceAdmission, &partition)
+            .await
+            .is_ok()
+        {
+            allowed += 1;
+        }
+    }
+    assert_eq!(allowed, capacity as u32);
+    redis::cmd("DEL")
+        .arg(key)
+        .query_async::<()>(&mut admin)
+        .await
+        .unwrap();
+}

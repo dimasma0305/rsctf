@@ -26,13 +26,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, Request};
-use axum::http::{header, HeaderValue};
-use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
-use axum::routing::MethodRouter;
 use sha2::{Digest, Sha256};
-
-use crate::app_state::SharedState;
 
 mod global;
 use global::check_authenticated_local;
@@ -40,6 +34,7 @@ pub use global::global_middleware;
 #[cfg(test)]
 use global::{
     globally_limited_path, route_supports_ad_bearer, AD_AUTH_CONCURRENCY, AD_AUTH_QUERY_TIMEOUT,
+    PERSONAL_TOKEN_AUTH_CONCURRENCY, PERSONAL_TOKEN_AUTH_QUERY_TIMEOUT,
 };
 
 mod proxy_open;
@@ -48,6 +43,9 @@ mod public_security;
 pub(crate) use public_security::{admit_public_security, PublicSecurityWork};
 mod proxy_traffic;
 pub(crate) use proxy_traffic::{admit_proxy_traffic_credit, admit_solve_receipt_issuance};
+mod route;
+pub use route::limited;
+use route::too_many_requests;
 mod work_admission;
 pub(crate) use work_admission::{
     admit_ad_submit, admit_asset_gate_miss, admit_asset_request, admit_asset_response_bytes,
@@ -197,6 +195,10 @@ pub enum Policy {
     /// strict process/session ceilings and never performs a Redis round trip.
     /// Appended to preserve every previously shipped Redis policy discriminant.
     ProxyTraffic = 26,
+    /// Source-IP admission before a managed personal-token digest lookup.
+    PersonalTokenSourceAdmission = 27,
+    /// Per-presented-digest admission before a managed personal-token lookup.
+    PersonalTokenAdmission = 28,
     /// Source budget for anonymous and authenticated asset routes, which live
     /// outside the global `/api` middleware.
     /// Values 27 through 29 are reserved by credential and honeypot admission.
@@ -333,6 +335,14 @@ impl Policy {
             Policy::ProxyTraffic => Kind::Bucket {
                 capacity: 16_384.0,
                 refill_per_sec: 1_024.0,
+            },
+            Policy::PersonalTokenSourceAdmission => Kind::Bucket {
+                capacity: 120.0,
+                refill_per_sec: 5.0,
+            },
+            Policy::PersonalTokenAdmission => Kind::Bucket {
+                capacity: 60.0,
+                refill_per_sec: 2.0,
             },
             Policy::AssetRequestSource => Kind::Bucket {
                 capacity: 512.0,
@@ -973,49 +983,6 @@ async fn check_weighted_async(policy: Policy, key: String, cost: u32) -> Result<
         Some(distributed) => distributed.check_weighted(policy, &key, cost).await,
         None => check_weighted(policy, key, cost),
     }
-}
-
-// ---------------------------------------------------------------------------
-// Middleware / decorator API
-// ---------------------------------------------------------------------------
-
-/// Decorate a single route handler with a named policy — the axum analogue of
-/// RSCTF's `[EnableRateLimiting(policy)]` attribute:
-/// ```ignore
-/// use crate::middlewares::rate_limiter::{limited, Policy};
-/// .route("/api/account/login", limited(Policy::Login, post(login)))
-/// ```
-/// The wrapped handler is checked against `policy` (partitioned by verified
-/// account when authenticated, otherwise by client IP) in addition to the
-/// always-on Global window; a denial short-circuits with a 429 + `Retry-After`
-/// and the handler never runs.
-pub fn limited(policy: Policy, handler: MethodRouter<SharedState>) -> MethodRouter<SharedState> {
-    handler.layer(axum::middleware::from_fn(
-        move |req: Request, next: Next| run_policy(policy, req, next),
-    ))
-}
-
-/// Per-route policy check backing [`limited`].
-async fn run_policy(policy: Policy, req: Request, next: Next) -> Response {
-    if let Err(retry_after) = check_async(policy, partition_key(policy, &req)).await {
-        return too_many_requests(retry_after);
-    }
-    next.run(req).await
-}
-
-/// Build the 429 response: RSCTF's `RequestResponse { title, status }` envelope
-/// (via [`crate::utils::shared::MessageResponse`]) plus a `Retry-After` header in
-/// whole seconds.
-fn too_many_requests(retry_after: u64) -> Response {
-    let mut resp = crate::utils::shared::MessageResponse::new(
-        format!("Too many requests. Please retry after {retry_after} seconds."),
-        429,
-    )
-    .into_response();
-    if let Ok(val) = HeaderValue::from_str(&retry_after.to_string()) {
-        resp.headers_mut().insert(header::RETRY_AFTER, val);
-    }
-    resp
 }
 
 #[cfg(test)]

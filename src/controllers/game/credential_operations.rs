@@ -4,7 +4,8 @@ use aes_gcm::aead::consts::U12;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use axum::extract::{FromRequest, Request};
-use axum::response::Response;
+use axum::http::{header, HeaderValue};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -13,6 +14,7 @@ use uuid::Uuid;
 
 use crate::app_state::SharedState;
 use crate::utils::error::{AppError, AppResult};
+use crate::utils::shared::RequestResponse;
 
 const MAX_CREDENTIAL_REVISION: i64 = 9_007_199_254_740_990;
 
@@ -76,6 +78,21 @@ pub(crate) enum CredentialReservation<T> {
         expected_revision: i64,
         result_revision: i64,
     },
+}
+
+/// Render a response containing a one-time plaintext credential. These values
+/// remain recoverable for a bounded retry window, but intermediaries and the
+/// browser history must never retain another copy of them.
+pub(crate) fn private_credential_response<T: Serialize>(model: T) -> Response {
+    let mut response = RequestResponse::ok(model).into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    response
 }
 
 type StoredOperationRow = (
@@ -462,7 +479,10 @@ mod tests {
     use axum::extract::FromRequest;
     use axum::http::{header, Request};
 
-    use super::{operation_aad, CredentialKind, CredentialMutationInput, CredentialScope};
+    use super::{
+        operation_aad, private_credential_response, CredentialKind, CredentialMutationInput,
+        CredentialScope,
+    };
 
     #[test]
     fn recovery_ciphertext_is_bound_to_exact_actor_scope_and_revision() {
@@ -510,4 +530,18 @@ mod tests {
             .expect("a stable operation identity is accepted");
         assert_eq!(parsed.0.expected_revision, 3);
     }
+
+    #[test]
+    fn one_time_credential_responses_cannot_be_cached() {
+        let response = private_credential_response(serde_json::json!({ "secret": "sensitive" }));
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "private, no-store"
+        );
+        assert_eq!(response.headers().get(header::PRAGMA).unwrap(), "no-cache");
+    }
 }
+
+#[cfg(test)]
+#[path = "credential_operations_tests.rs"]
+mod postgres_tests;

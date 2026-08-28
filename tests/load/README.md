@@ -25,6 +25,7 @@ N=60  npm run byoc          # BYOC scale + request flood
       npm run attack-arena # fixed-rate already-open public arena polling gate
       npm run control-plane-outage # acknowledged worker/missing-image recovery
       npm run proxy-traffic-admission # acknowledged line-rate proxy byte-work gate
+      npm run personal-token-admission # managed-token valid/revoked/rotating-invalid gate
       npm run monitor-history # fixed-rate bounded monitor history + durable backfills
       npm run participation-review # fixed-rate bounded 12k-team organizer review
       npm run details-read  # fixed-rate authenticated challenge-details poll
@@ -146,6 +147,24 @@ for a whole-pool capacity measurement.
 Any remote A&D target also requires `ALLOW_REMOTE_AD_BEARER_STRESS` to equal its
 exact origin. A remote WebSocket flood similarly requires
 `ALLOW_REMOTE_READONLY_WS_FLOOD` to equal the exact target origin.
+
+The managed personal-token gate requires one current admin token and one revoked token.
+It mixes valid, revoked, rotating-random, one-NAT, and many-source reads at a fixed
+arrival rate, keeps `healthz` independent, accepts only typed 401/429 failures, and
+proves that token authority metadata did not change (the intentionally throttled
+`last_used_at` field is excluded):
+
+```sh
+PERSONAL_TOKEN_STRESS_ACK=1 \
+  VALID_PERSONAL_TOKEN=rsctf_pat_v1_<43-chars> \
+  REVOKED_PERSONAL_TOKEN=rsctf_pat_v1_<43-chars> \
+  RATE=10 DURATION=20s SUMMARY_JSON=/tmp/personal-token-admission.json \
+  npm run personal-token-admission
+```
+
+For a non-loopback target, set `ALLOW_REMOTE_PERSONAL_TOKEN_STRESS` to its exact
+origin. Point `TARGET` at the load balancer to exercise the shared Redis source and
+digest budgets across replicas.
 
 The public-security gate discovers one real event-issued team credential from a
 currently live Accepted participation, generates an attacker-controlled Ed25519 key,
