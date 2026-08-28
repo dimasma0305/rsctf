@@ -38,6 +38,14 @@ fn immutable_jobs_never_coalesce_different_revisions() {
     ));
 }
 
+#[test]
+fn terminal_retention_is_bounded_and_cascades_from_jobs() {
+    assert!((1..=30).contains(&TERMINAL_RETENTION_DAYS));
+    assert!((1..=1_000).contains(&MAX_PURGE_BATCH));
+    assert!(PURGE_TERMINAL_SQL.contains("FOR UPDATE SKIP LOCKED LIMIT $2"));
+    assert!(PURGE_TERMINAL_SQL.contains("DELETE FROM \"ControlPlaneJobs\""));
+}
+
 #[tokio::test]
 #[ignore = "requires migrated disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn postgres_coalesces_retries_and_recovers_one_expired_lease() {
