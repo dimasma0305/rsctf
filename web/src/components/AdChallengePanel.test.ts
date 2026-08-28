@@ -111,7 +111,10 @@ test('terminal A&D state failures expose an accessible Retry in live and snapsho
     })
     assert.equal(stateReads, 3, 'explicit Retry performs one fresh state read')
     assert.equal(mounted.container.querySelector('[role="alert"]'), null)
-    assert.match(mounted.container.querySelector('a[download]')?.textContent ?? '', /Download \.tar\.gz/)
+    assert.match(
+      mounted.container.querySelector('button[aria-label="Download .tar.gz"]')?.textContent ?? '',
+      /Download \.tar\.gz/
+    )
 
     await act(async () => mounted.root.unmount())
     mounted = await mount(false, { ...state, services: [] })
@@ -122,6 +125,73 @@ test('terminal A&D state failures expose an accessible Retry in live and snapsho
     await act(async () => mounted.root.unmount())
     gameApi.gameAdState = originalState
     gameApi.adGameGetSshKey = originalSshKey
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('a route-owned A&D snapshot prevents a modal poll and owns Retry interaction', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/games/41/challenges' })
+  const restoreDom = installTestDom(browser)
+  const i18n = i18next.createInstance()
+  await i18n.init({ lng: 'en', fallbackLng: 'en', resources: { en: { translation: {} } } })
+  const originalState = api.game.gameAdState
+  let directReads = 0
+  let ownerRetries = 0
+  api.game.gameAdState = (async () => {
+    directReads += 1
+    throw new Error('the modal must not own this route read')
+  }) as typeof api.game.gameAdState
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    await act(async () => {
+      root.render(
+        createElement(
+          HeadlessMantineProvider,
+          null,
+          createElement(
+            I18nextProvider,
+            { i18n },
+            createElement(
+              SWRConfig,
+              { value: { provider: () => new Map(), dedupingInterval: 0 } },
+              createElement(AdChallengePanel, {
+                gameId: 41,
+                challengeId: 7,
+                active: true,
+                snapshotOnly: true,
+                stateOwner: {
+                  error: { response: { status: 503 } },
+                  mutate: async () => {
+                    ownerRetries += 1
+                  },
+                },
+              })
+            )
+          )
+        )
+      )
+      await flush()
+    })
+
+    assert.equal(directReads, 0)
+    const retry = container.querySelector<HTMLButtonElement>('button[aria-label="Retry A&D state"]')
+    assert.ok(retry)
+    await act(async () => {
+      retry.click()
+      await flush()
+    })
+    assert.equal(ownerRetries, 1)
+    assert.equal(directReads, 0)
+  } finally {
+    await act(async () => root.unmount())
+    api.game.gameAdState = originalState
     delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
     await browser.happyDOM.close()
     restoreDom()

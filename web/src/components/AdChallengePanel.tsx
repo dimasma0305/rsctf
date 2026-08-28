@@ -6,8 +6,8 @@ import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
-import { showErrorMsg } from '@Utils/Shared'
 import { createOperationId, waitForControlJob } from '@Utils/ControlJobs'
+import { showErrorMsg } from '@Utils/Shared'
 import { useChallengePolling } from '@Hooks/useChallengePolling'
 import api, { AdSshKeyInfoModel, AdStateModel, AdTeamServiceStateModel } from '@Api'
 import misc from '@Styles/Misc.module.css'
@@ -38,6 +38,14 @@ interface AdChallengePanelProps {
    * defended-service backup must still be downloadable.
    */
   snapshotOnly?: boolean
+  /** Route-owned A&D state. When supplied, this modal must not start a second poll. */
+  stateOwner?: AdStateOwner
+}
+
+export interface AdStateOwner {
+  adState?: AdStateModel
+  error?: unknown
+  mutate: () => Promise<unknown>
 }
 
 /**
@@ -47,7 +55,13 @@ interface AdChallengePanelProps {
  * Toolkit modal (sidebar button) so this panel only shows live per-team
  * operational state.
  */
-export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeId, active, snapshotOnly }) => {
+export const AdChallengePanel: FC<AdChallengePanelProps> = ({
+  gameId,
+  challengeId,
+  active,
+  snapshotOnly,
+  stateOwner,
+}) => {
   const { t } = useTranslation()
   const stateRequest = useCallback(
     async (signal: AbortSignal) => {
@@ -56,16 +70,15 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
     },
     [gameId]
   )
-  const {
-    data: adState,
-    error: stateError,
-    mutate: mutateState,
-  } = useChallengePolling<AdStateModel>({
+  const localState = useChallengePolling<AdStateModel>({
     key: gameId > 0 ? `/api/Game/${gameId}/Ad/State` : null,
-    active,
+    active: active && stateOwner === undefined,
     refreshInterval: snapshotOnly ? 0 : 10_000,
     request: stateRequest,
   })
+  const adState = stateOwner ? stateOwner.adState : localState.data
+  const stateError = stateOwner ? stateOwner.error : localState.error
+  const mutateState = stateOwner ? stateOwner.mutate : localState.mutate
   const sshRequest = useCallback(
     async (signal: AbortSignal) => {
       const response = await api.game.adGameGetSshKey(gameId, { signal })
@@ -227,9 +240,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
           ).data
         } catch (error) {
           if (controller.signal.aborted) throw error
-          job = (
-            await api.game.gameAdResetJobByOperation(gameId, operationId, { signal: controller.signal })
-          ).data
+          job = (await api.game.gameAdResetJobByOperation(gameId, operationId, { signal: controller.signal })).data
         }
         await waitForControlJob(
           job,

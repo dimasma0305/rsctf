@@ -42,7 +42,7 @@ import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
 import { FC, MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { AdChallengePanel } from '@Components/AdChallengePanel'
+import { AdChallengePanel, type AdStateOwner } from '@Components/AdChallengePanel'
 import { ChallengeDeadlineNotice } from '@Components/ChallengeDeadlineNotice'
 import { FlagVerdictOverlay } from '@Components/FlagVerdictOverlay'
 import { InstanceEntry } from '@Components/InstanceEntry'
@@ -106,6 +106,7 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
   /** When set, the modal is rendering an A&D challenge — switches the footer
    *  from the flag-submit form to the AdChallengePanel (status + API docs). */
   gameId?: number
+  adStateOwner?: AdStateOwner
   flagVerdict?: FlagVerdictState | null
   onDismissFlagVerdict?: () => void
 }
@@ -140,6 +141,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     solverTotal,
     solverError,
     gameId,
+    adStateOwner,
     flagVerdict,
     onDismissFlagVerdict,
     withOverlay = true,
@@ -693,7 +695,12 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
         {isKoth ? (
           <KothChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} active={Boolean(modalProps.opened)} />
         ) : (
-          <AdChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} active={Boolean(modalProps.opened)} />
+          <AdChallengePanel
+            gameId={gameId}
+            challengeId={challenge?.id ?? 0}
+            active={Boolean(modalProps.opened)}
+            stateOwner={adStateOwner}
+          />
         )}
         {eventAction}
       </Stack>
@@ -715,6 +722,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
             challengeId={challenge?.id ?? 0}
             active={Boolean(modalProps.opened)}
             snapshotOnly
+            stateOwner={adStateOwner}
           />
         )}
         {!readOnlyArchive && (

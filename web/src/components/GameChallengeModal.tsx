@@ -6,6 +6,7 @@ import { Icon } from '@mdi/react'
 import { FC, MutableRefObject, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSWRConfig } from 'swr'
+import type { AdStateOwner } from '@Components/AdChallengePanel'
 import { ChallengeModal, SolverInfo } from '@Components/ChallengeModal'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
 import { assertJsonResponse, NonJsonResponseError } from '@Utils/ChallengePolling'
@@ -50,6 +51,7 @@ interface GameChallengeModalProps extends ModalProps {
   status?: SubmissionType
   /** Proven by the current catalog/team response, not by a retained selection. */
   challengeOwned?: boolean
+  adStateOwner?: AdStateOwner
 }
 
 interface PendingFlagVerdict extends FlagVerdictIdentity {
@@ -114,6 +116,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     title,
     score,
     challengeOwned = true,
+    adStateOwner,
     ...modalProps
   } = props
 
@@ -678,6 +681,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       gameEnded={gameEnded}
       practiceMode={practiceMode}
       gameId={gameId}
+      adStateOwner={adStateOwner}
       flagVerdict={flagVerdict}
       onDismissFlagVerdict={() => {
         if (flagVerdict) dispatchFlagVerdict({ type: 'dismiss', sequence: flagVerdict.sequence })

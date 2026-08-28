@@ -1,8 +1,52 @@
 import dayjs from 'dayjs'
 import { useEffect, useRef } from 'react'
-import { SWRConfiguration } from 'swr'
-import api, { ClientConfig, ContainerPortMappingType } from '@Api'
+import { type Middleware, SWRConfiguration, unstable_serialize } from 'swr'
+import { createDeferredTimerOwner } from '@Utils/DeferredTimer'
 import { boundedRetryDelay, isRetryableHttpError } from '@Utils/HttpError'
+import api, { ClientConfig, ContainerPortMappingType } from '@Api'
+
+const onceSWRRetry: NonNullable<SWRConfiguration['onErrorRetry']> = (error, _key, _config, revalidate, options) => {
+  // This identity marker is replaced by cancelSafeOnceSWRRetryMiddleware.
+  // If a caller deliberately removes that middleware, fail closed instead of
+  // creating an unowned callback that can survive its component.
+  void error
+  void revalidate
+  void options
+}
+
+export const cancelSafeOnceSWRRetryMiddleware: Middleware = (useSWRNext) =>
+  function useCancelSafeOnceSWRRetry(key, fetcher, config) {
+    const serializedKey = unstable_serialize(key)
+    const timerOwnerRef = useRef(createDeferredTimerOwner())
+    const timerOwner = timerOwnerRef.current
+
+    useEffect(() => {
+      timerOwner.cancelAll()
+      timerOwnerRef.current = createDeferredTimerOwner()
+      return () => timerOwnerRef.current.cancelAll()
+    }, [serializedKey])
+
+    const request = useSWRNext(key, fetcher, {
+      ...config,
+      onErrorRetry:
+        config.onErrorRetry === onceSWRRetry
+          ? (error, _retryKey, _retryConfig, revalidate, options) => {
+              const delay = boundedRetryDelay(error, options.retryCount)
+              if (delay === null) return
+              timerOwnerRef.current.schedule(() => revalidate({ retryCount: options.retryCount }), delay)
+            }
+          : config.onErrorRetry,
+    })
+
+    useEffect(() => {
+      if (request.data !== undefined && request.error === undefined) {
+        timerOwnerRef.current.cancelAll()
+        timerOwnerRef.current = createDeferredTimerOwner()
+      }
+    }, [request.data, request.error])
+
+    return request
+  }
 
 export const RSCTF_REPOSITORY = 'https://github.com/dimasma0305/rsctf'
 export const RSCTF_DOCUMENTATION = `${RSCTF_REPOSITORY}/tree/main/docs`
@@ -15,11 +59,8 @@ export const OnceSWRConfig: SWRConfiguration = {
   refreshWhenOffline: false,
   shouldRetryOnError: isRetryableHttpError,
   errorRetryCount: 3,
-  onErrorRetry: (error, _key, _config, revalidate, options) => {
-    const delay = boundedRetryDelay(error, options.retryCount)
-    if (delay === null) return
-    window.setTimeout(() => revalidate({ retryCount: options.retryCount }), delay)
-  },
+  onErrorRetry: onceSWRRetry,
+  use: [cancelSafeOnceSWRRetryMiddleware],
 }
 
 const fallbackConfig: ClientConfig = {
