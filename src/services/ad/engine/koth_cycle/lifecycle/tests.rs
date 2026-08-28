@@ -122,6 +122,59 @@ fn persistent_replacement_preserves_the_static_runtime_flag() {
 }
 
 #[test]
+fn managed_reporter_replaces_a_pre_upgrade_create_orphan() {
+    let cycle = CycleRow {
+        id: 41,
+        game_id: 7,
+        challenge_id: 9,
+        cycle_number: 1,
+        phase: "CreatePending".to_string(),
+        planned_start_round: 1,
+        old_container_id: None,
+        replacement_container_id: None,
+        replacement_host: None,
+        replacement_port: None,
+        expected_image: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .to_string(),
+        reset_attempt: 3,
+        readiness_attempt: 0,
+    };
+    let hill = super::data::HillSpec {
+        target_id: 5,
+        image: cycle.expected_image.clone(),
+        memory_limit: 512,
+        cpu_count: 2,
+        storage_limit: 1_024,
+        expose_port: 8080,
+        allow_egress: false,
+        checker_dir: None,
+        runtime_flag: Some("flag{sealed-runtime-value}".to_string()),
+    };
+    let reporter = crate::services::ad::koth_reporter::TargetReporterRuntime {
+        env: vec![(
+            crate::services::ad::koth_reporter::REPORTER_SECRET_ENV.to_string(),
+            "koth_target_test".to_string(),
+        )],
+        callback_port: 8080,
+    };
+
+    let legacy = replacement_container_spec(cycle.expected_image.clone(), &cycle, &hill, None);
+    let managed =
+        replacement_container_spec(cycle.expected_image.clone(), &cycle, &hill, Some(&reporter));
+
+    assert_eq!(
+        legacy.operation_id.as_deref(),
+        Some("koth-cycle:41:attempt:3")
+    );
+    assert_eq!(
+        managed.operation_id.as_deref(),
+        Some("koth-cycle:41:attempt:3:managed-reporter-v1")
+    );
+    assert_ne!(managed.operation_id, legacy.operation_id);
+    assert_eq!(managed.control_plane_callback_port, Some(8080));
+}
+
+#[test]
 fn persistent_replacement_rejects_an_unusable_backend_endpoint() {
     let missing_host = ContainerInfo {
         id: "container-1".to_string(),

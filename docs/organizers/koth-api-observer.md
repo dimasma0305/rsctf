@@ -150,7 +150,9 @@ the player protocol; it receives no reporter credential or scoring state.
 1. Open the game's **A&D / KotH operations** page and select **KotH**.
 2. In the hill's **Claim input** column, choose **Enable Leaderboard**.
 3. Confirm `RSCTF_KOTH_REPORTER_BASE_URL` is configured on the lifecycle-owning
-   rsctf role and resolves to a private rsctf origin from managed targets.
+   rsctf role and on web roles that serve organizer status. The origin must
+   resolve privately from managed targets; web roles only use it as a capability
+   flag and need no route to that private address.
 4. Keep scoring paused and let rsctf create the official replacement target.
    rsctf generates the credential before the crash-recoverable create and
    injects the exact runtime contract below.

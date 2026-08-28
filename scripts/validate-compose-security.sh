@@ -116,6 +116,7 @@ expected = {
     "RSCTF_DISCORD_TOKEN_URL": "https://discord.example/token",
     "RSCTF_DISCORD_USERINFO_URL": "https://discord.example/userinfo",
 }
+
 actual = {key: environment.get(key) for key in expected}
 if actual != expected:
     raise SystemExit(
@@ -123,6 +124,32 @@ if actual != expected:
         f"expected {expected}, got {actual}"
     )
 ' "$service"
+}
+
+assert_split_koth_reporting() {
+  python3 -c '
+import json
+import sys
+
+document = json.load(sys.stdin)
+expected = "http://rsctf-koth-reporter:8080"
+for name in ("rsctf", "rsctf-control"):
+    actual = document["services"][name].get("environment", {}).get(
+        "RSCTF_KOTH_REPORTER_BASE_URL"
+    )
+    if actual != expected:
+        raise SystemExit(
+            f"{name} managed KotH reporting mismatch: expected {expected}, got {actual}"
+        )
+aliases = (
+    document["services"]["rsctf-control"]
+    .get("networks", {})
+    .get("rsctf-ad", {})
+    .get("aliases", [])
+)
+if "rsctf-koth-reporter" not in aliases:
+    raise SystemExit("control does not own the private managed KotH reporter alias")
+'
 }
 
 assert_bounded_logs() {
@@ -267,6 +294,8 @@ RSCTF_AD_SUBMIT_BURST_FLAGS=3200 \
   | assert_private_challenge_proxy rsctf-control
 "${compose[@]}" "${split[@]}" config --format json \
   | assert_bounded_logs rsctf-control
+"${compose[@]}" "${split[@]}" config --format json \
+  | assert_split_koth_reporting
 
 split_docker=(
   -f deploy/compose.yml

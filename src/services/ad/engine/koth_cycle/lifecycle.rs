@@ -444,6 +444,21 @@ fn replacement_container_spec(
     spec: &data::HillSpec,
     reporter: Option<&crate::services::ad::koth_reporter::TargetReporterRuntime>,
 ) -> ContainerSpec {
+    let operation_id = format!(
+        "koth-cycle:{}:attempt:{}{}",
+        cycle.id,
+        cycle.reset_attempt,
+        if reporter.is_some() {
+            // v0.1.92 can leave a crash-orphan under the unsuffixed identity.
+            // A reporter-aware create must use a new identity so Docker cannot
+            // reject the changed launch fingerprint and Kubernetes cannot
+            // adopt a Pod without the credential or callback policy. Normal
+            // orphan reconciliation removes the unpublished predecessor.
+            ":managed-reporter-v1"
+        } else {
+            ""
+        }
+    );
     ContainerSpec {
         game_kind: rsctf_worker_protocol::GameKind::KingOfTheHill,
         image,
@@ -465,10 +480,7 @@ fn replacement_container_spec(
         allow_egress: spec.allow_egress,
         control_plane_callback_port: reporter.map(|runtime| runtime.callback_port),
         network_mode: crate::utils::enums::NetworkMode::Open,
-        operation_id: Some(format!(
-            "koth-cycle:{}:attempt:{}",
-            cycle.id, cycle.reset_attempt
-        )),
+        operation_id: Some(operation_id),
     }
 }
 

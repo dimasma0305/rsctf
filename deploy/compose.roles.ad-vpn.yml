@@ -15,6 +15,9 @@ services:
       RSCTF_AD_VPN_SERVICES_NETWORK: ${RSCTF_AD_VPN_SERVICES_NETWORK:-${COMPOSE_PROJECT_NAME:-rsctf}-ad}
       RSCTF_AD_VPN_SERVER_ENDPOINT: ${RSCTF_AD_VPN_SERVER_ENDPOINT:?Set the public WireGuard host:port}
       RSCTF_AD_VPN_LISTEN_PORT: ${RSCTF_AD_VPN_PORT:-51820}
+      # Web serves the organizer status endpoint. It needs the same capability
+      # flag as control even though only control can reach this private alias.
+      RSCTF_KOTH_REPORTER_BASE_URL: ${RSCTF_KOTH_REPORTER_BASE_URL:-http://rsctf-koth-reporter:8080}
 
   rsctf-control:
     user: "0:0"
