@@ -32,7 +32,7 @@ pub enum AppError {
     Conflict(String),
 
     #[error("too many requests")]
-    TooManyRequests,
+    TooManyRequests { retry_after: Option<u64> },
 
     #[error("{0}")]
     PayloadTooLarge(String),
@@ -80,6 +80,11 @@ impl AppError {
     pub fn unavailable(msg: impl Into<String>) -> Self {
         AppError::ServiceUnavailable(msg.into())
     }
+    pub fn too_many_requests(retry_after: u64) -> Self {
+        AppError::TooManyRequests {
+            retry_after: Some(retry_after.max(1)),
+        }
+    }
 
     /// RSCTF `ErrorCode.GameEnded` (10002): 400 with the numeric code in the body.
     /// The React `TeamRank` redirects when `error.status === 10002`.
@@ -107,7 +112,7 @@ impl AppError {
             AppError::Forbidden => StatusCode::FORBIDDEN,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
-            AppError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
+            AppError::TooManyRequests { .. } => StatusCode::TOO_MANY_REQUESTS,
             AppError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Coded { http, .. } => *http,
@@ -143,8 +148,34 @@ impl IntoResponse for AppError {
             title,
             status: body_status,
         };
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        if let AppError::TooManyRequests {
+            retry_after: Some(retry_after),
+        } = self
+        {
+            if let Ok(value) = axum::http::HeaderValue::from_str(&retry_after.to_string()) {
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::RETRY_AFTER, value);
+            }
+        }
+        response
     }
 }
 
 pub type AppResult<T> = Result<T, AppError>;
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+
+    use super::AppError;
+
+    #[test]
+    fn retryable_overload_carries_retry_after() {
+        let response = AppError::too_many_requests(0).into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "1");
+    }
+}

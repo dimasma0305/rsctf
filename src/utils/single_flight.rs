@@ -36,6 +36,10 @@ static PROVISIONING_GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaph
             .unwrap_or(4);
         std::sync::Arc::new(tokio::sync::Semaphore::new(permits))
     });
+static EXERCISE_GRADING_GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(8)));
+static EXERCISE_RUNTIME_GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
 use tokio::sync::broadcast;
 
 /// Bound operations that retain a team-roster transaction while issuing
@@ -383,6 +387,40 @@ impl PgAdvisoryLock {
         Self::acquire_with_permit(pool, key, None).await
     }
 
+    /// Fail-fast practice grading admission. The returned transaction owns the
+    /// cross-replica user fence and must also execute every protected query, so
+    /// a submission never reserves one pool connection while waiting for a
+    /// second checkout.
+    pub(crate) async fn try_acquire_exercise_grading(
+        pool: &sqlx::PgPool,
+        key: &str,
+    ) -> anyhow::Result<Option<Self>> {
+        let Ok(permit) = EXERCISE_GRADING_GATE.clone().try_acquire_owned() else {
+            return Ok(None);
+        };
+        let Ok(transaction) = tokio::time::timeout(
+            Duration::from_millis(250),
+            super::database::begin_sqlx_transaction(pool),
+        )
+        .await
+        else {
+            return Ok(None);
+        };
+        let mut transaction = transaction?;
+        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+            .bind(advisory_lock_key(key))
+            .fetch_one(&mut *transaction)
+            .await?;
+        if !acquired {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            transaction: Some(transaction),
+            _concurrency_permit: Some(permit),
+        }))
+    }
+
     /// Try to take a short shared transaction lock against an existing
     /// exclusive advisory-lock domain. Shared readers never block one another;
     /// a concurrent roster mutation makes this fail immediately so a poll does
@@ -563,6 +601,35 @@ impl PgAdvisoryLock {
 }
 
 impl PgSessionAdvisoryLock {
+    /// Fail-fast, close-on-drop session ownership for legacy exercise runtime
+    /// work. This deliberately spans Docker/worker I/O without retaining a
+    /// PostgreSQL transaction; the small gate preserves pool headroom.
+    pub(crate) async fn try_acquire_exercise_runtime(
+        pool: &sqlx::PgPool,
+        key: &str,
+    ) -> anyhow::Result<Option<Self>> {
+        let Ok(permit) = EXERCISE_RUNTIME_GATE.clone().try_acquire_owned() else {
+            return Ok(None);
+        };
+        let Some(mut connection) = pool.try_acquire() else {
+            return Ok(None);
+        };
+        connection.close_on_drop();
+        let lock_key = advisory_lock_key(key);
+        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+            .bind(lock_key)
+            .fetch_one(&mut *connection)
+            .await?;
+        if !acquired {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            connection: Some(connection),
+            lock_key,
+            _concurrency_permit: Some(permit),
+        }))
+    }
+
     /// Serialize one synchronous admin bulk-build request per game across all
     /// replicas. The session lease spans slow Docker work without an open
     /// transaction; close-on-drop releases it if the HTTP request is cancelled.
