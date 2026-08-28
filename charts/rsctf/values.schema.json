@@ -326,9 +326,10 @@
     "config": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["publicUrl", "cookieSecure", "trustedProxyCidrs", "jwtTtlSeconds", "allowRegister", "allowPasswordRegistration", "emailConfirm", "adminConfirm", "activeOnRegister", "useCaptcha", "migrate", "logLevel", "provisioningConcurrency", "repoScanConcurrency", "dbMaxConnections", "checkerUidBase", "checkerProcessBudget", "adSubmitBurstFlags", "suspicionReconcileSeconds", "suspicionFinalizeGraceSeconds", "containerMaxMemoryMb", "containerMaxCpuCount"],
+      "required": ["publicUrl", "kothReporterBaseUrl", "cookieSecure", "trustedProxyCidrs", "jwtTtlSeconds", "allowRegister", "allowPasswordRegistration", "emailConfirm", "adminConfirm", "activeOnRegister", "useCaptcha", "migrate", "logLevel", "provisioningConcurrency", "repoScanConcurrency", "dbMaxConnections", "checkerUidBase", "checkerProcessBudget", "adSubmitBurstFlags", "suspicionReconcileSeconds", "suspicionFinalizeGraceSeconds", "containerMaxMemoryMb", "containerMaxCpuCount"],
       "properties": {
         "publicUrl": {"type": "string", "pattern": "^(|https?://[^[:space:]]+)$"},
+        "kothReporterBaseUrl": {"type": "string", "pattern": "^(|https?://[^[:space:]/?#@]+/?)$"},
         "cookieSecure": {"type": "boolean"},
         "trustedProxyCidrs": {"type": "string"},
         "jwtTtlSeconds": {"type": "integer", "minimum": 1},
@@ -376,13 +377,15 @@
     "kubernetes": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["challengeNamespace", "createChallengeNamespace", "challengeNamespaceLabels", "publicEntry", "challengeUid", "metrics", "adServiceCidr", "isolatedIngressCidrs", "podCidrs", "networkPolicyEnforced", "isolatedPodNetns"],
+      "required": ["challengeNamespace", "createChallengeNamespace", "challengeNamespaceLabels", "publicEntry", "challengeUid", "kothReporterPodSelector", "dnsCidrs", "metrics", "adServiceCidr", "isolatedIngressCidrs", "podCidrs", "networkPolicyEnforced", "isolatedPodNetns"],
       "properties": {
         "challengeNamespace": {"type": "string"},
         "createChallengeNamespace": {"type": "boolean"},
         "challengeNamespaceLabels": {"type": "object", "additionalProperties": {"type": "string"}},
         "publicEntry": {"type": "string"},
         "challengeUid": {"type": "integer", "minimum": 1},
+        "kothReporterPodSelector": {"type": "string", "maxLength": 1024, "description": "Exact callback Service pod selector. Managed KotH Kubernetes egress requires app.kubernetes.io/name, app.kubernetes.io/instance, and app.kubernetes.io/component."},
+        "dnsCidrs": {"type": "array", "items": {"type": "string"}, "maxItems": 8, "uniqueItems": true, "description": "Exact cluster resolver IPs or host-prefix CIDRs. Empty derives nameservers from the rsctf Pod's /etc/resolv.conf."},
         "metrics": {
           "type": "object",
           "additionalProperties": false,

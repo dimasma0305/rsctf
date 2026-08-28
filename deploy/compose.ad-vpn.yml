@@ -15,6 +15,7 @@ services:
       RSCTF_AD_VPN_SERVER_ENDPOINT: ${RSCTF_AD_VPN_SERVER_ENDPOINT:?Set the public WireGuard host:port}
       RSCTF_AD_VPN_LISTEN_PORT: ${RSCTF_AD_VPN_PORT:-51820}
       RSCTF_AD_SSH_PORT: ${RSCTF_AD_SSH_PORT:-2222}
+      RSCTF_KOTH_REPORTER_BASE_URL: ${RSCTF_KOTH_REPORTER_BASE_URL:-http://rsctf-koth-reporter:8080}
     cap_add:
       - NET_ADMIN
       # libxtables opens a raw socket while resolving `-m set` rules, even
@@ -32,7 +33,9 @@ services:
       - ${RSCTF_AD_VPN_BIND_IP:-0.0.0.0}:${RSCTF_AD_VPN_PORT:-51820}:${RSCTF_AD_VPN_PORT:-51820}/udp
       - ${RSCTF_AD_SSH_BIND_IP:-0.0.0.0}:${RSCTF_AD_SSH_PORT:-2222}:${RSCTF_AD_SSH_PORT:-2222}/tcp
     networks:
-      - rsctf-ad
+      rsctf-ad:
+        aliases:
+          - rsctf-koth-reporter
 
   # Opt in with COMPOSE_PROFILES=event-sensor. This sidecar shares only the
   # VPN network namespace, has no database credential/socket, and sheds

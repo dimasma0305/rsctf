@@ -36,8 +36,8 @@ Only attack systems and addresses explicitly identified as challenge targets. Th
 - Use the control token issued to your team.
 - Preserve the hill's expected functionality.
 - Do not interfere with the checker or control plane.
-- Do not call, probe, forge, or obtain credentials for the organizer-side KotH
-  observer API; use only the player-facing capture mechanic published by the challenge.
+- Do not call, probe, forge, or obtain credentials for KotH managed-reporting
+  endpoints; use only the player-facing mechanic published by the challenge.
 
 ## Reporting a problem
 

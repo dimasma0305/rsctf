@@ -610,6 +610,15 @@ fn common_router() -> Router<SharedState> {
             "/api/edit/games/{id}/ad/koth/{challengeId}/observer/operations/{operationId}",
             get(recover_observer_operation),
         )
+        .merge(reporting_router())
+    // No player score endpoint: Boot2Root hills read /koth/king, while Leaderboard
+    // accepts evidence only from its challenge-scoped managed target or legacy reporter.
+}
+
+/// Narrow callback surface shared by public web replicas for compatibility and
+/// the lifecycle-owning control process for private managed-target traffic.
+fn reporting_router() -> Router<SharedState> {
+    Router::new()
         .route(
             "/api/v1/koth/games/{id}/challenges/{challengeId}/context",
             get(observer_context),
@@ -622,8 +631,6 @@ fn common_router() -> Router<SharedState> {
             "/api/v1/koth/capability/authenticate",
             post(authenticate_capability).layer(DefaultBodyLimit::max(1_024)),
         )
-    // No player score endpoint: Boot2Root hills read /koth/king, while Leaderboard
-    // accepts evidence only from its challenge-scoped trusted referee.
 }
 
 fn recovery_router() -> Router<SharedState> {

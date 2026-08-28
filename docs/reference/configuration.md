@@ -177,6 +177,7 @@ uses S3.
 | `RSCTF_AD_VPN_SERVER_ENDPOINT` | Derived | Public `host:port` placed in player configurations |
 | `RSCTF_AD_VPN_DNS` | `1.1.1.1` | DNS server placed in generated WireGuard profiles |
 | `RSCTF_AD_VPN_ALLOWED_IPS` | Derived routes | Optional explicit routes in player profiles |
+| `RSCTF_KOTH_REPORTER_BASE_URL` | Unset | Private absolute HTTP(S) origin, without a path/query/credentials, that managed Leaderboard targets use for capability exchange, context reads, and evidence submission. Configure the same value on the lifecycle-owning role and web roles that serve organizer status; web roles treat it only as a capability flag. Kubernetes requires a cross-namespace Service origin such as `http://rsctf-network.rsctf-system.svc:8080`; callback policy allows that Service port and rsctf's configured bind/target port to cover Service translation. Leaving it unset keeps legacy external reporting only. |
 | `RSCTF_EVENT_VPN_CREDENTIAL_KEY` | Unset | Independent 32+ character key for event peer private-key encryption and short-lived proof signing |
 | `RSCTF_EVENT_VPN_PROOF_URL` | Unset | HTTPS rsctf origin reachable only over an event split route; required before an event can enable its VPN gate |
 | `RSCTF_EVENT_VPN_ALLOWED_IPS` | VPN client CIDR plus service routes | Additional narrow split-tunnel routes in event profiles; default routes are rejected |
@@ -326,6 +327,8 @@ explicit isolated load campaign, not as a scoring or event-size setting.
 | `RSCTF_K8S_ISOLATED_POD_NETNS` | `false` | Explicit confirmation of an ordinary isolated Pod network namespace |
 | `RSCTF_K8S_CONTROL_NAMESPACE` | Service-account namespace fallback | Namespace containing the rsctf control Pod |
 | `RSCTF_K8S_CONTROL_POD_LABEL` | `app.kubernetes.io/name=rsctf` | `key=value` selector allowed to reach A&D services |
+| `RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR` | Unset | Comma-separated exact callback Service pod selector for managed KotH egress. It must include `app.kubernetes.io/name`, `app.kubernetes.io/instance`, and `app.kubernetes.io/component`; copying the Service's complete `.spec.selector` prevents a challenge from reaching unrelated rsctf roles. The control namespace, canonical selector, and resolver peers are part of the lifecycle routing revision, so changing any of them rotates the target credential and prevents crash-orphan adoption. The Helm chart derives this for `all`, `control`, and `network`; a split `engine` must set `kubernetes.kothReporterPodSelector` to the `network` Service selector. |
+| `RSCTF_K8S_DNS_CIDRS` | Nameservers in `/etc/resolv.conf` | Comma-separated exact resolver IPs or host-prefix CIDRs admitted on TCP/UDP 53. This supports ordinary CoreDNS Service routing and NodeLocal DNSCache without assuming a single Pod label. Set `kubernetes.dnsCidrs` when rsctf runs outside the challenge cluster or uses a different resolver path. Broad resolver subnets and loopback addresses are rejected. |
 | `RSCTF_K8S_AD_INGRESS_CIDRS` | Empty | Extra exact CIDRs allowed into A&D service policies |
 | `RSCTF_K8S_ISOLATED_INGRESS_CIDRS` | Unset | Required for direct `Isolated` NodePorts; exact post-NAT source CIDRs admitted to the challenge port |
 | `RSCTF_K8S_POD_CIDRS` | Unset | Required for direct `Isolated` NodePorts; all cluster Pod CIDRs, excluded from every admitted source block |

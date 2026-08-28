@@ -131,6 +131,8 @@ mod m0108_koth_observer_rotation_operations;
 mod m0109_operator_console_latest_rows;
 mod m0110_participation_review_indexes;
 mod m0111_game_event_feed_cursor;
+mod m0112_koth_target_reporters;
+mod m0113_koth_reporter_routing_revision;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -268,6 +270,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0109_operator_console_latest_rows::Migration),
             Box::new(m0110_participation_review_indexes::Migration),
             Box::new(m0111_game_event_feed_cursor::Migration),
+            Box::new(m0112_koth_target_reporters::Migration),
+            Box::new(m0113_koth_reporter_routing_revision::Migration),
         ]
     }
 }
@@ -413,7 +417,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 9..],
+            &names[names.len() - 11..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -424,6 +428,8 @@ mod tests {
                 "m0109_operator_console_latest_rows",
                 "m0110_participation_review_indexes",
                 "m0111_game_event_feed_cursor",
+                "m0112_koth_target_reporters",
+                "m0113_koth_reporter_routing_revision",
             ]
         );
     }

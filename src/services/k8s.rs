@@ -25,9 +25,9 @@
 //! 4. **query** — get the Pod and map its `status.phase` to a coarse
 //!    [`ContainerStatus`].
 //!
-//! A live cluster is NOT available in this environment, so this module is
-//! compile-verified against the real crate APIs but cannot be exercised at
-//! runtime; genuinely-unrunnable glue is marked `// TODO`.
+//! Unit tests exercise the Kubernetes API wire contract, while CI also creates
+//! a disposable Kind cluster to prove cross-namespace managed KotH callback
+//! DNS and NetworkPolicy isolation.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -333,6 +333,10 @@ impl ContainerManager for KubernetesContainerManager {
         ContainerBackendKind::Kubernetes
     }
 
+    fn managed_callback_routing_identity(&self) -> AppResult<Option<String>> {
+        network::configured_reporter_route_identity().map(Some)
+    }
+
     async fn storage_quota_enforced(&self) -> Option<bool> {
         Some(true)
     }
@@ -355,10 +359,22 @@ impl ContainerManager for KubernetesContainerManager {
         let isolated = spec.network_mode == crate::utils::enums::NetworkMode::Isolated;
         let internal_only = ad_internal || spec.proxy_only;
         let ad_config = if ad_internal {
-            Some(ad_network_config()?)
+            Some(ad_network_config(
+                spec.allow_egress || !spec.control_plane_callback_ports.is_empty(),
+            )?)
         } else {
             None
         };
+        if !spec.control_plane_callback_ports.is_empty() {
+            let callback_configured = ad_config.as_ref().is_some_and(|config| {
+                config.control_namespace.is_some() && config.reporter_pod_selector.is_some()
+            });
+            if !callback_configured {
+                return Err(AppError::internal(
+                    "managed KotH reporting on Kubernetes requires RSCTF_K8S_CONTROL_NAMESPACE and RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR",
+                ));
+            }
+        }
 
         // Environment: caller-supplied vars plus the dynamic flag contract.
         let mut env: Vec<EnvVar> = spec
@@ -459,6 +475,7 @@ impl ContainerManager for KubernetesContainerManager {
                 None,
                 spec.expose_port,
                 spec.allow_egress,
+                &spec.control_plane_callback_ports,
                 config,
             ))
         } else if spec.proxy_only && isolated {

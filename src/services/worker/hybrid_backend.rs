@@ -60,6 +60,10 @@ impl ContainerManager for HybridWorkerContainerManager {
         self.local.backend_kind()
     }
 
+    fn managed_callback_routing_identity(&self) -> AppResult<Option<String>> {
+        self.local.managed_callback_routing_identity()
+    }
+
     fn requires_proxy(&self) -> bool {
         true
     }
@@ -198,6 +202,7 @@ mod tests {
             flag: None,
             ad_network: None,
             allow_egress: false,
+            control_plane_callback_ports: Vec::new(),
             network_mode: crate::utils::enums::NetworkMode::Open,
             operation_id: None,
         }

@@ -14,6 +14,7 @@ mod data;
 mod deadline;
 mod persistent;
 mod readiness;
+mod reporter;
 
 use super::state::CrownCyclePosition;
 use capability::mint_capabilities;
@@ -376,9 +377,15 @@ async fn create_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()>
         st.config.runtime_role,
         crate::services::challenge_images::shared_docker_daemon_acknowledged(),
     )?;
+    let reporter = reporter::ensure(st, cycle).await?;
     let info = st
         .containers
-        .create(replacement_container_spec(image, cycle, &spec))
+        .create(replacement_container_spec(
+            image,
+            cycle,
+            &spec,
+            reporter.as_ref(),
+        ))
         .await?;
     if !replacement_endpoint_is_valid(&info) {
         if let Err(error) = st.containers.destroy(&info.id).await {
@@ -428,7 +435,9 @@ fn replacement_container_spec(
     image: String,
     cycle: &CycleRow,
     spec: &data::HillSpec,
+    reporter: Option<&crate::services::ad::koth_reporter::TargetReporterRuntime>,
 ) -> ContainerSpec {
+    let operation_id = replacement_operation_id(cycle, reporter);
     ContainerSpec {
         game_kind: rsctf_worker_protocol::GameKind::KingOfTheHill,
         image,
@@ -438,7 +447,9 @@ fn replacement_container_spec(
         expose_port: spec.expose_port,
         publish_port: true,
         proxy_only: false,
-        env: Vec::new(),
+        env: reporter
+            .map(|runtime| runtime.env.clone())
+            .unwrap_or_default(),
         // Initial shared-hill provisioning injects the selected static flag.
         // Persistent arena replacements must preserve that exact runtime
         // contract as well; some challenge supervisors derive their internal
@@ -446,12 +457,32 @@ fn replacement_container_spec(
         flag: Some(spec.runtime_flag.clone().unwrap_or_default()),
         ad_network: Some(crate::services::ad_vpn::services_network()),
         allow_egress: spec.allow_egress,
+        control_plane_callback_ports: reporter
+            .map(|runtime| runtime.callback_ports.clone())
+            .unwrap_or_default(),
         network_mode: crate::utils::enums::NetworkMode::Open,
-        operation_id: Some(format!(
-            "koth-cycle:{}:attempt:{}",
-            cycle.id, cycle.reset_attempt
-        )),
+        operation_id: Some(operation_id),
     }
+}
+
+fn replacement_operation_id(
+    cycle: &CycleRow,
+    reporter: Option<&crate::services::ad::koth_reporter::TargetReporterRuntime>,
+) -> String {
+    let reporter_identity = reporter.map_or_else(String::new, |runtime| {
+        // v0.1.92 can leave a crash-orphan under the unsuffixed identity. The
+        // contract version fences that workload. The non-secret routing and
+        // credential revisions prevent adoption when callback policy changes
+        // or a route is revisited after its prior credential was revoked.
+        format!(
+            ":managed-reporter-v2:{}:{}",
+            runtime.routing_revision, runtime.credential_revision
+        )
+    });
+    format!(
+        "koth-cycle:{}:attempt:{}{}",
+        cycle.id, cycle.reset_attempt, reporter_identity
+    )
 }
 
 fn replacement_endpoint_is_valid(info: &ContainerInfo) -> bool {

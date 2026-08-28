@@ -100,8 +100,8 @@ Choose one format before official scoring; RSCTF freezes it with the hill:
   `/koth/king`, qualifies one holder, and scores acquisition, control, and
   reliability.
 - **Leaderboard KotH** is multi-team application or protocol KotH. Every
-  eligible team can score in each challenge-native finalized wave. A trusted
-  independent referee reports completed activity, ordered objective evidence,
+  eligible team can score in each challenge-native finalized wave. The
+  platform-managed target reports completed activity, ordered objective evidence,
   and a Crown only for one unique leader; RSCTF normalizes it and applies the
   constant 95% relative-performance plus 5% Crown formula. An exact top tie has
   no Crown.
@@ -111,9 +111,9 @@ provisional crown, or champion-cooldown score. It still uses pristine lifecycle
 resets, exact capability generations, an independent functional checker, and
 field-wide voids for platform failures.
 
-Configure the referee from the KotH operations table before official scoring.
-Keep its HMAC secret outside the player-facing application. See
-[Signed Leaderboard KotH referee](./koth-api-observer) for evidence design,
+Configure Leaderboard reporting from the KotH operations table before official scoring.
+Set the private managed-reporter origin on the lifecycle-owning rsctf role. See
+[Managed Leaderboard KotH reporting](./koth-api-observer) for evidence design,
 normalization, anti-cheat rules, the wire contract, and the runnable example.
 
 ## Review and enable

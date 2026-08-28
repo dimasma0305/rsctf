@@ -28,11 +28,12 @@ pub fn web_router() -> Router<SharedState> {
     )
 }
 
-/// Privileged singleton surface for lifecycle recovery. Custom checker probes
-/// install a short-lived uid-scoped firewall rule, so this must never execute
-/// on a capability-free web replica.
+/// Privileged singleton surface for lifecycle recovery and private managed
+/// target callbacks. Custom checker probes install a short-lived uid-scoped
+/// firewall rule, so recovery must never execute on a capability-free web
+/// replica; callback handlers remain shared with the compatibility web API.
 pub fn stateful_router() -> Router<SharedState> {
-    recovery_router()
+    recovery_router().merge(super::reporting_router())
 }
 
 pub(super) async fn redirect_recover_hill(

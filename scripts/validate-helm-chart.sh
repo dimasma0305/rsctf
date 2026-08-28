@@ -81,6 +81,20 @@ benchmark_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
   --show-only templates/configmap.yaml)"
 assert_contains "$benchmark_config" 'RSCTF_AD_SUBMIT_BURST_FLAGS: "3200"' \
   "explicit A&D submit burst was not rendered"
+managed_koth_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
+  --namespace rsctf-system \
+  --set containerBackend=kubernetes \
+  --set kubernetes.adServiceCidr=10.96.0.0/12 \
+  --set 'kubernetes.dnsCidrs[0]=169.254.20.10/32' \
+  --set kubernetes.networkPolicyEnforced=true \
+  --set config.kothReporterBaseUrl=http://rsctf.rsctf-system.svc:8080 \
+  --show-only templates/configmap.yaml)"
+assert_contains "$managed_koth_config" 'RSCTF_KOTH_REPORTER_BASE_URL: "http://rsctf.rsctf-system.svc:8080"' \
+  "managed KotH reporter origin was not rendered"
+assert_contains "$managed_koth_config" 'RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR: "app.kubernetes.io/name=rsctf,app.kubernetes.io/instance=rsctf,app.kubernetes.io/component=all"' \
+  "monolithic managed KotH callback did not select its exact Service pods"
+assert_contains "$managed_koth_config" 'RSCTF_K8S_DNS_CIDRS: "169.254.20.10/32"' \
+  "managed KotH callback did not render the configured cluster resolver"
 for invalid_burst in 99 3201; do
   if helm template rsctf charts/rsctf "${jwt[@]}" \
     --set config.adSubmitBurstFlags="$invalid_burst" >/dev/null 2>&1; then
@@ -269,6 +283,7 @@ assert_absent "$kubernetes_hybrid" 'name: docker-socket' \
   "Kubernetes hybrid received the Docker socket"
 
 split=(
+  --namespace rsctf-system
   --set runtimeRole=web
   --set replicaCount=2
   --set-string image.tag=1.2.3
@@ -286,6 +301,61 @@ split=(
   --set config.dbMaxConnections=26
 )
 helm template rsctf-web charts/rsctf "${split[@]}" >/dev/null
+reporter_selector='app.kubernetes.io/name=rsctf,app.kubernetes.io/instance=rsctf-network,app.kubernetes.io/component=network'
+network_reporter="$(helm template rsctf-network charts/rsctf "${split[@]}" \
+  --set runtimeRole=network \
+  --set replicaCount=1 \
+  --set config.dbMaxConnections=16 \
+  --set config.kothReporterBaseUrl=http://rsctf-network.rsctf-system.svc:8080 \
+  --show-only templates/configmap.yaml \
+  --show-only templates/service.yaml)"
+assert_contains "$network_reporter" "RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR: \"$reporter_selector\"" \
+  "network reporter callback did not select the exact network Service pods"
+assert_contains "$network_reporter" $'  selector:\n    app.kubernetes.io/name: rsctf\n    app.kubernetes.io/instance: rsctf-network\n    app.kubernetes.io/component: "network"' \
+  "network callback Service selector does not match the reporter egress identity"
+for label in \
+  'app.kubernetes.io/name: rsctf' \
+  'app.kubernetes.io/instance: rsctf-network' \
+  'app.kubernetes.io/component: "network"'; do
+  assert_contains "$network_reporter" "$label" \
+    "network callback Service is missing selector label $label"
+done
+engine_reporter="$(helm template rsctf-engine charts/rsctf "${split[@]}" \
+  --set runtimeRole=engine \
+  --set replicaCount=2 \
+  --set config.dbMaxConnections=16 \
+  --set config.kothReporterBaseUrl=http://rsctf-network.rsctf-system.svc:8080 \
+  --set-string 'kubernetes.kothReporterPodSelector=app.kubernetes.io/name=rsctf\,app.kubernetes.io/instance=rsctf-network\,app.kubernetes.io/component=network' \
+  --show-only templates/configmap.yaml)"
+assert_contains "$engine_reporter" "RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR: \"$reporter_selector\"" \
+  "engine callback policy did not use the network Service identity"
+if helm template rsctf-engine charts/rsctf "${split[@]}" \
+  --set runtimeRole=engine \
+  --set replicaCount=2 \
+  --set config.dbMaxConnections=16 \
+  --set config.kothReporterBaseUrl=http://rsctf-network.rsctf-system.svc:8080 >/dev/null 2>&1; then
+  fail "Kubernetes engine accepted managed KotH reporting without the callback Service selector"
+fi
+if helm template rsctf-engine charts/rsctf "${split[@]}" \
+  --set runtimeRole=engine \
+  --set replicaCount=2 \
+  --set config.dbMaxConnections=16 \
+  --set config.kothReporterBaseUrl=http://rsctf-network.rsctf-system.svc:8080 \
+  --set-string kubernetes.kothReporterPodSelector=app.kubernetes.io/name=rsctf >/dev/null 2>&1; then
+  fail "Kubernetes engine accepted a callback selector shared by unrelated rsctf roles"
+fi
+for invalid_reporter_origin in \
+  http://rsctf-network.rsctf-system.svc:0 \
+  http://rsctf-network:8080 \
+  http://rsctf-network.other-system.svc:8080; do
+  if helm template rsctf-network charts/rsctf "${split[@]}" \
+    --set runtimeRole=network \
+    --set replicaCount=1 \
+    --set config.dbMaxConnections=16 \
+    --set config.kothReporterBaseUrl="$invalid_reporter_origin" >/dev/null 2>&1; then
+    fail "Kubernetes managed reporting accepted an origin outside the rsctf release namespace: $invalid_reporter_origin"
+  fi
+done
 split_ingress="$(helm template rsctf-web charts/rsctf "${split[@]}" \
   --set ingress.enabled=true \
   --set ingress.statefulRoutes.enabled=true \

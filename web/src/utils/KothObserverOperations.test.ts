@@ -23,6 +23,7 @@ const result = (operationId: string, revision: number): AdminKothObserverModel =
   operationId,
   claimSource: 'Api',
   configured: true,
+  managedTargetReporting: true,
   secretHint: null,
   objectiveCount: null,
   objectiveIds: null,
@@ -45,10 +46,7 @@ test('mutation identities are opaque random UUIDs', () => {
 
 test('an older reversed response cannot replace the current observer mutation', () => {
   const current = owner('00000000-0000-4000-8000-000000000002', 2)
-  assert.equal(
-    ownsKothObserverResult(current, result('00000000-0000-4000-8000-000000000001', 2), 9, 4),
-    false
-  )
+  assert.equal(ownsKothObserverResult(current, result('00000000-0000-4000-8000-000000000001', 2), 9, 4), false)
   assert.equal(ownsKothObserverResult(current, result(current.operationId, 3), 9, 4), true)
 })
 

@@ -258,6 +258,11 @@ probes:
 
 config:
   publicUrl: ""
+  # Internal origin reachable from managed KotH pods, normally the singleton
+  # control/network Service. With Kubernetes, use the cross-namespace origin
+  # service.release-namespace.svc; a bare Service name cannot resolve from the
+  # challenge namespace. Leave empty to disable lifecycle-bound reporting.
+  kothReporterBaseUrl: ""
   cookieSecure: true
   trustedProxyCidrs: ""
   jwtTtlSeconds: 604800
@@ -334,6 +339,14 @@ kubernetes:
     pod-security.kubernetes.io/warn: restricted
   publicEntry: ""
   challengeUid: 10000
+  # Exact selector of the rsctf Service that receives managed KotH callbacks.
+  # all/control/network infer their own three stable Service labels. A split
+  # engine must copy the network release Service selector here.
+  kothReporterPodSelector: ""
+  # Exact cluster resolver addresses used by challenge Pods. Empty derives
+  # nameservers from the rsctf Pod's /etc/resolv.conf. Set this explicitly for
+  # out-of-cluster control planes or clusters with a different DNS path.
+  dnsCidrs: []
   metrics:
     enabled: true
   # Required on every non-migration Kubernetes role, with or without VPN. This

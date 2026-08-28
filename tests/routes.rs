@@ -41,7 +41,7 @@ mod koth_recovery_ownership {
     use std::sync::Arc;
 
     use axum::body::Body;
-    use axum::http::{header, Request, StatusCode};
+    use axum::http::{header, Method, Request, StatusCode};
     use sea_orm::SqlxPostgresConnector;
     use sqlx::postgres::PgPoolOptions;
     use tower::ServiceExt;
@@ -56,6 +56,9 @@ mod koth_recovery_ownership {
 
     const LEGACY: &str = "/api/edit/games/17/ad/koth/23/recover";
     const STATEFUL: &str = "/api/stateful/edit/games/17/ad/koth/23/recover";
+    const CONTEXT: &str = "/api/v1/koth/games/17/challenges/23/context";
+    const OBSERVATIONS: &str = "/api/v1/koth/games/17/challenges/23/observations";
+    const CAPABILITY: &str = "/api/v1/koth/capability/authenticate";
 
     fn test_state(role: RuntimeRole) -> SharedState {
         let pool = PgPoolOptions::new()
@@ -83,9 +86,24 @@ mod koth_recovery_ownership {
         role: RuntimeRole,
         path: &str,
     ) -> axum::response::Response {
+        request(router, role, Method::POST, path).await
+    }
+
+    async fn request(
+        router: axum::Router<SharedState>,
+        role: RuntimeRole,
+        method: Method,
+        path: &str,
+    ) -> axum::response::Response {
         router
             .with_state(test_state(role))
-            .oneshot(Request::post(path).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap()
     }
@@ -123,6 +141,20 @@ mod koth_recovery_ownership {
                 let response = post(router.clone(), role, path).await;
                 assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn control_router_owns_the_managed_target_callback_surface() {
+        let router = rsctf::controllers::game::koth::stateful_router();
+        for (method, path) in [
+            (Method::GET, CONTEXT),
+            (Method::POST, OBSERVATIONS),
+            (Method::POST, CAPABILITY),
+        ] {
+            let response = request(router.clone(), RuntimeRole::Control, method, path).await;
+            assert_ne!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            assert_ne!(response.status(), StatusCode::METHOD_NOT_ALLOWED, "{path}");
         }
     }
 }

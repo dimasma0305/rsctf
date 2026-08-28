@@ -111,7 +111,7 @@ const KothClaimInputCell: FC<{ hill: AdminKothHill; onOpen: (hill: AdminKothHill
           {hill.claimSource === 'Api'
             ? hill.apiObserverConfigured
               ? t('admin.content.ad_ops.koth.observer_api', 'Leaderboard')
-              : t('admin.content.ad_ops.koth.observer_missing', 'API key missing')
+              : t('admin.content.ad_ops.koth.observer_missing', 'Leaderboard disabled')
             : hill.cycleNumber > 0
               ? t('admin.content.ad_ops.koth.observer_marker_locked', 'Container marker · locked')
               : t('admin.content.ad_ops.koth.observer_marker', 'Container marker')}
@@ -133,7 +133,7 @@ const KothClaimInputCell: FC<{ hill: AdminKothHill; onOpen: (hill: AdminKothHill
           {hill.claimSource === 'Marker' && hill.cycleNumber > 0
             ? t('admin.button.ad_ops.koth.observer_view', 'View input')
             : hill.apiObserverConfigured
-              ? t('admin.button.ad_ops.koth.observer_manage', 'Manage API')
+              ? t('admin.button.ad_ops.koth.observer_manage', 'Manage scoring')
               : t('admin.button.ad_ops.koth.observer_enable', 'Enable Leaderboard')}
         </Button>
       </Stack>
@@ -364,9 +364,16 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
         operation.kind === 'Rotate'
           ? t(
               'admin.notification.ad_ops.koth.observer_rotated',
-              'A new referee secret was created. Copy it now; only this authorized operation can recover it for 24 hours.'
+              result.managedTargetReporting
+                ? 'Managed scoring is enabled. The displayed credential is only for legacy external reporting.'
+                : 'A new referee secret was created. Copy it now; only this authorized operation can recover it for 24 hours.'
             )
-          : t('admin.notification.ad_ops.koth.observer_revoked', 'The KotH referee secret was revoked.'),
+          : t(
+              'admin.notification.ad_ops.koth.observer_revoked',
+              result.managedTargetReporting
+                ? 'Managed scoring was disabled for this hill.'
+                : 'The KotH referee secret was revoked.'
+            ),
     })
     await onMutate()
     return true
@@ -462,7 +469,9 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
       !window.confirm(
         t(
           'admin.confirm.ad_ops.koth.observer_revoke',
-          'Revoke this referee secret? Leaderboard evidence will stop until a new secret is created.'
+          observer.managedTargetReporting
+            ? 'Disable managed scoring for this hill? Leaderboard evidence will stop until it is enabled again.'
+            : 'Revoke this referee secret? Leaderboard evidence will stop until a new secret is created.'
         )
       )
     )
@@ -921,12 +930,12 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
         centered
         title={t('admin.content.ad_ops.koth.observer_title', {
           hill: observerHill?.title ?? '',
-          defaultValue: 'Leaderboard referee — {{hill}}',
+          defaultValue: 'Leaderboard scoring — {{hill}}',
         })}
       >
         {observerLoading || !observer ? (
           <Text size="sm" c="dimmed">
-            {t('admin.content.ad_ops.koth.observer_loading', 'Loading referee configuration…')}
+            {t('admin.content.ad_ops.koth.observer_loading', 'Loading scoring configuration…')}
           </Text>
         ) : (
           <Stack gap="md">
@@ -940,15 +949,17 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                   ? observer.configured
                     ? t(
                         'admin.content.ad_ops.koth.observer_active',
-                        'This Leaderboard hill accepts signed finalized-wave evidence for every team. RSCTF binds it to the current scoring round, brackets it around the functional checker, normalizes every result, and calculates every point.'
+                        observer.managedTargetReporting
+                          ? 'This Leaderboard hill receives finalized-wave evidence directly from its platform-managed target. RSCTF injects a lifecycle-bound credential, binds every snapshot to the current target and round, normalizes each result, and calculates every point.'
+                          : 'This Leaderboard hill accepts signed finalized-wave evidence from a compatible external referee. RSCTF binds it to the current scoring round, normalizes every result, and calculates every point.'
                       )
                     : t(
                         'admin.content.ad_ops.koth.observer_required',
-                        'This hill is officially locked to Leaderboard scoring but has no active referee credential. Create one before resuming scoring.'
+                        'This hill is officially locked to Leaderboard scoring but scoring is disabled. Enable it before resuming the event.'
                       )
                   : t(
                       'admin.content.ad_ops.koth.observer_marker_mode',
-                      'This boot2root hill currently reads /koth/king. Enabling the referee before the official snapshot selects multi-team Leaderboard scoring; the mode cannot change after scoring starts.'
+                      'This boot2root hill currently reads /koth/king. Enabling Leaderboard scoring before the official snapshot selects multi-team evidence scoring; the mode cannot change after scoring starts.'
                     )}
               </Text>
               {observer.claimSource === 'Api' && observer.configured && (
@@ -961,7 +972,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                     : t('admin.content.ad_ops.koth.observer_scheme_locked', {
                         count: observer.objectiveCount,
                         defaultValue:
-                          'Objective scheme locked: {{count}} identified, equally normalized components for the event. Referee credential changes cannot alter it.',
+                          'Objective scheme locked: {{count}} identified, equally normalized components for the event. Credential changes cannot alter it.',
                       })}
                 </Text>
               )}
@@ -987,13 +998,20 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
               <Alert
                 color="orange"
                 variant="light"
-                title={t('admin.content.ad_ops.koth.secret_recoverable', 'Copy and store this credential')}
+                title={t(
+                  'admin.content.ad_ops.koth.secret_recoverable',
+                  observer.managedTargetReporting
+                    ? 'Optional legacy external credential'
+                    : 'Copy and store this credential'
+                )}
               >
                 <Stack gap="xs">
                   <Text size="sm">
                     {t(
                       'admin.content.ad_ops.koth.secret_recoverable_body',
-                      'This HMAC secret is retained for 24 hours only for this authorized operation, so an ambiguous response can recover the exact same result. Copy it into the independent referee service, never the player-facing arena or client.'
+                      observer.managedTargetReporting
+                        ? 'No copy is needed for the managed target. rsctf injects a separate short-lived credential for each target lifecycle. This recoverable HMAC value exists only for deployments that still run a compatible external referee.'
+                        : 'This HMAC secret is retained for 24 hours only for this authorized operation, so an ambiguous response can recover the exact same result. Copy it into the independent referee service, never the player-facing arena or client.'
                     )}
                   </Text>
                   <Group gap="xs" wrap="nowrap">
@@ -1023,30 +1041,49 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
               </Alert>
             )}
 
-            <Stack gap={4}>
-              <Text size="xs" fw={700}>
-                {t('admin.content.ad_ops.koth.observer_context_endpoint', '1. Fetch active context')}
-              </Text>
-              <Code block className={misc.ffmono} style={{ overflowWrap: 'anywhere' }}>
-                GET {observer.contextPath}
-              </Code>
-              <Text size="xs" fw={700} mt="xs">
-                {t('admin.content.ad_ops.koth.observer_post_endpoint', '2. Submit current evidence')}
-              </Text>
-              <Code block className={misc.ffmono} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-                {`POST ${observer.observationPath}
+            {!observer.managedTargetReporting && (
+              <Stack gap={4}>
+                <Text size="xs" fw={700}>
+                  {t('admin.content.ad_ops.koth.observer_context_endpoint', '1. Fetch active context')}
+                </Text>
+                <Code block className={misc.ffmono} style={{ overflowWrap: 'anywhere' }}>
+                  GET {observer.contextPath}
+                </Code>
+                <Text size="xs" fw={700} mt="xs">
+                  {t('admin.content.ad_ops.koth.observer_post_endpoint', '2. Submit current evidence')}
+                </Text>
+                <Code block className={misc.ffmono} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                  {`POST ${observer.observationPath}
 X-RSCTF-Timestamp: <Unix milliseconds>
 X-RSCTF-Signature: sha256=<HMAC-SHA256>
 
 {"context":"<context>","objectiveIds":["official-score"],"waves":[{"waveId":"heat-42","endedAtUnixMs":1786200000000,"teams":[{"tokenHash":"<sha256-current-capability>","activity":{"earned":1,"possible":1},"objectives":[{"earned":150,"possible":150}],"isCrown":true}]}]}`}
-              </Code>
-              <Text size="xs" c="dimmed">
-                {t(
-                  'admin.content.ad_ops.koth.observer_signature',
-                  'Hash each current capability with SHA-256 and sign the exact raw body as timestamp.gameId.challengeId.body. Every wave needs a unique ID, its server-confirmed end time, completed native results, and at most one best-scoring Crown. Stable ordered objectiveIds are frozen and bound into later contexts; raw capabilities and platform points are never accepted. Requests expire after five minutes and accepted signatures cannot be replayed.'
-                )}
-              </Text>
-            </Stack>
+                </Code>
+                <Text size="xs" c="dimmed">
+                  {t(
+                    'admin.content.ad_ops.koth.observer_signature',
+                    'Hash each current capability with SHA-256 and sign the exact raw body as timestamp.gameId.challengeId.body. Every wave needs a unique ID, its server-confirmed end time, completed native results, and at most one best-scoring Crown. Stable ordered objectiveIds are frozen and bound into later contexts; raw capabilities and platform points are never accepted. Requests expire after five minutes and accepted signatures cannot be replayed.'
+                  )}
+                </Text>
+              </Stack>
+            )}
+
+            {observer.managedTargetReporting && observer.configured && (
+              <Stack gap={4}>
+                <Text size="sm" c="dimmed">
+                  {t(
+                    'admin.content.ad_ops.koth.managed_target_reporting',
+                    'Each newly created target receives scoped context and observation URLs plus a lifecycle-bound signing credential. Challenge code submits native evidence; it never submits platform points.'
+                  )}
+                </Text>
+                <Text size="xs" c="dimmed">
+                  {t(
+                    'admin.content.ad_ops.koth.managed_target_reset_note',
+                    'If scoring was enabled after the current target started, reset that target once so rsctf can inject its managed credential.'
+                  )}
+                </Text>
+              </Stack>
+            )}
 
             <Group justify="space-between" wrap="wrap">
               <Button
@@ -1057,7 +1094,7 @@ X-RSCTF-Signature: sha256=<HMAC-SHA256>
                 loading={observerBusy}
                 onClick={revokeObserver}
               >
-                {t('admin.button.ad_ops.koth.observer_revoke', 'Revoke')}
+                {t('admin.button.ad_ops.koth.observer_revoke', 'Disable Leaderboard')}
               </Button>
               <Button
                 leftSection={<Icon path={mdiKeyVariant} size={0.8} />}
@@ -1068,8 +1105,14 @@ X-RSCTF-Signature: sha256=<HMAC-SHA256>
                 {pendingObserverOperation
                   ? t('admin.button.ad_ops.koth.observer_recover', 'Recover pending change')
                   : observer.configured
-                    ? t('admin.button.ad_ops.koth.observer_rotate', 'Rotate secret')
-                    : t('admin.button.ad_ops.koth.observer_create', 'Create referee secret')}
+                    ? t(
+                        'admin.button.ad_ops.koth.observer_rotate',
+                        observer.managedTargetReporting ? 'Rotate legacy fallback' : 'Rotate secret'
+                      )
+                    : t(
+                        'admin.button.ad_ops.koth.observer_create',
+                        observer.managedTargetReporting ? 'Enable managed scoring' : 'Create referee secret'
+                      )}
               </Button>
             </Group>
           </Stack>

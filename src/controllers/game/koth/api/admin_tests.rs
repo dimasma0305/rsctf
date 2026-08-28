@@ -18,6 +18,7 @@ fn mutation_results_are_never_cacheable() {
         revision: 1,
         claim_source: "Api".to_string(),
         configured: true,
+        managed_target_reporting: true,
         secret_hint: None,
         objective_count: None,
         objective_ids: None,

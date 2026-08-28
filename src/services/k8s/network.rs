@@ -14,9 +14,16 @@ use crate::utils::error::{AppError, AppResult};
 const AD_INGRESS_CIDRS_ENV: &str = "RSCTF_K8S_AD_INGRESS_CIDRS";
 const CONTROL_NAMESPACE_ENV: &str = "RSCTF_K8S_CONTROL_NAMESPACE";
 const CONTROL_POD_LABEL_ENV: &str = "RSCTF_K8S_CONTROL_POD_LABEL";
+const DNS_CIDRS_ENV: &str = "RSCTF_K8S_DNS_CIDRS";
+const KOTH_REPORTER_POD_SELECTOR_ENV: &str = "RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR";
 const POLICY_ENFORCED_ENV: &str = "RSCTF_K8S_NETWORK_POLICY_ENFORCED";
 const ISOLATED_INGRESS_CIDRS_ENV: &str = "RSCTF_K8S_ISOLATED_INGRESS_CIDRS";
 const POD_CIDRS_ENV: &str = "RSCTF_K8S_POD_CIDRS";
+const KOTH_REPORTER_REQUIRED_LABELS: [&str; 3] = [
+    "app.kubernetes.io/name",
+    "app.kubernetes.io/instance",
+    "app.kubernetes.io/component",
+];
 
 #[derive(Clone)]
 pub(super) struct AdNetworkConfig {
@@ -24,6 +31,8 @@ pub(super) struct AdNetworkConfig {
     pub(super) ingress_cidrs: Vec<IpNet>,
     pub(super) control_namespace: Option<String>,
     pub(super) control_pod_label: (String, String),
+    pub(super) reporter_pod_selector: Option<BTreeMap<String, String>>,
+    pub(super) dns_cidrs: Vec<IpNet>,
 }
 
 pub(super) fn validate_policy_enforcement_acknowledgement() -> AppResult<()> {
@@ -70,6 +79,131 @@ fn configured_control_pod_label() -> AppResult<(String, String)> {
     Ok((key.to_string(), value.to_string()))
 }
 
+fn valid_label_segment(value: &str, maximum: usize) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= maximum
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+fn valid_dns_subdomain(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value.split('.').all(|label| {
+            let bytes = label.as_bytes();
+            !bytes.is_empty()
+                && bytes.len() <= 63
+                && bytes
+                    .first()
+                    .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                && bytes
+                    .last()
+                    .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                && bytes
+                    .iter()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+        })
+}
+
+fn valid_label_key(value: &str) -> bool {
+    match value.split_once('/') {
+        Some((prefix, name)) => {
+            !name.contains('/') && valid_dns_subdomain(prefix) && valid_label_segment(name, 63)
+        }
+        None => valid_label_segment(value, 63),
+    }
+}
+
+pub(super) fn parse_reporter_pod_selector(value: &str) -> AppResult<BTreeMap<String, String>> {
+    if value.len() > 1_024 {
+        return Err(AppError::internal(format!(
+            "{KOTH_REPORTER_POD_SELECTOR_ENV} exceeds 1024 bytes"
+        )));
+    }
+    let mut selector = BTreeMap::new();
+    for item in value.split(',').map(str::trim) {
+        let (key, label_value) = item.split_once('=').ok_or_else(|| {
+            AppError::internal(format!(
+                "{KOTH_REPORTER_POD_SELECTOR_ENV} must use comma-separated key=value labels"
+            ))
+        })?;
+        let key = key.trim();
+        let label_value = label_value.trim();
+        if !valid_label_key(key)
+            || !valid_label_segment(label_value, 63)
+            || selector.contains_key(key)
+        {
+            return Err(AppError::internal(format!(
+                "{KOTH_REPORTER_POD_SELECTOR_ENV} contains an invalid or duplicate label"
+            )));
+        }
+        selector.insert(key.to_string(), label_value.to_string());
+        if selector.len() > 8 {
+            return Err(AppError::internal(format!(
+                "{KOTH_REPORTER_POD_SELECTOR_ENV} supports at most 8 labels"
+            )));
+        }
+    }
+    if !KOTH_REPORTER_REQUIRED_LABELS
+        .iter()
+        .all(|key| selector.contains_key(*key))
+    {
+        return Err(AppError::internal(format!(
+            "{KOTH_REPORTER_POD_SELECTOR_ENV} must include app.kubernetes.io/name, app.kubernetes.io/instance, and app.kubernetes.io/component from the callback Service selector"
+        )));
+    }
+    Ok(selector)
+}
+
+fn configured_reporter_pod_selector() -> AppResult<Option<BTreeMap<String, String>>> {
+    std::env::var(KOTH_REPORTER_POD_SELECTOR_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(|value| parse_reporter_pod_selector(&value))
+        .transpose()
+}
+
+pub(super) fn reporter_route_identity(
+    namespace: &str,
+    selector: &BTreeMap<String, String>,
+    dns_cidrs: &[IpNet],
+) -> String {
+    let selector = selector
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut dns_cidrs = dns_cidrs
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    dns_cidrs.sort();
+    format!(
+        "namespace={namespace}\0selector={selector}\0dns={}",
+        dns_cidrs.join(",")
+    )
+}
+
+pub(super) fn configured_reporter_route_identity() -> AppResult<String> {
+    let namespace = configured_control_namespace().ok_or_else(|| {
+        AppError::internal(
+            "managed KotH reporting on Kubernetes requires RSCTF_K8S_CONTROL_NAMESPACE",
+        )
+    })?;
+    let selector = configured_reporter_pod_selector()?.ok_or_else(|| {
+        AppError::internal(
+            "managed KotH reporting on Kubernetes requires RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR",
+        )
+    })?;
+    let dns_cidrs = configured_dns_cidrs()?;
+    Ok(reporter_route_identity(&namespace, &selector, &dns_cidrs))
+}
+
 fn parse_cidr(value: &str, variable: &str) -> AppResult<IpNet> {
     value.trim().parse::<IpNet>().map_err(|_| {
         AppError::internal(format!(
@@ -99,7 +233,95 @@ fn required_cidr_list(variable: &str) -> AppResult<Vec<IpNet>> {
     Ok(networks)
 }
 
-pub(super) fn ad_network_config() -> AppResult<AdNetworkConfig> {
+fn dns_host_network(address: IpAddr) -> IpNet {
+    match address {
+        IpAddr::V4(address) => IpNet::new(address.into(), 32).expect("valid IPv4 host prefix"),
+        IpAddr::V6(address) => IpNet::new(address.into(), 128).expect("valid IPv6 host prefix"),
+    }
+}
+
+fn parse_dns_peer(value: &str) -> AppResult<IpNet> {
+    if let Ok(address) = value.parse::<IpAddr>() {
+        if address.is_unspecified() || address.is_loopback() || address.is_multicast() {
+            return Err(AppError::internal(format!(
+                "{DNS_CIDRS_ENV} contains an unusable resolver address: {value}"
+            )));
+        }
+        return Ok(dns_host_network(address));
+    }
+    let network = parse_cidr(value, DNS_CIDRS_ENV)?;
+    let host = dns_host_network(network.addr());
+    if network != host {
+        return Err(AppError::internal(format!(
+            "{DNS_CIDRS_ENV} entries must identify exact resolver addresses: {value}"
+        )));
+    }
+    Ok(network)
+}
+
+pub(super) fn parse_dns_cidrs(
+    configured: Option<&str>,
+    resolv_conf: &str,
+) -> AppResult<Vec<IpNet>> {
+    let values = configured
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            resolv_conf
+                .lines()
+                .filter_map(|line| {
+                    let mut fields = line.split_whitespace();
+                    (fields.next() == Some("nameserver"))
+                        .then(|| fields.next().map(str::to_string))
+                        .flatten()
+                })
+                .collect()
+        });
+    let mut networks = Vec::new();
+    for value in values {
+        let network = parse_dns_peer(&value)?;
+        if !networks.contains(&network) {
+            networks.push(network);
+        }
+        if networks.len() > 8 {
+            return Err(AppError::internal(format!(
+                "{DNS_CIDRS_ENV} supports at most 8 exact resolver addresses"
+            )));
+        }
+    }
+    if networks.is_empty() {
+        return Err(AppError::internal(format!(
+            "managed Kubernetes networking requires {DNS_CIDRS_ENV} or at least one usable nameserver in /etc/resolv.conf"
+        )));
+    }
+    Ok(networks)
+}
+
+fn configured_dns_cidrs() -> AppResult<Vec<IpNet>> {
+    let configured = std::env::var(DNS_CIDRS_ENV).ok();
+    let resolv_conf = if configured
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        String::new()
+    } else {
+        std::fs::read_to_string("/etc/resolv.conf").map_err(|error| {
+            AppError::internal(format!(
+                "could not derive Kubernetes DNS peers from /etc/resolv.conf: {error}; set {DNS_CIDRS_ENV} explicitly"
+            ))
+        })?
+    };
+    parse_dns_cidrs(configured.as_deref(), &resolv_conf)
+}
+
+pub(super) fn ad_network_config(require_dns: bool) -> AppResult<AdNetworkConfig> {
     let service_cidr = crate::services::ad_vpn::kubernetes_services_cidr().ok_or_else(|| {
         AppError::internal(
             "RSCTF_K8S_AD_SERVICE_CIDR must be set to the cluster Service CIDR before provisioning Kubernetes A&D services",
@@ -125,6 +347,12 @@ pub(super) fn ad_network_config() -> AppResult<AdNetworkConfig> {
         ));
     }
     let control_pod_label = configured_control_pod_label()?;
+    let reporter_pod_selector = configured_reporter_pod_selector()?;
+    let dns_cidrs = if require_dns {
+        configured_dns_cidrs()?
+    } else {
+        Vec::new()
+    };
     let client_cidr = parse_cidr(
         &crate::services::ad_vpn::client_cidr(),
         "RSCTF_AD_VPN_CLIENT_CIDR",
@@ -137,6 +365,8 @@ pub(super) fn ad_network_config() -> AppResult<AdNetworkConfig> {
         ingress_cidrs,
         control_namespace,
         control_pod_label,
+        reporter_pod_selector,
+        dns_cidrs,
     })
 }
 
@@ -158,7 +388,10 @@ fn network_port(port: i32, protocol: &str) -> NetworkPolicyPort {
     }
 }
 
-fn control_pod_peer(namespace: String, label: (String, String)) -> NetworkPolicyPeer {
+fn selected_pod_peer(
+    namespace: String,
+    match_labels: BTreeMap<String, String>,
+) -> NetworkPolicyPeer {
     NetworkPolicyPeer {
         namespace_selector: Some(LabelSelector {
             match_labels: Some(BTreeMap::from([(
@@ -168,14 +401,47 @@ fn control_pod_peer(namespace: String, label: (String, String)) -> NetworkPolicy
             ..Default::default()
         }),
         pod_selector: Some(LabelSelector {
-            match_labels: Some(BTreeMap::from([label])),
+            match_labels: Some(match_labels),
             ..Default::default()
         }),
         ..Default::default()
     }
 }
 
-fn internet_egress_rules(extra_private: &[IpNet]) -> Vec<NetworkPolicyEgressRule> {
+fn control_pod_peer(namespace: String, label: (String, String)) -> NetworkPolicyPeer {
+    selected_pod_peer(namespace, BTreeMap::from([label]))
+}
+
+fn dns_egress_rule(dns_cidrs: &[IpNet]) -> NetworkPolicyEgressRule {
+    let dns_peer = NetworkPolicyPeer {
+        namespace_selector: Some(LabelSelector {
+            match_labels: Some(BTreeMap::from([(
+                "kubernetes.io/metadata.name".to_string(),
+                "kube-system".to_string(),
+            )])),
+            ..Default::default()
+        }),
+        pod_selector: Some(LabelSelector {
+            match_labels: Some(BTreeMap::from([(
+                "k8s-app".to_string(),
+                "kube-dns".to_string(),
+            )])),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut peers = vec![dns_peer];
+    peers.extend(dns_cidrs.iter().map(|cidr| ip_peer(cidr, None)));
+    NetworkPolicyEgressRule {
+        ports: Some(vec![network_port(53, "UDP"), network_port(53, "TCP")]),
+        to: Some(peers),
+    }
+}
+
+fn internet_egress_rules(
+    extra_private: &[IpNet],
+    dns_cidrs: &[IpNet],
+) -> Vec<NetworkPolicyEgressRule> {
     let mut v4_except = vec![
         "0.0.0.0/8".to_string(),
         "10.0.0.0/8".to_string(),
@@ -213,28 +479,7 @@ fn internet_egress_rules(extra_private: &[IpNet]) -> Vec<NetworkPolicyEgressRule
             ip_peer("::/0", Some(v6_except)),
         ]),
     };
-    let dns_peer = NetworkPolicyPeer {
-        namespace_selector: Some(LabelSelector {
-            match_labels: Some(BTreeMap::from([(
-                "kubernetes.io/metadata.name".to_string(),
-                "kube-system".to_string(),
-            )])),
-            ..Default::default()
-        }),
-        pod_selector: Some(LabelSelector {
-            match_labels: Some(BTreeMap::from([(
-                "k8s-app".to_string(),
-                "kube-dns".to_string(),
-            )])),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    let dns = NetworkPolicyEgressRule {
-        ports: Some(vec![network_port(53, "UDP"), network_port(53, "TCP")]),
-        to: Some(vec![dns_peer]),
-    };
-    vec![internet, dns]
+    vec![internet, dns_egress_rule(dns_cidrs)]
 }
 
 pub(super) fn ad_network_policy(
@@ -243,6 +488,7 @@ pub(super) fn ad_network_policy(
     owner_references: Option<Vec<OwnerReference>>,
     expose_port: i32,
     allow_egress: bool,
+    control_plane_callback_ports: &[i32],
     config: &AdNetworkConfig,
 ) -> NetworkPolicy {
     let mut ingress_peers: Vec<NetworkPolicyPeer> = config
@@ -256,13 +502,38 @@ pub(super) fn ad_network_policy(
             config.control_pod_label.clone(),
         ));
     }
-    let egress = if allow_egress {
+    let mut egress = if allow_egress {
         let mut private = config.ingress_cidrs.clone();
         private.push(config.service_cidr);
-        internet_egress_rules(&private)
+        internet_egress_rules(&private, &config.dns_cidrs)
     } else {
         Vec::new()
     };
+    if !control_plane_callback_ports.is_empty() {
+        if let (Some(namespace), Some(reporter_pod_selector)) = (
+            config.control_namespace.as_ref(),
+            config.reporter_pod_selector.as_ref(),
+        ) {
+            egress.insert(
+                0,
+                NetworkPolicyEgressRule {
+                    ports: Some(
+                        control_plane_callback_ports
+                            .iter()
+                            .map(|port| network_port(*port, "TCP"))
+                            .collect(),
+                    ),
+                    to: Some(vec![selected_pod_peer(
+                        namespace.clone(),
+                        reporter_pod_selector.clone(),
+                    )]),
+                },
+            );
+            if !allow_egress {
+                egress.push(dns_egress_rule(&config.dns_cidrs));
+            }
+        }
+    }
     NetworkPolicy {
         metadata: ObjectMeta {
             name: Some(name.to_string()),

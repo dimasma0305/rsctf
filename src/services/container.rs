@@ -237,23 +237,22 @@ pub struct ContainerSpec {
     /// the authenticated exec hub. Docker also gives a no-publish workload no
     /// network when `ad_network` is absent, preventing default-bridge egress.
     pub publish_port: bool,
-    /// Bind a published Jeopardy port only to the configured private proxy
-    /// entry instead of every host interface.
+    /// Bind a published Jeopardy port only to the configured private proxy entry.
     pub proxy_only: bool,
     /// Additional environment variables injected at creation time.
     pub env: Vec<(String, String)>,
     /// Optional dynamic flag baked into the container environment.
     pub flag: Option<String>,
-    /// A&D-over-VPN placement: the Docker network to join. When set, the container
-    /// joins that network (Docker auto-assigns an IP) and publishes NO host ports —
-    /// it's reachable only over the WireGuard tunnel. `ContainerInfo.ip` then
-    /// carries the assigned in-VPN IP and `port` the container-internal expose port.
+    /// A&D-over-VPN Docker network. It publishes no host ports and exposes the
+    /// assigned VPN address and internal port through `ContainerInfo`.
     pub ad_network: Option<String>,
     /// Whether an A&D/KotH container may use backend-isolated outbound access.
     /// Kubernetes enforces this with a per-workload NetworkPolicy. Docker
     /// rejects it because a shared external bridge cannot prevent east-west,
     /// private-network, or metadata access.
     pub allow_egress: bool,
+    /// Service and target-pod ports for narrow Kubernetes callback egress.
+    pub control_plane_callback_ports: Vec<i32>,
     /// Author-selected network isolation for legacy container definitions.
     pub network_mode: NetworkMode,
     /// Stable lifecycle identity for crash-recoverable create operations. When
@@ -305,6 +304,7 @@ impl ContainerSpec {
             flag: Some(flag),
             ad_network: Some(crate::services::ad_vpn::services_network()),
             allow_egress,
+            control_plane_callback_ports: Vec::new(),
             network_mode: NetworkMode::Open,
             operation_id: None,
         }

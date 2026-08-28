@@ -43,8 +43,8 @@ and reliability constrains the entire result.
 
 Use the application's published gameplay mechanic. Your current per-hill
 capability identifies the team to the challenge; players never call RSCTF's
-signed referee endpoint. An independent organizer-controlled referee converts
-verified challenge events into bounded evidence.
+managed evidence endpoints. The authoritative arena converts verified
+challenge events into bounded native evidence.
 
 For team `i` in finalized wave `t`:
 
@@ -153,7 +153,7 @@ For Boot2Root:
 
 For Leaderboard:
 
-- automate the documented challenge interaction, not the trusted referee;
+- automate the documented challenge interaction, not the managed reporter;
 - complete a fresh verified run in every wave you want to score;
 - reconnect after a health-recovery notice with the same event token;
 - optimize the published official result relative to the current field;

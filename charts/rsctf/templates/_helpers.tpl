@@ -85,14 +85,43 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end }}
 
+{{/* Exact rsctf Service identity allowed to receive managed KotH callbacks. */}}
+{{- define "rsctf.kothReporterPodSelector" -}}
+{{- $localBackend := include "rsctf.localContainerBackend" . | trim -}}
+{{- if and (eq $localBackend "kubernetes") (not (empty .Values.config.kothReporterBaseUrl)) (has .Values.runtimeRole (list "all" "control" "engine" "network")) -}}
+  {{- if not (empty .Values.kubernetes.kothReporterPodSelector) -}}
+    {{- .Values.kubernetes.kothReporterPodSelector -}}
+  {{- else if has .Values.runtimeRole (list "all" "control" "network") -}}
+    {{- printf "app.kubernetes.io/name=%s,app.kubernetes.io/instance=%s,app.kubernetes.io/component=%s" (include "rsctf.name" .) .Release.Name .Values.runtimeRole -}}
+  {{- end -}}
+{{- end -}}
+{{- end }}
+
 {{/* Fail early with messages that explain exactly what the operator must set. */}}
 {{- define "rsctf.validateValues" -}}
 {{- $backend := .Values.containerBackend -}}
 {{- $localBackend := include "rsctf.localContainerBackend" . | trim -}}
 {{- $role := .Values.runtimeRole -}}
 {{- $splitRole := and (ne $role "all") (ne $role "migrate") -}}
+{{- $reporterSelector := .Values.kubernetes.kothReporterPodSelector | trim -}}
 {{- if not (has $role (list "all" "web" "control" "engine" "network" "migrate")) -}}
 {{- fail "runtimeRole must be one of: all, web, control, engine, network, migrate" -}}
+{{- end -}}
+{{- if and (not (empty $reporterSelector)) (or (not (regexMatch `(^|,)[[:space:]]*app\.kubernetes\.io/name=[^,]+(,|$)` $reporterSelector)) (not (regexMatch `(^|,)[[:space:]]*app\.kubernetes\.io/instance=[^,]+(,|$)` $reporterSelector)) (not (regexMatch `(^|,)[[:space:]]*app\.kubernetes\.io/component=[^,]+(,|$)` $reporterSelector))) -}}
+{{- fail "kubernetes.kothReporterPodSelector must include app.kubernetes.io/name, app.kubernetes.io/instance, and app.kubernetes.io/component" -}}
+{{- end -}}
+{{- $reporterOrigin := .Values.config.kothReporterBaseUrl | trim -}}
+{{- if and (not (empty $reporterOrigin)) (regexMatch `:0/?$` $reporterOrigin) -}}
+  {{- fail "config.kothReporterBaseUrl must use a callback port between 1 and 65535" -}}
+{{- end -}}
+{{- if and (eq $localBackend "kubernetes") (not (empty $reporterOrigin)) -}}
+  {{- $authority := regexReplaceAll "^https?://" $reporterOrigin "" -}}
+  {{- $host := regexReplaceAll ":[0-9]+/?$" $authority "" | trimSuffix "/" -}}
+  {{- $serviceSuffix := printf ".%s.svc" .Release.Namespace -}}
+  {{- $serviceName := trimSuffix $serviceSuffix $host -}}
+  {{- if or (not (hasSuffix $serviceSuffix $host)) (empty $serviceName) (contains "." $serviceName) -}}
+    {{- fail (printf "config.kothReporterBaseUrl must use a cross-namespace Kubernetes Service origin such as http://rsctf-network.%s.svc:8080" .Release.Namespace) -}}
+  {{- end -}}
 {{- end -}}
 {{- $checkerUidEnd := add .Values.config.checkerUidBase .Values.config.checkerProcessBudget -1 -}}
 {{- if gt (int $checkerUidEnd) 65534 -}}
@@ -266,6 +295,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   {{- $_ := required "kubernetes.adServiceCidr is required on every Kubernetes runtime role, even without VPN; set it to the cluster Service CIDR used by provisioning and checker isolation" .Values.kubernetes.adServiceCidr -}}
   {{- if not .Values.kubernetes.networkPolicyEnforced -}}
     {{- fail "kubernetes.networkPolicyEnforced=true is required after proving that the cluster CNI enforces NetworkPolicy for challenge Pods" -}}
+  {{- end -}}
+  {{- if and (eq $role "engine") (not (empty .Values.config.kothReporterBaseUrl)) (empty .Values.kubernetes.kothReporterPodSelector) -}}
+    {{- fail "runtimeRole=engine with managed KotH reporting requires kubernetes.kothReporterPodSelector to equal the callback network Service selector" -}}
   {{- end -}}
 {{- end -}}
 

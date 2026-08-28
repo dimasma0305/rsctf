@@ -1,6 +1,7 @@
 {{- include "rsctf.validateValues" . }}
 {{- if ne .Values.runtimeRole "migrate" }}
 {{- $localBackend := include "rsctf.localContainerBackend" . | trim }}
+{{- $kothReporterPodSelector := include "rsctf.kothReporterPodSelector" . | trim }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -68,11 +69,20 @@ data:
   {{- with .Values.config.publicUrl }}
   RSCTF_PUBLIC_URL: {{ . | quote }}
   {{- end }}
+  {{- with .Values.config.kothReporterBaseUrl }}
+  RSCTF_KOTH_REPORTER_BASE_URL: {{ . | quote }}
+  {{- end }}
   {{- if eq $localBackend "kubernetes" }}
   RSCTF_K8S_NAMESPACE: {{ include "rsctf.challengeNamespace" . | quote }}
   RSCTF_K8S_CHALLENGE_UID: {{ .Values.kubernetes.challengeUid | quote }}
   RSCTF_K8S_CONTROL_NAMESPACE: {{ .Release.Namespace | quote }}
   RSCTF_K8S_CONTROL_POD_LABEL: {{ printf "app.kubernetes.io/name=%s" (include "rsctf.name" .) | quote }}
+  {{- with $kothReporterPodSelector }}
+  RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.kubernetes.dnsCidrs }}
+  RSCTF_K8S_DNS_CIDRS: {{ join "," . | quote }}
+  {{- end }}
   RSCTF_K8S_NETWORK_POLICY_ENFORCED: {{ .Values.kubernetes.networkPolicyEnforced | quote }}
   RSCTF_K8S_ISOLATED_POD_NETNS: {{ .Values.kubernetes.isolatedPodNetns | quote }}
   {{- with .Values.kubernetes.publicEntry }}

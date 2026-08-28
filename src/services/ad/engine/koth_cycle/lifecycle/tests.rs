@@ -2,8 +2,8 @@ use super::{
     data::snapshot_ids,
     deadline::{action as deadline_action, Action as DeadlineAction},
     drive_hills_fail_isolated, record_receipt, replacement_container_spec,
-    replacement_endpoint_is_valid, rotate_capability_window, set_phase, CapabilityWindow,
-    CrownPhase, CycleRow,
+    replacement_endpoint_is_valid, replacement_operation_id, rotate_capability_window, set_phase,
+    CapabilityWindow, CrownPhase, CycleRow,
 };
 use crate::services::container::ContainerInfo;
 use crate::utils::enums::ParticipationStatus;
@@ -107,7 +107,7 @@ fn persistent_replacement_preserves_the_static_runtime_flag() {
         runtime_flag: Some("flag{sealed-runtime-value}".to_string()),
     };
 
-    let spec = replacement_container_spec(cycle.expected_image.clone(), &cycle, &hill);
+    let spec = replacement_container_spec(cycle.expected_image.clone(), &cycle, &hill, None);
 
     assert_eq!(spec.flag.as_deref(), Some("flag{sealed-runtime-value}"));
     assert_eq!(
@@ -117,6 +117,106 @@ fn persistent_replacement_preserves_the_static_runtime_flag() {
     assert_eq!(spec.expose_port, 8080);
     assert_eq!(spec.storage_limit, 1_024);
     assert_eq!(spec.network_mode, crate::utils::enums::NetworkMode::Open);
+    assert!(spec.env.is_empty());
+    assert!(spec.control_plane_callback_ports.is_empty());
+}
+
+#[test]
+fn managed_reporter_replaces_a_pre_upgrade_create_orphan() {
+    let cycle = CycleRow {
+        id: 41,
+        game_id: 7,
+        challenge_id: 9,
+        cycle_number: 1,
+        phase: "CreatePending".to_string(),
+        planned_start_round: 1,
+        old_container_id: None,
+        replacement_container_id: None,
+        replacement_host: None,
+        replacement_port: None,
+        expected_image: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .to_string(),
+        reset_attempt: 3,
+        readiness_attempt: 0,
+    };
+    let hill = super::data::HillSpec {
+        target_id: 5,
+        image: cycle.expected_image.clone(),
+        memory_limit: 512,
+        cpu_count: 2,
+        storage_limit: 1_024,
+        expose_port: 8080,
+        allow_egress: false,
+        checker_dir: None,
+        runtime_flag: Some("flag{sealed-runtime-value}".to_string()),
+    };
+    let reporter = crate::services::ad::koth_reporter::TargetReporterRuntime {
+        env: vec![(
+            crate::services::ad::koth_reporter::REPORTER_SECRET_ENV.to_string(),
+            "koth_target_test".to_string(),
+        )],
+        callback_ports: vec![80, 8080],
+        routing_revision: "0123456789abcdef".to_string(),
+        credential_revision: "00112233445566778899aabbccddeeff".to_string(),
+    };
+
+    let legacy = replacement_container_spec(cycle.expected_image.clone(), &cycle, &hill, None);
+    let managed =
+        replacement_container_spec(cycle.expected_image.clone(), &cycle, &hill, Some(&reporter));
+
+    assert_eq!(
+        legacy.operation_id.as_deref(),
+        Some("koth-cycle:41:attempt:3")
+    );
+    assert_eq!(
+        managed.operation_id.as_deref(),
+        Some(
+            "koth-cycle:41:attempt:3:managed-reporter-v2:0123456789abcdef:00112233445566778899aabbccddeeff"
+        )
+    );
+    assert_ne!(managed.operation_id, legacy.operation_id);
+    assert_eq!(managed.control_plane_callback_ports, vec![80, 8080]);
+}
+
+#[test]
+fn managed_reporter_routing_revision_fences_crash_retry_identity() {
+    let cycle = CycleRow {
+        id: 41,
+        game_id: 7,
+        challenge_id: 9,
+        cycle_number: 1,
+        phase: "CreatePending".to_string(),
+        planned_start_round: 1,
+        old_container_id: None,
+        replacement_container_id: None,
+        replacement_host: None,
+        replacement_port: None,
+        expected_image: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .to_string(),
+        reset_attempt: 3,
+        readiness_attempt: 0,
+    };
+    let reporter = |routing_revision: &str, credential_revision: &str| {
+        crate::services::ad::koth_reporter::TargetReporterRuntime {
+            env: Vec::new(),
+            callback_ports: vec![80, 8080],
+            routing_revision: routing_revision.to_string(),
+            credential_revision: credential_revision.to_string(),
+        }
+    };
+    let original = reporter("0123456789abcdef", "00112233445566778899aabbccddeeff");
+    let changed = reporter("fedcba9876543210", "112233445566778899aabbccddeeff00");
+    let restored_route = reporter("0123456789abcdef", "2233445566778899aabbccddeeff0011");
+
+    assert_ne!(
+        replacement_operation_id(&cycle, Some(&original)),
+        replacement_operation_id(&cycle, Some(&changed))
+    );
+    assert_ne!(
+        replacement_operation_id(&cycle, Some(&original)),
+        replacement_operation_id(&cycle, Some(&restored_route)),
+        "returning to a prior route with a rotated credential must use a fresh workload identity"
+    );
 }
 
 #[test]
