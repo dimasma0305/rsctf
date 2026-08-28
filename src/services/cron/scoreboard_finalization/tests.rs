@@ -533,7 +533,12 @@ async fn real_builders_retry_failed_eviction_then_materialize_once_for_all_reade
         (failed.claimed, failed.retried, failed.completed),
         (2, 2, 0)
     );
-    assert_eq!(cache.removals.load(Ordering::SeqCst), 24);
+    let render_family_size =
+        crate::controllers::game::scoreboard_render_cache_keys(public_game.id).len();
+    assert_eq!(
+        cache.removals.load(Ordering::SeqCst),
+        render_family_size * 2
+    );
     assert_eq!(cache.sets.load(Ordering::SeqCst), 0);
     let invalidated: Vec<Option<DateTime<Utc>>> = sqlx::query_scalar(
         r#"SELECT invalidated_at_utc FROM "FinalScoreboardMaterializations"
@@ -565,19 +570,24 @@ async fn real_builders_retry_failed_eviction_then_materialize_once_for_all_reade
         reports.iter().map(|report| report.completed).sum::<usize>(),
         2
     );
-    assert_eq!(cache.removals.load(Ordering::SeqCst), 48);
+    assert_eq!(
+        cache.removals.load(Ordering::SeqCst),
+        render_family_size * 4
+    );
     assert_eq!(cache.sets.load(Ordering::SeqCst), 18);
 
     let public_keys = crate::controllers::game::scoreboard_render_cache_keys(public_game.id);
-    for key in &public_keys {
-        assert!(
+    for (index, key) in public_keys.iter().enumerate() {
+        let should_exist = matches!(index, 2..=7 | 10..=15);
+        assert_eq!(
             cache.get_authoritative(key).await.is_some(),
-            "missing {key}"
+            should_exist,
+            "wrong public-event publication state for {key}"
         );
     }
     let hidden_keys = crate::controllers::game::scoreboard_render_cache_keys(hidden_game.id);
     for (index, key) in hidden_keys.iter().enumerate() {
-        let should_exist = matches!(index, 0 | 2 | 3 | 6 | 8 | 10);
+        let should_exist = matches!(index, 2 | 4 | 5 | 10 | 12 | 14);
         assert_eq!(
             cache.get_authoritative(key).await.is_some(),
             should_exist,
@@ -586,12 +596,14 @@ async fn real_builders_retry_failed_eviction_then_materialize_once_for_all_reade
     }
     let readable_keys: Vec<_> = public_keys
         .iter()
-        .cloned()
+        .enumerate()
+        .filter(|(index, _)| matches!(index, 2..=7 | 10..=15))
+        .map(|(_, key)| key.clone())
         .chain(
             hidden_keys
                 .iter()
                 .enumerate()
-                .filter(|(index, _)| matches!(index, 0 | 2 | 3 | 6 | 8 | 10))
+                .filter(|(index, _)| matches!(index, 2 | 4 | 5 | 10 | 12 | 14))
                 .map(|(_, key)| key.clone()),
         )
         .collect();
