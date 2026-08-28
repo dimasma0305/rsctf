@@ -47,6 +47,10 @@ fn should_reconcile_vpn(need_vpn: bool, has_managed_challenges: bool) -> bool {
     need_vpn || has_managed_challenges
 }
 
+fn should_ensure_network(reconcile_vpn: bool, topology_owner: bool) -> bool {
+    reconcile_vpn && topology_owner
+}
+
 async fn current_ad_pair(
     st: &SharedState,
     game_id: i32,
@@ -196,6 +200,43 @@ pub(crate) async fn run_ad_reconcile_job(
     operation_id: Uuid,
 ) -> AppResult<(i32, i32)> {
     let game = load_game(st, game_id).await?;
+    let (has_managed_ad, has_engine_challenge): (bool, bool) = sqlx::query_as(
+        r#"SELECT
+             EXISTS (
+               SELECT 1 FROM "GameChallenges"
+                WHERE game_id = $1 AND is_enabled = TRUE
+                  AND review_status = $2 AND "Type" = $3
+                  AND ad_self_hosted = FALSE
+             ),
+             EXISTS (
+               SELECT 1 FROM "GameChallenges"
+                WHERE game_id = $1 AND is_enabled = TRUE
+                  AND review_status = $2 AND "Type" IN ($3, $4)
+             )"#,
+    )
+    .bind(game_id)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .bind(ChallengeType::AttackDefense as i16)
+    .bind(ChallengeType::KingOfTheHill as i16)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let need_vpn = should_provision_vpn(
+        crate::services::ad_vpn::enabled(),
+        game.is_active(Utc::now()),
+        has_engine_challenge,
+        ensure_vpn,
+    );
+    if should_ensure_network(should_reconcile_vpn(need_vpn, has_managed_ad), true)
+        && st.containers.backend_kind() == crate::services::container::ContainerBackendKind::Docker
+    {
+        st.containers
+            .ensure_network(
+                &crate::services::ad_vpn::services_network(),
+                &crate::services::ad_vpn::services_cidr(),
+            )
+            .await?;
+    }
     const PARTICIPATION_PAGE_SIZE: i64 = 64;
     let mut cursor = 0;
     let mut launched = 0i32;
@@ -232,20 +273,6 @@ pub(crate) async fn run_ad_reconcile_job(
             failures = failures.saturating_add(page_failures);
         }
     }
-    let has_managed_ad = sqlx::query_scalar::<_, bool>(
-        r#"SELECT EXISTS (
-             SELECT 1 FROM "GameChallenges"
-              WHERE game_id = $1 AND is_enabled = TRUE
-                AND review_status = $2 AND "Type" = $3
-                AND ad_self_hosted = FALSE
-           )"#,
-    )
-    .bind(game_id)
-    .bind(ChallengeReviewStatus::Active as i16)
-    .bind(ChallengeType::AttackDefense as i16)
-    .fetch_one(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
     if ensure_vpn || has_managed_ad {
         crate::services::ad_vpn::reconcile_for_deployment(&st.db).await?;
     }
@@ -384,7 +411,7 @@ pub(crate) async fn ensure_ad_containers(
     // Create the isolated service network before peer/firewall reconciliation,
     // then retain the allocator-selected address so BYOC rows can never drift
     // from WireGuard cryptokey routing after a collision probe.
-    if reconcile_vpn
+    if should_ensure_network(reconcile_vpn, finalize_topology)
         && st.containers.backend_kind() == crate::services::container::ContainerBackendKind::Docker
     {
         st.containers
@@ -755,7 +782,8 @@ mod tests {
 
     use super::{
         ad_service_operation_id, is_manual_operation_conflict, reconcile_operation_id,
-        should_provision_vpn, should_reconcile_vpn, IDEMPOTENCY_KEY_HEADER,
+        should_ensure_network, should_provision_vpn, should_reconcile_vpn,
+        IDEMPOTENCY_KEY_HEADER,
     };
 
     #[test]
@@ -826,6 +854,13 @@ mod tests {
         let need_vpn = should_provision_vpn(true, true, true, false);
         assert!(!need_vpn);
         assert!(should_reconcile_vpn(need_vpn, true));
+    }
+
+    #[test]
+    fn paged_reconcile_has_one_network_topology_owner() {
+        assert!(should_ensure_network(true, true));
+        assert!(!should_ensure_network(true, false));
+        assert!(!should_ensure_network(false, true));
     }
 }
 
