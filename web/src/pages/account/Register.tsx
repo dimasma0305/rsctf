@@ -3,7 +3,7 @@ import { useDisclosure, useInputState } from '@mantine/hooks'
 import { showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import { AccountView } from '@Components/AccountView'
@@ -11,9 +11,15 @@ import { Captcha, useCaptchaRef } from '@Components/Captcha'
 import { OAuthButtons } from '@Components/OAuthButtons'
 import { StrengthPasswordInput } from '@Components/StrengthPasswordInput'
 import { TermsOfService } from '@Components/TermsOfService'
+import {
+  AccountMailOperation,
+  clearAccountMailOperation,
+  retainAccountMailOperation,
+} from '@Utils/AccountMailOperations'
 import { encryptApiData } from '@Utils/Crypto'
 import { collectFingerprintIdentity } from '@Utils/FingerprintIdentity'
 import { isAbortError, throwIfAborted } from '@Utils/FingerprintProbe'
+import { isRetryableHttpError } from '@Utils/HttpError'
 import { tryGetClientError } from '@Utils/Shared'
 import { useConsentSingleFlight } from '@Utils/SingleFlightOperation'
 import { useConfig } from '@Hooks/useConfig'
@@ -28,6 +34,7 @@ const Register: FC = () => {
   const [email, setEmail] = useInputState('')
   const [bootstrapToken, setBootstrapToken] = useInputState('')
   const [disabled, setDisabled] = useState(false)
+  const mailOperation = useRef<AccountMailOperation | null>(null)
   const [tosOpened, { open: openTos, close: closeTos }] = useDisclosure(false)
   const { config } = useConfig()
 
@@ -75,6 +82,12 @@ const Register: FC = () => {
       return
     }
 
+    const mailScope = `${bootstrapMode ? 'bootstrap' : 'public'}\0${email.trim().toLowerCase()}\0${uname
+      .trim()
+      .toLowerCase()}`
+    const owner = retainAccountMailOperation(sessionStorage, 'registration', mailScope, mailOperation.current)
+    mailOperation.current = owner
+
     setDisabled(true)
 
     try {
@@ -85,6 +98,8 @@ const Register: FC = () => {
       throwIfAborted(signal)
 
       if (!valid) {
+        clearAccountMailOperation(sessionStorage, owner)
+        mailOperation.current = null
         showNotification({
           color: 'orange',
           title: t('account.notification.captcha.not_valid'),
@@ -121,11 +136,14 @@ const Register: FC = () => {
           fingerprint: fingerprintPayload.fingerprint,
           fingerprintProof: fingerprintPayload.fingerprintProof,
           bootstrapToken: bootstrapMode ? bootstrapToken : undefined,
+          operationId: owner.operationId,
         },
         { signal }
       )
       throwIfAborted(signal)
       const data = RegisterStatusMap.get(res.data.data)
+      clearAccountMailOperation(sessionStorage, owner)
+      mailOperation.current = null
       if (data) {
         updateNotification({
           id: 'register-status',
@@ -145,6 +163,10 @@ const Register: FC = () => {
       }
     } catch (err: any) {
       if (signal.aborted || isAbortError(err)) return
+      if (!isRetryableHttpError(err)) {
+        clearAccountMailOperation(sessionStorage, owner)
+        mailOperation.current = null
+      }
       const { title, message } = tryGetClientError(err, t)
 
       updateNotification({

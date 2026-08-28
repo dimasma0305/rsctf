@@ -289,17 +289,32 @@ async fn begin_import_job(
         .begin()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let existing: Option<(Uuid, Vec<u8>, i32, i16, bool)> = sqlx::query_as(
-        r#"SELECT requested_by, request_digest, row_count, status,
-                  result_expires_at_utc > clock_timestamp()
-             FROM "AdminCredentialJobs"
-            WHERE operation_id = $1 FOR UPDATE"#,
+    let inserted = sqlx::query_scalar::<_, Uuid>(
+        r#"INSERT INTO "AdminCredentialJobs"
+                  (operation_id, requested_by, request_digest, row_count)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (operation_id) DO NOTHING
+           RETURNING operation_id"#,
     )
     .bind(request.operation_id)
+    .bind(requested_by)
+    .bind(request_digest)
+    .bind(i32::try_from(request.rows.len()).expect("validated row count"))
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let completed = if let Some((owner, digest, row_count, status, live)) = existing {
+    let completed = if inserted.is_none() {
+        let (owner, digest, row_count, status, live) =
+            sqlx::query_as::<_, (Uuid, Vec<u8>, i32, i16, bool)>(
+                r#"SELECT requested_by, request_digest, row_count, status,
+                      result_expires_at_utc > clock_timestamp()
+                 FROM "AdminCredentialJobs"
+                WHERE operation_id = $1 FOR UPDATE"#,
+            )
+            .bind(request.operation_id)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         if owner != requested_by
             || digest != request_digest
             || row_count != i32::try_from(request.rows.len()).expect("validated row count")
@@ -313,18 +328,6 @@ async fn begin_import_job(
         }
         status == 1
     } else {
-        sqlx::query(
-            r#"INSERT INTO "AdminCredentialJobs"
-                   (operation_id, requested_by, request_digest, row_count)
-               VALUES ($1, $2, $3, $4)"#,
-        )
-        .bind(request.operation_id)
-        .bind(requested_by)
-        .bind(request_digest)
-        .bind(i32::try_from(request.rows.len()).expect("validated row count"))
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
         false
     };
 

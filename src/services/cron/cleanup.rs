@@ -79,6 +79,24 @@ async fn within_budget<T>(
 /// later work from receiving a turn forever.
 pub(super) async fn run(state: &SharedState) {
     if let Some(result) = within_budget(
+        "event_vpn_override_expiry",
+        DATABASE_CLEANUP_BUDGET,
+        crate::services::event_security::reconcile_expired_overrides(state, 64),
+    )
+    .await
+    {
+        match result {
+            Ok(n) if n > 0 => {
+                tracing::info!(n, "cron: reconciled naturally expired Event-VPN bypass(es)")
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, "cron: Event-VPN bypass expiry reconciliation failed")
+            }
+        }
+    }
+
+    if let Some(result) = within_budget(
         "ephemeral_credential_operations",
         DATABASE_CLEANUP_BUDGET,
         purge_ephemeral_operations(state),
@@ -189,5 +207,16 @@ mod tests {
             .expect("cleanup tests follow production code")
             .0;
         assert!(!production.contains("image_storage::scheduled_cleanup"));
+    }
+
+    #[test]
+    fn event_vpn_expiry_reconciliation_is_independently_budgeted() {
+        let production = include_str!("cleanup.rs")
+            .split_once("#[cfg(test)]")
+            .expect("cleanup tests follow production code")
+            .0;
+        assert!(production.contains("event_vpn_override_expiry"));
+        assert!(production.contains("reconcile_expired_overrides(state, 64)"));
+        assert!(production.contains("DATABASE_CLEANUP_BUDGET"));
     }
 }

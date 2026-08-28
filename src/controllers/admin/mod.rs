@@ -152,6 +152,10 @@ pub fn router() -> Router<SharedState> {
             "/api/admin/users/import",
             post(import_users).layer(DefaultBodyLimit::max(1024 * 1024)),
         )
+        .route(
+            "/api/admin/users/import/{operationId}",
+            get(recover_import_job),
+        )
         .route("/api/admin/users/credentials/send", post(send_credentials))
         .route("/api/admin/users/search", post(search_users))
         .route(
@@ -230,6 +234,10 @@ pub fn router() -> Router<SharedState> {
         .route(
             "/api/admin/games/{gameId}/vpn-overrides",
             get(list_event_vpn_overrides),
+        )
+        .route(
+            "/api/admin/games/{gameId}/vpn-override/operations/{operationId}",
+            get(recover_event_vpn_override_operation),
         )
         .route(
             "/api/admin/games/{gameId}/vpn-override/{overrideId}/revoke",
@@ -955,4 +963,5 @@ pub use settings::*;
 pub use teams::*;
 pub use users::*;
 pub use users_credentials::*;
+pub use users_import_results::recover_import_job;
 pub use users_mutate::*;

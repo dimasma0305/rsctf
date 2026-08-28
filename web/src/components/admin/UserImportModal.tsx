@@ -40,9 +40,18 @@ import {
   mdiUpload,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useCallback, useMemo, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import {
+  AdminImportOperation,
+  adminImportRequestSignature,
+  clearAdminImportOperation,
+  readAdminImportOperation,
+  retainAdminImportOperation,
+} from '@Utils/AdminImportOperations'
 import { quoteSpreadsheetCsvCell } from '@Utils/Csv'
+import { httpErrorStatus, isRetryableHttpError } from '@Utils/HttpError'
+import api from '@Api'
 
 // ─── Backend response types ───────────────────────────────────────────────────
 
@@ -205,9 +214,7 @@ function buildCredentialsCsv(users: CsvImportUserResult[]): Blob {
     ...users
       .filter((u) => u.status !== 'skipped')
       .map((u) =>
-        [u.userName, u.password, u.email, u.realName, u.teamName ?? '', u.status]
-          .map(quoteSpreadsheetCsvCell)
-          .join(','),
+        [u.userName, u.password, u.email, u.realName, u.teamName ?? '', u.status].map(quoteSpreadsheetCsvCell).join(',')
       ),
   ]
   return new Blob([lines.join('\n')], { type: 'text/csv' })
@@ -240,7 +247,57 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   const [sendingEmail, setSendingEmail] = useState(false)
   const [emailSendResult, setEmailSendResult] = useState<EmailSendResult | null>(null)
   const importInFlight = useRef(false)
-  const operationId = useRef(crypto.randomUUID())
+  const importOperation = useRef<AdminImportOperation | null>(null)
+  const importRecoveryAttempt = useRef<string | null>(null)
+  const onImportCompleteRef = useRef(onImportComplete)
+
+  useEffect(() => {
+    onImportCompleteRef.current = onImportComplete
+  }, [onImportComplete])
+
+  useEffect(() => {
+    if (!props.opened || importResult || importInFlight.current) return
+    const retained = readAdminImportOperation(sessionStorage)
+    if (!retained || importRecoveryAttempt.current === retained.operationId) return
+    importRecoveryAttempt.current = retained.operationId
+    importOperation.current = retained
+    let cancelled = false
+    api.admin
+      .adminRecoverUserImport(retained.operationId)
+      .then((response) => {
+        if (cancelled) return
+        if (response.data.status === 'Completed' && response.data.result) {
+          setImportResult(response.data.result)
+          setImportError(null)
+          setStep(4)
+          clearAdminImportOperation(sessionStorage, retained.operationId)
+          importOperation.current = null
+          onImportCompleteRef.current?.()
+          return
+        }
+        showNotification({
+          color: 'orange',
+          title: 'Previous import can be resumed',
+          message: `${response.data.completed} of ${response.data.total} rows completed. Re-select the same CSV and options to continue without issuing new passwords.`,
+        })
+      })
+      .catch((error) => {
+        if (cancelled) return
+        if (isRetryableHttpError(error) || httpErrorStatus(error) === 404) {
+          showNotification({
+            color: 'orange',
+            title: 'Previous import may still be starting',
+            message: 'Re-select the same CSV and options to safely resume it without issuing new passwords.',
+          })
+          return
+        }
+        clearAdminImportOperation(sessionStorage, retained.operationId)
+        importOperation.current = null
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [importResult, props.opened])
 
   // Step 0 → parse headers only
   const process = useCallback((text: string) => {
@@ -362,35 +419,43 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
 
     const rows = editableRows.filter((r) => !r.deleted)
 
+    const request = {
+      rows: rows.map((r) => ({
+        email: r.email,
+        realName: r.realName,
+        userNameOverride: r.userNameOverride || undefined,
+        teamName: r.teamName || undefined,
+        stdNumber: r.stdNumber || undefined,
+        phone: r.phone || undefined,
+      })),
+      teamMode: opts.teamMode,
+      singleTeamName: opts.teamMode === 'single' ? opts.singleTeamName : undefined,
+      emailConfirmed: opts.emailConfirmed,
+    }
+
     try {
+      const signature = await adminImportRequestSignature(request)
+      const operation = retainAdminImportOperation(sessionStorage, signature, importOperation.current)
+      importOperation.current = operation
       const resp = await fetch('/api/admin/users/import', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          operationId: operationId.current,
-          rows: rows.map((r) => ({
-            email: r.email,
-            realName: r.realName,
-            userNameOverride: r.userNameOverride || undefined,
-            teamName: r.teamName || undefined,
-            stdNumber: r.stdNumber || undefined,
-            phone: r.phone || undefined,
-          })),
-          teamMode: opts.teamMode,
-          singleTeamName: opts.teamMode === 'single' ? opts.singleTeamName : undefined,
-          emailConfirmed: opts.emailConfirmed,
+          operationId: operation.operationId,
+          ...request,
         }),
       })
 
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ title: 'Import failed' }))
-        throw new Error(err.title ?? err.message ?? 'Import failed')
+        throw Object.assign(new Error(err.title ?? err.message ?? 'Import failed'), { status: resp.status })
       }
 
       const result: CsvImportResult = await resp.json()
       setImportResult(result)
-      operationId.current = crypto.randomUUID()
+      clearAdminImportOperation(sessionStorage, operation.operationId)
+      importOperation.current = null
 
       if (result.created > 0 || result.updated > 0) {
         onImportComplete?.()
@@ -401,6 +466,10 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
         })
       }
     } catch (e: any) {
+      if (!isRetryableHttpError(e) && importOperation.current) {
+        clearAdminImportOperation(sessionStorage, importOperation.current.operationId)
+        importOperation.current = null
+      }
       setImportError(e?.message ?? 'Import failed')
       showNotification({ message: e?.message ?? 'Import failed', color: 'red' })
     } finally {
@@ -424,7 +493,8 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
     setSendingEmail(false)
     setEmailSendResult(null)
     importInFlight.current = false
-    operationId.current = crypto.randomUUID()
+    importOperation.current = readAdminImportOperation(sessionStorage)
+    importRecoveryAttempt.current = null
   }
 
   const goFixFailedRows = () => {
@@ -998,8 +1068,8 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                   (respecting any overrides) and secure passwords in a single atomic transaction.
                 </Text>
                 <Text size="xs" c="dimmed">
-                  Download the credentials CSV after import. The server keeps a temporary delivery copy for at most
-                  one hour so it can send email; the response itself is never browser/proxy cached.
+                  Download the credentials CSV after import. The server keeps a temporary delivery copy for at most one
+                  hour so it can send email; the response itself is never browser/proxy cached.
                 </Text>
               </Stack>
             </Alert>

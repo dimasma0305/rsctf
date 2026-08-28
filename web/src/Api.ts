@@ -1368,6 +1368,32 @@ export interface EventVpnOverrideList {
   overrides: EventVpnOverrideModel[];
 }
 
+export interface AdminUserImportRowResult {
+  email: string;
+  realName: string;
+  userName: string;
+  password: string;
+  teamName?: string;
+  status: "created" | "updated" | "skipped";
+  error?: string;
+}
+
+export interface AdminUserImportResult {
+  total: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  users: AdminUserImportRowResult[];
+}
+
+export interface AdminUserImportJobStatus {
+  operationId: string;
+  status: string;
+  total: number;
+  completed: number;
+  result?: AdminUserImportResult | null;
+}
+
 export interface SuspicionRecordResult {
   /** @format int32 */
   teamId?: number;
@@ -5706,6 +5732,14 @@ export class Api<
         path: `/api/admin/users/${userid}/password`,
         method: "DELETE",
         query: { operationId },
+        format: "json",
+        ...params,
+      }),
+
+    adminRecoverUserImport: (operationId: string, params: RequestParams = {}) =>
+      this.request<AdminUserImportJobStatus, RequestResponse>({
+        path: `/api/admin/users/import/${operationId}`,
+        method: "GET",
         format: "json",
         ...params,
       }),
@@ -11743,6 +11777,14 @@ export class Api<
     listVpnOverrides: (gameId: number, params: RequestParams = {}) =>
       this.request<EventVpnOverrideList, RequestResponse>({
         path: `/api/admin/games/${gameId}/vpn-overrides`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    getVpnOverrideOperation: (gameId: number, operationId: string, params: RequestParams = {}) =>
+      this.request<{ id: string; expiresAtUtc: number; policyRevision: number }, RequestResponse>({
+        path: `/api/admin/games/${gameId}/vpn-override/operations/${operationId}`,
         method: "GET",
         format: "json",
         ...params,

@@ -7,11 +7,27 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use sha2::{Digest, Sha256};
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportJobStatus {
+    pub operation_id: Uuid,
+    pub status: String,
+    pub total: usize,
+    pub completed: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<ImportResult>,
+}
+
 const MAX_IMPORT_ROWS: usize = 200;
 const MAX_IMPORT_TEAMS: usize = 100;
 const MAX_IMPORT_FIELD_BYTES: usize = 512;
 
 pub(super) fn validate_import_request(request: &ImportRequest) -> AppResult<()> {
+    if request.operation_id.is_nil() {
+        return Err(AppError::bad_request(
+            "A valid import operation ID is required",
+        ));
+    }
     if request.rows.is_empty() || request.rows.len() > MAX_IMPORT_ROWS {
         return Err(AppError::payload_too_large(
             "Imports must contain between 1 and 200 rows",
@@ -195,5 +211,114 @@ pub(super) fn summarize_import(users: Vec<ImportUserResult>, total: usize) -> Im
         updated: users.iter().filter(|row| row.status == "updated").count(),
         skipped: users.iter().filter(|row| row.status == "skipped").count(),
         users,
+    }
+}
+
+/// Recover one tab-owned import after a response loss or browser reload.
+pub async fn recover_import_job(
+    State(st): State<SharedState>,
+    AdminUser(caller): AdminUser,
+    Path(operation_id): Path<Uuid>,
+) -> AppResult<Response> {
+    if operation_id.is_nil() {
+        return Err(AppError::bad_request(
+            "A valid import operation ID is required",
+        ));
+    }
+    let mut transaction = st
+        .pg()
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let job = sqlx::query_as::<_, (i32, i16, bool)>(
+        r#"SELECT row_count, status,
+                  result_expires_at_utc > clock_timestamp()
+             FROM "AdminCredentialJobs"
+            WHERE operation_id = $1 AND requested_by = $2
+            FOR SHARE"#,
+    )
+    .bind(operation_id)
+    .bind(caller.id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Import operation not found"))?;
+    if !job.2 {
+        return Err(AppError::not_found("Import credential result has expired"));
+    }
+    let total = usize::try_from(job.0)
+        .map_err(|_| AppError::internal("Invalid persisted import row count"))?;
+    let encrypted_rows: Vec<(i32, Vec<u8>, Vec<u8>)> = sqlx::query_as(
+        r#"SELECT row_index, result_ciphertext, result_nonce
+             FROM "AdminCredentialJobRows"
+            WHERE operation_id = $1
+            ORDER BY row_index"#,
+    )
+    .bind(operation_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let completed = encrypted_rows.len();
+    let result = if job.1 == 1 {
+        if completed != total {
+            return Err(AppError::internal(
+                "Completed import is missing credential result rows",
+            ));
+        }
+        let mut rows = Vec::with_capacity(completed);
+        for (row_index, ciphertext, nonce) in encrypted_rows {
+            let row_index = usize::try_from(row_index)
+                .map_err(|_| AppError::internal("Invalid persisted import row index"))?;
+            rows.push(decrypt_import_result(
+                &st.config.jwt_secret,
+                operation_id,
+                row_index,
+                &ciphertext,
+                &nonce,
+            )?);
+        }
+        Some(summarize_import(rows, total))
+    } else {
+        None
+    };
+    Ok(super::users_credentials::private_no_store(Json(
+        ImportJobStatus {
+            operation_id,
+            status: if job.1 == 1 { "Completed" } else { "Running" }.to_string(),
+            total,
+            completed,
+            result,
+        },
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nil_import_operation_is_rejected_before_work_admission() {
+        let request = ImportRequest {
+            operation_id: Uuid::nil(),
+            rows: vec![super::super::users::ImportRow {
+                email: "player@example.test".to_string(),
+                real_name: "Player".to_string(),
+                user_name_override: None,
+                team_name: None,
+                std_number: None,
+                phone: None,
+            }],
+            team_mode: "none".to_string(),
+            single_team_name: None,
+            email_confirmed: true,
+        };
+        assert!(matches!(
+            validate_import_request(&request),
+            Err(AppError::BadRequest(_))
+        ));
     }
 }

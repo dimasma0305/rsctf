@@ -477,22 +477,12 @@ pub async fn register(
             database_now,
             mail_operation_id,
         );
-        link_attempts::stage_registration(
-            &mut txn,
-            &token,
-            id,
-            &link_attempts::value_digest(&security_stamp),
-            &link_attempts::value_digest(&norm_email),
-            database_now + chrono::Duration::minutes(15),
-        )
-        .await?;
-        link_attempts::activate_registration_locked(&mut txn, &token, id).await?;
-        Some(token)
+        Some((token, database_now + chrono::Duration::minutes(15)))
     } else {
         None
     };
-    if let Some(token) = confirmation_token.as_deref() {
-        email_confirmation::enqueue_confirmation(
+    if let Some((token, expires_at)) = confirmation_token.as_ref() {
+        let outcome = email_confirmation::enqueue_confirmation(
             &st,
             &mut txn,
             mail_operation_id,
@@ -503,6 +493,18 @@ pub async fn register(
             current_ip.as_deref(),
         )
         .await?;
+        if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {
+            link_attempts::stage_registration(
+                &mut txn,
+                token,
+                id,
+                &link_attempts::value_digest(&security_stamp),
+                &link_attempts::value_digest(&norm_email),
+                *expires_at,
+            )
+            .await?;
+            link_attempts::activate_registration_locked(&mut txn, token, id).await?;
+        }
     }
     txn.commit()
         .await

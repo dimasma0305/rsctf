@@ -28,7 +28,13 @@ import { useSearchParams } from 'react-router'
 import { PasswordChangeModal } from '@Components/PasswordChangeModal'
 import { WithNavBar } from '@Components/WithNavbar'
 import { StatsPanel } from '@Components/account/StatsPanel'
+import {
+  AccountMailOperation,
+  clearAccountMailOperation,
+  retainAccountMailOperation,
+} from '@Utils/AccountMailOperations'
 import { BLOB_OPERATION_HEADER, BlobUploadOperation, retainBlobUploadOperation } from '@Utils/BlobUploadOperations'
+import { isRetryableHttpError } from '@Utils/HttpError'
 import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { usePageTitle } from '@Hooks/usePageTitle'
@@ -64,7 +70,7 @@ const Profile: FC = () => {
 
   const [disabled, setDisabled] = useState(false)
   const emailChangeInFlight = useRef(false)
-  const emailChangeOperationId = useRef<string | null>(null)
+  const emailChangeOperation = useRef<AccountMailOperation | null>(null)
 
   const [mailEditOpened, setMailEditOpened] = useState(false)
   const [pwdChangeOpened, setPwdChangeOpened] = useState(false)
@@ -164,14 +170,22 @@ const Profile: FC = () => {
     if (!email || emailChangeInFlight.current) return
 
     emailChangeInFlight.current = true
+    const owner = retainAccountMailOperation(
+      sessionStorage,
+      'email-change',
+      `${user?.userId ?? 'unknown'}\0${email.trim().toLowerCase()}`,
+      emailChangeOperation.current
+    )
+    emailChangeOperation.current = owner
     try {
       setDisabled(true)
-      emailChangeOperationId.current ??= crypto.randomUUID()
       const res = await api.account.accountChangeEmail({
         newMail: email,
         password: emailPassword,
-        operationId: emailChangeOperationId.current,
+        operationId: owner.operationId,
       })
+      clearAccountMailOperation(sessionStorage, owner)
+      emailChangeOperation.current = null
       if (res.data.data) {
         showNotification({
           color: 'teal',
@@ -190,9 +204,12 @@ const Profile: FC = () => {
       }
       setEmail('')
       setEmailPassword('')
-      emailChangeOperationId.current = null
       setMailEditOpened(false)
     } catch (e) {
+      if (!isRetryableHttpError(e)) {
+        clearAccountMailOperation(sessionStorage, owner)
+        emailChangeOperation.current = null
+      }
       showErrorMsg(e, t)
     } finally {
       emailChangeInFlight.current = false
@@ -362,10 +379,7 @@ const Profile: FC = () => {
             placeholder={user?.email ?? 'player@example.com'}
             value={email}
             disabled={disabled}
-            onChange={(event) => {
-              emailChangeOperationId.current = null
-              setEmail(event.target.value)
-            }}
+            onChange={(event) => setEmail(event.target.value)}
           />
           <PasswordInput
             required
@@ -373,10 +387,7 @@ const Profile: FC = () => {
             autoComplete="current-password"
             value={emailPassword}
             disabled={disabled}
-            onChange={(event) => {
-              emailChangeOperationId.current = null
-              setEmailPassword(event.currentTarget.value)
-            }}
+            onChange={(event) => setEmailPassword(event.currentTarget.value)}
           />
           <Group justify="right">
             <Button
@@ -385,7 +396,6 @@ const Profile: FC = () => {
               onClick={() => {
                 setEmail(user?.email ?? '')
                 setEmailPassword('')
-                emailChangeOperationId.current = null
                 setMailEditOpened(false)
               }}
             >

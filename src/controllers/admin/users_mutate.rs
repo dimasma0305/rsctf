@@ -445,6 +445,11 @@ pub async fn reset_password(
     Path(userid): Path<Uuid>,
     Query(query): Query<AdminPasswordResetQuery>,
 ) -> AppResult<Response> {
+    if query.operation_id.is_nil() {
+        return Err(AppError::bad_request(
+            "A valid password reset operation ID is required",
+        ));
+    }
     let existing: Option<(Uuid, Uuid, i16, Option<Vec<u8>>, Option<Vec<u8>>, bool)> =
         sqlx::query_as(
             r#"SELECT user_id, requested_by, status, result_ciphertext, result_nonce,

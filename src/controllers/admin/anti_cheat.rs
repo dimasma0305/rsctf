@@ -396,7 +396,12 @@ const MAX_ACTIVE_VPN_OVERRIDES: i64 = 16;
 const VPN_OVERRIDE_HISTORY_LIMIT: i64 = 100;
 const VPN_OVERRIDE_MAINTENANCE_LIMIT: i64 = 128;
 
-fn override_request_digest(action: &str, reason: &str, duration: i32, id: Option<Uuid>) -> Vec<u8> {
+fn override_request_digest_v1(
+    action: &str,
+    reason: &str,
+    duration: i32,
+    id: Option<Uuid>,
+) -> Vec<u8> {
     let mut digest = Sha256::new();
     digest.update(b"rsctf:event-vpn-override-operation:v1\0");
     digest.update(action.as_bytes());
@@ -406,6 +411,26 @@ fn override_request_digest(action: &str, reason: &str, duration: i32, id: Option
     if let Some(id) = id {
         digest.update(id.as_bytes());
     }
+    digest.finalize().to_vec()
+}
+
+fn override_request_digest(
+    action: &str,
+    reason: &str,
+    duration: i32,
+    id: Option<Uuid>,
+    expected_policy_revision: i64,
+) -> Vec<u8> {
+    let mut digest = Sha256::new();
+    digest.update(b"rsctf:event-vpn-override-operation:v2\0");
+    digest.update(action.as_bytes());
+    digest.update([0]);
+    digest.update(reason.as_bytes());
+    digest.update(duration.to_be_bytes());
+    if let Some(id) = id {
+        digest.update(id.as_bytes());
+    }
+    digest.update(expected_policy_revision.to_be_bytes());
     digest.finalize().to_vec()
 }
 
@@ -483,6 +508,7 @@ pub async fn list_event_vpn_overrides(
     _admin: AdminUser,
     Path(game_id): Path<i32>,
 ) -> AppResult<RequestResponse<VpnOverrideList>> {
+    crate::services::event_security::reconcile_expired_override_game(&st, game_id).await?;
     let policy_revision = sqlx::query_scalar::<_, i64>(
         r#"SELECT vpn_policy_revision FROM "Games"
             WHERE id = $1 AND deletion_pending = FALSE"#,
@@ -524,6 +550,50 @@ pub async fn list_event_vpn_overrides(
     }))
 }
 
+pub async fn recover_event_vpn_override_operation(
+    State(st): State<SharedState>,
+    admin: AdminUser,
+    Path((game_id, operation_id)): Path<(i32, Uuid)>,
+) -> AppResult<RequestResponse<VpnOverrideResult>> {
+    if operation_id.is_nil() {
+        return Err(AppError::bad_request(
+            "A valid VPN override operation ID is required",
+        ));
+    }
+    let operation = load_event_vpn_override_operation(st.pg(), game_id, operation_id, admin.0.id)
+        .await?
+        .ok_or_else(|| AppError::not_found("VPN override operation not found"))?;
+    Ok(RequestResponse::ok(VpnOverrideResult {
+        id: operation.0,
+        expires_at_utc: operation.1,
+        policy_revision: operation.2,
+    }))
+}
+
+async fn load_event_vpn_override_operation(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    operation_id: Uuid,
+    actor_user_id: Uuid,
+) -> AppResult<Option<(Uuid, DateTime<Utc>, i64)>> {
+    sqlx::query_as::<_, (Uuid, DateTime<Utc>, i64)>(
+        r#"SELECT operation.override_id, override.expires_at_utc,
+                  operation.result_revision
+             FROM "EventVpnOverrideOperations" operation
+             JOIN "EventVpnGateOverrides" override
+               ON override.id = operation.override_id
+            WHERE operation.game_id = $1
+              AND operation.operation_id = $2
+              AND operation.actor_user_id = $3"#,
+    )
+    .bind(game_id)
+    .bind(operation_id)
+    .bind(actor_user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
 pub async fn create_event_vpn_override(
     State(st): State<SharedState>,
     admin: AdminUser,
@@ -540,7 +610,14 @@ pub async fn create_event_vpn_override(
             "Override requires an operation ID, observed policy revision, an 8 to 512 byte reason, and 1 to 60 minute duration",
         ));
     }
-    let digest = override_request_digest("create", reason, request.duration_minutes, None);
+    crate::services::event_security::reconcile_expired_override_game(&st, game_id).await?;
+    let digest = override_request_digest(
+        "create",
+        reason,
+        request.duration_minutes,
+        None,
+        request.expected_policy_revision,
+    );
     let mut transaction = st
         .pg()
         .begin()
@@ -559,9 +636,11 @@ pub async fn create_event_vpn_override(
     if let Some(stored) =
         stored_override_operation(&mut transaction, game_id, request.operation_id).await?
     {
+        let legacy_digest =
+            override_request_digest_v1("create", reason, request.duration_minutes, None);
         if stored.actor_user_id != admin.0.id
             || stored.action != "create"
-            || stored.request_digest != digest
+            || (stored.request_digest != digest && stored.request_digest != legacy_digest)
         {
             return Err(AppError::conflict(
                 "The operation ID is already bound to a different VPN override intent",
@@ -659,7 +738,14 @@ pub async fn revoke_event_vpn_override(
             "Revoke requires an operation ID and observed policy revision",
         ));
     }
-    let digest = override_request_digest("revoke", "", 0, Some(override_id));
+    crate::services::event_security::reconcile_expired_override_game(&st, game_id).await?;
+    let digest = override_request_digest(
+        "revoke",
+        "",
+        0,
+        Some(override_id),
+        request.expected_policy_revision,
+    );
     let mut transaction = st
         .pg()
         .begin()
@@ -677,10 +763,11 @@ pub async fn revoke_event_vpn_override(
     if let Some(stored) =
         stored_override_operation(&mut transaction, game_id, request.operation_id).await?
     {
+        let legacy_digest = override_request_digest_v1("revoke", "", 0, Some(override_id));
         if stored.actor_user_id != admin.0.id
             || stored.action != "revoke"
             || stored.override_id != override_id
-            || stored.request_digest != digest
+            || (stored.request_digest != digest && stored.request_digest != legacy_digest)
         {
             return Err(AppError::conflict(
                 "The operation ID is already bound to a different VPN override intent",
@@ -773,66 +860,5 @@ pub async fn revoke_event_vpn_override(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pagination_is_bounded_before_reaching_postgres() {
-        assert_eq!(bounded_page(0, 0), (1, 0));
-        assert_eq!(bounded_page(u64::MAX, u64::MAX), (500, 1_000_000));
-    }
-
-    #[test]
-    fn vpn_override_operation_digest_binds_every_semantic_input() {
-        let id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
-        let create = override_request_digest("create", "incident response", 15, None);
-        assert_eq!(
-            create,
-            override_request_digest("create", "incident response", 15, None)
-        );
-        assert_ne!(
-            create,
-            override_request_digest("create", "incident response", 16, None)
-        );
-        assert_ne!(
-            create,
-            override_request_digest("create", "different reason", 15, None)
-        );
-        assert_ne!(create, override_request_digest("revoke", "", 0, Some(id)));
-    }
-
-    #[test]
-    fn retained_block_wire_shape_uses_millis_and_redacts_identity_values() {
-        let occurred_at_utc = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        let adjudicated_at_utc = "2026-01-02T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        let exemption_expires_at_utc = "2026-01-09T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        let adjudicator = Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap();
-        let model = AntiCheatBlockModel::from(AntiCheatBlockRow {
-            id: 7,
-            user_id: Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
-            user_name: Some("blocked".to_string()),
-            conflict_user_id: Some(
-                Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
-            ),
-            conflict_user_name: Some("conflict".to_string()),
-            kind: "Ip".to_string(),
-            conflicting_value: Some("198.51.100.42".to_string()),
-            occurred_at_utc,
-            adjudicated_at_utc: Some(adjudicated_at_utc),
-            adjudicated_by_user_id: Some(adjudicator),
-            exemption_expires_at_utc: Some(exemption_expires_at_utc),
-        });
-        let value = serde_json::to_value(model).unwrap();
-        assert_eq!(value["conflictingValue"], "198.51.100.x");
-        assert_eq!(value["occurredAtUtc"], occurred_at_utc.timestamp_millis());
-        assert_eq!(
-            value["adjudicatedAtUtc"],
-            adjudicated_at_utc.timestamp_millis()
-        );
-        assert_eq!(value["adjudicatedByUserId"], adjudicator.to_string());
-        assert_eq!(
-            value["exemptionExpiresAtUtc"],
-            exemption_expires_at_utc.timestamp_millis()
-        );
-    }
-}
+#[path = "anti_cheat_tests.rs"]
+mod tests;

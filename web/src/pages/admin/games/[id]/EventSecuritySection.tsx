@@ -16,9 +16,16 @@ import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { Dispatch, FC, SetStateAction, useEffect, useRef, useState } from 'react'
+import { Dispatch, FC, SetStateAction, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { controlJobResultCount, createOperationId, waitForControlJob } from '@Utils/ControlJobs'
+import {
+  clearEventVpnOverrideOperation,
+  EventVpnOverrideOperation,
+  readEventVpnOverrideOperation,
+  retainEventVpnOverrideOperation,
+} from '@Utils/EventVpnOverrideOperations'
+import { httpErrorStatus, isRetryableHttpError } from '@Utils/HttpError'
 import { showErrorMsg } from '@Utils/Shared'
 import api, { EventVpnOverrideModel, GameInfoModel } from '@Api'
 
@@ -48,13 +55,98 @@ export const EventSecuritySection: FC<EventSecuritySectionProps> = ({
   const [vpnOverrides, setVpnOverrides] = useState<EventVpnOverrideModel[]>([])
   const [vpnPolicyRevision, setVpnPolicyRevision] = useState<number>(1)
   const vpnMutationOwner = useRef(false)
-  const createOverrideOperation = useRef<string | null>(null)
-  const revokeOverrideOperations = useRef(new Map<string, string>())
+  const vpnOperationRef = useRef<EventVpnOverrideOperation | null>(null)
   const [overrideReason, setOverrideReason] = useState('')
   const [overrideMinutes, setOverrideMinutes] = useState<number | string>(15)
   const [purgeReason, setPurgeReason] = useState('')
 
   useEffect(() => () => controlJobAbortRef.current.abort(), [])
+
+  const applyVpnList = useCallback((response: Awaited<ReturnType<typeof api.eventSecurity.listVpnOverrides>>) => {
+    setVpnOverrides(response.data.overrides)
+    setVpnPolicyRevision(response.data.policyRevision)
+  }, [])
+
+  const refreshVpnList = useCallback(
+    async (gameId: number) => {
+      const response = await api.eventSecurity.listVpnOverrides(gameId)
+      applyVpnList(response)
+      return response
+    },
+    [applyVpnList]
+  )
+
+  const executeVpnOperation = useCallback(async (operation: EventVpnOverrideOperation, reconcileFirst = false) => {
+    const send = () =>
+      operation.intent.kind === 'create'
+        ? api.eventSecurity.createVpnOverride(operation.gameId, {
+            reason: operation.intent.reason,
+            durationMinutes: operation.intent.durationMinutes,
+            operationId: operation.operationId,
+            expectedPolicyRevision: operation.intent.expectedPolicyRevision,
+          })
+        : api.eventSecurity.revokeVpnOverride(operation.gameId, operation.intent.overrideId, {
+            operationId: operation.operationId,
+            expectedPolicyRevision: operation.intent.expectedPolicyRevision,
+          })
+    try {
+      if (reconcileFirst) {
+        try {
+          await api.eventSecurity.getVpnOverrideOperation(operation.gameId, operation.operationId)
+        } catch (error) {
+          if (httpErrorStatus(error) !== 404) throw error
+          await send()
+        }
+      } else {
+        try {
+          await send()
+        } catch (error) {
+          if (!isRetryableHttpError(error)) throw error
+          try {
+            await api.eventSecurity.getVpnOverrideOperation(operation.gameId, operation.operationId)
+          } catch (recoveryError) {
+            if (httpErrorStatus(recoveryError) !== 404) throw recoveryError
+            throw error
+          }
+        }
+      }
+      clearEventVpnOverrideOperation(sessionStorage, operation.gameId, operation.operationId)
+      if (vpnOperationRef.current?.operationId === operation.operationId) vpnOperationRef.current = null
+      return await api.eventSecurity.listVpnOverrides(operation.gameId)
+    } catch (error) {
+      if (!isRetryableHttpError(error)) {
+        clearEventVpnOverrideOperation(sessionStorage, operation.gameId, operation.operationId)
+        if (vpnOperationRef.current?.operationId === operation.operationId) vpnOperationRef.current = null
+      }
+      throw error
+    }
+  }, [])
+
+  const reconcileDifferentPendingOperation = useCallback(
+    async (intent: EventVpnOverrideOperation['intent']) => {
+      const pending = vpnOperationRef.current
+      if (!pending || JSON.stringify(pending.intent) === JSON.stringify(intent)) return false
+      try {
+        applyVpnList(await executeVpnOperation(pending, true))
+        showNotification({
+          color: 'orange',
+          message: t(
+            'admin.event_security.previous_override_reconciled',
+            'The previous VPN bypass change was reconciled. Review the current policy, then submit this change again.'
+          ),
+        })
+      } catch (error) {
+        try {
+          await refreshVpnList(pending.gameId)
+        } catch {
+          // The original reconciliation error remains the actionable failure.
+        }
+        showErrorMsg(error, t)
+      }
+      return true
+    },
+    [applyVpnList, executeVpnOperation, refreshVpnList, t]
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -62,21 +154,41 @@ export const EventSecuritySection: FC<EventSecuritySectionProps> = ({
       setVpnOverrides([])
       return
     }
-    api.eventSecurity
-      .listVpnOverrides(game.id)
-      .then((response) => {
+    const gameId = game.id
+    const recover = async () => {
+      const pending = readEventVpnOverrideOperation(sessionStorage, gameId)
+      if (pending) {
+        vpnOperationRef.current = pending
+        vpnMutationOwner.current = true
+        setEventSecurityAction('recover-override')
+      }
+      try {
+        const response = pending
+          ? await executeVpnOperation(pending, true)
+          : await api.eventSecurity.listVpnOverrides(gameId)
+        if (!cancelled) applyVpnList(response)
+      } catch (error) {
         if (!cancelled) {
-          setVpnOverrides(response.data.overrides)
-          setVpnPolicyRevision(response.data.policyRevision)
+          try {
+            const authoritative = await api.eventSecurity.listVpnOverrides(gameId)
+            if (!cancelled) applyVpnList(authoritative)
+          } catch {
+            if (!cancelled) setVpnOverrides([])
+          }
         }
-      })
-      .catch(() => {
-        if (!cancelled) setVpnOverrides([])
-      })
+        if (pending && !cancelled) showErrorMsg(error, t)
+      } finally {
+        if (pending && !cancelled) {
+          vpnMutationOwner.current = false
+          setEventSecurityAction(null)
+        }
+      }
+    }
+    void recover()
     return () => {
       cancelled = true
     }
-  }, [game?.id, isAdmin])
+  }, [applyVpnList, executeVpnOperation, game?.id, isAdmin, refreshVpnList, t])
 
   const onGenerateVariants = async () => {
     if (!game?.id) return
@@ -160,19 +272,25 @@ export const EventSecuritySection: FC<EventSecuritySectionProps> = ({
     }
     vpnMutationOwner.current = true
     setEventSecurityAction('override')
-    const operationId = createOverrideOperation.current ?? crypto.randomUUID()
-    createOverrideOperation.current = operationId
+    const intent = {
+      kind: 'create',
+      reason,
+      durationMinutes,
+      expectedPolicyRevision: vpnPolicyRevision,
+    } as const
+    if (await reconcileDifferentPendingOperation(intent)) {
+      vpnMutationOwner.current = false
+      setEventSecurityAction(null)
+      return
+    }
+    const operation =
+      vpnOperationRef.current && JSON.stringify(vpnOperationRef.current.intent) === JSON.stringify(intent)
+        ? vpnOperationRef.current
+        : retainEventVpnOverrideOperation(sessionStorage, game.id, intent)
+    vpnOperationRef.current = operation
     try {
-      await api.eventSecurity.createVpnOverride(game.id, {
-        reason,
-        durationMinutes,
-        operationId,
-        expectedPolicyRevision: vpnPolicyRevision,
-      })
-      const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
-      setVpnOverrides(refreshed.data.overrides)
-      setVpnPolicyRevision(refreshed.data.policyRevision)
-      createOverrideOperation.current = null
+      const refreshed = await executeVpnOperation(operation)
+      applyVpnList(refreshed)
       setOverrideReason('')
       showNotification({
         color: 'orange',
@@ -180,6 +298,11 @@ export const EventSecuritySection: FC<EventSecuritySectionProps> = ({
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch (error) {
+      try {
+        await refreshVpnList(game.id)
+      } catch {
+        // Keep the mutation error as the primary user-facing failure.
+      }
       showErrorMsg(error, t)
     } finally {
       vpnMutationOwner.current = false
@@ -191,23 +314,35 @@ export const EventSecuritySection: FC<EventSecuritySectionProps> = ({
     if (!game?.id || vpnMutationOwner.current) return
     vpnMutationOwner.current = true
     setEventSecurityAction(`revoke:${overrideId}`)
-    const operationId = revokeOverrideOperations.current.get(overrideId) ?? crypto.randomUUID()
-    revokeOverrideOperations.current.set(overrideId, operationId)
+    const intent = {
+      kind: 'revoke',
+      overrideId,
+      expectedPolicyRevision: vpnPolicyRevision,
+    } as const
+    if (await reconcileDifferentPendingOperation(intent)) {
+      vpnMutationOwner.current = false
+      setEventSecurityAction(null)
+      return
+    }
+    const operation =
+      vpnOperationRef.current && JSON.stringify(vpnOperationRef.current.intent) === JSON.stringify(intent)
+        ? vpnOperationRef.current
+        : retainEventVpnOverrideOperation(sessionStorage, game.id, intent)
+    vpnOperationRef.current = operation
     try {
-      await api.eventSecurity.revokeVpnOverride(game.id, overrideId, {
-        operationId,
-        expectedPolicyRevision: vpnPolicyRevision,
-      })
-      const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
-      setVpnOverrides(refreshed.data.overrides)
-      setVpnPolicyRevision(refreshed.data.policyRevision)
-      revokeOverrideOperations.current.delete(overrideId)
+      const refreshed = await executeVpnOperation(operation)
+      applyVpnList(refreshed)
       showNotification({
         color: 'teal',
         message: t('admin.event_security.override_revoked', 'Event VPN bypass revoked.'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch (error) {
+      try {
+        await refreshVpnList(game.id)
+      } catch {
+        // Keep the mutation error as the primary user-facing failure.
+      }
       showErrorMsg(error, t)
     } finally {
       vpnMutationOwner.current = false

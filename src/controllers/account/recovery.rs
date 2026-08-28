@@ -901,17 +901,7 @@ pub async fn change_email(
             .begin()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-        link_attempts::stage_email_change(
-            &mut transaction,
-            &token,
-            user.id,
-            &expected_stamp,
-            &norm,
-            Utc::now() + chrono::Duration::from_std(RECOVERY_TTL).unwrap_or_default(),
-        )
-        .await?;
-        link_attempts::activate_email_change_locked(&mut transaction, &token, user.id).await?;
-        crate::services::mail_outbox::enqueue_in_transaction(
+        let outcome = crate::services::mail_outbox::enqueue_in_transaction(
             &mut transaction,
             crate::services::mail_outbox::MailIntent {
                 operation_id,
@@ -925,6 +915,18 @@ pub async fn change_email(
             },
         )
         .await?;
+        if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {
+            link_attempts::stage_email_change(
+                &mut transaction,
+                &token,
+                user.id,
+                &expected_stamp,
+                &norm,
+                Utc::now() + chrono::Duration::from_std(RECOVERY_TTL).unwrap_or_default(),
+            )
+            .await?;
+            link_attempts::activate_email_change_locked(&mut transaction, &token, user.id).await?;
+        }
         transaction
             .commit()
             .await

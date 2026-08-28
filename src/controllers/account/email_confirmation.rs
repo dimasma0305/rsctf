@@ -172,7 +172,7 @@ pub(super) async fn enqueue_confirmation(
     email: &str,
     token: &str,
     source: Option<&str>,
-) -> AppResult<()> {
+) -> AppResult<crate::services::mail_outbox::EnqueueOutcome> {
     let base = require_delivery_origin(st.config.as_ref())?.trim_end_matches('/');
     let link = format!(
         "{base}/account/verify?token={token}&email={}",
@@ -193,8 +193,7 @@ pub(super) async fn enqueue_confirmation(
             html_body: &body,
         },
     )
-    .await?;
-    Ok(())
+    .await
 }
 
 /// Authenticate a repeated registration for the same pending identity and
@@ -260,17 +259,7 @@ pub(super) async fn resend_pending_confirmation(
         database_now,
         operation_id,
     );
-    link_attempts::stage_registration(
-        &mut transaction,
-        &token,
-        pending.user_id,
-        &link_attempts::value_digest(pending.security_stamp),
-        &link_attempts::value_digest(pending.normalized_email),
-        database_now + chrono::Duration::seconds(EMAIL_CONFIRMATION_TTL_SECS),
-    )
-    .await?;
-    link_attempts::activate_registration_locked(&mut transaction, &token, pending.user_id).await?;
-    enqueue_confirmation(
+    let outcome = enqueue_confirmation(
         st,
         &mut transaction,
         operation_id,
@@ -281,6 +270,19 @@ pub(super) async fn resend_pending_confirmation(
         source,
     )
     .await?;
+    if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {
+        link_attempts::stage_registration(
+            &mut transaction,
+            &token,
+            pending.user_id,
+            &link_attempts::value_digest(pending.security_stamp),
+            &link_attempts::value_digest(pending.normalized_email),
+            database_now + chrono::Duration::seconds(EMAIL_CONFIRMATION_TTL_SECS),
+        )
+        .await?;
+        link_attempts::activate_registration_locked(&mut transaction, &token, pending.user_id)
+            .await?;
+    }
     transaction
         .commit()
         .await

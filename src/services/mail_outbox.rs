@@ -83,6 +83,11 @@ fn request_digest(intent: &MailIntent<'_>, generation: &[u8], destination: &[u8]
 }
 
 fn validate_intent(intent: &MailIntent<'_>) -> AppResult<()> {
+    if intent.operation_id.is_nil() {
+        return Err(AppError::bad_request(
+            "A valid mail operation ID is required",
+        ));
+    }
     crate::services::mail::validate_recipient(intent.destination)?;
     if intent.destination.as_bytes().len() > 320
         || intent.subject.is_empty()
@@ -620,6 +625,24 @@ mod tests {
             request_digest(&first, &generation, &destination),
             request_digest(&first, &changed_generation, &destination)
         );
+    }
+
+    #[test]
+    fn nil_operation_identity_is_rejected_before_database_work() {
+        let intent = MailIntent {
+            operation_id: Uuid::nil(),
+            purpose: MailPurpose::PasswordRecovery,
+            account_id: Uuid::new_v4(),
+            security_generation: "stamp",
+            destination: "player@example.test",
+            source: None,
+            subject: "Reset",
+            html_body: "body",
+        };
+        assert!(matches!(
+            validate_intent(&intent),
+            Err(AppError::BadRequest(_))
+        ));
     }
 
     #[tokio::test]

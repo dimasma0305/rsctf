@@ -99,6 +99,11 @@ fn validate_source_revisions(
 }
 
 fn validate_clone_request(model: &GameCloneModel) -> AppResult<String> {
+    if model.operation_id.is_nil() {
+        return Err(AppError::bad_request(
+            "A valid clone operation ID is required",
+        ));
+    }
     let title = model.title.trim();
     if !(3..=MAX_CLONE_TITLE_BYTES).contains(&title.len()) {
         return Err(AppError::bad_request(
@@ -430,6 +435,16 @@ mod clone_contract_tests {
         assert!(validate_source_revisions(&model, 7, 11).is_ok());
         assert!(validate_source_revisions(&model, 8, 11).is_err());
         assert!(validate_source_revisions(&model, 7, 12).is_err());
+    }
+
+    #[test]
+    fn nil_clone_operation_is_rejected_before_database_work() {
+        let mut model = clone_model();
+        model.operation_id = Uuid::nil();
+        assert!(matches!(
+            validate_clone_request(&model),
+            Err(AppError::BadRequest(_))
+        ));
     }
 
     #[test]
