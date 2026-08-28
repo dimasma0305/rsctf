@@ -3,6 +3,7 @@ import type { AdminKothObserverModel } from '@Hooks/useGame'
 export type KothObserverOperationKind = 'Rotate' | 'Revoke'
 
 export interface KothObserverOperationOwner {
+  gameId: number
   challengeId: number
   expectedRevision: number
   generation: number
@@ -23,10 +24,12 @@ export const newKothObserverOperationId = (): string => {
 export const ownsKothObserverResult = (
   owner: KothObserverOperationOwner | null,
   result: AdminKothObserverModel,
+  gameId: number,
   challengeId: number | null,
   viewGeneration: number
 ): boolean =>
   owner !== null &&
+  owner.gameId === gameId &&
   owner.challengeId === challengeId &&
   owner.viewGeneration === viewGeneration &&
   result.operationId === owner.operationId &&

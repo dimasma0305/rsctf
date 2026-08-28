@@ -9,6 +9,7 @@ import {
 } from './KothObserverOperations'
 
 const owner = (operationId: string, generation: number): KothObserverOperationOwner => ({
+  gameId: 7,
   challengeId: 9,
   expectedRevision: generation,
   generation,
@@ -46,20 +47,21 @@ test('mutation identities are opaque random UUIDs', () => {
 
 test('an older reversed response cannot replace the current observer mutation', () => {
   const current = owner('00000000-0000-4000-8000-000000000002', 2)
-  assert.equal(ownsKothObserverResult(current, result('00000000-0000-4000-8000-000000000001', 2), 9, 4), false)
-  assert.equal(ownsKothObserverResult(current, result(current.operationId, 3), 9, 4), true)
+  assert.equal(ownsKothObserverResult(current, result('00000000-0000-4000-8000-000000000001', 2), 7, 9, 4), false)
+  assert.equal(ownsKothObserverResult(current, result(current.operationId, 3), 7, 9, 4), true)
 })
 
 test('closing or switching the observer view fences a late one-time result', () => {
   const current = owner('00000000-0000-4000-8000-000000000003', 3)
-  assert.equal(ownsKothObserverResult(current, result(current.operationId, 4), null, 5), false)
-  assert.equal(ownsKothObserverResult(current, result(current.operationId, 4), 10, 4), false)
+  assert.equal(ownsKothObserverResult(current, result(current.operationId, 4), 7, null, 5), false)
+  assert.equal(ownsKothObserverResult(current, result(current.operationId, 4), 7, 10, 4), false)
+  assert.equal(ownsKothObserverResult(current, result(current.operationId, 4), 8, 9, 4), false)
 })
 
 test('a malformed revision cannot satisfy the operation owner', () => {
   const current = owner('00000000-0000-4000-8000-000000000004', 4)
-  assert.equal(ownsKothObserverResult(current, result(current.operationId, 4), 9, 4), false)
-  assert.equal(ownsKothObserverResult(current, result(current.operationId, 6), 9, 4), false)
+  assert.equal(ownsKothObserverResult(current, result(current.operationId, 4), 7, 9, 4), false)
+  assert.equal(ownsKothObserverResult(current, result(current.operationId, 6), 7, 9, 4), false)
 })
 
 test('the operator panel owns one ref-backed operation and recovers before retrying', () => {
@@ -69,4 +71,7 @@ test('the operator panel owns one ref-backed operation and recovers before retry
   assert.match(source, /recoverObserverOperation\(operation\)/)
   assert.match(source, /result = await requestObserverOperation\(operation\)/)
   assert.match(source, /ownsKothObserverResult/)
+  assert.match(source, /auditAbortRef\.current\?\.abort\(\)/)
+  assert.match(source, /observerReadAbortRef\.current\?\.abort\(\)/)
+  assert.match(source, /result\.challengeId === identity\.challengeId/)
 })
