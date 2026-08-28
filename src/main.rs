@@ -714,6 +714,10 @@ fn start_background_services(
 
     let mut optional = Vec::new();
     if role.capabilities().api {
+        optional.push(rsctf::services::feed_publication::start_publisher(
+            state,
+            shutdown.clone(),
+        ));
         optional.push(rsctf::middlewares::user_activity::start_writer(
             state,
             shutdown.clone(),

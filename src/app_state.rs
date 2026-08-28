@@ -53,6 +53,9 @@ pub struct AppState {
     /// Bounded handoff to the per-process best-effort user-activity writer.
     /// Requests only `try_send`; the worker owns all PostgreSQL interaction.
     pub(crate) user_activity: crate::middlewares::user_activity::ActivityQueue,
+    /// Bounded post-commit handoff for submission and game-event live feeds.
+    /// Cursor backfill remains authoritative if this best-effort queue is full.
+    pub(crate) feed_publication: crate::services::feed_publication::PublicationQueue,
 }
 
 /// One real-time message: which client hub method to invoke, which game it
@@ -162,6 +165,7 @@ impl AppState {
             monitor_export_admission: Default::default(),
             events,
             user_activity: crate::middlewares::user_activity::ActivityQueue::new(),
+            feed_publication: crate::services::feed_publication::PublicationQueue::new(),
         })
     }
 
