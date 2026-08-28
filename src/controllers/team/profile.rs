@@ -165,7 +165,7 @@ async fn store_operation(
     }
 }
 
-async fn enforce_mutation_budget(
+pub(super) async fn enforce_mutation_budget(
     connection: &mut PgConnection,
     team_id: i32,
     actor_user_id: Uuid,
@@ -183,6 +183,95 @@ async fn enforce_mutation_budget(
     if recent >= PROFILE_MUTATIONS_PER_MINUTE {
         return Err(AppError::TooManyRequests);
     }
+    Ok(())
+}
+
+pub(super) async fn replay_avatar_operation(
+    connection: &mut PgConnection,
+    operation_id: Uuid,
+    team_id: i32,
+    actor_user_id: Uuid,
+    digest: &str,
+) -> AppResult<Option<String>> {
+    let row = sqlx::query_as::<_, (i32, Uuid, String, serde_json::Value)>(
+        r#"SELECT team_id, actor_user_id, request_digest, result
+             FROM "TeamProfileOperations" WHERE operation_id = $1"#,
+    )
+    .bind(operation_id)
+    .fetch_optional(connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some((stored_team, stored_actor, stored_digest, result)) = row else {
+        return Ok(None);
+    };
+    if stored_team != team_id || stored_actor != actor_user_id || stored_digest != digest {
+        return Err(AppError::conflict(
+            "The team operation ID was already used for a different request",
+        ));
+    }
+    result
+        .as_str()
+        .map(|value| Some(value.to_string()))
+        .ok_or_else(|| AppError::internal("avatar operation result has an invalid shape"))
+}
+
+pub(super) async fn store_avatar_operation(
+    connection: &mut PgConnection,
+    operation_id: Uuid,
+    team_id: i32,
+    actor_user_id: Uuid,
+    digest: &str,
+    expected_revision: i64,
+    result_revision: i64,
+    result: &str,
+) -> AppResult<()> {
+    let inserted = sqlx::query(
+        r#"INSERT INTO "TeamProfileOperations"
+               (operation_id, team_id, actor_user_id, request_digest,
+                expected_revision, result_revision, result)
+           VALUES ($1, $2, $3, $4, $5, $6, to_jsonb($7::TEXT))"#,
+    )
+    .bind(operation_id)
+    .bind(team_id)
+    .bind(actor_user_id)
+    .bind(digest)
+    .bind(expected_revision)
+    .bind(result_revision)
+    .bind(result)
+    .execute(connection)
+    .await;
+    match inserted {
+        Ok(_) => Ok(()),
+        Err(error) if is_unique_violation(&error) => Err(AppError::conflict(
+            "The team operation ID was already used for a different request",
+        )),
+        Err(error) => Err(AppError::internal(error.to_string())),
+    }
+}
+
+pub(super) async fn enqueue_invalidation(
+    connection: &mut PgConnection,
+    team_id: i32,
+    profile_revision: i64,
+) -> AppResult<()> {
+    sqlx::query(
+        r#"INSERT INTO "TeamProfileInvalidations"
+               (team_id, profile_revision, after_game_id)
+           VALUES ($1, $2, 0)
+           ON CONFLICT (team_id) DO UPDATE
+             SET profile_revision = GREATEST(
+                     "TeamProfileInvalidations".profile_revision,
+                     EXCLUDED.profile_revision),
+                 after_game_id = 0,
+                 claim_id = NULL,
+                 claim_expires_at_utc = NULL,
+                 updated_at_utc = CURRENT_TIMESTAMP"#,
+    )
+    .bind(team_id)
+    .bind(profile_revision)
+    .execute(connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(())
 }
 
@@ -275,24 +364,7 @@ pub(super) async fn update_locked(
         &result,
     )
     .await?;
-    sqlx::query(
-        r#"INSERT INTO "TeamProfileInvalidations"
-               (team_id, profile_revision, after_game_id)
-           VALUES ($1, $2, 0)
-           ON CONFLICT (team_id) DO UPDATE
-             SET profile_revision = GREATEST(
-                     "TeamProfileInvalidations".profile_revision,
-                     EXCLUDED.profile_revision),
-                 after_game_id = 0,
-                 claim_id = NULL,
-                 claim_expires_at_utc = NULL,
-                 updated_at_utc = CURRENT_TIMESTAMP"#,
-    )
-    .bind(team_id)
-    .bind(result.profile_revision)
-    .execute(&mut **transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    enqueue_invalidation(&mut **transaction, team_id, result.profile_revision).await?;
     Ok(result)
 }
 

@@ -1,36 +1,14 @@
 //! Shared policy for changing an existing team roster.
 
+use sqlx::PgConnection;
+
 use crate::utils::error::{AppError, AppResult};
 
-/// Reject an addition or removal while an existing participation makes the
-/// roster immutable. The caller already owns `team-roster:{team_id}`; game
-/// locks are acquired in ascending order so registration, invitation, public
-/// removal, and game edits observe one cross-replica ordering.
-pub(crate) async fn ensure_roster_change_allowed(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+async fn load_roster_state(
+    connection: &mut PgConnection,
     team_id: i32,
-) -> AppResult<()> {
-    let game_ids: Vec<i32> = sqlx::query_scalar(
-        r#"SELECT DISTINCT game_id
-              FROM "Participations"
-             WHERE team_id = $1
-             ORDER BY game_id"#,
-    )
-    .bind(team_id)
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-
-    for game_id in game_ids {
-        crate::utils::single_flight::acquire_transaction_advisory_lock(
-            transaction,
-            &crate::services::ad_engine::game_lock_key(game_id),
-        )
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    }
-
-    let state: Option<(bool, bool, bool)> = sqlx::query_as(
+) -> AppResult<(bool, bool, bool)> {
+    sqlx::query_as(
         r#"WITH checked_at AS MATERIALIZED (
                SELECT clock_timestamp() AS value
            )
@@ -62,12 +40,13 @@ pub(crate) async fn ensure_roster_change_allowed(
     .bind(team_id)
     .bind(crate::utils::enums::ParticipationStatus::Accepted as i16)
     .bind(crate::utils::enums::ParticipationStatus::Suspended as i16)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(connection)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let Some((locked, active_scoring, active)) = state else {
-        return Err(AppError::not_found("Team not found"));
-    };
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Team not found"))
+}
+
+fn reject_frozen_state((locked, active_scoring, active): (bool, bool, bool)) -> AppResult<()> {
     if active_scoring {
         return Err(AppError::bad_request(
             "Team membership cannot change after A&D/KotH epoch scoring has started",
@@ -77,6 +56,47 @@ pub(crate) async fn ensure_roster_change_allowed(
         return Err(AppError::bad_request("Team is locked by an active game"));
     }
     Ok(())
+}
+
+/// Cheap early rejection before reading a multipart profile body. This is only
+/// an optimisation: callers must repeat [`ensure_roster_change_allowed`] under
+/// the canonical roster and ordered game fences before publishing a mutation.
+pub(super) async fn preflight_roster_change_allowed(
+    connection: &mut PgConnection,
+    team_id: i32,
+) -> AppResult<()> {
+    reject_frozen_state(load_roster_state(connection, team_id).await?)
+}
+
+/// Reject an addition or removal while an existing participation makes the
+/// roster immutable. The caller already owns `team-roster:{team_id}`; game
+/// locks are acquired in ascending order so registration, invitation, public
+/// removal, and game edits observe one cross-replica ordering.
+pub(crate) async fn ensure_roster_change_allowed(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    team_id: i32,
+) -> AppResult<()> {
+    let game_ids: Vec<i32> = sqlx::query_scalar(
+        r#"SELECT DISTINCT game_id
+              FROM "Participations"
+             WHERE team_id = $1
+             ORDER BY game_id"#,
+    )
+    .bind(team_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+
+    for game_id in game_ids {
+        crate::utils::single_flight::acquire_transaction_advisory_lock(
+            transaction,
+            &crate::services::ad_engine::game_lock_key(game_id),
+        )
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+
+    reject_frozen_state(load_roster_state(&mut **transaction, team_id).await?)
 }
 
 #[cfg(test)]
