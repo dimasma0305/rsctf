@@ -26,13 +26,27 @@ pub async fn clone_game(
     Path(id): Path<i32>,
     Json(model): Json<GameCloneModel>,
 ) -> AppResult<RequestResponse<i32>> {
-    let source_control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
-    let source = load_game(&st, id).await?;
+    let mut source_control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    let source =
+        super::update_support::load_game_locked(source_control.transaction_mut(), id, true).await?;
     let sources = if model.include_challenges {
-        game_challenge::Entity::find()
-            .filter(game_challenge::Column::GameId.eq(id))
-            .all(&st.db)
-            .await?
+        sqlx::query_scalar::<_, serde_json::Value>(
+            r#"SELECT to_jsonb(challenge)
+                 FROM "GameChallenges" challenge
+                WHERE challenge.game_id = $1
+                ORDER BY challenge.id"#,
+        )
+        .bind(id)
+        .fetch_all(&mut **source_control.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .into_iter()
+        .map(|value| {
+            serde_json::from_value(value).map_err(|error| {
+                AppError::internal(format!("could not decode challenge snapshot: {error}"))
+            })
+        })
+        .collect::<AppResult<Vec<game_challenge::Model>>>()?
     } else {
         Vec::new()
     };

@@ -480,16 +480,17 @@ impl PgAdvisoryLock {
     }
 
     /// Runtime eligibility transitions retain their cross-replica fence while
-    /// taking game/definition locks and reconciling external runtimes. Admit
-    /// one such outer operation per replica before checking out PostgreSQL so
-    /// distinct challenges cannot fill a small pool with transactions that all
-    /// need a second connection to make progress. This gate stays independent
-    /// from definition and provisioning because transition operations nest both.
-    pub async fn acquire_transition(pool: &sqlx::PgPool, key: &str) -> anyhow::Result<Self> {
+    /// reconciling external runtimes. Use a close-on-drop session lease so no
+    /// database transaction spans that I/O, and admit only one outer operation
+    /// per replica to preserve pool headroom for its short inner transactions.
+    pub async fn acquire_transition(
+        pool: &sqlx::PgPool,
+        key: &str,
+    ) -> anyhow::Result<PgSessionAdvisoryLock> {
         static GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
             std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
         let permit = GATE.clone().acquire_owned().await?;
-        Self::acquire_with_permit(pool, key, Some(permit)).await
+        PgSessionAdvisoryLock::acquire_with_permit(pool, key, Some(permit)).await
     }
 
     /// Distributed lock for mutable image-tag builds.

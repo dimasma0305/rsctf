@@ -371,7 +371,7 @@ pub fn runtime_transition_lock_key(challenge_id: i32) -> String {
 pub async fn acquire_runtime_transition_lock(
     pool: &sqlx::PgPool,
     challenge_id: i32,
-) -> AppResult<crate::utils::single_flight::PgAdvisoryLock> {
+) -> AppResult<crate::utils::single_flight::PgSessionAdvisoryLock> {
     crate::utils::single_flight::PgAdvisoryLock::acquire_transition(
         pool,
         &runtime_transition_lock_key(challenge_id),

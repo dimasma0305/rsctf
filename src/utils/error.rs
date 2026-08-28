@@ -2,7 +2,7 @@
 //! `IntoResponse` impl renders the RSCTF `RequestResponse { title, status }`
 //! envelope so error bodies match the original API shape.
 
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
@@ -143,7 +143,16 @@ impl IntoResponse for AppError {
             title,
             status: body_status,
         };
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        if matches!(
+            self,
+            AppError::TooManyRequests | AppError::ServiceUnavailable(_)
+        ) {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        }
+        response
     }
 }
 

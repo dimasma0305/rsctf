@@ -1,6 +1,6 @@
 //! Traffic-capture serving: pcap listing/download/flows.
 use super::*;
-use std::io::Read;
+use std::io::{Read, Write};
 
 // ---------------------------------------------------------------------------
 // Traffic capture metadata and pcap serving for the singleton capture worker.
@@ -8,10 +8,289 @@ use std::io::Read;
 
 const MAX_CAPTURE_ARCHIVE_FILES: usize = 256;
 const MAX_CAPTURE_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_CAPTURE_ARCHIVE_DEPLOYMENT_BYTES: i64 = 2 * MAX_CAPTURE_ARCHIVE_BYTES as i64;
+const MAX_CAPTURE_ARCHIVE_DEPLOYMENT_JOBS: i64 = 2;
+const CAPTURE_ARCHIVE_CHUNK_BYTES: usize = 64 * 1024;
+const CAPTURE_ARCHIVE_LEASE_SECONDS: i64 = 30;
+const CAPTURE_ARCHIVE_STREAM_SECONDS: u64 = 300;
+const CAPTURE_ARCHIVE_ADVISORY_KEY: i64 = 1_195_722_091;
 const MAX_INSPECT_CAPTURE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_CAPTURE_FLOWS: usize = 20_000;
-static CAPTURE_ARCHIVE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+static CAPTURE_ARCHIVE_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
 static CAPTURE_FLOW_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
+type CaptureZipChunk = Result<bytes::Bytes, std::io::Error>;
+
+struct CaptureArchiveStream {
+    inner: tokio_stream::wrappers::ReceiverStream<CaptureZipChunk>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    completed: Option<tokio::sync::oneshot::Sender<()>>,
+    lease_failed: std::pin::Pin<Box<tokio::sync::oneshot::Receiver<()>>>,
+    deadline: std::pin::Pin<Box<tokio::time::Sleep>>,
+    terminal: bool,
+}
+
+impl CaptureArchiveStream {
+    fn finish(&mut self) {
+        if let Some(completed) = self.completed.take() {
+            let _ = completed.send(());
+        }
+    }
+}
+
+impl futures::Stream for CaptureArchiveStream {
+    type Item = CaptureZipChunk;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        if self.terminal {
+            return std::task::Poll::Ready(None);
+        }
+        if std::future::Future::poll(self.deadline.as_mut(), context).is_ready() {
+            self.terminal = true;
+            self.finish();
+            return std::task::Poll::Ready(Some(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "capture archive stream exceeded its delivery deadline",
+            ))));
+        }
+        if std::future::Future::poll(self.lease_failed.as_mut(), context).is_ready() {
+            self.terminal = true;
+            self.finish();
+            return std::task::Poll::Ready(Some(Err(std::io::Error::other(
+                "capture archive admission lease was lost",
+            ))));
+        }
+        match futures::Stream::poll_next(std::pin::Pin::new(&mut self.inner), context) {
+            std::task::Poll::Ready(None) => {
+                self.terminal = true;
+                self.finish();
+                std::task::Poll::Ready(None)
+            }
+            result => result,
+        }
+    }
+}
+
+impl Drop for CaptureArchiveStream {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+struct CaptureArchiveSource {
+    path: std::path::PathBuf,
+    entry: String,
+}
+
+struct CaptureZipStreamWriter {
+    output: tokio::sync::mpsc::Sender<CaptureZipChunk>,
+    buffered: Vec<u8>,
+}
+
+impl CaptureZipStreamWriter {
+    fn new(output: tokio::sync::mpsc::Sender<CaptureZipChunk>) -> Self {
+        Self {
+            output,
+            buffered: Vec::with_capacity(CAPTURE_ARCHIVE_CHUNK_BYTES),
+        }
+    }
+
+    fn send_buffer(&mut self) -> std::io::Result<()> {
+        if self.buffered.is_empty() {
+            return Ok(());
+        }
+        let chunk = std::mem::replace(
+            &mut self.buffered,
+            Vec::with_capacity(CAPTURE_ARCHIVE_CHUNK_BYTES),
+        );
+        self.output
+            .blocking_send(Ok(bytes::Bytes::from(chunk)))
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "client disconnected"))
+    }
+
+    fn finish(mut self) -> std::io::Result<()> {
+        self.send_buffer()
+    }
+}
+
+impl Write for CaptureZipStreamWriter {
+    fn write(&mut self, mut input: &[u8]) -> std::io::Result<usize> {
+        let input_len = input.len();
+        while !input.is_empty() {
+            let available = CAPTURE_ARCHIVE_CHUNK_BYTES - self.buffered.len();
+            let take = available.min(input.len());
+            self.buffered.extend_from_slice(&input[..take]);
+            input = &input[take..];
+            if self.buffered.len() == CAPTURE_ARCHIVE_CHUNK_BYTES {
+                self.send_buffer()?;
+            }
+        }
+        Ok(input_len)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.send_buffer()
+    }
+}
+
+fn scan_capture_archive(dir: &std::path::Path) -> AppResult<Vec<CaptureArchiveSource>> {
+    let files = list_pcaps(dir);
+    if files.is_empty() {
+        return Err(AppError::not_found("No captures for this participation"));
+    }
+    if files.len() > MAX_CAPTURE_ARCHIVE_FILES {
+        return Err(AppError::bad_request(
+            "Too many captures to archive; download them individually",
+        ));
+    }
+    let declared_total = files.iter().try_fold(0u64, |total, entry| {
+        entry
+            .metadata()
+            .ok()
+            .and_then(|metadata| total.checked_add(metadata.len()))
+    });
+    if declared_total.is_none_or(|total| total > MAX_CAPTURE_ARCHIVE_BYTES) {
+        return Err(AppError::bad_request(
+            "Captures are too large to archive; download them individually",
+        ));
+    }
+    Ok(files
+        .into_iter()
+        .map(|entry| CaptureArchiveSource {
+            path: entry.path(),
+            entry: entry.file_name().to_string_lossy().to_string(),
+        })
+        .collect())
+}
+
+async fn acquire_archive_lease(
+    pool: &sqlx::PgPool,
+    challenge_id: i32,
+    participation_id: i32,
+) -> AppResult<uuid::Uuid> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+        .bind(CAPTURE_ARCHIVE_ADVISORY_KEY)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if !locked {
+        return Err(AppError::unavailable(
+            "Capture archive admission is busy; retry shortly",
+        ));
+    }
+    sqlx::query(r#"DELETE FROM "TrafficArchiveLeases" WHERE expires_at_utc <= CURRENT_TIMESTAMP"#)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let (active, reserved): (i64, i64) = sqlx::query_as(
+        r#"SELECT COUNT(*)::BIGINT, COALESCE(SUM(reserved_bytes), 0)::BIGINT
+             FROM "TrafficArchiveLeases"
+            WHERE expires_at_utc > CURRENT_TIMESTAMP"#,
+    )
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let duplicate: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM "TrafficArchiveLeases"
+                WHERE challenge_id = $1 AND participation_id = $2
+                  AND expires_at_utc > CURRENT_TIMESTAMP
+           )"#,
+    )
+    .bind(challenge_id)
+    .bind(participation_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if duplicate
+        || active >= MAX_CAPTURE_ARCHIVE_DEPLOYMENT_JOBS
+        || reserved.saturating_add(MAX_CAPTURE_ARCHIVE_BYTES as i64)
+            > MAX_CAPTURE_ARCHIVE_DEPLOYMENT_BYTES
+    {
+        return Err(AppError::unavailable(
+            "Capture archive capacity is busy; retry shortly",
+        ));
+    }
+
+    let operation_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO "TrafficArchiveLeases"
+               (operation_id, challenge_id, participation_id, reserved_bytes, expires_at_utc)
+           VALUES ($1, $2, $3, $4,
+                   CURRENT_TIMESTAMP + make_interval(secs => $5))"#,
+    )
+    .bind(operation_id)
+    .bind(challenge_id)
+    .bind(participation_id)
+    .bind(MAX_CAPTURE_ARCHIVE_BYTES as i64)
+    .bind(CAPTURE_ARCHIVE_LEASE_SECONDS as f64)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(operation_id)
+}
+
+async fn maintain_archive_lease(
+    pool: sqlx::PgPool,
+    operation_id: uuid::Uuid,
+    mut completed: tokio::sync::oneshot::Receiver<()>,
+    lease_failed: tokio::sync::oneshot::Sender<()>,
+) {
+    let mut lease_failed = Some(lease_failed);
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(10));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = &mut completed => break,
+            _ = heartbeat.tick() => {
+                let renewed = sqlx::query(
+                    r#"UPDATE "TrafficArchiveLeases"
+                          SET expires_at_utc = CURRENT_TIMESTAMP + make_interval(secs => $2)
+                        WHERE operation_id = $1"#,
+                )
+                .bind(operation_id)
+                .bind(CAPTURE_ARCHIVE_LEASE_SECONDS as f64)
+                .execute(&pool)
+                .await;
+                match renewed {
+                    Ok(result) if result.rows_affected() == 1 => {}
+                    Ok(_) => {
+                        tracing::warn!(%operation_id, "capture archive lease disappeared");
+                        if let Some(sender) = lease_failed.take() {
+                            let _ = sender.send(());
+                        }
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%operation_id, %error, "capture archive lease heartbeat failed");
+                        if let Some(sender) = lease_failed.take() {
+                            let _ = sender.send(());
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if let Err(error) = sqlx::query(r#"DELETE FROM "TrafficArchiveLeases" WHERE operation_id = $1"#)
+        .bind(operation_id)
+        .execute(&pool)
+        .await
+    {
+        tracing::warn!(%operation_id, %error, "capture archive lease release failed");
+    }
+}
 
 /// `GET /api/game/games/{id}/captures`
 /// Root dir for per-(challenge, participation) pcaps:
@@ -175,67 +454,95 @@ pub async fn get_all_traffic(
     let dir = capture_root(&st)
         .join(cid.to_string())
         .join(pid.to_string());
-    let _permit = CAPTURE_ARCHIVE_SLOTS
-        .try_acquire()
+    let permit = CAPTURE_ARCHIVE_SLOTS
+        .clone()
+        .try_acquire_owned()
         .map_err(|_| AppError::unavailable("Capture archive capacity is busy; retry shortly"))?;
-    let buf = tokio::task::spawn_blocking(move || -> AppResult<Vec<u8>> {
-        let files = list_pcaps(&dir);
-        if files.is_empty() {
-            return Err(AppError::not_found("No captures for this participation"));
+    let operation_id = acquire_archive_lease(st.pg(), cid, pid).await?;
+    let sources = match tokio::task::spawn_blocking(move || scan_capture_archive(&dir)).await {
+        Ok(Ok(sources)) => sources,
+        Ok(Err(error)) => {
+            let _ = sqlx::query(r#"DELETE FROM "TrafficArchiveLeases" WHERE operation_id = $1"#)
+                .bind(operation_id)
+                .execute(st.pg())
+                .await;
+            return Err(error);
         }
-        if files.len() > MAX_CAPTURE_ARCHIVE_FILES {
-            return Err(AppError::bad_request(
-                "Too many captures to archive; download them individually",
-            ));
+        Err(error) => {
+            let _ = sqlx::query(r#"DELETE FROM "TrafficArchiveLeases" WHERE operation_id = $1"#)
+                .bind(operation_id)
+                .execute(st.pg())
+                .await;
+            return Err(AppError::internal(format!(
+                "capture archive scan task failed: {error}"
+            )));
         }
-        let declared_total = files.iter().try_fold(0u64, |total, entry| {
-            entry
-                .metadata()
-                .ok()
-                .and_then(|metadata| total.checked_add(metadata.len()))
-        });
-        if declared_total.is_none_or(|total| total > MAX_CAPTURE_ARCHIVE_BYTES) {
-            return Err(AppError::bad_request(
-                "Captures are too large to archive; download them individually",
-            ));
-        }
-
-        let mut buf = Vec::new();
-        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-        let opts: zip::write::FileOptions<()> =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
-        let mut written = 0u64;
-        for e in files {
-            let name = e.file_name().to_string_lossy().to_string();
-            zip.start_file(name, opts)
-                .map_err(|err| AppError::internal(format!("zip: {err}")))?;
-            let file = std::fs::File::open(e.path())
-                .map_err(|error| AppError::internal(format!("capture open: {error}")))?;
-            let remaining = MAX_CAPTURE_ARCHIVE_BYTES.saturating_sub(written);
-            let copied = std::io::copy(&mut file.take(remaining + 1), &mut zip)
-                .map_err(|error| AppError::internal(format!("zip: {error}")))?;
-            if copied > remaining {
-                return Err(AppError::bad_request(
-                    "Captures grew beyond the archive size limit",
-                ));
+    };
+    let (output_sender, output_receiver) = tokio::sync::mpsc::channel::<CaptureZipChunk>(8);
+    let error_sender = output_sender.clone();
+    let (completed_sender, completed_receiver) = tokio::sync::oneshot::channel();
+    let (lease_failed_sender, lease_failed_receiver) = tokio::sync::oneshot::channel();
+    tokio::spawn(maintain_archive_lease(
+        st.pg().clone(),
+        operation_id,
+        completed_receiver,
+        lease_failed_sender,
+    ));
+    tokio::task::spawn_blocking(move || {
+        let outcome = (|| -> AppResult<()> {
+            let writer = CaptureZipStreamWriter::new(output_sender);
+            let mut zip = zip::ZipWriter::new_stream(writer);
+            let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            let mut written = 0u64;
+            for source in sources {
+                zip.start_file(source.entry, opts)
+                    .map_err(|err| AppError::internal(format!("zip: {err}")))?;
+                let file = std::fs::File::open(source.path)
+                    .map_err(|error| AppError::internal(format!("capture open: {error}")))?;
+                let remaining = MAX_CAPTURE_ARCHIVE_BYTES.saturating_sub(written);
+                let copied = std::io::copy(&mut file.take(remaining + 1), &mut zip)
+                    .map_err(|error| AppError::internal(format!("zip: {error}")))?;
+                if copied > remaining {
+                    return Err(AppError::bad_request(
+                        "Captures grew beyond the archive size limit",
+                    ));
+                }
+                written += copied;
             }
-            written += copied;
+            let writer = zip
+                .finish()
+                .map_err(|err| AppError::internal(format!("zip: {err}")))?;
+            writer
+                .into_inner()
+                .finish()
+                .map_err(|error| AppError::internal(format!("zip stream: {error}")))?;
+            Ok(())
+        })();
+        if let Err(error) = outcome {
+            let _ = error_sender.blocking_send(Err(std::io::Error::other(error.to_string())));
         }
-        zip.finish()
-            .map_err(|err| AppError::internal(format!("zip: {err}")))?;
-        Ok(buf)
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("capture archive task failed: {error}")))??;
+    });
     Ok((
+        StatusCode::OK,
         [
             (header::CONTENT_TYPE, "application/zip".to_string()),
             (
                 header::CONTENT_DISPOSITION,
                 format!("attachment; filename=\"captures_{cid}_{pid}.zip\""),
             ),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
         ],
-        buf,
+        Body::from_stream(CaptureArchiveStream {
+            inner: tokio_stream::wrappers::ReceiverStream::new(output_receiver),
+            _permit: permit,
+            completed: Some(completed_sender),
+            lease_failed: Box::pin(lease_failed_receiver),
+            deadline: Box::pin(tokio::time::sleep(std::time::Duration::from_secs(
+                CAPTURE_ARCHIVE_STREAM_SECONDS,
+            ))),
+            terminal: false,
+        }),
     )
         .into_response())
 }
@@ -402,4 +709,69 @@ pub async fn traffic_flow_detail(
         bytes_in: flow.as_ref().map(|f| f.bytes as i64).unwrap_or(0),
         ..Default::default()
     }))
+}
+
+#[cfg(test)]
+mod archive_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn traffic_zip_writer_streams_a_valid_archive() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<CaptureZipChunk>(1);
+        let worker = std::thread::spawn(move || {
+            let writer = CaptureZipStreamWriter::new(sender);
+            let mut zip = zip::ZipWriter::new_stream(writer);
+            zip.start_file("capture.pcap", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(b"pcap-data").unwrap();
+            zip.finish().unwrap().into_inner().finish().unwrap();
+        });
+
+        let mut bytes = Vec::new();
+        while let Some(chunk) = receiver.blocking_recv() {
+            bytes.extend_from_slice(&chunk.unwrap());
+        }
+        worker.join().unwrap();
+
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut contents = Vec::new();
+        archive
+            .by_name("capture.pcap")
+            .unwrap()
+            .read_to_end(&mut contents)
+            .unwrap();
+        assert_eq!(contents, b"pcap-data");
+    }
+
+    #[test]
+    fn deployment_budget_reserves_the_full_per_export_ceiling() {
+        assert_eq!(
+            MAX_CAPTURE_ARCHIVE_DEPLOYMENT_BYTES,
+            MAX_CAPTURE_ARCHIVE_DEPLOYMENT_JOBS * MAX_CAPTURE_ARCHIVE_BYTES as i64
+        );
+        assert!(CAPTURE_ARCHIVE_LEASE_SECONDS > 2 * 10);
+    }
+
+    #[tokio::test]
+    async fn response_stream_retains_admission_until_disconnect() {
+        let admission = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = admission.clone().try_acquire_owned().unwrap();
+        let (_sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (completed, released) = tokio::sync::oneshot::channel();
+        let (_lease_failed, lease_failure) = tokio::sync::oneshot::channel();
+        let stream = CaptureArchiveStream {
+            inner: tokio_stream::wrappers::ReceiverStream::new(receiver),
+            _permit: permit,
+            completed: Some(completed),
+            lease_failed: Box::pin(lease_failure),
+            deadline: Box::pin(tokio::time::sleep(std::time::Duration::from_secs(30))),
+            terminal: false,
+        };
+
+        assert!(admission.clone().try_acquire_owned().is_err());
+        drop(stream);
+        released.await.unwrap();
+        assert!(admission.try_acquire_owned().is_ok());
+    }
 }

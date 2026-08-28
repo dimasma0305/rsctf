@@ -18,7 +18,7 @@ import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose, mdiDeleteForeverOutline, mdiDownloadMultiple } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { CSSProperties, FC, useState } from 'react'
+import { CSSProperties, FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams, useSearchParams } from 'react-router'
 import { ScrollSelect } from '@Components/ScrollSelect'
@@ -90,6 +90,9 @@ const Traffic: FC = () => {
   }
 
   const [disabled, setDisabled] = useState(false)
+  const [downloadAllBusy, setDownloadAllBusy] = useState(false)
+  const downloadAllOwner = useRef(false)
+  const downloadAllRelease = useRef<ReturnType<typeof setTimeout> | null>(null)
   const theme = useMantineTheme()
 
   const { t } = useTranslation()
@@ -134,9 +137,34 @@ const Traffic: FC = () => {
       })
       return
     }
+    if (downloadAllOwner.current) return
+    downloadAllOwner.current = true
+    setDownloadAllBusy(true)
 
-    window.open(`/api/game/captures/${challengeId}/${participationId}/all`, '_blank', 'noopener,noreferrer')
+    const link = document.createElement('a')
+    link.href = `/api/game/captures/${challengeId}/${participationId}/all`
+    link.download = `captures_${challengeId}_${participationId}.zip`
+    link.rel = 'noopener noreferrer'
+    document.body.append(link)
+    link.click()
+    link.remove()
+
+    // Native downloads deliberately stream outside page memory, so the browser
+    // does not expose their completion. Keep one immediate intent owner while
+    // the server establishes its authoritative archive lease.
+    downloadAllRelease.current = setTimeout(() => {
+      downloadAllOwner.current = false
+      downloadAllRelease.current = null
+      setDownloadAllBusy(false)
+    }, 5000)
   }
+
+  useEffect(
+    () => () => {
+      if (downloadAllRelease.current) clearTimeout(downloadAllRelease.current)
+    },
+    []
+  )
 
   const onDelete = async (item: FileRecord) => {
     if (!challengeId || !participationId || !item.fileName) return
@@ -267,6 +295,8 @@ const Traffic: FC = () => {
                   <Tooltip label={t('game.button.download.all_traffic')} position="left">
                     <ActionIcon
                       size="md"
+                      loading={downloadAllBusy}
+                      disabled={disabled || downloadAllBusy}
                       aria-label={t('game.button.download.all_traffic', 'Download all listed traffic')}
                       onClick={onDownloadAll}
                     >

@@ -42,7 +42,7 @@ import {
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import localizedFormat from 'dayjs/plugin/localizedFormat'
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router'
 import { IconTabs } from '@Components/IconTabs'
@@ -79,6 +79,9 @@ const GameInfoEdit: FC = () => {
   const [end, setEnd] = useInputState(dayjs())
   const [freeze, setFreeze] = useState<dayjs.Dayjs | null>(null)
   const [wpddl, setWpddl] = useInputState(3)
+  const saveOwner = useRef(false)
+  const saveOperation = useRef<{ digest: string; id: string } | null>(null)
+  const saveAbort = useRef<AbortController | null>(null)
 
   const modals = useModals()
   const clipboard = useClipboard()
@@ -178,6 +181,13 @@ const GameInfoEdit: FC = () => {
     }
   }, [id, gameSource])
 
+  useEffect(
+    () => () => {
+      saveAbort.current?.abort()
+    },
+    []
+  )
+
   useEffect(() => {
     let cancelled = false
     if (!isAdmin || numId < 0) {
@@ -237,7 +247,7 @@ const GameInfoEdit: FC = () => {
   }
 
   const onUpdateInfo = async () => {
-    if (!dirty || !updatePayload) return
+    if (!dirty || !updatePayload || saveOwner.current) return
     if (!game?.title) {
       showNotification({
         color: 'orange',
@@ -270,21 +280,41 @@ const GameInfoEdit: FC = () => {
       })
       return
     }
+    const digest = JSON.stringify(updatePayload)
+    if (saveOperation.current?.digest !== digest) {
+      saveOperation.current = { digest, id: crypto.randomUUID() }
+    }
+    const operationId = saveOperation.current?.id
+    if (!operationId) return
+    const controller = new AbortController()
+    saveAbort.current?.abort()
+    saveAbort.current = controller
+    saveOwner.current = true
     setDisabled(true)
 
     try {
-      await api.edit.editUpdateGame(game.id!, updatePayload)
+      const response = await api.edit.editUpdateGame(
+        game.id!,
+        { ...updatePayload, operationId },
+        { signal: controller.signal }
+      )
+      if (saveAbort.current !== controller) return
+      saveOperation.current = null
       showNotification({
         color: 'teal',
         message: t('admin.notification.games.info.info_updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
-      await mutate()
+      await mutate(response.data, { revalidate: false })
       api.game.mutateGameGames()
     } catch (e) {
       showErrorMsg(e, t)
     } finally {
-      setDisabled(false)
+      if (saveAbort.current === controller) {
+        saveAbort.current = null
+        saveOwner.current = false
+        setDisabled(false)
+      }
     }
   }
 

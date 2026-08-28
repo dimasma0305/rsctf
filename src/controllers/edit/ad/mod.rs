@@ -146,13 +146,13 @@ pub async fn ad_toggle_challenge(
         challenge_id,
     )
     .await?;
-    let challenge = game_challenge::Entity::find()
+    let preflight = game_challenge::Entity::find()
         .filter(game_challenge::Column::Id.eq(challenge_id))
         .filter(game_challenge::Column::GameId.eq(game_id))
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("Challenge not found"))?;
-    if !challenge.challenge_type.uses_ad_engine() {
+    if !preflight.challenge_type.uses_ad_engine() {
         return Err(AppError::bad_request("Not an A&D / KotH challenge"));
     }
 
@@ -171,13 +171,24 @@ pub async fn ad_toggle_challenge(
             "A&D/KotH challenge enabled state is locked after epoch scoring has started.",
         ));
     }
-    let challenge = game_challenge::Entity::find()
-        .filter(game_challenge::Column::Id.eq(challenge_id))
-        .filter(game_challenge::Column::GameId.eq(game_id))
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Challenge not found"))?;
-    crate::controllers::edit::reject_pending_mutation(st.pg(), game_id, challenge_id).await?;
+    let challenge = load_challenge_locked(
+        engine_control
+            .as_mut()
+            .expect("engine challenge holds the game control lock")
+            .transaction_mut(),
+        game_id,
+        challenge_id,
+    )
+    .await?;
+    crate::controllers::edit::reject_pending_mutation(
+        &mut **engine_control
+            .as_mut()
+            .expect("engine challenge holds the game control lock")
+            .transaction_mut(),
+        game_id,
+        challenge_id,
+    )
+    .await?;
 
     let is_enabled = !challenge.is_enabled;
     let toggled = sqlx::query(
@@ -189,7 +200,12 @@ pub async fn ad_toggle_challenge(
     .bind(challenge_id)
     .bind(game_id)
     .bind(is_enabled)
-    .execute(st.pg())
+    .execute(
+        &mut **engine_control
+            .as_mut()
+            .expect("engine challenge holds the game control lock")
+            .transaction_mut(),
+    )
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .rows_affected();
@@ -197,7 +213,15 @@ pub async fn ad_toggle_challenge(
         return Err(AppError::conflict("Challenge is being deleted"));
     }
     if !is_enabled && challenge.challenge_type == ChallengeType::KingOfTheHill {
-        crate::services::ad_engine::clear_challenge_control(&st.db, game_id, challenge_id).await?;
+        crate::services::ad_engine::clear_challenge_control_locked(
+            &mut **engine_control
+                .as_mut()
+                .expect("engine challenge holds the game control lock")
+                .transaction_mut(),
+            game_id,
+            challenge_id,
+        )
+        .await?;
     }
     if let Some(lock) = engine_control {
         lock.release()

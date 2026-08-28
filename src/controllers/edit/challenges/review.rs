@@ -62,22 +62,10 @@ pub async fn approve_challenge(
             spec,
         )?;
     }
-    let mut engine_control =
-        Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?);
-    let control = engine_control
-        .as_mut()
-        .expect("challenge approval holds the game control lock");
-    if competition_scoring_started_locked(control.transaction_mut(), id).await? {
-        return Err(AppError::bad_request(
-            "Challenge review state is locked after competition scoring has started.",
-        ));
-    }
-    crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id).await?;
-
     // A submitted archive is immutable blob content. Prepare its reviewed
-    // process checker into a unique revision while holding the same distributed
-    // fence as checker GC. The row remains Pending/Rejected until the complete
-    // directory exists on shared storage.
+    // process checker before opening the game transaction. The retained runtime
+    // transition is a close-on-drop session lease, so storage I/O cannot convoy
+    // event-control transactions.
     let mut checker_artifact_guard = if challenge.challenge_type.uses_ad_engine() {
         Some(crate::services::git_sync::acquire_checker_artifact_guard(&st).await?)
     } else {
@@ -117,6 +105,25 @@ pub async fn approve_challenge(
     } else {
         false
     };
+    let mut engine_control =
+        Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?);
+    let control = engine_control
+        .as_mut()
+        .expect("challenge approval holds the game control lock");
+    if competition_scoring_started_locked(control.transaction_mut(), id).await? {
+        return Err(AppError::bad_request(
+            "Challenge review state is locked after competition scoring has started.",
+        ));
+    }
+    crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id).await?;
+    let authoritative = load_challenge_locked(control.transaction_mut(), id, c_id).await?;
+    deletion::reject_pending_mutation(&mut **control.transaction_mut(), id, c_id).await?;
+    if authoritative != challenge {
+        return Err(AppError::conflict(
+            "Challenge changed while approval artifacts were prepared; reload and retry",
+        ));
+    }
+    challenge = authoritative;
     if needs_build {
         let staged = if let Some(control) = engine_control.as_mut() {
             sqlx::query(
@@ -320,7 +327,7 @@ pub async fn reject_challenge(
     let runtime_transition =
         crate::services::challenge_workloads::acquire_runtime_transition_lock(st.pg(), c_id)
             .await?;
-    let challenge = load_challenge(&st, id, c_id).await?;
+    let _preflight = load_challenge(&st, id, c_id).await?;
     deletion::reject_pending_mutation(st.pg(), id, c_id).await?;
     let mut engine_control =
         Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?);
@@ -333,6 +340,8 @@ pub async fn reject_challenge(
         ));
     }
     crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id).await?;
+    let challenge = load_challenge_locked(control.transaction_mut(), id, c_id).await?;
+    deletion::reject_pending_mutation(&mut **control.transaction_mut(), id, c_id).await?;
     let rejected = sqlx::query(
         r#"UPDATE "GameChallenges"
               SET review_status = $3,
@@ -345,7 +354,7 @@ pub async fn reject_challenge(
     .bind(id)
     .bind(ChallengeReviewStatus::Rejected as i16)
     .bind(model.note)
-    .execute(st.pg())
+    .execute(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .rows_affected();
@@ -353,7 +362,12 @@ pub async fn reject_challenge(
         return Err(AppError::conflict("Challenge is being deleted"));
     }
     if challenge.challenge_type == ChallengeType::KingOfTheHill {
-        crate::services::ad_engine::clear_challenge_control(&st.db, id, c_id).await?;
+        crate::services::ad_engine::clear_challenge_control_locked(
+            &mut **control.transaction_mut(),
+            id,
+            c_id,
+        )
+        .await?;
     }
     if let Some(lock) = engine_control {
         lock.release()
