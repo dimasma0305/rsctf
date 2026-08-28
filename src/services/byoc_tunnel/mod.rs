@@ -97,7 +97,7 @@ struct TunnelHandle {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct AuthorizationGeneration {
+pub(crate) struct AuthorizationGeneration {
     participation: u64,
     challenge: u64,
 }
@@ -209,7 +209,11 @@ impl Registry {
             .is_some_and(|endpoint| endpoint.id() == endpoint_id)
     }
 
-    async fn authorization_generation(&self, pid: i32, cid: i32) -> AuthorizationGeneration {
+    pub(crate) async fn authorization_generation(
+        &self,
+        pid: i32,
+        cid: i32,
+    ) -> AuthorizationGeneration {
         self.authorization_generations
             .read()
             .await
@@ -510,12 +514,13 @@ fn services_ip() -> Result<String, String> {
 /// Accept an agent WebSocket, run the yamux client over it, and attach it to the
 /// team's stable process-local relay endpoint. Ordinary reconnects swap only
 /// the yamux session; revocation or an idle-grace expiry releases the listener.
-pub async fn serve_agent(
+pub(crate) async fn serve_agent(
     st: SharedState,
     game_id: i32,
     pid: i32,
     cid: i32,
     token: String,
+    authorization_generation: AuthorizationGeneration,
     ws: WebSocket,
 ) {
     // The WireGuard interface, firewall, and relay registry are protected by
@@ -528,12 +533,10 @@ pub async fn serve_agent(
         );
         return;
     }
-    if !live_tunnel_authorized(&st, game_id, pid, cid, &token).await {
-        return;
-    }
-    // Capture before doing any socket setup. A later disconnect advances this
-    // generation and prevents this pending activation from reaching VPN sync.
-    let authorization_generation = st.byoc.authorization_generation(pid, cid).await;
+    // The controller captured this generation while its atomic database
+    // authorization fence was still held. A later disconnect advances the
+    // generation and prevents this pending activation from reaching VPN sync;
+    // `activate_tunnel` performs the next DB read under the publication lock.
     if st.containers.backend_kind() == crate::services::container::ContainerBackendKind::Kubernetes
     {
         tracing::warn!(pid, cid, "byoc: Kubernetes relay mode is not supported");
