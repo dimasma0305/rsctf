@@ -955,24 +955,7 @@ pub async fn submit(
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Err(error) =
-        crate::services::game_event_feed::publish_committed(&st, &committed_event_ids).await
-    {
-        tracing::warn!(game = id, %error, "submission game events could not be published");
-    }
-    st.publish_event(
-        "ReceivedSubmissions",
-        Some(id),
-        serde_json::json!({
-            "answer": answer,
-            "status": result,
-            "time": submit_time,
-            "user": user.name,
-            "team": team_name,
-            "challenge": challenge.title,
-        })
-        .to_string(),
-    );
+    crate::services::feed_publication::enqueue_submission(&st, id, sub_id, committed_event_ids);
 
     if let Some((notice_type, notice_id, values, publish_time)) = notice_to_broadcast {
         let broadcast_now = Utc::now();

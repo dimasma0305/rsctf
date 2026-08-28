@@ -14,22 +14,26 @@ if (!/^\d+$/.test(GAME) || TOKENS.length === 0) {
 
 const longSearch = 'needle'.repeat(100);
 const endpoints = [
-  { name: 'events_zero', path: `/api/game/${GAME}/events/page?count=0`, kind: 'history', maxRows: 100 },
-  { name: 'events_one', path: `/api/game/${GAME}/events/page?count=1`, kind: 'history', maxRows: 1 },
-  { name: 'events_max', path: `/api/game/${GAME}/events/page?count=100`, kind: 'history', maxRows: 100 },
-  { name: 'events_clamp', path: `/api/game/${GAME}/events/page?count=10000`, kind: 'history', maxRows: 100 },
-  { name: 'events_wildcard', path: `/api/game/${GAME}/events/page?count=100&search=${encodeURIComponent('%_')}`, kind: 'history', maxRows: 100 },
-  { name: 'events_long', path: `/api/game/${GAME}/events/page?count=100&search=${longSearch}`, kind: 'history', maxRows: 100 },
-  { name: 'event_checkpoint', path: `/api/game/${GAME}/events/backfill`, kind: 'checkpoint', maxRows: 0 },
-  { name: 'event_backfill_one', path: `/api/game/${GAME}/events/backfill?after=0&limit=1`, kind: 'backfill', maxRows: 1 },
-  { name: 'event_backfill_max', path: `/api/game/${GAME}/events/backfill?after=0&limit=100`, kind: 'backfill', maxRows: 100 },
-  { name: 'event_backfill_clamp', path: `/api/game/${GAME}/events/backfill?after=0&limit=10000`, kind: 'backfill', maxRows: 100 },
-  { name: 'submissions_zero', path: `/api/game/${GAME}/submissions/page?count=0`, kind: 'history', maxRows: 100 },
-  { name: 'submissions_one', path: `/api/game/${GAME}/submissions/page?count=1`, kind: 'history', maxRows: 1 },
-  { name: 'submissions_max', path: `/api/game/${GAME}/submissions/page?count=100`, kind: 'history', maxRows: 100 },
-  { name: 'submissions_clamp', path: `/api/game/${GAME}/submissions/page?count=10000`, kind: 'history', maxRows: 100 },
-  { name: 'submissions_wildcard', path: `/api/game/${GAME}/submissions/page?count=100&search=${encodeURIComponent('%_')}`, kind: 'history', maxRows: 100 },
-  { name: 'submissions_long', path: `/api/game/${GAME}/submissions/page?count=100&search=${longSearch}`, kind: 'history', maxRows: 100 },
+  { name: 'events_zero', path: `/api/game/${GAME}/events/page?count=0`, kind: 'history', feed: 'events', maxRows: 100 },
+  { name: 'events_one', path: `/api/game/${GAME}/events/page?count=1`, kind: 'history', feed: 'events', maxRows: 1 },
+  { name: 'events_max', path: `/api/game/${GAME}/events/page?count=100`, kind: 'history', feed: 'events', maxRows: 100 },
+  { name: 'events_clamp', path: `/api/game/${GAME}/events/page?count=10000`, kind: 'history', feed: 'events', maxRows: 100 },
+  { name: 'events_wildcard', path: `/api/game/${GAME}/events/page?count=100&search=${encodeURIComponent('%_')}`, kind: 'history', feed: 'events', maxRows: 100 },
+  { name: 'events_long', path: `/api/game/${GAME}/events/page?count=100&search=${longSearch}`, kind: 'history', feed: 'events', maxRows: 100 },
+  { name: 'event_checkpoint', path: `/api/game/${GAME}/events/backfill`, kind: 'checkpoint', feed: 'events', maxRows: 0 },
+  { name: 'event_backfill_one', path: `/api/game/${GAME}/events/backfill?after=0&limit=1`, kind: 'backfill', feed: 'events', after: 0, maxRows: 1 },
+  { name: 'event_backfill_max', path: `/api/game/${GAME}/events/backfill?after=0&limit=100`, kind: 'backfill', feed: 'events', after: 0, maxRows: 100 },
+  { name: 'event_backfill_clamp', path: `/api/game/${GAME}/events/backfill?after=0&limit=10000`, kind: 'backfill', feed: 'events', after: 0, maxRows: 100 },
+  { name: 'submissions_zero', path: `/api/game/${GAME}/submissions/page?count=0`, kind: 'history', feed: 'submissions', maxRows: 100 },
+  { name: 'submissions_one', path: `/api/game/${GAME}/submissions/page?count=1`, kind: 'history', feed: 'submissions', maxRows: 1 },
+  { name: 'submissions_max', path: `/api/game/${GAME}/submissions/page?count=100`, kind: 'history', feed: 'submissions', maxRows: 100 },
+  { name: 'submissions_clamp', path: `/api/game/${GAME}/submissions/page?count=10000`, kind: 'history', feed: 'submissions', maxRows: 100 },
+  { name: 'submissions_wildcard', path: `/api/game/${GAME}/submissions/page?count=100&search=${encodeURIComponent('%_')}`, kind: 'history', feed: 'submissions', maxRows: 100 },
+  { name: 'submissions_long', path: `/api/game/${GAME}/submissions/page?count=100&search=${longSearch}`, kind: 'history', feed: 'submissions', maxRows: 100 },
+  { name: 'submission_checkpoint', path: `/api/game/${GAME}/submissions/backfill`, kind: 'checkpoint', feed: 'submissions', maxRows: 0 },
+  { name: 'submission_backfill_one', path: `/api/game/${GAME}/submissions/backfill?after=0&limit=1`, kind: 'backfill', feed: 'submissions', after: 0, maxRows: 1 },
+  { name: 'submission_backfill_max', path: `/api/game/${GAME}/submissions/backfill?after=0&limit=100`, kind: 'backfill', feed: 'submissions', after: 0, maxRows: 100 },
+  { name: 'submission_backfill_clamp', path: `/api/game/${GAME}/submissions/backfill?after=0&limit=10000`, kind: 'backfill', feed: 'submissions', after: 0, maxRows: 100 },
 ];
 
 const invalidResponse = new Rate('monitor_history_invalid');
@@ -62,6 +66,31 @@ export const options = {
   },
 };
 
+function validFeedRows(rows, endpoint, requireAscendingCursor) {
+  const ids = new Set();
+  const cursors = new Set();
+  let previousCursor = endpoint.after || 0;
+  for (const row of rows) {
+    const commonShape =
+      row !== null &&
+      typeof row === 'object' &&
+      Number.isSafeInteger(row.id) &&
+      Number.isSafeInteger(row.cursor) &&
+      row.cursor > 0 &&
+      Number.isFinite(row.time) &&
+      !ids.has(row.id) &&
+      !cursors.has(row.cursor);
+    const feedShape = endpoint.feed === 'events'
+      ? Array.isArray(row.values) && typeof row.type === 'string'
+      : typeof row.answer === 'string' && typeof row.status === 'string';
+    if (!commonShape || !feedShape || (requireAscendingCursor && row.cursor <= previousCursor)) return false;
+    ids.add(row.id);
+    cursors.add(row.cursor);
+    previousCursor = row.cursor;
+  }
+  return true;
+}
+
 export default function () {
   const sequence = exec.scenario.iterationInTest;
   const endpoint = endpoints[sequence % endpoints.length];
@@ -86,39 +115,21 @@ export default function () {
   let valid = response.status === 200;
   if (endpoint.kind === 'history') {
     rows = Array.isArray(body) ? body : null;
-    valid = valid && rows !== null;
+    valid = valid && rows !== null && validFeedRows(rows, endpoint, false);
   } else {
-    rows = body && Array.isArray(body.events) ? body.events : null;
+    rows = body && Array.isArray(body[endpoint.feed]) ? body[endpoint.feed] : null;
     valid =
       valid &&
       rows !== null &&
       Number.isSafeInteger(body.nextCursor) &&
       body.nextCursor >= 0 &&
-      typeof body.hasMore === 'boolean';
+      typeof body.hasMore === 'boolean' &&
+      validFeedRows(rows, endpoint, true);
     if (valid && endpoint.kind === 'checkpoint') {
       valid = rows.length === 0 && body.hasMore === false;
     } else if (valid) {
-      const ids = new Set();
-      let previousCursor = 0;
-      for (const event of rows) {
-        const validEvent =
-          event !== null &&
-          typeof event === 'object' &&
-          Number.isSafeInteger(event.id) &&
-          Number.isSafeInteger(event.cursor) &&
-          event.cursor > previousCursor &&
-          Array.isArray(event.values) &&
-          typeof event.type === 'string' &&
-          Number.isFinite(event.time) &&
-          !ids.has(event.id);
-        if (!validEvent) {
-          valid = false;
-          continue;
-        }
-        ids.add(event.id);
-        previousCursor = event.cursor;
-      }
-      valid = valid && (rows.length === 0 ? body.nextCursor === 0 : body.nextCursor === rows[rows.length - 1].cursor);
+      valid =
+        body.nextCursor === (rows.length === 0 ? endpoint.after : rows[rows.length - 1].cursor);
     }
   }
   invalidResponse.add(!valid);

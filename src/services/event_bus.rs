@@ -104,6 +104,7 @@ fn known_target(target: &str) -> Option<&'static str> {
         "ReceivedAttack" => Some("ReceivedAttack"),
         "ReceivedGameEvent" => Some("ReceivedGameEvent"),
         "ReceivedGameNotice" => Some("ReceivedGameNotice"),
+        "ReceivedFlagEgress" => Some("ReceivedFlagEgress"),
         "ReceivedLog" => Some("ReceivedLog"),
         "ReceivedSubmissions" => Some("ReceivedSubmissions"),
         "InternalByocRevokeParticipation" => Some("InternalByocRevokeParticipation"),
@@ -432,6 +433,21 @@ mod tests {
         let mut future = event;
         future.version = 2;
         assert!(future.into_hub().is_none());
+    }
+
+    #[test]
+    fn flag_egress_is_a_game_scoped_distributed_target() {
+        let wire = WireEvent {
+            version: 1,
+            id: Uuid::now_v7(),
+            origin: Uuid::new_v4(),
+            target: "ReceivedFlagEgress".to_owned(),
+            game_id: Some(7),
+            payload: r#"{"id":11,"cursor":19,"gameId":7}"#.to_owned(),
+        };
+        let delivered = wire.into_hub().unwrap();
+        assert_eq!(delivered.target, "ReceivedFlagEgress");
+        assert_eq!(delivered.game_id, Some(7));
     }
 
     #[test]

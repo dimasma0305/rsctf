@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::app_state::SharedState;
 use crate::models::data::{flag_context, game_instance};
+use crate::services::event_bus::EventBus;
 
 use super::{GameAccess, InstanceAccess};
 
@@ -13,6 +14,7 @@ use super::{GameAccess, InstanceAccess};
 #[derive(Clone)]
 pub(super) struct EgressScan {
     pool: sqlx::PgPool,
+    events: EventBus,
     /// The owning team's current flag bytes for this challenge.
     pub(super) flag: Vec<u8>,
     game_id: i32,
@@ -100,6 +102,7 @@ const RECORD_FLAG_EGRESS_SQL: &str = r#"
             "FlagEgressEvents".last_seen_utc,
             EXCLUDED.last_seen_utc
         )
+    RETURNING id
 "#;
 
 /// Load the owning team's flag for a proxied instance. `None` disables the
@@ -128,6 +131,7 @@ pub(super) async fn build_egress_scan(
     }
     Some(EgressScan {
         pool: st.pg().clone(),
+        events: st.events.clone(),
         flag: flag.into_bytes(),
         game_id: game.game_id,
         participation_id: game.owner_participation_id,
@@ -153,7 +157,7 @@ pub(super) async fn record_flag_egress(scan: &EgressScan) {
         return;
     };
     let now = chrono::Utc::now();
-    if sqlx::query(RECORD_FLAG_EGRESS_SQL)
+    let event_id = sqlx::query_scalar::<_, i32>(RECORD_FLAG_EGRESS_SQL)
         .bind(scan.game_id)
         .bind(scan.participation_id)
         .bind(scan.challenge_id)
@@ -161,11 +165,19 @@ pub(super) async fn record_flag_egress(scan: &EgressScan) {
         .bind(&scan.remote_ip)
         .bind(0_i32)
         .bind(now)
-        .execute(&mut *transaction)
-        .await
-        .is_ok()
+        .fetch_one(&mut *transaction)
+        .await;
+    let Ok(event_id) = event_id else {
+        return;
+    };
+    if transaction.commit().await.is_err() {
+        return;
+    }
+    if let Err(error) =
+        crate::services::flag_egress_feed::publish_committed_on(&scan.pool, &scan.events, event_id)
+            .await
     {
-        let _ = transaction.commit().await;
+        tracing::debug!(event_id, %error, "committed flag-egress event could not be published");
     }
 }
 
@@ -204,5 +216,6 @@ mod tests {
         assert!(RECORD_FLAG_EGRESS_SQL.contains("(COALESCE(container_id::TEXT, ''::TEXT))"));
         assert!(RECORD_FLAG_EGRESS_SQL.contains("ON CONFLICT"));
         assert!(RECORD_FLAG_EGRESS_SQL.contains("hit_count::BIGINT + 1"));
+        assert!(RECORD_FLAG_EGRESS_SQL.contains("RETURNING id"));
     }
 }

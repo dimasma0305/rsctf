@@ -319,6 +319,7 @@ function sampleBody(kind, status) {
   switch (kind) {
     case 'array': return [];
     case 'page': return { data: [], total: 0, length: 0 };
+    case 'flag-egress-backfill': return { events: [], nextCursor: 0, hasMore: false };
     case 'message': return { title: '', status };
     case 'string':
     case 'private-string': return 'one-time-secret';
@@ -434,15 +435,15 @@ function sampleResponse(operation) {
   return { status, body: sampleBody(operation.responseKind, status), headers };
 }
 
-test('catalog covers all 73 HTTP operations and keeps SignalR as separate surfaces', () => {
-  assert.equal(ADMIN_OPERATIONS.length, 73);
-  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 73);
+test('catalog covers all 74 HTTP operations and keeps SignalR as separate surfaces', () => {
+  assert.equal(ADMIN_OPERATIONS.length, 74);
+  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 74);
   assert.deepEqual(
     ADMIN_OPERATIONS.reduce((counts, operation) => {
       counts[operation.method] = (counts[operation.method] || 0) + 1;
       return counts;
     }, {}),
-    { GET: 31, PUT: 6, POST: 26, DELETE: 10 },
+    { GET: 32, PUT: 6, POST: 26, DELETE: 10 },
   );
   const enroll = ADMIN_OPERATIONS.find(({ id }) => id === 'worker_enroll');
   assert.deepEqual(
@@ -457,7 +458,7 @@ test('catalog covers all 73 HTTP operations and keeps SignalR as separate surfac
 });
 
 test('read-load subset is GET-only, non-destructive, and includes web and control surfaces', () => {
-  assert.equal(ADMIN_READ_OPERATIONS.length, 25);
+  assert.equal(ADMIN_READ_OPERATIONS.length, 26);
   assert.ok(ADMIN_READ_OPERATIONS.every(({ method, poll, mutation }) => method === 'GET' && poll && !mutation));
   assert.deepEqual(new Set(ADMIN_READ_OPERATIONS.map(({ surface }) => surface)), new Set(['web', 'control']));
   assert.ok(!ADMIN_READ_OPERATIONS.some(({ id }) => id === 'admin_writeups_download'));
@@ -472,7 +473,7 @@ test('fixed-rate admin load uses one bounded instance batch and never a per-row 
 });
 
 test('authorization classes keep Admin, manager, and enrollment-token surfaces explicit', () => {
-  assert.equal(ADMIN_OPERATIONS.filter(({ auth }) => auth === 'admin').length, 71);
+  assert.equal(ADMIN_OPERATIONS.filter(({ auth }) => auth === 'admin').length, 72);
   assert.deepEqual(
     ADMIN_OPERATIONS.filter(({ auth }) => auth !== 'admin').map(({ id, auth }) => [id, auth]),
     [
@@ -598,7 +599,7 @@ test('read-origin matrix covers every live read on every eligible replica exactl
   const controlOrigins = ['http://public.test', 'http://control.test'];
   const matrix = buildAdminReadOriginMatrix(context, webOrigins, controlOrigins);
 
-  assert.equal(matrix.length, 74);
+  assert.equal(matrix.length, 77);
   assert.equal(new Set(matrix.map(({ operation, selectedOrigin }) =>
     `${operation.id}|${selectedOrigin}`)).size, matrix.length);
   for (const operation of ADMIN_READ_OPERATIONS) {
@@ -616,9 +617,9 @@ test('read-origin matrix covers every live read on every eligible replica exactl
 
 test('repository router source and lifecycle catalog have exact bidirectional coverage', () => {
   const sources = repositoryRouterSources();
-  assert.deepEqual(assertRouterCoverage(sources), { operations: 73, signalR: 2 });
+  assert.deepEqual(assertRouterCoverage(sources), { operations: 74, signalR: 2 });
   const parsed = parseAdminRouterOperations(sources);
-  assert.equal(parsed.operations.length, 73);
+  assert.equal(parsed.operations.length, 74);
   assert.equal(parsed.signalR.length, 2);
 });
 
@@ -659,8 +660,8 @@ test('router parser ignores route-like text in Rust comments and strings', () =>
 
 test('coverage accounting rejects omissions, duplicates, and unknown operations', () => {
   assert.deepEqual(assertCompleteCoverage(ADMIN_OPERATION_IDS), {
-    covered: 73,
-    required: 73,
+    covered: 74,
+    required: 74,
     missing: [],
     extra: [],
   });
@@ -670,8 +671,8 @@ test('coverage accounting rejects omissions, duplicates, and unknown operations'
 
   const allSurfaces = [...ADMIN_OPERATION_IDS, ...ADMIN_SIGNALR_SURFACES.map(({ id }) => id)];
   assert.deepEqual(assertCompleteCoverage(allSurfaces, { includeSignalR: true }), {
-    covered: 75,
-    required: 75,
+    covered: 76,
+    required: 76,
     missing: [],
     extra: [],
   });
@@ -896,6 +897,10 @@ test('operation paths bind and encode disposable context without leaving placeho
   assert.equal(
     resolveOperationPath('admin_flag_egress_get', { gameId: 12 }),
     '/api/admin/Games/12/FlagEgress?count=25&skip=0',
+  );
+  assert.equal(
+    resolveOperationPath('admin_flag_egress_backfill', { gameId: 12 }),
+    '/api/admin/Games/12/FlagEgress/backfill?after=0&limit=25',
   );
   assert.equal(
     resolveOperationPath('admin_user_get', { userId: 'user/with space' }),

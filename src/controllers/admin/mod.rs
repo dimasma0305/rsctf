@@ -37,7 +37,7 @@ use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::AdminUser;
 use crate::models::data::{
     api_token, build_record, config, division, game, game_challenge, game_manager, local_file,
-    log_entry, participation, repo_binding, repo_binding_scan, team, user,
+    participation, repo_binding, repo_binding_scan, team, user,
 };
 use crate::utils::crypto_utils::hash_password_async;
 use crate::utils::enums::{
@@ -97,7 +97,14 @@ pub fn router() -> Router<SharedState> {
             "/api/admin/dashboard",
             limited(Policy::Query, get(dashboard)),
         )
-        .route("/api/admin/Games/{id}/FlagEgress", get(get_flag_egress))
+        .route(
+            "/api/admin/Games/{id}/FlagEgress",
+            limited(Policy::Query, get(get_flag_egress)),
+        )
+        .route(
+            "/api/admin/Games/{id}/FlagEgress/backfill",
+            limited(Policy::Query, get(get_flag_egress_backfill)),
+        )
         .route(
             "/api/admin/submissiontrend",
             limited(Policy::Query, get(submission_trend)),

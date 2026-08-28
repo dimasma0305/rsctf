@@ -9,8 +9,8 @@ use serde_json::Value as Json;
 
 use super::{
     load_game, parse_answer_result, AnswerResult, AppError, AppResult, EventQuery, EventType,
-    GameEventModel, MonitorUser, Path, Query, RequestResponse, SharedState, State, SubmissionModel,
-    SubmissionQuery,
+    GameEventModel, MonitorSubmissionModel, MonitorUser, Path, Query, RequestResponse, SharedState,
+    State, SubmissionQuery,
 };
 
 pub(super) const MONITOR_PAGE_DEFAULT: u64 = 100;
@@ -36,6 +36,7 @@ SELECT event."Type"::smallint AS event_type,
   LEFT JOIN "Teams" team ON team.id = event.team_id
   LEFT JOIN "AspNetUsers" account ON account.id = event.user_id
  WHERE event.game_id = $1
+   AND event.feed_cursor IS NOT NULL
    AND (NOT $2::boolean OR event."Type" NOT IN (1, 2))
  ORDER BY event.publish_time_utc DESC, event.id DESC
  OFFSET $3
@@ -49,6 +50,7 @@ WITH matching AS MATERIALIZED (
        FROM "GameEvents" candidate
        JOIN "Teams" searched_team ON searched_team.id = candidate.team_id
       WHERE candidate.game_id = $1
+        AND candidate.feed_cursor IS NOT NULL
         AND (NOT $2::boolean OR candidate."Type" NOT IN (1, 2))
         AND LOWER(searched_team.name) LIKE $3 ESCAPE '\'
       ORDER BY candidate.publish_time_utc DESC, candidate.id DESC
@@ -58,6 +60,7 @@ WITH matching AS MATERIALIZED (
        FROM "GameEvents" candidate
        JOIN "AspNetUsers" searched_account ON searched_account.id = candidate.user_id
       WHERE candidate.game_id = $1
+        AND candidate.feed_cursor IS NOT NULL
         AND (NOT $2::boolean OR candidate."Type" NOT IN (1, 2))
         AND LOWER(searched_account.user_name) LIKE $3 ESCAPE '\'
       ORDER BY candidate.publish_time_utc DESC, candidate.id DESC
@@ -66,6 +69,7 @@ WITH matching AS MATERIALIZED (
     (SELECT candidate.id, candidate.publish_time_utc
        FROM "GameEvents" candidate
       WHERE candidate.game_id = $1
+        AND candidate.feed_cursor IS NOT NULL
         AND (NOT $2::boolean OR candidate."Type" NOT IN (1, 2))
         AND LOWER(candidate.values::text) LIKE $3 ESCAPE '\'
       ORDER BY candidate.publish_time_utc DESC, candidate.id DESC
@@ -82,6 +86,7 @@ SELECT event."Type"::smallint AS event_type,
   JOIN "GameEvents" event ON event.id = matching.id
   LEFT JOIN "Teams" team ON team.id = event.team_id
   LEFT JOIN "AspNetUsers" account ON account.id = event.user_id
+ WHERE event.feed_cursor IS NOT NULL
  ORDER BY matching.publish_time_utc DESC, matching.id DESC
  OFFSET $4
  LIMIT $5
@@ -89,7 +94,9 @@ SELECT event."Type"::smallint AS event_type,
 
 pub(super) const MONITOR_SUBMISSIONS_SQL: &str = r#"
 /* rsctf_monitor_submissions */
-SELECT submission.answer,
+SELECT submission.id,
+       submission.feed_cursor,
+       submission.answer,
        submission.status::smallint AS status,
        submission.submit_time_utc,
        account.user_name,
@@ -102,6 +109,7 @@ SELECT submission.answer,
     ON challenge.id = submission.challenge_id
    AND challenge.game_id = submission.game_id
  WHERE submission.game_id = $1
+   AND submission.feed_cursor IS NOT NULL
    AND ($2::smallint IS NULL OR submission.status = $2)
  ORDER BY submission.submit_time_utc DESC, submission.id DESC
  OFFSET $3
@@ -115,6 +123,7 @@ WITH matching AS MATERIALIZED (
        FROM "Submissions" candidate
        JOIN "Teams" searched_team ON searched_team.id = candidate.team_id
       WHERE candidate.game_id = $1
+        AND candidate.feed_cursor IS NOT NULL
         AND ($2::smallint IS NULL OR candidate.status = $2)
         AND LOWER(searched_team.name) LIKE $3 ESCAPE '\'
       ORDER BY candidate.submit_time_utc DESC, candidate.id DESC
@@ -124,6 +133,7 @@ WITH matching AS MATERIALIZED (
        FROM "Submissions" candidate
        JOIN "AspNetUsers" searched_account ON searched_account.id = candidate.user_id
       WHERE candidate.game_id = $1
+        AND candidate.feed_cursor IS NOT NULL
         AND ($2::smallint IS NULL OR candidate.status = $2)
         AND LOWER(searched_account.user_name) LIKE $3 ESCAPE '\'
       ORDER BY candidate.submit_time_utc DESC, candidate.id DESC
@@ -135,6 +145,7 @@ WITH matching AS MATERIALIZED (
          ON searched_challenge.id = candidate.challenge_id
         AND searched_challenge.game_id = candidate.game_id
       WHERE candidate.game_id = $1
+        AND candidate.feed_cursor IS NOT NULL
         AND ($2::smallint IS NULL OR candidate.status = $2)
         AND LOWER(searched_challenge.title) LIKE $3 ESCAPE '\'
       ORDER BY candidate.submit_time_utc DESC, candidate.id DESC
@@ -143,12 +154,15 @@ WITH matching AS MATERIALIZED (
     (SELECT candidate.id, candidate.submit_time_utc
        FROM "Submissions" candidate
       WHERE candidate.game_id = $1
+        AND candidate.feed_cursor IS NOT NULL
         AND ($2::smallint IS NULL OR candidate.status = $2)
         AND LOWER(candidate.answer) LIKE $3 ESCAPE '\'
       ORDER BY candidate.submit_time_utc DESC, candidate.id DESC
       LIMIT $6)
 )
-SELECT submission.answer,
+SELECT submission.id,
+       submission.feed_cursor,
+       submission.answer,
        submission.status::smallint AS status,
        submission.submit_time_utc,
        account.user_name,
@@ -161,6 +175,7 @@ SELECT submission.answer,
   LEFT JOIN "GameChallenges" challenge
     ON challenge.id = submission.challenge_id
    AND challenge.game_id = submission.game_id
+ WHERE submission.feed_cursor IS NOT NULL
  ORDER BY matching.submit_time_utc DESC, matching.id DESC
  OFFSET $4
  LIMIT $5
@@ -266,6 +281,8 @@ struct EventRow {
 
 #[derive(sqlx::FromRow)]
 struct SubmissionRow {
+    id: i32,
+    feed_cursor: i64,
     answer: String,
     status: i16,
     submit_time_utc: DateTime<Utc>,
@@ -378,7 +395,7 @@ async fn load_submissions_window(
     query: &SubmissionQuery,
     status: Option<AnswerResult>,
     page: MonitorPage,
-) -> AppResult<Vec<SubmissionModel>> {
+) -> AppResult<Vec<MonitorSubmissionModel>> {
     if page.beyond_interactive_history {
         return Ok(Vec::new());
     }
@@ -407,7 +424,9 @@ async fn load_submissions_window(
 
     rows.into_iter()
         .map(|row| {
-            Ok(SubmissionModel {
+            Ok(MonitorSubmissionModel {
+                id: row.id,
+                cursor: row.feed_cursor,
                 answer: row.answer,
                 status: answer_result_from_db(row.status)?,
                 time: row.submit_time_utc,
@@ -424,7 +443,7 @@ pub(super) async fn load_submissions_legacy(
     game_id: i32,
     query: &SubmissionQuery,
     status: Option<AnswerResult>,
-) -> AppResult<Vec<SubmissionModel>> {
+) -> AppResult<Vec<MonitorSubmissionModel>> {
     load_submissions_window(
         pool,
         game_id,
@@ -440,7 +459,7 @@ pub(super) async fn load_submission_page(
     game_id: i32,
     query: &SubmissionQuery,
     status: Option<AnswerResult>,
-) -> AppResult<Vec<SubmissionModel>> {
+) -> AppResult<Vec<MonitorSubmissionModel>> {
     load_submissions_window(
         pool,
         game_id,
@@ -476,7 +495,7 @@ pub(super) async fn submission_page(
     MonitorUser(_user): MonitorUser,
     Path(id): Path<i32>,
     Query(q): Query<SubmissionQuery>,
-) -> AppResult<RequestResponse<Vec<SubmissionModel>>> {
+) -> AppResult<RequestResponse<Vec<MonitorSubmissionModel>>> {
     let _ = load_game(&st, id).await?;
 
     let status = q.type_filter.as_deref().and_then(parse_answer_result);

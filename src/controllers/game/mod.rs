@@ -172,6 +172,9 @@ pub struct GameNoticeModel {
 /// One serializer is shared by polled, backfilled, and pushed monitor events.
 pub type GameEventModel = crate::services::game_event_feed::GameEventMessage;
 
+/// One serializer shared by polled, backfilled, and pushed monitor submissions.
+pub type MonitorSubmissionModel = crate::services::submission_feed::SubmissionMessage;
+
 /// RSCTF `ChallengeItem` (a solved cell on the scoreboard).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -947,6 +950,7 @@ mod play;
 mod scoreboard;
 mod scoreboard_board;
 mod scoreboard_encoding;
+mod submission_backfill;
 mod submit;
 mod traffic;
 mod vpn_access;
@@ -963,6 +967,7 @@ pub use participation_review::*;
 pub use play::*;
 pub use scoreboard::*;
 pub(crate) use scoreboard_board::*;
+pub use submission_backfill::*;
 pub use submit::*;
 pub use traffic::*;
 pub use vpn_access::*;

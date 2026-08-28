@@ -1,5 +1,5 @@
 import {
-  Badge,
+  ActionIcon,
   Center,
   Group,
   Loader,
@@ -12,142 +12,307 @@ import {
   ThemeIcon,
   Tooltip,
 } from '@mantine/core'
-import { useDebouncedValue } from '@mantine/hooks'
-import { mdiFlagVariantOutline, mdiMagnify } from '@mdi/js'
+import { useDebouncedValue, useReducedMotion } from '@mantine/hooks'
+import { showNotification } from '@mantine/notifications'
+import { mdiArrowLeftBold, mdiArrowRightBold, mdiClose, mdiFlagVariantOutline, mdiMagnify, mdiReplay } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import * as signalR from '@microsoft/signalr'
 import dayjs from 'dayjs'
-import { FC, useEffect, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
-import useSWR from 'swr'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { handleAxiosError } from '@Utils/ApiHelper'
+import {
+  currentFlagEgressBuffer,
+  currentFlagEgressPage,
+  flagEgressMatchesSearch,
+  flagEgressPushIsCurrent,
+  flagEgressSnapshotIsCurrent,
+  formatFlagEgressAge,
+  mergeFlagEgressRows,
+  mergeMatchingFlagEgressRows,
+  normalizeFlagEgressSearch,
+  rebaseFlagEgressRows,
+  type ScopedFlagEgressPage,
+} from '@Utils/FlagEgressFeed'
 import { useLanguage } from '@Utils/I18n'
+import { LatestRequest } from '@Utils/LatestRequest'
+import { OPERATOR_FALLBACK_POLL_MS } from '@Utils/SignalRRecovery'
+import { useViewerIdentity } from '@Utils/ViewerIdentity'
+import { useRecoveringHub } from '@Hooks/useRecoveringHub'
+import api, { FlagEgressEventModel } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
 
-enum FlagEgressDirection {
-  ContainerToTeam = 0,
-  TeamToContainer = 1,
-}
+const ITEMS_PER_PAGE = 50
+const BACKFILL_PAGE_SIZE = 100
+const MAX_BACKFILL_PAGES = 10
+const MAX_BUFFERED_EVENTS = 200
 
-interface FlagEgressEventModel {
-  id: number
+interface FlagEgressViewProps {
   gameId: number
-  participationId: number
-  challengeId: number
-  containerId?: string | null
-  teamName: string
-  challengeTitle: string
-  remoteIp: string
-  remotePort: number
-  hitCount: number
-  firstSeenUtc: string
-  lastSeenUtc: string
-  direction: FlagEgressDirection
+  feedScope: string
 }
 
-interface FlagEgressPage {
-  data: FlagEgressEventModel[]
-  length: number
-  total?: number
-}
-
-const fetcher = (url: string) =>
-  fetch(url, { credentials: 'include' }).then((r) => {
-    if (!r.ok) throw new Error('Failed to fetch')
-    return r.json()
-  })
-
-const directionLabel = (d: FlagEgressDirection) =>
-  d === FlagEgressDirection.ContainerToTeam ? 'container → team' : 'team → container'
-
-const directionColor = (d: FlagEgressDirection) => (d === FlagEgressDirection.ContainerToTeam ? 'red' : 'orange')
-
-const FlagEgress: FC = () => {
-  const { id } = useParams()
-  const numId = parseInt(id ?? '-1', 10)
+const FlagEgressView: FC<FlagEgressViewProps> = ({ gameId, feedScope }) => {
   const { t } = useTranslation()
   const { locale } = useLanguage()
+  const [activePage, setPage] = useState(1)
   const [search, setSearch] = useState('')
-  const [debounced] = useDebouncedValue(search, 300)
-  const liveRef = useRef<FlagEgressEventModel[]>([])
-  const [, forceUpdate] = useState(0)
+  const [debouncedSearch] = useDebouncedValue(search, 300)
+  const normalizedSearch = normalizeFlagEgressSearch(debouncedSearch)
+  const filterScope = JSON.stringify([feedScope, normalizedSearch])
+  const snapshotScope = JSON.stringify([feedScope, activePage, normalizedSearch])
+  const reducedMotion = useReducedMotion()
 
-  const { data: page, isLoading } = useSWR<FlagEgressPage>(`/api/admin/Games/${numId}/FlagEgress?count=100`, fetcher, {
-    refreshInterval: 60_000,
-  })
+  const [, update] = useState(0)
+  const buffered = useRef<readonly FlagEgressEventModel[]>([])
+  const bufferedFilterScope = useRef(filterScope)
+  const cursor = useRef(0)
+  const cursorInitialized = useRef(false)
+  const activeFeedScope = useRef(feedScope)
+  const activeSnapshotScope = useRef(snapshotScope)
+  const latestSnapshotRequest = useRef(0)
+  const [snapshot, setSnapshot] = useState<ScopedFlagEgressPage>()
+  const page = currentFlagEgressPage(snapshotScope, snapshot)
+  const pageRequest = useRef(new LatestRequest())
+  const recoveryRequest = useRef(new LatestRequest())
+  const viewport = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    const connection = new signalR.HubConnectionBuilder()
-      .withUrl('/hub/admin')
-      .withHubProtocol(new signalR.JsonHubProtocol())
-      .withAutomaticReconnect()
-      .configureLogging(signalR.LogLevel.None)
-      .build()
+    activeFeedScope.current = feedScope
+    activeSnapshotScope.current = snapshotScope
+  }, [feedScope, snapshotScope])
 
-    connection.on('ReceivedFlagEgress', (msg: FlagEgressEventModel) => {
-      if (msg.gameId !== numId) return
-      const next = [msg, ...liveRef.current.filter((m) => m.id !== msg.id)].slice(0, 200)
-      liveRef.current = next
-      forceUpdate((n) => n + 1)
-    })
+  useEffect(() => {
+    viewport.current?.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' })
+  }, [activePage, normalizedSearch, reducedMotion])
 
-    connection.start().catch(() => {
-      /* admin hub unavailable — swr polling is the fallback */
-    })
-
-    return () => {
-      connection.stop().catch(() => undefined)
-    }
-  }, [numId])
-
-  const merged = [...liveRef.current, ...(page?.data ?? [])]
-  // de-dupe by id; live takes precedence
-  const seen = new Set<number>()
-  const rows = merged.filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)))
-
-  const filtered = rows.filter(
-    (r) =>
-      debounced === '' ||
-      r.teamName.toLowerCase().includes(debounced.toLowerCase()) ||
-      r.challengeTitle.toLowerCase().includes(debounced.toLowerCase()) ||
-      r.remoteIp.toLowerCase().includes(debounced.toLowerCase())
+  const reportFetchError = useCallback(
+    async (error: unknown) => {
+      showNotification({
+        color: 'red',
+        title: t('admin.notification.flag_egress.fetch_failed', 'Could not load Flag Egress activity'),
+        message: await handleAxiosError(error),
+        icon: <Icon path={mdiClose} size={1} />,
+        closeButtonProps: {
+          'aria-label': t('common.button.close', 'Dismiss notification'),
+        },
+      })
+    },
+    [t]
   )
+
+  const loadSnapshot = useCallback(async () => {
+    const requestedAt = ++latestSnapshotRequest.current
+    const response = await pageRequest.current.run((signal) =>
+      api.admin.adminFlagEgressPage(
+        gameId,
+        {
+          count: ITEMS_PER_PAGE,
+          skip: (activePage - 1) * ITEMS_PER_PAGE,
+          search: normalizedSearch || undefined,
+        },
+        { signal }
+      )
+    )
+    if (
+      !response ||
+      !flagEgressSnapshotIsCurrent(
+        activeSnapshotScope.current,
+        snapshotScope,
+        latestSnapshotRequest.current,
+        requestedAt
+      )
+    ) {
+      return
+    }
+    const nextPage = response.data
+    setSnapshot({ scope: snapshotScope, page: nextPage })
+    return nextPage
+  }, [activePage, gameId, normalizedSearch, snapshotScope])
+
+  useEffect(() => {
+    void loadSnapshot().catch(reportFetchError)
+    return () => pageRequest.current.cancel()
+  }, [loadSnapshot, reportFetchError])
+
+  useEffect(() => () => recoveryRequest.current.cancel(), [snapshotScope])
+
+  const mergeIncoming = useCallback(
+    (incoming: readonly FlagEgressEventModel[]) => {
+      if (incoming.length === 0) return
+      const current = currentFlagEgressBuffer(filterScope, bufferedFilterScope.current, buffered.current)
+      const next = mergeMatchingFlagEgressRows(incoming, current, normalizedSearch, MAX_BUFFERED_EVENTS)
+      if (next === current) return
+      bufferedFilterScope.current = filterScope
+      buffered.current = next
+      update((version) => version + 1)
+    },
+    [filterScope, normalizedSearch]
+  )
+
+  const rebaseAtCheckpoint = useCallback(
+    (checkpoint: number) => {
+      const current = currentFlagEgressBuffer(filterScope, bufferedFilterScope.current, buffered.current)
+      bufferedFilterScope.current = filterScope
+      buffered.current = rebaseFlagEgressRows(current, checkpoint)
+      update((version) => version + 1)
+    },
+    [filterScope]
+  )
+
+  const reconcile = useCallback(
+    () =>
+      recoveryRequest.current.run(async (signal) => {
+        const requestedFeedScope = feedScope
+        const requestedSnapshotScope = snapshotScope
+        const isCurrent = () =>
+          activeFeedScope.current === requestedFeedScope &&
+          activeSnapshotScope.current === requestedSnapshotScope &&
+          !signal.aborted
+
+        if (!cursorInitialized.current) {
+          const checkpoint = await api.admin.adminFlagEgressBackfill(gameId, {}, { signal })
+          if (!isCurrent()) return
+          const authoritativePage = await loadSnapshot()
+          if (!isCurrent() || authoritativePage === undefined) return
+          rebaseAtCheckpoint(checkpoint.data.nextCursor)
+          cursor.current = checkpoint.data.nextCursor
+          cursorInitialized.current = true
+          return
+        }
+
+        let after = cursor.current
+        for (let pageIndex = 0; pageIndex < MAX_BACKFILL_PAGES && isCurrent(); pageIndex += 1) {
+          const response = await api.admin.adminFlagEgressBackfill(
+            gameId,
+            { after, limit: BACKFILL_PAGE_SIZE },
+            { signal }
+          )
+          if (!isCurrent()) return
+          const backfill = response.data
+          if (backfill.nextCursor < after || (backfill.nextCursor === after && backfill.hasMore)) {
+            throw new Error('Flag Egress backfill cursor did not advance')
+          }
+          mergeIncoming(backfill.events)
+          after = backfill.nextCursor
+          cursor.current = after
+          if (!backfill.hasMore) {
+            await loadSnapshot()
+            return
+          }
+        }
+
+        if (!isCurrent()) return
+        const checkpoint = await api.admin.adminFlagEgressBackfill(gameId, {}, { signal })
+        if (!isCurrent()) return
+        const authoritativePage = await loadSnapshot()
+        if (!isCurrent() || authoritativePage === undefined) return
+        rebaseAtCheckpoint(checkpoint.data.nextCursor)
+        cursor.current = Math.max(cursor.current, checkpoint.data.nextCursor)
+      }),
+    [feedScope, gameId, loadSnapshot, mergeIncoming, rebaseAtCheckpoint, snapshotScope]
+  )
+
+  useRecoveringHub({
+    active: gameId > 0,
+    url: `/hub/admin?feed=flagEgress&game=${gameId}`,
+    ownerKey: feedScope,
+    handlers: {
+      ReceivedFlagEgress: (raw) => {
+        const message = raw as FlagEgressEventModel
+        if (
+          !flagEgressPushIsCurrent(activeFeedScope.current, feedScope, message.gameId, gameId) ||
+          (cursorInitialized.current && message.cursor <= cursor.current)
+        ) {
+          return
+        }
+        mergeIncoming([message])
+      },
+    },
+    revalidate: reconcile,
+    pollingIntervalMs: OPERATOR_FALLBACK_POLL_MS,
+  })
+
+  const currentBuffer = currentFlagEgressBuffer(filterScope, bufferedFilterScope.current, buffered.current)
+  const filteredLive = currentBuffer.filter((event) => flagEgressMatchesSearch(event, normalizedSearch))
+  const visibleEvents =
+    activePage === 1
+      ? mergeFlagEgressRows(filteredLive, page?.data ?? [], ITEMS_PER_PAGE)
+      : (page?.data ?? []).slice(0, ITEMS_PER_PAGE)
+  const totalPages = Math.max(1, Math.ceil((page?.total ?? 0) / ITEMS_PER_PAGE))
+
+  useEffect(() => {
+    if (page && activePage > totalPages) setPage(totalPages)
+  }, [activePage, page, totalPages])
 
   return (
     <WithGameEditTab
-      isLoading={isLoading && !page}
+      isLoading={!page}
       head={
         <Group justify="space-between" w="100%" wrap="wrap">
           <TextInput
             w={{ base: '100%', sm: '36%' }}
             size="sm"
             aria-label={t('admin.placeholder.flag_egress.search', 'Filter by team, challenge, or IP')}
-            leftSection={<Icon path={mdiMagnify} size={0.9} />}
+            leftSection={<Icon path={mdiMagnify} size={0.9} aria-hidden />}
             placeholder={t('admin.placeholder.flag_egress.search', 'Filter by team, challenge, or IP…')}
             value={search}
-            onChange={(e) => setSearch(e.currentTarget.value)}
+            onChange={(event) => {
+              setSearch(event.currentTarget.value)
+              setPage(1)
+            }}
           />
-          <Group gap="xl">
-            <Stack gap={0} align="center">
+          <Group gap="lg" wrap="wrap">
+            <Stack gap={0} align="center" aria-live="polite">
               <Text fw={700} size="lg" c="red">
-                {page?.total ?? rows.length}
+                {page?.total ?? 0}
               </Text>
               <Text size="xs" c="dimmed">
                 {t('admin.label.flag_egress.total_events', 'Egress Events')}
               </Text>
             </Stack>
+            <Group gap="xs" wrap="nowrap">
+              <ActionIcon
+                size="lg"
+                disabled={activePage <= 1}
+                aria-label={t('common.pagination.first', 'First page')}
+                onClick={() => setPage(1)}
+              >
+                <Icon path={mdiReplay} size={1} />
+              </ActionIcon>
+              <ActionIcon
+                size="lg"
+                disabled={activePage <= 1}
+                aria-label={t('common.pagination.previous', 'Previous page')}
+                onClick={() => setPage((pageNumber) => Math.max(1, pageNumber - 1))}
+              >
+                <Icon path={mdiArrowLeftBold} size={1} />
+              </ActionIcon>
+              <Text size="sm" fw={700} aria-live="polite">
+                {activePage} / {totalPages}
+              </Text>
+              <ActionIcon
+                size="lg"
+                disabled={activePage >= totalPages}
+                aria-label={t('common.pagination.next', 'Next page')}
+                onClick={() => setPage((pageNumber) => Math.min(totalPages, pageNumber + 1))}
+              >
+                <Icon path={mdiArrowRightBold} size={1} />
+              </ActionIcon>
+            </Group>
           </Group>
         </Group>
       }
     >
-      {isLoading && !page ? (
+      {!page ? (
         <Center h="60vh">
           <Loader />
         </Center>
       ) : (
         <Paper shadow="md" p="xs" w="100%">
           <ScrollArea
+            viewportRef={viewport}
             offsetScrollbars
             scrollbarSize={4}
             h="calc(100vh - 220px)"
@@ -167,11 +332,8 @@ const FlagEgress: FC = () => {
                   </Table.Th>
                   <Table.Th scope="col">{t('admin.label.flag_egress.team', 'Team')}</Table.Th>
                   <Table.Th scope="col">{t('admin.label.flag_egress.challenge', 'Challenge')}</Table.Th>
-                  <Table.Th scope="col" miw={120}>
-                    {t('admin.label.flag_egress.direction', 'Direction')}
-                  </Table.Th>
                   <Table.Th scope="col" miw={160}>
-                    {t('admin.label.flag_egress.remote', 'Remote IP:Port')}
+                    {t('admin.label.flag_egress.remote', 'Remote endpoint')}
                   </Table.Th>
                   <Table.Th scope="col" miw={80}>
                     {t('admin.label.flag_egress.hits', 'Hits')}
@@ -179,50 +341,45 @@ const FlagEgress: FC = () => {
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
-                {filtered.map((r) => (
-                  <Table.Tr key={r.id}>
+                {visibleEvents.map((event) => (
+                  <Table.Tr key={event.id}>
                     <Table.Td>
-                      <Tooltip label={dayjs(r.lastSeenUtc).locale(locale).format('LLL')} withArrow>
+                      <Tooltip label={dayjs(event.lastSeenUtc).locale(locale).format('LLL')} withArrow>
                         <Text size="sm" ff="monospace" style={{ cursor: 'help' }}>
-                          {dayjs(r.lastSeenUtc).locale(locale).fromNow()}
+                          {formatFlagEgressAge(event.lastSeenUtc, locale)}
                         </Text>
                       </Tooltip>
                     </Table.Td>
                     <Table.Td>
                       <Group gap="xs">
                         <ThemeIcon size="xs" color="red" variant="light" radius="xl">
-                          <Icon path={mdiFlagVariantOutline} size={0.6} />
+                          <Icon path={mdiFlagVariantOutline} size={0.6} aria-hidden />
                         </ThemeIcon>
                         <Text size="sm" fw={500}>
-                          {r.teamName || `#${r.participationId}`}
+                          {event.teamName || `#${event.participationId}`}
                         </Text>
                       </Group>
                     </Table.Td>
                     <Table.Td>
-                      <Text size="sm">{r.challengeTitle || `#${r.challengeId}`}</Text>
-                    </Table.Td>
-                    <Table.Td>
-                      <Badge size="sm" color={directionColor(r.direction)} variant="light">
-                        {directionLabel(r.direction)}
-                      </Badge>
+                      <Text size="sm">{event.challengeTitle || `#${event.challengeId}`}</Text>
                     </Table.Td>
                     <Table.Td>
                       <Text size="sm" ff="monospace">
-                        {r.remoteIp}:{r.remotePort}
+                        {event.remotePort > 0 ? `${event.remoteIp}:${event.remotePort}` : event.remoteIp}
                       </Text>
                     </Table.Td>
                     <Table.Td>
-                      <Text size="sm" ff="monospace" c={r.hitCount > 10 ? 'red' : undefined}>
-                        {r.hitCount}
+                      <Text size="sm" ff="monospace" c={event.hitCount > 10 ? 'red' : undefined}>
+                        {event.hitCount}
                       </Text>
                     </Table.Td>
                   </Table.Tr>
                 ))}
-                {filtered.length === 0 && (
+                {visibleEvents.length === 0 && (
                   <Table.Tr>
-                    <Table.Td colSpan={6}>
+                    <Table.Td colSpan={5}>
                       <Text ta="center" c="dimmed" py="md" size="sm">
-                        {debounced
+                        {normalizedSearch
                           ? t('admin.placeholder.flag_egress.no_match', 'No events match the filter.')
                           : t('admin.placeholder.flag_egress.empty', 'No flag-egress events yet.')}
                       </Text>
@@ -236,6 +393,15 @@ const FlagEgress: FC = () => {
       )}
     </WithGameEditTab>
   )
+}
+
+const FlagEgress: FC = () => {
+  const { id } = useParams()
+  const gameId = Number.parseInt(id ?? '-1', 10)
+  const { scope: viewerScope } = useViewerIdentity()
+  const feedScope = JSON.stringify([viewerScope, gameId])
+
+  return <FlagEgressView key={feedScope} gameId={gameId} feedScope={feedScope} />
 }
 
 export default FlagEgress

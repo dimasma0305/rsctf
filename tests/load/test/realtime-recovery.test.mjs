@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   durableEventFeedRequestUpperBound,
+  durableFeedRequestUpperBound,
+  durableSubmissionFeedRequestUpperBound,
   fallbackRequestUpperBound,
   steadyFallbackRequestsPerSecond,
 } from "../realtime-recovery-model.js";
@@ -74,29 +76,35 @@ test("fallback ownership pauses hidden/offline clients and unmount cancels both 
   );
 });
 
-test("durable event recovery has a fixed page and request-count ceiling", () => {
+test("durable event and submission recovery have explicit fixed request-count ceilings", () => {
   assert.match(eventSource, /const MAX_BACKFILL_PAGES = 10/);
   assert.match(eventSource, /page < MAX_BACKFILL_PAGES/);
   assert.match(eventSource, /const MAX_BUFFERED_EVENTS = 500/);
   assert.match(eventSource, /api\.game\.gameEventBackfill\(/);
 
+  const workload = {
+    clients: 1_000,
+    durationMs: 120_000,
+    pollingIntervalMs: 30_000,
+    maxBackfillPages: 10,
+  };
+  assert.equal(durableFeedRequestUpperBound(workload), 61_000);
+  assert.equal(durableEventFeedRequestUpperBound(workload), 61_000);
+  assert.equal(durableSubmissionFeedRequestUpperBound(workload), 61_000);
   assert.equal(
-    durableEventFeedRequestUpperBound({
-      clients: 1_000,
-      durationMs: 120_000,
-      pollingIntervalMs: 30_000,
-      maxBackfillPages: 10,
-    }),
-    61_000,
+    durableEventFeedRequestUpperBound(workload) + durableSubmissionFeedRequestUpperBound(workload),
+    122_000,
   );
-  assert.throws(
-    () =>
-      durableEventFeedRequestUpperBound({
+
+  for (const requestUpperBound of [durableEventFeedRequestUpperBound, durableSubmissionFeedRequestUpperBound]) {
+    assert.throws(
+      () => requestUpperBound({
         clients: 1,
         durationMs: 1,
         pollingIntervalMs: 30_000,
         maxBackfillPages: 0,
       }),
-    /maxBackfillPages/,
-  );
+      /maxBackfillPages/,
+    );
+  }
 });

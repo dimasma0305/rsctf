@@ -108,13 +108,13 @@ async fn large_monitor_history_is_bounded_indexed_and_one_query_per_page() {
         CREATE TABLE "GameEvents" (
             id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, "Type" SMALLINT NOT NULL,
             values JSONB NOT NULL, publish_time_utc TIMESTAMPTZ NOT NULL,
-            user_id UUID NULL, team_id INTEGER NOT NULL, feed_cursor BIGINT NOT NULL
+            user_id UUID NULL, team_id INTEGER NOT NULL, feed_cursor BIGINT NULL
         );
         CREATE TABLE "Submissions" (
             id INTEGER PRIMARY KEY, answer TEXT NOT NULL, status SMALLINT NOT NULL,
             submit_time_utc TIMESTAMPTZ NOT NULL, user_id UUID NULL,
             team_id INTEGER NOT NULL, game_id INTEGER NOT NULL,
-            challenge_id INTEGER NOT NULL
+            challenge_id INTEGER NOT NULL, feed_cursor BIGINT NULL
         );
         "#,
     )
@@ -167,15 +167,16 @@ async fn large_monitor_history_is_bounded_indexed_and_one_query_per_page() {
     .expect("seed large event history");
     sqlx::query(
         r#"INSERT INTO "Submissions"
-               (id, answer, status, submit_time_utc, user_id, team_id, game_id, challenge_id)
+               (id, answer, status, submit_time_utc, user_id, team_id, game_id, challenge_id, feed_cursor)
            SELECT n, 'game-seven-' || n::text, (n % 4)::smallint,
                   clock_timestamp() - n * interval '1 millisecond',
                   CASE WHEN n % 2 = 0 THEN $1 ELSE $2 END,
-                  CASE WHEN n % 2 = 0 THEN 1 ELSE 2 END, 7, 1
+                  CASE WHEN n % 2 = 0 THEN 1 ELSE 2 END, 7, 1, n::bigint
              FROM generate_series(1, 50000) n
            UNION ALL
            SELECT 100000 + n, 'game-eight-' || n::text, (n % 4)::smallint,
-                  clock_timestamp() - n * interval '1 millisecond', $2, 2, 8, 2
+                  clock_timestamp() - n * interval '1 millisecond', $2, 2, 8, 2,
+                  (100000 + n)::bigint
              FROM generate_series(1, 20000) n"#,
     )
     .bind(first_user)
@@ -183,6 +184,24 @@ async fn large_monitor_history_is_bounded_indexed_and_one_query_per_page() {
     .execute(&pool)
     .await
     .expect("seed large submission history");
+    sqlx::query(
+        r#"INSERT INTO "GameEvents"
+               (id, game_id, "Type", values, publish_time_utc, user_id, team_id, feed_cursor)
+           VALUES (200001, 7, 0, '["pending-feed-only"]', clock_timestamp(), $1, 1, NULL)"#,
+    )
+    .bind(first_user)
+    .execute(&pool)
+    .await
+    .expect("seed pending event row");
+    sqlx::query(
+        r#"INSERT INTO "Submissions"
+               (id, answer, status, submit_time_utc, user_id, team_id, game_id, challenge_id, feed_cursor)
+           VALUES (200002, 'pending-feed-only', 1, clock_timestamp(), $1, 1, 7, 1, NULL)"#,
+    )
+    .bind(first_user)
+    .execute(&pool)
+    .await
+    .expect("seed pending submission row");
     sqlx::raw_sql(TEST_INDEX_SQL)
         .execute(&pool)
         .await
@@ -211,6 +230,7 @@ async fn large_monitor_history_is_bounded_indexed_and_one_query_per_page() {
             .and_then(|value| value.as_str())
             .is_some_and(|value| value.starts_with("game-seven-"))
     }));
+    assert!(events.iter().all(|row| row.id != 200001));
     if let (Some(before), Some(after)) = (
         event_calls_before,
         statement_calls(&pool, r#""GameEvents" event"#).await,
@@ -238,6 +258,7 @@ async fn large_monitor_history_is_bounded_indexed_and_one_query_per_page() {
     assert!(submissions
         .iter()
         .all(|row| row.answer.starts_with("game-seven-")));
+    assert!(submissions.iter().all(|row| row.id != 200002));
     if let (Some(before), Some(after)) = (
         submission_calls_before,
         statement_calls(&pool, r#""Submissions" submission"#).await,
@@ -298,6 +319,32 @@ async fn large_monitor_history_is_bounded_indexed_and_one_query_per_page() {
     .await
     .unwrap();
     assert!(literal_wildcard.is_empty(), "wildcards must remain literal");
+
+    let pending_event_search = load_event_page(
+        &pool,
+        7,
+        &EventQuery {
+            count: Some(100),
+            search: Some("pending-feed-only".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(pending_event_search.is_empty());
+    let pending_submission_search = load_submission_page(
+        &pool,
+        7,
+        &SubmissionQuery {
+            count: Some(100),
+            search: Some("pending-feed-only".into()),
+            ..Default::default()
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(pending_submission_search.is_empty());
 
     let named_team = load_event_page(
         &pool,

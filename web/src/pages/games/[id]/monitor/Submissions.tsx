@@ -39,15 +39,31 @@ import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { downloadBlob, handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
 import { LatestRequest } from '@Utils/LatestRequest'
-import { submissionMonitorIdentity, unreconciledMonitorRows } from '@Utils/MonitorFeed'
+import {
+  currentMonitorBufferRows,
+  currentMonitorSnapshotRows,
+  mergeSubmissionBuffer,
+  monitorCursorPushIsCurrent,
+  monitorSnapshotIsCurrent,
+  receiveMonitorSubmissions,
+  rebaseSubmissionBuffer,
+  type ScopedMonitorSnapshot,
+  submissionMonitorFilterScope,
+  submissionMonitorIdentity,
+  unreconciledMonitorRows,
+} from '@Utils/MonitorFeed'
 import { OPERATOR_FALLBACK_POLL_MS } from '@Utils/SignalRRecovery'
 import { useDisplayInputStyles } from '@Utils/ThemeOverride'
+import { useViewerIdentity } from '@Utils/ViewerIdentity'
 import { useGame, useGameStatus, useRevalidateWhenPollingStops } from '@Hooks/useGame'
 import { useRecoveringHub } from '@Hooks/useRecoveringHub'
-import api, { AnswerResult, Submission } from '@Api'
+import api, { AnswerResult, MonitorSubmission } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
 
 const ITEM_COUNT_PER_PAGE = 50
+const BACKFILL_PAGE_SIZE = 100
+const MAX_BACKFILL_PAGES = 10
+const MAX_BUFFERED_SUBMISSIONS = 500
 
 const AnswerResultMap = new Map([
   [AnswerResult.Accepted, 'AC'],
@@ -78,16 +94,29 @@ const Submissions: FC = () => {
   const [activePage, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [debouncedSearch] = useDebouncedValue(search, 500)
-
-  const [, update] = useState(new Date())
-  const newSubmissions = useRef<Submission[]>([])
-  const [submissions, setSubmissions] = useState<Submission[]>()
-  const submissionRequest = useRef(new LatestRequest())
   const [type, setType] = useState<AnswerResult | 'All'>('All')
+  const { scope: viewerScope } = useViewerIdentity()
+  const feedScope = JSON.stringify([viewerScope, numId])
+  const snapshotScope = JSON.stringify([feedScope, activePage, type, debouncedSearch])
+  const submissionFilterScope = submissionMonitorFilterScope(feedScope, type, debouncedSearch)
+
+  const [, update] = useState(0)
+  const newSubmissions = useRef<readonly MonitorSubmission[]>([])
+  const bufferedSubmissionScope = useRef(submissionFilterScope)
+  const submissionCursor = useRef(0)
+  const cursorInitialized = useRef(false)
+  const activeFeedScope = useRef(feedScope)
+  const activeSnapshotScope = useRef(snapshotScope)
+  const activeSubmissionFilterScope = useRef(submissionFilterScope)
+  const latestSnapshotRequest = useRef(0)
+  const [submissionSnapshot, setSubmissionSnapshot] = useState<ScopedMonitorSnapshot<MonitorSubmission>>()
+  const submissions = currentMonitorSnapshotRows(snapshotScope, submissionSnapshot)
+  const submissionRequest = useRef(new LatestRequest())
+  const recoveryRequest = useRef(new LatestRequest())
   const [disabled, setDisabled] = useState(false)
 
   const { game } = useGame(numId)
-  const { finished } = useGameStatus(game)
+  const { finished, status: gameStatus } = useGameStatus(game)
   const monitorConnectionActive = Boolean(game?.end) && !finished
 
   const iconMap = AnswerResultIconMap(0.8)
@@ -99,26 +128,42 @@ const Submissions: FC = () => {
   const viewport = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    activeFeedScope.current = feedScope
+    activeSnapshotScope.current = snapshotScope
+    activeSubmissionFilterScope.current = submissionFilterScope
+  }, [feedScope, snapshotScope, submissionFilterScope])
+
+  useEffect(() => {
     viewport.current?.scrollTo({ top: 0, behavior: 'smooth' })
   }, [activePage, viewport])
 
+  const loadSnapshot = useCallback(async () => {
+    const requestId = ++latestSnapshotRequest.current
+    const res = await submissionRequest.current.run((signal) =>
+      api.game.gameSubmissionPage(
+        numId,
+        {
+          type: type === 'All' ? undefined : type,
+          count: ITEM_COUNT_PER_PAGE,
+          skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
+          search: debouncedSearch || undefined,
+        },
+        { signal }
+      )
+    )
+    if (
+      !res ||
+      !monitorSnapshotIsCurrent(activeSnapshotScope.current, snapshotScope, latestSnapshotRequest.current, requestId)
+    ) {
+      return
+    }
+    setSubmissionSnapshot({ scope: snapshotScope, rows: res.data })
+    return res.data
+  }, [activePage, type, debouncedSearch, numId, snapshotScope])
+
   const fetchSubmissions = useCallback(async () => {
     try {
-      const res = await submissionRequest.current.run((signal) =>
-        api.game.gameSubmissionPage(
-          numId,
-          {
-            type: type === 'All' ? undefined : type,
-            count: ITEM_COUNT_PER_PAGE,
-            skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
-            search: debouncedSearch || undefined,
-          },
-          { signal }
-        )
-      )
-      if (!res) return
-      newSubmissions.current = unreconciledMonitorRows(newSubmissions.current, res.data, submissionMonitorIdentity)
-      setSubmissions(res.data)
+      return await loadSnapshot()
     } catch (err) {
       showNotification({
         color: 'red',
@@ -127,7 +172,41 @@ const Submissions: FC = () => {
         icon: <Icon path={mdiClose} size={1} />,
       })
     }
-  }, [activePage, type, debouncedSearch, numId, t])
+  }, [loadSnapshot, t])
+
+  const mergeIncomingSubmissions = useCallback(
+    (incoming: readonly MonitorSubmission[]) => {
+      if (incoming.length === 0 || activeSubmissionFilterScope.current !== submissionFilterScope) return
+      const buffered = currentMonitorBufferRows(
+        submissionFilterScope,
+        bufferedSubmissionScope.current,
+        newSubmissions.current
+      )
+      const received = receiveMonitorSubmissions(incoming, buffered, MAX_BUFFERED_SUBMISSIONS, type, debouncedSearch)
+      if (!received.accepted) return
+      bufferedSubmissionScope.current = submissionFilterScope
+      newSubmissions.current = received.rows
+      update((version) => version + 1)
+    },
+    [debouncedSearch, submissionFilterScope, type]
+  )
+
+  const rebaseAtCheckpoint = useCallback((checkpoint: number) => {
+    newSubmissions.current = rebaseSubmissionBuffer(newSubmissions.current, checkpoint)
+    update((version) => version + 1)
+  }, [])
+
+  useEffect(() => {
+    submissionCursor.current = 0
+    cursorInitialized.current = false
+    newSubmissions.current = []
+    setSubmissionSnapshot(undefined)
+    update((version) => version + 1)
+    return () => {
+      submissionRequest.current.cancel()
+      recoveryRequest.current.cancel()
+    }
+  }, [feedScope])
 
   useEffect(() => {
     void fetchSubmissions()
@@ -139,17 +218,82 @@ const Submissions: FC = () => {
     return () => submissionRequest.current.cancel()
   }, [activePage, fetchSubmissions])
 
+  const reconcileSubmissions = useCallback(
+    () =>
+      recoveryRequest.current.run(async (signal) => {
+        const requestedFeedScope = feedScope
+        const requestedSubmissionFilterScope = submissionFilterScope
+        const isCurrent = () =>
+          activeFeedScope.current === requestedFeedScope &&
+          activeSubmissionFilterScope.current === requestedSubmissionFilterScope &&
+          !signal.aborted
+
+        if (!cursorInitialized.current) {
+          const checkpoint = await api.game.gameSubmissionBackfill(numId, {}, { signal })
+          if (!isCurrent()) return
+          const snapshot = await loadSnapshot()
+          if (!isCurrent() || snapshot === undefined) return
+          rebaseAtCheckpoint(checkpoint.data.nextCursor)
+          submissionCursor.current = checkpoint.data.nextCursor
+          cursorInitialized.current = true
+          return
+        }
+
+        let cursor = submissionCursor.current
+        for (let page = 0; page < MAX_BACKFILL_PAGES && isCurrent(); page += 1) {
+          const response = await api.game.gameSubmissionBackfill(
+            numId,
+            { after: cursor, limit: BACKFILL_PAGE_SIZE },
+            { signal }
+          )
+          if (!isCurrent()) return
+          if (response.data.nextCursor < cursor || (response.data.nextCursor === cursor && response.data.hasMore)) {
+            throw new Error('Monitor submission backfill cursor did not advance')
+          }
+          mergeIncomingSubmissions(response.data.submissions)
+          cursor = response.data.nextCursor
+          submissionCursor.current = cursor
+          if (!response.data.hasMore) {
+            await loadSnapshot()
+            return
+          }
+        }
+
+        if (!isCurrent()) return
+        // Cap recovery at ten pages so an idle tab cannot monopolize the API.
+        // A fresh authoritative snapshot/checkpoint replaces an older gap.
+        const checkpoint = await api.game.gameSubmissionBackfill(numId, {}, { signal })
+        if (!isCurrent()) return
+        const snapshot = await loadSnapshot()
+        if (!isCurrent() || snapshot === undefined) return
+        rebaseAtCheckpoint(checkpoint.data.nextCursor)
+        submissionCursor.current = Math.max(submissionCursor.current, checkpoint.data.nextCursor)
+      }),
+    [feedScope, loadSnapshot, mergeIncomingSubmissions, numId, rebaseAtCheckpoint, submissionFilterScope]
+  )
+
   const { waitForStop: waitForMonitorHubStop } = useRecoveringHub({
     active: monitorConnectionActive,
     url: `/hub/monitor?game=${numId}`,
+    ownerKey: gameStatus,
     handlers: {
       ReceivedSubmissions: (raw) => {
-        const message = raw as Submission
-        newSubmissions.current = [message, ...newSubmissions.current]
-        update(new Date(message.time!))
+        const message = raw as MonitorSubmission
+        if (
+          !monitorCursorPushIsCurrent(
+            activeFeedScope.current,
+            feedScope,
+            false,
+            cursorInitialized.current,
+            submissionCursor.current,
+            message.cursor
+          )
+        )
+          return
+        mergeIncomingSubmissions([message])
       },
     },
-    revalidate: fetchSubmissions,
+    revalidate: reconcileSubmissions,
     pollingIntervalMs: OPERATOR_FALLBACK_POLL_MS,
     onConnected: () =>
       showNotification({
@@ -162,20 +306,27 @@ const Submissions: FC = () => {
   // Keep the final request separate from hub ownership and fence it behind the
   // completed stop. A commit whose boundary broadcast loses the listener is
   // therefore present in the one post-stop authoritative reconciliation.
-  useRevalidateWhenPollingStops(monitorConnectionActive, fetchSubmissions, waitForMonitorHubStop)
+  useRevalidateWhenPollingStops(monitorConnectionActive, reconcileSubmissions, waitForMonitorHubStop)
 
-  const filteredSubs = newSubmissions.current.filter((item) => type === 'All' || item.status === type)
+  const currentBufferedSubmissions = currentMonitorBufferRows(
+    submissionFilterScope,
+    bufferedSubmissionScope.current,
+    newSubmissions.current
+  )
   const bufferedSubmissions =
-    activePage === 1 ? unreconciledMonitorRows(filteredSubs, submissions ?? [], submissionMonitorIdentity) : []
+    activePage === 1
+      ? unreconciledMonitorRows(currentBufferedSubmissions, submissions ?? [], submissionMonitorIdentity)
+      : []
+  const visibleSubmissions =
+    activePage === 1
+      ? mergeSubmissionBuffer(bufferedSubmissions, submissions ?? [], ITEM_COUNT_PER_PAGE)
+      : (submissions ?? [])
 
-  const rows = [...bufferedSubmissions, ...(submissions ?? [])].map((item, i) => (
-    <Table.Tr
-      key={`${item.time}@${i}`}
-      className={cx({ [tableClasses.fade]: i === 0 && bufferedSubmissions.length > 0 })}
-    >
+  const rows = visibleSubmissions.map((item, i) => (
+    <Table.Tr key={item.id} className={cx({ [tableClasses.fade]: i === 0 && bufferedSubmissions.length > 0 })}>
       <Table.Td>
-        <Icon {...iconMap.get(item.status ?? AnswerResult.FlagSubmitted)!} />
-        <VisuallyHidden>{item.status ?? AnswerResult.FlagSubmitted}</VisuallyHidden>
+        <Icon {...iconMap.get(item.status)!} />
+        <VisuallyHidden>{item.status}</VisuallyHidden>
       </Table.Td>
       <Table.Td ff="monospace">
         <Badge size="sm" color="indigo" fullWidth>

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { mergeReconciledRows, prependBoundedRow, reconcileLiveRows } from './FeedReconciliation'
+import { mergeUniqueRows, prependBoundedRow, prependUniqueBoundedRow, reconcileLiveRows } from './FeedReconciliation'
 
 interface DisplayedLog {
+  id: number
   marker: string
   time: number
   name: string
@@ -14,7 +15,8 @@ interface DisplayedLog {
   fingerprint: string
 }
 
-const duplicateLog = (marker: string): DisplayedLog => ({
+const duplicateLog = (marker: string, id: number): DisplayedLog => ({
+  id,
   marker,
   time: 1_788_000_000_123,
   name: 'admin',
@@ -25,17 +27,19 @@ const duplicateLog = (marker: string): DisplayedLog => ({
   fingerprint: 'same-browser',
 })
 
-const displayedLogIdentity = (item: DisplayedLog) =>
-  JSON.stringify([item.time, item.name, item.level, item.ip, item.msg, item.status, item.fingerprint])
+const displayedLogIdentity = (item: DisplayedLog) => item.id
 
-test('admin log reconciliation preserves duplicate authoritative records as a multiset', () => {
-  const authoritative = [duplicateLog('snapshot-one'), duplicateLog('snapshot-two')]
-  const pushed = [duplicateLog('push-one'), duplicateLog('push-two'), duplicateLog('push-three')]
+test('stable audit ids reconcile pushed rows without collapsing identical authoritative records', () => {
+  const authoritative = [duplicateLog('snapshot-one', 1), duplicateLog('snapshot-two', 2)]
+  const pushed = [duplicateLog('push-one', 1), duplicateLog('push-two', 2), duplicateLog('push-three', 3)]
 
   const unreconciled = reconcileLiveRows(pushed, authoritative, displayedLogIdentity)
-  assert.equal(unreconciled.length, 1, 'two snapshot occurrences consume exactly two pushed occurrences')
+  assert.deepEqual(
+    unreconciled.map(({ id }) => id),
+    [3]
+  )
 
-  const visible = mergeReconciledRows(unreconciled, authoritative, 50)
+  const visible = mergeUniqueRows(unreconciled, authoritative, displayedLogIdentity, 50)
   assert.equal(visible.length, 3)
   assert.deepEqual(
     visible.filter(({ marker }) => marker.startsWith('snapshot')).map(({ marker }) => marker),
@@ -44,30 +48,44 @@ test('admin log reconciliation preserves duplicate authoritative records as a mu
   )
 })
 
-test('admin live-log recovery buffers and merged views have explicit hard bounds', () => {
+test('five thousand stable-id pushes keep unique live and merged collections hard bounded', () => {
   let buffered: DisplayedLog[] = []
-  for (let index = 0; index < 200; index += 1) {
-    buffered = prependBoundedRow({ ...duplicateLog(`push-${index}`), time: index }, buffered, 50)
+  for (let index = 0; index < 5_000; index += 1) {
+    buffered = prependUniqueBoundedRow(duplicateLog(`push-${index}`, index), buffered, 100, displayedLogIdentity)
   }
 
-  assert.equal(buffered.length, 50)
-  assert.equal(buffered[0].marker, 'push-199')
-  assert.equal(buffered.at(-1)?.marker, 'push-150')
-  assert.equal(
-    mergeReconciledRows(
-      buffered,
-      Array.from({ length: 50 }, (_, index) => duplicateLog(`s-${index}`)),
-      75
-    ).length,
-    75
+  assert.equal(buffered.length, 100)
+  assert.equal(buffered[0].id, 4_999)
+  assert.equal(buffered.at(-1)?.id, 4_900)
+
+  buffered = prependUniqueBoundedRow(duplicateLog('refreshed', 4_999), buffered, 100, displayedLogIdentity)
+  assert.equal(buffered.length, 100)
+  assert.equal(buffered.filter(({ id }) => id === 4_999).length, 1)
+  assert.equal(buffered[0].marker, 'refreshed')
+
+  const merged = mergeUniqueRows(
+    buffered,
+    Array.from({ length: 100 }, (_, index) => duplicateLog(`snapshot-${index}`, 4_950 - index)),
+    displayedLogIdentity,
+    100
   )
-  assert.deepEqual(prependBoundedRow(duplicateLog('ignored'), buffered, Number.POSITIVE_INFINITY), [])
+  assert.equal(merged.length, 100)
+  assert.equal(new Set(merged.map(({ id }) => id)).size, 100)
+
+  assert.deepEqual(prependBoundedRow(duplicateLog('ignored', 9_999), buffered, Number.POSITIVE_INFINITY), [])
 })
 
-test('the admin Logs page uses multiset-safe bounded reconciliation instead of Set de-duplication', () => {
+test('the admin Logs page uses stable-id bounded reconciliation and React keys', () => {
   const source = readFileSync('src/pages/admin/Logs.tsx', 'utf8')
+  const feedSource = readFileSync('src/utils/AdminLogFeed.ts', 'utf8')
 
-  assert.match(source, /prependBoundedRow\(message, newLogs\.current, MAX_BUFFERED_LOGS\)/)
-  assert.match(source, /mergeReconciledRows\([\s\S]*?MAX_VISIBLE_LOGS/)
-  assert.doesNotMatch(source, /mergeUniqueRows/)
+  assert.match(source, /receiveAdminLog\(message, liveRows, query\)/)
+  assert.match(feedSource, /prependUniqueBoundedRow\([\s\S]*?MAX_BUFFERED_ADMIN_LOGS/)
+  assert.match(source, /mergeUniqueRows\([\s\S]*?MAX_VISIBLE_ADMIN_LOGS/)
+  assert.match(
+    source,
+    /mergeUniqueRows\([\s\S]*?MAX_VISIBLE_ADMIN_LOGS\)[\s\S]*?\.sort\(compareAdminLogsNewestFirst\)[\s\S]*?\.slice\(0, ADMIN_LOG_PAGE_SIZE\)/
+  )
+  assert.match(source, /key=\{item\.id\}/)
+  assert.doesNotMatch(source, /key=\{`\$\{item\.time\}@\$\{i\}`\}/)
 })

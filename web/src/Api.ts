@@ -940,6 +940,8 @@ export interface AdminUserInfoModel {
 
 /** Log information (Admin) */
 export interface LogMessageModel {
+  /** @format int32 */
+  id: number;
   /**
    * Log time
    * @format uint64
@@ -3265,9 +3267,47 @@ export type GameEvent = FormattableDataOfEventType & {
   team?: string;
 };
 
-/** One bounded commit-ordered page used to recover a monitor-hub reconnect. */
+/** One bounded reconnect-safe cursor page used to recover a monitor-hub reconnect. */
 export interface GameEventBackfill {
   events: GameEvent[];
+  nextCursor: number;
+  hasMore: boolean;
+}
+
+/** One windowed observation of a team's own flag leaving its proxied container. */
+export interface FlagEgressEventModel {
+  /** Stable aggregate-row identity. @format int32 */
+  id: number;
+  /** Monotonic checkpoint-safe reconnect cursor. */
+  cursor: number;
+  /** @format int32 */
+  gameId: number;
+  /** @format int32 */
+  participationId: number;
+  /** @format int32 */
+  challengeId: number;
+  containerId?: string | null;
+  teamName: string;
+  challengeTitle: string;
+  remoteIp: string;
+  /** @format int32 */
+  remotePort: number;
+  /** @format int32 */
+  hitCount: number;
+  /** @format uint64 */
+  firstSeenUtc: number;
+  /** @format uint64 */
+  lastSeenUtc: number;
+}
+
+export interface FlagEgressPage {
+  data: FlagEgressEventModel[];
+  total: number;
+  length: number;
+}
+
+export interface FlagEgressBackfill {
+  events: FlagEgressEventModel[];
   nextCursor: number;
   hasMore: boolean;
 }
@@ -3299,6 +3339,36 @@ export interface Submission {
   team?: string;
   /** Challenge that was submitted */
   challenge?: string;
+}
+
+/** Submission shown in the monitor snapshot and real-time feed. */
+export interface MonitorSubmission {
+  /** Stable row identity used to deduplicate snapshots, pushes, and backfills. */
+  id: number;
+  /** Commit-ordered reconnect cursor. */
+  cursor: number;
+  /** Submitted answer string. */
+  answer: string;
+  /** Status of the submitted answer. */
+  status: AnswerResult;
+  /**
+   * Time the answer was submitted.
+   * @format uint64
+   */
+  time: number;
+  /** User who submitted. */
+  user?: string;
+  /** Team that submitted. */
+  team?: string;
+  /** Challenge that was submitted. */
+  challenge?: string;
+}
+
+/** One bounded reconnect-safe cursor page used to recover a monitor-hub reconnect. */
+export interface SubmissionBackfill {
+  submissions: MonitorSubmission[];
+  nextCursor: number;
+  hasMore: boolean;
 }
 
 /** Cheat behavior information */
@@ -5102,6 +5172,54 @@ export class Api<
         data,
         options,
       ),
+
+    /**
+     * @description Get a bounded searchable page of Flag Egress aggregates.
+     * @tags Admin
+     * @name AdminFlagEgressPage
+     * @request GET:/api/admin/Games/{gameId}/FlagEgress
+     */
+    adminFlagEgressPage: (
+      gameId: number,
+      query?: {
+        /** @format int32 @min 1 @max 100 @default 100 */
+        count?: number;
+        /** @format int32 @default 0 */
+        skip?: number;
+        search?: string | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<FlagEgressPage, RequestResponse>({
+        path: `/api/admin/Games/${gameId}/FlagEgress`,
+        method: "GET",
+        query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Backfill committed Flag Egress updates; omit after for a cursor checkpoint.
+     * @tags Admin
+     * @name AdminFlagEgressBackfill
+     * @request GET:/api/admin/Games/{gameId}/FlagEgress/backfill
+     */
+    adminFlagEgressBackfill: (
+      gameId: number,
+      query?: {
+        after?: number;
+        /** @format int32 @min 1 @max 100 @default 100 */
+        limit?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<FlagEgressBackfill, RequestResponse>({
+        path: `/api/admin/Games/${gameId}/FlagEgress/backfill`,
+        method: "GET",
+        query,
+        format: "json",
+        ...params,
+      }),
 
     /**
      * @description Use this API to get all logs, requires Admin permission
@@ -8092,7 +8210,7 @@ export class Api<
         ...params,
       }),
     /**
-     * @description Retrieves a bounded commit-ordered monitor event backfill; omitting after returns a cursor-only checkpoint
+     * @description Retrieves a bounded reconnect-safe monitor event backfill; omitting after returns a cursor-only checkpoint
      *
      * @tags Game
      * @name GameEventBackfill
@@ -9755,8 +9873,38 @@ export class Api<
       },
       params: RequestParams = {},
     ) =>
-      this.request<Submission[], RequestResponse>({
+      this.request<MonitorSubmission[], RequestResponse>({
         path: `/api/game/${id}/submissions`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves a bounded reconnect-safe monitor submission backfill; omitting after returns a cursor-only checkpoint
+     *
+     * @tags Game
+     * @name GameSubmissionBackfill
+     * @summary Backfill game submissions after a reconnect
+     * @request GET:/api/game/{id}/submissions/backfill
+     */
+    gameSubmissionBackfill: (
+      id: number,
+      query?: {
+        /** Commit cursor previously observed by the client. */
+        after?: number;
+        /**
+         * @format int32
+         * @min 1
+         * @max 100
+         * @default 100
+         */
+        limit?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<SubmissionBackfill, RequestResponse>({
+        path: `/api/game/${id}/submissions/backfill`,
         method: "GET",
         query: query,
         format: "json",
@@ -9793,7 +9941,7 @@ export class Api<
       options?: SWRConfiguration,
       doFetch: boolean = true,
     ) =>
-      useSWR<Submission[], RequestResponse>(
+      useSWR<MonitorSubmission[], RequestResponse>(
         doFetch ? [`/api/game/${id}/submissions`, query] : null,
         options,
       ),
@@ -9826,10 +9974,10 @@ export class Api<
         /** Search query */
         search?: string | null;
       },
-      data?: Submission[] | Promise<Submission[]>,
+      data?: MonitorSubmission[] | Promise<MonitorSubmission[]>,
       options?: MutatorOptions,
     ) =>
-      mutate<Submission[]>(
+      mutate<MonitorSubmission[]>(
         [`/api/game/${id}/submissions`, query],
         data,
         options,
@@ -9861,7 +10009,7 @@ export class Api<
       },
       params: RequestParams = {},
     ) =>
-      this.request<Submission[], RequestResponse>({
+      this.request<MonitorSubmission[], RequestResponse>({
         path: `/api/game/${id}/submissions/page`,
         method: "GET",
         query: query,
@@ -9879,7 +10027,7 @@ export class Api<
       options?: SWRConfiguration,
       doFetch: boolean = true,
     ) =>
-      useSWR<Submission[], RequestResponse>(
+      useSWR<MonitorSubmission[], RequestResponse>(
         doFetch ? [`/api/game/${id}/submissions/page`, query] : null,
         options,
       ),
@@ -9891,10 +10039,10 @@ export class Api<
         skip?: number;
         search?: string | null;
       },
-      data?: Submission[] | Promise<Submission[]>,
+      data?: MonitorSubmission[] | Promise<MonitorSubmission[]>,
       options?: MutatorOptions,
     ) =>
-      mutate<Submission[]>(
+      mutate<MonitorSubmission[]>(
         [`/api/game/${id}/submissions/page`, query],
         data,
         options,

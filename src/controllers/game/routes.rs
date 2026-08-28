@@ -67,6 +67,10 @@ fn router_with_domains(
             "/api/game/{id}/submissions/page",
             limited(Policy::Query, get(monitor_history::submission_page)),
         )
+        .route(
+            "/api/game/{id}/submissions/backfill",
+            limited(Policy::Query, get(submission_backfill)),
+        )
         .route("/api/game/{id}/submissionsheet", get(submission_sheet))
         .route("/api/game/{id}/check", get(join_check))
         .route("/api/game/{id}/vpn/challenge", post(vpn_challenge))

@@ -46,6 +46,12 @@ export const ADMIN_OPERATIONS = Object.freeze([
     params: { id: "gameId" },
     query: "count=25&skip=0",
   }),
+  operation("admin_flag_egress_backfill", "GET", "/api/admin/Games/{id}/FlagEgress/backfill", {
+    poll: true,
+    responseKind: "flag-egress-backfill",
+    params: { id: "gameId" },
+    query: "after=0&limit=25",
+  }),
   operation("admin_submission_trend_get", "GET", "/api/admin/submissiontrend", {
     poll: true,
     responseKind: "array",
@@ -891,6 +897,9 @@ export function validateAdminResponse(operationId, response) {
         (body === undefined || body === null || body === "" || response.text === "");
     case "array": return Array.isArray(body);
     case "page": return validPage(body);
+    case "flag-egress-backfill":
+      return object(body) && Array.isArray(body.events) && Number.isSafeInteger(body.nextCursor) &&
+        body.nextCursor >= 0 && typeof body.hasMore === "boolean";
     case "message": return validMessage(body, Number(response.status));
     case "string": return typeof body === "string" && body.length > 0;
     case "private-string":
