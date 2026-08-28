@@ -2153,6 +2153,14 @@ export interface FlagInfoModel {
   attachment?: Attachment | null;
 }
 
+export interface ArrayResponseOfFlagInfoModel {
+  data: FlagInfoModel[];
+  /** @format int32 */
+  length: number;
+  /** @format int32 */
+  total?: number;
+}
+
 /** Basic challenge information (Edit) */
 export interface ChallengeInfoModel {
   /** Stable create identity used to recover an ambiguous response. */
@@ -7009,6 +7017,45 @@ export class Api<
         ...params,
       }),
 
+    editGetFlags: (
+      id: number,
+      cId: number,
+      query?: { count?: number; skip?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfFlagInfoModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/flags`,
+        method: "GET",
+        query,
+        format: "json",
+        ...params,
+      }),
+
+    useEditGetFlags: (
+      id: number,
+      cId: number,
+      query?: { count?: number; skip?: number },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfFlagInfoModel, RequestResponse>(
+        doFetch ? [`/api/edit/games/${id}/challenges/${cId}/flags`, query] : null,
+        options,
+      ),
+
+    mutateEditGetFlags: (
+      id: number,
+      cId: number,
+      query?: { count?: number; skip?: number },
+      data?: ArrayResponseOfFlagInfoModel | Promise<ArrayResponseOfFlagInfoModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ArrayResponseOfFlagInfoModel>(
+        [`/api/edit/games/${id}/challenges/${cId}/flags`, query],
+        data,
+        options,
+      ),
+
     /**
      * @description Adding a game requires administrator privileges
      *
@@ -7439,6 +7486,18 @@ export class Api<
     ) =>
       useSWR<ChallengeEditDetailModel, RequestResponse>(
         doFetch ? `/api/edit/games/${id}/challenges/${cId}` : null,
+        options,
+      ),
+
+    useEditGetGameChallengeProjection: (
+      id: number,
+      cId: number,
+      query: { includeFlags: boolean },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ChallengeEditDetailModel, RequestResponse>(
+        doFetch ? [`/api/edit/games/${id}/challenges/${cId}`, query] : null,
         options,
       ),
 

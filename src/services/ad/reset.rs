@@ -41,6 +41,13 @@ fn backend_matches(actual: Option<&str>, expected: Option<&str>) -> bool {
     actual.filter(|value| !value.is_empty()) == expected.filter(|value| !value.is_empty())
 }
 
+fn reset_flag(current: Option<String>) -> AppResult<String> {
+    match current {
+        Some(flag) => crate::utils::flag_generator::validate_stored_ad_flag(flag),
+        None => crate::utils::flag_generator::generate_ad_flag(),
+    }
+}
+
 pub async fn execute_job(
     st: &SharedState,
     claimed: &crate::services::control_jobs::ClaimedControlJob,
@@ -221,12 +228,11 @@ pub async fn execute_job(
         }
         (replacement.prepared_round_id, replacement.current_flag)
     };
-    let flag = current_flag.unwrap_or_else(|| {
-        let salt = crate::utils::flag_generator::team_hash_salt(&game.private_key);
-        let team_hash =
-            crate::utils::flag_generator::team_challenge_hash(&salt, challenge.id, &part.token);
-        crate::utils::flag_generator::generate_flag(challenge.flag_template.as_deref(), &team_hash)
-    });
+    // A&D services always use the exact round grammar. Challenge-authored
+    // normal templates belong to Jeopardy containers and must never leak into
+    // an A&D reset, otherwise the reset can publish a value that every A&D
+    // submit/delivery boundary correctly rejects.
+    let flag = reset_flag(current_flag)?;
     let mut spec = ContainerSpec::ad_service(
         image,
         ContainerResourceLimits {
@@ -315,7 +321,7 @@ pub async fn execute_job(
 
 #[cfg(test)]
 mod tests {
-    use super::{backend_matches, ResetJobInput};
+    use super::{backend_matches, reset_flag, ResetJobInput};
 
     #[test]
     fn backend_fence_treats_empty_as_absent_and_rejects_replacement() {
@@ -339,5 +345,12 @@ mod tests {
         assert!(input.reset_prepared);
         assert_eq!(input.prepared_round_id, None);
         assert_eq!(input.retired_backend_id.as_deref(), Some("old"));
+    }
+
+    #[test]
+    fn reset_never_delivers_a_normal_template_flag_to_ad() {
+        let generated = reset_flag(None).expect("generate A&D reset flag");
+        assert!(crate::utils::flag_policy::validate_ad(&generated).is_ok());
+        assert!(reset_flag(Some("flag{normal-jeopardy-answer}".to_string())).is_err());
     }
 }

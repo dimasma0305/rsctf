@@ -2,12 +2,21 @@ import { useState, useEffect } from 'react'
 import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { ChallengeInfoModel } from '@Api'
 
-export const useEditChallenge = (numId: number, numCId: number) => {
-  const { data: challenge, error, mutate, isValidating } = api.edit.useEditGetGameChallenge(
+export const useEditChallenge = (numId: number, numCId: number, includeFlags: boolean = true) => {
+  const full = api.edit.useEditGetGameChallenge(numId, numCId, OnceSWRConfig, includeFlags)
+  const projection = api.edit.useEditGetGameChallengeProjection(
     numId,
     numCId,
-    OnceSWRConfig
+    { includeFlags: false },
+    OnceSWRConfig,
+    !includeFlags,
   )
+  const {
+    data: challenge,
+    error,
+    mutate,
+    isValidating,
+  } = includeFlags ? full : projection
 
   return { challenge, error, mutate, isValidating }
 }

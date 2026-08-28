@@ -9,6 +9,7 @@ import {
   Input,
   List,
   Overlay,
+  Pagination,
   Progress,
   ScrollArea,
   Stack,
@@ -33,13 +34,31 @@ import { FlagEditPanel } from '@Components/admin/FlagEditPanel'
 import { WithChallengeEdit } from '@Components/admin/WithChallengeEdit'
 import { showErrorMsg } from '@Utils/Shared'
 import { useDisplayInputStyles } from '@Utils/ThemeOverride'
+import { OnceSWRConfig } from '@Hooks/useConfig'
 import { useEditChallenge } from '@Hooks/useEdit'
 import api, { ChallengeType, FileType, FlagInfoModel } from '@Api'
 import misc from '@Styles/Misc.module.css'
 import uploadClasses from '@Styles/Upload.module.css'
 
 interface FlagEditProps {
+  flags: FlagInfoModel[]
+  total: number
+  page: number
+  onPageChange: (page: number) => void
+  onImported: () => void | Promise<void>
   onDelete: (flag: FlagInfoModel) => void
+}
+
+const FLAG_PAGE_SIZE = 50
+
+const FlagPager: FC<Pick<FlagEditProps, 'total' | 'page' | 'onPageChange'>> = ({ total, page, onPageChange }) => {
+  const pages = Math.ceil(total / FLAG_PAGE_SIZE)
+  if (pages <= 1) return null
+  return (
+    <Group justify="center" mt="sm">
+      <Pagination total={pages} value={page} onChange={onPageChange} withEdges />
+    </Group>
+  )
 }
 
 const WrappingCode: FC<PropsWithChildren> = ({ children }) => (
@@ -53,7 +72,7 @@ const AttachmentEditor: FC = () => {
   const { id, chalId } = useParams()
   const [numId, numCId] = [parseInt(id ?? '-1'), parseInt(chalId ?? '-1')]
 
-  const { challenge, mutate } = useEditChallenge(numId, numCId)
+  const { challenge, mutate } = useEditChallenge(numId, numCId, false)
 
   const [disabled, setDisabled] = useState(false)
   const [type, setType] = useState<FileType>(challenge?.attachment?.type ?? FileType.None)
@@ -290,11 +309,11 @@ const AdEngineAttachment: FC = () => {
 }
 
 // with only one attachment
-const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
+const OneAttachmentWithFlags: FC<FlagEditProps> = ({ flags, total, page, onPageChange, onImported, onDelete }) => {
   const { id, chalId } = useParams()
   const [numId, numCId] = [parseInt(id ?? '-1'), parseInt(chalId ?? '-1')]
 
-  const { challenge, mutate } = useEditChallenge(numId, numCId)
+  const { challenge, mutate } = useEditChallenge(numId, numCId, false)
 
   const [disabled, setDisabled] = useState(false)
   const [type, setType] = useState<FileType>(challenge?.attachment?.type ?? FileType.None)
@@ -636,7 +655,7 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
         </Stack>
       ) : (
         <ScrollArea h="clamp(18rem, calc(100dvh - 32rem), 52rem)" pos="relative">
-          {!challenge?.flags.length && (
+          {!flags.length && (
             <>
               <Overlay opacity={0.3} color={colorScheme === 'dark' ? 'black' : 'white'} />
               <Center mih="18rem">
@@ -647,7 +666,8 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
               </Center>
             </>
           )}
-          <FlagEditPanel flags={challenge?.flags} onDelete={onDelete} unifiedAttachment={challenge?.attachment} />
+          <FlagEditPanel flags={flags} onDelete={onDelete} unifiedAttachment={challenge?.attachment} />
+          <FlagPager total={total} page={page} onPageChange={onPageChange} />
         </ScrollArea>
       )}
       <FlagCreateModal
@@ -655,16 +675,13 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
         size="min(32rem, calc(100vw - 2rem))"
         opened={flagCreateModalOpen}
         onClose={() => setFlagCreateModalOpen(false)}
+        onImported={onImported}
       />
     </Stack>
   )
 }
 
-const FlagsWithAttachments: FC<FlagEditProps> = ({ onDelete }) => {
-  const { id, chalId } = useParams()
-  const [numId, numCId] = [parseInt(id ?? '-1'), parseInt(chalId ?? '-1')]
-  const { challenge } = useEditChallenge(numId, numCId)
-
+const FlagsWithAttachments: FC<FlagEditProps> = ({ flags, total, page, onPageChange, onImported, onDelete }) => {
   const [attachmentUploadModalOpened, setAttachmentUploadModalOpened] = useState(false)
   const [remoteAttachmentModalOpened, setRemoteAttachmentModalOpened] = useState(false)
 
@@ -686,7 +703,7 @@ const FlagsWithAttachments: FC<FlagEditProps> = ({ onDelete }) => {
       </Group>
       <Divider />
       <ScrollArea h="clamp(18rem, calc(100dvh - 25rem), 52rem)" pos="relative">
-        {!challenge?.flags.length && (
+        {!flags.length && (
           <>
             <Overlay opacity={0.3} color={colorScheme === 'dark' ? 'black' : 'white'} />
             <Center mih="18rem">
@@ -697,19 +714,22 @@ const FlagsWithAttachments: FC<FlagEditProps> = ({ onDelete }) => {
             </Center>
           </>
         )}
-        <FlagEditPanel flags={challenge?.flags} onDelete={onDelete} />
+        <FlagEditPanel flags={flags} onDelete={onDelete} />
+        <FlagPager total={total} page={page} onPageChange={onPageChange} />
       </ScrollArea>
       <AttachmentUploadModal
         title={t('admin.button.challenges.flag.add.dynamic')}
         size="min(44rem, calc(100vw - 2rem))"
         opened={attachmentUploadModalOpened}
         onClose={() => setAttachmentUploadModalOpened(false)}
+        onImported={onImported}
       />
       <AttachmentRemoteEditModal
         title={t('admin.button.challenges.flag.add.remote')}
         size="min(44rem, calc(100vw - 2rem))"
         opened={remoteAttachmentModalOpened}
         onClose={() => setRemoteAttachmentModalOpened(false)}
+        onImported={onImported}
       />
     </Stack>
   )
@@ -720,7 +740,17 @@ const GameChallengeEdit: FC = () => {
   const [numId, numCId] = [parseInt(id ?? '-1'), parseInt(chalId ?? '-1')]
   const modals = useModals()
   const { classes } = useDisplayInputStyles({ fw: 'bold', ff: 'monospace' })
-  const { challenge, mutate } = useEditChallenge(numId, numCId)
+  const { challenge, mutate } = useEditChallenge(numId, numCId, false)
+  const [flagPage, setFlagPage] = useState(1)
+  const flagPageQuery = { count: FLAG_PAGE_SIZE, skip: (flagPage - 1) * FLAG_PAGE_SIZE }
+  const flagsEnabled =
+    challenge !== undefined &&
+    challenge.type !== ChallengeType.DynamicContainer &&
+    challenge.type !== ChallengeType.AttackDefense &&
+    challenge.type !== ChallengeType.KingOfTheHill
+  const flagsQuery = api.edit.useEditGetFlags(numId, numCId, flagPageQuery, OnceSWRConfig, flagsEnabled)
+  const flags = flagsQuery.data?.data ?? []
+  const flagTotal = flagsQuery.data?.total ?? flagsQuery.data?.length ?? 0
 
   const { t } = useTranslation()
 
@@ -753,6 +783,8 @@ const GameChallengeEdit: FC = () => {
           flags: challenge.flags.filter((f) => f.id !== id),
         })
       }
+      await flagsQuery.mutate()
+      if (flags.length === 1 && flagPage > 1) setFlagPage((current) => current - 1)
     } catch (e) {
       showErrorMsg(e, t)
     }
@@ -785,9 +817,27 @@ const GameChallengeEdit: FC = () => {
       (challenge.type === ChallengeType.AttackDefense || challenge.type === ChallengeType.KingOfTheHill) ? (
         <AdEngineAttachment />
       ) : challenge && challenge.type === ChallengeType.DynamicAttachment ? (
-        <FlagsWithAttachments onDelete={onDeleteFlag} />
+        <FlagsWithAttachments
+          flags={flags}
+          total={flagTotal}
+          page={flagPage}
+          onPageChange={setFlagPage}
+          onImported={async () => {
+            await flagsQuery.mutate()
+          }}
+          onDelete={onDeleteFlag}
+        />
       ) : (
-        <OneAttachmentWithFlags onDelete={onDeleteFlag} />
+        <OneAttachmentWithFlags
+          flags={flags}
+          total={flagTotal}
+          page={flagPage}
+          onPageChange={setFlagPage}
+          onImported={async () => {
+            await flagsQuery.mutate()
+          }}
+          onDelete={onDeleteFlag}
+        />
       )}
     </WithChallengeEdit>
   )

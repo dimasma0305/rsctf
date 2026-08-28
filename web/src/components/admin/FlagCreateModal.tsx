@@ -6,13 +6,17 @@ import { Icon } from '@mdi/react'
 import { FC, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
+import { MAX_FLAG_IMPORT_ROWS, parsePlainFlagRows, validateFlagRows } from '@Utils/FlagImport'
 import { showErrorMsg } from '@Utils/Shared'
 import { useEditChallenge } from '@Hooks/useEdit'
 import api from '@Api'
 import misc from '@Styles/Misc.module.css'
-import { MAX_FLAG_IMPORT_ROWS, parsePlainFlagRows, validateFlagRows } from '@Utils/FlagImport'
 
-export const FlagCreateModal: FC<ModalProps> = (props) => {
+interface FlagCreateModalProps extends ModalProps {
+  onImported?: () => void | Promise<void>
+}
+
+export const FlagCreateModal: FC<FlagCreateModalProps> = ({ onImported, ...props }) => {
   const [disabled, setDisabled] = useState(false)
   const submitting = useRef(false)
   const operationId = useRef<string | null>(null)
@@ -21,7 +25,7 @@ export const FlagCreateModal: FC<ModalProps> = (props) => {
   const [numId, numCId] = [parseInt(id ?? '-1'), parseInt(chalId ?? '-1')]
   const [flags, setFlags] = useInputState('')
 
-  const { challenge, mutate } = useEditChallenge(numId, numCId)
+  const { challenge, mutate } = useEditChallenge(numId, numCId, false)
 
   const { t } = useTranslation()
 
@@ -53,6 +57,7 @@ export const FlagCreateModal: FC<ModalProps> = (props) => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
       if (challenge) await mutate()
+      await onImported?.()
       setFlags('')
       operationId.current = null
       props.onClose()
@@ -70,7 +75,9 @@ export const FlagCreateModal: FC<ModalProps> = (props) => {
         <Text size="sm">
           <Trans i18nKey="admin.content.games.challenges.flag.create" />
         </Text>
-        <Text size="xs" c="dimmed">Up to {MAX_FLAG_IMPORT_ROWS} flags per import; one flag per line.</Text>
+        <Text size="xs" c="dimmed">
+          Up to {MAX_FLAG_IMPORT_ROWS} flags per import; one flag per line.
+        </Text>
         <Textarea
           label={t('admin.label.games.challenges.flags', 'Flags')}
           w="100%"

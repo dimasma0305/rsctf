@@ -5,13 +5,17 @@ import { Icon } from '@mdi/react'
 import { FC, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
+import { MAX_FLAG_IMPORT_ROWS, parseRemoteFlagRows, validateFlagRows } from '@Utils/FlagImport'
 import { showErrorMsg } from '@Utils/Shared'
 import { useEditChallenge } from '@Hooks/useEdit'
 import api from '@Api'
 import misc from '@Styles/Misc.module.css'
-import { MAX_FLAG_IMPORT_ROWS, parseRemoteFlagRows, validateFlagRows } from '@Utils/FlagImport'
 
-export const AttachmentRemoteEditModal: FC<ModalProps> = (props) => {
+interface AttachmentRemoteEditModalProps extends ModalProps {
+  onImported?: () => void | Promise<void>
+}
+
+export const AttachmentRemoteEditModal: FC<AttachmentRemoteEditModalProps> = ({ onImported, ...props }) => {
   const { id, chalId } = useParams()
   const [numId, numCId] = [parseInt(id ?? '-1'), parseInt(chalId ?? '-1')]
 
@@ -19,7 +23,7 @@ export const AttachmentRemoteEditModal: FC<ModalProps> = (props) => {
   const submitting = useRef(false)
   const operationId = useRef<string | null>(null)
 
-  const { mutate } = useEditChallenge(numId, numCId)
+  const { mutate } = useEditChallenge(numId, numCId, false)
 
   const [text, setText] = useState('')
   const flags = useMemo(() => parseRemoteFlagRows(text), [text])
@@ -49,7 +53,7 @@ export const AttachmentRemoteEditModal: FC<ModalProps> = (props) => {
       })
       setText('')
       operationId.current = null
-      mutate()
+      await Promise.all([mutate(), onImported?.()])
       props.onClose()
     } catch (e) {
       showErrorMsg(e, t)
@@ -74,7 +78,9 @@ export const AttachmentRemoteEditModal: FC<ModalProps> = (props) => {
           </Text>
           <br />
         </Text>
-        <Text size="xs" c="dimmed">Up to {MAX_FLAG_IMPORT_ROWS} flag and URL pairs per import.</Text>
+        <Text size="xs" c="dimmed">
+          Up to {MAX_FLAG_IMPORT_ROWS} flag and URL pairs per import.
+        </Text>
         <Textarea
           label={t('admin.label.games.challenges.attachment_pairs', 'Flag and attachment URL pairs')}
           required

@@ -52,6 +52,17 @@ pub(crate) use workload::execute_workload_rollout_job;
 pub use workload::rollout_workloads;
 
 const MAX_EDIT_CHALLENGES: u64 = 2_048;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChallengeDetailQuery {
+    #[serde(default = "default_include_flags")]
+    include_flags: bool,
+}
+
+const fn default_include_flags() -> bool {
+    true
+}
 // ============================================================================
 //  Game challenges
 // ============================================================================
@@ -107,14 +118,16 @@ pub async fn get_challenge(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((id, c_id)): Path<(i32, i32)>,
+    Query(query): Query<ChallengeDetailQuery>,
 ) -> AppResult<RequestResponse<ChallengeEditDetailModel>> {
     manager_or_admin(&st, &user, id).await?;
     let challenge = load_challenge(&st, id, c_id).await?;
-    let flags = if challenge.challenge_type == ChallengeType::DynamicContainer {
-        Vec::new()
-    } else {
-        load_flags(&st, c_id).await?
-    };
+    let flags =
+        if !query.include_flags || challenge.challenge_type == ChallengeType::DynamicContainer {
+            Vec::new()
+        } else {
+            load_flags(&st, c_id).await?
+        };
     Ok(RequestResponse::ok(
         ChallengeEditDetailModel::from_challenge(&st, &challenge, flags).await?,
     ))

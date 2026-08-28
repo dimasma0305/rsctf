@@ -7,6 +7,31 @@ const MAX_FLAGS_PER_CHALLENGE: i64 = 512;
 const MAX_FLAG_BYTES: usize = 127;
 const MAX_FLAG_REMOTE_URL_BYTES: usize = 2_048;
 const MAX_FLAG_FILE_HASH_BYTES: usize = 256;
+const DEFAULT_FLAG_PAGE_SIZE: u64 = 50;
+const MAX_FLAG_PAGE_SIZE: u64 = 100;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlagListQuery {
+    #[serde(default = "default_flag_page_size")]
+    count: u64,
+    #[serde(default)]
+    skip: u64,
+}
+
+const fn default_flag_page_size() -> u64 {
+    DEFAULT_FLAG_PAGE_SIZE
+}
+
+impl FlagListQuery {
+    fn limit(&self) -> i64 {
+        self.count.clamp(1, MAX_FLAG_PAGE_SIZE) as i64
+    }
+
+    fn offset(&self) -> i64 {
+        self.skip.min(MAX_FLAGS_PER_CHALLENGE as u64) as i64
+    }
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -470,19 +495,71 @@ pub async fn add_flags(
     }))
 }
 
-pub(crate) async fn load_flags(st: &SharedState, c_id: i32) -> AppResult<Vec<FlagInfoModel>> {
-    #[derive(sqlx::FromRow)]
-    struct FlagRow {
-        id: i32,
-        flag: String,
-        attachment_id: Option<i32>,
-        file_type: Option<i16>,
-        remote_url: Option<String>,
-        file_hash: Option<String>,
-        file_name: Option<String>,
-        file_size: Option<i64>,
-    }
+#[derive(sqlx::FromRow)]
+struct FlagRow {
+    id: i32,
+    flag: String,
+    attachment_id: Option<i32>,
+    file_type: Option<i16>,
+    remote_url: Option<String>,
+    file_hash: Option<String>,
+    file_name: Option<String>,
+    file_size: Option<i64>,
+}
 
+fn project_flag(row: FlagRow) -> AppResult<FlagInfoModel> {
+    let attachment = match (row.attachment_id, row.file_type) {
+        (Some(id), Some(raw_type)) => {
+            let file_type = match raw_type {
+                value if value == FileType::None as i16 => FileType::None,
+                value if value == FileType::Local as i16 => FileType::Local,
+                value if value == FileType::Remote as i16 => FileType::Remote,
+                _ => return Err(AppError::internal("Invalid attachment type")),
+            };
+            let (url, file_size) = match file_type {
+                FileType::None => (None, None),
+                FileType::Remote => (row.remote_url, None),
+                FileType::Local => (
+                    row.file_hash
+                        .zip(row.file_name)
+                        .map(|(hash, name)| format!("/assets/{hash}/{name}")),
+                    row.file_size,
+                ),
+            };
+            Some(AttachmentInfoModel {
+                id,
+                file_type,
+                url,
+                file_size,
+            })
+        }
+        _ => None,
+    };
+    Ok(FlagInfoModel {
+        id: row.id,
+        flag: row.flag,
+        attachment,
+    })
+}
+
+async fn load_flags_page(
+    st: &SharedState,
+    c_id: i32,
+    limit: i64,
+    offset: i64,
+) -> AppResult<(Vec<FlagInfoModel>, i64)> {
+    let total = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*)::bigint FROM "FlagContexts" WHERE challenge_id = $1"#,
+    )
+    .bind(c_id)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if total > MAX_FLAGS_PER_CHALLENGE {
+        return Err(AppError::payload_too_large(
+            "This challenge exceeds the editable flag limit; remove legacy flags first",
+        ));
+    }
     let rows = sqlx::query_as::<_, FlagRow>(
         r#"SELECT context.id, context.flag,
                   attachment.id AS attachment_id,
@@ -496,54 +573,39 @@ pub(crate) async fn load_flags(st: &SharedState, c_id: i32) -> AppResult<Vec<Fla
              LEFT JOIN "Files" file ON file.id = attachment.local_file_id
             WHERE context.challenge_id = $1
             ORDER BY context.id
-            LIMIT 513"#,
+            OFFSET $2 LIMIT $3"#,
     )
     .bind(c_id)
+    .bind(offset.clamp(0, MAX_FLAGS_PER_CHALLENGE))
+    .bind(limit.clamp(1, MAX_FLAGS_PER_CHALLENGE))
     .fetch_all(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    if rows.len() > 512 {
-        return Err(AppError::payload_too_large(
-            "This challenge exceeds the editable flag limit; remove legacy flags first",
-        ));
-    }
+    Ok((
+        rows.into_iter()
+            .map(project_flag)
+            .collect::<AppResult<Vec<_>>>()?,
+        total,
+    ))
+}
 
-    rows.into_iter()
-        .map(|row| {
-            let attachment = match (row.attachment_id, row.file_type) {
-                (Some(id), Some(raw_type)) => {
-                    let file_type = match raw_type {
-                        value if value == FileType::None as i16 => FileType::None,
-                        value if value == FileType::Local as i16 => FileType::Local,
-                        value if value == FileType::Remote as i16 => FileType::Remote,
-                        _ => return Err(AppError::internal("Invalid attachment type")),
-                    };
-                    let (url, file_size) = match file_type {
-                        FileType::None => (None, None),
-                        FileType::Remote => (row.remote_url, None),
-                        FileType::Local => (
-                            row.file_hash
-                                .zip(row.file_name)
-                                .map(|(hash, name)| format!("/assets/{hash}/{name}")),
-                            row.file_size,
-                        ),
-                    };
-                    Some(AttachmentInfoModel {
-                        id,
-                        file_type,
-                        url,
-                        file_size,
-                    })
-                }
-                _ => None,
-            };
-            Ok(FlagInfoModel {
-                id: row.id,
-                flag: row.flag,
-                attachment,
-            })
-        })
-        .collect()
+pub(crate) async fn load_flags(st: &SharedState, c_id: i32) -> AppResult<Vec<FlagInfoModel>> {
+    load_flags_page(st, c_id, MAX_FLAGS_PER_CHALLENGE, 0)
+        .await
+        .map(|(flags, _)| flags)
+}
+
+/// `GET /api/edit/games/{id}/challenges/{cId}/flags` — bounded edit page.
+pub async fn get_flags(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+    Path((id, c_id)): Path<(i32, i32)>,
+    Query(query): Query<FlagListQuery>,
+) -> AppResult<ArrayResponse<FlagInfoModel>> {
+    manager_or_admin(&st, &user, id).await?;
+    load_challenge(&st, id, c_id).await?;
+    let (flags, total) = load_flags_page(&st, c_id, query.limit(), query.offset()).await?;
+    Ok(ArrayResponse::new(flags, total))
 }
 
 #[cfg(test)]
@@ -566,6 +628,26 @@ mod policy_tests {
         assert!(validate_authored_flags(&[model("x".repeat(128))]).is_err());
         assert!(validate_authored_flags(&[model(format!("{}x", "界".repeat(42)))]).is_ok());
         assert!(validate_authored_flags(&[model(format!("{}xx", "界".repeat(42)))]).is_err());
+    }
+
+    #[test]
+    fn edit_projection_page_is_hard_bounded() {
+        assert_eq!(
+            FlagListQuery {
+                count: u64::MAX,
+                skip: u64::MAX,
+            }
+            .limit(),
+            MAX_FLAG_PAGE_SIZE as i64
+        );
+        assert_eq!(
+            FlagListQuery {
+                count: 0,
+                skip: u64::MAX,
+            }
+            .offset(),
+            MAX_FLAGS_PER_CHALLENGE
+        );
     }
 
     #[tokio::test]

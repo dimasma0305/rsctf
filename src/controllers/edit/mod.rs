@@ -9,7 +9,7 @@
 //! success so the React ClientApp stays functional — never a 4xx. Those are
 //! marked with `// TODO`.
 
-use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::header;
 use axum::response::Response;
 use axum::routing::{delete, get, post, put};
@@ -774,7 +774,9 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/flags",
-            post(add_flags).layer(DefaultBodyLimit::max(256 * 1024)),
+            get(get_flags)
+                .post(add_flags)
+                .layer(DefaultBodyLimit::max(256 * 1024)),
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/flags/{fId}",

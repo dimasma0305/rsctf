@@ -29,13 +29,17 @@ import { useEditChallenge } from '@Hooks/useEdit'
 import api, { FileType } from '@Api'
 import uploadClasses from '@Styles/Upload.module.css'
 
-export const AttachmentUploadModal: FC<ModalProps> = (props) => {
+interface AttachmentUploadModalProps extends ModalProps {
+  onImported?: () => void | Promise<void>
+}
+
+export const AttachmentUploadModal: FC<AttachmentUploadModalProps> = ({ onImported, ...props }) => {
   const { id, chalId } = useParams()
   const [numId, numCId] = [parseInt(id ?? '-1'), parseInt(chalId ?? '-1')]
   const uploadFileName = `DYN_ATTACHMENT_${numCId}`
   const [disabled, setDisabled] = useState(false)
 
-  const { mutate } = useEditChallenge(numId, numCId)
+  const { mutate } = useEditChallenge(numId, numCId, false)
 
   const [progress, setProgress] = useState(0)
   const [files, setFiles] = useState<File[]>([])
@@ -100,7 +104,7 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
         })
         setFiles([])
         operationIdRef.current = null
-        mutate()
+        await Promise.all([mutate(), onImported?.()])
         props.onClose()
       }
     } catch (err) {

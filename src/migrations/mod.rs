@@ -191,6 +191,7 @@ mod m0229_challenge_import_staging_admission;
 mod m0232_control_job_cancellation;
 mod m0233_variant_generation_admission;
 mod m0234_event_vpn_override_expiry;
+mod m0236_exercise_container_operations;
 mod m0237_blob_stage_publication_owner;
 
 #[cfg(test)]
@@ -225,6 +226,8 @@ pub(crate) use m0227_challenge_update_operations::UP_SQL as CHALLENGE_UPDATE_OPE
 pub(crate) use m0229_challenge_import_staging_admission::UP_SQL as CHALLENGE_IMPORT_STAGING_SQL;
 #[cfg(test)]
 pub(crate) use m0232_control_job_cancellation::UP_SQL as CONTROL_JOB_CANCELLATION_SQL;
+#[cfg(test)]
+pub(crate) use m0236_exercise_container_operations::UP_SQL as EXERCISE_CONTAINER_OPERATIONS_SQL;
 
 pub struct Migrator;
 
@@ -407,6 +410,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0232_control_job_cancellation::Migration),
             Box::new(m0233_variant_generation_admission::Migration),
             Box::new(m0234_event_vpn_override_expiry::Migration),
+            Box::new(m0236_exercise_container_operations::Migration),
             Box::new(m0237_blob_stage_publication_owner::Migration),
         ]
     }
@@ -553,7 +557,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 68..],
+            &names[names.len() - 69..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -622,6 +626,7 @@ mod tests {
                 "m0232_control_job_cancellation",
                 "m0233_variant_generation_admission",
                 "m0234_event_vpn_override_expiry",
+                "m0236_exercise_container_operations",
                 "m0237_blob_stage_publication_owner",
             ]
         );
