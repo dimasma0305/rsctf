@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import type { FlagEgressEventModel } from '@Api'
 import {
@@ -8,6 +9,7 @@ import {
   flagEgressPushIsCurrent,
   flagEgressSnapshotIsCurrent,
   mergeFlagEgressRows,
+  normalizeFlagEgressSearch,
   rebaseFlagEgressRows,
 } from './FlagEgressFeed'
 import { LatestRequest } from './LatestRequest'
@@ -88,9 +90,29 @@ test('active search applies to live rows by team, challenge, and remote IP', () 
   assert.equal(flagEgressMatchesSearch(row, 'PANDAS'), true)
   assert.equal(flagEgressMatchesSearch(row, 'heap'), true)
   assert.equal(flagEgressMatchesSearch(row, '113.44'), true)
+  assert.equal(flagEgressMatchesSearch(row, '  RED   TEAM  '), false)
   assert.equal(flagEgressMatchesSearch(row, 'blue'), false)
+})
+
+test('live Flag Egress search mirrors server whitespace and scalar bounds', () => {
+  assert.equal(normalizeFlagEgressSearch('  ReD   Team  '), 'red team')
+  assert.equal(normalizeFlagEgressSearch('x'.repeat(128) + 'not-inspected'), 'x'.repeat(128))
+  assert.equal(
+    flagEgressMatchesSearch(event(9, 9, 1, { teamName: 'Red Team' }), '  ReD   Team  '),
+    true
+  )
+  assert.equal(
+    flagEgressMatchesSearch(event(9, 9, 1, { teamName: 'x'.repeat(128) }), 'x'.repeat(128) + 'suffix'),
+    true
+  )
 })
 
 test('relative timestamps initialize their own Day.js plugin', () => {
   assert.match(formatFlagEgressAge(Date.now() - 60_000, 'en'), /minute/)
+})
+
+test('Flag Egress page respects reduced motion when resetting its viewport', () => {
+  const source = readFileSync('src/pages/admin/games/[id]/FlagEgress.tsx', 'utf8')
+  assert.match(source, /useReducedMotion\(\)/)
+  assert.match(source, /behavior: reducedMotion \? 'auto' : 'smooth'/)
 })

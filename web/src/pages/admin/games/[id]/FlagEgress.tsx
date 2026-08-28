@@ -12,7 +12,7 @@ import {
   ThemeIcon,
   Tooltip,
 } from '@mantine/core'
-import { useDebouncedValue } from '@mantine/hooks'
+import { useDebouncedValue, useReducedMotion } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import { mdiArrowLeftBold, mdiArrowRightBold, mdiClose, mdiFlagVariantOutline, mdiMagnify, mdiReplay } from '@mdi/js'
 import { Icon } from '@mdi/react'
@@ -30,6 +30,7 @@ import {
   flagEgressSnapshotIsCurrent,
   formatFlagEgressAge,
   mergeFlagEgressRows,
+  normalizeFlagEgressSearch,
   rebaseFlagEgressRows,
   type ScopedFlagEgressPage,
 } from '@Utils/FlagEgressFeed'
@@ -58,7 +59,9 @@ const FlagEgressView: FC<FlagEgressViewProps> = ({ gameId, feedScope }) => {
   const [activePage, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [debouncedSearch] = useDebouncedValue(search, 300)
-  const snapshotScope = JSON.stringify([feedScope, activePage, debouncedSearch])
+  const normalizedSearch = normalizeFlagEgressSearch(debouncedSearch)
+  const snapshotScope = JSON.stringify([feedScope, activePage, normalizedSearch])
+  const reducedMotion = useReducedMotion()
 
   const [, update] = useState(0)
   const buffered = useRef<FlagEgressEventModel[]>([])
@@ -80,8 +83,8 @@ const FlagEgressView: FC<FlagEgressViewProps> = ({ gameId, feedScope }) => {
   }, [feedScope, snapshotScope])
 
   useEffect(() => {
-    viewport.current?.scrollTo({ top: 0, behavior: 'smooth' })
-  }, [activePage, debouncedSearch])
+    viewport.current?.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' })
+  }, [activePage, normalizedSearch, reducedMotion])
 
   const reportFetchError = useCallback(
     async (error: unknown) => {
@@ -106,7 +109,7 @@ const FlagEgressView: FC<FlagEgressViewProps> = ({ gameId, feedScope }) => {
         {
           count: ITEMS_PER_PAGE,
           skip: (activePage - 1) * ITEMS_PER_PAGE,
-          search: debouncedSearch || undefined,
+          search: normalizedSearch || undefined,
         },
         { signal }
       )
@@ -125,7 +128,7 @@ const FlagEgressView: FC<FlagEgressViewProps> = ({ gameId, feedScope }) => {
     const nextPage = response.data
     setSnapshot({ scope: snapshotScope, page: nextPage })
     return nextPage
-  }, [activePage, debouncedSearch, gameId, snapshotScope])
+  }, [activePage, gameId, normalizedSearch, snapshotScope])
 
   useEffect(() => {
     void loadSnapshot().catch(reportFetchError)
@@ -215,7 +218,7 @@ const FlagEgressView: FC<FlagEgressViewProps> = ({ gameId, feedScope }) => {
   })
 
   const currentBuffer = currentFlagEgressBuffer(feedScope, bufferedFeedScope.current, buffered.current)
-  const filteredLive = currentBuffer.filter((event) => flagEgressMatchesSearch(event, debouncedSearch, locale))
+  const filteredLive = currentBuffer.filter((event) => flagEgressMatchesSearch(event, normalizedSearch))
   const visibleEvents =
     activePage === 1
       ? mergeFlagEgressRows(filteredLive, page?.data ?? [], MAX_VISIBLE_EVENTS)
@@ -359,7 +362,7 @@ const FlagEgressView: FC<FlagEgressViewProps> = ({ gameId, feedScope }) => {
                   <Table.Tr>
                     <Table.Td colSpan={5}>
                       <Text ta="center" c="dimmed" py="md" size="sm">
-                        {debouncedSearch
+                        {normalizedSearch
                           ? t('admin.placeholder.flag_egress.no_match', 'No events match the filter.')
                           : t('admin.placeholder.flag_egress.empty', 'No flag-egress events yet.')}
                       </Text>

@@ -9,6 +9,7 @@ import {
   adminLogQueryScope,
   compareAdminLogsNewestFirst,
   MAX_BUFFERED_ADMIN_LOGS,
+  normalizeAdminLogSearch,
 } from './AdminLogFeed'
 import { prependUniqueBoundedRow } from './FeedReconciliation'
 
@@ -48,6 +49,14 @@ test('live admin logs honor level and every server-supported search field', () =
     assert.equal(adminLogMatchesQuery(log(1), { ...base, search }), true, search)
   }
   assert.equal(adminLogMatchesQuery(log(1), { ...base, search: 'not-present' }), false)
+})
+
+test('admin log search is literal, case-folded, and bounded like the server', () => {
+  const base = { level: 'Information', page: 1, search: '' }
+  assert.equal(normalizeAdminLogSearch('  ERROR%_  '), 'error%_')
+  assert.equal(normalizeAdminLogSearch('x'.repeat(128) + 'suffix'), 'x'.repeat(128))
+  assert.equal(adminLogMatchesQuery(log(1, { msg: 'literal % marker' }), { ...base, search: '%' }), true)
+  assert.equal(adminLogMatchesQuery(log(1), { ...base, search: '%' }), false)
 })
 
 test('admin logs use the stable id to break equal-timestamp ordering ties', () => {

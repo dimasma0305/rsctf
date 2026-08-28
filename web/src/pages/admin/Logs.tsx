@@ -30,6 +30,7 @@ import {
   compareAdminLogsNewestFirst,
   MAX_BUFFERED_ADMIN_LOGS,
   MAX_VISIBLE_ADMIN_LOGS,
+  normalizeAdminLogSearch,
 } from '@Utils/AdminLogFeed'
 import { handleAxiosError } from '@Utils/ApiHelper'
 import { mergeUniqueRows, prependUniqueBoundedRow, reconcileLiveRows } from '@Utils/FeedReconciliation'
@@ -58,6 +59,8 @@ const LOG_LEVEL_COLOR: Record<string, string> = {
 const Logs: FC = () => {
   const [search, setSearch] = useState('')
   const [debouncedSearch] = useDebouncedValue(search, 500)
+  const normalizedSearch = normalizeAdminLogSearch(search)
+  const normalizedDebouncedSearch = normalizeAdminLogSearch(debouncedSearch)
   const [query, dispatchQuery] = useReducer(adminLogQueryReducer, {
     level: LogLevel.Info,
     page: 1,
@@ -65,7 +68,7 @@ const Logs: FC = () => {
   })
   const { level, page: activePage } = query
   const queryScope = adminLogQueryScope(query)
-  const queryReady = search === query.search
+  const queryReady = normalizedSearch === query.search
   const theme = useMantineTheme()
 
   const [, update] = useState(0)
@@ -83,8 +86,8 @@ const Logs: FC = () => {
   }, [activePage, level, viewport])
 
   useEffect(() => {
-    dispatchQuery({ type: 'search', search: debouncedSearch })
-  }, [debouncedSearch])
+    dispatchQuery({ type: 'search', search: normalizedDebouncedSearch })
+  }, [normalizedDebouncedSearch])
 
   const fetchLogs = useCallback(async () => {
     if (!queryReady) return

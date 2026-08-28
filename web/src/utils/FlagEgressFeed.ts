@@ -5,6 +5,35 @@ import type { FlagEgressEventModel, FlagEgressPage } from '@Api'
 dayjs.extend(relativeTime)
 
 const finiteLimit = (limit: number) => (Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0)
+const MAX_FLAG_EGRESS_SEARCH_CHARS = 128
+const MAX_FLAG_EGRESS_SEARCH_INSPECT_CHARS = 512
+
+/** Mirror the server's whitespace, case, inspection, and scalar bounds so an
+ * HTTP row and a live update always make the same search decision. */
+export const normalizeFlagEgressSearch = (search: string) => {
+  let normalized = ''
+  let scalarCount = 0
+  let pendingSpace = false
+  const inspected = [...search].slice(0, MAX_FLAG_EGRESS_SEARCH_INSPECT_CHARS)
+  for (const character of inspected) {
+    if (/\s/u.test(character)) {
+      pendingSpace = scalarCount > 0
+      continue
+    }
+    if (pendingSpace) {
+      if (scalarCount === MAX_FLAG_EGRESS_SEARCH_CHARS) break
+      normalized += ' '
+      scalarCount += 1
+      pendingSpace = false
+    }
+    for (const lower of character.toLowerCase()) {
+      if (scalarCount === MAX_FLAG_EGRESS_SEARCH_CHARS) return normalized
+      normalized += lower
+      scalarCount += 1
+    }
+  }
+  return normalized
+}
 
 /** Merge aggregate updates by stable row id, keeping the newest committed
  * cursor even when an older HTTP response completes after a live push. */
@@ -57,11 +86,11 @@ export const flagEgressPushIsCurrent = (
   connectedGameId: number
 ) => activeFeedScope === connectedFeedScope && messageGameId === connectedGameId
 
-export const flagEgressMatchesSearch = (event: FlagEgressEventModel, search: string, locale?: string) => {
-  const normalized = search.trim().toLocaleLowerCase(locale)
+export const flagEgressMatchesSearch = (event: FlagEgressEventModel, search: string) => {
+  const normalized = normalizeFlagEgressSearch(search)
   if (!normalized) return true
   return [event.teamName, event.challengeTitle, event.remoteIp]
-    .map((value) => value.toLocaleLowerCase(locale))
+    .map((value) => value.toLowerCase())
     .some((value) => value.includes(normalized))
 }
 

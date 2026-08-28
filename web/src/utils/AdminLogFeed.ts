@@ -14,6 +14,10 @@ export type AdminLogQueryAction =
   { type: 'level'; level: string } | { type: 'page'; page: number } | { type: 'search'; search: string }
 
 const normalizedPage = (page: number) => (Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1)
+const MAX_ADMIN_LOG_SEARCH_CHARS = 128
+
+export const normalizeAdminLogSearch = (search: string) =>
+  [...search.trim().toLowerCase()].slice(0, MAX_ADMIN_LOG_SEARCH_CHARS).join('')
 
 /** A filter commit and its page-one reset are one state transition, so React
  * cannot render or fetch a new filter with the previous page offset. */
@@ -42,7 +46,7 @@ export const compareAdminLogsNewestFirst = (left: LogMessageModel, right: LogMes
 export const adminLogMatchesQuery = (item: LogMessageModel, query: AdminLogQueryState) => {
   if (query.level !== 'All' && item.level !== query.level) return false
 
-  const search = query.search.trim().toLowerCase()
+  const search = normalizeAdminLogSearch(query.search)
   if (!search) return true
   return [item.name, item.msg, item.ip, item.fingerprint].some(
     (value) => typeof value === 'string' && value.toLowerCase().includes(search)
