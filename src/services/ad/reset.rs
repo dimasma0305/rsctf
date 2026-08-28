@@ -28,7 +28,11 @@ struct ResetJobInput {
     expected_backend_id: Option<String>,
     player_policy: bool,
     #[serde(default)]
+    reset_prepared: bool,
+    #[serde(default)]
     prepared_round_id: Option<i32>,
+    #[serde(default)]
+    retired_backend_id: Option<String>,
     #[serde(default)]
     replacement_backend_id: Option<String>,
 }
@@ -51,14 +55,17 @@ pub async fn execute_job(
             service.game_id == job.game_id && service.participation_id == input.participation_id
         })
         .ok_or_else(|| AppError::not_found("Service not found"))?;
-    let recovering_replacement = input
+    let replacement_checkpointed = input.replacement_backend_id.is_some();
+    let replacement_published = input
         .replacement_backend_id
         .as_deref()
         .is_some_and(|replacement| initial.container_id.as_deref() == Some(replacement));
-    if recovering_replacement && !initial.host.trim().is_empty() && initial.port > 0 {
+    let recovering_preparation = input.reset_prepared && input.replacement_backend_id.is_none();
+    if replacement_published && !initial.host.trim().is_empty() && initial.port > 0 {
         return Ok(json!({ "reset": true, "alreadyReplaced": true }));
     }
-    if !recovering_replacement
+    if !replacement_checkpointed
+        && !recovering_preparation
         && !backend_matches(
             initial.container_id.as_deref(),
             input.expected_backend_id.as_deref(),
@@ -83,15 +90,18 @@ pub async fn execute_job(
             service.game_id == job.game_id && service.participation_id == input.participation_id
         })
         .ok_or_else(|| AppError::not_found("Service not found"))?;
-    let recovering_replacement = input
+    let replacement_checkpointed = input.replacement_backend_id.is_some();
+    let replacement_published = input
         .replacement_backend_id
         .as_deref()
         .is_some_and(|replacement| service.container_id.as_deref() == Some(replacement));
-    if recovering_replacement && !service.host.trim().is_empty() && service.port > 0 {
+    let recovering_preparation = input.reset_prepared && input.replacement_backend_id.is_none();
+    if replacement_published && !service.host.trim().is_empty() && service.port > 0 {
         distributed.release().await?;
         return Ok(json!({ "reset": true, "alreadyReplaced": true }));
     }
-    if !recovering_replacement
+    if !replacement_checkpointed
+        && !recovering_preparation
         && !backend_matches(
             service.container_id.as_deref(),
             input.expected_backend_id.as_deref(),
@@ -135,7 +145,7 @@ pub async fn execute_job(
             "Service reset is only available while the game is running",
         ));
     }
-    if input.player_policy && !recovering_replacement {
+    if input.player_policy && !replacement_checkpointed && !recovering_preparation {
         let cooldown = game
             .ad_reset_cooldown_minutes
             .map(|minutes| i64::from(minutes) * 60)
@@ -152,7 +162,7 @@ pub async fn execute_job(
     }
 
     let image = crate::services::challenge_images::runtime_image(st, &challenge)?;
-    let (prepared_round_id, current_flag) = if recovering_replacement {
+    let (prepared_round_id, current_flag) = if replacement_checkpointed || recovering_preparation {
         let flag = match input.prepared_round_id {
             Some(round_id) => sqlx::query_scalar::<_, String>(
                 r#"SELECT flag FROM "AdFlags"
@@ -165,6 +175,20 @@ pub async fn execute_job(
             .map_err(|error| AppError::internal(error.to_string()))?,
             None => None,
         };
+        if recovering_preparation {
+            crate::services::ad_vpn::deactivate_team_service(&st.db, service.id).await?;
+            if let Some(retired_backend_id) = input
+                .retired_backend_id
+                .as_deref()
+                .filter(|retired| service.container_id.as_deref() == Some(*retired))
+            {
+                crate::services::traffic::destroy_container_after_capture_fence(
+                    st,
+                    retired_backend_id,
+                )
+                .await?;
+            }
+        }
         (input.prepared_round_id, flag)
     } else {
         let reason = if input.player_policy {
@@ -183,7 +207,11 @@ pub async fn execute_job(
             st.pg(),
             job.id,
             claimed.lease_token,
-            json!({ "preparedRoundId": replacement.prepared_round_id }),
+            json!({
+                "resetPrepared": true,
+                "preparedRoundId": replacement.prepared_round_id,
+                "retiredBackendId": replacement.retired_container_id.clone(),
+            }),
         )
         .await?;
         crate::services::ad_vpn::deactivate_team_service(&st.db, service.id).await?;
@@ -287,12 +315,29 @@ pub async fn execute_job(
 
 #[cfg(test)]
 mod tests {
-    use super::backend_matches;
+    use super::{backend_matches, ResetJobInput};
 
     #[test]
     fn backend_fence_treats_empty_as_absent_and_rejects_replacement() {
         assert!(backend_matches(None, Some("")));
         assert!(backend_matches(Some("old"), Some("old")));
         assert!(!backend_matches(Some("replacement"), Some("old")));
+    }
+
+    #[test]
+    fn preparation_checkpoint_distinguishes_warmup_from_no_checkpoint() {
+        let input: ResetJobInput = serde_json::from_value(serde_json::json!({
+            "serviceId": 7,
+            "participationId": 9,
+            "expectedBackendId": "old",
+            "playerPolicy": true,
+            "resetPrepared": true,
+            "preparedRoundId": null,
+            "retiredBackendId": "old"
+        }))
+        .unwrap();
+        assert!(input.reset_prepared);
+        assert_eq!(input.prepared_round_id, None);
+        assert_eq!(input.retired_backend_id.as_deref(), Some("old"));
     }
 }
