@@ -41,7 +41,7 @@ import {
   newKothObserverOperationId,
   ownsKothObserverResult,
 } from '@Utils/KothObserverOperations'
-import { showErrorMsg } from '@Utils/Shared'
+import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { isKothResetTransition } from '@Utils/kothLifecycle'
 import {
   type AdminKothAuditReceipt,
@@ -71,6 +71,24 @@ const statusMeta = (status?: string | null): { color: string; icon: string } => 
 
 const fmtPts = (value: number): string => (Number.isInteger(value) ? String(value) : value.toFixed(1))
 const OBSERVER_MUTATION_TIMEOUT_MS = 15_000
+interface ReadIdentity {
+  gameId: number
+  challengeId: number
+  generation: number
+}
+
+interface OwnedRead<T> {
+  identity: ReadIdentity
+  value: T
+}
+
+const sameReadIdentity = (left: ReadIdentity | null, right: ReadIdentity | null): boolean =>
+  left !== null &&
+  right !== null &&
+  left.gameId === right.gameId &&
+  left.challengeId === right.challengeId &&
+  left.generation === right.generation
+
 const shortId = (value: string) => (value.length > 16 ? `${value.slice(0, 12)}…` : value)
 const formatJson = (value: unknown): string => {
   try {
@@ -203,10 +221,12 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
   const { t } = useTranslation()
   const [retryingHill, setRetryingHill] = useState<number | null>(null)
   const [auditHill, setAuditHill] = useState<AdminKothHill | null>(null)
-  const [audit, setAudit] = useState<AdminKothReceiptsModel | null>(null)
+  const [auditResult, setAuditResult] = useState<OwnedRead<AdminKothReceiptsModel> | null>(null)
+  const [auditError, setAuditError] = useState<OwnedRead<string> | null>(null)
   const [auditLoading, setAuditLoading] = useState(false)
   const [observerHill, setObserverHill] = useState<AdminKothHill | null>(null)
-  const [observer, setObserver] = useState<AdminKothObserverModel | null>(null)
+  const [observerResult, setObserverResult] = useState<OwnedRead<AdminKothObserverModel> | null>(null)
+  const [observerError, setObserverError] = useState<OwnedRead<string> | null>(null)
   const [observerLoading, setObserverLoading] = useState(false)
   const [observerBusy, setObserverBusy] = useState(false)
   const [pendingObserverOperation, setPendingObserverOperation] = useState<KothObserverOperationOwner | null>(null)
@@ -215,6 +235,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
   const auditAbortRef = useRef<AbortController | null>(null)
   const observerHillRef = useRef<AdminKothHill | null>(null)
   const observerGameIdRef = useRef(gameId)
+  const observerReadIdentityRef = useRef<ReadIdentity | null>(null)
   const observerReadAbortRef = useRef<AbortController | null>(null)
   const observerViewGenerationRef = useRef(0)
   const observerMutationGenerationRef = useRef(0)
@@ -233,7 +254,8 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
     auditIdentityRef.current = null
     auditGenerationRef.current += 1
     setAuditHill(null)
-    setAudit(null)
+    setAuditResult(null)
+    setAuditError(null)
     setAuditLoading(false)
   }, [])
 
@@ -243,8 +265,10 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
     observerHillRef.current = null
     observerGameIdRef.current = gameId
     observerViewGenerationRef.current += 1
+    observerReadIdentityRef.current = null
     setObserverHill(null)
-    setObserver(null)
+    setObserverResult(null)
+    setObserverError(null)
     setObserverLoading(false)
   }, [gameId])
 
@@ -255,8 +279,23 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
     currentHillIds.has(auditHill.challengeId)
   const observerDialogOwned =
     observerHill !== null && observerGameIdRef.current === gameId && currentHillIds.has(observerHill.challengeId)
+  const audit =
+    auditDialogOwned && sameReadIdentity(auditResult?.identity ?? null, auditIdentityRef.current)
+      ? (auditResult?.value ?? null)
+      : null
+  const currentAuditError =
+    auditDialogOwned && sameReadIdentity(auditError?.identity ?? null, auditIdentityRef.current)
+      ? (auditError?.value ?? null)
+      : null
   const observerResultOwned =
-    observerDialogOwned && observer !== null && observer.challengeId === observerHill?.challengeId
+    observerDialogOwned &&
+    sameReadIdentity(observerResult?.identity ?? null, observerReadIdentityRef.current) &&
+    observerResult?.value.challengeId === observerHill?.challengeId
+  const observer = observerResultOwned ? (observerResult?.value ?? null) : null
+  const currentObserverError =
+    observerDialogOwned && sameReadIdentity(observerError?.identity ?? null, observerReadIdentityRef.current)
+      ? (observerError?.value ?? null)
+      : null
   useEffect(() => {
     if (auditHill && (auditIdentityRef.current?.gameId !== gameId || !currentHillIds.has(auditHill.challengeId))) {
       closeReceipts()
@@ -283,7 +322,8 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
     const identity = { gameId, challengeId: hill.challengeId, generation: ++auditGenerationRef.current }
     auditIdentityRef.current = identity
     setAuditHill(hill)
-    setAudit(null)
+    setAuditResult(null)
+    setAuditError(null)
     setAuditLoading(true)
     try {
       const response = await api.request<AdminKothReceiptsModel | { data: AdminKothReceiptsModel }>({
@@ -299,10 +339,14 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
         !controller.signal.aborted &&
         result.challengeId === identity.challengeId
       ) {
-        setAudit(result)
+        setAuditResult({ identity, value: result })
+      } else if (auditIdentityRef.current === identity && !controller.signal.aborted) {
+        setAuditError({ identity, value: 'The receipt response did not match the selected hill.' })
       }
     } catch (error) {
-      if (auditIdentityRef.current === identity && !isAbortError(error)) showErrorMsg(error, t)
+      if (auditIdentityRef.current === identity && !isAbortError(error)) {
+        setAuditError({ identity, value: tryGetErrorMsg(error, t) })
+      }
     } finally {
       if (auditIdentityRef.current === identity) {
         auditAbortRef.current = null
@@ -357,8 +401,11 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
     observerHillRef.current = hill
     observerGameIdRef.current = gameId
     const viewGeneration = ++observerViewGenerationRef.current
+    const identity = { gameId, challengeId: hill.challengeId, generation: viewGeneration }
+    observerReadIdentityRef.current = identity
     setObserverHill(hill)
-    setObserver(null)
+    setObserverResult(null)
+    setObserverError(null)
     setObserverLoading(true)
     try {
       const response = await api.request<AdminKothObserverModel>({
@@ -374,10 +421,14 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
         response.data.challengeId === hill.challengeId &&
         !controller.signal.aborted
       ) {
-        setObserver(response.data)
+        setObserverResult({ identity, value: response.data })
+      } else if (sameReadIdentity(observerReadIdentityRef.current, identity) && !controller.signal.aborted) {
+        setObserverError({ identity, value: 'The scoring response did not match the selected hill.' })
       }
     } catch (error) {
-      if (observerViewGenerationRef.current === viewGeneration && !isAbortError(error)) showErrorMsg(error, t)
+      if (sameReadIdentity(observerReadIdentityRef.current, identity) && !isAbortError(error)) {
+        setObserverError({ identity, value: tryGetErrorMsg(error, t) })
+      }
     } finally {
       if (observerViewGenerationRef.current === viewGeneration) {
         observerReadAbortRef.current = null
@@ -430,7 +481,10 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
     ) {
       return false
     }
-    setObserver(result)
+    const identity = observerReadIdentityRef.current
+    if (!identity) return false
+    setObserverResult({ identity, value: result })
+    setObserverError(null)
     observerMutationRef.current = null
     setPendingObserverOperation(null)
     showNotification({
@@ -476,7 +530,11 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
       response.data.challengeId === hill.challengeId &&
       !controller.signal.aborted
     ) {
-      setObserver(response.data)
+      const identity = observerReadIdentityRef.current
+      if (identity) {
+        setObserverResult({ identity, value: response.data })
+        setObserverError(null)
+      }
     }
     if (observerReadAbortRef.current === controller) observerReadAbortRef.current = null
   }
@@ -975,6 +1033,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
       </Stack>
 
       <Modal
+        data-koth-dialog="receipts"
         opened={auditDialogOwned}
         onClose={closeReceipts}
         size="xl"
@@ -985,9 +1044,18 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
         })}
       >
         {auditLoading ? (
-          <Text size="sm" c="dimmed">
+          <Text size="sm" c="dimmed" role="status" aria-live="polite">
             {t('admin.content.ad_ops.koth.receipts_loading', 'Loading audit receipts…')}
           </Text>
+        ) : currentAuditError ? (
+          <Alert color="red" role="alert" title={t('common.error.encountered')}>
+            <Stack gap="xs">
+              <Text size="sm">{currentAuditError}</Text>
+              <Button type="button" size="xs" variant="light" onClick={() => auditHill && void openReceipts(auditHill)}>
+                {t('common.button.retry', 'Retry')}
+              </Button>
+            </Stack>
+          </Alert>
         ) : audit && audit.receipts.length > 0 ? (
           <Stack gap="sm">
             <Group gap="xs">
@@ -1016,6 +1084,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
       </Modal>
 
       <Modal
+        data-koth-dialog="observer"
         opened={observerDialogOwned}
         onClose={closeObserver}
         size="lg"
@@ -1025,8 +1094,26 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
           defaultValue: 'Leaderboard scoring — {{hill}}',
         })}
       >
-        {observerLoading || !observer || !observerResultOwned ? (
-          <Text size="sm" c="dimmed">
+        {observerLoading ? (
+          <Text size="sm" c="dimmed" role="status" aria-live="polite">
+            {t('admin.content.ad_ops.koth.observer_loading', 'Loading scoring configuration…')}
+          </Text>
+        ) : currentObserverError ? (
+          <Alert color="red" role="alert" title={t('common.error.encountered')}>
+            <Stack gap="xs">
+              <Text size="sm">{currentObserverError}</Text>
+              <Button
+                type="button"
+                size="xs"
+                variant="light"
+                onClick={() => observerHill && void openObserver(observerHill)}
+              >
+                {t('common.button.retry', 'Retry')}
+              </Button>
+            </Stack>
+          </Alert>
+        ) : !observer || !observerResultOwned ? (
+          <Text size="sm" c="dimmed" role="status" aria-live="polite">
             {t('admin.content.ad_ops.koth.observer_loading', 'Loading scoring configuration…')}
           </Text>
         ) : (

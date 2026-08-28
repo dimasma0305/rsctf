@@ -11,11 +11,7 @@ import {
   resetEventVpnProofForTests,
 } from './EventVpnProof'
 
-const adapterError = (
-  config: AxiosRequestConfig,
-  status: number,
-  headers: Record<string, string> = {}
-): never => {
+const adapterError = (config: AxiosRequestConfig, status: number, headers: Record<string, string> = {}): never => {
   const response: AxiosResponse = {
     config: { ...config, headers: AxiosHeaders.from(config.headers) },
     data: {},
@@ -92,9 +88,18 @@ test('only the server-labelled VPN 401 is treated as a proof bootstrap', () => {
 })
 
 test('mint backoff is capped, jittered, and honors Retry-After', () => {
-  assert.equal(eventVpnMintRetryDelay({}, 1, () => 0), 750)
-  assert.equal(eventVpnMintRetryDelay({}, 1, () => 1), 1_250)
-  assert.equal(eventVpnMintRetryDelay({}, 20, () => 1), 75_000)
+  assert.equal(
+    eventVpnMintRetryDelay({}, 1, () => 0),
+    750
+  )
+  assert.equal(
+    eventVpnMintRetryDelay({}, 1, () => 1),
+    1_250
+  )
+  assert.equal(
+    eventVpnMintRetryDelay({}, 20, () => 1),
+    75_000
+  )
   assert.equal(
     eventVpnMintRetryDelay({ response: { headers: { 'retry-after': '90' } } }, 1, () => 0),
     90_000
@@ -137,4 +142,83 @@ test('a failed mint opens one shared circuit for repeated protected reads', asyn
     await assert.rejects(instance.get(path), (error: AxiosError) => error.response?.status === 401)
   }
   assert.equal(challengeRequests, 1)
+})
+
+test('expired proofs remint once and failed mint circuits reopen only after bounded time', async (context) => {
+  context.mock.timers.enable({ apis: ['Date'], now: new Date('2026-08-28T00:00:00Z') })
+  resetEventVpnProofForTests()
+  let challengeRequests = 0
+  let proofMints = 0
+  let failChallenges = false
+  const instance = axios.create({
+    adapter: async (config) => {
+      const path = new URL(config.url ?? '', 'https://arena.test').pathname
+      if (path === '/api/game/7/vpn/challenge') {
+        challengeRequests += 1
+        if (failChallenges) return adapterError(config, 503)
+        return {
+          config: { ...config, headers: AxiosHeaders.from(config.headers) },
+          data: {
+            challenge: `challenge-${challengeRequests}`,
+            proofUrl: 'https://arena.test/vpn-proof',
+            proofHeader: 'x-rsctf-vpn-proof',
+            expiresAtUtc: Date.now() + 60_000,
+          },
+          headers: {},
+          status: 200,
+          statusText: '200',
+        }
+      }
+      if (path === '/vpn-proof') {
+        proofMints += 1
+        return {
+          config: { ...config, headers: AxiosHeaders.from(config.headers) },
+          data: {
+            proof: `proof-${proofMints}`,
+            proofHeader: 'x-rsctf-vpn-proof',
+            expiresAtUtc: Date.now() + 30_000,
+          },
+          headers: {},
+          status: 200,
+          statusText: '200',
+        }
+      }
+      const proof = AxiosHeaders.from(config.headers).get('x-rsctf-vpn-proof')?.toString()
+      if (proof === `proof-${proofMints}` && proofMints > 0) {
+        return {
+          config: { ...config, headers: AxiosHeaders.from(config.headers) },
+          data: { connected: true },
+          headers: {},
+          status: 200,
+          statusText: '200',
+        }
+      }
+      return adapterError(config, 401, { [EVENT_VPN_AUTH_REASON_HEADER]: 'event-vpn' })
+    },
+  })
+  installEventVpnProof(instance, 'https://arena.test')
+
+  try {
+    assert.equal((await instance.get('/api/game/7/details')).status, 200)
+    assert.equal(challengeRequests, 1)
+    assert.equal(proofMints, 1)
+
+    context.mock.timers.tick(31_000)
+    assert.equal((await instance.get('/api/game/7/details')).status, 200)
+    assert.equal(challengeRequests, 2)
+    assert.equal(proofMints, 2)
+
+    context.mock.timers.tick(31_000)
+    failChallenges = true
+    await assert.rejects(instance.get('/api/game/7/details'), (error: AxiosError) => error.response?.status === 401)
+    await assert.rejects(instance.get('/api/game/7/scoreboard'), (error: AxiosError) => error.response?.status === 401)
+    assert.equal(challengeRequests, 3, 'the open circuit suppresses repeated protected polls')
+
+    context.mock.timers.tick(2_000)
+    await assert.rejects(instance.get('/api/game/7/details'), (error: AxiosError) => error.response?.status === 401)
+    assert.equal(challengeRequests, 4, 'the bounded circuit permits an explicit retry after backoff')
+  } finally {
+    context.mock.timers.reset()
+    resetEventVpnProofForTests()
+  }
 })

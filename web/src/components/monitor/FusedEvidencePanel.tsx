@@ -26,6 +26,34 @@ const reviewLabels = reviewOptions.map(({ label }) => label)
 const tierLabels = ['Context / 0 points', 'Behavioral', 'Strong', 'Hard']
 const MAX_REVIEW_NOTE_LENGTH = 4000
 
+interface ReviewIdentity {
+  gameId: number
+  participationId: number
+  findingId: number
+}
+
+interface ReviewDraft {
+  identity: ReviewIdentity
+  status: FindingReviewStatus
+  note: string
+}
+
+interface SaveOwner {
+  identity: ReviewIdentity
+  operation: symbol
+}
+
+const sameReviewIdentity = (left: ReviewIdentity, right: ReviewIdentity): boolean =>
+  left.gameId === right.gameId && left.participationId === right.participationId && left.findingId === right.findingId
+
+export const fusedEvidenceMatchesScope = (
+  value: FusedEvidenceBreakdown,
+  gameId: number,
+  participationId: number
+): boolean =>
+  value.participationId === participationId &&
+  value.findings.every((finding) => finding.gameId === gameId && finding.participationId === participationId)
+
 const findingStatus = (finding: AntiCheatFindingRow): FindingReviewStatus =>
   reviewOptions[finding.latestReviewStatus ?? -1]?.value ?? 'needsMoreEvidence'
 
@@ -34,13 +62,13 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
   const [result, setResult] = useState<FusedEvidenceBreakdown | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [activeFinding, setActiveFinding] = useState<number | null>(null)
-  const [status, setStatus] = useState<FindingReviewStatus>('needsMoreEvidence')
-  const [note, setNote] = useState('')
+  const [draft, setDraft] = useState<ReviewDraft | null>(null)
+  const [failedDraft, setFailedDraft] = useState<ReviewIdentity | null>(null)
   const [saving, setSaving] = useState(false)
   const loadGeneration = useRef(0)
   const loadAbort = useRef<AbortController | null>(null)
-  const saveOperation = useRef<symbol | null>(null)
+  const saveOperation = useRef<SaveOwner | null>(null)
+  const reviewNoteRef = useRef<HTMLTextAreaElement>(null)
 
   const reload = useCallback(async () => {
     const generation = ++loadGeneration.current
@@ -52,6 +80,9 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
     try {
       const response = await api.eventSecurity.fusedBreakdown(gameId, participationId, { signal: controller.signal })
       if (controller.signal.aborted || loadGeneration.current !== generation) return
+      if (!fusedEvidenceMatchesScope(response.data, gameId, participationId)) {
+        throw new Error('The evidence response did not match the selected participation.')
+      }
       setResult(response.data)
     } catch (requestError) {
       if (controller.signal.aborted || loadGeneration.current !== generation) return
@@ -71,9 +102,8 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
     saveOperation.current = null
     setResult(null)
     setError(null)
-    setActiveFinding(null)
-    setStatus('needsMoreEvidence')
-    setNote('')
+    setDraft(null)
+    setFailedDraft(null)
     setSaving(false)
     void reload()
     return () => {
@@ -84,6 +114,12 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
     }
   }, [reload])
 
+  useEffect(() => {
+    if (!draft || !failedDraft || !sameReviewIdentity(draft.identity, failedDraft)) return
+    const frame = window.requestAnimationFrame(() => reviewNoteRef.current?.focus({ preventScroll: true }))
+    return () => window.cancelAnimationFrame(frame)
+  }, [draft, failedDraft])
+
   const relationships = useMemo(() => {
     const counts = new Map<number, number>()
     for (const relation of result?.relationships || []) {
@@ -93,36 +129,29 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
   }, [result?.relationships])
 
   const saveReview = async (finding: AntiCheatFindingRow) => {
-    if (saveOperation.current) return
     const identity = { gameId, participationId, findingId: finding.id }
-    const operation = Symbol('finding-review')
-    saveOperation.current = operation
+    if (!draft || !sameReviewIdentity(draft.identity, identity) || saveOperation.current) return
+    const owner = { identity, operation: Symbol('finding-review') }
+    const submittedDraft = draft
+    saveOperation.current = owner
+    setFailedDraft(null)
     setSaving(true)
     try {
-      await api.eventSecurity.reviewFinding(gameId, finding.id, { status, note: note.trim() || null })
-      if (
-        saveOperation.current !== operation ||
-        identity.gameId !== gameId ||
-        identity.participationId !== participationId ||
-        activeFinding !== identity.findingId
-      )
-        return
+      await api.eventSecurity.reviewFinding(gameId, finding.id, {
+        status: submittedDraft.status,
+        note: submittedDraft.note.trim() || null,
+      })
+      if (saveOperation.current !== owner) return
       showNotification({ color: 'teal', message: 'Evidence review recorded' })
-      setActiveFinding(null)
-      setStatus('needsMoreEvidence')
-      setNote('')
+      setDraft((current) => (current && sameReviewIdentity(current.identity, identity) ? null : current))
       await reload()
     } catch (requestError) {
-      if (
-        saveOperation.current === operation &&
-        identity.gameId === gameId &&
-        identity.participationId === participationId &&
-        activeFinding === identity.findingId
-      ) {
+      if (saveOperation.current === owner) {
         setError(tryGetErrorMsg(requestError, t))
+        setFailedDraft(identity)
       }
     } finally {
-      if (saveOperation.current === operation) {
+      if (saveOperation.current === owner) {
         saveOperation.current = null
         setSaving(false)
       }
@@ -131,15 +160,14 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
 
   const toggleReview = (finding: AntiCheatFindingRow) => {
     if (saving) return
-    if (activeFinding === finding.id) {
-      setActiveFinding(null)
-      setStatus('needsMoreEvidence')
-      setNote('')
+    const identity = { gameId, participationId, findingId: finding.id }
+    if (draft && sameReviewIdentity(draft.identity, identity)) {
+      setDraft(null)
+      setFailedDraft(null)
       return
     }
-    setActiveFinding(finding.id)
-    setStatus(findingStatus(finding))
-    setNote('')
+    setDraft({ identity, status: findingStatus(finding), note: '' })
+    setFailedDraft(null)
     setError(null)
   }
 
@@ -167,7 +195,11 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
           Refresh
         </Button>
       </Group>
-      {error && <Alert color="red">{error}</Alert>}
+      {error && (
+        <Alert color="red" role="alert">
+          {error}
+        </Alert>
+      )}
       {result && (
         <>
           <Group gap="xs">
@@ -234,26 +266,44 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
                 <Text size="xs" ff="monospace" style={{ overflowWrap: 'anywhere' }}>
                   {JSON.stringify(finding.details)}
                 </Text>
-                {activeFinding === finding.id && (
-                  <Stack gap="xs">
-                    <Select
-                      label="Disposition"
-                      data={reviewOptions}
-                      value={status}
-                      onChange={(value) => value && setStatus(value as FindingReviewStatus)}
-                    />
-                    <Textarea
-                      label="Reviewer note"
-                      value={note}
-                      maxLength={MAX_REVIEW_NOTE_LENGTH}
-                      data-finding-review-note={finding.id}
-                      onChange={(event) => setNote(event.currentTarget.value)}
-                    />
-                    <Button size="xs" loading={saving} disabled={saving} onClick={() => void saveReview(finding)}>
-                      Record review
-                    </Button>
-                  </Stack>
-                )}
+                {draft?.identity.findingId === finding.id &&
+                  draft.identity.gameId === gameId &&
+                  draft.identity.participationId === participationId && (
+                    <Stack gap="xs">
+                      <Select
+                        label="Disposition"
+                        data={reviewOptions}
+                        value={draft.status}
+                        onChange={(value) =>
+                          value &&
+                          setDraft((current) =>
+                            current && sameReviewIdentity(current.identity, draft.identity)
+                              ? { ...current, status: value as FindingReviewStatus }
+                              : current
+                          )
+                        }
+                      />
+                      <Textarea
+                        ref={reviewNoteRef}
+                        label="Reviewer note"
+                        value={draft.note}
+                        maxLength={MAX_REVIEW_NOTE_LENGTH}
+                        data-finding-review-note={finding.id}
+                        onChange={(event) => {
+                          const note = event.currentTarget.value
+                          setFailedDraft(null)
+                          setDraft((current) =>
+                            current && sameReviewIdentity(current.identity, draft.identity)
+                              ? { ...current, note }
+                              : current
+                          )
+                        }}
+                      />
+                      <Button size="xs" loading={saving} disabled={saving} onClick={() => void saveReview(finding)}>
+                        Record review
+                      </Button>
+                    </Stack>
+                  )}
               </Stack>
             </Card>
           ))}
