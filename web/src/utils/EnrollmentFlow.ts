@@ -1,12 +1,10 @@
-import { encryptApiData } from '@Utils/Crypto'
+import { collectFingerprintIdentity, FingerprintIdentityOptions } from '@Utils/FingerprintIdentity'
+import { throwIfAborted } from '@Utils/FingerprintProbe'
 import api, { GameJoinModel } from '@Api'
 
-type Translate = Parameters<typeof encryptApiData>[0]
-
-interface FingerprintOptions {
+interface FingerprintOptions extends Pick<FingerprintIdentityOptions, 'apiPublicKey' | 'signal'> {
   enableBrowserFingerprint?: boolean
-  apiPublicKey?: string | null
-  t: Translate
+  t: FingerprintIdentityOptions['translate']
 }
 
 interface GameEnrollmentOptions extends FingerprintOptions {
@@ -18,40 +16,31 @@ interface TeamEnrollmentOptions extends FingerprintOptions {
   code: string
 }
 
-const collectEnrollmentIdentity = async ({
+const collectEnrollmentIdentity = ({
   apiPublicKey,
+  enableBrowserFingerprint,
+  signal,
   t,
-}: FingerprintOptions): Promise<Pick<GameJoinModel, 'fingerprint' | 'fingerprintProof'>> => {
-  const challengeResponse = await api.account.accountFingerprintChallenge()
-  const challenge = challengeResponse.data.data
-  if (!challenge?.nonce || !challenge.requiredSignals) {
-    throw new Error('Invalid fingerprint challenge')
-  }
-
-  const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
-  const payload = await getFingerprintPayload({
-    nonce: challenge.nonce,
-    requiredSignals: challenge.requiredSignals,
+}: FingerprintOptions): Promise<Pick<GameJoinModel, 'fingerprint' | 'fingerprintProof'>> =>
+  collectFingerprintIdentity({
+    enabled: enableBrowserFingerprint,
+    apiPublicKey,
+    signal,
+    translate: t,
   })
-
-  return {
-    fingerprint: await encryptApiData(t, payload.fingerprint, apiPublicKey),
-    fingerprintProof: await encryptApiData(t, payload.proof, apiPublicKey),
-  }
-}
 
 export const submitGameEnrollment = async ({ gameId, info, ...fingerprintOptions }: GameEnrollmentOptions) => {
   if (!Number.isSafeInteger(gameId) || gameId <= 0) throw new Error('Invalid game ID')
 
-  const identity = fingerprintOptions.enableBrowserFingerprint
-    ? await collectEnrollmentIdentity(fingerprintOptions)
-    : {}
-  await api.game.gameJoinGame(gameId, { ...info, ...identity })
+  const identity = await collectEnrollmentIdentity(fingerprintOptions)
+  throwIfAborted(fingerprintOptions.signal)
+  await api.game.gameJoinGame(gameId, { ...info, ...identity }, { signal: fingerprintOptions.signal })
+  throwIfAborted(fingerprintOptions.signal)
 }
 
 export const submitTeamEnrollment = async ({ code, ...fingerprintOptions }: TeamEnrollmentOptions) => {
-  const identity = fingerprintOptions.enableBrowserFingerprint
-    ? await collectEnrollmentIdentity(fingerprintOptions)
-    : {}
-  await api.team.teamAccept({ code, ...identity })
+  const identity = await collectEnrollmentIdentity(fingerprintOptions)
+  throwIfAborted(fingerprintOptions.signal)
+  await api.team.teamAccept({ code, ...identity }, { signal: fingerprintOptions.signal })
+  throwIfAborted(fingerprintOptions.signal)
 }

@@ -7,6 +7,7 @@ const register = readFileSync('src/pages/account/Register.tsx', 'utf8')
 const teamJoin = readFileSync('src/components/TeamJoinModal.tsx', 'utf8')
 const eventJoin = readFileSync('src/pages/games/[id]/Index.tsx', 'utf8')
 const eventJoinModal = readFileSync('src/components/GameJoinModal.tsx', 'utf8')
+const enrollment = readFileSync('src/utils/EnrollmentFlow.ts', 'utf8')
 
 test('login and registration use one native form-submit path with a consent single-flight', () => {
   for (const source of [login, register]) {
@@ -19,15 +20,16 @@ test('login and registration use one native form-submit path with a consent sing
   }
 })
 
-test('all four identity callers share the abortable fingerprint collection path', () => {
-  for (const source of [login, register, teamJoin, eventJoin]) {
+test('all identity callers share the abortable fingerprint collection path', () => {
+  for (const source of [login, register, enrollment]) {
     assert.match(source, /collectFingerprintIdentity\(\{/)
     assert.match(source, /signal,/)
     assert.doesNotMatch(source, /accountFingerprintChallenge|getFingerprintPayload/)
   }
-  assert.match(teamJoin, /useAbortableSingleFlight\(executeJoinTeam\)/)
-  assert.match(teamJoin, /joinOperation\.cancel\(\)[\s\S]*setJoining\(false\)[\s\S]*modalProps\.onClose\(\)/)
-  assert.match(eventJoinModal, /useAbortableSingleFlight\(executeJoinGame\)/)
-  assert.match(eventJoinModal, /joinOperation\.cancel\(\)[\s\S]*setDisabled\(false\)[\s\S]*modalProps\.onClose\(\)/)
+  assert.match(teamJoin, /attemptAbort\.current\?\.abort\(\)/)
+  assert.match(teamJoin, /submitTeamEnrollment\(\{[\s\S]*signal: controller\.signal/)
+  assert.match(eventJoin, /submitGameEnrollment\(\{[\s\S]*signal,/)
+  assert.match(eventJoinModal, /submissionAbort\.current\?\.abort\(\)/)
+  assert.match(eventJoinModal, /onSubmitJoin\([\s\S]*controller\.signal/)
   assert.match(eventJoinModal, /component="form"[\s\S]*type="submit"/)
 })

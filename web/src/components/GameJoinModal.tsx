@@ -14,7 +14,7 @@ interface GameJoinModalProps extends AccessibleModalProps {
   gameId: number
   teams?: TeamInfoModel[]
   refreshTeams: () => Promise<TeamInfoModel[] | undefined>
-  onSubmitJoin: (info: GameJoinModel) => Promise<void>
+  onSubmitJoin: (info: GameJoinModel, signal: AbortSignal) => Promise<void>
 }
 
 interface JoinContext {
@@ -54,6 +54,7 @@ export const GameJoinModal: FC<GameJoinModalProps> = ({
   const verifiedTeamsVisible = useRef(false)
   const submissionGeneration = useRef(0)
   const submissionInFlight = useRef(false)
+  const submissionAbort = useRef<AbortController | null>(null)
   const teamInputRef = useRef<HTMLInputElement>(null)
   const divisionInputRef = useRef<HTMLInputElement>(null)
   const inviteInputRef = useRef<HTMLInputElement>(null)
@@ -73,6 +74,8 @@ export const GameJoinModal: FC<GameJoinModalProps> = ({
     validationAbort.current?.abort()
     validationAbort.current = null
     submissionGeneration.current += 1
+    submissionAbort.current?.abort()
+    submissionAbort.current = null
     submissionInFlight.current = false
   }, [])
 
@@ -260,18 +263,24 @@ export const GameJoinModal: FC<GameJoinModalProps> = ({
     }
 
     const generation = ++submissionGeneration.current
+    const controller = new AbortController()
+    submissionAbort.current?.abort()
+    submissionAbort.current = controller
     submissionInFlight.current = true
     setJoining(true)
     try {
-      await onSubmitJoin({
-        teamId: Number.parseInt(team!, 10),
-        inviteCode: shouldRequireInviteCode ? inviteCode : undefined,
-        divisionId: gameHasDivisions
-          ? canSelectDivision
-            ? Number.parseInt(divisionId, 10)
-            : joinedDivision?.id
-          : undefined,
-      })
+      await onSubmitJoin(
+        {
+          teamId: Number.parseInt(team!, 10),
+          inviteCode: shouldRequireInviteCode ? inviteCode : undefined,
+          divisionId: gameHasDivisions
+            ? canSelectDivision
+              ? Number.parseInt(divisionId, 10)
+              : joinedDivision?.id
+            : undefined,
+        },
+        controller.signal
+      )
       if (generation !== submissionGeneration.current) return
       resetForm()
       onClose()
@@ -284,6 +293,7 @@ export const GameJoinModal: FC<GameJoinModalProps> = ({
       showErrorMsg(error, t)
     } finally {
       if (generation === submissionGeneration.current) {
+        submissionAbort.current = null
         submissionInFlight.current = false
         setJoining(false)
       }

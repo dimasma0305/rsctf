@@ -154,12 +154,13 @@ const GameDetail: FC = () => {
     [ParticipationStatus.Unsubmitted, t('game.participation.actions.unsubmitted')],
   ])
 
-  const onSubmitJoin = async (info: GameJoinModel) => {
+  const onSubmitJoin = async (info: GameJoinModel, signal: AbortSignal) => {
     await submitGameEnrollment({
       gameId: numId,
       info,
       enableBrowserFingerprint: config.enableBrowserFingerprint,
       apiPublicKey: config.apiPublicKey,
+      signal,
       t,
     })
     showNotification({

@@ -34,12 +34,15 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
   const [joinError, setJoinError] = useState<string | null>(null)
   const attemptGeneration = useRef(0)
   const attemptInFlight = useRef(false)
+  const attemptAbort = useRef<AbortController | null>(null)
   const codeInputRef = useRef<HTMLInputElement>(null)
   const { t } = useTranslation()
   const validCode = isValidTeamInviteCode(code)
 
   const invalidateAttempt = useCallback(() => {
     attemptGeneration.current += 1
+    attemptAbort.current?.abort()
+    attemptAbort.current = null
     attemptInFlight.current = false
   }, [])
 
@@ -85,12 +88,16 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
     }
 
     const generation = ++attemptGeneration.current
+    const controller = new AbortController()
+    attemptAbort.current?.abort()
+    attemptAbort.current = controller
     attemptInFlight.current = true
     setJoinError(null)
     setJoining(true)
     try {
       await settleTeamJoinAttempt({
-        accept: () => submitTeamEnrollment({ code, enableBrowserFingerprint, apiPublicKey, t }),
+        accept: () =>
+          submitTeamEnrollment({ code, enableBrowserFingerprint, apiPublicKey, signal: controller.signal, t }),
         onAccepted: () => {
           if (generation !== attemptGeneration.current) return
           showNotification({
@@ -112,6 +119,7 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
       })
     } finally {
       if (generation === attemptGeneration.current) {
+        attemptAbort.current = null
         attemptInFlight.current = false
         setJoining(false)
       }
