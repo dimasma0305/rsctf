@@ -48,6 +48,9 @@ use crate::utils::error::{AppError, AppResult};
 use crate::utils::flag_generator;
 use crate::utils::shared::{ArrayResponse, MessageResponse, PageParams, RequestResponse};
 
+pub(crate) mod control_jobs;
+use control_jobs::{get_control_job, get_control_job_by_operation};
+
 const BLOOD_BONUS_DEFAULT: i64 = (50 << 20) + (30 << 10) + 10;
 
 /// Port of RSCTF `BloodBonus.FromValue`: a packed value whose any of the three
@@ -640,6 +643,11 @@ impl PendingChallengeModel {
 
 pub fn router() -> Router<SharedState> {
     Router::new()
+        .route(
+            "/api/edit/jobs/operations/{operationId}",
+            get(get_control_job_by_operation),
+        )
+        .route("/api/edit/jobs/{jobId}", get(get_control_job))
         // --- Posts ---
         .route("/api/edit/posts", post(add_post))
         .route("/api/edit/posts/{id}", put(update_post).delete(delete_post))
@@ -812,7 +820,7 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Restart",
-            post(ad_restart_service),
+            limited(Policy::Container, post(ad_restart_service)),
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Snapshot",

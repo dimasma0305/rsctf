@@ -576,6 +576,7 @@ mod tests {
             challenge_type: ChallengeType::KingOfTheHill,
             hints: None,
             is_enabled: true,
+            ad_control_revision: 1,
             deadline_utc: None,
             submission_limit: 0,
             accepted_count: 0,

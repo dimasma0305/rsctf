@@ -24,6 +24,7 @@ use lifecycle::destroy_test_container_locked;
 #[cfg(test)]
 pub(crate) use repo_push::commit_latest_to_checkout_for_test;
 pub use review::{approve_challenge, list_pending_challenges, reject_challenge};
+pub(crate) use workload::execute_workload_rollout_job;
 pub use workload::rollout_workloads;
 
 const INSERTABLE_GAME_SQL: &str =

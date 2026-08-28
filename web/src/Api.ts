@@ -1831,6 +1831,7 @@ export interface WorkloadSpec {
 export interface WorkloadRolloutModel {
   matched: number;
   updated: number;
+  alreadyCurrent: number;
   stale: number;
   incompatible: number;
   insufficientCapacity: number;
@@ -2566,6 +2567,8 @@ export interface AdChallengeStateModel {
   challengeId: number;
   title: string;
   isEnabled: boolean;
+  /** Optimistic-concurrency fence for enabled-state commands. */
+  controlRevision: number;
   tickSeconds: number;
   flagLifetimeTicks: number;
   teamsWithLiveContainer?: number | null;
@@ -2665,6 +2668,8 @@ export interface AdGameStateModel {
   /** @format uint64 */
   roundEndsAt?: number | null;
   scoringPaused: boolean;
+  /** Optimistic-concurrency fence for scoring desired-state commands. */
+  controlRevision: number;
   /** When scoring was paused (null if running) — the UI freezes the round timer at this instant. */
   /** @format uint64 */
   scoringPausedAt?: number | null;
@@ -2700,6 +2705,7 @@ export interface AdLiveStateModel {
   /** @format uint64 */
   roundEndsAt?: number | null;
   scoringPaused: boolean;
+  controlRevision: number;
   /** @format uint64 */
   scoringPausedAt?: number | null;
   /** @format uint64 */
@@ -2711,6 +2717,50 @@ export interface AdLiveStateModel {
 export interface AdOverrideCheckModel {
   newStatus: AdCheckStatus;
   note?: string | null;
+}
+
+export interface AdScoringDesiredState {
+  paused: boolean;
+  revision: number;
+}
+
+export interface AdScoringCommandResult {
+  scoringPaused: boolean;
+  revision: number;
+}
+
+export interface AdChallengeDesiredState {
+  enabled: boolean;
+  revision: number;
+}
+
+export interface AdChallengeCommandResult {
+  isEnabled: boolean;
+  revision: number;
+}
+
+export type ControlJobStatus = "Queued" | "Running" | "Succeeded" | "Failed" | "Cancelled";
+
+export interface ControlJobModel {
+  id: string;
+  kind: string;
+  scopeKey: string;
+  gameId: number;
+  challengeId?: number | null;
+  operationId: string;
+  fingerprint: string;
+  status: ControlJobStatus;
+  progressCurrent: number;
+  progressTotal: number;
+  requestedGeneration: number;
+  result?: Record<string, unknown> | null;
+  error?: string | null;
+  /** @format uint64 */
+  createdAtUtc: number;
+  /** @format uint64 */
+  updatedAtUtc: number;
+  /** @format uint64 */
+  finishedAtUtc?: number | null;
 }
 
 /** New attachment information (Edit) */
@@ -6724,11 +6774,13 @@ export class Api<
     editRolloutChallengeWorkloads: (
       id: number,
       cId: number,
+      operationId: string,
       params: RequestParams = {},
     ) =>
-      this.request<WorkloadRolloutModel, RequestResponse>({
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${cId}/workload/rollout`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),
@@ -7566,10 +7618,17 @@ export class Api<
      * @name EditAdToggleChallenge
      * @request POST:/api/edit/games/{id}/ad/Challenges/{challengeId}/Toggle
      */
-    editAdToggleChallenge: (id: number, challengeId: number, params: RequestParams = {}) =>
-      this.request<{ isEnabled: boolean }, RequestResponse>({
+    editAdToggleChallenge: (
+      id: number,
+      challengeId: number,
+      data: AdChallengeDesiredState,
+      params: RequestParams = {},
+    ) =>
+      this.request<AdChallengeCommandResult, RequestResponse>({
         path: `/api/edit/games/${id}/ad/Challenges/${challengeId}/Toggle`,
         method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -7580,10 +7639,16 @@ export class Api<
      * @name EditAdForceRestart
      * @request POST:/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Restart
      */
-    editAdForceRestart: (id: number, adTeamServiceId: number, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+    editAdForceRestart: (
+      id: number,
+      adTeamServiceId: number,
+      operationId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/ad/Services/${adTeamServiceId}/Restart`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         ...params,
       }),
 
@@ -7613,27 +7678,13 @@ export class Api<
      * @name EditAdEnsureContainers
      * @request POST:/api/edit/games/{id}/ad/EnsureContainers
      */
-    editAdEnsureContainers: (
-      id: number,
-      operationIdOrParams?: string | RequestParams,
-      params: RequestParams = {},
-    ) => {
-      const operationId =
-        typeof operationIdOrParams === "string" ? operationIdOrParams : undefined;
-      const requestParams =
-        typeof operationIdOrParams === "string"
-          ? params
-          : operationIdOrParams ?? params;
-      return this.request<void, RequestResponse>({
+    editAdEnsureContainers: (id: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/ad/EnsureContainers`,
         method: "POST",
-        ...requestParams,
-        headers: {
-          ...requestParams.headers,
-          ...(operationId ? { "Idempotency-Key": operationId } : {}),
-        },
-      });
-    },
+        ...params,
+        headers: { ...params.headers, "Idempotency-Key": operationId },
+      }),
 
     /**
      * @description A&D — pause/resume scoring for the whole game (freezes round advance + checks).
@@ -7641,10 +7692,12 @@ export class Api<
      * @name EditAdToggleScoringPause
      * @request POST:/api/edit/games/{id}/ad/ScoringPause
      */
-    editAdToggleScoringPause: (id: number, params: RequestParams = {}) =>
-      this.request<{ scoringPaused: boolean }, RequestResponse>({
+    editAdToggleScoringPause: (id: number, data: AdScoringDesiredState, params: RequestParams = {}) =>
+      this.request<AdScoringCommandResult, RequestResponse>({
         path: `/api/edit/games/${id}/ad/ScoringPause`,
         method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -9552,10 +9605,32 @@ export class Api<
      * @name GameAdResetService
      * @request POST:/api/Game/{id}/Ad/Services/{adTeamServiceId}/Reset
      */
-    gameAdResetService: (id: number, adTeamServiceId: number, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+    gameAdResetService: (
+      id: number,
+      adTeamServiceId: number,
+      operationId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Services/${adTeamServiceId}/Reset`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
+        ...params,
+      }),
+
+    gameAdResetJob: (id: number, jobId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/ResetJobs/${jobId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    gameAdResetJobByOperation: (id: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/ResetJobs/Operations/${operationId}`,
+        method: "GET",
+        format: "json",
         ...params,
       }),
 
@@ -10925,6 +11000,22 @@ export class Api<
   };
 
   eventSecurity = {
+    getControlJob: (jobId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/edit/jobs/${jobId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    getControlJobByOperation: (operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/edit/jobs/operations/${operationId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
     gameVpnChallenge: (gameId: number, params: RequestParams = {}) =>
       this.request<EventVpnChallengeModel, RequestResponse>({
         path: `/api/game/${gameId}/vpn/challenge`,
@@ -10963,18 +11054,20 @@ export class Api<
         ...params,
       }),
 
-    generateVariants: (gameId: number, params: RequestParams = {}) =>
-      this.request<{ generated: number }, RequestResponse>({
+    generateVariants: (gameId: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${gameId}/variants/generate`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),
 
-    deriveFindings: (gameId: number, params: RequestParams = {}) =>
-      this.request<{ inserted: number }, RequestResponse>({
+    deriveFindings: (gameId: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/admin/games/${gameId}/anti-cheat/derive`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),

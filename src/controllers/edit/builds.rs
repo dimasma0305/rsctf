@@ -8,11 +8,15 @@ pub use backfill::backfill_build_records;
 #[cfg(test)]
 use backfill::backfill_terminal_build_records;
 mod identity;
+mod jobs;
 #[cfg(test)]
 use identity::immutable_image_reference;
 use identity::{build_lock_key, inspect_immutable_image, ImageOperation};
 pub(crate) use identity::{
     canonical_image_reference, canonical_managed_image_tag, image_build_lock_key,
+};
+pub(crate) use jobs::{
+    enqueue_challenge_build_job, execute_build_batch_job, execute_challenge_build_job,
 };
 mod publication;
 use publication::*;

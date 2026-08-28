@@ -29,6 +29,7 @@ const EXPECTED_WORKLOAD_HEADER: &str = "x-rsctf-expected-workload";
 pub struct WorkloadRolloutModel {
     pub matched: usize,
     pub updated: usize,
+    pub already_current: usize,
     pub stale: usize,
     pub incompatible: usize,
     pub insufficient_capacity: usize,
@@ -65,16 +66,12 @@ pub async fn rollout_workloads(
     user: CurrentUser,
     Path((game_id, challenge_id)): Path<(i32, i32)>,
     headers: HeaderMap,
-) -> AppResult<RequestResponse<WorkloadRolloutModel>> {
+) -> AppResult<(
+    axum::http::StatusCode,
+    RequestResponse<crate::services::control_jobs::ControlJobModel>,
+)> {
     manager_or_admin(&st, &user, game_id).await?;
-    let mut rollout_lock = crate::services::challenge_workloads::acquire_definition_lock(
-        st.pg(),
-        game_id,
-        challenge_id,
-    )
-    .await?;
-    super::reject_pending_mutation(&mut **rollout_lock.transaction_mut(), game_id, challenge_id)
-        .await?;
+    super::reject_pending_mutation(st.pg(), game_id, challenge_id).await?;
     let challenge = load_challenge(&st, game_id, challenge_id).await?;
     let workload = crate::services::challenge_workloads::from_challenge(&challenge)?
         .ok_or_else(|| AppError::bad_request("no workloadSpec is saved"))?;
@@ -89,6 +86,42 @@ pub async fn rollout_workloads(
         })
         .transpose()?;
     ensure_expected_identity(&runtime_identity, expected_identity)?;
+    let operation_id = super::super::control_jobs::operation_id(&headers)?;
+    let fingerprint = super::super::control_jobs::fingerprint(&runtime_identity)?;
+    let job = crate::services::control_jobs::enqueue(
+        st.pg(),
+        crate::services::control_jobs::ControlJobKind::WorkloadRollout,
+        &format!("challenge:{challenge_id}"),
+        game_id,
+        Some(challenge_id),
+        operation_id,
+        &fingerprint,
+        serde_json::json!({ "challengeId": challenge_id }),
+    )
+    .await?;
+    crate::services::control_jobs::kick(st);
+    Ok((axum::http::StatusCode::ACCEPTED, RequestResponse::ok(job)))
+}
+
+pub(crate) async fn execute_workload_rollout_job(
+    st: &SharedState,
+    job: &crate::services::control_jobs::ControlJobModel,
+) -> AppResult<WorkloadRolloutModel> {
+    let challenge_id = job
+        .challenge_id
+        .ok_or_else(|| AppError::internal("workload rollout job has no challenge id"))?;
+    super::reject_pending_mutation(st.pg(), job.game_id, challenge_id).await?;
+    let challenge = load_challenge(st, job.game_id, challenge_id).await?;
+    let workload = crate::services::challenge_workloads::from_challenge(&challenge)?
+        .ok_or_else(|| AppError::bad_request("no workloadSpec is saved"))?;
+    crate::services::challenge_workloads::ensure_live_rollout_is_stateless(&workload)?;
+    let runtime_identity = crate::services::challenge_workloads::runtime_identity(st, &challenge)?;
+    let fingerprint = super::super::control_jobs::fingerprint(&runtime_identity)?;
+    if fingerprint != job.fingerprint {
+        return Err(AppError::conflict(
+            "the saved workload changed after this rollout was queued",
+        ));
+    }
     let endpoint_port = primary_endpoint_port(&workload);
     let rows = sqlx::query_as::<_, (Uuid, String)>(
         r#"SELECT container.id, container.container_id
@@ -128,6 +161,7 @@ pub async fn rollout_workloads(
     let mut result = WorkloadRolloutModel {
         matched: rows.len(),
         updated: 0,
+        already_current: 0,
         stale: 0,
         incompatible: 0,
         insufficient_capacity: 0,
@@ -167,6 +201,7 @@ pub async fn rollout_workloads(
                     result.stale += 1;
                 }
             }
+            Ok(DefinitionUpdateOutcome::AlreadyCurrent { .. }) => result.already_current += 1,
             Ok(DefinitionUpdateOutcome::Stale) => result.stale += 1,
             Ok(DefinitionUpdateOutcome::WorkerNoLongerCompatible) => result.incompatible += 1,
             Ok(DefinitionUpdateOutcome::InsufficientCapacity) => result.insufficient_capacity += 1,
@@ -176,11 +211,8 @@ pub async fn rollout_workloads(
             }
         }
     }
-    // The saved definition and all desired generations now form one ordered
-    // rollout. Runtime convergence does not need to hold the advisory connection.
-    rollout_lock.release().await?;
     await_rollout_convergence(&st, &mut result, pending).await?;
-    Ok(RequestResponse::ok(result))
+    Ok(result)
 }
 
 async fn await_rollout_convergence(

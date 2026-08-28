@@ -33,6 +33,7 @@ struct HillRow {
     title: String,
     category: i16,
     is_enabled: bool,
+    control_revision: i64,
     container_ip: Option<String>,
     container_port: Option<i32>,
     container_id: Option<String>,
@@ -227,6 +228,7 @@ async fn compute_koth_board_inner(
     let challenge_rows = sqlx::query_as::<_, HillRow>(
         r#"SELECT challenge.id AS challenge_id, challenge.title,
                   challenge.category, challenge.is_enabled,
+                  challenge.ad_control_revision AS control_revision,
                   address.host AS container_ip, address.port AS container_port,
                   address.container_id,
                   holder_participation.id AS holder_participation_id,
@@ -321,6 +323,7 @@ async fn compute_koth_board_inner(
                 title: row.title,
                 category: challenge_category(row.category)?,
                 is_enabled: row.is_enabled,
+                control_revision: row.control_revision,
                 container_ip: row.container_ip,
                 container_port: row.container_port,
                 container_id: row.container_id,
@@ -511,6 +514,7 @@ pub(super) struct KothHillInfo {
     pub(super) title: String,
     pub(super) category: ChallengeCategory,
     pub(super) is_enabled: bool,
+    pub(super) control_revision: i64,
     pub(super) container_ip: Option<String>,
     pub(super) container_port: Option<i32>,
     /// Docker container id of the shared hill container (for the admin shell).

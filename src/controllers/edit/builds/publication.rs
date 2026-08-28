@@ -58,6 +58,17 @@ impl BuildFingerprint {
             build_context_subdir: challenge.build_context_subdir.clone(),
         }
     }
+
+    pub(super) fn identity(&self) -> String {
+        crate::utils::codec::sha256_str(
+            &serde_json::json!({
+                "containerImage": self.container_image.as_deref(),
+                "archive": self.original_archive_blob_path.as_deref(),
+                "context": self.build_context_subdir.as_deref(),
+            })
+            .to_string(),
+        )
+    }
 }
 
 pub(super) fn superseded_build_outcome(message: &str) -> BuildOutcome {
