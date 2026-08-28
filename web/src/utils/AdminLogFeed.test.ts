@@ -61,8 +61,19 @@ test('admin log search is literal, case-folded, and bounded like the server', ()
   const base = { level: 'Information', page: 1, search: '' }
   assert.equal(normalizeAdminLogSearch('  ERROR%_  '), 'error%_')
   assert.equal(normalizeAdminLogSearch('x'.repeat(128) + 'suffix'), 'x'.repeat(128))
+  assert.equal(normalizeAdminLogSearch('\u0085ERROR\u0085'), 'error')
   assert.equal(adminLogMatchesQuery(log(1, { msg: 'literal % marker' }), { ...base, search: '%' }), true)
   assert.equal(adminLogMatchesQuery(log(1), { ...base, search: '%' }), false)
+})
+
+test('admin log search never normalizes beyond its bounded raw prefix', () => {
+  const adversarial = ' '.repeat(512) + 'ERROR' + 'x'.repeat(250_000)
+  assert.equal(normalizeAdminLogSearch(adversarial), '')
+
+  const source = readFileSync('src/utils/AdminLogFeed.ts', 'utf8')
+  assert.match(source, /for \(const character of search\)/)
+  assert.match(source, /inspected\.length === MAX_ADMIN_LOG_SEARCH_INSPECT_CHARS/)
+  assert.doesNotMatch(source, /\[\.\.\.search\.trim\(\)\.toLowerCase\(\)\]/)
 })
 
 test('admin logs use the stable id to break equal-timestamp ordering ties', () => {
