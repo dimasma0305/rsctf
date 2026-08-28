@@ -165,7 +165,7 @@ fn reserve_monitor_export_work(
 }
 
 /// Reconnect backfill. Omitting `after` returns a cursor-only checkpoint; a
-/// supplied cursor returns the next commit-ordered bounded page.
+/// supplied cursor returns the next reconnect-safe bounded page.
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventBackfillQuery {
@@ -315,7 +315,7 @@ pub async fn events(
 /// `GET /api/game/{id}/events/backfill` — monitor-only reconnect recovery.
 ///
 /// With no `after`, this returns a cursor-only checkpoint. With `after`, it
-/// returns at most 100 committed events in ascending cursor order and reports
+/// returns at most 100 visible events in ascending cursor order and reports
 /// whether another bounded page remains.
 pub async fn event_backfill(
     State(st): State<SharedState>,

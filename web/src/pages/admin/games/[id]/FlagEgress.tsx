@@ -46,7 +46,6 @@ const ITEMS_PER_PAGE = 50
 const BACKFILL_PAGE_SIZE = 100
 const MAX_BACKFILL_PAGES = 10
 const MAX_BUFFERED_EVENTS = 200
-const MAX_VISIBLE_EVENTS = 100
 
 interface FlagEgressViewProps {
   gameId: number
@@ -221,7 +220,7 @@ const FlagEgressView: FC<FlagEgressViewProps> = ({ gameId, feedScope }) => {
   const filteredLive = currentBuffer.filter((event) => flagEgressMatchesSearch(event, normalizedSearch))
   const visibleEvents =
     activePage === 1
-      ? mergeFlagEgressRows(filteredLive, page?.data ?? [], MAX_VISIBLE_EVENTS)
+      ? mergeFlagEgressRows(filteredLive, page?.data ?? [], ITEMS_PER_PAGE)
       : (page?.data ?? []).slice(0, ITEMS_PER_PAGE)
   const totalPages = Math.max(1, Math.ceil((page?.total ?? 0) / ITEMS_PER_PAGE))
 

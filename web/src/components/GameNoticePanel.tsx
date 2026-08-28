@@ -8,10 +8,10 @@ import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { Empty } from '@Components/Empty'
 import { InlineMarkdown } from '@Components/MarkdownRenderer'
-import { mergeUniqueRows, reconcileLiveRows } from '@Utils/FeedReconciliation'
+import { reconcileLiveRows } from '@Utils/FeedReconciliation'
 import { useLanguage } from '@Utils/I18n'
 import { currentListSnapshotRows, LatestListRequest, type ListSnapshot } from '@Utils/LatestRequest'
-import { MAX_GAME_NOTICE_ROWS, receiveGameNotice } from '@Utils/NoticeFeed'
+import { MAX_GAME_NOTICE_ROWS, mergeGameNotices, receiveGameNotice } from '@Utils/NoticeFeed'
 import { NoticTypeIconMap } from '@Utils/Shared'
 import { NOTICE_FALLBACK_POLL_MS } from '@Utils/SignalRRecovery'
 import { useRecoveringHub } from '@Hooks/useRecoveringHub'
@@ -162,14 +162,8 @@ export const GameNoticePanel: FC = () => {
   })
 
   const liveNotices = currentListSnapshotRows(noticeScope, newNotices.current) ?? []
-  const allNotices = mergeUniqueRows(liveNotices, notices ?? [], (notice) => notice.id, MAX_GAME_NOTICE_ROWS)
+  const allNotices = mergeGameNotices(liveNotices, notices ?? [])
   const filteredNotices = ApplyFilter(allNotices, filter)
-
-  filteredNotices.sort((a, b) =>
-    a.type !== b.type && (a.type === NoticeType.Normal || b.type == NoticeType.Normal)
-      ? +(a.type !== NoticeType.Normal) || -1
-      : dayjs(b.time).diff(a.time) || b.id - a.id
-  )
   const visibleNotices = filteredNotices.slice(0, MAX_GAME_NOTICE_ROWS)
 
   return (

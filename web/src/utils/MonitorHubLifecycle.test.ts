@@ -724,6 +724,8 @@ test('submission live rows apply the active result and normalized search filters
   assert.equal(submissionMatchesMonitorFilter(accepted, AnswerResult.WrongAnswer, 'blue team', 'en'), false)
   assert.equal(submissionMatchesMonitorFilter(accepted, 'All', 'flag{accepted}', 'en'), true)
   assert.equal(submissionMatchesMonitorFilter(accepted, 'All', 'red team', 'en'), false)
+  assert.equal(submissionMatchesMonitorFilter(accepted, 'All', ' '.repeat(513) + 'red team', 'en'), true)
+  assert.equal(submissionMatchesMonitorFilter(accepted, 'All', '\u0085blue\u0085team', 'en'), true)
 })
 
 test('a delayed game-A snapshot and late game-A push cannot enter game B', () => {

@@ -37,7 +37,7 @@ interface CursorMonitorRow {
   cursor: number
 }
 
-/** Merge durable real-time, snapshot, and backfill rows newest-commit first. */
+/** Merge durable real-time, snapshot, and backfill rows newest-cursor first. */
 export const mergeCursorMonitorBuffer = <Row extends CursorMonitorRow>(
   incoming: readonly Row[],
   current: readonly Row[],
@@ -58,7 +58,7 @@ export const mergeCursorMonitorBuffer = <Row extends CursorMonitorRow>(
 export const rebaseCursorMonitorBuffer = <Row extends CursorMonitorRow>(current: readonly Row[], checkpoint: number) =>
   current.filter((row) => row.cursor > checkpoint)
 
-/** Merge real-time and HTTP rows by durable identity, newest commit first. */
+/** Merge real-time and HTTP rows by durable identity, newest cursor first. */
 export const mergeGameEventBuffer = (incoming: readonly GameEvent[], current: readonly GameEvent[], limit: number) =>
   mergeCursorMonitorBuffer(incoming, current, limit)
 
@@ -90,7 +90,7 @@ export const monitorPushIsCurrent = <Scope extends string | number>(
   cancelled: boolean
 ) => !cancelled && activeScope === connectedScope
 
-/** Reject a delayed monitor push once its commit is covered by the durable cursor. */
+/** Reject a delayed monitor push once its assignment is covered by the durable cursor. */
 export const monitorCursorPushIsCurrent = <Scope extends string | number>(
   activeScope: Scope,
   connectedScope: Scope,
@@ -116,8 +116,36 @@ export const currentMonitorSnapshotRows = <Row>(activeScope: string, snapshot?: 
 export const currentMonitorBufferRows = <Row>(activeScope: string, bufferedScope: string, rows: readonly Row[]) =>
   activeScope === bufferedScope ? rows : []
 
-const normalizedMonitorSearch = (search: string, locale: string) =>
-  Array.from(search.trim().replace(/\s+/gu, ' ').toLocaleLowerCase(locale)).slice(0, 128).join('')
+const monitorWhitespacePattern = /^\p{White_Space}$/u
+
+const normalizedMonitorSearch = (search: string, locale: string) => {
+  let normalized = ''
+  let scalarCount = 0
+  let pendingSpace = false
+  let inspected = 0
+
+  for (const character of search) {
+    if (inspected === 512) break
+    inspected += 1
+    if (monitorWhitespacePattern.test(character)) {
+      pendingSpace = scalarCount > 0
+      continue
+    }
+    if (pendingSpace) {
+      if (scalarCount === 128) break
+      normalized += ' '
+      scalarCount += 1
+      pendingSpace = false
+    }
+    for (const lower of character.toLocaleLowerCase(locale)) {
+      if (scalarCount === 128) return normalized
+      normalized += lower
+      scalarCount += 1
+    }
+  }
+
+  return normalized
+}
 
 /** Match a pushed submission with the same result/search dimensions as HTTP. */
 export const submissionMatchesMonitorFilter = (

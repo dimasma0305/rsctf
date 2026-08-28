@@ -14,6 +14,52 @@
 > offenders plus 95 clean controls; older six/94 and honeypot-score figures are
 > historical results, not acceptance expectations.
 
+## Bounded live-feed recovery acceptance — 28 August 2026
+
+The event, submission, notice, admin-log, and Flag Egress feed changes were
+exercised against the exact release-candidate source build and an isolated
+PostgreSQL 18.4/Redis development stack. The monitor-history fixture contained
+10,000 cursor-backed game events and 10,000 cursor-backed submissions for one
+event. The fixed `constant-arrival-rate` run held one request per second for 20
+seconds across the bounded event/submission history, filtered search,
+checkpoint, and reconnect-backfill endpoints.
+
+| Metric | Accepted result |
+| --- | ---: |
+| Requests / observed rate | 20 / 0.999970 s⁻¹ |
+| Latency average / p50 | 23.19 / 20.83 ms |
+| Latency p90 / p95 | 37.53 / 39.59 ms |
+| Latency p99 / maximum | 44.04 / 45.15 ms |
+| Invalid / row-limit / oversized-body responses | 0 / 0 / 0 |
+| HTTP 429 / 5xx / dropped arrivals | 0 / 0 / 0 |
+| rsctf CPU average over five one-second samples | 1.40% of one core |
+| rsctf RSS | 83,828 KiB |
+| PostgreSQL CPU / RSS contemporaneous sample | 5.35% / 165.6 MiB |
+| Redis CPU / RSS contemporaneous sample | 0.65% / 4.203 MiB |
+
+The initial diagnostic deliberately reused one administrator identity at five
+requests per second and was rejected by the monitor query admission policy
+(198 HTTP 429 responses out of 201 requests). It had zero 5xx responses and no
+dropped arrivals, but it is not counted as acceptance. The accepted run rotated
+12 isolated monitor/administrator identities so it measured the bounded query
+path instead of one identity's abuse budget.
+
+Real-PostgreSQL concurrency regressions separately held each per-game cursor
+fence while two later event and submission writers committed. Those commits
+completed inside the two-second test deadline, remained durably queued with a
+null cursor, and were recovered above an intervening reconnect checkpoint by
+two concurrent reconcilers without duplicate cursors or queue residue. A
+30,000-event/50,000-submission history test also proved that both unfiltered and
+searched pages exclude pending null-cursor rows.
+
+The exact frontend build passed 20 browser renders of Flag Egress, notices,
+event monitoring, and submission monitoring at ultrawide, desktop, tablet,
+390-pixel mobile, and 320-pixel compact sizes. The audit reported zero relevant
+Axe violations, overflow, unnamed controls, heading errors, console/runtime
+errors, or visual warnings. This is a correctness and bounded-resource
+acceptance, not a same-host before/after optimization comparison, so it adds no
+optimization-ledger row.
+
 ## Complete donation-history production acceptance — 23 August 2026
 
 The complete-history donation fix was measured immediately before and after the

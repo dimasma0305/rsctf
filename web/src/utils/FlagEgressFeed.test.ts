@@ -97,14 +97,8 @@ test('active search applies to live rows by team, challenge, and remote IP', () 
 test('live Flag Egress search mirrors server whitespace and scalar bounds', () => {
   assert.equal(normalizeFlagEgressSearch('  ReD   Team  '), 'red team')
   assert.equal(normalizeFlagEgressSearch('x'.repeat(128) + 'not-inspected'), 'x'.repeat(128))
-  assert.equal(
-    flagEgressMatchesSearch(event(9, 9, 1, { teamName: 'Red Team' }), '  ReD   Team  '),
-    true
-  )
-  assert.equal(
-    flagEgressMatchesSearch(event(9, 9, 1, { teamName: 'x'.repeat(128) }), 'x'.repeat(128) + 'suffix'),
-    true
-  )
+  assert.equal(flagEgressMatchesSearch(event(9, 9, 1, { teamName: 'Red Team' }), '  ReD   Team  '), true)
+  assert.equal(flagEgressMatchesSearch(event(9, 9, 1, { teamName: 'x'.repeat(128) }), 'x'.repeat(128) + 'suffix'), true)
 })
 
 test('relative timestamps initialize their own Day.js plugin', () => {
@@ -115,4 +109,10 @@ test('Flag Egress page respects reduced motion when resetting its viewport', () 
   const source = readFileSync('src/pages/admin/games/[id]/FlagEgress.tsx', 'utf8')
   assert.match(source, /useReducedMotion\(\)/)
   assert.match(source, /behavior: reducedMotion \? 'auto' : 'smooth'/)
+})
+
+test('Flag Egress first page uses the same row limit as later pages', () => {
+  const source = readFileSync('src/pages/admin/games/[id]/FlagEgress.tsx', 'utf8')
+  assert.match(source, /mergeFlagEgressRows\(filteredLive, page\?\.data \?\? \[\], ITEMS_PER_PAGE\)/)
+  assert.doesNotMatch(source, /MAX_VISIBLE_EVENTS/)
 })

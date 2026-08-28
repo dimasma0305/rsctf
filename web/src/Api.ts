@@ -3267,7 +3267,7 @@ export type GameEvent = FormattableDataOfEventType & {
   team?: string;
 };
 
-/** One bounded commit-ordered page used to recover a monitor-hub reconnect. */
+/** One bounded reconnect-safe cursor page used to recover a monitor-hub reconnect. */
 export interface GameEventBackfill {
   events: GameEvent[];
   nextCursor: number;
@@ -3364,7 +3364,7 @@ export interface MonitorSubmission {
   challenge?: string;
 }
 
-/** One bounded commit-ordered page used to recover a monitor-hub reconnect. */
+/** One bounded reconnect-safe cursor page used to recover a monitor-hub reconnect. */
 export interface SubmissionBackfill {
   submissions: MonitorSubmission[];
   nextCursor: number;
@@ -8210,7 +8210,7 @@ export class Api<
         ...params,
       }),
     /**
-     * @description Retrieves a bounded commit-ordered monitor event backfill; omitting after returns a cursor-only checkpoint
+     * @description Retrieves a bounded reconnect-safe monitor event backfill; omitting after returns a cursor-only checkpoint
      *
      * @tags Game
      * @name GameEventBackfill
@@ -9881,7 +9881,7 @@ export class Api<
         ...params,
       }),
     /**
-     * @description Retrieves a bounded commit-ordered monitor submission backfill; omitting after returns a cursor-only checkpoint
+     * @description Retrieves a bounded reconnect-safe monitor submission backfill; omitting after returns a cursor-only checkpoint
      *
      * @tags Game
      * @name GameSubmissionBackfill

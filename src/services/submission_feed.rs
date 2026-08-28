@@ -1,18 +1,27 @@
 //! Durable monitor-submission shaping and best-effort real-time publication.
 //!
 //! PostgreSQL is authoritative. A submission commits before publication, and
-//! reconnecting clients recover missed pushes through the commit-ordered cursor
-//! installed by `m0114_submission_feed_cursor`.
+//! reconnecting clients recover missed pushes through the reconnect-safe cursor
+//! installed by `m0114_submission_feed_cursor`. Cursor assignment never waits
+//! behind another same-game submitter: a deferred trigger makes a non-blocking
+//! attempt, then this service reconciles any missed rows in bounded batches.
 
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveEnum;
 use serde::Serialize;
+use sqlx::{Acquire, PgConnection};
 
 use crate::app_state::{HubEvent, SharedState};
 use crate::services::event_bus::EventBus;
 use crate::utils::enums::AnswerResult;
 
 pub const MAX_BACKFILL_SUBMISSIONS: i64 = 100;
+const CURSOR_LOCK_NAMESPACE: i32 = 1_398_097_485;
+const MAX_ASSIGNMENTS_PER_GAME: i64 = 100;
+const MAX_GAMES_PER_PASS: i64 = 16;
+const MAX_PUBLISH_BATCH: usize = MAX_ASSIGNMENTS_PER_GAME as usize;
+const RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+const HOT_PATH_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,6 +77,27 @@ impl TryFrom<SubmissionRow> for SubmissionMessage {
     }
 }
 
+const COMMITTED_SUBMISSIONS_SQL: &str = r#"
+    SELECT submission.id,
+           submission.feed_cursor,
+           submission.answer,
+           submission.status::smallint AS status,
+           submission.submit_time_utc,
+           account.user_name,
+           team.name AS team_name,
+           challenge.title AS challenge_title
+      FROM "Submissions" submission
+      LEFT JOIN "Teams" team ON team.id = submission.team_id
+      LEFT JOIN "AspNetUsers" account ON account.id = submission.user_id
+      LEFT JOIN "GameChallenges" challenge
+        ON challenge.id = submission.challenge_id
+       AND challenge.game_id = submission.game_id
+     WHERE submission.game_id = $1
+       AND submission.id = ANY($2)
+       AND submission.feed_cursor IS NOT NULL
+     ORDER BY submission.feed_cursor ASC
+"#;
+
 const COMMITTED_SUBMISSION_SQL: &str = r#"
     SELECT submission.id,
            submission.feed_cursor,
@@ -109,6 +139,189 @@ const BACKFILL_SQL: &str = r#"
      LIMIT $3
 "#;
 
+const ASSIGN_PENDING_SQL: &str = r#"
+    WITH pending AS MATERIALIZED (
+      SELECT queue.submission_id
+        FROM "SubmissionFeedPending" queue
+       WHERE queue.game_id = $1
+       ORDER BY queue.submission_id
+       LIMIT $2
+       FOR UPDATE SKIP LOCKED
+    ), assigned AS (
+      UPDATE "Submissions" submission
+         SET feed_cursor = nextval('rsctf_submission_feed_cursor_seq')
+        FROM pending
+       WHERE submission.id = pending.submission_id
+         AND submission.feed_cursor IS NULL
+       RETURNING submission.id, submission.feed_cursor
+    ), removed AS (
+      DELETE FROM "SubmissionFeedPending" queue
+       USING pending
+       WHERE queue.submission_id = pending.submission_id
+       RETURNING queue.submission_id
+    )
+    SELECT id FROM assigned ORDER BY feed_cursor ASC
+"#;
+
+const FIRST_PENDING_GAME_SQL: &str = r#"
+    SELECT game_id
+      FROM "SubmissionFeedPending"
+     ORDER BY game_id, submission_id
+     LIMIT 1
+"#;
+
+const NEXT_PENDING_GAME_SQL: &str = r#"
+    SELECT game_id
+      FROM "SubmissionFeedPending"
+     WHERE game_id > $1
+     ORDER BY game_id, submission_id
+     LIMIT 1
+"#;
+
+async fn assign_pending_on(
+    connection: &mut PgConnection,
+    game_id: i32,
+    limit: i64,
+) -> anyhow::Result<Vec<i32>> {
+    let mut transaction = connection.begin().await?;
+    let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1, $2)")
+        .bind(CURSOR_LOCK_NAMESPACE)
+        .bind(game_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+    if !acquired {
+        transaction.rollback().await?;
+        return Ok(Vec::new());
+    }
+    let assigned = sqlx::query_scalar(ASSIGN_PENDING_SQL)
+        .bind(game_id)
+        .bind(limit.clamp(1, MAX_ASSIGNMENTS_PER_GAME))
+        .fetch_all(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    Ok(assigned)
+}
+
+async fn pending_game_ids(
+    pool: &sqlx::PgPool,
+    last_game_id: &mut Option<i32>,
+) -> anyhow::Result<Vec<i32>> {
+    let mut game_ids = Vec::with_capacity(MAX_GAMES_PER_PASS as usize);
+    let mut seen = std::collections::HashSet::with_capacity(MAX_GAMES_PER_PASS as usize);
+    let mut wrapped = false;
+    while game_ids.len() < MAX_GAMES_PER_PASS as usize {
+        let next = match *last_game_id {
+            Some(game_id) => {
+                sqlx::query_scalar(NEXT_PENDING_GAME_SQL)
+                    .bind(game_id)
+                    .fetch_optional(pool)
+                    .await?
+            }
+            None => {
+                sqlx::query_scalar(FIRST_PENDING_GAME_SQL)
+                    .fetch_optional(pool)
+                    .await?
+            }
+        };
+        let Some(game_id) = next else {
+            if last_game_id.is_some() && !wrapped {
+                *last_game_id = None;
+                wrapped = true;
+                continue;
+            }
+            break;
+        };
+        if !seen.insert(game_id) {
+            break;
+        }
+        *last_game_id = Some(game_id);
+        game_ids.push(game_id);
+    }
+    Ok(game_ids)
+}
+
+async fn committed_by_ids_on(
+    connection: &mut PgConnection,
+    game_id: i32,
+    submission_ids: &[i32],
+) -> anyhow::Result<Vec<SubmissionMessage>> {
+    if submission_ids.len() > MAX_PUBLISH_BATCH {
+        anyhow::bail!("submission publish batch exceeds {MAX_PUBLISH_BATCH} rows");
+    }
+    if submission_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query_as::<_, SubmissionRow>(COMMITTED_SUBMISSIONS_SQL)
+        .bind(game_id)
+        .bind(submission_ids)
+        .fetch_all(connection)
+        .await?;
+    rows.into_iter()
+        .map(SubmissionMessage::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn publish_messages(events: &EventBus, game_id: i32, messages: Vec<SubmissionMessage>) {
+    for message in messages {
+        match serde_json::to_string(&message) {
+            Ok(payload) => events.publish(HubEvent {
+                target: "ReceivedSubmissions",
+                game_id: Some(game_id),
+                payload,
+            }),
+            Err(error) => tracing::warn!(
+                game = game_id,
+                submission = message.id,
+                %error,
+                "submission feed row could not be serialized"
+            ),
+        }
+    }
+}
+
+async fn committed_or_pending_on(
+    connection: &mut PgConnection,
+    game_id: i32,
+    submission_id: i32,
+) -> anyhow::Result<Option<SubmissionMessage>> {
+    if let Some(row) = sqlx::query_as::<_, SubmissionRow>(COMMITTED_SUBMISSION_SQL)
+        .bind(game_id)
+        .bind(submission_id)
+        .fetch_optional(&mut *connection)
+        .await?
+    {
+        return Ok(Some(SubmissionMessage::try_from(row)?));
+    }
+    let pending: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS (
+             SELECT 1 FROM "SubmissionFeedPending" WHERE submission_id = $1
+           )"#,
+    )
+    .bind(submission_id)
+    .fetch_one(&mut *connection)
+    .await?;
+    if pending {
+        tracing::debug!(
+            game = game_id,
+            submission = submission_id,
+            "submission feed cursor assignment remains pending"
+        );
+        return Ok(None);
+    }
+    // Close the race where a reconciler assigned and removed the queue row
+    // between the first projection and the pending check.
+    if let Some(row) = sqlx::query_as::<_, SubmissionRow>(COMMITTED_SUBMISSION_SQL)
+        .bind(game_id)
+        .bind(submission_id)
+        .fetch_optional(&mut *connection)
+        .await?
+    {
+        return Ok(Some(SubmissionMessage::try_from(row)?));
+    }
+    anyhow::bail!("committed submission is unavailable for publication")
+}
+
 /// Publish the canonical committed row. HTTP backfill remains the correctness
 /// path when best-effort publication fails.
 pub async fn publish_committed_on(
@@ -118,26 +331,21 @@ pub async fn publish_committed_on(
     submission_id: i32,
 ) -> anyhow::Result<()> {
     // Publication is optional because cursor backfill is authoritative. Never
-    // queue a completed player request behind a saturated SQL pool.
+    // queue a completed player request behind a saturated SQL pool or a
+    // same-game cursor assignment already in progress.
     let mut connection = pool
         .try_acquire()
         .ok_or_else(|| anyhow::anyhow!("submission publish skipped while SQL pool is busy"))?;
-    let row = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        sqlx::query_as::<_, SubmissionRow>(COMMITTED_SUBMISSION_SQL)
-            .bind(game_id)
-            .bind(submission_id)
-            .fetch_optional(&mut *connection),
+    let message = tokio::time::timeout(
+        HOT_PATH_BUDGET,
+        committed_or_pending_on(&mut connection, game_id, submission_id),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("submission publish projection timed out"))??
-    .ok_or_else(|| anyhow::anyhow!("committed submission is unavailable for publication"))?;
-    let message = SubmissionMessage::try_from(row)?;
-    events.publish(HubEvent {
-        target: "ReceivedSubmissions",
-        game_id: Some(game_id),
-        payload: serde_json::to_string(&message)?,
-    });
+    .map_err(|_| anyhow::anyhow!("submission publish projection timed out"))??;
+    let Some(message) = message else {
+        return Ok(());
+    };
+    publish_messages(events, game_id, vec![message]);
     Ok(())
 }
 
@@ -147,6 +355,60 @@ pub async fn publish_committed(
     submission_id: i32,
 ) -> anyhow::Result<()> {
     publish_committed_on(st.pg(), &st.events, game_id, submission_id).await
+}
+
+async fn reconcile_pending_once(
+    st: &SharedState,
+    last_game_id: &mut Option<i32>,
+) -> anyhow::Result<usize> {
+    let game_ids = pending_game_ids(st.pg(), last_game_id).await?;
+    let mut assigned_count = 0;
+    for game_id in game_ids {
+        let mut connection = st.pg().acquire().await?;
+        let submission_ids =
+            assign_pending_on(&mut connection, game_id, MAX_ASSIGNMENTS_PER_GAME).await?;
+        assigned_count += submission_ids.len();
+        let messages = committed_by_ids_on(&mut connection, game_id, &submission_ids).await?;
+        publish_messages(&st.events, game_id, messages);
+    }
+    Ok(assigned_count)
+}
+
+/// Reconcile rows whose commit-time non-blocking cursor attempt lost a race.
+/// Every pass and every game batch is bounded; multiple eligible replicas may run
+/// this safely because the same non-blocking per-game transaction fence owns
+/// assignment order.
+pub fn start_reconciler(
+    state: SharedState,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(RECONCILE_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_game_id = None;
+        loop {
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        break;
+                    }
+                }
+                _ = ticker.tick() => {
+                    match reconcile_pending_once(&state, &mut last_game_id).await {
+                        Ok(count) if count > 0 => tracing::debug!(
+                            count,
+                            "reconciled pending submission feed cursor(s)"
+                        ),
+                        Ok(_) => {}
+                        Err(error) => tracing::warn!(
+                            %error,
+                            "submission feed cursor reconciliation failed"
+                        ),
+                    }
+                }
+            }
+        }
+    })
 }
 
 pub async fn backfill_after(
@@ -219,6 +481,19 @@ mod tests {
         assert_eq!(value["cursor"], 29);
         assert_eq!(value["time"], at.timestamp_millis());
         assert_eq!(value["status"], "Accepted");
+    }
+
+    #[test]
+    fn pending_reconciliation_is_nonblocking_and_bounded() {
+        assert!(ASSIGN_PENDING_SQL.contains("FOR UPDATE SKIP LOCKED"));
+        assert!(ASSIGN_PENDING_SQL.contains("LIMIT $2"));
+        assert!(ASSIGN_PENDING_SQL.contains("DELETE FROM \"SubmissionFeedPending\""));
+        assert!(!NEXT_PENDING_GAME_SQL.contains("IS NULL OR"));
+        assert!(NEXT_PENDING_GAME_SQL.contains("game_id > $1"));
+        assert!(FIRST_PENDING_GAME_SQL.contains("ORDER BY game_id, submission_id"));
+        assert!(NEXT_PENDING_GAME_SQL.contains("LIMIT 1"));
+        assert!(MAX_ASSIGNMENTS_PER_GAME <= 100);
+        assert!(MAX_GAMES_PER_PASS <= 16);
     }
 
     #[tokio::test]
@@ -319,7 +594,7 @@ mod tests {
         let first = insert(7, 9, 70, "first".into()).await;
         let second = insert(7, 9, 70, "second".into()).await;
         let third = insert(7, 9, 70, "third".into()).await;
-        insert(8, 10, 80, "other-game".into()).await;
+        let other_game = insert(8, 10, 80, "other-game".into()).await;
 
         let bus = EventBus::local();
         let mut received = bus.subscribe();
@@ -360,8 +635,125 @@ mod tests {
             .submissions
             .is_empty());
 
+        // A same-game cursor owner must never hold a submission commit hostage.
+        // The deferred trigger skips the busy fence, leaving a durable NULL for
+        // the bounded reconciler to assign after the owner releases it.
+        let mut blocker = pool.begin().await.unwrap();
+        sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
+            .bind(CURSOR_LOCK_NAMESPACE)
+            .bind(7_i32)
+            .execute(&mut *blocker)
+            .await
+            .unwrap();
+        let pending_id = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            insert(7, 9, 70, "lost-race".into()),
+        )
+        .await
+        .expect("submission commit waited behind the cursor fence");
+        let second_pending_id = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            insert(7, 9, 70, "second-lost-race".into()),
+        )
+        .await
+        .expect("second submission commit waited behind the cursor fence");
+        let pending_cursor: Option<i64> =
+            sqlx::query_scalar(r#"SELECT feed_cursor FROM "Submissions" WHERE id = $1"#)
+                .bind(pending_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(pending_cursor, None);
+        assert!(publish_committed_on(&pool, &bus, 7, pending_id)
+            .await
+            .is_ok());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), received.recv())
+                .await
+                .is_err()
+        );
+        blocker.rollback().await.unwrap();
+
+        // A later visible submission may safely advance the monitor checkpoint.
+        // Reconciliation must assign the older pending row above that checkpoint
+        // so `after = checkpoint` still recovers it.
+        let visible_after_pending = insert(7, 9, 70, "visible-after-pending".into()).await;
+        let visible_cursor: i64 =
+            sqlx::query_scalar(r#"SELECT feed_cursor FROM "Submissions" WHERE id = $1"#)
+                .bind(visible_after_pending)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        let first_worker = {
+            let pool = pool.clone();
+            async move {
+                let mut connection = pool.acquire().await.unwrap();
+                assign_pending_on(&mut connection, 7, MAX_ASSIGNMENTS_PER_GAME)
+                    .await
+                    .unwrap()
+            }
+        };
+        let second_worker = {
+            let pool = pool.clone();
+            async move {
+                let mut connection = pool.acquire().await.unwrap();
+                assign_pending_on(&mut connection, 7, MAX_ASSIGNMENTS_PER_GAME)
+                    .await
+                    .unwrap()
+            }
+        };
+        let (first_assigned, second_assigned) = tokio::join!(first_worker, second_worker);
+        let assigned = first_assigned
+            .into_iter()
+            .chain(second_assigned)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(assigned.len(), 2);
+        assert!(assigned.contains(&pending_id));
+        assert!(assigned.contains(&second_pending_id));
+        let pending_after_assignment: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*)::bigint FROM "SubmissionFeedPending" WHERE game_id = 7"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending_after_assignment, 0);
+        let reconciled_cursor: i64 =
+            sqlx::query_scalar(r#"SELECT feed_cursor FROM "Submissions" WHERE id = $1"#)
+                .bind(pending_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(reconciled_cursor > visible_cursor);
+        let recovered = backfill_after(&pool, 7, visible_cursor, 100).await.unwrap();
+        assert!(recovered
+            .submissions
+            .iter()
+            .any(|submission| submission.id == pending_id));
+
+        // Rotation is by game, not by one global oldest-row window. Even with
+        // more game-7 work, a pass resuming after game 7 visits game 8 first.
+        sqlx::query(
+            r#"INSERT INTO "SubmissionFeedPending" (submission_id, game_id)
+               VALUES ($1, 7), ($2, 8)"#,
+        )
+        .bind(first)
+        .bind(other_game)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut last_game_id = Some(7);
+        let fair_games = pending_game_ids(&pool, &mut last_game_id).await.unwrap();
+        assert_eq!(fair_games.first(), Some(&8));
+        assert!(fair_games.contains(&7));
+        sqlx::query(r#"DELETE FROM "SubmissionFeedPending" WHERE submission_id = ANY($1)"#)
+            .bind([first, other_game])
+            .execute(&pool)
+            .await
+            .unwrap();
+
         // Allocate the lower id first, then commit the higher id first. Cursor
-        // order must follow commit order rather than sequence-id order.
+        // order must remain reconnect-safe rather than follow sequence-id order.
         let mut lower = pool.begin().await.unwrap();
         let lower_id: i32 = sqlx::query_scalar(
             r#"INSERT INTO "Submissions"

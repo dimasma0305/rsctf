@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import type { GameNotice } from '../Api'
+import { NoticeType, type GameNotice } from '../Api'
 import { currentListSnapshotRows } from './LatestRequest'
-import { MAX_GAME_NOTICE_ROWS, receiveGameNotice } from './NoticeFeed'
+import { MAX_GAME_NOTICE_ROWS, mergeGameNotices, receiveGameNotice } from './NoticeFeed'
 
-const notice = (id: number): GameNotice => ({
+const notice = (id: number, type = NoticeType.FirstBlood): GameNotice => ({
   id,
   time: 1_788_000_000_000 + id,
-  type: 0 as GameNotice['type'],
+  type,
   values: [`notice-${id}`],
 })
 
@@ -38,8 +38,21 @@ test('a duplicate notice from either the socket or HTTP snapshot is rejected bef
   const guard = source.indexOf('if (!received.accepted) return')
   const toast = source.indexOf('showNotification({', guard)
   assert.ok(guard >= 0 && toast > guard, 'duplicate rejection must precede every notice toast')
-  assert.match(source, /mergeUniqueRows\([\s\S]*?MAX_GAME_NOTICE_ROWS\)/)
+  assert.match(source, /mergeGameNotices\(liveNotices, notices \?\? \[\]\)/)
   assert.match(source, /visibleNotices = filteredNotices\.slice\(0, MAX_GAME_NOTICE_ROWS\)/)
+})
+
+test('an organizer notice survives one hundred newer live system notices', () => {
+  const live = Array.from({ length: MAX_GAME_NOTICE_ROWS }, (_, index) => notice(index + 1))
+  const organizer = notice(1_000, NoticeType.Normal)
+  organizer.time = live[0].time - 1
+
+  const merged = mergeGameNotices(live, [live[0], organizer])
+
+  assert.equal(merged.length, MAX_GAME_NOTICE_ROWS)
+  assert.equal(merged[0], organizer)
+  assert.ok(merged.some(({ id }) => id === organizer.id))
+  assert.equal(new Set(merged.map(({ id }) => id)).size, MAX_GAME_NOTICE_ROWS)
 })
 
 test('a game-scope transition hides the previous game buffer synchronously', () => {

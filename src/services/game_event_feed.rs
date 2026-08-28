@@ -3,18 +3,24 @@
 //! PostgreSQL is authoritative. Writers persist a `GameEvents` row inside the
 //! operation's transaction, commit it, and only then call [`publish_committed`].
 //! Redis/WebSocket delivery may be lost, so reconnecting clients recover from
-//! [`backfill_after`] using the commit-ordered cursor assigned by migration
-//! `m0111_game_event_feed_cursor`.
+//! [`backfill_after`] using the reconnect-safe cursor assigned by migration
+//! `m0111_game_event_feed_cursor`. Cursor assignment never waits behind another
+//! same-game writer; a bounded reconciler fills rows that lose the commit-time
+//! non-blocking assignment race.
 
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveEnum;
 use serde::Serialize;
 use serde_json::Value as Json;
+use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::app_state::{HubEvent, SharedState};
 use crate::services::event_bus::EventBus;
 use crate::utils::enums::{AnswerResult, EventType};
+
+mod reconcile;
+pub use reconcile::start_reconciler;
 
 pub const MAX_BACKFILL_EVENTS: i64 = 100;
 const MAX_PUBLISH_BATCH: usize = 8;
@@ -24,7 +30,7 @@ const MAX_PUBLISH_BATCH: usize = 8;
 pub struct GameEventMessage {
     /// Stable database identity used for client-side deduplication.
     pub id: i32,
-    /// Commit-ordered cursor used only for reconnect backfill.
+    /// Reconnect-safe cursor used only for backfill.
     pub cursor: i64,
     #[serde(rename = "type")]
     pub event_type: EventType,
@@ -156,7 +162,8 @@ pub async fn insert_cheat_detected_on(
 }
 
 /// Persist one standalone event and publish it only after its transaction (and
-/// therefore the deferred feed-cursor assignment) has committed.
+/// has committed. The cursor trigger normally assigns immediately; a lost
+/// non-blocking race remains durable for the bounded reconciler.
 pub async fn persist_and_publish(st: &SharedState, event: NewGameEvent<'_>) -> anyhow::Result<i32> {
     let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg()).await?;
     let event_id = insert_on(&mut transaction, event).await?;
@@ -231,6 +238,82 @@ const EVENT_PAGE_SQL: &str = r#"
      LIMIT $7
 "#;
 
+async fn committed_by_ids_on(
+    connection: &mut PgConnection,
+    event_ids: &[i32],
+    max_batch: usize,
+    tolerate_pending: bool,
+) -> anyhow::Result<Vec<(i32, GameEventMessage)>> {
+    if event_ids.len() > max_batch {
+        anyhow::bail!("game-event publish batch exceeds {max_batch} rows");
+    }
+    if event_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut rows = sqlx::query_as::<_, GameEventRow>(COMMITTED_BY_IDS_SQL)
+        .bind(event_ids)
+        .fetch_all(&mut *connection)
+        .await?;
+    let expected = event_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    if rows.len() != expected.len() {
+        let present = rows
+            .iter()
+            .map(|row| row.id)
+            .collect::<std::collections::HashSet<_>>();
+        let missing = expected.difference(&present).copied().collect::<Vec<_>>();
+        let pending = if tolerate_pending {
+            sqlx::query_scalar::<_, i32>(
+                r#"SELECT event_id
+                     FROM "GameEventFeedPending"
+                    WHERE event_id = ANY($1)"#,
+            )
+            .bind(&missing)
+            .fetch_all(&mut *connection)
+            .await?
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+        } else {
+            std::collections::HashSet::new()
+        };
+        let unresolved = missing
+            .iter()
+            .filter(|id| !pending.contains(id))
+            .copied()
+            .collect::<Vec<_>>();
+        if !unresolved.is_empty() {
+            rows.extend(
+                sqlx::query_as::<_, GameEventRow>(COMMITTED_BY_IDS_SQL)
+                    .bind(&unresolved)
+                    .fetch_all(&mut *connection)
+                    .await?,
+            );
+        }
+        let accounted = rows
+            .iter()
+            .map(|row| row.id)
+            .chain(pending.iter().copied())
+            .collect::<std::collections::HashSet<_>>();
+        if accounted != expected {
+            anyhow::bail!("committed game-event projection is incomplete");
+        }
+        if !pending.is_empty() {
+            tracing::debug!(
+                pending = pending.len(),
+                "game-event feed cursor assignment remains pending"
+            );
+        }
+    }
+    rows.into_iter()
+        .map(|row| {
+            let game_id = row.game_id;
+            Ok((game_id, GameEventMessage::try_from(row)?))
+        })
+        .collect()
+}
+
 async fn committed_by_ids(
     pool: &sqlx::PgPool,
     event_ids: &[i32],
@@ -241,7 +324,6 @@ async fn committed_by_ids(
     if event_ids.is_empty() {
         return Ok(Vec::new());
     }
-
     // Real-time publication is optional because cursor backfill is authoritative.
     // Never queue a player response behind a saturated SQL pool after its write
     // already committed.
@@ -250,27 +332,11 @@ async fn committed_by_ids(
         .ok_or_else(|| anyhow::anyhow!("game-event publish skipped while SQL pool is busy"))?;
     let rows = tokio::time::timeout(
         std::time::Duration::from_millis(500),
-        sqlx::query_as::<_, GameEventRow>(COMMITTED_BY_IDS_SQL)
-            .bind(event_ids)
-            .fetch_all(&mut *connection),
+        committed_by_ids_on(&mut connection, event_ids, MAX_PUBLISH_BATCH, true),
     )
     .await
     .map_err(|_| anyhow::anyhow!("game-event publish projection timed out"))??;
-    if rows.len()
-        != event_ids
-            .iter()
-            .copied()
-            .collect::<std::collections::HashSet<_>>()
-            .len()
-    {
-        anyhow::bail!("committed game-event projection is incomplete");
-    }
-    rows.into_iter()
-        .map(|row| {
-            let game_id = row.game_id;
-            Ok((game_id, GameEventMessage::try_from(row)?))
-        })
-        .collect()
+    Ok(rows)
 }
 
 /// Publish already-committed rows to local subscribers and Redis peers. A
@@ -295,9 +361,9 @@ pub async fn publish_committed(st: &SharedState, event_ids: &[i32]) -> anyhow::R
     publish_committed_on(st.pg(), &st.events, event_ids).await
 }
 
-/// Return a reconnect page in commit order. Every database read is bounded by
-/// `MAX_BACKFILL_EVENTS + 1`; the extra row determines `hasMore` without a
-/// separate count over the growing event table.
+/// Return a reconnect page in reconnect-safe cursor order. Every database read
+/// is bounded by `MAX_BACKFILL_EVENTS + 1`; the extra row determines `hasMore`
+/// without a separate count over the growing event table.
 pub async fn backfill_after(
     pool: &sqlx::PgPool,
     game_id: i32,
@@ -364,8 +430,9 @@ pub async fn event_page(
 }
 
 /// Capture a no-gap checkpoint after a SignalR connection is established and
-/// the authoritative filtered snapshot has completed. Newer commits are then
-/// either pushed to that live listener or recoverable with `backfill_after`.
+/// the authoritative filtered snapshot has completed. Newer cursor assignments
+/// are then either pushed to that live listener or recoverable with
+/// `backfill_after`.
 pub async fn latest_cursor(pool: &sqlx::PgPool, game_id: i32) -> anyhow::Result<i64> {
     Ok(sqlx::query_scalar(
         r#"SELECT COALESCE(MAX(feed_cursor), 0)::bigint
@@ -380,6 +447,10 @@ pub async fn latest_cursor(pool: &sqlx::PgPool, game_id: i32) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
+    use super::reconcile::{
+        assign_pending_on, pending_game_ids, ASSIGN_PENDING_SQL, FIRST_PENDING_GAME_SQL,
+        MAX_ASSIGNMENTS_PER_GAME, MAX_GAMES_PER_PASS, NEXT_PENDING_GAME_SQL,
+    };
     use super::*;
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
     use std::str::FromStr;
@@ -416,6 +487,19 @@ mod tests {
             assert!(value["type"].is_string());
             assert_eq!(value["time"], at.timestamp_millis());
         }
+    }
+
+    #[test]
+    fn pending_reconciliation_is_nonblocking_and_bounded() {
+        assert!(ASSIGN_PENDING_SQL.contains("FOR UPDATE SKIP LOCKED"));
+        assert!(ASSIGN_PENDING_SQL.contains("LIMIT $2"));
+        assert!(ASSIGN_PENDING_SQL.contains("DELETE FROM \"GameEventFeedPending\""));
+        assert!(!NEXT_PENDING_GAME_SQL.contains("IS NULL OR"));
+        assert!(NEXT_PENDING_GAME_SQL.contains("game_id > $1"));
+        assert!(FIRST_PENDING_GAME_SQL.contains("ORDER BY game_id, event_id"));
+        assert!(NEXT_PENDING_GAME_SQL.contains("LIMIT 1"));
+        assert!(MAX_ASSIGNMENTS_PER_GAME <= 100);
+        assert!(MAX_GAMES_PER_PASS <= 16);
     }
 
     #[tokio::test]
@@ -614,7 +698,7 @@ mod tests {
         let mut other = crate::utils::database::begin_sqlx_transaction(&pool)
             .await
             .unwrap();
-        insert_on(
+        let other_id = insert_on(
             &mut other,
             NewGameEvent {
                 game_id: 8,
@@ -685,7 +769,8 @@ mod tests {
         assert_eq!(natural_commit_order[1].0, lower_id_event);
 
         // Force the deferred trigger in A while retaining its advisory lock.
-        // B's commit must wait and receive the later cursor after A commits.
+        // B must commit without waiting, remain durably pending, and later be
+        // assigned above any checkpoint that became visible in between.
         let mut first = crate::utils::database::begin_sqlx_transaction(&pool)
             .await
             .unwrap();
@@ -722,14 +807,105 @@ mod tests {
         )
         .await
         .unwrap();
-        let mut second_commit = tokio::spawn(async move { second.commit().await });
+        tokio::time::timeout(Duration::from_secs(2), second.commit())
+            .await
+            .expect("game-event commit waited behind the cursor fence")
+            .unwrap();
+        let mut third = crate::utils::database::begin_sqlx_transaction(&pool)
+            .await
+            .unwrap();
+        let third_id = insert_on(
+            &mut third,
+            NewGameEvent {
+                game_id: 7,
+                event_type: EventType::Normal,
+                values: &serde_json::json!(["third-pending"]),
+                publish_time: Utc::now(),
+                user_id: Some(user_id),
+                team_id: 9,
+            },
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), third.commit())
+            .await
+            .expect("second game-event commit waited behind the cursor fence")
+            .unwrap();
+        let pending_cursor: Option<i64> =
+            sqlx::query_scalar(r#"SELECT feed_cursor FROM "GameEvents" WHERE id = $1"#)
+                .bind(second_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(pending_cursor, None);
+        assert!(publish_committed_on(&pool, &bus, &[second_id])
+            .await
+            .is_ok());
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut second_commit)
+            tokio::time::timeout(Duration::from_millis(30), received.recv())
                 .await
                 .is_err()
         );
         first.commit().await.unwrap();
-        second_commit.await.unwrap().unwrap();
+
+        let visible_values = serde_json::json!(["visible-after-pending"]);
+        let mut visible = crate::utils::database::begin_sqlx_transaction(&pool)
+            .await
+            .unwrap();
+        let visible_id = insert_on(
+            &mut visible,
+            NewGameEvent {
+                game_id: 7,
+                event_type: EventType::Normal,
+                values: &visible_values,
+                publish_time: Utc::now(),
+                user_id: Some(user_id),
+                team_id: 9,
+            },
+        )
+        .await
+        .unwrap();
+        visible.commit().await.unwrap();
+        let visible_cursor: i64 =
+            sqlx::query_scalar(r#"SELECT feed_cursor FROM "GameEvents" WHERE id = $1"#)
+                .bind(visible_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        let first_worker = {
+            let pool = pool.clone();
+            async move {
+                let mut connection = pool.acquire().await.unwrap();
+                assign_pending_on(&mut connection, 7, MAX_ASSIGNMENTS_PER_GAME)
+                    .await
+                    .unwrap()
+            }
+        };
+        let second_worker = {
+            let pool = pool.clone();
+            async move {
+                let mut connection = pool.acquire().await.unwrap();
+                assign_pending_on(&mut connection, 7, MAX_ASSIGNMENTS_PER_GAME)
+                    .await
+                    .unwrap()
+            }
+        };
+        let (first_assigned, second_assigned) = tokio::join!(first_worker, second_worker);
+        let assigned = first_assigned
+            .into_iter()
+            .chain(second_assigned)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(assigned.len(), 2);
+        assert!(assigned.contains(&second_id));
+        assert!(assigned.contains(&third_id));
+        let pending_after_assignment: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*)::bigint FROM "GameEventFeedPending" WHERE game_id = 7"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending_after_assignment, 0);
         let cursor_pair: Vec<(i32, i64)> = sqlx::query_as(
             r#"SELECT id, feed_cursor FROM "GameEvents" WHERE id = ANY($1) ORDER BY feed_cursor"#,
         )
@@ -740,6 +916,70 @@ mod tests {
         assert_eq!(cursor_pair[0].0, first_id);
         assert_eq!(cursor_pair[1].0, second_id);
         assert!(cursor_pair[0].1 < cursor_pair[1].1);
+        assert!(cursor_pair[1].1 > visible_cursor);
+        let recovered = backfill_after(&pool, 7, visible_cursor, 100).await.unwrap();
+        assert!(recovered.events.iter().any(|event| event.id == second_id));
+
+        sqlx::query(
+            r#"INSERT INTO "GameEventFeedPending" (event_id, game_id)
+               VALUES ($1, 7), ($2, 8)"#,
+        )
+        .bind(ids[0])
+        .bind(other_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut last_game_id = Some(7);
+        let fair_games = pending_game_ids(&pool, &mut last_game_id).await.unwrap();
+        assert_eq!(fair_games.first(), Some(&8));
+        assert!(fair_games.contains(&7));
+        sqlx::query(r#"DELETE FROM "GameEventFeedPending" WHERE event_id = ANY($1)"#)
+            .bind([ids[0], other_id])
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Multiple event rows in one submit transaction reuse the same owned
+        // advisory fence and all become visible atomically at commit.
+        let mut multi = crate::utils::database::begin_sqlx_transaction(&pool)
+            .await
+            .unwrap();
+        let multi_first = insert_on(
+            &mut multi,
+            NewGameEvent {
+                game_id: 7,
+                event_type: EventType::FlagSubmit,
+                values: &serde_json::json!(["multi-first"]),
+                publish_time: Utc::now(),
+                user_id: Some(user_id),
+                team_id: 9,
+            },
+        )
+        .await
+        .unwrap();
+        let multi_second = insert_on(
+            &mut multi,
+            NewGameEvent {
+                game_id: 7,
+                event_type: EventType::CheatDetected,
+                values: &serde_json::json!(["multi-second"]),
+                publish_time: Utc::now(),
+                user_id: Some(user_id),
+                team_id: 9,
+            },
+        )
+        .await
+        .unwrap();
+        multi.commit().await.unwrap();
+        let multi_cursors: Vec<i64> = sqlx::query_scalar(
+            r#"SELECT feed_cursor FROM "GameEvents" WHERE id = ANY($1) ORDER BY feed_cursor"#,
+        )
+        .bind([multi_first, multi_second])
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(multi_cursors.len(), 2);
+        assert!(multi_cursors[0] < multi_cursors[1]);
 
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

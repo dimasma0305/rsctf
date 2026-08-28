@@ -36,6 +36,7 @@ SELECT event."Type"::smallint AS event_type,
   LEFT JOIN "Teams" team ON team.id = event.team_id
   LEFT JOIN "AspNetUsers" account ON account.id = event.user_id
  WHERE event.game_id = $1
+   AND event.feed_cursor IS NOT NULL
    AND (NOT $2::boolean OR event."Type" NOT IN (1, 2))
  ORDER BY event.publish_time_utc DESC, event.id DESC
  OFFSET $3
@@ -49,6 +50,7 @@ WITH matching AS MATERIALIZED (
        FROM "GameEvents" candidate
        JOIN "Teams" searched_team ON searched_team.id = candidate.team_id
       WHERE candidate.game_id = $1
+        AND candidate.feed_cursor IS NOT NULL
         AND (NOT $2::boolean OR candidate."Type" NOT IN (1, 2))
         AND LOWER(searched_team.name) LIKE $3 ESCAPE '\'
       ORDER BY candidate.publish_time_utc DESC, candidate.id DESC
@@ -58,6 +60,7 @@ WITH matching AS MATERIALIZED (
        FROM "GameEvents" candidate
        JOIN "AspNetUsers" searched_account ON searched_account.id = candidate.user_id
       WHERE candidate.game_id = $1
+        AND candidate.feed_cursor IS NOT NULL
         AND (NOT $2::boolean OR candidate."Type" NOT IN (1, 2))
         AND LOWER(searched_account.user_name) LIKE $3 ESCAPE '\'
       ORDER BY candidate.publish_time_utc DESC, candidate.id DESC
@@ -66,6 +69,7 @@ WITH matching AS MATERIALIZED (
     (SELECT candidate.id, candidate.publish_time_utc
        FROM "GameEvents" candidate
       WHERE candidate.game_id = $1
+        AND candidate.feed_cursor IS NOT NULL
         AND (NOT $2::boolean OR candidate."Type" NOT IN (1, 2))
         AND LOWER(candidate.values::text) LIKE $3 ESCAPE '\'
       ORDER BY candidate.publish_time_utc DESC, candidate.id DESC
@@ -82,6 +86,7 @@ SELECT event."Type"::smallint AS event_type,
   JOIN "GameEvents" event ON event.id = matching.id
   LEFT JOIN "Teams" team ON team.id = event.team_id
   LEFT JOIN "AspNetUsers" account ON account.id = event.user_id
+ WHERE event.feed_cursor IS NOT NULL
  ORDER BY matching.publish_time_utc DESC, matching.id DESC
  OFFSET $4
  LIMIT $5
@@ -104,6 +109,7 @@ SELECT submission.id,
     ON challenge.id = submission.challenge_id
    AND challenge.game_id = submission.game_id
  WHERE submission.game_id = $1
+   AND submission.feed_cursor IS NOT NULL
    AND ($2::smallint IS NULL OR submission.status = $2)
  ORDER BY submission.submit_time_utc DESC, submission.id DESC
  OFFSET $3
@@ -117,6 +123,7 @@ WITH matching AS MATERIALIZED (
        FROM "Submissions" candidate
        JOIN "Teams" searched_team ON searched_team.id = candidate.team_id
       WHERE candidate.game_id = $1
+        AND candidate.feed_cursor IS NOT NULL
         AND ($2::smallint IS NULL OR candidate.status = $2)
         AND LOWER(searched_team.name) LIKE $3 ESCAPE '\'
       ORDER BY candidate.submit_time_utc DESC, candidate.id DESC
@@ -126,6 +133,7 @@ WITH matching AS MATERIALIZED (
        FROM "Submissions" candidate
        JOIN "AspNetUsers" searched_account ON searched_account.id = candidate.user_id
       WHERE candidate.game_id = $1
+        AND candidate.feed_cursor IS NOT NULL
         AND ($2::smallint IS NULL OR candidate.status = $2)
         AND LOWER(searched_account.user_name) LIKE $3 ESCAPE '\'
       ORDER BY candidate.submit_time_utc DESC, candidate.id DESC
@@ -137,6 +145,7 @@ WITH matching AS MATERIALIZED (
          ON searched_challenge.id = candidate.challenge_id
         AND searched_challenge.game_id = candidate.game_id
       WHERE candidate.game_id = $1
+        AND candidate.feed_cursor IS NOT NULL
         AND ($2::smallint IS NULL OR candidate.status = $2)
         AND LOWER(searched_challenge.title) LIKE $3 ESCAPE '\'
       ORDER BY candidate.submit_time_utc DESC, candidate.id DESC
@@ -145,6 +154,7 @@ WITH matching AS MATERIALIZED (
     (SELECT candidate.id, candidate.submit_time_utc
        FROM "Submissions" candidate
       WHERE candidate.game_id = $1
+        AND candidate.feed_cursor IS NOT NULL
         AND ($2::smallint IS NULL OR candidate.status = $2)
         AND LOWER(candidate.answer) LIKE $3 ESCAPE '\'
       ORDER BY candidate.submit_time_utc DESC, candidate.id DESC
@@ -165,6 +175,7 @@ SELECT submission.id,
   LEFT JOIN "GameChallenges" challenge
     ON challenge.id = submission.challenge_id
    AND challenge.game_id = submission.game_id
+ WHERE submission.feed_cursor IS NOT NULL
  ORDER BY matching.submit_time_utc DESC, matching.id DESC
  OFFSET $4
  LIMIT $5

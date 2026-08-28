@@ -582,6 +582,16 @@ fn start_background_services(
     use rsctf::services::cron::{self, RoundSchedulerScope};
 
     let mut required = Vec::new();
+    if owns_feed_reconciliation(role) {
+        required.push(RequiredTask::Unit(
+            "game-event feed cursor reconciler",
+            rsctf::services::game_event_feed::start_reconciler(state.clone(), shutdown.clone()),
+        ));
+        required.push(RequiredTask::Unit(
+            "submission feed cursor reconciler",
+            rsctf::services::submission_feed::start_reconciler(state.clone(), shutdown.clone()),
+        ));
+    }
     if owns_suspicion_reconciliation(role) {
         required.push(RequiredTask::Unit(
             "suspicion evaluation reconciler",
@@ -726,6 +736,13 @@ fn owns_suspicion_reconciliation(role: RuntimeRole) -> bool {
     )
 }
 
+fn owns_feed_reconciliation(role: RuntimeRole) -> bool {
+    matches!(
+        role,
+        RuntimeRole::All | RuntimeRole::Development | RuntimeRole::Control | RuntimeRole::Engine
+    )
+}
+
 fn should_run_migrations(role: RuntimeRole, combined_migrations_disabled: bool) -> bool {
     role == RuntimeRole::Migrate
         || role == RuntimeRole::Development
@@ -863,6 +880,17 @@ mod startup_tests {
         assert!(owns_suspicion_reconciliation(RuntimeRole::Development));
         assert!(!owns_suspicion_reconciliation(RuntimeRole::Network));
         assert!(!owns_suspicion_reconciliation(RuntimeRole::Migrate));
+    }
+
+    #[test]
+    fn feed_reconciliation_runs_only_on_durable_control_roles() {
+        assert!(owns_feed_reconciliation(RuntimeRole::All));
+        assert!(owns_feed_reconciliation(RuntimeRole::Control));
+        assert!(owns_feed_reconciliation(RuntimeRole::Engine));
+        assert!(owns_feed_reconciliation(RuntimeRole::Development));
+        assert!(!owns_feed_reconciliation(RuntimeRole::Web));
+        assert!(!owns_feed_reconciliation(RuntimeRole::Network));
+        assert!(!owns_feed_reconciliation(RuntimeRole::Migrate));
     }
 
     #[test]
