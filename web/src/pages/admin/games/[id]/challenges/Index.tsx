@@ -40,16 +40,11 @@ import { BloodBonusModel } from '@Components/admin/BloodBonusModel'
 import { ChallengeCreateModal } from '@Components/admin/ChallengeCreateModal'
 import { ChallengeEditCard } from '@Components/admin/ChallengeEditCard'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { controlJobResultCount, createOperationId, startControlJob, waitForControlJob } from '@Utils/ControlJobs'
 import { showErrorMsg } from '@Utils/Shared'
-import {
-  controlJobResultCount,
-  createOperationId,
-  startControlJob,
-  waitForControlJob,
-} from '@Utils/ControlJobs'
 import { ChallengeCategoryItem, ChallengeCategoryList, useChallengeCategoryLabelMap } from '@Utils/Shared'
-import { useEditChallenges } from '@Hooks/useEdit'
 import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
+import { useEditChallenges } from '@Hooks/useEdit'
 import api, { BulkChallengeAction, ChallengeInfoModel, ChallengeCategory, ChallengeType } from '@Api'
 
 const MAX_BULK_SELECTION = 100
@@ -91,12 +86,13 @@ const GameChallengeEdit: FC = () => {
   useEffect(() => () => bulkBuildAbort.current.abort(), [])
 
   const { challenges, mutate } = useEditChallenges(numId)
-  const buildPollingActive = challenges?.some(
-    (challenge) =>
-      matchesEngine(challenge.type, engine) &&
-      (!category || challenge.category === category) &&
-      (challenge.buildStatus === 'Queued' || challenge.buildStatus === 'Building')
-  ) ?? false
+  const buildPollingActive =
+    challenges?.some(
+      (challenge) =>
+        matchesEngine(challenge.type, engine) &&
+        (!category || challenge.category === category) &&
+        (challenge.buildStatus === 'Queued' || challenge.buildStatus === 'Building')
+    ) ?? false
   const buildStatusesQuery = api.edit.useEditGetChallengeBuildStatuses(
     numId,
     CompletionPollSWRConfig,
@@ -204,8 +200,9 @@ const GameChallengeEdit: FC = () => {
 
   const performBulkMutation = async (action: BulkChallengeAction, ids: number[]) => {
     if (ids.length === 0 || ids.length > MAX_BULK_SELECTION || bulkMutationOwner.current) return
-    const expectedRevision = challenges?.find((challenge) => challenge.configurationRevision != null)
-      ?.configurationRevision
+    const expectedRevision = challenges?.find(
+      (challenge) => challenge.configurationRevision != null
+    )?.configurationRevision
     if (expectedRevision == null) return
     const canonicalIds = [...ids].sort((left, right) => left - right)
     const previous = bulkOperation.current
@@ -304,11 +301,14 @@ const GameChallengeEdit: FC = () => {
   }
 
   const onConfirmToggle = async (challenge: ChallengeInfoModel, setDisabled: Dispatch<SetStateAction<boolean>>) => {
+    if (challenge.id == null || challenge.revision == null) return
     const numId = parseInt(id ?? '-1')
     setDisabled(true)
 
     try {
-      await api.edit.editUpdateGameChallenge(numId, challenge.id!, {
+      await api.edit.editUpdateGameChallenge(numId, challenge.id, {
+        operationId: crypto.randomUUID(),
+        expectedRevision: challenge.revision,
         isEnabled: !challenge.isEnabled,
       })
       showNotification({
@@ -316,7 +316,7 @@ const GameChallengeEdit: FC = () => {
         message: t('admin.notification.games.challenges.updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
-      mutate(challenges?.map((c) => (c.id === challenge.id ? { ...c, isEnabled: !challenge.isEnabled } : c)))
+      await mutate()
     } catch (e) {
       showErrorMsg(e, t)
     } finally {

@@ -1,5 +1,53 @@
 //! edit: posts CRUD (see edit/mod.rs for the router + shared DTOs/helpers).
 use super::*;
+use crate::models::data::post;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostEditModel {
+    pub operation_id: Option<Uuid>,
+    pub title: Option<String>,
+    pub summary: Option<String>,
+    pub content: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub is_pinned: Option<bool>,
+}
+
+/// Outbound editor view for a post.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostDetailModel {
+    pub id: String,
+    pub title: String,
+    pub summary: String,
+    pub content: String,
+    pub is_pinned: bool,
+    pub tags: Option<Vec<String>>,
+    pub author_avatar: Option<String>,
+    pub author_name: Option<String>,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub time: DateTime<Utc>,
+}
+
+impl PostDetailModel {
+    fn from_post(p: &post::Model, author_name: Option<String>) -> Self {
+        let tags = p
+            .tags
+            .as_ref()
+            .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok());
+        Self {
+            id: p.id.clone(),
+            title: p.title.clone(),
+            summary: p.summary.clone(),
+            content: p.content.clone(),
+            is_pinned: p.is_pinned,
+            tags,
+            author_avatar: None,
+            author_name,
+            time: p.update_time_utc,
+        }
+    }
+}
 
 /// `POST /api/edit/posts`
 pub async fn add_post(
@@ -7,6 +55,8 @@ pub async fn add_post(
     AdminUser(user): AdminUser,
     Json(model): Json<PostEditModel>,
 ) -> AppResult<RequestResponse<String>> {
+    let operation_id =
+        crate::services::create_operations::require_operation_id(model.operation_id)?;
     let mut digest_model = model.clone();
     digest_model.operation_id = None;
     let request_digest = sha256_str(
@@ -18,23 +68,21 @@ pub async fn add_post(
         .begin()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some(operation_id) = model.operation_id {
-        if let Some(id) = crate::services::create_operations::claim(
-            &mut transaction,
-            user.id,
-            "post",
-            0,
-            operation_id,
-            &request_digest,
-        )
-        .await?
-        {
-            transaction
-                .commit()
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
-            return Ok(RequestResponse::ok(id));
-        }
+    if let Some(id) = crate::services::create_operations::claim(
+        &mut transaction,
+        user.id,
+        "post",
+        0,
+        operation_id,
+        &request_digest,
+    )
+    .await?
+    {
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(RequestResponse::ok(id));
     }
     let now = Utc::now();
     // Post.UpdateKeyWithHash: sha256("{title}:{iso}:{uuid}")[4..12].
@@ -64,17 +112,15 @@ pub async fn add_post(
     .execute(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some(operation_id) = model.operation_id {
-        crate::services::create_operations::complete(
-            &mut transaction,
-            user.id,
-            "post",
-            0,
-            operation_id,
-            &id,
-        )
-        .await?;
-    }
+    crate::services::create_operations::complete(
+        &mut transaction,
+        user.id,
+        "post",
+        0,
+        operation_id,
+        &id,
+    )
+    .await?;
     transaction
         .commit()
         .await

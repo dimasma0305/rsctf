@@ -33,10 +33,14 @@ pub(crate) use deletion::reject_pending_mutation;
 pub use hard_delete::delete_challenge;
 pub(crate) use hard_delete::delete_challenge_core;
 pub(crate) use lifecycle::destroy_challenge_containers;
-use mutation_recovery::update_challenge_row_locked;
+pub use mutation_recovery::recover_challenge_update_operation;
 #[cfg(test)]
 use mutation_recovery::{
     claim_challenge_create_operation, complete_challenge_create_operation, INSERTABLE_GAME_SQL,
+};
+use mutation_recovery::{
+    claim_challenge_update_operation, complete_challenge_update_operation,
+    update_challenge_row_locked, ChallengeUpdateClaim,
 };
 #[cfg(test)]
 pub(crate) use repo_push::commit_latest_to_checkout_for_test;
@@ -171,15 +175,23 @@ pub async fn update_challenge(
     Json(model): Json<ChallengeUpdateModel>,
 ) -> AppResult<RequestResponse<ChallengeEditDetailModel>> {
     manager_or_admin(&st, &user, id).await?;
+    let operation_id =
+        crate::services::create_operations::require_operation_id(model.operation_id)?;
     let expected_revision = model.expected_revision.ok_or_else(|| {
         AppError::bad_request("Challenge revision is required; reload the editor before saving")
     })?;
+    let mut digest_model = model.clone();
+    digest_model.operation_id = None;
+    let request_digest = crate::utils::codec::sha256_str(
+        &serde_json::to_string(&digest_model)
+            .map_err(|error| AppError::internal(error.to_string()))?,
+    );
     let game = load_game(&st, id).await?;
     // Every runtime eligibility/topology mutation and its possible cleanup
     // shares this outer challenge fence. Cleanup may take per-runtime
     // provisioning locks, so this gate deliberately sits outside that bounded
     // semaphore. The global order is transition -> game -> definition -> runtime.
-    let runtime_transition = if workload::update_changes_runtime_definition(&model) {
+    let mut runtime_transition = if workload::update_changes_runtime_definition(&model) {
         Some(
             crate::services::challenge_workloads::acquire_runtime_transition_lock(st.pg(), c_id)
                 .await?,
@@ -199,6 +211,37 @@ pub async fn update_challenge(
         )
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    if let ChallengeUpdateClaim::Completed(_) = claim_challenge_update_operation(
+        control.transaction_mut(),
+        user.id,
+        id,
+        c_id,
+        operation_id,
+        expected_revision,
+        &request_digest,
+    )
+    .await?
+    {
+        if let Some(lock) = engine_control.take() {
+            lock.release()
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+        }
+        if let Some(lock) = runtime_transition.take() {
+            lock.release().await.map_err(|error| {
+                AppError::internal(format!("release challenge transition: {error}"))
+            })?;
+        }
+        let replayed = load_challenge(&st, id, c_id).await?;
+        let flags = if replayed.challenge_type == ChallengeType::DynamicContainer {
+            Vec::new()
+        } else {
+            load_flags(&st, c_id).await.unwrap_or_default()
+        };
+        return Ok(RequestResponse::ok(
+            ChallengeEditDetailModel::from_challenge(&st, &replayed, flags).await?,
+        ));
     }
     let challenge = load_challenge_locked(control.transaction_mut(), id, c_id).await?;
     deletion::reject_pending_mutation(&mut **control.transaction_mut(), id, c_id).await?;
@@ -731,6 +774,16 @@ pub async fn update_challenge(
             .transaction_mut(),
         id,
         c_id,
+        updated.revision,
+    )
+    .await?;
+    complete_challenge_update_operation(
+        engine_control
+            .as_mut()
+            .expect("challenge update holds the game control lock")
+            .transaction_mut(),
+        user.id,
+        operation_id,
         updated.revision,
     )
     .await?;

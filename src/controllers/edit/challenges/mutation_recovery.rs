@@ -3,6 +3,142 @@ use super::*;
 pub(super) const INSERTABLE_GAME_SQL: &str =
     r#"SELECT NOT deletion_pending FROM "Games" WHERE id = $1 FOR SHARE"#;
 const CREATE_OPERATION_RETENTION: i64 = 128;
+const UPDATE_OPERATION_RETENTION: i64 = 128;
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ChallengeUpdateClaim {
+    Pending,
+    Completed(i64),
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChallengeUpdateOperationResult {
+    pub operation_id: Uuid,
+    pub challenge_id: i32,
+    pub revision: i64,
+}
+
+pub(super) async fn claim_challenge_update_operation(
+    connection: &mut sqlx::PgConnection,
+    actor_id: Uuid,
+    game_id: i32,
+    challenge_id: i32,
+    operation_id: Uuid,
+    expected_revision: i64,
+    request_digest: &str,
+) -> AppResult<ChallengeUpdateClaim> {
+    sqlx::query(
+        r#"INSERT INTO "ChallengeUpdateOperations"
+                  (operation_id, actor_id, game_id, challenge_id,
+                   request_digest, expected_revision)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (operation_id) DO NOTHING"#,
+    )
+    .bind(operation_id)
+    .bind(actor_id)
+    .bind(game_id)
+    .bind(challenge_id)
+    .bind(request_digest)
+    .bind(expected_revision)
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let stored = sqlx::query_as::<_, (Uuid, i32, i32, String, i64, Option<i64>)>(
+        r#"SELECT actor_id, game_id, challenge_id, request_digest,
+                  expected_revision, result_revision
+             FROM "ChallengeUpdateOperations"
+            WHERE operation_id = $1
+            FOR UPDATE"#,
+    )
+    .bind(operation_id)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if stored.0 != actor_id
+        || stored.1 != game_id
+        || stored.2 != challenge_id
+        || stored.3 != request_digest
+        || stored.4 != expected_revision
+    {
+        return Err(AppError::conflict(
+            "Challenge update operation was already used with different input",
+        ));
+    }
+    Ok(stored.5.map_or(
+        ChallengeUpdateClaim::Pending,
+        ChallengeUpdateClaim::Completed,
+    ))
+}
+
+pub(super) async fn complete_challenge_update_operation(
+    connection: &mut sqlx::PgConnection,
+    actor_id: Uuid,
+    operation_id: Uuid,
+    result_revision: i64,
+) -> AppResult<()> {
+    let completed = sqlx::query(
+        r#"UPDATE "ChallengeUpdateOperations"
+              SET result_revision = $3, completed_at_utc = clock_timestamp()
+            WHERE operation_id = $1 AND actor_id = $2
+              AND result_revision IS NULL"#,
+    )
+    .bind(operation_id)
+    .bind(actor_id)
+    .bind(result_revision)
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if completed.rows_affected() != 1 {
+        return Err(AppError::conflict(
+            "Challenge update operation already completed",
+        ));
+    }
+    sqlx::query(
+        r#"DELETE FROM "ChallengeUpdateOperations" old
+            WHERE old.created_at_utc < clock_timestamp() - INTERVAL '7 days'
+               OR (old.actor_id = $1 AND old.ctid IN (
+                    SELECT ctid FROM "ChallengeUpdateOperations"
+                     WHERE actor_id = $1
+                     ORDER BY created_at_utc DESC, operation_id DESC
+                    OFFSET $2
+               ))"#,
+    )
+    .bind(actor_id)
+    .bind(UPDATE_OPERATION_RETENTION)
+    .execute(connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(())
+}
+
+pub async fn recover_challenge_update_operation(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+    Path((game_id, challenge_id, operation_id)): Path<(i32, i32, Uuid)>,
+) -> AppResult<RequestResponse<ChallengeUpdateOperationResult>> {
+    manager_or_admin(&st, &user, game_id).await?;
+    let revision = sqlx::query_scalar::<_, i64>(
+        r#"SELECT result_revision
+             FROM "ChallengeUpdateOperations"
+            WHERE operation_id = $1 AND actor_id = $2
+              AND game_id = $3 AND challenge_id = $4
+              AND result_revision IS NOT NULL"#,
+    )
+    .bind(operation_id)
+    .bind(user.id)
+    .bind(game_id)
+    .bind(challenge_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Challenge update operation not found"))?;
+    Ok(RequestResponse::ok(ChallengeUpdateOperationResult {
+        operation_id,
+        challenge_id,
+        revision,
+    }))
+}
 
 pub(super) async fn claim_challenge_create_operation(
     connection: &mut sqlx::PgConnection,

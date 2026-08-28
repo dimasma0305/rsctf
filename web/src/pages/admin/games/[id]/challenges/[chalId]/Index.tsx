@@ -45,6 +45,8 @@ import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { WithChallengeEdit } from '@Components/admin/WithChallengeEdit'
 import { ScoreFunc } from '@Components/charts/ScoreFunc'
+import { challengeUpdateIntentKey, useChallengeUpdateIntent } from '@Utils/ChallengeUpdateIntent'
+import { controlJobResultCount, createOperationId, startControlJob, waitForControlJob } from '@Utils/ControlJobs'
 import { getInputNumber, NetworkModeItem, NetworkModeList, showErrorMsg, useNetworkModeMap } from '@Utils/Shared'
 import {
   ChallengeCategoryItem,
@@ -54,9 +56,8 @@ import {
   ChallengeCategoryList,
 } from '@Utils/Shared'
 import { createDefaultJeopardyWorkloadSpec, formatWorkloadSpec, parseJeopardyWorkloadSpec } from '@Utils/WorkloadSpec'
-import { controlJobResultCount, createOperationId, startControlJob, waitForControlJob } from '@Utils/ControlJobs'
-import { useEditChallenge, useEditChallenges } from '@Hooks/useEdit'
 import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
+import { useEditChallenge, useEditChallenges } from '@Hooks/useEdit'
 import { useAdminGame, useGameStatus } from '@Hooks/useGame'
 import api, {
   ChallengeBuildStatus,
@@ -76,6 +77,11 @@ const WORKLOAD_SPEC_EDITOR_HELP_ID = 'challenge-workload-spec-editor-help'
 const WORKLOAD_SPEC_ERROR_ID = 'challenge-workload-spec-error'
 const WORKLOAD_SPEC_ROLLOUT_HELP_ID = 'challenge-workload-spec-rollout-help'
 const DEFAULT_JEOPARDY_MIN_SCORE_RATE = 0.01
+
+interface ChallengeSaveIntent {
+  update: ChallengeUpdateModel
+  noFeedback: boolean
+}
 
 /**
  * Inline live build-log surface for the challenge edit page.
@@ -144,10 +150,9 @@ const GameChallengeEdit: FC = () => {
     challenge?.deadlineUtc ? dayjs(challenge?.deadlineUtc) : null
   )
 
-  const [disabled, setDisabled] = useState(false)
+  const [localDisabled, setDisabled] = useState(false)
   const rolloutPromiseRef = useRef<Promise<void> | null>(null)
   const rolloutAbortRef = useRef<AbortController | null>(null)
-  const saveOwnerRef = useRef<AbortController | null>(null)
 
   const [minRate, setMinRate] = useState((challenge?.minScoreRate ?? DEFAULT_JEOPARDY_MIN_SCORE_RATE) * 100)
   const [category, setCategory] = useState<string | null>(challenge?.category ?? ChallengeCategory.Misc)
@@ -242,16 +247,6 @@ const GameChallengeEdit: FC = () => {
     }
   }, [challenge])
 
-  useEffect(() => {
-    saveOwnerRef.current?.abort()
-    saveOwnerRef.current = null
-    setDisabled(false)
-    return () => {
-      saveOwnerRef.current?.abort()
-      saveOwnerRef.current = null
-    }
-  }, [numId, numCId])
-
   // Recompute dirty against the saved baseline whenever any tracked edit state changes.
   useEffect(() => {
     setDirty(
@@ -302,18 +297,62 @@ const GameChallengeEdit: FC = () => {
     : []
   const rolloutBlockedByStatefulService = statefulRolloutServices.length > 0
 
+  const { busy: saveBusy, submit: submitUpdate } = useChallengeUpdateIntent<
+    ChallengeSaveIntent,
+    ChallengeEditDetailModel
+  >({
+    storageKey: challengeUpdateIntentKey(numId, numCId),
+    enabled: Boolean(challenge),
+    request: async (intent, signal) => {
+      const response = await api.edit.editUpdateGameChallenge(
+        numId,
+        numCId,
+        {
+          ...intent.payload.update,
+          operationId: intent.operationId,
+          expectedRevision: intent.expectedRevision,
+        },
+        { signal }
+      )
+      return response.data
+    },
+    recover: async (operationId, signal) =>
+      (await api.edit.editRecoverChallengeUpdateOperation(numId, numCId, operationId, { signal })).data,
+    onSuccess: async (updated, intent) => {
+      if (!intent.payload.noFeedback) {
+        showNotification({
+          color: 'teal',
+          message: t('admin.notification.games.challenges.updated'),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+      }
+      await Promise.all([mutate(updated), mutateChals()])
+    },
+    onRecovered: async (_result, intent) => {
+      const [updated] = await Promise.all([mutate(), mutateChals()])
+      if (!updated) throw new Error('Challenge update committed but the authoritative challenge could not be reloaded')
+      if (!intent.payload.noFeedback) {
+        showNotification({
+          color: 'teal',
+          message: t('admin.notification.games.challenges.updated'),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+      }
+      return updated
+    },
+    onError: (error) => showErrorMsg(error, t),
+  })
+  const disabled = localDisabled || saveBusy
+
   const onUpdate = async (
     candidate: ChallengeUpdateModel,
     noFeedback?: boolean
   ): Promise<ChallengeEditDetailModel | null> => {
-    if (saveOwnerRef.current || !challenge) return null
-    const owner = new AbortController()
-    saveOwnerRef.current = owner
+    if (saveBusy || !challenge) return null
     const update = { ...candidate }
     if (isJeopardyContainer && workloadEditorEnabled) {
       const workloadSpec = validateWorkloadEditor(true)
       if (!workloadSpec) {
-        saveOwnerRef.current = null
         return null
       }
       const workloadIsUnchanged = savedWorkloadRef.current.enabled && savedWorkloadRef.current.text === workloadJson
@@ -324,41 +363,14 @@ const GameChallengeEdit: FC = () => {
       }
     }
 
-    setDisabled(true)
-
-    try {
-      const res = await api.edit.editUpdateGameChallenge(
-        numId,
-        numCId,
-        {
-          ...update,
-          expectedRevision: challenge.revision,
-          deadlineUtc: deadline ? deadline.valueOf() : 0,
-          isEnabled: undefined,
-        },
-        { signal: owner.signal }
-      )
-      if (saveOwnerRef.current !== owner) return null
-      if (!noFeedback) {
-        showNotification({
-          color: 'teal',
-          message: t('admin.notification.games.challenges.updated'),
-          icon: <Icon path={mdiCheck} size={1} />,
-        })
-      }
-      mutate(res.data)
-      mutateChals()
-      return res.data
-    } catch (e) {
-      if (saveOwnerRef.current === owner && !owner.signal.aborted) showErrorMsg(e, t)
-      if (noFeedback) setDisabled(false)
-      return null
-    } finally {
-      if (saveOwnerRef.current === owner) {
-        saveOwnerRef.current = null
-        if (!noFeedback) setDisabled(false)
-      }
-    }
+    return submitUpdate(challenge.revision, {
+      update: {
+        ...update,
+        deadlineUtc: deadline ? deadline.valueOf() : 0,
+        isEnabled: undefined,
+      },
+      noFeedback: Boolean(noFeedback),
+    })
   }
 
   const [building, setBuilding] = useState(false)
@@ -394,9 +406,7 @@ const GameChallengeEdit: FC = () => {
     if (!status) return
     void mutate(
       (current) =>
-        current
-          ? { ...current, buildStatus: status.buildStatus, lastBuildLog: status.lastBuildLog ?? null }
-          : current,
+        current ? { ...current, buildStatus: status.buildStatus, lastBuildLog: status.lastBuildLog ?? null } : current,
       { revalidate: false }
     )
     void mutateChals(

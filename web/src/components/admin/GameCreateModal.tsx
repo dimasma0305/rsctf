@@ -5,9 +5,10 @@ import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useEffect, useRef, useState } from 'react'
+import { FC } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
+import { createIntentStorageKey, useDurableCreateIntent } from '@Utils/DurableCreateIntent'
 import { showErrorMsg } from '@Utils/Shared'
 import api, { GameInfoModel } from '@Api'
 
@@ -17,9 +18,6 @@ interface GameCreateModalProps extends ModalProps {
 
 export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
   const { onAddGame, ...modalProps } = props
-  const [disabled, setDisabled] = useState(false)
-  const createOwnerRef = useRef<AbortController | null>(null)
-  const operationIdRef = useRef<string | null>(null)
   const navigate = useNavigate()
   const [title, setTitle] = useInputState('')
   const [start, setStart] = useInputState(dayjs())
@@ -27,20 +25,25 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
 
   const { t } = useTranslation()
 
-  useEffect(() => {
-    if (!createOwnerRef.current) operationIdRef.current = null
-  }, [title, start, end])
-
-  useEffect(
-    () => () => {
-      createOwnerRef.current?.abort()
-      createOwnerRef.current = null
+  const { busy: disabled, submit } = useDurableCreateIntent({
+    storageKey: createIntentStorageKey('game'),
+    enabled: modalProps.opened,
+    request: (payload: Pick<GameInfoModel, 'title' | 'start' | 'end'>, operationId, signal) =>
+      api.edit.editAddGame({ ...payload, operationId }, { signal }),
+    onSuccess: (res) => {
+      showNotification({
+        color: 'teal',
+        message: t('admin.notification.games.created'),
+        icon: <Icon path={mdiCheck} size={1} />,
+      })
+      onAddGame(res.data)
+      navigate(`/admin/games/${res.data.id}/info`)
     },
-    []
-  )
+    onError: (error) => showErrorMsg(error, t),
+  })
 
   const onCreate = async () => {
-    if (createOwnerRef.current) return
+    if (disabled) return
     if (!title || end < start) {
       showNotification({
         color: 'red',
@@ -51,44 +54,11 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
       return
     }
 
-    const owner = new AbortController()
-    createOwnerRef.current = owner
-    const operationId = operationIdRef.current ?? crypto.randomUUID()
-    operationIdRef.current = operationId
-    setDisabled(true)
-
-    try {
-      const res = await api.edit.editAddGame(
-        {
-          operationId,
-          title,
-          start: start.valueOf(),
-          end: end.valueOf(),
-        },
-        { signal: owner.signal }
-      )
-      if (createOwnerRef.current !== owner) return
-      showNotification({
-        color: 'teal',
-        message: t('admin.notification.games.created'),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-      operationIdRef.current = null
-      onAddGame(res.data)
-      navigate(`/admin/games/${res.data.id}/info`)
-    } catch (e) {
-      if (createOwnerRef.current === owner && !owner.signal.aborted) showErrorMsg(e, t)
-    } finally {
-      if (createOwnerRef.current === owner) {
-        createOwnerRef.current = null
-        setDisabled(false)
-      }
-    }
+    await submit({ title, start: start.valueOf(), end: end.valueOf() })
   }
 
   const handleClose = () => {
-    if (createOwnerRef.current) return
-    operationIdRef.current = null
+    if (disabled) return
     modalProps.onClose()
   }
 

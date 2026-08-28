@@ -9,6 +9,7 @@ import { useNavigate, useParams } from 'react-router'
 import { useSWRConfig } from 'swr'
 import { WithNavBar } from '@Components/WithNavbar'
 import { WithRole } from '@Components/WithRole'
+import { createIntentStorageKey, useDurableCreateIntent } from '@Utils/DurableCreateIntent'
 import { invalidatePostPageCaches } from '@Utils/PostFeed'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
@@ -46,9 +47,8 @@ const PostEdit: FC = () => {
   })
 
   const [tags, setTags] = useState<string[]>([])
-  const [disabled, setDisabled] = useState(false)
+  const [updateDisabled, setUpdateDisabled] = useState(false)
   const saveOwnerRef = useRef<AbortController | null>(null)
-  const createOperationIdRef = useRef<string | null>(null)
   const [hasChanged, setHasChanged] = useState(false)
 
   const modals = useModals()
@@ -58,56 +58,45 @@ const PostEdit: FC = () => {
   useEffect(() => {
     saveOwnerRef.current?.abort()
     saveOwnerRef.current = null
-    createOperationIdRef.current = null
-    setDisabled(false)
+    setUpdateDisabled(false)
     return () => {
       saveOwnerRef.current?.abort()
       saveOwnerRef.current = null
     }
   }, [postId])
 
-  useEffect(() => {
-    if (postId === 'new' && !saveOwnerRef.current) createOperationIdRef.current = null
-  }, [post, postId])
+  const { busy: createBusy, submit: submitCreate } = useDurableCreateIntent({
+    storageKey: createIntentStorageKey('post'),
+    enabled: postId === 'new',
+    request: (payload: PostEditModel, operationId, signal) =>
+      api.edit.editAddPost({ ...payload, operationId }, { signal }),
+    onSuccess: async (res) => {
+      await Promise.all([
+        api.info.mutateInfoGetLatestPosts(),
+        api.info.mutateInfoGetPosts(),
+        invalidatePostPageCaches(mutateCache),
+      ])
+      showNotification({
+        color: 'teal',
+        message: t('post.notification.created'),
+        icon: <Icon path={mdiCheck} size={24} />,
+      })
+      setHasChanged(false)
+      navigate(`/posts/${res.data}/edit`)
+    },
+    onError: (error) => showErrorMsg(error, t),
+  })
+  const disabled = updateDisabled || createBusy
 
   const onUpdate = async (): Promise<boolean> => {
-    if (saveOwnerRef.current) return false
-    const owner = new AbortController()
-    saveOwnerRef.current = owner
     if (postId === 'new') {
-      const operationId = createOperationIdRef.current ?? crypto.randomUUID()
-      createOperationIdRef.current = operationId
-      setDisabled(true)
-
-      try {
-        const res = await api.edit.editAddPost({ ...post, operationId }, { signal: owner.signal })
-        if (saveOwnerRef.current !== owner) return false
-        await Promise.all([
-          api.info.mutateInfoGetLatestPosts(),
-          api.info.mutateInfoGetPosts(),
-          invalidatePostPageCaches(mutateCache),
-        ])
-        if (saveOwnerRef.current !== owner) return false
-        showNotification({
-          color: 'teal',
-          message: t('post.notification.created'),
-          icon: <Icon path={mdiCheck} size={24} />,
-        })
-        createOperationIdRef.current = null
-        setHasChanged(false)
-        navigate(`/posts/${res.data}/edit`)
-        return true
-      } catch (e) {
-        if (saveOwnerRef.current === owner && !owner.signal.aborted) showErrorMsg(e, t)
-        return false
-      } finally {
-        if (saveOwnerRef.current === owner) {
-          saveOwnerRef.current = null
-          setDisabled(false)
-        }
-      }
+      if (createBusy) return false
+      return submitCreate(post)
     } else if (postId?.length === 8) {
-      setDisabled(true)
+      if (saveOwnerRef.current) return false
+      const owner = new AbortController()
+      saveOwnerRef.current = owner
+      setUpdateDisabled(true)
 
       try {
         // Temporary workaround for an issue where posts could not be updated.
@@ -136,17 +125,16 @@ const PostEdit: FC = () => {
       } finally {
         if (saveOwnerRef.current === owner) {
           saveOwnerRef.current = null
-          setDisabled(false)
+          setUpdateDisabled(false)
         }
       }
     }
-    saveOwnerRef.current = null
     return false
   }
 
   const onDelete = async () => {
     if (!postId) return
-    setDisabled(true)
+    setUpdateDisabled(true)
 
     try {
       await api.edit.editDeletePost(postId)
@@ -157,7 +145,7 @@ const PostEdit: FC = () => {
     } catch (e) {
       showErrorMsg(e, t)
     } finally {
-      setDisabled(false)
+      setUpdateDisabled(false)
     }
   }
 

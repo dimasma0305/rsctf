@@ -2136,6 +2136,8 @@ export interface ChallengeInfoModel {
    * @format int32
    */
   id?: number;
+  /** Challenge definition revision used by direct edits. */
+  revision?: number;
   /**
    * Challenge title
    * @minLength 1
@@ -2323,6 +2325,8 @@ export interface ImageCleanupReport {
 
 /** Challenge update information (Edit) */
 export interface ChallengeUpdateModel {
+  /** Stable identity for exact replay and terminal-result recovery. */
+  operationId?: string;
   /** Revision returned by the last authoritative challenge read. */
   expectedRevision?: number | null;
   /**
@@ -2437,6 +2441,13 @@ export interface ChallengeUpdateModel {
   variantGeneratorDigest?: string | null;
   solveReceiptMode?: SolveReceiptMode | null;
   receiptVerifierIdentity?: string | null;
+}
+
+export interface ChallengeUpdateOperationResult {
+  operationId: string;
+  /** @format int32 */
+  challengeId: number;
+  revision: number;
 }
 
 /**
@@ -6956,7 +6967,7 @@ export class Api<
      * @summary Add Game
      * @request POST:/api/edit/games
      */
-    editAddGame: (data: GameInfoModel, params: RequestParams = {}) =>
+    editAddGame: (data: GameInfoModel & { operationId: string }, params: RequestParams = {}) =>
       this.request<GameInfoModel, RequestResponse>({
         path: `/api/edit/games`,
         method: "POST",
@@ -6999,7 +7010,7 @@ export class Api<
      */
     editAddGameChallenge: (
       id: number,
-      data: ChallengeInfoModel,
+      data: ChallengeInfoModel & { operationId: string },
       params: RequestParams = {},
     ) =>
       this.request<ChallengeEditDetailModel, RequestResponse>({
@@ -7041,7 +7052,7 @@ export class Api<
      * @summary Add Post
      * @request POST:/api/edit/posts
      */
-    editAddPost: (data: PostEditModel, params: RequestParams = {}) =>
+    editAddPost: (data: PostEditModel & { operationId: string }, params: RequestParams = {}) =>
       this.request<string, RequestResponse>({
         path: `/api/edit/posts`,
         method: "POST",
@@ -7908,7 +7919,7 @@ export class Api<
     editUpdateGameChallenge: (
       id: number,
       cId: number,
-      data: ChallengeUpdateModel,
+      data: ChallengeUpdateModel & { operationId: string },
       params: RequestParams = {},
     ) =>
       this.request<ChallengeEditDetailModel, RequestResponse>({
@@ -7916,6 +7927,25 @@ export class Api<
         method: "PUT",
         body: data,
         type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Recover the exact terminal revision of an ordinary challenge update
+     * @tags Edit
+     * @name EditRecoverChallengeUpdateOperation
+     * @request GET:/api/edit/games/{id}/challenges/{cId}/operations/{operationId}
+     */
+    editRecoverChallengeUpdateOperation: (
+      id: number,
+      cId: number,
+      operationId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeUpdateOperationResult, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/operations/${operationId}`,
+        method: "GET",
         format: "json",
         ...params,
       }),
@@ -11195,7 +11225,7 @@ export class Api<
      * @summary Create team
      * @request POST:/api/team
      */
-    teamCreateTeam: (data: TeamUpdateModel, params: RequestParams = {}) =>
+    teamCreateTeam: (data: TeamUpdateModel & { operationId: string }, params: RequestParams = {}) =>
       this.request<TeamInfoModel, RequestResponse>({
         path: `/api/team`,
         method: "POST",

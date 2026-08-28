@@ -7,6 +7,15 @@ use crate::utils::error::{AppError, AppResult};
 
 const MAX_RETAINED_PER_KIND: i64 = 128;
 
+/// Create endpoints must always carry an opaque identity. Accepting an
+/// unidentified request makes a lost response indistinguishable from a new
+/// resource intent, which defeats the ledger below.
+pub(crate) fn require_operation_id(operation_id: Option<Uuid>) -> AppResult<Uuid> {
+    operation_id
+        .filter(|operation_id| !operation_id.is_nil())
+        .ok_or_else(|| AppError::bad_request("operationId is required"))
+}
+
 pub(crate) async fn claim(
     transaction: &mut Transaction<'_, Postgres>,
     actor_id: Uuid,
@@ -108,6 +117,17 @@ mod tests {
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
     use super::*;
+
+    #[test]
+    fn create_operation_identity_is_required_and_non_nil() {
+        assert!(require_operation_id(None).is_err());
+        assert!(require_operation_id(Some(Uuid::nil())).is_err());
+        let operation_id = Uuid::new_v4();
+        assert_eq!(
+            require_operation_id(Some(operation_id)).unwrap(),
+            operation_id
+        );
+    }
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]

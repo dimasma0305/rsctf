@@ -6,6 +6,8 @@ pub async fn add_game(
     AdminUser(user): AdminUser,
     Json(model): Json<GameInfoModel>,
 ) -> AppResult<RequestResponse<GameInfoModel>> {
+    let operation_id =
+        crate::services::create_operations::require_operation_id(model.operation_id)?;
     let discord_webhook = model.validate()?;
     model.validate_event_security(&st)?;
     let koth_epoch_ticks = model.koth_epoch_ticks.unwrap_or(12);
@@ -24,27 +26,25 @@ pub async fn add_game(
         .begin()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some(operation_id) = model.operation_id {
-        if let Some(result_id) = crate::services::create_operations::claim(
-            &mut transaction,
-            user.id,
-            "game",
-            0,
-            operation_id,
-            &request_digest,
-        )
-        .await?
-        {
-            let game_id = result_id
-                .parse::<i32>()
-                .map_err(|_| AppError::internal("invalid retained game create result"))?;
-            transaction
-                .commit()
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
-            let created = load_game(&st, game_id).await?;
-            return Ok(RequestResponse::ok(GameInfoModel::from_game(&created)));
-        }
+    if let Some(result_id) = crate::services::create_operations::claim(
+        &mut transaction,
+        user.id,
+        "game",
+        0,
+        operation_id,
+        &request_digest,
+    )
+    .await?
+    {
+        let game_id = result_id
+            .parse::<i32>()
+            .map_err(|_| AppError::internal("invalid retained game create result"))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        let created = load_game(&st, game_id).await?;
+        return Ok(RequestResponse::ok(GameInfoModel::from_game(&created)));
     }
 
     let (public_key, private_key) = crate::utils::crypto_utils::generate_game_keypair();
@@ -116,17 +116,15 @@ pub async fn add_game(
     .fetch_one(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some(operation_id) = model.operation_id {
-        crate::services::create_operations::complete(
-            &mut transaction,
-            user.id,
-            "game",
-            0,
-            operation_id,
-            &game_id.to_string(),
-        )
-        .await?;
-    }
+    crate::services::create_operations::complete(
+        &mut transaction,
+        user.id,
+        "game",
+        0,
+        operation_id,
+        &game_id.to_string(),
+    )
+    .await?;
     transaction
         .commit()
         .await

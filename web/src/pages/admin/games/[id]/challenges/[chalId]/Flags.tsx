@@ -425,23 +425,23 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
   }
 
   const onChangeFlagTemplate = async () => {
+    if (!challenge) return
     if (flagTemplate === challenge?.flagTemplate) return
     setDisabled(true)
 
     try {
       // allow empty flag template to be set (but not null or undefined)
-      await api.edit.editUpdateGameChallenge(numId, numCId, { flagTemplate })
+      const updated = await api.edit.editUpdateGameChallenge(numId, numCId, {
+        operationId: crypto.randomUUID(),
+        expectedRevision: challenge.revision,
+        flagTemplate,
+      })
       showNotification({
         color: 'teal',
         message: t('admin.notification.games.challenges.flag_template.updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
-      if (challenge) {
-        mutate({
-          ...challenge,
-          flagTemplate,
-        })
-      }
+      mutate(updated.data)
     } catch (e) {
       showErrorMsg(e, t)
     } finally {

@@ -34,7 +34,7 @@ use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::models::data::{
     ad_flag, ad_round, ad_team_service, attachment, build_record, challenge_review, container,
     division, division_challenge_config, flag_context, game, game_challenge, game_instance,
-    game_manager, game_notice, koth_target, local_file, participation, post, team, user,
+    game_manager, game_notice, koth_target, local_file, participation, team, user,
 };
 use crate::services::container::{ContainerResourceLimits, ContainerSpec};
 use crate::utils::codec::sha256_str;
@@ -82,59 +82,10 @@ fn default_blood_bonus() -> i64 {
 //  DTOs
 // ============================================================================
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PostEditModel {
-    pub operation_id: Option<Uuid>,
-    pub title: Option<String>,
-    pub summary: Option<String>,
-    pub content: Option<String>,
-    pub tags: Option<Vec<String>>,
-    pub is_pinned: Option<bool>,
-}
-
-/// RSCTF `PostDetailModel` — the outbound editor view for a post. `time` is a
-/// `DateTime` serialized as ISO-8601 (matching the info controller's mapping).
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PostDetailModel {
-    pub id: String,
-    pub title: String,
-    pub summary: String,
-    pub content: String,
-    pub is_pinned: bool,
-    pub tags: Option<Vec<String>>,
-    pub author_avatar: Option<String>,
-    pub author_name: Option<String>,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub time: DateTime<Utc>,
-}
-
-impl PostDetailModel {
-    fn from_post(p: &post::Model, author_name: Option<String>) -> Self {
-        let tags = p
-            .tags
-            .as_ref()
-            .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok());
-        Self {
-            id: p.id.clone(),
-            title: p.title.clone(),
-            summary: p.summary.clone(),
-            content: p.content.clone(),
-            is_pinned: p.is_pinned,
-            tags,
-            author_avatar: None,
-            author_name,
-            time: p.update_time_utc,
-        }
-    }
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeInfoModel {
-    /// Stable client mutation identity. Legacy callers may omit it, but only
-    /// identified operations can be reconciled after an ambiguous response.
+    /// Stable client mutation identity; the create handler requires it.
     pub operation_id: Option<Uuid>,
     #[serde(default)]
     pub title: String,
@@ -153,9 +104,11 @@ fn default_score_curve() -> ScoreCurve {
     ScoreCurve::Standard
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeUpdateModel {
+    /// Stable identity for exact replay and terminal-result recovery.
+    pub operation_id: Option<Uuid>,
     /// Revision returned by the last authoritative challenge read.
     pub expected_revision: Option<i64>,
     pub title: Option<String>,
@@ -271,6 +224,7 @@ impl AttachmentInfoModel {
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeSummaryModel {
     pub id: i32,
+    pub revision: i64,
     pub title: String,
     pub category: ChallengeCategory,
     #[serde(rename = "type")]
@@ -291,6 +245,7 @@ impl ChallengeSummaryModel {
     fn from_challenge(c: &game_challenge::Model, configuration_revision: i64) -> Self {
         Self {
             id: c.id,
+            revision: c.revision,
             title: c.title.clone(),
             category: c.category,
             challenge_type: c.challenge_type,
@@ -773,6 +728,10 @@ pub fn router() -> Router<SharedState> {
             get(get_challenge)
                 .put(update_challenge)
                 .delete(delete_challenge),
+        )
+        .route(
+            "/api/edit/games/{id}/challenges/{cId}/operations/{operationId}",
+            get(recover_challenge_update_operation),
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/approve",

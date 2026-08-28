@@ -185,22 +185,21 @@ pub async fn create_team(
     user: CurrentUser,
     Json(model): Json<TeamUpdateModel>,
 ) -> AppResult<RequestResponse<TeamInfoModel>> {
+    let operation_id =
+        crate::services::create_operations::require_operation_id(model.operation_id)?;
     let name = model.name.unwrap_or_default().trim().to_string();
     validate_team_profile(Some(&name), model.bio.as_deref())?;
     let request_digest = crate::utils::codec::sha256_str(
         &serde_json::to_string(&(name.as_str(), model.bio.as_deref()))
             .map_err(|error| AppError::internal(error.to_string()))?,
     );
-    let operation = model
-        .operation_id
-        .map(|operation_id| (operation_id, request_digest.as_str()));
     let team_id = create_team_rows_replay(
         st.pg(),
         user.id,
         &user.security_stamp,
         &name,
         model.bio.as_deref(),
-        operation,
+        Some((operation_id, request_digest.as_str())),
     )
     .await?;
     let team = load_team(&st, team_id).await?;

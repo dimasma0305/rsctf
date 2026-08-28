@@ -3,9 +3,10 @@ import { useInputState } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useRef, useState } from 'react'
+import { FC, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router'
+import { createIntentStorageKey, useDurableCreateIntent } from '@Utils/DurableCreateIntent'
 import { showErrorMsg } from '@Utils/Shared'
 import {
   ChallengeCategoryItem,
@@ -23,9 +24,6 @@ interface ChallengeCreateModalProps extends ModalProps {
 export const ChallengeCreateModal: FC<ChallengeCreateModalProps> = (props) => {
   const { id } = useParams()
   const { onAddChallenge, onClose, ...modalProps } = props
-  const [disabled, setDisabled] = useState(false)
-  const createOwnerRef = useRef<AbortController | null>(null)
-  const operationIdRef = useRef<string | null>(null)
   const navigate = useNavigate()
   const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
   const challengeTypeLabelMap = useChallengeTypeLabelMap()
@@ -36,63 +34,31 @@ export const ChallengeCreateModal: FC<ChallengeCreateModalProps> = (props) => {
 
   const { t } = useTranslation()
 
-  useEffect(() => {
-    createOwnerRef.current?.abort()
-    createOwnerRef.current = null
-    operationIdRef.current = null
-    setDisabled(false)
-    return () => {
-      createOwnerRef.current?.abort()
-      createOwnerRef.current = null
-    }
-  }, [id])
-
-  useEffect(() => {
-    if (!createOwnerRef.current) operationIdRef.current = null
-  }, [title, category, type])
-
-  const onCreate = async () => {
-    if (createOwnerRef.current || !title || !category || !type) return
-
-    const owner = new AbortController()
-    createOwnerRef.current = owner
-    setDisabled(true)
-    const numId = parseInt(id ?? '-1')
-    const operationId = operationIdRef.current ?? crypto.randomUUID()
-    operationIdRef.current = operationId
-
-    try {
-      const res = await api.edit.editAddGameChallenge(
-        numId,
-        {
-          operationId,
-          title: title,
-          category: category as ChallengeCategory,
-          type: type as ChallengeType,
-        },
-        { signal: owner.signal }
-      )
-      if (createOwnerRef.current !== owner) return
+  const intentKey = createIntentStorageKey('challenge', id ?? 'invalid')
+  const { busy: disabled, submit } = useDurableCreateIntent({
+    storageKey: intentKey,
+    enabled: Boolean(modalProps.opened && id),
+    request: (payload: { title: string; category: ChallengeCategory; type: ChallengeType }, operationId, signal) =>
+      api.edit.editAddGameChallenge(parseInt(id ?? '-1'), { ...payload, operationId }, { signal }),
+    onSuccess: (res) => {
       showNotification({
         color: 'teal',
         message: t('admin.notification.games.challenges.created'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
-      operationIdRef.current = null
       onAddChallenge(res.data)
       navigate(`/admin/games/${id}/challenges/${res.data.id}`)
-    } catch (e) {
-      if (createOwnerRef.current === owner && !owner.signal.aborted) showErrorMsg(e, t)
-    } finally {
-      if (createOwnerRef.current === owner) {
-        createOwnerRef.current = null
-        setDisabled(false)
-      }
-    }
+    },
+    onError: (error) => showErrorMsg(error, t),
+  })
+
+  const onCreate = async () => {
+    if (disabled || !title || !category || !type) return
+    await submit({ title, category: category as ChallengeCategory, type: type as ChallengeType })
   }
 
   const handleClose = () => {
-    if (createOwnerRef.current) return
+    if (disabled) return
     setTitle('')
     setCategory(null)
     setType(null)

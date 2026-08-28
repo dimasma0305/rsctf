@@ -11,6 +11,8 @@ pub async fn add_challenge(
     Json(model): Json<ChallengeInfoModel>,
 ) -> AppResult<RequestResponse<ChallengeEditDetailModel>> {
     manager_or_admin(&st, &user, id).await?;
+    let operation_id =
+        crate::services::create_operations::require_operation_id(model.operation_id)?;
     load_game(&st, id).await?;
 
     // Every challenge kind shares the game deletion/control domain. A game
@@ -38,19 +40,14 @@ pub async fn add_challenge(
         &serde_json::to_string(&(model.title.as_str(), model.category, model.challenge_type))
             .map_err(|error| AppError::internal(error.to_string()))?,
     );
-    let operation_id = model.operation_id;
-    let replay_id = if let Some(operation_id) = operation_id {
-        claim_challenge_create_operation(
-            control.transaction_mut(),
-            user.id,
-            id,
-            operation_id,
-            &request_digest,
-        )
-        .await?
-    } else {
-        None
-    };
+    let replay_id = claim_challenge_create_operation(
+        control.transaction_mut(),
+        user.id,
+        id,
+        operation_id,
+        &request_digest,
+    )
+    .await?;
     let challenge_id = match replay_id {
         Some(challenge_id) => challenge_id,
         None => {
@@ -83,16 +80,14 @@ pub async fn add_challenge(
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
             seed_division_configs(control.transaction_mut(), id, challenge_id).await?;
-            if let Some(operation_id) = operation_id {
-                complete_challenge_create_operation(
-                    control.transaction_mut(),
-                    user.id,
-                    id,
-                    operation_id,
-                    challenge_id,
-                )
-                .await?;
-            }
+            complete_challenge_create_operation(
+                control.transaction_mut(),
+                user.id,
+                id,
+                operation_id,
+                challenge_id,
+            )
+            .await?;
             challenge_id
         }
     };

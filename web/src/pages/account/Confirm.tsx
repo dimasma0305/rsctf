@@ -6,6 +6,7 @@ import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router'
 import { AccountView } from '@Components/AccountView'
+import { reconcileAccountLink } from '@Utils/AccountLinkReconciliation'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import api from '@Api'
 
@@ -60,7 +61,10 @@ const Confirm: FC = () => {
     setDisabled(true)
 
     try {
-      await api.account.accountMailChangeConfirm({ token, email }, { signal: owner.signal })
+      await reconcileAccountLink(
+        () => api.account.accountMailChangeConfirm({ token, email }, { signal: owner.signal }),
+        owner.signal
+      )
       if (submitOwnerRef.current !== owner) return
       showNotification({
         color: 'teal',
