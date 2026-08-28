@@ -1340,6 +1340,12 @@ export interface EventVpnOverrideModel {
   active: boolean;
 }
 
+export interface EventVpnOverrideList {
+  policyRevision: number;
+  activeLimit: number;
+  overrides: EventVpnOverrideModel[];
+}
+
 export interface SuspicionRecordResult {
   /** @format int32 */
   teamId?: number;
@@ -11429,10 +11435,10 @@ export class Api<
 
     createVpnOverride: (
       gameId: number,
-      data: { reason: string; durationMinutes: number },
+      data: { reason: string; durationMinutes: number; operationId: string; expectedPolicyRevision: number },
       params: RequestParams = {},
     ) =>
-      this.request<{ id: string; expiresAtUtc: number }, RequestResponse>({
+      this.request<{ id: string; expiresAtUtc: number; policyRevision: number }, RequestResponse>({
         path: `/api/admin/games/${gameId}/vpn-override`,
         method: "POST",
         body: data,
@@ -11442,7 +11448,7 @@ export class Api<
       }),
 
     listVpnOverrides: (gameId: number, params: RequestParams = {}) =>
-      this.request<EventVpnOverrideModel[], RequestResponse>({
+      this.request<EventVpnOverrideList, RequestResponse>({
         path: `/api/admin/games/${gameId}/vpn-overrides`,
         method: "GET",
         format: "json",
@@ -11452,11 +11458,14 @@ export class Api<
     revokeVpnOverride: (
       gameId: number,
       overrideId: string,
+      data: { operationId: string; expectedPolicyRevision: number },
       params: RequestParams = {},
     ) =>
-      this.request<void, RequestResponse>({
+      this.request<{ id: string; expiresAtUtc: number; policyRevision: number }, RequestResponse>({
         path: `/api/admin/games/${gameId}/vpn-override/${overrideId}/revoke`,
         method: "POST",
+        body: data,
+        type: ContentType.Json,
         ...params,
       }),
   };
