@@ -1,6 +1,4 @@
 use std::collections::VecDeque;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -58,7 +56,7 @@ impl DurableSpool {
         tokio::fs::rename(&temporary, &final_path).await?;
         sync_directory(&self.directory).await?;
         let size = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
-        self.entries.push_back((final_path, size));
+        self.entries.push_back((final_path.clone(), size));
         self.bytes = self.bytes.saturating_add(size);
 
         let mut removed = false;
