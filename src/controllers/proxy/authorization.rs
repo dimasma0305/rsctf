@@ -13,6 +13,8 @@ mod exercise;
 pub(super) mod lease_cache;
 pub(super) mod lease_generation;
 pub(super) use exercise::exercise_lease_is_valid;
+#[cfg(test)]
+pub(super) use exercise::EXERCISE_LEASE_FRESHNESS;
 use lease_cache::LeaseCache;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
 
@@ -232,19 +232,27 @@ async fn pending_game_or_challenge_cannot_issue_a_byoc_grant() {
 async fn agent_authorization_distinguishes_prestart_retry_from_terminal_revocation() {
     let (admin, pool, schema) = test_pool().await;
     let bearer = agent_token("team-secret");
-    let start = Utc::now() + Duration::minutes(10);
+    // PostgreSQL stores timestamptz values at microsecond precision. Keep a
+    // deliberately finer input here and compare admission with the value the
+    // database actually retained, rather than with a nanosecond-only tail that
+    // cannot cross the SQL boundary.
+    let start = DateTime::<Utc>::from_timestamp(Utc::now().timestamp() + 600, 123_456_789)
+        .expect("valid pre-start timestamp");
     let end = start + Duration::hours(1);
-    sqlx::query(r#"UPDATE "Games" SET start_time_utc = $1, end_time_utc = $2 WHERE id = 3"#)
-        .bind(start)
-        .bind(end)
-        .execute(&pool)
-        .await
-        .unwrap();
+    let stored_start: DateTime<Utc> = sqlx::query_scalar(
+        r#"UPDATE "Games" SET start_time_utc = $1, end_time_utc = $2
+            WHERE id = 3 RETURNING start_time_utc"#,
+    )
+    .bind(start)
+    .bind(end)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     match authorize_byoc_agent_capability(&pool, 3, 11, 13, &bearer)
         .await
         .unwrap()
     {
-        ByocAgentAuthorization::RetryAt(retry_at) => assert_eq!(retry_at, start),
+        ByocAgentAuthorization::RetryAt(retry_at) => assert_eq!(retry_at, stored_start),
         ByocAgentAuthorization::Authorized(authorization) => {
             authorization.release().await.unwrap();
             panic!("a pre-start agent was admitted")

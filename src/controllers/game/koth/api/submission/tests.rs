@@ -380,6 +380,11 @@ async fn signed_snapshot_is_tick_bound_normalized_replay_safe_and_hash_only() {
         ),
         (1, 2, 1)
     );
+    assert_eq!(
+        accepted.accepted_at.timestamp_micros(),
+        accepted.accepted_at.timestamp_millis() * 1_000,
+        "the first response must use the same millisecond precision as replay JSON"
+    );
     // The first accepted objective scheme becomes part of the next opaque
     // context, so every reporter must refetch before deduplicating it.
     let reporter_context = load_active_context(&pool, 7, 9)

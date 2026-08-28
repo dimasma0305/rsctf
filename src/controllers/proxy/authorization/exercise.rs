@@ -6,6 +6,9 @@ use crate::utils::enums::Role;
 
 use super::lease_cache::LeaseCache;
 
+pub(in crate::controllers::proxy) const EXERCISE_LEASE_FRESHNESS: Duration =
+    Duration::from_millis(250);
+
 const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
     SELECT 1
       FROM "ExerciseInstances" instance
@@ -69,7 +72,7 @@ struct ExerciseLeaseKey {
 }
 
 static EXERCISE_LEASES: std::sync::LazyLock<LeaseCache<ExerciseLeaseKey>> =
-    std::sync::LazyLock::new(|| LeaseCache::new(8_192, Duration::from_millis(250)));
+    std::sync::LazyLock::new(|| LeaseCache::new(8_192, EXERCISE_LEASE_FRESHNESS));
 
 async fn exercise_lease_is_valid_authoritative(
     pool: &sqlx::PgPool,

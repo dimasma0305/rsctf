@@ -716,6 +716,12 @@ async fn accept_observation(
             .map_err(|error| AppError::internal(error.to_string()))?;
         }
     }
+    // The public contract and the durable operation response both encode Unix
+    // milliseconds. Canonicalize the first response to that same precision so
+    // an idempotent replay cannot return a subtly different timestamp after
+    // PostgreSQL's microsecond value has passed through JSON.
+    let accepted_at = DateTime::from_timestamp_millis(accepted_at.timestamp_millis())
+        .ok_or_else(|| AppError::internal("accepted observation timestamp is out of range"))?;
     let response = KothObservationAcceptedModel {
         accepted: true,
         cycle_number: context.cycle_number,

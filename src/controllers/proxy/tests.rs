@@ -172,6 +172,14 @@ async fn exercise_lease_revokes_when_the_account_session_changes() {
         .execute(&pool)
         .await
         .unwrap();
+    // Established sessions poll on a five-second cadence and the shared
+    // authorization result is allowed a much smaller bounded freshness
+    // window. Exercise the next authoritative lease check, not a deliberately
+    // fresh cached result from the preceding assertion.
+    tokio::time::sleep(
+        super::authorization::EXERCISE_LEASE_FRESHNESS + std::time::Duration::from_millis(25),
+    )
+    .await;
     assert!(!live().await);
 
     sqlx::query(
