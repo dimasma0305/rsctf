@@ -695,40 +695,10 @@ pub(crate) async fn effective_permission(
     part: &participation::Model,
     challenge_id: i32,
 ) -> AppResult<GamePermission> {
-    let Some(div_id) = part.division_id else {
-        return Ok(GamePermission(GamePermission::ALL));
-    };
-
-    let cache_key = format!("effperm:v3:{}:{div_id}:{challenge_id}", part.game_id);
-    if let Some(bytes) = st.cache.get(&cache_key).await {
-        if let Ok(perm) = serde_json::from_slice::<GamePermission>(&bytes) {
-            return Ok(perm);
-        }
-    }
-
-    let stored: Option<i32> = sqlx::query_scalar(
-        r#"SELECT COALESCE(permission.permissions, division.default_permissions)
-             FROM "Divisions" division
-             LEFT JOIN "DivisionChallengeConfigs" permission
-               ON permission.division_id = division.id
-              AND permission.challenge_id = $3
-            WHERE division.id = $1 AND division.game_id = $2"#,
-    )
-    .bind(div_id)
-    .bind(part.game_id)
-    .bind(challenge_id)
-    .fetch_optional(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let perm = GamePermission(stored.unwrap_or(0));
-
-    if let Ok(json) = serde_json::to_vec(&perm) {
-        st.cache
-            .set(&cache_key, &json, Some(std::time::Duration::from_secs(10)))
-            .await;
-    }
-
-    Ok(perm)
+    Ok(effective_permissions_batch(st, part, &[challenge_id])
+        .await?
+        .remove(&challenge_id)
+        .unwrap_or(GamePermission(0)))
 }
 
 /// Batched permission resolution for the polled `/details` path.

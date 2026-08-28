@@ -1701,6 +1701,8 @@ export interface Division {
   inviteCode?: string | null;
   /** Permissions associated with the division. */
   defaultPermissions?: GamePermission;
+  revision: number;
+  policyRevision: number;
   /** Challenge configs for this division. */
   challengeConfigs?: DivisionChallengeConfig[];
 }
@@ -1741,6 +1743,8 @@ export interface DivisionChallengeConfigModel {
 }
 
 export interface DivisionEditModel {
+  operationId: string;
+  expectedRevision: number;
   /**
    * The name of the division.
    * @maxLength 31
