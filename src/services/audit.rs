@@ -17,9 +17,10 @@ use crate::models::data::log_entry;
 /// Byte-identical model shared by the admin log list and the `ReceivedLog`
 /// SignalR event. Keeping one serializer prevents the polled and pushed views
 /// from drifting (especially timestamp units and camelCase field names).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct LogMessageModel {
+    pub id: i32,
     #[serde(with = "crate::utils::datetime::millis")]
     pub time: DateTime<Utc>,
     pub level: Option<String>,
@@ -33,6 +34,7 @@ pub struct LogMessageModel {
 impl From<log_entry::Model> for LogMessageModel {
     fn from(entry: log_entry::Model) -> Self {
         Self {
+            id: entry.id,
             time: entry.time_utc,
             level: Some(entry.level),
             msg: Some(entry.message),
@@ -165,6 +167,7 @@ mod tests {
         });
 
         let value = serde_json::to_value(model).unwrap();
+        assert_eq!(value["id"], 7);
         assert_eq!(value["time"], at.timestamp_millis());
         assert_eq!(value["level"], "Information");
         assert_eq!(value["msg"], "created fixture");

@@ -31,6 +31,27 @@ export const prependBoundedRow = <T>(row: T, current: readonly T[], limit: numbe
   return [row, ...current.slice(0, bounded - 1)]
 }
 
+/** Add or refresh one stable row while keeping exactly one copy of its identity
+ * and enforcing the same hard bound as the live feed. */
+export const prependUniqueBoundedRow = <T>(
+  row: T,
+  current: readonly T[],
+  limit: number,
+  identity: (row: T) => string | number
+) => {
+  const bounded = finiteLimit(limit)
+  if (bounded === 0) return []
+
+  const key = identity(row)
+  const rows = [row]
+  for (const existing of current) {
+    if (identity(existing) === key) continue
+    rows.push(existing)
+    if (rows.length === bounded) break
+  }
+  return rows
+}
+
 /** Concatenate a live buffer that has already been reconciled as a multiset
  * with its authoritative snapshot. Unlike a Set union, this deliberately keeps
  * repeated snapshot rows because separate audit records can share every
@@ -41,12 +62,23 @@ export const mergeReconciledRows = <T>(live: readonly T[], snapshot: readonly T[
 /** Socket rows precede their HTTP equivalents. This final de-duplication also
  * covers a render that occurs between an HTTP response and its reconciliation
  * effect. */
-export const mergeUniqueRows = <T>(live: T[], snapshot: T[], identity: (row: T) => string | number) => {
+export const mergeUniqueRows = <T>(
+  live: readonly T[],
+  snapshot: readonly T[],
+  identity: (row: T) => string | number,
+  limit?: number
+) => {
+  const bounded = limit === undefined ? live.length + snapshot.length : finiteLimit(limit)
+  if (bounded === 0) return []
+
   const seen = new Set<string | number>()
-  return [...live, ...snapshot].filter((row) => {
+  const rows: T[] = []
+  for (const row of [...live, ...snapshot]) {
     const key = identity(row)
-    if (seen.has(key)) return false
+    if (seen.has(key)) continue
     seen.add(key)
-    return true
-  })
+    rows.push(row)
+    if (rows.length === bounded) break
+  }
+  return rows
 }

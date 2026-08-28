@@ -1,10 +1,28 @@
 //! Audit-log listing.
 
 use super::*;
-use sea_orm::sea_query::{Expr, Func};
-use sea_orm::ColumnTrait;
 
 pub use crate::services::audit::LogMessageModel;
+
+const ADMIN_LOGS_SQL: &str = r#"
+SELECT id,
+       time_utc AS time,
+       level,
+       message AS msg,
+       remote_ip AS ip,
+       user_name AS name,
+       status,
+       browser_fingerprint AS fingerprint
+  FROM "Logs"
+ WHERE ($1 = 'All' OR $1 = '' OR level = $1)
+   AND ($2::TEXT IS NULL
+        OR LOWER(COALESCE(user_name, '')) LIKE $2
+        OR LOWER(message) LIKE $2
+        OR LOWER(COALESCE(remote_ip, '')) LIKE $2
+        OR LOWER(COALESCE(browser_fingerprint, '')) LIKE $2)
+ ORDER BY time_utc DESC, id DESC
+ LIMIT $3 OFFSET $4
+"#;
 
 /// Log listing query (`?level=&count=&skip=&search=`). Mirrors RSCTF's
 /// `Logs` action: `level` defaults to the `"All"` sentinel (no filter).
@@ -30,56 +48,47 @@ fn default_log_count() -> u64 {
 }
 
 /// `GET /api/admin/logs` — page of audit-log rows, newest first, with an
-/// optional `level` filter and substring `search` across name / message / ip,
+/// optional `level` filter and substring `search` across name / message / ip /
+/// fingerprint,
 /// faithful to RSCTF `ILogRepository.GetLogs`. Returns the raw `LogMessageModel[]`.
 pub async fn logs(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Query(q): Query<LogsQuery>,
 ) -> AppResult<RequestResponse<Vec<LogMessageModel>>> {
-    let count = q.count.clamp(0, 1000);
+    let count = q.count.clamp(0, 1000) as i64;
+    let skip = q.skip.min(i64::MAX as u64) as i64;
+    let search = q
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("%{}%", value.to_lowercase()));
 
-    let mut base = log_entry::Entity::find();
+    let data = sqlx::query_as::<_, LogMessageModel>(ADMIN_LOGS_SQL)
+        .bind(&q.level)
+        .bind(search.as_deref())
+        .bind(count)
+        .bind(skip)
+        .fetch_all(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
 
-    // `"All"` (the default sentinel) means "no level filter".
-    if !q.level.is_empty() && q.level != "All" {
-        base = base.filter(log_entry::Column::Level.eq(q.level.clone()));
-    }
-
-    if let Some(search) = q.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        // Case-insensitive substring match (RSCTF searches with ILIKE); mirror the
-        // `Func::lower(col) LIKE %term%` pattern admin/users.rs already uses.
-        let pat = format!("%{}%", search.to_lowercase());
-        base = base.filter(
-            Condition::any()
-                .add(
-                    Expr::expr(Func::lower(log_entry::Column::UserName.into_expr()))
-                        .like(pat.as_str()),
-                )
-                .add(
-                    Expr::expr(Func::lower(log_entry::Column::Message.into_expr()))
-                        .like(pat.as_str()),
-                )
-                .add(
-                    Expr::expr(Func::lower(log_entry::Column::RemoteIp.into_expr()))
-                        .like(pat.as_str()),
-                )
-                .add(
-                    Expr::expr(Func::lower(
-                        log_entry::Column::BrowserFingerprint.into_expr(),
-                    ))
-                    .like(pat.as_str()),
-                ),
-        );
-    }
-
-    let rows = base
-        .order_by_desc(log_entry::Column::TimeUtc)
-        .offset(q.skip)
-        .limit(count)
-        .all(&st.db)
-        .await?;
-
-    let data = rows.into_iter().map(LogMessageModel::from).collect();
     Ok(RequestResponse::ok(data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn admin_log_page_has_a_stable_timestamp_and_id_order() {
+        let normalized = ADMIN_LOGS_SQL
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(normalized.starts_with("SELECT id,"));
+        assert!(normalized.contains("ORDER BY time_utc DESC, id DESC"));
+        assert!(normalized.contains("LIMIT $3 OFFSET $4"));
+    }
 }

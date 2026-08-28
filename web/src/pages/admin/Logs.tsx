@@ -18,25 +18,29 @@ import { mdiArrowLeftBold, mdiArrowRightBold, mdiCheck, mdiClose, mdiMagnify } f
 import { Icon } from '@mdi/react'
 import cx from 'clsx'
 import dayjs from 'dayjs'
-import { FC, useCallback, useEffect, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AdminPage } from '@Components/admin/AdminPage'
+import {
+  ADMIN_LOG_PAGE_SIZE,
+  adminLogIdentity,
+  adminLogMatchesQuery,
+  adminLogQueryReducer,
+  adminLogQueryScope,
+  compareAdminLogsNewestFirst,
+  MAX_BUFFERED_ADMIN_LOGS,
+  MAX_VISIBLE_ADMIN_LOGS,
+} from '@Utils/AdminLogFeed'
 import { handleAxiosError } from '@Utils/ApiHelper'
-import { mergeReconciledRows, prependBoundedRow, reconcileLiveRows } from '@Utils/FeedReconciliation'
+import { mergeUniqueRows, prependUniqueBoundedRow, reconcileLiveRows } from '@Utils/FeedReconciliation'
 import { useLanguage } from '@Utils/I18n'
+import { currentListSnapshotRows, LatestListRequest, type ListSnapshot } from '@Utils/LatestRequest'
 import { TaskStatusColorMap } from '@Utils/Shared'
 import { OPERATOR_FALLBACK_POLL_MS } from '@Utils/SignalRRecovery'
 import { useRecoveringHub } from '@Hooks/useRecoveringHub'
 import api, { LogMessageModel, TaskStatus } from '@Api'
 import classes from '@Styles/AdminLogs.module.css'
 import tableClasses from '@Styles/Table.module.css'
-
-const ITEM_COUNT_PER_PAGE = 50
-const MAX_BUFFERED_LOGS = ITEM_COUNT_PER_PAGE
-const MAX_VISIBLE_LOGS = ITEM_COUNT_PER_PAGE * 2
-
-const logIdentity = (item: LogMessageModel) =>
-  JSON.stringify([item.time, item.name, item.level, item.ip, item.msg, item.status, item.fingerprint])
 
 enum LogLevel {
   Info = 'Information',
@@ -52,15 +56,23 @@ const LOG_LEVEL_COLOR: Record<string, string> = {
 }
 
 const Logs: FC = () => {
-  const [level, setLevel] = useState(LogLevel.Info)
-  const [activePage, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [debouncedSearch] = useDebouncedValue(search, 500)
+  const [query, dispatchQuery] = useReducer(adminLogQueryReducer, {
+    level: LogLevel.Info,
+    page: 1,
+    search: '',
+  })
+  const { level, page: activePage } = query
+  const queryScope = adminLogQueryScope(query)
+  const queryReady = search === query.search
   const theme = useMantineTheme()
 
-  const [, update] = useState(new Date())
+  const [, update] = useState(0)
   const newLogs = useRef<LogMessageModel[]>([])
-  const [logs, setLogs] = useState<LogMessageModel[]>()
+  const logRequest = useRef(new LatestListRequest<LogMessageModel>())
+  const [logSnapshot, setLogSnapshot] = useState<ListSnapshot<LogMessageModel>>()
+  const logs = queryReady ? currentListSnapshotRows(queryScope, logSnapshot) : undefined
 
   const { t } = useTranslation()
   const { locale } = useLanguage()
@@ -70,16 +82,36 @@ const Logs: FC = () => {
     viewport.current?.scrollTo({ top: 0, behavior: 'smooth' })
   }, [activePage, level, viewport])
 
+  useEffect(() => {
+    dispatchQuery({ type: 'search', search: debouncedSearch })
+  }, [debouncedSearch])
+
   const fetchLogs = useCallback(async () => {
+    if (!queryReady) return
+    const snapshot = await logRequest.current.run(queryScope, async (signal) => {
+      const res = await api.admin.adminLogs(
+        {
+          level,
+          count: ADMIN_LOG_PAGE_SIZE,
+          skip: (activePage - 1) * ADMIN_LOG_PAGE_SIZE,
+          search: query.search || undefined,
+        },
+        { signal }
+      )
+      return res.data.slice(0, ADMIN_LOG_PAGE_SIZE)
+    })
+    if (!snapshot) return
+
+    newLogs.current = reconcileLiveRows(newLogs.current, snapshot.rows, adminLogIdentity).slice(
+      0,
+      MAX_BUFFERED_ADMIN_LOGS
+    )
+    setLogSnapshot(snapshot)
+  }, [activePage, level, query.search, queryReady, queryScope])
+
+  const fetchLogsForUi = useCallback(async () => {
     try {
-      const res = await api.admin.adminLogs({
-        level,
-        count: ITEM_COUNT_PER_PAGE,
-        skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
-        search: debouncedSearch || undefined,
-      })
-      newLogs.current = reconcileLiveRows(newLogs.current, res.data, logIdentity).slice(0, MAX_BUFFERED_LOGS)
-      setLogs(res.data)
+      await fetchLogs()
     } catch (err) {
       showNotification({
         color: 'red',
@@ -91,19 +123,12 @@ const Logs: FC = () => {
         },
       })
     }
-  }, [activePage, debouncedSearch, level, t])
+  }, [fetchLogs, t])
 
   useEffect(() => {
-    void fetchLogs()
-
-    if (activePage === 1) {
-      newLogs.current = []
-    }
-  }, [activePage, fetchLogs])
-
-  useEffect(() => {
-    setPage(1)
-  }, [level, debouncedSearch])
+    void fetchLogsForUi()
+    return () => logRequest.current.cancel()
+  }, [fetchLogsForUi])
 
   useRecoveringHub({
     active: true,
@@ -111,8 +136,8 @@ const Logs: FC = () => {
     handlers: {
       ReceivedLog: (raw) => {
         const message = raw as LogMessageModel
-        newLogs.current = prependBoundedRow(message, newLogs.current, MAX_BUFFERED_LOGS)
-        update(new Date(message.time!))
+        newLogs.current = prependUniqueBoundedRow(message, newLogs.current, MAX_BUFFERED_ADMIN_LOGS, adminLogIdentity)
+        update((version) => version + 1)
       },
     },
     revalidate: fetchLogs,
@@ -128,16 +153,18 @@ const Logs: FC = () => {
       }),
   })
 
-  const visibleLogs = mergeReconciledRows(activePage === 1 ? newLogs.current : [], logs ?? [], MAX_VISIBLE_LOGS).filter(
-    (item) => level === 'All' || item.level === level
+  const bufferedLogs =
+    queryReady && activePage === 1 ? newLogs.current.filter((item) => adminLogMatchesQuery(item, query)) : []
+  const snapshotLogs = (logs ?? []).filter((item) => adminLogMatchesQuery(item, query))
+  const visibleLogs = mergeUniqueRows(bufferedLogs, snapshotLogs, adminLogIdentity, MAX_VISIBLE_ADMIN_LOGS).sort(
+    compareAdminLogsNewestFirst
   )
 
   const rows = visibleLogs.map((item, i) => (
     <Table.Tr
-      key={`${item.time}@${i}`}
+      key={item.id}
       className={cx({
-        [tableClasses.fade]:
-          i === 0 && activePage === 1 && newLogs.current.length > 0 && newLogs.current[0].level === level,
+        [tableClasses.fade]: i === 0 && bufferedLogs.length > 0 && bufferedLogs[0].id === item.id,
       })}
     >
       <Table.Td className={tableClasses.time}>
@@ -187,7 +214,7 @@ const Logs: FC = () => {
             color={theme.primaryColor}
             value={level}
             bg="transparent"
-            onChange={(value) => setLevel(value as LogLevel)}
+            onChange={(value) => dispatchQuery({ type: 'level', level: value as LogLevel })}
             data={Object.entries(LogLevel).map((role) => ({
               value: role[1],
               label: role[0],
@@ -198,18 +225,15 @@ const Logs: FC = () => {
             placeholder={t('admin.label.logs.search', 'Search logs')}
             leftSection={<Icon path={mdiMagnify} size={0.8} />}
             value={search}
-            onChange={(e) => {
-              setSearch(e.currentTarget.value)
-              setPage(1)
-            }}
+            onChange={(e) => setSearch(e.currentTarget.value)}
             className={classes.search}
           />
           <Group justify="right">
             <ActionIcon
               size="lg"
-              disabled={activePage <= 1}
+              disabled={!queryReady || activePage <= 1}
               aria-label={t('common.pagination.previous', 'Previous page')}
-              onClick={() => setPage(activePage - 1)}
+              onClick={() => dispatchQuery({ type: 'page', page: activePage - 1 })}
             >
               <Icon path={mdiArrowLeftBold} size={1} />
             </ActionIcon>
@@ -218,9 +242,9 @@ const Logs: FC = () => {
             </Text>
             <ActionIcon
               size="lg"
-              disabled={!logs || logs.length < ITEM_COUNT_PER_PAGE}
+              disabled={!logs || logs.length < ADMIN_LOG_PAGE_SIZE}
               aria-label={t('common.pagination.next', 'Next page')}
-              onClick={() => setPage(activePage + 1)}
+              onClick={() => dispatchQuery({ type: 'page', page: activePage + 1 })}
             >
               <Icon path={mdiArrowRightBold} size={1} />
             </ActionIcon>
@@ -277,8 +301,8 @@ const Logs: FC = () => {
             </Text>
           </Paper>
         ) : (
-          visibleLogs.map((item, index) => (
-            <Paper component="article" key={`${item.time}@${index}`} p="md" withBorder className={classes.logCard}>
+          visibleLogs.map((item) => (
+            <Paper component="article" key={item.id} p="md" withBorder className={classes.logCard}>
               <Stack gap="sm">
                 <Group justify="space-between" align="flex-start" gap="sm" wrap="nowrap">
                   <Group gap="xs" wrap="wrap">

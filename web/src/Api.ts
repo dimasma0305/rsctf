@@ -940,6 +940,8 @@ export interface AdminUserInfoModel {
 
 /** Log information (Admin) */
 export interface LogMessageModel {
+  /** @format int32 */
+  id: number;
   /**
    * Log time
    * @format uint64

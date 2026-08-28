@@ -32,3 +32,30 @@ export class LatestRequest {
     this.controller = undefined
   }
 }
+
+export interface ListSnapshot<T> {
+  scope: string
+  rows: readonly T[]
+}
+
+/** Bind a list snapshot to both the newest request generation and the exact UI
+ * scope that requested it. Consumers can hide an old page synchronously while
+ * the replacement request is still pending. */
+export class LatestListRequest<T> {
+  private readonly latest = new LatestRequest()
+
+  async run(
+    scope: string,
+    request: (signal: AbortSignal) => Promise<readonly T[]>
+  ): Promise<ListSnapshot<T> | undefined> {
+    const rows = await this.latest.run(request)
+    return rows === undefined ? undefined : { scope, rows }
+  }
+
+  cancel() {
+    this.latest.cancel()
+  }
+}
+
+export const currentListSnapshotRows = <T>(scope: string, snapshot?: ListSnapshot<T>) =>
+  snapshot?.scope === scope ? snapshot.rows : undefined
