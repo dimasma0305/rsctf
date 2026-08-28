@@ -671,16 +671,19 @@ pub async fn cleanup(st: &SharedState, policy: &ContainerPolicy) -> AppResult<Im
         .filter(|candidate| seen.insert(candidate.canonical_ref.clone()))
         .collect::<Vec<_>>();
     report.candidate_backlog = candidate_backlog(total_candidates, candidates.len());
-    let mut outcomes = futures::stream::iter(candidates.iter())
+    let mut outcomes = futures::stream::iter(candidates.into_iter())
         .map(|candidate| {
             let canonical_ref = candidate.canonical_ref.clone();
+            let docker = &docker;
+            let references = &references;
+            let live_image_ids = &live_image_ids;
             async move {
                 let outcome = evict_one(
                     st,
-                    &docker,
-                    candidate,
-                    &references,
-                    &live_image_ids,
+                    docker,
+                    &candidate,
+                    references,
+                    live_image_ids,
                     cutoff,
                     before.low_storage,
                 )

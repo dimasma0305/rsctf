@@ -1,6 +1,6 @@
 use bollard::models::ContainerStateStatusEnum;
 
-use super::TEAM_ENV;
+use super::spec::TEAM_ENV;
 
 /// A readable collision-safe name. A stable operation gets a deterministic
 /// suffix so recovery can adopt the same backend workload.

@@ -4,7 +4,7 @@ use rsctf_worker_protocol::GameKind;
 
 use crate::utils::enums::{ChallengeType, NetworkMode};
 
-const TEAM_ENV: &str = "RSCTF_TEAM_ID";
+pub(super) const TEAM_ENV: &str = "RSCTF_TEAM_ID";
 
 /// Requested container configuration.
 ///

@@ -5,6 +5,7 @@ use super::inspection::{
 };
 use super::*;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::time::Instant;
 
 fn scratch(name: &str) -> std::path::PathBuf {
     let mut p = std::env::temp_dir();
