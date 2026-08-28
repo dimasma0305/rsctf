@@ -783,7 +783,7 @@ async function prepareAdFixture() {
     containerImage: image,
     memoryLimit: 64,
     cpuCount: 1,
-    exposePort: 80,
+    exposePort: 8080,
     adCheckerImage: checker,
     adAllowEgress: false,
     adAllowSelfReset: true,

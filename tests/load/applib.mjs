@@ -1701,6 +1701,14 @@ export async function kothApiObservation(
   return response;
 }
 
+export function isRetriableKothApiContextFailure(value) {
+  const status = value instanceof Error ? null : Number(value?.status);
+  const detail = value instanceof Error ? value.message : String(value?.text || '');
+  return (status === 409 || /fetch KotH API context → 409\b/.test(detail)) &&
+    (detail.includes('Leaderboard KotH context is not active') ||
+      detail.includes('Leaderboard KotH context changed; fetch context and retry'));
+}
+
 export async function kothApiCaptureWrite(
   gid,
   cid,
@@ -1708,19 +1716,32 @@ export async function kothApiCaptureWrite(
   tokenOrTokens,
   options,
 ) {
-  const response = await kothApiObservation(
-    gid,
-    cid,
-    secret,
-    tokenOrTokens,
-    options,
-  );
-  if (response.status !== 200) {
+  const attempts = 20;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let response;
+    try {
+      response = await kothApiObservation(
+        gid,
+        cid,
+        secret,
+        tokenOrTokens,
+        options,
+      );
+    } catch (error) {
+      if (!isRetriableKothApiContextFailure(error) || attempt === attempts) throw error;
+      await sleep(500);
+      continue;
+    }
+    if (response.status === 200) return unwrap(response);
+    if (isRetriableKothApiContextFailure(response) && attempt < attempts) {
+      await sleep(500);
+      continue;
+    }
     throw new Error(
       `write KotH Leaderboard evidence → ${response.status} ${response.text?.slice(0, 200)}`,
     );
   }
-  return unwrap(response);
+  throw new Error('write KotH Leaderboard evidence exhausted its bounded context retries');
 }
 
 export function latestKothToken(gid, pid, cid) {
