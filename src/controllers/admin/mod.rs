@@ -329,43 +329,34 @@ pub async fn files(
 pub struct WriteupInfoModel {
     pub divisions: BTreeMap<String, String>,
     pub writeups: Vec<WriteupInfo>,
+    pub total: i64,
 }
 
-/// Materialise a single participation's writeup, if it carries one.
-async fn writeup_for(st: &SharedState, p: &participation::Model) -> AppResult<Option<WriteupInfo>> {
-    let Some(wid) = p.writeup_id else {
-        return Ok(None);
-    };
-    let Some(f) = local_file::Entity::find_by_id(wid).one(&st.db).await? else {
-        return Ok(None);
-    };
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameWriteupQuery {
+    #[serde(default = "default_count")]
+    pub count: u64,
+    #[serde(default)]
+    pub skip: u64,
+    #[serde(default)]
+    pub division_id: Option<i32>,
+}
 
-    let team = team::Entity::find_by_id(p.team_id)
-        .one(&st.db)
-        .await?
-        .map(TeamInfoModel::from)
-        .unwrap_or_else(|| TeamInfoModel {
-            id: p.team_id,
-            name: String::new(),
-            bio: None,
-            avatar: None,
-            locked: false,
-            members: Vec::new(),
-        });
-    let game_title = game::Entity::find_by_id(p.game_id)
-        .one(&st.db)
-        .await?
-        .map(|g| g.title)
-        .unwrap_or_default();
-
-    Ok(Some(WriteupInfo {
-        id: p.id,
-        team,
-        game_title,
-        url: format!("/assets/{}/{}", f.hash, f.name),
-        upload_time_utc: f.upload_time_utc,
-        division_id: p.division_id,
-    }))
+#[derive(sqlx::FromRow)]
+struct GameWriteupRow {
+    participation_id: i32,
+    division_id: Option<i32>,
+    game_title: String,
+    hash: String,
+    file_name: String,
+    upload_time_utc: DateTime<Utc>,
+    team_id: i32,
+    team_name: String,
+    team_bio: Option<String>,
+    team_avatar_hash: Option<String>,
+    team_locked: bool,
+    total: i64,
 }
 
 /// `GET /api/admin/writeups/{id}` — writeups submitted for a single game.
@@ -373,6 +364,7 @@ pub async fn game_writeups(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Path(id): Path<i32>,
+    Query(q): Query<GameWriteupQuery>,
 ) -> AppResult<RequestResponse<WriteupInfoModel>> {
     game::Entity::find_by_id(id)
         .one(&st.db)
@@ -388,33 +380,83 @@ pub async fn game_writeups(
         .map(|d| (d.id.to_string(), d.name))
         .collect();
 
-    let parts = participation::Entity::find()
-        .filter(participation::Column::GameId.eq(id))
-        .filter(participation::Column::WriteupId.is_not_null())
-        .all(&st.db)
-        .await?;
-
-    let mut writeups = Vec::with_capacity(parts.len());
-    for p in parts {
-        if let Some(w) = writeup_for(&st, &p).await? {
-            writeups.push(w);
-        }
-    }
+    let count = q.count.clamp(1, 100);
+    let rows = sqlx::query_as::<_, GameWriteupRow>(
+        r#"SELECT participation.id AS participation_id,
+                  participation.division_id,
+                  game.title AS game_title,
+                  file.hash,
+                  file.name AS file_name,
+                  file.upload_time_utc,
+                  team.id AS team_id,
+                  team.name AS team_name,
+                  team.bio AS team_bio,
+                  team.avatar_hash AS team_avatar_hash,
+                  team.locked AS team_locked,
+                  COUNT(*) OVER()::bigint AS total
+             FROM "Participations" participation
+             JOIN "Games" game ON game.id = participation.game_id
+             JOIN "Teams" team ON team.id = participation.team_id
+             JOIN "Files" file ON file.id = participation.writeup_id
+            WHERE participation.game_id = $1
+              AND ($4::integer IS NULL OR participation.division_id = $4)
+            ORDER BY participation.id
+            LIMIT $2 OFFSET $3"#,
+    )
+    .bind(id)
+    .bind(i64::try_from(count).unwrap_or(100))
+    .bind(i64::try_from(q.skip).unwrap_or(i64::MAX))
+    .bind(q.division_id)
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let total = rows.first().map_or(0, |row| row.total);
+    let writeups = rows
+        .into_iter()
+        .map(|row| WriteupInfo {
+            id: row.participation_id,
+            team: TeamInfoModel {
+                id: row.team_id,
+                name: row.team_name,
+                bio: row.team_bio,
+                avatar: row
+                    .team_avatar_hash
+                    .map(|hash| format!("/assets/{hash}/avatar")),
+                locked: row.team_locked,
+                members: Vec::new(),
+            },
+            game_title: row.game_title,
+            url: format!("/assets/{}/{}", row.hash, row.file_name),
+            upload_time_utc: row.upload_time_utc,
+            division_id: row.division_id,
+        })
+        .collect();
 
     Ok(RequestResponse::ok(WriteupInfoModel {
         divisions,
         writeups,
+        total,
     }))
 }
 
 /// `GET /api/admin/writeups/{id}/all` — download every writeup for a game as a
 /// single streamed zip archive.
 const WRITEUP_ZIP_CHUNK_BYTES: usize = 64 * 1024;
-static WRITEUP_ARCHIVE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+const MAX_WRITEUP_ARCHIVE_ENTRIES: usize = 2_048;
+const MAX_WRITEUP_ARCHIVE_BYTES: usize = 128 * 1024 * 1024;
 
 struct WriteupArchiveSource {
     hash: String,
     entry: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct WriteupArchiveRow {
+    participation_id: i32,
+    team_name: String,
+    hash: String,
+    file_name: String,
+    file_size: i64,
 }
 
 struct WriteupArchiveFile {
@@ -480,62 +522,74 @@ pub async fn download_all_writeups(
     _admin: AdminUser,
     Path(id): Path<i32>,
 ) -> AppResult<Response> {
+    let permit = match st
+        .bulk_export_admission
+        .try_acquire(std::sync::Arc::clone(&st.cache), MAX_WRITEUP_ARCHIVE_BYTES)
+        .await
+    {
+        Ok(permit) => std::sync::Arc::new(permit),
+        Err(_) => return Ok(crate::services::bulk_export::overload_response()),
+    };
     let game = game::Entity::find_by_id(id)
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("Game not found"))?;
 
-    let parts = participation::Entity::find()
-        .filter(participation::Column::GameId.eq(id))
-        .filter(participation::Column::WriteupId.is_not_null())
-        .all(&st.db)
-        .await?;
-
-    let mut sources = Vec::with_capacity(parts.len());
-    for participation in parts {
-        let Some(writeup_id) = participation.writeup_id else {
-            continue;
-        };
-        let Some(file) = local_file::Entity::find_by_id(writeup_id)
-            .one(&st.db)
-            .await?
-        else {
-            continue;
-        };
-        if file.file_size < 0 || file.file_size as usize > crate::utils::upload::WRITEUP_FILE_BYTES
-        {
-            tracing::warn!(
-                file_id = file.id,
-                size = file.file_size,
-                "skipping writeup with invalid stored size"
-            );
-            continue;
+    let rows = sqlx::query_as::<_, WriteupArchiveRow>(
+        r#"SELECT participation.id AS participation_id,
+                  team.name AS team_name,
+                  file.hash,
+                  file.name AS file_name,
+                  file.file_size
+             FROM "Participations" participation
+             JOIN "Teams" team ON team.id = participation.team_id
+             JOIN "Files" file ON file.id = participation.writeup_id
+            WHERE participation.game_id = $1
+            ORDER BY participation.id
+            LIMIT $2"#,
+    )
+    .bind(id)
+    .bind(i64::try_from(MAX_WRITEUP_ARCHIVE_ENTRIES + 1).unwrap_or(i64::MAX))
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if rows.len() > MAX_WRITEUP_ARCHIVE_ENTRIES {
+        return Err(AppError::payload_too_large(format!(
+            "Writeup archives are limited to {MAX_WRITEUP_ARCHIVE_ENTRIES} files"
+        )));
+    }
+    let mut total_bytes = 0usize;
+    let mut sources = Vec::with_capacity(rows.len());
+    for row in rows {
+        let file_size = usize::try_from(row.file_size)
+            .map_err(|_| AppError::bad_request("Writeup has an invalid stored size"))?;
+        if file_size > crate::utils::upload::WRITEUP_FILE_BYTES {
+            return Err(AppError::payload_too_large(
+                "A writeup exceeds the file limit",
+            ));
         }
-        let team_name = team::Entity::find_by_id(participation.team_id)
-            .one(&st.db)
-            .await?
-            .map(|team| team.name)
-            .unwrap_or_else(|| format!("team-{}", participation.team_id));
+        total_bytes = total_bytes
+            .checked_add(file_size)
+            .filter(|total| *total <= MAX_WRITEUP_ARCHIVE_BYTES)
+            .ok_or_else(|| AppError::payload_too_large("Writeup archive exceeds 128 MiB"))?;
         sources.push(WriteupArchiveSource {
-            hash: file.hash,
+            hash: row.hash,
             entry: format!(
                 "{}-{}-{}",
-                participation.id,
-                sanitize_entry(&team_name),
-                sanitize_entry(&file.name)
+                row.participation_id,
+                sanitize_entry(&row.team_name),
+                sanitize_entry(&row.file_name)
             ),
         });
     }
 
-    let permit = WRITEUP_ARCHIVE_SLOTS
-        .try_acquire()
-        .map_err(|_| AppError::unavailable("Writeup archive capacity is busy; retry shortly"))?;
     let (file_sender, mut file_receiver) = tokio::sync::mpsc::channel::<WriteupArchiveFile>(1);
     let (output_sender, output_receiver) = tokio::sync::mpsc::channel::<WriteupZipChunk>(8);
 
     let error_sender = output_sender.clone();
+    let worker_permit = std::sync::Arc::clone(&permit);
     tokio::task::spawn_blocking(move || {
-        let _permit = permit;
+        let _permit = worker_permit;
         let outcome = (|| -> Result<(), String> {
             let writer = ZipStreamWriter::new(output_sender);
             let mut zip = zip::ZipWriter::new_stream(writer);
@@ -561,7 +615,9 @@ pub async fn download_all_writeups(
     });
 
     let storage = st.storage.clone();
+    let loader_permit = std::sync::Arc::clone(&permit);
     tokio::spawn(async move {
+        let _permit = loader_permit;
         for source in sources {
             let bytes = match storage
                 .load_bounded(&source.hash, crate::utils::upload::WRITEUP_FILE_BYTES)
@@ -604,7 +660,10 @@ pub async fn download_all_writeups(
             (header::CONTENT_DISPOSITION, disposition),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
         ],
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(output_receiver)),
+        crate::services::bulk_export::permitted_stream_body(
+            tokio_stream::wrappers::ReceiverStream::new(output_receiver),
+            permit,
+        ),
     )
         .into_response())
 }
@@ -625,6 +684,18 @@ fn sanitize_entry(name: &str) -> String {
 mod writeup_archive_tests {
     use super::*;
     use std::io::{Cursor, Read};
+
+    #[test]
+    fn writeup_archive_admits_before_any_projection_or_blob_read() {
+        let source = include_str!("mod.rs");
+        let handler = source.find("pub async fn download_all_writeups(").unwrap();
+        let body = &source[handler..];
+        let admission = body.find("bulk_export_admission").unwrap();
+        let projection = body.find("query_as::<_, WriteupArchiveRow>").unwrap();
+        let blob_read = body.find("load_bounded").unwrap();
+        assert!(admission < projection);
+        assert!(admission < blob_read);
+    }
 
     #[test]
     fn streamed_writeup_zip_is_valid_without_buffering_the_archive() {

@@ -1,9 +1,10 @@
 import { Alert, Badge, Button, CopyButton, Group, Loader, Stack, Text, Tooltip } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
-import { mdiAlertCircleOutline, mdiConsole, mdiDownload, mdiRefresh, mdiRestart, mdiServerNetwork } from '@mdi/js'
+import { mdiAlertCircleOutline, mdiConsole, mdiRefresh, mdiRestart, mdiServerNetwork } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { showErrorMsg } from '@Utils/Shared'
 import { useChallengePolling } from '@Hooks/useChallengePolling'
@@ -90,16 +91,14 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
           {t('game.content.ad.snapshot', 'Post-game snapshot')}:
         </Text>
         <Tooltip label={t('game.tooltip.ad.snapshot', 'Download the final container filesystem as a TAR archive.')}>
-          <Button
-            component="a"
-            href={api.game.gameAdDownloadSnapshotUrl(gameId, service.adTeamServiceId)}
-            download
+          <SnapshotDownloadButton
+            url={api.game.gameAdDownloadSnapshotUrl(gameId, service.adTeamServiceId)}
+            filename={`ad-snapshot-service${service.adTeamServiceId}.tar.gz`}
+            downloadKey={`player:snapshot:${gameId}:${service.adTeamServiceId}`}
+            label={t('game.button.ad.download_snapshot', 'Download .tar.gz')}
             size="compact-xs"
             variant="light"
-            leftSection={<Icon path={mdiDownload} size={0.7} />}
-          >
-            {t('game.button.ad.download_snapshot', 'Download .tar.gz')}
-          </Button>
+          />
         </Tooltip>
       </Group>
     ) : null

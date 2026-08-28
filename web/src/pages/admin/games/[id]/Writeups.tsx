@@ -1,4 +1,4 @@
-import { Button, Center, Flex, ScrollArea, Select, Stack, Text, Title } from '@mantine/core'
+import { Button, Center, Flex, Pagination, ScrollArea, Select, Stack, Text, Title } from '@mantine/core'
 import { mdiFolderDownloadOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useState, useMemo } from 'react'
@@ -7,19 +7,33 @@ import { useParams } from 'react-router'
 import { PDFViewer } from '@Components/admin/PDFViewer'
 import { TeamWriteupCard } from '@Components/admin/TeamWriteupCard'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { downloadBlob } from '@Utils/ApiHelper'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { WriteupInfo } from '@Api'
+
+const WRITEUPS_PER_PAGE = 50
 
 const GameWriteups: FC = () => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const [selected, setSelected] = useState<WriteupInfo>()
   const [selectedDivision, setSelectedDivision] = useState<string>('')
+  const [page, setPage] = useState(1)
+  const [downloading, setDownloading] = useState(false)
 
-  const { data } = api.admin.useAdminWriteups(numId, OnceSWRConfig)
+  const query = useMemo(
+    () => ({
+      count: WRITEUPS_PER_PAGE,
+      skip: (page - 1) * WRITEUPS_PER_PAGE,
+      divisionId: selectedDivision ? parseInt(selectedDivision) : undefined,
+    }),
+    [page, selectedDivision]
+  )
+  const { data } = api.admin.useAdminWriteups(numId, query, OnceSWRConfig)
   const { t } = useTranslation()
   const isCompact = useIsMobile(900)
+  const totalPages = Math.max(1, Math.ceil((data?.total ?? 0) / WRITEUPS_PER_PAGE))
 
   const writeups = useMemo(() => data?.writeups ?? [], [data?.writeups])
 
@@ -33,16 +47,25 @@ const GameWriteups: FC = () => {
     return { divisions, divisionOptions }
   }, [data?.divisions, t])
 
-  const filteredWriteups = useMemo(() => {
-    const div = parseInt(selectedDivision)
-    return selectedDivision ? writeups.filter((w) => w.divisionId === div) : writeups
-  }, [selectedDivision, writeups])
+  const filteredWriteups = writeups
 
   useEffect(() => {
     if (filteredWriteups?.length && (!selected || !filteredWriteups.some((w) => w.id === selected.id))) {
       setSelected(filteredWriteups[0])
     }
   }, [filteredWriteups, selected])
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
+
+  const downloadAll = () =>
+    downloadBlob(
+      `admin:writeups:${numId}`,
+      () => api.admin.adminDownloadAllWriteups(numId, { format: 'blob' }),
+      setDownloading,
+      t
+    )
 
   return (
     <WithGameEditTab
@@ -53,7 +76,9 @@ const GameWriteups: FC = () => {
           fullWidth
           w={isCompact ? '100%' : '15rem'}
           leftSection={<Icon path={mdiFolderDownloadOutline} size={1} />}
-          onClick={() => window.open(`/api/admin/writeups/${id}/all`, '_blank', 'noopener,noreferrer')}
+          disabled={downloading}
+          loading={downloading}
+          onClick={downloadAll}
         >
           {t('admin.button.writeups.download_all')}
         </Button>
@@ -84,7 +109,10 @@ const GameWriteups: FC = () => {
             label={t('admin.label.games.writeups.division', 'Division')}
             data={divisionOptions}
             value={selectedDivision}
-            onChange={(value) => setSelectedDivision(value ?? '')}
+            onChange={(value) => {
+              setSelectedDivision(value ?? '')
+              setPage(1)
+            }}
           />
           <ScrollArea type="auto" h={isCompact ? '22rem' : undefined} style={{ flex: 1 }}>
             <Stack gap="sm">
@@ -99,6 +127,18 @@ const GameWriteups: FC = () => {
               ))}
             </Stack>
           </ScrollArea>
+          {totalPages > 1 && (
+            <Pagination
+              total={totalPages}
+              value={page}
+              onChange={setPage}
+              size="sm"
+              siblings={0}
+              boundaries={0}
+              withEdges
+              aria-label={t('admin.label.games.writeups.page', 'Writeup pages')}
+            />
+          )}
         </Stack>
       </Flex>
     </WithGameEditTab>

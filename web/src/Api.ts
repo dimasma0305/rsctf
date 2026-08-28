@@ -977,6 +977,8 @@ export interface WriteupInfoModel {
   divisions?: Record<string, string>;
   /** Writeups list */
   writeups?: WriteupInfo[];
+  /** Total matching writeups */
+  total?: number;
 }
 
 export interface WriteupInfo {
@@ -5812,10 +5814,15 @@ export class Api<
      * @summary Get all Writeup basic information
      * @request GET:/api/admin/writeups/{id}
      */
-    adminWriteups: (id: number, params: RequestParams = {}) =>
+    adminWriteups: (
+      id: number,
+      query?: { count?: number; skip?: number; divisionId?: number },
+      params: RequestParams = {},
+    ) =>
       this.request<WriteupInfoModel, RequestResponse>({
         path: `/api/admin/writeups/${id}`,
         method: "GET",
+        query: query,
         format: "json",
         ...params,
       }),
@@ -5829,11 +5836,12 @@ export class Api<
      */
     useAdminWriteups: (
       id: number,
+      query?: { count?: number; skip?: number; divisionId?: number },
       options?: SWRConfiguration,
       doFetch: boolean = true,
     ) =>
       useSWR<WriteupInfoModel, RequestResponse>(
-        doFetch ? `/api/admin/writeups/${id}` : null,
+        doFetch ? [`/api/admin/writeups/${id}`, query] : null,
         options,
       ),
 
@@ -5847,9 +5855,10 @@ export class Api<
      */
     mutateAdminWriteups: (
       id: number,
+      query?: { count?: number; skip?: number; divisionId?: number },
       data?: WriteupInfoModel | Promise<WriteupInfoModel>,
       options?: MutatorOptions,
-    ) => mutate<WriteupInfoModel>(`/api/admin/writeups/${id}`, data, options),
+    ) => mutate<WriteupInfoModel>([`/api/admin/writeups/${id}`, query], data, options),
 
     /**
      * @description List configured repo bindings

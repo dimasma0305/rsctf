@@ -493,7 +493,7 @@ fn fill_random(buf: &mut [u8]) {
 mod byoc;
 mod byoc_authorization;
 mod scoreboard;
-mod snapshot_download;
+pub(crate) mod snapshot_download;
 mod ssh;
 mod state_tail;
 mod submit;

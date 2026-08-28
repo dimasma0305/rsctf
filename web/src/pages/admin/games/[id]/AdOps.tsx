@@ -41,7 +41,6 @@ import {
   mdiClose,
   mdiCloseCircle,
   mdiConsole,
-  mdiDownload,
   mdiFileOutline,
   mdiFileTree,
   mdiFolderOutline,
@@ -59,6 +58,7 @@ import dayjs from 'dayjs'
 import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
+import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
 import { KothOpsPanel } from '@Components/admin/KothOpsPanel'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
@@ -655,15 +655,13 @@ const SnapshotModal: FC<{
         <Group justify="space-between" wrap="wrap" gap="sm">
           <Group gap="sm" wrap="nowrap">
             {hasSnapshot && (
-              <Button
-                component="a"
-                href={downloadUrl}
-                download={filename}
+              <SnapshotDownloadButton
+                url={downloadUrl}
+                filename={filename}
+                downloadKey={`admin:snapshot:${gameId}:${target.cell.adTeamServiceId}`}
+                label={t('admin.button.ad_ops.snapshot.download', 'Download .tar.gz')}
                 variant="default"
-                leftSection={<Icon path={mdiDownload} size={0.9} />}
-              >
-                {t('admin.button.ad_ops.snapshot.download', 'Download .tar.gz')}
-              </Button>
+              />
             )}
             <Tooltip
               label={
