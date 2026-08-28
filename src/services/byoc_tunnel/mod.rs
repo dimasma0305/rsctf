@@ -37,6 +37,8 @@ mod endpoint;
 mod flag;
 mod framing;
 mod lifecycle;
+#[cfg(test)]
+mod tests;
 use authorization::live_tunnel_authorized;
 pub use control::start_control_listener;
 use endpoint::RelayEndpoint;
@@ -68,6 +70,26 @@ const AUTHORIZATION_LEASE_SECONDS: u64 = 15;
 /// A tunnel that never completed publication gets a short retry window. Once
 /// published, its endpoint remains stable until authorization expires.
 const FAILED_ACTIVATION_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
+const TEAM_DISCONNECT_PAGE_SIZE: i64 = 256;
+
+async fn load_team_participation_page(
+    pool: &sqlx::PgPool,
+    team_id: i32,
+    after_id: i32,
+) -> AppResult<Vec<i32>> {
+    sqlx::query_scalar(
+        r#"SELECT id FROM "Participations"
+            WHERE team_id = $1 AND id > $2
+            ORDER BY id
+            LIMIT $3"#,
+    )
+    .bind(team_id)
+    .bind(after_id)
+    .bind(TEAM_DISCONNECT_PAGE_SIZE)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
 
 /// A request to open a new outbound yamux stream, answered with the stream.
 type OpenReq = oneshot::Sender<Result<yamux::Stream, ()>>;
@@ -98,19 +120,24 @@ struct TunnelHandle {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct AuthorizationGeneration {
+    team_id: i32,
+    team: u64,
     participation: u64,
     challenge: u64,
 }
 
 #[derive(Default)]
 struct AuthorizationGenerations {
+    teams: HashMap<i32, u64>,
     participations: HashMap<i32, u64>,
     challenges: HashMap<i32, u64>,
 }
 
 impl AuthorizationGenerations {
-    fn current(&self, pid: i32, cid: i32) -> AuthorizationGeneration {
+    fn current(&self, team_id: i32, pid: i32, cid: i32) -> AuthorizationGeneration {
         AuthorizationGeneration {
+            team_id,
+            team: self.teams.get(&team_id).copied().unwrap_or_default(),
             participation: self.participations.get(&pid).copied().unwrap_or_default(),
             challenge: self.challenges.get(&cid).copied().unwrap_or_default(),
         }
@@ -211,13 +238,14 @@ impl Registry {
 
     pub(crate) async fn authorization_generation(
         &self,
+        team_id: i32,
         pid: i32,
         cid: i32,
     ) -> AuthorizationGeneration {
         self.authorization_generations
             .read()
             .await
-            .current(pid, cid)
+            .current(team_id, pid, cid)
     }
 
     async fn publication_guard(
@@ -227,7 +255,7 @@ impl Registry {
         expected: AuthorizationGeneration,
     ) -> Option<tokio::sync::RwLockReadGuard<'_, AuthorizationGenerations>> {
         let guard = self.authorization_generations.read().await;
-        (guard.current(pid, cid) == expected).then_some(guard)
+        (guard.current(expected.team_id, pid, cid) == expected).then_some(guard)
     }
 
     fn schedule_failed_activation_release(
@@ -331,65 +359,67 @@ impl Registry {
         team_id: i32,
         propagate: bool,
     ) -> AppResult<()> {
-        let participation_ids = sqlx::query_scalar::<_, i32>(
-            r#"SELECT id FROM "Participations" WHERE team_id = $1 ORDER BY id"#,
-        )
-        .bind(team_id)
-        .fetch_all(db.get_postgres_connection_pool())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        let participation_set = participation_ids.iter().copied().collect::<HashSet<_>>();
-        {
-            let mut generations = self.authorization_generations.write().await;
-            for &participation_id in &participation_ids {
-                let generation = generations
-                    .participations
-                    .entry(participation_id)
-                    .or_default();
-                *generation = generation.saturating_add(1);
+        // One team generation fences every in-flight agent without retaining a
+        // generation entry for each historical participation. Keep the write
+        // guard until all pages are revoked so a newly authorized agent cannot
+        // publish between its page update and the final VPN reconciliation.
+        let mut generations = self.authorization_generations.write().await;
+        let generation = generations.teams.entry(team_id).or_default();
+        *generation = generation.saturating_add(1);
+
+        let mut after_id = 0;
+        loop {
+            let participation_ids =
+                load_team_participation_page(db.get_postgres_connection_pool(), team_id, after_id)
+                    .await?;
+            if participation_ids.is_empty() {
+                break;
             }
-        }
-        let endpoints = {
-            let mut registry = self.endpoints.lock().await;
-            let keys = registry
-                .keys()
-                .filter(|(participation_id, _)| participation_set.contains(participation_id))
-                .copied()
-                .collect::<Vec<_>>();
-            keys.into_iter()
-                .filter_map(|key| registry.remove(&key))
+            after_id = *participation_ids
+                .last()
+                .expect("a non-empty participation page has a final id");
+            let participation_set = participation_ids.iter().copied().collect::<HashSet<_>>();
+            let endpoints = {
+                let mut registry = self.endpoints.lock().await;
+                let keys = registry
+                    .keys()
+                    .filter(|(participation_id, _)| participation_set.contains(participation_id))
+                    .copied()
+                    .collect::<Vec<_>>();
+                keys.into_iter()
+                    .filter_map(|key| registry.remove(&key))
+                    .collect::<Vec<_>>()
+            };
+            let mut handles = futures::stream::iter(endpoints.iter().cloned())
+                .map(|endpoint| async move { endpoint.revoke().await })
+                .buffer_unordered(16)
+                .filter_map(future::ready)
                 .collect::<Vec<_>>()
-        };
-        let handles = futures::stream::iter(endpoints.iter().cloned())
-            .map(|endpoint| async move { endpoint.revoke().await })
-            .buffer_unordered(16)
-            .filter_map(future::ready)
-            .collect::<Vec<_>>()
-            .await;
-        let revocation = async {
-            if !participation_ids.is_empty() {
-                sqlx::query(
-                    r#"UPDATE "AdTeamServices" service
-                          SET host = '', port = 0, status = 2
-                        WHERE service.participation_id = ANY($1)
-                          AND service.container_id IS NULL
-                          AND EXISTS (
-                              SELECT 1 FROM "GameChallenges" challenge
-                               WHERE challenge.id = service.challenge_id
-                                 AND challenge.ad_self_hosted = TRUE
-                          )"#,
-                )
-                .bind(&participation_ids)
-                .execute(db.get_postgres_connection_pool())
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
+                .await;
+            let update = sqlx::query(
+                r#"UPDATE "AdTeamServices" service
+                      SET host = '', port = 0, status = 2
+                    WHERE service.participation_id = ANY($1)
+                      AND service.container_id IS NULL
+                      AND EXISTS (
+                          SELECT 1 FROM "GameChallenges" challenge
+                           WHERE challenge.id = service.challenge_id
+                             AND challenge.ad_self_hosted = TRUE
+                      )"#,
+            )
+            .bind(&participation_ids)
+            .execute(db.get_postgres_connection_pool())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()));
+            wait_for_tunnel_shutdown(&mut handles).await;
+            wait_for_endpoint_shutdown(&endpoints).await;
+            update?;
+            if participation_ids.len() < TEAM_DISCONNECT_PAGE_SIZE as usize {
+                break;
             }
-            crate::services::ad_vpn::ensure_hub_and_sync(db).await
         }
-        .await;
-        let mut handles = handles;
-        wait_for_tunnel_shutdown(&mut handles).await;
-        wait_for_endpoint_shutdown(&endpoints).await;
+        drop(generations);
+        let revocation = crate::services::ad_vpn::ensure_hub_and_sync(db).await;
         if propagate
             && revocation.is_ok()
             && self.events.is_distributed()

@@ -118,8 +118,17 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
   const [inviteLoading, setInviteLoading] = useState(false)
   const [inviteLoadError, setInviteLoadError] = useState(false)
   const inviteRequestGeneration = useRef(0)
-  const inviteMutationOwner = useRef(false)
-  const inviteOperationId = useRef<string | null>(null)
+  const inviteReadOwner = useRef<AbortController | null>(null)
+  const inviteMutationOwner = useRef<{
+    controller: AbortController
+    generation: number
+    teamId: number
+  } | null>(null)
+  const inviteOperation = useRef<{
+    operationId: string
+    expectedRevision: number
+    teamId: number
+  } | null>(null)
   const [disabled, setDisabled] = useState(false)
   const mutationOwner = useRef<AbortController | null>(null)
   const profileOperation = useRef<{ digest: string; id: string } | null>(null)
@@ -156,6 +165,8 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
 
   useEffect(
     () => () => {
+      inviteReadOwner.current?.abort()
+      inviteMutationOwner.current?.controller.abort()
       mutationOwner.current?.abort()
     },
     []
@@ -163,32 +174,57 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
 
   const loadInviteCode = useCallback(async () => {
     if (!isCaptain || !teamId || !props.opened) return
+    inviteReadOwner.current?.abort()
+    const owner = new AbortController()
+    inviteReadOwner.current = owner
     const generation = ++inviteRequestGeneration.current
     setInviteLoading(true)
     setInviteLoadError(false)
     try {
-      const response = await api.team.teamInviteCode(teamId)
-      if (generation !== inviteRequestGeneration.current) return
+      const response = await api.team.teamInviteCode(teamId, { signal: owner.signal })
+      if (owner.signal.aborted || generation !== inviteRequestGeneration.current) return
       setInviteCode(response.data.code)
       setInviteRevision(response.data.revision)
-    } catch {
-      if (generation === inviteRequestGeneration.current) setInviteLoadError(true)
+      const recoverableOperation = inviteOperation.current
+      if (recoverableOperation?.teamId === teamId && response.data.revision !== recoverableOperation.expectedRevision) {
+        inviteOperation.current = null
+      }
+    } catch (error) {
+      if (
+        !owner.signal.aborted &&
+        generation === inviteRequestGeneration.current &&
+        !(error instanceof DOMException && error.name === 'AbortError')
+      ) {
+        setInviteLoadError(true)
+      }
     } finally {
-      if (generation === inviteRequestGeneration.current) setInviteLoading(false)
+      if (inviteReadOwner.current === owner) inviteReadOwner.current = null
+      if (!owner.signal.aborted && generation === inviteRequestGeneration.current) setInviteLoading(false)
     }
   }, [isCaptain, props.opened, teamId])
 
   useEffect(() => {
     inviteRequestGeneration.current += 1
+    inviteReadOwner.current?.abort()
+    inviteReadOwner.current = null
+    inviteMutationOwner.current?.controller.abort()
+    inviteMutationOwner.current = null
     setInviteCode('')
     setInviteRevision(null)
     setInviteLoadError(false)
-    inviteOperationId.current = null
     if (props.opened) void loadInviteCode()
     return () => {
       inviteRequestGeneration.current += 1
+      inviteReadOwner.current?.abort()
+      inviteReadOwner.current = null
+      inviteMutationOwner.current?.controller.abort()
+      inviteMutationOwner.current = null
     }
   }, [loadInviteCode, props.opened])
+
+  useEffect(() => {
+    inviteOperation.current = null
+  }, [teamId])
 
   const onConfirmLeaveTeam = async () => {
     if (!teamInfo || isCaptain) return
@@ -295,31 +331,65 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
   const onRefreshInviteCode = async () => {
     if (!team?.id || inviteRevision == null || inviteMutationOwner.current) return
 
-    inviteMutationOwner.current = true
-    setInviteLoading(true)
-    const operationId = inviteOperationId.current ?? crypto.randomUUID()
-    inviteOperationId.current = operationId
-    try {
-      const response = await api.team.teamUpdateInviteToken(team.id, {
-        operationId,
-        expectedRevision: inviteRevision,
-      })
-      if (response.data.revision >= inviteRevision) {
-        setInviteCode(response.data.code)
-        setInviteRevision(response.data.revision)
+    inviteReadOwner.current?.abort()
+    inviteReadOwner.current = null
+    const generation = ++inviteRequestGeneration.current
+    const targetTeamId = team.id
+    const expectedRevision = inviteRevision
+    const previous = inviteOperation.current
+    if (previous?.teamId !== targetTeamId || previous.expectedRevision !== expectedRevision) {
+      inviteOperation.current = {
+        operationId: crypto.randomUUID(),
+        expectedRevision,
+        teamId: targetTeamId,
       }
-      inviteOperationId.current = null
+    }
+    const operation = inviteOperation.current!
+    const controller = new AbortController()
+    const owner = { controller, generation, teamId: targetTeamId }
+    inviteMutationOwner.current = owner
+    setInviteLoading(true)
+    setInviteLoadError(false)
+    try {
+      const response = await api.team.teamUpdateInviteToken(
+        targetTeamId,
+        {
+          operationId: operation.operationId,
+          expectedRevision: operation.expectedRevision,
+        },
+        { signal: controller.signal }
+      )
+      if (
+        controller.signal.aborted ||
+        inviteMutationOwner.current !== owner ||
+        generation !== inviteRequestGeneration.current
+      ) {
+        return
+      }
+      if (response.data.revision !== expectedRevision + 1) {
+        setInviteLoadError(true)
+        return
+      }
+      setInviteCode(response.data.code)
+      setInviteRevision(response.data.revision)
+      inviteOperation.current = null
       showNotification({
         color: 'teal',
         message: t('team.notification.invite_code.updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch (e) {
-      showErrorMsg(e, t)
-      setInviteLoadError(true)
+      if (inviteMutationOwner.current === owner && !controller.signal.aborted) {
+        showErrorMsg(e, t)
+        setInviteLoadError(true)
+      }
     } finally {
-      inviteMutationOwner.current = false
-      setInviteLoading(false)
+      if (inviteMutationOwner.current === owner) {
+        inviteMutationOwner.current = null
+        if (!controller.signal.aborted && generation === inviteRequestGeneration.current) {
+          setInviteLoading(false)
+        }
+      }
     }
   }
 
@@ -535,7 +605,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
                       size="sm"
                       aria-label={t('team.label.refresh_code', 'Refresh invitation code')}
                       loading={inviteLoading}
-                      disabled={locked || inviteRevision == null || inviteMutationOwner.current}
+                      disabled={locked || inviteRevision == null || inviteMutationOwner.current != null}
                       onClick={onRefreshInviteCode}
                     >
                       <Icon path={mdiRefresh} size={1} />

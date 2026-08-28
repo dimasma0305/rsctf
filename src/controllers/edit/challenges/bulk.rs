@@ -56,7 +56,6 @@ struct SelectedChallenge {
     deletion_pending: bool,
     review_status: i16,
     has_flag: bool,
-    ad_self_hosted: bool,
 }
 
 fn validate_request(request: &mut BulkChallengeMutationRequest) -> AppResult<()> {
@@ -223,8 +222,7 @@ async fn complete_desired_state(
                   challenge.is_enabled, challenge.deletion_pending,
                   challenge.review_status,
                   EXISTS (SELECT 1 FROM "FlagContexts" flag
-                           WHERE flag.challenge_id = challenge.id) AS has_flag,
-                  challenge.ad_self_hosted
+                           WHERE flag.challenge_id = challenge.id) AS has_flag
              FROM "GameChallenges" challenge
             WHERE challenge.game_id = $1 AND challenge.id = ANY($2)
             ORDER BY challenge.id
@@ -242,7 +240,6 @@ async fn complete_desired_state(
         .collect::<std::collections::HashMap<_, _>>();
     let mut changed_ids = Vec::new();
     let mut changed_titles = Vec::new();
-    let mut changed_runtimes = Vec::new();
     let mut outcomes = Vec::with_capacity(request.challenge_ids.len());
     for challenge_id in &request.challenge_ids {
         let Some(row) = by_id.get(challenge_id) else {
@@ -283,10 +280,13 @@ async fn complete_desired_state(
         } else {
             changed_ids.push(*challenge_id);
             changed_titles.push(row.title.clone());
-            changed_runtimes.push((row.id, row.challenge_type, row.ad_self_hosted));
             outcomes.push(BulkChallengeOutcome {
                 challenge_id: *challenge_id,
-                status: "Changed".into(),
+                status: if desired {
+                    "Changed".into()
+                } else {
+                    "CleanupPending".into()
+                },
                 message: None,
             });
         }
@@ -318,19 +318,38 @@ async fn complete_desired_state(
     .map_err(|error| AppError::internal(error.to_string()))?;
     let result_json =
         serde_json::to_value(&outcomes).map_err(|error| AppError::internal(error.to_string()))?;
-    let completion = sqlx::query(
-        r#"UPDATE "BulkChallengeMutationOperations"
-              SET state = 2, result = $3, result_revision = $4,
-                  completed_at_utc = clock_timestamp()
-            WHERE game_id = $1 AND operation_id = $2 AND state = 0"#,
-    )
-    .bind(game_id)
-    .bind(request.operation_id)
-    .bind(result_json)
-    .bind(result_revision)
-    .execute(&mut **control.transaction_mut())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    let cleanup_lease = (!desired && !changed_ids.is_empty()).then(Uuid::new_v4);
+    let completion = if let Some(lease_token) = cleanup_lease {
+        sqlx::query(
+            r#"UPDATE "BulkChallengeMutationOperations"
+                  SET state = 1, result = $3, result_revision = $4,
+                      lease_token = $5,
+                      lease_expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
+                WHERE game_id = $1 AND operation_id = $2 AND state = 0"#,
+        )
+        .bind(game_id)
+        .bind(request.operation_id)
+        .bind(result_json)
+        .bind(result_revision)
+        .bind(lease_token)
+        .execute(&mut **control.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+    } else {
+        sqlx::query(
+            r#"UPDATE "BulkChallengeMutationOperations"
+                  SET state = 2, result = $3, result_revision = $4,
+                      completed_at_utc = clock_timestamp()
+                WHERE game_id = $1 AND operation_id = $2 AND state = 0"#,
+        )
+        .bind(game_id)
+        .bind(request.operation_id)
+        .bind(result_json)
+        .bind(result_revision)
+        .execute(&mut **control.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+    };
     if completion.rows_affected() != 1 {
         return Err(AppError::conflict(
             "Bulk challenge operation changed while it was running",
@@ -341,11 +360,25 @@ async fn complete_desired_state(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
-    cleanup_operations(st).await;
-    if let Err(error) = crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await {
-        tracing::warn!(%error, game_id, "bulk challenge VPN reconciliation deferred");
+    if let Some(lease_token) = cleanup_lease {
+        spawn_disable_job(st.clone(), game_id, request.operation_id, lease_token);
+        return Ok(BulkChallengeMutationResult {
+            operation_id: request.operation_id,
+            state: "Pending",
+            configuration_revision: result_revision,
+            outcomes,
+        });
     }
-    flush_game_scoreboards(st, game_id).await;
+
+    cleanup_operations(st).await;
+    // Exact no-ops and fully rejected selections do not invalidate event-wide
+    // VPN or scoreboard state. Only a committed desired-state transition does.
+    if !changed_ids.is_empty() {
+        if let Err(error) = crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await {
+            tracing::warn!(%error, game_id, "bulk challenge VPN reconciliation deferred");
+        }
+        flush_game_scoreboards(st, game_id).await;
+    }
     if desired && game_state.2 && !changed_titles.is_empty() {
         let values = serde_json::json!(changed_titles);
         let notice = sqlx::query_as::<_, (i32, DateTime<Utc>)>(
@@ -375,48 +408,148 @@ async fn complete_desired_state(
             }
         }
     }
-    if !desired && !changed_ids.is_empty() {
-        let background = st.clone();
-        tokio::spawn(async move {
-            for (challenge_id, challenge_type, ad_self_hosted) in changed_runtimes {
-                let is_container = matches!(
-                    challenge_type,
-                    value if value == ChallengeType::StaticContainer as i16
-                        || value == ChallengeType::DynamicContainer as i16
-                        || value == ChallengeType::AttackDefense as i16
-                        || value == ChallengeType::KingOfTheHill as i16
-                );
-                if is_container {
-                    if let Err(error) = super::lifecycle::destroy_challenge_containers_by_id(
-                        &background,
-                        game_id,
-                        challenge_id,
-                        true,
-                        false,
-                    )
-                    .await
-                    {
-                        tracing::warn!(%error, challenge_id, "bulk disable cleanup deferred");
-                    }
-                }
-                if ad_self_hosted {
-                    if let Err(error) = background
-                        .byoc
-                        .disconnect_challenge(&background.db, challenge_id)
-                        .await
-                    {
-                        tracing::warn!(%error, challenge_id, "bulk BYOC cleanup deferred");
-                    }
-                }
-            }
-        });
-    }
     Ok(BulkChallengeMutationResult {
         operation_id: request.operation_id,
         state: "Complete",
         configuration_revision: result_revision,
         outcomes,
     })
+}
+
+fn spawn_disable_job(st: SharedState, game_id: i32, operation_id: Uuid, lease_token: Uuid) {
+    tokio::spawn(async move {
+        if let Err(error) = run_disable_job(&st, game_id, operation_id, lease_token).await {
+            tracing::error!(%error, game_id, %operation_id, "bulk challenge disable cleanup paused");
+        }
+    });
+}
+
+async fn run_disable_job(
+    st: &SharedState,
+    game_id: i32,
+    operation_id: Uuid,
+    lease_token: Uuid,
+) -> AppResult<()> {
+    let stored = sqlx::query_scalar::<_, serde_json::Value>(
+        r#"SELECT result FROM "BulkChallengeMutationOperations"
+            WHERE game_id = $1 AND operation_id = $2 AND action = $3
+              AND state = 1 AND lease_token = $4"#,
+    )
+    .bind(game_id)
+    .bind(operation_id)
+    .bind(BulkChallengeAction::Disable.as_i16())
+    .bind(lease_token)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some(stored) = stored else {
+        return Ok(());
+    };
+    let mut outcomes: Vec<BulkChallengeOutcome> =
+        serde_json::from_value(stored).map_err(|error| AppError::internal(error.to_string()))?;
+
+    for index in 0..outcomes.len() {
+        if outcomes[index].status != "CleanupPending" {
+            continue;
+        }
+        let challenge_id = outcomes[index].challenge_id;
+        let definition = sqlx::query_as::<_, (i16, bool, bool)>(
+            r#"SELECT "Type", ad_self_hosted, is_enabled FROM "GameChallenges"
+                WHERE game_id = $1 AND id = $2"#,
+        )
+        .bind(game_id)
+        .bind(challenge_id)
+        .fetch_optional(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        let mut cleanup_message = None;
+        if let Some((challenge_type, ad_self_hosted, is_enabled)) = definition {
+            if is_enabled {
+                cleanup_message = Some("Cleanup was superseded by a later re-enable".into());
+            }
+            let is_container = matches!(
+                challenge_type,
+                value if value == ChallengeType::StaticContainer as i16
+                    || value == ChallengeType::DynamicContainer as i16
+                    || value == ChallengeType::AttackDefense as i16
+                    || value == ChallengeType::KingOfTheHill as i16
+            );
+            if is_container && cleanup_message.is_none() {
+                // Strict teardown propagates a failed runtime cleanup into the
+                // durable Pending operation instead of logging and forgetting it.
+                let teardown = super::lifecycle::destroy_challenge_containers_by_id(
+                    st,
+                    game_id,
+                    challenge_id,
+                    true,
+                    true,
+                )
+                .await;
+                if let Err(error) = teardown {
+                    let reenabled = sqlx::query_scalar::<_, bool>(
+                        r#"SELECT is_enabled FROM "GameChallenges"
+                            WHERE game_id = $1 AND id = $2"#,
+                    )
+                    .bind(game_id)
+                    .bind(challenge_id)
+                    .fetch_optional(st.pg())
+                    .await
+                    .map_err(|query_error| AppError::internal(query_error.to_string()))?
+                    .unwrap_or(false);
+                    if reenabled {
+                        cleanup_message =
+                            Some("Cleanup was superseded by a later re-enable".into());
+                    } else {
+                        return Err(error);
+                    }
+                }
+            }
+            if ad_self_hosted && cleanup_message.is_none() {
+                st.byoc.disconnect_challenge(&st.db, challenge_id).await?;
+            }
+        }
+        outcomes[index].status = "Changed".into();
+        outcomes[index].message = cleanup_message;
+        let result = serde_json::to_value(&outcomes)
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        let progress = sqlx::query(
+            r#"UPDATE "BulkChallengeMutationOperations"
+                  SET result = $3,
+                      lease_expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
+                WHERE game_id = $1 AND operation_id = $2 AND state = 1
+                  AND lease_token = $4"#,
+        )
+        .bind(game_id)
+        .bind(operation_id)
+        .bind(result)
+        .bind(lease_token)
+        .execute(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if progress.rows_affected() != 1 {
+            return Ok(());
+        }
+    }
+
+    crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+    flush_game_scoreboards(st, game_id).await;
+    let completed = sqlx::query(
+        r#"UPDATE "BulkChallengeMutationOperations"
+              SET state = 2, lease_token = NULL,
+                  completed_at_utc = clock_timestamp()
+            WHERE game_id = $1 AND operation_id = $2 AND state = 1
+              AND lease_token = $3"#,
+    )
+    .bind(game_id)
+    .bind(operation_id)
+    .bind(lease_token)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if completed.rows_affected() == 1 {
+        cleanup_operations(st).await;
+    }
+    Ok(())
 }
 
 async fn validate_delete_job(
@@ -602,6 +735,28 @@ async fn run_delete_job(
     Ok(())
 }
 
+async fn reclaim_expired_operation(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    operation_id: Uuid,
+) -> AppResult<Option<Uuid>> {
+    let lease_token = Uuid::new_v4();
+    let claimed = sqlx::query(
+        r#"UPDATE "BulkChallengeMutationOperations"
+              SET lease_token = $3,
+                  lease_expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
+            WHERE game_id = $1 AND operation_id = $2 AND state = 1
+              AND lease_expires_at_utc <= clock_timestamp()"#,
+    )
+    .bind(game_id)
+    .bind(operation_id)
+    .bind(lease_token)
+    .execute(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok((claimed.rows_affected() == 1).then_some(lease_token))
+}
+
 pub async fn mutate_challenges_bulk(
     State(st): State<SharedState>,
     user: CurrentUser,
@@ -629,10 +784,7 @@ pub async fn mutate_challenges_bulk(
             outcomes,
         }));
     }
-    if request.action != BulkChallengeAction::Delete {
-        if state != 0 {
-            return Err(AppError::conflict("This bulk mutation is still running"));
-        }
+    if state == 0 && request.action != BulkChallengeAction::Delete {
         if !may_claim {
             return Err(AppError::conflict(
                 "This bulk mutation is still running; retry later",
@@ -641,6 +793,24 @@ pub async fn mutate_challenges_bulk(
         return Ok(RequestResponse::ok(
             complete_desired_state(&st, game_id, &request).await?,
         ));
+    }
+    if request.action == BulkChallengeAction::Enable {
+        return Err(AppError::conflict("This bulk mutation is still running"));
+    }
+    if request.action == BulkChallengeAction::Disable {
+        if may_claim {
+            if let Some(lease_token) =
+                reclaim_expired_operation(st.pg(), game_id, request.operation_id).await?
+            {
+                spawn_disable_job(st.clone(), game_id, request.operation_id, lease_token);
+            }
+        }
+        return Ok(RequestResponse::ok(BulkChallengeMutationResult {
+            operation_id: request.operation_id,
+            state: "Pending",
+            configuration_revision: result_revision.unwrap_or(request.expected_revision),
+            outcomes,
+        }));
     }
 
     let revision = if state == 0 {
@@ -651,21 +821,9 @@ pub async fn mutate_challenges_bulk(
         revision
     } else {
         if may_claim {
-            let lease_token = Uuid::new_v4();
-            let claimed = sqlx::query(
-                r#"UPDATE "BulkChallengeMutationOperations"
-                      SET lease_token = $3,
-                          lease_expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
-                    WHERE game_id = $1 AND operation_id = $2 AND state = 1
-                      AND lease_expires_at_utc <= clock_timestamp()"#,
-            )
-            .bind(game_id)
-            .bind(request.operation_id)
-            .bind(lease_token)
-            .execute(st.pg())
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-            if claimed.rows_affected() == 1 {
+            if let Some(lease_token) =
+                reclaim_expired_operation(st.pg(), game_id, request.operation_id).await?
+            {
                 spawn_delete_job(st.clone(), game_id, request.operation_id, lease_token);
             }
         }
@@ -681,6 +839,10 @@ pub async fn mutate_challenges_bulk(
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
     use super::*;
 
     #[test]
@@ -705,5 +867,91 @@ mod tests {
             validate_request(&mut oversized).unwrap_err().status(),
             axum::http::StatusCode::PAYLOAD_TOO_LARGE
         );
+    }
+
+    #[test]
+    fn pending_disable_cleanup_round_trips_as_a_per_challenge_result() {
+        let outcomes = vec![
+            BulkChallengeOutcome {
+                challenge_id: 7,
+                status: "CleanupPending".into(),
+                message: None,
+            },
+            BulkChallengeOutcome {
+                challenge_id: 8,
+                status: "Unchanged".into(),
+                message: None,
+            },
+        ];
+        let encoded = serde_json::to_value(&outcomes).unwrap();
+        let recovered: Vec<BulkChallengeOutcome> = serde_json::from_value(encoded).unwrap();
+        assert_eq!(recovered[0].challenge_id, 7);
+        assert_eq!(recovered[0].status, "CleanupPending");
+        assert_eq!(recovered[1].status, "Unchanged");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn an_expired_disable_owner_is_reclaimed_exactly_once() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .expect("connect test database");
+        let schema = format!("rsctf_bulk_disable_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .expect("create isolated schema");
+        let options = PgConnectOptions::from_str(&database_url)
+            .expect("parse test database URL")
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .expect("connect isolated pool");
+        sqlx::raw_sql(
+            r#"CREATE TABLE "BulkChallengeMutationOperations" (
+                   game_id INTEGER NOT NULL,
+                   operation_id UUID NOT NULL,
+                   state SMALLINT NOT NULL,
+                   lease_token UUID,
+                   lease_expires_at_utc TIMESTAMPTZ NOT NULL,
+                   PRIMARY KEY (game_id, operation_id)
+               );"#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create operation table");
+        let operation_id = Uuid::new_v4();
+        sqlx::query(
+            r#"INSERT INTO "BulkChallengeMutationOperations"
+                   (game_id, operation_id, state, lease_token, lease_expires_at_utc)
+               VALUES (1, $1, 1, $2, clock_timestamp() - INTERVAL '1 second')"#,
+        )
+        .bind(operation_id)
+        .bind(Uuid::new_v4())
+        .execute(&pool)
+        .await
+        .expect("seed expired owner");
+
+        assert!(reclaim_expired_operation(&pool, 1, operation_id)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(reclaim_expired_operation(&pool, 1, operation_id)
+            .await
+            .unwrap()
+            .is_none());
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .expect("drop isolated schema");
+        admin.close().await;
     }
 }

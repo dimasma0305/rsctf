@@ -259,6 +259,23 @@ async fn ensure_flag_policy_mutable_locked(
     Ok(())
 }
 
+/// Take the challenge-definition fence on the transaction that already owns
+/// the broader game-control lock. Flag policy is part of the challenge
+/// definition, but checking out a second pooled connection here can deadlock a
+/// small pool when organizers edit several different games concurrently.
+async fn acquire_flag_definition_lock(
+    control: &mut crate::services::ad_engine::GameControlLock,
+    game_id: i32,
+    challenge_id: i32,
+) -> AppResult<()> {
+    crate::utils::single_flight::acquire_transaction_advisory_lock(
+        control.transaction_mut(),
+        &crate::services::challenge_workloads::definition_lock_key(game_id, challenge_id),
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
 /// `POST /api/edit/games/{id}/challenges/{cId}/flags` — void.
 pub async fn add_flags(
     State(st): State<SharedState>,
@@ -325,42 +342,31 @@ pub async fn add_flags(
     // Global order is game-control -> challenge definition -> JFLG. The game
     // lock prevents an A&D/KotH first round from crossing the policy check;
     // JFLG provides the corresponding first-Jeopardy-solve fence.
-    let game_control = match crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await {
+    let mut game_control = match crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await
+    {
         Ok(lock) => lock,
         Err(error) => {
             abandon_flag_import(st.pg(), c_id, request.operation_id).await;
             return Err(error);
         }
     };
-    let mut definition_lock = match crate::services::challenge_workloads::acquire_definition_lock(
-        st.pg(),
-        id,
-        c_id,
-    )
-    .await
-    {
-        Ok(lock) => lock,
-        Err(error) => {
-            drop(game_control);
-            abandon_flag_import(st.pg(), c_id, request.operation_id).await;
-            return Err(AppError::internal(error.to_string()));
-        }
-    };
+    if let Err(error) = acquire_flag_definition_lock(&mut game_control, id, c_id).await {
+        drop(game_control);
+        abandon_flag_import(st.pg(), c_id, request.operation_id).await;
+        return Err(error);
+    }
     let mutation: AppResult<(i32, std::collections::HashSet<String>)> = async {
-        challenges::reject_pending_mutation(&mut **definition_lock.transaction_mut(), id, c_id)
+        challenges::reject_pending_mutation(&mut **game_control.transaction_mut(), id, c_id)
             .await?;
-        ensure_flag_policy_mutable_locked(definition_lock.transaction_mut(), id, c_id).await?;
-        crate::utils::scoring::lock_jeopardy_flags_exclusive(
-            definition_lock.transaction_mut(),
-            c_id,
-        )
-        .await?;
+        ensure_flag_policy_mutable_locked(game_control.transaction_mut(), id, c_id).await?;
+        crate::utils::scoring::lock_jeopardy_flags_exclusive(game_control.transaction_mut(), c_id)
+            .await?;
 
         let current_count = sqlx::query_scalar::<_, i64>(
             r#"SELECT COUNT(*)::bigint FROM "FlagContexts" WHERE challenge_id = $1"#,
         )
         .bind(c_id)
-        .fetch_one(&mut **definition_lock.transaction_mut())
+        .fetch_one(&mut **game_control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         if current_count > MAX_FLAGS_PER_CHALLENGE {
@@ -379,7 +385,7 @@ pub async fn add_flags(
         )
         .bind(c_id)
         .bind(&values)
-        .fetch_all(&mut **definition_lock.transaction_mut())
+        .fetch_all(&mut **game_control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?
         .into_iter()
@@ -397,7 +403,7 @@ pub async fn add_flags(
                 continue;
             }
             let attachment_id =
-                insert_flag_attachment_locked(definition_lock.transaction_mut(), prepared).await?;
+                insert_flag_attachment_locked(game_control.transaction_mut(), prepared).await?;
             sqlx::query(
                 r#"INSERT INTO "FlagContexts"
                      (flag, is_occupied, challenge_id, attachment_id)
@@ -406,7 +412,7 @@ pub async fn add_flags(
             .bind(&prepared.flag)
             .bind(c_id)
             .bind(attachment_id)
-            .execute(&mut **definition_lock.transaction_mut())
+            .execute(&mut **game_control.transaction_mut())
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
             inserted_set.insert(prepared.flag.clone());
@@ -424,7 +430,7 @@ pub async fn add_flags(
         .bind(request.operation_id)
         .bind(inserted_count)
         .bind(duplicate_count)
-        .execute(&mut **definition_lock.transaction_mut())
+        .execute(&mut **game_control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         sqlx::query(
@@ -441,7 +447,7 @@ pub async fn add_flags(
                 WHERE operation.challenge_id = expired.challenge_id
                   AND operation.operation_id = expired.operation_id"#,
         )
-        .execute(&mut **definition_lock.transaction_mut())
+        .execute(&mut **game_control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         Ok((duplicate_count, inserted_set))
@@ -451,20 +457,15 @@ pub async fn add_flags(
     let (duplicates, inserted_set) = match mutation {
         Ok(result) => result,
         Err(error) => {
-            drop(definition_lock);
             drop(game_control);
             abandon_flag_import(st.pg(), c_id, request.operation_id).await;
             return Err(error);
         }
     };
-    if let Err(error) = definition_lock.release().await {
-        drop(game_control);
+    if let Err(error) = game_control.release().await {
         // Commit acknowledgement is ambiguous. Leave the durable operation and
         // ready upload stages intact so the exact replay can recover safely.
         return Err(AppError::internal(error.to_string()));
-    }
-    if let Err(error) = game_control.release().await {
-        tracing::warn!(%error, id, c_id, "flag-policy game lock release failed after commit");
     }
     Ok(RequestResponse::ok(FlagImportResult {
         inserted: inserted_set.len() as i32,
@@ -569,6 +570,43 @@ mod policy_tests {
         assert!(validate_authored_flags(&[model(format!("{}x", "界".repeat(42)))]).is_ok());
         assert!(validate_authored_flags(&[model(format!("{}xx", "界".repeat(42)))]).is_err());
     }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn flag_definition_fence_reuses_the_single_game_control_connection() {
+        use sea_orm::SqlxPostgresConnector;
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .expect("connect single-connection test pool");
+        let database = SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone());
+        let identity = Uuid::new_v4().as_u128();
+        let game_id = ((identity & 0x3fff_ffff) as i32).max(1);
+        let challenge_id = (((identity >> 32) & 0x3fff_ffff) as i32).max(1);
+
+        let mut control = crate::services::ad_engine::acquire_ad_game_lock(&database, game_id)
+            .await
+            .expect("acquire game control");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            acquire_flag_definition_lock(&mut control, game_id, challenge_id),
+        )
+        .await
+        .expect("definition fence tried to check out a second pool connection")
+        .expect("acquire definition fence on retained transaction");
+        let value = sqlx::query_scalar::<_, i32>("SELECT 1")
+            .fetch_one(&mut **control.transaction_mut())
+            .await
+            .expect("retained connection remains usable");
+        assert_eq!(value, 1);
+        control.release().await.expect("release game control");
+        pool.close().await;
+    }
 }
 
 /// `DELETE /api/edit/games/{id}/challenges/{cId}/flags/{fId}` — returns a
@@ -580,27 +618,19 @@ pub async fn remove_flag(
     Path((id, c_id, f_id)): Path<(i32, i32, i32)>,
 ) -> AppResult<RequestResponse<String>> {
     manager_or_admin(&st, &user, id).await?;
-    let game_control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
-    let mut definition_lock =
-        crate::services::challenge_workloads::acquire_definition_lock(st.pg(), id, c_id).await?;
-    let removal = match remove_flag_locked(definition_lock.transaction_mut(), id, c_id, f_id).await
-    {
+    let mut game_control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    acquire_flag_definition_lock(&mut game_control, id, c_id).await?;
+    let removal = match remove_flag_locked(game_control.transaction_mut(), id, c_id, f_id).await {
         Ok(removal) => removal,
         Err(error) => {
-            if let Err(rollback_error) = definition_lock.rollback().await {
-                tracing::warn!(%rollback_error, f_id, "flag removal rollback failed");
-            }
             drop(game_control);
             return Err(error);
         }
     };
-    definition_lock
+    game_control
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Err(error) = game_control.release().await {
-        tracing::warn!(%error, id, c_id, f_id, "flag-policy game lock release failed after commit");
-    }
     let Some(deleted_hash) = removal else {
         return Ok(RequestResponse::ok("NotFound".to_string()));
     };

@@ -45,11 +45,16 @@ impl ByocGrant {
 /// decision atomic. Callers release it at their bounded hand-off point; it must
 /// never be retained across client-paced streaming or a long-lived tunnel.
 pub(crate) struct ByocCapabilityFence {
+    team_id: i32,
     grant: ByocGrant,
     roster: crate::utils::single_flight::PgAdvisoryLock,
 }
 
 impl ByocCapabilityFence {
+    pub(crate) fn team_id(&self) -> i32 {
+        self.team_id
+    }
+
     pub(crate) fn grant(&self) -> &ByocGrant {
         &self.grant
     }
@@ -280,7 +285,11 @@ async fn authorize_byoc_capability_inner(
         roster.release().await?;
         return Ok(None);
     }
-    Ok(Some(ByocCapabilityFence { grant, roster }))
+    Ok(Some(ByocCapabilityFence {
+        team_id,
+        grant,
+        roster,
+    }))
 }
 
 #[cfg(test)]

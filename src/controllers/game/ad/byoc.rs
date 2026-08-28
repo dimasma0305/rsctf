@@ -582,7 +582,10 @@ pub async fn byoc_agent(
             return response;
         }
     };
-    let authorization_generation = st.byoc.authorization_generation(pid, cid).await;
+    let authorization_generation = st
+        .byoc
+        .authorization_generation(authorization.team_id(), pid, cid)
+        .await;
     ws.max_frame_size(1024 * 1024)
         .max_message_size(1024 * 1024)
         .on_upgrade(move |socket| async move {

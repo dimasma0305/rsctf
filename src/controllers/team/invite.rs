@@ -36,18 +36,24 @@ pub async fn invite_code(
     user: CurrentUser,
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<TeamInviteModel>> {
-    let team = load_team(&st, id).await?;
-    require_captain(&team, &user)?;
-    let revision = sqlx::query_scalar::<_, i64>(
-        r#"SELECT invite_revision FROM "Teams" WHERE id = $1 AND deletion_pending = FALSE"#,
-    )
-    .bind(id)
-    .fetch_optional(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("Team not found"))?;
+    // The token and its revision are one credential snapshot. Reading a SeaORM
+    // team model and the revision separately could pair an old token with a new
+    // revision during a concurrent rotation.
+    let (team_name, invite_token, captain_id, revision) =
+        sqlx::query_as::<_, (String, String, Uuid, i64)>(
+            r#"SELECT name, invite_token, captain_id, invite_revision
+                 FROM "Teams" WHERE id = $1 AND deletion_pending = FALSE"#,
+        )
+        .bind(id)
+        .fetch_optional(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .ok_or_else(|| AppError::not_found("Team not found"))?;
+    if captain_id != user.id {
+        return Err(AppError::Forbidden);
+    }
     Ok(RequestResponse::ok(TeamInviteModel {
-        code: team.invite_code(),
+        code: format!("{team_name}:{id}:{invite_token}"),
         revision,
     }))
 }

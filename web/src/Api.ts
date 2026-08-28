@@ -2190,7 +2190,7 @@ export interface BulkChallengeMutationRequest {
 
 export interface BulkChallengeOutcome {
   challengeId: number
-  status: "Changed" | "Unchanged" | "Rejected" | "Deleted"
+  status: "CleanupPending" | "Changed" | "Unchanged" | "Rejected" | "Deleted"
   message?: string | null
 }
 
