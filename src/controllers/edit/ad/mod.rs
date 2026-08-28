@@ -7,9 +7,11 @@ use super::*;
 
 mod inspector;
 mod provision;
+mod provision_recovery;
 mod state;
 pub use inspector::*;
 pub use provision::*;
+pub(crate) use provision_recovery::*;
 pub use state::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

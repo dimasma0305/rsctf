@@ -264,6 +264,12 @@ async fn persist_participation_status(
             )
             .await?;
         }
+        crate::controllers::edit::enqueue_accepted_provisioning(
+            &mut transaction,
+            identity.game_id,
+            identity.id,
+        )
+        .await?;
     }
     transaction
         .commit()
@@ -477,12 +483,9 @@ pub async fn update_participation(
 
         let effect = run_terminal_effect(&mut lease, identity, requested_status, || async {
             if requested_status == ParticipationStatus::Accepted {
-                crate::controllers::edit::provision_accepted_participation(
-                    &st,
-                    identity.game_id,
-                    identity.id,
-                )
-                .await
+                crate::controllers::edit::run_accepted_provisioning_job(&st, identity.id)
+                    .await
+                    .map(|_| ())
             } else {
                 crate::controllers::team::revoke_participation_capabilities(&st, identity.id).await
             }

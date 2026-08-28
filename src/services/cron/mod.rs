@@ -354,6 +354,12 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: ended-game A&D teardown failed: {e}"),
     }
 
+    match crate::controllers::edit::recover_accepted_provisioning(state).await {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: recovered accepted-participation resources"),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "cron: accepted-participation recovery failed"),
+    }
+
     match container_reaper::sweep_orphan_containers(state).await {
         Ok(report) => tracing::info!(
             job = "orphan_containers",

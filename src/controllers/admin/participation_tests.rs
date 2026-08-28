@@ -81,6 +81,14 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
           participation_id INTEGER NOT NULL,
           PRIMARY KEY (user_id, game_id)
         );
+        CREATE TABLE "ParticipationProvisionJobs" (
+          participation_id INTEGER PRIMARY KEY,
+          game_id INTEGER NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          lease_owner UUID, lease_until TIMESTAMPTZ, last_error TEXT,
+          updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
         "#,
     )
     .execute(&pool)
@@ -333,6 +341,14 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
           team_id INTEGER NOT NULL,
           participation_id INTEGER NOT NULL,
           PRIMARY KEY (user_id, game_id)
+        );
+        CREATE TABLE "ParticipationProvisionJobs" (
+          participation_id INTEGER PRIMARY KEY,
+          game_id INTEGER NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          lease_owner UUID, lease_until TIMESTAMPTZ, last_error TEXT,
+          updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
         "#,
     )

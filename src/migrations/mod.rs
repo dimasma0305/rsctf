@@ -167,6 +167,7 @@ mod m0183_exercise_api_bounds;
 mod m0184_canonical_flag_policy;
 mod m0205_account_activity_indexes;
 mod m0206_joined_challenge_catalog_indexes;
+mod m0207_participation_provision_jobs;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -188,6 +189,8 @@ pub(crate) use m0115_flag_egress_feed_cursor::UP_SQL as FLAG_EGRESS_FEED_CURSOR_
 pub(crate) use m0116_game_event_feed_pending::UP_SQL as GAME_EVENT_FEED_PENDING_SQL;
 #[cfg(test)]
 pub(crate) use m0175_mail_outbox::UP_SQL as MAIL_OUTBOX_SQL;
+#[cfg(test)]
+pub(crate) use m0207_participation_provision_jobs::UP_SQL as PARTICIPATION_PROVISION_JOBS_SQL;
 
 pub struct Migrator;
 
@@ -348,6 +351,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0184_canonical_flag_policy::Migration),
             Box::new(m0205_account_activity_indexes::Migration),
             Box::new(m0206_joined_challenge_catalog_indexes::Migration),
+            Box::new(m0207_participation_provision_jobs::Migration),
         ]
     }
 }
@@ -493,7 +497,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 45..],
+            &names[names.len() - 46..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -540,6 +544,7 @@ mod tests {
                 "m0184_canonical_flag_policy",
                 "m0205_account_activity_indexes",
                 "m0206_joined_challenge_catalog_indexes",
+                "m0207_participation_provision_jobs",
             ]
         );
     }
