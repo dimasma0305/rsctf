@@ -21,6 +21,7 @@ pub(crate) async fn install_operation_tables(pool: &sqlx::PgPool) {
             created_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             lease_expires_at_utc TIMESTAMPTZ NOT NULL,
             published_at_utc TIMESTAMPTZ NULL,
+            published_owner_scope TEXT NULL,
             last_error TEXT NULL
         );
         CREATE TABLE IF NOT EXISTS "BlobDeletionOperations" (

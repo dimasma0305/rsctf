@@ -210,6 +210,29 @@ fn remote_attachments_require_absolute_http_urls() {
     }
 }
 
+#[test]
+fn local_attachment_requires_its_exact_staged_upload_receipt() {
+    let local = prepare_attachment(Some(FileType::Local), Some("a".repeat(64)), None)
+        .unwrap()
+        .unwrap();
+    assert!(validate_upload_binding(Some(&local), None).is_err());
+    assert!(validate_upload_binding(Some(&local), Some(Uuid::new_v4())).is_ok());
+
+    let remote = prepare_attachment(
+        Some(FileType::Remote),
+        None,
+        Some("https://files.example/challenge.zip".to_string()),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(validate_upload_binding(Some(&remote), Some(Uuid::new_v4())).is_err());
+    assert_eq!(attachment_publication_scope(41), "attachment:41");
+    assert_ne!(
+        attachment_publication_scope(41),
+        attachment_publication_scope(42)
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn pending_game_or_challenge_creates_no_attachment_or_blob_reference() {

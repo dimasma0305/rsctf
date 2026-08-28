@@ -25,7 +25,8 @@ pub(crate) async fn publish_staged_blob_in_seaorm_transaction(
         .query_one(Statement::from_sql_and_values(
             DatabaseBackend::Postgres,
             r#"SELECT owner_scope, owner_user_id, content_hash, file_name, file_size,
-                      state, lease_expires_at_utc > clock_timestamp() AS lease_active
+                      state, published_owner_scope,
+                      lease_expires_at_utc > clock_timestamp() AS lease_active
                  FROM "BlobStagingOperations"
                 WHERE operation_id = $1
                 FOR UPDATE"#,
@@ -52,6 +53,9 @@ pub(crate) async fn publish_staged_blob_in_seaorm_transaction(
     let state = row
         .try_get::<String>("", "state")
         .map_err(|error| AppError::internal(error.to_string()))?;
+    let published_owner_scope = row
+        .try_get::<Option<String>>("", "published_owner_scope")
+        .map_err(|error| AppError::internal(error.to_string()))?;
     let lease_active = row
         .try_get::<bool>("", "lease_active")
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -66,6 +70,11 @@ pub(crate) async fn publish_staged_blob_in_seaorm_transaction(
         ));
     }
     if state == "Published" {
+        if published_owner_scope.as_deref() != Some(staged.owner_scope.as_str()) {
+            return Err(AppError::conflict(
+                "Blob upload receipt was already consumed by another owner",
+            ));
+        }
         return transaction
             .query_one(Statement::from_sql_and_values(
                 DatabaseBackend::Postgres,
@@ -102,10 +111,14 @@ pub(crate) async fn publish_staged_blob_in_seaorm_transaction(
             DatabaseBackend::Postgres,
             r#"UPDATE "BlobStagingOperations"
                   SET state = 'Published', published_at_utc = clock_timestamp(),
+                      published_owner_scope = $2,
                       lease_expires_at_utc = clock_timestamp() + interval '24 hours'
                 WHERE operation_id = $1 AND state = 'Ready'
                   AND lease_expires_at_utc > clock_timestamp()"#,
-            [staged.operation_id.into()],
+            [
+                staged.operation_id.into(),
+                staged.owner_scope.clone().into(),
+            ],
         ))
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;

@@ -296,6 +296,16 @@ async fn cached_asset_gate(st: &SharedState, hash: &str) -> AppResult<AssetGate>
                 }
             }
 
+            // Charge only the coalesced leader. `run_with_limit` bounds local
+            // distinct keys before this closure starts; this deployment-wide
+            // budget bounds the authorization queries that actually follow.
+            if crate::middlewares::rate_limiter::admit_asset_gate_miss()
+                .await
+                .is_err()
+            {
+                return None;
+            }
+
             let gate = match query_asset_gate(state.pg(), &fill_hash).await {
                 Ok(gate) => gate,
                 Err(error) => {

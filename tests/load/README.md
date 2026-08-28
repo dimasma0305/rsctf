@@ -23,7 +23,7 @@ N=60  npm run byoc          # BYOC scale + request flood
       npm run challenge-modal-read # bounded detail + solver modal reads
       npm run donations     # fixed-rate, read-only cached donation-feed smoke
       npm run news-feed     # fixed-rate, conditional homepage-feed smoke
-      npm run asset-download # fixed-rate authenticated 1 MiB attachment ranges
+      npm run asset-download # fixed-rate ranges + anonymous denial/304 admission
       npm run monitor-exports # fixed-rate bounded monitor XLSX exports + health
       npm run event-security # destructive fixed-rate bounded telemetry/resource comparison
       npm run scoreboard-evidence # isolated fixed-rate canonical FirstSolve query benchmark
@@ -291,7 +291,7 @@ tests/load/
     polled-read.js     one read per iteration across the dominant polled endpoints
     monitor-history.js one bounded history, event checkpoint/backfill, or submission checkpoint/backfill read per iteration
     scoreboard-conditional.js conditional standard/KotH spectators at a fixed arrival rate
-    asset-download.js  one authenticated deterministic attachment range per iteration
+    asset-download.js  fixed-rate ranges, rotating unknown hashes, public 304s, and health
     monitor-exports.js fixed-rate monitor exports plus independent health arrivals
     participation-review.js fixed-rate bounded organizer review plus independent health arrivals
     event-security.js  fixed-rate empty-control and aggregate sensor-ingest phases
@@ -396,26 +396,32 @@ SUMMARY_JSON=/tmp/scoreboard-evidence.json npm run scoreboard-evidence
 PostgreSQL target. This is a focused SQL scalability comparison; use
 `polled-read` and `lifecycle` for HTTP and whole-event acceptance.
 
-`asset-download` measures large-file delivery at a fixed request and byte rate.
-It sends one exact, authenticated range per iteration and fails on malformed
-resume headers, authorization rejection, 5xx responses, or dropped iterations.
-Use the same attachment, range, rate, duration, and host for before/after data:
+`asset-download` measures asset authorization and delivery at fixed arrival
+rates. In parallel it sends exact authenticated ranges, rotating anonymous
+unknown hashes, anonymous public `304` revalidations, and independent health
+probes. It fails on malformed ranges, unexpected authorization results,
+non-retryable 5xx responses, missing `Retry-After`, unhealthy probes, or dropped
+iterations. Use the same attachment, rates, duration, and host for before/after
+data:
 
 ```sh
 TARGET=https://ctf.example \
 ASSET_URL=/assets/<sha256>/challenge.zip \
-RATE=20 RANGE_BYTES=1048576 DURATION=30s \
+RATE=20 UNKNOWN_RATE=32 CONDITIONAL_RATE=20 \
+RANGE_BYTES=1048576 DURATION=30s \
 SUMMARY_JSON=/tmp/asset-download.json npm run asset-download
 ```
 
-The runner reads the referenced size and accepted-participant security stamps
-from the selected PostgreSQL container, keeps generated tokens in a mode-0600
-temporary file, and removes it after k6 exits. It calls no mutation endpoint;
-RSCTF still performs its normal deduplicated attachment-download audit write.
-`RSCTF_JWT_SECRET` is required for local token minting.
+The runner reads the referenced size, accepted-participant security stamps, and
+one real public avatar/poster/branding hash from the selected PostgreSQL
+container. It keeps generated tokens in a mode-0600 temporary file and removes
+it after k6 exits. It calls no mutation endpoint; RSCTF still performs its
+normal deduplicated attachment-download audit write. `RSCTF_JWT_SECRET` is
+required for local token minting.
 
-Every knob is env-overridable: `TARGET`, `GAME`, `CID`, `VUS`, `RATE`, `DURATION`, `N`,
-`RSCTF_JWT_SECRET`, `PG_CONTAINER`, `RSCTF_CONTAINER`, `NET`, `AD_NET`,
+Every knob is env-overridable: `TARGET`, `GAME`, `CID`, `VUS`, `RATE`, `UNKNOWN_RATE`,
+`CONDITIONAL_RATE`, `DURATION`, `N`, `RSCTF_JWT_SECRET`, `PG_CONTAINER`,
+`RSCTF_CONTAINER`, `NET`, `AD_NET`,
 `LOAD_FIXTURE_ROOT`. The standalone player scenario also accepts
 `THINK_MIN_SECONDS` / `THINK_MAX_SECONDS` (defaults 3–5 seconds) and sends each
 real player session on its public-board polls. This keeps a normal reverse proxy's

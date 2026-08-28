@@ -44,6 +44,10 @@ use crate::app_state::SharedState;
 
 mod receipt_admission;
 pub(crate) use receipt_admission::admit_solve_receipt_issuance;
+mod work_admission;
+pub(crate) use work_admission::{
+    admit_asset_gate_miss, admit_asset_request, admit_asset_response_bytes,
+};
 
 static AUTHENTICATED_IP_BACKSTOP_PER_MINUTE: LazyLock<u32> = LazyLock::new(|| {
     std::env::var("RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE")
@@ -168,6 +172,18 @@ pub enum Policy {
     /// Trusted solve-verifier issuance work. Appended to preserve every
     /// previously shipped Redis policy discriminant.
     SolveReceipt,
+    /// Source budget for anonymous and authenticated asset routes, which live
+    /// outside the ordinary `/api` namespace. Values 20 through 29 remain
+    /// available to the other independently developed admission policies.
+    AssetRequestSource = 30,
+    /// Authenticated account budget for asset routes across changing source IPs.
+    AssetRequestIdentity = 31,
+    /// Deployment-wide request-work budget before asset cache or PostgreSQL work.
+    AssetRequestWork = 32,
+    /// Deployment-wide byte budget for bodies served through the platform.
+    AssetResponseBytes = 33,
+    /// Deployment-wide budget for distinct authorization cache misses.
+    AssetGateMiss = 34,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -259,6 +275,28 @@ impl Policy {
             Policy::SolveReceipt => Kind::Bucket {
                 capacity: 128.0,
                 refill_per_sec: 16.0,
+            },
+            Policy::AssetRequestSource => Kind::Bucket {
+                capacity: 512.0,
+                refill_per_sec: 128.0,
+            },
+            Policy::AssetRequestIdentity => Kind::Bucket {
+                capacity: 512.0,
+                refill_per_sec: 64.0,
+            },
+            Policy::AssetRequestWork => Kind::Bucket {
+                capacity: 2_048.0,
+                refill_per_sec: 256.0,
+            },
+            // One unit is 64 KiB. Preserve a 512-MiB burst while bounding
+            // sustained platform-served bytes at 128 MiB/s.
+            Policy::AssetResponseBytes => Kind::Bucket {
+                capacity: 8_192.0,
+                refill_per_sec: 2_048.0,
+            },
+            Policy::AssetGateMiss => Kind::Bucket {
+                capacity: 256.0,
+                refill_per_sec: 128.0,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {

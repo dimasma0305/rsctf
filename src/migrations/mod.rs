@@ -156,6 +156,7 @@ mod m0313_game_configuration_operations;
 mod m0314_team_profile_operations;
 mod m0315_exercise_api_bounds;
 mod m0316_exercise_container_operations;
+mod m0317_blob_stage_publication_owner;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -328,6 +329,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0314_team_profile_operations::Migration),
             Box::new(m0315_exercise_api_bounds::Migration),
             Box::new(m0316_exercise_container_operations::Migration),
+            Box::new(m0317_blob_stage_publication_owner::Migration),
         ]
     }
 }
@@ -473,7 +475,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 34..],
+            &names[names.len() - 35..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -509,6 +511,7 @@ mod tests {
                 "m0314_team_profile_operations",
                 "m0315_exercise_api_bounds",
                 "m0316_exercise_container_operations",
+                "m0317_blob_stage_publication_owner",
             ]
         );
     }

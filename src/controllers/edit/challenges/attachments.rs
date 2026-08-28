@@ -29,6 +29,7 @@ pub async fn update_attachment(
     manager_or_admin(&st, &user, id).await?;
     let mut prepared =
         prepare_attachment(model.attachment_type, model.file_hash, model.remote_url)?;
+    validate_upload_binding(prepared.as_ref(), model.upload_id)?;
     if let Some(upload_id) = model.upload_id {
         let prepared = prepared
             .as_mut()
@@ -77,6 +78,21 @@ pub async fn update_attachment(
         purge_replaced_attachment(st.pg(), st.storage.as_ref(), c_id, hash).await;
     }
     Ok(RequestResponse::ok(swap.attachment_id.unwrap_or(0)))
+}
+
+fn validate_upload_binding(
+    prepared: Option<&PreparedAttachment>,
+    upload_id: Option<Uuid>,
+) -> AppResult<()> {
+    match (prepared.map(|value| value.file_type), upload_id) {
+        (Some(FileType::Local), None) => Err(AppError::bad_request(
+            "A local attachment requires its uploadId",
+        )),
+        (Some(FileType::Local), Some(_)) | (_, None) => Ok(()),
+        (_, Some(_)) => Err(AppError::bad_request(
+            "An uploadId requires a local attachment",
+        )),
+    }
 }
 
 async fn purge_replaced_attachment(
@@ -156,7 +172,12 @@ async fn replace_attachment_locked(
             && old_file_type == Some(FileType::Local as i16)
             && old_hash.as_deref() == Some(stage.blob.hash.as_str());
         if same_local_content {
-            stage.consume_with_existing_reference(transaction).await?;
+            stage
+                .consume_with_existing_reference_as(
+                    transaction,
+                    &attachment_publication_scope(old_attachment_id),
+                )
+                .await?;
             return Ok(AttachmentSwap {
                 attachment_id: Some(old_attachment_id),
                 deleted_hash: None,
@@ -165,39 +186,32 @@ async fn replace_attachment_locked(
     }
 
     let new_attachment_id = if let Some(prepared) = prepared {
-        let local_file_id = match (prepared.file_type, prepared.file_hash.as_deref()) {
-            (FileType::Local, Some(_)) if prepared.upload_stage.is_some() => Some(
-                crate::services::blob_refs::publish_staged_blob(
-                    transaction,
-                    prepared
-                        .upload_stage
-                        .as_ref()
-                        .expect("checked upload stage"),
-                )
-                .await?,
-            ),
-            (FileType::Local, Some(hash)) if !hash.is_empty() => {
-                sqlx::query_scalar::<_, i32>(r#"SELECT id FROM "Files" WHERE hash = $1"#)
-                    .bind(hash)
-                    .fetch_optional(&mut **transaction)
-                    .await
-                    .map_err(|error| AppError::internal(error.to_string()))?
-            }
-            _ => None,
-        };
-        Some(
-            sqlx::query_scalar::<_, i32>(
-                r#"INSERT INTO "Attachments" ("Type", remote_url, local_file_id)
-                   VALUES ($1, $2, $3)
-                   RETURNING id"#,
-            )
-            .bind(prepared.file_type as i16)
-            .bind(prepared.remote_url.as_deref())
-            .bind(local_file_id)
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?,
+        let attachment_id = sqlx::query_scalar::<_, i32>(
+            r#"INSERT INTO "Attachments" ("Type", remote_url, local_file_id)
+               VALUES ($1, $2, NULL)
+               RETURNING id"#,
         )
+        .bind(prepared.file_type as i16)
+        .bind(prepared.remote_url.as_deref())
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if let (FileType::Local, Some(stage)) = (prepared.file_type, prepared.upload_stage.as_ref())
+        {
+            let local_file_id = crate::services::blob_refs::publish_staged_blob_for_owner(
+                transaction,
+                stage,
+                &attachment_publication_scope(attachment_id),
+            )
+            .await?;
+            sqlx::query(r#"UPDATE "Attachments" SET local_file_id = $2 WHERE id = $1"#)
+                .bind(attachment_id)
+                .bind(local_file_id)
+                .execute(&mut **transaction)
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+        }
+        Some(attachment_id)
     } else {
         None
     };
@@ -229,6 +243,10 @@ async fn replace_attachment_locked(
         attachment_id: new_attachment_id,
         deleted_hash,
     })
+}
+
+fn attachment_publication_scope(attachment_id: i32) -> String {
+    format!("attachment:{attachment_id}")
 }
 
 pub(crate) fn validate_remote_attachment_url(raw: &str) -> AppResult<String> {
