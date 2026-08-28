@@ -5,7 +5,11 @@
 //! makes the object store and database ordering safe across replicas without
 //! relying on process-local mutexes.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use sqlx::{PgPool, Postgres, Transaction};
+use tokio::sync::Semaphore;
 
 use crate::storage::{BlobStorage, StoredBlob};
 use crate::utils::codec::sha256_hex;
@@ -19,7 +23,7 @@ mod poster_tests;
 mod seaorm;
 mod staging;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 mod writeups;
 pub use ad_snapshots::{
     available_service_snapshots, load_service_snapshot, purge_expired_service_snapshots,
@@ -36,7 +40,7 @@ pub use challenges::{
 pub(crate) use challenges::{
     delete_challenge_locked, delete_game_challenges_locked, purge_deleted_challenge_artifacts,
 };
-pub(crate) use seaorm::store_and_acquire_in_seaorm_transaction;
+pub(crate) use seaorm::publish_staged_blob_in_seaorm_transaction;
 pub(crate) use staging::{
     load_ready_upload_stage, publish_staged_blob, purge_expired_stages, stage_blob, StagedBlob,
 };
@@ -52,6 +56,13 @@ const UPSERT_FILE_SQL: &str = r#"
        SET reference_count = "Files".reference_count + 1
     RETURNING id
 "#;
+
+const DELETE_DEADLINE: Duration = Duration::from_secs(45);
+const LOCAL_DELETE_JOBS: usize = 4;
+const DEPLOYMENT_DELETE_JOBS: i64 = 32;
+const DELETE_ADMISSION_LOCK: &str = "rsctf:blob-delete-admission";
+static DELETE_ADMISSION: std::sync::LazyLock<Arc<Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(Semaphore::new(LOCAL_DELETE_JOBS)));
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseOutcome {
@@ -310,13 +321,90 @@ pub async fn purge_if_unreferenced(
     storage: &dyn BlobStorage,
     hash: &str,
 ) -> AppResult<bool> {
+    let _permit = DELETE_ADMISSION
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AppError::overloaded("Blob deletion capacity is busy", 2))?;
+    let Some(operation_id) = claim_blob_deletion(pool, hash).await? else {
+        return Ok(false);
+    };
+
+    let deleted = tokio::time::timeout(DELETE_DEADLINE, storage.delete(hash)).await;
+    match deleted {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            mark_blob_deletion_failed(pool, hash, operation_id, &error.to_string()).await;
+            return Err(error);
+        }
+        Err(_) => {
+            let message = "Blob deletion timed out";
+            mark_blob_deletion_failed(pool, hash, operation_id, message).await;
+            return Err(AppError::overloaded(message, 2));
+        }
+    }
+
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(database_error)?;
     lock_hash(&mut transaction, hash)
         .await
         .map_err(database_error)?;
-    let still_referenced: bool = sqlx::query_scalar(
+    let owns_lease: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM "BlobDeletionOperations"
+                WHERE content_hash = $1 AND operation_id = $2
+                  AND state = 'Deleting'
+           )"#,
+    )
+    .bind(hash)
+    .bind(operation_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if !owns_lease {
+        return Err(AppError::conflict("Blob deletion ownership changed"));
+    }
+    if hash_is_referenced(&mut transaction, hash).await? {
+        sqlx::query(
+            r#"DELETE FROM "BlobDeletionOperations"
+                WHERE content_hash = $1 AND operation_id = $2"#,
+        )
+        .bind(hash)
+        .bind(operation_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
+        return Err(AppError::internal(
+            "Blob gained an owner while deletion was in progress",
+        ));
+    }
+    sqlx::query(
+        r#"DELETE FROM "Files"
+            WHERE hash = $1 AND reference_count <= 0"#,
+    )
+    .bind(hash)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        r#"DELETE FROM "BlobDeletionOperations"
+            WHERE content_hash = $1 AND operation_id = $2"#,
+    )
+    .bind(hash)
+    .bind(operation_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
+    Ok(true)
+}
+
+async fn hash_is_referenced(
+    transaction: &mut Transaction<'_, Postgres>,
+    hash: &str,
+) -> AppResult<bool> {
+    sqlx::query_scalar(
         r#"SELECT EXISTS(
                     SELECT 1 FROM "Files"
                      WHERE hash = $1 AND reference_count > 0
@@ -356,32 +444,111 @@ pub async fn purge_if_unreferenced(
                )"#,
     )
     .bind(hash)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)
+}
+
+async fn claim_blob_deletion(pool: &PgPool, hash: &str) -> AppResult<Option<uuid::Uuid>> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(database_error)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(DELETE_ADMISSION_LOCK)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+    lock_hash(&mut transaction, hash)
+        .await
+        .map_err(database_error)?;
+    if hash_is_referenced(&mut transaction, hash).await? {
+        sqlx::query(r#"DELETE FROM "BlobDeletionOperations" WHERE content_hash = $1"#)
+            .bind(hash)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
+        return Ok(None);
+    }
+    let active: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)::bigint FROM "BlobDeletionOperations"
+            WHERE state = 'Deleting'
+              AND lease_expires_at_utc > clock_timestamp()"#,
+    )
     .fetch_one(&mut *transaction)
     .await
     .map_err(database_error)?;
-    if still_referenced {
-        transaction.commit().await.map_err(database_error)?;
-        return Ok(false);
-    }
-    storage.delete(hash).await?;
-    sqlx::query(
-        r#"DELETE FROM "Files"
-            WHERE hash = $1 AND reference_count <= 0"#,
+    let already_active: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM "BlobDeletionOperations"
+                WHERE content_hash = $1 AND state = 'Deleting'
+                  AND lease_expires_at_utc > clock_timestamp()
+           )"#,
     )
     .bind(hash)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if already_active {
+        transaction.commit().await.map_err(database_error)?;
+        return Ok(None);
+    }
+    if active >= DEPLOYMENT_DELETE_JOBS {
+        transaction.commit().await.map_err(database_error)?;
+        return Err(AppError::overloaded("Blob deletion capacity is busy", 2));
+    }
+    let operation_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO "BlobDeletionOperations"
+               (content_hash, operation_id, state, lease_expires_at_utc,
+                updated_at_utc, last_error)
+           VALUES ($1, $2, 'Deleting',
+                   clock_timestamp() + interval '2 minutes',
+                   clock_timestamp(), NULL)
+           ON CONFLICT (content_hash) DO UPDATE
+             SET operation_id = EXCLUDED.operation_id,
+                 state = 'Deleting',
+                 lease_expires_at_utc = EXCLUDED.lease_expires_at_utc,
+                 updated_at_utc = clock_timestamp(),
+                 last_error = NULL"#,
+    )
+    .bind(hash)
+    .bind(operation_id)
     .execute(&mut *transaction)
     .await
     .map_err(database_error)?;
     transaction.commit().await.map_err(database_error)?;
-    Ok(true)
+    Ok(Some(operation_id))
+}
+
+async fn mark_blob_deletion_failed(
+    pool: &PgPool,
+    hash: &str,
+    operation_id: uuid::Uuid,
+    error: &str,
+) {
+    if let Err(update_error) = sqlx::query(
+        r#"UPDATE "BlobDeletionOperations"
+              SET state = 'Failed', lease_expires_at_utc = clock_timestamp(),
+                  updated_at_utc = clock_timestamp(), last_error = left($3, 1000)
+            WHERE content_hash = $1 AND operation_id = $2"#,
+    )
+    .bind(hash)
+    .bind(operation_id)
+    .bind(error)
+    .execute(pool)
+    .await
+    {
+        tracing::warn!(%hash, %operation_id, %update_error, "failed to persist blob deletion failure");
+    }
 }
 
 /// Retry a bounded batch of durable zero-reference blob tombstones.
 ///
 /// The final-release transaction intentionally leaves these rows behind until
 /// object storage acknowledges deletion. Running this from singleton
-/// maintenance closes the commit-to-object-delete crash window without a
-/// separate work queue or schema migration.
+/// maintenance closes the commit-to-object-delete crash window. The durable
+/// deletion lease makes the external delete retryable across replicas.
 pub async fn purge_pending(pool: &PgPool, storage: &dyn BlobStorage, limit: i64) -> AppResult<u64> {
     let hashes = sqlx::query_scalar::<_, String>(
         r#"SELECT file.hash FROM "Files" file
@@ -505,6 +672,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        test_support::install_operation_tables(&pool).await;
         let user_id = uuid::Uuid::new_v4();
         sqlx::query(
             r#"INSERT INTO "Games" VALUES
@@ -717,6 +885,7 @@ mod tests {
             .connect(&database_url)
             .await
             .expect("connect isolated blob pool");
+        test_support::install_operation_tables(&pool).await;
 
         let hash = "a".repeat(64);
         let acquisitions = (0..64)
@@ -782,6 +951,16 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(pending, 1);
+        let failed_operation: (String, bool, bool) = sqlx::query_as(
+            r#"SELECT state, lease_expires_at_utc <= clock_timestamp(),
+                      last_error IS NOT NULL
+                 FROM "BlobDeletionOperations" WHERE content_hash = $1"#,
+        )
+        .bind(&failed_hash)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(failed_operation, ("Failed".to_owned(), true, true));
 
         let old_hash = "b".repeat(64);
         let old_id = acquire(&pool, &old_hash, "old.pdf", 12).await.unwrap();
@@ -886,10 +1065,9 @@ mod tests {
             Some(owned_attachment_hash)
         );
 
-        // Force deletion to pause while holding the distributed hash lock.
-        // A correct uploader cannot enter storage.store until deletion finishes;
-        // once it does, it recreates the physical object before committing the
-        // canonical metadata row.
+        // Force deletion to pause after claiming its durable lease. A correct
+        // uploader fails fast before storage.store, then succeeds on retry once
+        // deletion has finalized the lease and canonical metadata tombstone.
         let storage = Arc::new(CoordinatedStorage::default());
         let bytes = b"delete-versus-store".to_vec();
         let coordinated_hash = sha256_hex(&bytes);
@@ -905,20 +1083,17 @@ mod tests {
             })
         };
         storage.delete_started.notified().await;
-        let upload_task = {
-            let pool = pool.clone();
-            let storage = storage.clone();
-            tokio::spawn(async move {
-                store_and_acquire(&pool, storage.as_ref(), "race.bin", &bytes)
-                    .await
-                    .unwrap()
-            })
-        };
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        assert!(
+            store_and_acquire(&pool, storage.as_ref(), "race.bin", &bytes)
+                .await
+                .is_err()
+        );
         assert_eq!(storage.stores.load(Ordering::SeqCst), 0);
         storage.allow_delete.notify_one();
         assert!(delete_task.await.expect("join coordinated deletion"));
-        upload_task.await.expect("join coordinated upload");
+        store_and_acquire(&pool, storage.as_ref(), "race.bin", &bytes)
+            .await
+            .unwrap();
         assert_eq!(storage.stores.load(Ordering::SeqCst), 1);
         assert!(storage.exists(&coordinated_hash).await);
         let refs: i64 =

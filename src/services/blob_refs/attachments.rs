@@ -3,11 +3,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::storage::BlobStorage;
-use crate::utils::codec::sha256_hex;
 use crate::utils::enums::FileType;
 use crate::utils::error::{AppError, AppResult};
 
-use super::{acquire_locked, database_error, lock_hash, purge_if_unreferenced, release_locked};
+use super::{database_error, lock_hash, purge_if_unreferenced, release_locked};
 
 const SELECT_ORPHANS_SQL: &str = r#"
     SELECT attachment.id, attachment.local_file_id, file.hash
@@ -149,7 +148,22 @@ pub async fn store_and_replace_challenge_attachment(
     artifact: Option<(&str, &[u8])>,
     replace_existing: bool,
 ) -> AppResult<()> {
-    let expected_hash = artifact.map(|(_, bytes)| sha256_hex(bytes));
+    let staged = match artifact {
+        Some((name, bytes)) => Some(
+            super::stage_blob(
+                pool,
+                storage,
+                uuid::Uuid::new_v4(),
+                &format!("challenge-attachment:{challenge_id}"),
+                None,
+                name,
+                bytes,
+            )
+            .await?,
+        ),
+        None => None,
+    };
+    let expected_hash = staged.as_ref().map(|stage| stage.blob.hash.clone());
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(database_error)?;
@@ -193,16 +207,8 @@ pub async fn store_and_replace_challenge_attachment(
                 .map_err(database_error)?;
         }
 
-        let new_attachment_id = if let Some((name, bytes)) = artifact {
-            let blob = storage.store(name, bytes).await?;
-            if Some(blob.hash.as_str()) != expected_hash.as_deref() {
-                return Err(AppError::internal(
-                    "blob storage returned a hash that does not match its content",
-                ));
-            }
-            let file_id = acquire_locked(&mut transaction, &blob.hash, name, blob.size)
-                .await
-                .map_err(database_error)?;
+        let new_attachment_id = if let Some(stage) = staged.as_ref() {
+            let file_id = super::publish_staged_blob(&mut transaction, stage).await?;
             Some(
                 sqlx::query_scalar::<_, i32>(
                     r#"INSERT INTO "Attachments" ("Type", remote_url, local_file_id)
@@ -439,6 +445,7 @@ mod tests {
             .connect(&database_url)
             .await
             .unwrap();
+        crate::services::blob_refs::test_support::install_operation_tables(&pool).await;
         let storage = CountingStorage::default();
         assert_eq!(delete_orphan_attachments(&pool, &storage).await.unwrap(), 1);
         assert_eq!(storage.0.load(Ordering::SeqCst), 1);
@@ -524,6 +531,7 @@ mod tests {
             .connect_with(sweep_options)
             .await
             .unwrap();
+        crate::services::blob_refs::test_support::install_operation_tables(&pool).await;
 
         // A replacement/repair writer owns the challenge row and blob hash
         // before it reaches the attachment row.

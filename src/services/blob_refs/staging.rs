@@ -89,6 +89,25 @@ async fn claim_stage(
         .execute(&mut *tx)
         .await
         .map_err(database_error)?;
+    lock_hash(&mut tx, hash).await.map_err(database_error)?;
+    let deletion_active: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM "BlobDeletionOperations"
+                WHERE content_hash = $1 AND state = 'Deleting'
+                  AND lease_expires_at_utc > clock_timestamp()
+           )"#,
+    )
+    .bind(hash)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(database_error)?;
+    if deletion_active {
+        tx.commit().await.map_err(database_error)?;
+        return Err(AppError::overloaded(
+            "This blob is being reclaimed; retry in a moment",
+            2,
+        ));
+    }
 
     let existing = sqlx::query_as::<_, StageRow>(
         r#"SELECT owner_scope, owner_user_id, content_hash, file_name, file_size,
@@ -278,6 +297,25 @@ pub(crate) async fn stage_blob(
     lock_hash(&mut ready_tx, &hash)
         .await
         .map_err(database_error)?;
+    let deletion_active: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM "BlobDeletionOperations"
+                WHERE content_hash = $1 AND state = 'Deleting'
+                  AND lease_expires_at_utc > clock_timestamp()
+           )"#,
+    )
+    .bind(&hash)
+    .fetch_one(&mut *ready_tx)
+    .await
+    .map_err(database_error)?;
+    if deletion_active {
+        ready_tx.rollback().await.map_err(database_error)?;
+        mark_failed(pool, operation_id, "Blob deletion won the publication race").await;
+        return Err(AppError::overloaded(
+            "This blob is being reclaimed; retry in a moment",
+            2,
+        ));
+    }
     sqlx::query(
         r#"INSERT INTO "Files" (hash, upload_time_utc, file_size, name, reference_count)
            VALUES ($1, clock_timestamp(), $2, $3, 0)
@@ -358,6 +396,12 @@ pub(crate) async fn publish_staged_blob(
     transaction: &mut Transaction<'_, Postgres>,
     staged: &StagedBlob,
 ) -> AppResult<i32> {
+    // All publication/deletion paths take the content fence before operation
+    // rows. This prevents a replay from deadlocking an owner swap that already
+    // fenced both its old and new hashes in canonical order.
+    lock_hash(transaction, &staged.blob.hash)
+        .await
+        .map_err(database_error)?;
     let row = sqlx::query_as::<_, StageRow>(
         r#"SELECT owner_scope, owner_user_id, content_hash, file_name, file_size,
                   state, lease_expires_at_utc
@@ -380,19 +424,18 @@ pub(crate) async fn publish_staged_blob(
         staged.blob.size,
     )?;
     if row.state == "Published" {
-        return sqlx::query_scalar::<_, i32>(r#"SELECT id FROM "Files" WHERE hash = $1"#)
-            .bind(&staged.blob.hash)
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(database_error)?
-            .ok_or_else(|| AppError::internal("published blob reference is missing"));
+        return sqlx::query_scalar::<_, i32>(
+            r#"SELECT id FROM "Files" WHERE hash = $1 AND reference_count > 0"#,
+        )
+        .bind(&staged.blob.hash)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| AppError::conflict("published blob is no longer owned"));
     }
     if row.state != "Ready" || row.lease_expires_at_utc <= Utc::now() {
         return Err(AppError::conflict("Blob staging operation is not ready"));
     }
-    lock_hash(transaction, &staged.blob.hash)
-        .await
-        .map_err(database_error)?;
     let file_id = acquire_locked(
         transaction,
         &staged.blob.hash,
@@ -401,16 +444,20 @@ pub(crate) async fn publish_staged_blob(
     )
     .await
     .map_err(database_error)?;
-    sqlx::query(
+    let updated = sqlx::query(
         r#"UPDATE "BlobStagingOperations"
               SET state = 'Published', published_at_utc = clock_timestamp(),
                   lease_expires_at_utc = clock_timestamp() + interval '24 hours'
-            WHERE operation_id = $1 AND state = 'Ready'"#,
+            WHERE operation_id = $1 AND state = 'Ready'
+              AND lease_expires_at_utc > clock_timestamp()"#,
     )
     .bind(staged.operation_id)
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
+    if updated.rows_affected() != 1 {
+        return Err(AppError::conflict("Blob staging operation is not ready"));
+    }
     Ok(file_id)
 }
 
@@ -507,19 +554,12 @@ mod tests {
                    id SERIAL PRIMARY KEY, hash VARCHAR(64) NOT NULL UNIQUE,
                    upload_time_utc TIMESTAMPTZ NOT NULL, file_size BIGINT NOT NULL,
                    name TEXT NOT NULL, reference_count BIGINT NOT NULL
-               );
-               CREATE TABLE "BlobStagingOperations" (
-                   operation_id UUID PRIMARY KEY, owner_scope TEXT NOT NULL,
-                   owner_user_id UUID NULL, content_hash VARCHAR(64) NOT NULL,
-                   file_name VARCHAR(255) NOT NULL, file_size BIGINT NOT NULL,
-                   state VARCHAR(16) NOT NULL, created_at_utc TIMESTAMPTZ NOT NULL DEFAULT now(),
-                   lease_expires_at_utc TIMESTAMPTZ NOT NULL,
-                   published_at_utc TIMESTAMPTZ NULL, last_error TEXT NULL
                )"#,
         )
         .execute(&pool)
         .await
         .unwrap();
+        crate::services::blob_refs::test_support::install_operation_tables(&pool).await;
 
         let storage = CoordinatedStorage::default();
         let owner = Uuid::new_v4();
@@ -567,6 +607,20 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(references, 1);
+
+        sqlx::query(r#"UPDATE "Files" SET reference_count = 0 WHERE id = $1"#)
+            .bind(first_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut expired_owner_replay = pool.begin().await.unwrap();
+        assert!(
+            publish_staged_blob(&mut expired_owner_replay, &replay)
+                .await
+                .is_err(),
+            "a publication receipt must not resurrect a released physical blob"
+        );
+        expired_owner_replay.rollback().await.unwrap();
 
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
