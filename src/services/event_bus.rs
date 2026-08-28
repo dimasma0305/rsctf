@@ -167,7 +167,7 @@ impl Drop for EventReceiver {
         let Some((game_id, sender)) = &self.game else {
             return;
         };
-        self.fanout.games.remove_if(game_id, |_, current| {
+        let _ = self.fanout.games.remove_if(game_id, |_, current| {
             current.same_channel(sender) && current.receiver_count() == 1
         });
     }

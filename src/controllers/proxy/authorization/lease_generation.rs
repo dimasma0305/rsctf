@@ -126,7 +126,7 @@ where
                 break;
             }
         }
-        self.cache.entries.remove_if(&self.key, |_, current| {
+        let _ = self.cache.entries.remove_if(&self.key, |_, current| {
             Arc::ptr_eq(current, &self.generation)
                 && self.generation.subscribers.load(Ordering::Acquire) == 0
         });
@@ -152,7 +152,7 @@ where
     fn drop(&mut self) {
         if self.generation.subscribers.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.generation.idle.notify_one();
-            self.cache.entries.remove_if(&self.key, |_, current| {
+            let _ = self.cache.entries.remove_if(&self.key, |_, current| {
                 Arc::ptr_eq(current, &self.generation)
                     && self.generation.subscribers.load(Ordering::Acquire) == 0
                     && !*self.generation.valid.borrow()
