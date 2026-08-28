@@ -464,6 +464,23 @@ test('cleanup reconciles run-tagged games whose failing create never returned an
   assert.match(cleanup, /run-tagged game survived cleanup/);
 });
 
+test('identity admission is isolated from the public game-delete success fixture', () => {
+  const source = readFileSync(join(REPOSITORY, 'tests/load/edit-lifecycle.mjs'), 'utf8');
+  const prepare = source.slice(
+    source.indexOf('async function prepareFutureFixture()'),
+    source.indexOf('async function prepareAdFixture()'),
+  );
+  const cleanup = source.slice(
+    source.indexOf('async function deleteFutureGame('),
+    source.indexOf('async function removeOwnedImages()'),
+  );
+  assert.match(prepare, /title: titleFor\(tags\.auth\)/);
+  assert.match(prepare, /A\.seedCohort\(authorizationGameId, 3\)/);
+  assert.doesNotMatch(prepare, /A\.seedCohort\(context\.gameId, 3\)/);
+  assert.match(cleanup, /title === titleFor\(tags\.auth\)/);
+  assert.match(cleanup, /deleteDisposableAdminGame\(gameId, tags\.auth, \{ runtimeIds: state\.runtimeIds \}\)/);
+});
+
 test('edit acceptance awaits the shared orchestration lease with the canonical path', () => {
   const source = readFileSync(join(REPOSITORY, 'tests/load/edit-lifecycle.mjs'), 'utf8');
   assert.match(
@@ -477,7 +494,7 @@ test('edit acceptance awaits the shared orchestration lease with the canonical p
 test('GitHub import defaults to the challenge repository rather than its parent gitlink', () => {
   const source = readFileSync(join(REPOSITORY, 'tests/load/edit-lifecycle.mjs'), 'utf8');
   assert.match(source, /https:\/\/github\.com\/dimasma0305\/rsctf-challenges\.git/);
-  assert.match(source, /'Jeopardy\/Misc\/static-handout'/);
+  assert.match(source, /'challenges\/Jeopardy\/Misc\/static-handout'/);
   assert.doesNotMatch(source, /examples\/challenge-repository\/Jeopardy/);
 });
 

@@ -59,6 +59,7 @@ import {
 const runKey = `${Date.now().toString(36)}${process.pid.toString(36)}`;
 const tags = Object.freeze({
   future: `adm${runKey}f`,
+  auth: `adm${runKey}u`,
   ad: `adm${runKey}a`,
   koth: `adm${runKey}k`,
 });
@@ -87,7 +88,8 @@ const k6SummaryPath = process.env.EDIT_SUMMARY_JSON || `/tmp/rsctf-edit-lifecycl
 const githubRepository = process.env.EDIT_GITHUB_REPOSITORY ||
   'https://github.com/dimasma0305/rsctf-challenges.git';
 const githubRef = String(process.env.EDIT_GITHUB_REF || 'main').trim();
-const githubSubpath = process.env.EDIT_GITHUB_SUBPATH || 'Jeopardy/Misc/static-handout';
+const githubSubpath = process.env.EDIT_GITHUB_SUBPATH ||
+  'challenges/Jeopardy/Misc/static-handout';
 const githubExpectedCommit = String(process.env.EDIT_GITHUB_EXPECTED_COMMIT || '').trim().toLowerCase();
 if (!/^[a-f0-9]{40}$/.test(githubExpectedCommit)) {
   throw new Error('EDIT_GITHUB_EXPECTED_COMMIT must be a full 40-character Git commit');
@@ -304,7 +306,7 @@ function authorizationProbeRequest(operation) {
     edit_challenge_update: { content: 'authorization probe' },
     edit_challenge_import_github: {
       repoUrl: 'https://github.com/dimasma0305/rsctf-challenges.git',
-      subpath: 'Jeopardy/Misc/static-handout',
+      subpath: 'challenges/Jeopardy/Misc/static-handout',
     },
     edit_challenge_reject: { note: 'authorization probe' },
     edit_challenge_attachment: {
@@ -431,7 +433,20 @@ async function prepareFutureFixture() {
   state.futureGameIds.push(context.gameId);
   saveRecovery();
 
-  const cohort = A.seedCohort(context.gameId, 3);
+  authorizationGameId = await A.createGame({
+    ...futureGameBody(),
+    title: titleFor(tags.auth),
+    allowUserSubmissions: false,
+  });
+  state.gameIds.push(authorizationGameId);
+  state.futureGameIds.push(authorizationGameId);
+  saveRecovery();
+
+  // Cohort seeding records durable competitive admission. Keep those identity
+  // rows on their own exact disposable event so the primary future event still
+  // truthfully exercises the public hard-delete success path. Cleanup routes
+  // this protected auxiliary identity through the title-guarded fixture helper.
+  const cohort = A.seedCohort(authorizationGameId, 3);
   const [managerUserId, ordinaryUserId, crossManagerUserId] = cohort.userIds;
   const stamp = (id) => sql(`SELECT security_stamp FROM "AspNetUsers" WHERE id=${sqlLiteral(id)}::uuid`);
   context.managerUserId = managerUserId;
@@ -444,15 +459,6 @@ async function prepareFutureFixture() {
     crossGameManagerJwt: mintJwt(crossManagerUserId, stamp(crossManagerUserId), 1),
     managerGameIds: new Set(),
   };
-
-  authorizationGameId = await A.createGame({
-    ...futureGameBody(),
-    title: `EDIT-AUTH-${runKey}`,
-    allowUserSubmissions: false,
-  });
-  state.gameIds.push(authorizationGameId);
-  state.futureGameIds.push(authorizationGameId);
-  saveRecovery();
   await uncatalogued('POST', `/api/edit/games/${authorizationGameId}/admins/${crossManagerUserId}`);
 
   await call('edit_game_admin_add');
@@ -1721,6 +1727,15 @@ async function destructivePositiveSurface() {
 
 async function deleteFutureGame(gameId) {
   if (!gameId || Number(sql(`SELECT count(*) FROM "Games" WHERE id=${Number(gameId)}`)) === 0) return;
+  const title = sql(`SELECT title FROM "Games" WHERE id=${Number(gameId)}`);
+  if (title === titleFor(tags.auth)) {
+    deleteDisposableAdminGame(gameId, tags.auth, { runtimeIds: state.runtimeIds });
+    requireCondition(
+      Number(sql(`SELECT count(*) FROM "Games" WHERE id=${Number(gameId)}`)) === 0,
+      `protected authorization game ${gameId} survived exact cleanup`,
+    );
+    return;
+  }
   const response = await A.deleteGame(gameId);
   expectStatus(response, 200, `cleanup future game ${gameId}`);
   requireCondition(Number(sql(`SELECT count(*) FROM "Games" WHERE id=${Number(gameId)}`)) === 0, `future game ${gameId} survived cleanup`);

@@ -2011,7 +2011,8 @@ async function repositoryLifecycle() {
   );
   expectStatus(solved, 200, 'repository preservation solve');
   const repoSubmissionId = positiveId(solved.json?.data ?? solved.json, 'repository submission');
-  const sourceIdentity = `binding/${repoBindingId}/Jeopardy/Misc/static-handout/challenge.yaml`;
+  const sourceIdentity =
+    `binding/${repoBindingId}/challenges/Jeopardy/Misc/static-handout/challenge.yaml`;
   sql(
     `UPDATE "Games" SET repo_binding_id=${repoBindingId}, event_manifest_path='.gzevent' ` +
       `WHERE id=${repoGameId}; ` +

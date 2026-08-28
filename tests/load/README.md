@@ -539,7 +539,7 @@ update and a bind-mounted debug binary even when its image metadata still matche
 Three external integrations must be ready before the run:
 
 - Repository scan needs outbound HTTPS from the server to a read-only fixture containing
-  one `.gzevent` and `Jeopardy/Misc/static-handout/challenge.yaml`.
+  one `.gzevent` and `challenges/Jeopardy/Misc/static-handout/challenge.yaml`.
   `ADMIN_REPOSITORY_URL` defaults to
   `https://github.com/dimasma0305/rsctf-challenges.git`; set `ADMIN_REPOSITORY_REF`
   to override its `main` ref. Reportable runs must set the full 40-character
@@ -636,7 +636,8 @@ Use the same isolated Compose topology, marker, direct replica origins, confirma
 JWT secret, PostgreSQL/Redis/container variables, and safety acknowledgements shown for
 `admin-lifecycle` above. The two runners share both host and PostgreSQL advisory locks and
 cannot overlap. The GitHub challenge-import route defaults to the public
-`dimasma0305/rsctf-challenges` repository's `Jeopardy/Misc/static-handout` example (the
+`dimasma0305/rsctf-challenges` repository's
+`challenges/Jeopardy/Misc/static-handout` example (the
 main repository only stores that repository as a Git submodule); override it with
 `EDIT_GITHUB_REPOSITORY`, `EDIT_GITHUB_REF`, and `EDIT_GITHUB_SUBPATH`. Runtime knobs are
 `EDIT_CONTAINER_IMAGE`, `EDIT_AD_IMAGE`,
@@ -652,7 +653,7 @@ the manifest records that residual TOCTOU limitation.
 ```sh
 export EDIT_GITHUB_REPOSITORY=https://github.com/dimasma0305/rsctf-challenges.git
 export EDIT_GITHUB_REF=main
-export EDIT_GITHUB_SUBPATH=Jeopardy/Misc/static-handout
+export EDIT_GITHUB_SUBPATH=challenges/Jeopardy/Misc/static-handout
 export EDIT_GITHUB_EXPECTED_COMMIT="$(
   git ls-remote "$EDIT_GITHUB_REPOSITORY" "refs/heads/$EDIT_GITHUB_REF" |
     awk 'NR == 1 { print $1 }'
