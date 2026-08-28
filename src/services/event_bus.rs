@@ -533,9 +533,8 @@ async fn run_subscriber(
         }
 
         retry = REDIS_RETRY_MIN;
-        if requires_resync {
+        if std::mem::take(&mut requires_resync) {
             local.force_resync_after_subscriber_gap();
-            requires_resync = false;
         }
         let mut messages = pubsub.on_message();
         while let Some(message) = messages.next().await {
