@@ -52,7 +52,7 @@ use crate::utils::flag_generator;
 use crate::utils::shared::{ArrayResponse, MessageResponse, PageParams, RequestResponse};
 
 /// RSCTF `Limits.MaxFlagLength`.
-const MAX_FLAG_LENGTH: usize = 127;
+pub(crate) const MAX_FLAG_LENGTH: usize = 127;
 
 // ---------------------------------------------------------------------------
 // DTOs (inline; camelCase on the wire to match RSCTF's JSON contract).

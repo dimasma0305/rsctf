@@ -1,11 +1,11 @@
 //! controllers/exercise.rs — ported from RSCTF `Controllers/ExerciseController.cs`.
 //! Standalone per-user practice challenges (no game/team scope).
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 
 use crate::app_state::SharedState;
@@ -13,37 +13,51 @@ use crate::middlewares::privilege_authentication::CurrentUser;
 use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::models::data::{container, exercise_challenge, exercise_instance, flag_context};
 use crate::services::container::ContainerSpec;
-use crate::utils::crypto_utils::ct_eq;
 use crate::utils::enums::{AnswerResult, ChallengeCategory, ContainerStatus};
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::flag_generator;
 use crate::utils::shared::{ArrayResponse, MessageResponse, RequestResponse};
 
-const ELIGIBLE_EXERCISE_FLAGS_SQL: &str = r#"SELECT flag
-      FROM "FlagContexts"
-     WHERE exercise_id = $1
-       AND (
-           (id = $2 AND is_occupied = TRUE)
-           OR is_occupied = FALSE
-       )"#;
+const DEFAULT_EXERCISE_PAGE_SIZE: u64 = 24;
+const MAX_EXERCISE_PAGE_SIZE: u64 = 50;
+const MAX_EXERCISE_CATALOG_ROWS: u64 = 500;
+const MAX_AUTO_DESTROY_PER_CREATE: usize = 2;
+const MAX_TRACKED_EXERCISE_CONTAINERS: usize = 64;
+const EXERCISE_OVERLOAD_RETRY_SECONDS: u64 = 2;
 
-async fn eligible_exercise_flags(
-    pool: &sqlx::PgPool,
+const ELIGIBLE_EXERCISE_FLAG_SQL: &str = r#"SELECT EXISTS (
+    SELECT 1
+      FROM "FlagContexts" flag
+     WHERE flag.exercise_id = $1
+       AND flag.flag = $3
+       AND (
+           (flag.id = $2 AND flag.is_occupied = TRUE)
+           OR flag.is_occupied = FALSE
+       )
+)"#;
+
+async fn eligible_exercise_flag(
+    connection: &mut sqlx::PgConnection,
     exercise_id: i32,
     current_flag_id: Option<i32>,
-) -> AppResult<Vec<String>> {
-    sqlx::query_scalar::<_, String>(ELIGIBLE_EXERCISE_FLAGS_SQL)
+    answer: &str,
+) -> AppResult<bool> {
+    sqlx::query_scalar::<_, bool>(ELIGIBLE_EXERCISE_FLAG_SQL)
         .bind(exercise_id)
         .bind(current_flag_id)
-        .fetch_all(pool)
+        .bind(answer)
+        .fetch_one(connection)
         .await
         .map_err(|error| AppError::internal(error.to_string()))
 }
 
 pub fn router() -> Router<SharedState> {
     Router::new()
-        .route("/api/exercise", get(list))
-        .route("/api/exercise/{id}", get(detail).post(submit))
+        .route("/api/exercise", limited(Policy::Query, get(list)))
+        .route(
+            "/api/exercise/{id}",
+            get(detail).merge(limited(Policy::Submit, axum::routing::post(submit))),
+        )
         .route(
             "/api/exercise/{id}/container",
             limited(
@@ -62,6 +76,40 @@ pub struct ExerciseBrief {
     pub difficulty: i16,
     pub score: i32,
     pub solved: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExerciseListQuery {
+    #[serde(default = "default_exercise_page_size")]
+    count: u64,
+    #[serde(default)]
+    skip: u64,
+}
+
+fn default_exercise_page_size() -> u64 {
+    DEFAULT_EXERCISE_PAGE_SIZE
+}
+
+impl ExerciseListQuery {
+    fn limit(&self) -> i64 {
+        self.count.clamp(1, MAX_EXERCISE_PAGE_SIZE) as i64
+    }
+
+    fn offset(&self) -> i64 {
+        self.skip.min(MAX_EXERCISE_CATALOG_ROWS) as i64
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct ExerciseCatalogRow {
+    id: Option<i32>,
+    title: Option<String>,
+    category: Option<i16>,
+    difficulty: Option<i16>,
+    score: Option<i32>,
+    solved: Option<bool>,
+    total_count: i64,
 }
 
 #[derive(Serialize)]
@@ -83,6 +131,17 @@ pub struct FlagSubmit {
     pub flag: String,
 }
 
+fn validated_exercise_answer(value: &str) -> AppResult<&str> {
+    if value.len() > crate::controllers::game::MAX_FLAG_LENGTH {
+        return Err(AppError::bad_request("Flag is too long"));
+    }
+    let answer = value.trim();
+    if answer.is_empty() {
+        return Err(AppError::bad_request("A flag is required"));
+    }
+    Ok(answer)
+}
+
 fn user_container_lock_key(user_id: uuid::Uuid) -> String {
     format!("exercise-container-user:{user_id}")
 }
@@ -99,6 +158,7 @@ async fn other_owned_containers(
     pool: &sqlx::PgPool,
     user_id: uuid::Uuid,
     exercise_id: i32,
+    limit: i64,
 ) -> AppResult<Vec<OwnedExerciseContainer>> {
     sqlx::query_as::<_, OwnedExerciseContainer>(
         r#"SELECT instance.id AS instance_id,
@@ -111,52 +171,81 @@ async fn other_owned_containers(
               AND instance.exercise_id <> $2
               AND instance.is_loaded = TRUE
               AND instance.container_id IS NOT NULL
-            ORDER BY container.started_at ASC, instance.id ASC"#,
+            ORDER BY container.started_at ASC, instance.id ASC
+            LIMIT $3"#,
     )
     .bind(user_id)
     .bind(exercise_id)
+    .bind(limit)
     .fetch_all(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))
-}
-
-async fn solved_ids(
-    st: &SharedState,
-    user_id: uuid::Uuid,
-) -> AppResult<std::collections::HashSet<i32>> {
-    let insts = exercise_instance::Entity::find()
-        .filter(exercise_instance::Column::UserId.eq(user_id))
-        .filter(exercise_instance::Column::IsSolved.eq(true))
-        .all(&st.db)
-        .await?;
-    Ok(insts.into_iter().map(|i| i.exercise_id).collect())
 }
 
 /// `GET /api/exercise` — published, enabled exercises.
 pub async fn list(
     State(st): State<SharedState>,
     user: CurrentUser,
+    Query(query): Query<ExerciseListQuery>,
 ) -> AppResult<ArrayResponse<ExerciseBrief>> {
-    let now = Utc::now();
-    let solved = solved_ids(&st, user.id).await?;
-    let items = exercise_challenge::Entity::find()
-        .filter(exercise_challenge::Column::IsEnabled.eq(true))
-        .filter(exercise_challenge::Column::PublishTimeUtc.lte(now))
-        .order_by_asc(exercise_challenge::Column::Id)
-        .all(&st.db)
-        .await?;
-    let total = items.len() as i64;
-    let data = items
+    let rows = sqlx::query_as::<_, ExerciseCatalogRow>(
+        r#"WITH bounded AS MATERIALIZED (
+                SELECT exercise.id, exercise.title,
+                       exercise.category::smallint AS category,
+                       exercise.difficulty,
+                       exercise.original_score AS score,
+                       COALESCE(instance.is_solved, FALSE) AS solved
+                  FROM "ExerciseChallenges" exercise
+                  LEFT JOIN "ExerciseInstances" instance
+                    ON instance.exercise_id = exercise.id
+                   AND instance.user_id = $1
+                 WHERE exercise.is_enabled = TRUE
+                   AND exercise.publish_time_utc <= clock_timestamp()
+                 ORDER BY exercise.id
+                 LIMIT $4
+             ), page AS (
+                SELECT * FROM bounded ORDER BY id OFFSET $2 LIMIT $3
+             )
+             SELECT page.id, page.title, page.category, page.difficulty,
+                    page.score, page.solved,
+                    (SELECT COUNT(*)::bigint FROM bounded) AS total_count
+               FROM (SELECT 1) anchor
+               LEFT JOIN page ON TRUE
+              ORDER BY page.id NULLS LAST"#,
+    )
+    .bind(user.id)
+    .bind(query.offset())
+    .bind(query.limit())
+    .bind(MAX_EXERCISE_CATALOG_ROWS as i64)
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let total = rows.first().map_or(0, |row| row.total_count);
+    let data = rows
         .into_iter()
-        .map(|e| ExerciseBrief {
-            solved: solved.contains(&e.id),
-            id: e.id,
-            title: e.title,
-            category: e.category,
-            difficulty: e.difficulty,
-            score: e.original_score,
+        .filter_map(|row| {
+            Some((
+                row.id?,
+                row.title?,
+                row.category?,
+                row.difficulty?,
+                row.score?,
+                row.solved?,
+            ))
         })
-        .collect();
+        .map(|(id, title, category, difficulty, score, solved)| {
+            let category = <ChallengeCategory as sea_orm::ActiveEnum>::try_from_value(&category)
+                .map_err(|error| AppError::internal(error.to_string()))?;
+            Ok(ExerciseBrief {
+                id,
+                title,
+                category,
+                difficulty,
+                score,
+                solved,
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
     Ok(ArrayResponse::new(data, total))
 }
 
@@ -297,28 +386,41 @@ pub async fn submit(
     Path(id): Path<i32>,
     Json(model): Json<FlagSubmit>,
 ) -> AppResult<RequestResponse<AnswerResult>> {
+    let answer = validated_exercise_answer(&model.flag)?;
     let _e = load_exercise(&st, id).await?;
-    let answer = model.flag.trim().to_string();
-    if answer.is_empty() {
-        return Err(AppError::bad_request("A flag is required"));
-    }
 
-    let lock_key = user_container_lock_key(user.id);
-    let _instance_guard = crate::utils::single_flight::coalesce(&lock_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &lock_key).await?;
-    let inst = user_instance(&st, id, user.id).await?;
+    let lock_key = format!("exercise-submit-user:{}", user.id);
+    let Some(mut distributed) =
+        crate::utils::single_flight::PgAdvisoryLock::try_acquire_exercise_grading(
+            st.pg(),
+            &lock_key,
+        )
+        .await?
+    else {
+        return Err(AppError::too_many_requests(EXERCISE_OVERLOAD_RETRY_SECONDS));
+    };
+    let current = sqlx::query_scalar::<_, Option<i32>>(
+        r#"SELECT flag_id
+             FROM "ExerciseInstances"
+            WHERE exercise_id = $1 AND user_id = $2
+            FOR UPDATE"#,
+    )
+    .bind(id)
+    .bind(user.id)
+    .fetch_optional(&mut **distributed.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
 
     // Only the caller's current occupied flag and author-defined unoccupied
     // static flags are eligible. Other users' and stale instance flags share
     // the exercise id, so exercise-id-only fallback would cross that boundary.
-    let eligible_flags = eligible_exercise_flags(
-        st.pg(),
+    let accepted = eligible_exercise_flag(
+        &mut **distributed.transaction_mut(),
         id,
-        inst.as_ref().and_then(|instance| instance.flag_id),
+        current.flatten(),
+        answer,
     )
     .await?;
-    let accepted = eligible_flags.iter().any(|flag| ct_eq(flag, &answer));
 
     let result = if accepted {
         AnswerResult::Accepted
@@ -327,27 +429,20 @@ pub async fn submit(
     };
 
     if accepted {
-        match inst {
-            Some(i) => {
-                let mut am: exercise_instance::ActiveModel = i.into();
-                am.is_solved = Set(true);
-                am.update(&st.db).await?;
-            }
-            None => {
-                exercise_instance::ActiveModel {
-                    exercise_id: Set(id),
-                    user_id: Set(user.id),
-                    is_loaded: Set(false),
-                    is_solved: Set(true),
-                    flag_id: Set(None),
-                    container_id: Set(None),
-                    last_container_operation: Set(Utc::now()),
-                    ..Default::default()
-                }
-                .insert(&st.db)
-                .await?;
-            }
-        }
+        sqlx::query(
+            r#"INSERT INTO "ExerciseInstances"
+                    (exercise_id, user_id, is_loaded, is_solved, flag_id,
+                     container_id, last_container_operation)
+               VALUES ($1, $2, FALSE, TRUE, NULL, NULL, clock_timestamp())
+               ON CONFLICT (user_id, exercise_id) DO UPDATE
+                   SET is_solved = TRUE
+                 WHERE "ExerciseInstances".is_solved = FALSE"#,
+        )
+        .bind(id)
+        .bind(user.id)
+        .execute(&mut **distributed.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     }
 
     distributed.release().await?;
@@ -393,9 +488,15 @@ pub async fn create_container(
     // previously created backend container.
     let flight_key = user_container_lock_key(user.id);
     let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &flight_key)
-            .await?;
+    let Some(distributed) =
+        crate::utils::single_flight::PgSessionAdvisoryLock::try_acquire_exercise_runtime(
+            st.pg(),
+            &flight_key,
+        )
+        .await?
+    else {
+        return Err(AppError::too_many_requests(EXERCISE_OVERLOAD_RETRY_SECONDS));
+    };
     let mut existing = user_instance(&st, id, user.id).await?;
     if let Some(instance) = existing.as_mut() {
         if let Some(container_id) = instance.container_id {
@@ -439,9 +540,17 @@ pub async fn create_container(
 
     let container_policy =
         crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
-    let owned = other_owned_containers(st.pg(), user.id, id).await?;
     let maximum = usize::try_from(container_policy.max_exercise_container_count_per_user)
         .map_err(|_| AppError::internal("invalid exercise container limit"))?;
+    if maximum == 0 || maximum > MAX_TRACKED_EXERCISE_CONTAINERS {
+        distributed.release().await?;
+        return Err(AppError::internal("invalid exercise container limit"));
+    }
+    let inventory_limit = maximum
+        .saturating_add(MAX_AUTO_DESTROY_PER_CREATE)
+        .saturating_add(1)
+        .min(MAX_TRACKED_EXERCISE_CONTAINERS) as i64;
+    let owned = other_owned_containers(st.pg(), user.id, id, inventory_limit).await?;
     if owned.len() >= maximum {
         if !container_policy.auto_destroy_on_limit_reached {
             distributed.release().await?;
@@ -451,6 +560,10 @@ pub async fn create_container(
             )));
         }
         let remove_count = owned.len() - maximum + 1;
+        if remove_count > MAX_AUTO_DESTROY_PER_CREATE {
+            distributed.release().await?;
+            return Err(AppError::too_many_requests(EXERCISE_OVERLOAD_RETRY_SECONDS));
+        }
         for old in owned.into_iter().take(remove_count) {
             destroy_owned_exercise_container_with(
                 st.pg(),
@@ -645,8 +758,15 @@ pub async fn destroy_container(
 ) -> AppResult<MessageResponse> {
     let lock_key = user_container_lock_key(user.id);
     let _instance_guard = crate::utils::single_flight::coalesce(&lock_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &lock_key).await?;
+    let Some(distributed) =
+        crate::utils::single_flight::PgSessionAdvisoryLock::try_acquire_exercise_runtime(
+            st.pg(),
+            &lock_key,
+        )
+        .await?
+    else {
+        return Err(AppError::too_many_requests(EXERCISE_OVERLOAD_RETRY_SECONDS));
+    };
     let inst = user_instance(&st, id, user.id)
         .await?
         .ok_or_else(|| AppError::not_found("No instance"))?;
@@ -698,9 +818,20 @@ mod tests {
 
     #[test]
     fn eligible_flags_are_scoped_to_current_dynamic_or_static_rows() {
-        assert!(ELIGIBLE_EXERCISE_FLAGS_SQL.contains("exercise_id = $1"));
-        assert!(ELIGIBLE_EXERCISE_FLAGS_SQL.contains("id = $2 AND is_occupied = TRUE"));
-        assert!(ELIGIBLE_EXERCISE_FLAGS_SQL.contains("OR is_occupied = FALSE"));
+        assert!(ELIGIBLE_EXERCISE_FLAG_SQL.contains("exercise_id = $1"));
+        assert!(ELIGIBLE_EXERCISE_FLAG_SQL.contains("flag.flag = $3"));
+        assert!(ELIGIBLE_EXERCISE_FLAG_SQL.contains("flag.id = $2 AND flag.is_occupied = TRUE"));
+        assert!(ELIGIBLE_EXERCISE_FLAG_SQL.contains("OR flag.is_occupied = FALSE"));
+    }
+
+    #[test]
+    fn exercise_answer_uses_the_normal_flag_byte_limit() {
+        assert!(validated_exercise_answer(&"a".repeat(127)).is_ok());
+        assert!(matches!(
+            validated_exercise_answer(&"a".repeat(128)),
+            Err(AppError::BadRequest(message)) if message == "Flag is too long"
+        ));
+        assert!(validated_exercise_answer("  \t").is_err());
     }
 
     #[tokio::test]
@@ -757,16 +888,33 @@ mod tests {
         .await
         .unwrap();
 
-        let eligible = eligible_exercise_flags(&pool, 9, Some(own_flag_id))
-            .await
-            .unwrap();
-        assert!(eligible.iter().any(|flag| flag == "flag{own}"));
-        assert!(eligible.iter().any(|flag| flag == "flag{static}"));
-        assert!(!eligible.iter().any(|flag| flag == "flag{other}"));
-        assert_eq!(
-            eligible_exercise_flags(&pool, 9, None).await.unwrap(),
-            vec!["flag{static}".to_string()]
+        let mut connection = pool.acquire().await.unwrap();
+        assert!(
+            eligible_exercise_flag(&mut connection, 9, Some(own_flag_id), "flag{own}")
+                .await
+                .unwrap()
         );
+        assert!(
+            eligible_exercise_flag(&mut connection, 9, Some(own_flag_id), "flag{static}")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !eligible_exercise_flag(&mut connection, 9, Some(own_flag_id), "flag{other}")
+                .await
+                .unwrap()
+        );
+        assert!(
+            eligible_exercise_flag(&mut connection, 9, None, "flag{static}")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !eligible_exercise_flag(&mut connection, 9, None, "flag{own}")
+                .await
+                .unwrap()
+        );
+        drop(connection);
 
         let container_id = uuid::Uuid::new_v4();
         sqlx::query(r#"INSERT INTO "ExerciseInstances" VALUES (41, $1, TRUE, $2)"#)
