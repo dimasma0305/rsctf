@@ -136,8 +136,13 @@ mod tests {
         let game_id = 7;
         let challenge_id = 11;
         let keys = delete_fence_keys(game_id, challenge_id);
-        assert!(keys[0].contains("runtime-transition"));
-        assert!(keys[1].contains("game"));
-        assert!(keys[2].contains("workload-rollout"));
+        assert_eq!(
+            keys,
+            [
+                crate::services::challenge_workloads::runtime_transition_lock_key(challenge_id),
+                crate::services::ad_engine::game_lock_key(game_id),
+                crate::services::challenge_workloads::definition_lock_key(game_id, challenge_id),
+            ]
+        );
     }
 }

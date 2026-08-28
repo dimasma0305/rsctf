@@ -527,7 +527,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 59..],
+            &names[names.len() - 61..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",

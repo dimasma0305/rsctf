@@ -184,7 +184,10 @@ mod tests {
 
     #[test]
     fn latency_sensitive_cleanup_chain_does_not_run_image_maintenance() {
-        let source = include_str!("cleanup.rs");
-        assert!(!source.contains("image_storage::scheduled_cleanup"));
+        let production = include_str!("cleanup.rs")
+            .split_once("#[cfg(test)]")
+            .expect("cleanup tests follow production code")
+            .0;
+        assert!(!production.contains("image_storage::scheduled_cleanup"));
     }
 }

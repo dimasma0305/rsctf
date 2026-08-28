@@ -666,10 +666,13 @@ mod tests {
         let labels = filters.get("label").unwrap();
         assert_eq!(labels.len(), 2);
         assert!(labels.iter().all(|label| label.ends_with(SCOPE)));
-        let source = include_str!("images.rs");
-        assert!(!source.contains("list_images("));
-        assert!(source.contains("buffer_unordered(INVENTORY_INSPECT_CONCURRENCY)"));
-        assert!(source.contains("run_with_timeout"));
+        let production = include_str!("images.rs")
+            .split_once("#[cfg(test)]")
+            .expect("images tests follow production code")
+            .0;
+        assert!(!production.contains("list_images("));
+        assert!(production.contains("buffer_unordered(INVENTORY_INSPECT_CONCURRENCY)"));
+        assert!(production.contains("run_with_timeout"));
     }
 
     #[tokio::test]

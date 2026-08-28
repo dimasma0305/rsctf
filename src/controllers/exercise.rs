@@ -822,10 +822,15 @@ mod tests {
 
     #[test]
     fn exercise_answer_uses_the_normal_flag_byte_limit() {
-        assert!(validated_exercise_answer(&"a".repeat(127)).is_ok());
+        let maximum = crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES;
+        assert!(validated_exercise_answer(&"a".repeat(maximum)).is_ok());
         assert!(matches!(
-            validated_exercise_answer(&"a".repeat(128)),
-            Err(AppError::BadRequest(message)) if message == "Flag is too long"
+            validated_exercise_answer(&"a".repeat(maximum + 1)),
+            Err(AppError::BadRequest(message))
+                if message == format!(
+                    "Flag is {} UTF-8 bytes; the maximum is {maximum} bytes",
+                    maximum + 1
+                )
         ));
         assert!(validated_exercise_answer("  \t").is_err());
     }

@@ -6,7 +6,7 @@
 //! same-key-coalesced blocking-work gate.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 use std::time::UNIX_EPOCH;
 
 use nix::errno::Errno;
@@ -23,13 +23,11 @@ const MAX_RECONCILE_ENTRIES: usize = 65_536;
 const MAX_RECONCILE_KEYS: usize = 64;
 const RECONCILE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-static INVENTORY_WRITER: LazyLock<Mutex<()>> = LazyLock::new(Default::default);
 static RECONCILE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 static RECONCILE_FLIGHTS: LazyLock<crate::utils::single_flight::SingleFlight<InventoryFill>> =
     LazyLock::new(crate::utils::single_flight::SingleFlight::new);
 
 struct InventoryWriterGuard {
-    _process: std::sync::MutexGuard<'static, ()>,
     _file: Flock<std::fs::File>,
 }
 
@@ -83,16 +81,6 @@ fn mark_dirty(root: &Path) {
 }
 
 fn acquire_writer(root: &Path) -> AppResult<InventoryWriterGuard> {
-    let process = match INVENTORY_WRITER.try_lock() {
-        Ok(process) => process,
-        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-        Err(std::sync::TryLockError::WouldBlock) => {
-            return Err(AppError::retryable_unavailable(
-                "Capture inventory publication is busy",
-                2,
-            ))
-        }
-    };
     let directory = root.join(".inventory");
     std::fs::create_dir_all(&directory)
         .map_err(|error| AppError::internal(format!("create capture inventory: {error}")))?;
@@ -117,10 +105,7 @@ fn acquire_writer(root: &Path) -> AppResult<InventoryWriterGuard> {
             )))
         }
     };
-    Ok(InventoryWriterGuard {
-        _process: process,
-        _file: file,
-    })
+    Ok(InventoryWriterGuard { _file: file })
 }
 
 fn modified_ns(metadata: &std::fs::Metadata) -> u64 {

@@ -606,14 +606,17 @@ mod tests {
 
     #[test]
     fn export_projection_is_batched_and_archive_is_streamed() {
-        let source = include_str!("transfer_export.rs");
-        assert!(source.contains("JOIN \"Divisions\""));
-        assert!(source.contains("JOIN \"GameChallenges\""));
-        assert!(source.contains("attachment.id = ANY($1)"));
-        assert!(source.contains("stream_range(&source.hash"));
-        assert!(source.contains("permitted_stream_body"));
-        assert!(!source.contains("permitted_bytes_body"));
-        assert!(!source.contains("load_bounded"));
+        let production = include_str!("transfer_export.rs")
+            .split_once("#[cfg(test)]")
+            .expect("export tests follow production code")
+            .0;
+        assert!(production.contains("JOIN \"Divisions\""));
+        assert!(production.contains("JOIN \"GameChallenges\""));
+        assert!(production.contains("attachment.id = ANY($1)"));
+        assert!(production.contains("stream_range(&source.hash"));
+        assert!(production.contains("permitted_stream_body"));
+        assert!(!production.contains("permitted_bytes_body"));
+        assert!(!production.contains("load_bounded"));
     }
 
     #[tokio::test]
