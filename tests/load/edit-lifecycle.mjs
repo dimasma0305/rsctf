@@ -1019,9 +1019,17 @@ async function positiveReadAndMutationSurface() {
     generatedVariants.model.generated === 0,
     'fixture with no configured generators unexpectedly created variants',
   );
+  requireCondition(
+    Number.isSafeInteger(primaryGameModel.configurationRevision) &&
+      Number.isSafeInteger(primaryGameModel.challengeConfigurationRevision),
+    'clone source omitted its configuration revisions',
+  );
 
   const clone = await call('edit_game_clone', {
     body: {
+      operationId: randomUUID(),
+      expectedSourceRevision: primaryGameModel.configurationRevision,
+      expectedChallengeRevision: primaryGameModel.challengeConfigurationRevision,
       title: `EDIT-CLONE-${runKey}`,
       startTimeUtc: primaryGameModel.start,
       endTimeUtc: primaryGameModel.end,

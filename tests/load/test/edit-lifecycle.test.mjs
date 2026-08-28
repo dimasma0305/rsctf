@@ -37,6 +37,7 @@ test('GitHub import ref fencing resolves one stable branch/tag commit', () => {
     ),
     commit,
   );
+  assert.match(positives, /clone source omitted its configuration revisions/);
   assert.throws(
     () => resolveRemoteGitRefCommit('https://github.com/example/repo.git', 'main', () =>
       `${'c'.repeat(40)}\trefs/heads/main\n${'d'.repeat(40)}\trefs/tags/main\n`),
@@ -638,6 +639,9 @@ test('clone acceptance verifies template semantics and rejects inherited live ow
     orchestrator.indexOf('async function positiveReadAndMutationSurface()'),
     orchestrator.indexOf('async function runReadSimulation()'),
   );
+  assert.match(positives, /operationId: randomUUID\(\)/);
+  assert.match(positives, /expectedSourceRevision: primaryGameModel\.configurationRevision/);
+  assert.match(positives, /expectedChallengeRevision: primaryGameModel\.challengeConfigurationRevision/);
   assert.match(positives, /assertSemanticGameClone\(/);
   assert.ok(positives.indexOf('saveRecovery()') < positives.indexOf('assertSemanticGameClone('));
   assert.match(fixtures, /clone\.public_key<>source\.public_key/);

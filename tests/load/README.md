@@ -16,6 +16,11 @@ cd tests/load
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
+      npm run anti-cheat-read # large-ledger incident/report read gate
+      npm run ad-bearer-admission # A&D bearer admission and optional dependency outages
+      npm run traffic-inventory # bounded capture-inventory pagination
+      npm run read-only-websocket-flood # read-only feed inbound-abuse gate
+      npm run control-plane-outage # acknowledged worker/missing-image recovery
       npm run monitor-history # fixed-rate bounded monitor history + durable backfills
       npm run participation-review # fixed-rate bounded 12k-team organizer review
       npm run details-read  # fixed-rate authenticated challenge-details poll
@@ -36,6 +41,95 @@ N=120 npm run worst-case    # mass BYOC reconnect storm (restarts rsctf)
 FLEET=10 npm run worker      # trusted worker create/proxy/destroy + lease gate
 FLEET=5  npm run worker-local # isolated current-tree rsctf + native Linux agent
 ```
+
+### Residual fixed-rate integrity gates
+
+These gates add contracts and repeatable schedules; this change does not record a
+measured baseline. Keep the fixture, rate, duration, replica count, and host identical
+when the live release gate is run, and only then retain measurements in `REPORT.md`.
+
+The anti-cheat gate refuses a game outside the configured large-ledger range, primes
+the report ETag, mixes snapshot, cursor-delta, and conditional report reads, and proves
+that the incident/solve/suspicion/identity/outbox fingerprint did not change:
+
+```sh
+ANTI_CHEAT_GAME=92001 MIN_INCIDENTS=10000 RATE=2 DURATION=30s \
+  SUMMARY_JSON=/tmp/anti-cheat-read.json npm run anti-cheat-read
+```
+
+The traffic gate discovers one real captured challenge/participation, exercises the
+first and second 100-row pages, rejects duplicate or oversized rows, and compares the
+same inventory fingerprint after the fixed-rate run:
+
+```sh
+TRAFFIC_GAME=92001 RATE=2 DURATION=30s \
+  SUMMARY_JSON=/tmp/traffic-inventory.json npm run traffic-inventory
+```
+
+The read-only WebSocket gate alternates raw and SignalR attack feeds. It requires the
+normal greeting/handshake before sending an unsupported application frame, requires a
+policy/frame-size close, and probes exact `healthz` on an independent arrival lane:
+
+```sh
+READONLY_WS_FLOOD_ACK=1 WEBSOCKET_GAME=92001 RATE=20 DURATION=30s \
+  SUMMARY_JSON=/tmp/read-only-websocket-flood.json npm run read-only-websocket-flood
+```
+
+The A&D bearer gate requires one current token and one fixed-shape token whose digest
+is absent. It covers current, revoked, rotating-random, one-NAT, many-source, and
+optional prepared rotated/suspended credentials. Redis loss and a slow authentication
+query are opt-in and restored in `finally`:
+
+```sh
+AD_BEARER_STRESS_ACK=1 AD_BEARER_GAME=92001 \
+  VALID_AD_TOKEN=ad_<43-chars> REVOKED_AD_TOKEN=ad_<43-chars> \
+  RATE=10 DURATION=20s npm run ad-bearer-admission
+
+AD_REDIS_CONTAINER=rsctf-redis-1 CONFIRM_AD_REDIS_OUTAGE=rsctf-redis-1 \
+AD_SLOW_POOL_STRESS=1 CONFIRM_AD_SLOW_POOL=rsctf_load_test \
+RSCTF_LOAD_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1/rsctf_load_test \
+  AD_BEARER_STRESS_ACK=1 AD_BEARER_GAME=92001 \
+  VALID_AD_TOKEN=ad_<43-chars> REVOKED_AD_TOKEN=ad_<43-chars> \
+  npm run ad-bearer-admission
+```
+
+Point `TARGET` at the real load balancer to cover multiple replicas. A remote Redis
+drill additionally requires `CONFIRM_REMOTE_AD_REDIS_OUTAGE` to equal the target
+origin. The slow-pool phase refuses database names without `test`, `load`, or
+`acceptance`, holds only the token table lock, and verifies the existing absolute
+authentication deadline; use the normal database pool saturation workflow
+for a whole-pool capacity measurement.
+Any remote A&D target also requires `ALLOW_REMOTE_AD_BEARER_STRESS` to equal its
+exact origin. A remote WebSocket flood similarly requires
+`ALLOW_REMOTE_READONLY_WS_FLOOD` to equal the exact target origin.
+
+The control-plane outage gate can stop one exact acknowledged worker container and/or
+start one explicitly prepared disposable challenge whose worker-scoped immutable image
+is absent. It requires bounded failure, no published player instance, continued
+inventory/health reads, and worker reconnection:
+
+```sh
+OUTAGE_WORKER_ID=<uuid> OUTAGE_WORKER_CONTAINER=rsctf-worker-1 \
+CONFIRM_WORKER_OUTAGE=rsctf-worker-1 \
+HEALTHY_PROXY_ENDPOINTS_FILE=/tmp/worker-outage-streams.json \
+  npm run control-plane-outage
+
+OUTAGE_WORKER_ID=<uuid> IMAGE_OUTAGE_GAME=92001 IMAGE_OUTAGE_CID=92002 \
+CONTROL_PLANE_IMAGE_OUTAGE_ACK=1 npm run control-plane-outage
+```
+
+Remote worker stops additionally require `CONFIRM_REMOTE_WORKER_OUTAGE` to equal the
+target origin. The image fixture must already reference
+`worker://<OUTAGE_WORKER_ID>/sha256:<digest>` that is absent on that worker; the runner
+does not rewrite a challenge or delete an image.
+Remote missing-image starts require `CONFIRM_REMOTE_IMAGE_OUTAGE` to equal the target
+origin.
+
+The worker-outage stream file is a JSON array with at least one `player` and one
+`checker` entry on workers other than `OUTAGE_WORKER_ID`. Each entry contains
+`kind`, `workerId`, `url`, `token`, and optional `payload`/`marker`; keep the file mode
+`0600`. Those streams stay active at a fixed rate while all lanes on the selected
+worker disappear and it later reconnects.
 
 Requires `k6`, `node`, and `docker exec <PG>` / `docker` access; the stack up with a
 running game (default `GAME=10`, BYOC challenge `CID=68`). BYOC runs require at least
