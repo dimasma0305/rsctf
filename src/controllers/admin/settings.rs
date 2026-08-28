@@ -661,6 +661,11 @@ pub async fn logo_upload(
     .map_err(|error| AppError::internal(error.to_string()))?
     .into_iter()
     .collect();
+    crate::services::blob_refs::lock_direct_hashes_locked(
+        &mut transaction,
+        std::iter::once(staged.blob.hash.as_str()).chain(old_hashes.iter().map(String::as_str)),
+    )
+    .await?;
     crate::services::blob_refs::publish_staged_blob(&mut transaction, &staged).await?;
     let blob = staged.blob;
     let new_hash = blob.hash.clone();
