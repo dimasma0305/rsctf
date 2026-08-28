@@ -68,6 +68,17 @@ pub fn router() -> Router<SharedState> {
         .route("/api/assets/{hash}", delete(delete_asset))
 }
 
+fn admit_asset_field(field_count: &mut usize) -> AppResult<()> {
+    *field_count = field_count.saturating_add(1);
+    if *field_count > crate::utils::upload::ASSET_FILE_COUNT {
+        return Err(AppError::bad_request(format!(
+            "Upload cannot contain more than {} fields",
+            crate::utils::upload::ASSET_FILE_COUNT
+        )));
+    }
+    Ok(())
+}
+
 /// `POST /api/assets` (admin) — multipart upload of one or more files.
 pub async fn upload(
     State(st): State<SharedState>,
@@ -82,12 +93,14 @@ pub async fn upload(
         crate::utils::upload::reserve_buffered(crate::utils::upload::ASSET_BODY_BYTES)?;
     let mut uploads = Vec::new();
     let mut total_bytes = 0usize;
+    let mut field_count = 0usize;
 
     while let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?
     {
+        admit_asset_field(&mut field_count)?;
         // The uploaded filename, before consuming the field body.
         let file_name = field.file_name().map(|s| s.to_string());
         let bytes = field
@@ -109,12 +122,6 @@ pub async fn upload(
             .filter(|total| *total <= crate::utils::upload::ASSET_TOTAL_BYTES)
             .ok_or_else(|| AppError::bad_request("Upload exceeds the total size limit"))?;
         uploads.push((name, bytes));
-        if uploads.len() > crate::utils::upload::ASSET_FILE_COUNT {
-            return Err(AppError::bad_request(format!(
-                "Upload cannot contain more than {} files",
-                crate::utils::upload::ASSET_FILE_COUNT
-            )));
-        }
     }
 
     if uploads.is_empty() {
@@ -386,6 +393,12 @@ async fn serve_asset(
 ) -> AppResult<Response> {
     let source = crate::services::anti_cheat::client_ip(headers, Some(peer.ip()))
         .unwrap_or_else(|| peer.ip().to_string());
+    crate::middlewares::rate_limiter::admit_asset_request(
+        &source,
+        user.as_ref().map(|user| user.id),
+    )
+    .await
+    .map_err(AppError::too_many_requests)?;
     let request_permit = st
         .asset_download_admission
         .try_acquire_request(&source, hash)
@@ -525,6 +538,13 @@ async fn serve_asset(
         }
     }
 
+    let response_bytes = requested_range
+        .as_ref()
+        .map_or(size, |range| range.end - range.start);
+    crate::middlewares::rate_limiter::admit_asset_response_bytes(response_bytes)
+        .await
+        .map_err(AppError::too_many_requests)?;
+
     let body = match (&cached, &requested_range) {
         (Some(bytes), Some(range)) => {
             let start = usize::try_from(range.start).expect("cached asset fits usize");
@@ -644,8 +664,9 @@ mod tests {
     use axum::http::{header, StatusCode};
 
     use super::{
-        asset_response, content_type_for, parse_byte_range, required_asset_upload_operation_id,
-        signed_download_response, AssetCachePolicy, AssetUploadQuery,
+        admit_asset_field, asset_response, content_type_for, parse_byte_range,
+        required_asset_upload_operation_id, signed_download_response, AssetCachePolicy,
+        AssetUploadQuery,
     };
     use uuid::Uuid;
 
@@ -677,6 +698,15 @@ mod tests {
             .unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn multipart_field_count_is_rejected_before_the_extra_body_is_read() {
+        let mut fields = 0;
+        for _ in 0..crate::utils::upload::ASSET_FILE_COUNT {
+            admit_asset_field(&mut fields).unwrap();
+        }
+        assert!(admit_asset_field(&mut fields).is_err());
     }
 
     #[test]

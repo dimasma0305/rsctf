@@ -118,3 +118,38 @@ async fn response_stream_retains_admission_until_disconnect() {
     released.await.unwrap();
     assert!(admission.try_acquire_owned().is_ok());
 }
+
+#[tokio::test]
+async fn final_buffered_archive_chunk_retains_admission_until_eof() {
+    use futures::StreamExt as _;
+
+    let admission = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+    let permit = admission.clone().try_acquire_owned().unwrap();
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    sender
+        .send(Ok(bytes::Bytes::from_static(b"last-archive-byte")))
+        .await
+        .unwrap();
+    drop(sender);
+    let (completed, released) = tokio::sync::oneshot::channel();
+    let (_lease_failed, lease_failure) = tokio::sync::oneshot::channel();
+    let mut stream = CaptureArchiveStream {
+        inner: tokio_stream::wrappers::ReceiverStream::new(receiver),
+        _permit: permit,
+        completed: Some(completed),
+        lease_failed: Box::pin(lease_failure),
+        deadline: Box::pin(tokio::time::sleep(std::time::Duration::from_secs(30))),
+        terminal: false,
+    };
+
+    assert_eq!(
+        stream.next().await.unwrap().unwrap(),
+        bytes::Bytes::from_static(b"last-archive-byte")
+    );
+    assert!(admission.clone().try_acquire_owned().is_err());
+    assert!(stream.next().await.is_none());
+    released.await.unwrap();
+    assert!(admission.clone().try_acquire_owned().is_err());
+    drop(stream);
+    assert!(admission.try_acquire_owned().is_ok());
+}

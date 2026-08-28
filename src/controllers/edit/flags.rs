@@ -131,7 +131,6 @@ async fn reserve_flag_import(
 struct PreparedFlag {
     flag: String,
     file_type: FileType,
-    file_hash: Option<String>,
     remote_url: Option<String>,
     upload_stage: Option<crate::services::blob_refs::StagedBlob>,
 }
@@ -148,8 +147,8 @@ async fn prepare_flag(
         )?),
         _ => None,
     };
-    let upload_stage = match model.upload_id {
-        Some(upload_id) if file_type == FileType::Local => {
+    let upload_stage = match (file_type, model.upload_id) {
+        (FileType::Local, Some(upload_id)) => {
             let hash = model
                 .file_hash
                 .as_deref()
@@ -164,17 +163,21 @@ async fn prepare_flag(
                 .await?,
             )
         }
-        Some(_) => {
+        (FileType::Local, None) => {
+            return Err(AppError::bad_request(
+                "A local flag attachment requires its uploadId",
+            ));
+        }
+        (_, Some(_)) => {
             return Err(AppError::bad_request(
                 "An uploadId requires a local attachment",
             ));
         }
-        None => None,
+        (_, None) => None,
     };
     Ok(PreparedFlag {
         flag: model.flag,
         file_type,
-        file_hash: model.file_hash,
         remote_url,
         upload_stage,
     })
@@ -187,38 +190,32 @@ async fn insert_flag_attachment_locked(
     if prepared.file_type == FileType::None {
         return Ok(None);
     }
-    let local_file_id = match prepared.file_type {
-        FileType::Local => match prepared.upload_stage.as_ref() {
-            Some(stage) => {
-                Some(crate::services::blob_refs::publish_staged_blob(transaction, stage).await?)
-            }
-            None => match prepared
-                .file_hash
-                .as_deref()
-                .filter(|hash| !hash.is_empty())
-            {
-                Some(hash) => {
-                    sqlx::query_scalar::<_, i32>(r#"SELECT id FROM "Files" WHERE hash = $1"#)
-                        .bind(hash)
-                        .fetch_optional(&mut **transaction)
-                        .await
-                        .map_err(|error| AppError::internal(error.to_string()))?
-                }
-                None => None,
-            },
-        },
-        _ => None,
-    };
     let id = sqlx::query_scalar::<_, i32>(
         r#"INSERT INTO "Attachments" ("Type", remote_url, local_file_id)
-           VALUES ($1, $2, $3) RETURNING id"#,
+           VALUES ($1, $2, NULL) RETURNING id"#,
     )
     .bind(prepared.file_type as i16)
     .bind(prepared.remote_url.as_deref())
-    .bind(local_file_id)
     .fetch_one(&mut **transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    if prepared.file_type == FileType::Local {
+        let stage = prepared.upload_stage.as_ref().ok_or_else(|| {
+            AppError::bad_request("A local flag attachment requires its uploadId")
+        })?;
+        let local_file_id = crate::services::blob_refs::publish_staged_blob_for_owner(
+            transaction,
+            stage,
+            &format!("attachment:{id}"),
+        )
+        .await?;
+        sqlx::query(r#"UPDATE "Attachments" SET local_file_id = $2 WHERE id = $1"#)
+            .bind(id)
+            .bind(local_file_id)
+            .execute(&mut **transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
     Ok(Some(id))
 }
 

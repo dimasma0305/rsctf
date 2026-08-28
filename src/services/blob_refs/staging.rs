@@ -49,6 +49,14 @@ impl StagedBlob {
     ) -> AppResult<i32> {
         consume_staged_blob_with_existing_reference(transaction, self).await
     }
+
+    pub(crate) async fn consume_with_existing_reference_as(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        publication_scope: &str,
+    ) -> AppResult<i32> {
+        consume_staged_blob_with_existing_reference_as(transaction, self, publication_scope).await
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -60,6 +68,7 @@ struct StageRow {
     file_size: i64,
     state: String,
     lease_expires_at_utc: DateTime<Utc>,
+    published_owner_scope: Option<String>,
 }
 
 enum Claim {
@@ -137,7 +146,7 @@ async fn claim_stage(
 
     let existing = sqlx::query_as::<_, StageRow>(
         r#"SELECT owner_scope, owner_user_id, content_hash, file_name, file_size,
-                  state, lease_expires_at_utc
+                  state, lease_expires_at_utc, published_owner_scope
              FROM "BlobStagingOperations"
             WHERE operation_id = $1
             FOR UPDATE"#,
@@ -385,7 +394,7 @@ pub(crate) async fn load_ready_upload_stage(
 ) -> AppResult<StagedBlob> {
     let row = sqlx::query_as::<_, StageRow>(
         r#"SELECT owner_scope, owner_user_id, content_hash, file_name, file_size,
-                  state, lease_expires_at_utc
+                  state, lease_expires_at_utc, published_owner_scope
              FROM "BlobStagingOperations"
             WHERE operation_id = $1"#,
     )
@@ -422,6 +431,18 @@ pub(crate) async fn publish_staged_blob(
     transaction: &mut Transaction<'_, Postgres>,
     staged: &StagedBlob,
 ) -> AppResult<i32> {
+    publish_staged_blob_for_owner(transaction, staged, &staged.owner_scope).await
+}
+
+/// Publish one staged reference for exactly one durable domain owner. A
+/// `Published` receipt may be replayed only by that same owner; it cannot be
+/// reused to create a second attachment without a second logical reference.
+pub(crate) async fn publish_staged_blob_for_owner(
+    transaction: &mut Transaction<'_, Postgres>,
+    staged: &StagedBlob,
+    publication_scope: &str,
+) -> AppResult<i32> {
+    validate_publication_scope(publication_scope)?;
     // All publication/deletion paths take the content fence before operation
     // rows. This prevents a replay from deadlocking an owner swap that already
     // fenced both its old and new hashes in canonical order.
@@ -430,7 +451,7 @@ pub(crate) async fn publish_staged_blob(
         .map_err(database_error)?;
     let row = sqlx::query_as::<_, StageRow>(
         r#"SELECT owner_scope, owner_user_id, content_hash, file_name, file_size,
-                  state, lease_expires_at_utc
+                  state, lease_expires_at_utc, published_owner_scope
              FROM "BlobStagingOperations"
             WHERE operation_id = $1
             FOR UPDATE"#,
@@ -450,6 +471,11 @@ pub(crate) async fn publish_staged_blob(
         staged.blob.size,
     )?;
     if row.state == "Published" {
+        if row.published_owner_scope.as_deref() != Some(publication_scope) {
+            return Err(AppError::conflict(
+                "Blob upload receipt was already consumed by another owner",
+            ));
+        }
         return sqlx::query_scalar::<_, i32>(
             r#"SELECT id FROM "Files" WHERE hash = $1 AND reference_count > 0"#,
         )
@@ -473,11 +499,13 @@ pub(crate) async fn publish_staged_blob(
     let updated = sqlx::query(
         r#"UPDATE "BlobStagingOperations"
               SET state = 'Published', published_at_utc = clock_timestamp(),
+                  published_owner_scope = $2,
                   lease_expires_at_utc = clock_timestamp() + interval '24 hours'
             WHERE operation_id = $1 AND state = 'Ready'
               AND lease_expires_at_utc > clock_timestamp()"#,
     )
     .bind(staged.operation_id)
+    .bind(publication_scope)
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
@@ -496,12 +524,21 @@ pub(crate) async fn consume_staged_blob_with_existing_reference(
     transaction: &mut Transaction<'_, Postgres>,
     staged: &StagedBlob,
 ) -> AppResult<i32> {
+    consume_staged_blob_with_existing_reference_as(transaction, staged, &staged.owner_scope).await
+}
+
+pub(crate) async fn consume_staged_blob_with_existing_reference_as(
+    transaction: &mut Transaction<'_, Postgres>,
+    staged: &StagedBlob,
+    publication_scope: &str,
+) -> AppResult<i32> {
+    validate_publication_scope(publication_scope)?;
     lock_hash(transaction, &staged.blob.hash)
         .await
         .map_err(database_error)?;
     let row = sqlx::query_as::<_, StageRow>(
         r#"SELECT owner_scope, owner_user_id, content_hash, file_name, file_size,
-                  state, lease_expires_at_utc
+                  state, lease_expires_at_utc, published_owner_scope
              FROM "BlobStagingOperations"
             WHERE operation_id = $1
             FOR UPDATE"#,
@@ -534,15 +571,22 @@ pub(crate) async fn consume_staged_blob_with_existing_reference(
     .await
     .map_err(database_error)?
     .ok_or_else(|| AppError::conflict("current blob is no longer owned"))?;
+    if row.state == "Published" && row.published_owner_scope.as_deref() != Some(publication_scope) {
+        return Err(AppError::conflict(
+            "Blob upload receipt was already consumed by another owner",
+        ));
+    }
     if row.state == "Ready" {
         let updated = sqlx::query(
             r#"UPDATE "BlobStagingOperations"
                   SET state = 'Published', published_at_utc = clock_timestamp(),
+                      published_owner_scope = $2,
                       lease_expires_at_utc = clock_timestamp() + interval '24 hours'
                 WHERE operation_id = $1 AND state = 'Ready'
                   AND lease_expires_at_utc > clock_timestamp()"#,
         )
         .bind(staged.operation_id)
+        .bind(publication_scope)
         .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
@@ -551,6 +595,13 @@ pub(crate) async fn consume_staged_blob_with_existing_reference(
         }
     }
     Ok(file_id)
+}
+
+fn validate_publication_scope(publication_scope: &str) -> AppResult<()> {
+    if publication_scope.is_empty() || publication_scope.len() > 255 {
+        return Err(AppError::bad_request("Invalid blob publication owner"));
+    }
+    Ok(())
 }
 
 /// Reclaim a bounded batch. Published result receipts expire without touching
@@ -699,14 +750,15 @@ mod tests {
         assert_eq!(storage.stores.load(Ordering::SeqCst), 1);
 
         let mut first_publish = pool.begin().await.unwrap();
-        let first_id = publish_staged_blob(&mut first_publish, &first)
+        let first_id = publish_staged_blob_for_owner(&mut first_publish, &first, "attachment:11")
             .await
             .unwrap();
         first_publish.commit().await.unwrap();
         let mut replay_publish = pool.begin().await.unwrap();
-        let replay_id = publish_staged_blob(&mut replay_publish, &replay)
-            .await
-            .unwrap();
+        let replay_id =
+            publish_staged_blob_for_owner(&mut replay_publish, &replay, "attachment:11")
+                .await
+                .unwrap();
         replay_publish.commit().await.unwrap();
         assert_eq!(first_id, replay_id);
         let references: i64 =
@@ -716,6 +768,63 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(references, 1);
+
+        let mut wrong_owner = pool.begin().await.unwrap();
+        let wrong_owner_error =
+            publish_staged_blob_for_owner(&mut wrong_owner, &replay, "attachment:12")
+                .await
+                .expect_err("one upload receipt must not create a second owner");
+        assert_eq!(wrong_owner_error.status(), axum::http::StatusCode::CONFLICT);
+        wrong_owner.rollback().await.unwrap();
+
+        let raced = stage_blob(
+            &pool,
+            &storage,
+            Uuid::new_v4(),
+            "asset-upload:race:0",
+            Some(owner),
+            "race.bin",
+            b"immutable-race",
+        )
+        .await
+        .unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let publish = |scope: &'static str| {
+            let pool = pool.clone();
+            let staged = raced.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                let mut transaction = pool.begin().await.unwrap();
+                barrier.wait().await;
+                match publish_staged_blob_for_owner(&mut transaction, &staged, scope).await {
+                    Ok(file_id) => {
+                        transaction.commit().await.unwrap();
+                        Ok(file_id)
+                    }
+                    Err(error) => {
+                        transaction.rollback().await.unwrap();
+                        Err(error.status())
+                    }
+                }
+            })
+        };
+        let (left, right) = tokio::join!(publish("attachment:21"), publish("attachment:22"));
+        let outcomes = [left.unwrap(), right.unwrap()];
+        assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| outcome == &&Err(axum::http::StatusCode::CONFLICT))
+                .count(),
+            1
+        );
+        let raced_references: i64 =
+            sqlx::query_scalar(r#"SELECT reference_count FROM "Files" WHERE hash = $1"#)
+                .bind(&raced.blob.hash)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(raced_references, 1);
 
         let recovered = load_ready_upload_stage(&pool, operation, owner, &first.blob.hash)
             .await

@@ -191,6 +191,7 @@ mod m0229_challenge_import_staging_admission;
 mod m0232_control_job_cancellation;
 mod m0233_variant_generation_admission;
 mod m0234_event_vpn_override_expiry;
+mod m0237_blob_stage_publication_owner;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -404,8 +405,9 @@ impl MigratorTrait for Migrator {
             Box::new(m0227_challenge_update_operations::Migration),
             Box::new(m0229_challenge_import_staging_admission::Migration),
             Box::new(m0232_control_job_cancellation::Migration),
-            Box::new(m0234_event_vpn_override_expiry::Migration),
             Box::new(m0233_variant_generation_admission::Migration),
+            Box::new(m0234_event_vpn_override_expiry::Migration),
+            Box::new(m0237_blob_stage_publication_owner::Migration),
         ]
     }
 }
@@ -551,7 +553,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 67..],
+            &names[names.len() - 68..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -618,8 +620,9 @@ mod tests {
                 "m0227_challenge_update_operations",
                 "m0229_challenge_import_staging_admission",
                 "m0232_control_job_cancellation",
-                "m0234_event_vpn_override_expiry",
                 "m0233_variant_generation_admission",
+                "m0234_event_vpn_override_expiry",
+                "m0237_blob_stage_publication_owner",
             ]
         );
     }

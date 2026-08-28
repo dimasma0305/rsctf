@@ -42,8 +42,8 @@ pub(crate) use challenges::{
 };
 pub(crate) use seaorm::publish_staged_blob_in_seaorm_transaction;
 pub(crate) use staging::{
-    load_ready_upload_stage, publish_staged_blob, purge_expired_stages, scoped_operation_id,
-    stage_blob, StagedBlob,
+    load_ready_upload_stage, publish_staged_blob, publish_staged_blob_for_owner,
+    purge_expired_stages, scoped_operation_id, stage_blob, StagedBlob,
 };
 pub use writeups::clear_game_writeups;
 #[cfg(test)]

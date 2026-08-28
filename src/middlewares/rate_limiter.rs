@@ -48,6 +48,11 @@ mod public_security;
 pub(crate) use public_security::{admit_public_security, PublicSecurityWork};
 mod proxy_traffic;
 pub(crate) use proxy_traffic::{admit_proxy_traffic_credit, admit_solve_receipt_issuance};
+mod work_admission;
+pub(crate) use work_admission::{
+    admit_ad_submit, admit_asset_gate_miss, admit_asset_request, admit_asset_response_bytes,
+    admit_honeypot_source,
+};
 
 static AUTHENTICATED_IP_BACKSTOP_PER_MINUTE: LazyLock<u32> = LazyLock::new(|| {
     std::env::var("RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE")
@@ -181,17 +186,29 @@ pub enum Policy {
     /// Appended to preserve every shipped Redis policy discriminant.
     HoneypotTcp,
     /// Deployment-wide verifier budget behind source-scoped `TeamSignature`.
-    TeamSignatureAggregate,
+    TeamSignatureAggregate = 23,
     /// Deployment-wide HashPoW issuance budget layered behind the source-scoped
     /// `PowChallenge` policy. Appended to preserve shipped discriminants.
-    PowChallengeAggregate,
+    PowChallengeAggregate = 24,
     /// Trusted solve-verifier issuance work. Appended to preserve every
     /// previously shipped Redis policy discriminant.
-    SolveReceipt,
+    SolveReceipt = 25,
     /// Coarse cross-replica proxy byte credits. Per-frame work remains behind
     /// strict process/session ceilings and never performs a Redis round trip.
     /// Appended to preserve every previously shipped Redis policy discriminant.
-    ProxyTraffic,
+    ProxyTraffic = 26,
+    /// Source budget for anonymous and authenticated asset routes, which live
+    /// outside the global `/api` middleware.
+    /// Values 27 through 29 are reserved by credential and honeypot admission.
+    AssetRequestSource = 30,
+    /// Authenticated account budget for asset routes across changing source IPs.
+    AssetRequestIdentity = 31,
+    /// Deployment-wide request-work budget before asset cache or PostgreSQL work.
+    AssetRequestWork = 32,
+    /// Deployment-wide byte budget for bodies served through the platform.
+    AssetResponseBytes = 33,
+    /// Deployment-wide budget for distinct authorization cache misses.
+    AssetGateMiss = 34,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -316,6 +333,29 @@ impl Policy {
             Policy::ProxyTraffic => Kind::Bucket {
                 capacity: 16_384.0,
                 refill_per_sec: 1_024.0,
+            },
+            Policy::AssetRequestSource => Kind::Bucket {
+                capacity: 512.0,
+                refill_per_sec: 128.0,
+            },
+            Policy::AssetRequestIdentity => Kind::Bucket {
+                capacity: 512.0,
+                refill_per_sec: 64.0,
+            },
+            Policy::AssetRequestWork => Kind::Bucket {
+                capacity: 2_048.0,
+                refill_per_sec: 256.0,
+            },
+            // One work unit is 64 KiB. This bounds aggregate proxied response
+            // bytes at a 512-MiB burst and 128 MiB/s sustained while leaving
+            // immutable signed-object delivery to the object-store policy.
+            Policy::AssetResponseBytes => Kind::Bucket {
+                capacity: 8_192.0,
+                refill_per_sec: 2_048.0,
+            },
+            Policy::AssetGateMiss => Kind::Bucket {
+                capacity: 256.0,
+                refill_per_sec: 128.0,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {
@@ -933,34 +973,6 @@ async fn check_weighted_async(policy: Policy, key: String, cost: u32) -> Result<
         Some(distributed) => distributed.check_weighted(policy, &key, cost).await,
         None => check_weighted(policy, key, cost),
     }
-}
-
-/// Silent source admission for decoy routes. Multi-replica deployments use
-/// the configured Redis limiter; a Redis outage falls back to the same bounded
-/// local policy without changing the plausible honeypot response.
-pub(crate) async fn admit_honeypot_source(source: &str, tcp: bool) -> bool {
-    let policy = if tcp {
-        Policy::HoneypotTcp
-    } else {
-        Policy::HoneypotHttp
-    };
-    check_async(policy, source.to_owned()).await.is_ok()
-}
-
-/// Enforce the team-scoped A&D lookup/byte work budget after authentication has
-/// resolved a canonical participation. Returning the normal 429 response
-/// preserves the public error envelope and `Retry-After` header.
-pub(crate) async fn admit_ad_submit(
-    game_id: i32,
-    participation_id: i32,
-    work_units: usize,
-) -> Option<Response> {
-    let cost = u32::try_from(work_units.max(1)).unwrap_or(u32::MAX);
-    let key = format!("game:{game_id}:participation:{participation_id}");
-    check_weighted_async(Policy::AdSubmit, key, cost)
-        .await
-        .err()
-        .map(too_many_requests)
 }
 
 // ---------------------------------------------------------------------------
