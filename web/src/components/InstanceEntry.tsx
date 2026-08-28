@@ -300,7 +300,13 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   }, [capabilityAttempt, isWsrxUsable, label, pendingWsrxRemoteEntry, proxyEntryMode, t, wsrx, wsrxOptions.allowLan])
 
   useEffect(() => {
-    if (!pendingWsrxRemoteEntry || !pendingTraffic || pendingTraffic.latency < 0) return
+    if (
+      !pendingWsrxRemoteEntry ||
+      !pendingTraffic ||
+      typeof pendingTraffic.latency !== 'number' ||
+      pendingTraffic.latency < 0
+    )
+      return
     const oldLocal = localTraffic?.local
     setWsrxRemoteEntry(pendingWsrxRemoteEntry)
     setPendingWsrxRemoteEntry('')

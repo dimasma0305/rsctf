@@ -1,6 +1,6 @@
 import { Alert, Badge, Button, CopyButton, Group, Loader, Stack, Text, Tooltip } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
-import { mdiAlertCircleOutline, mdiConsole, mdiRefresh, mdiRestart, mdiServerNetwork } from '@mdi/js'
+import { mdiAlertCircleOutline, mdiConsole, mdiDownload, mdiRefresh, mdiRestart, mdiServerNetwork } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
