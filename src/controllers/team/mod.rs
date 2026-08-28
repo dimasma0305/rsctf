@@ -813,28 +813,6 @@ async fn to_info(
     })
 }
 
-/// Every team the user captains or is a roster member of, ordered by id.
-async fn user_teams(st: &SharedState, user_id: Uuid) -> AppResult<Vec<team::Model>> {
-    let member_team_ids: Vec<i32> = team_member::Entity::find()
-        .filter(team_member::Column::UserId.eq(user_id))
-        .all(&st.db)
-        .await?
-        .into_iter()
-        .map(|r| r.team_id)
-        .collect();
-
-    let mut cond = team::Column::CaptainId.eq(user_id);
-    if !member_team_ids.is_empty() {
-        cond = cond.or(team::Column::Id.is_in(member_team_ids));
-    }
-    let teams = team::Entity::find()
-        .filter(cond)
-        .order_by_asc(team::Column::Id)
-        .all(&st.db)
-        .await?;
-    Ok(teams)
-}
-
 /// Distinct ids of the games the team has (or had) a participation in.
 pub(crate) async fn team_game_ids(st: &SharedState, team_id: i32) -> AppResult<Vec<i32>> {
     let mut ids: Vec<i32> = participation::Entity::find()

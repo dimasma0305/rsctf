@@ -27,7 +27,7 @@ pub struct EventVpnProofRequest {
     pub challenge: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventVpnProofModel {
     pub proof: String,
