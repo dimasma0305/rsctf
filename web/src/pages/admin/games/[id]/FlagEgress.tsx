@@ -28,6 +28,7 @@ import {
   flagEgressMatchesSearch,
   flagEgressPushIsCurrent,
   flagEgressSnapshotIsCurrent,
+  formatFlagEgressAge,
   mergeFlagEgressRows,
   rebaseFlagEgressRows,
   type ScopedFlagEgressPage,
@@ -325,7 +326,7 @@ const FlagEgressView: FC<FlagEgressViewProps> = ({ gameId, feedScope }) => {
                     <Table.Td>
                       <Tooltip label={dayjs(event.lastSeenUtc).locale(locale).format('LLL')} withArrow>
                         <Text size="sm" ff="monospace" style={{ cursor: 'help' }}>
-                          {dayjs(event.lastSeenUtc).locale(locale).fromNow()}
+                          {formatFlagEgressAge(event.lastSeenUtc, locale)}
                         </Text>
                       </Tooltip>
                     </Table.Td>

@@ -3,6 +3,7 @@ import test from 'node:test'
 import type { FlagEgressEventModel } from '@Api'
 import {
   currentFlagEgressBuffer,
+  formatFlagEgressAge,
   flagEgressMatchesSearch,
   flagEgressPushIsCurrent,
   flagEgressSnapshotIsCurrent,
@@ -88,4 +89,8 @@ test('active search applies to live rows by team, challenge, and remote IP', () 
   assert.equal(flagEgressMatchesSearch(row, 'heap'), true)
   assert.equal(flagEgressMatchesSearch(row, '113.44'), true)
   assert.equal(flagEgressMatchesSearch(row, 'blue'), false)
+})
+
+test('relative timestamps initialize their own Day.js plugin', () => {
+  assert.match(formatFlagEgressAge(Date.now() - 60_000, 'en'), /minute/)
 })

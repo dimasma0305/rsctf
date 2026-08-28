@@ -1,4 +1,8 @@
+import dayjs from 'dayjs'
+import relativeTime from 'dayjs/plugin/relativeTime'
 import type { FlagEgressEventModel, FlagEgressPage } from '@Api'
+
+dayjs.extend(relativeTime)
 
 const finiteLimit = (limit: number) => (Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0)
 
@@ -60,3 +64,7 @@ export const flagEgressMatchesSearch = (event: FlagEgressEventModel, search: str
     .map((value) => value.toLocaleLowerCase(locale))
     .some((value) => value.includes(normalized))
 }
+
+/** Keep the relative-time plugin next to the formatter so this feed cannot
+ * depend on another lazily loaded page having initialized Day.js first. */
+export const formatFlagEgressAge = (timestamp: number, locale: string) => dayjs(timestamp).locale(locale).fromNow()

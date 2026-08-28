@@ -71,7 +71,7 @@ on 2026-08-25.
     `web/src/components/admin/ContainerExecModal.tsx`, and
     `src/hubs/container/admission.rs`.
 
-- [ ] Bound the live submission, event, notice, and log collections.
+- [x] Bound the live submission, event, notice, and log collections.
   - Cap and deduplicate in-memory entries, following the established Flag Egress feed
     pattern.
   - Put stable submission/event IDs (and a reconnect cursor) on both HTTP and SignalR
