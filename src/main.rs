@@ -626,6 +626,12 @@ fn start_background_services(
             rsctf::services::discord_webhook::start_reconciler(state.clone(), shutdown.clone()),
         ));
     }
+    if owns_mail_reconciliation(role) {
+        required.push(RequiredTask::Unit(
+            "mail outbox reconciler",
+            rsctf::services::mail_outbox::start_reconciler(state.clone(), shutdown.clone()),
+        ));
+    }
     if let Some(worker_plane) = worker_plane {
         let service = worker_plane.service.clone();
         required.push(RequiredTask::Fallible(
@@ -799,6 +805,13 @@ fn owns_proxy_observation_writer(role: RuntimeRole) -> bool {
     )
 }
 
+fn owns_mail_reconciliation(role: RuntimeRole) -> bool {
+    matches!(
+        role,
+        RuntimeRole::All | RuntimeRole::Development | RuntimeRole::Control
+    )
+}
+
 fn should_run_migrations(role: RuntimeRole, combined_migrations_disabled: bool) -> bool {
     role == RuntimeRole::Migrate
         || role == RuntimeRole::Development
@@ -962,6 +975,17 @@ mod startup_tests {
         assert!(!owns_proxy_observation_writer(RuntimeRole::Web));
         assert!(!owns_proxy_observation_writer(RuntimeRole::Engine));
         assert!(!owns_proxy_observation_writer(RuntimeRole::Migrate));
+    }
+
+    #[test]
+    fn mail_reconciliation_runs_only_on_the_external_control_owner() {
+        assert!(owns_mail_reconciliation(RuntimeRole::All));
+        assert!(owns_mail_reconciliation(RuntimeRole::Control));
+        assert!(owns_mail_reconciliation(RuntimeRole::Development));
+        assert!(!owns_mail_reconciliation(RuntimeRole::Web));
+        assert!(!owns_mail_reconciliation(RuntimeRole::Engine));
+        assert!(!owns_mail_reconciliation(RuntimeRole::Network));
+        assert!(!owns_mail_reconciliation(RuntimeRole::Migrate));
     }
 
     #[test]

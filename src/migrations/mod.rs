@@ -156,6 +156,7 @@ mod m0169_credential_work_admission;
 mod m0170_admin_credential_jobs;
 mod m0171_admin_password_reset_operations;
 mod m0172_distributed_proxy_admission;
+mod m0175_mail_outbox;
 mod m0183_exercise_api_bounds;
 
 #[cfg(test)]
@@ -176,6 +177,8 @@ pub(crate) use m0114_submission_feed_cursor::UP_SQL as SUBMISSION_FEED_CURSOR_SQ
 pub(crate) use m0115_flag_egress_feed_cursor::UP_SQL as FLAG_EGRESS_FEED_CURSOR_SQL;
 #[cfg(test)]
 pub(crate) use m0116_game_event_feed_pending::UP_SQL as GAME_EVENT_FEED_PENDING_SQL;
+#[cfg(test)]
+pub(crate) use m0175_mail_outbox::UP_SQL as MAIL_OUTBOX_SQL;
 
 pub struct Migrator;
 
@@ -325,6 +328,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0170_admin_credential_jobs::Migration),
             Box::new(m0171_admin_password_reset_operations::Migration),
             Box::new(m0172_distributed_proxy_admission::Migration),
+            Box::new(m0175_mail_outbox::Migration),
             Box::new(m0183_exercise_api_bounds::Migration),
         ]
     }

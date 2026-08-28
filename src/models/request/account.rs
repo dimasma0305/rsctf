@@ -2,6 +2,7 @@
 
 use serde::Deserialize;
 use std::fmt;
+use uuid::Uuid;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +25,9 @@ pub struct RegisterModel {
     /// table is empty. It is ignored after the bootstrap administrator exists.
     #[serde(default)]
     pub bootstrap_token: Option<String>,
+    /// Stable identity for reconciling an ambiguous registration/mail commit.
+    #[serde(default)]
+    pub operation_id: Option<Uuid>,
 }
 
 impl fmt::Debug for RegisterModel {
@@ -46,6 +50,7 @@ impl fmt::Debug for RegisterModel {
                 "bootstrap_token",
                 &self.bootstrap_token.as_ref().map(|_| "<redacted>"),
             )
+            .field("operation_id", &self.operation_id)
             .finish()
     }
 }

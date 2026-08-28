@@ -1,12 +1,8 @@
 //! services/mail.rs — ported from RSCTF `Services/Mail/MailSender.cs`.
 //!
-//! RSCTF's `MailSender` is a hosted singleton with a bounded, retrying in-memory
-//! queue and a background worker that (re)builds a MailKit `SmtpClient` on config
-//! change. Here we model the essential, directly-usable surface: a `MailSender`
-//! built from environment SMTP config plus an async `send` that transmits one HTML
-//! message via lettre's `AsyncSmtpTransport<Tokio1Executor>` over rustls. If SMTP
-//! is not configured we log a warning and no-op (return `Ok`) rather than erroring,
-//! matching RSCTF's "not fatal unless email confirmation is required" posture.
+//! Account workflows persist mail through `services::mail_outbox`; its bounded
+//! worker resolves the effective database configuration with environment
+//! fallback once per batch. This module owns only SMTP transport and templates.
 //!
 //! The confirm / change-email / reset-password / invite templates RSCTF renders
 //! from its localized `MailSender_Template` are provided here as plain builder

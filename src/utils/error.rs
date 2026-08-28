@@ -94,6 +94,9 @@ impl AppError {
             retry_after,
         }
     }
+    pub fn retry_after(seconds: u64) -> Self {
+        AppError::too_many_requests(seconds)
+    }
 
     /// RSCTF `ErrorCode.GameEnded` (10002): 400 with the numeric code in the body.
     /// The React `TeamRank` redirects when `error.status === 10002`.
@@ -197,5 +200,12 @@ mod tests {
         let response = AppError::retryable_unavailable("busy", 3).into_response();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "3");
+    }
+
+    #[test]
+    fn bounded_admission_errors_expose_retry_after() {
+        let response = AppError::retry_after(300).into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get("retry-after").unwrap(), "300");
     }
 }
