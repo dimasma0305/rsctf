@@ -3,27 +3,24 @@
 use super::*;
 
 pub(crate) fn game_is_live(game: &game::Model, now: DateTime<Utc>) -> bool {
-    event_window_is_live(
-        game.practice_mode,
-        game.start_time_utc,
-        game.end_time_utc,
-        now,
-    )
+    operational_window_is_live(game.start_time_utc, game.end_time_utc, now)
 }
 
-fn event_window_is_live(
-    practice_mode: bool,
+fn operational_window_is_live(
     start_time_utc: DateTime<Utc>,
     end_time_utc: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> bool {
-    now >= start_time_utc && (practice_mode || now < end_time_utc)
+    now >= start_time_utc && now < end_time_utc
 }
 
 pub(crate) async fn require_live_event_window(
     st: &SharedState,
     game_id: i32,
 ) -> AppResult<game::Model> {
+    // Practice mode keeps the safe challenge archive available, but it must not
+    // extend rotating flags, service coordinates, target capabilities, or
+    // mutable engine state beyond the configured competition end.
     let game = load_game_cached(st, game_id).await?;
     let now = Utc::now();
     if game_is_live(&game, now) {
@@ -54,28 +51,25 @@ fn engine_standings_visible(
 
 #[cfg(test)]
 mod tests {
-    use super::{engine_standings_visible, event_window_is_live};
+    use super::{engine_standings_visible, operational_window_is_live};
     use chrono::{Duration, Utc};
 
     #[test]
-    fn live_window_never_opens_before_start_and_practice_only_relaxes_end() {
+    fn operational_window_is_strict_at_both_event_edges() {
         let start = Utc::now();
         let end = start + Duration::hours(1);
-        assert!(!event_window_is_live(
-            false,
+        assert!(!operational_window_is_live(
             start,
             end,
             start - Duration::milliseconds(1)
         ));
-        assert!(!event_window_is_live(
-            true,
+        assert!(operational_window_is_live(start, end, start));
+        assert!(!operational_window_is_live(start, end, end));
+        assert!(!operational_window_is_live(
             start,
             end,
-            start - Duration::milliseconds(1)
+            end + Duration::milliseconds(1)
         ));
-        assert!(event_window_is_live(false, start, end, start));
-        assert!(!event_window_is_live(false, start, end, end));
-        assert!(event_window_is_live(true, start, end, end));
     }
 
     #[test]

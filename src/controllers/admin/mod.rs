@@ -162,7 +162,10 @@ pub fn router() -> Router<SharedState> {
             "/api/admin/users/{userid}",
             get(user_info).put(update_user).delete(delete_user),
         )
-        .route("/api/admin/users/{userid}/password", delete(reset_password))
+        .route(
+            "/api/admin/users/{userid}/password",
+            limited(Policy::CredentialMutation, delete(reset_password)),
+        )
         // --- Teams ---
         .route("/api/admin/teams", get(teams))
         .route("/api/admin/teams/search", post(search_teams))

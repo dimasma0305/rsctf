@@ -535,7 +535,23 @@ pub async fn reset_password(
         Err(error) => return Err(AppError::internal(error.to_string())),
     }
     let password = generate_password();
-    let hash = hash_password_async(password.clone()).await?;
+    let hash = match hash_password_async(password.clone()).await {
+        Ok(hash) => hash,
+        Err(error) => {
+            // Admission failures happen before Argon2 starts. Release only this
+            // operation's lease so its stable ID can be retried immediately.
+            let _ = sqlx::query(
+                r#"UPDATE "AdminPasswordResetOperations"
+                      SET lease_expires_at_utc = clock_timestamp()
+                    WHERE operation_id = $1 AND lease_token = $2 AND status = 0"#,
+            )
+            .bind(query.operation_id)
+            .bind(lease_token)
+            .execute(st.pg())
+            .await;
+            return Err(error);
+        }
+    };
     let credential_email_to_invalidate = target.normalized_email.clone();
     let (ciphertext, nonce) =
         encrypt_admin_reset(&st.config.jwt_secret, query.operation_id, userid, &password)?;

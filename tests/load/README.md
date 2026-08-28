@@ -18,6 +18,7 @@ N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
       npm run anti-cheat-read # large-ledger incident/report read gate
       npm run ad-bearer-admission # A&D bearer admission and optional dependency outages
+      npm run public-security # HashPoW issuance + authoritative team-signature admission
       npm run traffic-inventory # bounded capture-inventory pagination
       npm run read-only-websocket-flood # read-only feed inbound-abuse gate
       npm run attack-arena # fixed-rate already-open public arena polling gate
@@ -119,6 +120,23 @@ for a whole-pool capacity measurement.
 Any remote A&D target also requires `ALLOW_REMOTE_AD_BEARER_STRESS` to equal its
 exact origin. A remote WebSocket flood similarly requires
 `ALLOW_REMOTE_READONLY_WS_FLOOD` to equal the exact target origin.
+
+The public-security gate discovers one real event-issued team credential from a
+currently live Accepted participation, generates an attacker-controlled Ed25519 key,
+and mixes trusted, attacker, malformed, and stateless HashPoW issuance requests at a
+fixed rate. It accepts only typed `429` overloads with `Retry-After`, keeps `healthz`
+responsive, and proves the game key/participation credential fingerprint is unchanged:
+
+```sh
+PUBLIC_SECURITY_STRESS_ACK=1 PUBLIC_SECURITY_GAME=92001 PUBLIC_SECURITY_TEAM=92002 \
+  RATE=8 DURATION=30s SUMMARY_JSON=/tmp/public-security.json npm run public-security
+```
+
+Pointing it at a non-loopback target additionally requires
+`ALLOW_REMOTE_PUBLIC_SECURITY_STRESS` to equal the exact target origin. HashPoW captcha
+must be enabled for the run. Use `npm run observe` alongside the same fixed fixture to
+record PostgreSQL query rate, Redis commands/key count under the 256 MiB `allkeys-lru`
+bound, server CPU/RAM, and full latency distributions.
 
 The control-plane outage gate can stop one exact acknowledged worker container and/or
 start one explicitly prepared disposable challenge whose worker-scoped immutable image

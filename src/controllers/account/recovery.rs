@@ -311,7 +311,7 @@ pub async fn change_password(
     if model.old.len() > MAX_PASSWORD_BYTES {
         return Err(AppError::bad_request("Old password is incorrect"));
     }
-    if !verify_password_async(model.old, old_hash.clone()).await {
+    if !verify_password_async(model.old, old_hash.clone()).await? {
         return Err(AppError::bad_request("Old password is incorrect"));
     }
     let new_hash = hash_password_async(model.new).await?;
@@ -705,7 +705,24 @@ pub async fn password_reset(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
-    let new_hash = hash_password_async(model.password.clone()).await?;
+    let new_hash = match hash_password_async(model.password.clone()).await {
+        Ok(hash) => hash,
+        Err(error) => {
+            // No Argon2 work started, so make the exact durable operation
+            // immediately reclaimable instead of advertising a one-second
+            // retry while leaving its 45-second lease live.
+            let _ = sqlx::query(
+                r#"UPDATE "PasswordResetAttempts"
+                      SET lease_expires_at_utc = clock_timestamp()
+                    WHERE operation_id = $1 AND lease_token = $2 AND status = 0"#,
+            )
+            .bind(model.operation_id)
+            .bind(lease_token)
+            .execute(st.pg())
+            .await;
+            return Err(error);
+        }
+    };
 
     // Authorize the write against the same security stamp. A concurrent logout or
     // password change either wins first and makes this affect zero rows, or wins
@@ -839,7 +856,7 @@ pub async fn change_email(
         model.password,
         current.password_hash.clone().unwrap_or_default(),
     )
-    .await
+    .await?
     {
         return Err(AppError::bad_request("Current password is incorrect"));
     }

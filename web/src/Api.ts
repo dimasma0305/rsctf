@@ -11570,11 +11570,11 @@ export class Api<
       }),
 
     /**
-     * @description Statelessly verify a caller-supplied Ed25519 key and signature. A 200 is not platform team or participation authorization.
+     * @description Verify an event-issued Ed25519 team credential against the canonical live game key and Accepted participation.
      *
      * @tags Team
      * @name TeamVerifySignature
-     * @summary Verify an untrusted-key signature envelope
+     * @summary Verify a live event team credential
      * @request POST:/api/team/verify
      */
     teamVerifySignature: (

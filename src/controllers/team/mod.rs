@@ -34,6 +34,7 @@ mod models;
 mod profile;
 mod revocation;
 mod roster_policy;
+mod signature;
 #[cfg(test)]
 pub(crate) use account_lifecycle::create_team_rows;
 pub(crate) use account_lifecycle::{create_team_rows_replay, transfer_captain_locked};
@@ -49,6 +50,8 @@ pub(crate) use revocation::{
 };
 use revocation::{remove_membership, revoke_team_shared_capabilities_locked};
 pub(crate) use roster_policy::ensure_roster_change_allowed;
+pub use signature::verify_signature;
+use signature::SIGNATURE_VERIFY_BODY_BYTES;
 
 /// Each user may captain at most this many teams. Mirrors RSCTF `MaxTeamsAllowed`.
 pub(crate) const MAX_TEAMS_ALLOWED: u64 = 3;
@@ -56,8 +59,6 @@ pub(crate) const MAX_TEAMS_ALLOWED: u64 = 3;
 pub(crate) const MAX_TEAM_MEMBERS: u64 = 100;
 pub(crate) const MAX_TEAM_NAME_CHARS: usize = 128;
 pub(crate) const MAX_TEAM_BIO_CHARS: usize = 4_096;
-const SIGNATURE_VERIFY_BODY_BYTES: usize = 256;
-static SIGNATURE_VERIFY_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
 pub(crate) fn validate_team_profile(name: Option<&str>, bio: Option<&str>) -> AppResult<()> {
     if let Some(name) = name {
@@ -79,7 +80,6 @@ pub(crate) fn validate_team_profile(name: Option<&str>, bio: Option<&str>) -> Ap
 #[cfg(test)]
 mod profile_tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
 
     #[test]
     fn team_profile_bounds_are_character_based() {
@@ -87,54 +87,6 @@ mod profile_tests {
         assert!(validate_team_profile(Some(&"x".repeat(129)), None).is_err());
         assert!(validate_team_profile(Some(""), None).is_err());
         assert!(validate_team_profile(None, Some(&"x".repeat(4_097))).is_err());
-    }
-
-    fn signature_model(id: &str) -> SignatureVerifyModel {
-        let signing = SigningKey::from_bytes(&[7; 32]);
-        let signature = signing.sign(format!("RSCTF_TEAM_{id}").as_bytes());
-        SignatureVerifyModel {
-            team_token: format!(
-                "{id}:{}",
-                crate::utils::codec::base64_encode(&signature.to_bytes())
-            ),
-            public_key: crate::utils::codec::base64_encode(signing.verifying_key().as_bytes()),
-        }
-    }
-
-    #[test]
-    fn signature_envelope_accepts_exact_canonical_lengths() {
-        let parsed = parse_signature_envelope(&signature_model("2147483647")).unwrap();
-        assert_eq!(parsed.0, i32::MAX);
-    }
-
-    #[test]
-    fn signature_envelope_rejects_before_unbounded_decode() {
-        let valid = signature_model("7");
-        for model in [
-            SignatureVerifyModel {
-                public_key: "A".repeat(1_000_000),
-                team_token: valid.team_token.clone(),
-            },
-            SignatureVerifyModel {
-                public_key: valid.public_key.clone(),
-                team_token: format!("7:{}", "A".repeat(1_000_000)),
-            },
-            SignatureVerifyModel {
-                public_key: valid.public_key.clone(),
-                team_token: "7:extra:delimiter".to_string(),
-            },
-            signature_model("0"),
-            SignatureVerifyModel {
-                public_key: valid.public_key.clone(),
-                team_token: format!("-1:{}", valid.team_token.split_once(':').unwrap().1),
-            },
-            SignatureVerifyModel {
-                public_key: valid.public_key,
-                team_token: format!("2147483648:{}", valid.team_token.split_once(':').unwrap().1),
-            },
-        ] {
-            assert!(parse_signature_envelope(&model).is_err());
-        }
     }
 }
 
@@ -647,88 +599,6 @@ pub async fn transfer(
     let team = load_team(&st, id).await?;
     let info = to_info(&st, &team, true).await?;
     Ok(RequestResponse::ok(info))
-}
-
-/// `POST /api/team/verify` — stateless cryptographic signature utility. Mirrors RSCTF
-/// `TeamController.VerifySignature` / `CryptoUtils.VerifySignature`:
-///
-/// * `publicKey` is the game's Ed25519 public key, standard-Base64 encoded
-///   (must decode to exactly 32 bytes).
-/// * `teamToken` is `<id>:<signature>` where `<signature>` is the standard-Base64
-///   Ed25519 signature over the UTF-8 bytes of `RSCTF_TEAM_{id}`.
-///
-/// A 200 proves only that the caller-supplied key signed the caller-supplied
-/// positive identifier. It is not proof that the key is owned by a current
-/// game, team, participation or member. No authorization path consumes this
-/// response; integrations needing membership must use an authenticated,
-/// game-scoped endpoint.
-///
-/// Returns void 200 when the signature is valid, 400 on malformed input, 401
-/// when the signature does not verify, and 503 when verifier capacity is busy.
-pub async fn verify_signature(
-    State(_st): State<SharedState>,
-    Json(model): Json<SignatureVerifyModel>,
-) -> AppResult<StatusCode> {
-    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-    let (team_id, public_key, signature) = parse_signature_envelope(&model)?;
-    let _permit = SIGNATURE_VERIFY_SLOTS
-        .try_acquire()
-        .map_err(|_| AppError::unavailable("Signature verifier capacity is busy; retry shortly"))?;
-    let verified = tokio::task::spawn_blocking(move || {
-        let Ok(verifying_key) = VerifyingKey::from_bytes(&public_key) else {
-            return false;
-        };
-        verifying_key
-            .verify(
-                format!("RSCTF_TEAM_{team_id}").as_bytes(),
-                &Signature::from_bytes(&signature),
-            )
-            .is_ok()
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("signature verifier task failed: {error}")))?;
-
-    if verified {
-        // RSCTF `VerifySignature` returns a bare `Ok()` (empty 200); the client
-        // types the success case as `void`, so emit an empty 200.
-        Ok(StatusCode::OK)
-    } else {
-        Err(AppError::Unauthorized)
-    }
-}
-
-fn canonical_base64<const N: usize>(value: &str, encoded_len: usize) -> Option<[u8; N]> {
-    if value.len() != encoded_len || !value.is_ascii() {
-        return None;
-    }
-    let decoded = crate::utils::codec::base64_decode(value)?;
-    if crate::utils::codec::base64_encode(&decoded) != value {
-        return None;
-    }
-    decoded.try_into().ok()
-}
-
-fn parse_signature_envelope(model: &SignatureVerifyModel) -> AppResult<(i32, [u8; 32], [u8; 64])> {
-    let public_key = canonical_base64::<32>(&model.public_key, 44)
-        .ok_or_else(|| AppError::bad_request("Invalid signature"))?;
-    if model.team_token.len() > 99 || model.team_token.matches(':').count() != 1 {
-        return Err(AppError::bad_request("Invalid signature"));
-    }
-    let (id, encoded_signature) = model
-        .team_token
-        .split_once(':')
-        .ok_or_else(|| AppError::bad_request("Invalid signature"))?;
-    if id.is_empty() || id.len() > 10 || !id.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(AppError::bad_request("Invalid signature"));
-    }
-    let team_id = id
-        .parse::<i32>()
-        .ok()
-        .filter(|id| *id > 0)
-        .ok_or_else(|| AppError::bad_request("Invalid signature"))?;
-    let signature = canonical_base64::<64>(encoded_signature, 88)
-        .ok_or_else(|| AppError::bad_request("Invalid signature"))?;
-    Ok((team_id, public_key, signature))
 }
 
 // --- Helpers ---------------------------------------------------------------

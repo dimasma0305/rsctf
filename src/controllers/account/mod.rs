@@ -87,9 +87,15 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/account/changeemail",
-            limited(Policy::Register, put(change_email)),
+            limited(
+                Policy::Register,
+                limited(Policy::CredentialMutation, put(change_email)),
+            ),
         )
-        .route("/api/account/changepassword", put(change_password))
+        .route(
+            "/api/account/changepassword",
+            limited(Policy::CredentialMutation, put(change_password)),
+        )
         .route(
             "/api/account/fingerprintchallenge",
             limited(Policy::Register, get(fingerprint_challenge)),
@@ -100,7 +106,10 @@ pub fn router() -> Router<SharedState> {
             "/api/account/mailchangeconfirm",
             limited(Policy::Register, post(mail_change_confirm)),
         )
-        .route("/api/account/passwordreset", post(password_reset))
+        .route(
+            "/api/account/passwordreset",
+            limited(Policy::CredentialMutation, post(password_reset)),
+        )
         .route("/api/account/profile", get(profile))
         .route("/api/account/stats", get(stats))
         .route(
@@ -282,7 +291,7 @@ pub async fn register(
             let pending_user = !pending.5 && pending.6 == Role::User as i16;
             if exact_identity && pending_user {
                 if let (Some(password_hash), Some(security_stamp)) = (&pending.7, &pending.8) {
-                    if verify_password_async(model.password.clone(), password_hash.clone()).await {
+                    if verify_password_async(model.password.clone(), password_hash.clone()).await? {
                         email_confirmation::resend_pending_confirmation(
                             &st,
                             email_confirmation::PendingConfirmation {
@@ -594,7 +603,7 @@ pub async fn login(
     } else {
         String::new()
     };
-    let password_valid = verify_password_async(supplied_password, password_hash).await;
+    let password_valid = verify_password_async(supplied_password, password_hash).await?;
     let found = found.ok_or_else(unauthorized_credentials)?;
     if !password_valid {
         return Err(unauthorized_credentials());

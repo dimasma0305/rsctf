@@ -52,6 +52,8 @@ use global::{
 
 mod proxy_open;
 pub(crate) use proxy_open::{admit_proxy_open, admit_proxy_participation};
+mod public_security;
+pub(crate) use public_security::{admit_public_security, PublicSecurityWork};
 
 static AUTHENTICATED_IP_BACKSTOP_PER_MINUTE: LazyLock<u32> = LazyLock::new(|| {
     std::env::var("RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE")
@@ -184,6 +186,11 @@ pub enum Policy {
     /// Silent distributed admission for raw TCP honeypot connections.
     /// Appended to preserve every shipped Redis policy discriminant.
     HoneypotTcp,
+    /// Deployment-wide verifier budget behind source-scoped `TeamSignature`.
+    TeamSignatureAggregate,
+    /// Deployment-wide HashPoW issuance budget layered behind the source-scoped
+    /// `PowChallenge` policy. Appended to preserve shipped discriminants.
+    PowChallengeAggregate,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -290,6 +297,14 @@ impl Policy {
             Policy::HoneypotTcp => Kind::Bucket {
                 capacity: 30.0,
                 refill_per_sec: 0.5,
+            },
+            Policy::TeamSignatureAggregate => Kind::Bucket {
+                capacity: 256.0,
+                refill_per_sec: 32.0,
+            },
+            Policy::PowChallengeAggregate => Kind::Bucket {
+                capacity: 64.0,
+                refill_per_sec: 4.0,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {
@@ -979,3 +994,7 @@ fn too_many_requests(retry_after: u64) -> Response {
 #[cfg(test)]
 #[path = "rate_limiter_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "rate_limiter_public_security_tests.rs"]
+mod public_security_tests;

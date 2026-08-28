@@ -396,9 +396,13 @@ pub async fn get_pow_challenge(
     // The provider + difficulty come from the LIVE captcha config (the same
     // source the verify step reads), so the client solves the PoW at exactly the
     // difficulty the server later checks against.
+    crate::middlewares::rate_limiter::admit_public_security(
+        crate::middlewares::rate_limiter::PublicSecurityWork::PowChallenge,
+    )
+    .await?;
     let _permit = HASHPOW_ISSUANCE_SLOTS
         .try_acquire()
-        .map_err(|_| AppError::unavailable("PoW issuance capacity is busy; retry shortly"))?;
+        .map_err(|_| AppError::too_many_requests(1))?;
     let settings = CaptchaSettings::load_cached(st.pg(), st.config.account.use_captcha).await?;
     let issued = settings.issue_hashpow(&st.config.jwt_secret)?;
 

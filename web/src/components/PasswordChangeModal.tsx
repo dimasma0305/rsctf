@@ -3,7 +3,7 @@ import { useInputState } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useRef, useState } from 'react'
+import { FC, type FormEvent, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
 import { StrengthPasswordInput } from '@Components/StrengthPasswordInput'
@@ -24,7 +24,8 @@ export const PasswordChangeModal: FC<ModalProps> = (props) => {
   const { t } = useTranslation()
   const { config } = useConfig()
 
-  const onChangePwd = async () => {
+  const onChangePwd = async (event: FormEvent) => {
+    event.preventDefault()
     if (inFlight.current) return
     if (!pwd || !retypedPwd) {
       showNotification({
@@ -75,7 +76,7 @@ export const PasswordChangeModal: FC<ModalProps> = (props) => {
       closeOnEscape={!pending}
       withCloseButton={!pending}
     >
-      <Stack>
+      <Stack component="form" onSubmit={onChangePwd}>
         <PasswordInput
           required
           label={t('account.label.password_old')}
@@ -98,6 +99,7 @@ export const PasswordChangeModal: FC<ModalProps> = (props) => {
 
         <Group justify="right">
           <Button
+            type="button"
             variant="default"
             disabled={pending}
             onClick={() => {
@@ -109,7 +111,7 @@ export const PasswordChangeModal: FC<ModalProps> = (props) => {
           >
             {t('common.modal.cancel')}
           </Button>
-          <Button color="orange" onClick={onChangePwd} loading={pending} disabled={pending}>
+          <Button type="submit" color="orange" loading={pending} disabled={pending}>
             {t('common.modal.confirm_update')}
           </Button>
         </Group>

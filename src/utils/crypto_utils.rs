@@ -72,18 +72,30 @@ static ARGON2_GATE: std::sync::LazyLock<tokio::sync::Semaphore> = std::sync::Laz
     tokio::sync::Semaphore::new(cores)
 });
 
+fn try_acquire_argon2(
+    gate: &tokio::sync::Semaphore,
+) -> Result<tokio::sync::SemaphorePermit<'_>, AppError> {
+    gate.try_acquire()
+        .map_err(|_| AppError::too_many_requests(1))
+}
+
 pub async fn hash_password_async(password: String) -> Result<String, AppError> {
-    let _permit = ARGON2_GATE.acquire().await;
+    // Credential routes already carry their durable operation lease. Never
+    // turn a burst into an unbounded queue of handler state behind Argon2;
+    // callers receive a typed 429 and may recover the same operation later.
+    let _permit = try_acquire_argon2(&ARGON2_GATE)?;
     tokio::task::spawn_blocking(move || hash_password(&password))
         .await
         .map_err(|e| AppError::internal(format!("password hash task: {e}")))?
 }
 
-pub async fn verify_password_async(password: String, hash: String) -> bool {
-    let _permit = ARGON2_GATE.acquire().await;
-    tokio::task::spawn_blocking(move || verify_password(&password, &hash))
-        .await
-        .unwrap_or(false)
+pub async fn verify_password_async(password: String, hash: String) -> Result<bool, AppError> {
+    let _permit = try_acquire_argon2(&ARGON2_GATE)?;
+    Ok(
+        tokio::task::spawn_blocking(move || verify_password(&password, &hash))
+            .await
+            .unwrap_or(false),
+    )
 }
 
 /// Constant-time string comparison for flag/secret checking.
@@ -118,5 +130,17 @@ mod tests {
             .is_ok());
         assert!(game_sign("not-base64", "team-token").is_err());
         assert!(game_sign(&base64_encode(&[0_u8; 31]), "team-token").is_err());
+    }
+
+    #[test]
+    fn argon2_admission_rejects_instead_of_queueing_waiters() {
+        let gate = tokio::sync::Semaphore::new(1);
+        let held = gate.try_acquire().unwrap();
+        assert!(matches!(
+            try_acquire_argon2(&gate),
+            Err(AppError::TooManyRequests { .. })
+        ));
+        drop(held);
+        assert!(try_acquire_argon2(&gate).is_ok());
     }
 }

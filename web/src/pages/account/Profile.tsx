@@ -64,6 +64,7 @@ const Profile: FC = () => {
 
   const [disabled, setDisabled] = useState(false)
   const emailChangeInFlight = useRef(false)
+  const emailChangeOperationId = useRef<string | null>(null)
 
   const [mailEditOpened, setMailEditOpened] = useState(false)
   const [pwdChangeOpened, setPwdChangeOpened] = useState(false)
@@ -165,7 +166,12 @@ const Profile: FC = () => {
     emailChangeInFlight.current = true
     try {
       setDisabled(true)
-      const res = await api.account.accountChangeEmail({ newMail: email, password: emailPassword })
+      emailChangeOperationId.current ??= crypto.randomUUID()
+      const res = await api.account.accountChangeEmail({
+        newMail: email,
+        password: emailPassword,
+        operationId: emailChangeOperationId.current,
+      })
       if (res.data.data) {
         showNotification({
           color: 'teal',
@@ -184,6 +190,7 @@ const Profile: FC = () => {
       }
       setEmail('')
       setEmailPassword('')
+      emailChangeOperationId.current = null
       setMailEditOpened(false)
     } catch (e) {
       showErrorMsg(e, t)
@@ -355,7 +362,10 @@ const Profile: FC = () => {
             placeholder={user?.email ?? 'player@example.com'}
             value={email}
             disabled={disabled}
-            onChange={(event) => setEmail(event.target.value)}
+            onChange={(event) => {
+              emailChangeOperationId.current = null
+              setEmail(event.target.value)
+            }}
           />
           <PasswordInput
             required
@@ -363,7 +373,10 @@ const Profile: FC = () => {
             autoComplete="current-password"
             value={emailPassword}
             disabled={disabled}
-            onChange={(event) => setEmailPassword(event.currentTarget.value)}
+            onChange={(event) => {
+              emailChangeOperationId.current = null
+              setEmailPassword(event.currentTarget.value)
+            }}
           />
           <Group justify="right">
             <Button
@@ -372,6 +385,7 @@ const Profile: FC = () => {
               onClick={() => {
                 setEmail(user?.email ?? '')
                 setEmailPassword('')
+                emailChangeOperationId.current = null
                 setMailEditOpened(false)
               }}
             >
