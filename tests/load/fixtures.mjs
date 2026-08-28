@@ -393,6 +393,7 @@ const KOTH_DOCKERFILE = [
   'FROM ${BASE_IMAGE}',
   'COPY koth-service.py /opt/rsctf-load/koth-service.py',
   'EXPOSE 8080',
+  'HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=6 CMD python3 -c "import urllib.request; urllib.request.urlopen(\'http://127.0.0.1:8080/\', timeout=3).read()"',
   'ENTRYPOINT ["python3", "/opt/rsctf-load/koth-service.py"]',
   '',
 ].join('\n');

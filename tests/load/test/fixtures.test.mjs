@@ -9,6 +9,12 @@ import { test } from "node:test";
 
 import { materializeFixtures } from "../fixtures.mjs";
 
+test("KotH image replaces the base server healthcheck with its real root probe", () => {
+  const dockerfile = readFileSync(materializeFixtures().kothDockerfile, "utf8");
+  assert.match(dockerfile, /HEALTHCHECK .*http:\/\/127\.0\.0\.1:8080\//);
+  assert.doesNotMatch(dockerfile, /healthz/);
+});
+
 function reservePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
