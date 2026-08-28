@@ -329,3 +329,91 @@ async fn email_change_rechecks_identity_after_a_registration_lock_wait() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn password_recovery_replay_preserves_the_original_ticket() {
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let schema = format!("rsctf_recovery_replay_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let options = PgConnectOptions::from_str(&database_url)
+        .unwrap()
+        .options([("search_path", schema.as_str())]);
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        r#"CREATE TABLE "AspNetUsers" (id UUID PRIMARY KEY);
+           CREATE TABLE "PasswordResetTickets" (
+             token_hash BYTEA PRIMARY KEY,
+             user_id UUID NOT NULL REFERENCES "AspNetUsers"(id),
+             security_stamp TEXT NOT NULL,
+             expires_at_utc TIMESTAMPTZ NOT NULL,
+             superseded_at_utc TIMESTAMPTZ NULL,
+             consumed_at_utc TIMESTAMPTZ NULL,
+             created_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+           )"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let user_id = Uuid::new_v4();
+    sqlx::query(r#"INSERT INTO "AspNetUsers" (id) VALUES ($1)"#)
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let ticket = PasswordResetTicket {
+        user_id,
+        security_stamp: "stamp-1".into(),
+    };
+    let original_hash = [1_u8; 32];
+    let mut first = pool.begin().await.unwrap();
+    assert!(stage_password_reset_ticket(
+        &mut first,
+        crate::services::mail_outbox::EnqueueOutcome::Inserted,
+        &original_hash,
+        &ticket,
+    )
+    .await
+    .unwrap());
+    first.commit().await.unwrap();
+
+    let replay_hash = [2_u8; 32];
+    let mut replay = pool.begin().await.unwrap();
+    assert!(!stage_password_reset_ticket(
+        &mut replay,
+        crate::services::mail_outbox::EnqueueOutcome::Replayed,
+        &replay_hash,
+        &ticket,
+    )
+    .await
+    .unwrap());
+    replay.commit().await.unwrap();
+
+    let rows: Vec<(Vec<u8>, Option<chrono::DateTime<Utc>>)> = sqlx::query_as(
+        r#"SELECT token_hash, superseded_at_utc
+             FROM "PasswordResetTickets" ORDER BY created_at_utc"#,
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows, vec![(original_hash.to_vec(), None)]);
+
+    pool.close().await;
+    sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+        .execute(&admin)
+        .await
+        .unwrap();
+}

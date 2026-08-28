@@ -14,6 +14,40 @@ struct PasswordResetTicket {
     security_stamp: String,
 }
 
+async fn stage_password_reset_ticket(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    outcome: crate::services::mail_outbox::EnqueueOutcome,
+    token_hash: &[u8],
+    ticket: &PasswordResetTicket,
+) -> AppResult<bool> {
+    if outcome == crate::services::mail_outbox::EnqueueOutcome::Replayed {
+        return Ok(false);
+    }
+
+    sqlx::query(
+        r#"UPDATE "PasswordResetTickets"
+              SET superseded_at_utc = clock_timestamp()
+            WHERE user_id = $1 AND superseded_at_utc IS NULL
+              AND consumed_at_utc IS NULL"#,
+    )
+    .bind(ticket.user_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query(
+        r#"INSERT INTO "PasswordResetTickets"
+               (token_hash, user_id, security_stamp, expires_at_utc)
+           VALUES ($1, $2, $3, clock_timestamp() + INTERVAL '15 minutes')"#,
+    )
+    .bind(token_hash)
+    .bind(ticket.user_id)
+    .bind(&ticket.security_stamp)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(true)
+}
+
 fn reset_current_key(user_id: Uuid) -> String {
     format!("pwreset-current:{user_id}")
 }
@@ -367,37 +401,7 @@ pub async fn recovery(
             security_stamp: user.security_stamp.clone().unwrap_or_default(),
         };
         let token_hash = Sha256::digest(token.as_bytes()).to_vec();
-        let mut ticket_transaction = st
-            .pg()
-            .begin()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        sqlx::query(
-            r#"UPDATE "PasswordResetTickets"
-                  SET superseded_at_utc = clock_timestamp()
-                WHERE user_id = $1 AND superseded_at_utc IS NULL
-                  AND consumed_at_utc IS NULL"#,
-        )
-        .bind(user.id)
-        .execute(&mut *ticket_transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        sqlx::query(
-            r#"INSERT INTO "PasswordResetTickets"
-                   (token_hash, user_id, security_stamp, expires_at_utc)
-               VALUES ($1, $2, $3, clock_timestamp() + INTERVAL '15 minutes')"#,
-        )
-        .bind(&token_hash)
-        .bind(user.id)
-        .bind(&ticket.security_stamp)
-        .execute(&mut *ticket_transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        ticket_transaction
-            .commit()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        let ticket = serde_json::to_vec(&ticket)
+        let cached_ticket = serde_json::to_vec(&ticket)
             .map_err(|e| AppError::internal(format!("password-reset ticket: {e}")))?;
         let user_email = user
             .email
@@ -446,23 +450,31 @@ pub async fn recovery(
         )
         .await;
         match outcome {
-            Ok(crate::services::mail_outbox::EnqueueOutcome::Inserted) => {
-                invalidate_password_reset_tokens(&st, user.id).await;
-                st.cache.set(&key, &ticket, Some(RECOVERY_TTL)).await;
-                st.cache
-                    .set(&current_key, token.as_bytes(), Some(RECOVERY_TTL))
-                    .await;
-                if let Err(error) = transaction.commit().await {
-                    st.cache.remove(&key).await;
-                    st.cache
-                        .compare_and_remove(&current_key, token.as_bytes())
-                        .await;
-                    tracing::error!(%error, operation_id = %operation_id, "password-recovery mail commit failed");
-                }
-            }
-            Ok(crate::services::mail_outbox::EnqueueOutcome::Replayed) => {
-                if let Err(error) = transaction.commit().await {
-                    tracing::error!(%error, operation_id = %operation_id, "password-recovery replay commit failed");
+            Ok(outcome) => {
+                match stage_password_reset_ticket(&mut transaction, outcome, &token_hash, &ticket)
+                    .await
+                {
+                    Ok(true) => match transaction.commit().await {
+                        Ok(()) => {
+                            invalidate_password_reset_tokens(&st, user.id).await;
+                            st.cache.set(&key, &cached_ticket, Some(RECOVERY_TTL)).await;
+                            st.cache
+                                .set(&current_key, token.as_bytes(), Some(RECOVERY_TTL))
+                                .await;
+                        }
+                        Err(error) => {
+                            tracing::error!(%error, operation_id = %operation_id, "password-recovery mail commit failed");
+                        }
+                    },
+                    Ok(false) => {
+                        if let Err(error) = transaction.commit().await {
+                            tracing::error!(%error, operation_id = %operation_id, "password-recovery replay commit failed");
+                        }
+                    }
+                    Err(error) => {
+                        let _ = transaction.rollback().await;
+                        tracing::error!(%error, operation_id = %operation_id, "password-recovery ticket staging failed");
+                    }
                 }
             }
             Err(error) => {

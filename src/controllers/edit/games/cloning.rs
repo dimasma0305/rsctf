@@ -74,11 +74,28 @@ struct CloneOperationRow {
 fn clone_request_digest(source_id: i32, model: &GameCloneModel, title: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(source_id.to_be_bytes());
+    digest.update(model.expected_source_revision.to_be_bytes());
+    digest.update(model.expected_challenge_revision.to_be_bytes());
     digest.update(title.as_bytes());
     digest.update(model.start_time_utc.timestamp_millis().to_be_bytes());
     digest.update(model.end_time_utc.timestamp_millis().to_be_bytes());
     digest.update([u8::from(model.include_challenges)]);
     hex::encode(digest.finalize())
+}
+
+fn validate_source_revisions(
+    model: &GameCloneModel,
+    source_revision: i64,
+    challenge_revision: i64,
+) -> AppResult<()> {
+    if model.expected_source_revision != source_revision
+        || model.expected_challenge_revision != challenge_revision
+    {
+        return Err(AppError::conflict(format!(
+            "Source game changed before cloning (current revisions: {source_revision}/{challenge_revision})"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_clone_request(model: &GameCloneModel) -> AppResult<String> {
@@ -175,14 +192,21 @@ pub async fn clone_game(
         .execute(&mut **source_control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let (source_revision, challenge_count, flag_count): (String, i64, i64) = sqlx::query_as(
+    let (source_fingerprint, source_revision, challenge_revision, challenge_count, flag_count): (
+        String,
+        i64,
+        i64,
+        i64,
+        i64,
+    ) = sqlx::query_as(
         r#"SELECT md5(
                       row_to_json(source)::text || COALESCE((
                           SELECT string_agg(row_to_json(challenge)::text, '' ORDER BY challenge.id)
                             FROM "GameChallenges" challenge
                            WHERE challenge.game_id = source.id
                       ), '')
-                  ),
+                  ), source.configuration_revision,
+                  source.challenge_configuration_revision,
                   (SELECT COUNT(*) FROM "GameChallenges" WHERE game_id = source.id),
                   (SELECT COUNT(*)
                      FROM "FlagContexts" flag
@@ -196,6 +220,7 @@ pub async fn clone_game(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Game not found"))?;
+    validate_source_revisions(&model, source_revision, challenge_revision)?;
     if model.include_challenges
         && (challenge_count > MAX_CLONE_CHALLENGES || flag_count > MAX_CLONE_FLAGS)
     {
@@ -257,7 +282,7 @@ pub async fn clone_game(
     .bind(id)
     .bind(admin.id)
     .bind(&request_digest)
-    .bind(&source_revision)
+    .bind(&source_fingerprint)
     .execute(&mut **source_control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
@@ -372,6 +397,18 @@ pub async fn clone_game(
 mod clone_contract_tests {
     use super::*;
 
+    fn clone_model() -> GameCloneModel {
+        GameCloneModel {
+            operation_id: Uuid::new_v4(),
+            expected_source_revision: 7,
+            expected_challenge_revision: 11,
+            title: "Clone target".to_string(),
+            start_time_utc: Utc::now(),
+            end_time_utc: Utc::now() + chrono::Duration::days(1),
+            include_challenges: true,
+        }
+    }
+
     #[test]
     fn clone_copy_is_set_based_and_maps_flags_through_preallocated_ids() {
         assert!(CLONE_CHALLENGES_SQL.contains("WITH source AS MATERIALIZED"));
@@ -385,6 +422,22 @@ mod clone_contract_tests {
         let router = include_str!("../mod.rs");
         assert!(router.contains("/api/edit/games/{id}/Clone"));
         assert!(router.contains("/api/edit/games/{id}/clone"));
+    }
+
+    #[test]
+    fn clone_intent_is_fenced_by_both_observed_source_revisions() {
+        let model = clone_model();
+        assert!(validate_source_revisions(&model, 7, 11).is_ok());
+        assert!(validate_source_revisions(&model, 8, 11).is_err());
+        assert!(validate_source_revisions(&model, 7, 12).is_err());
+    }
+
+    #[test]
+    fn source_revision_is_part_of_exact_replay_identity() {
+        let mut model = clone_model();
+        let first = clone_request_digest(1, &model, "Clone target");
+        model.expected_challenge_revision += 1;
+        assert_ne!(first, clone_request_digest(1, &model, "Clone target"));
     }
 }
 

@@ -3,7 +3,7 @@ import { DateTimePicker } from '@mantine/dates'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiContentDuplicate } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useRef, useState } from 'react'
+import { FC, MutableRefObject, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
 import { showErrorMsg } from '@Utils/Shared'
@@ -11,6 +11,45 @@ import api, { GameInfoModel } from '@Api'
 
 interface CloneGameModalProps extends ModalProps {
   game: GameInfoModel | null
+}
+
+interface CloneOperationOwner {
+  scope: string
+  operationId: string
+}
+
+const CLONE_OPERATION_KEY = 'rsctf:clone-game-operation'
+
+const retainCloneOperation = (ownerRef: MutableRefObject<CloneOperationOwner | null>, scope: string) => {
+  if (ownerRef.current?.scope === scope) return ownerRef.current.operationId
+  let owner: CloneOperationOwner | null = null
+  try {
+    const stored = sessionStorage.getItem(CLONE_OPERATION_KEY)
+    const candidate = stored ? (JSON.parse(stored) as Partial<CloneOperationOwner>) : null
+    if (candidate?.scope === scope && typeof candidate.operationId === 'string') {
+      owner = { scope, operationId: candidate.operationId }
+    }
+  } catch {
+    // Privacy-restricted browsers still retain the in-memory owner.
+  }
+  owner ??= { scope, operationId: crypto.randomUUID() }
+  ownerRef.current = owner
+  try {
+    sessionStorage.setItem(CLONE_OPERATION_KEY, JSON.stringify(owner))
+  } catch {
+    // The in-memory owner remains authoritative for this modal lifetime.
+  }
+  return owner.operationId
+}
+
+const clearCloneOperation = (ownerRef: MutableRefObject<CloneOperationOwner | null>, operationId: string) => {
+  if (ownerRef.current?.operationId !== operationId) return
+  ownerRef.current = null
+  try {
+    sessionStorage.removeItem(CLONE_OPERATION_KEY)
+  } catch {
+    // The committed operation no longer needs browser recovery.
+  }
 }
 
 export const CloneGameModal: FC<CloneGameModalProps> = ({ game, ...props }) => {
@@ -23,10 +62,10 @@ export const CloneGameModal: FC<CloneGameModalProps> = ({ game, ...props }) => {
   const [includeChallenges, setIncludeChallenges] = useState(true)
   const [loading, setLoading] = useState(false)
   const inFlight = useRef(false)
-  const operationId = useRef(crypto.randomUUID())
+  const operationOwner = useRef<CloneOperationOwner | null>(null)
 
   useEffect(() => {
-    if (!inFlight.current) operationId.current = crypto.randomUUID()
+    if (!inFlight.current) operationOwner.current = null
   }, [game?.id])
 
   const canSubmit = title.trim().length >= 3 && start && end && end > start
@@ -44,9 +83,21 @@ export const CloneGameModal: FC<CloneGameModalProps> = ({ game, ...props }) => {
     if (!game?.id || !canSubmit || inFlight.current) return
     inFlight.current = true
     setLoading(true)
+    const scope = JSON.stringify({
+      gameId: game.id,
+      sourceRevision: game.configurationRevision ?? 0,
+      challengeRevision: game.challengeConfigurationRevision ?? 1,
+      title: title.trim(),
+      start: start!.getTime(),
+      end: end!.getTime(),
+      includeChallenges,
+    })
+    const operationId = retainCloneOperation(operationOwner, scope)
     try {
       const response = await api.edit.editCloneGame(game.id, {
-        operationId: operationId.current,
+        operationId,
+        expectedSourceRevision: game.configurationRevision ?? 0,
+        expectedChallengeRevision: game.challengeConfigurationRevision ?? 1,
         title: title.trim(),
         startTimeUtc: start!.getTime(),
         endTimeUtc: end!.getTime(),
@@ -58,7 +109,7 @@ export const CloneGameModal: FC<CloneGameModalProps> = ({ game, ...props }) => {
         message: t('admin.notification.games.cloned', `Game cloned successfully`),
         icon: <Icon path={mdiCheck} size={1} />,
       })
-      operationId.current = crypto.randomUUID()
+      clearCloneOperation(operationOwner, operationId)
       inFlight.current = false
       onClose()
       navigate(`/admin/games/${newId}/info`)
@@ -94,7 +145,7 @@ export const CloneGameModal: FC<CloneGameModalProps> = ({ game, ...props }) => {
           value={title}
           disabled={loading}
           onChange={(e) => {
-            operationId.current = crypto.randomUUID()
+            operationOwner.current = null
             setTitle(e.currentTarget.value)
           }}
           error={title.length > 0 && title.trim().length < 3 ? t('admin.error.games.title_too_short', 'At least 3 characters') : undefined}
@@ -104,7 +155,7 @@ export const CloneGameModal: FC<CloneGameModalProps> = ({ game, ...props }) => {
           value={start}
           disabled={loading}
           onChange={(e) => {
-            operationId.current = crypto.randomUUID()
+            operationOwner.current = null
             setStart(e ? new Date(e) : null)
           }}
           clearable
@@ -115,7 +166,7 @@ export const CloneGameModal: FC<CloneGameModalProps> = ({ game, ...props }) => {
           disabled={loading}
           minDate={start ?? undefined}
           onChange={(e) => {
-            operationId.current = crypto.randomUUID()
+            operationOwner.current = null
             setEnd(e ? new Date(e) : null)
           }}
           clearable
@@ -125,7 +176,7 @@ export const CloneGameModal: FC<CloneGameModalProps> = ({ game, ...props }) => {
           checked={includeChallenges}
           disabled={loading}
           onChange={(e) => {
-            operationId.current = crypto.randomUUID()
+            operationOwner.current = null
             setIncludeChallenges(e.currentTarget.checked)
           }}
         />

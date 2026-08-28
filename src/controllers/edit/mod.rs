@@ -537,6 +537,10 @@ pub struct AttachmentCreateModel {
 #[serde(rename_all = "camelCase")]
 pub struct GameCloneModel {
     pub operation_id: Uuid,
+    /// Revisions observed when the organizer opened the clone action. A new
+    /// intent must not silently clone a different source configuration.
+    pub expected_source_revision: i64,
+    pub expected_challenge_revision: i64,
     #[serde(default)]
     pub title: String,
     #[serde(default = "epoch", with = "crate::utils::datetime::millis")]
