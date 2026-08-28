@@ -138,8 +138,9 @@ pub enum Policy {
     /// Cheap source-IP admission before JWT verification or A&D token lookup.
     /// Appended to preserve every shipped Redis policy discriminant.
     CredentialIpAdmission,
-    /// Team-scoped A&D batch work budget. The cost is the number of distinct,
-    /// plausible flags in the request rather than one token per HTTP request.
+    /// Team-scoped A&D batch work budget. The handler charges distinct
+    /// plausible lookups plus admitted flag-byte units rather than one token
+    /// per HTTP request.
     /// Appended to preserve every shipped Redis policy discriminant.
     AdSubmit,
     /// Source-IP admission for privileged hub negotiation and WebSocket upgrade.
@@ -883,15 +884,15 @@ async fn check_weighted_async(policy: Policy, key: String, cost: u32) -> Result<
     }
 }
 
-/// Enforce the team-scoped A&D work budget after authentication has resolved a
-/// canonical participation. Returning the normal 429 response preserves the
-/// public error envelope and `Retry-After` header.
+/// Enforce the team-scoped A&D lookup/byte work budget after authentication has
+/// resolved a canonical participation. Returning the normal 429 response
+/// preserves the public error envelope and `Retry-After` header.
 pub(crate) async fn admit_ad_submit(
     game_id: i32,
     participation_id: i32,
-    distinct_plausible_flags: usize,
+    work_units: usize,
 ) -> Option<Response> {
-    let cost = u32::try_from(distinct_plausible_flags.max(1)).unwrap_or(u32::MAX);
+    let cost = u32::try_from(work_units.max(1)).unwrap_or(u32::MAX);
     let key = format!("game:{game_id}:participation:{participation_id}");
     check_weighted_async(Policy::AdSubmit, key, cost)
         .await

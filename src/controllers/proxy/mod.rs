@@ -915,7 +915,7 @@ where
         let mut egress_recorded = false;
         let mut egress_matcher = scan
             .as_ref()
-            .map(|scan| RollingFlagMatcher::new(&scan.flag));
+            .and_then(|scan| RollingFlagMatcher::new(&scan.flag));
         loop {
             match tcp_rd.read(&mut buf).await {
                 Ok(0) => {

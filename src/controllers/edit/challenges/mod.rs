@@ -398,21 +398,13 @@ pub async fn update_challenge(
             ));
         }
     }
-    // RSCTF `UpdateGameChallenge`: a non-blank flag template on a DynamicContainer
-    // must carry enough randomness or every team receives the SAME flag. RSCTF's
-    // `DynamicFlagGenerator.IsValid` treats a template as sufficiently random only
-    // when it contains a `[GUID]` or `[TEAM_HASH]` placeholder — reject otherwise
-    // with 400 `Challenge_FlagTooTrivial`. (rsctf's `flag_generator::generate_flag`
-    // also expands `[UUID]`, but RSCTF's validator recognizes only the two tokens
-    // above, so we match RSCTF here.)
+    // A dynamic template must remain submittable after every production
+    // placeholder occurrence expands. Blank input clears the template and uses
+    // the bounded default generator.
     if let Some(t) = model.flag_template.as_deref() {
-        if !t.trim().is_empty()
-            && ch_type == ChallengeType::DynamicContainer
-            && !(t.contains("[GUID]") || t.contains("[TEAM_HASH]"))
-        {
-            return Err(AppError::bad_request(
-                "Flag template is too trivial: it must contain a [GUID] or [TEAM_HASH] placeholder",
-            ));
+        if !t.trim().is_empty() && ch_type == ChallengeType::DynamicContainer {
+            crate::utils::flag_policy::validate_dynamic_template(t)
+                .map_err(|error| AppError::bad_request(error.to_string()))?;
         }
     }
 

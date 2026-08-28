@@ -140,6 +140,14 @@ async fn cleanup_staged_flag_attachments(st: &SharedState, flags: &[(String, Opt
     }
 }
 
+fn validate_authored_flags(models: &[FlagCreateModel]) -> AppResult<()> {
+    for model in models {
+        crate::utils::flag_policy::validate_normal(&model.flag)
+            .map_err(|error| AppError::bad_request(error.to_string()))?;
+    }
+    Ok(())
+}
+
 /// The accepted static flags and a dynamic flag template are scoring policy,
 /// not ordinary challenge content. Production callers own the game-control
 /// lock and the challenge-scoped JFLG lock, making this decision linearizable
@@ -213,6 +221,11 @@ pub async fn add_flags(
             unique
         })
         .collect::<Vec<_>>();
+
+    // Reject impossible answers before attachment staging or lock acquisition.
+    // Player submissions trim the answer and accept at most 127 UTF-8 bytes, so
+    // every authored static value must already be in that exact canonical form.
+    validate_authored_flags(&models)?;
 
     // Attachment creation does not alter grading policy. Materialize it before
     // taking the flag-policy lock so submissions are not held up by blob lookup.
@@ -466,6 +479,28 @@ pub(crate) async fn load_flags(st: &SharedState, c_id: i32) -> AppResult<Vec<Fla
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    fn model(flag: String) -> FlagCreateModel {
+        FlagCreateModel {
+            flag,
+            attachment_type: None,
+            file_hash: None,
+            remote_url: None,
+        }
+    }
+
+    #[test]
+    fn direct_editor_rejects_an_unsubmittable_flag_before_attachment_work() {
+        assert!(validate_authored_flags(&[model("x".repeat(127))]).is_ok());
+        assert!(validate_authored_flags(&[model("x".repeat(128))]).is_err());
+        assert!(validate_authored_flags(&[model(format!("{}x", "界".repeat(42)))]).is_ok());
+        assert!(validate_authored_flags(&[model(format!("{}xx", "界".repeat(42)))]).is_err());
+    }
 }
 
 /// `DELETE /api/edit/games/{id}/challenges/{cId}/flags/{fId}` — returns a

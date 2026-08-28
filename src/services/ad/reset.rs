@@ -221,12 +221,21 @@ pub async fn execute_job(
         }
         (replacement.prepared_round_id, replacement.current_flag)
     };
-    let flag = current_flag.unwrap_or_else(|| {
-        let salt = crate::utils::flag_generator::team_hash_salt(&game.private_key);
-        let team_hash =
-            crate::utils::flag_generator::team_challenge_hash(&salt, challenge.id, &part.token);
-        crate::utils::flag_generator::generate_flag(challenge.flag_template.as_deref(), &team_hash)
-    });
+    let flag = match current_flag {
+        Some(flag) => crate::utils::flag_generator::validate_stored_ad_flag(flag)?,
+        None => {
+            let salt = crate::utils::flag_generator::team_hash_salt(&game.private_key);
+            let team_hash = crate::utils::flag_generator::team_challenge_hash(
+                &salt,
+                challenge.id,
+                &part.token,
+            );
+            crate::utils::flag_generator::generate_retryable_ad_flag(
+                &team_hash,
+                &job.operation_id.to_string(),
+            )?
+        }
+    };
     let mut spec = ContainerSpec::ad_service(
         image,
         ContainerResourceLimits {

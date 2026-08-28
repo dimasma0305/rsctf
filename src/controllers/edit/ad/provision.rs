@@ -590,21 +590,22 @@ pub(crate) async fn ensure_ad_containers(
             let team_hash =
                 crate::utils::flag_generator::team_challenge_hash(&salt, c.id, &p.token);
             let operation_id = ad_service_operation_id(reconcile_operation_id, game.id, p.id, c.id);
-            let flag = operation_id.as_deref().map_or_else(
-                || {
-                    crate::utils::flag_generator::generate_flag(
-                        c.flag_template.as_deref(),
-                        &team_hash,
-                    )
-                },
-                |operation_id| {
-                    crate::utils::flag_generator::generate_retryable_flag(
-                        c.flag_template.as_deref(),
-                        &team_hash,
-                        operation_id,
-                    )
-                },
-            );
+            let flag = match operation_id.as_deref() {
+                Some(operation_id) => crate::utils::flag_generator::generate_retryable_ad_flag(
+                    &team_hash,
+                    operation_id,
+                ),
+                None => crate::utils::flag_generator::generate_ad_flag(),
+            };
+            let flag = match flag {
+                Ok(flag) => flag,
+                Err(error) => {
+                    tracing::error!(challenge = c.id, %error, "A&D warmup flag generation failed");
+                    failures += 1;
+                    distributed.release().await?;
+                    continue;
+                }
+            };
             let image = match crate::services::challenge_images::runtime_image(st, &c) {
                 Ok(image) => image,
                 Err(error) => {

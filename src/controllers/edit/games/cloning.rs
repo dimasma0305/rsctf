@@ -95,6 +95,18 @@ pub async fn clone_game(
     let new_game = new_game.insert(&transaction).await?;
 
     for src in sources {
+        if src.challenge_type == ChallengeType::DynamicContainer {
+            if let Some(template) = src.flag_template.as_deref() {
+                crate::utils::flag_policy::validate_dynamic_template(template).map_err(
+                    |error| {
+                        AppError::conflict(format!(
+                            "Source challenge {} has an invalid flag template: {error}",
+                            src.id
+                        ))
+                    },
+                )?;
+            }
+        }
         let mut clone = game_challenge::ActiveModel {
             game_id: Set(new_game.id),
             title: Set(src.title.clone()),
@@ -142,6 +154,12 @@ pub async fn clone_game(
             .all(&transaction)
             .await?;
         for flag in flags {
+            crate::utils::flag_policy::validate_normal(&flag.flag).map_err(|error| {
+                AppError::conflict(format!(
+                    "Source challenge {} has an invalid static flag: {error}",
+                    src.id
+                ))
+            })?;
             flag_context::ActiveModel {
                 flag: Set(flag.flag),
                 is_occupied: Set(false),
