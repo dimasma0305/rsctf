@@ -14,6 +14,33 @@ use crate::hubs::{admission, signalr};
 use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::utils::enums::Role;
 
+const ADMIN_LOG_TARGETS: &[&str] = &["ReceivedLog"];
+const FLAG_EGRESS_TARGETS: &[&str] = &["ReceivedFlagEgress"];
+
+fn subscription_scope(
+    params: &HashMap<String, String>,
+) -> Result<(&'static [&'static str], Option<i32>, admission::Scope), StatusCode> {
+    match params.get("feed").map(String::as_str) {
+        None => Ok((ADMIN_LOG_TARGETS, None, admission::Scope::Global)),
+        Some("flagEgress") => {
+            let game_id = params
+                .get("game")
+                .ok_or(StatusCode::BAD_REQUEST)?
+                .parse::<i32>()
+                .map_err(|_| StatusCode::BAD_REQUEST)?;
+            if game_id <= 0 {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            Ok((
+                FLAG_EGRESS_TARGETS,
+                Some(game_id),
+                admission::Scope::Game(game_id),
+            ))
+        }
+        Some(_) => Err(StatusCode::BAD_REQUEST),
+    }
+}
+
 pub fn router() -> Router<SharedState> {
     Router::new()
         .route(
@@ -38,12 +65,14 @@ async fn admin_hub(
 ) -> Response {
     match signalr::hub_identity(&st, &params, &headers).await {
         Some((user, token)) if user.is_admin() => {
-            // Admin log stream is global (not game-scoped).
+            let (targets, game_id, scope) = match subscription_scope(&params) {
+                Ok(scope) => scope,
+                Err(status) => return status.into_response(),
+            };
             let rx = st.events.subscribe();
-            let Some(connection_permit) = admission::try_connection_permit(
-                admission::client_key(&headers, peer.ip()),
-                admission::Scope::Global,
-            ) else {
+            let Some(connection_permit) =
+                admission::try_connection_permit(admission::client_key(&headers, peer.ip()), scope)
+            else {
                 return StatusCode::TOO_MANY_REQUESTS.into_response();
             };
             let authorization = signalr::HubAuthorization::new(st, token, Role::Admin);
@@ -52,8 +81,8 @@ async fn admin_hub(
                     signalr::serve(
                         s,
                         rx,
-                        &["ReceivedLog"],
-                        None,
+                        targets,
+                        game_id,
                         Some(authorization),
                         connection_permit,
                     )
@@ -86,6 +115,33 @@ mod tests {
     use crate::storage::LocalBlobStorage;
 
     const NEGOTIATE_ROUTES: [&str; 2] = ["/hub/admin/negotiate", "/hub/containerExec/negotiate"];
+
+    #[test]
+    fn admin_feed_scope_is_explicit_bounded_and_game_scoped() {
+        assert_eq!(
+            subscription_scope(&HashMap::new()).unwrap().0,
+            ADMIN_LOG_TARGETS
+        );
+        let flag = HashMap::from([
+            ("feed".to_owned(), "flagEgress".to_owned()),
+            ("game".to_owned(), "7".to_owned()),
+        ]);
+        let (targets, game_id, scope) = subscription_scope(&flag).unwrap();
+        assert_eq!(targets, FLAG_EGRESS_TARGETS);
+        assert_eq!(game_id, Some(7));
+        assert_eq!(scope, admission::Scope::Game(7));
+
+        for invalid in [
+            HashMap::from([("feed".to_owned(), "flagEgress".to_owned())]),
+            HashMap::from([
+                ("feed".to_owned(), "flagEgress".to_owned()),
+                ("game".to_owned(), "0".to_owned()),
+            ]),
+            HashMap::from([("feed".to_owned(), "unknown".to_owned())]),
+        ] {
+            assert_eq!(subscription_scope(&invalid), Err(StatusCode::BAD_REQUEST));
+        }
+    }
 
     fn test_state() -> SharedState {
         let pool = PgPoolOptions::new()

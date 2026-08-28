@@ -97,7 +97,14 @@ pub fn router() -> Router<SharedState> {
             "/api/admin/dashboard",
             limited(Policy::Query, get(dashboard)),
         )
-        .route("/api/admin/Games/{id}/FlagEgress", get(get_flag_egress))
+        .route(
+            "/api/admin/Games/{id}/FlagEgress",
+            limited(Policy::Query, get(get_flag_egress)),
+        )
+        .route(
+            "/api/admin/Games/{id}/FlagEgress/backfill",
+            limited(Policy::Query, get(get_flag_egress_backfill)),
+        )
         .route(
             "/api/admin/submissiontrend",
             limited(Policy::Query, get(submission_trend)),

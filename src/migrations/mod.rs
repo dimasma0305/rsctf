@@ -134,6 +134,7 @@ mod m0111_game_event_feed_cursor;
 mod m0112_koth_target_reporters;
 mod m0113_koth_reporter_routing_revision;
 mod m0112_submission_feed_cursor;
+mod m0113_flag_egress_feed_cursor;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -149,6 +150,8 @@ pub(crate) use m0110_participation_review_indexes::UP_SQL as PARTICIPATION_REVIE
 pub(crate) use m0111_game_event_feed_cursor::UP_SQL as GAME_EVENT_FEED_CURSOR_SQL;
 #[cfg(test)]
 pub(crate) use m0112_submission_feed_cursor::UP_SQL as SUBMISSION_FEED_CURSOR_SQL;
+#[cfg(test)]
+pub(crate) use m0113_flag_egress_feed_cursor::UP_SQL as FLAG_EGRESS_FEED_CURSOR_SQL;
 
 pub struct Migrator;
 
@@ -276,6 +279,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0112_koth_target_reporters::Migration),
             Box::new(m0113_koth_reporter_routing_revision::Migration),
             Box::new(m0112_submission_feed_cursor::Migration),
+            Box::new(m0113_flag_egress_feed_cursor::Migration),
         ]
     }
 }
@@ -414,14 +418,14 @@ mod tests {
     use super::{ensure_no_other_database_clients, migration_ledger_diff, Migrator, MigratorTrait};
 
     #[test]
-    fn recent_migration_identities_are_contiguous_and_preserve_shipped_m0103() {
+    fn recent_migration_identities_preserve_shipped_order() {
         let names = Migrator::migrations()
             .into_iter()
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 11..],
+            &names[names.len() - 13..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -434,6 +438,8 @@ mod tests {
                 "m0111_game_event_feed_cursor",
                 "m0112_koth_target_reporters",
                 "m0113_koth_reporter_routing_revision",
+                "m0112_submission_feed_cursor",
+                "m0113_flag_egress_feed_cursor",
             ]
         );
     }

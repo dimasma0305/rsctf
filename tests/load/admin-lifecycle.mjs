@@ -1437,6 +1437,16 @@ async function observabilityAndRuntime() {
     egress.json?.data?.some((item) => item.id === state.evidence.flagEgressId),
     'flag-egress feed omitted the fixture event',
   );
+  const egressBackfill = await call(
+    'GET',
+    '/api/admin/Games/{id}/FlagEgress/backfill',
+    `/api/admin/Games/${fixtureGame}/FlagEgress/backfill?after=0&limit=20`,
+  );
+  requireCondition(
+    egressBackfill.json?.events?.some((item) =>
+      item.id === state.evidence.flagEgressId && Number.isSafeInteger(item.cursor)),
+    'flag-egress reconnect feed omitted the fixture event or cursor',
+  );
 
   const trend = await call(
     'GET',

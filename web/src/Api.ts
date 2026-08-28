@@ -3272,6 +3272,44 @@ export interface GameEventBackfill {
   hasMore: boolean;
 }
 
+/** One windowed observation of a team's own flag leaving its proxied container. */
+export interface FlagEgressEventModel {
+  /** Stable aggregate-row identity. @format int32 */
+  id: number;
+  /** Commit/update-ordered reconnect cursor. */
+  cursor: number;
+  /** @format int32 */
+  gameId: number;
+  /** @format int32 */
+  participationId: number;
+  /** @format int32 */
+  challengeId: number;
+  containerId?: string | null;
+  teamName: string;
+  challengeTitle: string;
+  remoteIp: string;
+  /** @format int32 */
+  remotePort: number;
+  /** @format int32 */
+  hitCount: number;
+  /** @format uint64 */
+  firstSeenUtc: number;
+  /** @format uint64 */
+  lastSeenUtc: number;
+}
+
+export interface FlagEgressPage {
+  data: FlagEgressEventModel[];
+  total: number;
+  length: number;
+}
+
+export interface FlagEgressBackfill {
+  events: FlagEgressEventModel[];
+  nextCursor: number;
+  hasMore: boolean;
+}
+
 /** Formattable data */
 export interface FormattableDataOfEventType {
   /** Data type */
@@ -5132,6 +5170,54 @@ export class Api<
         data,
         options,
       ),
+
+    /**
+     * @description Get a bounded searchable page of Flag Egress aggregates.
+     * @tags Admin
+     * @name AdminFlagEgressPage
+     * @request GET:/api/admin/Games/{gameId}/FlagEgress
+     */
+    adminFlagEgressPage: (
+      gameId: number,
+      query?: {
+        /** @format int32 @min 1 @max 100 @default 100 */
+        count?: number;
+        /** @format int32 @default 0 */
+        skip?: number;
+        search?: string | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<FlagEgressPage, RequestResponse>({
+        path: `/api/admin/Games/${gameId}/FlagEgress`,
+        method: "GET",
+        query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Backfill committed Flag Egress updates; omit after for a cursor checkpoint.
+     * @tags Admin
+     * @name AdminFlagEgressBackfill
+     * @request GET:/api/admin/Games/{gameId}/FlagEgress/backfill
+     */
+    adminFlagEgressBackfill: (
+      gameId: number,
+      query?: {
+        after?: number;
+        /** @format int32 @min 1 @max 100 @default 100 */
+        limit?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<FlagEgressBackfill, RequestResponse>({
+        path: `/api/admin/Games/${gameId}/FlagEgress/backfill`,
+        method: "GET",
+        query,
+        format: "json",
+        ...params,
+      }),
 
     /**
      * @description Use this API to get all logs, requires Admin permission

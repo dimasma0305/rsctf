@@ -17,6 +17,7 @@ pub mod discord_webhook;
 pub mod donations;
 pub mod event_bus;
 pub mod event_security;
+pub mod flag_egress_feed;
 pub(crate) mod game_config;
 pub mod game_event_feed;
 pub mod git_sync;

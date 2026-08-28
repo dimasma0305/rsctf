@@ -20,6 +20,7 @@ pub struct Model {
     pub hit_count: i32,
     pub first_seen_utc: DateTime<Utc>,
     pub last_seen_utc: DateTime<Utc>,
+    pub feed_cursor: Option<i64>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
