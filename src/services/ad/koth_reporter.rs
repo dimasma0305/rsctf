@@ -21,6 +21,9 @@ pub(crate) const REPORTER_SECRET_ENV: &str = "RSCTF_KOTH_REPORTER_SECRET";
 pub(crate) struct TargetReporterRuntime {
     pub(crate) env: Vec<(String, String)>,
     pub(crate) callback_ports: Vec<i32>,
+    /// Non-secret fingerprint of the injected origin and callback ports. It
+    /// fences Kubernetes crash-orphan adoption when routing changes.
+    pub(crate) routing_revision: String,
 }
 
 fn callback_origin_port(base_url: &str) -> AppResult<i32> {
@@ -53,6 +56,15 @@ fn callback_ports(base_url: &str, bind_addr: &str) -> AppResult<Vec<i32>> {
     Ok(ports)
 }
 
+fn routing_revision(base_url: &str, callback_ports: &[i32]) -> String {
+    let ports = callback_ports
+        .iter()
+        .map(i32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    crate::utils::codec::sha256_str(&format!("{base_url}\0{ports}"))[..16].to_string()
+}
+
 fn runtime(
     base_url: &str,
     bind_addr: &str,
@@ -61,6 +73,7 @@ fn runtime(
     secret: String,
 ) -> AppResult<TargetReporterRuntime> {
     let base_url = base_url.trim_end_matches('/');
+    let callback_ports = callback_ports(base_url, bind_addr)?;
     let challenge_api = format!("{base_url}/api/v1/koth/games/{game_id}/challenges/{challenge_id}");
     Ok(TargetReporterRuntime {
         env: vec![
@@ -77,7 +90,8 @@ fn runtime(
             ),
             (REPORTER_SECRET_ENV.to_string(), secret),
         ],
-        callback_ports: callback_ports(base_url, bind_addr)?,
+        routing_revision: routing_revision(base_url, &callback_ports),
+        callback_ports,
     })
 }
 
@@ -192,6 +206,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(http.callback_ports, vec![80, 8080]);
+        assert_eq!(http.routing_revision.len(), 16);
+        assert!(http
+            .routing_revision
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()));
         assert!(http.env.contains(&(
             CONTEXT_URL_ENV.to_string(),
             "http://rsctf-control/api/v1/koth/games/7/challenges/9/context".to_string()
@@ -219,6 +238,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(custom.callback_ports, vec![8080]);
+        assert_ne!(http.routing_revision, https.routing_revision);
+        assert_ne!(http.routing_revision, custom.routing_revision);
     }
 
     #[tokio::test]

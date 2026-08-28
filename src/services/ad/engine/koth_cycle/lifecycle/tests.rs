@@ -2,8 +2,8 @@ use super::{
     data::snapshot_ids,
     deadline::{action as deadline_action, Action as DeadlineAction},
     drive_hills_fail_isolated, record_receipt, replacement_container_spec,
-    replacement_endpoint_is_valid, rotate_capability_window, set_phase, CapabilityWindow,
-    CrownPhase, CycleRow,
+    replacement_endpoint_is_valid, replacement_operation_id, rotate_capability_window, set_phase,
+    CapabilityWindow, CrownPhase, CycleRow,
 };
 use crate::services::container::ContainerInfo;
 use crate::utils::enums::ParticipationStatus;
@@ -156,6 +156,7 @@ fn managed_reporter_replaces_a_pre_upgrade_create_orphan() {
             "koth_target_test".to_string(),
         )],
         callback_ports: vec![80, 8080],
+        routing_revision: "0123456789abcdef".to_string(),
     };
 
     let legacy = replacement_container_spec(cycle.expected_image.clone(), &cycle, &hill, None);
@@ -168,10 +169,43 @@ fn managed_reporter_replaces_a_pre_upgrade_create_orphan() {
     );
     assert_eq!(
         managed.operation_id.as_deref(),
-        Some("koth-cycle:41:attempt:3:managed-reporter-v1")
+        Some("koth-cycle:41:attempt:3:managed-reporter-v1:0123456789abcdef")
     );
     assert_ne!(managed.operation_id, legacy.operation_id);
     assert_eq!(managed.control_plane_callback_ports, vec![80, 8080]);
+}
+
+#[test]
+fn managed_reporter_routing_revision_fences_crash_retry_identity() {
+    let cycle = CycleRow {
+        id: 41,
+        game_id: 7,
+        challenge_id: 9,
+        cycle_number: 1,
+        phase: "CreatePending".to_string(),
+        planned_start_round: 1,
+        old_container_id: None,
+        replacement_container_id: None,
+        replacement_host: None,
+        replacement_port: None,
+        expected_image: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .to_string(),
+        reset_attempt: 3,
+        readiness_attempt: 0,
+    };
+    let reporter =
+        |routing_revision: &str| crate::services::ad::koth_reporter::TargetReporterRuntime {
+            env: Vec::new(),
+            callback_ports: vec![80, 8080],
+            routing_revision: routing_revision.to_string(),
+        };
+    let original = reporter("0123456789abcdef");
+    let changed = reporter("fedcba9876543210");
+
+    assert_ne!(
+        replacement_operation_id(&cycle, Some(&original)),
+        replacement_operation_id(&cycle, Some(&changed))
+    );
 }
 
 #[test]

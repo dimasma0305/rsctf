@@ -153,6 +153,130 @@ async fn managed_callback_policy_round_trips_through_kubernetes_api() {
     assert_eq!(ports, vec![80, 8080]);
 }
 
+#[tokio::test]
+async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
+    use std::convert::Infallible;
+    use std::future::pending;
+    use std::sync::{Arc, Mutex};
+
+    use axum::http::{header::CONTENT_TYPE, Method, Request, Response, StatusCode};
+    use kube::client::Body;
+    use tokio::sync::Notify;
+    use tower::service_fn;
+
+    let image = format!("registry.example/hill@sha256:{}", "a".repeat(64));
+    let spec = |operation_id: &str| ContainerSpec {
+        game_kind: rsctf_worker_protocol::GameKind::KingOfTheHill,
+        image: image.clone(),
+        memory_limit: 256,
+        cpu_count: 1,
+        storage_limit: crate::services::container::DEFAULT_CONTAINER_STORAGE_MB,
+        expose_port: 8080,
+        publish_port: true,
+        proxy_only: false,
+        env: Vec::new(),
+        flag: Some("flag{test}".to_string()),
+        ad_network: None,
+        allow_egress: false,
+        control_plane_callback_ports: Vec::new(),
+        network_mode: crate::utils::enums::NetworkMode::Open,
+        operation_id: Some(operation_id.to_string()),
+    };
+    let original_operation = "koth-cycle:41:attempt:3:managed-reporter-v1:0123456789abcdef";
+    let changed_operation = "koth-cycle:41:attempt:3:managed-reporter-v1:fedcba9876543210";
+    let resource_name = |operation: &str| {
+        format!(
+            "{}-{}",
+            sanitize_image(&image),
+            &crate::utils::codec::sha256_str(operation)[..16]
+        )
+    };
+    let original_name = resource_name(original_operation);
+    let changed_name = resource_name(changed_operation);
+    assert_ne!(original_name, changed_name);
+
+    let requests = Arc::new(Mutex::new(Vec::<(Method, String, String)>::new()));
+    let captured_requests = Arc::clone(&requests);
+    let service_started = Arc::new(Notify::new());
+    let captured_service_started = Arc::clone(&service_started);
+    let captured_original_name = original_name.clone();
+    let service = service_fn(move |request: Request<Body>| {
+        let requests = Arc::clone(&captured_requests);
+        let service_started = Arc::clone(&captured_service_started);
+        let original_name = captured_original_name.clone();
+        async move {
+            let method = request.method().clone();
+            let path = request.uri().path().to_string();
+            let body = request.into_body().collect_bytes().await.unwrap();
+            let mut value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let name = value["metadata"]["name"].as_str().unwrap().to_string();
+            requests
+                .lock()
+                .unwrap()
+                .push((method.clone(), path.clone(), name.clone()));
+
+            if path.ends_with("/pods") {
+                value["metadata"]["uid"] = serde_json::json!(format!("uid-{name}"));
+                value["status"] = serde_json::json!({
+                    "phase": "Running",
+                    "hostIP": "192.0.2.10"
+                });
+            }
+            if path.ends_with("/services") && name == original_name {
+                service_started.notify_one();
+                return pending::<Result<Response<Body>, Infallible>>().await;
+            }
+
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(StatusCode::CREATED)
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&value).unwrap()))
+                    .unwrap(),
+            )
+        }
+    });
+    let manager = KubernetesContainerManager {
+        client: Client::new(service, "rsctf-challenges"),
+        namespace: "rsctf-challenges".to_string(),
+        scope: orphans::workload_scope("rsctf-challenges", None),
+        public_entry: Some("192.0.2.10".to_string()),
+    };
+
+    let original_manager = manager.clone();
+    let original = spec(original_operation);
+    let interrupted = tokio::spawn(async move { original_manager.create(original).await });
+    tokio::time::timeout(Duration::from_secs(2), service_started.notified())
+        .await
+        .expect("the original create reached its Service request");
+    interrupted.abort();
+    assert!(interrupted.await.unwrap_err().is_cancelled());
+
+    let created = manager.create(spec(changed_operation)).await.unwrap();
+    assert_eq!(created.id, changed_name);
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|(method, _, name)| *method == Method::POST && name == &original_name)
+            .count(),
+        2,
+        "the interrupted create left a Pod before its Service completed"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|(method, _, name)| *method == Method::POST && name == &changed_name)
+            .count(),
+        2,
+        "the retry created a fresh Pod and Service under the changed routing identity"
+    );
+    assert!(requests
+        .iter()
+        .all(|(method, _, _)| *method == Method::POST));
+}
+
 #[test]
 fn proxy_policy_allows_only_the_control_identity_on_the_exact_tcp_port() {
     let labels = BTreeMap::from([(APP_LABEL.to_string(), "rsctf-proxy-test".to_string())]);

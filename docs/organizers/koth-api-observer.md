@@ -203,7 +203,9 @@ The challenge must remain healthy when these variables are absent because the
 pre-cycle shared target is created before the operator selects Leaderboard
 scoring. Event-only admission may return a bounded unavailable response until
 the managed replacement is active. A retry of the same reset reuses the same
-credential; every new reset rotates it.
+credential; every new reset rotates it. Changing the reporter origin or rsctf
+bind port during a pending create gives the replacement a new routing identity,
+so Kubernetes cannot adopt a crash-orphan with stale URLs or callback policy.
 
 Set `RSCTF_KOTH_REPORTER_BASE_URL` to an absolute HTTP(S) origin with no path,
 credentials, query, or fragment. Docker examples expose the control process on
