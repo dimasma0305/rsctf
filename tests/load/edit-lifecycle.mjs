@@ -775,7 +775,9 @@ async function prepareAdFixture() {
     title: `edit-ad-${runKey}`, category: 'Pwn', type: 'AttackDefense',
   });
   const checker = A.prepareExactChecker(context.adGameId, context.adChallengeId);
-  const image = ensureLocalImage(process.env.EDIT_AD_IMAGE || 'nginx:alpine');
+  const image = process.env.EDIT_AD_IMAGE
+    ? ensureLocalImage(process.env.EDIT_AD_IMAGE)
+    : A.buildManagedAdImage();
   await A.setChallenge(context.adGameId, context.adChallengeId, {
     content: 'Disposable managed A&D service',
     containerImage: image,

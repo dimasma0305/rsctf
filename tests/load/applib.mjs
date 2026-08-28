@@ -923,11 +923,10 @@ export function prepareKothChecker(gid, cid) {
   return prepareChecker(gid, cid, materializeFixtures().kothChecker, 'KotH');
 }
 
-export function buildCompetitiveKothImage() {
-  const tag = 'rsctf-load-koth:competitive-v1';
+function buildManagedFixtureImage(tag, dockerfile, label) {
   const baseImage = mustDocker(
     docker(['inspect', RSCTF, '--format', '{{.Config.Image}}']),
-    'discover base image for competitive KotH fixture'
+    `discover base image for ${label}`
   ).stdout.trim();
   const fixtures = materializeFixtures();
   mustDocker(
@@ -937,21 +936,37 @@ export function buildCompetitiveKothImage() {
       '--tag',
       tag,
       '--file',
-      fixtures.kothDockerfile,
+      dockerfile(fixtures),
       '--build-arg',
       `BASE_IMAGE=${baseImage}`,
       fixtures.root,
     ]),
-    'build competitive KotH fixture image'
+    `build ${label} image`
   );
   const identity = mustDocker(
     docker(['image', 'inspect', tag, '--format', '{{.Id}}']),
-    'inspect competitive KotH fixture image'
+    `inspect ${label} image`
   ).stdout.trim();
   if (!isImmutableImageReference(identity) || !identity.startsWith('sha256:')) {
-    throw new Error('competitive KotH fixture did not produce an immutable Docker image ID');
+    throw new Error(`${label} did not produce an immutable Docker image ID`);
   }
   return identity;
+}
+
+export function buildManagedAdImage() {
+  return buildManagedFixtureImage(
+    'rsctf-load-ad:functional-v1',
+    (fixtures) => fixtures.adDockerfile,
+    'functional A&D fixture',
+  );
+}
+
+export function buildCompetitiveKothImage() {
+  return buildManagedFixtureImage(
+    'rsctf-load-koth:competitive-v1',
+    (fixtures) => fixtures.kothDockerfile,
+    'competitive KotH fixture',
+  );
 }
 
 export function startFleetService(gameId, cid) {

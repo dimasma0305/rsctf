@@ -405,6 +405,7 @@ const AD_DOCKERFILE = [
   'COPY ad-service.py /opt/rsctf-load/ad-service.py',
   'ENV FLAG_FILE=/flag',
   'EXPOSE 8080',
+  'HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=6 CMD python3 -c "import urllib.request; urllib.request.urlopen(\'http://127.0.0.1:8080/health\', timeout=3).read()"',
   'ENTRYPOINT ["python3", "/opt/rsctf-load/ad-service.py"]',
   '',
 ].join('\n');

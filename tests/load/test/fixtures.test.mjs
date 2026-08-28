@@ -9,10 +9,14 @@ import { test } from "node:test";
 
 import { materializeFixtures } from "../fixtures.mjs";
 
-test("KotH image replaces the base server healthcheck with its real root probe", () => {
-  const dockerfile = readFileSync(materializeFixtures().kothDockerfile, "utf8");
-  assert.match(dockerfile, /HEALTHCHECK .*http:\/\/127\.0\.0\.1:8080\//);
-  assert.doesNotMatch(dockerfile, /healthz/);
+test("managed images replace the base server healthcheck with their real probes", () => {
+  const fixtures = materializeFixtures();
+  const kothDockerfile = readFileSync(fixtures.kothDockerfile, "utf8");
+  const adDockerfile = readFileSync(fixtures.adDockerfile, "utf8");
+  assert.match(kothDockerfile, /HEALTHCHECK .*http:\/\/127\.0\.0\.1:8080\//);
+  assert.match(adDockerfile, /HEALTHCHECK .*http:\/\/127\.0\.0\.1:8080\/health/);
+  assert.doesNotMatch(kothDockerfile, /healthz/);
+  assert.doesNotMatch(adDockerfile, /healthz/);
 });
 
 function reservePort() {

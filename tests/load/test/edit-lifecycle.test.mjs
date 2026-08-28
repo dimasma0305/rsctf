@@ -544,6 +544,7 @@ test('A&D and KotH create fixtures immediately prove every supplied engine setti
   );
   assert.match(adPrepare, /assertPersistedGameSettings\(context\.adGameId, AD_CREATION_SETTINGS/);
   assert.match(kothPrepare, /assertPersistedGameSettings\(context\.kothGameId, KOTH_CREATION_SETTINGS/);
+  assert.match(adPrepare, /A\.buildManagedAdImage\(\)/);
   assert.ok(adPrepare.indexOf('saveRecovery()') < adPrepare.indexOf('assertPersistedGameSettings('));
   assert.ok(kothPrepare.indexOf('saveRecovery()') < kothPrepare.indexOf('assertPersistedGameSettings('));
   assert.ok(
