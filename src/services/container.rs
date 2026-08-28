@@ -8,11 +8,7 @@
 //! configured) and a real [`DockerContainerManager`] backed by the `bollard`
 //! crate.
 //!
-//! ## Docker flow (mirrors RSCTF `DockerManager.CreateContainerAsync`)
-//!
-//! 1. **Connect** — [`DockerContainerManager::connect`] talks to the local
-//!    Docker daemon through `bollard::Docker::connect_with_local_defaults`
-//!    (honours `DOCKER_HOST` / falls back to the unix socket).
+//! Docker uses `bollard` through the local daemon and preserves managed ownership.
 //! 2. **Create** — for each per-instance challenge we:
 //!    - best-effort pull the immutable repository digest (`create_image`
 //!      streaming pull; a daemon-local image ID must already be present),
@@ -73,7 +69,8 @@ use self::docker::{
 };
 pub use backend::{
     should_use_platform_proxy, ContainerBackendKind, ContainerExecAdmission, ContainerExecError,
-    ContainerLiveness, ContainerManager, ContainerStatus, FileChange, NoopContainerManager,
+    ContainerFile, ContainerLiveness, ContainerManager, ContainerStatus, FileChange,
+    NoopContainerManager,
 };
 pub use docker::{from_env, from_env_required};
 use logging::bounded_log_config;
@@ -928,6 +925,10 @@ impl ContainerManager for DockerContainerManager {
                 .to_string(),
             })
             .collect())
+    }
+
+    async fn read_file(&self, id: &str, path: &str, limit: usize) -> AppResult<ContainerFile> {
+        self.read_bounded_file(id, path, limit).await
     }
 
     /// Exec a command in the container (KotH token plant/read-back), returning

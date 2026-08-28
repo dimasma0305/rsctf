@@ -2,7 +2,7 @@
 //! `IntoResponse` impl renders the RSCTF `RequestResponse { title, status }`
 //! envelope so error bodies match the original API shape.
 
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
@@ -39,6 +39,9 @@ pub enum AppError {
 
     #[error("{0}")]
     ServiceUnavailable(String),
+
+    #[error("{title}")]
+    RetryableUnavailable { title: String, retry_after: u64 },
 
     /// Carries a RSCTF numeric `ErrorCode` in the response body distinct from the
     /// HTTP status (e.g. 10001/10002 for game-not-started/ended, which the React
@@ -85,6 +88,12 @@ impl AppError {
             retry_after: Some(retry_after.max(1)),
         }
     }
+    pub fn retryable_unavailable(msg: impl Into<String>, retry_after: u64) -> Self {
+        AppError::RetryableUnavailable {
+            title: msg.into(),
+            retry_after,
+        }
+    }
 
     /// RSCTF `ErrorCode.GameEnded` (10002): 400 with the numeric code in the body.
     /// The React `TeamRank` redirects when `error.status === 10002`.
@@ -114,7 +123,9 @@ impl AppError {
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::TooManyRequests { .. } => StatusCode::TOO_MANY_REQUESTS,
             AppError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
-            AppError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            AppError::ServiceUnavailable(_) | AppError::RetryableUnavailable { .. } => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             AppError::Coded { http, .. } => *http,
             AppError::Database(_) | AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -148,15 +159,17 @@ impl IntoResponse for AppError {
             title,
             status: body_status,
         };
+        let retry_after = match &self {
+            AppError::TooManyRequests {
+                retry_after: Some(retry_after),
+            }
+            | AppError::RetryableUnavailable { retry_after, .. } => Some(*retry_after),
+            _ => None,
+        };
         let mut response = (status, Json(body)).into_response();
-        if let AppError::TooManyRequests {
-            retry_after: Some(retry_after),
-        } = self
-        {
-            if let Ok(value) = axum::http::HeaderValue::from_str(&retry_after.to_string()) {
-                response
-                    .headers_mut()
-                    .insert(axum::http::header::RETRY_AFTER, value);
+        if let Some(retry_after) = retry_after {
+            if let Ok(value) = HeaderValue::from_str(&retry_after.to_string()) {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
             }
         }
         response
@@ -177,5 +190,12 @@ mod tests {
         let response = AppError::too_many_requests(0).into_response();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "1");
+    }
+
+    #[test]
+    fn retryable_unavailable_has_typed_status_and_retry_header() {
+        let response = AppError::retryable_unavailable("busy", 3).into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "3");
     }
 }

@@ -2607,6 +2607,10 @@ export interface AdSnapshotChangesModel {
   /** True when computed live from the running container (mid-game), not a stored snapshot. */
   live?: boolean;
   changes: AdSnapshotChange[];
+  /** Total runtime entries observed before response sanitization and caps. */
+  observedChanges?: number;
+  /** True when unsafe or excess entries were omitted from this bounded response. */
+  truncated?: boolean;
   /** Path categories filtered out of `changes` (runtime/churn blacklist), shown via the info button. */
   filteredCategories?: string[];
 }
