@@ -1,5 +1,4 @@
-import type { AxiosInstance, AxiosResponse } from 'axios'
-import axios from 'axios'
+import axios, { type AxiosInstance, type AxiosResponse } from 'axios'
 import api from '@Api'
 
 export type ApiJsonFetchInit = {
@@ -7,11 +6,23 @@ export type ApiJsonFetchInit = {
   readonly signal?: AbortSignal | null
 }
 
-type ApiJsonFetchResponse = Pick<Response, 'ok' | 'status' | 'json'>
+type ApiJsonFetchResponse = Pick<Response, 'ok' | 'status' | 'json'> & {
+  readonly retryAfter: string | null
+}
+
+const responseHeader = (response: AxiosResponse, name: string): string | null => {
+  const headers = response.headers as unknown as {
+    get?: (key: string) => unknown
+    [key: string]: unknown
+  }
+  const value = typeof headers.get === 'function' ? headers.get(name) : headers[name.toLowerCase()]
+  return value == null ? null : String(value)
+}
 
 const jsonResponse = (response: AxiosResponse): ApiJsonFetchResponse => ({
   ok: response.status >= 200 && response.status < 300,
   status: response.status,
+  retryAfter: responseHeader(response, 'retry-after'),
   // Axios has already decoded the JSON body. Keep the small fetch-shaped
   // surface used by the arena without returning request headers, cookies, or
   // the short-lived Event-VPN proof attached by its interceptor.

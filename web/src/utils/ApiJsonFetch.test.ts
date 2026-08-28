@@ -5,10 +5,15 @@ import test from 'node:test'
 import { createApiJsonFetch } from './ApiJsonFetch'
 import { installEventVpnProof } from './EventVpnProof'
 
-const jsonResult = (config: AxiosRequestConfig, status: number, data: unknown): AxiosResponse => ({
+const jsonResult = (
+  config: AxiosRequestConfig,
+  status: number,
+  data: unknown,
+  headers: Record<string, string> = {}
+): AxiosResponse => ({
   config: { ...config, headers: AxiosHeaders.from(config.headers) },
   data,
-  headers: {},
+  headers,
   status,
   statusText: String(status),
 })
@@ -69,7 +74,7 @@ test('VPN-required arena reads use one accepted proof across Jeopardy, A&D and K
     assert.equal(response.status, 200, path)
     assert.equal(response.ok, true, path)
     assert.deepEqual(await response.json(), { path })
-    assert.deepEqual(Object.keys(response).sort(), ['json', 'ok', 'status'])
+    assert.deepEqual(Object.keys(response).sort(), ['json', 'ok', 'retryAfter', 'status'])
   }
   assert.equal(proofMints, 1)
 })
@@ -134,6 +139,18 @@ test('arena adapter rejects cross-origin targets before Axios can attach credent
     await assert.rejects(fetchJson(target), /same-origin absolute path/)
   }
   assert.equal(requests, 0)
+})
+
+test('arena adapter exposes only the bounded-retry header needed by polling', async () => {
+  const response = await createApiJsonFetch(
+    axios.create({
+      adapter: async (config) => jsonResult(config, 429, {}, { 'retry-after': '7' }),
+      validateStatus: () => true,
+    })
+  )('/api/game/7/scoreboard')
+
+  assert.equal(response.status, 429)
+  assert.equal(response.retryAfter, '7')
 })
 
 test('live arena shadows only its JSON fetch with the configured proof-aware adapter', () => {

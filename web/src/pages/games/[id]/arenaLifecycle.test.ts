@@ -22,8 +22,11 @@ test('live arena URLs match the registered case-sensitive route contract', () =>
   assert.ok(adRoutes.includes('"/api/Game/{id}/Ad/Scoreboard"'))
   assert.ok(kothRoutes.includes('"/api/game/{id}/ad/koth/scoreboard"'))
   assert.doesNotMatch(arena, /AttackFeed/)
-  assert.match(arena, /AbortSignal\.timeout\(LIVE_REQUEST_TIMEOUT_MS\)/)
-  assert.match(arena, /setInterval\(pollLive, 15000\)/)
+  assert.match(arena, /new CompletionScheduledArenaCycle\(runLiveCycle/)
+  assert.doesNotMatch(arena, /setInterval\(pollLive/)
+  assert.match(arena, /arenaRetryDelay\(Math\.max\(1, wsRetry\)/)
+  assert.doesNotMatch(arena, /setTimeout\(connectWS/)
+  assert.match(arena, /window\.addEventListener\('offline', syncLiveTransport\)/)
 })
 
 const eventFormats = [

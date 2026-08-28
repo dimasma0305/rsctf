@@ -29,6 +29,12 @@ import {
   previewArenaMatchTiming,
   resolveArenaFinalState,
 } from './arenaLifecycle'
+import {
+  arenaRetryDelay,
+  CompletionScheduledArenaCycle,
+  retryAfterMilliseconds,
+  type ArenaCycleResult,
+} from './arenaTransport'
 import { createSoundEngine } from './audio'
 import { createFbRenderer } from './fbRenderer'
 import { createFxRenderer } from './fxRenderer'
@@ -630,10 +636,12 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   let killed = false
   const timers: number[] = []
   let raf = 0
-  let liveClockStarted = false,
-    livePollStarted = false
+  let liveClockStarted = false
+  let arenaInitialized = false
+  let liveCycleOwner: CompletionScheduledArenaCycle | null = null
   let ws: WebSocket | null = null
   let wsRetry = 0,
+    wsOpenedAt = 0,
     reconnectTimer = 0 // single reconnect handle (never >1 pending) — don't accumulate in timers[]
 
   const $ = (id: string): any => root.getElementById(id)
@@ -1137,9 +1145,25 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     })
   }
   window.addEventListener('resize', onResize)
-  // keep audio alive when the tab is backgrounded (some browsers suspend the context)
-  const onVis = () => snd.resume()
+  const liveTransportSuspended = () => document.visibilityState === 'hidden' || !navigator.onLine
+  const syncLiveTransport = () => {
+    if (liveTransportSuspended()) {
+      liveCycleOwner?.suspend()
+      if (!navigator.onLine && ws) ws.close()
+      return
+    }
+    liveCycleOwner?.resume()
+    if (arenaInitialized) scheduleWsReconnect()
+  }
+  // Keep audio usable after a background transition while suspending network
+  // retries that the spectator cannot observe.
+  const onVis = () => {
+    snd.resume()
+    syncLiveTransport()
+  }
   document.addEventListener('visibilitychange', onVis)
+  window.addEventListener('online', syncLiveTransport)
+  window.addEventListener('offline', syncLiveTransport)
 
   const shots: any[] = [],
     sparks: any[] = [],
@@ -2167,22 +2191,43 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
 
   /* -------- live data -------- */
   const LIVE_REQUEST_TIMEOUT_MS = 10_000
-  async function fetchJSON<T = any>(url: string): Promise<T> {
+  const LIVE_POLL_INTERVAL_MS = 15_000
+  const LIVE_MAXIMUM_BACKOFF_MS = 60_000
+  class ArenaHttpError extends Error {
+    constructor(
+      message: string,
+      readonly retryAfterMs?: number
+    ) {
+      super(message)
+    }
+  }
+  async function fetchJSON<T = any>(
+    url: string,
+    signal: AbortSignal = AbortSignal.timeout(LIVE_REQUEST_TIMEOUT_MS)
+  ): Promise<T> {
     const r = await fetch(url, {
       headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(LIVE_REQUEST_TIMEOUT_MS),
+      signal,
     })
-    if (!r.ok) throw new Error(url + ' -> ' + r.status)
+    if (!r.ok) {
+      throw new ArenaHttpError(url + ' -> ' + r.status, retryAfterMilliseconds(r.retryAfter))
+    }
     return r.json()
   }
 
-  const fetchLiveSnapshot = () =>
+  const fetchLiveSnapshot = (signal: AbortSignal) =>
     Promise.allSettled([
-      fetchJSON<AdScoreboardModel>(routes.adScoreboard),
-      fetchJSON(routes.kothScoreboard),
-      fetchJSON(routes.standardScoreboard),
-      fetchJSON(routes.game),
+      fetchJSON<AdScoreboardModel>(routes.adScoreboard, signal),
+      fetchJSON(routes.kothScoreboard, signal),
+      fetchJSON(routes.standardScoreboard, signal),
+      fetchJSON(routes.game, signal),
     ] as const)
+
+  const snapshotRetryAfter = (results: readonly PromiseSettledResult<unknown>[]) =>
+    results.reduce<number | undefined>((latest, result) => {
+      const retryAfter = result.status === 'rejected' ? (result.reason as ArenaHttpError)?.retryAfterMs : undefined
+      return retryAfter === undefined ? latest : Math.max(latest ?? 0, retryAfter)
+    }, undefined)
 
   const emptyAdScoreboard = (): AdScoreboardModel => ({
     epochTicks: 0,
@@ -2470,22 +2515,6 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     else if (freezeViews.length > 0 && freezeViews.every((value) => !value) && frozen && !matchOver) unfreeze()
   }
 
-  async function pollLive() {
-    if (killed) return
-    const [adResult, kothResult, jpResult, gameResult] = await fetchLiveSnapshot()
-    if (killed) return
-
-    if (gameResult.status === 'fulfilled') {
-      matchTiming = observeArenaGameTiming(matchTiming, gameResult.value)
-      if (matchOver && !arenaHasEnded(matchTiming)) reopenMatch()
-    }
-
-    const ad = adResult.status === 'fulfilled' ? adResult.value : null
-    const koth = kothResult.status === 'fulfilled' ? kothResult.value : null
-    const jp = jpResult.status === 'fulfilled' ? jpResult.value : null
-    if (ad || koth || jp) applyLivePoll(ad, koth, jp)
-  }
-
   function liveAttack(f: any) {
     const atkr = teamByName(f.teamName)
     if (!atkr) return
@@ -2599,15 +2628,42 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     patchEffect(teamByName(f.teamName), f.challengeTitle, f.changeCount || 0)
   }
 
+  function scheduleWsReconnect() {
+    if (
+      killed ||
+      liveTransportSuspended() ||
+      reconnectTimer ||
+      !arenaInitialized ||
+      (ws && ws.readyState <= WebSocket.OPEN)
+    )
+      return
+    const delay = arenaRetryDelay(Math.max(1, wsRetry), 1_000, LIVE_MAXIMUM_BACKOFF_MS)
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = 0
+      connectWS()
+    }, delay)
+  }
+
   function connectWS() {
-    if (killed) return
+    if (killed || liveTransportSuspended() || (ws && ws.readyState <= WebSocket.OPEN)) return
+    clearTimeout(reconnectTimer)
+    reconnectTimer = 0
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    ws = new WebSocket(`${proto}://${location.host}/hub/attack/ws?game=${gameId}`)
-    ws.onopen = () => {
-      wsRetry = 0
+    let socket: WebSocket
+    try {
+      socket = new WebSocket(`${proto}://${location.host}/hub/attack/ws?game=${gameId}`)
+    } catch {
+      wsRetry = Math.min(wsRetry + 1, 20)
+      scheduleWsReconnect()
+      return
     }
-    ws.onmessage = (m) => {
-      if (killed) return
+    ws = socket
+    socket.onopen = () => {
+      if (ws !== socket) return
+      wsOpenedAt = Date.now()
+    }
+    socket.onmessage = (m) => {
+      if (killed || ws !== socket) return
       let f: any
       try {
         f = JSON.parse(m.data)
@@ -2619,14 +2675,17 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       else if (f.kind === 'koth') liveKoth(f)
       else if (f.kind === 'patch') livePatch(f)
     }
-    ws.onclose = () => {
-      if (killed) return
-      wsRetry = Math.min(wsRetry + 1, 6)
-      reconnectTimer = window.setTimeout(connectWS, 1000 * wsRetry)
+    socket.onclose = () => {
+      if (ws !== socket) return
+      ws = null
+      const stable = wsOpenedAt > 0 && Date.now() - wsOpenedAt >= 30_000
+      wsOpenedAt = 0
+      wsRetry = stable ? 1 : Math.min(wsRetry + 1, 20)
+      scheduleWsReconnect()
     }
-    ws.onerror = () => {
+    socket.onerror = () => {
       try {
-        if (ws) ws.close()
+        socket.close()
       } catch {}
     }
   }
@@ -2650,22 +2709,34 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     if (!raf) raf = requestAnimationFrame(loop)
   }
 
-  async function start() {
-    const [adResult, kothResult, jpResult, gameResult] = await fetchLiveSnapshot()
-    if (killed) return
+  async function runLiveCycle(signal: AbortSignal): Promise<ArenaCycleResult> {
+    const results = await fetchLiveSnapshot(signal)
+    if (killed || signal.aborted) return { success: false }
+    const [adResult, kothResult, jpResult, gameResult] = results
 
     const ad = adResult.status === 'fulfilled' ? adResult.value : emptyAdScoreboard()
     const koth = kothResult.status === 'fulfilled' ? kothResult.value : null
     const jp = jpResult.status === 'fulfilled' ? jpResult.value : null
     const game: any = gameResult.status === 'fulfilled' ? gameResult.value : null
-    if (game) matchTiming = observeArenaGameTiming(matchTiming, game)
-    if (adResult.status === 'rejected' && !koth && !jp) {
+    if (game) {
+      matchTiming = observeArenaGameTiming(matchTiming, game)
+      if (matchOver && !arenaHasEnded(matchTiming)) reopenMatch()
+    }
+
+    const scoreboardAvailable = adResult.status === 'fulfilled' || koth !== null || jp !== null
+    const retryAfterMs = snapshotRetryAfter(results)
+    if (arenaInitialized) {
+      if (scoreboardAvailable) applyLivePoll(adResult.status === 'fulfilled' ? ad : null, koth, jp)
+      return { success: scoreboardAvailable, retryAfterMs }
+    }
+
+    if (!scoreboardAvailable) {
+      const firstFailure = root.querySelector('.arena-note') === null
       showNote('LIVE SCOREBOARDS ARE TEMPORARILY UNAVAILABLE')
-      addLog('SYS', 'sys', `<span class="em">WAITING FOR LIVE SCOREBOARDS</span>`)
+      if (firstFailure) addLog('SYS', 'sys', `<span class="em">WAITING FOR LIVE SCOREBOARDS</span>`)
       tNow = Date.now()
       ensureLiveLoops()
-      timers.push(window.setTimeout(() => !killed && void start(), 5000))
-      return
+      return { success: false, retryAfterMs }
     }
 
     latestAdBoard = ad
@@ -2674,14 +2745,10 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       showNote('WAITING FOR THE OFFICIAL EVENT ROSTER')
       tNow = Date.now()
       ensureLiveLoops()
-      timers.push(
-        window.setTimeout(() => {
-          if (!killed) void start()
-        }, 5000)
-      )
-      return
+      return { success: true }
     }
 
+    arenaInitialized = true
     clearNote()
     buildArena()
     refreshRank()
@@ -2693,12 +2760,9 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       `<span class="em">ARENA ONLINE</span> :: ${TEAMS.length} teams, ${SERVICES.length} services, ${totalFlags} accepted captures`
     )
 
-    if (!livePollStarted) {
-      livePollStarted = true
-      connectWS()
-      timers.push(window.setInterval(pollLive, 15000))
-    }
+    connectWS()
     ensureLiveLoops()
+    return { success: true }
   }
 
   /* -------- preview: simulated battle (no WS / no poll) -------- */
@@ -3181,7 +3245,16 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     }
 
   if (preview) startPreview()
-  else start()
+  else {
+    liveCycleOwner = new CompletionScheduledArenaCycle(runLiveCycle, {
+      successDelayMs: LIVE_POLL_INTERVAL_MS,
+      failureBaseDelayMs: 1_000,
+      maximumDelayMs: LIVE_MAXIMUM_BACKOFF_MS,
+      requestTimeoutMs: LIVE_REQUEST_TIMEOUT_MS,
+    })
+    liveCycleOwner.start()
+    if (liveTransportSuspended()) liveCycleOwner.suspend()
+  }
 
   /* -------- teardown -------- */
   return () => {
@@ -3190,10 +3263,14 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     timers.forEach((id) => clearTimeout(id))
     clearTimeout(evTimer)
     clearTimeout(reconnectTimer) // cancel any pending WS reconnect so connectWS can't fire after killed
+    liveCycleOwner?.stop()
+    liveCycleOwner = null
     if (raf) cancelAnimationFrame(raf)
     window.removeEventListener('resize', onResize)
     if (resizeRaf) cancelAnimationFrame(resizeRaf) // don't let a pending resize fire sizeCanvas into destroyed Pixi apps
     document.removeEventListener('visibilitychange', onVis)
+    window.removeEventListener('online', syncLiveTransport)
+    window.removeEventListener('offline', syncLiveTransport)
     document.removeEventListener('pointerdown', primeAudio)
     document.removeEventListener('keydown', primeAudio)
     if ('speechSynthesis' in window) {
