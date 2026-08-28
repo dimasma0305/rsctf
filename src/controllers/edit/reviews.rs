@@ -59,6 +59,11 @@ pub async fn update_poster(
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Game not found"))?
     .0;
+    crate::services::blob_refs::lock_direct_hashes_locked(
+        control.transaction_mut(),
+        std::iter::once(staged.blob.hash.as_str()).chain(old_hash.as_deref()),
+    )
+    .await?;
     crate::services::blob_refs::publish_staged_blob(control.transaction_mut(), &staged).await?;
     let blob = staged.blob;
     sqlx::query(r#"UPDATE "Games" SET poster_hash = $2 WHERE id = $1"#)
@@ -67,14 +72,21 @@ pub async fn update_poster(
         .execute(&mut **control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some(old_hash) = old_hash.as_deref() {
+        crate::services::blob_refs::release_direct_hash_locked(control.transaction_mut(), old_hash)
+            .await?;
+    }
     control
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     if let Some(old_hash) = old_hash {
-        if let Err(error) =
-            crate::services::blob_refs::release_and_purge(st.pg(), st.storage.as_ref(), &old_hash)
-                .await
+        if let Err(error) = crate::services::blob_refs::purge_if_unreferenced(
+            st.pg(),
+            st.storage.as_ref(),
+            &old_hash,
+        )
+        .await
         {
             tracing::warn!(%error, hash = %old_hash, "old game poster purge failed");
         }

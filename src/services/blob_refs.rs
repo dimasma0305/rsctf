@@ -77,6 +77,27 @@ async fn lock_hash(
     Ok(())
 }
 
+/// Take every content lock needed by a direct-hash owner swap in canonical
+/// order. Publication and release re-enter these transaction-scoped locks, so
+/// concurrent accounts/games swapping the same two hashes cannot deadlock by
+/// each taking its new hash before the other's old hash.
+pub(crate) async fn lock_direct_hashes_locked<'a>(
+    transaction: &mut Transaction<'_, Postgres>,
+    hashes: impl IntoIterator<Item = &'a str>,
+) -> AppResult<()> {
+    for hash in canonical_hash_order(hashes) {
+        lock_hash(transaction, hash).await.map_err(database_error)?;
+    }
+    Ok(())
+}
+
+fn canonical_hash_order<'a>(hashes: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut hashes = hashes.into_iter().collect::<Vec<_>>();
+    hashes.sort_unstable();
+    hashes.dedup();
+    hashes
+}
+
 async fn acquire_locked(
     transaction: &mut Transaction<'_, Postgres>,
     hash: &str,
@@ -399,6 +420,14 @@ mod tests {
         assert!(UPSERT_FILE_SQL.contains("ON CONFLICT (hash) DO UPDATE"));
         assert!(UPSERT_FILE_SQL.contains("\"Files\".reference_count + 1"));
         assert!(UPSERT_FILE_SQL.contains("RETURNING id"));
+    }
+
+    #[test]
+    fn direct_owner_swaps_lock_distinct_hashes_in_canonical_order() {
+        assert_eq!(
+            canonical_hash_order(["bbbb", "aaaa", "bbbb", "cccc"]),
+            vec!["aaaa", "bbbb", "cccc"]
+        );
     }
 
     #[tokio::test]

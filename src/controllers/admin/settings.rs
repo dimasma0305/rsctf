@@ -807,6 +807,11 @@ pub async fn logo_upload(
     .map_err(|error| AppError::internal(error.to_string()))?
     .into_iter()
     .collect();
+    crate::services::blob_refs::lock_direct_hashes_locked(
+        &mut transaction,
+        std::iter::once(staged.blob.hash.as_str()).chain(old_hashes.iter().map(String::as_str)),
+    )
+    .await?;
     crate::services::blob_refs::publish_staged_blob(&mut transaction, &staged).await?;
     let blob = staged.blob;
     for key in ["GlobalConfig:LogoHash", "GlobalConfig:FaviconHash"] {
@@ -821,15 +826,21 @@ pub async fn logo_upload(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     }
+    for old_hash in &old_hashes {
+        crate::services::blob_refs::release_direct_hash_locked(&mut transaction, old_hash).await?;
+    }
     transaction
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
     for old_hash in old_hashes {
-        if let Err(error) =
-            crate::services::blob_refs::release_and_purge(st.pg(), st.storage.as_ref(), &old_hash)
-                .await
+        if let Err(error) = crate::services::blob_refs::purge_if_unreferenced(
+            st.pg(),
+            st.storage.as_ref(),
+            &old_hash,
+        )
+        .await
         {
             tracing::warn!(%error, hash = %old_hash, "old branding blob purge failed");
         }

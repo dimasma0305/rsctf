@@ -233,6 +233,11 @@ pub async fn avatar(
         ));
     }
     super::profile::enforce_mutation_budget(&mut **roster.transaction_mut(), id, user.id).await?;
+    crate::services::blob_refs::lock_direct_hashes_locked(
+        roster.transaction_mut(),
+        std::iter::once(staged.blob.hash.as_str()).chain(old_hash.as_deref()),
+    )
+    .await?;
     crate::services::blob_refs::publish_staged_blob(roster.transaction_mut(), &staged).await?;
     let blob = staged.blob;
     let revision = sqlx::query_scalar::<_, i64>(
