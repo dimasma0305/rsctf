@@ -1,17 +1,6 @@
-import type { GameEvent, Submission } from '@Api'
+import { AnswerResult, type GameEvent, type MonitorSubmission } from '@Api'
 
 type RowIdentity<T> = (row: T) => string
-
-const monitorTimeIdentity = (value: unknown) => {
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  if (typeof value === 'string') {
-    const numeric = Number(value)
-    if (value.trim() && Number.isFinite(numeric)) return numeric
-    const parsed = Date.parse(value)
-    if (Number.isFinite(parsed)) return parsed
-  }
-  return value ?? null
-}
 
 /**
  * Keep only pushed rows not already represented by an authoritative snapshot.
@@ -41,22 +30,50 @@ export const unreconciledMonitorRows = <T>(
 
 export const gameEventMonitorIdentity = (event: GameEvent) => String(event.id)
 
-/** Merge real-time and HTTP rows by durable identity, newest commit first. */
-export const mergeGameEventBuffer = (incoming: readonly GameEvent[], current: readonly GameEvent[], limit: number) => {
+export const submissionMonitorIdentity = (submission: MonitorSubmission) => String(submission.id)
+
+interface CursorMonitorRow {
+  id: number
+  cursor: number
+}
+
+/** Merge durable real-time, snapshot, and backfill rows newest-commit first. */
+export const mergeCursorMonitorBuffer = <Row extends CursorMonitorRow>(
+  incoming: readonly Row[],
+  current: readonly Row[],
+  limit: number
+) => {
   const seen = new Set<number>()
   return [...incoming, ...current]
     .sort((left, right) => right.cursor - left.cursor)
-    .filter((event) => {
-      if (seen.has(event.id)) return false
-      seen.add(event.id)
+    .filter((row) => {
+      if (seen.has(row.id)) return false
+      seen.add(row.id)
       return true
     })
     .slice(0, Math.max(0, limit))
 }
 
+/** Keep only pushed rows newer than a snapshot's authoritative checkpoint. */
+export const rebaseCursorMonitorBuffer = <Row extends CursorMonitorRow>(current: readonly Row[], checkpoint: number) =>
+  current.filter((row) => row.cursor > checkpoint)
+
+/** Merge real-time and HTTP rows by durable identity, newest commit first. */
+export const mergeGameEventBuffer = (incoming: readonly GameEvent[], current: readonly GameEvent[], limit: number) =>
+  mergeCursorMonitorBuffer(incoming, current, limit)
+
+export const mergeSubmissionBuffer = (
+  incoming: readonly MonitorSubmission[],
+  current: readonly MonitorSubmission[],
+  limit: number
+) => mergeCursorMonitorBuffer(incoming, current, limit)
+
 /** Keep only pushes newer than a snapshot's authoritative checkpoint. */
 export const rebaseGameEventBuffer = (current: readonly GameEvent[], checkpoint: number) =>
-  current.filter((event) => event.cursor > checkpoint)
+  rebaseCursorMonitorBuffer(current, checkpoint)
+
+export const rebaseSubmissionBuffer = (current: readonly MonitorSubmission[], checkpoint: number) =>
+  rebaseCursorMonitorBuffer(current, checkpoint)
 
 /** Fence delayed HTTP snapshots to the query scope and newest request. */
 export const monitorSnapshotIsCurrent = (
@@ -73,8 +90,8 @@ export const monitorPushIsCurrent = <Scope extends string | number>(
   cancelled: boolean
 ) => !cancelled && activeScope === connectedScope
 
-/** Reject a delayed event push once its commit is covered by the durable cursor. */
-export const monitorEventPushIsCurrent = <Scope extends string | number>(
+/** Reject a delayed monitor push once its commit is covered by the durable cursor. */
+export const monitorCursorPushIsCurrent = <Scope extends string | number>(
   activeScope: Scope,
   connectedScope: Scope,
   cancelled: boolean,
@@ -83,6 +100,8 @@ export const monitorEventPushIsCurrent = <Scope extends string | number>(
   pushedCursor: number
 ) =>
   monitorPushIsCurrent(activeScope, connectedScope, cancelled) && (!cursorInitialized || pushedCursor > durableCursor)
+
+export const monitorEventPushIsCurrent = monitorCursorPushIsCurrent
 
 export interface ScopedMonitorSnapshot<Row> {
   scope: string
@@ -97,12 +116,20 @@ export const currentMonitorSnapshotRows = <Row>(activeScope: string, snapshot?: 
 export const currentMonitorBufferRows = <Row>(activeScope: string, bufferedScope: string, rows: readonly Row[]) =>
   activeScope === bufferedScope ? rows : []
 
-export const submissionMonitorIdentity = (submission: Submission) =>
-  JSON.stringify([
-    monitorTimeIdentity(submission.time),
-    submission.status ?? null,
-    submission.answer ?? null,
-    submission.user ?? null,
-    submission.team ?? null,
-    submission.challenge ?? null,
-  ])
+const normalizedMonitorSearch = (search: string, locale: string) =>
+  Array.from(search.trim().replace(/\s+/gu, ' ').toLocaleLowerCase(locale)).slice(0, 128).join('')
+
+/** Match a pushed submission with the same result/search dimensions as HTTP. */
+export const submissionMatchesMonitorFilter = (
+  submission: MonitorSubmission,
+  type: AnswerResult | 'All',
+  search: string,
+  locale: string
+) => {
+  if (type !== 'All' && submission.status !== type) return false
+  const normalizedSearch = normalizedMonitorSearch(search, locale)
+  if (!normalizedSearch) return true
+  return [submission.answer, submission.user, submission.team, submission.challenge]
+    .filter((value): value is string => typeof value === 'string')
+    .some((value) => value.toLocaleLowerCase(locale).includes(normalizedSearch))
+}

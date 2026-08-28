@@ -3301,6 +3301,36 @@ export interface Submission {
   challenge?: string;
 }
 
+/** Submission shown in the monitor snapshot and real-time feed. */
+export interface MonitorSubmission {
+  /** Stable row identity used to deduplicate snapshots, pushes, and backfills. */
+  id: number;
+  /** Commit-ordered reconnect cursor. */
+  cursor: number;
+  /** Submitted answer string. */
+  answer: string;
+  /** Status of the submitted answer. */
+  status: AnswerResult;
+  /**
+   * Time the answer was submitted.
+   * @format uint64
+   */
+  time: number;
+  /** User who submitted. */
+  user?: string;
+  /** Team that submitted. */
+  team?: string;
+  /** Challenge that was submitted. */
+  challenge?: string;
+}
+
+/** One bounded commit-ordered page used to recover a monitor-hub reconnect. */
+export interface SubmissionBackfill {
+  submissions: MonitorSubmission[];
+  nextCursor: number;
+  hasMore: boolean;
+}
+
 /** Cheat behavior information */
 export interface CheatInfoModel {
   /** Team owning the flag */
@@ -9755,8 +9785,38 @@ export class Api<
       },
       params: RequestParams = {},
     ) =>
-      this.request<Submission[], RequestResponse>({
+      this.request<MonitorSubmission[], RequestResponse>({
         path: `/api/game/${id}/submissions`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves a bounded commit-ordered monitor submission backfill; omitting after returns a cursor-only checkpoint
+     *
+     * @tags Game
+     * @name GameSubmissionBackfill
+     * @summary Backfill game submissions after a reconnect
+     * @request GET:/api/game/{id}/submissions/backfill
+     */
+    gameSubmissionBackfill: (
+      id: number,
+      query?: {
+        /** Commit cursor previously observed by the client. */
+        after?: number;
+        /**
+         * @format int32
+         * @min 1
+         * @max 100
+         * @default 100
+         */
+        limit?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<SubmissionBackfill, RequestResponse>({
+        path: `/api/game/${id}/submissions/backfill`,
         method: "GET",
         query: query,
         format: "json",
@@ -9793,7 +9853,7 @@ export class Api<
       options?: SWRConfiguration,
       doFetch: boolean = true,
     ) =>
-      useSWR<Submission[], RequestResponse>(
+      useSWR<MonitorSubmission[], RequestResponse>(
         doFetch ? [`/api/game/${id}/submissions`, query] : null,
         options,
       ),
@@ -9826,10 +9886,10 @@ export class Api<
         /** Search query */
         search?: string | null;
       },
-      data?: Submission[] | Promise<Submission[]>,
+      data?: MonitorSubmission[] | Promise<MonitorSubmission[]>,
       options?: MutatorOptions,
     ) =>
-      mutate<Submission[]>(
+      mutate<MonitorSubmission[]>(
         [`/api/game/${id}/submissions`, query],
         data,
         options,
@@ -9861,7 +9921,7 @@ export class Api<
       },
       params: RequestParams = {},
     ) =>
-      this.request<Submission[], RequestResponse>({
+      this.request<MonitorSubmission[], RequestResponse>({
         path: `/api/game/${id}/submissions/page`,
         method: "GET",
         query: query,
@@ -9879,7 +9939,7 @@ export class Api<
       options?: SWRConfiguration,
       doFetch: boolean = true,
     ) =>
-      useSWR<Submission[], RequestResponse>(
+      useSWR<MonitorSubmission[], RequestResponse>(
         doFetch ? [`/api/game/${id}/submissions/page`, query] : null,
         options,
       ),
@@ -9891,10 +9951,10 @@ export class Api<
         skip?: number;
         search?: string | null;
       },
-      data?: Submission[] | Promise<Submission[]>,
+      data?: MonitorSubmission[] | Promise<MonitorSubmission[]>,
       options?: MutatorOptions,
     ) =>
-      mutate<Submission[]>(
+      mutate<MonitorSubmission[]>(
         [`/api/game/${id}/submissions/page`, query],
         data,
         options,

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { act, createElement, type FC, useCallback, useEffect, useRef, useState } from 'react'
-import { AnswerResult, EventType, type GameEvent, type Submission } from '../Api'
+import { AnswerResult, EventType, type GameEvent, type MonitorSubmission } from '../Api'
 import { useRecoveringHub } from '../hooks/useRecoveringHub'
 import { installTestDom } from '../test/installDom'
 import {
@@ -12,10 +12,14 @@ import {
   currentMonitorSnapshotRows,
   gameEventMonitorIdentity,
   mergeGameEventBuffer,
+  mergeSubmissionBuffer,
+  monitorCursorPushIsCurrent,
   monitorEventPushIsCurrent,
   monitorPushIsCurrent,
   monitorSnapshotIsCurrent,
   rebaseGameEventBuffer,
+  rebaseSubmissionBuffer,
+  submissionMatchesMonitorFilter,
   submissionMonitorIdentity,
   unreconciledMonitorRows,
 } from './MonitorFeed'
@@ -31,9 +35,9 @@ const monitorPages = [
   {
     path: 'src/pages/games/[id]/monitor/Submissions.tsx',
     fetchName: 'fetchSubmissions',
-    finalName: 'fetchSubmissions',
+    finalName: 'reconcileSubmissions',
     identityName: 'submissionMonitorIdentity',
-    callbackDependencies: /\[activePage, type, debouncedSearch, numId, t\]/,
+    callbackDependencies: /\[loadSnapshot, t\]/,
   },
 ]
 
@@ -78,6 +82,53 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
       assert.match(
         fallback,
         /const checkpoint = await api\.game\.gameEventBackfill\(numId, \{\}, \{ signal \}\)[\s\S]*const snapshot = await loadSnapshot\(\)[\s\S]*if \(!isCurrent\(\) \|\| snapshot === undefined\) return[\s\S]*rebaseAtCheckpoint\(checkpoint\.data\.nextCursor\)/,
+        `${path} must not skip a large reconnect gap when its replacement snapshot fails`
+      )
+    } else {
+      assert.match(source, /api\.game\.gameSubmissionBackfill\(numId/, path)
+      assert.match(source, /page < MAX_BACKFILL_PAGES/, path)
+      assert.match(source, /mergeSubmissionBuffer\(incoming, newSubmissions\.current, MAX_BUFFERED_SUBMISSIONS\)/, path)
+      assert.match(source, /ownerKey: gameStatus/, path)
+      assert.match(
+        source,
+        /monitorCursorPushIsCurrent\([\s\S]*?activeFeedScope\.current,[\s\S]*?cursorInitialized\.current,[\s\S]*?submissionCursor\.current,[\s\S]*?message\.cursor/,
+        path
+      )
+      assert.match(source, /monitorSnapshotIsCurrent\(/, path)
+      assert.match(source, /const \{ scope: viewerScope \} = useViewerIdentity\(\)/, path)
+      assert.match(source, /const feedScope = JSON\.stringify\(\[viewerScope, numId\]\)/, path)
+      assert.match(
+        source,
+        /const snapshotScope = JSON\.stringify\(\[feedScope, activePage, type, debouncedSearch\]\)/,
+        path
+      )
+      assert.match(source, /const submissionRequest = useRef\(new LatestRequest\(\)\)/, path)
+      assert.match(source, /const recoveryRequest = useRef\(new LatestRequest\(\)\)/, path)
+      assert.match(source, /currentMonitorSnapshotRows\(snapshotScope, submissionSnapshot\)/, path)
+      assert.match(
+        source,
+        /currentMonitorBufferRows\([\s\S]*?feedScope,[\s\S]*?bufferedFeedScope\.current,[\s\S]*?newSubmissions\.current[\s\S]*?\)/,
+        path
+      )
+      assert.match(
+        source,
+        /const loadSnapshot = useCallback[\s\S]*?\[activePage, type, debouncedSearch, numId, snapshotScope\]/,
+        path
+      )
+      assert.match(source, /submissionMatchesMonitorFilter\(item, type, debouncedSearch, locale\)/, path)
+      assert.match(
+        source,
+        /mergeSubmissionBuffer\(bufferedSubmissions, submissions \?\? \[\], MAX_BUFFERED_SUBMISSIONS\)/,
+        path
+      )
+      assert.match(source, /key=\{item\.id\}/, path)
+      const fallback = source.slice(
+        source.indexOf('// Cap recovery at ten pages'),
+        source.indexOf('const { waitForStop: waitForMonitorHubStop }')
+      )
+      assert.match(
+        fallback,
+        /const checkpoint = await api\.game\.gameSubmissionBackfill\(numId, \{\}, \{ signal \}\)[\s\S]*const snapshot = await loadSnapshot\(\)[\s\S]*if \(!isCurrent\(\) \|\| snapshot === undefined\) return[\s\S]*rebaseAtCheckpoint\(checkpoint\.data\.nextCursor\)/,
         `${path} must not skip a large reconnect gap when its replacement snapshot fails`
       )
     }
@@ -278,6 +329,87 @@ test('monitor Events ignores initialized pushes covered by its durable cursor', 
         hubs[0].emit('ReceivedGameEvent', event(9))
         hubs[0].emit('ReceivedGameEvent', event(10))
         hubs[0].emit('ReceivedGameEvent', event(11))
+        await settleHookLifecycle()
+      })
+      assert.equal(container.textContent, '11', 'only a commit newer than the initialized durable cursor is live')
+    })
+  } finally {
+    await act(async () => {
+      root.unmount()
+      await settleHookLifecycle()
+    })
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('monitor Submissions ignores initialized pushes covered by its durable cursor', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/games/1/monitor/submissions' })
+  const restoreDom = installTestDom(browser)
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  const submission = (cursor: number): MonitorSubmission => ({
+    id: cursor,
+    cursor,
+    time: cursor,
+    status: AnswerResult.Accepted,
+    answer: `submission-${cursor}`,
+  })
+
+  const Probe: FC = () => {
+    const activeScope = useRef('viewer:1/game:1')
+    const cursorInitialized = useRef(false)
+    const durableCursor = useRef(0)
+    const [visible, setVisible] = useState<MonitorSubmission[]>([])
+
+    useRecoveringHub({
+      active: true,
+      url: '/hub/monitor?game=1',
+      ownerKey: 'ongoing',
+      handlers: {
+        ReceivedSubmissions: (raw) => {
+          const message = raw as MonitorSubmission
+          if (
+            !monitorCursorPushIsCurrent(
+              activeScope.current,
+              'viewer:1/game:1',
+              false,
+              cursorInitialized.current,
+              durableCursor.current,
+              message.cursor
+            )
+          )
+            return
+          setVisible((current) => mergeSubmissionBuffer([message], current, 500))
+        },
+      },
+      revalidate: () => {
+        durableCursor.current = 10
+        cursorInitialized.current = true
+      },
+      pollingIntervalMs: 0,
+    })
+
+    return createElement('output', null, visible.map(({ cursor }) => cursor).join(','))
+  }
+
+  try {
+    await withFakeHookHubs(async (hubs) => {
+      await act(async () => {
+        root.render(createElement(Probe))
+        await settleHookLifecycle()
+      })
+      assert.equal(hubs.length, 1)
+
+      await act(async () => {
+        hubs[0].emit('ReceivedSubmissions', submission(9))
+        hubs[0].emit('ReceivedSubmissions', submission(10))
+        hubs[0].emit('ReceivedSubmissions', submission(11))
         await settleHookLifecycle()
       })
       assert.equal(container.textContent, '11', 'only a commit newer than the initialized durable cursor is live')
@@ -526,6 +658,74 @@ test('event pushes and reconnect pages merge in cursor order without duplicate i
   )
 })
 
+const monitorSubmission = (
+  id: number,
+  status: AnswerResult = AnswerResult.Accepted,
+  overrides: Partial<MonitorSubmission> = {}
+): MonitorSubmission => ({
+  id,
+  cursor: id,
+  time: id,
+  status,
+  answer: `submission-${id}`,
+  ...overrides,
+})
+
+test('submission pushes and reconnect pages merge in cursor order without duplicate identities', () => {
+  const merged = mergeSubmissionBuffer(
+    [
+      monitorSubmission(2, AnswerResult.Accepted, { cursor: 12 }),
+      monitorSubmission(1, AnswerResult.WrongAnswer, { cursor: 11 }),
+    ],
+    [
+      monitorSubmission(3, AnswerResult.Accepted, { cursor: 13 }),
+      monitorSubmission(2, AnswerResult.CheatDetected, { cursor: 12 }),
+    ],
+    2
+  )
+
+  assert.deepEqual(
+    merged.map(({ id, cursor }) => [id, cursor]),
+    [
+      [3, 13],
+      [2, 12],
+    ]
+  )
+  assert.equal(submissionMonitorIdentity(merged[1]), '2')
+})
+
+test('submission realtime rows remain deduplicated and capped through 5k sustained pushes', () => {
+  let buffered: MonitorSubmission[] = []
+  for (let cursor = 1; cursor <= 5_000; cursor += 1) {
+    buffered = mergeSubmissionBuffer([monitorSubmission(cursor)], buffered, 500)
+  }
+
+  assert.equal(buffered.length, 500)
+  assert.equal(new Set(buffered.map(({ id }) => id)).size, 500)
+  assert.deepEqual([buffered[0].cursor, buffered.at(-1)?.cursor], [5_000, 4_501])
+
+  buffered = mergeSubmissionBuffer(
+    [monitorSubmission(5_000, AnswerResult.Accepted, { answer: 'updated duplicate' })],
+    buffered,
+    500
+  )
+  assert.equal(buffered.length, 500)
+  assert.equal(buffered[0].answer, 'updated duplicate')
+})
+
+test('submission live rows apply the active result and normalized search filters', () => {
+  const accepted = monitorSubmission(1, AnswerResult.Accepted, {
+    answer: 'FLAG{accepted}',
+    team: 'Blue Team',
+    challenge: 'Warm Up',
+  })
+
+  assert.equal(submissionMatchesMonitorFilter(accepted, AnswerResult.Accepted, '  blue   team  ', 'en'), true)
+  assert.equal(submissionMatchesMonitorFilter(accepted, AnswerResult.WrongAnswer, 'blue team', 'en'), false)
+  assert.equal(submissionMatchesMonitorFilter(accepted, 'All', 'flag{accepted}', 'en'), true)
+  assert.equal(submissionMatchesMonitorFilter(accepted, 'All', 'red team', 'en'), false)
+})
+
 test('a delayed game-A snapshot and late game-A push cannot enter game B', () => {
   const gameAScope = JSON.stringify([1, 1, false, ''])
   const gameBScope = JSON.stringify([2, 1, false, ''])
@@ -556,6 +756,17 @@ test('a large-gap fallback rebases stale pages and preserves post-checkpoint pus
 
   assert.deepEqual(
     visible.map(({ cursor }) => cursor),
+    Array.from({ length: 31 }, (_, index) => 1501 - index)
+  )
+
+  const recoveredSubmissions = Array.from({ length: 500 }, (_, index) => monitorSubmission(501 + index))
+  const bufferedSubmissions = mergeSubmissionBuffer([monitorSubmission(1501)], recoveredSubmissions, 500)
+  const rebasedSubmissions = rebaseSubmissionBuffer(bufferedSubmissions, 1500)
+  const submissionSnapshot = Array.from({ length: 30 }, (_, index) => monitorSubmission(1500 - index))
+  const visibleSubmissions = mergeSubmissionBuffer(rebasedSubmissions, submissionSnapshot, 500)
+
+  assert.deepEqual(
+    visibleSubmissions.map(({ cursor }) => cursor),
     Array.from({ length: 31 }, (_, index) => 1501 - index)
   )
 })
@@ -707,10 +918,12 @@ test('each browser feed serializes stop and backfill across received, in-flight,
     label: (row) => row.values[0],
     restProjection: (row) => ({ ...row, time: Date.parse(String(row.time)) }),
   })
-  await runCase<Submission>({
+  await runCase<MonitorSubmission>({
     name: 'submissions',
     initial: {
-      time: hubTime(1_000),
+      id: 1,
+      cursor: 1,
+      time: 1_000,
       status: AnswerResult.WrongAnswer,
       answer: 'initial',
       user: 'one',
@@ -718,7 +931,9 @@ test('each browser feed serializes stop and backfill across received, in-flight,
       challenge: 'A',
     },
     received: {
-      time: hubTime(2_000),
+      id: 2,
+      cursor: 2,
+      time: 2_000,
       status: AnswerResult.Accepted,
       answer: 'received',
       user: 'two',
@@ -726,7 +941,9 @@ test('each browser feed serializes stop and backfill across received, in-flight,
       challenge: 'B',
     },
     inFlight: {
-      time: hubTime(3_000),
+      id: 3,
+      cursor: 3,
+      time: 3_000,
       status: AnswerResult.CheatDetected,
       answer: 'in-flight',
       user: 'three',
@@ -734,7 +951,9 @@ test('each browser feed serializes stop and backfill across received, in-flight,
       challenge: 'C',
     },
     postStop: {
-      time: hubTime(4_000),
+      id: 4,
+      cursor: 4,
+      time: 4_000,
       status: AnswerResult.NotFound,
       answer: 'post-stop',
       user: 'four',
@@ -742,7 +961,7 @@ test('each browser feed serializes stop and backfill across received, in-flight,
       challenge: 'D',
     },
     identity: submissionMonitorIdentity,
-    label: (row) => row.answer ?? '',
-    restProjection: (row) => ({ ...row, time: Date.parse(String(row.time)) }),
+    label: (row) => row.answer,
+    restProjection: (row) => ({ ...row }),
   })
 })
