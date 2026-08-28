@@ -9,7 +9,6 @@
 //! success so the React ClientApp stays functional — never a 4xx. Those are
 //! marked with `// TODO`.
 
-use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::header;
 use axum::response::Response;

@@ -751,7 +751,7 @@ fn monitored_git_workspace(cwd: Option<&Path>, args: &[&str]) -> Option<PathBuf>
 /// Check paid checkout bytes while the network process is still running. This
 /// includes `.git` object packs and stops at the first declared bound instead
 /// of completing an attacker-sized download and only then rejecting it.
-async fn checkout_usage_exceeds(root: &Path) -> AppResult<bool> {
+pub(super) async fn checkout_usage_exceeds(root: &Path) -> AppResult<bool> {
     if !tokio::fs::try_exists(root)
         .await
         .map_err(|error| AppError::internal(format!("git_sync: stat workspace: {error}")))?

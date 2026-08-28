@@ -17,7 +17,6 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 use crate::middlewares::rate_limiter::{limited, Policy};
-use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -37,7 +36,7 @@ use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::AdminUser;
 use crate::models::data::{
     api_token, build_record, config, division, game, game_challenge, game_manager, local_file,
-    participation, repo_binding, repo_binding_scan, team, user,
+    repo_binding, repo_binding_scan, team, user,
 };
 use crate::utils::crypto_utils::hash_password_async;
 use crate::utils::enums::{
