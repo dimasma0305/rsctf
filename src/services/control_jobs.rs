@@ -22,7 +22,19 @@ const MAX_SCOPE_BYTES: usize = 256;
 const MAX_INPUT_BYTES: usize = 16 * 1024;
 const MAX_RESULT_BYTES: usize = 64 * 1024;
 const MAX_ERROR_BYTES: usize = 4 * 1024;
+const TERMINAL_RETENTION_DAYS: i32 = 7;
+const MAX_PURGE_BATCH: i64 = 256;
 const ADMISSION_LOCK_KEY: i64 = 0x5253_4354_464A_4F42;
+
+const PURGE_TERMINAL_SQL: &str = r#"WITH expired AS (
+    SELECT id FROM "ControlPlaneJobs"
+     WHERE status IN (2, 3, 4)
+       AND finished_at_utc < clock_timestamp() - make_interval(days => $1)
+     ORDER BY finished_at_utc, id
+     FOR UPDATE SKIP LOCKED LIMIT $2
+)
+DELETE FROM "ControlPlaneJobs" job
+ USING expired WHERE job.id = expired.id"#;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlJobKind {
@@ -570,6 +582,20 @@ pub async fn wait_for_terminal(
         tokio::time::sleep(delay).await;
         delay = delay.saturating_mul(2).min(Duration::from_secs(2));
     }
+}
+
+/// Retain enough terminal history for ordinary lost-response recovery while
+/// bounding jobs, operation aliases, completed variant claims, and stale
+/// resource leases through their cascading ownership graph.
+pub async fn purge_terminal(pool: &sqlx::PgPool, limit: i64) -> AppResult<u64> {
+    let removed = sqlx::query(PURGE_TERMINAL_SQL)
+        .bind(TERMINAL_RETENTION_DAYS)
+        .bind(limit.clamp(1, MAX_PURGE_BATCH))
+        .execute(pool)
+        .await
+        .map_err(database_error)?
+        .rows_affected();
+    Ok(removed)
 }
 
 pub fn result_count(job: &ControlJobModel, key: &str) -> AppResult<usize> {
