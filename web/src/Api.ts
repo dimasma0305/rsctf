@@ -866,6 +866,11 @@ export interface TeamInfoModel {
   members?: TeamUserInfoModel[] | null;
 }
 
+export interface TeamInviteModel {
+  code: string;
+  revision: number;
+}
+
 /** Team member information */
 export interface TeamUserInfoModel {
   /**
@@ -11028,7 +11033,7 @@ export class Api<
      * @request GET:/api/team/{id}/invite
      */
     teamInviteCode: (id: number, params: RequestParams = {}) =>
-      this.request<string, RequestResponse>({
+      this.request<TeamInviteModel, RequestResponse>({
         path: `/api/team/${id}/invite`,
         method: "GET",
         format: "json",
@@ -11127,10 +11132,16 @@ export class Api<
      * @summary Update invitation token
      * @request PUT:/api/team/{id}/invite
      */
-    teamUpdateInviteToken: (id: number, params: RequestParams = {}) =>
-      this.request<string, RequestResponse>({
+    teamUpdateInviteToken: (
+      id: number,
+      data: { operationId: string; expectedRevision: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<TeamInviteModel, RequestResponse>({
         path: `/api/team/${id}/invite`,
         method: "PUT",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
