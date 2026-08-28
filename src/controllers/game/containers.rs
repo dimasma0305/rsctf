@@ -18,8 +18,8 @@ pub(crate) use image_repair::{prepare_queued_image, repair_missing_legacy_image}
 mod publication;
 pub(crate) use publication::refresh_shared_container_lease_locked;
 use publication::{
-    revoke_failed_team_container_publication, revoke_published_shared_container,
-    revoke_published_team_container,
+    publish_team_container_locked, revoke_published_shared_container,
+    revoke_published_team_container, TeamPublication,
 };
 mod operations;
 mod policy;
@@ -31,8 +31,8 @@ mod shared;
 pub(crate) use shared::get_or_create_shared_container_locked;
 mod workload_fence;
 use workload_fence::{
-    acquire_playable_publication_lock, acquire_shared_publication_lock,
-    load_playable_definition_snapshot, load_shared_definition_snapshot,
+    ensure_publication_definition_current, load_playable_definition_snapshot,
+    load_shared_definition_snapshot,
 };
 
 /// Immutable identity precondition for a player container lifecycle mutation.
@@ -42,12 +42,14 @@ pub struct ExpectedContainerQuery {
     pub expected_container_id: Uuid,
 }
 
-fn operation_id_from_headers(headers: &HeaderMap) -> Uuid {
-    headers
-        .get("x-rsctf-operation-id")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| Uuid::parse_str(value).ok())
-        .unwrap_or_else(Uuid::new_v4)
+fn operation_id_from_headers(headers: &HeaderMap) -> AppResult<Uuid> {
+    let Some(value) = headers.get("x-rsctf-operation-id") else {
+        return Ok(Uuid::new_v4());
+    };
+    let value = value
+        .to_str()
+        .map_err(|_| AppError::bad_request("Invalid container operation ID"))?;
+    Uuid::parse_str(value).map_err(|_| AppError::bad_request("Invalid container operation ID"))
 }
 
 /// `POST /api/game/{id}/container/{challengeId}` — provision a per-team dynamic
@@ -81,7 +83,7 @@ pub async fn create_container(
             "Container creation is not allowed for this challenge",
         ));
     }
-    let requested_operation_id = operation_id_from_headers(&headers);
+    let requested_operation_id = operation_id_from_headers(&headers)?;
     let shared = uses_shared_container(&challenge);
     let operation_scope = if shared {
         format!("shared-challenge:{cid}")
@@ -185,6 +187,7 @@ async fn perform_create_container(
             &st,
             &challenge,
             ctx.game.vpn_access_required,
+            Some(caller),
             operation.operation_id,
             operation.publication_id,
         )
@@ -216,7 +219,7 @@ async fn perform_create_container(
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("Game not found"))?;
-    let (challenge, workload, identity, publication_fence, legacy_image) =
+    let (challenge, workload, identity, _publication_fence, legacy_image) =
         load_playable_definition_snapshot(&st, id, cid).await?;
     let container_policy =
         crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
@@ -252,6 +255,9 @@ async fn perform_create_container(
                     )
                     .await?
                 {
+                    if c.id == operation.publication_id {
+                        return Ok(ContainerInfoModel::from(&c));
+                    }
                     return Err(AppError::bad_request(
                         "The container of this challenge already exists",
                     ));
@@ -390,134 +396,70 @@ async fn perform_create_container(
         }
     }
 
-    // If Save+rollout won while the worker was launching, this runtime was not
-    // visible to rollout's query. Destroy only this unpublished old generation
-    // and ask the caller to retry. Otherwise retain the fence through metadata
-    // publication, so a later rollout is guaranteed to discover the new row.
-    let definition_lock = match acquire_playable_publication_lock(
-        &st,
+    // Save/rollout and publication share this exact transaction and connection.
+    // No second pool checkout or ORM write is allowed while these fences live.
+    if let Err(error) = distributed
+        .acquire_additional(&crate::services::challenge_workloads::definition_lock_key(
+            id, cid,
+        ))
+        .await
+    {
+        distributed.rollback().await?;
+        if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
+            tracing::warn!(%backend_id, error = %destroy_error, "unpublished definition-lock container destroy failed");
+        }
+        return Err(AppError::internal(error.to_string()));
+    }
+    if let Err(error) = ensure_publication_definition_current(
+        distributed.transaction_mut(),
         id,
         cid,
-        &publication_fence,
+        &challenge,
         selected_static_flag.as_deref(),
     )
     .await
     {
-        Ok(lock) => lock,
+        distributed.rollback().await?;
+        if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
+            tracing::warn!(%backend_id, error = %destroy_error, "unpublished stale-definition container destroy failed");
+        }
+        return Err(error);
+    }
+    let existing_instance_id = existing.as_ref().map(|instance| instance.id);
+    let now = Utc::now();
+    let stop_at = now + chrono::Duration::minutes(i64::from(container_policy.default_lifetime));
+    let dynamic_flag =
+        (challenge.challenge_type == ChallengeType::DynamicContainer).then_some(flag.as_str());
+    let c = match publish_team_container_locked(
+        distributed.transaction_mut(),
+        TeamPublication {
+            container_id: container_uuid,
+            backend_id: &backend_id,
+            image: &identity,
+            is_proxy,
+            ip: &info.ip,
+            port: info.port,
+            participation_id: participation.id,
+            challenge_id: cid,
+            existing_instance_id,
+            dynamic_flag,
+            started_at: now,
+            expect_stop_at: stop_at,
+        },
+    )
+    .await
+    {
+        Ok(container) => container,
         Err(error) => {
-            distributed.release().await?;
+            distributed.rollback().await?;
             if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
-                tracing::warn!(%backend_id, error = %destroy_error, "unpublished stale-definition container destroy failed");
+                tracing::warn!(%backend_id, error = %destroy_error, "unpublished container destroy failed after database rejection");
             }
             return Err(error);
         }
     };
-    let mut created_flag_id = None;
-    let mut created_instance_id = None;
-    let existing_instance_id = existing.as_ref().map(|instance| instance.id);
-    let persisted: AppResult<(container::Model, chrono::DateTime<Utc>)> = async {
-        let now = Utc::now();
-        let stop_at = now + chrono::Duration::minutes(i64::from(container_policy.default_lifetime));
 
-        // Only a DynamicContainer needs a per-team FlagContext + an instance flag_id;
-        // static containers use the challenge's shared static flag row.
-        let dyn_flag_id = if challenge.challenge_type == ChallengeType::DynamicContainer {
-            let flag_row = flag_context::ActiveModel {
-                flag: Set(flag),
-                is_occupied: Set(true),
-                attachment_id: Set(None),
-                challenge_id: Set(Some(cid)),
-                exercise_id: Set(None),
-                ..Default::default()
-            }
-            .insert(&st.db)
-            .await?;
-            created_flag_id = Some(flag_row.id);
-            Some(flag_row.id)
-        } else {
-            None
-        };
-
-        let instance = match existing {
-            Some(inst) => inst,
-            None => {
-                let instance = game_instance::ActiveModel {
-                    challenge_id: Set(cid),
-                    participation_id: Set(participation.id),
-                    is_loaded: Set(true),
-                    last_container_operation: Set(now),
-                    flag_id: Set(dyn_flag_id),
-                    container_id: Set(None),
-                    ..Default::default()
-                }
-                .insert(&st.db)
-                .await?;
-                created_instance_id = Some(instance.id);
-                instance
-            }
-        };
-
-        let c = container::ActiveModel {
-            id: Set(container_uuid),
-            image: Set(identity),
-            container_id: Set(info.id),
-            status: Set(ContainerStatus::Running),
-            started_at: Set(now),
-            expect_stop_at: Set(stop_at),
-            is_proxy: Set(is_proxy),
-            ip: Set(info.ip),
-            port: Set(info.port),
-            public_ip: Set(None),
-            public_port: Set(None),
-            game_instance_id: Set(Some(instance.id)),
-            exercise_instance_id: Set(None),
-            ad_team_service_id: Set(None),
-        }
-        .insert(&st.db)
-        .await?;
-
-        let mut inst_am: game_instance::ActiveModel = instance.into();
-        inst_am.container_id = Set(Some(container_uuid));
-        inst_am.flag_id = Set(dyn_flag_id);
-        inst_am.is_loaded = Set(true);
-        inst_am.last_container_operation = Set(now);
-        inst_am.update(&st.db).await?;
-        Ok((c, now))
-    }
-    .await;
-    definition_lock.release().await?;
-
-    let (c, now) = match persisted {
-        Ok(value) => value,
-        Err(err) => {
-            distributed.release().await?;
-            if let Err(cleanup_error) = revoke_failed_team_container_publication(
-                &st,
-                &backend_id,
-                container_uuid,
-                created_instance_id.or(existing_instance_id),
-                created_instance_id,
-                created_flag_id,
-            )
-            .await
-            {
-                tracing::error!(
-                    %backend_id,
-                    %cleanup_error,
-                    "team container publication rollback failed; retaining durable owner for retry"
-                );
-                return Err(AppError::internal(format!(
-                    "{err}; container rollback failed: {cleanup_error}"
-                )));
-            }
-            return Err(err);
-        }
-    };
-
-    // Publication itself is not instantaneous. Re-check once more after every DB
-    // link exists: if a team/game/challenge teardown swept before those rows became
-    // visible, this request now owns enough information to revoke its own late publish.
-    let stale_error = match player_container_request_is_eligible(
+    let still_eligible = match player_container_request_is_eligible(
         distributed.transaction_mut(),
         caller,
         cid,
@@ -525,46 +467,35 @@ async fn perform_create_container(
     )
     .await
     {
-        Ok(true) => None,
-        Ok(false) => Some(AppError::Forbidden),
-        Err(error) => Some(error),
+        Ok(value) => value,
+        Err(error) => {
+            distributed.rollback().await?;
+            if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
+                tracing::warn!(%backend_id, error = %destroy_error, "unpublished container destroy failed after final authorization error");
+            }
+            return Err(error);
+        }
     };
-    if let Some(error) = stale_error {
-        distributed.release().await?;
-        let cleanup = match c.game_instance_id {
-            Some(instance_id) => {
-                revoke_published_team_container(
-                    &st,
-                    &backend_id,
-                    container_uuid,
-                    instance_id,
-                    created_instance_id,
-                    created_flag_id,
-                )
-                .await
-            }
-            None => {
-                tracing::warn!(
-                    backend_id = %backend_id,
-                    container_id = %container_uuid,
-                    "team container publication missing instance owner; using fallback cleanup"
-                );
-                revoke_failed_team_container_publication(
-                    &st,
-                    &backend_id,
-                    container_uuid,
-                    None,
-                    created_instance_id,
-                    created_flag_id,
-                )
-                .await
-            }
-        };
-        cleanup?;
-        return Err(error);
+    if !still_eligible {
+        distributed.rollback().await?;
+        if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
+            tracing::warn!(%backend_id, error = %destroy_error, "stale unpublished container destroy failed");
+        }
+        return Err(AppError::Forbidden);
     }
-
-    distributed.release().await?;
+    if let Err(commit_error) = distributed.release().await {
+        let recovered = container::Entity::find_by_id(container_uuid)
+            .one(&st.db)
+            .await?
+            .filter(|published| published.container_id == backend_id);
+        let Some(recovered) = recovered else {
+            if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
+                tracing::warn!(%backend_id, error = %destroy_error, "ambiguous unpublished container destroy failed");
+            }
+            return Err(AppError::internal(commit_error.to_string()));
+        };
+        return Ok(recovered.into());
+    }
 
     // Surface container activity on the monitor `/events` feed. RSCTF emits a
     // ContainerStart GameEvent with Values = [challengeId, challengeTitle]; the team is
@@ -620,7 +551,7 @@ pub async fn delete_container(
             "Container creation is not allowed for this challenge",
         ));
     }
-    let operation_id = operation_id_from_headers(&headers);
+    let operation_id = operation_id_from_headers(&headers)?;
     let scope = format!("participation:{}", ctx.participation.id);
     let operation = match operations::claim_delete(
         st.pg(),
@@ -777,7 +708,7 @@ pub async fn extend_container(
             "Container creation is not allowed for this challenge",
         ));
     }
-    let operation_id = operation_id_from_headers(&headers);
+    let operation_id = operation_id_from_headers(&headers)?;
     let scope = if shared {
         format!("shared-challenge:{cid}")
     } else {
@@ -804,8 +735,17 @@ pub async fn extend_container(
     };
     let owner_st = st.clone();
     let owner_user = user.clone();
+    let owner_operation = operation.clone();
     let owner = operations::spawn_owner(st.pg().clone(), operation, async move {
-        perform_extend_container(owner_st, owner_user, id, cid, query.expected_container_id).await
+        perform_extend_container(
+            owner_st,
+            owner_user,
+            id,
+            cid,
+            query.expected_container_id,
+            owner_operation,
+        )
+        .await
     });
     let model = operations::await_owner(owner).await?;
     Ok(RequestResponse::ok(model))
@@ -817,6 +757,7 @@ async fn perform_extend_container(
     id: i32,
     cid: i32,
     expected_container_id: Uuid,
+    operation: operations::ClaimedOperation,
 ) -> AppResult<ContainerInfoModel> {
     let ctx = context_info(&st, &user, id, true).await?;
     let caller = LiveParticipationIdentity {
@@ -860,41 +801,102 @@ async fn perform_extend_container(
             {
                 return Err(AppError::Forbidden);
             }
-            // The reaper uses the same lock and may have removed or refreshed this
-            // pointer while this request waited. Never extend a pre-lock snapshot.
-            let current_challenge = game_challenge::Entity::find_by_id(guard_challenge.id)
-                .one(&st.db)
-                .await?
-                .ok_or_else(|| AppError::not_found("Challenge not found"))?;
-            let sid = current_challenge
-                .shared_container_id
-                .ok_or_else(|| AppError::bad_request("No running container"))?;
+            // The reaper uses the same lock and may have replaced this pointer
+            // while this request waited. Read and update on the lock owner.
+            let sid = sqlx::query_scalar::<_, Option<Uuid>>(
+                r#"SELECT shared_container_id FROM "GameChallenges" WHERE id = $1"#,
+            )
+            .bind(guard_challenge.id)
+            .fetch_optional(&mut **distributed.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+            .ok_or_else(|| AppError::not_found("Challenge not found"))?
+            .ok_or_else(|| AppError::bad_request("No running container"))?;
             if sid != expected_container_id {
                 return Err(AppError::conflict(
                     "The challenge instance changed; refresh and retry.",
                 ));
             }
-            let shared = container::Entity::find_by_id(sid)
-                .one(&st.db)
-                .await?
-                .ok_or_else(|| AppError::bad_request("No running container"))?;
-            if shared.expect_stop_at - Utc::now()
+            let shared = sqlx::query_as::<
+                _,
+                (
+                    DateTime<Utc>,
+                    DateTime<Utc>,
+                    i16,
+                    bool,
+                    String,
+                    i32,
+                    Option<String>,
+                    Option<i32>,
+                ),
+            >(
+                r#"SELECT started_at, expect_stop_at, status, is_proxy, ip, port,
+                          public_ip, public_port
+                     FROM "Containers" WHERE id = $1"#,
+            )
+            .bind(sid)
+            .fetch_optional(&mut **distributed.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+            .ok_or_else(|| AppError::bad_request("No running container"))?;
+            if shared.1 - Utc::now()
                 > chrono::Duration::minutes(i64::from(container_policy.renewal_window))
             {
                 return Err(AppError::bad_request(
                     "The container is not yet eligible for extension",
                 ));
             }
-            let stop_at = shared.expect_stop_at
+            let stop_at = shared.1
                 + chrono::Duration::minutes(i64::from(container_policy.extension_duration));
-            let mut am: container::ActiveModel = shared.into();
-            am.expect_stop_at = Set(stop_at);
-            let shared = am.update(&st.db).await?;
-            Ok(ContainerInfoModel::from(&shared))
+            let stop_at: DateTime<Utc> = sqlx::query_scalar(
+                r#"UPDATE "Containers" SET expect_stop_at = $2
+                    WHERE id = $1 RETURNING expect_stop_at"#,
+            )
+            .bind(sid)
+            .bind(stop_at)
+            .fetch_one(&mut **distributed.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+            let status = match shared.2 {
+                value if value == ContainerStatus::Pending as i16 => ContainerStatus::Pending,
+                value if value == ContainerStatus::Running as i16 => ContainerStatus::Running,
+                value if value == ContainerStatus::Destroyed as i16 => ContainerStatus::Destroyed,
+                value => {
+                    return Err(AppError::internal(format!(
+                        "invalid container status {value}"
+                    )))
+                }
+            };
+            let entry = if shared.3 {
+                sid.to_string()
+            } else {
+                format!(
+                    "{}:{}",
+                    shared.6.as_deref().unwrap_or(&shared.4),
+                    shared.7.unwrap_or(shared.5)
+                )
+            };
+            Ok(ContainerInfoModel {
+                id: sid.to_string(),
+                status,
+                started_at: shared.0,
+                expect_stop_at: stop_at,
+                entry,
+            })
         }
         .await;
-        distributed.release().await?;
-        return result;
+        return match result {
+            Ok(response) => {
+                operations::complete_locked(distributed.transaction_mut(), &operation, &response)
+                    .await?;
+                distributed.release().await?;
+                Ok(response)
+            }
+            Err(error) => {
+                distributed.rollback().await?;
+                Err(error)
+            }
+        };
     }
 
     // A&D / KotH per-team services are engine-owned, not jeopardy containers — the
@@ -932,7 +934,7 @@ async fn perform_extend_container(
         // helper re-reads and checks the immutable link after acquisition, so a
         // delayed request for runtime A can never extend replacement B.
         let response = extend_expected_team_container_locked(
-            &st,
+            distributed.transaction_mut(),
             ctx.participation.id,
             cid,
             expected_container_id,
@@ -942,8 +944,32 @@ async fn perform_extend_container(
         Ok(response)
     }
     .await;
-    distributed.release().await?;
-    result
+    match result {
+        Ok(response) => {
+            operations::complete_locked(distributed.transaction_mut(), &operation, &response)
+                .await?;
+            distributed.release().await?;
+            Ok(response)
+        }
+        Err(error) => {
+            distributed.rollback().await?;
+            Err(error)
+        }
+    }
+}
+
+#[cfg(test)]
+mod operation_header_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_explicit_operation_identity_is_not_silently_replaced() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-rsctf-operation-id", "not-a-uuid".parse().unwrap());
+        assert!(operation_id_from_headers(&headers).is_err());
+        headers.remove("x-rsctf-operation-id");
+        assert!(operation_id_from_headers(&headers).is_ok());
+    }
 }
 
 #[cfg(test)]

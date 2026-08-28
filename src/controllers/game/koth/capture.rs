@@ -336,6 +336,7 @@ pub async fn ensure_koth_hills(st: &SharedState, game_id: i32) -> AppResult<u64>
                     st,
                     &c,
                     true,
+                    None,
                     uuid::Uuid::new_v4(),
                     uuid::Uuid::new_v4(),
                 )
