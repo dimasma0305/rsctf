@@ -136,6 +136,7 @@ mod m0113_koth_reporter_routing_revision;
 mod m0114_submission_feed_cursor;
 mod m0115_flag_egress_feed_cursor;
 mod m0116_game_event_feed_pending;
+mod m0144_worker_workload_quarantine;
 mod m0183_exercise_api_bounds;
 
 #[cfg(test)]
@@ -285,6 +286,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0114_submission_feed_cursor::Migration),
             Box::new(m0115_flag_egress_feed_cursor::Migration),
             Box::new(m0116_game_event_feed_pending::Migration),
+            Box::new(m0144_worker_workload_quarantine::Migration),
             Box::new(m0183_exercise_api_bounds::Migration),
         ]
     }
@@ -431,7 +433,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 15..],
+            &names[names.len() - 16..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -447,6 +449,7 @@ mod tests {
                 "m0114_submission_feed_cursor",
                 "m0115_flag_egress_feed_cursor",
                 "m0116_game_event_feed_pending",
+                "m0144_worker_workload_quarantine",
                 "m0183_exercise_api_bounds",
             ]
         );

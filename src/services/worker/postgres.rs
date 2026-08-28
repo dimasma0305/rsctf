@@ -538,7 +538,7 @@ fn store_error(error: WorkerStoreError) -> WorkerError {
 mod health_tests;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::BTreeMap;
 
     use chrono::{Duration as ChronoDuration, Utc};
@@ -552,14 +552,14 @@ mod tests {
     use super::health_tests::complete_capabilities;
     use super::*;
 
-    pub(super) struct AuthorityFixture {
+    pub(crate) struct AuthorityFixture {
         admin: PgPool,
-        pub(super) pool: PgPool,
+        pub(crate) pool: PgPool,
         schema: String,
     }
 
     impl AuthorityFixture {
-        pub(super) async fn create() -> Self {
+        pub(crate) async fn create() -> Self {
             let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
                 .expect("RSCTF_TEST_DATABASE_URL must point to PostgreSQL");
             let admin = PgPoolOptions::new()
@@ -639,6 +639,9 @@ mod tests {
                     observed_message TEXT NULL,
                     observed_at TIMESTAMPTZ NULL,
                     ready_at TIMESTAMPTZ NULL,
+                    reconcile_quarantine_generation BIGINT NULL,
+                    reconcile_quarantined_at TIMESTAMPTZ NULL,
+                    reconcile_quarantine_message TEXT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
                 );
@@ -659,7 +662,7 @@ mod tests {
             }
         }
 
-        pub(super) async fn insert_current_session(&self) -> SessionContext {
+        pub(crate) async fn insert_current_session(&self) -> SessionContext {
             let worker_id = Uuid::new_v4();
             let session_id = Uuid::new_v4();
             let boot_id = Uuid::new_v4();
@@ -698,7 +701,7 @@ mod tests {
             }
         }
 
-        pub(super) async fn destroy(self) {
+        pub(crate) async fn destroy(self) {
             self.pool.close().await;
             sqlx::query(&format!(r#"DROP SCHEMA "{}" CASCADE"#, self.schema))
                 .execute(&self.admin)
@@ -735,7 +738,7 @@ mod tests {
         })
     }
 
-    pub(super) fn spec() -> ValidatedWorkloadSpec {
+    pub(crate) fn spec() -> ValidatedWorkloadSpec {
         WorkloadSpec {
             game_kind: GameKind::Jeopardy,
             platform: Platform {
