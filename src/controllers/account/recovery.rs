@@ -315,6 +315,8 @@ pub async fn change_password(
 /// whether a matching user was found or the mail relay was even configured.
 pub async fn recovery(
     State(st): State<SharedState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(model): Json<RecoveryModel>,
 ) -> AppResult<MessageResponse> {
     // Captcha gate (RSCTF `AccountController.Recovery`: `if (UseCaptcha &&
@@ -340,6 +342,8 @@ pub async fn recovery(
     .await?;
 
     let response_started = tokio::time::Instant::now();
+    let operation_id = model.operation_id.unwrap_or_else(Uuid::now_v7);
+    let request_ip = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()));
     let norm_email = if model.email.len() <= MAX_EMAIL_BYTES {
         model.email.trim().to_uppercase()
     } else {
@@ -351,26 +355,15 @@ pub async fn recovery(
         .one(&st.db)
         .await?
     {
-        // Opaque single-use token. A per-user current-generation pointer makes a
-        // newer recovery request supersede every older outstanding link.
         let token = crate::utils::codec::random_token(32);
         let key = format!("pwreset:{token}");
         let current_key = reset_current_key(user.id);
-        invalidate_password_reset_tokens(&st, user.id).await;
         let ticket = PasswordResetTicket {
             user_id: user.id,
             security_stamp: user.security_stamp.clone().unwrap_or_default(),
         };
         let ticket = serde_json::to_vec(&ticket)
             .map_err(|e| AppError::internal(format!("password-reset ticket: {e}")))?;
-        st.cache.set(&key, &ticket, Some(RECOVERY_TTL)).await;
-        st.cache
-            .set(&current_key, token.as_bytes(), Some(RECOVERY_TTL))
-            .await;
-
-        // Build the link the SPA's /account/reset page consumes: the token verbatim
-        // plus the base64-encoded email (as RSCTF's GetEmailLink does). An optional
-        // RSCTF_PUBLIC_URL makes it absolute; otherwise it stays site-relative.
         let user_email = user
             .email
             .clone()
@@ -383,27 +376,65 @@ pub async fn recovery(
             "{base}/account/reset?token={token}&email={}",
             crate::utils::codec::base64_encode(user_email.as_bytes())
         );
+        let (subject, body) =
+            crate::services::mail::reset_password(&link, Some(st.config.global.title.as_str()));
 
-        // SMTP latency and audit insertion must not reveal whether the lookup hit.
-        // Token generation stays ordered on the request path, while delivery runs
-        // best-effort after the indistinguishable response has been produced.
-        let background = st.clone();
-        tokio::spawn(async move {
-            let (subject, body) = crate::services::mail::reset_password(
-                &link,
-                Some(background.config.global.title.as_str()),
-            );
-            let sender = crate::services::mail::MailSender::from_env();
-            let _ = sender.send(&user_email, &subject, &body).await;
-            crate::services::audit::info(
-                &background,
-                "AccountController",
-                None,
-                None,
-                format!("Password recovery email requested for {user_email}"),
-            )
-            .await;
-        });
+        // The database operation lock coalesces the same operation across
+        // replicas before its cache generation is changed. No SMTP work occurs
+        // here, and every failure retains the anonymous success response.
+        let mut transaction = match st.pg().begin().await {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                tracing::error!(%error, operation_id = %operation_id, "password-recovery mail transaction failed");
+                if let Some(remaining) =
+                    RECOVERY_RESPONSE_FLOOR.checked_sub(response_started.elapsed())
+                {
+                    tokio::time::sleep(remaining).await;
+                }
+                return Ok(MessageResponse::ok(
+                    "If that email is registered, a password reset link has been sent.",
+                ));
+            }
+        };
+        let outcome = crate::services::mail_outbox::enqueue_in_transaction(
+            &mut transaction,
+            crate::services::mail_outbox::MailIntent {
+                operation_id,
+                purpose: crate::services::mail_outbox::MailPurpose::PasswordRecovery,
+                account_id: user.id,
+                security_generation: user.security_stamp.as_deref().unwrap_or_default(),
+                destination: &user_email,
+                source: request_ip.as_deref(),
+                subject: &subject,
+                html_body: &body,
+            },
+        )
+        .await;
+        match outcome {
+            Ok(crate::services::mail_outbox::EnqueueOutcome::Inserted) => {
+                invalidate_password_reset_tokens(&st, user.id).await;
+                st.cache.set(&key, &ticket, Some(RECOVERY_TTL)).await;
+                st.cache
+                    .set(&current_key, token.as_bytes(), Some(RECOVERY_TTL))
+                    .await;
+                if let Err(error) = transaction.commit().await {
+                    st.cache.remove(&key).await;
+                    st.cache
+                        .compare_and_remove(&current_key, token.as_bytes())
+                        .await;
+                    tracing::error!(%error, operation_id = %operation_id, "password-recovery mail commit failed");
+                }
+            }
+            Ok(crate::services::mail_outbox::EnqueueOutcome::Replayed) => {
+                if let Err(error) = transaction.commit().await {
+                    tracing::error!(%error, operation_id = %operation_id, "password-recovery replay commit failed");
+                }
+            }
+            Err(error) => {
+                let _ = transaction.rollback().await;
+                tracing::warn!(%error, operation_id = %operation_id, "password-recovery mail intent was not admitted");
+            }
+        }
     }
 
     if let Some(remaining) = RECOVERY_RESPONSE_FLOOR.checked_sub(response_started.elapsed()) {
@@ -526,9 +557,13 @@ pub async fn password_reset(
 /// alone cannot redirect password-recovery mail and make a theft permanent.
 pub async fn change_email(
     State(st): State<SharedState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     user: CurrentUser,
     Json(model): Json<MailChangeModel>,
 ) -> AppResult<Response> {
+    let operation_id = model.operation_id.unwrap_or_else(Uuid::now_v7);
+    let request_ip = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()));
     let new_mail = model.new_mail.trim().to_lowercase();
     if new_mail.len() > MAX_EMAIL_BYTES || !new_mail.contains('@') {
         return Err(AppError::bad_request("Invalid email address"));
@@ -570,20 +605,9 @@ pub async fn change_email(
     let confirmation_required = email_confirmation_required(&st).await?;
     let mut refreshed_stamp = None;
     if confirmation_required {
-        let sender = crate::services::mail::MailSender::from_env();
-        if !sender.is_configured() {
-            return Err(AppError::bad_request(
-                "Email confirmation is required but SMTP is not configured",
-            ));
-        }
         let token = crate::utils::codec::random_token(32);
         let key = format!("emailchange:{token}");
         let current_key = format!("emailchange-current:{}", user.id);
-        if let Some(previous) = st.cache.get(&current_key).await {
-            if let Ok(previous) = std::str::from_utf8(&previous) {
-                st.cache.remove(&format!("emailchange:{previous}")).await;
-            }
-        }
         let ticket = EmailChangeTicket {
             user_id: user.id,
             new_email: new_mail.clone(),
@@ -610,12 +634,44 @@ pub async fn change_email(
             &link,
             Some(st.config.global.title.as_str()),
         );
-        if let Err(error) = sender.send(&new_mail, &subject, &body).await {
-            st.cache.remove(&key).await;
+        let mut transaction = st
+            .pg()
+            .begin()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        let outcome = crate::services::mail_outbox::enqueue_in_transaction(
+            &mut transaction,
+            crate::services::mail_outbox::MailIntent {
+                operation_id,
+                purpose: crate::services::mail_outbox::MailPurpose::EmailChange,
+                account_id: user.id,
+                security_generation: &expected_stamp,
+                destination: &new_mail,
+                source: request_ip.as_deref(),
+                subject: &subject,
+                html_body: &body,
+            },
+        )
+        .await?;
+        if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {
+            if let Some(previous) = st.cache.get(&current_key).await {
+                if let Ok(previous) = std::str::from_utf8(&previous) {
+                    st.cache.remove(&format!("emailchange:{previous}")).await;
+                }
+            }
+            st.cache.set(&key, &bytes, Some(RECOVERY_TTL)).await;
             st.cache
-                .compare_and_remove(&current_key, token.as_bytes())
+                .set(&current_key, token.as_bytes(), Some(RECOVERY_TTL))
                 .await;
-            return Err(error);
+        }
+        if let Err(error) = transaction.commit().await {
+            if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {
+                st.cache.remove(&key).await;
+                st.cache
+                    .compare_and_remove(&current_key, token.as_bytes())
+                    .await;
+            }
+            return Err(AppError::internal(error.to_string()));
         }
     } else {
         let new_stamp = Uuid::new_v4().to_string();

@@ -275,6 +275,8 @@ export type RegisterModel = ModelWithCaptcha & {
   fingerprintProof?: string | null;
   /** Deployment bootstrap secret, required only for the first administrator. */
   bootstrapToken?: string | null;
+  /** Stable identity retained through an ambiguous account/mail commit. */
+  operationId?: string | null;
 };
 
 export interface ModelWithCaptcha {
@@ -290,6 +292,8 @@ export type RecoveryModel = ModelWithCaptcha & {
    * @minLength 1
    */
   email: string;
+  /** Stable identity retained through an ambiguous account/mail commit. */
+  operationId?: string | null;
 };
 
 /** Account password reset */
@@ -410,6 +414,8 @@ export interface MailChangeModel {
   newMail: string;
   /** Current password used to re-authenticate this security-sensitive change. */
   password: string;
+  /** Stable identity retained through an ambiguous account/mail commit. */
+  operationId?: string | null;
 }
 
 /** Basic account information */

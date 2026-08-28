@@ -17,7 +17,7 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseTransaction, EntityTrait,
     PaginatorTrait, QueryFilter, Set,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::net::SocketAddr;
 use uuid::Uuid;
 
@@ -66,11 +66,16 @@ mod bootstrap;
 mod email_confirmation;
 mod profile_bounds;
 mod recovery;
+mod request_models;
 pub use avatar::avatar;
 pub use email_confirmation::verify;
 use profile_bounds::load_user;
 pub(crate) use profile_bounds::validate_profile_fields;
 pub use recovery::*;
+use request_models::EmailChangeTicket;
+pub use request_models::{
+    AccountVerifyModel, LoginModel, MailChangeModel, PasswordResetModel, RecoveryModel,
+};
 
 pub fn router() -> Router<SharedState> {
     Router::new()
@@ -108,82 +113,6 @@ pub fn router() -> Router<SharedState> {
         )
         .route("/api/account/update", put(update))
         .route("/api/account/verify", post(verify))
-}
-
-// ---------------------------------------------------------------------------
-// Local request DTOs not shared elsewhere (camelCase, tolerant).
-// ---------------------------------------------------------------------------
-
-/// `LoginModel` — credentials plus the optional browser fingerprint the SPA
-/// collects (see `Api.ts`). The shared request DTO omits `fingerprint`, so we
-/// deserialize into this tolerant local copy to capture it at login. Shadows
-/// the glob-imported `models::request::account::LoginModel` within this module.
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LoginModel {
-    #[serde(default)]
-    pub user_name: String,
-    #[serde(default)]
-    pub password: String,
-    #[serde(default)]
-    pub fingerprint: Option<String>,
-    #[serde(default)]
-    pub fingerprint_proof: Option<String>,
-    /// Captcha token (`ModelWithCaptcha.challenge`); verified only when the live
-    /// `AccountPolicy:UseCaptcha` is on. Absent/`null` on captcha-off deployments.
-    #[serde(default)]
-    pub challenge: Option<String>,
-}
-
-/// `MailChangeModel` — new email address.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MailChangeModel {
-    #[serde(default)]
-    pub new_mail: String,
-    /// Current password re-authentication. A session bearer alone is not enough
-    /// to redirect future recovery mail to a new address.
-    #[serde(default)]
-    pub password: String,
-}
-
-/// `AccountVerifyModel` — email-confirmation / mail-change token.
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountVerifyModel {
-    #[serde(default)]
-    pub token: String,
-    #[serde(default)]
-    pub email: String,
-}
-
-/// `PasswordResetModel` — reset password using an emailed token.
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PasswordResetModel {
-    #[serde(default)]
-    pub password: String,
-    #[serde(default)]
-    pub email: String,
-    #[serde(default)]
-    pub r_token: String,
-}
-
-/// `RecoveryModel` — request a password-recovery email.
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecoveryModel {
-    #[serde(default)]
-    pub email: String,
-    #[serde(default)]
-    pub challenge: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(super) struct EmailChangeTicket {
-    pub user_id: Uuid,
-    pub new_email: String,
-    pub security_stamp: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +189,8 @@ pub async fn register(
     headers: HeaderMap,
     Json(model): Json<RegisterModel>,
 ) -> AppResult<Response> {
+    let mail_operation_id = model.operation_id.unwrap_or_else(Uuid::now_v7);
+    let request_ip = anti_cheat::client_ip(&headers, Some(peer.ip()));
     // Fail fast before policy loading, captcha verification, and Argon2.
     let is_first_preflight = bootstrap::preflight(&st, model.bootstrap_token.as_deref()).await?;
     // Load the live AccountPolicy from the `Configs` key/value table so the
@@ -366,6 +297,8 @@ pub async fn register(
                                 security_stamp,
                             },
                             captcha_admission,
+                            mail_operation_id,
+                            request_ip.as_deref(),
                         )
                         .await?;
                         return Ok(
@@ -395,7 +328,7 @@ pub async fn register(
         model.fingerprint_proof.as_deref(),
     )
     .await?;
-    let current_ip = anti_cheat::client_ip(&headers, Some(peer.ip()));
+    let current_ip = request_ip;
 
     let now = Utc::now();
     let id = Uuid::now_v7();
@@ -535,10 +468,24 @@ pub async fn register(
             &norm_email,
             &security_stamp,
             database_now,
+            mail_operation_id,
         ))
     } else {
         None
     };
+    if let Some(token) = confirmation_token.as_deref() {
+        email_confirmation::enqueue_confirmation(
+            &st,
+            &mut txn,
+            mail_operation_id,
+            id,
+            &security_stamp,
+            &email,
+            token,
+            current_ip.as_deref(),
+        )
+        .await?;
+    }
     txn.commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -548,14 +495,6 @@ pub async fn register(
         // pair-scoped exemption applies to this same account on its next login.
         // No session and no successful identity observation are created.
         return Ok(MessageResponse::new(anti_cheat::block_message(), 403).into_response());
-    }
-
-    if let Some(token) = confirmation_token {
-        // The pending account and signed token state are already durable. SMTP
-        // runs without a database connection or global registration lock; a
-        // delivery failure is recoverable by repeating this authenticated
-        // registration request, which mints a fresh token.
-        email_confirmation::deliver_confirmation(&st, &email, &token).await?;
     }
 
     // The bootstrap admin is the sole exception. For every later account,

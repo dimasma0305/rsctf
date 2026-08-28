@@ -30,6 +30,7 @@ pub mod image_storage;
 pub mod k8s;
 pub(crate) mod live_roster;
 pub mod mail;
+pub mod mail_outbox;
 pub(crate) mod monitor_export;
 pub(crate) mod oauth_config;
 pub(crate) mod participation_evidence;
