@@ -84,6 +84,11 @@ pub struct AdminKothObserverModel {
     pub revision: i64,
     pub claim_source: String,
     pub configured: bool,
+    /// Whether this deployment injects a lifecycle-bound reporter into the
+    /// platform-managed target. The legacy external HMAC credential remains
+    /// available for compatible deployments.
+    #[serde(default)]
+    pub managed_target_reporting: bool,
     pub secret_hint: Option<String>,
     /// Frozen by the first accepted signed Leaderboard snapshot.
     pub objective_count: Option<i16>,
@@ -187,6 +192,7 @@ where
         revision: row.10,
         claim_source: row.0.unwrap_or_else(|| "Marker".to_string()),
         configured: row.9,
+        managed_target_reporting: false,
         secret_hint: row.1,
         objective_count: row.2,
         objective_ids: row.3,
@@ -244,9 +250,9 @@ pub async fn get_observer(
     Path((game_id, challenge_id)): Path<(i32, i32)>,
 ) -> AppResult<RequestResponse<AdminKothObserverModel>> {
     require_game_admin(&st, &user, game_id).await?;
-    Ok(RequestResponse::ok(
-        observer_model(st.pg(), game_id, challenge_id, None, None).await?,
-    ))
+    let mut model = observer_model(st.pg(), game_id, challenge_id, None, None).await?;
+    model.managed_target_reporting = st.config.koth_reporter_base_url.is_some();
+    Ok(RequestResponse::ok(model))
 }
 
 fn private_no_store(model: AdminKothObserverModel) -> Response {
@@ -730,7 +736,7 @@ async fn mutate_observer(
         request,
     )
     .await?;
-    let outcome = mutate_observer_locked(
+    let mut outcome = mutate_observer_locked(
         control.transaction_mut(),
         game_id,
         challenge_id,
@@ -739,6 +745,8 @@ async fn mutate_observer(
         &request,
     )
     .await?;
+
+    outcome.model.managed_target_reporting = st.config.koth_reporter_base_url.is_some();
     control
         .release()
         .await
@@ -811,7 +819,7 @@ pub async fn recover_observer_operation(
 ) -> AppResult<Response> {
     require_game_admin(&st, &user, game_id).await?;
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, game_id).await?;
-    let outcome = recover_observer_locked(
+    let mut outcome = recover_observer_locked(
         control.transaction_mut(),
         game_id,
         challenge_id,
@@ -819,6 +827,8 @@ pub async fn recover_observer_operation(
         operation_id,
     )
     .await?;
+
+    outcome.model.managed_target_reporting = st.config.koth_reporter_base_url.is_some();
     control
         .release()
         .await

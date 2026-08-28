@@ -19,7 +19,7 @@ fn ad_policy_is_default_deny_with_allowlisted_ingress() {
         control_namespace: Some("rsctf-system".to_string()),
         control_pod_label: ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
     };
-    let policy = network::ad_network_policy("test", &labels, None, 8080, false, &config);
+    let policy = network::ad_network_policy("test", &labels, None, 8080, false, None, &config);
     let spec = policy.spec.unwrap();
     assert_eq!(spec.egress, Some(Vec::new()));
     assert_eq!(spec.ingress.as_ref().map(Vec::len), Some(1));
@@ -46,7 +46,7 @@ fn ad_internet_egress_still_excludes_private_networks() {
         control_namespace: Some("rsctf-system".to_string()),
         control_pod_label: ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
     };
-    let policy = network::ad_network_policy("test", &labels, None, 8080, true, &config);
+    let policy = network::ad_network_policy("test", &labels, None, 8080, true, None, &config);
     let egress = policy.spec.unwrap().egress.unwrap();
     assert_eq!(egress.len(), 2);
     let internet_peers = egress[0].to.as_ref().unwrap();
@@ -57,6 +57,35 @@ fn ad_internet_egress_still_excludes_private_networks() {
         .as_ref()
         .unwrap()
         .contains(&"10.0.0.0/8".to_string()));
+    assert_eq!(egress[1].ports.as_ref().map(Vec::len), Some(2));
+}
+
+#[test]
+fn managed_koth_callback_allows_only_control_http_and_dns() {
+    let labels = BTreeMap::from([(APP_LABEL.to_string(), "rsctf-test".to_string())]);
+    let config = network::AdNetworkConfig {
+        service_cidr: "10.96.0.0/12".parse().unwrap(),
+        ingress_cidrs: vec!["10.244.1.0/24".parse().unwrap()],
+        control_namespace: Some("rsctf-system".to_string()),
+        control_pod_label: ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
+    };
+    let policy =
+        network::ad_network_policy("test", &labels, None, 8080, false, Some(8080), &config);
+    let egress = policy.spec.unwrap().egress.unwrap();
+    assert_eq!(egress.len(), 2);
+    assert_eq!(
+        egress[0].ports.as_ref().unwrap()[0].port,
+        Some(IntOrString::Int(8080))
+    );
+    let peer = &egress[0].to.as_ref().unwrap()[0];
+    assert_eq!(
+        peer.namespace_selector
+            .as_ref()
+            .and_then(|selector| selector.match_labels.as_ref())
+            .and_then(|labels| labels.get("kubernetes.io/metadata.name"))
+            .map(String::as_str),
+        Some("rsctf-system")
+    );
     assert_eq!(egress[1].ports.as_ref().map(Vec::len), Some(2));
 }
 

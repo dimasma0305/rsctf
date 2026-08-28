@@ -19,7 +19,7 @@ pub struct KothCapabilityAuthenticationRequest {
 #[serde(rename_all = "camelCase")]
 pub struct KothCapabilityIdentityModel {
     /// Challenge-local pseudonym. It is deliberately the capability digest so
-    /// the signed referee can map arena evidence without learning RSCTF IDs.
+    /// the managed reporter can map arena evidence without learning RSCTF IDs.
     team_id: String,
     team_name: String,
 }

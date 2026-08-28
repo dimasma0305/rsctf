@@ -81,6 +81,11 @@ benchmark_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
   --show-only templates/configmap.yaml)"
 assert_contains "$benchmark_config" 'RSCTF_AD_SUBMIT_BURST_FLAGS: "3200"' \
   "explicit A&D submit burst was not rendered"
+managed_koth_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
+  --set config.kothReporterBaseUrl=http://rsctf-control:8080 \
+  --show-only templates/configmap.yaml)"
+assert_contains "$managed_koth_config" 'RSCTF_KOTH_REPORTER_BASE_URL: "http://rsctf-control:8080"' \
+  "managed KotH reporter origin was not rendered"
 for invalid_burst in 99 3201; do
   if helm template rsctf charts/rsctf "${jwt[@]}" \
     --set config.adSubmitBurstFlags="$invalid_burst" >/dev/null 2>&1; then

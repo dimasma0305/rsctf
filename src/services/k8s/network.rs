@@ -175,6 +175,30 @@ fn control_pod_peer(namespace: String, label: (String, String)) -> NetworkPolicy
     }
 }
 
+fn dns_egress_rule() -> NetworkPolicyEgressRule {
+    let dns_peer = NetworkPolicyPeer {
+        namespace_selector: Some(LabelSelector {
+            match_labels: Some(BTreeMap::from([(
+                "kubernetes.io/metadata.name".to_string(),
+                "kube-system".to_string(),
+            )])),
+            ..Default::default()
+        }),
+        pod_selector: Some(LabelSelector {
+            match_labels: Some(BTreeMap::from([(
+                "k8s-app".to_string(),
+                "kube-dns".to_string(),
+            )])),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    NetworkPolicyEgressRule {
+        ports: Some(vec![network_port(53, "UDP"), network_port(53, "TCP")]),
+        to: Some(vec![dns_peer]),
+    }
+}
+
 fn internet_egress_rules(extra_private: &[IpNet]) -> Vec<NetworkPolicyEgressRule> {
     let mut v4_except = vec![
         "0.0.0.0/8".to_string(),
@@ -213,28 +237,7 @@ fn internet_egress_rules(extra_private: &[IpNet]) -> Vec<NetworkPolicyEgressRule
             ip_peer("::/0", Some(v6_except)),
         ]),
     };
-    let dns_peer = NetworkPolicyPeer {
-        namespace_selector: Some(LabelSelector {
-            match_labels: Some(BTreeMap::from([(
-                "kubernetes.io/metadata.name".to_string(),
-                "kube-system".to_string(),
-            )])),
-            ..Default::default()
-        }),
-        pod_selector: Some(LabelSelector {
-            match_labels: Some(BTreeMap::from([(
-                "k8s-app".to_string(),
-                "kube-dns".to_string(),
-            )])),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    let dns = NetworkPolicyEgressRule {
-        ports: Some(vec![network_port(53, "UDP"), network_port(53, "TCP")]),
-        to: Some(vec![dns_peer]),
-    };
-    vec![internet, dns]
+    vec![internet, dns_egress_rule()]
 }
 
 pub(super) fn ad_network_policy(
@@ -243,6 +246,7 @@ pub(super) fn ad_network_policy(
     owner_references: Option<Vec<OwnerReference>>,
     expose_port: i32,
     allow_egress: bool,
+    control_plane_callback_port: Option<i32>,
     config: &AdNetworkConfig,
 ) -> NetworkPolicy {
     let mut ingress_peers: Vec<NetworkPolicyPeer> = config
@@ -256,13 +260,31 @@ pub(super) fn ad_network_policy(
             config.control_pod_label.clone(),
         ));
     }
-    let egress = if allow_egress {
+    let mut egress = if allow_egress {
         let mut private = config.ingress_cidrs.clone();
         private.push(config.service_cidr);
         internet_egress_rules(&private)
     } else {
         Vec::new()
     };
+    if let (Some(port), Some(namespace)) = (
+        control_plane_callback_port,
+        config.control_namespace.as_ref(),
+    ) {
+        egress.insert(
+            0,
+            NetworkPolicyEgressRule {
+                ports: Some(vec![network_port(port, "TCP")]),
+                to: Some(vec![control_pod_peer(
+                    namespace.clone(),
+                    config.control_pod_label.clone(),
+                )]),
+            },
+        );
+        if !allow_egress {
+            egress.push(dns_egress_rule());
+        }
+    }
     NetworkPolicy {
         metadata: ObjectMeta {
             name: Some(name.to_string()),

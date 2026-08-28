@@ -14,7 +14,7 @@ The public [`dimasma0305/rsctf-challenges`](https://github.com/dimasma0305/rsctf
 | Hosted flag-file service | `AttackDefense` | Platform-managed raw TCP line service and `pwntools==4.15.0` checker; requires a complete Docker A&D staging setup |
 | Self-hosted flag-file service | `AttackDefense` | BYOC HTTP service and `httpx==0.28.1` checker reached through the outbound relay |
 | Claim marker | `KingOfTheHill` | Exclusive shared hill and `/koth/king` marker scoring |
-| Proof arena | `KingOfTheHill` | Concurrent API play with a separately deployed signed evidence referee |
+| Proof arena | `KingOfTheHill` | Concurrent API play with managed target evidence reporting |
 
 The event manifest is `.gzevent` at the challenge repository root. Challenges use
 the layout `challenges/AD/<category>/<challenge>/`,
@@ -81,7 +81,7 @@ generate/freeze variants before the event starts. The generator cannot create
 attachment files; it derives only the participant's content, hints, and
 server-side flag.
 
-Platform-hosted A&D also needs an isolated service network, scheduler, checker sandbox, accepted test teams, and optionally WireGuard. Self-hosted A&D builds the challenge service locally but sends it to each authorized team to run behind the BYOC relay; platform resource and egress settings do not constrain that team-owned container. The separately configured relay-agent image is still a platform dependency and must be mirrored when the deployment cannot pull from Docker Hub. The marker KotH sample requires backend exec access to read `/koth/king`. The separate proof arena uses a [signed API referee](./koth-api-observer), supports concurrent team scoring, and does not use marker-holder scoring. Both local checkers verify service health without changing scoring state. Preparing the sample Pwn and Web A&D checkers also requires outbound access from the scanning rsctf process to PyPI and its package file hosts; checker runtime egress remains restricted to the supplied challenge target.
+Platform-hosted A&D also needs an isolated service network, scheduler, checker sandbox, accepted test teams, and optionally WireGuard. Self-hosted A&D builds the challenge service locally but sends it to each authorized team to run behind the BYOC relay; platform resource and egress settings do not constrain that team-owned container. The separately configured relay-agent image is still a platform dependency and must be mirrored when the deployment cannot pull from Docker Hub. The marker KotH sample requires backend exec access to read `/koth/king`. The separate proof arena uses [managed target reporting](./koth-api-observer), supports concurrent team scoring, and does not use marker-holder scoring. Both local checkers verify service health without changing scoring state. Preparing the sample Pwn and Web A&D checkers also requires outbound access from the scanning rsctf process to PyPI and its package file hosts; checker runtime egress remains restricted to the supplied challenge target.
 
 ::: warning Dynamic Attachment is intentionally not runnable
 The current importer creates one challenge-level attachment and unassigned flag rows, but does not assign a per-team flag/attachment to the participation instance. It still imports successfully because it demonstrates the schema. Leave it disabled until that application gap is implemented and tested.

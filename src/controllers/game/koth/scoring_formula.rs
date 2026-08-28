@@ -43,7 +43,7 @@ pub struct KothEpochHillEvidence {
 
 /// Normalized evidence for one Leaderboard team, hill, and epoch.
 ///
-/// The signed referee submits integer evidence budgets. SQL aggregates their
+/// The managed target reporter submits integer evidence budgets. SQL aggregates their
 /// platform-calculated ratios and immutable Crown credits.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct KothApiEpochHillEvidence {

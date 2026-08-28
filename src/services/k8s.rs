@@ -359,6 +359,16 @@ impl ContainerManager for KubernetesContainerManager {
         } else {
             None
         };
+        if spec.control_plane_callback_port.is_some()
+            && ad_config
+                .as_ref()
+                .and_then(|config| config.control_namespace.as_ref())
+                .is_none()
+        {
+            return Err(AppError::internal(
+                "managed KotH reporting on Kubernetes requires RSCTF_K8S_CONTROL_NAMESPACE",
+            ));
+        }
 
         // Environment: caller-supplied vars plus the dynamic flag contract.
         let mut env: Vec<EnvVar> = spec
@@ -459,6 +469,7 @@ impl ContainerManager for KubernetesContainerManager {
                 None,
                 spec.expose_port,
                 spec.allow_egress,
+                spec.control_plane_callback_port,
                 config,
             ))
         } else if spec.proxy_only && isolated {

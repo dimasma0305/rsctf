@@ -258,6 +258,9 @@ probes:
 
 config:
   publicUrl: ""
+  # Internal origin reachable from managed KotH pods, normally the singleton
+  # control Service. Leave empty to disable lifecycle-bound target reporting.
+  kothReporterBaseUrl: ""
   cookieSecure: true
   trustedProxyCidrs: ""
   jwtTtlSeconds: 604800

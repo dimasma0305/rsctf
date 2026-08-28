@@ -137,6 +137,7 @@ services:
       # Private host bridge used only for PlatformProxy challenge ports.
       RSCTF_DOCKER_PROXY_BIND: "${RSCTF_DOCKER_PROXY_BIND:-172.23.254.1}"
       RSCTF_PUBLIC_URL: "https://${PUBLIC_ENTRY:-tcp.1pc.tf}"
+      RSCTF_KOTH_REPORTER_BASE_URL: "http://rsctf-koth-reporter:8080"
       RSCTF_STORAGE_ROOT: /data/files
       RSCTF_STORAGE_BACKEND: "${RSCTF_STORAGE_BACKEND:-local}"
       RSCTF_S3_BUCKET: "${RSCTF_S3_BUCKET:-}"
@@ -211,10 +212,12 @@ services:
     # default net (db/redis) + external `traefik` (routing) + `rsctf-ad` (the A&D
     # services network the WireGuard hub bridges VPN clients onto).
     networks:
-      - default
-      - traefik
-      - rsctf-ad
-      - challenge-proxy
+      default: {}
+      traefik: {}
+      rsctf-ad:
+        aliases:
+          - rsctf-koth-reporter
+      challenge-proxy: {}
     ports:
       # Local-only debug port; public access is via Traefik on https://<domain>.
       - "127.0.0.1:8080:8080"

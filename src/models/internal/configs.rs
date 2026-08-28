@@ -182,6 +182,10 @@ pub struct AppConfig {
     /// Canonical browser-facing base URL. When absent, request security derives
     /// the expected scheme from `cookie_secure` and the request Host header.
     pub public_url: Option<String>,
+    /// Internal rsctf origin injected into managed Leaderboard KotH targets.
+    /// It is deliberately separate from the browser origin so an isolated
+    /// challenge network never needs public Internet egress.
+    pub koth_reporter_base_url: Option<String>,
     pub storage_root: String,
     /// Optional short-lived object-store GET signature. `None` keeps the
     /// backwards-compatible RSCTF streaming path.
@@ -281,6 +285,9 @@ impl AppConfig {
             public_url: env::var("RSCTF_PUBLIC_URL")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
+            koth_reporter_base_url: env::var("RSCTF_KOTH_REPORTER_BASE_URL")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
             storage_root: env_or("RSCTF_STORAGE_ROOT", "./files"),
             asset_signed_url_ttl_secs,
             asset_signed_url_ttl_error,
@@ -315,6 +322,9 @@ impl AppConfig {
         }
         if let Some(public_url) = self.public_url.as_deref() {
             validate_public_url(public_url)?;
+        }
+        if let Some(base_url) = self.koth_reporter_base_url.as_deref() {
+            validate_koth_reporter_base_url(base_url)?;
         }
         Ok(())
     }
@@ -381,6 +391,21 @@ fn validate_public_url(value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_koth_reporter_base_url(value: &str) -> anyhow::Result<()> {
+    let uri = value.parse::<axum::http::Uri>().map_err(|_| {
+        anyhow::anyhow!("RSCTF_KOTH_REPORTER_BASE_URL must be an absolute HTTP(S) origin")
+    })?;
+    let authority = uri.authority().map(|value| value.as_str());
+    if !matches!(uri.scheme_str(), Some("http" | "https"))
+        || authority.is_none_or(|value| value.contains('@'))
+        || !matches!(uri.path(), "" | "/")
+        || uri.query().is_some()
+    {
+        anyhow::bail!("RSCTF_KOTH_REPORTER_BASE_URL must be an absolute HTTP(S) origin");
+    }
+    Ok(())
+}
+
 fn validate_development_bind(role: RuntimeRole, value: &str) -> anyhow::Result<()> {
     if role != RuntimeRole::Development {
         return Ok(());
@@ -437,7 +462,8 @@ impl Default for AppConfig {
 mod tests {
     use super::{
         parse_asset_signed_url_ttl, parse_jwt_ttl, validate_development_bind,
-        validate_identity_hash_key, validate_jwt_secret, validate_public_url, RuntimeRole,
+        validate_identity_hash_key, validate_jwt_secret, validate_koth_reporter_base_url,
+        validate_public_url, RuntimeRole,
     };
 
     #[test]
@@ -493,6 +519,16 @@ mod tests {
         assert!(validate_public_url("ctf.example").is_err());
         assert!(validate_public_url("javascript:alert(1)").is_err());
         assert!(validate_public_url("https://user@ctf.example").is_err());
+    }
+
+    #[test]
+    fn koth_reporter_url_is_an_internal_http_origin_without_a_path() {
+        assert!(validate_koth_reporter_base_url("http://rsctf-koth-reporter:8080").is_ok());
+        assert!(validate_koth_reporter_base_url("https://rsctf.internal/").is_ok());
+        assert!(validate_koth_reporter_base_url("rsctf.internal").is_err());
+        assert!(validate_koth_reporter_base_url("http://user@rsctf.internal").is_err());
+        assert!(validate_koth_reporter_base_url("http://rsctf.internal/api").is_err());
+        assert!(validate_koth_reporter_base_url("http://rsctf.internal/?target=other").is_err());
     }
 
     #[test]

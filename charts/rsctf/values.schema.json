@@ -326,9 +326,10 @@
     "config": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["publicUrl", "cookieSecure", "trustedProxyCidrs", "jwtTtlSeconds", "allowRegister", "allowPasswordRegistration", "emailConfirm", "adminConfirm", "activeOnRegister", "useCaptcha", "migrate", "logLevel", "provisioningConcurrency", "repoScanConcurrency", "dbMaxConnections", "checkerUidBase", "checkerProcessBudget", "adSubmitBurstFlags", "suspicionReconcileSeconds", "suspicionFinalizeGraceSeconds", "containerMaxMemoryMb", "containerMaxCpuCount"],
+      "required": ["publicUrl", "kothReporterBaseUrl", "cookieSecure", "trustedProxyCidrs", "jwtTtlSeconds", "allowRegister", "allowPasswordRegistration", "emailConfirm", "adminConfirm", "activeOnRegister", "useCaptcha", "migrate", "logLevel", "provisioningConcurrency", "repoScanConcurrency", "dbMaxConnections", "checkerUidBase", "checkerProcessBudget", "adSubmitBurstFlags", "suspicionReconcileSeconds", "suspicionFinalizeGraceSeconds", "containerMaxMemoryMb", "containerMaxCpuCount"],
       "properties": {
         "publicUrl": {"type": "string", "pattern": "^(|https?://[^[:space:]]+)$"},
+        "kothReporterBaseUrl": {"type": "string", "pattern": "^(|https?://[^[:space:]/?#@]+/?)$"},
         "cookieSecure": {"type": "boolean"},
         "trustedProxyCidrs": {"type": "string"},
         "jwtTtlSeconds": {"type": "integer", "minimum": 1},

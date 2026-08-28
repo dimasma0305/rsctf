@@ -496,6 +496,7 @@ pub async fn create_container(
             flag: Some(flag.clone()),
             ad_network: None,
             allow_egress: true,
+            control_plane_callback_port: None,
             network_mode: crate::utils::enums::NetworkMode::Open,
             operation_id: Some(format!("container:{cuuid}")),
         })

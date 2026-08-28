@@ -107,7 +107,7 @@ fn persistent_replacement_preserves_the_static_runtime_flag() {
         runtime_flag: Some("flag{sealed-runtime-value}".to_string()),
     };
 
-    let spec = replacement_container_spec(cycle.expected_image.clone(), &cycle, &hill);
+    let spec = replacement_container_spec(cycle.expected_image.clone(), &cycle, &hill, None);
 
     assert_eq!(spec.flag.as_deref(), Some("flag{sealed-runtime-value}"));
     assert_eq!(
@@ -117,6 +117,8 @@ fn persistent_replacement_preserves_the_static_runtime_flag() {
     assert_eq!(spec.expose_port, 8080);
     assert_eq!(spec.storage_limit, 1_024);
     assert_eq!(spec.network_mode, crate::utils::enums::NetworkMode::Open);
+    assert!(spec.env.is_empty());
+    assert_eq!(spec.control_plane_callback_port, None);
 }
 
 #[test]

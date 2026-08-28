@@ -68,6 +68,9 @@ data:
   {{- with .Values.config.publicUrl }}
   RSCTF_PUBLIC_URL: {{ . | quote }}
   {{- end }}
+  {{- with .Values.config.kothReporterBaseUrl }}
+  RSCTF_KOTH_REPORTER_BASE_URL: {{ . | quote }}
+  {{- end }}
   {{- if eq $localBackend "kubernetes" }}
   RSCTF_K8S_NAMESPACE: {{ include "rsctf.challengeNamespace" . | quote }}
   RSCTF_K8S_CHALLENGE_UID: {{ .Values.kubernetes.challengeUid | quote }}

@@ -254,6 +254,10 @@ pub struct ContainerSpec {
     /// rejects it because a shared external bridge cannot prevent east-west,
     /// private-network, or metadata access.
     pub allow_egress: bool,
+    /// Exact control-plane port a trusted platform-managed workload may call.
+    /// Kubernetes uses it to add one narrow egress rule; ordinary challenge
+    /// containers leave it unset.
+    pub control_plane_callback_port: Option<i32>,
     /// Author-selected network isolation for legacy container definitions.
     pub network_mode: NetworkMode,
     /// Stable lifecycle identity for crash-recoverable create operations. When
@@ -305,6 +309,7 @@ impl ContainerSpec {
             flag: Some(flag),
             ad_network: Some(crate::services::ad_vpn::services_network()),
             allow_egress,
+            control_plane_callback_port: None,
             network_mode: NetworkMode::Open,
             operation_id: None,
         }

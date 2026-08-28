@@ -640,7 +640,7 @@ const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
               <Text size="xs">
                 {t(
                   'game.content.scoreboard.koth.api.info_body',
-                  'Every finalized Leaderboard wave scores independently. RSCTF normalizes each completed team’s signed native result against the best result in that same wave, then applies one fixed curve. The referee submits evidence and one Crown assertion, never platform points.'
+                  'Every finalized Leaderboard wave scores independently. RSCTF normalizes each completed team’s native result against the best result in that same wave, then applies one fixed curve. The arena submits evidence and one Crown assertion, never platform points.'
                 )}
               </Text>
               <Text size="xs">

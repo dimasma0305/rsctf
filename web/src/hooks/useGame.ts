@@ -1011,6 +1011,8 @@ export interface AdminKothObserverModel {
   revision: number
   claimSource: 'Api' | 'Marker' | string
   configured: boolean
+  /** The platform injects a lifecycle-bound signing credential into the active target. */
+  managedTargetReporting: boolean
   secretHint: string | null
   /** Frozen by the first accepted signed Leaderboard snapshot. */
   objectiveCount: number | null

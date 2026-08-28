@@ -376,9 +376,23 @@ async fn create_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()>
         st.config.runtime_role,
         crate::services::challenge_images::shared_docker_daemon_acknowledged(),
     )?;
+    let reporter = crate::services::ad::koth_reporter::ensure_for_cycle(
+        st.pg(),
+        st.config.koth_reporter_base_url.as_deref(),
+        cycle.id,
+        cycle.game_id,
+        cycle.challenge_id,
+        cycle.reset_attempt,
+    )
+    .await?;
     let info = st
         .containers
-        .create(replacement_container_spec(image, cycle, &spec))
+        .create(replacement_container_spec(
+            image,
+            cycle,
+            &spec,
+            reporter.as_ref(),
+        ))
         .await?;
     if !replacement_endpoint_is_valid(&info) {
         if let Err(error) = st.containers.destroy(&info.id).await {
@@ -428,6 +442,7 @@ fn replacement_container_spec(
     image: String,
     cycle: &CycleRow,
     spec: &data::HillSpec,
+    reporter: Option<&crate::services::ad::koth_reporter::TargetReporterRuntime>,
 ) -> ContainerSpec {
     ContainerSpec {
         game_kind: rsctf_worker_protocol::GameKind::KingOfTheHill,
@@ -438,7 +453,9 @@ fn replacement_container_spec(
         expose_port: spec.expose_port,
         publish_port: true,
         proxy_only: false,
-        env: Vec::new(),
+        env: reporter
+            .map(|runtime| runtime.env.clone())
+            .unwrap_or_default(),
         // Initial shared-hill provisioning injects the selected static flag.
         // Persistent arena replacements must preserve that exact runtime
         // contract as well; some challenge supervisors derive their internal
@@ -446,6 +463,7 @@ fn replacement_container_spec(
         flag: Some(spec.runtime_flag.clone().unwrap_or_default()),
         ad_network: Some(crate::services::ad_vpn::services_network()),
         allow_egress: spec.allow_egress,
+        control_plane_callback_port: reporter.map(|runtime| runtime.callback_port),
         network_mode: crate::utils::enums::NetworkMode::Open,
         operation_id: Some(format!(
             "koth-cycle:{}:attempt:{}",

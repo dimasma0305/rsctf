@@ -1,6 +1,7 @@
-//! Signed, challenge-scoped Leaderboard referee.
+//! Signed, challenge-scoped Leaderboard evidence reporting.
 //!
-//! Referees report bounded evidence ratios, never points. The round checker is
+//! Managed targets (or legacy external reporters) submit bounded evidence
+//! ratios, never points. The round checker is
 //! the only component that can turn a stable, healthy snapshot into score.
 
 use axum::extract::{Path, State};
@@ -38,6 +39,7 @@ pub(super) struct ActiveObserverContext {
     pub(super) cycle_id: i64,
     pub(super) cycle_number: i32,
     pub(super) reset_attempt: i32,
+    pub(super) reporting_revision: i64,
     pub(super) container_id: String,
     pub(super) round_id: i32,
     pub(super) round_number: i32,
@@ -63,6 +65,7 @@ impl ActiveObserverContext {
             target_id: self.target_id,
             cycle_id: self.cycle_id,
             reset_attempt: self.reset_attempt,
+            reporting_revision: self.reporting_revision,
             container_id: &self.container_id,
             round_id: self.round_id,
             objective_schema_hash: self.objective_schema_hash.as_deref(),
@@ -94,7 +97,7 @@ pub struct KothObserverContextModel {
     cycle_number: i32,
     reset_attempt: i32,
     round_number: i32,
-    /// Kept as `cycleEndsAt` for existing referees; this is the event cutoff.
+    /// Kept as `cycleEndsAt` for existing reporters; this is the event cutoff.
     #[serde(with = "crate::utils::datetime::millis")]
     cycle_ends_at: DateTime<Utc>,
     #[serde(with = "crate::utils::datetime::millis")]
@@ -133,6 +136,7 @@ where
     sqlx::query_as::<_, ActiveObserverContext>(
         r#"SELECT target.id AS target_id, cycle.id AS cycle_id,
                   cycle.cycle_number, cycle.reset_attempt,
+                  COALESCE(revision.revision, 0)::bigint AS reporting_revision,
                   target.container_id AS container_id,
                   round.id AS round_id, round.number AS round_number,
                   game.start_time_utc AS game_starts_at,
@@ -158,6 +162,9 @@ where
              JOIN "KothApiObservers" observer
                ON observer.game_id = target.game_id
               AND observer.challenge_id = target.challenge_id
+        LEFT JOIN "KothApiObserverRevisions" revision
+               ON revision.game_id = target.game_id
+              AND revision.challenge_id = target.challenge_id
         LEFT JOIN "KothApiArenaSchemes" scheme
                ON scheme.game_id = target.game_id
               AND scheme.challenge_id = target.challenge_id
@@ -329,6 +336,7 @@ struct OpaqueContext<'a> {
     target_id: i32,
     cycle_id: i64,
     reset_attempt: i32,
+    reporting_revision: i64,
     container_id: &'a str,
     round_id: i32,
     objective_schema_hash: Option<&'a [u8]>,
@@ -342,6 +350,7 @@ fn opaque_context(context: OpaqueContext<'_>) -> String {
     digest.update(context.target_id.to_be_bytes());
     digest.update(context.cycle_id.to_be_bytes());
     digest.update(context.reset_attempt.to_be_bytes());
+    digest.update(context.reporting_revision.to_be_bytes());
     digest.update((context.container_id.len() as u64).to_be_bytes());
     digest.update(context.container_id.as_bytes());
     digest.update(context.round_id.to_be_bytes());
@@ -405,6 +414,7 @@ mod tests {
                        target_id,
                        cycle_id,
                        reset_attempt,
+                       reporting_revision,
                        container_id,
                        round_id,
                        objective_schema_hash,
@@ -415,6 +425,7 @@ mod tests {
                 target_id,
                 cycle_id,
                 reset_attempt,
+                reporting_revision,
                 container_id,
                 round_id,
                 objective_schema_hash,
@@ -422,35 +433,35 @@ mod tests {
             })
         };
         let tokens = vec!["token-a".to_string(), "token-b".to_string()];
-        let base = context(7, 9, 3, 41, 1, "container-a", 51, None, &tokens);
+        let base = context(7, 9, 3, 41, 1, 5, "container-a", 51, None, &tokens);
         assert_eq!(base.len(), 64);
         assert_ne!(
             base,
-            context(8, 9, 3, 41, 1, "container-a", 51, None, &tokens)
+            context(8, 9, 3, 41, 1, 5, "container-a", 51, None, &tokens)
         );
         assert_ne!(
             base,
-            context(7, 9, 4, 41, 1, "container-a", 51, None, &tokens)
+            context(7, 9, 4, 41, 1, 5, "container-a", 51, None, &tokens)
         );
         assert_ne!(
             base,
-            context(7, 9, 3, 42, 1, "container-a", 51, None, &tokens)
+            context(7, 9, 3, 42, 1, 5, "container-a", 51, None, &tokens)
         );
         assert_ne!(
             base,
-            context(7, 9, 3, 41, 2, "container-a", 51, None, &tokens)
+            context(7, 9, 3, 41, 2, 5, "container-a", 51, None, &tokens)
         );
         assert_ne!(
             base,
-            context(7, 9, 3, 41, 1, "container-b", 51, None, &tokens)
+            context(7, 9, 3, 41, 1, 6, "container-a", 51, None, &tokens)
         );
         assert_ne!(
             base,
-            context(7, 9, 3, 41, 1, "container-a", 52, None, &tokens)
+            context(7, 9, 3, 41, 1, 5, "container-b", 51, None, &tokens)
         );
         assert_ne!(
             base,
-            context(7, 9, 3, 41, 1, "container-a", 51, Some(&[1; 32]), &tokens)
+            context(7, 9, 3, 41, 1, 5, "container-a", 52, None, &tokens)
         );
         assert_ne!(
             base,
@@ -460,6 +471,22 @@ mod tests {
                 3,
                 41,
                 1,
+                5,
+                "container-a",
+                51,
+                Some(&[1; 32]),
+                &tokens
+            )
+        );
+        assert_ne!(
+            base,
+            context(
+                7,
+                9,
+                3,
+                41,
+                1,
+                5,
                 "container-a",
                 51,
                 None,
@@ -476,6 +503,7 @@ mod tests {
             cycle_id: 41,
             cycle_number: 1,
             reset_attempt: 0,
+            reporting_revision: 1,
             container_id: "runtime-a".to_string(),
             round_id: round_number,
             round_number,

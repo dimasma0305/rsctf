@@ -1,4 +1,4 @@
-# Signed Leaderboard KotH referee
+# Managed Leaderboard KotH reporting
 
 RSCTF has two constant King of the Hill scoring formats:
 
@@ -7,8 +7,10 @@ RSCTF has two constant King of the Hill scoring formats:
 - **Leaderboard KotH** is a concurrent application or protocol challenge.
   Every eligible team can produce evidence in the same finalized wave.
 
-Leaderboard KotH is not a dynamic-points webhook. A trusted referee submits
-bounded integer evidence, never team IDs, bearer capabilities, or points.
+Leaderboard KotH is not a dynamic-points webhook. By default, the
+platform-managed target reports bounded integer evidence from the code that
+owns the native gameplay truth. It never submits team IDs, bearer capabilities,
+or points.
 RSCTF owns normalization, zero treatment, the fixed formula, wave settlement,
 and the 0–100 ceiling. There is no organizer-selectable
 formula version.
@@ -16,7 +18,7 @@ formula version.
 ## Constant scoring rule
 
 For every challenge-native wave finalized inside the current RSCTF scoring
-round, the referee reports:
+round, the target reporter sends:
 
 - a stable wave ID and server-confirmed end time;
 - completed activity evidence `1 / 1` for each submitted team;
@@ -41,7 +43,7 @@ points in every wave. There is no separate winner award, shared-pool dilution,
 or growing streak multiplier. The epoch result is the mean of immutable wave
 results and remains in `[0, 100]`.
 
-The referee must assert exactly one Crown when a wave has one unique positive
+The reporter must assert exactly one Crown when a wave has one unique positive
 leader. The asserted team must have the best normalized result. On an exact
 top tie, assert no Crown: every tied team receives full relative-performance
 credit, but none receives the five-point premium. RSCTF rejects a Crown on a
@@ -66,36 +68,45 @@ snapshot voids the checker tick instead of carrying an earlier result forward.
 
 ## Trust and isolation boundary
 
-Run the referee as an independent trusted service. HMAC authenticates that a
-body came from that service and was not changed in transit; it does **not**
-prove that the measurements are honest. The referee must therefore be outside
-the player-controlled challenge workload and use a separate identity,
-filesystem, process/container boundary, and secret store.
+The authoritative arena is already trusted to measure native gameplay. rsctf
+therefore injects one lifecycle-bound HMAC credential into that exact managed
+target and lets it report its own immutable snapshot. HMAC authenticates the
+target and protects the body in transit; it does **not** prove that a compromised
+arena measured honestly.
+
+The credential is bound to the exact game, challenge, lifecycle cycle, reset
+attempt, target row, container identity, event window, and `Api` claim source.
+A target compromise can forge native evidence only for that target's remaining
+lifecycle. It cannot choose platform points, report for another hill, or keep
+using the credential after a reset.
 
 The recommended deployment has these properties:
 
-1. The player-facing arena cannot read the HMAC secret or referee state.
-2. The referee has read-only access to the smallest evidence feed it needs and
-   outbound access only to the arena and RSCTF.
-3. The arena cannot call the signed RSCTF endpoint directly.
+1. Reporter code reads an immutable in-memory snapshot from the component that
+   owns gameplay truth; there is no second private scoring feed.
+2. A child gameplay process receives a domain-separated loopback credential,
+   not any `RSCTF_KOTH_*` value, when a narrower supervisor can own reporting.
+3. The managed callback network allows only the target-to-rsctf port plus DNS.
 4. A team controls only work keyed by its KotH capability hash; it cannot spend
    another team's quota or an unbounded shared admission budget.
 5. The independent RSCTF functional checker is read-only and does not accept
-   the scoring feed as proof of health.
+   the reporting path as proof of health.
 
-Do not put the HMAC secret in the player image, player-visible environment,
-browser, logs, repository, or challenge backup. PostgreSQL backups contain the
-symmetric referee key and remain sensitive. Use HTTPS, synchronize the clock,
-restrict service identities and networks, and rotate the key after suspected
-disclosure.
+Do not put the reporter credential in a handout, browser, response, log,
+repository, Dockerfile, Compose file, child-process environment, or challenge
+backup. Do not persist it to disk. PostgreSQL backups contain symmetric
+credentials and remain sensitive. Use a private HTTP origin on an isolated
+network, or HTTPS where that boundary is not available.
 
 The arena should exchange a submitted KotH capability with RSCTF immediately,
-then retain only the returned lowercase SHA-256 pseudonym. The referee submits
+then retain only the returned lowercase SHA-256 pseudonym. The reporter submits
 that value as `tokenHash`. RSCTF resolves it against the current event
 capability for the exact game, hill, and official participation. The signed
 context separately binds the lifecycle record, runtime attempt, target,
-container, round, and objective schema. Raw capabilities never enter the
-signed body.
+container, round, reporting-configuration revision, and objective schema.
+Rotating, disabling, or re-enabling the compatibility credential therefore
+invalidates a target's previous deduplication fence. Raw capabilities never
+enter the signed body.
 
 The context response contains the current eligible hashes. Filter the
 untrusted arena feed against this set before constructing the snapshot. These
@@ -119,37 +130,37 @@ A fair Leaderboard challenge must satisfy all of the following:
 6. Bound request size, sessions, evidence retention, pagination, and
    rate-limit state. Key the team quota by capability identity, not source IP,
    so proxying or distributed addresses cannot consume extra team capacity.
-7. Isolate per-team work and reserve referee/checker capacity. One participant
+7. Isolate per-team work and reserve reporter/checker capacity. One participant
    must not be able to exhaust a global queue and manufacture field-wide voids.
 8. Expose an ordered evidence cursor. A retention gap fails closed and alerts
    an operator; it never produces a partial score snapshot.
-9. Keep the RSCTF functional checker independent of the referee and arena
+9. Keep the RSCTF functional checker independent of the reporter and arena
    scoring database.
 10. Rehearse at least one complete epoch at expected peak capacity, including
-    valid play, invalid traffic, referee restart, forced arena health recovery,
+    valid play, invalid traffic, reporter restart, forced arena health recovery,
     stale capabilities, replay, feed gaps, and one deliberately overloaded
     team.
 
-The bundled
-[`api-observed-hill`](https://github.com/dimasma0305/rsctf-challenges/tree/main/Koth/Web/api-observed-hill)
-demonstrates expiring one-use proof sessions, bounded evidence pagination,
-persistent referee state, capability-hash filtering, team-scoped admission,
-and two differently scaled objective channels.
+Keep reporter implementation beside the authoritative challenge state. A
+transport-only gateway is justified only when rsctf's exposed port cannot carry
+the player protocol; it receives no reporter credential or scoring state.
 
 ## Enable Leaderboard KotH
 
 1. Open the game's **A&D / KotH operations** page and select **KotH**.
 2. In the hill's **Claim input** column, choose **Enable Leaderboard**.
-3. Copy the referee secret. For 24 hours, an ambiguous mutation response can
-   recover the exact result only for that same authorized operation; the
-   operator UI performs that recovery before it permits another change.
-4. Keep scoring paused and provision the official persistent arena lifecycle.
-5. Configure the referee with the game ID, challenge ID, RSCTF origin, stable
-   arena URL, secret, and persistent state path.
-6. Fetch context and submit a preflight snapshot using the final ordered
-   `objectiveIds`. The first accepted snapshot freezes that schema.
+3. Confirm `RSCTF_KOTH_REPORTER_BASE_URL` is configured on the lifecycle-owning
+   rsctf role and resolves to a private rsctf origin from managed targets.
+4. Keep scoring paused and let rsctf create the official replacement target.
+   rsctf generates the credential before the crash-recoverable create and
+   injects the exact runtime contract below.
+5. Confirm the target stays healthy and that no player response or child
+   environment exposes an injected value.
+6. Fetch context and submit a preflight snapshot from the target using the
+   final ordered `objectiveIds`. The first accepted snapshot freezes that
+   schema.
 7. Fetch context again and confirm the returned IDs and schema hash match the
-   referee configuration.
+   reporter configuration.
 8. Exercise valid work, invalid traffic, omission, and restart behavior. Wait
    for checker evidence and verify submitted/recognized counts before resuming
    scoring.
@@ -164,12 +175,38 @@ scoring, rotate, submit fresh evidence, verify it, and resume. Leaderboard
 hills support at most 2,000 accepted teams, 64 waves per snapshot, and 2,000
 total team-wave rows; official start is rejected above the roster bound.
 
-Credential mutations carry an opaque `operationId` and the observer `revision`
-shown to the operator. A retry with that same authorized operation recovers the
-same result; a different operation against a stale revision is rejected. After
-an ambiguous response, recover the known operation before issuing another
-rotation or revocation. Results expire after 24 hours and are removed by bounded
-opportunistic cleanup.
+The optional legacy external credential mutation carries an opaque
+`operationId` and the stored configuration `revision` shown to the operator. A
+retry with that same authorized operation recovers the same result; a different
+operation against a stale revision is rejected. After an ambiguous response,
+recover the known operation before issuing another rotation or revocation.
+Results expire after 24 hours and are removed by bounded opportunistic cleanup.
+
+## Injected target contract
+
+When managed reporting is enabled, rsctf injects these values into the
+replacement target only:
+
+| Variable | Meaning |
+| --- | --- |
+| `RSCTF_KOTH_GAME_ID` | exact numeric game scope |
+| `RSCTF_KOTH_CHALLENGE_ID` | exact numeric challenge scope |
+| `RSCTF_KOTH_PLATFORM_URL` | private rsctf origin for capability exchange |
+| `RSCTF_KOTH_CONTEXT_URL` | exact active-context endpoint |
+| `RSCTF_KOTH_OBSERVATION_URL` | exact evidence-submission endpoint |
+| `RSCTF_KOTH_REPORTER_SECRET` | lifecycle-bound `koth_target_…` HMAC credential |
+
+The challenge must remain healthy when these variables are absent because the
+pre-cycle shared target is created before the operator selects Leaderboard
+scoring. Event-only admission may return a bounded unavailable response until
+the managed replacement is active. A retry of the same reset reuses the same
+credential; every new reset rotates it.
+
+Set `RSCTF_KOTH_REPORTER_BASE_URL` to an absolute HTTP(S) origin with no path,
+credentials, query, or fragment. Docker examples expose the control process on
+the private `rsctf-koth-reporter` alias. Kubernetes deployments should point it
+at the singleton control Service; the generated NetworkPolicy grants only that
+Service's backing pods and port.
 
 ## Wire contract
 
@@ -189,7 +226,7 @@ The token remains valid across rounds, epochs, and health recovery; an explicit
 player rotation invalidates the old value immediately and requires a new arena
 session.
 
-The organizer-controlled referee then fetches the current scoring fence:
+The managed target reporter then fetches the current scoring fence:
 
 ```http
 GET /api/v1/koth/games/{gameId}/challenges/{challengeId}/context
@@ -202,7 +239,7 @@ Example response after the objective schema is frozen:
   "apiVersion": "v1",
   "context": "64-lowercase-hex-characters",
   "cycleNumber": 4,
-  "resetAttempt": 0,
+  "resetAttempt": 1,
   "roundNumber": 17,
   "cycleEndsAt": 1785123970000,
   "waveWindowStartsAt": 1785123370000,
@@ -217,7 +254,7 @@ Example response after the objective schema is frozen:
 ```
 
 Before the first accepted snapshot, `objectiveIds` is empty and
-`objectiveSchemaHash` is `null`. The referee supplies the final schema in that
+`objectiveSchemaHash` is `null`. The reporter supplies the final schema in that
 first submission. Thereafter the context is bound to its hash. `context`
 changes with the scoring round, runtime/recovery identity, objective schema, or
 eligible capability set. A player token rotation therefore requires a fresh
@@ -269,7 +306,7 @@ cases.
 
 RSCTF closes each settlement window 20 seconds behind the live checker-round
 boundary. The checker waits for that cutoff before it acquires the hill lock,
-then allows the referee a bounded arrival period. From round two onward, the
+then allows the reporter a bounded arrival period. From round two onward, the
 next window starts at the previous cutoff, so the intervals are contiguous and
 no challenge-native wave end can fall into a gap. Use the published window
 fields exactly; do not derive them from the round number or local clock. The
@@ -285,7 +322,7 @@ normally will appear in several waves.
 Finalized waves are append-only within a context. Every later snapshot must
 preserve the already accepted wave prefix exactly after capability resolution,
 then may append newly finalized waves. Changing or removing an older wave is
-rejected; a referee must fail closed rather than revise history.
+rejected; a reporter must fail closed rather than revise history.
 
 Every evidence ratio must satisfy:
 
@@ -303,7 +340,7 @@ Compute the signature over the exact body bytes:
 
 ```text
 HMAC-SHA256(
-  key = referee secret UTF-8 bytes,
+  key = reporter secret UTF-8 bytes,
   message = timestamp + "." + gameId + "." + challengeId + "." + rawBody
 )
 ```
@@ -319,7 +356,7 @@ Example success:
 {
   "accepted": true,
   "cycleNumber": 4,
-  "resetAttempt": 0,
+  "resetAttempt": 1,
   "roundNumber": 17,
   "submittedWaves": 2,
   "submittedTeams": 2,
@@ -331,7 +368,7 @@ Example success:
 Require `submittedWaves` to equal the emitted wave count and
 `recognizedTeams === submittedTeams` after local filtering. Team counts are
 unique identities across all waves, not the number of team-wave rows. A
-mismatch means the capability window changed or the referee used an invalid
+mismatch means the capability window changed or the reporter used an invalid
 identity.
 
 | Status | Meaning |
@@ -353,18 +390,18 @@ import os
 import time
 import urllib.request
 
-ORIGIN = "https://ctf.example"
-GAME_ID = 7
-CHALLENGE_ID = 42
 OBJECTIVE_IDS = ["official-score"]
-SECRET = os.environ["RSCTF_KOTH_OBSERVER_SECRET"]
+GAME_ID = int(os.environ["RSCTF_KOTH_GAME_ID"])
+CHALLENGE_ID = int(os.environ["RSCTF_KOTH_CHALLENGE_ID"])
+CONTEXT_URL = os.environ["RSCTF_KOTH_CONTEXT_URL"]
+OBSERVATION_URL = os.environ["RSCTF_KOTH_OBSERVATION_URL"]
+SECRET = os.environ["RSCTF_KOTH_REPORTER_SECRET"]
 
-base = f"{ORIGIN}/api/v1/koth/games/{GAME_ID}/challenges/{CHALLENGE_ID}"
-with urllib.request.urlopen(f"{base}/context", timeout=5) as response:
+with urllib.request.urlopen(CONTEXT_URL, timeout=5) as response:
     model = json.load(response)
 
 if model["objectiveIds"] not in ([], OBJECTIVE_IDS):
-    raise RuntimeError("RSCTF objective schema does not match this referee")
+    raise RuntimeError("RSCTF objective schema does not match this reporter")
 
 eligible = set(model["eligibleTokenHashes"])
 waves = []
@@ -391,7 +428,7 @@ message = f"{timestamp}.{GAME_ID}.{CHALLENGE_ID}.".encode() + body
 signature = hmac.new(SECRET.encode(), message, hashlib.sha256).hexdigest()
 
 request = urllib.request.Request(
-    f"{base}/observations",
+    OBSERVATION_URL,
     data=body,
     method="POST",
     headers={
@@ -434,3 +471,12 @@ provisional capture confirmation, scheduled Crown reset, or champion cooldown.
 A snapshot must match the exact current round, lifecycle record, runtime
 attempt, target, container, and objective schema; after the arrival window,
 absence remains a field-wide void.
+
+## Legacy external compatibility
+
+The existing `koth_api_…` secret and endpoint contract remain available for
+deployments whose challenge cannot report from a managed target. The admin UI
+labels this value as a legacy fallback when managed reporting is configured.
+Store it in an independent service and apply the same evidence, replay, and
+acknowledgement checks. New challenge packages should use the lifecycle-bound
+target reporter unless a concrete platform constraint prevents it.
