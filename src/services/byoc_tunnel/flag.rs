@@ -10,7 +10,6 @@ use super::{TunnelHandle, STREAM_FLAG};
 /// The agent applies the same bound while reading a flag stream. Keeping one
 /// retained value per live/authorized relay endpoint therefore has a hard and
 /// small memory ceiling.
-pub(super) const MAX_FLAG_BYTES: usize = 4096;
 const FLAG_ACK: u8 = b'A';
 const FLAG_ACK_BYTES: usize = 9;
 /// Absolute fail-closed ceiling. Round publication applies its configured
@@ -58,10 +57,10 @@ impl FlagState {
         sequence: u64,
         value: &str,
     ) -> Result<FlagRetention, FlagRetentionError> {
-        let value = value.as_bytes();
-        if value.is_empty() || value.len() > MAX_FLAG_BYTES {
+        if crate::utils::flag_policy::validate_ad(value).is_err() {
             return Err(FlagRetentionError::InvalidValue);
         }
+        let value = value.as_bytes();
         if sequence == 0 {
             return Err(FlagRetentionError::InvalidSequence);
         }
@@ -159,33 +158,37 @@ mod tests {
 
     #[test]
     fn durable_retention_is_monotonic_bounded_and_idempotent() {
+        const FIRST: &str = "flag{AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA}";
+        const SECOND: &str = "flag{BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB}";
+        const FORGED: &str = "flag{CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC}";
+        const STALE: &str = "flag{DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD}";
         let mut state = FlagState::default();
         assert_eq!(state.retain(1, ""), Err(FlagRetentionError::InvalidValue));
         assert_eq!(
-            state.retain(1, &"x".repeat(MAX_FLAG_BYTES + 1)),
+            state.retain(1, &"x".repeat(crate::utils::flag_policy::AD_FLAG_BYTES + 1)),
             Err(FlagRetentionError::InvalidValue)
         );
         assert_eq!(
-            state.retain(0, "flag"),
+            state.retain(0, FIRST),
             Err(FlagRetentionError::InvalidSequence)
         );
 
-        let FlagRetention::Accepted(first) = state.retain(10, "flag-one").unwrap() else {
+        let FlagRetention::Accepted(first) = state.retain(10, FIRST).unwrap() else {
             panic!("first durable flag was not accepted")
         };
         assert_eq!(
-            state.retain(10, "flag-one"),
+            state.retain(10, FIRST),
             Ok(FlagRetention::Accepted(first.clone()))
         );
         assert_eq!(
-            state.retain(10, "forged"),
+            state.retain(10, FORGED),
             Err(FlagRetentionError::SequenceConflict)
         );
         assert_eq!(
-            state.retain(9, "stale"),
+            state.retain(9, STALE),
             Ok(FlagRetention::Stale(first.clone()))
         );
-        let FlagRetention::Accepted(second) = state.retain(42, "flag-two").unwrap() else {
+        let FlagRetention::Accepted(second) = state.retain(42, SECOND).unwrap() else {
             panic!("newer durable flag was not accepted")
         };
         assert_eq!(second.sequence, 42);

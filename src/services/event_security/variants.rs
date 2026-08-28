@@ -62,7 +62,8 @@ impl ChallengeVariantManifest {
         let content_bytes = self.content.as_ref().map_or(0, String::len);
         let hints = self.hints.as_deref().unwrap_or_default();
         let hint_bytes = hints.iter().map(String::len).sum::<usize>();
-        if !(8..=127).contains(&self.flag.len())
+        if self.flag.len() < 8
+            || crate::utils::flag_policy::validate_normal(&self.flag).is_err()
             || content_bytes > 64 * 1024
             || hints.len() > 32
             || hints.iter().any(|hint| hint.len() > 4 * 1024)

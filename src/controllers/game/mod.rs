@@ -15,6 +15,7 @@ pub mod koth;
 mod monitor_history;
 #[cfg(test)]
 mod monitor_history_tests;
+mod submit_flag_policy;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -52,9 +53,6 @@ use crate::utils::enums::{
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::flag_generator;
 use crate::utils::shared::{ArrayResponse, MessageResponse, PageParams, RequestResponse};
-
-/// RSCTF `Limits.MaxFlagLength`.
-pub(crate) const MAX_FLAG_LENGTH: usize = 127;
 
 // ---------------------------------------------------------------------------
 // DTOs (inline; camelCase on the wire to match RSCTF's JSON contract).

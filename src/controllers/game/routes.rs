@@ -119,7 +119,10 @@ fn router_with_domains(
             "/api/game/{id}/challenges/{challengeId}",
             // Only the POST (flag submit) carries the Submit policy, like RSCTF's
             // per-action [EnableRateLimiting]; the GET detail is unthrottled.
-            get(get_challenge).merge(limited(Policy::Submit, post(submit))),
+            get(get_challenge).merge(limited(
+                Policy::Submit,
+                post(submit).layer(DefaultBodyLimit::max(8 * 1024)),
+            )),
         )
         .route(
             "/api/game/{id}/challenges/{challengeId}/review",

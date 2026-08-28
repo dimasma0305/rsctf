@@ -274,6 +274,9 @@ async fn deliver_round_flag(
         .container_id
         .as_deref()
         .filter(|id| !id.trim().is_empty());
+    if let Some(outcome) = invalid_stored_flag_outcome(&planted, kind, container_id) {
+        return outcome;
+    }
     let attempted = match (planted.managed, container_id) {
         (true, Some(container_id)) => {
             deliver_managed_flag(
@@ -333,6 +336,30 @@ async fn deliver_round_flag(
             },
         )
     }
+}
+
+fn invalid_stored_flag_outcome(
+    planted: &crate::services::ad_engine::AdvancedRoundFlag,
+    kind: crate::services::ad_engine::FlagDeliveryKind,
+    container_id: Option<&str>,
+) -> Option<crate::services::ad_engine::FlagDeliveryOutcome> {
+    if crate::utils::flag_policy::validate_ad(&planted.flag).is_ok() {
+        return None;
+    }
+    tracing::warn!(
+        team_service_id = planted.team_service_id,
+        challenge_id = planted.challenge_id,
+        "invalid persisted A&D flag blocked before delivery"
+    );
+    Some(crate::services::ad_engine::FlagDeliveryOutcome::failed(
+        planted.team_service_id,
+        kind,
+        planted
+            .managed
+            .then(|| container_id.unwrap_or_default().to_string()),
+        0,
+        "stored round flag violates the canonical A&D format",
+    ))
 }
 
 async fn deliver_initial_round_flags<F, Fut>(

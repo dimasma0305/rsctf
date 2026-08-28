@@ -131,7 +131,10 @@ mod grading;
 use grading::{competition_scoring_started_locked, grading_fence_locked, GradingIntent};
 mod policy;
 pub use policy::ImportPolicy;
-use policy::{initialize_new_import_review, validate_pending_manifest, MAX_PENDING_MANIFEST_BYTES};
+use policy::{
+    initialize_new_import_review, validate_flag_definition, validate_pending_manifest,
+    MAX_PENDING_MANIFEST_BYTES,
+};
 #[cfg(test)]
 use policy::{MAX_PENDING_HINTS, MAX_PENDING_STATIC_FLAGS};
 mod provenance;
@@ -468,6 +471,11 @@ pub(super) async fn import_manifest_inner(
     };
     requested_static_flags.sort();
     requested_static_flags.dedup();
+    validate_flag_definition(
+        challenge_type,
+        flag_template.as_deref(),
+        &requested_static_flags,
+    )?;
     let disable_blood_bonus = disable_blood_bonus_or_default(model.disable_blood_bonus);
     let declared_checker_image = if uses_ad {
         ad.and_then(|a| a.checker_image.clone())

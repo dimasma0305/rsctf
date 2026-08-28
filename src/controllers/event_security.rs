@@ -53,6 +53,8 @@ async fn load_sensor_flag_patterns(
                   WHERE challenge.game_id = $1
                     AND challenge.is_enabled = TRUE AND challenge.review_status = 0
                     AND challenge."Type" NOT IN (4, 5)
+                    AND OCTET_LENGTH(flag.flag) BETWEEN 1 AND $3
+                    AND flag.flag !~ '(^[[:space:]])|([[:space:]]$)'
                  UNION ALL
                  SELECT variant.challenge_id, variant.participation_id,
                         variant.manifest->>'flag'
@@ -62,12 +64,15 @@ async fn load_sensor_flag_patterns(
                     AND challenge.game_id = $1
                     AND challenge.is_enabled = TRUE AND challenge.review_status = 0
                     AND jsonb_typeof(variant.manifest->'flag') = 'string'
+                    AND OCTET_LENGTH(variant.manifest->>'flag') BETWEEN 1 AND $3
+                    AND variant.manifest->>'flag' !~ '(^[[:space:]])|([[:space:]]$)'
              ) source
             ORDER BY source.challenge_id, source.owning_participation_id
             LIMIT $2"#,
     )
     .bind(game_id)
     .bind(i64::try_from(MAX_PATTERNS + 1).unwrap_or(i64::MAX))
+    .bind(i32::try_from(crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES).unwrap_or(127))
     .fetch_all(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;

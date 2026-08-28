@@ -428,16 +428,39 @@ pub async fn load_selected_static_flag(
     if challenge_type == ChallengeType::DynamicContainer {
         return Ok(None);
     }
-    sqlx::query_scalar::<_, String>(
-        r#"SELECT flag FROM "FlagContexts"
-            WHERE challenge_id = $1
-         ORDER BY id
-           LIMIT 1"#,
+    let (selected, has_invalid): (Option<String>, bool) = sqlx::query_as(
+        r#"SELECT (
+                   SELECT flag FROM "FlagContexts"
+                    WHERE challenge_id = $1
+                      AND OCTET_LENGTH(flag) BETWEEN 1 AND $2
+                      AND flag !~ '(^[[:space:]])|([[:space:]]$)'
+                    ORDER BY id
+                    LIMIT 1
+               ) AS selected,
+               EXISTS (
+                   SELECT 1 FROM "FlagContexts"
+                    WHERE challenge_id = $1
+                      AND NOT (
+                          OCTET_LENGTH(flag) BETWEEN 1 AND $2
+                          AND flag !~ '(^[[:space:]])|([[:space:]]$)'
+                      )
+               ) AS has_invalid"#,
     )
     .bind(challenge_id)
-    .fetch_optional(pool)
+    .bind(i32::try_from(crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES).unwrap_or(127))
+    .fetch_one(pool)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if has_invalid {
+        tracing::warn!(
+            challenge_id,
+            "invalid legacy static flag blocked at runtime"
+        );
+        return Err(AppError::unavailable(
+            "Challenge has an invalid flag definition; ask an administrator to repair it",
+        ));
+    }
+    Ok(selected)
 }
 
 fn ensure_selected_static_flag_unchanged(

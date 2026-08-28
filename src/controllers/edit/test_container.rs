@@ -169,10 +169,10 @@ pub async fn create_test_container(
     // runtime modes mirror their currently-selected static flag.
     let flag = if challenge.challenge_type == ChallengeType::DynamicContainer {
         let seed = sha256_str(&Uuid::new_v4().to_string());
-        Some(flag_generator::generate_flag(
+        Some(flag_generator::generate_flag_checked(
             challenge.flag_template.as_deref(),
             &seed,
-        ))
+        )?)
     } else {
         selected_static_flag.clone()
     };

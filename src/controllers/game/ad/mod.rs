@@ -24,7 +24,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::scoreboard_encoding;
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::Router;
@@ -75,7 +75,10 @@ fn common_router() -> Router<SharedState> {
             limited(Policy::CredentialMutation, post(generate_ssh_key)),
         )
         .route("/api/Game/{id}/Ad/State", get(state))
-        .route("/api/Game/{id}/Ad/Submit", post(submit))
+        .route(
+            "/api/Game/{id}/Ad/Submit",
+            post(submit).layer(DefaultBodyLimit::max(submit::AD_SUBMIT_BODY_BYTES)),
+        )
         .route("/api/Game/{id}/Ad/Targets", get(targets))
         // Lowercase alias the KotH panel calls (KothChallengePanel.tsx hits
         // `/api/game/{id}/ad/targets`; axum matches case-sensitively so the

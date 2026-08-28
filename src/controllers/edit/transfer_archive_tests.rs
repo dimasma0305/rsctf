@@ -140,6 +140,24 @@ fn archive_import_rejects_duplicate_ids_and_invalid_engine_weights() {
 }
 
 #[test]
+fn archive_import_rejects_impossible_flags_and_template_expansion() {
+    let mut challenge = valid_import_challenge(12);
+    challenge.flags.push(ExportFlagModel {
+        flag: "x".repeat(128),
+        attachment_type: None,
+        file_hash: None,
+        remote_url: None,
+        file_name: None,
+    });
+    assert!(validate_import_challenges(std::slice::from_ref(&challenge)).is_err());
+
+    challenge.flags.clear();
+    challenge.challenge_type = ChallengeType::DynamicContainer;
+    challenge.flag_template = Some(format!("flag{{{}}}", "[GUID]".repeat(4)));
+    assert!(validate_import_challenges(&[challenge]).is_err());
+}
+
+#[test]
 fn archive_import_preserves_supported_isolation_and_rejects_unsafe_modes() {
     let mut challenge = valid_import_challenge(10);
     challenge.challenge_type = ChallengeType::DynamicContainer;

@@ -257,7 +257,7 @@ pub async fn create_container(
     let flag = if challenge.challenge_type == ChallengeType::DynamicContainer {
         let salt = flag_generator::team_hash_salt(&game.private_key);
         let team_hash = flag_generator::team_challenge_hash(&salt, cid, &participation.token);
-        flag_generator::generate_flag(challenge.flag_template.as_deref(), &team_hash)
+        flag_generator::generate_flag_checked(challenge.flag_template.as_deref(), &team_hash)?
     } else {
         selected_static_flag.clone().unwrap_or_default()
     };

@@ -583,6 +583,21 @@ async fn validate_challenge(
         report.error(root, manifest, error.to_string());
     }
 
+    let flag_template = model
+        .container
+        .as_ref()
+        .and_then(|container| container.flag_template.as_deref())
+        .or(model.flag_template.as_deref())
+        .map(str::trim)
+        .filter(|template| !template.is_empty());
+    if challenge_type == ChallengeType::DynamicContainer {
+        if let Some(template) = flag_template {
+            if let Err(error) = crate::utils::flag_policy::validate_dynamic_template(template) {
+                report.error(root, manifest, error.to_string());
+            }
+        }
+    }
+
     let mut flags = BTreeSet::new();
     for flag in model.flags.as_deref().unwrap_or_default() {
         let flag = flag.trim();

@@ -30,12 +30,14 @@ pub(super) struct RollingFlagMatcher {
 }
 
 impl RollingFlagMatcher {
-    pub(super) fn new(flag: &[u8]) -> Self {
+    pub(super) fn new(flag: &[u8]) -> Option<Self> {
+        let flag = std::str::from_utf8(flag).ok()?;
+        crate::utils::flag_policy::validate_normal(flag).ok()?;
         let max_overlap = flag.len().saturating_sub(1);
-        Self {
+        Some(Self {
             overlap: Vec::with_capacity(max_overlap),
             max_overlap,
-        }
+        })
     }
 
     /// Returns whether `chunk` completes a flag wholly within this read or
@@ -90,21 +92,26 @@ pub(super) async fn build_egress_scan(
     game: &GameAccess,
     remote_ip: String,
 ) -> Option<EgressScan> {
+    // Filter at PostgreSQL so a malformed legacy value never crosses the wire
+    // or determines a per-session overlap allocation.
     let flag = sqlx::query_scalar::<_, String>(
         r#"SELECT flag.flag
              FROM "GameInstances" instance
              JOIN "FlagContexts" flag ON flag.id = instance.flag_id
             WHERE instance.participation_id = $1
               AND instance.challenge_id = $2
-              AND instance.container_id = $3"#,
+              AND instance.container_id = $3
+              AND OCTET_LENGTH(flag.flag) BETWEEN 1 AND $4
+              AND flag.flag !~ '(^[[:space:]])|([[:space:]]$)'"#,
     )
     .bind(game.owner_participation_id)
     .bind(game.challenge_id)
     .bind(access.container_id)
+    .bind(i32::try_from(crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES).unwrap_or(127))
     .fetch_optional(st.pg())
     .await
     .ok()??;
-    if flag.is_empty() {
+    if crate::utils::flag_policy::validate_normal(&flag).is_err() {
         return None;
     }
     Some(EgressScan {
@@ -142,7 +149,7 @@ mod tests {
     fn matches_a_flag_at_every_read_boundary() {
         let flag = b"flag{split-across-tcp-reads}";
         for split in 1..flag.len() {
-            let mut matcher = RollingFlagMatcher::new(flag);
+            let mut matcher = RollingFlagMatcher::new(flag).unwrap();
             assert!(!matcher.contains(flag, &flag[..split]));
             assert!(matcher.contains(flag, &flag[split..]), "split={split}");
         }
@@ -151,7 +158,7 @@ mod tests {
     #[test]
     fn matches_across_multiple_reads_and_keeps_only_bounded_overlap() {
         let flag = b"flag{three-reads}";
-        let mut matcher = RollingFlagMatcher::new(flag);
+        let mut matcher = RollingFlagMatcher::new(flag).unwrap();
         assert!(!matcher.contains(flag, b"noise-flag{"));
         assert!(!matcher.contains(flag, b"three-"));
         assert!(matcher.contains(flag, b"reads}-tail"));
@@ -161,5 +168,29 @@ mod tests {
             assert!(!matcher.contains(flag, b"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"));
             assert!(matcher.overlap.len() < flag.len());
         }
+    }
+    #[test]
+    fn matcher_rejects_invalid_lengths_before_reserving_overlap() {
+        assert!(RollingFlagMatcher::new(&[]).is_none());
+        assert!(RollingFlagMatcher::new(&vec![b'x'; 128]).is_none());
+        assert!(RollingFlagMatcher::new(b" flag{answer}").is_none());
+    }
+
+    #[test]
+    fn many_proxy_sessions_keep_a_fixed_per_session_overlap_bound() {
+        let flag = vec![b'x'; crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES];
+        let matchers: Vec<_> = (0..4_096)
+            .map(|_| RollingFlagMatcher::new(&flag).unwrap())
+            .collect();
+        assert!(matchers
+            .iter()
+            .all(|matcher| matcher.max_overlap < crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES));
+        assert_eq!(
+            matchers
+                .iter()
+                .map(|matcher| matcher.max_overlap)
+                .sum::<usize>(),
+            4_096 * (crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES - 1)
+        );
     }
 }

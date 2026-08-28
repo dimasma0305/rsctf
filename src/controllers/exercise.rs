@@ -132,13 +132,9 @@ pub struct FlagSubmit {
 }
 
 fn validated_exercise_answer(value: &str) -> AppResult<&str> {
-    if value.len() > crate::controllers::game::MAX_FLAG_LENGTH {
-        return Err(AppError::bad_request("Flag is too long"));
-    }
     let answer = value.trim();
-    if answer.is_empty() {
-        return Err(AppError::bad_request("A flag is required"));
-    }
+    crate::utils::flag_policy::validate_normal(answer)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
     Ok(answer)
 }
 
@@ -580,10 +576,10 @@ pub async fn create_container(
         }
     }
 
-    let flag = flag_generator::generate_flag(
+    let flag = flag_generator::generate_flag_checked(
         e.flag_template.as_deref(),
         &flag_generator::exercise_user_hash(st.config.identity_hash_key.as_bytes(), id, user.id),
-    );
+    )?;
     let game_kind = crate::services::container::game_kind_for_challenge(e.challenge_type);
     let platform_proxy =
         crate::controllers::admin::container_port_mapping(&st).await == "PlatformProxy";

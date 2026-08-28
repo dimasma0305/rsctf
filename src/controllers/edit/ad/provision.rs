@@ -339,7 +339,6 @@ pub(crate) async fn ensure_ad_containers(
     }
     let parts: Vec<participation::Model> = parts_query.all(&st.db).await?;
 
-    let salt = crate::utils::flag_generator::team_hash_salt(&game.private_key);
     let mut launched = 0;
     let mut failures = 0;
     let has_koth = game_challenge::Entity::find()
@@ -494,10 +493,15 @@ pub(crate) async fn ensure_ad_containers(
                     row.status = crate::utils::enums::AdCheckStatus::Offline as i16;
                 }
             }
-            let team_hash =
-                crate::utils::flag_generator::team_challenge_hash(&salt, c.id, &p.token);
-            let flag =
-                crate::utils::flag_generator::generate_flag(c.flag_template.as_deref(), &team_hash);
+            let flag = match crate::utils::flag_generator::generate_ad_flag() {
+                Ok(flag) => flag,
+                Err(error) => {
+                    tracing::error!(challenge = c.id, %error, "A&D warmup flag generation failed");
+                    failures += 1;
+                    distributed.release().await?;
+                    continue;
+                }
+            };
             let image = match crate::services::challenge_images::runtime_image(st, &c) {
                 Ok(image) => image,
                 Err(error) => {

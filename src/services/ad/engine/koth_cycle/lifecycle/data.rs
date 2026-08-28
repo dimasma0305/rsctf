@@ -91,6 +91,7 @@ pub(super) struct HillSpec {
     pub(super) allow_egress: bool,
     pub(super) checker_dir: Option<String>,
     pub(super) runtime_flag: Option<String>,
+    pub(super) runtime_flag_invalid: bool,
 }
 
 pub(super) fn snapshot_ids(snapshot: &serde_json::Value, object_key: &str) -> Vec<i32> {
@@ -198,8 +199,18 @@ pub(super) async fn load_hill_spec(st: &SharedState, cycle: &CycleRow) -> AppRes
                   (SELECT flag.flag
                      FROM "FlagContexts" flag
                     WHERE flag.challenge_id = challenge.id
+                      AND OCTET_LENGTH(flag.flag) BETWEEN 1 AND 127
+                      AND flag.flag !~ '(^[[:space:]])|([[:space:]]$)'
                     ORDER BY flag.id
-                    LIMIT 1) AS runtime_flag
+                    LIMIT 1) AS runtime_flag,
+                  EXISTS (
+                    SELECT 1 FROM "FlagContexts" flag
+                     WHERE flag.challenge_id = challenge.id
+                       AND NOT (
+                         OCTET_LENGTH(flag.flag) BETWEEN 1 AND 127
+                         AND flag.flag !~ '(^[[:space:]])|([[:space:]]$)'
+                       )
+                  ) AS runtime_flag_invalid
              FROM "GameChallenges" challenge
              JOIN "KothTargets" target
                ON target.game_id = challenge.game_id
@@ -223,6 +234,19 @@ pub(super) async fn load_hill_spec(st: &SharedState, cycle: &CycleRow) -> AppRes
         AppError::bad_request(
             "Managed KotH requires a platform-hosted hill with a configured image",
         )
+    })
+    .and_then(|spec| {
+        if spec.runtime_flag_invalid {
+            tracing::warn!(
+                game_id = cycle.game_id,
+                challenge_id = cycle.challenge_id,
+                "invalid legacy KotH flag blocked before workload delivery"
+            );
+            return Err(AppError::unavailable(
+                "The KotH flag is invalid; ask an administrator to repair it",
+            ));
+        }
+        Ok(spec)
     })
 }
 

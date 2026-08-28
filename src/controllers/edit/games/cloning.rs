@@ -203,6 +203,49 @@ pub async fn clone_game(
             "Source exceeds the clone limit of 500 challenges or 5000 flags",
         ));
     }
+    if model.include_challenges {
+        let definitions = sqlx::query_as::<_, (i32, i16, Option<String>)>(
+            r#"SELECT id, "Type", flag_template
+                 FROM "GameChallenges"
+                WHERE game_id = $1
+                ORDER BY id"#,
+        )
+        .bind(id)
+        .fetch_all(&mut **source_control.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        for (challenge_id, challenge_type, template) in definitions {
+            if challenge_type == ChallengeType::DynamicContainer as i16 {
+                if let Some(template) = template.as_deref() {
+                    crate::utils::flag_policy::validate_dynamic_template(template).map_err(
+                        |error| {
+                            AppError::conflict(format!(
+                                "Source challenge {challenge_id} has an invalid flag template: {error}"
+                            ))
+                        },
+                    )?;
+                }
+            }
+        }
+        let flags = sqlx::query_as::<_, (i32, String)>(
+            r#"SELECT challenge.id, flag.flag
+                 FROM "GameChallenges" challenge
+                 JOIN "FlagContexts" flag ON flag.challenge_id = challenge.id
+                WHERE challenge.game_id = $1
+                ORDER BY challenge.id, flag.id"#,
+        )
+        .bind(id)
+        .fetch_all(&mut **source_control.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        for (challenge_id, flag) in flags {
+            crate::utils::flag_policy::validate_normal(&flag).map_err(|error| {
+                AppError::conflict(format!(
+                    "Source challenge {challenge_id} has an invalid static flag: {error}"
+                ))
+            })?;
+        }
+    }
     let inserted = sqlx::query(
         r#"INSERT INTO "GameCloneOperations" (
                operation_id, source_game_id, requested_by, request_digest,
