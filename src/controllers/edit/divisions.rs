@@ -577,6 +577,22 @@ pub async fn update_division(
     .execute(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query(
+        r#"WITH expired AS (
+               SELECT division_id, operation_id
+                 FROM "DivisionUpdateOperations"
+                WHERE created_at_utc < clock_timestamp() - INTERVAL '30 days'
+                ORDER BY created_at_utc, division_id, operation_id
+                LIMIT 128
+           )
+           DELETE FROM "DivisionUpdateOperations" operation
+            USING expired
+            WHERE operation.division_id = expired.division_id
+              AND operation.operation_id = expired.operation_id"#,
+    )
+    .execute(&mut **control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     control
         .release()
         .await

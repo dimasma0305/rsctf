@@ -72,6 +72,26 @@ $$;
 const DOWN_SQL: &str = r#"
 DROP TABLE IF EXISTS "EventVpnOverrideOperations";
 DROP INDEX IF EXISTS ix_event_vpn_gate_overrides_active_complete;
+CREATE OR REPLACE FUNCTION guard_event_vpn_override_mutation()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'EventVpnGateOverrides cannot be deleted' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.id IS DISTINCT FROM NEW.id
+       OR OLD.game_id IS DISTINCT FROM NEW.game_id
+       OR OLD.created_by_user_id IS DISTINCT FROM NEW.created_by_user_id
+       OR OLD.reason IS DISTINCT FROM NEW.reason
+       OR OLD.created_at_utc IS DISTINCT FROM NEW.created_at_utc
+       OR OLD.expires_at_utc IS DISTINCT FROM NEW.expires_at_utc
+       OR OLD.revoked_at_utc IS NOT NULL
+       OR NEW.revoked_at_utc IS NULL
+    THEN
+        RAISE EXCEPTION 'EventVpnGateOverrides provenance is immutable' USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
+END;
+$$;
 ALTER TABLE "EventVpnGateOverrides"
     DROP COLUMN IF EXISTS revoke_policy_revision,
     DROP COLUMN IF EXISTS revoked_by_user_id,
@@ -96,12 +116,13 @@ impl MigrationTrait for Migration {
 
 #[cfg(test)]
 mod tests {
-    use super::UP_SQL;
+    use super::{DOWN_SQL, UP_SQL};
 
     #[test]
     fn operation_identity_and_active_listing_are_indexed() {
         assert!(UP_SQL.contains("PRIMARY KEY (game_id, operation_id)"));
         assert!(UP_SQL.contains("OCTET_LENGTH(request_digest) = 32"));
         assert!(UP_SQL.contains("WHERE revoked_at_utc IS NULL"));
+        assert!(!DOWN_SQL.contains("OLD.policy_revision"));
     }
 }
