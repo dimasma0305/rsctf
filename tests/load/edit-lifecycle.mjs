@@ -20,6 +20,7 @@ import {
   expectStatus,
   inspectUnchangedServerRuntimeIdentity,
   inspectUniformServerRuntimeIdentity,
+  multipartRequest,
   originalServerRuntimeLogTargets,
   persistRecovery,
   rawRequest,
@@ -583,15 +584,47 @@ async function prepareFutureFixture() {
   });
   context.divisionId = division.model.id;
 
-  const pendingArchive = challengeArchive([
+  const pendingApproveArchive = challengeArchive([
     { name: `Pending Approve ${runKey}`, flag: `flag{pending_approve_${runKey}}` },
+  ]);
+  const submittedApprove = await call('edit_challenge_submit', {
+    jwt: identities.ordinaryJwt,
+    form: {
+      filename: `${runKey}-pending-approve.zip`,
+      content: pendingApproveArchive,
+      contentType: 'application/zip',
+    },
+  });
+  requireCondition(
+    submittedApprove.model.imported === 1 && submittedApprove.model.failed === 0,
+    'first user submission did not create its pending challenge',
+  );
+  const pendingRejectArchive = challengeArchive([
     { name: `Pending Reject ${runKey}`, flag: `flag{pending_reject_${runKey}}` },
   ]);
-  const submitted = await call('edit_challenge_submit', {
-    jwt: identities.ordinaryJwt,
-    form: { filename: `${runKey}-pending.zip`, content: pendingArchive, contentType: 'application/zip' },
+  const submitOperation = operationById.get('edit_challenge_submit');
+  const submittedRejectResponse = await multipartRequest(
+    resolveEditOperationPath(submitOperation, context),
+    {
+      filename: `${runKey}-pending-reject.zip`,
+      content: pendingRejectArchive,
+      contentType: 'application/zip',
+      jwt: identities.ordinaryJwt,
+      ip: `10.254.${Math.floor(requestIndex / 240) % 240}.${(requestIndex++ % 240) + 1}`,
+      label: 'second single-manifest user challenge submission',
+      timeoutMs: 180_000,
+    },
+  );
+  const submittedReject = responseBody(submittedRejectResponse, submitOperation);
+  validateEditResponse(submitOperation, {
+    status: submittedRejectResponse.status,
+    body: submittedReject,
+    headers: submittedRejectResponse.headers,
   });
-  requireCondition(submitted.model.imported === 2 && submitted.model.failed === 0, 'user submission did not create two pending challenges');
+  requireCondition(
+    submittedReject.imported === 1 && submittedReject.failed === 0,
+    'second user submission did not create its pending challenge',
+  );
   context.pendingApproveId = Number(sql(
     `SELECT id FROM "GameChallenges" WHERE game_id=${context.gameId} ` +
       `AND title=${sqlLiteral(`Pending Approve ${runKey}`)} ORDER BY id DESC LIMIT 1`,

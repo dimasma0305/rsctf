@@ -348,6 +348,18 @@ test('the disposable orchestrator has one explicit positive call for every catal
   assert.equal(new Set(invoked).size, invoked.length, 'positive calls must not hide duplicate coverage');
 });
 
+test('pending challenge fixtures obey the one-manifest public submission boundary', () => {
+  const source = readFileSync(join(REPOSITORY, 'tests/load/edit-lifecycle.mjs'), 'utf8');
+  assert.match(source, /const pendingApproveArchive = challengeArchive\(\[\s*\{ name: `Pending Approve/);
+  assert.match(source, /const pendingRejectArchive = challengeArchive\(\[\s*\{ name: `Pending Reject/);
+  assert.match(source, /await call\('edit_challenge_submit'/);
+  assert.match(source, /await multipartRequest\([\s\S]*second single-manifest user challenge submission/);
+  assert.doesNotMatch(
+    source,
+    /challengeArchive\(\[[\s\S]{0,300}Pending Approve[\s\S]{0,300}Pending Reject/,
+  );
+});
+
 test('every manager-class positive uses the delegated manager token', () => {
   const source = readFileSync(join(REPOSITORY, 'tests/load/edit-lifecycle.mjs'), 'utf8');
   const calls = new Map(positiveCallExpressions(source).map((call) => [call.id, call.source]));
