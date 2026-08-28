@@ -14,6 +14,30 @@ fn enqueue_bounds_are_applied_before_postgres() {
     .is_err());
 }
 
+#[test]
+fn immutable_jobs_never_coalesce_different_revisions() {
+    for kind in [
+        ControlJobKind::ChallengeBuild,
+        ControlJobKind::BuildBatch,
+        ControlJobKind::VariantGeneration,
+        ControlJobKind::SecurityDerivation,
+        ControlJobKind::WorkloadRollout,
+    ] {
+        assert!(can_coalesce_active(kind, "same", "same"));
+        assert!(!can_coalesce_active(kind, "old", "new"));
+    }
+    assert!(can_coalesce_active(
+        ControlJobKind::AdReconcile,
+        "weaker",
+        "stronger"
+    ));
+    assert!(can_coalesce_active(
+        ControlJobKind::AdReset,
+        "player",
+        "operator"
+    ));
+}
+
 #[tokio::test]
 #[ignore = "requires migrated disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn postgres_coalesces_retries_and_recovers_one_expired_lease() {
