@@ -70,8 +70,8 @@ async fn admin_hub(
                 Err(status) => return status.into_response(),
             };
             let rx = game_id.map_or_else(
-                || st.events.subscribe_global(),
-                |id| st.events.subscribe_game(id),
+                || st.events.subscribe_global_targets(targets),
+                |id| st.events.subscribe_game_targets(id, targets),
             );
             let Some(connection_permit) =
                 admission::try_connection_permit(admission::client_key(&headers, peer.ip()), scope)

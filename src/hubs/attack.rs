@@ -19,6 +19,8 @@ use crate::hubs::{admission, signalr};
 use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::services::event_bus::EventReceiver;
 
+const ATTACK_TARGETS: &[&str] = &["ReceivedAttack"];
+
 pub fn router() -> Router<SharedState> {
     Router::new()
         .route(
@@ -54,13 +56,15 @@ async fn attack_hub(
     ) else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
-    let rx = st.events.subscribe_game(scope.game_id);
+    let rx = st
+        .events
+        .subscribe_game_targets(scope.game_id, ATTACK_TARGETS);
     signalr::bounded_upgrade(ws)
         .on_upgrade(move |s| {
             signalr::serve(
                 s,
                 rx,
-                &["ReceivedAttack"],
+                ATTACK_TARGETS,
                 Some(scope.game_id),
                 scope.authorization,
                 connection_permit,
@@ -92,7 +96,9 @@ async fn attack_ws(
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
 
-    let rx = st.events.subscribe_game(scope.game_id);
+    let rx = st
+        .events
+        .subscribe_game_targets(scope.game_id, ATTACK_TARGETS);
     signalr::bounded_upgrade(ws)
         .on_upgrade(move |s| {
             serve_raw(s, rx, scope.game_id, scope.authorization, connection_permit)

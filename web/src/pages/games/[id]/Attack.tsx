@@ -646,7 +646,8 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   let ws: WebSocket | null = null
   let wsRetry = 0,
     wsOpenedAt = 0,
-    reconnectTimer = 0 // single reconnect handle (never >1 pending) — don't accumulate in timers[]
+    reconnectTimer = 0,
+    wsConnectTimer = 0 // single reconnect/open-deadline owner; neither accumulates in timers[]
 
   const $ = (id: string): any => root.getElementById(id)
   const NS = 'http://www.w3.org/2000/svg'
@@ -1153,7 +1154,11 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   const syncLiveTransport = () => {
     if (liveTransportSuspended()) {
       liveCycleOwner?.suspend()
-      if (!navigator.onLine && ws) ws.close()
+      clearTimeout(reconnectTimer)
+      reconnectTimer = 0
+      clearTimeout(wsConnectTimer)
+      wsConnectTimer = 0
+      if (ws) ws.close()
       return
     }
     liveCycleOwner?.resume()
@@ -2652,8 +2657,20 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       return
     }
     ws = socket
+    wsConnectTimer = window.setTimeout(() => {
+      wsConnectTimer = 0
+      if (ws !== socket || socket.readyState !== WebSocket.CONNECTING) return
+      ws = null
+      wsRetry = Math.min(wsRetry + 1, 20)
+      try {
+        socket.close()
+      } catch {}
+      scheduleWsReconnect()
+    }, LIVE_REQUEST_TIMEOUT_MS)
     socket.onopen = () => {
       if (ws !== socket) return
+      clearTimeout(wsConnectTimer)
+      wsConnectTimer = 0
       wsOpenedAt = Date.now()
     }
     socket.onmessage = (m) => {
@@ -2671,6 +2688,8 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     }
     socket.onclose = () => {
       if (ws !== socket) return
+      clearTimeout(wsConnectTimer)
+      wsConnectTimer = 0
       ws = null
       const stable = wsOpenedAt > 0 && Date.now() - wsOpenedAt >= 30_000
       wsOpenedAt = 0
@@ -3288,6 +3307,8 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     deferredTimers.cancelAll()
     clearTimeout(evTimer)
     clearTimeout(reconnectTimer) // cancel any pending WS reconnect so connectWS can't fire after killed
+    clearTimeout(wsConnectTimer)
+    wsConnectTimer = 0
     liveCycleOwner?.stop()
     liveCycleOwner = null
     if (raf) cancelAnimationFrame(raf)

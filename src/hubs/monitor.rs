@@ -53,9 +53,10 @@ async fn monitor_hub(
                 },
                 None => None,
             };
+            const TARGETS: &[&str] = &["ReceivedGameEvent", "ReceivedSubmissions"];
             let rx = game_id.map_or_else(
-                || st.events.subscribe_global(),
-                |id| st.events.subscribe_game(id),
+                || st.events.subscribe_global_targets(TARGETS),
+                |id| st.events.subscribe_game_targets(id, TARGETS),
             );
             let Some(connection_permit) = admission::try_connection_permit(
                 admission::client_key(&headers, peer.ip()),
@@ -69,7 +70,7 @@ async fn monitor_hub(
                     signalr::serve(
                         s,
                         rx,
-                        &["ReceivedGameEvent", "ReceivedSubmissions"],
+                        TARGETS,
                         game_id,
                         Some(authorization),
                         connection_permit,

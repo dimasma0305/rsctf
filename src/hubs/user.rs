@@ -13,6 +13,8 @@ use crate::app_state::SharedState;
 use crate::hubs::{admission, signalr};
 use crate::middlewares::rate_limiter::{limited, Policy};
 
+const USER_TARGETS: &[&str] = &["ReceivedGameNotice", "ReceivedGameNoticeChanged"];
+
 pub fn router() -> Router<SharedState> {
     Router::new()
         .route(
@@ -42,13 +44,15 @@ async fn user_hub(
     ) else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
-    let rx = st.events.subscribe_game(scope.game_id);
+    let rx = st
+        .events
+        .subscribe_game_targets(scope.game_id, USER_TARGETS);
     signalr::bounded_upgrade(ws)
         .on_upgrade(move |s| {
             signalr::serve(
                 s,
                 rx,
-                &["ReceivedGameNotice", "ReceivedGameNoticeChanged"],
+                USER_TARGETS,
                 Some(scope.game_id),
                 scope.authorization,
                 connection_permit,

@@ -2,7 +2,10 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
-pub const MAX_NORMAL_NOTICE_BYTES: usize = 48 * 1024;
+/// Eight KiB remains below the 64-KiB SignalR text-frame ceiling even when
+/// every UTF-8 byte needs JSON's six-byte control-character escape. The same
+/// payload also remains comfortably below the distributed fanout envelope.
+pub const MAX_NORMAL_NOTICE_BYTES: usize = 8 * 1024;
 
 const NOTICE_EVENT_PUBLISH: i16 = 0;
 const NOTICE_EVENT_CHANGED: i16 = 1;
@@ -436,6 +439,21 @@ mod tests {
             validated_content(format!("{}é", "x".repeat(MAX_NORMAL_NOTICE_BYTES - 1))).is_err()
         );
         assert!(validated_content("   ".to_owned()).is_err());
+    }
+
+    #[test]
+    fn maximum_notice_fits_the_signalr_frame_after_worst_case_json_escaping() {
+        let notice = GameNoticeDetailModel {
+            id: i32::MAX,
+            notice_type: NoticeType::Normal,
+            values: serde_json::json!(["\u{1}".repeat(MAX_NORMAL_NOTICE_BYTES)]),
+            time: DateTime::<Utc>::MAX_UTC,
+        };
+        let payload = serde_json::to_string(&notice).unwrap();
+        let frame = format!(
+            "{{\"type\":1,\"target\":\"ReceivedGameNotice\",\"arguments\":[{payload}]}}\u{1e}"
+        );
+        assert!(frame.len() < 64 * 1024, "frame was {} bytes", frame.len());
     }
 
     #[test]

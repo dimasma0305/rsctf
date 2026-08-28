@@ -144,3 +144,7 @@ pub fn start_reconciler(
         }
     })
 }
+
+#[cfg(test)]
+#[path = "notice_delivery/tests.rs"]
+mod tests;

@@ -20,6 +20,7 @@ N=60  npm run byoc          # BYOC scale + request flood
       npm run ad-bearer-admission # A&D bearer admission and optional dependency outages
       npm run traffic-inventory # bounded capture-inventory pagination
       npm run read-only-websocket-flood # read-only feed inbound-abuse gate
+      npm run attack-arena # fixed-rate already-open public arena polling gate
       npm run control-plane-outage # acknowledged worker/missing-image recovery
       npm run monitor-history # fixed-rate bounded monitor history + durable backfills
       npm run participation-review # fixed-rate bounded 12k-team organizer review
@@ -74,6 +75,22 @@ policy/frame-size close, and probes exact `healthz` on an independent arrival la
 READONLY_WS_FLOOD_ACK=1 WEBSOCKET_GAME=92001 RATE=20 DURATION=30s \
   SUMMARY_JSON=/tmp/read-only-websocket-flood.json npm run read-only-websocket-flood
 ```
+
+The public arena gate issues only the exact four canonical live-arena reads:
+
+```sh
+ATTACK_ARENA_LOAD_ACK=1 GAME=7 RATE=80 VUS=120 DURATION=60s \
+  SUMMARY_JSON=/tmp/attack-arena.json npm run attack-arena
+```
+
+`attack-arena` treats each arrival as one already-open spectator's 15-second
+completion-scheduled refresh. The default 80 cycles/second therefore models
+roughly 1,200 visible spectators without synchronizing their requests. Use a
+live public non-Event-VPN game. The acceptance baseline is zero 404/5xx and
+dropped iterations, under 0.1% 429, an exact responsive `healthz`, and p95 below
+the checked thresholds. Compare `SUMMARY_JSON` distributions and host/container
+CPU and RAM from the same held rate before making an optimization claim.
+For a remote target, set `ALLOW_REMOTE_ATTACK_ARENA_LOAD` to its exact origin.
 
 The A&D bearer gate requires one current token and one fixed-shape token whose digest
 is absent. It covers current, revoked, rotating-random, one-NAT, many-source, and

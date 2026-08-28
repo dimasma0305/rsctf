@@ -103,6 +103,36 @@ test('arena polling aborts and stays idle while suspended, then resumes once', a
   owner.stop()
 })
 
+test('stopping an arena owner aborts its only request and never schedules recovery', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  let calls = 0
+  let aborts = 0
+  const owner = new CompletionScheduledArenaCycle((signal) => {
+    calls += 1
+    return new Promise<{ success: boolean }>((_resolve, reject) => {
+      signal.addEventListener(
+        'abort',
+        () => {
+          aborts += 1
+          reject(new DOMException('aborted', 'AbortError'))
+        },
+        { once: true }
+      )
+    })
+  }, options)
+
+  owner.start()
+  context.mock.timers.tick(0)
+  await settle()
+  owner.stop()
+  await settle()
+  context.mock.timers.tick(120_000)
+  await settle()
+
+  assert.equal(calls, 1)
+  assert.equal(aborts, 1)
+})
+
 test('arena polling honors Retry-After before retrying a failed cycle', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] })
   let calls = 0

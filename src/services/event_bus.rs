@@ -8,11 +8,10 @@
 //! outage may be dropped.
 
 use std::collections::{HashSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dashmap::DashMap;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
@@ -20,7 +19,14 @@ use uuid::Uuid;
 
 use crate::app_state::HubEvent;
 
-const LOCAL_QUEUE_CAPACITY: usize = 512;
+#[path = "event_bus/local.rs"]
+mod local;
+
+pub use local::EventReceiver;
+use local::LocalFanout;
+#[cfg(test)]
+use local::LOCAL_QUEUE_CAPACITY;
+
 const OUTBOUND_QUEUE_CAPACITY: usize = 512;
 const DEDUP_CAPACITY: usize = 4_096;
 const MAX_WIRE_BYTES: usize = 256 * 1024;
@@ -30,6 +36,20 @@ const REDIS_RETRY_MIN: Duration = Duration::from_secs(1);
 const REDIS_RETRY_MAX: Duration = Duration::from_secs(10);
 const RESYNC_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const RESYNC_TARGET: &str = "InternalFeedResyncRequired";
+const KNOWN_TARGETS: &[&str] = &[
+    "ReceivedAttack",
+    "ReceivedGameEvent",
+    "ReceivedGameNotice",
+    "ReceivedGameNoticeChanged",
+    "ReceivedFlagEgress",
+    "ReceivedLog",
+    "ReceivedSubmissions",
+    "InternalByocRevokeParticipation",
+    "InternalByocRevokeTeam",
+    "InternalByocRevokeChallenge",
+    "InternalTrafficCaptureReconcile",
+    RESYNC_TARGET,
+];
 
 /// Default channel for installations that use Redis only for one RSCTF cluster.
 pub const DEFAULT_REDIS_CHANNEL: &str = "rsctf:hub-events:v1";
@@ -41,136 +61,6 @@ pub const DEFAULT_REDIS_CHANNEL: &str = "rsctf:hub-events:v1";
 pub struct EventBus {
     local: Arc<LocalFanout>,
     distributed: Option<DistributedPublisher>,
-}
-
-/// Process-local queues. A queue exists only while a game has a subscriber, so
-/// unrelated games never share bounded history and the map cannot retain every
-/// historical game id. The legacy `all` queue remains for the few internal
-/// control listeners that intentionally consume multiple targets.
-struct LocalFanout {
-    all: broadcast::Sender<HubEvent>,
-    global: broadcast::Sender<HubEvent>,
-    games: DashMap<i32, broadcast::Sender<HubEvent>>,
-    lagged_receivers: AtomicU64,
-    distributed_drops: AtomicU64,
-    distributed_loss_generation: AtomicU64,
-    subscriber_gaps: AtomicU64,
-}
-
-impl LocalFanout {
-    fn new() -> Self {
-        let (all, _) = broadcast::channel(LOCAL_QUEUE_CAPACITY);
-        let (global, _) = broadcast::channel(LOCAL_QUEUE_CAPACITY);
-        Self {
-            all,
-            global,
-            games: DashMap::new(),
-            lagged_receivers: AtomicU64::new(0),
-            distributed_drops: AtomicU64::new(0),
-            distributed_loss_generation: AtomicU64::new(0),
-            subscriber_gaps: AtomicU64::new(0),
-        }
-    }
-
-    fn game_sender(&self, game_id: i32) -> broadcast::Sender<HubEvent> {
-        self.games
-            .entry(game_id)
-            .or_insert_with(|| broadcast::channel(LOCAL_QUEUE_CAPACITY).0)
-            .clone()
-    }
-
-    fn publish(&self, event: HubEvent) {
-        let _ = self.all.send(event.clone());
-        match event.game_id {
-            Some(game_id) => {
-                if let Some(sender) = self.games.get(&game_id) {
-                    let _ = sender.send(event);
-                }
-            }
-            None => {
-                let _ = self.global.send(event);
-            }
-        }
-    }
-
-    fn record_distributed_drop(&self, reason: &'static str) {
-        let dropped = self
-            .distributed_drops
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        self.distributed_loss_generation
-            .fetch_add(1, Ordering::Release);
-        if dropped.is_power_of_two() {
-            tracing::warn!(
-                dropped,
-                reason,
-                "remote hub fanout lost data; clients must reconcile from HTTP"
-            );
-        }
-    }
-
-    fn force_resync_after_subscriber_gap(&self) {
-        let gaps = self
-            .subscriber_gaps
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        if gaps.is_power_of_two() {
-            tracing::warn!(
-                gaps,
-                "Redis hub subscription recovered after possible data loss; forcing client resync"
-            );
-        }
-        self.publish(HubEvent {
-            target: RESYNC_TARGET,
-            game_id: None,
-            payload: serde_json::json!({ "subscriberGap": gaps }).to_string(),
-        });
-    }
-}
-
-/// Receiver used by public hubs. A game-scoped feed merges only its stable
-/// event shard with true global broadcasts; unrelated game queues never enter
-/// its bounded history.
-pub struct EventReceiver {
-    scoped: broadcast::Receiver<HubEvent>,
-    global: Option<broadcast::Receiver<HubEvent>>,
-    fanout: Arc<LocalFanout>,
-    game: Option<(i32, broadcast::Sender<HubEvent>)>,
-}
-
-impl EventReceiver {
-    pub async fn recv(&mut self) -> Result<HubEvent, broadcast::error::RecvError> {
-        let result = match self.global.as_mut() {
-            Some(global) => {
-                tokio::select! {
-                    result = self.scoped.recv() => result,
-                    result = global.recv() => result,
-                }
-            }
-            None => self.scoped.recv().await,
-        };
-        let result = match result {
-            Ok(event) if event.target == RESYNC_TARGET => {
-                Err(broadcast::error::RecvError::Lagged(0))
-            }
-            result => result,
-        };
-        if matches!(result, Err(broadcast::error::RecvError::Lagged(_))) {
-            self.fanout.lagged_receivers.fetch_add(1, Ordering::Relaxed);
-        }
-        result
-    }
-}
-
-impl Drop for EventReceiver {
-    fn drop(&mut self) {
-        let Some((game_id, sender)) = &self.game else {
-            return;
-        };
-        let _ = self.fanout.games.remove_if(game_id, |_, current| {
-            current.same_channel(sender) && current.receiver_count() == 1
-        });
-    }
 }
 
 #[derive(Clone)]
@@ -245,21 +135,7 @@ impl WireEvent {
 /// server itself can publish, both to reject malformed messages and to retain
 /// the allocation-free `&'static str` target used by every WebSocket hot path.
 fn known_target(target: &str) -> Option<&'static str> {
-    match target {
-        "ReceivedAttack" => Some("ReceivedAttack"),
-        "ReceivedGameEvent" => Some("ReceivedGameEvent"),
-        "ReceivedGameNotice" => Some("ReceivedGameNotice"),
-        "ReceivedGameNoticeChanged" => Some("ReceivedGameNoticeChanged"),
-        "ReceivedFlagEgress" => Some("ReceivedFlagEgress"),
-        "ReceivedLog" => Some("ReceivedLog"),
-        "ReceivedSubmissions" => Some("ReceivedSubmissions"),
-        "InternalByocRevokeParticipation" => Some("InternalByocRevokeParticipation"),
-        "InternalByocRevokeTeam" => Some("InternalByocRevokeTeam"),
-        "InternalByocRevokeChallenge" => Some("InternalByocRevokeChallenge"),
-        "InternalTrafficCaptureReconcile" => Some("InternalTrafficCaptureReconcile"),
-        RESYNC_TARGET => Some(RESYNC_TARGET),
-        _ => None,
-    }
+    KNOWN_TARGETS.iter().copied().find(|known| *known == target)
 }
 
 struct InboundDedup {
@@ -347,23 +223,27 @@ impl EventBus {
         self.local.all.subscribe()
     }
 
+    /// Compatibility subscription for internal consumers that intentionally
+    /// need every known target for one game. Public hubs should use the exact
+    /// target-scoped form below.
     pub fn subscribe_game(&self, game_id: i32) -> EventReceiver {
-        let sender = self.local.game_sender(game_id);
-        EventReceiver {
-            scoped: sender.subscribe(),
-            global: Some(self.local.global.subscribe()),
-            fanout: self.local.clone(),
-            game: Some((game_id, sender)),
-        }
+        self.subscribe_game_targets(game_id, KNOWN_TARGETS)
+    }
+
+    pub fn subscribe_game_targets(
+        &self,
+        game_id: i32,
+        targets: &'static [&'static str],
+    ) -> EventReceiver {
+        self.local.subscribe(Some(game_id), targets)
     }
 
     pub fn subscribe_global(&self) -> EventReceiver {
-        EventReceiver {
-            scoped: self.local.global.subscribe(),
-            global: None,
-            fanout: self.local.clone(),
-            game: None,
-        }
+        self.subscribe_global_targets(KNOWN_TARGETS)
+    }
+
+    pub fn subscribe_global_targets(&self, targets: &'static [&'static str]) -> EventReceiver {
+        self.local.subscribe(None, targets)
     }
 
     /// Publish locally, then offer the same event to other replicas. A full or
@@ -640,6 +520,42 @@ mod tests {
         .expect("Redis readiness barrier was not delivered");
     }
 
+    async fn wait_for_remote_target_subscription(
+        sender: &EventBus,
+        receiver: &mut EventReceiver,
+        probe: HubEvent,
+    ) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                sender.publish(probe.clone());
+                if let Ok(Ok(received)) =
+                    tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await
+                {
+                    if received.target == probe.target && received.payload == probe.payload {
+                        return;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("Redis target subscription did not become ready");
+
+        let mut barrier = probe;
+        barrier.payload = format!("rsctf-target-ready-barrier:{}", Uuid::new_v4());
+        sender.publish(barrier.clone());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let received = receiver.recv().await.expect("target stream closed");
+                if received.target == barrier.target && received.payload == barrier.payload {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("Redis target readiness barrier was not delivered");
+    }
+
     #[test]
     fn wire_event_round_trips_and_rejects_unknown_targets_or_versions() {
         let origin = Uuid::new_v4();
@@ -780,10 +696,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn per_game_queues_isolate_former_hash_collisions_and_keep_global_events() {
+    async fn per_game_queues_isolate_former_hash_collisions_and_unrelated_targets() {
         let bus = EventBus::local();
-        let mut game_seven = bus.subscribe_game(7);
-        let mut formerly_colliding_game = bus.subscribe_game(71);
+        let mut game_seven = bus.subscribe_game_targets(7, &["ReceivedGameEvent"]);
+        let mut formerly_colliding_game = bus.subscribe_game_targets(71, &["ReceivedGameEvent"]);
 
         for cursor in 0..(LOCAL_QUEUE_CAPACITY * 2) {
             bus.publish(received_game_event(7, cursor as i32, cursor as i64));
@@ -791,12 +707,13 @@ mod tests {
         bus.publish(received_game_event(71, 1, 1));
         bus.publish(received_log_event());
 
-        let received = [
-            formerly_colliding_game.recv().await.unwrap(),
-            formerly_colliding_game.recv().await.unwrap(),
-        ];
-        assert!(received.iter().any(|event| event.game_id == Some(71)));
-        assert!(received.iter().any(|event| event.target == "ReceivedLog"));
+        let received = formerly_colliding_game.recv().await.unwrap();
+        assert_eq!(received.game_id, Some(71));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), formerly_colliding_game.recv())
+                .await
+                .is_err()
+        );
 
         assert!(matches!(
             game_seven.recv().await,
@@ -808,7 +725,7 @@ mod tests {
     #[tokio::test]
     async fn distributed_loss_marker_forces_authoritative_resync() {
         let bus = EventBus::local();
-        let mut receiver = bus.subscribe_game(7);
+        let mut receiver = bus.subscribe_game_targets(7, &["ReceivedGameEvent"]);
         bus.local.force_resync_after_subscriber_gap();
 
         assert!(matches!(
@@ -841,12 +758,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn idle_game_channels_are_removed_after_the_last_receiver() {
+    async fn noisy_target_cannot_evict_a_notice_in_the_same_game() {
         let bus = EventBus::local();
-        let receiver = bus.subscribe_game(7);
-        assert!(bus.local.games.contains_key(&7));
+        let mut notice = bus.subscribe_game_targets(7, &["ReceivedGameNotice"]);
+        for cursor in 0..(LOCAL_QUEUE_CAPACITY * 2) {
+            bus.publish(received_game_event(7, cursor as i32, cursor as i64));
+        }
+        bus.publish(HubEvent {
+            target: "ReceivedGameNotice",
+            game_id: Some(7),
+            payload: r#"{"id":91}"#.to_owned(),
+        });
+
+        let received = notice.recv().await.unwrap();
+        assert_eq!(received.target, "ReceivedGameNotice");
+        assert_eq!(received.payload, r#"{"id":91}"#);
+        assert_eq!(bus.local.lagged_receivers.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn idle_target_game_channels_are_removed_after_the_last_receiver() {
+        let bus = EventBus::local();
+        let receiver = bus.subscribe_game_targets(7, &["ReceivedAttack"]);
+        assert_eq!(bus.local.active_queue_count(), 2);
         drop(receiver);
-        assert!(!bus.local.games.contains_key(&7));
+        assert_eq!(bus.local.active_queue_count(), 0);
     }
 
     /// Run explicitly with `RSCTF_TEST_REDIS_URL=redis://... cargo test
@@ -891,10 +827,19 @@ mod tests {
         let channel = format!("rsctf:test:monitor-events:{}", Uuid::new_v4());
         let first_replica = EventBus::distributed_on(&url, &channel).unwrap();
         let second_replica = EventBus::distributed_on(&url, &channel).unwrap();
-        let mut remote = second_replica.subscribe();
+        let mut remote = second_replica.subscribe_game_targets(7, &["ReceivedGameEvent"]);
 
-        wait_for_remote_subscription(&first_replica, &mut remote, received_game_event(7, -1, -1))
-            .await;
+        wait_for_remote_target_subscription(
+            &first_replica,
+            &mut remote,
+            received_game_event(7, -1, -1),
+        )
+        .await;
+        // The maximum accepted A&D flag batch in another game must not enter
+        // this target/game receiver's bounded history.
+        for cursor in 0..100 {
+            first_replica.publish(received_game_event(8, cursor as i32, cursor as i64));
+        }
         for (id, cursor) in [(31, 101), (32, 102), (33, 103)] {
             first_replica.publish(received_game_event(7, id, cursor));
         }

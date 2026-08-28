@@ -6,6 +6,7 @@ import { Icon } from '@mdi/react'
 import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
+import { type NormalNoticeDraft, sameNormalNoticeDraft } from '@Utils/NoticeDraft'
 import { showErrorMsg } from '@Utils/Shared'
 import api, { GameNotice } from '@Api'
 
@@ -26,26 +27,36 @@ export const GameNoticeEditModal: FC<GameNoticeEditModalProps> = (props) => {
   const submittingRef = useRef(false)
   const operationRef = useRef<{ fingerprint: string; operationId: string } | null>(null)
   const generationRef = useRef(0)
+  const initialDraftRef = useRef<NormalNoticeDraft>({ content: '', scheduled: false, publishAt: null })
   const { t } = useTranslation()
   const contentBytes = new TextEncoder().encode(content).length
-  const maxContentBytes = 48 * 1024
+  // Matches the backend's worst-case JSON/SignalR-safe UTF-8 boundary.
+  const maxContentBytes = 8 * 1024
 
   useEffect(() => {
     generationRef.current += 1
     submittingRef.current = false
     operationRef.current = null
     setDisabled(false)
-    setContent(gameNotice?.values.at(-1) || '')
-    setScheduled(false)
-    setPublishAt(null)
+    const initialContent = gameNotice?.values.at(-1) || ''
+    let initialScheduled = false
+    let initialPublishAt: Date | null = null
     // Pre-populate schedule if existing notice has a future publish time
     if (gameNotice?.time) {
-      const t = new Date(gameNotice.time)
-      if (t > new Date()) {
-        setScheduled(true)
-        setPublishAt(t)
+      const publishTime = new Date(gameNotice.time)
+      if (publishTime > new Date()) {
+        initialScheduled = true
+        initialPublishAt = publishTime
       }
     }
+    initialDraftRef.current = {
+      content: initialContent,
+      scheduled: initialScheduled,
+      publishAt: initialPublishAt?.getTime() ?? null,
+    }
+    setContent(initialContent)
+    setScheduled(initialScheduled)
+    setPublishAt(initialPublishAt)
   }, [gameNotice])
 
   const onConfirm = async () => {
@@ -69,7 +80,12 @@ export const GameNoticeEditModal: FC<GameNoticeEditModalProps> = (props) => {
       })
       return
     }
-    if (content === gameNotice?.values.at(-1) && !scheduled) {
+    const currentDraft: NormalNoticeDraft = {
+      content,
+      scheduled,
+      publishAt: scheduled && publishAt ? publishAt.getTime() : null,
+    }
+    if (sameNormalNoticeDraft(initialDraftRef.current, currentDraft)) {
       showNotification({
         color: 'orange',
         message: t('common.error.no_change'),
