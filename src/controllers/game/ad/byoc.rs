@@ -42,136 +42,20 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use super::*;
 mod agent_image;
 mod compose;
+mod handshake;
 use agent_image::{default_byoc_agent_image, immutable_agent_image};
 use compose::{build_compose, build_setup_compose};
+#[cfg(test)]
+use handshake::AgentHandshakeAdmission;
+use handshake::{
+    byoc_agent_state_response, AGENT_HANDSHAKE_ADMISSION, BYOC_AGENT_RETRY_AFTER_SECONDS,
+    BYOC_AGENT_STATE_HEADER,
+};
 
 /// Immutable multi-platform placeholder (amd64/arm64/arm/ppc64le/s390x).
 const DEFAULT_BYOC_FALLBACK_IMAGE: &str =
     "docker.io/alpine/socat@sha256:4e625a62c9ea40ccbce93b9a4fcc6b41740a9f308389c216f34c88ce3abb275b";
 const BYOC_SECRET_CACHE_CONTROL: &str = "private, no-store";
-const BYOC_AGENT_STATE_HEADER: &str = "x-rsctf-byoc-state";
-const BYOC_AGENT_RETRY_AFTER_SECONDS: u64 = 5;
-const MAX_CONCURRENT_AGENT_HANDSHAKES: usize = 128;
-const MAX_AGENT_HANDSHAKE_PARTICIPATIONS: usize = 4_096;
-const MAX_AGENT_HANDSHAKE_CAPABILITIES: usize = 4_096;
-
-static AGENT_HANDSHAKE_ADMISSION: LazyLock<AgentHandshakeAdmission> =
-    LazyLock::new(|| AgentHandshakeAdmission::new(MAX_CONCURRENT_AGENT_HANDSHAKES));
-
-struct AgentHandshakeAdmission {
-    global: Arc<Semaphore>,
-    identities: Mutex<ByocIdentityGates>,
-}
-
-struct AgentHandshakePermit {
-    _global: OwnedSemaphorePermit,
-    _participation: OwnedSemaphorePermit,
-    _capability: OwnedSemaphorePermit,
-}
-
-impl AgentHandshakeAdmission {
-    fn new(global_limit: usize) -> Self {
-        Self {
-            global: Arc::new(Semaphore::new(global_limit)),
-            identities: Mutex::new(ByocIdentityGates::default()),
-        }
-    }
-
-    fn try_admit(&self, participation_id: i32, challenge_id: i32) -> Option<AgentHandshakePermit> {
-        let global = self.global.clone().try_acquire_owned().ok()?;
-        let (participation, capability) = {
-            let mut identities = self
-                .identities
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if identities.participations.len() >= MAX_AGENT_HANDSHAKE_PARTICIPATIONS {
-                identities
-                    .participations
-                    .retain(|_, gate| gate.strong_count() > 0);
-            }
-            if identities.capabilities.len() >= MAX_AGENT_HANDSHAKE_CAPABILITIES {
-                identities
-                    .capabilities
-                    .retain(|_, gate| gate.strong_count() > 0);
-            }
-
-            let participation = match identities
-                .participations
-                .get(&participation_id)
-                .and_then(Weak::upgrade)
-            {
-                Some(gate) => gate,
-                None if identities.participations.len() < MAX_AGENT_HANDSHAKE_PARTICIPATIONS => {
-                    let gate = Arc::new(Semaphore::new(4));
-                    identities
-                        .participations
-                        .insert(participation_id, Arc::downgrade(&gate));
-                    gate
-                }
-                None => return None,
-            };
-            let capability = match identities
-                .capabilities
-                .get(&(participation_id, challenge_id))
-                .and_then(Weak::upgrade)
-            {
-                Some(gate) => gate,
-                None if identities.capabilities.len() < MAX_AGENT_HANDSHAKE_CAPABILITIES => {
-                    let gate = Arc::new(Semaphore::new(1));
-                    identities
-                        .capabilities
-                        .insert((participation_id, challenge_id), Arc::downgrade(&gate));
-                    gate
-                }
-                None => return None,
-            };
-            (participation, capability)
-        };
-        Some(AgentHandshakePermit {
-            _global: global,
-            _participation: participation.try_acquire_owned().ok()?,
-            _capability: capability.try_acquire_owned().ok()?,
-        })
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ByocAgentStateBody {
-    title: &'static str,
-    state: &'static str,
-    terminal: bool,
-    retry_after: Option<u64>,
-}
-
-fn byoc_agent_state_response(
-    status: StatusCode,
-    title: &'static str,
-    state: &'static str,
-    terminal: bool,
-    retry_after: Option<u64>,
-) -> Response {
-    let mut response = (
-        status,
-        axum::Json(ByocAgentStateBody {
-            title,
-            state,
-            terminal,
-            retry_after,
-        }),
-    )
-        .into_response();
-    response.headers_mut().insert(
-        BYOC_AGENT_STATE_HEADER,
-        axum::http::HeaderValue::from_static(state),
-    );
-    if let Some(retry_after) = retry_after {
-        if let Ok(value) = axum::http::HeaderValue::from_str(&retry_after.to_string()) {
-            response.headers_mut().insert(header::RETRY_AFTER, value);
-        }
-    }
-    response
-}
 
 /// Deterministic per-`(participation, challenge)` BYOC token, hex-encoded.
 /// `domain` domain-separates the agent/image tokens (mirrors RSCTF's
