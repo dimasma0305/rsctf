@@ -688,6 +688,10 @@ pub fn router() -> Router<SharedState> {
             "/api/edit/games/{id}",
             get(get_game).put(update_game).delete(delete_game),
         )
+        .route(
+            "/api/edit/games/{id}/operations/{operationId}",
+            get(recover_game_configuration_operation),
+        )
         .route("/api/edit/games/{id}/HashSalt", get(get_hash_salt))
         .route("/api/edit/games/{id}/Clone", post(clone_game))
         .route("/api/edit/games/{id}/clone", post(clone_game))

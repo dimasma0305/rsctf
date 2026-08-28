@@ -103,6 +103,18 @@ pub async fn get_game(
     Ok(RequestResponse::ok(GameInfoModel::from_game(&g)))
 }
 
+/// `GET /api/edit/games/{id}/operations/{operationId}` — recover the
+/// authoritative result of this editor's completed settings operation.
+pub async fn recover_game_configuration_operation(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+    Path((id, operation_id)): Path<(i32, Uuid)>,
+) -> AppResult<RequestResponse<GameInfoModel>> {
+    manager_or_admin(&st, &user, id).await?;
+    let result = update_support::recover_operation(st.pg(), operation_id, id, user.id).await?;
+    Ok(RequestResponse::ok(result))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn validate_scoring_transition(
     current_epoch_ticks: i32,

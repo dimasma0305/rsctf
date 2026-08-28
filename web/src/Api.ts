@@ -7860,6 +7860,26 @@ export class Api<
       }),
 
     /**
+     * @description Recover this editor's completed game-settings operation after an ambiguous response
+     *
+     * @tags Edit
+     * @name EditRecoverGameConfigurationOperation
+     * @summary Recover Game Settings Operation
+     * @request GET:/api/edit/games/{id}/operations/{operationId}
+     */
+    editRecoverGameConfigurationOperation: (
+      id: number,
+      operationId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<GameInfoModel, RequestResponse>({
+        path: `/api/edit/games/${id}/operations/${operationId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
      * @description Updating a game challenge, requires administrator privileges. Flags are not affected; use Flag-related APIs to modify
      *
      * @tags Edit

@@ -1,5 +1,8 @@
 use super::*;
 
+const RECOVER_OPERATION_SQL: &str = r#"SELECT result FROM "GameConfigurationOperations"
+        WHERE operation_id = $1 AND game_id = $2 AND actor_user_id = $3"#;
+
 pub(super) fn request_digest(model: &GameInfoModel) -> AppResult<String> {
     let payload = serde_json::json!({
         "configuration": model,
@@ -35,6 +38,23 @@ pub(super) async fn replay_operation(
         ));
     }
     Ok(Some(result.0))
+}
+
+pub(super) async fn recover_operation(
+    pool: &sqlx::PgPool,
+    operation_id: Uuid,
+    game_id: i32,
+    actor_user_id: Uuid,
+) -> AppResult<GameInfoModel> {
+    sqlx::query_scalar::<_, sqlx::types::Json<GameInfoModel>>(RECOVER_OPERATION_SQL)
+        .bind(operation_id)
+        .bind(game_id)
+        .bind(actor_user_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .map(|result| result.0)
+        .ok_or_else(|| AppError::not_found("Settings operation not found"))
 }
 
 pub(super) async fn load_game_locked(
@@ -342,6 +362,13 @@ pub(crate) async fn process_configuration_effects(state: &SharedState) -> AppRes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_query_is_scoped_to_the_operation_owner_and_game() {
+        assert!(RECOVER_OPERATION_SQL.contains("operation_id = $1"));
+        assert!(RECOVER_OPERATION_SQL.contains("game_id = $2"));
+        assert!(RECOVER_OPERATION_SQL.contains("actor_user_id = $3"));
+    }
 
     #[test]
     fn metadata_only_edits_do_not_flush_scoreboards() {
