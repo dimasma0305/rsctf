@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use dashmap::DashMap;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
@@ -20,7 +21,6 @@ use uuid::Uuid;
 use crate::app_state::HubEvent;
 
 const LOCAL_QUEUE_CAPACITY: usize = 512;
-const GAME_QUEUE_SHARDS: usize = 64;
 const OUTBOUND_QUEUE_CAPACITY: usize = 512;
 const DEDUP_CAPACITY: usize = 4_096;
 const MAX_WIRE_BYTES: usize = 256 * 1024;
@@ -28,6 +28,8 @@ const REDIS_IO_TIMEOUT: Duration = Duration::from_millis(750);
 const REDIS_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const REDIS_RETRY_MIN: Duration = Duration::from_secs(1);
 const REDIS_RETRY_MAX: Duration = Duration::from_secs(10);
+const RESYNC_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const RESYNC_TARGET: &str = "InternalFeedResyncRequired";
 
 /// Default channel for installations that use Redis only for one RSCTF cluster.
 pub const DEFAULT_REDIS_CHANNEL: &str = "rsctf:hub-events:v1";
@@ -41,42 +43,47 @@ pub struct EventBus {
     distributed: Option<DistributedPublisher>,
 }
 
-/// A bounded set of process-local queues. Game-scoped sockets subscribe only
-/// to one stable shard plus the small broadcast-to-all queue, so a 100-flag
-/// burst in one event cannot evict notices or monitor updates in every other
-/// event. The legacy `all` queue remains for the few internal control listeners
-/// that intentionally consume multiple targets.
+/// Process-local queues. A queue exists only while a game has a subscriber, so
+/// unrelated games never share bounded history and the map cannot retain every
+/// historical game id. The legacy `all` queue remains for the few internal
+/// control listeners that intentionally consume multiple targets.
 struct LocalFanout {
     all: broadcast::Sender<HubEvent>,
     global: broadcast::Sender<HubEvent>,
-    games: [broadcast::Sender<HubEvent>; GAME_QUEUE_SHARDS],
+    games: DashMap<i32, broadcast::Sender<HubEvent>>,
     lagged_receivers: AtomicU64,
     distributed_drops: AtomicU64,
+    distributed_loss_generation: AtomicU64,
 }
 
 impl LocalFanout {
     fn new() -> Self {
         let (all, _) = broadcast::channel(LOCAL_QUEUE_CAPACITY);
         let (global, _) = broadcast::channel(LOCAL_QUEUE_CAPACITY);
-        let games = std::array::from_fn(|_| broadcast::channel(LOCAL_QUEUE_CAPACITY).0);
         Self {
             all,
             global,
-            games,
+            games: DashMap::new(),
             lagged_receivers: AtomicU64::new(0),
             distributed_drops: AtomicU64::new(0),
+            distributed_loss_generation: AtomicU64::new(0),
         }
     }
 
-    fn game_shard(game_id: i32) -> usize {
-        (game_id.unsigned_abs() as usize) % GAME_QUEUE_SHARDS
+    fn game_sender(&self, game_id: i32) -> broadcast::Sender<HubEvent> {
+        self.games
+            .entry(game_id)
+            .or_insert_with(|| broadcast::channel(LOCAL_QUEUE_CAPACITY).0)
+            .clone()
     }
 
     fn publish(&self, event: HubEvent) {
         let _ = self.all.send(event.clone());
         match event.game_id {
             Some(game_id) => {
-                let _ = self.games[Self::game_shard(game_id)].send(event);
+                if let Some(sender) = self.games.get(&game_id) {
+                    let _ = sender.send(event);
+                }
             }
             None => {
                 let _ = self.global.send(event);
@@ -89,6 +96,8 @@ impl LocalFanout {
             .distributed_drops
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
+        self.distributed_loss_generation
+            .fetch_add(1, Ordering::Release);
         if dropped.is_power_of_two() {
             tracing::warn!(
                 dropped,
@@ -106,6 +115,7 @@ pub struct EventReceiver {
     scoped: broadcast::Receiver<HubEvent>,
     global: Option<broadcast::Receiver<HubEvent>>,
     fanout: Arc<LocalFanout>,
+    game: Option<(i32, broadcast::Sender<HubEvent>)>,
 }
 
 impl EventReceiver {
@@ -119,10 +129,27 @@ impl EventReceiver {
             }
             None => self.scoped.recv().await,
         };
+        let result = match result {
+            Ok(event) if event.target == RESYNC_TARGET => {
+                Err(broadcast::error::RecvError::Lagged(0))
+            }
+            result => result,
+        };
         if matches!(result, Err(broadcast::error::RecvError::Lagged(_))) {
             self.fanout.lagged_receivers.fetch_add(1, Ordering::Relaxed);
         }
         result
+    }
+}
+
+impl Drop for EventReceiver {
+    fn drop(&mut self) {
+        let Some((game_id, sender)) = &self.game else {
+            return;
+        };
+        self.fanout.games.remove_if(game_id, |_, current| {
+            current.same_channel(sender) && current.receiver_count() == 1
+        });
     }
 }
 
@@ -181,6 +208,17 @@ impl WireEvent {
             payload: self.payload,
         })
     }
+
+    fn resync(origin: Uuid, generation: u64) -> Self {
+        Self {
+            version: 1,
+            id: Uuid::now_v7(),
+            origin,
+            target: RESYNC_TARGET.to_owned(),
+            game_id: None,
+            payload: serde_json::json!({ "generation": generation }).to_string(),
+        }
+    }
 }
 
 /// Redis is not an authorization boundary. Still, accept only methods the
@@ -199,6 +237,7 @@ fn known_target(target: &str) -> Option<&'static str> {
         "InternalByocRevokeTeam" => Some("InternalByocRevokeTeam"),
         "InternalByocRevokeChallenge" => Some("InternalByocRevokeChallenge"),
         "InternalTrafficCaptureReconcile" => Some("InternalTrafficCaptureReconcile"),
+        RESYNC_TARGET => Some(RESYNC_TARGET),
         _ => None,
     }
 }
@@ -265,6 +304,7 @@ impl EventBus {
         let publisher = tokio::spawn(run_publisher(
             client.clone(),
             channel.clone(),
+            origin,
             outbound_rx,
             local.clone(),
         ));
@@ -288,10 +328,12 @@ impl EventBus {
     }
 
     pub fn subscribe_game(&self, game_id: i32) -> EventReceiver {
+        let sender = self.local.game_sender(game_id);
         EventReceiver {
-            scoped: self.local.games[LocalFanout::game_shard(game_id)].subscribe(),
+            scoped: sender.subscribe(),
             global: Some(self.local.global.subscribe()),
             fanout: self.local.clone(),
+            game: Some((game_id, sender)),
         }
     }
 
@@ -300,6 +342,7 @@ impl EventBus {
             scoped: self.local.global.subscribe(),
             global: None,
             fanout: self.local.clone(),
+            game: None,
         }
     }
 
@@ -333,61 +376,100 @@ impl Default for EventBus {
 async fn run_publisher(
     client: redis::Client,
     channel: String,
+    origin: Uuid,
     mut outbound: mpsc::Receiver<WireEvent>,
     local: Arc<LocalFanout>,
 ) {
     let mut connection: Option<redis::aio::ConnectionManager> = None;
-    while let Some(event) = outbound.recv().await {
-        let Ok(payload) = serde_json::to_vec(&event) else {
-            local.record_distributed_drop("encode_failed");
-            continue;
+    let mut acknowledged_loss_generation = 0;
+    let mut resync_retry = tokio::time::interval(RESYNC_RETRY_INTERVAL);
+    resync_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    resync_retry.tick().await;
+    loop {
+        let event = tokio::select! {
+            event = outbound.recv() => event,
+            _ = resync_retry.tick() => None,
         };
-        if payload.len() > MAX_WIRE_BYTES {
-            tracing::debug!(bytes = payload.len(), "dropping oversized remote hub event");
-            local.record_distributed_drop("wire_size_exceeded");
-            continue;
-        }
-
-        if connection.is_none() {
-            connection = match tokio::time::timeout(
-                REDIS_CONNECT_TIMEOUT,
-                crate::utils::redis::connection_manager(&client),
-            )
-            .await
+        let loss_generation = local.distributed_loss_generation.load(Ordering::Acquire);
+        if loss_generation > acknowledged_loss_generation {
+            let marker = WireEvent::resync(origin, loss_generation);
+            if publish_remote(&client, &channel, &marker, &mut connection)
+                .await
+                .is_err()
             {
-                Ok(Ok(connection)) => Some(connection),
-                Ok(Err(error)) => {
-                    tracing::debug!(%error, "hub event publisher could not connect to Redis");
-                    None
+                if event.is_some() {
+                    local.record_distributed_drop("resync_marker_unavailable");
+                } else if outbound.is_closed() {
+                    break;
                 }
-                Err(_) => {
-                    tracing::debug!("hub event publisher Redis connection timed out");
-                    None
-                }
-            };
+                continue;
+            }
+            acknowledged_loss_generation = loss_generation;
         }
-        let Some(mut active) = connection.take() else {
-            local.record_distributed_drop("redis_unavailable");
+        let Some(event) = event else {
+            if outbound.is_closed() {
+                break;
+            }
             continue;
         };
-        let result = tokio::time::timeout(
-            REDIS_IO_TIMEOUT,
-            redis::cmd("PUBLISH")
-                .arg(&channel)
-                .arg(payload)
-                .query_async::<i64>(&mut active),
+        if let Err(reason) = publish_remote(&client, &channel, &event, &mut connection).await {
+            local.record_distributed_drop(reason);
+        }
+    }
+}
+
+async fn publish_remote(
+    client: &redis::Client,
+    channel: &str,
+    event: &WireEvent,
+    connection: &mut Option<redis::aio::ConnectionManager>,
+) -> Result<(), &'static str> {
+    let payload = serde_json::to_vec(event).map_err(|_| "encode_failed")?;
+    if payload.len() > MAX_WIRE_BYTES {
+        tracing::debug!(bytes = payload.len(), "dropping oversized remote hub event");
+        return Err("wire_size_exceeded");
+    }
+    if connection.is_none() {
+        *connection = match tokio::time::timeout(
+            REDIS_CONNECT_TIMEOUT,
+            crate::utils::redis::connection_manager(client),
         )
-        .await;
-        match result {
-            Ok(Ok(_)) => connection = Some(active),
+        .await
+        {
+            Ok(Ok(connection)) => Some(connection),
             Ok(Err(error)) => {
-                tracing::debug!(%error, "hub event publish failed; reconnecting on next event");
-                local.record_distributed_drop("redis_publish_failed");
+                tracing::debug!(%error, "hub event publisher could not connect to Redis");
+                None
             }
             Err(_) => {
-                tracing::debug!("hub event publish timed out; reconnecting on next event");
-                local.record_distributed_drop("redis_publish_timeout");
+                tracing::debug!("hub event publisher Redis connection timed out");
+                None
             }
+        };
+    }
+    let Some(mut active) = connection.take() else {
+        return Err("redis_unavailable");
+    };
+    let result = tokio::time::timeout(
+        REDIS_IO_TIMEOUT,
+        redis::cmd("PUBLISH")
+            .arg(channel)
+            .arg(payload)
+            .query_async::<i64>(&mut active),
+    )
+    .await;
+    match result {
+        Ok(Ok(_)) => {
+            *connection = Some(active);
+            Ok(())
+        }
+        Ok(Err(error)) => {
+            tracing::debug!(%error, "hub event publish failed; reconnecting on next event");
+            Err("redis_publish_failed")
+        }
+        Err(_) => {
+            tracing::debug!("hub event publish timed out; reconnecting on next event");
+            Err("redis_publish_timeout")
         }
     }
 }
@@ -670,22 +752,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn game_shards_isolate_unrelated_bursts_and_keep_global_events() {
+    async fn per_game_queues_isolate_former_hash_collisions_and_keep_global_events() {
         let bus = EventBus::local();
         let mut game_seven = bus.subscribe_game(7);
-        let mut game_eight = bus.subscribe_game(8);
+        let mut formerly_colliding_game = bus.subscribe_game(71);
 
         for cursor in 0..(LOCAL_QUEUE_CAPACITY * 2) {
             bus.publish(received_game_event(7, cursor as i32, cursor as i64));
         }
-        bus.publish(received_game_event(8, 1, 1));
+        bus.publish(received_game_event(71, 1, 1));
         bus.publish(received_log_event());
 
         let received = [
-            game_eight.recv().await.unwrap(),
-            game_eight.recv().await.unwrap(),
+            formerly_colliding_game.recv().await.unwrap(),
+            formerly_colliding_game.recv().await.unwrap(),
         ];
-        assert!(received.iter().any(|event| event.game_id == Some(8)));
+        assert!(received.iter().any(|event| event.game_id == Some(71)));
         assert!(received.iter().any(|event| event.target == "ReceivedLog"));
 
         assert!(matches!(
@@ -693,6 +775,50 @@ mod tests {
             Err(broadcast::error::RecvError::Lagged(_))
         ));
         assert_eq!(bus.local.lagged_receivers.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn distributed_loss_marker_forces_authoritative_resync() {
+        let bus = EventBus::local();
+        let mut receiver = bus.subscribe_game(7);
+        bus.local
+            .publish(WireEvent::resync(Uuid::new_v4(), 3).into_hub().unwrap());
+
+        assert!(matches!(
+            receiver.recv().await,
+            Err(broadcast::error::RecvError::Lagged(0))
+        ));
+        assert_eq!(bus.local.lagged_receivers.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn full_distributed_queue_advances_the_resync_generation() {
+        let local = Arc::new(LocalFanout::new());
+        let (outbound, _outbound_rx) = mpsc::channel(1);
+        let bus = EventBus {
+            local: Arc::clone(&local),
+            distributed: Some(DistributedPublisher {
+                origin: Uuid::new_v4(),
+                outbound,
+                _tasks: Arc::new(TaskSet {
+                    handles: Vec::new(),
+                }),
+            }),
+        };
+        bus.publish(received_game_event(7, 1, 1));
+        bus.publish(received_game_event(7, 2, 2));
+
+        assert_eq!(local.distributed_drops.load(Ordering::Relaxed), 1);
+        assert_eq!(local.distributed_loss_generation.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn idle_game_channels_are_removed_after_the_last_receiver() {
+        let bus = EventBus::local();
+        let receiver = bus.subscribe_game(7);
+        assert!(bus.local.games.contains_key(&7));
+        drop(receiver);
+        assert!(!bus.local.games.contains_key(&7));
     }
 
     /// Run explicitly with `RSCTF_TEST_REDIS_URL=redis://... cargo test

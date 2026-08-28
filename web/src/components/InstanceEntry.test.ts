@@ -12,8 +12,8 @@ test('the WSRX action row remains single-line and has room for retry, copy, and 
 })
 
 test('WSRX receives an authenticated narrow capability without exposing the browser session', () => {
-  assert.match(entry, /proxyIssueNoInstanceCapability\(instanceEntry\)/)
-  assert.match(entry, /proxyIssueInstanceCapability\(instanceEntry\)/)
+  assert.match(entry, /proxyIssueNoInstanceCapability\(instanceEntry, \{ signal: controller\.signal \}\)/)
+  assert.match(entry, /proxyIssueInstanceCapability\(instanceEntry, \{ signal: controller\.signal \}\)/)
   assert.match(entry, /getProxyEntry\(instanceEntry, isPreview, response\.data\.token\)/)
   assert.match(shared, /capability \? `\$\{url\}\?capability=\$\{encodeURIComponent\(capability\)\}` : url/)
   assert.doesNotMatch(entry, /RSCTF_Token|document\.cookie|Authorization/)
@@ -48,6 +48,17 @@ test('the scoped WSS capability is renewed before it can leave a stale local lis
   assert.match(entry, /setCapabilityExpiresAt\(response\.data\.expiresAt\)/)
   assert.match(entry, /CAPABILITY_REFRESH_SAFETY_MS/)
   assert.match(entry, /useServerClockTimeout\([\s\S]*?onRefreshProxyEntry\(\)[\s\S]*?CAPABILITY_REFRESH_SAFETY_MS/)
+})
+
+test('capability renewal aborts stale HTTP work and owns every delayed cleanup', () => {
+  assert.match(entry, /const capabilityAbort = useRef<AbortController \| null>\(null\)/)
+  assert.match(entry, /const capabilityTimers = useRef\(new Set<number>\(\)\)/)
+  assert.match(entry, /capabilityAbort\.current\?\.abort\(\)/)
+  assert.match(entry, /for \(const timer of capabilityTimers\.current\) window\.clearTimeout\(timer\)/)
+  assert.match(entry, /signal\.addEventListener\('abort', finish, \{ once: true \}\)/)
+  assert.doesNotMatch(entry, /new Promise<void>\(\(resolve\) => window\.setTimeout/)
+  assert.doesNotMatch(entry, /window\.setTimeout\(\(\) => void wsrx\.delete/)
+  assert.match(entry, /for \(const local of drainingLocals\.current\) void wsrx\.delete/)
 })
 
 test('extension availability follows initial and corrected server clock samples', () => {

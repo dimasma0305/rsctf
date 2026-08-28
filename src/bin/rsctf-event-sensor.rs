@@ -878,6 +878,17 @@ fn terminal_snapshot_error(error: &anyhow::Error) -> bool {
         })
 }
 
+fn snapshot_retry_delay(attempt: u32, entropy: u64) -> Duration {
+    let cap_ms = 1_000_u64
+        .saturating_mul(1_u64 << attempt.min(5))
+        .min(30_000);
+    let floor_ms = cap_ms / 2;
+    let mixed = entropy
+        .rotate_left(attempt % 64)
+        .wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    Duration::from_millis(floor_ms + mixed % (cap_ms - floor_ms + 1))
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -890,6 +901,12 @@ async fn main() -> anyhow::Result<()> {
         .timeout(Duration::from_secs(10))
         .build()?;
     let mut spool = DurableSpool::open(config.spool_dir.clone()).await?;
+    let startup_entropy = u64::from_be_bytes(
+        Uuid::new_v4().as_bytes()[..8]
+            .try_into()
+            .expect("UUID prefix is eight bytes"),
+    );
+    let mut snapshot_failures = 0_u32;
     let initial = loop {
         match fetch_snapshot(&client, &config)
             .await
@@ -898,8 +915,10 @@ async fn main() -> anyhow::Result<()> {
             Ok(snapshot) => break Arc::new(snapshot),
             Err(error) if terminal_snapshot_error(&error) => return Err(error),
             Err(error) => {
-                tracing::warn!(%error, "event sensor initial snapshot unavailable; retrying");
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                let delay = snapshot_retry_delay(snapshot_failures, startup_entropy);
+                snapshot_failures = snapshot_failures.saturating_add(1);
+                tracing::warn!(%error, ?delay, "event sensor initial snapshot unavailable; retrying");
+                tokio::time::sleep(delay).await;
             }
         }
     };

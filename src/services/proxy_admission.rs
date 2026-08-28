@@ -32,6 +32,7 @@ struct Inner {
     events: DashMap<i32, Arc<AtomicUsize>>,
     workloads: DashMap<Uuid, Arc<AtomicUsize>>,
     traffic: Arc<FixedWindow>,
+    traffic_metrics: Arc<TrafficMetrics>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -84,6 +85,23 @@ pub struct ProxyTrafficPermit {
     process: Arc<FixedWindow>,
     session: Arc<FixedWindow>,
     total_bytes: Arc<AtomicU64>,
+    metrics: Arc<TrafficMetrics>,
+}
+
+#[derive(Default)]
+struct TrafficMetrics {
+    accepted_bytes: AtomicU64,
+    accepted_frames: AtomicU64,
+    accepted_control_frames: AtomicU64,
+    rejected_frames: AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ProxyTrafficMetrics {
+    pub accepted_bytes: u64,
+    pub accepted_frames: u64,
+    pub accepted_control_frames: u64,
+    pub rejected_frames: u64,
 }
 
 impl ProxyTrafficPermit {
@@ -91,7 +109,16 @@ impl ProxyTrafficPermit {
     /// remote store. The process ceiling is the fail-closed backstop when a
     /// distributed deployment's coarse open budget is unavailable.
     pub fn try_reserve(&self, bytes: usize) -> bool {
+        self.try_reserve_frame(bytes, false)
+    }
+
+    pub fn try_reserve_control(&self, bytes: usize) -> bool {
+        self.try_reserve_frame(bytes, true)
+    }
+
+    fn try_reserve_frame(&self, bytes: usize, control: bool) -> bool {
         let Ok(bytes) = u64::try_from(bytes) else {
+            self.record_rejection();
             return false;
         };
         if self
@@ -102,6 +129,7 @@ impl ProxyTrafficPermit {
             })
             .is_err()
         {
+            self.record_rejection();
             return false;
         }
         let now = unix_second();
@@ -112,6 +140,7 @@ impl ProxyTrafficPermit {
             SESSION_FRAMES_PER_SECOND,
         ) {
             self.total_bytes.fetch_sub(bytes, Ordering::AcqRel);
+            self.record_rejection();
             return false;
         }
         if !self.process.try_reserve(
@@ -122,9 +151,30 @@ impl ProxyTrafficPermit {
         ) {
             self.session.release(now, bytes);
             self.total_bytes.fetch_sub(bytes, Ordering::AcqRel);
+            self.record_rejection();
             return false;
         }
+        self.metrics
+            .accepted_bytes
+            .fetch_add(bytes, Ordering::Relaxed);
+        self.metrics.accepted_frames.fetch_add(1, Ordering::Relaxed);
+        if control {
+            self.metrics
+                .accepted_control_frames
+                .fetch_add(1, Ordering::Relaxed);
+        }
         true
+    }
+
+    fn record_rejection(&self) {
+        let rejected = self
+            .metrics
+            .rejected_frames
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        if rejected.is_power_of_two() {
+            tracing::warn!(rejected, "proxy traffic work budget rejected frames");
+        }
     }
 }
 
@@ -192,6 +242,7 @@ impl ProxyAdmission {
                 events: DashMap::new(),
                 workloads: DashMap::new(),
                 traffic: Arc::new(FixedWindow::default()),
+                traffic_metrics: Arc::new(TrafficMetrics::default()),
             }),
         }
     }
@@ -525,6 +576,34 @@ impl ProxyPermit {
             process: Arc::clone(&self.admission.inner.traffic),
             session: Arc::new(FixedWindow::default()),
             total_bytes: Arc::new(AtomicU64::new(0)),
+            metrics: Arc::clone(&self.admission.inner.traffic_metrics),
+        }
+    }
+}
+
+impl ProxyAdmission {
+    pub fn traffic_metrics(&self) -> ProxyTrafficMetrics {
+        ProxyTrafficMetrics {
+            accepted_bytes: self
+                .inner
+                .traffic_metrics
+                .accepted_bytes
+                .load(Ordering::Relaxed),
+            accepted_frames: self
+                .inner
+                .traffic_metrics
+                .accepted_frames
+                .load(Ordering::Relaxed),
+            accepted_control_frames: self
+                .inner
+                .traffic_metrics
+                .accepted_control_frames
+                .load(Ordering::Relaxed),
+            rejected_frames: self
+                .inner
+                .traffic_metrics
+                .rejected_frames
+                .load(Ordering::Relaxed),
         }
     }
 }
@@ -700,7 +779,17 @@ mod tests {
             .unwrap();
         let traffic = permit.traffic();
         assert!(traffic.try_reserve(1024));
+        assert!(traffic.try_reserve_control(0));
         assert!(!traffic.try_reserve(SESSION_TOTAL_BYTES as usize));
+        assert_eq!(
+            admission.traffic_metrics(),
+            ProxyTrafficMetrics {
+                accepted_bytes: 1024,
+                accepted_frames: 2,
+                accepted_control_frames: 1,
+                rejected_frames: 1,
+            }
+        );
     }
 
     #[tokio::test]

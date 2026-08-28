@@ -17,12 +17,23 @@ pub(super) async fn close_cleanly(mut socket: WebSocket) {
     let _ = socket.send(normal_close()).await;
 }
 
+pub(super) async fn close_at_capacity(mut socket: WebSocket) {
+    let _ = socket.send(capacity_exceeded_close()).await;
+}
+
 pub(super) fn normal_close() -> Message {
     close_message(close_code::NORMAL, "")
 }
 
 pub(super) fn endpoint_unavailable_close() -> Message {
     close_message(close_code::AGAIN, "proxy endpoint unavailable")
+}
+
+pub(super) fn capacity_exceeded_close() -> Message {
+    close_message(
+        close_code::AGAIN,
+        "proxy capacity exceeded; retry after 2 seconds",
+    )
 }
 
 pub(super) fn transport_failure_close() -> Message {
@@ -53,6 +64,10 @@ fn now_millis() -> u64 {
 
 fn reserve(traffic: Option<&ProxyTrafficPermit>, bytes: usize) -> bool {
     traffic.is_none_or(|traffic| traffic.try_reserve(bytes))
+}
+
+fn reserve_control(traffic: Option<&ProxyTrafficPermit>, bytes: usize) -> bool {
+    traffic.is_none_or(|traffic| traffic.try_reserve_control(bytes))
 }
 
 /// Pump one admitted tunnel with bounded per-session and per-process work. The
@@ -94,8 +109,18 @@ pub(super) async fn proxy_pump<S>(
                     ingress_activity.store(now_millis(), Ordering::Release);
                     tcp_wr.write_all(text.as_str().as_bytes()).await
                 }
-                Message::Close(_) => break,
-                Message::Ping(_) | Message::Pong(_) => {
+                Message::Close(frame) => {
+                    let bytes = frame.as_ref().map_or(0, |frame| frame.reason.len() + 2);
+                    if !reserve_control(ingress_traffic.as_ref(), bytes) {
+                        throttled = true;
+                    }
+                    break;
+                }
+                Message::Ping(value) | Message::Pong(value) => {
+                    if !reserve_control(ingress_traffic.as_ref(), value.len()) {
+                        throttled = true;
+                        break;
+                    }
                     ingress_activity.store(now_millis(), Ordering::Release);
                     continue;
                 }
@@ -198,5 +223,17 @@ mod tests {
         };
         assert_eq!(frame.code, close_code::POLICY);
         assert!(frame.reason.contains("retry after 2 seconds"));
+    }
+
+    #[test]
+    fn admission_overload_close_is_retryable_and_explicit() {
+        let Message::Close(Some(frame)) = capacity_exceeded_close() else {
+            panic!("expected close frame");
+        };
+        assert_eq!(frame.code, close_code::AGAIN);
+        assert_eq!(
+            frame.reason,
+            "proxy capacity exceeded; retry after 2 seconds"
+        );
     }
 }

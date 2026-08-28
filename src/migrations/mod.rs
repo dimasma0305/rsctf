@@ -179,6 +179,7 @@ mod m0199_repo_binding_scheduler;
 mod m0205_account_activity_indexes;
 mod m0206_joined_challenge_catalog_indexes;
 mod m0207_participation_provision_jobs;
+mod m0216_solve_receipt_audit_retention;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -374,6 +375,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0205_account_activity_indexes::Migration),
             Box::new(m0206_joined_challenge_catalog_indexes::Migration),
             Box::new(m0207_participation_provision_jobs::Migration),
+            Box::new(m0216_solve_receipt_audit_retention::Migration),
         ]
     }
 }

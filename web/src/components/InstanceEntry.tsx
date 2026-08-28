@@ -173,6 +173,9 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const [tunnelRetrying, setTunnelRetrying] = useState(false)
   const renewalOwner = useRef(false)
   const capabilityGeneration = useRef(0)
+  const capabilityAbort = useRef<AbortController | null>(null)
+  const capabilityTimers = useRef(new Set<number>())
+  const drainingLocals = useRef(new Set<string>())
   const remoteEntryRef = useRef(wsrxRemoteEntry)
   const capabilityExpiryRef = useRef(capabilityExpiresAt)
   const proxyModeRef = useRef(proxyEntryMode)
@@ -182,7 +185,40 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   proxyModeRef.current = proxyEntryMode
   wsrxUsableRef.current = isWsrxUsable
 
+  const clearCapabilityTimers = useCallback(() => {
+    for (const timer of capabilityTimers.current) window.clearTimeout(timer)
+    capabilityTimers.current.clear()
+  }, [])
+
+  const scheduleCapabilityTimer = useCallback((callback: () => void, delay: number) => {
+    const timer = window.setTimeout(() => {
+      capabilityTimers.current.delete(timer)
+      callback()
+    }, delay)
+    capabilityTimers.current.add(timer)
+  }, [])
+
+  const waitForCapabilityRetry = useCallback((delay: number, signal: AbortSignal) => {
+    return new Promise<void>((resolve) => {
+      let timer = 0
+      const finish = () => {
+        window.clearTimeout(timer)
+        capabilityTimers.current.delete(timer)
+        signal.removeEventListener('abort', finish)
+        resolve()
+      }
+      timer = window.setTimeout(finish, delay)
+      capabilityTimers.current.add(timer)
+      if (signal.aborted) finish()
+      else signal.addEventListener('abort', finish, { once: true })
+    })
+  }, [])
+
   useEffect(() => {
+    capabilityAbort.current?.abort()
+    clearCapabilityTimers()
+    for (const local of drainingLocals.current) void wsrx.delete(local).catch(() => undefined)
+    drainingLocals.current.clear()
     capabilityGeneration.current += 1
     renewalOwner.current = false
     setWsrxRemoteEntry('')
@@ -192,12 +228,25 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     setTunnelRequestComplete(false)
     setTunnelRequestFailed(false)
     setTunnelRetrying(false)
-  }, [instanceEntry, isPlatformProxy])
+  }, [clearCapabilityTimers, instanceEntry, isPlatformProxy, wsrx])
+
+  useEffect(
+    () => () => {
+      capabilityAbort.current?.abort()
+      clearCapabilityTimers()
+      for (const local of drainingLocals.current) void wsrx.delete(local).catch(() => undefined)
+      drainingLocals.current.clear()
+    },
+    [clearCapabilityTimers, wsrx]
+  )
 
   useEffect(() => {
     if (!isPlatformProxy || !instanceEntry) return
 
     const generation = ++capabilityGeneration.current
+    const controller = new AbortController()
+    capabilityAbort.current?.abort()
+    capabilityAbort.current = controller
     let active = true
     const requestCapability = async () => {
       renewalOwner.current = true
@@ -206,8 +255,8 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
       for (let attempt = 0; attempt < 6 && active && generation === capabilityGeneration.current; attempt += 1) {
         try {
           const response = isPreview
-            ? await api.proxy.proxyIssueNoInstanceCapability(instanceEntry)
-            : await api.proxy.proxyIssueInstanceCapability(instanceEntry)
+            ? await api.proxy.proxyIssueNoInstanceCapability(instanceEntry, { signal: controller.signal })
+            : await api.proxy.proxyIssueInstanceCapability(instanceEntry, { signal: controller.signal })
           if (!active || generation !== capabilityGeneration.current) return
           const candidate = getProxyEntry(instanceEntry, isPreview, response.data.token)
           if (remoteEntryRef.current && proxyModeRef.current === 'wsrx' && wsrxUsableRef.current) {
@@ -222,12 +271,15 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
           setTunnelRequestFailed(false)
           return
         } catch (err) {
-          const response = (err as {
-            response?: {
-              status?: number
-              headers?: { get?: (name: string) => unknown; 'retry-after'?: unknown }
+          if (controller.signal.aborted || !active || generation !== capabilityGeneration.current) return
+          const response = (
+            err as {
+              response?: {
+                status?: number
+                headers?: { get?: (name: string) => unknown; 'retry-after'?: unknown }
+              }
             }
-          })?.response
+          )?.response
           const status = response?.status
           const terminal = status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429
           const oldPathStillValid =
@@ -239,13 +291,13 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
             setTunnelRetrying(false)
             return
           }
-          const jitter = Math.max(50, Math.floor((delay * (generation % 17 + 1)) / 18))
+          const jitter = Math.max(50, Math.floor((delay * ((generation % 17) + 1)) / 18))
           const retryAfterValue = response?.headers?.get?.('retry-after') ?? response?.headers?.['retry-after']
           const retryAfterSeconds = Number.parseInt(String(retryAfterValue ?? ''), 10)
           const retryAfter = Number.isFinite(retryAfterSeconds)
             ? Math.min(Math.max(retryAfterSeconds, 0) * 1000, 10_000)
             : jitter
-          await new Promise<void>((resolve) => window.setTimeout(resolve, retryAfter))
+          await waitForCapabilityRetry(retryAfter, controller.signal)
           delay = Math.min(delay * 2, 10_000)
         }
       }
@@ -254,10 +306,12 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     requestCapability()
     return () => {
       active = false
+      controller.abort()
+      if (capabilityAbort.current === controller) capabilityAbort.current = null
       if (capabilityGeneration.current === generation) capabilityGeneration.current += 1
       renewalOwner.current = false
     }
-  }, [capabilityAttempt, instanceEntry, isPlatformProxy, isPreview, t])
+  }, [capabilityAttempt, instanceEntry, isPlatformProxy, isPreview, t, waitForCapabilityRetry])
 
   const localTraffic = wsrxInstances.find((traffic) => traffic.remote === wsrxRemoteEntry)
   const pendingTraffic = wsrxInstances.find((traffic) => traffic.remote === pendingWsrxRemoteEntry)
@@ -284,7 +338,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
           HandleWsrxError(err, t)
           if (canRetry) {
             const retryDelay = Math.min(1000 * 2 ** Math.min(capabilityAttempt, 4), 10_000)
-            window.setTimeout(() => {
+            scheduleCapabilityTimer(() => {
               if (capabilityGeneration.current === retryGeneration) {
                 setCapabilityAttempt((attempt) => attempt + 1)
               }
@@ -297,7 +351,17 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     return () => {
       active = false
     }
-  }, [capabilityAttempt, isWsrxUsable, label, pendingWsrxRemoteEntry, proxyEntryMode, t, wsrx, wsrxOptions.allowLan])
+  }, [
+    capabilityAttempt,
+    isWsrxUsable,
+    label,
+    pendingWsrxRemoteEntry,
+    proxyEntryMode,
+    scheduleCapabilityTimer,
+    t,
+    wsrx,
+    wsrxOptions.allowLan,
+  ])
 
   useEffect(() => {
     if (
@@ -314,10 +378,22 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     setTunnelRequestComplete(true)
     renewalOwner.current = false
     setTunnelRetrying(false)
-    if (oldLocal) {
-      window.setTimeout(() => void wsrx.delete(oldLocal).catch((err) => HandleWsrxError(err, t)), 10_000)
+    if (oldLocal && !drainingLocals.current.has(oldLocal)) {
+      drainingLocals.current.add(oldLocal)
+      scheduleCapabilityTimer(() => {
+        drainingLocals.current.delete(oldLocal)
+        void wsrx.delete(oldLocal).catch((err) => HandleWsrxError(err, t))
+      }, 10_000)
     }
-  }, [localTraffic?.local, pendingCapabilityExpiresAt, pendingTraffic, pendingWsrxRemoteEntry, t, wsrx])
+  }, [
+    localTraffic?.local,
+    pendingCapabilityExpiresAt,
+    pendingTraffic,
+    pendingWsrxRemoteEntry,
+    scheduleCapabilityTimer,
+    t,
+    wsrx,
+  ])
 
   const pendingCheckExpired = wsrxReadinessExpired.has(pendingWsrxRemoteEntry)
   useEffect(() => {
@@ -332,13 +408,21 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     if (pendingLocal) void wsrx.delete(pendingLocal).catch((err) => HandleWsrxError(err, t))
     if (canRetry) {
       const retryDelay = Math.min(1000 * 2 ** Math.min(capabilityAttempt, 4), 10_000)
-      window.setTimeout(() => {
+      scheduleCapabilityTimer(() => {
         if (capabilityGeneration.current === retryGeneration) {
           setCapabilityAttempt((attempt) => attempt + 1)
         }
       }, retryDelay)
     }
-  }, [capabilityAttempt, pendingCheckExpired, pendingTraffic?.local, pendingWsrxRemoteEntry, t, wsrx])
+  }, [
+    capabilityAttempt,
+    pendingCheckExpired,
+    pendingTraffic?.local,
+    pendingWsrxRemoteEntry,
+    scheduleCapabilityTimer,
+    t,
+    wsrx,
+  ])
 
   useEffect(() => {
     if (!wsrxRemoteEntry || !isWsrxUsable) return
@@ -374,7 +458,17 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     return () => {
       active = false
     }
-  }, [capabilityAttempt, isWsrxUsable, label, localTraffic?.local, retryWsrxReadiness, t, wsrx, wsrxOptions.allowLan, wsrxRemoteEntry])
+  }, [
+    capabilityAttempt,
+    isWsrxUsable,
+    label,
+    localTraffic?.local,
+    retryWsrxReadiness,
+    t,
+    wsrx,
+    wsrxOptions.allowLan,
+    wsrxRemoteEntry,
+  ])
 
   const tunnelCheckExpired = wsrxReadinessExpired.has(wsrxRemoteEntry)
 

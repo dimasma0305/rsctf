@@ -13,6 +13,8 @@ use crate::utils::enums::SolveReceiptMode;
 use crate::utils::error::{AppError, AppResult};
 
 pub const RECEIPT_TTL_SECONDS: i64 = 10 * 60;
+const RECEIPT_AUDIT_RETENTION_DAYS: i64 = 365;
+const RECEIPT_MAINTENANCE_BATCH: i64 = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ReceiptClaims {
@@ -392,6 +394,24 @@ pub async fn consume_receipt(
     Ok(())
 }
 
+async fn cleanup_solve_receipt_audit(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
+    sqlx::query(
+        r#"WITH expired AS (
+               SELECT receipt_id FROM "SolveReceiptAudit"
+                WHERE consumed_at_utc < clock_timestamp() - ($1 * interval '1 day')
+             ORDER BY consumed_at_utc, receipt_id
+                FOR UPDATE SKIP LOCKED LIMIT $2
+           )
+           DELETE FROM "SolveReceiptAudit" audit USING expired
+            WHERE audit.receipt_id = expired.receipt_id"#,
+    )
+    .bind(RECEIPT_AUDIT_RETENTION_DAYS)
+    .bind(RECEIPT_MAINTENANCE_BATCH)
+    .execute(pool)
+    .await
+    .map(|result| result.rows_affected())
+}
+
 /// Keeps expired one-use secrets out of the hot lookup index in bounded
 /// batches. Consumed provenance is moved synchronously to the audit table.
 pub fn start_receipt_maintenance(
@@ -437,6 +457,9 @@ pub fn start_receipt_maintenance(
                     {
                         tracing::warn!(%error, "event sensor batch cleanup failed");
                     }
+                    if let Err(error) = cleanup_solve_receipt_audit(st.pg()).await {
+                        tracing::warn!(%error, "solve-receipt audit retention cleanup failed");
+                    }
                 }
             }
         }
@@ -446,6 +469,8 @@ pub fn start_receipt_maintenance(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    use std::str::FromStr;
 
     const KEY: &str = "solve-receipt-test-key-0123456789ab";
 
@@ -485,5 +510,76 @@ mod tests {
             verifier_attempt_hash(KEY, "other", attempt).unwrap()
         );
         assert_eq!(issuer_shard("verifier", 7), issuer_shard("verifier", 7));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn receipt_audit_retention_is_bounded_and_preserves_recent_rows() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("receipt_retention_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"CREATE TABLE "SolveReceiptAudit" (
+                   receipt_id UUID PRIMARY KEY,
+                   consumed_at_utc TIMESTAMPTZ NOT NULL
+               );
+               CREATE INDEX ix_solve_receipt_audit_retention
+                   ON "SolveReceiptAudit" (consumed_at_utc, receipt_id);"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for _ in 0..501 {
+            sqlx::query(
+                r#"INSERT INTO "SolveReceiptAudit" (receipt_id, consumed_at_utc)
+                   VALUES ($1, clock_timestamp() - interval '366 days')"#,
+            )
+            .bind(Uuid::new_v4())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let recent = Uuid::new_v4();
+        sqlx::query(
+            r#"INSERT INTO "SolveReceiptAudit" (receipt_id, consumed_at_utc)
+               VALUES ($1, clock_timestamp())"#,
+        )
+        .bind(recent)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(cleanup_solve_receipt_audit(&pool).await.unwrap(), 500);
+        assert_eq!(cleanup_solve_receipt_audit(&pool).await.unwrap(), 1);
+        assert!(sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS (SELECT 1 FROM "SolveReceiptAudit" WHERE receipt_id = $1)"#,
+        )
+        .bind(recent)
+        .fetch_one(&pool)
+        .await
+        .unwrap());
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
     }
 }

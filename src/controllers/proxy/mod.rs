@@ -35,6 +35,7 @@
 //! consume every trusted-worker data stream.
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use axum::extract::ws::{WebSocket, WebSocketUpgrade};
@@ -67,6 +68,7 @@ mod tests;
 mod transport;
 
 use access_log::log_container_access_on;
+use authorization::lease_generation::LeaseGenerationCache;
 use authorization::{
     exercise_lease_is_valid, game_proxy_scope_is_valid, game_proxy_session_is_valid,
     try_acquire_game_proxy_open_fence, GameProxyOpenFence, GameProxyTargetIdentity,
@@ -77,7 +79,7 @@ use capability::{
 };
 use egress::{build_egress_scan, EgressScan};
 use target::{game_proxy_target_identity, proxy_target, resolve_noinstance_target, ProxyTarget};
-use transport::{close_cleanly, endpoint_unavailable_close, proxy_pump};
+use transport::{close_at_capacity, close_cleanly, endpoint_unavailable_close, proxy_pump};
 
 /// Maximum client frame and reassembled message; raw TCP clients can segment writes.
 const MAX_CLIENT_MESSAGE_SIZE: usize = 64 * 1024;
@@ -181,7 +183,7 @@ async fn proxy_for_instance(
                                 )
                                 .await
                             else {
-                                run_or_close(st_log, socket, None, None, None, None, None).await;
+                                close_at_capacity(socket).await;
                                 return;
                             };
                             // Egress metadata is preparatory only and may use a
@@ -263,7 +265,7 @@ async fn proxy_for_instance(
                                 )
                                 .await
                             else {
-                                run_or_close(st_log, socket, None, None, None, None, None).await;
+                                close_at_capacity(socket).await;
                                 return;
                             };
                             let lease = InstanceLease {
@@ -822,6 +824,7 @@ enum WorkerProxyOpenError {
     Worker(crate::services::worker::WorkerError),
 }
 
+#[derive(Clone)]
 struct InstanceLease {
     pool: sqlx::PgPool,
     user_id: Uuid,
@@ -829,7 +832,7 @@ struct InstanceLease {
     owner: LeaseOwner,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 enum LeaseOwner {
     Game {
         game_id: i32,
@@ -850,63 +853,83 @@ enum LeaseOwner {
     },
 }
 
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct LeaseGenerationKey {
+    user_id: Uuid,
+    security_stamp: String,
+    owner: LeaseOwner,
+}
+
+static LEASE_GENERATIONS: LazyLock<Arc<LeaseGenerationCache<LeaseGenerationKey>>> =
+    LazyLock::new(LeaseGenerationCache::new);
+
 async fn wait_for_revocation(lease: InstanceLease) {
     let jitter = Duration::from_millis(u64::from(lease.user_id.as_bytes()[0]) * 4);
-    loop {
-        tokio::time::sleep(Duration::from_secs(5) + jitter).await;
-        let lease_valid = match &lease.owner {
-            LeaseOwner::Game {
-                game_id,
-                team_id,
-                participation_id,
-                challenge_id,
+    let key = LeaseGenerationKey {
+        user_id: lease.user_id,
+        security_stamp: lease.security_stamp.clone(),
+        owner: lease.owner.clone(),
+    };
+    let (mut subscription, owner) = LEASE_GENERATIONS.subscribe(key);
+    if let Some(owner) = owner {
+        let _ = tokio::spawn(owner.drive(Duration::from_secs(5) + jitter, move || {
+            let lease = lease.clone();
+            async move { lease_is_valid(&lease).await }
+        }));
+    }
+    subscription.invalidated().await;
+}
+
+async fn lease_is_valid(lease: &InstanceLease) -> bool {
+    match &lease.owner {
+        LeaseOwner::Game {
+            game_id,
+            team_id,
+            participation_id,
+            challenge_id,
+            target_identity,
+            event_vpn_source,
+            bypass_event_vpn,
+        } => {
+            game_proxy_session_is_valid(
+                &lease.pool,
+                LiveParticipationIdentity {
+                    user_id: lease.user_id,
+                    expected_security_stamp: &lease.security_stamp,
+                    game_id: *game_id,
+                    team_id: *team_id,
+                    participation_id: *participation_id,
+                },
+                *challenge_id,
                 target_identity,
-                event_vpn_source,
-                bypass_event_vpn,
-            } => {
-                game_proxy_session_is_valid(
-                    &lease.pool,
-                    LiveParticipationIdentity {
-                        user_id: lease.user_id,
-                        expected_security_stamp: &lease.security_stamp,
-                        game_id: *game_id,
-                        team_id: *team_id,
-                        participation_id: *participation_id,
-                    },
-                    *challenge_id,
-                    target_identity,
-                    *event_vpn_source,
-                    *bypass_event_vpn,
-                )
-                .await
-            }
-            LeaseOwner::Exercise {
-                exercise_instance_id,
-                exercise_id,
-                container_id,
-            } => {
-                exercise_lease_is_valid(
-                    &lease.pool,
-                    lease.user_id,
-                    &lease.security_stamp,
-                    *exercise_instance_id,
-                    *exercise_id,
-                    *container_id,
-                )
-                .await
-            }
-            LeaseOwner::Preview { container_id } => {
-                preview_lease_is_valid(
-                    &lease.pool,
-                    lease.user_id,
-                    &lease.security_stamp,
-                    *container_id,
-                )
-                .await
-            }
-        };
-        if !lease_valid {
-            return;
+                *event_vpn_source,
+                *bypass_event_vpn,
+            )
+            .await
+        }
+        LeaseOwner::Exercise {
+            exercise_instance_id,
+            exercise_id,
+            container_id,
+        } => {
+            exercise_lease_is_valid(
+                &lease.pool,
+                lease.user_id,
+                &lease.security_stamp,
+                *exercise_instance_id,
+                *exercise_id,
+                *container_id,
+            )
+            .await
+        }
+        LeaseOwner::Preview { container_id } => {
+            preview_lease_is_valid(
+                &lease.pool,
+                lease.user_id,
+                &lease.security_stamp,
+                *container_id,
+            )
+            .await
         }
     }
 }

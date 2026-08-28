@@ -52,3 +52,19 @@ fn sensor_api_url_requires_exact_loopback_http_or_https() {
     assert!(validate_api_url("https://user:secret@sensor.example.test").is_err());
     assert!(validate_api_url("https://sensor.example.test?token=leak").is_err());
 }
+
+#[test]
+fn startup_snapshot_recovery_is_jittered_and_capped() {
+    for attempt in 0..64 {
+        let delay = snapshot_retry_delay(attempt, 0x1234_5678_9abc_def0);
+        let cap = Duration::from_secs(1_u64.checked_shl(attempt.min(5)).unwrap())
+            .min(Duration::from_secs(30));
+        assert!(
+            delay >= cap / 2,
+            "attempt {attempt} was below equal-jitter floor"
+        );
+        assert!(delay <= cap, "attempt {attempt} exceeded cap");
+    }
+    assert_ne!(snapshot_retry_delay(3, 1), snapshot_retry_delay(3, 2));
+    assert!(snapshot_retry_delay(u32::MAX, 7) <= Duration::from_secs(30));
+}
