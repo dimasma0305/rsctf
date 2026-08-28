@@ -96,6 +96,7 @@ pub async fn update_invite_token(
     }
     let mut roster = acquire_roster_mutation(st.pg(), id).await?;
     require_team_mutable(roster.transaction_mut(), id).await?;
+    ensure_roster_change_allowed(roster.transaction_mut(), id).await?;
     let team = load_team(&st, id).await?;
     require_captain(&team, &user)?;
     let current_revision = sqlx::query_scalar::<_, i64>(
