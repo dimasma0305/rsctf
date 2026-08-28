@@ -2188,6 +2188,11 @@ export interface ChallengeBuildAuditModel {
   durationMs: number
 }
 
+export interface ChallengeBuildStatusModel {
+  buildStatus: ChallengeBuildStatus
+  lastBuildLog?: string | null
+}
+
 /** One row of the live in-progress strip */
 export interface ChallengeBuildInProgressModel {
   auditId: number
@@ -2869,6 +2874,16 @@ export interface FlagCreateModel {
   fileHash?: string | null;
   /** File URL (remote file) */
   remoteUrl?: string | null;
+}
+
+export interface FlagImportRequest {
+  operationId: string;
+  flags: FlagCreateModel[];
+}
+
+export interface FlagImportResult {
+  inserted: number;
+  duplicates: number;
 }
 
 /** List response */
@@ -6788,10 +6803,10 @@ export class Api<
     editAddFlags: (
       id: number,
       cId: number,
-      data: FlagCreateModel[],
+      data: FlagImportRequest,
       params: RequestParams = {},
     ) =>
-      this.request<void, RequestResponse>({
+      this.request<FlagImportResult, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${cId}/flags`,
         method: "POST",
         body: data,
@@ -8211,6 +8226,18 @@ export class Api<
     ) =>
       this.request<ChallengeAuditModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${cId}/auditmeta`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    editGetChallengeBuildStatus: (
+      id: number,
+      cId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeBuildStatusModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/buildstatus`,
         method: "GET",
         format: "json",
         ...params,

@@ -27,6 +27,7 @@ import { showErrorMsg } from '@Utils/Shared'
 import { useEditChallenge } from '@Hooks/useEdit'
 import api, { FileType } from '@Api'
 import uploadClasses from '@Styles/Upload.module.css'
+import { MAX_FLAG_IMPORT_ROWS } from '@Utils/FlagImport'
 
 export const AttachmentUploadModal: FC<ModalProps> = (props) => {
   const { id, chalId } = useParams()
@@ -53,6 +54,10 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
       })
       return
     }
+    if (files.length > MAX_FLAG_IMPORT_ROWS) {
+      showNotification({ color: 'red', message: `Only ${MAX_FLAG_IMPORT_ROWS} files can be added at once.` })
+      return
+    }
 
     setProgress(0)
     setDisabled(true)
@@ -75,11 +80,14 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
         await api.edit.editAddFlags(
           numId,
           numCId,
-          data.data.map((f, idx) => ({
-            flag: files[idx].name,
-            attachmentType: FileType.Local,
-            fileHash: f.hash,
-          }))
+          {
+            operationId: crypto.randomUUID(),
+            flags: data.data.map((f, idx) => ({
+              flag: files[idx].name,
+              attachmentType: FileType.Local,
+              fileHash: f.hash,
+            })),
+          }
         )
 
         setProgress(0)

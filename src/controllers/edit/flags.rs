@@ -1,5 +1,132 @@
 //! edit: flag CRUD (see edit/mod.rs for the router + shared DTOs/helpers).
 use super::*;
+use sha2::{Digest, Sha256};
+
+const MAX_FLAGS_PER_IMPORT: usize = 100;
+const MAX_FLAGS_PER_CHALLENGE: i64 = 512;
+const MAX_FLAG_BYTES: usize = 127;
+const MAX_FLAG_REMOTE_URL_BYTES: usize = 2_048;
+const MAX_FLAG_FILE_HASH_BYTES: usize = 256;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlagImportResult {
+    pub inserted: i32,
+    pub duplicates: i32,
+}
+
+fn validate_flag_import(flags: &[FlagCreateModel]) -> AppResult<()> {
+    if flags.is_empty() || flags.len() > MAX_FLAGS_PER_IMPORT {
+        return Err(AppError::payload_too_large(format!(
+            "A flag import must contain 1 to {MAX_FLAGS_PER_IMPORT} rows"
+        )));
+    }
+    for model in flags {
+        if model.flag.is_empty() || model.flag.len() > MAX_FLAG_BYTES {
+            return Err(AppError::bad_request(format!(
+                "Every flag must contain 1 to {MAX_FLAG_BYTES} UTF-8 bytes"
+            )));
+        }
+        if model
+            .remote_url
+            .as_ref()
+            .is_some_and(|value| value.len() > MAX_FLAG_REMOTE_URL_BYTES)
+            || model
+                .file_hash
+                .as_ref()
+                .is_some_and(|value| value.len() > MAX_FLAG_FILE_HASH_BYTES)
+        {
+            return Err(AppError::payload_too_large(
+                "A flag attachment URL or hash exceeds its byte limit",
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn abandon_flag_import(pool: &sqlx::PgPool, challenge_id: i32, operation_id: Uuid) {
+    if let Err(error) = sqlx::query(
+        r#"DELETE FROM "FlagImportOperations"
+            WHERE challenge_id = $1 AND operation_id = $2 AND state = 0"#,
+    )
+    .bind(challenge_id)
+    .bind(operation_id)
+    .execute(pool)
+    .await
+    {
+        tracing::warn!(%error, challenge_id, %operation_id, "failed to abandon flag import reservation");
+    }
+}
+
+async fn reserve_flag_import(
+    pool: &sqlx::PgPool,
+    challenge_id: i32,
+    actor_user_id: Uuid,
+    operation_id: Uuid,
+    request_digest: &[u8],
+) -> AppResult<Option<FlagImportResult>> {
+    let inserted = sqlx::query_scalar::<_, bool>(
+        r#"INSERT INTO "FlagImportOperations"
+             (challenge_id, operation_id, actor_user_id, request_digest)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (challenge_id, operation_id) DO NOTHING
+           RETURNING TRUE"#,
+    )
+    .bind(challenge_id)
+    .bind(operation_id)
+    .bind(actor_user_id)
+    .bind(request_digest)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if inserted.is_some() {
+        return Ok(None);
+    }
+    let stored = sqlx::query_as::<_, (Uuid, Vec<u8>, i16, Option<i32>, Option<i32>, bool)>(
+        r#"SELECT actor_user_id, request_digest, state, inserted_count,
+                  duplicate_count, lease_expires_at_utc <= clock_timestamp()
+             FROM "FlagImportOperations"
+            WHERE challenge_id = $1 AND operation_id = $2"#,
+    )
+    .bind(challenge_id)
+    .bind(operation_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if stored.0 != actor_user_id || stored.1 != request_digest {
+        return Err(AppError::conflict(
+            "The operation ID is already bound to another flag import",
+        ));
+    }
+    if stored.2 == 1 {
+        return Ok(Some(FlagImportResult {
+            inserted: stored.3.unwrap_or_default(),
+            duplicates: stored.4.unwrap_or_default(),
+        }));
+    }
+    if !stored.5 {
+        return Err(AppError::conflict(
+            "This flag import is still running; retry its operation ID later",
+        ));
+    }
+    let reclaimed = sqlx::query(
+        r#"UPDATE "FlagImportOperations"
+              SET lease_expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
+            WHERE challenge_id = $1 AND operation_id = $2 AND state = 0
+              AND lease_expires_at_utc <= clock_timestamp()"#,
+    )
+    .bind(challenge_id)
+    .bind(operation_id)
+    .execute(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if reclaimed.rows_affected() != 1 {
+        return Err(AppError::conflict(
+            "This flag import was reclaimed by another request",
+        ));
+    }
+    Ok(None)
+}
 
 async fn cleanup_staged_flag_attachments(st: &SharedState, flags: &[(String, Option<i32>)]) {
     for attachment_id in flags.iter().filter_map(|(_, attachment_id)| *attachment_id) {
@@ -47,11 +174,45 @@ pub async fn add_flags(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((id, c_id)): Path<(i32, i32)>,
-    Json(models): Json<Vec<FlagCreateModel>>,
-) -> AppResult<MessageResponse> {
+    Json(request): Json<FlagImportRequest>,
+) -> AppResult<RequestResponse<FlagImportResult>> {
     manager_or_admin(&st, &user, id).await?;
     challenges::reject_pending_mutation(st.pg(), id, c_id).await?;
     load_challenge(&st, id, c_id).await?;
+    if request.operation_id.is_nil() {
+        return Err(AppError::bad_request(
+            "Flag import operation ID is required",
+        ));
+    }
+    validate_flag_import(&request.flags)?;
+    let request_digest = Sha256::digest(
+        serde_json::to_vec(&request.flags)
+            .map_err(|error| AppError::internal(error.to_string()))?,
+    )
+    .to_vec();
+    if let Some(result) = reserve_flag_import(
+        st.pg(),
+        c_id,
+        user.id,
+        request.operation_id,
+        &request_digest,
+    )
+    .await?
+    {
+        return Ok(RequestResponse::ok(result));
+    }
+
+    let mut seen = std::collections::HashSet::with_capacity(request.flags.len());
+    let mut body_duplicates = 0_i32;
+    let models = request
+        .flags
+        .into_iter()
+        .filter(|model| {
+            let unique = seen.insert(model.flag.clone());
+            body_duplicates += i32::from(!unique);
+            unique
+        })
+        .collect::<Vec<_>>();
 
     // Attachment creation does not alter grading policy. Materialize it before
     // taking the flag-policy lock so submissions are not held up by blob lookup.
@@ -63,6 +224,7 @@ pub async fn add_flags(
                 Ok(attachment_id) => attachment_id,
                 Err(error) => {
                     cleanup_staged_flag_attachments(&st, &flags).await;
+                    abandon_flag_import(st.pg(), c_id, request.operation_id).await;
                     return Err(error);
                 }
             };
@@ -76,6 +238,7 @@ pub async fn add_flags(
         Ok(lock) => lock,
         Err(error) => {
             cleanup_staged_flag_attachments(&st, &flags).await;
+            abandon_flag_import(st.pg(), c_id, request.operation_id).await;
             return Err(error);
         }
     };
@@ -90,10 +253,11 @@ pub async fn add_flags(
         Err(error) => {
             drop(game_control);
             cleanup_staged_flag_attachments(&st, &flags).await;
+            abandon_flag_import(st.pg(), c_id, request.operation_id).await;
             return Err(AppError::internal(error.to_string()));
         }
     };
-    let mutation: AppResult<()> = async {
+    let mutation: AppResult<(i32, std::collections::HashSet<String>)> = async {
         // Deletion may have won after the intentionally lock-free attachment
         // staging. Recheck both durable fences in this retained transaction so
         // their key-share row locks survive until every flag insert commits.
@@ -106,38 +270,202 @@ pub async fn add_flags(
         )
         .await?;
 
-        for (flag, attachment_id) in &flags {
-            sqlx::query(
-                r#"INSERT INTO "FlagContexts"
-                     (flag, is_occupied, challenge_id, attachment_id)
-                   VALUES ($1, FALSE, $2, $3)"#,
-            )
-            .bind(flag)
-            .bind(c_id)
-            .bind(*attachment_id)
-            .execute(&mut **definition_lock.transaction_mut())
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+        let current_count = sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(*)::bigint FROM "FlagContexts" WHERE challenge_id = $1"#,
+        )
+        .bind(c_id)
+        .fetch_one(&mut **definition_lock.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if current_count > MAX_FLAGS_PER_CHALLENGE {
+            return Err(AppError::payload_too_large(
+                "This challenge already exceeds the editable flag limit",
+            ));
         }
-        Ok(())
+        let values = flags
+            .iter()
+            .map(|(flag, _)| flag.clone())
+            .collect::<Vec<_>>();
+        let attachment_ids = flags
+            .iter()
+            .map(|(_, attachment_id)| *attachment_id)
+            .collect::<Vec<_>>();
+        let inserted = sqlx::query_scalar::<_, String>(
+            r#"WITH desired AS MATERIALIZED (
+                   SELECT input.flag, input.attachment_id
+                     FROM UNNEST($2::text[], $3::integer[])
+                          AS input(flag, attachment_id)
+               ), inserted AS (
+                   INSERT INTO "FlagContexts"
+                       (flag, is_occupied, challenge_id, attachment_id)
+                   SELECT desired.flag, FALSE, $1, desired.attachment_id
+                     FROM desired
+                   WHERE NOT EXISTS (
+                        SELECT 1 FROM "FlagContexts" existing
+                         WHERE existing.challenge_id = $1
+                           AND existing.flag = desired.flag
+                    )
+                   ON CONFLICT (challenge_id, flag) WHERE challenge_id IS NOT NULL
+                   DO NOTHING
+                   RETURNING flag
+               ) SELECT flag FROM inserted"#,
+        )
+        .bind(c_id)
+        .bind(&values)
+        .bind(&attachment_ids)
+        .fetch_all(&mut **definition_lock.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        let inserted_set = inserted
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        if current_count + inserted_set.len() as i64 > MAX_FLAGS_PER_CHALLENGE {
+            return Err(AppError::payload_too_large(format!(
+                "A challenge may contain at most {MAX_FLAGS_PER_CHALLENGE} flags"
+            )));
+        }
+        let inserted_count = inserted_set.len() as i32;
+        let duplicate_count = body_duplicates + flags.len() as i32 - inserted_count;
+        sqlx::query(
+            r#"UPDATE "FlagImportOperations"
+                  SET state = 1, inserted_count = $3, duplicate_count = $4,
+                      completed_at_utc = clock_timestamp()
+                WHERE challenge_id = $1 AND operation_id = $2 AND state = 0"#,
+        )
+        .bind(c_id)
+        .bind(request.operation_id)
+        .bind(inserted_count)
+        .bind(duplicate_count)
+        .execute(&mut **definition_lock.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        sqlx::query(
+            r#"WITH expired AS (
+                   SELECT challenge_id, operation_id
+                     FROM "FlagImportOperations"
+                    WHERE state = 1
+                      AND completed_at_utc < clock_timestamp() - INTERVAL '30 days'
+                    ORDER BY completed_at_utc, challenge_id, operation_id
+                    LIMIT 128
+               )
+               DELETE FROM "FlagImportOperations" operation
+                USING expired
+                WHERE operation.challenge_id = expired.challenge_id
+                  AND operation.operation_id = expired.operation_id"#,
+        )
+        .execute(&mut **definition_lock.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        Ok((duplicate_count, inserted_set))
     }
     .await;
 
-    if let Err(error) = mutation {
-        drop(definition_lock);
-        drop(game_control);
-        cleanup_staged_flag_attachments(&st, &flags).await;
-        return Err(error);
-    }
+    let (duplicates, inserted_set) = match mutation {
+        Ok(result) => result,
+        Err(error) => {
+            drop(definition_lock);
+            drop(game_control);
+            cleanup_staged_flag_attachments(&st, &flags).await;
+            abandon_flag_import(st.pg(), c_id, request.operation_id).await;
+            return Err(error);
+        }
+    };
     if let Err(error) = definition_lock.release().await {
         drop(game_control);
-        cleanup_staged_flag_attachments(&st, &flags).await;
+        // Commit acknowledgement is ambiguous. Keep staged rows intact so a
+        // committed flag never loses its hand-out; the durable operation and
+        // ordinary orphan reconciler make a retry/recovery safe.
         return Err(AppError::internal(error.to_string()));
     }
     if let Err(error) = game_control.release().await {
         tracing::warn!(%error, id, c_id, "flag-policy game lock release failed after commit");
     }
-    Ok(MessageResponse::ok(""))
+    let duplicate_attachments = flags
+        .iter()
+        .filter(|(flag, _)| !inserted_set.contains(flag))
+        .cloned()
+        .collect::<Vec<_>>();
+    cleanup_staged_flag_attachments(&st, &duplicate_attachments).await;
+    Ok(RequestResponse::ok(FlagImportResult {
+        inserted: inserted_set.len() as i32,
+        duplicates,
+    }))
+}
+
+pub(crate) async fn load_flags(st: &SharedState, c_id: i32) -> AppResult<Vec<FlagInfoModel>> {
+    #[derive(sqlx::FromRow)]
+    struct FlagRow {
+        id: i32,
+        flag: String,
+        attachment_id: Option<i32>,
+        file_type: Option<i16>,
+        remote_url: Option<String>,
+        file_hash: Option<String>,
+        file_name: Option<String>,
+        file_size: Option<i64>,
+    }
+
+    let rows = sqlx::query_as::<_, FlagRow>(
+        r#"SELECT context.id, context.flag,
+                  attachment.id AS attachment_id,
+                  attachment."Type" AS file_type,
+                  attachment.remote_url,
+                  file.hash AS file_hash,
+                  file.name AS file_name,
+                  file.file_size
+             FROM "FlagContexts" context
+             LEFT JOIN "Attachments" attachment ON attachment.id = context.attachment_id
+             LEFT JOIN "Files" file ON file.id = attachment.local_file_id
+            WHERE context.challenge_id = $1
+            ORDER BY context.id
+            LIMIT 513"#,
+    )
+    .bind(c_id)
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if rows.len() > 512 {
+        return Err(AppError::payload_too_large(
+            "This challenge exceeds the editable flag limit; remove legacy flags first",
+        ));
+    }
+
+    rows.into_iter()
+        .map(|row| {
+            let attachment = match (row.attachment_id, row.file_type) {
+                (Some(id), Some(raw_type)) => {
+                    let file_type = match raw_type {
+                        value if value == FileType::None as i16 => FileType::None,
+                        value if value == FileType::Local as i16 => FileType::Local,
+                        value if value == FileType::Remote as i16 => FileType::Remote,
+                        _ => return Err(AppError::internal("Invalid attachment type")),
+                    };
+                    let (url, file_size) = match file_type {
+                        FileType::None => (None, None),
+                        FileType::Remote => (row.remote_url, None),
+                        FileType::Local => (
+                            row.file_hash
+                                .zip(row.file_name)
+                                .map(|(hash, name)| format!("/assets/{hash}/{name}")),
+                            row.file_size,
+                        ),
+                    };
+                    Some(AttachmentInfoModel {
+                        id,
+                        file_type,
+                        url,
+                        file_size,
+                    })
+                }
+                _ => None,
+            };
+            Ok(FlagInfoModel {
+                id: row.id,
+                flag: row.flag,
+                attachment,
+            })
+        })
+        .collect()
 }
 
 /// `DELETE /api/edit/games/{id}/challenges/{cId}/flags/{fId}` — returns a

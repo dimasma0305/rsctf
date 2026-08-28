@@ -161,6 +161,7 @@ mod m0176_platform_settings_operations;
 mod m0177_event_vpn_override_operations;
 mod m0179_division_revision_operations;
 mod m0180_team_invite_rotation;
+mod m0181_flag_import_operations;
 mod m0183_exercise_api_bounds;
 
 #[cfg(test)]
@@ -337,6 +338,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0177_event_vpn_override_operations::Migration),
             Box::new(m0179_division_revision_operations::Migration),
             Box::new(m0180_team_invite_rotation::Migration),
+            Box::new(m0181_flag_import_operations::Migration),
             Box::new(m0183_exercise_api_bounds::Migration),
         ]
     }
@@ -483,7 +485,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 40..],
+            &names[names.len() - 41..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -524,6 +526,7 @@ mod tests {
                 "m0177_event_vpn_override_operations",
                 "m0179_division_revision_operations",
                 "m0180_team_invite_rotation",
+                "m0181_flag_import_operations",
                 "m0183_exercise_api_bounds",
             ]
         );

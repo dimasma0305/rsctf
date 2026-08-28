@@ -3,16 +3,19 @@ import { useInputState } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { showErrorMsg } from '@Utils/Shared'
 import { useEditChallenge } from '@Hooks/useEdit'
 import api from '@Api'
 import misc from '@Styles/Misc.module.css'
+import { MAX_FLAG_IMPORT_ROWS, parsePlainFlagRows, validateFlagRows } from '@Utils/FlagImport'
 
 export const FlagCreateModal: FC<ModalProps> = (props) => {
   const [disabled, setDisabled] = useState(false)
+  const submitting = useRef(false)
+  const operationId = useRef<string | null>(null)
 
   const { id, chalId } = useParams()
   const [numId, numCId] = [parseInt(id ?? '-1'), parseInt(chalId ?? '-1')]
@@ -27,31 +30,36 @@ export const FlagCreateModal: FC<ModalProps> = (props) => {
       return
     }
 
-    const flagList = flags
-      .split('\n')
-      .filter((x) => x.trim().length > 0)
-      .map((x) => ({ flag: x }))
+    if (submitting.current) return
+    const flagList = parsePlainFlagRows(flags)
+    const validationError = validateFlagRows(flagList)
+    if (validationError) {
+      showNotification({ color: 'red', message: validationError })
+      return
+    }
 
+    submitting.current = true
     setDisabled(true)
 
     try {
-      await api.edit.editAddFlags(numId, numCId, flagList)
+      operationId.current ??= crypto.randomUUID()
+      const response = await api.edit.editAddFlags(numId, numCId, {
+        operationId: operationId.current,
+        flags: flagList,
+      })
       showNotification({
         color: 'teal',
-        message: t('admin.notification.games.challenges.flag.created'),
+        message: `${response.data.inserted} added; ${response.data.duplicates} duplicate(s) skipped.`,
         icon: <Icon path={mdiCheck} size={1} />,
       })
-      if (challenge) {
-        mutate({
-          ...challenge,
-          flags: [...(challenge.flags ?? []), ...flagList],
-        })
-      }
+      if (challenge) await mutate()
       setFlags('')
+      operationId.current = null
       props.onClose()
     } catch (e) {
       showErrorMsg(e, t)
     } finally {
+      submitting.current = false
       setDisabled(false)
     }
   }
@@ -62,6 +70,7 @@ export const FlagCreateModal: FC<ModalProps> = (props) => {
         <Text size="sm">
           <Trans i18nKey="admin.content.games.challenges.flag.create" />
         </Text>
+        <Text size="xs" c="dimmed">Up to {MAX_FLAG_IMPORT_ROWS} flags per import; one flag per line.</Text>
         <Textarea
           label={t('admin.label.games.challenges.flags', 'Flags')}
           w="100%"
@@ -70,7 +79,10 @@ export const FlagCreateModal: FC<ModalProps> = (props) => {
           autosize
           minRows={8}
           maxRows={8}
-          onChange={setFlags}
+          onChange={(event) => {
+            operationId.current = null
+            setFlags(event)
+          }}
           classNames={{
             input: misc.ffmono,
           }}
