@@ -272,8 +272,17 @@ async fn emit_managed_koth_callback_policy_for_live_test() {
     use tokio::sync::Notify;
     use tower::service_fn;
 
-    let output = std::env::var("RSCTF_K8S_POLICY_OUTPUT")
-        .expect("RSCTF_K8S_POLICY_OUTPUT must name the temporary acceptance artifact");
+    let Ok(output) = std::env::var("RSCTF_K8S_POLICY_OUTPUT") else {
+        assert!(
+            std::env::var_os("RSCTF_K8S_POLICY_OPERATION_ID").is_none(),
+            "RSCTF_K8S_POLICY_OUTPUT must accompany RSCTF_K8S_POLICY_OPERATION_ID"
+        );
+        eprintln!(
+            "skipping live policy emission without RSCTF_K8S_POLICY_OUTPUT; \
+             scripts/test-kubernetes-koth-callback.sh supplies it"
+        );
+        return;
+    };
     let operation_id = std::env::var("RSCTF_K8S_POLICY_OPERATION_ID")
         .expect("RSCTF_K8S_POLICY_OPERATION_ID must name the lifecycle identity under acceptance");
     let captured = Arc::new(Mutex::new(None));
