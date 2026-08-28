@@ -715,6 +715,10 @@ pub fn router() -> Router<SharedState> {
             post(import_from_github),
         )
         .route(
+            "/api/edit/games/{id}/challenges/importjobs/{jobId}",
+            get(test_container::import_jobs::get_job),
+        )
+        .route(
             "/api/edit/games/{id}/challenges/{cId}",
             get(get_challenge)
                 .put(update_challenge)

@@ -136,6 +136,7 @@ mod m0113_koth_reporter_routing_revision;
 mod m0114_submission_feed_cursor;
 mod m0115_flag_egress_feed_cursor;
 mod m0116_game_event_feed_pending;
+mod m0143_challenge_import_jobs;
 mod m0144_worker_workload_quarantine;
 mod m0183_exercise_api_bounds;
 
@@ -286,6 +287,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0114_submission_feed_cursor::Migration),
             Box::new(m0115_flag_egress_feed_cursor::Migration),
             Box::new(m0116_game_event_feed_pending::Migration),
+            Box::new(m0143_challenge_import_jobs::Migration),
             Box::new(m0144_worker_workload_quarantine::Migration),
             Box::new(m0183_exercise_api_bounds::Migration),
         ]
@@ -449,6 +451,7 @@ mod tests {
                 "m0114_submission_feed_cursor",
                 "m0115_flag_egress_feed_cursor",
                 "m0116_game_event_feed_pending",
+                "m0143_challenge_import_jobs",
                 "m0144_worker_workload_quarantine",
                 "m0183_exercise_api_bounds",
             ]

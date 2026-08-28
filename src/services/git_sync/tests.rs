@@ -225,6 +225,22 @@ async fn checkout_tree_limits_depth_before_packaging() {
     }
     tokio::fs::create_dir_all(&current).await.unwrap();
     tokio::fs::write(current.join("file"), b"x").await.unwrap();
+    assert!(checkout_usage_exceeds(&root).await.unwrap());
+    assert!(validate_checkout_tree(&root).await.is_err());
+    let _ = tokio::fs::remove_dir_all(root).await;
+}
+
+#[tokio::test]
+async fn checkout_tree_quota_includes_git_object_storage() {
+    let root = std::env::temp_dir().join(format!("rsctf-git-pack-{}", uuid::Uuid::new_v4()));
+    let objects = root.join(".git/objects/pack");
+    tokio::fs::create_dir_all(&objects).await.unwrap();
+    let pack = tokio::fs::File::create(objects.join("pack-large.pack"))
+        .await
+        .unwrap();
+    pack.set_len(MAX_REPO_TOTAL_BYTES + 1).await.unwrap();
+
+    assert!(checkout_usage_exceeds(&root).await.unwrap());
     assert!(validate_checkout_tree(&root).await.is_err());
     let _ = tokio::fs::remove_dir_all(root).await;
 }

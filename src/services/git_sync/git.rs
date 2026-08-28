@@ -542,9 +542,6 @@ pub(super) async fn validate_checkout_tree(root: &Path) -> AppResult<()> {
             .await
             .map_err(|e| AppError::internal(format!("git_sync: read repository entry: {e}")))?
         {
-            if depth == 0 && entry.file_name() == OsStr::new(".git") {
-                continue;
-            }
             entries_seen += 1;
             if entries_seen > MAX_REPO_ENTRIES {
                 return Err(AppError::bad_request(
@@ -676,20 +673,52 @@ async fn run_git_opt_cwd(cwd: Option<&Path>, args: &[&str]) -> AppResult<String>
         // lock sweep never races a live process.
         .kill_on_drop(true);
 
-    let output = match timeout(GIT_COMMAND_TIMEOUT, cmd.output()).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(e)) => {
-            return Err(AppError::internal(format!(
-                "git {}: failed to run (is git installed?): {e}",
-                sanitize(&args.join(" "))
-            )));
-        }
-        Err(_) => {
-            return Err(AppError::internal(format!(
-                "git {} timed out after {}s",
-                sanitize(&args.join(" ")),
-                GIT_COMMAND_TIMEOUT.as_secs()
-            )));
+    #[cfg(unix)]
+    cmd.process_group(0);
+
+    let child = cmd.spawn().map_err(|e| {
+        AppError::internal(format!(
+            "git {}: failed to run (is git installed?): {e}",
+            sanitize(&args.join(" "))
+        ))
+    })?;
+    let mut process_group = GitProcessGroupGuard::new(child.id());
+    let monitored_root = monitored_git_workspace(cwd, args);
+    let output = child.wait_with_output();
+    tokio::pin!(output);
+    let deadline = tokio::time::sleep(GIT_COMMAND_TIMEOUT);
+    tokio::pin!(deadline);
+    let mut quota_tick = tokio::time::interval(Duration::from_millis(500));
+    quota_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let output = loop {
+        tokio::select! {
+            output = &mut output => {
+                let output = output.map_err(|e| AppError::internal(format!(
+                    "git {}: failed to run (is git installed?): {e}",
+                    sanitize(&args.join(" "))
+                )))?;
+                // `wait_with_output` observed complete process exit. Only now
+                // may the cancellation guard stop owning the process group.
+                process_group.disarm();
+                break output;
+            }
+            _ = &mut deadline => {
+                return Err(AppError::internal(format!(
+                    "git {} timed out after {}s",
+                    sanitize(&args.join(" ")),
+                    GIT_COMMAND_TIMEOUT.as_secs()
+                )));
+            }
+            _ = quota_tick.tick(), if monitored_root.is_some() => {
+                if checkout_usage_exceeds(
+                    monitored_root.as_deref().expect("guarded monitored workspace")
+                ).await? {
+                    return Err(AppError::bad_request(
+                        "repository checkout exceeds the filesystem quota",
+                    ));
+                }
+            }
         }
     };
 
@@ -709,6 +738,112 @@ async fn run_git_opt_cwd(cwd: Option<&Path>, args: &[&str]) -> AppResult<String>
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn monitored_git_workspace(cwd: Option<&Path>, args: &[&str]) -> Option<PathBuf> {
+    match args.first().copied() {
+        Some("clone") => args.last().map(PathBuf::from),
+        Some("fetch") => cwd.map(Path::to_path_buf),
+        _ => None,
+    }
+}
+
+/// Check paid checkout bytes while the network process is still running. This
+/// includes `.git` object packs and stops at the first declared bound instead
+/// of completing an attacker-sized download and only then rejecting it.
+async fn checkout_usage_exceeds(root: &Path) -> AppResult<bool> {
+    if !tokio::fs::try_exists(root)
+        .await
+        .map_err(|error| AppError::internal(format!("git_sync: stat workspace: {error}")))?
+    {
+        return Ok(false);
+    }
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    let mut entries_seen = 0usize;
+    let mut total_bytes = 0u64;
+    while let Some((current, depth)) = stack.pop() {
+        if depth > MAX_REPO_DEPTH {
+            return Ok(true);
+        }
+        let mut entries = tokio::fs::read_dir(&current).await.map_err(|error| {
+            AppError::internal(format!("git_sync: read_dir {}: {error}", current.display()))
+        })?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|error| AppError::internal(format!("git_sync: read workspace: {error}")))?
+        {
+            entries_seen += 1;
+            if entries_seen > MAX_REPO_ENTRIES {
+                return Ok(true);
+            }
+            let file_type = entry.file_type().await.map_err(|error| {
+                AppError::internal(format!(
+                    "git_sync: stat {}: {error}",
+                    entry.path().display()
+                ))
+            })?;
+            if file_type.is_dir() {
+                stack.push((entry.path(), depth + 1));
+            } else if file_type.is_file() {
+                let size = entry
+                    .metadata()
+                    .await
+                    .map_err(|error| {
+                        AppError::internal(format!(
+                            "git_sync: stat {}: {error}",
+                            entry.path().display()
+                        ))
+                    })?
+                    .len();
+                if size > MAX_REPO_FILE_BYTES
+                    || total_bytes.saturating_add(size) > MAX_REPO_TOTAL_BYTES
+                {
+                    return Ok(true);
+                }
+                total_bytes = total_bytes.saturating_add(size);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Killing only the direct `git` process can leave credential helpers, hooks,
+/// or transport children writing after cancellation. Every invocation owns a
+/// fresh process group and this guard terminates the complete tree whenever the
+/// command future is dropped or reaches its deadline.
+struct GitProcessGroupGuard {
+    #[cfg(unix)]
+    process_group: Option<i32>,
+}
+
+impl GitProcessGroupGuard {
+    fn new(pid: Option<u32>) -> Self {
+        Self {
+            #[cfg(unix)]
+            process_group: pid.and_then(|pid| i32::try_from(pid).ok()),
+        }
+    }
+
+    fn disarm(&mut self) {
+        #[cfg(unix)]
+        {
+            self.process_group = None;
+        }
+    }
+}
+
+impl Drop for GitProcessGroupGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(process_group) = self.process_group.take() {
+            // SAFETY: the child was created in a fresh process group whose ID
+            // equals its PID; negative kill targets only that owned group.
+            unsafe {
+                libc::kill(-process_group, libc::SIGKILL);
+            }
+        }
+    }
 }
 
 /// Redact an embedded `x-access-token:<pat>@` Basic-auth credential from a string

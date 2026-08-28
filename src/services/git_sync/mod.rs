@@ -118,6 +118,11 @@ pub use validation::{
 mod repository;
 use repository::find_repository_challenge;
 pub(crate) use repository::{manifest_candidate_in_checkout, tombstone_missing_challenges};
+mod import_identity;
+use import_identity::{
+    associate_import_source_identity, durable_repo_manifest_path, find_imported_challenge,
+};
+pub use import_identity::{import_manifest, import_manifest_with_source_identity};
 mod runtime;
 use runtime::{live_runtime_update_deferred, LiveRuntimeIntent};
 mod grading;
@@ -139,34 +144,6 @@ pub struct ManifestImportResult {
     pub runtime_update_deferred: bool,
     pub grading_update_deferred: bool,
     pub attachment_synced: bool,
-}
-
-/// Persist a replica-independent source identity only when the manifest resolves
-/// inside this game's binding-owned checkout. Temporary ZIP/GitHub imports store
-/// no path because their request-scoped directories are removed after import.
-fn durable_repo_manifest_path(
-    storage_root: &str,
-    binding_id: Option<i32>,
-    manifest: &Path,
-) -> Option<String> {
-    let binding_id = binding_id?;
-    let checkout = std::fs::canonicalize(
-        Path::new(storage_root)
-            .join("repos")
-            .join(binding_id.to_string()),
-    )
-    .ok()?;
-    let manifest = std::fs::canonicalize(manifest).ok()?;
-    (manifest.is_file() && manifest.starts_with(&checkout))
-        .then(|| manifest.strip_prefix(&checkout).ok())
-        .flatten()
-        .filter(|relative| !relative.as_os_str().is_empty())
-        .map(|relative| {
-            repository::scoped_manifest_identity(
-                binding_id,
-                &relative.to_string_lossy().replace('\\', "/"),
-            )
-        })
 }
 
 const MAX_REPO_ENTRIES: usize = 4_096;
@@ -195,11 +172,12 @@ const MAX_REPO_DEPTH: usize = 32;
 /// Errors: a missing/empty `name`, an unknown `type`, `ignore: true`, or a
 /// nonexistent `game_id` all map to [`AppError::bad_request`]; a yaml parse
 /// failure or a DB error maps through [`AppError`].
-pub async fn import_manifest(
+pub(super) async fn import_manifest_inner(
     st: &SharedState,
     game_id: i32,
     manifest: &Path,
     policy: ImportPolicy,
+    import_source_identity: Option<&str>,
 ) -> AppResult<ManifestImportResult> {
     // Fail early with a friendly message rather than surfacing an FK violation
     // from the INSERT below.
@@ -257,15 +235,23 @@ pub async fn import_manifest(
     let raw_type = model.challenge_type.as_deref().unwrap_or("");
     let challenge_type = parse_enum::<ChallengeType>(raw_type)
         .ok_or_else(|| AppError::bad_request(format!("unknown challenge type '{raw_type}'")))?;
-    let source_yaml_path =
-        durable_repo_manifest_path(&st.config.storage_root, game.repo_binding_id, manifest);
-    let existing = find_repository_challenge(
-        st,
-        game_id,
-        game.repo_binding_id,
-        source_yaml_path.as_deref(),
-    )
-    .await?;
+    let source_yaml_path = import_source_identity
+        .is_none()
+        .then(|| {
+            durable_repo_manifest_path(&st.config.storage_root, game.repo_binding_id, manifest)
+        })
+        .flatten();
+    let existing = if let Some(source_identity) = import_source_identity {
+        find_imported_challenge(st, game_id, source_identity).await?
+    } else {
+        find_repository_challenge(
+            st,
+            game_id,
+            game.repo_binding_id,
+            source_yaml_path.as_deref(),
+        )
+        .await?
+    };
     if existing
         .as_ref()
         .is_some_and(|challenge| challenge.challenge_type != challenge_type)
@@ -404,6 +390,11 @@ pub async fn import_manifest(
     let preserve_live_runtime = existing
         .as_ref()
         .is_some_and(|challenge| challenge.is_enabled && challenge.challenge_type.is_container());
+    let preserve_completed_import_build = import_source_identity.is_some()
+        && existing.as_ref().is_some_and(|challenge| {
+            challenge.build_status == ChallengeBuildStatus::Success
+                && challenge.build_image_digest.is_some()
+        });
     ensure_source_archive_refresh_allowed(
         preserve_live_runtime,
         generator_intent.source_archive_refresh_required,
@@ -746,15 +737,17 @@ pub async fn import_manifest(
     // submissions, enabled/review state, and live runtime ownership fields.
     am.source_yaml_path = Set(source_yaml_path);
     if !preserve_live_runtime {
-        am.container_image = Set(container_image);
+        if !preserve_completed_import_build {
+            am.container_image = Set(container_image);
+            am.build_status = Set(build_status);
+            am.build_image_digest = Set(None);
+            am.last_build_log = Set(None);
+            am.build_context_subdir = Set(build_context_subdir);
+        }
         am.memory_limit = Set(memory_limit);
         am.storage_limit = Set(storage_limit);
         am.cpu_count = Set(cpu_count);
         am.expose_port = Set(expose_port);
-        am.build_status = Set(build_status);
-        am.build_image_digest = Set(None);
-        am.last_build_log = Set(None);
-        am.build_context_subdir = Set(build_context_subdir);
         am.enable_traffic_capture = Set(enable_traffic_capture);
         am.enable_shared_container = Set(enable_shared_container);
         am.network_mode = Set(network_mode);
@@ -849,6 +842,9 @@ pub async fn import_manifest(
         } else {
             am.insert(&transaction).await?
         };
+        if let Some(source_identity) = import_source_identity {
+            associate_import_source_identity(&transaction, challenge.id, source_identity).await?;
+        }
         if provenance_policy_changed {
             if !publish_provenance_policy_locked(
                 &transaction,
