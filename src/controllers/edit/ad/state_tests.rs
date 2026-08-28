@@ -34,8 +34,7 @@ async fn operator_test_pool() -> sqlx::PgPool {
           ad_scoring_paused_at TIMESTAMPTZ NULL,
           ad_control_revision BIGINT NOT NULL DEFAULT 1,
           start_time_utc TIMESTAMPTZ NOT NULL,
-          end_time_utc TIMESTAMPTZ NOT NULL,
-          ad_control_revision BIGINT NOT NULL DEFAULT 0
+          end_time_utc TIMESTAMPTZ NOT NULL
         );
         CREATE TEMP TABLE "GameManagers" (
           id INTEGER PRIMARY KEY,
@@ -277,7 +276,7 @@ async fn latest_verdict_work_and_live_query_count_stay_bounded_as_history_grows(
         .await
         .expect("load compact live projection");
     assert_eq!(game.current_round, Some(41));
-    assert_eq!(game.control_revision, 0);
+    assert_eq!(game.control_revision, 1);
     assert_eq!(cells.len(), SERVICE_COUNT as usize);
     assert_eq!(
         AD_LIVE_QUERY_EXECUTIONS.load(Ordering::Relaxed),
