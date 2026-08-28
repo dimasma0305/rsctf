@@ -49,7 +49,7 @@ impl ExtensionCandidate {
 /// instance link uses that same PostgreSQL advisory identity, so this post-lock
 /// read and immutable-ID comparison fence delayed A -> B request ordering.
 pub(super) async fn extend_expected_team_container_locked(
-    st: &SharedState,
+    connection: &mut sqlx::PgConnection,
     participation_id: i32,
     challenge_id: i32,
     expected_container_id: Uuid,
@@ -63,7 +63,7 @@ pub(super) async fn extend_expected_team_container_locked(
     )
     .bind(participation_id)
     .bind(challenge_id)
-    .fetch_optional(st.pg())
+    .fetch_optional(&mut *connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("No instance for this challenge"))?
@@ -81,7 +81,7 @@ pub(super) async fn extend_expected_team_container_locked(
             WHERE id = $1"#,
     )
     .bind(current_container_id)
-    .fetch_optional(st.pg())
+    .fetch_optional(&mut *connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Container not found"))?;
@@ -105,7 +105,7 @@ pub(super) async fn extend_expected_team_container_locked(
     )
     .bind(current_container_id)
     .bind(stop_at)
-    .fetch_one(st.pg())
+    .fetch_one(&mut *connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     current.into_model()

@@ -55,6 +55,7 @@ impl Intent {
 
 #[derive(sqlx::FromRow)]
 struct OperationRow {
+    operation_id: Uuid,
     scope_key: String,
     actor_user_id: Uuid,
     game_id: i32,
@@ -136,7 +137,7 @@ async fn claim<T: DeserializeOwned>(
         .await
         .map_err(database_error)?;
     let existing = sqlx::query_as::<_, OperationRow>(
-        r#"SELECT scope_key, actor_user_id, game_id, participation_id, challenge_id,
+        r#"SELECT operation_id, scope_key, actor_user_id, game_id, participation_id, challenge_id,
                   intent, publication_id, state, result,
                   lease_expires_at_utc > clock_timestamp() AS lease_active
              FROM "PlayerContainerOperations"
@@ -196,7 +197,7 @@ async fn claim<T: DeserializeOwned>(
             r#"UPDATE "PlayerContainerOperations"
                   SET state = 'Running', result = NULL,
                       updated_at_utc = clock_timestamp(),
-                      lease_expires_at_utc = clock_timestamp() + interval '2 minutes'
+                      lease_expires_at_utc = clock_timestamp() + interval '3 minutes'
                 WHERE operation_id = $1"#,
         )
         .bind(operation_id)
@@ -220,6 +221,114 @@ async fn claim<T: DeserializeOwned>(
         }));
     }
 
+    // Shared create results are challenge-owned rather than actor-owned. Once
+    // the first caller published a still-running endpoint, later authorized
+    // callers can reuse that durable receipt without runtime inspection or a
+    // new operation row. Per-team creates retain exact-operation semantics.
+    if matches!(intent, Intent::Create) && participation_id.is_none() {
+        let reusable = sqlx::query_as::<_, (serde_json::Value,)>(
+            r#"SELECT operation.result
+                 FROM "PlayerContainerOperations" operation
+                 JOIN "Containers" container ON container.id = operation.publication_id
+                 JOIN "GameChallenges" challenge
+                   ON challenge.id = operation.challenge_id
+                  AND challenge.shared_container_id = container.id
+                WHERE operation.scope_key = $1 AND operation.game_id = $2
+                  AND operation.challenge_id = $3 AND operation.intent = 'Create'
+                  AND operation.state = 'Succeeded' AND container.status = $4
+             ORDER BY operation.updated_at_utc DESC, operation.operation_id
+                LIMIT 1"#,
+        )
+        .bind(scope_key)
+        .bind(game_id)
+        .bind(challenge_id)
+        .bind(ContainerStatus::Running as i16)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        if let Some((result,)) = reusable {
+            let result = serde_json::from_value(result)
+                .map_err(|error| AppError::internal(error.to_string()))?;
+            tx.commit().await.map_err(database_error)?;
+            return Ok(ClaimOutcome::Recovered(result));
+        }
+    }
+
+    let stale_scope = sqlx::query_as::<_, OperationRow>(
+        r#"SELECT operation_id, scope_key, actor_user_id, game_id, participation_id, challenge_id,
+                  intent, publication_id, state, result,
+                  lease_expires_at_utc > clock_timestamp() AS lease_active
+             FROM "PlayerContainerOperations"
+            WHERE scope_key = $1 AND state = 'Running'
+            FOR UPDATE"#,
+    )
+    .bind(scope_key)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(database_error)?;
+    if let Some(row) = stale_scope {
+        if row.lease_active {
+            tx.commit().await.map_err(database_error)?;
+            return Err(AppError::overloaded(
+                "Another container operation is active for this team",
+                2,
+            ));
+        }
+        if row.game_id != game_id
+            || row.participation_id != participation_id
+            || row.challenge_id != challenge_id
+        {
+            tx.commit().await.map_err(database_error)?;
+            return Err(AppError::conflict(
+                "A stale container operation must be reconciled before changing intent",
+            ));
+        }
+        if row.intent != intent.as_str() {
+            if row.intent == Intent::Create.as_str() {
+                tx.commit().await.map_err(database_error)?;
+                return Err(AppError::conflict(
+                    "A stale container create must be reconciled before changing intent",
+                ));
+            }
+            // Extend commits its receipt atomically with the lease change;
+            // delete is compare-and-swap/idempotent. An expired non-create
+            // cannot hide an unowned newly launched runtime.
+            sqlx::query(
+                r#"UPDATE "PlayerContainerOperations"
+                      SET state = 'Failed', result = NULL,
+                          lease_expires_at_utc = clock_timestamp(),
+                          updated_at_utc = clock_timestamp()
+                    WHERE operation_id = $1 AND state = 'Running'"#,
+            )
+            .bind(row.operation_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        } else {
+            if expected_publication_id.is_some_and(|expected| expected != row.publication_id) {
+                tx.commit().await.map_err(database_error)?;
+                return Err(AppError::conflict(
+                    "The stale container operation targets another runtime",
+                ));
+            }
+            sqlx::query(
+                r#"UPDATE "PlayerContainerOperations"
+                      SET lease_expires_at_utc = clock_timestamp() + interval '3 minutes',
+                          updated_at_utc = clock_timestamp()
+                    WHERE operation_id = $1 AND state = 'Running'"#,
+            )
+            .bind(row.operation_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+            tx.commit().await.map_err(database_error)?;
+            return Ok(ClaimOutcome::Owned(ClaimedOperation {
+                operation_id: row.operation_id,
+                publication_id: row.publication_id,
+            }));
+        }
+    }
+
     if active_count(&mut tx).await? >= MAX_DEPLOYMENT_OPERATIONS {
         tx.commit().await.map_err(database_error)?;
         return Err(AppError::overloaded(
@@ -233,7 +342,7 @@ async fn claim<T: DeserializeOwned>(
                (operation_id, scope_key, actor_user_id, game_id, participation_id,
                 challenge_id, intent, publication_id, state, lease_expires_at_utc)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Running',
-                   clock_timestamp() + interval '2 minutes')
+                   clock_timestamp() + interval '3 minutes')
            ON CONFLICT (operation_id) DO NOTHING"#,
     )
     .bind(operation_id)
@@ -352,9 +461,56 @@ async fn complete<T: Serialize>(
             WHERE operation_id = $1 AND publication_id = $3 AND state = 'Running'"#,
     )
     .bind(operation.operation_id)
-    .bind(result)
+    .bind(&result)
     .bind(operation.publication_id)
     .execute(pool)
+    .await
+    .map_err(database_error)?;
+    if updated.rows_affected() != 1 {
+        let replay: Option<(String, Uuid, Option<serde_json::Value>)> = sqlx::query_as(
+            r#"SELECT state, publication_id, result
+                 FROM "PlayerContainerOperations" WHERE operation_id = $1"#,
+        )
+        .bind(operation.operation_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(database_error)?;
+        if !matches!(
+            replay,
+            Some((state, publication_id, Some(ref stored)))
+                if state == "Succeeded"
+                    && publication_id == operation.publication_id
+                    && stored == &result
+        ) {
+            return Err(AppError::conflict(
+                "Container operation ownership changed before publication",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Commit a database-only lifecycle result with its durable receipt in the
+/// same transaction. The detached owner later repeats `complete`, which is an
+/// exact no-op replay of this receipt.
+pub(crate) async fn complete_locked<T: Serialize>(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation: &ClaimedOperation,
+    result: &T,
+) -> AppResult<()> {
+    let result =
+        serde_json::to_value(result).map_err(|error| AppError::internal(error.to_string()))?;
+    let updated = sqlx::query(
+        r#"UPDATE "PlayerContainerOperations"
+              SET state = 'Succeeded', result = $2,
+                  updated_at_utc = clock_timestamp(),
+                  lease_expires_at_utc = clock_timestamp() + interval '24 hours'
+            WHERE operation_id = $1 AND publication_id = $3 AND state = 'Running'"#,
+    )
+    .bind(operation.operation_id)
+    .bind(result)
+    .bind(operation.publication_id)
+    .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
     if updated.rows_affected() != 1 {
@@ -439,6 +595,7 @@ pub(crate) async fn wait_for_result<T: DeserializeOwned>(
             MAX_LOCAL_RESULT_KEYS,
             move || async move {
                 let deadline = tokio::time::Instant::now() + RESULT_WAIT_DEADLINE;
+                let mut poll_delay = Duration::from_millis(100);
                 loop {
                     let row = sqlx::query_as::<_, (String, Option<serde_json::Value>, bool)>(
                         r#"SELECT state, result,
@@ -457,7 +614,10 @@ pub(crate) async fn wait_for_result<T: DeserializeOwned>(
                         Some((state, _, false)) if state == "Running" => return None,
                         None => return None,
                         _ if tokio::time::Instant::now() >= deadline => return None,
-                        _ => tokio::time::sleep(Duration::from_millis(100)).await,
+                        _ => {
+                            tokio::time::sleep(poll_delay).await;
+                            poll_delay = (poll_delay * 2).min(Duration::from_secs(1));
+                        }
                     }
                 }
             },
@@ -504,6 +664,7 @@ mod tests {
         let actor = Uuid::new_v4();
         let runtime = Uuid::new_v4();
         let row = OperationRow {
+            operation_id: Uuid::new_v4(),
             scope_key: "participation:7".to_string(),
             actor_user_id: actor,
             game_id: 2,
