@@ -47,7 +47,7 @@ fn zip_admission_is_durable_before_object_storage_and_worker_claim() {
     let handler = zip_source.find("async fn enqueue_zip_owned(").unwrap();
     let body = &zip_source[handler..];
     let admission = body.find("begin_admitted(").unwrap();
-    let reservation = body.find("source_staged)").unwrap();
+    let reservation = body.find("source_staged, lease_owner").unwrap();
     let commit = body.find(".commit()").unwrap();
     let storage = body.find("stage_blob(").unwrap();
     assert!(admission < reservation && reservation < commit && commit < storage);

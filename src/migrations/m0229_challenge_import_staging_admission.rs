@@ -57,24 +57,6 @@ ALTER TABLE "ChallengeImportJobs"
     VALIDATE CONSTRAINT ck_challengeimportjobs_source_fields_v2;
 "#;
 
-const DOWN_SQL: &str = r#"
-ALTER TABLE "ChallengeImportJobs"
-    DROP CONSTRAINT IF EXISTS ck_challengeimportjobs_source_fields_v2;
-ALTER TABLE "ChallengeImportJobs"
-    DROP COLUMN IF EXISTS source_staged;
-ALTER TABLE "ChallengeImportJobs"
-    DROP CONSTRAINT IF EXISTS ck_challengeimportjobs_source_fields;
-ALTER TABLE "ChallengeImportJobs"
-    ADD CONSTRAINT ck_challengeimportjobs_source_fields CHECK (
-        (source_kind = 0 AND (source_file_id IS NOT NULL OR status IN (2, 3))
-            AND repo_url IS NULL AND token_ciphertext IS NULL AND token_nonce IS NULL)
-        OR
-        (source_kind = 1 AND source_file_id IS NULL AND repo_url IS NOT NULL
-            AND ((token_ciphertext IS NULL AND token_nonce IS NULL)
-                OR (token_ciphertext IS NOT NULL AND octet_length(token_nonce) = 12)))
-    );
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -82,11 +64,10 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
+        // Production migrations are forward-only. Retaining this column and
+        // constraint prevents rollback tooling from deleting durable import
+        // admission state needed to recover an interrupted ZIP upload.
         Ok(())
     }
 }
