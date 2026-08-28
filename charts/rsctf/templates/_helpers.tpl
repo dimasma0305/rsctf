@@ -110,6 +110,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if and (not (empty $reporterSelector)) (or (not (regexMatch `(^|,)[[:space:]]*app\.kubernetes\.io/name=[^,]+(,|$)` $reporterSelector)) (not (regexMatch `(^|,)[[:space:]]*app\.kubernetes\.io/instance=[^,]+(,|$)` $reporterSelector)) (not (regexMatch `(^|,)[[:space:]]*app\.kubernetes\.io/component=[^,]+(,|$)` $reporterSelector))) -}}
 {{- fail "kubernetes.kothReporterPodSelector must include app.kubernetes.io/name, app.kubernetes.io/instance, and app.kubernetes.io/component" -}}
 {{- end -}}
+{{- $reporterOrigin := .Values.config.kothReporterBaseUrl | trim -}}
+{{- if and (eq $localBackend "kubernetes") (not (empty $reporterOrigin)) -}}
+  {{- $authority := regexReplaceAll "^https?://" $reporterOrigin "" -}}
+  {{- $host := regexReplaceAll ":[0-9]+/?$" $authority "" | trimSuffix "/" -}}
+  {{- $serviceSuffix := printf ".%s.svc" .Release.Namespace -}}
+  {{- $serviceName := trimSuffix $serviceSuffix $host -}}
+  {{- if or (not (hasSuffix $serviceSuffix $host)) (empty $serviceName) (contains "." $serviceName) -}}
+    {{- fail (printf "config.kothReporterBaseUrl must use a cross-namespace Kubernetes Service origin such as http://rsctf-network.%s.svc:8080" .Release.Namespace) -}}
+  {{- end -}}
+{{- end -}}
 {{- $checkerUidEnd := add .Values.config.checkerUidBase .Values.config.checkerProcessBudget -1 -}}
 {{- if gt (int $checkerUidEnd) 65534 -}}
 {{- fail "config.checkerUidBase + config.checkerProcessBudget - 1 must be at most 65534" -}}

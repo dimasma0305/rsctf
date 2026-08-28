@@ -124,6 +124,16 @@ fn managed_koth_callback_selector_requires_exact_service_identity() {
     )
     .unwrap();
     assert_eq!(selector, reporter_selector());
+    let route = network::reporter_route_identity("rsctf-system", &selector);
+    assert_eq!(
+        route,
+        "namespace=rsctf-system\0selector=app.kubernetes.io/component=network,app.kubernetes.io/instance=rsctf-network,app.kubernetes.io/name=rsctf"
+    );
+    assert_ne!(
+        route,
+        network::reporter_route_identity("rsctf-control", &selector),
+        "the control namespace is part of the crash-recovery routing identity"
+    );
 
     for invalid in [
         "app.kubernetes.io/name=rsctf",
@@ -209,6 +219,7 @@ async fn managed_callback_policy_round_trips_through_kubernetes_api() {
 #[tokio::test]
 async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
     use std::convert::Infallible;
+    use std::ffi::OsString;
     use std::future::pending;
     use std::sync::{Arc, Mutex};
 
@@ -216,6 +227,42 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
     use kube::client::Body;
     use tokio::sync::Notify;
     use tower::service_fn;
+
+    struct RestoreEnv(Vec<(&'static str, Option<OsString>)>);
+
+    impl RestoreEnv {
+        fn set(values: &[(&'static str, &'static str)]) -> Self {
+            let previous = values
+                .iter()
+                .map(|(key, _)| (*key, std::env::var_os(key)))
+                .collect();
+            for (key, value) in values {
+                std::env::set_var(key, value);
+            }
+            Self(previous)
+        }
+    }
+
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            for (key, value) in self.0.drain(..) {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+    }
+
+    let _environment = RestoreEnv::set(&[
+        ("RSCTF_K8S_AD_SERVICE_CIDR", "10.96.0.0/12"),
+        ("RSCTF_K8S_CONTROL_NAMESPACE", "rsctf-system"),
+        (
+            "RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR",
+            "app.kubernetes.io/name=rsctf,app.kubernetes.io/instance=rsctf-network,app.kubernetes.io/component=network",
+        ),
+    ]);
 
     let image = format!("registry.example/hill@sha256:{}", "a".repeat(64));
     let spec = |operation_id: &str| ContainerSpec {
@@ -229,14 +276,43 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
         proxy_only: false,
         env: Vec::new(),
         flag: Some("flag{test}".to_string()),
-        ad_network: None,
+        ad_network: Some("rsctf-ad".to_string()),
         allow_egress: false,
-        control_plane_callback_ports: Vec::new(),
+        control_plane_callback_ports: vec![8080],
         network_mode: crate::utils::enums::NetworkMode::Open,
         operation_id: Some(operation_id.to_string()),
     };
-    let original_operation = "koth-cycle:41:attempt:3:managed-reporter-v1:0123456789abcdef";
-    let changed_operation = "koth-cycle:41:attempt:3:managed-reporter-v1:fedcba9876543210";
+    let base_url = "http://rsctf-network.rsctf-system.svc:8080";
+    let original_route = network::reporter_route_identity("rsctf-system", &reporter_selector());
+    let changed_selector = BTreeMap::from([
+        ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
+        (
+            "app.kubernetes.io/instance".to_string(),
+            "rsctf-control".to_string(),
+        ),
+        (
+            "app.kubernetes.io/component".to_string(),
+            "control".to_string(),
+        ),
+    ]);
+    let changed_route = network::reporter_route_identity("rsctf-system", &changed_selector);
+    let revision = |route: &str| {
+        crate::services::ad::koth_reporter::routing_revision(
+            base_url,
+            &[8080],
+            ContainerBackendKind::Kubernetes,
+            Some(route),
+        )
+        .unwrap()
+    };
+    let original_operation = format!(
+        "koth-cycle:41:attempt:3:managed-reporter-v1:{}",
+        revision(&original_route)
+    );
+    let changed_operation = format!(
+        "koth-cycle:41:attempt:3:managed-reporter-v1:{}",
+        revision(&changed_route)
+    );
     let resource_name = |operation: &str| {
         format!(
             "{}-{}",
@@ -244,8 +320,8 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
             &crate::utils::codec::sha256_str(operation)[..16]
         )
     };
-    let original_name = resource_name(original_operation);
-    let changed_name = resource_name(changed_operation);
+    let original_name = resource_name(&original_operation);
+    let changed_name = resource_name(&changed_operation);
     assert_ne!(original_name, changed_name);
 
     let requests = Arc::new(Mutex::new(Vec::<(Method, String, String)>::new()));
@@ -275,6 +351,9 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
                     "hostIP": "192.0.2.10"
                 });
             }
+            if path.ends_with("/services") {
+                value["spec"]["clusterIP"] = serde_json::json!("10.96.12.34");
+            }
             if path.ends_with("/services") && name == original_name {
                 service_started.notify_one();
                 return pending::<Result<Response<Body>, Infallible>>().await;
@@ -297,7 +376,7 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
     };
 
     let original_manager = manager.clone();
-    let original = spec(original_operation);
+    let original = spec(&original_operation);
     let interrupted = tokio::spawn(async move { original_manager.create(original).await });
     tokio::time::timeout(Duration::from_secs(2), service_started.notified())
         .await
@@ -305,7 +384,7 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
     interrupted.abort();
     assert!(interrupted.await.unwrap_err().is_cancelled());
 
-    let created = manager.create(spec(changed_operation)).await.unwrap();
+    let created = manager.create(spec(&changed_operation)).await.unwrap();
     assert_eq!(created.id, changed_name);
 
     let requests = requests.lock().unwrap();
@@ -314,16 +393,16 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
             .iter()
             .filter(|(method, _, name)| *method == Method::POST && name == &original_name)
             .count(),
-        2,
-        "the interrupted create left a Pod before its Service completed"
+        3,
+        "the interrupted create left a NetworkPolicy and Pod before its Service completed"
     );
     assert_eq!(
         requests
             .iter()
             .filter(|(method, _, name)| *method == Method::POST && name == &changed_name)
             .count(),
-        2,
-        "the retry created a fresh Pod and Service under the changed routing identity"
+        3,
+        "the retry created a fresh NetworkPolicy, Pod, and Service under the changed routing identity"
     );
     assert!(requests
         .iter()

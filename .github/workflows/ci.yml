@@ -372,6 +372,34 @@ jobs:
       - name: Verify PlatformProxy host-firewall isolation
         run: sudo ./scripts/test-docker-proxy-firewall.sh
 
+  kubernetes-callback:
+    name: Kubernetes KotH callback isolation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Kubernetes tools
+        run: |
+          curl --fail --silent --show-error --location \
+            --output /tmp/rsctf-kind \
+            https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
+          echo '50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54  /tmp/rsctf-kind' \
+            | sha256sum --check --strict
+          curl --fail --silent --show-error --location \
+            --output /tmp/rsctf-kubectl \
+            https://dl.k8s.io/release/v1.36.1/bin/linux/amd64/kubectl
+          echo '629d3f410e09bf49b64ae7079f7f0bda1191efed311f7d37fdbab0ad5b0ec2b7  /tmp/rsctf-kubectl' \
+            | sha256sum --check --strict
+          sudo install -m 0755 /tmp/rsctf-kind /usr/local/bin/kind
+          sudo install -m 0755 /tmp/rsctf-kubectl /usr/local/bin/kubectl
+
+      - name: Exercise callback DNS and NetworkPolicy
+        run: ./scripts/test-kubernetes-koth-callback.sh
+
   web:
     name: React client
     runs-on: ubuntu-latest

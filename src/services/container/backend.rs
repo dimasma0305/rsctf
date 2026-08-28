@@ -85,6 +85,12 @@ pub trait ContainerManager: Send + Sync {
         ContainerBackendKind::None
     }
 
+    /// Stable, non-secret identity of backend routing that a managed challenge
+    /// uses to call rsctf. Backends with no extra route policy return `None`.
+    fn managed_callback_routing_identity(&self) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
     fn requires_proxy(&self) -> bool {
         false
     }

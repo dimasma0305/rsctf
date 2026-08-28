@@ -427,17 +427,20 @@ Service's complete selector because its own Pods expose only health endpoints:
 # rsctf-network values
 runtimeRole: network
 config:
-  kothReporterBaseUrl: http://rsctf-network:8080
+  kothReporterBaseUrl: http://rsctf-network.rsctf-system.svc:8080
 
 # rsctf-engine values
 runtimeRole: engine
 config:
-  kothReporterBaseUrl: http://rsctf-network:8080
+  kothReporterBaseUrl: http://rsctf-network.rsctf-system.svc:8080
 kubernetes:
   kothReporterPodSelector: >-
     app.kubernetes.io/name=rsctf,app.kubernetes.io/instance=rsctf-network,app.kubernetes.io/component=network
 ```
 
+The example assumes the rsctf roles run in `rsctf-system` and challenges run in
+`rsctf-challenges`. Keep the `service.namespace.svc` origin: a bare Service name
+is looked up in the challenge namespace and cannot reach the callback Service.
 The generated challenge NetworkPolicy uses those three labels together in the
 rsctf release namespace. Do not shorten it to the shared application name: that
 would let compromised challenge code reach unrelated web or engine Pods.

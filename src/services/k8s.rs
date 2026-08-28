@@ -25,9 +25,9 @@
 //! 4. **query** — get the Pod and map its `status.phase` to a coarse
 //!    [`ContainerStatus`].
 //!
-//! A live cluster is NOT available in this environment, so this module is
-//! compile-verified against the real crate APIs but cannot be exercised at
-//! runtime; genuinely-unrunnable glue is marked `// TODO`.
+//! Unit tests exercise the Kubernetes API wire contract, while CI also creates
+//! a disposable Kind cluster to prove cross-namespace managed KotH callback
+//! DNS and NetworkPolicy isolation.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -331,6 +331,10 @@ fn challenge_security_context() -> SecurityContext {
 impl ContainerManager for KubernetesContainerManager {
     fn backend_kind(&self) -> ContainerBackendKind {
         ContainerBackendKind::Kubernetes
+    }
+
+    fn managed_callback_routing_identity(&self) -> AppResult<Option<String>> {
+        network::configured_reporter_route_identity().map(Some)
     }
 
     async fn storage_quota_enforced(&self) -> Option<bool> {

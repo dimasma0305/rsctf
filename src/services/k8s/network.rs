@@ -166,6 +166,32 @@ fn configured_reporter_pod_selector() -> AppResult<Option<BTreeMap<String, Strin
         .transpose()
 }
 
+pub(super) fn reporter_route_identity(
+    namespace: &str,
+    selector: &BTreeMap<String, String>,
+) -> String {
+    let selector = selector
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("namespace={namespace}\0selector={selector}")
+}
+
+pub(super) fn configured_reporter_route_identity() -> AppResult<String> {
+    let namespace = configured_control_namespace().ok_or_else(|| {
+        AppError::internal(
+            "managed KotH reporting on Kubernetes requires RSCTF_K8S_CONTROL_NAMESPACE",
+        )
+    })?;
+    let selector = configured_reporter_pod_selector()?.ok_or_else(|| {
+        AppError::internal(
+            "managed KotH reporting on Kubernetes requires RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR",
+        )
+    })?;
+    Ok(reporter_route_identity(&namespace, &selector))
+}
+
 fn parse_cidr(value: &str, variable: &str) -> AppResult<IpNet> {
     value.trim().parse::<IpNet>().map_err(|_| {
         AppError::internal(format!(

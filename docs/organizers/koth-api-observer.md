@@ -209,12 +209,19 @@ the managed replacement is active. A retry of the same reset reuses the same
 credential; every new reset rotates it. Changing the reporter origin or rsctf
 bind port during a pending create rotates the credential and gives the
 replacement a new routing identity. An older crash-orphan therefore has neither
-a valid credential nor an adoptable Kubernetes workload name.
+a valid credential nor an adoptable Kubernetes workload name. Changing the
+Kubernetes control namespace or exact callback Service selector is also a route
+change and rotates both identities. Disabling managed reporting or removing the
+API-hill configuration revokes any credential left by a pending create before
+an uncredentialed replacement is started.
 
 Set `RSCTF_KOTH_REPORTER_BASE_URL` to an absolute HTTP(S) origin with no path,
 credentials, query, or fragment. Docker examples expose the control process on
-the private `rsctf-koth-reporter` alias. Kubernetes deployments should point it
-at the singleton control/network Service. The generated NetworkPolicy grants
+the private `rsctf-koth-reporter` alias. Kubernetes deployments must use the
+cross-namespace Service origin, for example
+`http://rsctf-network.rsctf-system.svc:8080` when rsctf runs in
+`rsctf-system`; a bare Service name resolves in the challenge namespace and is
+rejected by the Helm chart. The generated NetworkPolicy grants
 only pods matching that Service's complete `name` + `instance` + `component`
 identity and both its public port and rsctf's configured bind port, covering CNI
 enforcement before or after Service port translation. The Helm chart derives
