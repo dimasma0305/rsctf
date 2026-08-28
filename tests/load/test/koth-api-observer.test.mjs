@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import {
   assignUniqueKothApiCrown,
+  isRetriableKothApiContextFailure,
   kothApiEvidence,
   validateKothApiContext,
 } from '../applib.mjs';
@@ -38,6 +39,33 @@ test('KotH API headers use the documented wire names and sha256 prefix', () => {
   const headers = kothObservationHeaders(secret, timestamp, 7, 9, body);
   assert.equal(headers['x-rsctf-timestamp'], String(timestamp));
   assert.match(headers['x-rsctf-signature'], /^sha256=[0-9a-f]{64}$/);
+});
+
+test('KotH API success writes retry only transient context fences', () => {
+  assert.equal(
+    isRetriableKothApiContextFailure(
+      new Error('fetch KotH API context → 409 {"title":"Leaderboard KotH context is not active"}'),
+    ),
+    true,
+  );
+  assert.equal(
+    isRetriableKothApiContextFailure({
+      status: 409,
+      text: '{"title":"Leaderboard KotH context changed; fetch context and retry"}',
+    }),
+    true,
+  );
+  assert.equal(
+    isRetriableKothApiContextFailure({
+      status: 409,
+      text: '{"title":"Leaderboard objective IDs and order are frozen for this challenge"}',
+    }),
+    false,
+  );
+  assert.equal(
+    isRetriableKothApiContextFailure({ status: 401, text: 'Unauthorized' }),
+    false,
+  );
 });
 
 test('KotH API signing rejects ambiguous identities and oversized payloads', () => {
