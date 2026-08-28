@@ -168,6 +168,9 @@ pub enum Policy {
     /// Higher-capacity NAT/source backstop for proxy-open churn.
     /// Appended to preserve shipped discriminants.
     ProxySourceOpen,
+    /// Per-session Event-VPN challenge/proof bootstrap budget. Appended to
+    /// preserve every shipped Redis policy discriminant.
+    EventVpnMint,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -259,6 +262,13 @@ impl Policy {
             Policy::ProxySourceOpen => Kind::Bucket {
                 capacity: 512.0,
                 refill_per_sec: 32.0,
+            },
+            // One mint exchange costs two requests. A six-request burst lets a
+            // player recover three tabs while the sustained budget bounds a
+            // disconnected or broken client to one request every five seconds.
+            Policy::EventVpnMint => Kind::Bucket {
+                capacity: 6.0,
+                refill_per_sec: 0.2,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {

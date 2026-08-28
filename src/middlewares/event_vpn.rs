@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
@@ -23,9 +23,21 @@ use crate::services::event_security::{
 use crate::utils::error::{AppError, AppResult};
 
 const PROOF_SUBJECT_CACHE_TTL: Duration = Duration::from_secs(2);
+pub const EVENT_VPN_AUTH_REASON_HEADER: &str = "x-rsctf-auth-reason";
+pub const EVENT_VPN_AUTH_REASON: &str = "event-vpn";
 static PROOF_SUBJECT_FLIGHT: LazyLock<
     crate::utils::single_flight::SingleFlight<Option<bytes::Bytes>>,
 > = LazyLock::new(crate::utils::single_flight::SingleFlight::new);
+
+pub fn unauthorized_response() -> Response {
+    let mut response = AppError::Unauthorized.into_response();
+    debug_assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    response.headers_mut().insert(
+        EVENT_VPN_AUTH_REASON_HEADER,
+        HeaderValue::from_static(EVENT_VPN_AUTH_REASON),
+    );
+    response
+}
 
 fn protected_game_path(path: &str) -> Option<i32> {
     let mut segments = path.split('/').filter(|segment| !segment.is_empty());
@@ -139,32 +151,46 @@ async fn proof_subject_is_current(
     Ok(result.is_some())
 }
 
+enum AuthorizationError {
+    Session(AppError),
+    VpnProof,
+    Other(AppError),
+}
+
 async fn authorize_request(
     st: &SharedState,
     headers: &HeaderMap,
     game_id: i32,
-) -> AppResult<Option<CurrentUser>> {
-    let policy = load_policy(st, game_id).await?;
+) -> Result<Option<CurrentUser>, AuthorizationError> {
+    let policy = load_policy(st, game_id)
+        .await
+        .map_err(AuthorizationError::Other)?;
     if !policy.gate_active_at(chrono::Utc::now()) {
         return Ok(None);
     }
-    let token = session_token(headers).ok_or(AppError::Unauthorized)?;
-    let user = authenticate_token(st, &token).await?;
+    let token =
+        session_token(headers).ok_or(AuthorizationError::Session(AppError::Unauthorized))?;
+    let user = authenticate_token(st, &token)
+        .await
+        .map_err(AuthorizationError::Session)?;
     if user.is_monitor() {
         return Ok(Some(user));
     }
     let proof = headers
         .get(VPN_PROOF_HEADER)
         .and_then(|value| value.to_str().ok())
-        .ok_or(AppError::Unauthorized)?;
-    let claims = verify_proof(&st.config.event_vpn_credential_key, proof)?;
+        .ok_or(AuthorizationError::VpnProof)?;
+    let claims = verify_proof(&st.config.event_vpn_credential_key, proof)
+        .map_err(|_| AuthorizationError::VpnProof)?;
     if claims.game_id != game_id
         || claims.user_id != user.id
         || claims.policy_revision != policy.revision
         || claims.security_stamp_hash != stamp_hash(&user.security_stamp)
-        || !proof_subject_is_current(st, &claims, &user.security_stamp).await?
+        || !proof_subject_is_current(st, &claims, &user.security_stamp)
+            .await
+            .map_err(AuthorizationError::Other)?
     {
-        return Err(AppError::Unauthorized);
+        return Err(AuthorizationError::VpnProof);
     }
     Ok(Some(user))
 }
@@ -185,7 +211,10 @@ pub async fn middleware(
             }
             next.run(request).await
         }
-        Err(error) => error.into_response(),
+        Err(AuthorizationError::Session(error) | AuthorizationError::Other(error)) => {
+            error.into_response()
+        }
+        Err(AuthorizationError::VpnProof) => unauthorized_response(),
     }
 }
 
@@ -204,7 +233,10 @@ mod tests {
     use tower::ServiceExt;
     use uuid::Uuid;
 
-    use super::{middleware, protected_game_path, subject_cache_key};
+    use super::{
+        middleware, protected_game_path, subject_cache_key, EVENT_VPN_AUTH_REASON,
+        EVENT_VPN_AUTH_REASON_HEADER,
+    };
     use crate::app_state::{AppState, SharedState};
     use crate::models::internal::configs::AppConfig;
     use crate::services::cache::InMemoryCache;
@@ -315,12 +347,12 @@ mod tests {
             .with_state(st)
     }
 
-    async fn get(
+    async fn get_response(
         router: &Router,
         path: &str,
         token: Option<&str>,
         proof: Option<&str>,
-    ) -> StatusCode {
+    ) -> axum::response::Response {
         let mut request = Request::get(path);
         if let Some(token) = token {
             request = request.header(AUTHORIZATION, format!("Bearer {token}"));
@@ -333,7 +365,15 @@ mod tests {
             .oneshot(request.body(Body::empty()).unwrap())
             .await
             .unwrap()
-            .status()
+    }
+
+    async fn get(
+        router: &Router,
+        path: &str,
+        token: Option<&str>,
+        proof: Option<&str>,
+    ) -> StatusCode {
+        get_response(router, path, token, proof).await.status()
     }
 
     #[test]
@@ -377,6 +417,43 @@ mod tests {
                 "off-VPN {path}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn vpn_denial_is_distinct_from_an_expired_session() {
+        let st = test_state();
+        prime_active_policy(&st).await;
+        let user_id = Uuid::new_v4();
+        let stamp = "accepted-stamp";
+        prime_live_user(&st, user_id, Role::User, stamp).await;
+        let token = st
+            .token
+            .issue(user_id, Role::User, "player", stamp)
+            .unwrap();
+        let router = gated_router(st);
+
+        let off_vpn = get_response(&router, "/api/game/7/challenges/9", Some(&token), None).await;
+        assert_eq!(off_vpn.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            off_vpn
+                .headers()
+                .get(EVENT_VPN_AUTH_REASON_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(EVENT_VPN_AUTH_REASON)
+        );
+
+        let expired = get_response(
+            &router,
+            "/api/game/7/challenges/9",
+            Some("invalid-session"),
+            None,
+        )
+        .await;
+        assert_eq!(expired.status(), StatusCode::UNAUTHORIZED);
+        assert!(expired
+            .headers()
+            .get(EVENT_VPN_AUTH_REASON_HEADER)
+            .is_none());
     }
 
     #[tokio::test]

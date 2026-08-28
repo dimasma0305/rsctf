@@ -1,6 +1,30 @@
+import axios, { AxiosError, AxiosHeaders, type AxiosRequestConfig, type AxiosResponse } from 'axios'
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { protectedEventGameId, protectedEventGamePathId } from './EventVpnProof'
+import {
+  EVENT_VPN_AUTH_REASON_HEADER,
+  eventVpnMintRetryDelay,
+  installEventVpnProof,
+  isEventVpnUnauthorized,
+  protectedEventGameId,
+  protectedEventGamePathId,
+  resetEventVpnProofForTests,
+} from './EventVpnProof'
+
+const adapterError = (
+  config: AxiosRequestConfig,
+  status: number,
+  headers: Record<string, string> = {}
+): never => {
+  const response: AxiosResponse = {
+    config: { ...config, headers: AxiosHeaders.from(config.headers) },
+    data: {},
+    headers,
+    status,
+    statusText: String(status),
+  }
+  throw new AxiosError('request failed', AxiosError.ERR_BAD_REQUEST, response.config, undefined, response)
+}
 
 const protectedPaths = [
   '/api/game/7/challenges/9',
@@ -49,4 +73,68 @@ test('event VPN proof matching accepts only positive PostgreSQL game ids', () =>
 test('event VPN proof matching never attaches a proof to another origin', () => {
   assert.equal(protectedEventGameId('/api/Game/7/Ad/Scoreboard', 'https://arena.test'), 7)
   assert.equal(protectedEventGameId('https://attacker.test/api/Game/7/Ad/Scoreboard', 'https://arena.test'), null)
+})
+
+test('only the server-labelled VPN 401 is treated as a proof bootstrap', () => {
+  assert.equal(
+    isEventVpnUnauthorized({
+      response: { status: 401, headers: { [EVENT_VPN_AUTH_REASON_HEADER]: 'event-vpn' } },
+    }),
+    true
+  )
+  assert.equal(isEventVpnUnauthorized({ response: { status: 401, headers: {} } }), false)
+  assert.equal(
+    isEventVpnUnauthorized({
+      response: { status: 403, headers: { [EVENT_VPN_AUTH_REASON_HEADER]: 'event-vpn' } },
+    }),
+    false
+  )
+})
+
+test('mint backoff is capped, jittered, and honors Retry-After', () => {
+  assert.equal(eventVpnMintRetryDelay({}, 1, () => 0), 750)
+  assert.equal(eventVpnMintRetryDelay({}, 1, () => 1), 1_250)
+  assert.equal(eventVpnMintRetryDelay({}, 20, () => 1), 75_000)
+  assert.equal(
+    eventVpnMintRetryDelay({ response: { headers: { 'retry-after': '90' } } }, 1, () => 0),
+    90_000
+  )
+  assert.equal(
+    eventVpnMintRetryDelay({ response: { headers: { 'retry-after': '9999' } } }, 1, () => 0),
+    300_000
+  )
+})
+
+test('a genuine session 401 never starts a VPN proof exchange', async () => {
+  resetEventVpnProofForTests()
+  let challengeRequests = 0
+  const instance = axios.create({
+    adapter: async (config) => {
+      if (config.url?.endsWith('/vpn/challenge')) challengeRequests += 1
+      return adapterError(config, 401)
+    },
+  })
+  installEventVpnProof(instance, 'https://arena.test')
+  await assert.rejects(instance.get('/api/game/7/details'), (error: AxiosError) => error.response?.status === 401)
+  assert.equal(challengeRequests, 0)
+})
+
+test('a failed mint opens one shared circuit for repeated protected reads', async () => {
+  resetEventVpnProofForTests()
+  let challengeRequests = 0
+  const instance = axios.create({
+    adapter: async (config) => {
+      if (config.url?.endsWith('/vpn/challenge')) {
+        challengeRequests += 1
+        return adapterError(config, 503)
+      }
+      return adapterError(config, 401, { [EVENT_VPN_AUTH_REASON_HEADER]: 'event-vpn' })
+    },
+  })
+  installEventVpnProof(instance, 'https://arena.test')
+
+  for (const path of ['/api/game/7/details', '/api/game/7/scoreboard']) {
+    await assert.rejects(instance.get(path), (error: AxiosError) => error.response?.status === 401)
+  }
+  assert.equal(challengeRequests, 1)
 })

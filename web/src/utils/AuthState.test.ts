@@ -40,6 +40,10 @@ test('genuine session expiry on a PROTECTED page (challenges) DOES redirect', ()
   assert.equal(shouldRedirectOnUnauthorized({ ...base, hasSession: true }), true)
 })
 
+test('an Event VPN denial never redirects a still-authenticated player', () => {
+  assert.equal(shouldRedirectOnUnauthorized({ ...base, eventVpnDenied: true }), false)
+})
+
 test('falls back to the live flag when hasSession is omitted', () => {
   setAuthSession(false)
   assert.equal(

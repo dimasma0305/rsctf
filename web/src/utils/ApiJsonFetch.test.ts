@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { createApiJsonFetch } from './ApiJsonFetch'
-import { installEventVpnProof } from './EventVpnProof'
+import { EVENT_VPN_AUTH_REASON_HEADER, installEventVpnProof, resetEventVpnProofForTests } from './EventVpnProof'
 
 const jsonResult = (
   config: AxiosRequestConfig,
@@ -21,8 +21,13 @@ const jsonResult = (
 const header = (config: AxiosRequestConfig, name: string): string | undefined =>
   AxiosHeaders.from(config.headers).get(name)?.toString()
 
-const adapterResult = (config: AxiosRequestConfig, status: number, data: unknown): AxiosResponse => {
-  const response = jsonResult(config, status, data)
+const adapterResult = (
+  config: AxiosRequestConfig,
+  status: number,
+  data: unknown,
+  headers: Record<string, string> = {}
+): AxiosResponse => {
+  const response = { ...jsonResult(config, status, data), headers }
   if (status >= 200 && status < 300) return response
   throw new AxiosError(
     `Request failed with status code ${status}`,
@@ -34,6 +39,7 @@ const adapterResult = (config: AxiosRequestConfig, status: number, data: unknown
 }
 
 test('VPN-required arena reads use one accepted proof across Jeopardy, A&D and KotH casing', async () => {
+  resetEventVpnProofForTests()
   const gameId = 17_001
   const acceptedProof = 'accepted-route-proof'
   const protectedPaths = [
@@ -63,7 +69,7 @@ test('VPN-required arena reads use one accepted proof across Jeopardy, A&D and K
         })
       }
       const accepted = header(config, 'x-rsctf-vpn-proof') === acceptedProof
-      return adapterResult(config, accepted ? 200 : 401, { path })
+      return adapterResult(config, accepted ? 200 : 401, { path }, accepted ? {} : { [EVENT_VPN_AUTH_REASON_HEADER]: 'event-vpn' })
     },
   })
   installEventVpnProof(instance, 'https://arena.test')
@@ -84,11 +90,12 @@ test('arena adapter preserves 401 when a VPN proof is absent or rejected', async
     [17_002, null, 'absent'],
     [17_003, 'wrong-route-proof', 'wrong'],
   ] as const) {
+    resetEventVpnProofForTests()
     const instance = axios.create({
       adapter: async (config) => {
         const path = new URL(config.url ?? '', 'https://arena.test').pathname
         if (path === `/api/game/${gameId}/vpn/challenge`) {
-          if (proof === null) return adapterResult(config, 401, {})
+          if (proof === null) return adapterResult(config, 503, {})
           return adapterResult(config, 200, {
             challenge: 'vpn-challenge',
             proofUrl: 'https://arena.test/vpn-proof',
@@ -103,7 +110,7 @@ test('arena adapter preserves 401 when a VPN proof is absent or rejected', async
             expiresAtUtc: Date.now() + 30_000,
           })
         }
-        return adapterResult(config, 401, {})
+        return adapterResult(config, 401, {}, { [EVENT_VPN_AUTH_REASON_HEADER]: 'event-vpn' })
       },
     })
     installEventVpnProof(instance, 'https://arena.test')

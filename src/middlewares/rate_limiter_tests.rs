@@ -537,8 +537,8 @@ fn verdict_recovery_has_a_distinct_bounded_identity_budget() {
     ));
     assert_eq!(Policy::Verdict.fixed_window(), (30, 60_000));
     assert!(redis_key(Policy::Verdict, "partition").starts_with("rl:tb:12:"));
-    assert!(redis_key(Policy::TeamSignature, "partition").starts_with("rl:tb:13:"));
-    assert!(redis_key(Policy::PowChallenge, "partition").starts_with("rl:tb:14:"));
+    assert!(redis_key(Policy::TeamSignature, "partition").starts_with("rl:tb:16:"));
+    assert!(redis_key(Policy::PowChallenge, "partition").starts_with("rl:tb:17:"));
 
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -571,8 +571,35 @@ fn proxy_open_churn_has_distinct_subject_and_nat_budgets() {
             refill_per_sec: 32.0,
         }
     ));
-    assert!(redis_key(Policy::ProxyOpen, "partition").starts_with("rl:tb:13:"));
-    assert!(redis_key(Policy::ProxySourceOpen, "partition").starts_with("rl:tb:14:"));
+    assert!(redis_key(Policy::ProxyOpen, "partition").starts_with("rl:tb:18:"));
+    assert!(redis_key(Policy::ProxySourceOpen, "partition").starts_with("rl:tb:19:"));
+}
+
+#[test]
+fn event_vpn_mint_has_a_distinct_bounded_identity_budget() {
+    assert!(matches!(
+        Policy::EventVpnMint.kind(),
+        Kind::Bucket {
+            capacity: 6.0,
+            refill_per_sec: 0.2,
+        }
+    ));
+    assert_eq!(Policy::EventVpnMint.fixed_window(), (6, 30_000));
+    assert!(redis_key(Policy::EventVpnMint, "partition").starts_with("rl:tb:20:"));
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let key = format!("event-vpn-mint-{nonce}");
+    for _ in 0..6 {
+        assert_eq!(check(Policy::EventVpnMint, key.clone()), Ok(()));
+    }
+    assert_eq!(check(Policy::EventVpnMint, key.clone()), Err(5));
+    shard_for(Policy::EventVpnMint, &key)
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(&(Policy::EventVpnMint, key));
 }
 
 /// Two `DistributedLimiter` instances = two replicas sharing one Redis. Proves

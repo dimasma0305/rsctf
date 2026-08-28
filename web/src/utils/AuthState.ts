@@ -40,6 +40,8 @@ export interface UnauthorizedRedirectContext {
   redirectInFlight: boolean
   /** Whether a session is believed to exist; defaults to the live flag. */
   hasSession?: boolean
+  /** The server authenticated the session but rejected this event's VPN proof. */
+  eventVpnDenied?: boolean
 }
 
 /**
@@ -70,11 +72,12 @@ export const isPublicPage = (pathname: string): boolean =>
  * game landing or scoreboard — render the public view instead of redirecting.
  */
 export const shouldRedirectOnUnauthorized = (ctx: UnauthorizedRedirectContext): boolean => {
-  const { status, requestPath, pathname, redirectInFlight } = ctx
+  const { status, requestPath, pathname, redirectInFlight, eventVpnDenied = false } = ctx
   const hasSession = ctx.hasSession ?? authed
   const isAuthEndpoint = requestPath.includes('/account/') || requestPath.includes('/info')
   return (
     status === 401 &&
+    !eventVpnDenied &&
     hasSession &&
     !redirectInFlight &&
     !isAuthEndpoint &&

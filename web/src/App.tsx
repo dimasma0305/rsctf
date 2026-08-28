@@ -15,6 +15,7 @@ import { WsrxProvider } from '@Components/WsrxProvider'
 import { PlayerGuideProvider } from '@Components/guide/PlayerGuide'
 import { shouldRedirectOnUnauthorized } from '@Utils/AuthState'
 import { localCacheProvider } from '@Utils/Cache'
+import { isEventVpnUnauthorized } from '@Utils/EventVpnProof'
 import { useLanguage } from '@Utils/I18n'
 import { useCustomTheme } from '@Utils/ThemeOverride'
 import { RouteLifecycleBoundary, viewerIdentityMiddleware, ViewerIdentityProvider } from '@Utils/ViewerIdentity'
@@ -50,6 +51,7 @@ const authAwareFetcher = async (args: Parameters<typeof rawFetcher>[0]) => {
         requestPath: path,
         pathname: window.location.pathname,
         redirectInFlight: authRedirectInFlight,
+        eventVpnDenied: isEventVpnUnauthorized(e),
       })
     ) {
       authRedirectInFlight = true
