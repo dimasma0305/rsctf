@@ -15,7 +15,7 @@
 //! existing checker (which joins that network) reaches it with no extra hop, and
 //! `ad_team_service.host:port` points at that listener.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::UdpSocket;
 use std::sync::{Arc, OnceLock};
 
@@ -315,6 +315,93 @@ impl Registry {
         pid: i32,
     ) -> AppResult<()> {
         self.disconnect_participation_inner(db, pid, true).await
+    }
+
+    /// Revoke every BYOC endpoint owned by a team as one bounded transition.
+    /// The database update and VPN synchronization are set-wise, while local
+    /// endpoint shutdown is capped so a long participation history cannot
+    /// create one serial timeout per row.
+    pub async fn disconnect_team(&self, db: &DatabaseConnection, team_id: i32) -> AppResult<()> {
+        self.disconnect_team_inner(db, team_id, true).await
+    }
+
+    async fn disconnect_team_inner(
+        &self,
+        db: &DatabaseConnection,
+        team_id: i32,
+        propagate: bool,
+    ) -> AppResult<()> {
+        let participation_ids = sqlx::query_scalar::<_, i32>(
+            r#"SELECT id FROM "Participations" WHERE team_id = $1 ORDER BY id"#,
+        )
+        .bind(team_id)
+        .fetch_all(db.get_postgres_connection_pool())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        let participation_set = participation_ids.iter().copied().collect::<HashSet<_>>();
+        {
+            let mut generations = self.authorization_generations.write().await;
+            for &participation_id in &participation_ids {
+                let generation = generations
+                    .participations
+                    .entry(participation_id)
+                    .or_default();
+                *generation = generation.saturating_add(1);
+            }
+        }
+        let endpoints = {
+            let mut registry = self.endpoints.lock().await;
+            let keys = registry
+                .keys()
+                .filter(|(participation_id, _)| participation_set.contains(participation_id))
+                .copied()
+                .collect::<Vec<_>>();
+            keys.into_iter()
+                .filter_map(|key| registry.remove(&key))
+                .collect::<Vec<_>>()
+        };
+        let handles = futures::stream::iter(endpoints.iter())
+            .map(|endpoint| async move { endpoint.revoke().await })
+            .buffer_unordered(16)
+            .filter_map(future::ready)
+            .collect::<Vec<_>>()
+            .await;
+        let revocation = async {
+            if !participation_ids.is_empty() {
+                sqlx::query(
+                    r#"UPDATE "AdTeamServices" service
+                          SET host = '', port = 0, status = 2
+                        WHERE service.participation_id = ANY($1)
+                          AND service.container_id IS NULL
+                          AND EXISTS (
+                              SELECT 1 FROM "GameChallenges" challenge
+                               WHERE challenge.id = service.challenge_id
+                                 AND challenge.ad_self_hosted = TRUE
+                          )"#,
+                )
+                .bind(&participation_ids)
+                .execute(db.get_postgres_connection_pool())
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+            }
+            crate::services::ad_vpn::ensure_hub_and_sync(db).await
+        }
+        .await;
+        let mut handles = handles;
+        wait_for_tunnel_shutdown(&mut handles).await;
+        wait_for_endpoint_shutdown(&endpoints).await;
+        if propagate
+            && revocation.is_ok()
+            && self.events.is_distributed()
+            && !crate::services::ad_vpn::owns_instance_lease()
+        {
+            self.events.publish(crate::app_state::HubEvent {
+                target: "InternalByocRevokeTeam",
+                game_id: None,
+                payload: team_id.to_string(),
+            });
+        }
+        revocation
     }
 
     async fn disconnect_participation_inner(

@@ -40,6 +40,13 @@ pub fn start_control_listener(
                                 }
                             }
                         }
+                        "InternalByocRevokeTeam" => {
+                            if let Ok(id) = event.payload.parse::<i32>() {
+                                if let Err(error) = st.byoc.disconnect_team_inner(&st.db, id, false).await {
+                                    tracing::warn!(team = id, %error, "cross-replica BYOC team revocation failed");
+                                }
+                            }
+                        }
                         "InternalByocRevokeChallenge" => {
                             if let Ok(id) = event.payload.parse::<i32>() {
                                 if let Err(error) = st.byoc.disconnect_challenge_inner(&st.db, id, false).await {

@@ -196,6 +196,7 @@ fn known_target(target: &str) -> Option<&'static str> {
         "ReceivedLog" => Some("ReceivedLog"),
         "ReceivedSubmissions" => Some("ReceivedSubmissions"),
         "InternalByocRevokeParticipation" => Some("InternalByocRevokeParticipation"),
+        "InternalByocRevokeTeam" => Some("InternalByocRevokeTeam"),
         "InternalByocRevokeChallenge" => Some("InternalByocRevokeChallenge"),
         "InternalTrafficCaptureReconcile" => Some("InternalTrafficCaptureReconcile"),
         _ => None,
@@ -568,6 +569,7 @@ mod tests {
     fn internal_control_targets_are_valid_distributed_events() {
         for target in [
             "InternalByocRevokeParticipation",
+            "InternalByocRevokeTeam",
             "InternalByocRevokeChallenge",
             "InternalTrafficCaptureReconcile",
         ] {
