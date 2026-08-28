@@ -193,7 +193,7 @@ async fn apply_claimed(st: &SharedState, effect: &ClaimedEffect) -> AppResult<()
                 .release()
                 .await
                 .map_err(|release_error| AppError::internal(release_error.to_string()));
-            return Err(error).and(released);
+            return Err::<(), _>(error).and(released);
         }
     };
 
