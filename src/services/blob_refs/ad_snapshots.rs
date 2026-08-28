@@ -8,7 +8,7 @@ use sqlx::PgPool;
 use crate::storage::BlobStorage;
 use crate::utils::error::{AppError, AppResult};
 
-use super::{database_error, purge_if_unreferenced};
+use super::{database_error, lock_hash, purge_if_unreferenced};
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct ServiceSnapshotBlob {
