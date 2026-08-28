@@ -3551,8 +3551,22 @@ export interface ChallengeImportResult {
   messages: string[]
 }
 
+export type ChallengeImportJobStatus = "Queued" | "Running" | "Succeeded" | "Failed"
+
+/** Durable identity and terminal result for one admitted challenge import. */
+export interface ChallengeImportJobModel {
+  jobId: string
+  status: ChallengeImportJobStatus
+  result?: ChallengeImportResult | null
+  error?: string | null
+  createdAt: number
+  updatedAt: number
+}
+
 /** Body for POST /api/Edit/Games/{id}/Challenges/ImportFromGitHub */
 export interface ImportFromGitHubModel {
+  /** Stable UUID used to recover an exact retry without duplicating work. */
+  operationId?: string | null
   repoUrl: string
   ref?: string | null
   subpath?: string | null
@@ -7914,11 +7928,13 @@ export class Api<
     editSubmitChallenge: (
       id: number,
       archive: File,
+      operationId: string,
       params: RequestParams = {},
     ) => {
       const fd = new FormData()
       fd.append("archive", archive)
-      return this.request<ChallengeImportResult, RequestResponse>({
+      fd.append("operationId", operationId)
+      return this.request<ChallengeImportJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/submit`,
         method: "POST",
         body: fd,
@@ -7937,11 +7953,13 @@ export class Api<
     editImportChallenge: (
       id: number,
       archive: File,
+      operationId: string,
       params: RequestParams = {},
     ) => {
       const fd = new FormData()
       fd.append("archive", archive)
-      return this.request<ChallengeImportResult, RequestResponse>({
+      fd.append("operationId", operationId)
+      return this.request<ChallengeImportJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/import`,
         method: "POST",
         body: fd,
@@ -7962,11 +7980,30 @@ export class Api<
       data: ImportFromGitHubModel,
       params: RequestParams = {},
     ) =>
-      this.request<ChallengeImportResult, RequestResponse>({
+      this.request<ChallengeImportJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/importfromgithub`,
         method: "POST",
         body: data,
         type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Recover the status/result of an admitted challenge import.
+     *
+     * @tags Edit
+     * @name EditGetChallengeImportJob
+     * @request GET:/api/edit/games/{id}/challenges/importjobs/{jobId}
+     */
+    editGetChallengeImportJob: (
+      id: number,
+      jobId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeImportJobModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/importjobs/${jobId}`,
+        method: "GET",
         format: "json",
         ...params,
       }),

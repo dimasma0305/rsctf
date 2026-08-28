@@ -139,6 +139,7 @@ mod m0116_game_event_feed_pending;
 mod m0242_participation_provision_jobs;
 mod m0133_ad_control_revisions;
 mod m0135_control_plane_jobs;
+mod m0143_challenge_import_jobs;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -292,6 +293,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0242_participation_provision_jobs::Migration),
             Box::new(m0133_ad_control_revisions::Migration),
             Box::new(m0135_control_plane_jobs::Migration),
+            Box::new(m0143_challenge_import_jobs::Migration),
         ]
     }
 }
@@ -437,7 +439,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 17..],
+            &names[names.len() - 18..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -456,6 +458,7 @@ mod tests {
                 "m0242_participation_provision_jobs",
                 "m0133_ad_control_revisions",
                 "m0135_control_plane_jobs",
+                "m0143_challenge_import_jobs",
             ]
         );
     }
