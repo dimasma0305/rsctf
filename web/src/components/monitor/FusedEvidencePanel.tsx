@@ -1,15 +1,9 @@
 import { Alert, Badge, Button, Card, Group, Loader, Select, Stack, Text, Textarea } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-
-import api, {
-  AntiCheatFindingRow,
-  EvidenceFamily,
-  FindingReviewStatus,
-  FusedEvidenceBreakdown,
-} from '@Api'
 import { tryGetErrorMsg } from '@Utils/Shared'
+import api, { AntiCheatFindingRow, EvidenceFamily, FindingReviewStatus, FusedEvidenceBreakdown } from '@Api'
 
 const familyLabels: Record<EvidenceFamily, string> = {
   identityCorrelation: 'Identity correlation',
@@ -30,6 +24,10 @@ const reviewOptions: Array<{ value: FindingReviewStatus; label: string }> = [
 
 const reviewLabels = reviewOptions.map(({ label }) => label)
 const tierLabels = ['Context / 0 points', 'Behavioral', 'Strong', 'Hard']
+const MAX_REVIEW_NOTE_LENGTH = 4000
+
+const findingStatus = (finding: AntiCheatFindingRow): FindingReviewStatus =>
+  reviewOptions[finding.latestReviewStatus ?? -1]?.value ?? 'needsMoreEvidence'
 
 export function FusedEvidencePanel({ gameId, participationId }: { gameId: number; participationId: number }) {
   const { t } = useTranslation()
@@ -40,22 +38,50 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
   const [status, setStatus] = useState<FindingReviewStatus>('needsMoreEvidence')
   const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
+  const loadGeneration = useRef(0)
+  const loadAbort = useRef<AbortController | null>(null)
+  const saveOperation = useRef<symbol | null>(null)
 
   const reload = useCallback(async () => {
+    const generation = ++loadGeneration.current
+    loadAbort.current?.abort()
+    const controller = new AbortController()
+    loadAbort.current = controller
     setLoading(true)
     setError(null)
     try {
-      const response = await api.eventSecurity.fusedBreakdown(gameId, participationId)
+      const response = await api.eventSecurity.fusedBreakdown(gameId, participationId, { signal: controller.signal })
+      if (controller.signal.aborted || loadGeneration.current !== generation) return
       setResult(response.data)
     } catch (requestError) {
+      if (controller.signal.aborted || loadGeneration.current !== generation) return
       setError(tryGetErrorMsg(requestError, t))
     } finally {
-      setLoading(false)
+      if (loadGeneration.current === generation) {
+        if (loadAbort.current === controller) loadAbort.current = null
+        setLoading(false)
+      }
     }
   }, [gameId, participationId, t])
 
   useEffect(() => {
+    loadGeneration.current += 1
+    loadAbort.current?.abort()
+    loadAbort.current = null
+    saveOperation.current = null
+    setResult(null)
+    setError(null)
+    setActiveFinding(null)
+    setStatus('needsMoreEvidence')
+    setNote('')
+    setSaving(false)
     void reload()
+    return () => {
+      loadGeneration.current += 1
+      loadAbort.current?.abort()
+      loadAbort.current = null
+      saveOperation.current = null
+    }
   }, [reload])
 
   const relationships = useMemo(() => {
@@ -67,25 +93,63 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
   }, [result?.relationships])
 
   const saveReview = async (finding: AntiCheatFindingRow) => {
+    if (saveOperation.current) return
+    const identity = { gameId, participationId, findingId: finding.id }
+    const operation = Symbol('finding-review')
+    saveOperation.current = operation
     setSaving(true)
     try {
       await api.eventSecurity.reviewFinding(gameId, finding.id, { status, note: note.trim() || null })
+      if (
+        saveOperation.current !== operation ||
+        identity.gameId !== gameId ||
+        identity.participationId !== participationId ||
+        activeFinding !== identity.findingId
+      )
+        return
       showNotification({ color: 'teal', message: 'Evidence review recorded' })
       setActiveFinding(null)
+      setStatus('needsMoreEvidence')
       setNote('')
       await reload()
     } catch (requestError) {
-      setError(tryGetErrorMsg(requestError, t))
+      if (
+        saveOperation.current === operation &&
+        identity.gameId === gameId &&
+        identity.participationId === participationId &&
+        activeFinding === identity.findingId
+      ) {
+        setError(tryGetErrorMsg(requestError, t))
+      }
     } finally {
-      setSaving(false)
+      if (saveOperation.current === operation) {
+        saveOperation.current = null
+        setSaving(false)
+      }
     }
+  }
+
+  const toggleReview = (finding: AntiCheatFindingRow) => {
+    if (saving) return
+    if (activeFinding === finding.id) {
+      setActiveFinding(null)
+      setStatus('needsMoreEvidence')
+      setNote('')
+      return
+    }
+    setActiveFinding(finding.id)
+    setStatus(findingStatus(finding))
+    setNote('')
+    setError(null)
   }
 
   if (loading && !result) {
     return (
       <Group justify="center" py="sm">
         <Loader size="sm" />
-        <Text size="sm" c="dimmed">Loading fused evidence…</Text>
+        <Text size="sm" c="dimmed">
+          Loading fused evidence…
+        </Text>
       </Group>
     )
   }
@@ -119,7 +183,9 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
           <Group gap="xs" align="stretch">
             {result.families.map((family) => (
               <Card key={family.family} withBorder padding="xs" miw={180}>
-                <Text size="xs" fw={700}>{familyLabels[family.family]}</Text>
+                <Text size="xs" fw={700}>
+                  {familyLabels[family.family]}
+                </Text>
                 <Text size="xs" c="dimmed">
                   context {family.contextCount} · behavioral {family.behavioral} · strong {family.strong} · hard{' '}
                   {family.hard}
@@ -128,14 +194,22 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
             ))}
           </Group>
           {result.findings.map((finding) => (
-            <Card key={finding.id} withBorder padding="sm">
+            <Card key={finding.id} withBorder padding="sm" data-finding-id={finding.id}>
               <Stack gap="xs">
                 <Group justify="space-between" align="flex-start">
                   <div>
                     <Group gap="xs">
-                      <Text size="sm" fw={700}>{finding.detectorCode}</Text>
-                      <Badge size="xs" variant="light">{tierLabels[finding.evidenceTier] || 'Unknown tier'}</Badge>
-                      {finding.shadow && <Badge size="xs" color="gray">shadow / no score</Badge>}
+                      <Text size="sm" fw={700}>
+                        {finding.detectorCode}
+                      </Text>
+                      <Badge size="xs" variant="light">
+                        {tierLabels[finding.evidenceTier] || 'Unknown tier'}
+                      </Badge>
+                      {finding.shadow && (
+                        <Badge size="xs" color="gray">
+                          shadow / no score
+                        </Badge>
+                      )}
                       {finding.latestReviewStatus != null && (
                         <Badge size="xs" color="blue" variant="light">
                           {reviewLabels[finding.latestReviewStatus] || 'Reviewed'}
@@ -143,13 +217,16 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
                       )}
                     </Group>
                     <Text size="xs" c="dimmed">
-                      {new Date(finding.occurredAtUtc).toLocaleString()} · {relationships.get(finding.id) || 0} evidence links
+                      {new Date(finding.occurredAtUtc).toLocaleString()} · {relationships.get(finding.id) || 0} evidence
+                      links
                     </Text>
                   </div>
                   <Button
                     size="compact-xs"
                     variant="light"
-                    onClick={() => setActiveFinding(activeFinding === finding.id ? null : finding.id)}
+                    aria-label={`Review ${finding.detectorCode}`}
+                    disabled={saving}
+                    onClick={() => toggleReview(finding)}
                   >
                     Review
                   </Button>
@@ -168,10 +245,11 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
                     <Textarea
                       label="Reviewer note"
                       value={note}
-                      maxLength={4000}
+                      maxLength={MAX_REVIEW_NOTE_LENGTH}
+                      data-finding-review-note={finding.id}
                       onChange={(event) => setNote(event.currentTarget.value)}
                     />
-                    <Button size="xs" loading={saving} onClick={() => void saveReview(finding)}>
+                    <Button size="xs" loading={saving} disabled={saving} onClick={() => void saveReview(finding)}>
                       Record review
                     </Button>
                   </Stack>
@@ -180,7 +258,9 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
             </Card>
           ))}
           {!result.findings.length && (
-            <Text size="sm" c="dimmed">No bounded event-network findings were recorded for this participation.</Text>
+            <Text size="sm" c="dimmed">
+              No bounded event-network findings were recorded for this participation.
+            </Text>
           )}
         </>
       )}

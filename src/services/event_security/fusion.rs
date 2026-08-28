@@ -254,7 +254,10 @@ pub async fn review_finding(
     status: FindingReviewStatus,
     note: Option<&str>,
 ) -> AppResult<()> {
-    if note.is_some_and(|value| value.len() > 4_000) {
+    // HTML maxlength counts UTF-16 code units. Mirror that boundary so a note
+    // accepted by the browser cannot fail merely because it contains
+    // multi-byte Unicode, while retaining a strict finite storage budget.
+    if note.is_some_and(|value| !review_note_within_limit(value)) {
         return Err(AppError::bad_request("Review note is too long"));
     }
     let inserted = sqlx::query(
@@ -276,6 +279,10 @@ pub async fn review_finding(
         return Err(AppError::not_found("Finding not found"));
     }
     Ok(())
+}
+
+fn review_note_within_limit(value: &str) -> bool {
+    value.encode_utf16().take(4_001).count() <= 4_000
 }
 
 fn score_findings(findings: &[FindingRow]) -> AppResult<(i64, Vec<FamilyContribution>, usize)> {
@@ -821,5 +828,13 @@ mod tests {
             serde_json::to_string(&EvidenceFamily::CrossTeamPossession).unwrap(),
             r#""crossTeamPossession""#
         );
+    }
+
+    #[test]
+    fn review_note_limit_matches_browser_utf16_units() {
+        assert!(review_note_within_limit(&"é".repeat(4_000)));
+        assert!(!review_note_within_limit(&"é".repeat(4_001)));
+        assert!(review_note_within_limit(&"😀".repeat(2_000)));
+        assert!(!review_note_within_limit(&"😀".repeat(2_001)));
     }
 }
