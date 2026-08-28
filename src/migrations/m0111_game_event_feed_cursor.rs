@@ -3,9 +3,9 @@
 //! `GameEvents.id` is a stable row identity, but PostgreSQL sequences allocate
 //! values before commit. Two concurrent writers can therefore commit ids in the
 //! opposite order and make a plain `id > cursor` backfill skip the late commit.
-//! A deferred constraint trigger makes a non-blocking assignment attempt at
-//! transaction end. A bounded application reconciler assigns rows that lost
-//! the per-game race, preserving reconnect safety without serializing commits.
+//! A deferred constraint trigger assigns `feed_cursor` at transaction end while
+//! holding a very short per-game advisory lock. For one game, cursor order now
+//! matches commit order without serializing the longer submission transaction.
 
 use sea_orm_migration::prelude::*;
 use sea_orm_migration::sea_orm::ConnectionTrait;
@@ -52,20 +52,6 @@ CREATE INDEX IF NOT EXISTS ix_gameevents_game_feed_cursor
     ON "GameEvents" (game_id, feed_cursor)
     WHERE feed_cursor IS NOT NULL;
 
--- Remove the superseded transient-row indexes if an unreleased development
--- deployment already applied an earlier form of this migration.
-DROP INDEX IF EXISTS ix_gameevents_pending_feed_age;
-DROP INDEX IF EXISTS ix_gameevents_pending_feed_cursor;
-
-CREATE TABLE IF NOT EXISTS "GameEventFeedPending" (
-    event_id INTEGER PRIMARY KEY
-        REFERENCES "GameEvents" (id) ON DELETE CASCADE,
-    game_id INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS ix_gameeventfeedpending_game_event
-    ON "GameEventFeedPending" (game_id, event_id);
-
 CREATE OR REPLACE FUNCTION rsctf_assign_game_event_feed_cursor()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -73,16 +59,11 @@ AS $function$
 BEGIN
     IF NEW.feed_cursor IS NULL THEN
         -- Namespace 1195722068 is reserved for the game-event commit fence.
-        IF pg_try_advisory_xact_lock(1195722068, NEW.game_id) THEN
-            UPDATE "GameEvents"
-               SET feed_cursor = nextval('rsctf_game_event_feed_cursor_seq')
-             WHERE id = NEW.id
-               AND feed_cursor IS NULL;
-        ELSE
-            INSERT INTO "GameEventFeedPending" (event_id, game_id)
-            VALUES (NEW.id, NEW.game_id)
-            ON CONFLICT (event_id) DO NOTHING;
-        END IF;
+        PERFORM pg_advisory_xact_lock(1195722068, NEW.game_id);
+        UPDATE "GameEvents"
+           SET feed_cursor = nextval('rsctf_game_event_feed_cursor_seq')
+         WHERE id = NEW.id
+           AND feed_cursor IS NULL;
     END IF;
     RETURN NULL;
 END
@@ -99,7 +80,6 @@ CREATE CONSTRAINT TRIGGER tr_gameevents_feed_cursor
 const DOWN_SQL: &str = r#"
 DROP TRIGGER IF EXISTS tr_gameevents_feed_cursor ON "GameEvents";
 DROP FUNCTION IF EXISTS rsctf_assign_game_event_feed_cursor();
-DROP TABLE IF EXISTS "GameEventFeedPending";
 DROP INDEX IF EXISTS ix_gameevents_game_feed_cursor;
 DROP INDEX IF EXISTS ux_gameevents_feed_cursor;
 ALTER TABLE "GameEvents" DROP COLUMN IF EXISTS feed_cursor;
@@ -127,15 +107,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cursor_assignment_is_deferred_nonblocking_indexed_and_idempotent() {
+    fn cursor_assignment_is_deferred_indexed_and_idempotent() {
         assert!(UP_SQL.contains("DEFERRABLE INITIALLY DEFERRED"));
-        assert!(UP_SQL.contains("pg_try_advisory_xact_lock(1195722068, NEW.game_id)"));
-        assert!(!UP_SQL.contains("PERFORM pg_advisory_xact_lock"));
+        assert!(UP_SQL.contains("pg_advisory_xact_lock(1195722068, NEW.game_id)"));
         assert!(UP_SQL.contains("ADD COLUMN IF NOT EXISTS feed_cursor BIGINT"));
         assert!(UP_SQL.contains("ix_gameevents_game_feed_cursor"));
-        assert!(UP_SQL.contains("CREATE TABLE IF NOT EXISTS \"GameEventFeedPending\""));
-        assert!(UP_SQL.contains("ix_gameeventfeedpending_game_event"));
-        assert!(UP_SQL.contains("ON CONFLICT (event_id) DO NOTHING"));
         assert!(UP_SQL.contains("ux_gameevents_feed_cursor"));
     }
 }

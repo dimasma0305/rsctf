@@ -135,6 +135,7 @@ mod m0112_koth_target_reporters;
 mod m0113_koth_reporter_routing_revision;
 mod m0114_submission_feed_cursor;
 mod m0115_flag_egress_feed_cursor;
+mod m0116_game_event_feed_pending;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -280,6 +281,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0113_koth_reporter_routing_revision::Migration),
             Box::new(m0114_submission_feed_cursor::Migration),
             Box::new(m0115_flag_egress_feed_cursor::Migration),
+            Box::new(m0116_game_event_feed_pending::Migration),
         ]
     }
 }
@@ -425,7 +427,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 13..],
+            &names[names.len() - 14..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -440,6 +442,7 @@ mod tests {
                 "m0113_koth_reporter_routing_revision",
                 "m0114_submission_feed_cursor",
                 "m0115_flag_egress_feed_cursor",
+                "m0116_game_event_feed_pending",
             ]
         );
     }
