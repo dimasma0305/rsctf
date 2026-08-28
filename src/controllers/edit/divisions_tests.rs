@@ -59,6 +59,18 @@ fn scoring_boundary_rejects_only_real_division_policy_changes() {
     );
 }
 
+#[test]
+fn division_input_rejects_duplicate_unbounded_and_unknown_permissions() {
+    let duplicates = [config(10, Some(7)), config(10, Some(7))];
+    assert!(validate_division_input(Some("open"), None, None, Some(&duplicates)).is_err());
+    let too_many = (0..=MAX_DIVISION_CONFIGS)
+        .map(|id| config(id as i32, Some(0)))
+        .collect::<Vec<_>>();
+    assert!(validate_division_input(Some("open"), None, None, Some(&too_many)).is_err());
+    assert!(validate_division_input(Some("open"), None, Some(1 << 20), None).is_err());
+    assert!(validate_division_input(Some("open"), None, Some(GamePermission::ALL), None).is_ok());
+}
+
 struct DivisionPolicyFixture {
     admin_pool: sqlx::PgPool,
     pool: sqlx::PgPool,

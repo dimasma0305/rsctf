@@ -542,9 +542,11 @@ pub struct DivisionCreateModel {
     pub challenge_configs: Option<Vec<DivisionChallengeConfigInput>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionEditModel {
+    pub operation_id: Uuid,
+    pub expected_revision: i64,
     pub name: Option<String>,
     pub invite_code: Option<String>,
     pub default_permissions: Option<i32>,
@@ -555,7 +557,7 @@ pub struct DivisionEditModel {
 /// Inbound half of RSCTF `DivisionChallengeConfigModel` — a per-challenge
 /// permission override for a division. `permissions` is a numeric
 /// `GamePermission` bit-set; defaults to `All` when omitted (matching the C#).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionChallengeConfigInput {
     pub challenge_id: i32,
