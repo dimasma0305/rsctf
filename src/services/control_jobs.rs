@@ -386,12 +386,16 @@ pub async fn get_ad_reset_for_participation(
     operation_id: Option<Uuid>,
 ) -> AppResult<Option<ControlJobModel>> {
     let sql = format!(
-        r#"SELECT {JOB_COLUMNS} FROM "ControlPlaneJobs"
-            WHERE kind = 'AdReset' AND game_id = $1
-              AND (input->>'participationId')::integer = $2
-              AND ($3::uuid IS NULL OR id = $3)
-              AND ($4::uuid IS NULL OR operation_id = $4)
-            ORDER BY created_at_utc DESC, id DESC LIMIT 1"#
+        r#"SELECT {JOB_COLUMNS_QUALIFIED} FROM "ControlPlaneJobs" job
+            WHERE job.kind = 'AdReset' AND job.game_id = $1
+              AND (job.input->>'participationId')::integer = $2
+              AND ($3::uuid IS NULL OR job.id = $3)
+              AND ($4::uuid IS NULL OR EXISTS (
+                  SELECT 1 FROM "ControlPlaneJobOperations" operation
+                   WHERE operation.job_id = job.id
+                     AND operation.operation_id = $4
+              ))
+            ORDER BY job.created_at_utc DESC, job.id DESC LIMIT 1"#
     );
     sqlx::query_as::<_, JobRow>(&sql)
         .bind(game_id)
