@@ -44,6 +44,14 @@ pub struct ExpectedContainerQuery {
     pub expected_container_id: Uuid,
 }
 
+fn operation_id_from_headers(headers: &HeaderMap) -> Uuid {
+    headers
+        .get("x-rsctf-operation-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .unwrap_or_else(Uuid::new_v4)
+}
+
 /// `POST /api/game/{id}/container/{challengeId}` — provision a per-team dynamic
 /// container (mirrors RSCTF `GameInstanceRepository.CreateContainer`).
 pub async fn create_container(
@@ -53,14 +61,6 @@ pub async fn create_container(
     Path((id, cid)): Path<(i32, i32)>,
 ) -> AppResult<RequestResponse<ContainerInfoModel>> {
     let ctx = context_info(&st, &user, id, true).await?;
-    let caller = LiveParticipationIdentity {
-        user_id: user.id,
-        expected_security_stamp: &user.security_stamp,
-        game_id: id,
-        team_id: ctx.participation.team_id,
-        participation_id: ctx.participation.id,
-    };
-
     let challenge = load_playable_challenge(&st, id, cid).await?;
     // Division may restrict viewing (hence provisioning) this challenge: lacking
     // ViewChallenge hides it as a 404, mirroring the identical gate `get_challenge`
@@ -83,11 +83,7 @@ pub async fn create_container(
             "Container creation is not allowed for this challenge",
         ));
     }
-    let requested_operation_id = headers
-        .get("x-rsctf-operation-id")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| Uuid::parse_str(value).ok())
-        .unwrap_or_else(Uuid::new_v4);
+    let requested_operation_id = operation_id_from_headers(&headers);
     let shared = uses_shared_container(&challenge);
     let operation_scope = if shared {
         format!("shared-challenge:{cid}")
@@ -106,20 +102,77 @@ pub async fn create_container(
     .await?
     {
         operations::ClaimOutcome::Recovered(model) => return Ok(RequestResponse::ok(model)),
+        operations::ClaimOutcome::Following => {
+            let model = operations::wait_for_result(st.pg(), requested_operation_id).await?;
+            return Ok(RequestResponse::ok(model));
+        }
         operations::ClaimOutcome::Owned(operation) => operation,
     };
+    let owner_st = st.clone();
+    let owner_user = user.clone();
+    let owner_operation = operation.clone();
+    let owner = operations::spawn_owner(st.pg().clone(), operation, async move {
+        perform_create_container(owner_st, owner_user, id, cid, owner_operation).await
+    });
+    let model = operations::await_owner(owner).await?;
+    Ok(RequestResponse::ok(model))
+}
+
+async fn player_request_is_eligible_now(
+    st: &SharedState,
+    caller: LiveParticipationIdentity<'_>,
+    challenge_id: i32,
+    mode: ContainerRequestMode,
+) -> AppResult<bool> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let eligible =
+        player_container_request_is_eligible(&mut transaction, caller, challenge_id, mode).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(eligible)
+}
+
+async fn perform_create_container(
+    st: SharedState,
+    user: CurrentUser,
+    id: i32,
+    cid: i32,
+    operation: operations::ClaimedOperation,
+) -> AppResult<ContainerInfoModel> {
+    let ctx = context_info(&st, &user, id, true).await?;
+    let caller = LiveParticipationIdentity {
+        user_id: user.id,
+        expected_security_stamp: &user.security_stamp,
+        game_id: id,
+        team_id: ctx.participation.team_id,
+        participation_id: ctx.participation.id,
+    };
+    let challenge = load_playable_challenge(&st, id, cid).await?;
+    let perm = effective_permission(&st, &ctx.participation, cid).await?;
+    if !perm.contains(GamePermission::VIEW_CHALLENGE) {
+        return Err(AppError::not_found("The challenge was not found"));
+    }
+    if !challenge.challenge_type.is_container() {
+        return Err(AppError::bad_request("Challenge has no container"));
+    }
+    if challenge.challenge_type.uses_ad_engine()
+        && !allows_practice_container(&challenge, &ctx.game)
+    {
+        return Err(AppError::bad_request(
+            "Container creation is not allowed for this challenge",
+        ));
+    }
+    let shared = uses_shared_container(&challenge);
     let on_demand_build = match authorize_on_demand_build(&st, caller, &challenge).await {
         Ok(value) => value,
-        Err(error) => {
-            operations::fail_create(st.pg(), &operation).await;
-            return Err(error);
-        }
+        Err(error) => return Err(error),
     };
     if on_demand_build {
-        if let Err(error) = image_repair::prepare_queued_image(&st, &challenge).await {
-            operations::fail_create(st.pg(), &operation).await;
-            return Err(error);
-        }
+        image_repair::prepare_queued_image(&st, &challenge).await?;
     }
 
     // Shared container: one challenge-owned container serves every team. Get-or-create
@@ -127,85 +180,29 @@ pub async fn create_container(
     // Mirrors RSCTF `CreateContainer` (UsesSharedContainer branch, GameController.cs:1953)
     // + `GameInstanceRepository.GetOrCreateSharedContainer`.
     if shared {
-        let flight_key = format!("shared-container:{}", challenge.id);
-        let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
-        let roster_key = crate::services::live_roster::lock_key(ctx.participation.team_id);
-        let mut distributed =
-            crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning_below_shared(
-                st.pg(),
-                &[roster_key],
-                &flight_key,
-            )
-            .await?;
-        let result = async {
-            if !player_container_request_is_eligible(
-                distributed.transaction_mut(),
-                caller,
-                cid,
-                ContainerRequestMode::Shared,
-            )
-            .await?
-            {
-                return Err(ineligible_container_start_error(&st, &challenge));
-            }
-            let c = get_or_create_shared_container_locked(
-                &st,
-                &challenge,
-                ctx.game.vpn_access_required,
-                operation.operation_id,
-                operation.publication_id,
-            )
-            .await?;
-            // The shared backend remains a valid challenge-level resource when only
-            // this caller loses eligibility, but the stale request must not receive
-            // its endpoint after the potentially slow backend operation.
-            if !player_container_request_is_eligible(
-                distributed.transaction_mut(),
-                caller,
-                cid,
-                ContainerRequestMode::Shared,
-            )
-            .await?
-            {
-                return Err(AppError::Forbidden);
-            }
-            let model = ContainerInfoModel::from(&c);
-            operations::complete_create(st.pg(), &operation, &model).await?;
-            Ok(RequestResponse::ok(model))
+        if !player_request_is_eligible_now(&st, caller, cid, ContainerRequestMode::Shared).await? {
+            return Err(ineligible_container_start_error(&st, &challenge));
         }
-        .await;
-        let release = distributed.release().await;
-        if result.is_err() {
-            operations::fail_create(st.pg(), &operation).await;
-        }
-        release?;
-        return result;
-    }
-
-    // Serialize all starts for one participation. This closes both the duplicate
-    // (participation, challenge) race and the cross-challenge container-cap race.
-    let flight_key = format!("game-container:{}", ctx.participation.id);
-    let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
-    let roster_key = crate::services::live_roster::lock_key(ctx.participation.team_id);
-    let mut distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning_below_shared(
-            st.pg(),
-            &[roster_key],
-            &flight_key,
+        let c = get_or_create_shared_container_locked(
+            &st,
+            &challenge,
+            ctx.game.vpn_access_required,
+            operation.operation_id,
+            operation.publication_id,
         )
         .await?;
+        // The shared backend remains valid for other teams if this caller lost
+        // eligibility during runtime work, but this stale waiter gets no endpoint.
+        if !player_request_is_eligible_now(&st, caller, cid, ContainerRequestMode::Shared).await? {
+            return Err(AppError::Forbidden);
+        }
+        return Ok(ContainerInfoModel::from(&c));
+    }
 
-    if !player_container_request_is_eligible(
-        distributed.transaction_mut(),
-        caller,
-        cid,
-        ContainerRequestMode::PerTeam,
-    )
-    .await?
-    {
-        let error = ineligible_container_start_error(&st, &challenge);
-        distributed.release().await?;
-        return Err(error);
+    // The durable active-scope row serializes player lifecycle intent. This
+    // short authorization transaction is released before every runtime call.
+    if !player_request_is_eligible_now(&st, caller, cid, ContainerRequestMode::PerTeam).await? {
+        return Err(ineligible_container_start_error(&st, &challenge));
     }
 
     // Everything below uses a post-lock snapshot. In particular, do not launch an
@@ -359,6 +356,17 @@ pub async fn create_container(
     };
 
     let backend_id = info.id.clone();
+    // Reacquire the legacy publication/reaper fence only after runtime I/O has
+    // completed. It is retained solely for authorization and database publish.
+    let flight_key = format!("game-container:{}", ctx.participation.id);
+    let roster_key = crate::services::live_roster::lock_key(ctx.participation.team_id);
+    let mut distributed =
+        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning_below_shared(
+            st.pg(),
+            &[roster_key],
+            &flight_key,
+        )
+        .await?;
     match player_container_request_is_eligible(
         distributed.transaction_mut(),
         caller,
@@ -369,17 +377,17 @@ pub async fn create_container(
     {
         Ok(true) => {}
         Ok(false) => {
+            distributed.release().await?;
             if let Err(error) = st.containers.destroy(&backend_id).await {
                 tracing::warn!(%backend_id, %error, "stale unpublished container destroy failed");
             }
-            distributed.release().await?;
             return Err(AppError::Forbidden);
         }
         Err(error) => {
+            let _ = distributed.release().await;
             if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
                 tracing::warn!(%backend_id, error = %destroy_error, "unpublished container destroy failed after authorization error");
             }
-            let _ = distributed.release().await;
             return Err(error);
         }
     }
@@ -399,10 +407,10 @@ pub async fn create_container(
     {
         Ok(lock) => lock,
         Err(error) => {
+            distributed.release().await?;
             if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
                 tracing::warn!(%backend_id, error = %destroy_error, "unpublished stale-definition container destroy failed");
             }
-            distributed.release().await?;
             return Err(error);
         }
     };
@@ -484,6 +492,7 @@ pub async fn create_container(
     let (c, now) = match persisted {
         Ok(value) => value,
         Err(err) => {
+            distributed.release().await?;
             if let Err(cleanup_error) = revoke_failed_team_container_publication(
                 &st,
                 &backend_id,
@@ -523,6 +532,7 @@ pub async fn create_container(
         Err(error) => Some(error),
     };
     if let Some(error) = stale_error {
+        distributed.release().await?;
         let cleanup = match c.game_instance_id {
             Some(instance_id) => {
                 revoke_published_team_container(
@@ -552,12 +562,7 @@ pub async fn create_container(
                 .await
             }
         };
-        let unlock = distributed
-            .release()
-            .await
-            .map_err(|unlock_error| AppError::internal(unlock_error.to_string()));
         cleanup?;
-        unlock?;
         return Err(error);
     }
 
@@ -583,15 +588,14 @@ pub async fn create_container(
         tracing::warn!(game = id, challenge = cid, error = %err, "container start event persist failed");
     }
 
-    let model = ContainerInfoModel::from(&c);
-    operations::complete_create(st.pg(), &operation, &model).await?;
-    Ok(RequestResponse::ok(model))
+    Ok(ContainerInfoModel::from(&c))
 }
 
 /// `DELETE /api/game/{id}/container/{challengeId}` — tear down the team's container.
 pub async fn delete_container(
     State(st): State<SharedState>,
     user: CurrentUser,
+    headers: HeaderMap,
     Path((id, cid)): Path<(i32, i32)>,
     Query(query): Query<ExpectedContainerQuery>,
 ) -> AppResult<StatusCode> {
@@ -618,18 +622,64 @@ pub async fn delete_container(
             "Container creation is not allowed for this challenge",
         ));
     }
-    let flight_key = format!("game-container:{}", ctx.participation.id);
-    let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
-    let roster_key = crate::services::live_roster::lock_key(ctx.participation.team_id);
-    let mut distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning_below_shared(
-            st.pg(),
-            &[roster_key],
-            &flight_key,
-        )
-        .await?;
-    if !crate::services::live_roster::participation_caller_is_live_on(
-        &mut **distributed.transaction_mut(),
+    let operation_id = operation_id_from_headers(&headers);
+    let scope = format!("participation:{}", ctx.participation.id);
+    let operation = match operations::claim_delete(
+        st.pg(),
+        operation_id,
+        &scope,
+        user.id,
+        id,
+        ctx.participation.id,
+        cid,
+        query.expected_container_id,
+    )
+    .await?
+    {
+        operations::ClaimOutcome::Recovered(()) => return Ok(StatusCode::OK),
+        operations::ClaimOutcome::Following => {
+            operations::wait_for_result::<()>(st.pg(), operation_id).await?;
+            return Ok(StatusCode::OK);
+        }
+        operations::ClaimOutcome::Owned(operation) => operation,
+    };
+    let owner_st = st.clone();
+    let owner_user = user.clone();
+    let owner = operations::spawn_owner(st.pg().clone(), operation, async move {
+        perform_delete_container(owner_st, owner_user, id, cid, query.expected_container_id).await
+    });
+    operations::await_owner(owner).await?;
+    Ok(StatusCode::OK)
+}
+
+async fn perform_delete_container(
+    st: SharedState,
+    user: CurrentUser,
+    id: i32,
+    cid: i32,
+    expected_container_id: Uuid,
+) -> AppResult<()> {
+    let ctx = context_info(&st, &user, id, false).await?;
+    let guard_challenge = load_scoped_challenge(&st, id, cid).await?;
+    if uses_shared_container(&guard_challenge) {
+        return Err(AppError::Coded {
+            http: StatusCode::FORBIDDEN,
+            code: 403,
+            title: "Shared containers can only be stopped by an administrator.".into(),
+        });
+    }
+    if guard_challenge.challenge_type.uses_ad_engine()
+        && !allows_practice_container(&guard_challenge, &ctx.game)
+    {
+        return Err(AppError::bad_request(
+            "Container creation is not allowed for this challenge",
+        ));
+    }
+    let mut authorization = crate::utils::database::begin_sqlx_transaction(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let live = crate::services::live_roster::participation_caller_is_live_on(
+        &mut *authorization,
         user.id,
         &user.security_stamp,
         id,
@@ -637,24 +687,26 @@ pub async fn delete_container(
         ctx.participation.id,
         true,
     )
-    .await?
-    {
-        distributed.release().await?;
+    .await?;
+    authorization
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if !live {
         return Err(AppError::Forbidden);
     }
     let outcome = delete_expected_team_container_locked(
         &st,
         ctx.participation.id,
         cid,
-        query.expected_container_id,
+        expected_container_id,
     )
     .await?;
     let DeleteContainerOutcome::Destroyed {
         audit_id: destroy_id,
     } = outcome
     else {
-        distributed.release().await?;
-        return Ok(StatusCode::OK);
+        return Ok(());
     };
 
     let team_name = team::Entity::find_by_id(ctx.participation.team_id)
@@ -685,8 +737,8 @@ pub async fn delete_container(
     // Mirror RSCTF: emit a ContainerDestroy GameEvent (Values = [challengeId, title]) so
     // the monitor `/events` feed reflects the teardown alongside the ContainerStart.
     let values = serde_json::json!([cid.to_string(), challenge_title]);
-    let event_id = crate::services::game_event_feed::insert_on(
-        distributed.transaction_mut(),
+    if let Err(error) = crate::services::game_event_feed::persist_and_publish(
+        &st,
         crate::services::game_event_feed::NewGameEvent {
             game_id: id,
             event_type: crate::utils::enums::EventType::ContainerDestroy,
@@ -697,23 +749,77 @@ pub async fn delete_container(
         },
     )
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    distributed.release().await?;
-    if let Err(error) = crate::services::game_event_feed::publish_committed(&st, &[event_id]).await
     {
-        tracing::warn!(event_id, %error, "container destroy event publish failed");
+        tracing::warn!(%error, "container destroy event persist/publish failed");
     }
 
-    Ok(StatusCode::OK)
+    Ok(())
 }
 
 /// `POST /api/game/{id}/container/{challengeId}/extend` — extend the lifetime.
 pub async fn extend_container(
     State(st): State<SharedState>,
     user: CurrentUser,
+    headers: HeaderMap,
     Path((id, cid)): Path<(i32, i32)>,
     Query(query): Query<ExpectedContainerQuery>,
 ) -> AppResult<RequestResponse<ContainerInfoModel>> {
+    let ctx = context_info(&st, &user, id, true).await?;
+    let guard_challenge = load_playable_challenge(&st, id, cid).await?;
+    let perm = effective_permission(&st, &ctx.participation, cid).await?;
+    if !perm.contains(GamePermission::VIEW_CHALLENGE) {
+        return Err(AppError::not_found("Challenge not found"));
+    }
+    let shared = uses_shared_container(&guard_challenge);
+    if !shared
+        && guard_challenge.challenge_type.uses_ad_engine()
+        && !allows_practice_container(&guard_challenge, &ctx.game)
+    {
+        return Err(AppError::bad_request(
+            "Container creation is not allowed for this challenge",
+        ));
+    }
+    let operation_id = operation_id_from_headers(&headers);
+    let scope = if shared {
+        format!("shared-challenge:{cid}")
+    } else {
+        format!("participation:{}", ctx.participation.id)
+    };
+    let operation = match operations::claim_extend(
+        st.pg(),
+        operation_id,
+        &scope,
+        user.id,
+        id,
+        (!shared).then_some(ctx.participation.id),
+        cid,
+        query.expected_container_id,
+    )
+    .await?
+    {
+        operations::ClaimOutcome::Recovered(model) => return Ok(RequestResponse::ok(model)),
+        operations::ClaimOutcome::Following => {
+            let model = operations::wait_for_result(st.pg(), operation_id).await?;
+            return Ok(RequestResponse::ok(model));
+        }
+        operations::ClaimOutcome::Owned(operation) => operation,
+    };
+    let owner_st = st.clone();
+    let owner_user = user.clone();
+    let owner = operations::spawn_owner(st.pg().clone(), operation, async move {
+        perform_extend_container(owner_st, owner_user, id, cid, query.expected_container_id).await
+    });
+    let model = operations::await_owner(owner).await?;
+    Ok(RequestResponse::ok(model))
+}
+
+async fn perform_extend_container(
+    st: SharedState,
+    user: CurrentUser,
+    id: i32,
+    cid: i32,
+    expected_container_id: Uuid,
+) -> AppResult<ContainerInfoModel> {
     let ctx = context_info(&st, &user, id, true).await?;
     let caller = LiveParticipationIdentity {
         user_id: user.id,
@@ -725,7 +831,6 @@ pub async fn extend_container(
     let guard_challenge = load_playable_challenge(&st, id, cid).await?;
     let container_policy =
         crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
-
     let perm = effective_permission(&st, &ctx.participation, cid).await?;
     if !perm.contains(GamePermission::VIEW_CHALLENGE) {
         return Err(AppError::not_found("Challenge not found"));
@@ -766,7 +871,7 @@ pub async fn extend_container(
             let sid = current_challenge
                 .shared_container_id
                 .ok_or_else(|| AppError::bad_request("No running container"))?;
-            if sid != query.expected_container_id {
+            if sid != expected_container_id {
                 return Err(AppError::conflict(
                     "The challenge instance changed; refresh and retry.",
                 ));
@@ -787,7 +892,7 @@ pub async fn extend_container(
             let mut am: container::ActiveModel = shared.into();
             am.expect_stop_at = Set(stop_at);
             let shared = am.update(&st.db).await?;
-            Ok(RequestResponse::ok(ContainerInfoModel::from(&shared)))
+            Ok(ContainerInfoModel::from(&shared))
         }
         .await;
         distributed.release().await?;
@@ -832,11 +937,11 @@ pub async fn extend_container(
             &st,
             ctx.participation.id,
             cid,
-            query.expected_container_id,
+            expected_container_id,
             &container_policy,
         )
         .await?;
-        Ok(RequestResponse::ok(response))
+        Ok(response)
     }
     .await;
     distributed.release().await?;
