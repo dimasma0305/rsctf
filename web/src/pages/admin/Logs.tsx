@@ -23,17 +23,19 @@ import { useTranslation } from 'react-i18next'
 import { AdminPage } from '@Components/admin/AdminPage'
 import {
   ADMIN_LOG_PAGE_SIZE,
+  adminLogFilterScope,
   adminLogIdentity,
   adminLogMatchesQuery,
   adminLogQueryReducer,
   adminLogQueryScope,
+  boundAdminLogRows,
   compareAdminLogsNewestFirst,
-  MAX_BUFFERED_ADMIN_LOGS,
   MAX_VISIBLE_ADMIN_LOGS,
   normalizeAdminLogSearch,
+  receiveAdminLog,
 } from '@Utils/AdminLogFeed'
 import { handleAxiosError } from '@Utils/ApiHelper'
-import { mergeUniqueRows, prependUniqueBoundedRow, reconcileLiveRows } from '@Utils/FeedReconciliation'
+import { mergeUniqueRows, reconcileLiveRows } from '@Utils/FeedReconciliation'
 import { useLanguage } from '@Utils/I18n'
 import { currentListSnapshotRows, LatestListRequest, type ListSnapshot } from '@Utils/LatestRequest'
 import { TaskStatusColorMap } from '@Utils/Shared'
@@ -68,11 +70,12 @@ const Logs: FC = () => {
   })
   const { level, page: activePage } = query
   const queryScope = adminLogQueryScope(query)
+  const liveScope = adminLogFilterScope(query)
   const queryReady = normalizedSearch === query.search
   const theme = useMantineTheme()
 
   const [, update] = useState(0)
-  const newLogs = useRef<LogMessageModel[]>([])
+  const newLogs = useRef<ListSnapshot<LogMessageModel>>({ scope: liveScope, rows: [] })
   const logRequest = useRef(new LatestListRequest<LogMessageModel>())
   const [logSnapshot, setLogSnapshot] = useState<ListSnapshot<LogMessageModel>>()
   const logs = queryReady ? currentListSnapshotRows(queryScope, logSnapshot) : undefined
@@ -105,12 +108,13 @@ const Logs: FC = () => {
     })
     if (!snapshot) return
 
-    newLogs.current = reconcileLiveRows(newLogs.current, snapshot.rows, adminLogIdentity).slice(
-      0,
-      MAX_BUFFERED_ADMIN_LOGS
-    )
+    const liveRows = currentListSnapshotRows(liveScope, newLogs.current) ?? []
+    newLogs.current = {
+      scope: liveScope,
+      rows: boundAdminLogRows(reconcileLiveRows(liveRows, snapshot.rows, adminLogIdentity), query),
+    }
     setLogSnapshot(snapshot)
-  }, [activePage, level, query.search, queryReady, queryScope])
+  }, [activePage, level, liveScope, query, queryReady, queryScope])
 
   const fetchLogsForUi = useCallback(async () => {
     try {
@@ -139,7 +143,10 @@ const Logs: FC = () => {
     handlers: {
       ReceivedLog: (raw) => {
         const message = raw as LogMessageModel
-        newLogs.current = prependUniqueBoundedRow(message, newLogs.current, MAX_BUFFERED_ADMIN_LOGS, adminLogIdentity)
+        const liveRows = currentListSnapshotRows(liveScope, newLogs.current) ?? []
+        const received = receiveAdminLog(message, liveRows, query)
+        if (!received.accepted) return
+        newLogs.current = { scope: liveScope, rows: received.rows }
         update((version) => version + 1)
       },
     },
@@ -156,8 +163,8 @@ const Logs: FC = () => {
       }),
   })
 
-  const bufferedLogs =
-    queryReady && activePage === 1 ? newLogs.current.filter((item) => adminLogMatchesQuery(item, query)) : []
+  const liveRows = currentListSnapshotRows(liveScope, newLogs.current) ?? []
+  const bufferedLogs = queryReady && activePage === 1 ? boundAdminLogRows(liveRows, query) : []
   const snapshotLogs = (logs ?? []).filter((item) => adminLogMatchesQuery(item, query))
   const visibleLogs = mergeUniqueRows(bufferedLogs, snapshotLogs, adminLogIdentity, MAX_VISIBLE_ADMIN_LOGS).sort(
     compareAdminLogsNewestFirst

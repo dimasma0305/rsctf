@@ -3,15 +3,19 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import type { LogMessageModel } from '../Api'
 import {
+  adminLogFilterScope,
   adminLogIdentity,
   adminLogMatchesQuery,
   adminLogQueryReducer,
   adminLogQueryScope,
+  boundAdminLogRows,
   compareAdminLogsNewestFirst,
   MAX_BUFFERED_ADMIN_LOGS,
   normalizeAdminLogSearch,
+  receiveAdminLog,
 } from './AdminLogFeed'
 import { prependUniqueBoundedRow } from './FeedReconciliation'
+import { currentListSnapshotRows } from './LatestRequest'
 
 const log = (id: number, overrides: Partial<LogMessageModel> = {}): LogMessageModel => ({
   id,
@@ -87,12 +91,60 @@ test('five thousand admin pushes retain fifty unique stable ids', () => {
   assert.equal(buffered[0].msg, 'refreshed')
 })
 
+test('more than fifty unrelated pushes cannot evict a matching live row', () => {
+  const warningQuery = { level: 'Warning', page: 1, search: 'keep-me' }
+  let buffered = receiveAdminLog(log(1, { level: 'Warning', msg: 'keep-me' }), [], warningQuery).rows
+
+  for (let id = 2; id <= 102; id += 1) {
+    const received = receiveAdminLog(log(id, { level: 'Information', msg: 'unrelated' }), buffered, warningQuery)
+    assert.equal(received.accepted, false)
+    assert.equal(received.rows, buffered, 'unrelated traffic must not churn the scoped buffer')
+    buffered = received.rows
+  }
+
+  assert.deepEqual(
+    buffered.map(({ id }) => id),
+    [1]
+  )
+})
+
+test('admin live buffers are filter-scoped, page-stable, and bounded after filtering', () => {
+  const warningQuery = { level: 'Warning', page: 1, search: '' }
+  const errorQuery = { level: 'Error', page: 1, search: 'needle' }
+  const warningBuffer = {
+    scope: adminLogFilterScope(warningQuery),
+    rows: [log(1, { level: 'Warning' })],
+  }
+
+  assert.equal(adminLogFilterScope({ ...warningQuery, page: 7 }), warningBuffer.scope)
+  assert.equal(currentListSnapshotRows(adminLogFilterScope(errorQuery), warningBuffer), undefined)
+
+  const mixed = [
+    ...Array.from({ length: 75 }, (_, index) => log(index + 10, { level: 'Information' })),
+    log(2, { level: 'Error', msg: 'needle' }),
+  ]
+  assert.deepEqual(
+    boundAdminLogRows(mixed, errorQuery).map(({ id }) => id),
+    [2],
+    'the cap must be applied after filtering'
+  )
+
+  const received = receiveAdminLog(log(3, { level: 'Error', msg: 'needle' }), warningBuffer.rows, errorQuery)
+  assert.equal(received.accepted, true)
+  assert.deepEqual(
+    received.rows.map(({ id }) => id),
+    [3]
+  )
+})
+
 test('the Logs callsite owns one scoped latest request and no separate page-reset effect', () => {
   const source = readFileSync('src/pages/admin/Logs.tsx', 'utf8')
   assert.match(source, /useReducer\(adminLogQueryReducer/)
   assert.match(source, /new LatestListRequest<LogMessageModel>\(\)/)
+  assert.match(source, /newLogs = useRef<ListSnapshot<LogMessageModel>>/)
   assert.match(source, /currentListSnapshotRows\(queryScope, logSnapshot\)/)
+  assert.match(source, /currentListSnapshotRows\(liveScope, newLogs\.current\)/)
   assert.match(source, /if \(!queryReady\) return/)
-  assert.match(source, /adminLogMatchesQuery\(item, query\)/)
+  assert.match(source, /receiveAdminLog\(message, liveRows, query\)/)
   assert.doesNotMatch(source, /useEffect\(\(\) => \{\s*setPage\(1\)/)
 })

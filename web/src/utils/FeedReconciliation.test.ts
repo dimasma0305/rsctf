@@ -77,8 +77,10 @@ test('five thousand stable-id pushes keep unique live and merged collections har
 
 test('the admin Logs page uses stable-id bounded reconciliation and React keys', () => {
   const source = readFileSync('src/pages/admin/Logs.tsx', 'utf8')
+  const feedSource = readFileSync('src/utils/AdminLogFeed.ts', 'utf8')
 
-  assert.match(source, /prependUniqueBoundedRow\([\s\S]*?MAX_BUFFERED_ADMIN_LOGS/)
+  assert.match(source, /receiveAdminLog\(message, liveRows, query\)/)
+  assert.match(feedSource, /prependUniqueBoundedRow\([\s\S]*?MAX_BUFFERED_ADMIN_LOGS/)
   assert.match(source, /mergeUniqueRows\([\s\S]*?MAX_VISIBLE_ADMIN_LOGS/)
   assert.match(source, /key=\{item\.id\}/)
   assert.doesNotMatch(source, /key=\{`\$\{item\.time\}@\$\{i\}`\}/)

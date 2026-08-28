@@ -1,3 +1,4 @@
+import { prependUniqueBoundedRow } from '@Utils/FeedReconciliation'
 import type { LogMessageModel } from '@Api'
 
 export const ADMIN_LOG_PAGE_SIZE = 50
@@ -38,6 +39,10 @@ export const adminLogQueryReducer = (state: AdminLogQueryState, action: AdminLog
 
 export const adminLogQueryScope = ({ level, page, search }: AdminLogQueryState) => JSON.stringify([level, page, search])
 
+/** Live rows follow the active filters but remain available while paging away
+ * from page one. The authoritative HTTP snapshot owns each individual page. */
+export const adminLogFilterScope = ({ level, search }: AdminLogQueryState) => JSON.stringify([level, search])
+
 export const adminLogIdentity = (item: LogMessageModel) => item.id
 
 export const compareAdminLogsNewestFirst = (left: LogMessageModel, right: LogMessageModel) =>
@@ -51,4 +56,28 @@ export const adminLogMatchesQuery = (item: LogMessageModel, query: AdminLogQuery
   return [item.name, item.msg, item.ip, item.fingerprint].some(
     (value) => typeof value === 'string' && value.toLowerCase().includes(search)
   )
+}
+
+export const boundAdminLogRows = (rows: readonly LogMessageModel[], query: AdminLogQueryState) =>
+  rows.filter((item) => adminLogMatchesQuery(item, query)).slice(0, MAX_BUFFERED_ADMIN_LOGS)
+
+export interface AdminLogPushResult {
+  accepted: boolean
+  rows: readonly LogMessageModel[]
+}
+
+/** Filter before applying the hard cap so traffic outside the active query can
+ * never evict a matching live row. */
+export const receiveAdminLog = (
+  item: LogMessageModel,
+  current: readonly LogMessageModel[],
+  query: AdminLogQueryState
+): AdminLogPushResult => {
+  if (!adminLogMatchesQuery(item, query)) return { accepted: false, rows: current }
+
+  const matching = boundAdminLogRows(current, query)
+  return {
+    accepted: true,
+    rows: prependUniqueBoundedRow(item, matching, MAX_BUFFERED_ADMIN_LOGS, adminLogIdentity),
+  }
 }
