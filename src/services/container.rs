@@ -237,26 +237,21 @@ pub struct ContainerSpec {
     /// the authenticated exec hub. Docker also gives a no-publish workload no
     /// network when `ad_network` is absent, preventing default-bridge egress.
     pub publish_port: bool,
-    /// Bind a published Jeopardy port only to the configured private proxy
-    /// entry instead of every host interface.
+    /// Bind a published Jeopardy port only to the configured private proxy entry.
     pub proxy_only: bool,
     /// Additional environment variables injected at creation time.
     pub env: Vec<(String, String)>,
     /// Optional dynamic flag baked into the container environment.
     pub flag: Option<String>,
-    /// A&D-over-VPN placement: the Docker network to join. When set, the container
-    /// joins that network (Docker auto-assigns an IP) and publishes NO host ports —
-    /// it's reachable only over the WireGuard tunnel. `ContainerInfo.ip` then
-    /// carries the assigned in-VPN IP and `port` the container-internal expose port.
+    /// A&D-over-VPN Docker network. It publishes no host ports and exposes the
+    /// assigned VPN address and internal port through `ContainerInfo`.
     pub ad_network: Option<String>,
     /// Whether an A&D/KotH container may use backend-isolated outbound access.
     /// Kubernetes enforces this with a per-workload NetworkPolicy. Docker
     /// rejects it because a shared external bridge cannot prevent east-west,
     /// private-network, or metadata access.
     pub allow_egress: bool,
-    /// Exact control-plane port a trusted platform-managed workload may call.
-    /// Kubernetes uses it to add one narrow egress rule; ordinary challenge
-    /// containers leave it unset.
+    /// Trusted platform callback port used by the narrow Kubernetes egress rule.
     pub control_plane_callback_port: Option<i32>,
     /// Author-selected network isolation for legacy container definitions.
     pub network_mode: NetworkMode,
