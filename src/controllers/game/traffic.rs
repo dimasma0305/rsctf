@@ -3,6 +3,10 @@ use super::*;
 use base64::Engine as _;
 use std::io::{Read, Write};
 
+#[path = "traffic_inventory_page.rs"]
+mod inventory_page;
+pub use inventory_page::{team_traffic_page, traffic_files_page, CaptureInventoryPage};
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub enum TrafficFlowDirection {
     ContainerToTeam,
@@ -479,55 +483,8 @@ pub async fn team_traffic(
     Path(cid): Path<i32>,
     Query(page): Query<CapturePageQuery>,
 ) -> AppResult<RequestResponse<Vec<Json>>> {
-    let (skip, count) = page.normalized()?;
-    let inventory = crate::services::traffic::inventory::load(capture_root(&st)).await?;
-    let captures = inventory
-        .directories
-        .iter()
-        .filter(|directory| directory.challenge_id == cid && !directory.files.is_empty())
-        .skip(skip)
-        .take(count)
-        .map(|directory| (directory.participation_id, directory.files.len()))
-        .collect::<Vec<_>>();
-    if captures.is_empty() {
-        return Ok(RequestResponse::ok(Vec::new()));
-    }
-    let participation_ids: Vec<i32> = captures.iter().map(|(pid, _)| *pid).collect();
-    let teams = sqlx::query_as::<_, CaptureTeamRow>(
-        r#"SELECT p.id AS participation_id,
-                  p.team_id,
-                  t.name,
-                  t.avatar_hash
-             FROM "Participations" p
-             JOIN "Teams" t ON t.id = p.team_id
-             JOIN "GameChallenges" challenge
-               ON challenge.id = $2 AND challenge.game_id = p.game_id
-            WHERE p.id = ANY($1)"#,
-    )
-    .bind(&participation_ids)
-    .bind(cid)
-    .fetch_all(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let teams: std::collections::HashMap<_, _> = teams
-        .into_iter()
-        .map(|row| (row.participation_id, row))
-        .collect();
-    let mut out = Vec::with_capacity(captures.len());
-    for (pid, capture_count) in captures {
-        let Some(team) = teams.get(&pid) else {
-            continue;
-        };
-        let avatar = team
-            .avatar_hash
-            .as_ref()
-            .map(|hash| format!("/assets/{hash}/avatar"));
-        out.push(serde_json::json!({
-            "id": pid, "teamId": team.team_id, "name": team.name,
-            "division": Json::Null, "avatar": avatar, "count": capture_count,
-        }));
-    }
-    Ok(RequestResponse::ok(out))
+    let page = inventory_page::load_team_traffic_page(&st, cid, page).await?;
+    Ok(RequestResponse::ok(page.items))
 }
 
 /// `GET /api/game/captures/{challengeId}/{partId}` — the pcap files (FileRecord).
@@ -537,49 +494,8 @@ pub async fn traffic_files(
     Path((cid, pid)): Path<(i32, i32)>,
     Query(page): Query<CapturePageQuery>,
 ) -> AppResult<RequestResponse<Vec<Json>>> {
-    let (skip, count) = page.normalized()?;
-    let root = capture_root(&st);
-    let inventory =
-        crate::services::traffic::inventory::load_directory(root.clone(), cid, pid).await?;
-    let names = inventory
-        .map(|inventory| {
-            inventory
-                .files
-                .into_iter()
-                .skip(skip)
-                .take(count)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let dir = root.join(cid.to_string()).join(pid.to_string());
-    let out = tokio::task::spawn_blocking(move || -> AppResult<Vec<Json>> {
-        let rows = names
-            .into_iter()
-            .filter_map(|name| {
-                let path = dir.join(&name);
-                let meta = std::fs::symlink_metadata(path).ok()?;
-                if meta.file_type().is_symlink() || !meta.is_file() {
-                    return None;
-                }
-                let size = meta.len();
-                let update = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                Some(serde_json::json!({
-                    "fileName": name,
-                    "size": size,
-                    "updateTime": update,
-                }))
-            })
-            .collect::<Vec<_>>();
-        Ok(rows)
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("capture listing task failed: {error}")))??;
-    Ok(RequestResponse::ok(out))
+    let page = inventory_page::load_traffic_files_page(&st, cid, pid, page).await?;
+    Ok(RequestResponse::ok(page.items))
 }
 
 /// `GET /api/game/captures/{challengeId}/{partId}/all` — zip of the pcaps.

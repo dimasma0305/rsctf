@@ -22,14 +22,18 @@ import { useNavigate, useParams } from 'react-router'
 import { ErrorCodes } from '@Utils/Shared'
 import { visibleChallengeSolveProgress } from '@Utils/challengeProgress'
 import { isReadOnlyGameArchive } from '@Utils/gameArchive'
-import { useGameStatus, useGameTeamInfo } from '@Hooks/useGame'
+import { useGameStatus, type GameParticipantDetailsOwner } from '@Hooks/useGame'
 import misc from '@Styles/Misc.module.css'
 
-export const TeamRank: FC<CardProps> = (props) => {
+interface TeamRankProps extends CardProps {
+  participantDetails: GameParticipantDetailsOwner
+}
+
+export const TeamRank: FC<TeamRankProps> = ({ participantDetails, ...props }) => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const navigate = useNavigate()
-  const { teamInfo, game, error } = useGameTeamInfo(numId)
+  const { teamInfo, game, error } = participantDetails
   const { now: serverNow } = useGameStatus(game)
   const archived = isReadOnlyGameArchive(game, serverNow.valueOf())
 

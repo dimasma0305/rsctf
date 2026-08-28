@@ -588,6 +588,8 @@ export const useGameTeamInfo = (numId: number, shouldPoll: boolean = true) => {
   return { teamInfo, game, error: catalog.error ?? delta.error, mutate }
 }
 
+export type GameParticipantDetailsOwner = ReturnType<typeof useGameTeamInfo>
+
 /** A&D — player state poll (own team's containers + flags). Pass doFetch=false
  *  to skip the request entirely (e.g. on pages that only conditionally need it). */
 export const useAdState = (numId: number, doFetch: boolean = true) => {

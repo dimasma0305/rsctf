@@ -3687,6 +3687,21 @@ export interface TeamTrafficModel {
   count?: number;
 }
 
+export interface CapturePageParams {
+  /** @format uint64 */
+  skip?: number;
+  /** @format uint64 */
+  count?: number;
+}
+
+export interface TrafficInventoryPage<T> {
+  items: T[];
+  /** @format uint64 */
+  total: number;
+  /** @format uint64 */
+  nextSkip?: number | null;
+}
+
 /** File record */
 /** Direction of a captured payload chunk relative to the proxied container */
 export type TrafficFlowDirection = "ContainerToTeam" | "TeamToContainer"
@@ -9388,6 +9403,27 @@ export class Api<
         format: "json",
         ...params,
       }),
+
+    /**
+     * @description Retrieves one bounded page of captured teams with navigation metadata; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetChallengeTrafficPage
+     * @summary Get a team capture page
+     * @request GET:/api/game/captures/{challengeId}/page
+     */
+    gameGetChallengeTrafficPage: (
+      challengeId: number,
+      query: CapturePageParams,
+      params: RequestParams = {},
+    ) =>
+      this.request<TrafficInventoryPage<TeamTrafficModel>, RequestResponse>({
+        path: `/api/game/captures/${challengeId}/page`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
     /**
      * @description Retrieves the list of captured teams for a game challenge; requires Monitor permission
      *
@@ -9508,6 +9544,28 @@ export class Api<
       this.request<FileRecord[], RequestResponse>({
         path: `/api/game/captures/${challengeId}/${partId}`,
         method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Retrieves one bounded page of traffic files with navigation metadata; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetTeamTrafficPage
+     * @summary Get a traffic file page
+     * @request GET:/api/game/captures/{challengeId}/{partId}/page
+     */
+    gameGetTeamTrafficPage: (
+      challengeId: number,
+      partId: number,
+      query: CapturePageParams,
+      params: RequestParams = {},
+    ) =>
+      this.request<TrafficInventoryPage<FileRecord>, RequestResponse>({
+        path: `/api/game/captures/${challengeId}/${partId}/page`,
+        method: "GET",
+        query: query,
         format: "json",
         ...params,
       }),

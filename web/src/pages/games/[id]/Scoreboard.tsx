@@ -39,7 +39,8 @@ const Scoreboard: FC = () => {
   const numId = parseInt(id ?? '-1')
   // These two general-game reads are needed once for tab discovery. The visible
   // A&D/KotH board owns live polling, so do not keep unrelated endpoints hot.
-  const { teamInfo, error: teamInfoError } = useGameTeamInfo(numId, false)
+  const participantDetails = useGameTeamInfo(numId, false)
+  const { teamInfo, error: teamInfoError } = participantDetails
   const { t } = useTranslation()
   const navigate = useNavigate()
   const location = useLocation()
@@ -272,7 +273,7 @@ const Scoreboard: FC = () => {
         {isMobile ? (
           <Stack pt="md">
             {freezeBanner}
-            {teamInfo && !teamInfoError && showJeopardy && <TeamRank />}
+            {teamInfo && !teamInfoError && showJeopardy && <TeamRank participantDetails={participantDetails} />}
             {tabNavbar}
             {showOverall ? (
               <CombinedScoreboardTable numId={numId} scoreboard={combinedScoreboard} error={combinedScoreboardError} />

@@ -25,6 +25,7 @@ import { CheatSubmissionLog } from '@Components/monitor/CheatSubmissionLog'
 import { CHEAT_REPORT_REFRESH_INTERVAL_MS, isCheatReportStale, normalizeCheatViewTab } from '@Utils/AntiCheat'
 import { tryGetErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
+import { CompletionPollSWRConfig, jitterPollingDelay, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import { useUser } from '@Hooks/useUser'
 import api, { DetectorCapability, Role } from '@Api'
 
@@ -57,6 +58,7 @@ const CheatCheck: FC = () => {
   const isMobile = useIsMobile()
   const [searchParams, setSearchParams] = useSearchParams()
   const activeTab = normalizeCheatViewTab(searchParams.get('tab'))
+  const reportEnabled = activeTab === 'analysis'
 
   const handleTabChange = (value: string | null) => {
     const next = new URLSearchParams(searchParams)
@@ -73,15 +75,22 @@ const CheatCheck: FC = () => {
   } = api.cheatReport.useCheatReportGet(
     numId,
     {
-      refreshInterval: (latest) => (latest?.sealedAt == null ? CHEAT_REPORT_REFRESH_INTERVAL_MS : 0),
-      refreshWhenHidden: false,
-      refreshWhenOffline: false,
-      revalidateOnFocus: true,
-      revalidateOnReconnect: true,
+      ...CompletionPollSWRConfig,
       keepPreviousData: false,
     },
-    activeTab === 'analysis'
+    reportEnabled
   )
+  useCompletionPolling({
+    key: reportEnabled ? `/api/game/${numId}/cheatreport` : '',
+    phase: activeTab,
+    enabled: reportEnabled,
+    data: report,
+    error,
+    isValidating,
+    mutate,
+    successDelay: (latest) =>
+      latest.sealedAt == null ? jitterPollingDelay(CHEAT_REPORT_REFRESH_INTERVAL_MS) : null,
+  })
   const refresh = () => void mutate()
   const lastReconciledAt = report?.lastReconciledAt
   const reportIsStale = isCheatReportStale(lastReconciledAt)

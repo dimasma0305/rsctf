@@ -10,11 +10,12 @@ const oauthButtons = readFileSync('src/components/OAuthButtons.tsx', 'utf8')
 const settings = readFileSync('src/pages/admin/Settings.tsx', 'utf8')
 const apiTypes = readFileSync('src/Api.ts', 'utf8')
 
-test('the visible report exposes freshness and stops cadence after sealing', () => {
-  assert.match(
-    reportPage,
-    /refreshInterval: \(latest\) => \(latest\?\.sealedAt == null \? CHEAT_REPORT_REFRESH_INTERVAL_MS : 0\)/
-  )
+test('the visible report exposes freshness and uses one status-aware completion cadence', () => {
+  assert.match(reportPage, /\.\.\.CompletionPollSWRConfig/)
+  assert.match(reportPage, /useCompletionPolling\(\{/)
+  assert.match(reportPage, /key: reportEnabled \? `\/api\/game\/\$\{numId\}\/cheatreport` : ''/)
+  assert.match(reportPage, /latest\.sealedAt == null \? jitterPollingDelay\(CHEAT_REPORT_REFRESH_INTERVAL_MS\) : null/)
+  assert.doesNotMatch(reportPage, /refreshInterval:/)
   assert.match(reportPage, /activeTab === 'analysis'/)
   assert.match(reportPage, /activeTab === 'submissions'/)
   assert.match(reportPage, /keepPreviousData: false/)

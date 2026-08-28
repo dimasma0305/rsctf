@@ -34,7 +34,8 @@ const Challenges: FC = () => {
   const { t } = useTranslation()
   const isCompact = useIsMobile(1200)
 
-  const { teamInfo, game } = useGameTeamInfo(numId)
+  const participantDetails = useGameTeamInfo(numId)
+  const { teamInfo, game } = participantDetails
   const { now: serverNow } = useGameStatus(game)
   const archived = isReadOnlyGameArchive(game, serverNow.valueOf())
   // Three separate flags so the toolkit buttons can be shown / hidden
@@ -93,7 +94,7 @@ const Challenges: FC = () => {
             </Alert>
           )}
           <Flex direction={isCompact ? 'column' : 'row'} gap="sm" justify="space-between" align="flex-start" w="100%">
-            <ChallengePanel adStateOwner={adStateOwner} />
+            <ChallengePanel adStateOwner={adStateOwner} participantDetails={participantDetails} />
             <Stack gap="sm" w={isCompact ? '100%' : '22rem'} miw={isCompact ? 0 : '22rem'}>
               {!archived && adState?.scoringPaused && (
                 <Alert
@@ -201,7 +202,7 @@ const Challenges: FC = () => {
                   {t('game.button.koth.open_toolkit', 'KotH Toolkit')}
                 </Button>
               )}
-              <TeamRank />
+              <TeamRank participantDetails={participantDetails} />
               <GameNoticePanel />
             </Stack>
           </Flex>

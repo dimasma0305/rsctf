@@ -163,8 +163,16 @@ fn router_with_domains(
             limited(Policy::Query, get(team_traffic)),
         )
         .route(
+            "/api/game/captures/{challengeId}/page",
+            limited(Policy::Query, get(team_traffic_page)),
+        )
+        .route(
             "/api/game/captures/{challengeId}/{partId}",
             limited(Policy::Query, get(traffic_files)),
+        )
+        .route(
+            "/api/game/captures/{challengeId}/{partId}/page",
+            limited(Policy::Query, get(traffic_files_page)),
         )
         .route(
             "/api/game/captures/{challengeId}/{partId}/all",

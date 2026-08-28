@@ -13,3 +13,17 @@ test('traffic navigation cancels superseded inventories and generation-binds res
   assert.doesNotMatch(page, /useGameGetChallengeTraffic/)
   assert.doesNotMatch(page, /useGameGetTeamTrafficAll/)
 })
+
+test('traffic team and file inventories expose bounded metadata-backed pagination', () => {
+  assert.match(page, /const TRAFFIC_PAGE_SIZE = 50/)
+  assert.match(page, /gameGetChallengeTrafficPage/)
+  assert.match(page, /gameGetTeamTrafficPage/)
+  assert.match(page, /skip: \(teamPage - 1\) \* TRAFFIC_PAGE_SIZE/)
+  assert.match(page, /skip: \(filePage - 1\) \* TRAFFIC_PAGE_SIZE/)
+  assert.match(page, /const teamTotal = teamQuery\.page\?\.total/)
+  assert.match(page, /const fileTotal = fileQuery\.page\?\.total/)
+  assert.match(page, /if \(teamTotal === undefined\) return/)
+  assert.match(page, /if \(fileTotal === undefined\) return/)
+  assert.match(page, /<InventoryPager[\s\S]*Captured team pages/)
+  assert.match(page, /<InventoryPager[\s\S]*Capture file pages/)
+})

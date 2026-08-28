@@ -1,9 +1,11 @@
 import {
   ActionIcon,
+  Box,
   Center,
   Divider,
   Grid,
   Group,
+  Pagination,
   Paper,
   rem,
   Stack,
@@ -26,12 +28,14 @@ import { ChallengeItem, FileItem, TeamItem } from '@Components/TrafficItems'
 import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { FlowInspector } from '@Components/traffic/FlowInspector'
 import { useLanguage } from '@Utils/I18n'
-import { currentListSnapshotRows, LatestListRequest, type ListSnapshot } from '@Utils/LatestRequest'
+import { currentListSnapshotRows, LatestListRequest, LatestRequest, type ListSnapshot } from '@Utils/LatestRequest'
 import { showErrorMsg } from '@Utils/Shared'
 import { HunamizeSize } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import api, { FileRecord } from '@Api'
-import type { ChallengeTrafficModel, TeamTrafficModel } from '@Api'
+import type { ChallengeTrafficModel, TeamTrafficModel, TrafficInventoryPage } from '@Api'
+
+const TRAFFIC_PAGE_SIZE = 50
 
 const useLatestTrafficList = <T,>(
   scope: string,
@@ -76,6 +80,78 @@ const useLatestTrafficList = <T,>(
   }
 }
 
+const useLatestTrafficPage = <T,>(
+  scope: string,
+  enabled: boolean,
+  request: (signal: AbortSignal) => Promise<TrafficInventoryPage<T>>
+) => {
+  const owner = useRef(new LatestRequest())
+  const generation = useRef(0)
+  const [snapshot, setSnapshot] = useState<{ scope: string; page: TrafficInventoryPage<T> }>()
+  const [loading, setLoading] = useState(enabled)
+
+  const refresh = useCallback(async () => {
+    const current = ++generation.current
+    if (!enabled) {
+      owner.current.cancel()
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    try {
+      const page = await owner.current.run(request)
+      if (page) setSnapshot({ scope, page })
+    } catch {
+      // Retain only a snapshot from this exact navigation scope.
+    } finally {
+      if (generation.current === current) setLoading(false)
+    }
+  }, [enabled, request, scope])
+
+  useEffect(() => {
+    void refresh()
+    return () => {
+      generation.current += 1
+      owner.current.cancel()
+    }
+  }, [refresh])
+
+  return {
+    page: snapshot?.scope === scope ? snapshot.page : undefined,
+    loading,
+    mutate: refresh,
+  }
+}
+
+interface InventoryPagerProps {
+  page: number
+  pageSize: number
+  total: number
+  loaded: number
+  label: string
+  onChange: (page: number) => void
+}
+
+const InventoryPager: FC<InventoryPagerProps> = ({ page, pageSize, total, loaded, label, onChange }) => {
+  const { t } = useTranslation()
+  const pages = Math.max(1, Math.ceil(total / pageSize))
+  const first = loaded === 0 ? 0 : (page - 1) * pageSize + 1
+  const last = loaded === 0 ? 0 : Math.min(total, first + loaded - 1)
+
+  return (
+    <Stack gap={2} align="center" px="xs" py={4}>
+      <Text size="xs" c="dimmed" role="status" aria-live="polite" aria-atomic="true">
+        {t('game.content.traffic.page_status', 'Showing {{first}}–{{last}} of {{total}}', { first, last, total })}
+      </Text>
+      {pages > 1 && (
+        <Box component="nav" aria-label={label} maw="100%">
+          <Pagination size="xs" total={pages} value={Math.min(page, pages)} onChange={onChange} withEdges />
+        </Box>
+      )}
+    </Stack>
+  )
+}
+
 const Traffic: FC = () => {
   const { id } = useParams()
   const gameId = parseInt(id ?? '-1')
@@ -89,11 +165,19 @@ const Traffic: FC = () => {
   const challengeId = parseInt2(searchParams.get('chal'))
   const participationId = parseInt2(searchParams.get('team'))
   const inspectFilename = searchParams.get('file')
+  const [teamPage, setTeamPage] = useState(1)
+  const [filePage, setFilePage] = useState(1)
 
   // Cascading URL writer for the three "navigation" slots. Cascade rules
   // match the plan: changing the upstream slot clears the downstream ones,
   // closing the modal (file → null) wipes the inner inspector state too.
   const setNav = (updates: { chal?: number | null; team?: number | null; file?: string | null }) => {
+    if ('chal' in updates) {
+      setTeamPage(1)
+      setFilePage(1)
+    } else if ('team' in updates) {
+      setFilePage(1)
+    }
     setSearchParams(
       (prev) => {
         const out = new URLSearchParams(prev)
@@ -147,24 +231,35 @@ const Traffic: FC = () => {
   )
   const loadTeams = useCallback(
     (signal: AbortSignal) =>
-      api.game.gameGetChallengeTraffic(challengeId ?? 0, { signal }).then((response) => response.data),
-    [challengeId]
+      api.game
+        .gameGetChallengeTrafficPage(
+          challengeId ?? 0,
+          { skip: (teamPage - 1) * TRAFFIC_PAGE_SIZE, count: TRAFFIC_PAGE_SIZE },
+          { signal }
+        )
+        .then((response) => response.data),
+    [challengeId, teamPage]
   )
   const loadFiles = useCallback(
     (signal: AbortSignal) =>
       api.game
-        .gameGetTeamTrafficAll(challengeId ?? 0, participationId ?? 0, { signal })
+        .gameGetTeamTrafficPage(
+          challengeId ?? 0,
+          participationId ?? 0,
+          { skip: (filePage - 1) * TRAFFIC_PAGE_SIZE, count: TRAFFIC_PAGE_SIZE },
+          { signal }
+        )
         .then((response) => response.data),
-    [challengeId, participationId]
+    [challengeId, filePage, participationId]
   )
   const challengeQuery = useLatestTrafficList<ChallengeTrafficModel>(`game:${gameId}`, gameId > 0, loadChallenges)
-  const teamQuery = useLatestTrafficList<TeamTrafficModel>(
-    `challenge:${challengeId ?? 0}`,
+  const teamQuery = useLatestTrafficPage<TeamTrafficModel>(
+    `challenge:${challengeId ?? 0}:page:${teamPage}`,
     challengeId != null,
     loadTeams
   )
-  const fileQuery = useLatestTrafficList<FileRecord>(
-    `files:${challengeId ?? 0}:${participationId ?? 0}`,
+  const fileQuery = useLatestTrafficPage<FileRecord>(
+    `files:${challengeId ?? 0}:${participationId ?? 0}:page:${filePage}`,
     challengeId != null && participationId != null,
     loadFiles
   )
@@ -174,13 +269,27 @@ const Traffic: FC = () => {
     [challengeQuery.data]
   )
   const teamTraffic = useMemo(
-    () => teamQuery.data && [...teamQuery.data].sort((a, b) => (a.teamId ?? 0) - (b.teamId ?? 0)),
-    [teamQuery.data]
+    () => teamQuery.page && [...teamQuery.page.items].sort((a, b) => (a.teamId ?? 0) - (b.teamId ?? 0)),
+    [teamQuery.page]
   )
-  const fileRecords = fileQuery.data
+  const fileRecords = fileQuery.page?.items
   const mutateChallenges = challengeQuery.mutate
   const mutateTeams = teamQuery.mutate
   const mutateTraffic = fileQuery.mutate
+  const teamTotal = teamQuery.page?.total
+  const fileTotal = fileQuery.page?.total
+
+  useEffect(() => {
+    if (teamTotal === undefined) return
+    const pages = Math.max(1, Math.ceil(teamTotal / TRAFFIC_PAGE_SIZE))
+    if (teamPage > pages) setTeamPage(pages)
+  }, [teamPage, teamTotal])
+
+  useEffect(() => {
+    if (fileTotal === undefined) return
+    const pages = Math.max(1, Math.ceil(fileTotal / TRAFFIC_PAGE_SIZE))
+    if (filePage > pages) setFilePage(pages)
+  }, [filePage, fileTotal])
 
   const onDownload = (item: FileRecord) => {
     if (!challengeId || !participationId || !item.fileName) return
@@ -267,7 +376,8 @@ const Traffic: FC = () => {
     } catch (e) {
       showErrorMsg(e, t)
     } finally {
-      mutateTraffic()
+      if (filePage === 1) mutateTraffic()
+      else setFilePage(1)
       mutateTeams()
       mutateChallenges()
       setDisabled(false)
@@ -287,7 +397,8 @@ const Traffic: FC = () => {
     : { borderRight: `${rem(1)} solid ${dividerColor}` }
 
   const scrollHeight = isCompact ? 'clamp(10rem, 26vh, 15rem)' : 'calc(100vh - 174px)'
-  const fileScrollHeight = isCompact ? 'clamp(14rem, 36vh, 21rem)' : scrollHeight
+  const pagedScrollHeight = isCompact ? scrollHeight : 'calc(100vh - 224px)'
+  const fileScrollHeight = isCompact ? 'clamp(14rem, 36vh, 21rem)' : pagedScrollHeight
   const headerHeight = rem(32)
 
   return (
@@ -329,7 +440,15 @@ const Traffic: FC = () => {
                 items={teamTraffic}
                 selectedId={participationId}
                 onSelect={(id) => setNav({ team: id })}
-                h={scrollHeight}
+                h={pagedScrollHeight}
+              />
+              <InventoryPager
+                page={teamPage}
+                pageSize={TRAFFIC_PAGE_SIZE}
+                total={teamTotal ?? 0}
+                loaded={teamTraffic?.length ?? 0}
+                label={t('game.content.traffic.team_pages', 'Captured team pages')}
+                onChange={setTeamPage}
               />
             </Grid.Col>
             <Grid.Col span={{ base: 12, lg: 6 }}>
@@ -383,6 +502,14 @@ const Traffic: FC = () => {
                 }}
                 items={orderedFileRecords}
                 h={fileScrollHeight}
+              />
+              <InventoryPager
+                page={filePage}
+                pageSize={TRAFFIC_PAGE_SIZE}
+                total={fileTotal ?? 0}
+                loaded={orderedFileRecords.length}
+                label={t('game.content.traffic.file_pages', 'Capture file pages')}
+                onChange={setFilePage}
               />
             </Grid.Col>
           </Grid>

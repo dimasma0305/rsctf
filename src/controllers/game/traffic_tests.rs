@@ -28,6 +28,13 @@ fn capture_pages_reject_unbounded_windows() {
 }
 
 #[test]
+fn capture_page_metadata_advances_without_repeating_or_overrunning() {
+    assert_eq!(inventory_page::next_capture_skip(0, 50, 121), Some(50));
+    assert_eq!(inventory_page::next_capture_skip(100, 21, 121), None);
+    assert_eq!(inventory_page::next_capture_skip(121, 0, 121), None);
+}
+
+#[test]
 fn archive_scan_filters_non_pcaps() {
     let dir = std::env::temp_dir().join(format!("rsctf-capture-list-{}", Uuid::new_v4()));
     std::fs::create_dir(&dir).unwrap();
