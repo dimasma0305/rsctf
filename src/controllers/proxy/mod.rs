@@ -50,7 +50,7 @@ use uuid::Uuid;
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser};
-use crate::models::data::{container, game_instance, participation, user_participation};
+use crate::models::data::{container, game_instance};
 use crate::services::live_roster::LiveParticipationIdentity;
 use crate::services::worker::WorkerHandle;
 use crate::utils::enums::{ParticipationStatus, Role};
@@ -77,7 +77,7 @@ use capability::{
     issue_instance_capability, issue_noinstance_capability, proxy_instance_latency_probe,
     proxy_noinstance_latency_probe, proxy_user, ProxyCapabilityQuery,
 };
-use egress::{build_egress_scan, EgressScan};
+use egress::{build_egress_scan, load_egress_participation, EgressMetadataRevision, EgressScan};
 use target::{game_proxy_target_identity, proxy_target, resolve_noinstance_target, ProxyTarget};
 use transport::{close_at_capacity, close_cleanly, endpoint_unavailable_close, proxy_pump};
 
@@ -378,6 +378,9 @@ struct GameAccess {
     owner_participation_id: i32,
     /// The accessing user's own participation in this game.
     accessing_participation_id: i32,
+    /// Monotonic event challenge revision plus the exact per-instance flag row.
+    /// Together these make flag-egress metadata cache entries immutable.
+    egress_revision: Option<EgressMetadataRevision>,
     target_identity: GameProxyTargetIdentity,
     /// Monitor/Admin — legitimately reaches any container, so never flagged.
     is_monitor: bool,
@@ -426,20 +429,7 @@ async fn resolve_instance_target(
         .one(&st.db)
         .await
         .ok()??;
-    let part = participation::Entity::find_by_id(instance.participation_id)
-        .one(&st.db)
-        .await
-        .ok()??;
-    if part.status != ParticipationStatus::Accepted {
-        return None;
-    }
-    let link = user_participation::Entity::find_by_id((user.id, part.game_id))
-        .one(&st.db)
-        .await
-        .ok()??;
-    if link.participation_id != part.id {
-        return None;
-    }
+    let part = load_egress_participation(st.pg(), instance.participation_id, user.id).await?;
     let target_identity = game_proxy_target_identity(&container, Some(instance.id));
     if !game_proxy_scope_is_valid(
         st.pg(),
@@ -470,7 +460,11 @@ async fn resolve_instance_target(
             accessing_team_id: part.team_id,
             challenge_id: instance.challenge_id,
             owner_participation_id: part.id,
-            accessing_participation_id: link.participation_id,
+            accessing_participation_id: part.id,
+            egress_revision: instance.flag_id.map(|flag_id| EgressMetadataRevision {
+                challenge_configuration_revision: part.challenge_configuration_revision,
+                flag_id,
+            }),
             target_identity,
             is_monitor: user.is_monitor(),
         }),
@@ -649,6 +643,8 @@ async fn resolve_shared_instance_target(
             challenge_id: row.challenge_id,
             owner_participation_id: row.participation_id,
             accessing_participation_id: row.participation_id,
+            // Shared containers intentionally have no per-team dynamic flag row.
+            egress_revision: None,
             target_identity,
             is_monitor: user.is_monitor(),
         }),

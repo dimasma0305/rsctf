@@ -19,6 +19,14 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const RETENTION_DAYS: i32 = 7;
 static ADMISSION_DROPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HoneypotTelemetryMetrics {
+    pub queued: usize,
+    pub queue_capacity: usize,
+    pub queue_dropped: u64,
+    pub admission_dropped: u64,
+}
+
 #[derive(Clone, Copy)]
 pub enum HoneypotRouteClass {
     Http,
@@ -92,6 +100,23 @@ impl HoneypotQueue {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
     }
+
+    fn metrics(&self) -> HoneypotTelemetryMetrics {
+        HoneypotTelemetryMetrics {
+            queued: self
+                .sender
+                .max_capacity()
+                .saturating_sub(self.sender.capacity()),
+            queue_capacity: self.sender.max_capacity(),
+            queue_dropped: self.dropped_total.load(Ordering::Relaxed),
+            admission_dropped: ADMISSION_DROPPED_TOTAL.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Process-local bounded-queue counters for operational monitoring.
+pub fn honeypot_telemetry_metrics(state: &SharedState) -> HoneypotTelemetryMetrics {
+    state.honeypot_telemetry.metrics()
 }
 
 /// Cheap, silent admission used before authentication or database work. The
@@ -393,6 +418,10 @@ mod tests {
         assert!(!queue.enqueue(observation("/.git/config")));
         assert_eq!(queue.dropped_since_flush.load(Ordering::Relaxed), 1);
         assert_eq!(queue.dropped_total.load(Ordering::Relaxed), 1);
+        let metrics = queue.metrics();
+        assert_eq!(metrics.queued, 1);
+        assert_eq!(metrics.queue_capacity, 1);
+        assert!(metrics.queue_dropped >= 1);
     }
 
     #[test]

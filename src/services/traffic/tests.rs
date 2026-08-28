@@ -1,11 +1,29 @@
 use super::inspection::{
     cache_entry_expired, inspect_flows_bounded, inspect_flows_bounded_cancellable,
-    parse_work_units, FlowCacheEntry, FLOW_CACHE_TTL, FLOW_PARSE_WORK_UNITS,
-    FLOW_PARSE_WORK_UNIT_BYTES, MAX_RETAINED_PAYLOAD_BYTES,
+    parse_work_units, retryable_inspection_error, FlowCacheEntry, FLOW_CACHE_TTL,
+    FLOW_PARSE_WORK_UNITS, FLOW_PARSE_WORK_UNIT_BYTES, MAX_RETAINED_PAYLOAD_BYTES,
 };
 use super::*;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Instant;
+
+#[test]
+fn inspection_overload_exposes_retry_after() {
+    use axum::response::IntoResponse;
+
+    let response = retryable_inspection_error("busy").into_response();
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .unwrap(),
+        "2"
+    );
+}
 
 fn scratch(name: &str) -> std::path::PathBuf {
     let mut p = std::env::temp_dir();

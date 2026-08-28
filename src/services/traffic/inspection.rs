@@ -15,6 +15,7 @@ use crate::utils::error::{AppError, AppResult};
 const MAX_FLOW_CACHE_ENTRIES: usize = 8;
 pub(super) const FLOW_CACHE_TTL: Duration = Duration::from_secs(120);
 const FLOW_PARSE_DEADLINE: Duration = Duration::from_secs(20);
+const INSPECTION_RETRY_AFTER_SECONDS: u64 = 2;
 pub(super) const MAX_RETAINED_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RETAINED_PAYLOAD_PER_FLOW: usize = 256 * 1024;
 pub(super) const FLOW_PARSE_WORK_UNIT_BYTES: u64 = 16 * 1024 * 1024;
@@ -26,6 +27,10 @@ static FLOW_PARSE_WORK: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
     });
 static FLOW_INDEX_CACHE: std::sync::LazyLock<dashmap::DashMap<FileIdentity, Arc<FlowCacheEntry>>> =
     std::sync::LazyLock::new(dashmap::DashMap::new);
+
+pub(super) fn retryable_inspection_error(message: impl Into<String>) -> AppError {
+    AppError::retryable_unavailable(message, INSPECTION_RETRY_AFTER_SECONDS)
+}
 
 pub(super) struct FlowCacheEntry {
     pub(super) inserted_at: Instant,
@@ -129,12 +134,14 @@ pub async fn inspect_flows_cached(
         .cell
         .get_or_try_init(|| async move {
             let _permit = FLOW_PARSE_SLOTS.try_acquire().map_err(|_| {
-                AppError::unavailable("Capture inspection capacity is busy; retry shortly")
+                retryable_inspection_error("Capture inspection capacity is busy; retry shortly")
             })?;
             let _work = Arc::clone(&FLOW_PARSE_WORK)
                 .try_acquire_many_owned(work_units)
                 .map_err(|_| {
-                    AppError::unavailable("Capture inspection byte budget is busy; retry shortly")
+                    retryable_inspection_error(
+                        "Capture inspection byte budget is busy; retry shortly",
+                    )
                 })?;
             let cancellation = ParseCancellation::new();
             let signal = cancellation.signal();
@@ -152,7 +159,7 @@ pub async fn inspect_flows_cached(
                 }),
             )
             .await
-            .map_err(|_| AppError::unavailable("Capture inspection timed out"))?
+            .map_err(|_| retryable_inspection_error("Capture inspection timed out"))?
             .map_err(|error| {
                 AppError::internal(format!("capture inspection task failed: {error}"))
             })?
@@ -212,7 +219,9 @@ pub(super) fn inspect_flows_bounded_cancellable(
 
     while let Some(next) = reader.next_packet() {
         if cancellation.is_some_and(|signal| signal.load(Ordering::Acquire)) {
-            return Err(AppError::unavailable("Capture inspection was superseded"));
+            return Err(retryable_inspection_error(
+                "Capture inspection was superseded",
+            ));
         }
         let packet = match next {
             Ok(packet) => packet,

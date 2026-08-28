@@ -13,7 +13,7 @@
 //! these container ports for the listeners to be reachable.
 
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
@@ -29,10 +29,34 @@ use crate::app_state::SharedState;
 type PortConfig = (String, u16, Option<String>);
 const MAX_ACTIVE_CONNECTIONS: usize = 128;
 const MAX_ACTIVE_PER_SOURCE: usize = 4;
+const BANNER_WRITE_TIMEOUT: StdDuration = StdDuration::from_millis(750);
+const PROBE_READ_TIMEOUT: StdDuration = StdDuration::from_secs(3);
+const SOCKET_SHUTDOWN_TIMEOUT: StdDuration = StdDuration::from_millis(500);
 static CONNECTIONS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_CONNECTIONS)));
 static SOURCE_CONNECTIONS: std::sync::LazyLock<DashMap<IpAddr, Arc<AtomicUsize>>> =
     std::sync::LazyLock::new(DashMap::new);
+static REJECTED_CONNECTIONS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HoneypotListenerMetrics {
+    pub active_connections: usize,
+    pub active_sources: usize,
+    pub rejected_connections: u64,
+    pub connection_limit: usize,
+    pub per_source_limit: usize,
+}
+
+/// Process-local socket admission counters for operational monitoring.
+pub fn metrics() -> HoneypotListenerMetrics {
+    HoneypotListenerMetrics {
+        active_connections: MAX_ACTIVE_CONNECTIONS.saturating_sub(CONNECTIONS.available_permits()),
+        active_sources: SOURCE_CONNECTIONS.len(),
+        rejected_connections: REJECTED_CONNECTIONS.load(Ordering::Relaxed),
+        connection_limit: MAX_ACTIVE_CONNECTIONS,
+        per_source_limit: MAX_ACTIVE_PER_SOURCE,
+    }
+}
 
 struct SourcePermit {
     source: IpAddr,
@@ -148,9 +172,13 @@ async fn run_listener(
                 Ok((socket, peer)) => {
                     let global = match Arc::clone(&CONNECTIONS).try_acquire_owned() {
                         Ok(permit) => permit,
-                        Err(_) => continue,
+                        Err(_) => {
+                            REJECTED_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
                     };
                     let Some(source) = try_acquire_source(peer.ip()) else {
+                        REJECTED_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
                         continue;
                     };
                     if !crate::services::suspicion::admit_honeypot_source(
@@ -159,6 +187,7 @@ async fn run_listener(
                     )
                     .await
                     {
+                        REJECTED_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
                     connections.spawn(handle_connection(
@@ -200,18 +229,45 @@ async fn handle_connection(
     _source: SourcePermit,
 ) {
     let ip = peer.ip().to_string();
-    if let Some(banner) = &banner {
-        let _ = socket.write_all(banner.as_bytes()).await;
-        let _ = socket.write_all(b"\r\n").await;
-    }
+    let banner_written = match banner.as_deref() {
+        Some(banner) => write_banner_with_deadline(&mut socket, banner, BANNER_WRITE_TIMEOUT).await,
+        None => true,
+    };
     // Read (and discard) a short probe with a tight timeout so a
     // slow-loris connection can't pin the task.
-    let mut buf = [0u8; 256];
-    let _ = tokio::time::timeout(StdDuration::from_secs(3), socket.read(&mut buf)).await;
-    let _ = socket.shutdown().await;
+    if banner_written {
+        let mut buf = [0u8; 256];
+        let _ = tokio::time::timeout(PROBE_READ_TIMEOUT, socket.read(&mut buf)).await;
+    }
+    let _ = shutdown_with_deadline(&mut socket, SOCKET_SHUTDOWN_TIMEOUT).await;
 
     let bait = format!("{name}:{port}");
     let _ = crate::services::suspicion::enqueue_honeypot_hit(&state, None, &bait, Some(&ip), None);
+}
+
+async fn write_banner_with_deadline<W: tokio::io::AsyncWrite + Unpin>(
+    socket: &mut W,
+    banner: &str,
+    deadline: StdDuration,
+) -> bool {
+    matches!(
+        tokio::time::timeout(deadline, async {
+            socket.write_all(banner.as_bytes()).await?;
+            socket.write_all(b"\r\n").await
+        })
+        .await,
+        Ok(Ok(()))
+    )
+}
+
+async fn shutdown_with_deadline<W: tokio::io::AsyncWrite + Unpin>(
+    socket: &mut W,
+    deadline: StdDuration,
+) -> bool {
+    matches!(
+        tokio::time::timeout(deadline, socket.shutdown()).await,
+        Ok(Ok(()))
+    )
 }
 
 async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
@@ -224,9 +280,32 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
     use std::time::Duration;
 
-    use super::{parse_ports, try_acquire_source, wait_for_shutdown, MAX_ACTIVE_PER_SOURCE};
+    use super::*;
+
+    struct PendingWrite;
+
+    impl tokio::io::AsyncWrite for PendingWrite {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
 
     #[test]
     fn parses_named_ports_and_optional_banners() {
@@ -266,5 +345,23 @@ mod tests {
         assert!(try_acquire_source(source).is_none());
         drop(permits);
         assert!(try_acquire_source(source).is_some());
+    }
+
+    #[tokio::test]
+    async fn banner_and_socket_shutdown_have_hard_deadlines() {
+        let mut socket = PendingWrite;
+        assert!(
+            !write_banner_with_deadline(&mut socket, "SSH-2.0-test", Duration::from_millis(5))
+                .await
+        );
+        assert!(!shutdown_with_deadline(&mut socket, Duration::from_millis(5)).await);
+    }
+
+    #[test]
+    fn listener_metrics_export_fixed_resource_limits() {
+        let snapshot = metrics();
+        assert_eq!(snapshot.connection_limit, MAX_ACTIVE_CONNECTIONS);
+        assert_eq!(snapshot.per_source_limit, MAX_ACTIVE_PER_SOURCE);
+        assert!(snapshot.active_connections <= snapshot.connection_limit);
     }
 }

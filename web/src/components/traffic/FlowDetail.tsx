@@ -1,10 +1,11 @@
 import { Badge, Center, Flex, Group, Loader, SegmentedControl, Stack, Text } from '@mantine/core'
 import dayjs from 'dayjs'
-import { FC, useEffect, useMemo, useState } from 'react'
+import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HunamizeSize } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useUrlState } from '@Hooks/useUrlState'
+import { boundedRetryDelay } from '@Utils/HttpError'
 import api, { TrafficFlowChunk, TrafficFlowDetail, TrafficFlowDirection } from '@Api'
 import { HexAsciiView, ViewMode } from './HexAsciiView'
 
@@ -52,6 +53,12 @@ export const FlowDetail: FC<FlowDetailProps> = ({ challengeId, participationId, 
   const isCompact = useIsMobile(700)
   const [detail, setDetail] = useState<TrafficFlowDetail | null>(null)
   const [loading, setLoading] = useState(false)
+  const [retryGeneration, setRetryGeneration] = useState(0)
+  const retryOwner = useRef<{ key: string; attempts: number; timer: number | null }>({
+    key: '',
+    attempts: 0,
+    timer: null,
+  })
   const [mode, setMode] = useUrlState<ViewMode>(
     'mode',
     (raw) => (raw === 'hex' ? 'hex' : 'ascii'),
@@ -63,24 +70,48 @@ export const FlowDetail: FC<FlowDetailProps> = ({ challengeId, participationId, 
       setDetail(null)
       return
     }
+    const requestKey = JSON.stringify([challengeId, participationId, filename, connectionPort])
+    const owner = retryOwner.current
+    if (owner.key !== requestKey) {
+      if (owner.timer !== null) window.clearTimeout(owner.timer)
+      owner.key = requestKey
+      owner.attempts = 0
+      owner.timer = null
+      setDetail(null)
+    }
     const abort = new AbortController()
     setLoading(true)
-    setDetail(null)
     api.game
       .gameGetTrafficFlowDetail(challengeId, participationId, filename, connectionPort, { signal: abort.signal })
       .then((res) => {
-        if (!abort.signal.aborted) setDetail(res.data)
+        if (!abort.signal.aborted) {
+          owner.attempts = 0
+          setDetail(res.data)
+        }
       })
-      .catch(() => {
-        if (!abort.signal.aborted) setDetail(null)
+      .catch((error: unknown) => {
+        if (!abort.signal.aborted) {
+          const delay = boundedRetryDelay(error, owner.attempts)
+          if (delay !== null && owner.key === requestKey) {
+            owner.attempts += 1
+            owner.timer = window.setTimeout(() => {
+              owner.timer = null
+              setRetryGeneration((generation) => generation + 1)
+            }, delay)
+          }
+        }
       })
       .finally(() => {
         if (!abort.signal.aborted) setLoading(false)
       })
     return () => {
       abort.abort()
+      if (owner.timer !== null) {
+        window.clearTimeout(owner.timer)
+        owner.timer = null
+      }
     }
-  }, [challengeId, participationId, filename, connectionPort])
+  }, [challengeId, participationId, filename, connectionPort, retryGeneration])
 
   const out = useMemo(() => (detail ? concatChunks(detail.chunks, 'TeamToContainer') : null), [detail])
   const inn = useMemo(() => (detail ? concatChunks(detail.chunks, 'ContainerToTeam') : null), [detail])

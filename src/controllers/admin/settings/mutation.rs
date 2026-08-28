@@ -374,6 +374,12 @@ pub async fn update_config(
     .map_err(database_error)?;
     transaction.commit().await.map_err(database_error)?;
 
+    if has_security_update {
+        // Publish the new account/captcha policy once, and only after its
+        // complete settings revision is durable. Exact operation replays return
+        // above and therefore cannot repeat this process-local invalidation.
+        crate::services::captcha::invalidate_settings_snapshot();
+    }
     if donations_enabled.is_some() {
         crate::services::donations::invalidate(st.cache.as_ref()).await;
     }

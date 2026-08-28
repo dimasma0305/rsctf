@@ -1,11 +1,151 @@
 //! Best-effort flag-egress detection for proxied game containers.
 
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
 use uuid::Uuid;
 
 use crate::app_state::SharedState;
 use crate::services::flag_egress_observations::{Observation, ObservationKey, Queue};
+use crate::utils::enums::ParticipationStatus;
 
 use super::{GameAccess, InstanceAccess};
+
+const EGRESS_METADATA_CACHE_ENTRIES: usize = 1_024;
+const EGRESS_METADATA_CACHE_TTL: Duration = Duration::from_secs(60);
+const EGRESS_METADATA_QUERY_DEADLINE: Duration = Duration::from_secs(2);
+const EGRESS_METADATA_FLIGHTS: usize = 32;
+const EGRESS_METADATA_QUERY_CONCURRENCY: usize = 16;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) struct EgressMetadataRevision {
+    pub(super) challenge_configuration_revision: i64,
+    pub(super) flag_id: i32,
+}
+
+#[derive(sqlx::FromRow)]
+pub(super) struct EgressParticipationMetadata {
+    pub(super) id: i32,
+    pub(super) game_id: i32,
+    pub(super) team_id: i32,
+    pub(super) challenge_configuration_revision: i64,
+}
+
+/// Resolve the accepted owner and the caller's exact membership in one indexed
+/// read while carrying the immutable event challenge revision into the scan.
+pub(super) async fn load_egress_participation(
+    pool: &sqlx::PgPool,
+    participation_id: i32,
+    user_id: Uuid,
+) -> Option<EgressParticipationMetadata> {
+    sqlx::query_as::<_, EgressParticipationMetadata>(
+        r#"SELECT participation.id, participation.game_id,
+                  participation.team_id, game.challenge_configuration_revision
+             FROM "Participations" participation
+             JOIN "Games" game ON game.id = participation.game_id
+             JOIN "UserParticipations" membership
+               ON membership.game_id = participation.game_id
+              AND membership.participation_id = participation.id
+              AND membership.user_id = $2
+            WHERE participation.id = $1
+              AND participation.status = $3
+            LIMIT 1"#,
+    )
+    .bind(participation_id)
+    .bind(user_id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .fetch_optional(pool)
+    .await
+    .ok()?
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct EgressMetadataKey {
+    game_id: i32,
+    participation_id: i32,
+    challenge_id: i32,
+    container_id: Uuid,
+    revision: EgressMetadataRevision,
+}
+
+struct CachedFlag {
+    loaded_at: Instant,
+    flag: Arc<[u8]>,
+}
+
+struct EgressMetadataCache {
+    entries: Mutex<HashMap<EgressMetadataKey, CachedFlag>>,
+    maximum: usize,
+    ttl: Duration,
+}
+
+impl EgressMetadataCache {
+    fn new(maximum: usize, ttl: Duration) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            maximum,
+            ttl,
+        }
+    }
+
+    fn get(&self, key: &EgressMetadataKey) -> Option<Arc<[u8]>> {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let expired = entries
+            .get(key)
+            .is_some_and(|entry| entry.loaded_at.elapsed() >= self.ttl);
+        if expired {
+            entries.remove(key);
+            return None;
+        }
+        entries.get(key).map(|entry| entry.flag.clone())
+    }
+
+    fn store(&self, key: EgressMetadataKey, flag: Arc<[u8]>) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let now = Instant::now();
+        entries.retain(|_, entry| now.saturating_duration_since(entry.loaded_at) < self.ttl);
+        if entries.len() >= self.maximum && !entries.contains_key(&key) {
+            if let Some(oldest) = entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.loaded_at)
+                .map(|(key, _)| *key)
+            {
+                entries.remove(&oldest);
+            }
+        }
+        entries.insert(
+            key,
+            CachedFlag {
+                loaded_at: now,
+                flag,
+            },
+        );
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+}
+
+static EGRESS_METADATA_CACHE: LazyLock<EgressMetadataCache> = LazyLock::new(|| {
+    EgressMetadataCache::new(EGRESS_METADATA_CACHE_ENTRIES, EGRESS_METADATA_CACHE_TTL)
+});
+static EGRESS_METADATA_SINGLE_FLIGHT: LazyLock<
+    crate::utils::single_flight::SingleFlight<Option<Arc<[u8]>>>,
+> = LazyLock::new(crate::utils::single_flight::SingleFlight::new);
+static EGRESS_METADATA_QUERIES: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(EGRESS_METADATA_QUERY_CONCURRENCY);
 
 /// Context for the in-tunnel flag-egress scan. Cloneable so the bounded
 /// observation queue can own a copy without retaining the proxy session.
@@ -13,7 +153,7 @@ use super::{GameAccess, InstanceAccess};
 pub(super) struct EgressScan {
     queue: Queue,
     /// The owning team's current flag bytes for this challenge.
-    pub(super) flag: Vec<u8>,
+    pub(super) flag: Arc<[u8]>,
     game_id: i32,
     participation_id: i32,
     challenge_id: i32,
@@ -92,31 +232,82 @@ pub(super) async fn build_egress_scan(
     game: &GameAccess,
     remote_ip: String,
 ) -> Option<EgressScan> {
-    // Filter at PostgreSQL so a malformed legacy value never crosses the wire
-    // or determines a per-session overlap allocation.
-    let flag = sqlx::query_scalar::<_, String>(
-        r#"SELECT flag.flag
-             FROM "GameInstances" instance
-             JOIN "FlagContexts" flag ON flag.id = instance.flag_id
-            WHERE instance.participation_id = $1
-              AND instance.challenge_id = $2
-              AND instance.container_id = $3
-              AND OCTET_LENGTH(flag.flag) BETWEEN 1 AND $4
-              AND flag.flag !~ '(^[[:space:]])|([[:space:]]$)'"#,
-    )
-    .bind(game.owner_participation_id)
-    .bind(game.challenge_id)
-    .bind(access.container_id)
-    .bind(i32::try_from(crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES).unwrap_or(127))
-    .fetch_optional(st.pg())
-    .await
-    .ok()??;
-    if crate::utils::flag_policy::validate_normal(&flag).is_err() {
-        return None;
-    }
+    let revision = game.egress_revision?;
+    let key = EgressMetadataKey {
+        game_id: game.game_id,
+        participation_id: game.owner_participation_id,
+        challenge_id: game.challenge_id,
+        container_id: access.container_id,
+        revision,
+    };
+    let flag = match EGRESS_METADATA_CACHE.get(&key) {
+        Some(flag) => flag,
+        None => {
+            let pool = st.pg().clone();
+            let flight_key = format!(
+                "{}:{}:{}:{}:{}:{}",
+                key.game_id,
+                key.participation_id,
+                key.challenge_id,
+                key.container_id,
+                key.revision.challenge_configuration_revision,
+                key.revision.flag_id
+            );
+            EGRESS_METADATA_SINGLE_FLIGHT
+                .run_with_limit(
+                    &flight_key,
+                    EGRESS_METADATA_QUERY_DEADLINE,
+                    EGRESS_METADATA_FLIGHTS,
+                    move || async move {
+                        if let Some(flag) = EGRESS_METADATA_CACHE.get(&key) {
+                            return Some(flag);
+                        }
+                        let _permit = EGRESS_METADATA_QUERIES.try_acquire().ok()?;
+                        // Revalidate the exact instance/flag revision at the
+                        // database boundary before publishing immutable bytes.
+                        let flag = sqlx::query_scalar::<_, String>(
+                            r#"SELECT flag.flag
+                                 FROM "GameInstances" instance
+                                 JOIN "Participations" participation
+                                   ON participation.id = instance.participation_id
+                                 JOIN "Games" game ON game.id = participation.game_id
+                                 JOIN "FlagContexts" flag ON flag.id = instance.flag_id
+                                WHERE instance.participation_id = $1
+                                  AND instance.challenge_id = $2
+                                  AND instance.container_id = $3
+                                  AND participation.game_id = $4
+                                  AND game.challenge_configuration_revision = $5
+                                  AND flag.id = $6
+                                  AND OCTET_LENGTH(flag.flag) BETWEEN 1 AND $7
+                                  AND flag.flag !~ '(^[[:space:]])|([[:space:]]$)'"#,
+                        )
+                        .bind(key.participation_id)
+                        .bind(key.challenge_id)
+                        .bind(key.container_id)
+                        .bind(key.game_id)
+                        .bind(key.revision.challenge_configuration_revision)
+                        .bind(key.revision.flag_id)
+                        .bind(
+                            i32::try_from(crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES)
+                                .unwrap_or(127),
+                        )
+                        .fetch_optional(&pool)
+                        .await
+                        .ok()??;
+                        if crate::utils::flag_policy::validate_normal(&flag).is_err() {
+                            return None;
+                        }
+                        let flag = Arc::<[u8]>::from(flag.into_bytes());
+                        EGRESS_METADATA_CACHE.store(key, Arc::clone(&flag));
+                        Some(flag)
+                    },
+                )
+                .await?
+        }
+    };
     Some(EgressScan {
         queue: st.flag_egress_observations.clone(),
-        flag: flag.into_bytes(),
+        flag,
         game_id: game.game_id,
         participation_id: game.owner_participation_id,
         challenge_id: game.challenge_id,
@@ -143,7 +334,33 @@ pub(super) fn record_flag_egress(scan: &EgressScan) {
 
 #[cfg(test)]
 mod tests {
-    use super::RollingFlagMatcher;
+    use super::*;
+
+    fn cache_key(revision: i64, flag_id: i32) -> EgressMetadataKey {
+        EgressMetadataKey {
+            game_id: 1,
+            participation_id: 2,
+            challenge_id: 3,
+            container_id: Uuid::nil(),
+            revision: EgressMetadataRevision {
+                challenge_configuration_revision: revision,
+                flag_id,
+            },
+        }
+    }
+
+    #[test]
+    fn metadata_cache_is_bounded_and_revision_keyed() {
+        let cache = EgressMetadataCache::new(2, Duration::from_secs(60));
+        cache.store(cache_key(7, 11), Arc::from(&b"flag{one}"[..]));
+        assert_eq!(&*cache.get(&cache_key(7, 11)).unwrap(), b"flag{one}");
+        assert!(cache.get(&cache_key(8, 11)).is_none());
+        assert!(cache.get(&cache_key(7, 12)).is_none());
+
+        cache.store(cache_key(8, 12), Arc::from(&b"flag{two}"[..]));
+        cache.store(cache_key(9, 13), Arc::from(&b"flag{three}"[..]));
+        assert_eq!(cache.len(), 2);
+    }
 
     #[test]
     fn matches_a_flag_at_every_read_boundary() {

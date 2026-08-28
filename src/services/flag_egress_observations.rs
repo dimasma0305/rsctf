@@ -13,8 +13,21 @@ use crate::app_state::SharedState;
 const QUEUE_CAPACITY: usize = 2_048;
 const MAX_AGGREGATES: usize = 4_096;
 const MAX_FLUSH: usize = 256;
+const MAX_FLUSH_BACKOFF: Duration = Duration::from_secs(5);
 static QUEUE_DROPS: AtomicU64 = AtomicU64::new(0);
 static AGGREGATE_DROPS: AtomicU64 = AtomicU64::new(0);
+static FLUSH_FAILURES: AtomicU64 = AtomicU64::new(0);
+static FLUSH_RETRIES: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FlagEgressObservationMetrics {
+    pub queued: usize,
+    pub queue_capacity: usize,
+    pub queue_drops: u64,
+    pub aggregate_drops: u64,
+    pub flush_failures: u64,
+    pub flush_retries: u64,
+}
 
 fn record_overflow(counter: &AtomicU64, boundary: &'static str) {
     record_overflow_count(counter, boundary, 1);
@@ -92,11 +105,70 @@ impl Queue {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
     }
+
+    fn metrics(&self) -> FlagEgressObservationMetrics {
+        FlagEgressObservationMetrics {
+            queued: self
+                .inner
+                .sender
+                .max_capacity()
+                .saturating_sub(self.inner.sender.capacity()),
+            queue_capacity: self.inner.sender.max_capacity(),
+            queue_drops: QUEUE_DROPS.load(Ordering::Relaxed),
+            aggregate_drops: AGGREGATE_DROPS.load(Ordering::Relaxed),
+            flush_failures: FLUSH_FAILURES.load(Ordering::Relaxed),
+            flush_retries: FLUSH_RETRIES.load(Ordering::Relaxed),
+        }
+    }
 }
 
 impl Default for Queue {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Process-local bounded-writer counters for operational monitoring.
+pub fn observation_metrics(state: &SharedState) -> FlagEgressObservationMetrics {
+    state.flag_egress_observations.metrics()
+}
+
+fn retry_delay(failures: u32, seed: u64) -> Duration {
+    let multiplier = 1u32 << failures.saturating_sub(1).min(4);
+    let base = Duration::from_millis(250).saturating_mul(multiplier);
+    let jitter_ceiling = u64::try_from((base / 4).as_millis()).unwrap_or(u64::MAX);
+    let jitter = Duration::from_millis(seed % jitter_ceiling.saturating_add(1));
+    base.saturating_add(jitter).min(MAX_FLUSH_BACKOFF)
+}
+
+#[derive(Default)]
+struct FlushSchedule {
+    failures: u32,
+    retry_at: Option<tokio::time::Instant>,
+}
+
+impl FlushSchedule {
+    fn ready(&self) -> bool {
+        self.retry_at
+            .is_none_or(|retry_at| tokio::time::Instant::now() >= retry_at)
+    }
+
+    fn record(&mut self, succeeded: bool) {
+        if succeeded {
+            self.failures = 0;
+            self.retry_at = None;
+            return;
+        }
+        FLUSH_FAILURES.fetch_add(1, Ordering::Relaxed);
+        self.failures = self.failures.saturating_add(1);
+        let seed = rand::random::<u64>();
+        self.retry_at = Some(tokio::time::Instant::now() + retry_delay(self.failures, seed));
+    }
+
+    fn record_attempt(&self) {
+        if self.failures > 0 {
+            FLUSH_RETRIES.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -273,6 +345,7 @@ pub fn start_writer(
             return;
         };
         let mut aggregates = HashMap::new();
+        let mut flush_schedule = FlushSchedule::default();
         let mut interval = tokio::time::interval(Duration::from_millis(250));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -284,7 +357,16 @@ pub fn start_writer(
                     let Some(observation) = observation else { break; };
                     aggregate(&mut aggregates, observation);
                 }
-                _ = interval.tick() => { flush(&state, &mut aggregates).await; },
+                _ = interval.tick(), if flush_schedule.ready() => {
+                    flush_schedule.record_attempt();
+                    let succeeded = flush(&state, &mut aggregates).await;
+                    flush_schedule.record(succeeded);
+                },
+            }
+            if aggregates.len() >= MAX_AGGREGATES && flush_schedule.ready() {
+                flush_schedule.record_attempt();
+                let succeeded = flush(&state, &mut aggregates).await;
+                flush_schedule.record(succeeded);
             }
         }
         while let Ok(observation) = receiver.try_recv() {
@@ -307,6 +389,25 @@ mod tests {
         assert_eq!(QUEUE_CAPACITY, 2_048);
         assert_eq!(MAX_AGGREGATES, 4_096);
         assert_eq!(MAX_FLUSH, 256);
+    }
+
+    #[test]
+    fn retry_backoff_is_jittered_and_strictly_capped() {
+        assert_eq!(retry_delay(1, 0), Duration::from_millis(250));
+        assert!(retry_delay(2, 1) > retry_delay(2, 0));
+        for failure in 1..=64 {
+            assert!(retry_delay(failure, u64::MAX) <= MAX_FLUSH_BACKOFF);
+        }
+    }
+
+    #[test]
+    fn metrics_export_queue_occupancy_and_fixed_capacity() {
+        let queue = Queue::new();
+        let before = queue.metrics();
+        assert_eq!(before.queued, 0);
+        assert_eq!(before.queue_capacity, QUEUE_CAPACITY);
+        assert!(queue.enqueue(observation(1)));
+        assert_eq!(queue.metrics().queued, 1);
     }
 
     fn observation(index: u32) -> Observation {

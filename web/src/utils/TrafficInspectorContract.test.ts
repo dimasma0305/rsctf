@@ -14,6 +14,14 @@ test('traffic inspector aborts superseded work and preserves its last good resul
   assert.match(detail, /new AbortController\(\)/)
 })
 
+test('traffic inspector owns bounded Retry-After recovery timers', () => {
+  for (const source of [inspector, detail]) {
+    assert.match(source, /boundedRetryDelay\(error, owner\.attempts\)/)
+    assert.match(source, /window\.clearTimeout\(owner\.timer\)/)
+    assert.match(source, /setRetryGeneration/)
+  }
+})
+
 test('traffic wire contract uses real numeric timestamps, filters, and pagination', () => {
   assert.match(api, /firstSeenUtc: number/)
   assert.match(api, /timestampUtc: number/)

@@ -20,11 +20,12 @@ import {
 } from '@mantine/core'
 import { useDebouncedValue } from '@mantine/hooks'
 import dayjs from 'dayjs'
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HunamizeSize } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useUrlState } from '@Hooks/useUrlState'
+import { boundedRetryDelay } from '@Utils/HttpError'
 import api, { FlowFilter, TrafficFlowDirection, TrafficFlowSummary } from '@Api'
 import { FlowDetail } from './FlowDetail'
 
@@ -82,9 +83,31 @@ export const FlowInspector: FC<FlowInspectorProps> = ({ challengeId, participati
   const [flows, setFlows] = useState<TrafficFlowSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(false)
+  const [retryGeneration, setRetryGeneration] = useState(0)
+  const retryOwner = useRef<{ key: string; attempts: number; timer: number | null }>({
+    key: '',
+    attempts: 0,
+    timer: null,
+  })
 
   useEffect(() => {
     if (!opened) return
+    const requestKey = JSON.stringify([
+      challengeId,
+      participationId,
+      filename,
+      debouncedRegex,
+      debouncedPeerIp,
+      direction,
+      flagsOnly,
+    ])
+    const owner = retryOwner.current
+    if (owner.key !== requestKey) {
+      if (owner.timer !== null) window.clearTimeout(owner.timer)
+      owner.key = requestKey
+      owner.attempts = 0
+      owner.timer = null
+    }
     const abort = new AbortController()
     setLoading(true)
     setLoadError(false)
@@ -99,18 +122,45 @@ export const FlowInspector: FC<FlowInspectorProps> = ({ challengeId, participati
     api.game
       .gameGetTrafficFlows(challengeId!, participationId!, filename!, filter, { signal: abort.signal })
       .then((res) => {
-        if (!abort.signal.aborted) setFlows(res.data)
+        if (!abort.signal.aborted) {
+          owner.attempts = 0
+          setFlows(res.data)
+        }
       })
-      .catch(() => {
-        if (!abort.signal.aborted) setLoadError(true)
+      .catch((error: unknown) => {
+        if (!abort.signal.aborted) {
+          setLoadError(true)
+          const delay = boundedRetryDelay(error, owner.attempts)
+          if (delay !== null && owner.key === requestKey) {
+            owner.attempts += 1
+            owner.timer = window.setTimeout(() => {
+              owner.timer = null
+              setRetryGeneration((generation) => generation + 1)
+            }, delay)
+          }
+        }
       })
       .finally(() => {
         if (!abort.signal.aborted) setLoading(false)
       })
     return () => {
       abort.abort()
+      if (owner.timer !== null) {
+        window.clearTimeout(owner.timer)
+        owner.timer = null
+      }
     }
-  }, [opened, challengeId, participationId, filename, debouncedRegex, debouncedPeerIp, direction, flagsOnly])
+  }, [
+    opened,
+    challengeId,
+    participationId,
+    filename,
+    debouncedRegex,
+    debouncedPeerIp,
+    direction,
+    flagsOnly,
+    retryGeneration,
+  ])
 
   return (
     <Modal

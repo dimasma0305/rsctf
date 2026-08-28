@@ -45,6 +45,28 @@ fn email_domains_are_canonical_and_bounded() {
     assert!(canonical_email_domains(&too_many).is_err());
 }
 
+#[test]
+fn security_snapshot_is_invalidated_once_only_after_commit() {
+    let source = include_str!("mutation.rs");
+    let update = source
+        .split_once("pub async fn update_config(")
+        .expect("settings update handler")
+        .1;
+    let commit = update
+        .find("transaction.commit().await.map_err(database_error)?;")
+        .expect("settings transaction commit");
+    let invalidation = update
+        .find("crate::services::captcha::invalidate_settings_snapshot();")
+        .expect("post-commit captcha invalidation");
+    assert!(commit < invalidation);
+    assert_eq!(
+        update
+            .matches("crate::services::captcha::invalidate_settings_snapshot();")
+            .count(),
+        1
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn failed_nth_write_rolls_back_and_completed_operation_replays() {

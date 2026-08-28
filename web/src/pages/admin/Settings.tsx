@@ -59,6 +59,7 @@ import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { webCryptoAvailable } from '@Utils/Crypto'
 import { getInputNumber, showErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
+import { httpErrorStatus } from '@Utils/HttpError'
 import { OnceSWRConfig, useCaptchaConfig, useConfig } from '@Hooks/useConfig'
 import api, {
   AccountPolicy,
@@ -84,12 +85,39 @@ import misc from '@Styles/Misc.module.css'
 import classes from '@Styles/Settings.module.css'
 import {
   dirtySettingsSections,
+  clearSettingsOperation,
   newSettingsOperationId,
   ownsSettingsResult,
+  readSettingsOperation,
+  retainSettingsOperation,
   settingsRequestSignature,
   type SettingsOperationOwner,
 } from '@Utils/SettingsOperations'
 import { getAccountUniquenessState, setBrowserFingerprintCollection } from './settingsAccountPolicy'
+
+const loadRetainedSettingsOperation = (): SettingsOperationOwner | null => {
+  try {
+    return typeof window === 'undefined' ? null : readSettingsOperation(window.sessionStorage)
+  } catch {
+    return null
+  }
+}
+
+const retainSettingsOperationSafely = (owner: SettingsOperationOwner): void => {
+  try {
+    retainSettingsOperation(window.sessionStorage, owner)
+  } catch {
+    // Privacy-restricted browsers retain the in-memory owner for this mount.
+  }
+}
+
+const clearSettingsOperationSafely = (operationId: string): void => {
+  try {
+    clearSettingsOperation(window.sessionStorage, operationId)
+  } catch {
+    // The in-memory owner remains authoritative when storage is unavailable.
+  }
+}
 
 const Configs: FC = () => {
   const { data: configs, mutate } = api.admin.useAdminGetConfigs(OnceSWRConfig)
@@ -133,7 +161,7 @@ const Configs: FC = () => {
   const [activeSection, setActiveSection] = useState<SectionKey>('platform')
   const initialSnapshotRef = useRef<ConfigEditModel | null>(null)
   const saveOwnerRef = useRef(false)
-  const operationRef = useRef<SettingsOperationOwner | null>(null)
+  const operationRef = useRef<SettingsOperationOwner | null>(loadRetainedSettingsOperation())
   const [color, setColor] = useState<string | undefined | null>(globalConfig?.customTheme)
   const [logoFile, setLogoFile] = useState<File | null>(null)
   const [brandingAction, setBrandingAction] = useState<BrandingAction>(BrandingAction.Keep)
@@ -174,8 +202,6 @@ const Configs: FC = () => {
         registry: configs.registry,
         donations: configs.donations,
       }
-      const pending = operationRef.current
-      if (pending && (configs.revision ?? 0) > pending.expectedRevision) operationRef.current = null
     }
   }, [configs])
 
@@ -209,6 +235,33 @@ const Configs: FC = () => {
     },
     [logoPreviewUrl]
   )
+
+  // A tab reload after an ambiguous response recovers the durable operation
+  // before discarding its identity. A genuinely uncommitted, clean reload has
+  // no draft to replay and can safely forget the stale browser owner.
+  useEffect(() => {
+    const owner = operationRef.current
+    if (!configs || !owner) return
+    const abort = new AbortController()
+    api.admin
+      .adminGetSettingsOperation(owner.operationId, { signal: abort.signal })
+      .then(({ data: result }) => {
+        if (abort.signal.aborted || !ownsSettingsResult(owner, result)) return
+        operationRef.current = null
+        clearSettingsOperationSafely(owner.operationId)
+        setLogoFile(null)
+        setBrandingAction(BrandingAction.Keep)
+        void Promise.allSettled([mutate(), mutateConfig(), mutateCaptchaConfig()])
+      })
+      .catch((error: unknown) => {
+        if (abort.signal.aborted || httpErrorStatus(error) !== 404) return
+        if (!dirty || (configs.revision ?? 0) !== owner.expectedRevision) {
+          operationRef.current = null
+          clearSettingsOperationSafely(owner.operationId)
+        }
+      })
+    return () => abort.abort()
+  }, [configs, dirty, mutate, mutateCaptchaConfig, mutateConfig])
 
   // Per-section status, surfaced as a coloured badge in the sidebar
   // so an operator can see at a glance which surfaces are wired up.
@@ -320,6 +373,7 @@ const Configs: FC = () => {
         // No durable result was available to reconcile this response.
       }
       if ((originalError as { response?: { status?: number } }).response?.status === 409) {
+        clearSettingsOperationSafely(owner.operationId)
         operationRef.current = null
         await mutate()
       }
@@ -402,8 +456,10 @@ const Configs: FC = () => {
             operationId: newSettingsOperationId(),
             expectedRevision,
             signature,
+            createdAt: Date.now(),
           }
     operationRef.current = owner
+    retainSettingsOperationSafely(owner)
     try {
       const result = await updateConfig(
         {
@@ -414,6 +470,7 @@ const Configs: FC = () => {
         owner
       )
       if (!result || !ownsSettingsResult(owner, result)) return
+      clearSettingsOperationSafely(owner.operationId)
       operationRef.current = null
       setLogoFile(null)
       setBrandingAction(BrandingAction.Keep)
