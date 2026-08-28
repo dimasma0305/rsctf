@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS "GameConfigurationEffects" (
     invalidate_game BOOLEAN NOT NULL,
     invalidate_scoreboards BOOLEAN NOT NULL,
     invalidate_policy BOOLEAN NOT NULL,
+    claim_id UUID,
+    claim_expires_at_utc TIMESTAMPTZ,
     updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS ix_gameconfigurationeffects_pending

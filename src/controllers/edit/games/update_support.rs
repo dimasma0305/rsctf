@@ -234,6 +234,8 @@ pub(super) async fn enqueue_effects(
                                          OR EXCLUDED.invalidate_scoreboards,
                  invalidate_policy = "GameConfigurationEffects".invalidate_policy
                                      OR EXCLUDED.invalidate_policy,
+                 claim_id = NULL,
+                 claim_expires_at_utc = NULL,
                  updated_at_utc = CURRENT_TIMESTAMP"#,
     )
     .bind(game_id)
@@ -271,16 +273,35 @@ struct PendingEffect {
 }
 
 pub(crate) async fn process_configuration_effects(state: &SharedState) -> AppResult<u64> {
+    let claim_id = Uuid::new_v4();
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(state.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     let effects = sqlx::query_as::<_, PendingEffect>(
-        r#"SELECT game_id, configuration_revision, invalidate_game,
-                  invalidate_scoreboards, invalidate_policy
-             FROM "GameConfigurationEffects"
-            ORDER BY updated_at_utc, game_id
-            LIMIT 32"#,
+        r#"WITH candidates AS (
+               SELECT game_id FROM "GameConfigurationEffects"
+                WHERE claim_expires_at_utc IS NULL
+                   OR claim_expires_at_utc <= CURRENT_TIMESTAMP
+                ORDER BY updated_at_utc, game_id
+                FOR UPDATE SKIP LOCKED LIMIT 32
+           )
+           UPDATE "GameConfigurationEffects" effect
+              SET claim_id = $1,
+                  claim_expires_at_utc = CURRENT_TIMESTAMP + INTERVAL '2 minutes'
+             FROM candidates
+            WHERE effect.game_id = candidates.game_id
+        RETURNING effect.game_id, effect.configuration_revision,
+                  effect.invalidate_game, effect.invalidate_scoreboards,
+                  effect.invalidate_policy"#,
     )
-    .fetch_all(state.pg())
+    .bind(claim_id)
+    .fetch_all(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     let mut processed = 0;
     for effect in effects {
         if effect.invalidate_game {
@@ -294,10 +315,11 @@ pub(crate) async fn process_configuration_effects(state: &SharedState) -> AppRes
         }
         let deleted = sqlx::query(
             r#"DELETE FROM "GameConfigurationEffects"
-                WHERE game_id = $1 AND configuration_revision = $2"#,
+                WHERE game_id = $1 AND configuration_revision = $2 AND claim_id = $3"#,
         )
         .bind(effect.game_id)
         .bind(effect.configuration_revision)
+        .bind(claim_id)
         .execute(state.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;

@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS "TeamProfileInvalidations" (
     team_id INTEGER PRIMARY KEY REFERENCES "Teams" (id) ON DELETE CASCADE,
     profile_revision BIGINT NOT NULL CHECK (profile_revision >= 0),
     after_game_id INTEGER NOT NULL DEFAULT 0 CHECK (after_game_id >= 0),
+    claim_id UUID,
+    claim_expires_at_utc TIMESTAMPTZ,
     updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS ix_teamprofileinvalidations_pending
