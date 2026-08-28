@@ -1516,6 +1516,7 @@ export async function configureKothApiObserver(gid, cid) {
 
 let lastKothObservationTimestamp = 0;
 const kothObservationLedgers = new Map();
+const kothContextValidators = new Map();
 
 export function kothApiEvidence(token, index) {
   if (typeof token !== 'string') return null;
@@ -1637,17 +1638,30 @@ export async function kothApiObservation(
     if (remainingMs <= 0) throw new Error('KotH API context retry deadline exhausted');
     return remainingMs;
   };
+  const scope = `${gameId}:${challengeId}`;
+  const cachedContext = kothContextValidators.get(scope);
   const contextResponse = await api(
     'GET',
     `/api/v1/koth/games/${gameId}/challenges/${challengeId}/context`,
-    { ip: '10.9.9.10', timeoutMs: requestTimeout() },
+    {
+      ip: '10.9.9.10',
+      timeoutMs: requestTimeout(),
+      headers: cachedContext?.etag ? { 'If-None-Match': cachedContext.etag } : undefined,
+    },
   );
-  if (contextResponse.status !== 200) {
+  let contextModel;
+  if (contextResponse.status === 304 && cachedContext) {
+    contextModel = cachedContext.model;
+  } else if (contextResponse.status === 200) {
+    contextModel = validateKothApiContext(unwrap(contextResponse));
+    const etag = contextResponse.headers.get('etag');
+    if (etag) kothContextValidators.set(scope, { etag, model: contextModel });
+    else kothContextValidators.delete(scope);
+  } else {
     throw new Error(
       `fetch KotH API context → ${contextResponse.status} ${contextResponse.text?.slice(0, 200)}`,
     );
   }
-  const contextModel = validateKothApiContext(unwrap(contextResponse));
   const context = contextModel.context;
   const tokens = Array.isArray(tokenOrTokens)
     ? tokenOrTokens
@@ -1660,35 +1674,45 @@ export async function kothApiObservation(
     .map((token, index) => kothApiEvidence(token, index))
     .filter(Boolean);
   assignUniqueKothApiCrown(teams);
-  const scope = `${gameId}:${challengeId}`;
   const previous = kothObservationLedgers.get(scope);
   const ledger = previous?.context === context
     ? previous
-    : { context, sequence: 0, waves: [] };
+    : { context, sequence: 0, waves: [], pending: null };
   if (ledger.waves.length >= 64) {
     throw new Error('KotH API load fixture exhausted the 64-wave settlement bound');
   }
-  const earliest = ledger.waves.length === 0
-    ? contextModel.waveWindowStartsAt
-    : ledger.waves.at(-1).endedAtUnixMs;
-  const endedAtUnixMs = Math.max(
-    earliest,
-    Math.min(Date.now(), contextModel.waveWindowEndsAt - 1),
-  );
-  if (endedAtUnixMs >= contextModel.waveWindowEndsAt) {
-    throw new Error('KotH API load fixture settlement window has no timestamp left');
+  let pending = ledger.pending;
+  if (!pending) {
+    const earliest = ledger.waves.length === 0
+      ? contextModel.waveWindowStartsAt
+      : ledger.waves.at(-1).endedAtUnixMs;
+    const endedAtUnixMs = Math.max(
+      earliest,
+      Math.min(Date.now(), contextModel.waveWindowEndsAt - 1),
+    );
+    if (endedAtUnixMs >= contextModel.waveWindowEndsAt) {
+      throw new Error('KotH API load fixture settlement window has no timestamp left');
+    }
+    const nextWave = {
+      waveId: `load-${contextModel.roundNumber}-${String(ledger.sequence).padStart(2, '0')}`,
+      endedAtUnixMs,
+      teams,
+    };
+    const proposedWaves = [...ledger.waves, nextWave];
+    pending = {
+      rawBody: JSON.stringify({
+        context,
+        objectiveIds: ['quality', 'throughput'],
+        waves: proposedWaves,
+      }),
+      proposedWaves,
+    };
+    ledger.pending = pending;
+    // Retain the exact canonical body before sending it. A timeout may mean
+    // PostgreSQL committed even though the acknowledgement never arrived.
+    kothObservationLedgers.set(scope, ledger);
   }
-  const nextWave = {
-    waveId: `load-${contextModel.roundNumber}-${String(ledger.sequence).padStart(2, '0')}`,
-    endedAtUnixMs,
-    teams,
-  };
-  const proposedWaves = [...ledger.waves, nextWave];
-  const rawBody = JSON.stringify({
-    context,
-    objectiveIds: ['quality', 'throughput'],
-    waves: proposedWaves,
-  });
+  const { rawBody, proposedWaves } = pending;
   const timestamp = Math.max(Date.now(), lastKothObservationTimestamp + 1);
   lastKothObservationTimestamp = timestamp;
   const response = await api(
@@ -1704,6 +1728,12 @@ export async function kothApiObservation(
   if (response.status === 200) {
     ledger.sequence += 1;
     ledger.waves = proposedWaves;
+    ledger.pending = null;
+    kothObservationLedgers.set(scope, ledger);
+  } else if ([400, 401, 403, 409, 413].includes(response.status)) {
+    // A definitive rejection proves this exact intent did not commit. Keep
+    // ambiguous timeout, overload, and server-failure bodies for exact retry.
+    ledger.pending = null;
     kothObservationLedgers.set(scope, ledger);
   }
   return response;

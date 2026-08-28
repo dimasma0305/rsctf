@@ -6,6 +6,7 @@ import {
   assignUniqueKothApiCrown,
   isRetriableKothApiContextFailure,
   kothApiEvidence,
+  kothApiObservation,
   validateKothApiContext,
 } from '../applib.mjs';
 import {
@@ -75,6 +76,69 @@ test('KotH API signing rejects ambiguous identities and oversized payloads', () 
     () => kothObservationMessage(timestamp, 7, 9, 'x'.repeat(512 * 1024 + 1)),
     /512 KiB/,
   );
+});
+
+test('the supplied referee retries the exact body and conditionally reuses its context', async (context) => {
+  const originalFetch = globalThis.fetch;
+  const now = Date.now();
+  const contextModel = {
+    apiVersion: 'v1',
+    context: 'c'.repeat(64),
+    cycleNumber: 4,
+    resetAttempt: 1,
+    roundNumber: 17,
+    cycleEndsAt: now + 60_000,
+    waveWindowStartsAt: now - 10_000,
+    waveWindowEndsAt: now + 10_000,
+    generatedAt: now - 20_000,
+    eligibleTokenHashes: [],
+    objectiveIds: [],
+    objectiveSchemaHash: null,
+  };
+  const posts = [];
+  const contextValidators = [];
+  let loseFirstResponse = true;
+  context.mock.method(globalThis, 'fetch', async (input, init = {}) => {
+    const url = String(input);
+    if (url.endsWith('/context')) {
+      const validator = new Headers(init.headers).get('If-None-Match');
+      contextValidators.push(validator);
+      if (validator === '"context-v1"') return new Response(null, { status: 304 });
+      return new Response(JSON.stringify(contextModel), {
+        status: 200,
+        headers: { 'content-type': 'application/json', etag: '"context-v1"' },
+      });
+    }
+    posts.push({
+      body: String(init.body),
+      timestamp: new Headers(init.headers).get('x-rsctf-timestamp'),
+    });
+    if (loseFirstResponse) {
+      loseFirstResponse = false;
+      throw new DOMException('response lost after commit', 'TimeoutError');
+    }
+    return new Response(JSON.stringify({ accepted: true }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  try {
+    await assert.rejects(
+      kothApiObservation(701, 901, secret, [], { deadlineMs: performance.now() + 5_000 }),
+      /response lost after commit/,
+    );
+    const replay = await kothApiObservation(701, 901, secret, [], {
+      deadlineMs: performance.now() + 5_000,
+    });
+    assert.equal(replay.status, 200);
+    assert.equal(posts.length, 2);
+    assert.equal(posts[1].body, posts[0].body, 'lost-response retry must retain the canonical body');
+    assert.notEqual(posts[1].timestamp, posts[0].timestamp, 'the exact body is signed with a fresh timestamp');
+    assert.deepEqual(contextValidators, [null, '"context-v1"']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('Leaderboard load evidence uses hashes and equivalent native score scales', () => {
