@@ -301,6 +301,13 @@ pub struct GameChallengeCatalogModel {
 #[serde(rename_all = "camelCase")]
 pub struct GameParticipantDeltaModel {
     pub rank: Option<ScoreboardItem>,
+    /// Submission counts by visible challenge ID for this participation.
+    pub attempts: BTreeMap<i32, i32>,
+    /// Durable, cross-replica invalidation identity for this projection.
+    pub generation: i64,
+    /// Latest committed submission ID in this event. Inserts/deletes change
+    /// this cursor without serializing the submission path on a generation row.
+    pub submission_cursor: i32,
 }
 
 /// RSCTF `JoinedTeam`.

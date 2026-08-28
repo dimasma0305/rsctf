@@ -132,14 +132,28 @@ const OBSERVER_CONTEXT_CONCURRENCY: usize = 16;
 static OBSERVER_CONTEXT_ADMISSION: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(OBSERVER_CONTEXT_CONCURRENCY));
 
-fn observer_context_cache_key(game_id: i32, challenge_id: i32) -> String {
-    format!("_KothObserverContextV2_{game_id}_{challenge_id}")
+fn observer_context_cache_key(game_id: i32, challenge_id: i32, generation: i64) -> String {
+    format!("_KothObserverContextV3_{game_id}_{challenge_id}_{generation}")
 }
 
 pub(crate) async fn invalidate_observer_context(st: &SharedState, game_id: i32, challenge_id: i32) {
-    st.cache
-        .remove(&observer_context_cache_key(game_id, challenge_id))
-        .await;
+    if let Ok(Some(generation)) = sqlx::query_scalar::<_, i64>(
+        r#"SELECT generation FROM "KothObserverContextGenerations"
+            WHERE game_id = $1 AND challenge_id = $2"#,
+    )
+    .bind(game_id)
+    .bind(challenge_id)
+    .fetch_optional(st.pg())
+    .await
+    {
+        st.cache
+            .remove(&observer_context_cache_key(
+                game_id,
+                challenge_id,
+                generation,
+            ))
+            .await;
+    }
 }
 
 pub(super) fn retry_after_response(error: AppError, seconds: u64) -> Response {
@@ -289,7 +303,17 @@ async fn observer_context_body(
     game_id: i32,
     challenge_id: i32,
 ) -> AppResult<bytes::Bytes> {
-    let key = observer_context_cache_key(game_id, challenge_id);
+    let generation: i64 = sqlx::query_scalar(
+        r#"SELECT generation FROM "KothObserverContextGenerations"
+            WHERE game_id = $1 AND challenge_id = $2"#,
+    )
+    .bind(game_id)
+    .bind(challenge_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::conflict("Leaderboard KotH context is not active"))?;
+    let key = observer_context_cache_key(game_id, challenge_id, generation);
     if let Some(body) = st.cache.get(&key).await {
         return Ok(body);
     }
@@ -689,5 +713,13 @@ mod tests {
             HeaderValue::from_str(&(now - MAX_CLOCK_SKEW_MS as i64 - 1).to_string()).unwrap(),
         );
         assert!(parse_timestamp(&headers, now).is_err());
+    }
+
+    #[test]
+    fn observer_context_cache_identity_includes_durable_generation() {
+        assert_ne!(
+            observer_context_cache_key(4, 9, 10),
+            observer_context_cache_key(4, 9, 11)
+        );
     }
 }

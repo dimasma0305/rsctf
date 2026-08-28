@@ -637,8 +637,16 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
 }
 #[test]
 fn private_play_projections_support_stable_weak_conditional_reads() {
-    let response = private_conditional_response(GameParticipantDeltaModel { rank: None }, None)
-        .expect("serialize participant delta");
+    let response = private_conditional_response(
+        GameParticipantDeltaModel {
+            rank: None,
+            attempts: Default::default(),
+            generation: 1,
+            submission_cursor: 0,
+        },
+        None,
+    )
+    .expect("serialize participant delta");
     let validator = response
         .headers()
         .get(axum::http::header::ETAG)
@@ -653,7 +661,12 @@ fn private_play_projections_support_stable_weak_conditional_reads() {
         Some("private, no-cache")
     );
     let conditional = private_conditional_response(
-        GameParticipantDeltaModel { rank: None },
+        GameParticipantDeltaModel {
+            rank: None,
+            attempts: Default::default(),
+            generation: 1,
+            submission_cursor: 0,
+        },
         Some(&format!("W/{validator}")),
     )
     .expect("conditional participant delta");

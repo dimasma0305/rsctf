@@ -1,5 +1,22 @@
 use super::evidence::ResolvedInputRow;
 use super::*;
+
+#[test]
+fn duplicate_in_progress_observations_have_a_typed_retry_contract() {
+    let response = AppError::retryable_unavailable("busy", 1).into_response();
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .unwrap(),
+        "1"
+    );
+    assert!(include_str!("../submission.rs").contains("AppError::retryable_unavailable("));
+}
 use axum::http::HeaderValue;
 use hmac::{Hmac, KeyInit, Mac};
 use sqlx::postgres::PgPoolOptions;

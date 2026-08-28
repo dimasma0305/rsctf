@@ -179,6 +179,8 @@ mod m0199_repo_binding_scheduler;
 mod m0205_account_activity_indexes;
 mod m0206_joined_challenge_catalog_indexes;
 mod m0207_participation_provision_jobs;
+mod m0208_participant_detail_generations;
+mod m0209_koth_context_generations;
 mod m0216_solve_receipt_audit_retention;
 
 #[cfg(test)]
@@ -375,6 +377,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0205_account_activity_indexes::Migration),
             Box::new(m0206_joined_challenge_catalog_indexes::Migration),
             Box::new(m0207_participation_provision_jobs::Migration),
+            Box::new(m0208_participant_detail_generations::Migration),
+            Box::new(m0209_koth_context_generations::Migration),
             Box::new(m0216_solve_receipt_audit_retention::Migration),
         ]
     }
@@ -521,7 +525,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 57..],
+            &names[names.len() - 59..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -580,6 +584,9 @@ mod tests {
                 "m0205_account_activity_indexes",
                 "m0206_joined_challenge_catalog_indexes",
                 "m0207_participation_provision_jobs",
+                "m0208_participant_detail_generations",
+                "m0209_koth_context_generations",
+                "m0216_solve_receipt_audit_retention",
             ]
         );
     }

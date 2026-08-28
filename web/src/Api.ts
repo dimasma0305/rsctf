@@ -2460,6 +2460,8 @@ export interface AdBatchSubmitResultModel {
 export interface AdTokenGenerateResultModel {
   token: string;
   hint: string;
+  participationId: number;
+  teamId: number;
   operationId: string;
   revision: number;
   rotatedAt: string;
@@ -2587,6 +2589,8 @@ export interface AdTokenHintModel {
   /** True iff caller is captain of the participating team. */
   canManage: boolean;
   revision: number;
+  participationId: number;
+  teamId: number;
 }
 
 /** A&D — per-service row in the player's state view. */
@@ -3970,6 +3974,9 @@ export interface GameChallengeCatalogModel {
 
 export interface GameParticipantDeltaModel {
   rank?: ScoreboardItem | null;
+  attempts: Record<string, number>;
+  generation: number;
+  submissionCursor: number;
 }
 
 /** Participation for review (Admin). Kept for the legacy raw-array endpoint. */

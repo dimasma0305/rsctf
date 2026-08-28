@@ -173,8 +173,9 @@ async fn reserve_observation(
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    Err(AppError::unavailable(
+    Err(AppError::retryable_unavailable(
         "An identical Leaderboard observation is still being committed; retry later",
+        1,
     ))
 }
 
