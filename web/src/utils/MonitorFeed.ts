@@ -118,7 +118,7 @@ export const currentMonitorBufferRows = <Row>(activeScope: string, bufferedScope
 
 const monitorWhitespacePattern = /^\p{White_Space}$/u
 
-const normalizedMonitorSearch = (search: string, locale: string) => {
+const normalizedMonitorSearch = (search: string) => {
   let normalized = ''
   let scalarCount = 0
   let pendingSpace = false
@@ -137,7 +137,7 @@ const normalizedMonitorSearch = (search: string, locale: string) => {
       scalarCount += 1
       pendingSpace = false
     }
-    for (const lower of character.toLocaleLowerCase(locale)) {
+    for (const lower of character.toLowerCase()) {
       if (scalarCount === 128) return normalized
       normalized += lower
       scalarCount += 1
@@ -151,13 +151,12 @@ const normalizedMonitorSearch = (search: string, locale: string) => {
 export const submissionMatchesMonitorFilter = (
   submission: MonitorSubmission,
   type: AnswerResult | 'All',
-  search: string,
-  locale: string
+  search: string
 ) => {
   if (type !== 'All' && submission.status !== type) return false
-  const normalizedSearch = normalizedMonitorSearch(search, locale)
+  const normalizedSearch = normalizedMonitorSearch(search)
   if (!normalizedSearch) return true
   return [submission.answer, submission.user, submission.team, submission.challenge]
     .filter((value): value is string => typeof value === 'string')
-    .some((value) => value.toLocaleLowerCase(locale).includes(normalizedSearch))
+    .some((value) => value.toLowerCase().includes(normalizedSearch))
 }

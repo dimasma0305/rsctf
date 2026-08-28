@@ -55,12 +55,19 @@ test('an organizer notice survives one hundred newer live system notices', () =>
   assert.equal(new Set(merged.map(({ id }) => id)).size, MAX_GAME_NOTICE_ROWS)
 })
 
-test('a game-scope transition hides the previous game buffer synchronously', () => {
-  const gameOneBuffer = { scope: '1', rows: [notice(1)] }
-  assert.deepEqual(currentListSnapshotRows('1', gameOneBuffer), gameOneBuffer.rows)
-  assert.equal(currentListSnapshotRows('2', gameOneBuffer), undefined)
+test('a game or viewer-scope transition hides the previous principal buffer synchronously', () => {
+  const viewerOneScope = JSON.stringify(['user:one:User', 1])
+  const viewerTwoScope = JSON.stringify(['user:two:User', 1])
+  const gameTwoScope = JSON.stringify(['user:one:User', 2])
+  const viewerOneBuffer = { scope: viewerOneScope, rows: [notice(1)] }
+  assert.deepEqual(currentListSnapshotRows(viewerOneScope, viewerOneBuffer), viewerOneBuffer.rows)
+  assert.equal(currentListSnapshotRows(viewerTwoScope, viewerOneBuffer), undefined)
+  assert.equal(currentListSnapshotRows(gameTwoScope, viewerOneBuffer), undefined)
 
   const source = readFileSync('src/components/GameNoticePanel.tsx', 'utf8')
+  assert.match(source, /const \{ scope: viewerScope \} = useViewerIdentity\(\)/)
+  assert.match(source, /const noticeScope = JSON\.stringify\(\[viewerScope, numId\]\)/)
   assert.match(source, /currentListSnapshotRows\(noticeScope, newNotices\.current\)/)
   assert.match(source, /currentListSnapshotRows\(noticeScope, noticeSnapshotRows\.current\)/)
+  assert.match(source, /ownerKey: noticeScope/)
 })

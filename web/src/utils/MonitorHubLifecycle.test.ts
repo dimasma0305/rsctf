@@ -115,7 +115,7 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
         /const loadSnapshot = useCallback[\s\S]*?\[activePage, type, debouncedSearch, numId, snapshotScope\]/,
         path
       )
-      assert.match(source, /submissionMatchesMonitorFilter\(item, type, debouncedSearch, locale\)/, path)
+      assert.match(source, /submissionMatchesMonitorFilter\(item, type, debouncedSearch\)/, path)
       assert.match(
         source,
         /mergeSubmissionBuffer\(bufferedSubmissions, submissions \?\? \[\], MAX_BUFFERED_SUBMISSIONS\)/,
@@ -720,12 +720,18 @@ test('submission live rows apply the active result and normalized search filters
     challenge: 'Warm Up',
   })
 
-  assert.equal(submissionMatchesMonitorFilter(accepted, AnswerResult.Accepted, '  blue   team  ', 'en'), true)
-  assert.equal(submissionMatchesMonitorFilter(accepted, AnswerResult.WrongAnswer, 'blue team', 'en'), false)
-  assert.equal(submissionMatchesMonitorFilter(accepted, 'All', 'flag{accepted}', 'en'), true)
-  assert.equal(submissionMatchesMonitorFilter(accepted, 'All', 'red team', 'en'), false)
-  assert.equal(submissionMatchesMonitorFilter(accepted, 'All', ' '.repeat(513) + 'red team', 'en'), true)
-  assert.equal(submissionMatchesMonitorFilter(accepted, 'All', '\u0085blue\u0085team', 'en'), true)
+  assert.equal(submissionMatchesMonitorFilter(accepted, AnswerResult.Accepted, '  blue   team  '), true)
+  assert.equal(submissionMatchesMonitorFilter(accepted, AnswerResult.WrongAnswer, 'blue team'), false)
+  assert.equal(submissionMatchesMonitorFilter(accepted, 'All', 'flag{accepted}'), true)
+  assert.equal(submissionMatchesMonitorFilter(accepted, 'All', 'red team'), false)
+  assert.equal(submissionMatchesMonitorFilter(accepted, 'All', ' '.repeat(513) + 'red team'), true)
+  assert.equal(submissionMatchesMonitorFilter(accepted, 'All', '\u0085blue\u0085team'), true)
+
+  const asciiCase = monitorSubmission(2, AnswerResult.Accepted, { team: 'Istanbul' })
+  assert.equal(submissionMatchesMonitorFilter(asciiCase, 'All', 'istanbul'), true)
+
+  const source = readFileSync('src/utils/MonitorFeed.ts', 'utf8')
+  assert.doesNotMatch(source, /toLocaleLowerCase/)
 })
 
 test('a delayed game-A snapshot and late game-A push cannot enter game B', () => {

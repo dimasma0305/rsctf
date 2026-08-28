@@ -296,7 +296,7 @@ const Submissions: FC = () => {
     newSubmissions.current
   )
   const filteredSubs = currentBufferedSubmissions.filter((item) =>
-    submissionMatchesMonitorFilter(item, type, debouncedSearch, locale)
+    submissionMatchesMonitorFilter(item, type, debouncedSearch)
   )
   const bufferedSubmissions =
     activePage === 1 ? unreconciledMonitorRows(filteredSubs, submissions ?? [], submissionMonitorIdentity) : []

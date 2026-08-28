@@ -14,6 +14,7 @@ import { currentListSnapshotRows, LatestListRequest, type ListSnapshot } from '@
 import { MAX_GAME_NOTICE_ROWS, mergeGameNotices, receiveGameNotice } from '@Utils/NoticeFeed'
 import { NoticTypeIconMap } from '@Utils/Shared'
 import { NOTICE_FALLBACK_POLL_MS } from '@Utils/SignalRRecovery'
+import { useViewerIdentity } from '@Utils/ViewerIdentity'
 import { useRecoveringHub } from '@Hooks/useRecoveringHub'
 import api, { GameNotice, NoticeType } from '@Api'
 import misc from '@Styles/Misc.module.css'
@@ -87,7 +88,8 @@ export const GameNoticePanel: FC = () => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const feedActive = Boolean(id) && Number.isInteger(numId) && numId > 0
-  const noticeScope = String(numId)
+  const { scope: viewerScope } = useViewerIdentity()
+  const noticeScope = JSON.stringify([viewerScope, numId])
 
   const [, update] = useState(0)
   const newNotices = useRef<ListSnapshot<GameNotice>>({ scope: noticeScope, rows: [] })
@@ -129,6 +131,7 @@ export const GameNoticePanel: FC = () => {
   useRecoveringHub({
     active: feedActive,
     url: `/hub/user?game=${numId}`,
+    ownerKey: noticeScope,
     handlers: {
       ReceivedGameNotice: (raw) => {
         const message = raw as GameNotice
