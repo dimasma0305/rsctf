@@ -2135,6 +2135,30 @@ export interface ChallengeInfoModel {
   buildStatus?: ChallengeBuildStatus;
   /** True iff an OriginalArchiveBlobPath is on file (i.e. Rebuild has something to rebuild from) */
   hasOriginalArchive?: boolean;
+  /** Event-wide challenge configuration revision used by bounded bulk edits. */
+  configurationRevision?: number;
+}
+
+export type BulkChallengeAction = "Enable" | "Disable" | "Delete"
+
+export interface BulkChallengeMutationRequest {
+  operationId: string
+  expectedRevision: number
+  action: BulkChallengeAction
+  challengeIds: number[]
+}
+
+export interface BulkChallengeOutcome {
+  challengeId: number
+  status: "Changed" | "Unchanged" | "Rejected" | "Deleted"
+  message?: string | null
+}
+
+export interface BulkChallengeMutationResult {
+  operationId: string
+  state: "Pending" | "Complete"
+  configurationRevision: number
+  outcomes: BulkChallengeOutcome[]
 }
 
 /** Review state of a challenge */
@@ -7279,6 +7303,20 @@ export class Api<
       this.request<ChallengeInfoModel[], RequestResponse>({
         path: `/api/edit/games/${id}/challenges`,
         method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    editMutateGameChallengesBulk: (
+      id: number,
+      data: BulkChallengeMutationRequest,
+      params: RequestParams = {},
+    ) =>
+      this.request<BulkChallengeMutationResult, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/bulk`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
