@@ -168,15 +168,11 @@ pub trait ContainerManager: Send + Sync {
 
     /// Fetch a bounded inventory page without first materializing every
     /// managed runtime. Backends used in production override this method with
-    /// server-side pagination; the fallback only preserves compatibility for
-    /// test and out-of-tree implementations.
+    /// server-side pagination. The fallback returns no candidates, preferring
+    /// a skipped cleanup pass over an unbounded legacy inventory allocation.
     async fn list_managed_page(&self, _cursor: Option<&str>, limit: usize) -> ManagedContainerPage {
-        let mut ids = self.list_managed().await;
-        ids.truncate(limit);
-        ManagedContainerPage {
-            ids,
-            next_cursor: None,
-        }
+        let _ = limit;
+        ManagedContainerPage::default()
     }
 
     async fn ensure_network(&self, _name: &str, _subnet: &str) -> AppResult<()> {

@@ -21,7 +21,7 @@ use super::orphan_tracking::{
 #[cfg(test)]
 use super::orphan_identity::{RuntimeOwnership, DOCKER_SHORT_ID_LEN};
 #[cfg(test)]
-use super::orphan_tracking::{managed_scan_batch, reset_scan_cursor};
+use super::orphan_tracking::reset_scan_cursor;
 
 const EXPIRED_REAP_BATCH: usize = 64;
 const EXPIRED_REAP_CONCURRENCY: usize = 4;
@@ -732,6 +732,19 @@ mod tests {
         async fn list_managed(&self) -> Vec<String> {
             self.managed.as_ref().clone()
         }
+
+        async fn list_managed_page(
+            &self,
+            _cursor: Option<&str>,
+            limit: usize,
+        ) -> crate::services::container::ManagedContainerPage {
+            let mut ids = self.managed.as_ref().clone();
+            ids.truncate(limit);
+            crate::services::container::ManagedContainerPage {
+                ids,
+                next_cursor: None,
+            }
+        }
     }
 
     fn test_state(pool: &sqlx::PgPool, runtime: Arc<dyn ContainerManager>) -> SharedState {
@@ -762,22 +775,6 @@ mod tests {
         assert!(ownership.contains("rsctf-koth-cycle-17"));
         assert!(!ownership.contains("rsctf-koth-cycle"));
         assert!(!ownership.contains("rsctf-koth-cycle-17-extra"));
-    }
-
-    #[test]
-    fn rotating_scan_is_bounded_and_eventually_visits_the_inventory() {
-        reset_scan_cursor();
-        let inventory = (0..1_000)
-            .map(|index| format!("runtime-{index:04}"))
-            .collect::<Vec<_>>();
-        let mut visited = HashSet::new();
-        for _ in 0..4 {
-            let (batch, total) = managed_scan_batch(inventory.clone(), 256);
-            assert_eq!(total, 1_000);
-            assert!(batch.len() <= 256);
-            visited.extend(batch);
-        }
-        assert_eq!(visited.len(), 1_000);
     }
 
     fn reset_orphan_test_state() {

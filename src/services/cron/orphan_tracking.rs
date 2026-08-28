@@ -50,33 +50,6 @@ impl Default for OrphanSweepPolicy {
 }
 
 #[cfg(test)]
-pub(super) fn managed_scan_batch(mut managed: Vec<String>, limit: usize) -> (Vec<String>, usize) {
-    managed.retain(|id| !id.trim().is_empty());
-    for id in &mut managed {
-        *id = id.trim().to_string();
-    }
-    managed.sort_unstable();
-    managed.dedup();
-    let total = managed.len();
-    if total == 0 || limit == 0 {
-        return (Vec::new(), total);
-    }
-    let take = limit.min(total);
-    let mut cursor = ORPHAN_SCAN_CURSOR
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let start = cursor
-        .as_deref()
-        .and_then(|after| managed.iter().position(|id| id.as_str() > after))
-        .unwrap_or(0);
-    let batch = (0..take)
-        .map(|offset| managed[(start + offset) % total].clone())
-        .collect::<Vec<_>>();
-    *cursor = batch.last().cloned();
-    (batch, total)
-}
-
-#[cfg(test)]
 pub(super) fn reset_scan_cursor() {
     advance_inventory_cursor(None);
 }
