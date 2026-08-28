@@ -303,8 +303,13 @@ async fn locked_extend(
     let lock = crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(state.pg(), &key)
         .await
         .map_err(AppError::from)?;
+    let mut connection = state
+        .pg()
+        .acquire()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     let result = extend_expected_team_container_locked(
-        state,
+        &mut connection,
         participation_id,
         challenge_id,
         expected_container_id,

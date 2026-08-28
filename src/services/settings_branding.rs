@@ -66,8 +66,6 @@ fn database_error(error: sqlx::Error) -> AppError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn cleanup_batch_is_always_bounded() {
         for (input, expected) in [(-1, 1), (0, 1), (16, 16), (5_000, 128)] {

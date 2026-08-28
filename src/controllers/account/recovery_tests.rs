@@ -129,7 +129,6 @@ async fn email_change_rechecks_identity_after_a_registration_lock_wait() {
                     email: "claimed@example.test",
                     normalized_email: "CLAIMED@EXAMPLE.TEST",
                     new_stamp: "stamp-new".to_string(),
-                    mode: EmailUpdateMode::Immediate,
                 },
             )
             .await
@@ -188,7 +187,6 @@ async fn email_change_rechecks_identity_after_a_registration_lock_wait() {
                     email: "fresh@example.test",
                     normalized_email: "FRESH@EXAMPLE.TEST",
                     new_stamp: "stamp-after-policy".to_string(),
-                    mode: EmailUpdateMode::Immediate,
                 },
             )
             .await
@@ -251,7 +249,6 @@ async fn email_change_rechecks_identity_after_a_registration_lock_wait() {
                     email: "new@example.test",
                     normalized_email: "NEW@EXAMPLE.TEST",
                     new_stamp: "stamp-email-request".to_string(),
-                    mode: EmailUpdateMode::Immediate,
                 },
             )
             .await

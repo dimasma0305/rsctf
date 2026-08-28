@@ -206,13 +206,7 @@ async fn scheduler_closes_intake_after_grace_and_waits_for_every_job() {
     .await
     .unwrap();
 
-    let mut reconciliation = pool.begin().await.unwrap();
-    assert!(
-        defer_final_for_incomplete_jobs(&pool, &mut reconciliation, 5)
-            .await
-            .unwrap()
-    );
-    reconciliation.commit().await.unwrap();
+    assert!(defer_final_for_incomplete_jobs(&pool, 5).await.unwrap());
     let deferred: (bool, Option<String>) = sqlx::query_as(
         r#"SELECT sealed_at_utc IS NOT NULL, last_error
              FROM "SuspicionReconciliationState" WHERE game_id = 5"#,
@@ -235,13 +229,13 @@ async fn scheduler_closes_intake_after_grace_and_waits_for_every_job() {
     .execute(&pool)
     .await
     .unwrap();
+    assert!(!defer_final_for_incomplete_jobs(&pool, 5).await.unwrap());
+    let claim = claim_game_reconciliation(&pool, 5, true)
+        .await
+        .unwrap()
+        .expect("final reconciliation state is claimable");
     let mut reconciliation = pool.begin().await.unwrap();
-    assert!(
-        !defer_final_for_incomplete_jobs(&pool, &mut reconciliation, 5)
-            .await
-            .unwrap()
-    );
-    record_game_reconciliation(&mut reconciliation, 5, true, &[])
+    record_game_reconciliation(&mut reconciliation, 5, &claim, true, 0, &[])
         .await
         .unwrap();
     reconciliation.commit().await.unwrap();

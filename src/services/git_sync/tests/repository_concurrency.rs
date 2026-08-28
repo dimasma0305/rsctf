@@ -533,7 +533,7 @@ pub(super) async fn assert_binding_update_and_delete_fences(
         scan_time,
         Some("scan-commit".to_string()),
         "scan complete".to_string(),
-        scan_time + chrono::Duration::seconds(60),
+        60,
     )
     .await
     .unwrap();

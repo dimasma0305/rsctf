@@ -33,6 +33,10 @@ pub(crate) use lifecycle::destroy_challenge_containers;
 use lifecycle::destroy_test_container_locked;
 use mutation_recovery::update_challenge_row_locked;
 #[cfg(test)]
+use mutation_recovery::{
+    claim_challenge_create_operation, complete_challenge_create_operation, INSERTABLE_GAME_SQL,
+};
+#[cfg(test)]
 pub(crate) use repo_push::commit_latest_to_checkout_for_test;
 pub(crate) use repo_push::{
     claim_jobs as claim_repo_push_jobs, run_claimed_job as run_claimed_repo_push_job,

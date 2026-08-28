@@ -199,8 +199,6 @@ pub(crate) use m0115_flag_egress_feed_cursor::UP_SQL as FLAG_EGRESS_FEED_CURSOR_
 #[cfg(test)]
 pub(crate) use m0116_game_event_feed_pending::UP_SQL as GAME_EVENT_FEED_PENDING_SQL;
 #[cfg(test)]
-pub(crate) use m0175_mail_outbox::UP_SQL as MAIL_OUTBOX_SQL;
-#[cfg(test)]
 pub(crate) use m0196_resource_create_operations::UP_SQL as RESOURCE_CREATE_OPERATIONS_SQL;
 #[cfg(test)]
 pub(crate) use m0207_participation_provision_jobs::UP_SQL as PARTICIPATION_PROVISION_JOBS_SQL;

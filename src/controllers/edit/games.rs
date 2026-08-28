@@ -7,6 +7,21 @@ pub use model::GameInfoModel;
 mod update_support;
 pub(crate) use update_support::process_configuration_effects;
 
+#[cfg(test)]
+fn apply_ad_creation_settings(model: &GameInfoModel, active: &mut game::ActiveModel) {
+    use sea_orm::ActiveValue::Set;
+
+    active.ad_warmup_seconds = Set(model.ad_warmup_seconds);
+    active.ad_snapshot_retention_days = Set(model.ad_snapshot_retention_days);
+    active.ad_tick_seconds = Set(model.ad_tick_seconds);
+    active.ad_flag_lifetime_ticks = Set(model.ad_flag_lifetime_ticks);
+    active.ad_reset_cooldown_minutes = Set(model.ad_reset_cooldown_minutes);
+    active.ad_allow_snapshot_download = Set(model.ad_allow_snapshot_download.unwrap_or(true));
+    active.ad_getflag_window_fraction = Set(model.ad_getflag_window_fraction);
+    active.ad_min_grace_period_seconds = Set(model.ad_min_grace_period_seconds);
+    active.ad_epoch_ticks = Set(model.ad_epoch_ticks.unwrap_or(8));
+}
+
 pub(super) async fn validate_koth_game_shape_locked(
     conn: &mut sqlx::PgConnection,
     game_id: i32,

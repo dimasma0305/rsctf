@@ -260,7 +260,7 @@ mod tests {
                 &["password:user:stamp", "credential-source:192.0.2.2"],
             )
             .await,
-            Err(AppError::too_many_requests(1))
+            Err(AppError::TooManyRequests { .. })
         ));
         first.release().await;
         let reclaimed = try_acquire_scopes(

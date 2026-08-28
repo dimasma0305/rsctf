@@ -557,6 +557,7 @@ mod policy_tests {
             flag,
             attachment_type: None,
             file_hash: None,
+            upload_id: None,
             remote_url: None,
         }
     }

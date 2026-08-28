@@ -1,5 +1,6 @@
+use super::transport::{normal_close, transport_failure_close, BUFFER_SIZE};
 use super::*;
-use axum::extract::ws::close_code;
+use axum::extract::ws::{close_code, Message};
 
 #[test]
 fn proxy_client_messages_have_a_small_memory_bound() {

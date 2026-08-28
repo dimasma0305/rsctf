@@ -9,7 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use super::egress::{record_flag_egress, EgressScan, RollingFlagMatcher};
 use crate::services::proxy_admission::ProxyTrafficPermit;
 
-const BUFFER_SIZE: usize = 4096;
+pub(super) const BUFFER_SIZE: usize = 4096;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Accept the upgraded socket and close it cleanly when there is no valid proxy
 /// target. Sending the frame before dropping the socket keeps rejection graceful.

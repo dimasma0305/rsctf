@@ -345,7 +345,8 @@ mod tests {
 
     #[test]
     fn metadata_only_edits_do_not_flush_scoreboards() {
-        let mut current: game::Model = serde_json::from_value(serde_json::json!({
+        let mut current: game::Model = serde_json::from_str(
+            r#"{
             "id": 1, "title": "Event", "public_key": "public", "private_key": "private",
             "hidden": false, "practice_mode": true, "poster_hash": null,
             "summary": "old", "content": "old", "accept_without_review": false,
@@ -367,7 +368,8 @@ mod tests {
             "ad_scoring_start_round": null, "koth_scoring_start_round": null,
             "koth_epoch_ticks": 12, "koth_cycle_ticks": 3,
             "koth_champion_cooldown_ticks": 1, "koth_claim_confirmation_ticks": 2
-        }))
+        }"#,
+        )
         .unwrap();
         let original = current.clone();
         current.summary = "new".into();
