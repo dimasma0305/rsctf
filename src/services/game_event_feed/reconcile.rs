@@ -9,6 +9,8 @@ pub(super) const CURSOR_LOCK_NAMESPACE: i32 = 1_195_722_068;
 pub(super) const MAX_ASSIGNMENTS_PER_GAME: i64 = 100;
 pub(super) const MAX_GAMES_PER_PASS: i64 = 16;
 const RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+const _: () = assert!(MAX_ASSIGNMENTS_PER_GAME <= 100);
+const _: () = assert!(MAX_GAMES_PER_PASS <= 16);
 
 pub(super) const ASSIGN_PENDING_SQL: &str = r#"
     WITH pending AS MATERIALIZED (

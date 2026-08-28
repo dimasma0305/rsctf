@@ -22,6 +22,8 @@ const MAX_GAMES_PER_PASS: i64 = 16;
 const MAX_PUBLISH_BATCH: usize = MAX_ASSIGNMENTS_PER_GAME as usize;
 const RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 const HOT_PATH_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
+const _: () = assert!(MAX_ASSIGNMENTS_PER_GAME <= 100);
+const _: () = assert!(MAX_GAMES_PER_PASS <= 16);
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -492,8 +494,6 @@ mod tests {
         assert!(NEXT_PENDING_GAME_SQL.contains("game_id > $1"));
         assert!(FIRST_PENDING_GAME_SQL.contains("ORDER BY game_id, submission_id"));
         assert!(NEXT_PENDING_GAME_SQL.contains("LIMIT 1"));
-        assert!(MAX_ASSIGNMENTS_PER_GAME <= 100);
-        assert!(MAX_GAMES_PER_PASS <= 16);
     }
 
     #[tokio::test]

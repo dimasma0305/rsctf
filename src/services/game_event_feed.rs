@@ -449,7 +449,7 @@ pub async fn latest_cursor(pool: &sqlx::PgPool, game_id: i32) -> anyhow::Result<
 mod tests {
     use super::reconcile::{
         assign_pending_on, pending_game_ids, ASSIGN_PENDING_SQL, FIRST_PENDING_GAME_SQL,
-        MAX_ASSIGNMENTS_PER_GAME, MAX_GAMES_PER_PASS, NEXT_PENDING_GAME_SQL,
+        MAX_ASSIGNMENTS_PER_GAME, NEXT_PENDING_GAME_SQL,
     };
     use super::*;
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -498,8 +498,6 @@ mod tests {
         assert!(NEXT_PENDING_GAME_SQL.contains("game_id > $1"));
         assert!(FIRST_PENDING_GAME_SQL.contains("ORDER BY game_id, event_id"));
         assert!(NEXT_PENDING_GAME_SQL.contains("LIMIT 1"));
-        assert!(MAX_ASSIGNMENTS_PER_GAME <= 100);
-        assert!(MAX_GAMES_PER_PASS <= 16);
     }
 
     #[tokio::test]
