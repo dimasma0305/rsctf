@@ -49,7 +49,7 @@ import {
 import {
   assertSafeAdminTarget,
 } from './admin-lifecycle.js';
-import { docker, mintJwt, PG, RSCTF, runK6, sleep, sql, TARGET } from './lib.mjs';
+import { docker, mintJwt, PG, retryTransientUntil, RSCTF, runK6, sql, TARGET } from './lib.mjs';
 import { countContainerFatalLogs } from './log-audit.mjs';
 import {
   acquireExclusiveProcessLock,
@@ -239,19 +239,17 @@ async function call(id, {
     requestBody = JSON.stringify(body);
   }
   const started = performance.now();
-  let response;
-  for (let attempt = 1; attempt <= 20; attempt += 1) {
-    response = await rawRequest(operation.method, path, {
+  const request = ({ timeoutMs = 180_000 } = {}) => rawRequest(operation.method, path, {
       baseUrl,
       jwt,
       ip: `10.254.${Math.floor(requestIndex / 240) % 240}.${(requestIndex++ % 240) + 1}`,
       headers: requestHeaders,
       body: requestBody,
-      timeoutMs: 180_000,
+      timeoutMs,
     });
-    if (!retryConflict?.(response) || attempt === 20) break;
-    await sleep(500);
-  }
+  const response = retryConflict
+    ? await retryTransientUntil(request, retryConflict)
+    : await request();
   expectStatus(response, operation.expectedStatuses, label);
   const model = responseBody(response, operation);
   validateEditResponse(operation, {
@@ -794,15 +792,15 @@ async function prepareAdFixture() {
     title: `edit-ad-${runKey}`, category: 'Pwn', type: 'AttackDefense',
   });
   const checker = A.prepareExactChecker(context.adGameId, context.adChallengeId);
-  const image = process.env.EDIT_AD_IMAGE
-    ? ensureLocalImage(process.env.EDIT_AD_IMAGE)
-    : A.buildManagedAdImage();
+  const suppliedImage = String(process.env.EDIT_AD_IMAGE || '').trim();
+  const image = suppliedImage ? ensureLocalImage(suppliedImage) : A.buildManagedAdImage();
+  const exposePort = suppliedImage ? 80 : 8080;
   await A.setChallenge(context.adGameId, context.adChallengeId, {
     content: 'Disposable managed A&D service',
     containerImage: image,
     memoryLimit: 64,
     cpuCount: 1,
-    exposePort: 8080,
+    exposePort,
     adCheckerImage: checker,
     adAllowEgress: false,
     adAllowSelfReset: true,

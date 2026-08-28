@@ -545,7 +545,8 @@ test('A&D and KotH create fixtures immediately prove every supplied engine setti
   assert.match(adPrepare, /assertPersistedGameSettings\(context\.adGameId, AD_CREATION_SETTINGS/);
   assert.match(kothPrepare, /assertPersistedGameSettings\(context\.kothGameId, KOTH_CREATION_SETTINGS/);
   assert.match(adPrepare, /A\.buildManagedAdImage\(\)/);
-  assert.match(adPrepare, /exposePort: 8080/);
+  assert.match(adPrepare, /const exposePort = suppliedImage \? 80 : 8080/);
+  assert.match(adPrepare, /exposePort,/);
   assert.ok(adPrepare.indexOf('saveRecovery()') < adPrepare.indexOf('assertPersistedGameSettings('));
   assert.ok(kothPrepare.indexOf('saveRecovery()') < kothPrepare.indexOf('assertPersistedGameSettings('));
   assert.ok(
@@ -715,8 +716,7 @@ test('KotH recovery acceptance faults a scoped durable phase and proves receipt/
   assert.match(source, /title === 'replacement container is still transitioning'/);
   assert.match(source, /title === 'checker exit 2'/);
   assert.match(source, /title === 'checker timed out'/);
-  assert.match(source, /attempt <= 20/);
-  assert.match(source, /await sleep\(500\)/);
+  assert.match(source, /retryTransientUntil\(request, retryConflict\)/);
   assert.match(positives, /recovered\.model\.resetPhase === 'Active'/);
   assert.match(positives, /replacementHill\.backendId !== oldHill\.backendId/);
   assert.match(positives, /docker\(\['container', 'inspect', oldHill\.backendId\]\)\.status !== 0/);

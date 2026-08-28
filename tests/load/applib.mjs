@@ -17,6 +17,7 @@ import {
   byocAgentImage,
   NET,
   RSCTF,
+  retryTransientUntil,
 } from './lib.mjs';
 import { cohortSeedQuery, parseCohortSeedResult } from './cohort-seed.js';
 import { materializeFixtures } from './fixtures.mjs';
@@ -1626,14 +1627,20 @@ export async function kothApiObservation(
   cid,
   secret,
   tokenOrTokens,
-  { omitLast = false } = {},
+  { omitLast = false, deadlineMs } = {},
 ) {
   const gameId = Number(gid);
   const challengeId = Number(cid);
+  const requestTimeout = () => {
+    if (deadlineMs === undefined) return 30_000;
+    const remainingMs = Math.floor(deadlineMs - performance.now());
+    if (remainingMs <= 0) throw new Error('KotH API context retry deadline exhausted');
+    return remainingMs;
+  };
   const contextResponse = await api(
     'GET',
     `/api/v1/koth/games/${gameId}/challenges/${challengeId}/context`,
-    { ip: '10.9.9.10' },
+    { ip: '10.9.9.10', timeoutMs: requestTimeout() },
   );
   if (contextResponse.status !== 200) {
     throw new Error(
@@ -1691,6 +1698,7 @@ export async function kothApiObservation(
       rawBody,
       headers: kothObservationHeaders(secret, timestamp, gameId, challengeId, rawBody),
       ip: '10.9.9.10',
+      timeoutMs: requestTimeout(),
     },
   );
   if (response.status === 200) {
@@ -1716,32 +1724,22 @@ export async function kothApiCaptureWrite(
   tokenOrTokens,
   options,
 ) {
-  const attempts = 20;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    let response;
-    try {
-      response = await kothApiObservation(
+  const response = await retryTransientUntil(
+    ({ deadlineMs }) => kothApiObservation(
         gid,
         cid,
         secret,
         tokenOrTokens,
-        options,
-      );
-    } catch (error) {
-      if (!isRetriableKothApiContextFailure(error) || attempt === attempts) throw error;
-      await sleep(500);
-      continue;
-    }
-    if (response.status === 200) return unwrap(response);
-    if (isRetriableKothApiContextFailure(response) && attempt < attempts) {
-      await sleep(500);
-      continue;
-    }
+        { ...options, deadlineMs },
+      ),
+    isRetriableKothApiContextFailure,
+  );
+  if (response.status !== 200) {
     throw new Error(
       `write KotH Leaderboard evidence → ${response.status} ${response.text?.slice(0, 200)}`,
     );
   }
-  throw new Error('write KotH Leaderboard evidence exhausted its bounded context retries');
+  return unwrap(response);
 }
 
 export function latestKothToken(gid, pid, cid) {
