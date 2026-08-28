@@ -377,13 +377,14 @@
     "kubernetes": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["challengeNamespace", "createChallengeNamespace", "challengeNamespaceLabels", "publicEntry", "challengeUid", "metrics", "adServiceCidr", "isolatedIngressCidrs", "podCidrs", "networkPolicyEnforced", "isolatedPodNetns"],
+      "required": ["challengeNamespace", "createChallengeNamespace", "challengeNamespaceLabels", "publicEntry", "challengeUid", "kothReporterPodSelector", "metrics", "adServiceCidr", "isolatedIngressCidrs", "podCidrs", "networkPolicyEnforced", "isolatedPodNetns"],
       "properties": {
         "challengeNamespace": {"type": "string"},
         "createChallengeNamespace": {"type": "boolean"},
         "challengeNamespaceLabels": {"type": "object", "additionalProperties": {"type": "string"}},
         "publicEntry": {"type": "string"},
         "challengeUid": {"type": "integer", "minimum": 1},
+        "kothReporterPodSelector": {"type": "string", "maxLength": 1024, "description": "Exact callback Service pod selector. Managed KotH Kubernetes egress requires app.kubernetes.io/name, app.kubernetes.io/instance, and app.kubernetes.io/component."},
         "metrics": {
           "type": "object",
           "additionalProperties": false,

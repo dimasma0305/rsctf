@@ -95,9 +95,10 @@ fn runtime(
     })
 }
 
-/// Load or create the one reporter secret for an exact lifecycle reset. A
-/// concurrent retry keeps the first secret so an adopted container and the
-/// database can never disagree about the injected credential.
+/// Load or create the reporter secret for one lifecycle reset and routing
+/// contract. A same-route retry keeps the first secret so an adopted container
+/// and the database agree; changing the route rotates it before replacement
+/// creation, immediately revoking any crash-orphaned target.
 pub(crate) async fn ensure_for_cycle(
     pool: &sqlx::PgPool,
     base_url: Option<&str>,
@@ -129,12 +130,15 @@ pub(crate) async fn ensure_for_cycle(
         "{REPORTER_SECRET_PREFIX}{}",
         crate::utils::codec::random_token(REPORTER_SECRET_BYTES)
     );
+    let normalized_base_url = base_url.trim_end_matches('/');
+    let effective_ports = callback_ports(normalized_base_url, bind_addr)?;
+    let current_routing_revision = routing_revision(normalized_base_url, &effective_ports);
     let secret: Option<String> = sqlx::query_scalar(
         r#"INSERT INTO "KothTargetReporters"
              (cycle_id, game_id, challenge_id, reset_attempt,
-              hmac_secret, issued_at, expires_at, last_used_at)
+              routing_revision, hmac_secret, issued_at, expires_at, last_used_at)
            SELECT cycle.id, cycle.game_id, cycle.challenge_id,
-                  cycle.reset_attempt, $5, clock_timestamp(),
+                  cycle.reset_attempt, $6, $5, clock_timestamp(),
                   game.end_time_utc, NULL
              FROM "KothCrownCycles" cycle
              JOIN "Games" game ON game.id = cycle.game_id
@@ -149,19 +153,23 @@ pub(crate) async fn ensure_for_cycle(
               AND clock_timestamp() < game.end_time_utc
            ON CONFLICT (cycle_id) DO UPDATE SET
              reset_attempt = EXCLUDED.reset_attempt,
+             routing_revision = EXCLUDED.routing_revision,
              hmac_secret = CASE
                WHEN "KothTargetReporters".reset_attempt = EXCLUDED.reset_attempt
+                AND "KothTargetReporters".routing_revision = EXCLUDED.routing_revision
                  THEN "KothTargetReporters".hmac_secret
                ELSE EXCLUDED.hmac_secret
              END,
              issued_at = CASE
                WHEN "KothTargetReporters".reset_attempt = EXCLUDED.reset_attempt
+                AND "KothTargetReporters".routing_revision = EXCLUDED.routing_revision
                  THEN "KothTargetReporters".issued_at
                ELSE clock_timestamp()
              END,
              expires_at = EXCLUDED.expires_at,
              last_used_at = CASE
                WHEN "KothTargetReporters".reset_attempt = EXCLUDED.reset_attempt
+                AND "KothTargetReporters".routing_revision = EXCLUDED.routing_revision
                  THEN "KothTargetReporters".last_used_at
                ELSE NULL
              END
@@ -173,6 +181,7 @@ pub(crate) async fn ensure_for_cycle(
     .bind(challenge_id)
     .bind(reset_attempt)
     .bind(candidate)
+    .bind(&current_routing_revision)
     .fetch_optional(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -244,7 +253,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn retry_keeps_one_secret_and_a_new_reset_rotates_it() {
+    async fn retry_keeps_one_secret_while_routing_and_reset_changes_rotate_it() {
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
             .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
         let pool = PgPoolOptions::new()
@@ -270,6 +279,7 @@ mod tests {
             CREATE TEMP TABLE "KothTargetReporters" (
               cycle_id BIGINT PRIMARY KEY, game_id INTEGER,
               challenge_id INTEGER, reset_attempt INTEGER,
+              routing_revision VARCHAR(16),
               hmac_secret TEXT, issued_at TIMESTAMPTZ,
               expires_at TIMESTAMPTZ, last_used_at TIMESTAMPTZ
             );
@@ -311,6 +321,52 @@ mod tests {
         .unwrap();
         assert_eq!(reporter_secret(&first), reporter_secret(&retry));
 
+        let rerouted = ensure_for_cycle(
+            &pool,
+            Some("https://rsctf-koth-reporter"),
+            "0.0.0.0:8080",
+            41,
+            7,
+            9,
+            1,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_ne!(reporter_secret(&first), reporter_secret(&rerouted));
+        let rerouted_retry = ensure_for_cycle(
+            &pool,
+            Some("https://rsctf-koth-reporter"),
+            "0.0.0.0:8080",
+            41,
+            7,
+            9,
+            1,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(reporter_secret(&rerouted), reporter_secret(&rerouted_retry));
+
+        let restored_route = ensure_for_cycle(
+            &pool,
+            Some("http://rsctf-koth-reporter:8080"),
+            "0.0.0.0:8080",
+            41,
+            7,
+            9,
+            1,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_ne!(reporter_secret(&rerouted), reporter_secret(&restored_route));
+        assert_ne!(
+            reporter_secret(&first),
+            reporter_secret(&restored_route),
+            "returning to an old route must not reactivate its orphan credential"
+        );
+
         sqlx::query(r#"UPDATE "KothCrownCycles" SET reset_attempt = 2 WHERE id = 41"#)
             .execute(&pool)
             .await
@@ -327,13 +383,18 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
-        assert_ne!(reporter_secret(&first), reporter_secret(&replacement));
-        let stored_attempt: i32 = sqlx::query_scalar(
-            r#"SELECT reset_attempt FROM "KothTargetReporters" WHERE cycle_id = 41"#,
+        assert_ne!(
+            reporter_secret(&restored_route),
+            reporter_secret(&replacement)
+        );
+        let (stored_attempt, stored_routing_revision): (i32, String) = sqlx::query_as(
+            r#"SELECT reset_attempt, routing_revision
+                 FROM "KothTargetReporters" WHERE cycle_id = 41"#,
         )
         .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(stored_attempt, 2);
+        assert_eq!(stored_routing_revision, replacement.routing_revision);
     }
 }

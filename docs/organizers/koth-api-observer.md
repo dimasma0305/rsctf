@@ -153,7 +153,10 @@ the player protocol; it receives no reporter credential or scoring state.
 3. Confirm `RSCTF_KOTH_REPORTER_BASE_URL` is configured on the lifecycle-owning
    rsctf role and on web roles that serve organizer status. The origin must
    resolve privately from managed targets; web roles only use it as a capability
-   flag and need no route to that private address.
+   flag and need no route to that private address. On Kubernetes, also confirm
+   `RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR` exactly matches the callback Service;
+   the Helm `engine` role requires this through
+   `kubernetes.kothReporterPodSelector`.
 4. Keep scoring paused and let rsctf create the official replacement target.
    rsctf generates the credential before the crash-recoverable create and
    injects the exact runtime contract below.
@@ -204,15 +207,20 @@ pre-cycle shared target is created before the operator selects Leaderboard
 scoring. Event-only admission may return a bounded unavailable response until
 the managed replacement is active. A retry of the same reset reuses the same
 credential; every new reset rotates it. Changing the reporter origin or rsctf
-bind port during a pending create gives the replacement a new routing identity,
-so Kubernetes cannot adopt a crash-orphan with stale URLs or callback policy.
+bind port during a pending create rotates the credential and gives the
+replacement a new routing identity. An older crash-orphan therefore has neither
+a valid credential nor an adoptable Kubernetes workload name.
 
 Set `RSCTF_KOTH_REPORTER_BASE_URL` to an absolute HTTP(S) origin with no path,
 credentials, query, or fragment. Docker examples expose the control process on
 the private `rsctf-koth-reporter` alias. Kubernetes deployments should point it
-at the singleton control Service. The generated NetworkPolicy grants only that
-Service's backing pods and both its public port and rsctf's configured bind
-port, covering CNI enforcement before or after Service port translation.
+at the singleton control/network Service. The generated NetworkPolicy grants
+only pods matching that Service's complete `name` + `instance` + `component`
+identity and both its public port and rsctf's configured bind port, covering CNI
+enforcement before or after Service port translation. The Helm chart derives
+the selector when the lifecycle owner also serves that callback. A split
+`engine` must set `kubernetes.kothReporterPodSelector` to the exact selector of
+the `network` Service.
 
 ## Wire contract
 

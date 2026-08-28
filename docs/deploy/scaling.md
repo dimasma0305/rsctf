@@ -418,6 +418,30 @@ the namespace resource. At the default concurrency settings, use
 the control example uses `21`, its exact VPN floor; a network-only owner needs
 16 without VPN or 19 with it.
 
+When advanced Kubernetes roles enable managed KotH reporting, point both
+`engine` and `web` at the private `network` Service. The `network` release
+derives its own exact callback selector. Each `engine` release must copy that
+Service's complete selector because its own Pods expose only health endpoints:
+
+```yaml
+# rsctf-network values
+runtimeRole: network
+config:
+  kothReporterBaseUrl: http://rsctf-network:8080
+
+# rsctf-engine values
+runtimeRole: engine
+config:
+  kothReporterBaseUrl: http://rsctf-network:8080
+kubernetes:
+  kothReporterPodSelector: >-
+    app.kubernetes.io/name=rsctf,app.kubernetes.io/instance=rsctf-network,app.kubernetes.io/component=network
+```
+
+The generated challenge NetworkPolicy uses those three labels together in the
+rsctf release namespace. Do not shorten it to the shared application name: that
+would let compromised challenge code reach unrelated web or engine Pods.
+
 When the deployment uses the A&D VPN, set `vpn.enabled: true` on every role so
 web/engine mutations participate in the durable network-policy acknowledgement.
 The chart grants `/dev/net/tun`, forwarding sysctls, and the UDP Service only to

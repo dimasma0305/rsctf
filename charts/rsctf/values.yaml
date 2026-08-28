@@ -259,7 +259,7 @@ probes:
 config:
   publicUrl: ""
   # Internal origin reachable from managed KotH pods, normally the singleton
-  # control Service. Leave empty to disable lifecycle-bound target reporting.
+  # control/network Service. Leave empty to disable lifecycle-bound reporting.
   kothReporterBaseUrl: ""
   cookieSecure: true
   trustedProxyCidrs: ""
@@ -337,6 +337,10 @@ kubernetes:
     pod-security.kubernetes.io/warn: restricted
   publicEntry: ""
   challengeUid: 10000
+  # Exact selector of the rsctf Service that receives managed KotH callbacks.
+  # all/control/network infer their own three stable Service labels. A split
+  # engine must copy the network release Service selector here.
+  kothReporterPodSelector: ""
   metrics:
     enabled: true
   # Required on every non-migration Kubernetes role, with or without VPN. This

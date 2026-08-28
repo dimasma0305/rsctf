@@ -359,15 +359,15 @@ impl ContainerManager for KubernetesContainerManager {
         } else {
             None
         };
-        if !spec.control_plane_callback_ports.is_empty()
-            && ad_config
-                .as_ref()
-                .and_then(|config| config.control_namespace.as_ref())
-                .is_none()
-        {
-            return Err(AppError::internal(
-                "managed KotH reporting on Kubernetes requires RSCTF_K8S_CONTROL_NAMESPACE",
-            ));
+        if !spec.control_plane_callback_ports.is_empty() {
+            let callback_configured = ad_config.as_ref().is_some_and(|config| {
+                config.control_namespace.is_some() && config.reporter_pod_selector.is_some()
+            });
+            if !callback_configured {
+                return Err(AppError::internal(
+                    "managed KotH reporting on Kubernetes requires RSCTF_K8S_CONTROL_NAMESPACE and RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR",
+                ));
+            }
         }
 
         // Environment: caller-supplied vars plus the dynamic flag contract.

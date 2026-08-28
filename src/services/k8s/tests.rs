@@ -1,6 +1,20 @@
 use super::*;
 use ipnet::IpNet;
 
+fn reporter_selector() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
+        (
+            "app.kubernetes.io/instance".to_string(),
+            "rsctf-network".to_string(),
+        ),
+        (
+            "app.kubernetes.io/component".to_string(),
+            "network".to_string(),
+        ),
+    ])
+}
+
 #[test]
 fn private_proxy_and_ad_services_use_cluster_ip() {
     assert_eq!(service_type(true), "ClusterIP");
@@ -18,6 +32,7 @@ fn ad_policy_is_default_deny_with_allowlisted_ingress() {
         ingress_cidrs: vec!["10.244.1.0/24".parse().unwrap()],
         control_namespace: Some("rsctf-system".to_string()),
         control_pod_label: ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
+        reporter_pod_selector: None,
     };
     let policy = network::ad_network_policy("test", &labels, None, 8080, false, &[], &config);
     let spec = policy.spec.unwrap();
@@ -45,6 +60,7 @@ fn ad_internet_egress_still_excludes_private_networks() {
         ingress_cidrs: vec!["10.244.1.0/24".parse().unwrap()],
         control_namespace: Some("rsctf-system".to_string()),
         control_pod_label: ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
+        reporter_pod_selector: None,
     };
     let policy = network::ad_network_policy("test", &labels, None, 8080, true, &[], &config);
     let egress = policy.spec.unwrap().egress.unwrap();
@@ -61,13 +77,14 @@ fn ad_internet_egress_still_excludes_private_networks() {
 }
 
 #[test]
-fn managed_koth_callback_allows_only_control_http_and_dns() {
+fn managed_koth_callback_allows_only_reporter_http_and_dns() {
     let labels = BTreeMap::from([(APP_LABEL.to_string(), "rsctf-test".to_string())]);
     let config = network::AdNetworkConfig {
         service_cidr: "10.96.0.0/12".parse().unwrap(),
         ingress_cidrs: vec!["10.244.1.0/24".parse().unwrap()],
         control_namespace: Some("rsctf-system".to_string()),
         control_pod_label: ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
+        reporter_pod_selector: Some(reporter_selector()),
     };
     let policy =
         network::ad_network_policy("test", &labels, None, 8080, false, &[80, 8080], &config);
@@ -91,7 +108,34 @@ fn managed_koth_callback_allows_only_control_http_and_dns() {
             .map(String::as_str),
         Some("rsctf-system")
     );
+    assert_eq!(
+        peer.pod_selector
+            .as_ref()
+            .and_then(|selector| selector.match_labels.as_ref()),
+        Some(&reporter_selector())
+    );
     assert_eq!(egress[1].ports.as_ref().map(Vec::len), Some(2));
+}
+
+#[test]
+fn managed_koth_callback_selector_requires_exact_service_identity() {
+    let selector = network::parse_reporter_pod_selector(
+        "app.kubernetes.io/name=rsctf,app.kubernetes.io/instance=rsctf-network,app.kubernetes.io/component=network",
+    )
+    .unwrap();
+    assert_eq!(selector, reporter_selector());
+
+    for invalid in [
+        "app.kubernetes.io/name=rsctf",
+        "app.kubernetes.io/name=rsctf,app.kubernetes.io/instance=rsctf-network",
+        "app.kubernetes.io/name=rsctf,app.kubernetes.io/instance=rsctf-network,app.kubernetes.io/component=.network",
+        "app.kubernetes.io/name=rsctf,app.kubernetes.io/name=other,app.kubernetes.io/instance=rsctf-network,app.kubernetes.io/component=network",
+    ] {
+        assert!(
+            network::parse_reporter_pod_selector(invalid).is_err(),
+            "accepted unsafe selector {invalid}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -110,6 +154,7 @@ async fn managed_callback_policy_round_trips_through_kubernetes_api() {
         ingress_cidrs: vec!["10.244.1.0/24".parse().unwrap()],
         control_namespace: Some("rsctf-system".to_string()),
         control_pod_label: ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
+        reporter_pod_selector: Some(reporter_selector()),
     };
     let policy =
         network::ad_network_policy("test", &labels, None, 8080, false, &[80, 8080], &config);
@@ -151,6 +196,14 @@ async fn managed_callback_policy_round_trips_through_kubernetes_api() {
         .map(|port| port["port"].as_i64().unwrap())
         .collect::<Vec<_>>();
     assert_eq!(ports, vec![80, 8080]);
+    assert_eq!(
+        value["spec"]["egress"][0]["to"][0]["podSelector"]["matchLabels"],
+        serde_json::json!({
+            "app.kubernetes.io/name": "rsctf",
+            "app.kubernetes.io/instance": "rsctf-network",
+            "app.kubernetes.io/component": "network"
+        })
+    );
 }
 
 #[tokio::test]

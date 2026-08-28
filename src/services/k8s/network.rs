@@ -14,9 +14,15 @@ use crate::utils::error::{AppError, AppResult};
 const AD_INGRESS_CIDRS_ENV: &str = "RSCTF_K8S_AD_INGRESS_CIDRS";
 const CONTROL_NAMESPACE_ENV: &str = "RSCTF_K8S_CONTROL_NAMESPACE";
 const CONTROL_POD_LABEL_ENV: &str = "RSCTF_K8S_CONTROL_POD_LABEL";
+const KOTH_REPORTER_POD_SELECTOR_ENV: &str = "RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR";
 const POLICY_ENFORCED_ENV: &str = "RSCTF_K8S_NETWORK_POLICY_ENFORCED";
 const ISOLATED_INGRESS_CIDRS_ENV: &str = "RSCTF_K8S_ISOLATED_INGRESS_CIDRS";
 const POD_CIDRS_ENV: &str = "RSCTF_K8S_POD_CIDRS";
+const KOTH_REPORTER_REQUIRED_LABELS: [&str; 3] = [
+    "app.kubernetes.io/name",
+    "app.kubernetes.io/instance",
+    "app.kubernetes.io/component",
+];
 
 #[derive(Clone)]
 pub(super) struct AdNetworkConfig {
@@ -24,6 +30,7 @@ pub(super) struct AdNetworkConfig {
     pub(super) ingress_cidrs: Vec<IpNet>,
     pub(super) control_namespace: Option<String>,
     pub(super) control_pod_label: (String, String),
+    pub(super) reporter_pod_selector: Option<BTreeMap<String, String>>,
 }
 
 pub(super) fn validate_policy_enforcement_acknowledgement() -> AppResult<()> {
@@ -68,6 +75,95 @@ fn configured_control_pod_label() -> AppResult<(String, String)> {
         )));
     }
     Ok((key.to_string(), value.to_string()))
+}
+
+fn valid_label_segment(value: &str, maximum: usize) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= maximum
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+fn valid_dns_subdomain(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value.split('.').all(|label| {
+            let bytes = label.as_bytes();
+            !bytes.is_empty()
+                && bytes.len() <= 63
+                && bytes
+                    .first()
+                    .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                && bytes
+                    .last()
+                    .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                && bytes
+                    .iter()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+        })
+}
+
+fn valid_label_key(value: &str) -> bool {
+    match value.split_once('/') {
+        Some((prefix, name)) => {
+            !name.contains('/') && valid_dns_subdomain(prefix) && valid_label_segment(name, 63)
+        }
+        None => valid_label_segment(value, 63),
+    }
+}
+
+pub(super) fn parse_reporter_pod_selector(value: &str) -> AppResult<BTreeMap<String, String>> {
+    if value.len() > 1_024 {
+        return Err(AppError::internal(format!(
+            "{KOTH_REPORTER_POD_SELECTOR_ENV} exceeds 1024 bytes"
+        )));
+    }
+    let mut selector = BTreeMap::new();
+    for item in value.split(',').map(str::trim) {
+        let (key, label_value) = item.split_once('=').ok_or_else(|| {
+            AppError::internal(format!(
+                "{KOTH_REPORTER_POD_SELECTOR_ENV} must use comma-separated key=value labels"
+            ))
+        })?;
+        let key = key.trim();
+        let label_value = label_value.trim();
+        if !valid_label_key(key)
+            || !valid_label_segment(label_value, 63)
+            || selector.contains_key(key)
+        {
+            return Err(AppError::internal(format!(
+                "{KOTH_REPORTER_POD_SELECTOR_ENV} contains an invalid or duplicate label"
+            )));
+        }
+        selector.insert(key.to_string(), label_value.to_string());
+        if selector.len() > 8 {
+            return Err(AppError::internal(format!(
+                "{KOTH_REPORTER_POD_SELECTOR_ENV} supports at most 8 labels"
+            )));
+        }
+    }
+    if !KOTH_REPORTER_REQUIRED_LABELS
+        .iter()
+        .all(|key| selector.contains_key(*key))
+    {
+        return Err(AppError::internal(format!(
+            "{KOTH_REPORTER_POD_SELECTOR_ENV} must include app.kubernetes.io/name, app.kubernetes.io/instance, and app.kubernetes.io/component from the callback Service selector"
+        )));
+    }
+    Ok(selector)
+}
+
+fn configured_reporter_pod_selector() -> AppResult<Option<BTreeMap<String, String>>> {
+    std::env::var(KOTH_REPORTER_POD_SELECTOR_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(|value| parse_reporter_pod_selector(&value))
+        .transpose()
 }
 
 fn parse_cidr(value: &str, variable: &str) -> AppResult<IpNet> {
@@ -125,6 +221,7 @@ pub(super) fn ad_network_config() -> AppResult<AdNetworkConfig> {
         ));
     }
     let control_pod_label = configured_control_pod_label()?;
+    let reporter_pod_selector = configured_reporter_pod_selector()?;
     let client_cidr = parse_cidr(
         &crate::services::ad_vpn::client_cidr(),
         "RSCTF_AD_VPN_CLIENT_CIDR",
@@ -137,6 +234,7 @@ pub(super) fn ad_network_config() -> AppResult<AdNetworkConfig> {
         ingress_cidrs,
         control_namespace,
         control_pod_label,
+        reporter_pod_selector,
     })
 }
 
@@ -158,7 +256,10 @@ fn network_port(port: i32, protocol: &str) -> NetworkPolicyPort {
     }
 }
 
-fn control_pod_peer(namespace: String, label: (String, String)) -> NetworkPolicyPeer {
+fn selected_pod_peer(
+    namespace: String,
+    match_labels: BTreeMap<String, String>,
+) -> NetworkPolicyPeer {
     NetworkPolicyPeer {
         namespace_selector: Some(LabelSelector {
             match_labels: Some(BTreeMap::from([(
@@ -168,11 +269,15 @@ fn control_pod_peer(namespace: String, label: (String, String)) -> NetworkPolicy
             ..Default::default()
         }),
         pod_selector: Some(LabelSelector {
-            match_labels: Some(BTreeMap::from([label])),
+            match_labels: Some(match_labels),
             ..Default::default()
         }),
         ..Default::default()
     }
+}
+
+fn control_pod_peer(namespace: String, label: (String, String)) -> NetworkPolicyPeer {
+    selected_pod_peer(namespace, BTreeMap::from([label]))
 }
 
 fn dns_egress_rule() -> NetworkPolicyEgressRule {
@@ -268,7 +373,10 @@ pub(super) fn ad_network_policy(
         Vec::new()
     };
     if !control_plane_callback_ports.is_empty() {
-        if let Some(namespace) = config.control_namespace.as_ref() {
+        if let (Some(namespace), Some(reporter_pod_selector)) = (
+            config.control_namespace.as_ref(),
+            config.reporter_pod_selector.as_ref(),
+        ) {
             egress.insert(
                 0,
                 NetworkPolicyEgressRule {
@@ -278,9 +386,9 @@ pub(super) fn ad_network_policy(
                             .map(|port| network_port(*port, "TCP"))
                             .collect(),
                     ),
-                    to: Some(vec![control_pod_peer(
+                    to: Some(vec![selected_pod_peer(
                         namespace.clone(),
-                        config.control_pod_label.clone(),
+                        reporter_pod_selector.clone(),
                     )]),
                 },
             );
