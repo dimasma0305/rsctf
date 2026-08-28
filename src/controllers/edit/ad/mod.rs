@@ -2,6 +2,7 @@
 use crate::services::container::storage_limit_or_default;
 use axum::extract::Query;
 use axum::response::IntoResponse;
+use base64::Engine as _;
 
 use super::*;
 
@@ -333,10 +334,10 @@ pub async fn ad_override_check(
 /// `GET /api/edit/games/{id}/ad/Services/{adTeamServiceId}/File` ->
 /// `AdFileViewModel`.
 ///
-/// Port of `AdAdminController.File`: inspect one file inside a team's service
-/// container. rsctf reads the CURRENT content by exec-ing `cat <path>` in the
-/// live container (best-effort: empty when the service has no platform
-/// container). The image `baseline` + `unifiedDiff` need an offline image read
+/// Inspect one file inside a team's service container through the runtime's
+/// bounded archive API. This deliberately never launches a participant-owned
+/// process, so FIFOs and devices cannot strand an exec after cancellation. The
+/// image `baseline` + `unifiedDiff` need an offline image read
 /// rsctf doesn't have, so they stay null (the UI then shows current only). BYOC
 /// self-hosted services expose only a relay, not the team's box — return empty
 /// rather than leak relay internals (RSCTF refuses outright).
@@ -347,41 +348,29 @@ pub async fn ad_service_file(
     Query(q): Query<AdFileQuery>,
 ) -> AppResult<RequestResponse<JsonValue>> {
     manager_or_admin(&st, &user, game_id).await?;
-    if q.path.trim().is_empty() {
-        return Err(AppError::bad_request("A file path is required"));
-    }
-    let svc = ad_team_service::Entity::find_by_id(ats_id)
-        .one(&st.db)
-        .await?
-        .filter(|s| s.game_id == game_id)
-        .ok_or_else(|| AppError::not_found("Service not found"))?;
-
-    let self_hosted = game_challenge::Entity::find_by_id(svc.challenge_id)
-        .one(&st.db)
-        .await?
-        .map(|c| c.ad_self_hosted)
-        .unwrap_or(false);
+    crate::services::ad::forensics::validate_path(&q.path)?;
+    let svc = live_forensics_service(&st, game_id, ats_id).await?;
 
     let container_running = svc.container_id.is_some();
-    let current: JsonValue = match svc.container_id.as_deref().filter(|c| !c.is_empty()) {
-        Some(cid) if !self_hosted => {
-            match st
-                .containers
-                .exec(cid, vec!["cat".into(), q.path.clone()])
-                .await
-            {
-                Ok(text) if !text.is_empty() => json!({
-                    "size": text.len(),
-                    "truncated": false,
-                    // exec surfaces stdout+stderr as a lossy String, so we always
-                    // present the current side as text (the base64 path is only
-                    // reachable with raw bytes, which this backend can't yield).
-                    "binary": false,
-                    "text": text,
-                    "base64": null,
-                }),
-                _ => JsonValue::Null,
-            }
+    let current = match svc.container_id.as_deref() {
+        Some(cid) if !svc.self_hosted => {
+            let _permit = crate::services::ad::forensics::acquire(
+                st.pg(),
+                cid,
+                crate::services::ad::forensics::ForensicsWork::File,
+            )
+            .await?;
+            let file = tokio::time::timeout(
+                crate::services::ad::forensics::FILE_DEADLINE,
+                st.containers.read_file(
+                    cid,
+                    &q.path,
+                    crate::services::ad::forensics::MAX_FILE_PREVIEW_BYTES,
+                ),
+            )
+            .await
+            .map_err(|_| crate::services::ad::forensics::timeout_error("file read"))??;
+            file_preview_json(file)
         }
         _ => JsonValue::Null,
     };
@@ -399,6 +388,56 @@ pub async fn ad_service_file(
 #[derive(Debug, Deserialize)]
 pub struct AdFileQuery {
     pub path: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct LiveForensicsService {
+    container_id: Option<String>,
+    self_hosted: bool,
+}
+
+async fn live_forensics_service(
+    st: &SharedState,
+    game_id: i32,
+    ats_id: i32,
+) -> AppResult<LiveForensicsService> {
+    sqlx::query_as(
+        r#"SELECT NULLIF(service.container_id, '') AS container_id,
+                  challenge.ad_self_hosted AS self_hosted
+             FROM "AdTeamServices" service
+             JOIN "GameChallenges" challenge
+               ON challenge.id = service.challenge_id
+              AND challenge.game_id = service.game_id
+            WHERE service.id = $1 AND service.game_id = $2"#,
+    )
+    .bind(ats_id)
+    .bind(game_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Service not found"))
+}
+
+fn file_preview_json(file: crate::services::container::ContainerFile) -> JsonValue {
+    let (text, binary_bytes) = match String::from_utf8(file.bytes) {
+        Ok(text)
+            if text.chars().all(|character| {
+                !character.is_control() || matches!(character, '\n' | '\r' | '\t')
+            }) =>
+        {
+            (Some(text), None)
+        }
+        Ok(text) => (None, Some(text.into_bytes())),
+        Err(error) => (None, Some(error.into_bytes())),
+    };
+    let binary = binary_bytes.is_some();
+    json!({
+        "size": file.size,
+        "truncated": file.truncated,
+        "binary": binary,
+        "text": text,
+        "base64": binary_bytes.map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
+    })
 }
 
 /// `POST /api/edit/games/{id}/ad/Services/{adTeamServiceId}/Restart` -> void.
@@ -722,21 +761,17 @@ pub async fn ad_snapshot_changes(
     manager_or_admin(&st, &user, game_id).await?;
     let changes = snapshot_changes_for(&st, game_id, ats_id).await?;
     let persisted = crate::services::blob_refs::load_service_snapshot(st.pg(), ats_id).await?;
-    let live: bool = sqlx::query_scalar(
-        r#"SELECT container_id IS NOT NULL
-             FROM "AdTeamServices"
-            WHERE id = $1 AND game_id = $2"#,
-    )
-    .bind(ats_id)
-    .bind(game_id)
-    .fetch_optional(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("Service not found"))?;
+    let live_service = live_forensics_service(&st, game_id, ats_id).await?;
+    let live = live_service.container_id.is_some() && !live_service.self_hosted;
     Ok(RequestResponse::ok(json!({
-        "snapshotAvailable": persisted.is_some() || !changes.is_empty(),
+        "snapshotAvailable": persisted.is_some() || changes.observed > 0,
         "live": live,
-        "changes": changes.iter().map(|c| json!({"path": c.path, "kind": c.kind})).collect::<Vec<_>>(),
+        "changes": changes.changes.iter().map(|c| json!({
+            "path": c.path,
+            "kind": change_kind_number(&c.kind),
+        })).collect::<Vec<_>>(),
+        "observedChanges": changes.observed,
+        "truncated": changes.truncated,
     })))
 }
 
@@ -749,15 +784,17 @@ pub async fn ad_snapshot_diff(
 ) -> AppResult<RequestResponse<JsonValue>> {
     manager_or_admin(&st, &user, game_id).await?;
     let changes = snapshot_changes_for(&st, game_id, ats_id).await?;
-    let added: Vec<String> = changes
+    let added: Vec<JsonValue> = changes
+        .changes
         .iter()
         .filter(|c| c.kind == "Added")
-        .map(|c| c.path.clone())
+        .map(|c| json!({ "path": c.path, "kind": 1 }))
         .collect();
-    let removed: Vec<String> = changes
+    let removed: Vec<JsonValue> = changes
+        .changes
         .iter()
         .filter(|c| c.kind == "Deleted")
-        .map(|c| c.path.clone())
+        .map(|c| json!({ "path": c.path, "kind": 2 }))
         .collect();
     Ok(RequestResponse::ok(
         json!({ "added": added, "removed": removed }),
@@ -773,12 +810,14 @@ pub async fn ad_service_snapshots(
 ) -> AppResult<RequestResponse<Vec<JsonValue>>> {
     manager_or_admin(&st, &user, game_id).await?;
     let changes = snapshot_changes_for(&st, game_id, ats_id).await?;
-    if changes.is_empty() {
+    if changes.changes.is_empty() {
         return Ok(RequestResponse::ok(Vec::new()));
     }
     Ok(RequestResponse::ok(vec![json!({
         "id": ats_id,
-        "changeCount": changes.len(),
+        "changeCount": changes.changes.len(),
+        "observedChangeCount": changes.observed,
+        "truncated": changes.truncated,
         "kind": "live",
     })]))
 }
@@ -789,16 +828,43 @@ async fn snapshot_changes_for(
     st: &SharedState,
     game_id: i32,
     ats_id: i32,
-) -> AppResult<Vec<crate::services::container::FileChange>> {
-    let svc = crate::models::data::ad_team_service::Entity::find()
-        .filter(crate::models::data::ad_team_service::Column::Id.eq(ats_id))
-        .filter(crate::models::data::ad_team_service::Column::GameId.eq(game_id))
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Service not found"))?;
-    match svc.container_id {
-        Some(cid) => st.containers.snapshot_changes(&cid).await,
-        None => Ok(Vec::new()),
+) -> AppResult<std::sync::Arc<crate::services::ad::forensics::BoundedChanges>> {
+    let svc = live_forensics_service(st, game_id, ats_id).await?;
+    if svc.self_hosted {
+        return Ok(std::sync::Arc::new(
+            crate::services::ad::forensics::bound_changes(Vec::new()),
+        ));
+    }
+    let Some(cid) = svc.container_id else {
+        return Ok(std::sync::Arc::new(
+            crate::services::ad::forensics::bound_changes(Vec::new()),
+        ));
+    };
+    if let Some(cached) = crate::services::ad::forensics::cached_changes(&cid) {
+        return Ok(cached);
+    }
+    let _permit = crate::services::ad::forensics::acquire(
+        st.pg(),
+        &cid,
+        crate::services::ad::forensics::ForensicsWork::Changes,
+    )
+    .await?;
+    let changes = tokio::time::timeout(
+        crate::services::ad::forensics::CHANGE_DEADLINE,
+        st.containers.snapshot_changes(&cid),
+    )
+    .await
+    .map_err(|_| crate::services::ad::forensics::timeout_error("change scan"))??;
+    let bounded = std::sync::Arc::new(crate::services::ad::forensics::bound_changes(changes));
+    crate::services::ad::forensics::cache_changes(&cid, std::sync::Arc::clone(&bounded));
+    Ok(bounded)
+}
+
+fn change_kind_number(kind: &str) -> i32 {
+    match kind {
+        "Added" => 1,
+        "Deleted" => 2,
+        _ => 0,
     }
 }
 

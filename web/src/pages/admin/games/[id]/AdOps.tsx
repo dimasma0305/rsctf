@@ -4,6 +4,7 @@ import {
   Badge,
   Button,
   Center,
+  Code,
   CopyButton,
   Divider,
   Group,
@@ -171,16 +172,32 @@ const langFromPath = (p: string): string => {
 
 // Shiki-highlighted code block. Shiki escapes the code, so the rendered HTML
 // is safe even though the content comes from a team's container.
+const MAX_HIGHLIGHT_CHARACTERS = 64 * 1024
+
 const ShikiBlock: FC<{ code: string; lang: string }> = ({ code, lang }) => (
-  <ScrollArea h={400} type="auto">
-    <div
-      style={{ fontSize: 12 }}
-      // Shiki escapes source text; DOMPurify remains the final sink boundary.
-      // eslint-disable-next-line react/no-danger
-      dangerouslySetInnerHTML={{ __html: sanitizeMarkdownHtml(highlight(code, lang)) }}
-    />
+  <ScrollArea h={400} type="auto" aria-label="File preview">
+    {code.length > MAX_HIGHLIGHT_CHARACTERS ? (
+      <Code block style={{ fontSize: 12, whiteSpace: 'pre' }}>
+        {code}
+      </Code>
+    ) : (
+      <div
+        style={{ fontSize: 12 }}
+        // Shiki escapes source text; DOMPurify remains the final sink boundary.
+        // eslint-disable-next-line react/no-danger
+        dangerouslySetInnerHTML={{ __html: sanitizeMarkdownHtml(highlight(code, lang)) }}
+      />
+    )}
   </ScrollArea>
 )
+
+const forensicsErrorMessage = (error: unknown): string => {
+  const status = (error as { response?: { status?: number } })?.response?.status
+  if (status === 429 || status === 503) return 'Inspection is busy or timed out. Retry in a moment.'
+  if (status === 413) return 'This item is too large to inspect safely.'
+  if (status === 400) return 'This path cannot be previewed safely. Use the shell if necessary.'
+  return 'Could not read live filesystem evidence.'
+}
 
 // ---- changed-files folder tree ----
 interface TreeNode {
@@ -301,26 +318,34 @@ const FileDetail: FC<{ gameId: number; sid: number; path: string; onBack: () => 
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState<AdFileViewModel | null>(null)
   const [view, setView] = useState<'diff' | 'current' | 'original'>('diff')
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [retryGeneration, setRetryGeneration] = useState(0)
+  const requestGeneration = useRef(0)
 
   useEffect(() => {
-    let cancelled = false
+    const controller = new AbortController()
+    const generation = ++requestGeneration.current
     setLoading(true)
     setData(null)
+    setLoadError(null)
     api.edit
-      .editAdFile(gameId, sid, { path })
+      .editAdFile(gameId, sid, { path }, { signal: controller.signal })
       .then(({ data }) => {
-        if (cancelled) return
+        if (controller.signal.aborted || generation !== requestGeneration.current) return
         setData(data)
         setView(data.unifiedDiff ? 'diff' : data.current ? 'current' : 'original')
       })
-      .catch(() => undefined)
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted && generation === requestGeneration.current)
+          setLoadError(forensicsErrorMessage(error))
+      })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!controller.signal.aborted && generation === requestGeneration.current) setLoading(false)
       })
     return () => {
-      cancelled = true
+      controller.abort()
     }
-  }, [gameId, sid, path])
+  }, [gameId, sid, path, retryGeneration])
 
   const lang = langFromPath(path)
 
@@ -344,7 +369,7 @@ const FileDetail: FC<{ gameId: number; sid: number; path: string; onBack: () => 
       <Stack gap={4}>
         {blob.truncated && (
           <Text size="xs" c="orange">
-            {t('admin.content.ad_ops.file.truncated', 'Showing the first 256 KiB (truncated).')}
+            {t('admin.content.ad_ops.file.truncated', 'Showing a bounded preview (truncated).')}
           </Text>
         )}
         <ShikiBlock code={blob.text ?? ''} lang={lang} />
@@ -389,10 +414,15 @@ const FileDetail: FC<{ gameId: number; sid: number; path: string; onBack: () => 
         <Center h={200}>
           <Loader size="sm" />
         </Center>
-      ) : !data ? (
-        <Text size="sm" c="dimmed">
-          {t('admin.content.ad_ops.file.load_failed', 'Could not read this file from the container.')}
-        </Text>
+      ) : loadError || !data ? (
+        <Alert color="orange" title={t('admin.content.ad_ops.file.load_failed', 'File preview unavailable')}>
+          <Stack gap="xs">
+            <Text size="sm">{loadError ?? t('admin.content.ad_ops.file.load_failed', 'Could not read this file.')}</Text>
+            <Button variant="light" size="xs" onClick={() => setRetryGeneration((value) => value + 1)}>
+              {t('common.button.retry', 'Retry')}
+            </Button>
+          </Stack>
+        </Alert>
       ) : view === 'diff' ? (
         data.unifiedDiff ? (
           <ShikiBlock code={data.unifiedDiff} lang="diff" />
@@ -433,14 +463,17 @@ const SnapshotHistory: FC<{ gameId: number; sid: number; onSelect: (path: string
   const [toId, setToId] = useState<string | null>(null)
   const [diff, setDiff] = useState<AdSnapshotTimeDiffModel | null>(null)
   const [diffLoading, setDiffLoading] = useState(false)
+  const pointsGeneration = useRef(0)
+  const diffGeneration = useRef(0)
 
   useEffect(() => {
-    let cancelled = false
+    const controller = new AbortController()
+    const generation = ++pointsGeneration.current
     setLoading(true)
     api.edit
-      .editAdServiceSnapshots(gameId, sid)
+      .editAdServiceSnapshots(gameId, sid, { signal: controller.signal })
       .then(({ data }) => {
-        if (cancelled) return
+        if (controller.signal.aborted || generation !== pointsGeneration.current) return
         setPoints(data)
         if (data.length >= 2) {
           setFromId(String(data[0].id))
@@ -449,28 +482,34 @@ const SnapshotHistory: FC<{ gameId: number; sid: number; onSelect: (path: string
       })
       .catch(() => undefined)
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!controller.signal.aborted && generation === pointsGeneration.current) setLoading(false)
       })
     return () => {
-      cancelled = true
+      controller.abort()
     }
   }, [gameId, sid])
 
   useEffect(() => {
     if (!fromId || !toId) return
-    let cancelled = false
+    const controller = new AbortController()
+    const generation = ++diffGeneration.current
     setDiffLoading(true)
     api.edit
-      .editAdSnapshotTimeDiff(gameId, sid, { fromId: Number(fromId), toId: Number(toId) })
+      .editAdSnapshotTimeDiff(
+        gameId,
+        sid,
+        { fromId: Number(fromId), toId: Number(toId) },
+        { signal: controller.signal }
+      )
       .then(({ data }) => {
-        if (!cancelled) setDiff(data)
+        if (!controller.signal.aborted && generation === diffGeneration.current) setDiff(data)
       })
       .catch(() => undefined)
       .finally(() => {
-        if (!cancelled) setDiffLoading(false)
+        if (!controller.signal.aborted && generation === diffGeneration.current) setDiffLoading(false)
       })
     return () => {
-      cancelled = true
+      controller.abort()
     }
   }, [gameId, sid, fromId, toId])
 
@@ -564,6 +603,11 @@ const SnapshotModal: FC<{
   const [changes, setChanges] = useState<AdSnapshotChange[]>([])
   const [live, setLive] = useState(false)
   const [filteredCats, setFilteredCats] = useState<string[]>([])
+  const [changesTruncated, setChangesTruncated] = useState(false)
+  const [observedChanges, setObservedChanges] = useState(0)
+  const [changesError, setChangesError] = useState<string | null>(null)
+  const [changesRetry, setChangesRetry] = useState(0)
+  const changesGeneration = useRef(0)
   const [fileSearch, setFileSearch] = useState('')
   const [debouncedFileSearch] = useDebouncedValue(fileSearch, 200)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -607,29 +651,36 @@ const SnapshotModal: FC<{
 
   useEffect(() => {
     if (sid === undefined) return
-    let cancelled = false
+    const controller = new AbortController()
+    const generation = ++changesGeneration.current
     setLoading(true)
     setChanges([])
     setLive(false)
+    setChangesError(null)
+    setChangesTruncated(false)
+    setObservedChanges(0)
     api.edit
-      .editAdSnapshotChanges(gameId, sid)
+      .editAdSnapshotChanges(gameId, sid, { signal: controller.signal })
       .then(({ data }) => {
-        if (!cancelled) {
+        if (!controller.signal.aborted && generation === changesGeneration.current) {
           setChanges(data.changes ?? [])
           setLive(!!data.live)
           setFilteredCats(data.filteredCategories ?? [])
+          setChangesTruncated(!!data.truncated)
+          setObservedChanges(data.observedChanges ?? data.changes?.length ?? 0)
         }
       })
-      .catch(() => {
-        // changes are best-effort; the tarball download is the source of truth
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted && generation === changesGeneration.current)
+          setChangesError(forensicsErrorMessage(error))
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!controller.signal.aborted && generation === changesGeneration.current) setLoading(false)
       })
     return () => {
-      cancelled = true
+      controller.abort()
     }
-  }, [gameId, sid])
+  }, [gameId, sid, changesRetry])
 
   const downloadUrl = target ? api.edit.editAdSnapshotUrl(gameId, target.cell.adTeamServiceId) : '#'
   const filename = target
@@ -691,7 +742,7 @@ const SnapshotModal: FC<{
           <Group gap={6} wrap="nowrap">
             <Text size="sm" c="dimmed">
               {t('admin.content.ad_ops.snapshot.changed_count', {
-                count: changes.length,
+                count: observedChanges,
                 defaultValue: '{{count}} file(s) changed vs original image',
               })}
             </Text>
@@ -792,6 +843,15 @@ const SnapshotModal: FC<{
               <Center h={120}>
                 <Loader size="sm" />
               </Center>
+            ) : changesError ? (
+              <Alert color="orange" title={t('admin.content.ad_ops.snapshot.load_failed', 'Changes unavailable')}>
+                <Stack gap="xs">
+                  <Text size="sm">{changesError}</Text>
+                  <Button variant="light" size="xs" onClick={() => setChangesRetry((value) => value + 1)}>
+                    {t('common.button.retry', 'Retry')}
+                  </Button>
+                </Stack>
+              </Alert>
             ) : changes.length === 0 ? (
               <Text size="sm" c="dimmed">
                 {t(
@@ -801,6 +861,15 @@ const SnapshotModal: FC<{
               </Text>
             ) : (
               <>
+                {changesTruncated && (
+                  <Alert color="orange" title={t('admin.content.ad_ops.snapshot.bounded', 'Bounded result')}>
+                    {t(
+                      'admin.content.ad_ops.snapshot.bounded_detail',
+                      'The container reported {{observed}} changes. Only a safe bounded subset is shown; narrow the investigation with the shell if needed.',
+                      { observed: observedChanges }
+                    )}
+                  </Alert>
+                )}
                 <TextInput
                   size="xs"
                   aria-label={t('admin.placeholder.ad_ops.search_file', 'Filter files')}
