@@ -165,6 +165,9 @@ mod m0180_team_invite_rotation;
 mod m0181_flag_import_operations;
 mod m0183_exercise_api_bounds;
 mod m0184_canonical_flag_policy;
+mod m0190_traffic_archive_admission;
+mod m0191_game_configuration_operations;
+mod m0192_team_profile_operations;
 mod m0205_account_activity_indexes;
 mod m0206_joined_challenge_catalog_indexes;
 mod m0207_participation_provision_jobs;
@@ -349,6 +352,9 @@ impl MigratorTrait for Migrator {
             Box::new(m0181_flag_import_operations::Migration),
             Box::new(m0183_exercise_api_bounds::Migration),
             Box::new(m0184_canonical_flag_policy::Migration),
+            Box::new(m0190_traffic_archive_admission::Migration),
+            Box::new(m0191_game_configuration_operations::Migration),
+            Box::new(m0192_team_profile_operations::Migration),
             Box::new(m0205_account_activity_indexes::Migration),
             Box::new(m0206_joined_challenge_catalog_indexes::Migration),
             Box::new(m0207_participation_provision_jobs::Migration),
@@ -497,7 +503,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 46..],
+            &names[names.len() - 49..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -542,6 +548,9 @@ mod tests {
                 "m0181_flag_import_operations",
                 "m0183_exercise_api_bounds",
                 "m0184_canonical_flag_policy",
+                "m0190_traffic_archive_admission",
+                "m0191_game_configuration_operations",
+                "m0192_team_profile_operations",
                 "m0205_account_activity_indexes",
                 "m0206_joined_challenge_catalog_indexes",
                 "m0207_participation_provision_jobs",

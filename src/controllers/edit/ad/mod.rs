@@ -282,6 +282,11 @@ pub async fn ad_toggle_challenge(
     let DesiredStateDecision::Transition { next_revision } = decision else {
         unreachable!("already-current challenge command returned above")
     };
+    if ad_epoch_scoring_started_locked(tx, game_id).await? {
+        return Err(AppError::bad_request(
+            "A&D/KotH challenge enabled state is locked after epoch scoring has started.",
+        ));
+    }
     let toggled = sqlx::query(
         r#"UPDATE "GameChallenges"
               SET is_enabled = $3, ad_control_revision = $4
@@ -301,16 +306,12 @@ pub async fn ad_toggle_challenge(
         return Err(AppError::conflict("Challenge is being deleted"));
     }
     if !command.enabled && challenge_type == ChallengeType::KingOfTheHill as i16 {
-        sqlx::query(
-            r#"UPDATE "KothTargets"
-                  SET holder_participation_id = NULL, held_since = NULL
-                WHERE game_id = $1 AND challenge_id = $2"#,
+        crate::services::ad_engine::clear_challenge_control_locked(
+            &mut **tx,
+            game_id,
+            challenge_id,
         )
-        .bind(game_id)
-        .bind(challenge_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+        .await?;
     }
     if let Some(lock) = engine_control {
         lock.release()

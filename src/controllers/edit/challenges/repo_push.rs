@@ -22,6 +22,12 @@ enum SnapshotResult {
     Skip,
 }
 
+enum DatabaseSnapshot {
+    Ready(repo_binding::Model, game_challenge::Model, Vec<String>),
+    Retry,
+    Skip,
+}
+
 /// Enqueue identifiers only. Every queued edit re-reads the current durable
 /// state after acquiring the checkout lock, so delayed tasks cannot push an old
 /// in-memory challenge snapshot after a newer save.
@@ -137,16 +143,16 @@ async fn snapshot_after_checkout(
     synced_binding: &repo_binding::Model,
     checkout: &std::path::Path,
 ) -> AppResult<SnapshotResult> {
-    let game_lock = crate::services::ad_engine::acquire_ad_game_lock(&st.db, game_id).await?;
-    let mut definition_lock = crate::services::challenge_workloads::acquire_definition_lock(
-        st.pg(),
-        game_id,
-        challenge_id,
+    let mut game_lock = crate::services::ad_engine::acquire_ad_game_lock(&st.db, game_id).await?;
+    crate::utils::single_flight::acquire_transaction_advisory_lock(
+        game_lock.transaction_mut(),
+        &crate::services::challenge_workloads::definition_lock_key(game_id, challenge_id),
     )
-    .await?;
-    let snapshot: AppResult<SnapshotResult> = async {
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let database_snapshot: AppResult<DatabaseSnapshot> = async {
         match super::reject_pending_mutation(
-            &mut **definition_lock.transaction_mut(),
+            &mut **game_lock.transaction_mut(),
             game_id,
             challenge_id,
         )
@@ -154,99 +160,114 @@ async fn snapshot_after_checkout(
         {
             Ok(()) => {}
             Err(AppError::Conflict(_)) | Err(AppError::NotFound(_)) => {
-                return Ok(SnapshotResult::Skip);
+                return Ok(DatabaseSnapshot::Skip);
             }
             Err(error) => return Err(error),
         }
-        let Some(current_game) = game::Entity::find_by_id(game_id).one(&st.db).await? else {
-            return Ok(SnapshotResult::Skip);
-        };
-        if current_game.repo_binding_id != Some(expected_binding_id) {
-            return Ok(SnapshotResult::Retry);
+        let binding_id = sqlx::query_scalar::<_, Option<i32>>(
+            r#"SELECT repo_binding_id FROM "Games" WHERE id = $1"#,
+        )
+        .bind(game_id)
+        .fetch_optional(&mut **game_lock.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if binding_id.flatten() != Some(expected_binding_id) {
+            return Ok(DatabaseSnapshot::Retry);
         }
-        let Some(binding) = repo_binding::Entity::find_by_id(expected_binding_id)
-            .one(&st.db)
-            .await?
+        let Some(binding_json) = sqlx::query_scalar::<_, serde_json::Value>(
+            r#"SELECT to_jsonb(binding) FROM "RepoBindings" binding WHERE id = $1"#,
+        )
+        .bind(expected_binding_id)
+        .fetch_optional(&mut **game_lock.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
         else {
-            return Ok(SnapshotResult::Skip);
+            return Ok(DatabaseSnapshot::Skip);
         };
+        let binding: repo_binding::Model =
+            serde_json::from_value(binding_json).map_err(|error| {
+                AppError::internal(format!("could not decode binding row: {error}"))
+            })?;
         if !binding.push_on_edit {
-            return Ok(SnapshotResult::Skip);
+            return Ok(DatabaseSnapshot::Skip);
         }
         if binding.repo_url != synced_binding.repo_url
             || binding.git_ref != synced_binding.git_ref
             || binding.github_token != synced_binding.github_token
         {
-            return Ok(SnapshotResult::Retry);
+            return Ok(DatabaseSnapshot::Retry);
         }
-        let Some(challenge) = game_challenge::Entity::find_by_id(challenge_id)
-            .one(&st.db)
-            .await?
-            .filter(|challenge| challenge.game_id == game_id)
-        else {
-            return Ok(SnapshotResult::Skip);
-        };
-        let Some(manifest) = locate_owned_manifest(checkout, expected_binding_id, &challenge).await
-        else {
-            tracing::warn!(
-                binding = expected_binding_id,
-                challenge = challenge_id,
-                "push-back: repository ownership path is missing or invalid; skipping"
-            );
-            return Ok(SnapshotResult::Skip);
-        };
+        let challenge =
+            load_challenge_locked(game_lock.transaction_mut(), game_id, challenge_id).await?;
         let flag_texts = if challenge.challenge_type == ChallengeType::DynamicContainer {
             Vec::new()
         } else {
-            flag_context::Entity::find()
-                .filter(flag_context::Column::ChallengeId.eq(challenge.id))
-                .all(&st.db)
-                .await?
-                .into_iter()
-                .filter_map(|flag| {
-                    let flag = flag.flag.trim().to_string();
-                    (!flag.is_empty()).then_some(flag)
-                })
-                .collect()
-        };
-        let relative_manifest = manifest
-            .strip_prefix(checkout)
-            .map_err(|_| AppError::internal("push-back manifest escaped checkout"))?
-            .to_string_lossy()
-            .replace('\\', "/");
-        let token = binding
-            .github_token
-            .clone()
-            .filter(|token| !token.is_empty())
-            .ok_or_else(|| AppError::internal("push-back token disappeared"))?;
-        let source_yaml = tokio::fs::read_to_string(&manifest)
+            sqlx::query_scalar::<_, String>(
+                r#"SELECT flag FROM "FlagContexts"
+                    WHERE challenge_id = $1 ORDER BY id"#,
+            )
+            .bind(challenge.id)
+            .fetch_all(&mut **game_lock.transaction_mut())
             .await
-            .map_err(|error| {
-                AppError::internal(format!(
-                    "push-back: read current manifest {}: {error}",
-                    manifest.display()
-                ))
-            })?;
-        let yaml =
-            git_sync::serialize_challenge_preserving_source(&challenge, &flag_texts, &source_yaml)?;
-        Ok(SnapshotResult::Ready(PushPayload {
-            binding_id: binding.id,
-            repo_url: git_sync::validate_binding_repo_url(&binding.repo_url)?,
-            token,
-            challenge_id: challenge.id,
-            title: challenge.title.clone(),
-            manifest,
-            relative_manifest,
-            yaml,
-        }))
+            .map_err(|error| AppError::internal(error.to_string()))?
+            .into_iter()
+            .filter_map(|flag| {
+                let flag = flag.trim().to_string();
+                (!flag.is_empty()).then_some(flag)
+            })
+            .collect()
+        };
+        Ok(DatabaseSnapshot::Ready(binding, challenge, flag_texts))
     }
     .await;
-    definition_lock.release().await?;
     game_lock
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    snapshot
+    let (binding, challenge, flag_texts) = match database_snapshot? {
+        DatabaseSnapshot::Skip => return Ok(SnapshotResult::Skip),
+        DatabaseSnapshot::Retry => return Ok(SnapshotResult::Retry),
+        DatabaseSnapshot::Ready(binding, challenge, flags) => (binding, challenge, flags),
+    };
+    let Some(manifest) = locate_owned_manifest(checkout, expected_binding_id, &challenge).await
+    else {
+        tracing::warn!(
+            binding = expected_binding_id,
+            challenge = challenge_id,
+            "push-back: repository ownership path is missing or invalid; skipping"
+        );
+        return Ok(SnapshotResult::Skip);
+    };
+    let relative_manifest = manifest
+        .strip_prefix(checkout)
+        .map_err(|_| AppError::internal("push-back manifest escaped checkout"))?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let token = binding
+        .github_token
+        .clone()
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| AppError::internal("push-back token disappeared"))?;
+    let source_yaml = tokio::fs::read_to_string(&manifest)
+        .await
+        .map_err(|error| {
+            AppError::internal(format!(
+                "push-back: read current manifest {}: {error}",
+                manifest.display()
+            ))
+        })?;
+    let yaml =
+        git_sync::serialize_challenge_preserving_source(&challenge, &flag_texts, &source_yaml)?;
+    Ok(SnapshotResult::Ready(PushPayload {
+        binding_id: binding.id,
+        repo_url: git_sync::validate_binding_repo_url(&binding.repo_url)?,
+        token,
+        challenge_id: challenge.id,
+        title: challenge.title.clone(),
+        manifest,
+        relative_manifest,
+        yaml,
+    }))
 }
 
 /// Push-back never adopts a same-title manifest. Only a binding-scoped durable

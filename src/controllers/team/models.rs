@@ -3,11 +3,15 @@
 use uuid::Uuid;
 
 /// Body for create/update — `TeamUpdateModel`.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamUpdateModel {
     pub name: Option<String>,
     pub bio: Option<String>,
+    #[serde(default)]
+    pub profile_revision: i64,
+    #[serde(default, skip_serializing)]
+    pub operation_id: Option<Uuid>,
 }
 
 /// Body for `PUT /{id}/transfer` — `TeamTransferModel`.
@@ -28,7 +32,7 @@ pub struct SignatureVerifyModel {
 }
 
 /// One roster entry — `TeamUserInfoModel`.
-#[derive(Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamUserInfoModel {
     pub id: Uuid,
@@ -38,14 +42,14 @@ pub struct TeamUserInfoModel {
     pub captain: bool,
     // RSCTF marks these `[JsonIgnore]`: populated for scoreboard generation but
     // never emitted to clients (they are PII). `GET /api/team/{id}` is public.
-    #[serde(skip_serializing)]
+    #[serde(default, skip_serializing)]
     pub real_name: String,
-    #[serde(skip_serializing)]
+    #[serde(default, skip_serializing)]
     pub student_number: String,
 }
 
 /// Team view — `TeamInfoModel`.
-#[derive(Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamInfoModel {
     pub id: i32,
@@ -53,6 +57,7 @@ pub struct TeamInfoModel {
     pub bio: Option<String>,
     pub avatar: Option<String>,
     pub locked: bool,
+    pub profile_revision: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<TeamUserInfoModel>>,
 }
