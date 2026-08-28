@@ -3681,30 +3681,6 @@ export interface ChallengeBuildListStatusModel {
   buildStatus: ChallengeBuildStatus
 }
 
-export type ControlJobStatus = "Queued" | "Running" | "Succeeded" | "Failed" | "Cancelled";
-
-export interface ControlJobModel {
-  id: string;
-  kind: string;
-  scopeKey: string;
-  gameId: number;
-  challengeId?: number | null;
-  operationId: string;
-  fingerprint: string;
-  status: ControlJobStatus;
-  progressCurrent: number;
-  progressTotal: number;
-  requestedGeneration: number;
-  result?: Record<string, unknown> | null;
-  error?: string | null;
-  /** @format uint64 */
-  createdAtUtc: number;
-  /** @format uint64 */
-  updatedAtUtc: number;
-  /** @format uint64 */
-  finishedAtUtc?: number | null;
-}
-
 /** Row returned by GET .../PendingChallenges (includes Pending + Rejected) */
 export interface PendingChallengeModel {
   id: number
