@@ -443,6 +443,10 @@ test('edit cleanup is stable and GitHub import is fenced before and after', () =
     'each edit cleanup sample must wait before reading residue',
   );
   assert.match(cleanup, /JSON\.stringify\(passes\[0\]\) === JSON\.stringify\(passes\[1\]\)/);
+  assert.match(cleanup, /buildRecords:/);
+  assert.match(cleanup, /owned build history/);
+  assert.match(cleanup, /refusing to remove build history while a tracked fixture game still exists/);
+  assert.match(cleanup, /DELETE FROM "BuildRecords" WHERE game_id IN/);
   assert.match(cleanup, /stable exact residual audit/);
   assert.match(source, /EDIT_GITHUB_EXPECTED_COMMIT must be a full 40-character Git commit/);
   const before = source.indexOf('const githubCommitBefore = resolveRemoteGitRefCommit');

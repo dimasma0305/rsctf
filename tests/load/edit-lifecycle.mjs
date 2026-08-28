@@ -1786,8 +1786,8 @@ function checkerDirectoryPresent(container, gameId) {
   throw new Error(`could not audit checker directory ${path} in ${container}`);
 }
 
-function editResidualSnapshot() {
-  const gameIds = [...new Set([
+function trackedGameIds() {
+  return [...new Set([
     ...state.gameIds,
     context.gameId,
     authorizationGameId,
@@ -1796,6 +1796,10 @@ function editResidualSnapshot() {
     cloneGameId,
     importedGameId,
   ].map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))];
+}
+
+function editResidualSnapshot() {
+  const gameIds = trackedGameIds();
   const containerIds = [...new Set(state.containerIds
     .map((id) => String(id || '').trim())
     .filter((id) => /^[a-f0-9-]{36}$/i.test(id)))];
@@ -1806,6 +1810,9 @@ function editResidualSnapshot() {
   return Object.freeze({
     games: gameIds.length
       ? Number(sql(`SELECT count(*) FROM "Games" WHERE id IN (${gameIds.join(',')})`))
+      : 0,
+    buildRecords: gameIds.length
+      ? Number(sql(`SELECT count(*) FROM "BuildRecords" WHERE game_id IN (${gameIds.join(',')})`))
       : 0,
     gameNamespace: Number(sql(`SELECT count(*) FROM "Games" WHERE strpos(title, ${sqlLiteral(runKey)}) > 0`)),
     containers: containerIds.length
@@ -1855,6 +1862,20 @@ async function assertStableExactEditCleanup() {
   );
   state.cleanupAudit = { delayMs, passes };
   saveRecovery();
+}
+
+function removeOwnedBuildHistory() {
+  const gameIds = trackedGameIds();
+  if (gameIds.length === 0) return;
+  requireCondition(
+    Number(sql(`SELECT count(*) FROM "Games" WHERE id IN (${gameIds.join(',')})`)) === 0,
+    'refusing to remove build history while a tracked fixture game still exists',
+  );
+  sql(`DELETE FROM "BuildRecords" WHERE game_id IN (${gameIds.join(',')})`);
+  requireCondition(
+    Number(sql(`SELECT count(*) FROM "BuildRecords" WHERE game_id IN (${gameIds.join(',')})`)) === 0,
+    'tracked fixture build history survived cleanup',
+  );
 }
 
 async function cleanup() {
@@ -1944,6 +1965,7 @@ async function cleanup() {
     });
   }
   await capture('owned build images', removeOwnedImages);
+  await capture('owned build history', removeOwnedBuildHistory);
   await capture('stable exact residual audit', assertStableExactEditCleanup);
 
   if (errors.length) {
