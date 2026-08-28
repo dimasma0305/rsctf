@@ -114,7 +114,7 @@ async fn large_monitor_history_is_bounded_indexed_and_one_query_per_page() {
             id INTEGER PRIMARY KEY, answer TEXT NOT NULL, status SMALLINT NOT NULL,
             submit_time_utc TIMESTAMPTZ NOT NULL, user_id UUID NULL,
             team_id INTEGER NOT NULL, game_id INTEGER NOT NULL,
-            challenge_id INTEGER NOT NULL
+            challenge_id INTEGER NOT NULL, feed_cursor BIGINT NOT NULL
         );
         "#,
     )
@@ -167,15 +167,16 @@ async fn large_monitor_history_is_bounded_indexed_and_one_query_per_page() {
     .expect("seed large event history");
     sqlx::query(
         r#"INSERT INTO "Submissions"
-               (id, answer, status, submit_time_utc, user_id, team_id, game_id, challenge_id)
+               (id, answer, status, submit_time_utc, user_id, team_id, game_id, challenge_id, feed_cursor)
            SELECT n, 'game-seven-' || n::text, (n % 4)::smallint,
                   clock_timestamp() - n * interval '1 millisecond',
                   CASE WHEN n % 2 = 0 THEN $1 ELSE $2 END,
-                  CASE WHEN n % 2 = 0 THEN 1 ELSE 2 END, 7, 1
+                  CASE WHEN n % 2 = 0 THEN 1 ELSE 2 END, 7, 1, n::bigint
              FROM generate_series(1, 50000) n
            UNION ALL
            SELECT 100000 + n, 'game-eight-' || n::text, (n % 4)::smallint,
-                  clock_timestamp() - n * interval '1 millisecond', $2, 2, 8, 2
+                  clock_timestamp() - n * interval '1 millisecond', $2, 2, 8, 2,
+                  (100000 + n)::bigint
              FROM generate_series(1, 20000) n"#,
     )
     .bind(first_user)

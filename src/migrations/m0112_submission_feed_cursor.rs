@@ -1,0 +1,114 @@
+//! Give committed monitor submissions a reconnect-safe cursor.
+//!
+//! `Submissions.id` is stable, but sequence allocation can precede commit. A
+//! deferred trigger assigns the feed cursor while holding a short per-game
+//! transaction lock so reconnect backfills cannot skip a late commit.
+
+use sea_orm_migration::prelude::*;
+use sea_orm_migration::sea_orm::ConnectionTrait;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+pub(crate) const UP_SQL: &str = r#"
+CREATE SEQUENCE IF NOT EXISTS rsctf_submission_feed_cursor_seq AS BIGINT;
+
+ALTER TABLE "Submissions"
+    ADD COLUMN IF NOT EXISTS feed_cursor BIGINT;
+
+DO $migration$
+DECLARE
+    current_max BIGINT;
+BEGIN
+    SELECT MAX(feed_cursor) INTO current_max FROM "Submissions";
+    IF current_max IS NULL THEN
+        UPDATE "Submissions"
+           SET feed_cursor = id::BIGINT
+         WHERE feed_cursor IS NULL;
+    ELSE
+        PERFORM setval('rsctf_submission_feed_cursor_seq', current_max, TRUE);
+        UPDATE "Submissions"
+           SET feed_cursor = nextval('rsctf_submission_feed_cursor_seq')
+         WHERE feed_cursor IS NULL;
+    END IF;
+
+    SELECT MAX(feed_cursor) INTO current_max FROM "Submissions";
+    IF current_max IS NULL THEN
+        PERFORM setval('rsctf_submission_feed_cursor_seq', 1, FALSE);
+    ELSE
+        PERFORM setval('rsctf_submission_feed_cursor_seq', current_max, TRUE);
+    END IF;
+END
+$migration$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_submissions_feed_cursor
+    ON "Submissions" (feed_cursor)
+    WHERE feed_cursor IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS ix_submissions_game_feed_cursor
+    ON "Submissions" (game_id, feed_cursor)
+    WHERE feed_cursor IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION rsctf_assign_submission_feed_cursor()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+    IF NEW.feed_cursor IS NULL THEN
+        -- Namespace 1398097485 is reserved for the submission commit fence.
+        PERFORM pg_advisory_xact_lock(1398097485, NEW.game_id);
+        UPDATE "Submissions"
+           SET feed_cursor = nextval('rsctf_submission_feed_cursor_seq')
+         WHERE id = NEW.id
+           AND feed_cursor IS NULL;
+    END IF;
+    RETURN NULL;
+END
+$function$;
+
+DROP TRIGGER IF EXISTS tr_submissions_feed_cursor ON "Submissions";
+CREATE CONSTRAINT TRIGGER tr_submissions_feed_cursor
+    AFTER INSERT ON "Submissions"
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    EXECUTE FUNCTION rsctf_assign_submission_feed_cursor();
+"#;
+
+const DOWN_SQL: &str = r#"
+DROP TRIGGER IF EXISTS tr_submissions_feed_cursor ON "Submissions";
+DROP FUNCTION IF EXISTS rsctf_assign_submission_feed_cursor();
+DROP INDEX IF EXISTS ix_submissions_game_feed_cursor;
+DROP INDEX IF EXISTS ux_submissions_feed_cursor;
+ALTER TABLE "Submissions" DROP COLUMN IF EXISTS feed_cursor;
+DROP SEQUENCE IF EXISTS rsctf_submission_feed_cursor_seq;
+"#;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager.get_connection().execute_unprepared(UP_SQL).await?;
+        Ok(())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .get_connection()
+            .execute_unprepared(DOWN_SQL)
+            .await?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_assignment_is_deferred_indexed_and_idempotent() {
+        assert!(UP_SQL.contains("DEFERRABLE INITIALLY DEFERRED"));
+        assert!(UP_SQL.contains("pg_advisory_xact_lock(1398097485, NEW.game_id)"));
+        assert!(UP_SQL.contains("ADD COLUMN IF NOT EXISTS feed_cursor BIGINT"));
+        assert!(UP_SQL.contains("ix_submissions_game_feed_cursor"));
+        assert!(UP_SQL.contains("ux_submissions_feed_cursor"));
+    }
+}

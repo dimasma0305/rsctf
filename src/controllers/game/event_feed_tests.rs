@@ -34,7 +34,7 @@ fn request(path: &str, role: Option<Role>) -> Request<Body> {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-async fn event_backfill_enforces_role_game_start_scope_and_hard_page_bound() {
+async fn monitor_backfills_enforce_role_game_start_scope_and_hard_page_bound() {
     let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
         .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
     let admin = PgPoolOptions::new()
@@ -73,6 +73,11 @@ async fn event_backfill_enforces_role_game_start_scope_and_hard_page_bound() {
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL
         );
+        CREATE TABLE "GameChallenges" (
+            id INTEGER PRIMARY KEY,
+            game_id INTEGER NOT NULL,
+            title TEXT NOT NULL
+        );
         CREATE TABLE "GameEvents" (
             id INTEGER PRIMARY KEY,
             game_id INTEGER NOT NULL,
@@ -83,12 +88,44 @@ async fn event_backfill_enforces_role_game_start_scope_and_hard_page_bound() {
             team_id INTEGER NOT NULL,
             feed_cursor BIGINT
         );
+        CREATE TABLE "Submissions" (
+            id INTEGER PRIMARY KEY,
+            answer TEXT NOT NULL,
+            status SMALLINT NOT NULL,
+            submit_time_utc TIMESTAMPTZ NOT NULL,
+            user_id UUID,
+            team_id INTEGER NOT NULL,
+            game_id INTEGER NOT NULL,
+            challenge_id INTEGER NOT NULL,
+            feed_cursor BIGINT
+        );
         INSERT INTO "Games" (id, start_time_utc) VALUES
             (7, clock_timestamp() - interval '1 hour'),
             (8, clock_timestamp() - interval '1 hour'),
             (9, clock_timestamp() + interval '1 hour');
         INSERT INTO "Teams" (id, name) VALUES (1, 'alpha'), (2, 'other');
+        INSERT INTO "GameChallenges" (id, game_id, title) VALUES
+            (70, 7, 'seven'), (80, 8, 'eight');
         "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    for id in 1..=125_i32 {
+        sqlx::query(
+            r#"INSERT INTO "Submissions"
+                 (id, answer, status, submit_time_utc, team_id, game_id, challenge_id, feed_cursor)
+               VALUES ($1, $1::text, 1, clock_timestamp(), 1, 7, 70, $1)"#,
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        r#"INSERT INTO "Submissions"
+             (id, answer, status, submit_time_utc, team_id, game_id, challenge_id, feed_cursor)
+           VALUES (1000, 'wrong-game', 1, clock_timestamp(), 2, 8, 80, 1000)"#,
     )
     .execute(&pool)
     .await
@@ -130,6 +167,10 @@ async fn event_backfill_enforces_role_game_start_scope_and_hard_page_bound() {
     );
     let app = Router::new()
         .route("/api/game/{id}/events/backfill", get(event_backfill))
+        .route(
+            "/api/game/{id}/submissions/backfill",
+            get(submission_backfill),
+        )
         .with_state(state);
 
     assert_eq!(
@@ -195,12 +236,81 @@ async fn event_backfill_enforces_role_game_start_scope_and_hard_page_bound() {
         .all(|event| event["team"] == "alpha"));
 
     let checkpoint = app
+        .clone()
         .oneshot(request("/api/game/7/events/backfill", Some(Role::Admin)))
         .await
         .unwrap();
     let checkpoint = to_bytes(checkpoint.into_body(), 16 * 1024).await.unwrap();
     let checkpoint: serde_json::Value = serde_json::from_slice(&checkpoint).unwrap();
     assert_eq!(checkpoint["events"].as_array().unwrap().len(), 0);
+    assert_eq!(checkpoint["nextCursor"], 125);
+
+    for (role, expected) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some(Role::User), StatusCode::FORBIDDEN),
+    ] {
+        assert_eq!(
+            app.clone()
+                .oneshot(request("/api/game/7/submissions/backfill?after=0", role,))
+                .await
+                .unwrap()
+                .status(),
+            expected
+        );
+    }
+    assert_eq!(
+        app.clone()
+            .oneshot(request(
+                "/api/game/9/submissions/backfill?after=0",
+                Some(Role::Monitor),
+            ))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(request(
+                "/api/game/404/submissions/backfill?after=0",
+                Some(Role::Admin),
+            ))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let submissions = app
+        .clone()
+        .oneshot(request(
+            "/api/game/7/submissions/backfill?after=0&limit=999",
+            Some(Role::Monitor),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(submissions.status(), StatusCode::OK);
+    let body = to_bytes(submissions.into_body(), 256 * 1024).await.unwrap();
+    let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page["submissions"].as_array().unwrap().len(), 100);
+    assert_eq!(page["nextCursor"], 100);
+    assert_eq!(page["hasMore"], true);
+    assert!(page["submissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|submission| submission["team"] == "alpha" && submission["challenge"] == "seven"));
+
+    let checkpoint = app
+        .oneshot(request(
+            "/api/game/7/submissions/backfill",
+            Some(Role::Admin),
+        ))
+        .await
+        .unwrap();
+    let checkpoint = to_bytes(checkpoint.into_body(), 16 * 1024).await.unwrap();
+    let checkpoint: serde_json::Value = serde_json::from_slice(&checkpoint).unwrap();
+    assert_eq!(checkpoint["submissions"].as_array().unwrap().len(), 0);
     assert_eq!(checkpoint["nextCursor"], 125);
 
     pool.close().await;

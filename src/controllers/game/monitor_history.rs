@@ -9,8 +9,8 @@ use serde_json::Value as Json;
 
 use super::{
     load_game, parse_answer_result, AnswerResult, AppError, AppResult, EventQuery, EventType,
-    GameEventModel, MonitorUser, Path, Query, RequestResponse, SharedState, State, SubmissionModel,
-    SubmissionQuery,
+    GameEventModel, MonitorSubmissionModel, MonitorUser, Path, Query, RequestResponse, SharedState,
+    State, SubmissionQuery,
 };
 
 pub(super) const MONITOR_PAGE_DEFAULT: u64 = 100;
@@ -89,7 +89,9 @@ SELECT event."Type"::smallint AS event_type,
 
 pub(super) const MONITOR_SUBMISSIONS_SQL: &str = r#"
 /* rsctf_monitor_submissions */
-SELECT submission.answer,
+SELECT submission.id,
+       submission.feed_cursor,
+       submission.answer,
        submission.status::smallint AS status,
        submission.submit_time_utc,
        account.user_name,
@@ -148,7 +150,9 @@ WITH matching AS MATERIALIZED (
       ORDER BY candidate.submit_time_utc DESC, candidate.id DESC
       LIMIT $6)
 )
-SELECT submission.answer,
+SELECT submission.id,
+       submission.feed_cursor,
+       submission.answer,
        submission.status::smallint AS status,
        submission.submit_time_utc,
        account.user_name,
@@ -266,6 +270,8 @@ struct EventRow {
 
 #[derive(sqlx::FromRow)]
 struct SubmissionRow {
+    id: i32,
+    feed_cursor: i64,
     answer: String,
     status: i16,
     submit_time_utc: DateTime<Utc>,
@@ -378,7 +384,7 @@ async fn load_submissions_window(
     query: &SubmissionQuery,
     status: Option<AnswerResult>,
     page: MonitorPage,
-) -> AppResult<Vec<SubmissionModel>> {
+) -> AppResult<Vec<MonitorSubmissionModel>> {
     if page.beyond_interactive_history {
         return Ok(Vec::new());
     }
@@ -407,7 +413,9 @@ async fn load_submissions_window(
 
     rows.into_iter()
         .map(|row| {
-            Ok(SubmissionModel {
+            Ok(MonitorSubmissionModel {
+                id: row.id,
+                cursor: row.feed_cursor,
                 answer: row.answer,
                 status: answer_result_from_db(row.status)?,
                 time: row.submit_time_utc,
@@ -424,7 +432,7 @@ pub(super) async fn load_submissions_legacy(
     game_id: i32,
     query: &SubmissionQuery,
     status: Option<AnswerResult>,
-) -> AppResult<Vec<SubmissionModel>> {
+) -> AppResult<Vec<MonitorSubmissionModel>> {
     load_submissions_window(
         pool,
         game_id,
@@ -440,7 +448,7 @@ pub(super) async fn load_submission_page(
     game_id: i32,
     query: &SubmissionQuery,
     status: Option<AnswerResult>,
-) -> AppResult<Vec<SubmissionModel>> {
+) -> AppResult<Vec<MonitorSubmissionModel>> {
     load_submissions_window(
         pool,
         game_id,
@@ -476,7 +484,7 @@ pub(super) async fn submission_page(
     MonitorUser(_user): MonitorUser,
     Path(id): Path<i32>,
     Query(q): Query<SubmissionQuery>,
-) -> AppResult<RequestResponse<Vec<SubmissionModel>>> {
+) -> AppResult<RequestResponse<Vec<MonitorSubmissionModel>>> {
     let _ = load_game(&st, id).await?;
 
     let status = q.type_filter.as_deref().and_then(parse_answer_result);

@@ -960,19 +960,9 @@ pub async fn submit(
     {
         tracing::warn!(game = id, %error, "submission game events could not be published");
     }
-    st.publish_event(
-        "ReceivedSubmissions",
-        Some(id),
-        serde_json::json!({
-            "answer": answer,
-            "status": result,
-            "time": submit_time,
-            "user": user.name,
-            "team": team_name,
-            "challenge": challenge.title,
-        })
-        .to_string(),
-    );
+    if let Err(error) = crate::services::submission_feed::publish_committed(&st, id, sub_id).await {
+        tracing::warn!(game = id, submission = sub_id, %error, "submission feed could not be published");
+    }
 
     if let Some((notice_type, notice_id, values, publish_time)) = notice_to_broadcast {
         let broadcast_now = Utc::now();
