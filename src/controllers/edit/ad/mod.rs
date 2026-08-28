@@ -9,10 +9,12 @@ mod inspector;
 mod provision;
 mod provision_recovery;
 mod state;
+mod state_effects;
 pub use inspector::*;
 pub use provision::*;
 pub(crate) use provision_recovery::*;
 pub use state::*;
+pub(crate) use state_effects::kick as kick_challenge_state_effects;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DesiredStateDecision {
@@ -274,6 +276,7 @@ pub async fn ad_toggle_challenge(
             .release()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
+        state_effects::kick(st.clone());
         return Ok(RequestResponse::ok(AdChallengeCommandResult {
             is_enabled,
             revision,
@@ -313,6 +316,15 @@ pub async fn ad_toggle_challenge(
         )
         .await?;
     }
+    state_effects::enqueue_locked(
+        &mut **tx,
+        game_id,
+        challenge_id,
+        next_revision,
+        command.enabled,
+        uuid::Uuid::new_v4(),
+    )
+    .await?;
     if let Some(lock) = engine_control {
         lock.release()
             .await
@@ -322,26 +334,11 @@ pub async fn ad_toggle_challenge(
     // Flush after either engine-backed toggle so KotH eligibility and board
     // caches do not wait for their TTL on the writer replica.
     flush_ad_scoreboard(&st, game_id).await;
-    let challenge = game_challenge::Entity::find_by_id(challenge_id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Challenge not found"))?;
-    if !command.enabled {
-        st.byoc.disconnect_challenge(&st.db, challenge_id).await?;
-        let _ =
-            crate::controllers::edit::destroy_challenge_containers(&st, &challenge, true, false)
-                .await;
-    }
-    crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
     runtime_transition
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    if command.enabled {
-        // Enabling changes the desired topology. Admission is event-scoped and
-        // coalesces with the scheduler/manual ensure owner before any grid scan.
-        request_ad_reconcile_job(&st, game_id, true, true).await?;
-    }
+    state_effects::kick(st.clone());
 
     Ok(RequestResponse::ok(AdChallengeCommandResult {
         is_enabled: command.enabled,

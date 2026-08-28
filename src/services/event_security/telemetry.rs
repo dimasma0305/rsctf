@@ -2,6 +2,7 @@ use chrono::{DateTime, Timelike, Utc};
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sqlx::Acquire;
 use uuid::Uuid;
 
 use crate::app_state::SharedState;
@@ -545,18 +546,23 @@ pub async fn ingest_batch(
     st: &SharedState,
     batch: &TelemetryBatch,
 ) -> AppResult<TelemetryIngestResult> {
+    ingest_batch_with_pool(st.pg(), batch).await
+}
+
+async fn ingest_batch_with_pool(
+    pool: &sqlx::PgPool,
+    batch: &TelemetryBatch,
+) -> AppResult<TelemetryIngestResult> {
     batch.validate()?;
     if batch.batch_id.is_nil() {
         return Err(AppError::bad_request("Invalid telemetry batch ID"));
     }
-    let estimated = batch.estimated_bytes()?;
     let fingerprint: [u8; 32] = sha2::Sha256::digest(
         serde_json::to_vec(batch)
             .map_err(|error| AppError::internal(format!("encode telemetry batch: {error}")))?,
     )
     .into();
-    let mut transaction = st
-        .pg()
+    let mut transaction = pool
         .begin()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -647,10 +653,36 @@ pub async fn ingest_batch(
         .map_err(|error| AppError::internal(error.to_string()))?;
     }
     let (event_bytes, disabled, global_bytes) = lock_usage(&mut transaction, batch.game_id).await?;
-    if disabled
-        || event_bytes.saturating_add(estimated) > EVENT_LOGICAL_QUOTA_BYTES
-        || global_bytes.saturating_add(estimated) > GLOBAL_LOGICAL_QUOTA_BYTES
-    {
+
+    // Discover novelty while both usage rows are locked, but keep the inserted
+    // rows in a savepoint until the quota decision is made. This charges only
+    // rows that actually won their immutable deduplication key. In particular,
+    // an exact row replay remains successful even when an event is already at
+    // its quota; rejecting it would make sensor retry behavior depend on disk
+    // pressure rather than on the durable row identity.
+    let mut novel_rows = transaction
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let flow_count = insert_flows(&mut novel_rows, batch.game_id, &batch.flows).await?;
+    let dns_count = insert_dns(&mut novel_rows, batch.game_id, &batch.dns_providers).await?;
+    let network_count =
+        insert_networks(&mut novel_rows, batch.game_id, &batch.peer_networks).await?;
+    let flag_count = insert_flags(&mut novel_rows, batch.game_id, &batch.flag_transports).await?;
+    let accepted = flow_count + dns_count + network_count + flag_count;
+    let actual = i64::try_from(flow_count).unwrap_or(i64::MAX) * FLOW_LOGICAL_BYTES
+        + i64::try_from(dns_count).unwrap_or(i64::MAX) * DNS_LOGICAL_BYTES
+        + i64::try_from(network_count).unwrap_or(i64::MAX) * NETWORK_LOGICAL_BYTES
+        + i64::try_from(flag_count).unwrap_or(i64::MAX) * FLAG_LOGICAL_BYTES;
+    let quota_exceeded = actual > 0
+        && (disabled
+            || event_bytes.saturating_add(actual) > EVENT_LOGICAL_QUOTA_BYTES
+            || global_bytes.saturating_add(actual) > GLOBAL_LOGICAL_QUOTA_BYTES);
+    if quota_exceeded {
+        novel_rows
+            .rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         sqlx::query(
             r#"UPDATE "AntiCheatTelemetryUsage"
                   SET disabled_at_utc = COALESCE(disabled_at_utc, clock_timestamp()),
@@ -672,14 +704,14 @@ pub async fn ingest_batch(
                    observed_at_utc = clock_timestamp()"#,
         )
         .bind(batch.game_id)
-        .bind(i64::try_from(batch.row_count()).unwrap_or(i64::MAX))
-        .bind(estimated)
+        .bind(i64::try_from(accepted).unwrap_or(i64::MAX))
+        .bind(actual)
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         let result = TelemetryIngestResult {
             accepted_rows: 0,
-            duplicate_or_invalid_rows: 0,
+            duplicate_or_invalid_rows: batch.row_count().saturating_sub(accepted),
             dropped_for_quota: true,
             logical_bytes: 0,
         };
@@ -690,17 +722,10 @@ pub async fn ingest_batch(
             .map_err(|error| AppError::internal(error.to_string()))?;
         return Ok(result);
     }
-
-    let flow_count = insert_flows(&mut transaction, batch.game_id, &batch.flows).await?;
-    let dns_count = insert_dns(&mut transaction, batch.game_id, &batch.dns_providers).await?;
-    let network_count =
-        insert_networks(&mut transaction, batch.game_id, &batch.peer_networks).await?;
-    let flag_count = insert_flags(&mut transaction, batch.game_id, &batch.flag_transports).await?;
-    let accepted = flow_count + dns_count + network_count + flag_count;
-    let actual = i64::try_from(flow_count).unwrap_or(i64::MAX) * FLOW_LOGICAL_BYTES
-        + i64::try_from(dns_count).unwrap_or(i64::MAX) * DNS_LOGICAL_BYTES
-        + i64::try_from(network_count).unwrap_or(i64::MAX) * NETWORK_LOGICAL_BYTES
-        + i64::try_from(flag_count).unwrap_or(i64::MAX) * FLAG_LOGICAL_BYTES;
+    novel_rows
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     if actual > 0 {
         sqlx::query(
             r#"UPDATE "AntiCheatTelemetryUsage"
@@ -845,6 +870,10 @@ pub async fn purge_game_telemetry(
         .map_err(|error| AppError::internal(error.to_string()))?;
     Ok((rows_removed, logical_bytes))
 }
+
+#[cfg(test)]
+#[path = "telemetry_pg_tests.rs"]
+mod pg_tests;
 
 #[cfg(test)]
 mod tests {

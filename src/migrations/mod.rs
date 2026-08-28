@@ -185,6 +185,7 @@ mod m0208_participant_detail_generations;
 mod m0209_koth_context_generations;
 mod m0216_solve_receipt_audit_retention;
 mod m0221_team_invite_reconcile_claims;
+mod m0226_ad_challenge_state_effects;
 mod m0227_challenge_update_operations;
 
 #[cfg(test)]
@@ -209,6 +210,8 @@ pub(crate) use m0116_game_event_feed_pending::UP_SQL as GAME_EVENT_FEED_PENDING_
 pub(crate) use m0196_resource_create_operations::UP_SQL as RESOURCE_CREATE_OPERATIONS_SQL;
 #[cfg(test)]
 pub(crate) use m0207_participation_provision_jobs::UP_SQL as PARTICIPATION_PROVISION_JOBS_SQL;
+#[cfg(test)]
+pub(crate) use m0226_ad_challenge_state_effects::UP_SQL as AD_CHALLENGE_STATE_EFFECTS_SQL;
 #[cfg(test)]
 pub(crate) use m0227_challenge_update_operations::UP_SQL as CHALLENGE_UPDATE_OPERATIONS_SQL;
 
@@ -387,6 +390,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0209_koth_context_generations::Migration),
             Box::new(m0216_solve_receipt_audit_retention::Migration),
             Box::new(m0221_team_invite_reconcile_claims::Migration),
+            Box::new(m0226_ad_challenge_state_effects::Migration),
             Box::new(m0227_challenge_update_operations::Migration),
         ]
     }
@@ -596,6 +600,7 @@ mod tests {
                 "m0209_koth_context_generations",
                 "m0216_solve_receipt_audit_retention",
                 "m0221_team_invite_reconcile_claims",
+                "m0226_ad_challenge_state_effects",
                 "m0227_challenge_update_operations",
             ]
         );

@@ -32,7 +32,7 @@ pub use create::add_challenge;
 pub(crate) use deletion::reject_pending_mutation;
 pub use hard_delete::delete_challenge;
 pub(crate) use hard_delete::delete_challenge_core;
-pub(crate) use lifecycle::destroy_challenge_containers;
+pub(crate) use lifecycle::{destroy_challenge_containers, destroy_challenge_containers_by_id};
 pub use mutation_recovery::recover_challenge_update_operation;
 #[cfg(test)]
 use mutation_recovery::{

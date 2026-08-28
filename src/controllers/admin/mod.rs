@@ -11,6 +11,7 @@ pub mod ad;
 mod flag_egress;
 #[path = "participation.rs"]
 mod participation_review;
+mod realtime;
 pub(crate) mod users_manager_autocomplete;
 
 use std::collections::BTreeMap;
@@ -81,6 +82,10 @@ pub fn router() -> Router<SharedState> {
     Router::new()
         // --- Diagnostics ---
         .route("/api/admin/MyIp", get(my_ip))
+        .route(
+            "/api/admin/realtime/websocket-metrics",
+            limited(Policy::Query, get(realtime::websocket_metrics)),
+        )
         // --- Config ---
         .route(
             "/api/admin/config",

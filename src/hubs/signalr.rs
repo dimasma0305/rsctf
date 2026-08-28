@@ -84,10 +84,10 @@ impl InboundBudget {
             (self.frame_tokens + elapsed * CLIENT_FRAME_RATE).min(CLIENT_FRAME_BURST);
         self.byte_tokens = (self.byte_tokens + elapsed * CLIENT_BYTE_RATE).min(CLIENT_BYTE_BURST);
         let byte_cost = bytes as f64;
-        if self.frame_tokens < 1.0
-            || self.byte_tokens < byte_cost
-            || !admission::try_inbound_frame(bytes)
-        {
+        let local_admitted = self.frame_tokens >= 1.0 && self.byte_tokens >= byte_cost;
+        let admitted = local_admitted && admission::try_inbound_frame(bytes);
+        admission::record_inbound_attempt(bytes, admitted);
+        if !admitted {
             return false;
         }
         self.frame_tokens -= 1.0;
@@ -309,6 +309,8 @@ pub(super) async fn serve(
             }
         }
         _ => {
+            admission::record_protocol_rejection();
+            admission::record_close(admission::CloseReason::InvalidHandshake);
             let _ = tx.send(policy_close("invalid SignalR handshake")).await;
             return;
         }
@@ -325,6 +327,7 @@ pub(super) async fn serve(
                 Some(Ok(Message::Text(text))) => {
                     idle.as_mut().reset(Instant::now() + READ_IDLE_TIMEOUT);
                     if !inbound.admit(text.len()) {
+                        admission::record_close(admission::CloseReason::Quota);
                         let _ = tx.send(policy_close("inbound feed quota exceeded")).await;
                         break;
                     }
@@ -332,6 +335,8 @@ pub(super) async fn serve(
                         ClientMessageDisposition::KeepAlive => {}
                         ClientMessageDisposition::Close => break,
                         ClientMessageDisposition::Unsupported => {
+                            admission::record_protocol_rejection();
+                            admission::record_close(admission::CloseReason::Protocol);
                             let _ = tx.send(Message::Text(format!("{{\"type\":7,\"error\":\"read-only hub\"}}{RS}").into())).await;
                             let _ = tx.send(policy_close("unsupported read-only hub invocation")).await;
                             break;
@@ -340,15 +345,23 @@ pub(super) async fn serve(
                 }
                 Some(Ok(Message::Ping(value))) => {
                     idle.as_mut().reset(Instant::now() + READ_IDLE_TIMEOUT);
-                    if !inbound.admit(value.len()) { break; }
+                    if !inbound.admit(value.len()) {
+                        admission::record_close(admission::CloseReason::Quota);
+                        break;
+                    }
                     if tx.send(Message::Pong(value)).await.is_err() { break; }
                 }
                 Some(Ok(Message::Pong(value))) => {
                     idle.as_mut().reset(Instant::now() + READ_IDLE_TIMEOUT);
-                    if !inbound.admit(value.len()) { break; }
+                    if !inbound.admit(value.len()) {
+                        admission::record_close(admission::CloseReason::Quota);
+                        break;
+                    }
                 }
                 Some(Ok(Message::Binary(value))) => {
                     let _ = inbound.admit(value.len());
+                    admission::record_protocol_rejection();
+                    admission::record_close(admission::CloseReason::Protocol);
                     let _ = tx.send(policy_close("binary application frames are unsupported")).await;
                     break;
                 }
@@ -371,6 +384,7 @@ pub(super) async fn serve(
                 }
                 Err(RecvError::Lagged(skipped)) => {
                     tracing::warn!(skipped, "SignalR feed lost realtime events; forcing authoritative reconnect");
+                    admission::record_close(admission::CloseReason::FeedResync);
                     let _ = tx.send(Message::Text(format!("{{\"type\":7,\"error\":\"feed resync required\"}}{RS}").into())).await;
                     break;
                 }
@@ -378,11 +392,15 @@ pub(super) async fn serve(
             },
             _ = ping.tick() => {
                 if let Some(auth) = &authorization {
-                    if !auth.is_valid().await { break; }
+                    if !auth.is_valid().await {
+                        admission::record_close(admission::CloseReason::Authorization);
+                        break;
+                    }
                 }
                 if tx.send(Message::Text(format!("{{\"type\":6}}{RS}").into())).await.is_err() { break; }
             }
             _ = &mut idle => {
+                admission::record_close(admission::CloseReason::IdleTimeout);
                 let _ = tx.send(policy_close("read-only feed idle timeout")).await;
                 break;
             }

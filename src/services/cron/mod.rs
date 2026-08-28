@@ -247,6 +247,7 @@ async fn run_jobs(state: &SharedState) {
     // Slow operator work is durable in PostgreSQL. Wake a bounded lease owner;
     // this returns immediately and also recovers jobs whose previous owner died.
     crate::services::control_jobs::kick(state.clone());
+    crate::controllers::edit::kick_challenge_state_effects(state.clone());
 
     match crate::services::control_jobs::purge_terminal(state.pg(), 256).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: purged retained control-plane job(s)"),

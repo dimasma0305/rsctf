@@ -248,6 +248,23 @@ pub(crate) async fn request_ad_reconcile_job(
     ensure_vpn: bool,
     ensure_koth: bool,
 ) -> AppResult<crate::services::control_jobs::ControlJobModel> {
+    request_ad_reconcile_job_with_operation(
+        st,
+        game_id,
+        ensure_vpn,
+        ensure_koth,
+        uuid::Uuid::new_v4(),
+    )
+    .await
+}
+
+pub(crate) async fn request_ad_reconcile_job_with_operation(
+    st: &SharedState,
+    game_id: i32,
+    ensure_vpn: bool,
+    ensure_koth: bool,
+    operation_id: uuid::Uuid,
+) -> AppResult<crate::services::control_jobs::ControlJobModel> {
     let input = serde_json::json!({ "ensureVpn": ensure_vpn, "ensureKoth": ensure_koth });
     let fingerprint = super::super::control_jobs::fingerprint(&input)?;
     let job = crate::services::control_jobs::enqueue(
@@ -256,7 +273,7 @@ pub(crate) async fn request_ad_reconcile_job(
         &format!("game:{game_id}"),
         game_id,
         None,
-        uuid::Uuid::new_v4(),
+        operation_id,
         &fingerprint,
         input,
     )

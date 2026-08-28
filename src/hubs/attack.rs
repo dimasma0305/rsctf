@@ -135,6 +135,8 @@ async fn serve_raw(
             msg = ws_rx.next() => match msg {
                 Some(Ok(Message::Text(value))) => {
                     let _ = inbound.admit(value.len());
+                    admission::record_protocol_rejection();
+                    admission::record_close(admission::CloseReason::Protocol);
                     let _ = tx.send(Message::Close(Some(CloseFrame {
                         code: close_code::POLICY,
                         reason: "raw attack feed is read-only".into(),
@@ -143,6 +145,8 @@ async fn serve_raw(
                 }
                 Some(Ok(Message::Binary(value))) => {
                     let _ = inbound.admit(value.len());
+                    admission::record_protocol_rejection();
+                    admission::record_close(admission::CloseReason::Protocol);
                     let _ = tx.send(Message::Close(Some(CloseFrame {
                         code: close_code::POLICY,
                         reason: "raw attack feed is read-only".into(),
@@ -151,12 +155,18 @@ async fn serve_raw(
                 }
                 Some(Ok(Message::Ping(value))) => {
                     idle.as_mut().reset(Instant::now() + Duration::from_secs(90));
-                    if !inbound.admit(value.len()) { break; }
+                    if !inbound.admit(value.len()) {
+                        admission::record_close(admission::CloseReason::Quota);
+                        break;
+                    }
                     if tx.send(Message::Pong(value)).await.is_err() { break; }
                 }
                 Some(Ok(Message::Pong(value))) => {
                     idle.as_mut().reset(Instant::now() + Duration::from_secs(90));
-                    if !inbound.admit(value.len()) { break; }
+                    if !inbound.admit(value.len()) {
+                        admission::record_close(admission::CloseReason::Quota);
+                        break;
+                    }
                 }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
             },
@@ -179,19 +189,24 @@ async fn serve_raw(
                 }
                 Err(RecvError::Lagged(skipped)) => {
                     tracing::warn!(game_id, skipped, "raw attack feed lost events; forcing authoritative reconnect");
+                    admission::record_close(admission::CloseReason::FeedResync);
                     break;
                 }
                 Err(RecvError::Closed) => break,
             },
             _ = keepalive.tick() => {
                 if let Some(auth) = &authorization {
-                    if !auth.is_valid().await { break; }
+                    if !auth.is_valid().await {
+                        admission::record_close(admission::CloseReason::Authorization);
+                        break;
+                    }
                 }
                 if tx.send(Message::Text("{\"kind\":\"ping\"}".to_string().into())).await.is_err() {
                     break;
                 }
             }
             _ = &mut idle => {
+                admission::record_close(admission::CloseReason::IdleTimeout);
                 let _ = tx.send(Message::Close(Some(CloseFrame {
                     code: close_code::POLICY,
                     reason: "raw attack feed idle timeout".into(),
