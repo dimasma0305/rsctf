@@ -526,9 +526,11 @@ pub(super) async fn destroy_shared_container_after_capture_fence(
     Ok(())
 }
 
-/// Caller holds `test-containers-game:{game_id}` through the subsequent challenge
-/// delete, preventing a new test backend from being published after this re-query.
-pub(super) async fn destroy_test_container_locked(
+/// Reap the last test backend after challenge deletion has committed its
+/// `deletion_pending` fence. Test creation rechecks that fence under the
+/// definition lock before publication, so this sweep needs no retained control
+/// lock while it performs backend I/O.
+pub(super) async fn destroy_fenced_test_container(
     st: &SharedState,
     challenge_id: i32,
 ) -> AppResult<()> {

@@ -182,6 +182,7 @@ mod m0207_participation_provision_jobs;
 mod m0208_participant_detail_generations;
 mod m0209_koth_context_generations;
 mod m0216_solve_receipt_audit_retention;
+mod m0221_team_invite_reconcile_claims;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -380,6 +381,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0208_participant_detail_generations::Migration),
             Box::new(m0209_koth_context_generations::Migration),
             Box::new(m0216_solve_receipt_audit_retention::Migration),
+            Box::new(m0221_team_invite_reconcile_claims::Migration),
         ]
     }
 }
@@ -587,6 +589,7 @@ mod tests {
                 "m0208_participant_detail_generations",
                 "m0209_koth_context_generations",
                 "m0216_solve_receipt_audit_retention",
+                "m0221_team_invite_reconcile_claims",
             ]
         );
     }

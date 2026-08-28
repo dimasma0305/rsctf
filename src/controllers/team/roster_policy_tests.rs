@@ -112,6 +112,41 @@ async fn public_roster_removal_obeys_scoring_and_active_lock_fences() {
             .unwrap();
     }
 
+    let over_limit_member = Uuid::new_v4();
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO "Teams" (id, locked) VALUES (18, FALSE);
+        INSERT INTO "TeamMembers" (team_id, user_id)
+            VALUES (18, '00000000-0000-0000-0000-000000000018');
+        INSERT INTO "Games"
+          (id, end_time_utc, ad_scoring_start_round, koth_scoring_start_round)
+        SELECT id, clock_timestamp() + interval '1 hour', NULL, NULL
+          FROM generate_series(100, 132) id;
+        INSERT INTO "Participations" (game_id, team_id, status)
+        SELECT id, 18, 0 FROM generate_series(100, 132) id;
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"UPDATE "TeamMembers" SET user_id = $1
+            WHERE team_id = 18"#,
+    )
+    .bind(over_limit_member)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let over_limit = remove_if_allowed(&pool, 18, over_limit_member)
+        .await
+        .expect_err("an unbounded number of active-game locks was attempted");
+    assert_eq!(
+        over_limit.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert!(membership_exists(&pool, 18, over_limit_member).await);
+
     for (team_id, user_id) in [(10, members[0]), (11, members[1])] {
         let error = remove_if_allowed(&pool, team_id, user_id)
             .await

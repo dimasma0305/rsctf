@@ -5,6 +5,17 @@ use serde::{Deserialize, Serialize};
 use super::*;
 use crate::utils::codec::random_hex;
 
+const INVITE_RECONCILE_LEASE_SECONDS: i64 = 300;
+
+const CLAIM_INVITE_RECONCILE_SQL: &str = r#"UPDATE "TeamInviteOperations"
+       SET reconcile_claim_id = $3,
+           reconcile_claim_expires_at_utc =
+               clock_timestamp() + make_interval(secs => $4)
+     WHERE team_id = $1 AND operation_id = $2
+       AND reconciled_at_utc IS NULL
+       AND (reconcile_claim_id IS NULL
+            OR reconcile_claim_expires_at_utc < clock_timestamp())"#;
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamInviteModel {
@@ -46,40 +57,113 @@ async fn reconcile_invite_rotation(
     team_id: i32,
     operation_id: Uuid,
 ) -> AppResult<()> {
-    let key = format!("team-invite-reconcile:{team_id}");
-    let mut lease =
-        crate::utils::single_flight::PgSessionAdvisoryLock::acquire_roster(st.pg(), &key)
+    let claim_id = Uuid::new_v4();
+    let mut claim = crate::utils::database::begin_sqlx_transaction(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let operation = sqlx::query_as::<_, (bool, bool)>(
+        r#"SELECT reconciled_at_utc IS NOT NULL,
+                  reconcile_claim_id IS NOT NULL
+                  AND reconcile_claim_expires_at_utc >= clock_timestamp()
+             FROM "TeamInviteOperations"
+            WHERE team_id = $1 AND operation_id = $2
+            FOR UPDATE"#,
+    )
+    .bind(team_id)
+    .bind(operation_id)
+    .fetch_optional(&mut *claim)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::conflict("Invite rotation operation expired"))?;
+    if operation.0 {
+        claim
+            .commit()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-    let pending = sqlx::query_scalar::<_, bool>(
-        r#"SELECT reconciled_at_utc IS NULL
+        return Ok(());
+    }
+    if operation.1 {
+        return Err(AppError::overloaded(
+            "Invite rotation reconciliation is already running",
+            2,
+        ));
+    }
+    let claimed = sqlx::query(CLAIM_INVITE_RECONCILE_SQL)
+        .bind(team_id)
+        .bind(operation_id)
+        .bind(claim_id)
+        .bind(INVITE_RECONCILE_LEASE_SECONDS as f64)
+        .execute(&mut *claim)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if claimed.rows_affected() != 1 {
+        return Err(AppError::overloaded(
+            "Invite rotation reconciliation is already running",
+            2,
+        ));
+    }
+    claim
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+
+    if let Err(error) = st.byoc.disconnect_team(&st.db, team_id).await {
+        if let Err(clear_error) = sqlx::query(
+            r#"UPDATE "TeamInviteOperations"
+                  SET reconcile_claim_id = NULL,
+                      reconcile_claim_expires_at_utc = NULL
+                WHERE team_id = $1 AND operation_id = $2
+                  AND reconcile_claim_id = $3
+                  AND reconciled_at_utc IS NULL"#,
+        )
+        .bind(team_id)
+        .bind(operation_id)
+        .bind(claim_id)
+        .execute(st.pg())
+        .await
+        {
+            tracing::warn!(team_id, %operation_id, %claim_id, %clear_error, "failed to release invite reconciliation claim");
+        }
+        return Err(error);
+    }
+
+    let finalized = sqlx::query(
+        r#"UPDATE "TeamInviteOperations"
+              SET reconciled_at_utc = clock_timestamp(),
+                  reconcile_claim_id = NULL,
+                  reconcile_claim_expires_at_utc = NULL
+            WHERE team_id = $1 AND operation_id = $2
+              AND reconcile_claim_id = $3
+              AND reconciled_at_utc IS NULL"#,
+    )
+    .bind(team_id)
+    .bind(operation_id)
+    .bind(claim_id)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if finalized.rows_affected() == 1 {
+        return Ok(());
+    }
+    let reconciled = sqlx::query_scalar::<_, bool>(
+        r#"SELECT reconciled_at_utc IS NOT NULL
              FROM "TeamInviteOperations"
             WHERE team_id = $1 AND operation_id = $2"#,
     )
     .bind(team_id)
     .bind(operation_id)
-    .fetch_optional(lease.connection_mut())
+    .fetch_optional(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::conflict("Invite rotation operation expired"))?;
-    if pending {
-        st.byoc.disconnect_team(&st.db, team_id).await?;
-        sqlx::query(
-            r#"UPDATE "TeamInviteOperations"
-                  SET reconciled_at_utc = clock_timestamp()
-                WHERE team_id = $1 AND operation_id = $2
-                  AND reconciled_at_utc IS NULL"#,
-        )
-        .bind(team_id)
-        .bind(operation_id)
-        .execute(lease.connection_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    .unwrap_or(false);
+    if reconciled {
+        Ok(())
+    } else {
+        Err(AppError::overloaded(
+            "Invite rotation reconciliation ownership changed; retry",
+            2,
+        ))
     }
-    lease
-        .release()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))
 }
 
 /// `PUT /api/team/{id}/invite` — regenerate the invite token (captain only).
@@ -94,18 +178,35 @@ pub async fn update_invite_token(
             "Invite rotation requires an operation ID and observed revision",
         ));
     }
+    let captain_id = sqlx::query_scalar::<_, Uuid>(
+        r#"SELECT captain_id FROM "Teams"
+            WHERE id = $1 AND deletion_pending = FALSE"#,
+    )
+    .bind(id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Team not found"))?;
+    if captain_id != user.id {
+        return Err(AppError::Forbidden);
+    }
     let mut roster = acquire_roster_mutation(st.pg(), id).await?;
     require_team_mutable(roster.transaction_mut(), id).await?;
     ensure_roster_change_allowed(roster.transaction_mut(), id).await?;
-    let team = load_team(&st, id).await?;
-    require_captain(&team, &user)?;
-    let current_revision = sqlx::query_scalar::<_, i64>(
-        r#"SELECT invite_revision FROM "Teams" WHERE id = $1 FOR UPDATE"#,
+    let (team_name, captain_id, current_revision) = sqlx::query_as::<_, (String, Uuid, i64)>(
+        r#"SELECT name, captain_id, invite_revision
+             FROM "Teams"
+            WHERE id = $1 AND deletion_pending = FALSE
+            FOR UPDATE"#,
     )
     .bind(id)
-    .fetch_one(&mut **roster.transaction_mut())
+    .fetch_optional(&mut **roster.transaction_mut())
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Team not found"))?;
+    if captain_id != user.id {
+        return Err(AppError::Forbidden);
+    }
     let stored = sqlx::query_as::<_, (Uuid, i64, i64, String)>(
         r#"SELECT actor_user_id, expected_revision, result_revision, result_token
              FROM "TeamInviteOperations"
@@ -174,10 +275,23 @@ pub async fn update_invite_token(
         .map_err(|error| AppError::internal(error.to_string()))?;
         (token, revision)
     };
-    let _local_owner = roster.release_for_external().await?;
+    roster.release().await?;
     reconcile_invite_rotation(&st, id, request.operation_id).await?;
     Ok(RequestResponse::ok(TeamInviteModel {
-        code: format!("{}:{}:{}", team.name, id, token),
+        code: format!("{team_name}:{id}:{token}"),
         revision: result_revision,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CLAIM_INVITE_RECONCILE_SQL, INVITE_RECONCILE_LEASE_SECONDS};
+
+    #[test]
+    fn reconciliation_is_claimed_without_retaining_a_session_lock() {
+        assert_eq!(INVITE_RECONCILE_LEASE_SECONDS, 300);
+        assert!(CLAIM_INVITE_RECONCILE_SQL.contains("reconcile_claim_id = $3"));
+        assert!(CLAIM_INVITE_RECONCILE_SQL.contains("reconcile_claim_expires_at_utc"));
+        assert!(!CLAIM_INVITE_RECONCILE_SQL.contains("pg_advisory"));
+    }
 }
