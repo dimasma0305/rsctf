@@ -50,6 +50,7 @@ pub struct BulkChallengeMutationResult {
 #[derive(sqlx::FromRow)]
 struct SelectedChallenge {
     id: i32,
+    title: String,
     challenge_type: i16,
     is_enabled: bool,
     deletion_pending: bool,
@@ -171,9 +172,10 @@ async fn complete_desired_state(
 ) -> AppResult<BulkChallengeMutationResult> {
     let desired = request.action == BulkChallengeAction::Enable;
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, game_id).await?;
-    let game_state = sqlx::query_as::<_, (i64, bool)>(
+    let game_state = sqlx::query_as::<_, (i64, bool, bool)>(
         r#"SELECT challenge_configuration_revision,
-                  ad_scoring_start_round IS NOT NULL OR koth_scoring_start_round IS NOT NULL
+                  ad_scoring_start_round IS NOT NULL OR koth_scoring_start_round IS NOT NULL,
+                  start_time_utc <= clock_timestamp() AND end_time_utc >= clock_timestamp()
              FROM "Games" WHERE id = $1 FOR UPDATE"#,
     )
     .bind(game_id)
@@ -191,7 +193,7 @@ async fn complete_desired_state(
     }
 
     let rows = sqlx::query_as::<_, SelectedChallenge>(
-        r#"SELECT challenge.id, challenge."Type" AS challenge_type,
+        r#"SELECT challenge.id, challenge.title, challenge."Type" AS challenge_type,
                   challenge.is_enabled, challenge.deletion_pending,
                   challenge.review_status,
                   EXISTS (SELECT 1 FROM "FlagContexts" flag
@@ -212,6 +214,7 @@ async fn complete_desired_state(
         .map(|row| (row.id, row))
         .collect::<std::collections::HashMap<_, _>>();
     let mut changed_ids = Vec::new();
+    let mut changed_titles = Vec::new();
     let mut outcomes = Vec::with_capacity(request.challenge_ids.len());
     for challenge_id in &request.challenge_ids {
         let Some(row) = by_id.get(challenge_id) else {
@@ -251,6 +254,7 @@ async fn complete_desired_state(
             });
         } else {
             changed_ids.push(*challenge_id);
+            changed_titles.push(row.title.clone());
             outcomes.push(BulkChallengeOutcome {
                 challenge_id: *challenge_id,
                 status: "Changed".into(),
@@ -299,8 +303,37 @@ async fn complete_desired_state(
         .map_err(|error| AppError::internal(error.to_string()))?;
 
     cleanup_operations(st).await;
-    crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+    if let Err(error) = crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await {
+        tracing::warn!(%error, game_id, "bulk challenge VPN reconciliation deferred");
+    }
     flush_game_scoreboards(st, game_id).await;
+    if desired && game_state.2 && !changed_titles.is_empty() {
+        let notice = game_notice::ActiveModel {
+            game_id: Set(game_id),
+            notice_type: Set(NoticeType::NewChallenge),
+            values: Set(serde_json::json!(changed_titles)),
+            publish_time_utc: Set(Utc::now()),
+            ..Default::default()
+        }
+        .insert(&st.db)
+        .await;
+        match notice {
+            Ok(notice) => st.publish_event(
+                "ReceivedGameNotice",
+                Some(game_id),
+                serde_json::json!({
+                    "type": notice.notice_type,
+                    "values": notice.values,
+                    "id": notice.id,
+                    "time": notice.publish_time_utc,
+                })
+                .to_string(),
+            ),
+            Err(error) => {
+                tracing::warn!(%error, game_id, "bulk challenge notice reconciliation deferred");
+            }
+        }
+    }
     if !desired && !changed_ids.is_empty() {
         let challenges = game_challenge::Entity::find()
             .filter(game_challenge::Column::Id.is_in(changed_ids))
