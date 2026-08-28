@@ -105,8 +105,9 @@ pub async fn rollout_workloads(
 
 pub(crate) async fn execute_workload_rollout_job(
     st: &SharedState,
-    job: &crate::services::control_jobs::ControlJobModel,
+    claimed: &crate::services::control_jobs::ClaimedControlJob,
 ) -> AppResult<WorkloadRolloutModel> {
+    let job = &claimed.model;
     let challenge_id = job
         .challenge_id
         .ok_or_else(|| AppError::internal("workload rollout job has no challenge id"))?;
@@ -167,8 +168,27 @@ pub(crate) async fn execute_workload_rollout_job(
         insufficient_capacity: 0,
         failed: 0,
     };
+    let progress_total = i32::try_from(rows.len().max(1)).unwrap_or(i32::MAX);
+    crate::services::control_jobs::set_progress(
+        st.pg(),
+        job.id,
+        claimed.lease_token,
+        0,
+        progress_total,
+    )
+    .await?;
     let mut pending = Vec::new();
+    let mut examined = 0i32;
     for (container_id, backend_id) in rows {
+        if crate::services::control_jobs::cancellation_requested(
+            st.pg(),
+            job.id,
+            claimed.lease_token,
+        )
+        .await?
+        {
+            return Ok(result);
+        }
         let Some(handle) = parse_worker_handle(&backend_id) else {
             result.failed += 1;
             continue;
@@ -210,6 +230,20 @@ pub(crate) async fn execute_workload_rollout_job(
                 tracing::warn!(%container_id, %error, "worker workload rollout failed");
             }
         }
+        examined = examined.saturating_add(1).min(progress_total);
+        crate::services::control_jobs::set_progress(
+            st.pg(),
+            job.id,
+            claimed.lease_token,
+            examined,
+            progress_total,
+        )
+        .await?;
+    }
+    if crate::services::control_jobs::cancellation_requested(st.pg(), job.id, claimed.lease_token)
+        .await?
+    {
+        return Ok(result);
     }
     await_rollout_convergence(&st, &mut result, pending).await?;
     Ok(result)

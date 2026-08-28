@@ -66,6 +66,21 @@ pub async fn get_control_job_by_operation(
     Ok(RequestResponse::ok(job))
 }
 
+pub async fn cancel_control_job(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+    Path(job_id): Path<Uuid>,
+) -> AppResult<RequestResponse<ControlJobModel>> {
+    authorize_job(
+        &st,
+        &user,
+        crate::services::control_jobs::get(st.pg(), job_id).await?,
+    )
+    .await?;
+    let job = crate::services::control_jobs::request_cancellation(st.pg(), job_id).await?;
+    Ok(RequestResponse::ok(job))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::{HeaderMap, HeaderValue};

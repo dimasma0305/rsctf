@@ -15,6 +15,7 @@ test('control-job result counts reject malformed server values', () => {
     progressCurrent: 1,
     progressTotal: 1,
     requestedGeneration: 1,
+    cancellationRequested: false,
     createdAtUtc: 1,
     updatedAtUtc: 1,
   }

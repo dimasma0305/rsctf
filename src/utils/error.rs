@@ -2,7 +2,7 @@
 //! `IntoResponse` impl renders the RSCTF `RequestResponse { title, status }`
 //! envelope so error bodies match the original API shape.
 
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
@@ -39,6 +39,9 @@ pub enum AppError {
 
     #[error("{0}")]
     ServiceUnavailable(String),
+
+    #[error("{title}")]
+    RetryableUnavailable { title: String, retry_after: u64 },
 
     /// Carries a RSCTF numeric `ErrorCode` in the response body distinct from the
     /// HTTP status (e.g. 10001/10002 for game-not-started/ended, which the React
@@ -80,6 +83,12 @@ impl AppError {
     pub fn unavailable(msg: impl Into<String>) -> Self {
         AppError::ServiceUnavailable(msg.into())
     }
+    pub fn overloaded(msg: impl Into<String>, retry_after_seconds: u64) -> Self {
+        AppError::RetryableUnavailable {
+            title: msg.into(),
+            retry_after: retry_after_seconds.max(1),
+        }
+    }
 
     /// RSCTF `ErrorCode.GameEnded` (10002): 400 with the numeric code in the body.
     /// The React `TeamRank` redirects when `error.status === 10002`.
@@ -109,7 +118,9 @@ impl AppError {
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             AppError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
-            AppError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            AppError::ServiceUnavailable(_) | AppError::RetryableUnavailable { .. } => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             AppError::Coded { http, .. } => *http,
             AppError::Database(_) | AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -143,7 +154,17 @@ impl IntoResponse for AppError {
             title,
             status: body_status,
         };
-        (status, Json(body)).into_response()
+        let retry_after = match &self {
+            AppError::RetryableUnavailable { retry_after, .. } => Some(*retry_after),
+            _ => None,
+        };
+        let mut response = (status, Json(body)).into_response();
+        if let Some(retry_after) = retry_after {
+            if let Ok(value) = HeaderValue::from_str(&retry_after.to_string()) {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
+        }
+        response
     }
 }
 

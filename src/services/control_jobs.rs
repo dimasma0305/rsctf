@@ -15,9 +15,19 @@ use uuid::Uuid;
 use crate::app_state::{SharedState, SharedState as StateHandle};
 use crate::utils::error::{AppError, AppResult};
 
+#[path = "control_jobs/cancellation.rs"]
+mod cancellation;
+pub use cancellation::request as request_cancellation;
+pub(crate) use cancellation::{finish as finish_cancellation, requested as cancellation_requested};
+#[path = "control_jobs/admission.rs"]
+mod admission;
+#[path = "control_jobs/execution.rs"]
+mod execution;
+
 const MAX_ACTIVE_JOBS: i64 = 256;
 const MAX_ACTIVE_RESETS_PER_GAME: i64 = 32;
 const MAX_ACTIVE_RESETS_PER_PARTICIPATION: i64 = 2;
+const MAX_OPERATION_ALIASES_PER_JOB: i64 = 64;
 const MAX_SCOPE_BYTES: usize = 256;
 const MAX_INPUT_BYTES: usize = 16 * 1024;
 const MAX_RESULT_BYTES: usize = 64 * 1024;
@@ -100,6 +110,7 @@ struct JobRow {
     result: Option<Value>,
     error: Option<String>,
     lease_token: Option<Uuid>,
+    cancel_requested_at_utc: Option<DateTime<Utc>>,
     created_at_utc: DateTime<Utc>,
     updated_at_utc: DateTime<Utc>,
     finished_at_utc: Option<DateTime<Utc>>,
@@ -121,6 +132,7 @@ pub struct ControlJobModel {
     pub requested_generation: i32,
     pub result: Option<Value>,
     pub error: Option<String>,
+    pub cancellation_requested: bool,
     #[serde(with = "crate::utils::datetime::millis")]
     pub created_at_utc: DateTime<Utc>,
     #[serde(with = "crate::utils::datetime::millis")]
@@ -147,6 +159,7 @@ impl TryFrom<JobRow> for ControlJobModel {
             requested_generation: row.input_revision,
             result: row.result,
             error: row.error,
+            cancellation_requested: row.cancel_requested_at_utc.is_some(),
             created_at_utc: row.created_at_utc,
             updated_at_utc: row.updated_at_utc,
             finished_at_utc: row.finished_at_utc,
@@ -164,11 +177,13 @@ pub struct ClaimedControlJob {
 
 const JOB_COLUMNS: &str = r#"id, kind, scope_key, game_id, challenge_id,
  operation_id, fingerprint, input, input_revision, status, progress_current, progress_total,
- result, error, lease_token, created_at_utc, updated_at_utc, finished_at_utc"#;
+ result, error, lease_token, cancel_requested_at_utc, created_at_utc,
+ updated_at_utc, finished_at_utc"#;
 const JOB_COLUMNS_QUALIFIED: &str = r#"job.id, job.kind, job.scope_key, job.game_id,
  job.challenge_id, job.operation_id, job.fingerprint, job.input, job.input_revision,
  job.status, job.progress_current, job.progress_total, job.result, job.error,
- job.lease_token, job.created_at_utc, job.updated_at_utc, job.finished_at_utc"#;
+ job.lease_token, job.cancel_requested_at_utc, job.created_at_utc,
+ job.updated_at_utc, job.finished_at_utc"#;
 
 fn validate_enqueue(scope_key: &str, fingerprint: &str, input: &Value) -> AppResult<()> {
     if scope_key.is_empty() || scope_key.len() > MAX_SCOPE_BYTES {
@@ -225,11 +240,24 @@ pub async fn enqueue(
 ) -> AppResult<ControlJobModel> {
     validate_enqueue(scope_key, fingerprint, &input)?;
     let mut transaction = pool.begin().await.map_err(database_error)?;
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+    let admitted: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
         .bind(ADMISSION_LOCK_KEY)
-        .execute(&mut *transaction)
+        .fetch_one(&mut *transaction)
         .await
         .map_err(database_error)?;
+    if !admitted {
+        transaction.rollback().await.map_err(database_error)?;
+        if let Some(job) =
+            admission::recover_exact_after_busy(pool, kind, scope_key, operation_id, fingerprint)
+                .await?
+        {
+            return Ok(job);
+        }
+        return Err(AppError::overloaded(
+            "Control-plane admission is busy; retry the same operation",
+            1,
+        ));
+    }
 
     let exact_sql = format!(
         r#"SELECT {JOB_COLUMNS_QUALIFIED} FROM "ControlPlaneJobs" job
@@ -271,6 +299,20 @@ pub async fn enqueue(
                 "A different revision is already active for this control-plane resource",
             ));
         }
+        let aliases: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*) FROM "ControlPlaneJobOperations" WHERE job_id = $1"#,
+        )
+        .bind(row.id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if aliases >= MAX_OPERATION_ALIASES_PER_JOB {
+            transaction.rollback().await.map_err(database_error)?;
+            return Err(AppError::overloaded(
+                "This control-plane job has reached its retry-alias bound",
+                2,
+            ));
+        }
         sqlx::query(
             r#"INSERT INTO "ControlPlaneJobOperations" (operation_id, job_id)
                 VALUES ($1, $2)"#,
@@ -291,8 +333,9 @@ pub async fn enqueue(
             .map_err(database_error)?;
     if active >= MAX_ACTIVE_JOBS {
         transaction.rollback().await.map_err(database_error)?;
-        return Err(AppError::unavailable(
+        return Err(AppError::overloaded(
             "Control-plane job capacity is full; retry later",
+            2,
         ));
     }
     if kind == ControlJobKind::AdReset {
@@ -306,8 +349,9 @@ pub async fn enqueue(
         .map_err(database_error)?;
         if game_active >= MAX_ACTIVE_RESETS_PER_GAME {
             transaction.rollback().await.map_err(database_error)?;
-            return Err(AppError::unavailable(
+            return Err(AppError::overloaded(
                 "Event reset capacity is full; retry later",
+                2,
             ));
         }
         if let Some(participation_id) = input
@@ -328,8 +372,9 @@ pub async fn enqueue(
             .map_err(database_error)?;
             if participation_active >= MAX_ACTIVE_RESETS_PER_PARTICIPATION {
                 transaction.rollback().await.map_err(database_error)?;
-                return Err(AppError::unavailable(
+                return Err(AppError::overloaded(
                     "Team reset capacity is full; retry later",
+                    2,
                 ));
             }
         }
@@ -678,7 +723,7 @@ pub async fn claim_next(
                   lease_expires_at_utc = clock_timestamp() + make_interval(secs => $3),
                   updated_at_utc = clock_timestamp()
              FROM candidate WHERE job.id = candidate.id
-         RETURNING {JOB_COLUMNS}"#
+         RETURNING {JOB_COLUMNS_QUALIFIED}"#
     );
     let row = sqlx::query_as::<_, JobRow>(&sql)
         .bind(kind.as_str())
@@ -725,7 +770,8 @@ pub async fn complete(
                   updated_at_utc = clock_timestamp(),
                   finished_at_utc = clock_timestamp()
             WHERE id = $1 AND status = 1 AND lease_token = $2
-              AND input_revision = $4"#,
+              AND input_revision = $4
+              AND cancel_requested_at_utc IS NULL"#,
     )
     .bind(id)
     .bind(lease_token)
@@ -736,6 +782,9 @@ pub async fn complete(
     .map_err(database_error)?
     .rows_affected();
     if affected == 1 {
+        return Ok(true);
+    }
+    if finish_cancellation(pool, id, lease_token).await? {
         return Ok(true);
     }
     // A stronger trigger merged while this pass ran. Relinquish the lease and
@@ -801,7 +850,8 @@ pub async fn fail(
                   updated_at_utc = clock_timestamp(),
                   finished_at_utc = clock_timestamp()
             WHERE id = $1 AND status = 1 AND lease_token = $2
-              AND input_revision = $4"#,
+              AND input_revision = $4
+              AND cancel_requested_at_utc IS NULL"#,
     )
     .bind(id)
     .bind(lease_token)
@@ -812,6 +862,9 @@ pub async fn fail(
     .map_err(database_error)?
     .rows_affected();
     if affected == 1 {
+        return Ok(true);
+    }
+    if finish_cancellation(pool, id, lease_token).await? {
         return Ok(true);
     }
     sqlx::query(
@@ -881,8 +934,11 @@ pub async fn drain_bounded(state: &StateHandle, limit: usize) -> AppResult<usize
             processed += 1;
             continue;
         }
-        let execution =
-            tokio::time::timeout(Duration::from_secs(14 * 60), execute_claimed(state, &job)).await;
+        let execution = tokio::time::timeout(
+            Duration::from_secs(14 * 60),
+            execution::execute_claimed(state, &job),
+        )
+        .await;
         match execution {
             Ok(Ok(result)) => {
                 let _ = complete(state.pg(), id, lease_token, job.input_revision, result).await?;
@@ -914,54 +970,6 @@ pub async fn drain_bounded(state: &StateHandle, limit: usize) -> AppResult<usize
         processed += 1;
     }
     Ok(processed)
-}
-
-fn input_bool(input: &Value, key: &str, default: bool) -> bool {
-    input.get(key).and_then(Value::as_bool).unwrap_or(default)
-}
-
-async fn execute_claimed(state: &StateHandle, job: &ClaimedControlJob) -> AppResult<Value> {
-    match job.model.kind.as_str() {
-        "VariantGeneration" => {
-            let generated = crate::services::event_security::generate_event_variants_for_job(
-                state,
-                job.model.game_id,
-                job.model.id,
-            )
-            .await?;
-            Ok(serde_json::json!({ "generated": generated }))
-        }
-        "SecurityDerivation" => {
-            let inserted =
-                crate::services::event_security::derive_context_findings(state, job.model.game_id)
-                    .await?;
-            Ok(serde_json::json!({ "inserted": inserted }))
-        }
-        "AdReconcile" => {
-            let (launched, failures) = crate::controllers::edit::run_ad_reconcile_job(
-                state,
-                job.model.game_id,
-                input_bool(&job.input, "ensureVpn", false),
-                input_bool(&job.input, "ensureKoth", false),
-                job.model.operation_id,
-            )
-            .await?;
-            Ok(serde_json::json!({ "launched": launched, "failures": failures }))
-        }
-        "ChallengeBuild" => {
-            crate::controllers::edit::execute_challenge_build_job(state, &job.model, &job.input)
-                .await
-        }
-        "BuildBatch" => crate::controllers::edit::execute_build_batch_job(state, &job.model).await,
-        "WorkloadRollout" => {
-            let result =
-                crate::controllers::edit::execute_workload_rollout_job(state, &job.model).await?;
-            serde_json::to_value(result)
-                .map_err(|error| AppError::internal(format!("rollout result failed: {error}")))
-        }
-        "AdReset" => crate::services::ad::reset::execute_job(state, job).await,
-        _ => Err(AppError::internal("unsupported claimed control-job kind")),
-    }
 }
 
 #[cfg(test)]

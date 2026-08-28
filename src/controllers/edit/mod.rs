@@ -49,7 +49,7 @@ use crate::utils::flag_generator;
 use crate::utils::shared::{ArrayResponse, MessageResponse, PageParams, RequestResponse};
 
 pub(crate) mod control_jobs;
-use control_jobs::{get_control_job, get_control_job_by_operation};
+use control_jobs::{cancel_control_job, get_control_job, get_control_job_by_operation};
 
 const BLOOD_BONUS_DEFAULT: i64 = (50 << 20) + (30 << 10) + 10;
 
@@ -647,7 +647,10 @@ pub fn router() -> Router<SharedState> {
             "/api/edit/jobs/operations/{operationId}",
             get(get_control_job_by_operation),
         )
-        .route("/api/edit/jobs/{jobId}", get(get_control_job))
+        .route(
+            "/api/edit/jobs/{jobId}",
+            get(get_control_job).post(cancel_control_job),
+        )
         // --- Posts ---
         .route("/api/edit/posts", post(add_post))
         .route("/api/edit/posts/{id}", put(update_post).delete(delete_post))
@@ -671,7 +674,7 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/variants/generate",
-            post(event_security::generate_variants),
+            limited(Policy::Concurrency, post(event_security::generate_variants)),
         )
         .route("/api/edit/games/{id}/writeups", delete(delete_writeups))
         .route(
@@ -762,11 +765,11 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/rebuild",
-            post(rebuild_challenge),
+            limited(Policy::Concurrency, post(rebuild_challenge)),
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/workload/rollout",
-            post(rollout_workloads),
+            limited(Policy::Concurrency, post(rollout_workloads)),
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/container",
@@ -808,7 +811,7 @@ pub fn router() -> Router<SharedState> {
         .route("/api/edit/games/{id}/ad/Live", get(ad_live_state))
         .route(
             "/api/edit/games/{id}/ad/EnsureContainers",
-            post(ad_ensure_containers),
+            limited(Policy::Concurrency, post(ad_ensure_containers)),
         )
         .route(
             "/api/edit/games/{id}/ad/ScoringPause",

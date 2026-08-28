@@ -140,6 +140,7 @@ mod m0242_participation_provision_jobs;
 mod m0133_ad_control_revisions;
 mod m0135_control_plane_jobs;
 mod m0143_challenge_import_jobs;
+mod m0232_control_job_cancellation;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -161,6 +162,10 @@ pub(crate) use m0115_flag_egress_feed_cursor::UP_SQL as FLAG_EGRESS_FEED_CURSOR_
 pub(crate) use m0116_game_event_feed_pending::UP_SQL as GAME_EVENT_FEED_PENDING_SQL;
 #[cfg(test)]
 pub(crate) use m0242_participation_provision_jobs::UP_SQL as PARTICIPATION_PROVISION_JOBS_SQL;
+#[cfg(test)]
+pub(crate) use m0143_challenge_import_jobs::UP_SQL as CHALLENGE_IMPORT_JOBS_SQL;
+#[cfg(test)]
+pub(crate) use m0232_control_job_cancellation::UP_SQL as CONTROL_JOB_CANCELLATION_SQL;
 
 pub struct Migrator;
 
@@ -294,6 +299,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0133_ad_control_revisions::Migration),
             Box::new(m0135_control_plane_jobs::Migration),
             Box::new(m0143_challenge_import_jobs::Migration),
+            Box::new(m0232_control_job_cancellation::Migration),
         ]
     }
 }
@@ -439,7 +445,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 18..],
+            &names[names.len() - 19..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -459,6 +465,7 @@ mod tests {
                 "m0133_ad_control_revisions",
                 "m0135_control_plane_jobs",
                 "m0143_challenge_import_jobs",
+                "m0232_control_job_cancellation",
             ]
         );
     }
