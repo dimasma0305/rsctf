@@ -359,7 +359,9 @@ impl ContainerManager for KubernetesContainerManager {
         let isolated = spec.network_mode == crate::utils::enums::NetworkMode::Isolated;
         let internal_only = ad_internal || spec.proxy_only;
         let ad_config = if ad_internal {
-            Some(ad_network_config()?)
+            Some(ad_network_config(
+                spec.allow_egress || !spec.control_plane_callback_ports.is_empty(),
+            )?)
         } else {
             None
         };

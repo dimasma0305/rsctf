@@ -398,6 +398,7 @@ fn validate_koth_reporter_base_url(value: &str) -> anyhow::Result<()> {
     let authority = uri.authority().map(|value| value.as_str());
     if !matches!(uri.scheme_str(), Some("http" | "https"))
         || authority.is_none_or(|value| value.contains('@'))
+        || uri.authority().and_then(|authority| authority.port_u16()) == Some(0)
         || !matches!(uri.path(), "" | "/")
         || uri.query().is_some()
     {
@@ -527,6 +528,7 @@ mod tests {
         assert!(validate_koth_reporter_base_url("https://rsctf.internal/").is_ok());
         assert!(validate_koth_reporter_base_url("rsctf.internal").is_err());
         assert!(validate_koth_reporter_base_url("http://user@rsctf.internal").is_err());
+        assert!(validate_koth_reporter_base_url("http://rsctf.internal:0").is_err());
         assert!(validate_koth_reporter_base_url("http://rsctf.internal/api").is_err());
         assert!(validate_koth_reporter_base_url("http://rsctf.internal/?target=other").is_err());
     }

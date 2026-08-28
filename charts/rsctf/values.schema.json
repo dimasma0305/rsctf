@@ -377,7 +377,7 @@
     "kubernetes": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["challengeNamespace", "createChallengeNamespace", "challengeNamespaceLabels", "publicEntry", "challengeUid", "kothReporterPodSelector", "metrics", "adServiceCidr", "isolatedIngressCidrs", "podCidrs", "networkPolicyEnforced", "isolatedPodNetns"],
+      "required": ["challengeNamespace", "createChallengeNamespace", "challengeNamespaceLabels", "publicEntry", "challengeUid", "kothReporterPodSelector", "dnsCidrs", "metrics", "adServiceCidr", "isolatedIngressCidrs", "podCidrs", "networkPolicyEnforced", "isolatedPodNetns"],
       "properties": {
         "challengeNamespace": {"type": "string"},
         "createChallengeNamespace": {"type": "boolean"},
@@ -385,6 +385,7 @@
         "publicEntry": {"type": "string"},
         "challengeUid": {"type": "integer", "minimum": 1},
         "kothReporterPodSelector": {"type": "string", "maxLength": 1024, "description": "Exact callback Service pod selector. Managed KotH Kubernetes egress requires app.kubernetes.io/name, app.kubernetes.io/instance, and app.kubernetes.io/component."},
+        "dnsCidrs": {"type": "array", "items": {"type": "string"}, "maxItems": 8, "uniqueItems": true, "description": "Exact cluster resolver IPs or host-prefix CIDRs. Empty derives nameservers from the rsctf Pod's /etc/resolv.conf."},
         "metrics": {
           "type": "object",
           "additionalProperties": false,

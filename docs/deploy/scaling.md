@@ -444,6 +444,12 @@ is looked up in the challenge namespace and cannot reach the callback Service.
 The generated challenge NetworkPolicy uses those three labels together in the
 rsctf release namespace. Do not shorten it to the shared application name: that
 would let compromised challenge code reach unrelated web or engine Pods.
+DNS egress is limited to the exact resolver addresses derived from the rsctf
+Pod's `/etc/resolv.conf`, plus the conventional CoreDNS backend selector for
+post-DNAT enforcement. Set `kubernetes.dnsCidrs` to the resolver IPs used by
+challenge Pods when using NodeLocal DNSCache or an out-of-cluster control plane.
+The resolver set is also part of crash-recovery identity, so a changed DNS path
+cannot adopt a policy created for the old path.
 
 When the deployment uses the A&D VPN, set `vpn.enabled: true` on every role so
 web/engine mutations participate in the durable network-policy acknowledgement.

@@ -343,6 +343,10 @@ kubernetes:
   # all/control/network infer their own three stable Service labels. A split
   # engine must copy the network release Service selector here.
   kothReporterPodSelector: ""
+  # Exact cluster resolver addresses used by challenge Pods. Empty derives
+  # nameservers from the rsctf Pod's /etc/resolv.conf. Set this explicitly for
+  # out-of-cluster control planes or clusters with a different DNS path.
+  dnsCidrs: []
   metrics:
     enabled: true
   # Required on every non-migration Kubernetes role, with or without VPN. This

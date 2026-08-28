@@ -57,6 +57,8 @@ jobs:
 
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: server
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -374,6 +376,7 @@ jobs:
 
   kubernetes-callback:
     name: Kubernetes KotH callback isolation
+    needs: rust
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -381,6 +384,24 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          submodules: recursive
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpcap-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: server
+
+      - name: Compile production-policy emitter
+        run: >-
+          cargo test --locked --lib
+          services::k8s::tests::emit_managed_koth_callback_policy_for_live_test
+          --no-run
 
       - name: Install pinned Kubernetes tools
         run: |

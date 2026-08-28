@@ -157,6 +157,7 @@ fn managed_reporter_replaces_a_pre_upgrade_create_orphan() {
         )],
         callback_ports: vec![80, 8080],
         routing_revision: "0123456789abcdef".to_string(),
+        credential_revision: "00112233445566778899aabbccddeeff".to_string(),
     };
 
     let legacy = replacement_container_spec(cycle.expected_image.clone(), &cycle, &hill, None);
@@ -169,7 +170,9 @@ fn managed_reporter_replaces_a_pre_upgrade_create_orphan() {
     );
     assert_eq!(
         managed.operation_id.as_deref(),
-        Some("koth-cycle:41:attempt:3:managed-reporter-v1:0123456789abcdef")
+        Some(
+            "koth-cycle:41:attempt:3:managed-reporter-v2:0123456789abcdef:00112233445566778899aabbccddeeff"
+        )
     );
     assert_ne!(managed.operation_id, legacy.operation_id);
     assert_eq!(managed.control_plane_callback_ports, vec![80, 8080]);
@@ -193,18 +196,26 @@ fn managed_reporter_routing_revision_fences_crash_retry_identity() {
         reset_attempt: 3,
         readiness_attempt: 0,
     };
-    let reporter =
-        |routing_revision: &str| crate::services::ad::koth_reporter::TargetReporterRuntime {
+    let reporter = |routing_revision: &str, credential_revision: &str| {
+        crate::services::ad::koth_reporter::TargetReporterRuntime {
             env: Vec::new(),
             callback_ports: vec![80, 8080],
             routing_revision: routing_revision.to_string(),
-        };
-    let original = reporter("0123456789abcdef");
-    let changed = reporter("fedcba9876543210");
+            credential_revision: credential_revision.to_string(),
+        }
+    };
+    let original = reporter("0123456789abcdef", "00112233445566778899aabbccddeeff");
+    let changed = reporter("fedcba9876543210", "112233445566778899aabbccddeeff00");
+    let restored_route = reporter("0123456789abcdef", "2233445566778899aabbccddeeff0011");
 
     assert_ne!(
         replacement_operation_id(&cycle, Some(&original)),
         replacement_operation_id(&cycle, Some(&changed))
+    );
+    assert_ne!(
+        replacement_operation_id(&cycle, Some(&original)),
+        replacement_operation_id(&cycle, Some(&restored_route)),
+        "returning to a prior route with a rotated credential must use a fresh workload identity"
     );
 }
 

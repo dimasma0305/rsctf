@@ -15,6 +15,10 @@ fn reporter_selector() -> BTreeMap<String, String> {
     ])
 }
 
+fn dns_cidrs() -> Vec<IpNet> {
+    vec!["10.96.0.10/32".parse().unwrap()]
+}
+
 #[test]
 fn private_proxy_and_ad_services_use_cluster_ip() {
     assert_eq!(service_type(true), "ClusterIP");
@@ -33,6 +37,7 @@ fn ad_policy_is_default_deny_with_allowlisted_ingress() {
         control_namespace: Some("rsctf-system".to_string()),
         control_pod_label: ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
         reporter_pod_selector: None,
+        dns_cidrs: dns_cidrs(),
     };
     let policy = network::ad_network_policy("test", &labels, None, 8080, false, &[], &config);
     let spec = policy.spec.unwrap();
@@ -61,6 +66,7 @@ fn ad_internet_egress_still_excludes_private_networks() {
         control_namespace: Some("rsctf-system".to_string()),
         control_pod_label: ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
         reporter_pod_selector: None,
+        dns_cidrs: dns_cidrs(),
     };
     let policy = network::ad_network_policy("test", &labels, None, 8080, true, &[], &config);
     let egress = policy.spec.unwrap().egress.unwrap();
@@ -85,6 +91,7 @@ fn managed_koth_callback_allows_only_reporter_http_and_dns() {
         control_namespace: Some("rsctf-system".to_string()),
         control_pod_label: ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
         reporter_pod_selector: Some(reporter_selector()),
+        dns_cidrs: dns_cidrs(),
     };
     let policy =
         network::ad_network_policy("test", &labels, None, 8080, false, &[80, 8080], &config);
@@ -115,6 +122,11 @@ fn managed_koth_callback_allows_only_reporter_http_and_dns() {
         Some(&reporter_selector())
     );
     assert_eq!(egress[1].ports.as_ref().map(Vec::len), Some(2));
+    assert!(egress[1].to.as_ref().unwrap().iter().any(|peer| peer
+        .ip_block
+        .as_ref()
+        .map(|block| block.cidr.as_str())
+        == Some("10.96.0.10/32")));
 }
 
 #[test]
@@ -124,15 +136,24 @@ fn managed_koth_callback_selector_requires_exact_service_identity() {
     )
     .unwrap();
     assert_eq!(selector, reporter_selector());
-    let route = network::reporter_route_identity("rsctf-system", &selector);
+    let route = network::reporter_route_identity("rsctf-system", &selector, &dns_cidrs());
     assert_eq!(
         route,
-        "namespace=rsctf-system\0selector=app.kubernetes.io/component=network,app.kubernetes.io/instance=rsctf-network,app.kubernetes.io/name=rsctf"
+        "namespace=rsctf-system\0selector=app.kubernetes.io/component=network,app.kubernetes.io/instance=rsctf-network,app.kubernetes.io/name=rsctf\0dns=10.96.0.10/32"
     );
     assert_ne!(
         route,
-        network::reporter_route_identity("rsctf-control", &selector),
+        network::reporter_route_identity("rsctf-control", &selector, &dns_cidrs()),
         "the control namespace is part of the crash-recovery routing identity"
+    );
+    assert_ne!(
+        route,
+        network::reporter_route_identity(
+            "rsctf-system",
+            &selector,
+            &["169.254.20.10/32".parse().unwrap()]
+        ),
+        "the effective DNS route is part of the crash-recovery routing identity"
     );
 
     for invalid in [
@@ -146,6 +167,23 @@ fn managed_koth_callback_selector_requires_exact_service_identity() {
             "accepted unsafe selector {invalid}"
         );
     }
+}
+
+#[test]
+fn kubernetes_dns_peers_support_exact_cluster_and_node_local_resolvers() {
+    assert_eq!(
+        network::parse_dns_cidrs(Some("10.96.0.10,169.254.20.10/32"), "").unwrap(),
+        vec![
+            "10.96.0.10/32".parse::<IpNet>().unwrap(),
+            "169.254.20.10/32".parse::<IpNet>().unwrap()
+        ]
+    );
+    assert_eq!(
+        network::parse_dns_cidrs(None, "search cluster.local\nnameserver fd00::53\n").unwrap(),
+        vec!["fd00::53/128".parse::<IpNet>().unwrap()]
+    );
+    assert!(network::parse_dns_cidrs(Some("10.96.0.0/24"), "").is_err());
+    assert!(network::parse_dns_cidrs(Some("127.0.0.1"), "").is_err());
 }
 
 #[tokio::test]
@@ -165,6 +203,7 @@ async fn managed_callback_policy_round_trips_through_kubernetes_api() {
         control_namespace: Some("rsctf-system".to_string()),
         control_pod_label: ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
         reporter_pod_selector: Some(reporter_selector()),
+        dns_cidrs: dns_cidrs(),
     };
     let policy =
         network::ad_network_policy("test", &labels, None, 8080, false, &[80, 8080], &config);
@@ -214,6 +253,84 @@ async fn managed_callback_policy_round_trips_through_kubernetes_api() {
             "app.kubernetes.io/component": "network"
         })
     );
+    assert!(value["spec"]["egress"][1]["to"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|peer| peer["ipBlock"]["cidr"] == "10.96.0.10/32"));
+}
+
+#[tokio::test]
+#[ignore = "emits the actual Kubernetes manager policy for the Kind acceptance test"]
+async fn emit_managed_koth_callback_policy_for_live_test() {
+    use std::convert::Infallible;
+    use std::future::pending;
+    use std::sync::{Arc, Mutex};
+
+    use axum::http::{Method, Request, Response};
+    use kube::client::Body;
+    use tokio::sync::Notify;
+    use tower::service_fn;
+
+    let output = std::env::var("RSCTF_K8S_POLICY_OUTPUT")
+        .expect("RSCTF_K8S_POLICY_OUTPUT must name the temporary acceptance artifact");
+    let operation_id = std::env::var("RSCTF_K8S_POLICY_OPERATION_ID")
+        .expect("RSCTF_K8S_POLICY_OPERATION_ID must name the lifecycle identity under acceptance");
+    let captured = Arc::new(Mutex::new(None));
+    let captured_request = Arc::clone(&captured);
+    let policy_started = Arc::new(Notify::new());
+    let captured_policy_started = Arc::clone(&policy_started);
+    let service = service_fn(move |request: Request<Body>| {
+        let captured_request = Arc::clone(&captured_request);
+        let policy_started = Arc::clone(&captured_policy_started);
+        async move {
+            assert_eq!(request.method(), Method::POST);
+            assert_eq!(
+                request.uri().path(),
+                "/apis/networking.k8s.io/v1/namespaces/rsctf-challenges/networkpolicies"
+            );
+            let body = request.into_body().collect_bytes().await.unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            *captured_request.lock().unwrap() = Some(value);
+            policy_started.notify_one();
+            pending::<Result<Response<Body>, Infallible>>().await
+        }
+    });
+    let manager = KubernetesContainerManager {
+        client: Client::new(service, "rsctf-challenges"),
+        namespace: "rsctf-challenges".to_string(),
+        scope: orphans::workload_scope("rsctf-challenges", Some("rsctf-system")),
+        public_entry: Some("192.0.2.10".to_string()),
+    };
+    let create = tokio::spawn(async move {
+        manager
+            .create(ContainerSpec {
+                game_kind: rsctf_worker_protocol::GameKind::KingOfTheHill,
+                image: format!("registry.example/hill@sha256:{}", "a".repeat(64)),
+                memory_limit: 256,
+                cpu_count: 1,
+                storage_limit: crate::services::container::DEFAULT_CONTAINER_STORAGE_MB,
+                expose_port: 8080,
+                publish_port: true,
+                proxy_only: false,
+                env: Vec::new(),
+                flag: Some("flag{live-policy-fixture}".to_string()),
+                ad_network: Some("rsctf-ad".to_string()),
+                allow_egress: false,
+                control_plane_callback_ports: vec![8080],
+                network_mode: crate::utils::enums::NetworkMode::Open,
+                operation_id: Some(operation_id),
+            })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), policy_started.notified())
+        .await
+        .expect("the production manager did not submit its NetworkPolicy");
+    create.abort();
+    assert!(create.await.unwrap_err().is_cancelled());
+
+    let value = captured.lock().unwrap().take().unwrap();
+    std::fs::write(&output, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
 }
 
 #[tokio::test]
@@ -262,6 +379,7 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
             "RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR",
             "app.kubernetes.io/name=rsctf,app.kubernetes.io/instance=rsctf-network,app.kubernetes.io/component=network",
         ),
+        ("RSCTF_K8S_DNS_CIDRS", "10.96.0.10/32"),
     ]);
 
     let image = format!("registry.example/hill@sha256:{}", "a".repeat(64));
@@ -283,7 +401,8 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
         operation_id: Some(operation_id.to_string()),
     };
     let base_url = "http://rsctf-network.rsctf-system.svc:8080";
-    let original_route = network::reporter_route_identity("rsctf-system", &reporter_selector());
+    let original_route =
+        network::reporter_route_identity("rsctf-system", &reporter_selector(), &dns_cidrs());
     let changed_selector = BTreeMap::from([
         ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
         (
@@ -295,7 +414,8 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
             "control".to_string(),
         ),
     ]);
-    let changed_route = network::reporter_route_identity("rsctf-system", &changed_selector);
+    let changed_route =
+        network::reporter_route_identity("rsctf-system", &changed_selector, &dns_cidrs());
     let revision = |route: &str| {
         crate::services::ad::koth_reporter::routing_revision(
             base_url,
@@ -306,12 +426,19 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
         .unwrap()
     };
     let original_operation = format!(
-        "koth-cycle:41:attempt:3:managed-reporter-v1:{}",
-        revision(&original_route)
+        "koth-cycle:41:attempt:3:managed-reporter-v2:{}:{}",
+        revision(&original_route),
+        "00112233445566778899aabbccddeeff"
     );
     let changed_operation = format!(
-        "koth-cycle:41:attempt:3:managed-reporter-v1:{}",
-        revision(&changed_route)
+        "koth-cycle:41:attempt:3:managed-reporter-v2:{}:{}",
+        revision(&changed_route),
+        "112233445566778899aabbccddeeff00"
+    );
+    let restored_operation = format!(
+        "koth-cycle:41:attempt:3:managed-reporter-v2:{}:{}",
+        revision(&original_route),
+        "2233445566778899aabbccddeeff0011"
     );
     let resource_name = |operation: &str| {
         format!(
@@ -322,7 +449,10 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
     };
     let original_name = resource_name(&original_operation);
     let changed_name = resource_name(&changed_operation);
+    let restored_name = resource_name(&restored_operation);
     assert_ne!(original_name, changed_name);
+    assert_ne!(original_name, restored_name);
+    assert_ne!(changed_name, restored_name);
 
     let requests = Arc::new(Mutex::new(Vec::<(Method, String, String)>::new()));
     let captured_requests = Arc::clone(&requests);
@@ -386,6 +516,8 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
 
     let created = manager.create(spec(&changed_operation)).await.unwrap();
     assert_eq!(created.id, changed_name);
+    let restored = manager.create(spec(&restored_operation)).await.unwrap();
+    assert_eq!(restored.id, restored_name);
 
     let requests = requests.lock().unwrap();
     assert_eq!(
@@ -403,6 +535,14 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
             .count(),
         3,
         "the retry created a fresh NetworkPolicy, Pod, and Service under the changed routing identity"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|(method, _, name)| *method == Method::POST && name == &restored_name)
+            .count(),
+        3,
+        "returning to route A with a new credential created fresh Kubernetes resources"
     );
     assert!(requests
         .iter()

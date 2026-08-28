@@ -10,9 +10,13 @@ done
 
 cluster_name="rsctf-koth-callback-${RANDOM}"
 node_image='kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5'
+policy_directory=''
 
 cleanup() {
   kind delete cluster --name "$cluster_name" >/dev/null 2>&1 || true
+  if [[ -n "$policy_directory" && -d "$policy_directory" && ! -L "$policy_directory" ]]; then
+    rm -r -- "$policy_directory"
+  fi
 }
 trap cleanup EXIT
 
@@ -110,6 +114,77 @@ kubectl wait --namespace rsctf-system \
 kubectl wait --namespace rsctf-challenges \
   --for=condition=Ready pod/callback-client --timeout=120s
 
+# The dollar-prefixed fields belong to awk, not this shell.
+# shellcheck disable=SC2016
+dns_server="$(kubectl exec --namespace rsctf-challenges callback-client -- \
+  awk '$1 == "nameserver" { print $2; exit }' /etc/resolv.conf)"
+case "$dns_server" in
+  *:*) dns_cidr="${dns_server}/128" ;;
+  *.*) dns_cidr="${dns_server}/32" ;;
+  *)
+    echo 'challenge Pod did not expose a usable cluster DNS resolver' >&2
+    exit 1
+    ;;
+esac
+
+policy_directory="$(mktemp -d /tmp/rsctf-koth-policy.XXXXXX)"
+emit_policy() {
+  local output=$1
+  local operation_id=$2
+  RSCTF_K8S_AD_SERVICE_CIDR='10.96.0.0/12' \
+  RSCTF_K8S_CONTROL_NAMESPACE='rsctf-system' \
+  RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR='app.kubernetes.io/name=rsctf,app.kubernetes.io/instance=rsctf-network,app.kubernetes.io/component=network' \
+  RSCTF_K8S_DNS_CIDRS="$dns_cidr" \
+  RSCTF_K8S_POLICY_OUTPUT="$output" \
+  RSCTF_K8S_POLICY_OPERATION_ID="$operation_id" \
+    cargo test --locked --lib \
+      services::k8s::tests::emit_managed_koth_callback_policy_for_live_test \
+      -- --ignored --exact
+}
+
+route_a_policy="${policy_directory}/route-a-original.json"
+route_b_policy="${policy_directory}/route-b.json"
+policy_file="${policy_directory}/route-a-restored.json"
+emit_policy "$route_a_policy" \
+  'koth-cycle:41:attempt:3:managed-reporter-v2:0123456789abcdef:00112233445566778899aabbccddeeff'
+emit_policy "$route_b_policy" \
+  'koth-cycle:41:attempt:3:managed-reporter-v2:fedcba9876543210:112233445566778899aabbccddeeff00'
+emit_policy "$policy_file" \
+  'koth-cycle:41:attempt:3:managed-reporter-v2:0123456789abcdef:2233445566778899aabbccddeeff0011'
+
+mapfile -t orphan_names < <(
+  jq -r '.metadata.name' "$route_a_policy" "$route_b_policy" "$policy_file" | sort -u
+)
+if [[ "${#orphan_names[@]}" -ne 3 ]]; then
+  echo 'A-to-B-to-A credential rotation reused a Kubernetes workload identity' >&2
+  exit 1
+fi
+
+# Leave the first two policies as crash orphans. The restored route must create
+# a third resource rather than adopting the original route-A policy.
+kubectl apply --namespace rsctf-challenges -f "$route_a_policy"
+kubectl apply --namespace rsctf-challenges -f "$route_b_policy"
+
+jq --exit-status \
+  --arg dns_cidr "$dns_cidr" \
+  '.spec.egress[0].to[0].podSelector.matchLabels == {
+      "app.kubernetes.io/name": "rsctf",
+      "app.kubernetes.io/instance": "rsctf-network",
+      "app.kubernetes.io/component": "network"
+    }
+    and (.spec.egress[0].ports | any(.protocol == "TCP" and .port == 8080))
+    and (.spec.egress[1].to | any(.ipBlock.cidr == $dns_cidr))' \
+  "$policy_file" >/dev/null
+
+mapfile -t policy_labels < <(
+  jq -r '.spec.podSelector.matchLabels | to_entries[] | "\(.key)=\(.value)"' \
+    "$policy_file"
+)
+for label in "${policy_labels[@]}"; do
+  kubectl label --namespace rsctf-challenges pod/callback-client \
+    --overwrite "$label" >/dev/null
+done
+
 callback_url='http://rsctf-network.rsctf-system.svc:8080/echo?msg=callback-ok'
 unrelated_url='http://rsctf-web.rsctf-system.svc:8080/echo?msg=unexpected'
 
@@ -140,44 +215,7 @@ if kubectl exec --namespace rsctf-challenges callback-client -- \
   exit 1
 fi
 
-kubectl apply -f - <<'YAML'
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: managed-koth-callback
-  namespace: rsctf-challenges
-spec:
-  podSelector:
-    matchLabels:
-      app: rsctf-koth-callback-test
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: rsctf-system
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: rsctf
-              app.kubernetes.io/instance: rsctf-network
-              app.kubernetes.io/component: network
-      ports:
-        - protocol: TCP
-          port: 8080
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-YAML
+kubectl apply --namespace rsctf-challenges -f "$policy_file"
 
 policy_enforced=0
 for _ in $(seq 1 30); do

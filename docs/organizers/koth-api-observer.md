@@ -209,11 +209,13 @@ the managed replacement is active. A retry of the same reset reuses the same
 credential; every new reset rotates it. Changing the reporter origin or rsctf
 bind port during a pending create rotates the credential and gives the
 replacement a new routing identity. An older crash-orphan therefore has neither
-a valid credential nor an adoptable Kubernetes workload name. Changing the
-Kubernetes control namespace or exact callback Service selector is also a route
-change and rotates both identities. Disabling managed reporting or removing the
-API-hill configuration revokes any credential left by a pending create before
-an uncredentialed replacement is started.
+a valid credential nor an adoptable Kubernetes workload name. Workload identity
+also includes a one-way fingerprint of the current random credential, so a
+route A → B → A rollback cannot revive the first route-A orphan. Changing the
+Kubernetes control namespace, exact callback Service selector, or DNS resolver
+peers is also a route change and rotates both identities. Disabling managed
+reporting or removing the API-hill configuration revokes any credential left by
+a pending create before an uncredentialed replacement is started.
 
 Set `RSCTF_KOTH_REPORTER_BASE_URL` to an absolute HTTP(S) origin with no path,
 credentials, query, or fragment. Docker examples expose the control process on
@@ -227,7 +229,9 @@ identity and both its public port and rsctf's configured bind port, covering CNI
 enforcement before or after Service port translation. The Helm chart derives
 the selector when the lifecycle owner also serves that callback. A split
 `engine` must set `kubernetes.kothReporterPodSelector` to the exact selector of
-the `network` Service.
+the `network` Service. DNS egress uses exact resolver IPs derived from
+`/etc/resolv.conf` or `kubernetes.dnsCidrs`, which covers both ordinary CoreDNS
+and NodeLocal DNSCache without opening unrelated cluster destinations.
 
 ## Wire contract
 

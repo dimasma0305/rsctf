@@ -471,10 +471,13 @@ fn replacement_operation_id(
 ) -> String {
     let reporter_identity = reporter.map_or_else(String::new, |runtime| {
         // v0.1.92 can leave a crash-orphan under the unsuffixed identity. The
-        // contract version fences that workload, while the non-secret routing
-        // revision prevents Kubernetes from adopting a Pod or NetworkPolicy
-        // whose injected callback URLs or translated ports are stale.
-        format!(":managed-reporter-v1:{}", runtime.routing_revision)
+        // contract version fences that workload. The non-secret routing and
+        // credential revisions prevent adoption when callback policy changes
+        // or a route is revisited after its prior credential was revoked.
+        format!(
+            ":managed-reporter-v2:{}:{}",
+            runtime.routing_revision, runtime.credential_revision
+        )
     });
     format!(
         "koth-cycle:{}:attempt:{}{}",

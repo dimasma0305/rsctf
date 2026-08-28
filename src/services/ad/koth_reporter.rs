@@ -26,6 +26,10 @@ pub(crate) struct TargetReporterRuntime {
     /// backend route identity. It fences crash-orphan adoption when routing
     /// changes.
     pub(crate) routing_revision: String,
+    /// Non-secret fingerprint of the current random credential. Same-contract
+    /// retries keep it stable, while every credential rotation fences any
+    /// crash-orphaned workload even when routing later returns to an old value.
+    pub(crate) credential_revision: String,
 }
 
 pub(crate) struct TargetReporterRoute<'a> {
@@ -49,6 +53,11 @@ fn callback_origin_port(base_url: &str) -> AppResult<i32> {
                 80
             }
         });
+    if port == 0 {
+        return Err(AppError::internal(
+            "managed KotH reporter callback port must be between 1 and 65535",
+        ));
+    }
     Ok(i32::from(port))
 }
 
@@ -58,6 +67,11 @@ fn callback_ports(base_url: &str, bind_addr: &str) -> AppResult<Vec<i32>> {
         .parse::<std::net::SocketAddr>()
         .map(|address| i32::from(address.port()))
         .map_err(|_| AppError::internal("invalid rsctf bind address for managed KotH reporting"))?;
+    if target_port == 0 {
+        return Err(AppError::internal(
+            "managed KotH reporter target port must be between 1 and 65535",
+        ));
+    }
     let mut ports = vec![origin_port];
     if target_port != origin_port {
         ports.push(target_port);
@@ -105,6 +119,7 @@ fn runtime(
 ) -> AppResult<TargetReporterRuntime> {
     let base_url = base_url.trim_end_matches('/');
     let callback_ports = callback_ports(base_url, bind_addr)?;
+    let credential_revision = crate::utils::codec::sha256_str(&secret)[..32].to_string();
     let challenge_api = format!("{base_url}/api/v1/koth/games/{game_id}/challenges/{challenge_id}");
     Ok(TargetReporterRuntime {
         env: vec![
@@ -127,6 +142,7 @@ fn runtime(
             backend_kind,
             backend_route_identity,
         )?,
+        credential_revision,
         callback_ports,
     })
 }
@@ -315,6 +331,7 @@ mod tests {
         .unwrap();
         assert_eq!(http.callback_ports, vec![80, 8080]);
         assert_eq!(http.routing_revision.len(), 16);
+        assert_eq!(http.credential_revision.len(), 32);
         assert!(http
             .routing_revision
             .bytes()
@@ -384,6 +401,26 @@ mod tests {
             None,
         )
         .is_err());
+        assert!(runtime(
+            "http://rsctf-control:0",
+            "0.0.0.0:8080",
+            7,
+            9,
+            "secret".to_string(),
+            ContainerBackendKind::Docker,
+            None,
+        )
+        .is_err());
+        assert!(runtime(
+            "http://rsctf-control:8080",
+            "0.0.0.0:0",
+            7,
+            9,
+            "secret".to_string(),
+            ContainerBackendKind::Docker,
+            None,
+        )
+        .is_err());
     }
 
     #[tokio::test]
@@ -429,6 +466,30 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+
+        let invalid_route = ensure_for_cycle(
+            &pool,
+            route(
+                Some("http://rsctf-koth-reporter:0"),
+                ContainerBackendKind::Docker,
+                None,
+            ),
+            41,
+            7,
+            9,
+            1,
+        )
+        .await;
+        assert!(invalid_route.is_err());
+        let reporter_rows: i64 =
+            sqlx::query_scalar(r#"SELECT count(*) FROM "KothTargetReporters""#)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            reporter_rows, 0,
+            "an invalid callback port must fail before persisting lifecycle state"
+        );
 
         let first = ensure_for_cycle(
             &pool,

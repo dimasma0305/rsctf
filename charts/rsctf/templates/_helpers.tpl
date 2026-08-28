@@ -111,6 +111,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- fail "kubernetes.kothReporterPodSelector must include app.kubernetes.io/name, app.kubernetes.io/instance, and app.kubernetes.io/component" -}}
 {{- end -}}
 {{- $reporterOrigin := .Values.config.kothReporterBaseUrl | trim -}}
+{{- if and (not (empty $reporterOrigin)) (regexMatch `:0/?$` $reporterOrigin) -}}
+  {{- fail "config.kothReporterBaseUrl must use a callback port between 1 and 65535" -}}
+{{- end -}}
 {{- if and (eq $localBackend "kubernetes") (not (empty $reporterOrigin)) -}}
   {{- $authority := regexReplaceAll "^https?://" $reporterOrigin "" -}}
   {{- $host := regexReplaceAll ":[0-9]+/?$" $authority "" | trimSuffix "/" -}}

@@ -14,6 +14,7 @@ use crate::utils::error::{AppError, AppResult};
 const AD_INGRESS_CIDRS_ENV: &str = "RSCTF_K8S_AD_INGRESS_CIDRS";
 const CONTROL_NAMESPACE_ENV: &str = "RSCTF_K8S_CONTROL_NAMESPACE";
 const CONTROL_POD_LABEL_ENV: &str = "RSCTF_K8S_CONTROL_POD_LABEL";
+const DNS_CIDRS_ENV: &str = "RSCTF_K8S_DNS_CIDRS";
 const KOTH_REPORTER_POD_SELECTOR_ENV: &str = "RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR";
 const POLICY_ENFORCED_ENV: &str = "RSCTF_K8S_NETWORK_POLICY_ENFORCED";
 const ISOLATED_INGRESS_CIDRS_ENV: &str = "RSCTF_K8S_ISOLATED_INGRESS_CIDRS";
@@ -31,6 +32,7 @@ pub(super) struct AdNetworkConfig {
     pub(super) control_namespace: Option<String>,
     pub(super) control_pod_label: (String, String),
     pub(super) reporter_pod_selector: Option<BTreeMap<String, String>>,
+    pub(super) dns_cidrs: Vec<IpNet>,
 }
 
 pub(super) fn validate_policy_enforcement_acknowledgement() -> AppResult<()> {
@@ -169,13 +171,22 @@ fn configured_reporter_pod_selector() -> AppResult<Option<BTreeMap<String, Strin
 pub(super) fn reporter_route_identity(
     namespace: &str,
     selector: &BTreeMap<String, String>,
+    dns_cidrs: &[IpNet],
 ) -> String {
     let selector = selector
         .iter()
         .map(|(key, value)| format!("{key}={value}"))
         .collect::<Vec<_>>()
         .join(",");
-    format!("namespace={namespace}\0selector={selector}")
+    let mut dns_cidrs = dns_cidrs
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    dns_cidrs.sort();
+    format!(
+        "namespace={namespace}\0selector={selector}\0dns={}",
+        dns_cidrs.join(",")
+    )
 }
 
 pub(super) fn configured_reporter_route_identity() -> AppResult<String> {
@@ -189,7 +200,8 @@ pub(super) fn configured_reporter_route_identity() -> AppResult<String> {
             "managed KotH reporting on Kubernetes requires RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR",
         )
     })?;
-    Ok(reporter_route_identity(&namespace, &selector))
+    let dns_cidrs = configured_dns_cidrs()?;
+    Ok(reporter_route_identity(&namespace, &selector, &dns_cidrs))
 }
 
 fn parse_cidr(value: &str, variable: &str) -> AppResult<IpNet> {
@@ -221,7 +233,95 @@ fn required_cidr_list(variable: &str) -> AppResult<Vec<IpNet>> {
     Ok(networks)
 }
 
-pub(super) fn ad_network_config() -> AppResult<AdNetworkConfig> {
+fn dns_host_network(address: IpAddr) -> IpNet {
+    match address {
+        IpAddr::V4(address) => IpNet::new(address.into(), 32).expect("valid IPv4 host prefix"),
+        IpAddr::V6(address) => IpNet::new(address.into(), 128).expect("valid IPv6 host prefix"),
+    }
+}
+
+fn parse_dns_peer(value: &str) -> AppResult<IpNet> {
+    if let Ok(address) = value.parse::<IpAddr>() {
+        if address.is_unspecified() || address.is_loopback() || address.is_multicast() {
+            return Err(AppError::internal(format!(
+                "{DNS_CIDRS_ENV} contains an unusable resolver address: {value}"
+            )));
+        }
+        return Ok(dns_host_network(address));
+    }
+    let network = parse_cidr(value, DNS_CIDRS_ENV)?;
+    let host = dns_host_network(network.addr());
+    if network != host {
+        return Err(AppError::internal(format!(
+            "{DNS_CIDRS_ENV} entries must identify exact resolver addresses: {value}"
+        )));
+    }
+    Ok(network)
+}
+
+pub(super) fn parse_dns_cidrs(
+    configured: Option<&str>,
+    resolv_conf: &str,
+) -> AppResult<Vec<IpNet>> {
+    let values = configured
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            resolv_conf
+                .lines()
+                .filter_map(|line| {
+                    let mut fields = line.split_whitespace();
+                    (fields.next() == Some("nameserver"))
+                        .then(|| fields.next().map(str::to_string))
+                        .flatten()
+                })
+                .collect()
+        });
+    let mut networks = Vec::new();
+    for value in values {
+        let network = parse_dns_peer(&value)?;
+        if !networks.contains(&network) {
+            networks.push(network);
+        }
+        if networks.len() > 8 {
+            return Err(AppError::internal(format!(
+                "{DNS_CIDRS_ENV} supports at most 8 exact resolver addresses"
+            )));
+        }
+    }
+    if networks.is_empty() {
+        return Err(AppError::internal(format!(
+            "managed Kubernetes networking requires {DNS_CIDRS_ENV} or at least one usable nameserver in /etc/resolv.conf"
+        )));
+    }
+    Ok(networks)
+}
+
+fn configured_dns_cidrs() -> AppResult<Vec<IpNet>> {
+    let configured = std::env::var(DNS_CIDRS_ENV).ok();
+    let resolv_conf = if configured
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        String::new()
+    } else {
+        std::fs::read_to_string("/etc/resolv.conf").map_err(|error| {
+            AppError::internal(format!(
+                "could not derive Kubernetes DNS peers from /etc/resolv.conf: {error}; set {DNS_CIDRS_ENV} explicitly"
+            ))
+        })?
+    };
+    parse_dns_cidrs(configured.as_deref(), &resolv_conf)
+}
+
+pub(super) fn ad_network_config(require_dns: bool) -> AppResult<AdNetworkConfig> {
     let service_cidr = crate::services::ad_vpn::kubernetes_services_cidr().ok_or_else(|| {
         AppError::internal(
             "RSCTF_K8S_AD_SERVICE_CIDR must be set to the cluster Service CIDR before provisioning Kubernetes A&D services",
@@ -248,6 +348,11 @@ pub(super) fn ad_network_config() -> AppResult<AdNetworkConfig> {
     }
     let control_pod_label = configured_control_pod_label()?;
     let reporter_pod_selector = configured_reporter_pod_selector()?;
+    let dns_cidrs = if require_dns {
+        configured_dns_cidrs()?
+    } else {
+        Vec::new()
+    };
     let client_cidr = parse_cidr(
         &crate::services::ad_vpn::client_cidr(),
         "RSCTF_AD_VPN_CLIENT_CIDR",
@@ -261,6 +366,7 @@ pub(super) fn ad_network_config() -> AppResult<AdNetworkConfig> {
         control_namespace,
         control_pod_label,
         reporter_pod_selector,
+        dns_cidrs,
     })
 }
 
@@ -306,7 +412,7 @@ fn control_pod_peer(namespace: String, label: (String, String)) -> NetworkPolicy
     selected_pod_peer(namespace, BTreeMap::from([label]))
 }
 
-fn dns_egress_rule() -> NetworkPolicyEgressRule {
+fn dns_egress_rule(dns_cidrs: &[IpNet]) -> NetworkPolicyEgressRule {
     let dns_peer = NetworkPolicyPeer {
         namespace_selector: Some(LabelSelector {
             match_labels: Some(BTreeMap::from([(
@@ -324,13 +430,18 @@ fn dns_egress_rule() -> NetworkPolicyEgressRule {
         }),
         ..Default::default()
     };
+    let mut peers = vec![dns_peer];
+    peers.extend(dns_cidrs.iter().map(|cidr| ip_peer(cidr, None)));
     NetworkPolicyEgressRule {
         ports: Some(vec![network_port(53, "UDP"), network_port(53, "TCP")]),
-        to: Some(vec![dns_peer]),
+        to: Some(peers),
     }
 }
 
-fn internet_egress_rules(extra_private: &[IpNet]) -> Vec<NetworkPolicyEgressRule> {
+fn internet_egress_rules(
+    extra_private: &[IpNet],
+    dns_cidrs: &[IpNet],
+) -> Vec<NetworkPolicyEgressRule> {
     let mut v4_except = vec![
         "0.0.0.0/8".to_string(),
         "10.0.0.0/8".to_string(),
@@ -368,7 +479,7 @@ fn internet_egress_rules(extra_private: &[IpNet]) -> Vec<NetworkPolicyEgressRule
             ip_peer("::/0", Some(v6_except)),
         ]),
     };
-    vec![internet, dns_egress_rule()]
+    vec![internet, dns_egress_rule(dns_cidrs)]
 }
 
 pub(super) fn ad_network_policy(
@@ -394,7 +505,7 @@ pub(super) fn ad_network_policy(
     let mut egress = if allow_egress {
         let mut private = config.ingress_cidrs.clone();
         private.push(config.service_cidr);
-        internet_egress_rules(&private)
+        internet_egress_rules(&private, &config.dns_cidrs)
     } else {
         Vec::new()
     };
@@ -419,7 +530,7 @@ pub(super) fn ad_network_policy(
                 },
             );
             if !allow_egress {
-                egress.push(dns_egress_rule());
+                egress.push(dns_egress_rule(&config.dns_cidrs));
             }
         }
     }

@@ -85,6 +85,7 @@ managed_koth_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
   --namespace rsctf-system \
   --set containerBackend=kubernetes \
   --set kubernetes.adServiceCidr=10.96.0.0/12 \
+  --set 'kubernetes.dnsCidrs[0]=169.254.20.10/32' \
   --set kubernetes.networkPolicyEnforced=true \
   --set config.kothReporterBaseUrl=http://rsctf.rsctf-system.svc:8080 \
   --show-only templates/configmap.yaml)"
@@ -92,6 +93,8 @@ assert_contains "$managed_koth_config" 'RSCTF_KOTH_REPORTER_BASE_URL: "http://rs
   "managed KotH reporter origin was not rendered"
 assert_contains "$managed_koth_config" 'RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR: "app.kubernetes.io/name=rsctf,app.kubernetes.io/instance=rsctf,app.kubernetes.io/component=all"' \
   "monolithic managed KotH callback did not select its exact Service pods"
+assert_contains "$managed_koth_config" 'RSCTF_K8S_DNS_CIDRS: "169.254.20.10/32"' \
+  "managed KotH callback did not render the configured cluster resolver"
 for invalid_burst in 99 3201; do
   if helm template rsctf charts/rsctf "${jwt[@]}" \
     --set config.adSubmitBurstFlags="$invalid_burst" >/dev/null 2>&1; then
@@ -342,6 +345,7 @@ if helm template rsctf-engine charts/rsctf "${split[@]}" \
   fail "Kubernetes engine accepted a callback selector shared by unrelated rsctf roles"
 fi
 for invalid_reporter_origin in \
+  http://rsctf-network.rsctf-system.svc:0 \
   http://rsctf-network:8080 \
   http://rsctf-network.other-system.svc:8080; do
   if helm template rsctf-network charts/rsctf "${split[@]}" \
