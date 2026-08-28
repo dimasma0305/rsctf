@@ -2,6 +2,14 @@
 
 use super::*;
 
+const CAPTURE_PAGE_LISTING_CONCURRENCY: usize = 4;
+static CAPTURE_PAGE_LISTING_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Arc::new(tokio::sync::Semaphore::new(
+            CAPTURE_PAGE_LISTING_CONCURRENCY,
+        ))
+    });
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureInventoryPage<T> {
@@ -118,7 +126,20 @@ pub(super) async fn load_traffic_files_page(
     let directory = root
         .join(challenge_id.to_string())
         .join(participation_id.to_string());
+    let listing_permit = std::sync::Arc::clone(&CAPTURE_PAGE_LISTING_SLOTS)
+        .try_acquire_owned()
+        .map_err(|_| {
+            AppError::retryable_unavailable(
+                "Capture file inventory capacity is busy; retry shortly",
+                2,
+            )
+        })?;
     let items = tokio::task::spawn_blocking(move || -> AppResult<Vec<Json>> {
+        // Keep the process permit inside the blocking task. If the client
+        // disconnects and its join handle is dropped, Tokio detaches the task;
+        // releasing the permit in the request future would then defeat the
+        // process-wide ceiling.
+        let _listing_permit = listing_permit;
         Ok(names
             .into_iter()
             .filter_map(|name| {
@@ -147,6 +168,11 @@ pub(super) async fn load_traffic_files_page(
         total,
         next_skip: next_capture_skip(skip, scanned, total),
     })
+}
+
+#[cfg(test)]
+pub(super) fn capture_page_listing_concurrency() -> usize {
+    CAPTURE_PAGE_LISTING_CONCURRENCY
 }
 
 pub async fn team_traffic_page(

@@ -214,7 +214,10 @@ pub(super) fn inspect_flows_bounded_cancellable(
     let file = file.take(max_file_bytes.saturating_add(1));
     let mut reader = PcapReader::new(file)
         .map_err(|_| AppError::bad_request("Capture is not a valid pcap file"))?;
-    let mut flows = BTreeMap::<u16, InspectedFlow>::new();
+    // A client-side ephemeral port is not globally unique: two teams may use
+    // the same port at the same time. Keep the peer in the index identity so
+    // their payloads and flag hits can never be merged into one apparent flow.
+    let mut flows = BTreeMap::<(u16, std::net::IpAddr), InspectedFlow>::new();
     let mut retained = 0usize;
 
     while let Some(next) = reader.next_packet() {
@@ -243,14 +246,15 @@ pub(super) fn inspect_flows_bounded_cancellable(
                 InspectedDirection::ContainerToTeam,
             )
         };
-        if !flows.contains_key(&connection) && flows.len() >= max_flows {
+        let flow_key = (connection, peer);
+        if !flows.contains_key(&flow_key) && flows.len() >= max_flows {
             return Err(AppError::bad_request(
                 "Capture contains too many distinct flows",
             ));
         }
         let timestamp_millis = packet.timestamp.as_millis().try_into().unwrap_or(i64::MAX);
         let flow = flows
-            .entry(connection)
+            .entry(flow_key)
             .or_insert_with(|| InspectedFlow::new(connection, peer, timestamp_millis));
         flow.first_seen_millis = flow.first_seen_millis.min(timestamp_millis);
         flow.last_seen_millis = flow.last_seen_millis.max(timestamp_millis);

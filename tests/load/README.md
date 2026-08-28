@@ -19,6 +19,7 @@ N=60  npm run byoc          # BYOC scale + request flood
       npm run anti-cheat-read # large-ledger incident/report read gate
       npm run anti-cheat-reconcile # destructive fixed-rate cursor/coalescing gate
       npm run ad-bearer-admission # A&D bearer admission and optional dependency outages
+      npm run honeypot-admission # silent decoy admission, aggregation, and storage bound
       npm run public-security # HashPoW issuance + authoritative team-signature admission
       npm run traffic-inventory # bounded capture-inventory pagination
       npm run read-only-websocket-flood # read-only feed inbound-abuse gate
@@ -165,6 +166,19 @@ PERSONAL_TOKEN_STRESS_ACK=1 \
 For a non-loopback target, set `ALLOW_REMOTE_PERSONAL_TOKEN_STRESS` to its exact
 origin. Point `TARGET` at the load balancer to exercise the shared Redis source and
 digest budgets across replicas.
+
+The honeypot gate sprays the public decoy routes from rotating test sources at a
+fixed arrival rate. Every response must remain the same ordinary `404`, while
+PostgreSQL must receive only bounded minute buckets, the legacy one-row-per-hit
+table must remain unchanged, and `healthz` stays responsive:
+
+```sh
+HONEYPOT_STRESS_ACK=1 RATE=60 DURATION=10s \
+  SUMMARY_JSON=/tmp/honeypot-admission.json npm run honeypot-admission
+```
+
+Run it against a disposable/local database. A non-loopback target additionally
+requires `ALLOW_REMOTE_HONEYPOT_STRESS` to equal the exact target origin.
 
 The public-security gate discovers one real event-issued team credential from a
 currently live Accepted participation, generates an attacker-controlled Ed25519 key,

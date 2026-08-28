@@ -16,6 +16,7 @@ pub(crate) const MAX_CHANGE_RESPONSE_BYTES: usize = 448 * 1_024;
 pub(crate) const MAX_FILE_PREVIEW_BYTES: usize = 240 * 1_024;
 pub(crate) const CHANGE_DEADLINE: Duration = Duration::from_secs(10);
 pub(crate) const FILE_DEADLINE: Duration = Duration::from_secs(8);
+const ADMISSION_DEADLINE: Duration = Duration::from_secs(2);
 const CACHE_TTL: Duration = Duration::from_secs(3);
 const MAX_CACHE_IDENTITIES: usize = 32;
 const GLOBAL_WEIGHT: usize = 4;
@@ -167,7 +168,12 @@ pub(crate) async fn acquire<'a>(
     container_id: &str,
     work: ForensicsWork,
 ) -> AppResult<ForensicsPermit<'a>> {
-    ADMISSION.acquire(pool, container_id, work).await
+    tokio::time::timeout(
+        ADMISSION_DEADLINE,
+        ADMISSION.acquire(pool, container_id, work),
+    )
+    .await
+    .map_err(|_| retryable("Live filesystem inspection admission timed out"))?
 }
 
 fn retryable(message: &str) -> AppError {
@@ -307,6 +313,13 @@ mod tests {
             .try_acquire_many_owned(FILE_WEIGHT)
             .is_ok());
         drop(second);
+    }
+
+    #[test]
+    fn admission_and_runtime_deadlines_are_absolute_and_small() {
+        assert!(ADMISSION_DEADLINE <= Duration::from_secs(2));
+        assert!(FILE_DEADLINE <= Duration::from_secs(8));
+        assert!(CHANGE_DEADLINE <= Duration::from_secs(10));
     }
 
     #[tokio::test]

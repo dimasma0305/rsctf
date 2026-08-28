@@ -3781,6 +3781,11 @@ export interface FlowFilter {
   pageSize?: number
 }
 
+/** Exact identity for a flow detail when client ports collide across peers */
+export interface FlowDetailQuery {
+  peerIp?: string
+}
+
 /** Result of a challenge import (tarball or github) */
 export interface ChallengeImportResult {
   imported: number
@@ -9739,10 +9744,12 @@ export class Api<
       filename: string,
       connectionPort: number,
       params: RequestParams = {},
+      query: FlowDetailQuery = {},
     ) =>
       this.request<TrafficFlowDetail, RequestResponse>({
         path: `/api/game/captures/${challengeId}/${partId}/${filename}/flow/${connectionPort}`,
         method: "GET",
+        query,
         format: "json",
         ...params,
       }),

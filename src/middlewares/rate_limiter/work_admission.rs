@@ -13,7 +13,12 @@ pub(crate) async fn admit_honeypot_source(source: &str, tcp: bool) -> bool {
     } else {
         Policy::HoneypotHttp
     };
-    check_async(policy, source.to_owned()).await.is_ok()
+    if check_async(policy, source.to_owned()).await.is_err() {
+        return false;
+    }
+    check_async(Policy::HoneypotAggregate, "telemetry".to_owned())
+        .await
+        .is_ok()
 }
 
 /// Asset downloads bypass the `/api` middleware, so enforce their source,

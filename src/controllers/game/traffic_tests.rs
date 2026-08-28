@@ -35,6 +35,37 @@ fn capture_page_metadata_advances_without_repeating_or_overrunning() {
 }
 
 #[test]
+fn capture_file_metadata_listing_has_a_small_process_ceiling() {
+    assert!((1..=4).contains(&inventory_page::capture_page_listing_concurrency()));
+}
+
+#[test]
+fn flow_detail_requires_peer_identity_only_when_ports_collide() {
+    let flow = |peer_ip: &str| crate::services::traffic::InspectedFlow {
+        connection_port: 42_000,
+        first_seen_millis: 1,
+        last_seen_millis: 2,
+        peer_ip: peer_ip.parse().unwrap(),
+        packets_in: 0,
+        packets_out: 1,
+        bytes_in: 0,
+        bytes_out: 1,
+        flag_hits: 0,
+        chunks: Vec::new(),
+    };
+    let flows = vec![flow("10.0.0.3"), flow("10.0.0.5")];
+
+    assert!(select_flow(&flows, 42_000, None).is_err());
+    assert_eq!(
+        select_flow(&flows, 42_000, Some("10.0.0.5".parse().unwrap()))
+            .unwrap()
+            .peer_ip,
+        "10.0.0.5".parse::<std::net::IpAddr>().unwrap()
+    );
+    assert!(select_flow(&flows, 42_001, None).is_err());
+}
+
+#[test]
 fn archive_scan_filters_non_pcaps() {
     let dir = std::env::temp_dir().join(format!("rsctf-capture-list-{}", Uuid::new_v4()));
     std::fs::create_dir(&dir).unwrap();

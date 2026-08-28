@@ -18,6 +18,8 @@ const FLUSH_INTERVAL: Duration = Duration::from_millis(250);
 const ACQUIRE_TIMEOUT: Duration = Duration::from_millis(50);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const RETENTION_DAYS: i32 = 7;
+const MAX_RETAINED_BUCKETS: i64 = 250_000;
+const BUDGET_RECONCILE_MINUTES: i32 = 10;
 static ADMISSION_DROPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,6 +59,12 @@ struct Bucket {
     user_agent: Option<String>,
     count: i64,
     last_hit: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FlushOutcome {
+    succeeded: bool,
+    capacity_dropped: u64,
 }
 
 pub(crate) struct HoneypotQueue {
@@ -206,31 +214,28 @@ fn restore_failed_batch(pending: &mut HashMap<BucketKey, Bucket>, batch: Vec<Buc
     }
 }
 
-async fn flush(pool: &sqlx::PgPool, pending: &mut HashMap<BucketKey, Bucket>) -> bool {
-    if pending.is_empty() {
-        return true;
-    }
-    let keys = pending
-        .keys()
-        .take(MAX_BATCH_BUCKETS)
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut batch = keys
-        .iter()
-        .filter_map(|key| pending.remove(key))
-        .collect::<Vec<_>>();
-    batch.sort_unstable_by(|left, right| {
-        (
-            &left.key.bucket_start,
-            &left.key.bait,
-            &left.key.source_hash,
-        )
-            .cmp(&(
-                &right.key.bucket_start,
-                &right.key.bait,
-                &right.key.source_hash,
-            ))
-    });
+fn pending_observation_count(pending: &HashMap<BucketKey, Bucket>) -> u64 {
+    pending.values().fold(0u64, |total, bucket| {
+        total.saturating_add(u64::try_from(bucket.count).unwrap_or(u64::MAX))
+    })
+}
+
+async fn flush_batch(pool: &sqlx::PgPool, batch: &[Bucket]) -> AppResult<u64> {
+    let mut transaction = tokio::time::timeout(ACQUIRE_TIMEOUT, pool.begin())
+        .await
+        .map_err(|_| AppError::unavailable("honeypot telemetry pool admission timed out"))?
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let retained: i64 = sqlx::query_scalar(
+        r#"SELECT row_count
+             FROM "HoneypotBucketBudget"
+            WHERE singleton = TRUE
+              FOR UPDATE"#,
+    )
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::internal("honeypot bucket budget is not initialized"))?;
+
     let bucket_starts = batch
         .iter()
         .map(|row| row.key.bucket_start)
@@ -243,26 +248,73 @@ async fn flush(pool: &sqlx::PgPool, pending: &mut HashMap<BucketKey, Bucket>) ->
         .iter()
         .map(|row| row.key.source_hash.clone())
         .collect::<Vec<_>>();
-    let users = batch.iter().map(|row| row.user_id).collect::<Vec<_>>();
-    let agents = batch
+    let existing = sqlx::query_as::<_, (chrono::DateTime<chrono::Utc>, String, String)>(
+        r#"SELECT bucket.bucket_start_utc, bucket.bait, bucket.source_hash
+             FROM "HoneypotHitBuckets" bucket
+             JOIN UNNEST($1::timestamptz[], $2::text[], $3::text[])
+                    AS input(bucket_start_utc, bait, source_hash)
+               ON input.bucket_start_utc = bucket.bucket_start_utc
+              AND input.bait = bucket.bait
+              AND input.source_hash = bucket.source_hash"#,
+    )
+    .bind(&bucket_starts)
+    .bind(&baits)
+    .bind(&sources)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .into_iter()
+    .map(|(bucket_start, bait, source_hash)| BucketKey {
+        bucket_start,
+        bait,
+        source_hash,
+    })
+    .collect::<std::collections::HashSet<_>>();
+
+    let mut remaining = MAX_RETAINED_BUCKETS.saturating_sub(retained).max(0) as usize;
+    let mut accepted = Vec::with_capacity(batch.len());
+    let mut capacity_dropped = 0u64;
+    let mut inserted = 0i64;
+    for bucket in batch {
+        if existing.contains(&bucket.key) {
+            accepted.push(bucket);
+        } else if remaining > 0 {
+            remaining -= 1;
+            inserted += 1;
+            accepted.push(bucket);
+        } else {
+            capacity_dropped =
+                capacity_dropped.saturating_add(u64::try_from(bucket.count).unwrap_or(u64::MAX));
+        }
+    }
+    if accepted.is_empty() {
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(capacity_dropped);
+    }
+
+    let bucket_starts = accepted
+        .iter()
+        .map(|row| row.key.bucket_start)
+        .collect::<Vec<_>>();
+    let baits = accepted
+        .iter()
+        .map(|row| row.key.bait.clone())
+        .collect::<Vec<_>>();
+    let sources = accepted
+        .iter()
+        .map(|row| row.key.source_hash.clone())
+        .collect::<Vec<_>>();
+    let users = accepted.iter().map(|row| row.user_id).collect::<Vec<_>>();
+    let agents = accepted
         .iter()
         .map(|row| row.user_agent.clone())
         .collect::<Vec<_>>();
-    let counts = batch.iter().map(|row| row.count).collect::<Vec<_>>();
-    let last_hits = batch.iter().map(|row| row.last_hit).collect::<Vec<_>>();
-    let mut connection = match tokio::time::timeout(ACQUIRE_TIMEOUT, pool.acquire()).await {
-        Ok(Ok(connection)) => connection,
-        Ok(Err(error)) => {
-            tracing::warn!(%error, "honeypot telemetry connection acquisition failed");
-            restore_failed_batch(pending, batch);
-            return false;
-        }
-        Err(_) => {
-            restore_failed_batch(pending, batch);
-            return false;
-        }
-    };
-    let write = sqlx::query(
+    let counts = accepted.iter().map(|row| row.count).collect::<Vec<_>>();
+    let last_hits = accepted.iter().map(|row| row.last_hit).collect::<Vec<_>>();
+    sqlx::query(
         r#"INSERT INTO "HoneypotHitBuckets" (
                bucket_start_utc, bait, source_hash, user_id, user_agent,
                hit_count, last_hit_at_utc
@@ -285,22 +337,79 @@ async fn flush(pool: &sqlx::PgPool, pending: &mut HashMap<BucketKey, Bucket>) ->
     .bind(agents)
     .bind(counts)
     .bind(last_hits)
-    .execute(&mut *connection);
-    let succeeded = match tokio::time::timeout(WRITE_TIMEOUT, write).await {
-        Ok(Ok(_)) => true,
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if inserted > 0 {
+        sqlx::query(
+            r#"UPDATE "HoneypotBucketBudget"
+                  SET row_count = row_count + $1
+                WHERE singleton = TRUE"#,
+        )
+        .bind(inserted)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(capacity_dropped)
+}
+
+async fn flush(pool: &sqlx::PgPool, pending: &mut HashMap<BucketKey, Bucket>) -> FlushOutcome {
+    if pending.is_empty() {
+        return FlushOutcome {
+            succeeded: true,
+            capacity_dropped: 0,
+        };
+    }
+    let keys = pending
+        .keys()
+        .take(MAX_BATCH_BUCKETS)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut batch = keys
+        .iter()
+        .filter_map(|key| pending.remove(key))
+        .collect::<Vec<_>>();
+    batch.sort_unstable_by(|left, right| {
+        (
+            &left.key.bucket_start,
+            &left.key.bait,
+            &left.key.source_hash,
+        )
+            .cmp(&(
+                &right.key.bucket_start,
+                &right.key.bait,
+                &right.key.source_hash,
+            ))
+    });
+    let outcome = match tokio::time::timeout(WRITE_TIMEOUT, flush_batch(pool, &batch)).await {
+        Ok(Ok(capacity_dropped)) => FlushOutcome {
+            succeeded: true,
+            capacity_dropped,
+        },
         Ok(Err(error)) => {
             tracing::warn!(%error, "honeypot telemetry batch failed");
-            false
+            FlushOutcome {
+                succeeded: false,
+                capacity_dropped: 0,
+            }
         }
         Err(_) => {
             tracing::warn!("honeypot telemetry batch timed out");
-            false
+            FlushOutcome {
+                succeeded: false,
+                capacity_dropped: 0,
+            }
         }
     };
-    if !succeeded {
+    if !outcome.succeeded {
         restore_failed_batch(pending, batch);
     }
-    succeeded
+    outcome
 }
 
 async fn run_writer(
@@ -332,7 +441,11 @@ async fn run_writer(
                 None => break,
             },
             _ = ticker.tick() => {
-                let _ = flush(&pool, &mut pending).await;
+                let outcome = flush(&pool, &mut pending).await;
+                if outcome.capacity_dropped > 0 {
+                    dropped_since_flush.fetch_add(outcome.capacity_dropped, Ordering::Relaxed);
+                    dropped_total.fetch_add(outcome.capacity_dropped, Ordering::Relaxed);
+                }
                 let dropped_count = dropped_since_flush.swap(0, Ordering::Relaxed);
                 if dropped_count > 0 {
                     tracing::warn!(
@@ -353,7 +466,11 @@ async fn run_writer(
             },
         }
         if pending.len() >= MAX_PENDING_BUCKETS {
-            let _ = flush(&pool, &mut pending).await;
+            let outcome = flush(&pool, &mut pending).await;
+            if outcome.capacity_dropped > 0 {
+                dropped_since_flush.fetch_add(outcome.capacity_dropped, Ordering::Relaxed);
+                dropped_total.fetch_add(outcome.capacity_dropped, Ordering::Relaxed);
+            }
         }
     }
     while let Ok(observation) = receiver.try_recv() {
@@ -362,7 +479,18 @@ async fn run_writer(
             dropped_total.fetch_add(1, Ordering::Relaxed);
         }
     }
-    let _ = flush(&pool, &mut pending).await;
+    let outcome = flush(&pool, &mut pending).await;
+    if outcome.capacity_dropped > 0 {
+        dropped_total.fetch_add(outcome.capacity_dropped, Ordering::Relaxed);
+    }
+    let shutdown_dropped = pending_observation_count(&pending);
+    if shutdown_dropped > 0 {
+        dropped_total.fetch_add(shutdown_dropped, Ordering::Relaxed);
+        tracing::warn!(
+            dropped = shutdown_dropped,
+            "honeypot telemetry shutdown discarded bounded pending work"
+        );
+    }
 }
 
 pub fn start_honeypot_writer(
@@ -383,20 +511,68 @@ pub fn start_honeypot_writer(
 }
 
 pub async fn purge_honeypot_buckets(pool: &sqlx::PgPool, limit: i64) -> AppResult<u64> {
+    tokio::time::timeout(WRITE_TIMEOUT, purge_honeypot_buckets_inner(pool, limit))
+        .await
+        .map_err(|_| AppError::unavailable("honeypot retention sweep timed out"))?
+}
+
+async fn purge_honeypot_buckets_inner(pool: &sqlx::PgPool, limit: i64) -> AppResult<u64> {
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let (mut retained, reconciliation_due): (i64, bool) = sqlx::query_as(
+        r#"SELECT row_count,
+                  reconciled_at_utc < clock_timestamp() - make_interval(mins => $1)
+             FROM "HoneypotBucketBudget"
+            WHERE singleton = TRUE
+              FOR UPDATE"#,
+    )
+    .bind(BUDGET_RECONCILE_MINUTES)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::internal("honeypot bucket budget is not initialized"))?;
+    let reconciled = reconciliation_due || retained >= MAX_RETAINED_BUCKETS;
+    if reconciled {
+        retained = sqlx::query_scalar(r#"SELECT COUNT(*)::BIGINT FROM "HoneypotHitBuckets""#)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
     let result = sqlx::query(
         r#"DELETE FROM "HoneypotHitBuckets"
             WHERE ctid IN (
                 SELECT ctid FROM "HoneypotHitBuckets"
                  WHERE last_hit_at_utc < clock_timestamp() - make_interval(days => $1)
+                    OR $3
                  ORDER BY last_hit_at_utc
                  LIMIT $2
             )"#,
     )
     .bind(RETENTION_DAYS)
     .bind(limit.clamp(1, 10_000))
-    .execute(pool)
+    .bind(retained >= MAX_RETAINED_BUCKETS)
+    .execute(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    let deleted = i64::try_from(result.rows_affected()).unwrap_or(i64::MAX);
+    sqlx::query(
+        r#"UPDATE "HoneypotBucketBudget"
+              SET row_count = $1,
+                  reconciled_at_utc = CASE WHEN $2 THEN clock_timestamp()
+                                           ELSE reconciled_at_utc END
+            WHERE singleton = TRUE"#,
+    )
+    .bind(retained.saturating_sub(deleted).max(0))
+    .bind(reconciled)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(result.rows_affected())
 }
 
@@ -440,6 +616,7 @@ mod tests {
         merge(&mut pending, observation("/.env"));
         assert_eq!(pending.len(), 1);
         assert_eq!(pending.values().next().unwrap().count, 2);
+        assert_eq!(pending_observation_count(&pending), 2);
     }
 
     #[tokio::test]
@@ -449,6 +626,33 @@ mod tests {
             assert!(admit_honeypot_source(&source, HoneypotRouteClass::Http).await);
         }
         assert!(!admit_honeypot_source(&source, HoneypotRouteClass::Http).await);
+    }
+
+    #[tokio::test]
+    async fn database_outage_restores_only_the_bounded_pending_work() {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_millis(25))
+            .connect_lazy_with(
+                PgConnectOptions::new()
+                    .host("127.0.0.1")
+                    .port(1)
+                    .username("rsctf")
+                    .database("rsctf"),
+            );
+        let mut pending = HashMap::new();
+        for index in 0..MAX_PENDING_BUCKETS {
+            let mut item = observation("/.env");
+            item.source_hash = format!("source-{index}");
+            assert!(merge(&mut pending, item));
+        }
+
+        let started = std::time::Instant::now();
+        let outcome = flush(&pool, &mut pending).await;
+        assert!(!outcome.succeeded);
+        assert_eq!(pending.len(), MAX_PENDING_BUCKETS);
+        assert!(!merge(&mut pending, observation("/server-status")));
+        assert!(started.elapsed() <= WRITE_TIMEOUT + Duration::from_secs(1));
     }
 
     #[tokio::test]
@@ -484,7 +688,15 @@ mod tests {
                  hit_count BIGINT NOT NULL,
                  last_hit_at_utc TIMESTAMPTZ NOT NULL,
                  PRIMARY KEY (bucket_start_utc, bait, source_hash)
-               );"#,
+               );
+               CREATE TABLE "HoneypotBucketBudget" (
+                 singleton BOOLEAN PRIMARY KEY CHECK (singleton),
+                 row_count BIGINT NOT NULL,
+                 reconciled_at_utc TIMESTAMPTZ NOT NULL
+               );
+               INSERT INTO "HoneypotBucketBudget"
+                    (singleton, row_count, reconciled_at_utc)
+               VALUES (TRUE, 0, CURRENT_TIMESTAMP);"#,
         )
         .execute(&pool)
         .await
@@ -494,15 +706,64 @@ mod tests {
         let mut first = HashMap::new();
         assert!(merge(&mut first, sample.clone()));
         assert!(merge(&mut first, sample.clone()));
-        assert!(flush(&pool, &mut first).await);
         let mut second = HashMap::new();
         assert!(merge(&mut second, sample));
-        assert!(flush(&pool, &mut second).await);
+        let (first_outcome, second_outcome) =
+            tokio::join!(flush(&pool, &mut first), flush(&pool, &mut second));
+        assert!(first_outcome.succeeded);
+        assert!(second_outcome.succeeded);
         let rows: Vec<(i64,)> = sqlx::query_as(r#"SELECT hit_count FROM "HoneypotHitBuckets""#)
             .fetch_all(&pool)
             .await
             .expect("load aggregate");
         assert_eq!(rows, vec![(3,)]);
+        let retained: i64 = sqlx::query_scalar(r#"SELECT row_count FROM "HoneypotBucketBudget""#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(retained, 1);
+
+        sqlx::query(r#"UPDATE "HoneypotBucketBudget" SET row_count = $1"#)
+            .bind(MAX_RETAINED_BUCKETS)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut at_capacity = HashMap::new();
+        assert!(merge(&mut at_capacity, observation("/.env")));
+        assert!(merge(&mut at_capacity, observation("/.git/config")));
+        let outcome = flush(&pool, &mut at_capacity).await;
+        assert!(outcome.succeeded);
+        assert_eq!(outcome.capacity_dropped, 1);
+        let rows: Vec<(String, i64)> =
+            sqlx::query_as(r#"SELECT bait, hit_count FROM "HoneypotHitBuckets" ORDER BY bait"#)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rows, vec![("/.env".into(), 4)]);
+
+        sqlx::query(
+            r#"UPDATE "HoneypotHitBuckets"
+                  SET last_hit_at_utc = CURRENT_TIMESTAMP - interval '8 days'"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(purge_honeypot_buckets(&pool, 10).await.unwrap(), 1);
+        let retained: i64 = sqlx::query_scalar(r#"SELECT row_count FROM "HoneypotBucketBudget""#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(retained, 0);
+        let mut reclaimed = HashMap::new();
+        assert!(merge(&mut reclaimed, observation("/server-status")));
+        let outcome = flush(&pool, &mut reclaimed).await;
+        assert!(outcome.succeeded);
+        assert_eq!(outcome.capacity_dropped, 0);
+        let retained: i64 = sqlx::query_scalar(r#"SELECT row_count FROM "HoneypotBucketBudget""#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(retained, 1);
 
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

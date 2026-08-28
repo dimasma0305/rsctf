@@ -57,6 +57,12 @@ pub struct TrafficFlowFilter {
     pub page_size: Option<u32>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficFlowDetailQuery {
+    pub peer_ip: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Traffic capture metadata and pcap serving for the singleton capture worker.
 // ---------------------------------------------------------------------------
@@ -811,6 +817,7 @@ pub async fn traffic_flow_detail(
     State(st): State<SharedState>,
     _user: MonitorUser,
     Path((cid, pid, filename, connection_port)): Path<(i32, i32, String, i32)>,
+    Query(query): Query<TrafficFlowDetailQuery>,
 ) -> AppResult<RequestResponse<TrafficFlowDetail>> {
     let name = safe_capture_name(&filename)?;
     let path = capture_root(&st)
@@ -826,10 +833,17 @@ pub async fn traffic_flow_detail(
         MAX_CAPTURE_FLOWS,
     )
     .await?;
-    let flow = flows
-        .iter()
-        .find(|flow| i32::from(flow.connection_port) == connection_port)
-        .ok_or_else(|| AppError::not_found("Traffic flow not found"))?;
+    let peer_ip = query
+        .peer_ip
+        .as_deref()
+        .map(str::trim)
+        .filter(|peer| !peer.is_empty())
+        .map(|peer| {
+            peer.parse::<std::net::IpAddr>()
+                .map_err(|_| AppError::bad_request("Invalid traffic flow peer IP"))
+        })
+        .transpose()?;
+    let flow = select_flow(&flows, connection_port, peer_ip)?;
     Ok(RequestResponse::ok(TrafficFlowDetail {
         summary: flow_summary(flow),
         chunks: flow
@@ -854,6 +868,26 @@ pub async fn traffic_flow_detail(
             })
             .collect(),
     }))
+}
+
+fn select_flow(
+    flows: &[crate::services::traffic::InspectedFlow],
+    connection_port: i32,
+    peer_ip: Option<std::net::IpAddr>,
+) -> AppResult<&crate::services::traffic::InspectedFlow> {
+    let mut candidates = flows.iter().filter(|flow| {
+        i32::from(flow.connection_port) == connection_port
+            && peer_ip.is_none_or(|peer_ip| flow.peer_ip == peer_ip)
+    });
+    let first = candidates
+        .next()
+        .ok_or_else(|| AppError::not_found("Traffic flow not found"))?;
+    if peer_ip.is_none() && candidates.next().is_some() {
+        return Err(AppError::bad_request(
+            "Traffic flow peerIp is required when a connection port is shared",
+        ));
+    }
+    Ok(first)
 }
 
 #[cfg(test)]

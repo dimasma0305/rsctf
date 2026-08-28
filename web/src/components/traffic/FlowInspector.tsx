@@ -22,10 +22,11 @@ import { useDebouncedValue } from '@mantine/hooks'
 import dayjs from 'dayjs'
 import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useSearchParams } from 'react-router'
+import { boundedRetryDelay } from '@Utils/HttpError'
 import { HunamizeSize } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useUrlState } from '@Hooks/useUrlState'
-import { boundedRetryDelay } from '@Utils/HttpError'
 import api, { FlowFilter, TrafficFlowDirection, TrafficFlowSummary } from '@Api'
 import { FlowDetail } from './FlowDetail'
 
@@ -67,15 +68,11 @@ export const FlowInspector: FC<FlowInspectorProps> = ({ challengeId, participati
     (raw) => raw === '1',
     (v) => (v ? '1' : null)
   )
-  const [selected, setSelected] = useUrlState<number | null>(
-    'port',
-    (raw) => {
-      if (!raw) return null
-      const n = Number.parseInt(raw, 10)
-      return Number.isFinite(n) ? n : null
-    },
-    (v) => (v == null ? null : String(v))
-  )
+  const [flowParams, setFlowParams] = useSearchParams()
+  const selectedRaw = flowParams.get('port')
+  const selectedNumber = selectedRaw == null ? Number.NaN : Number.parseInt(selectedRaw, 10)
+  const selected = Number.isFinite(selectedNumber) ? selectedNumber : null
+  const selectedPeer = flowParams.get('flowPeer')
 
   const [debouncedRegex] = useDebouncedValue(regex, 300)
   const [debouncedPeerIp] = useDebouncedValue(peerIp, 300)
@@ -89,6 +86,33 @@ export const FlowInspector: FC<FlowInspectorProps> = ({ challengeId, participati
     attempts: 0,
     timer: null,
   })
+
+  useEffect(() => {
+    if (selected == null || selectedPeer != null) return
+    const matches = flows.filter((flow) => flow.connectionPort === selected)
+    if (matches.length === 1) {
+      setFlowParams(
+        (previous) => {
+          const next = new URLSearchParams(previous)
+          next.set('flowPeer', matches[0].peerIp)
+          return next
+        },
+        { replace: true }
+      )
+    }
+  }, [flows, selected, selectedPeer, setFlowParams])
+
+  const selectFlow = (flow: TrafficFlowSummary) => {
+    setFlowParams(
+      (previous) => {
+        const next = new URLSearchParams(previous)
+        next.set('port', String(flow.connectionPort))
+        next.set('flowPeer', flow.peerIp)
+        return next
+      },
+      { replace: true }
+    )
+  }
 
   useEffect(() => {
     if (!opened) return
@@ -243,7 +267,10 @@ export const FlowInspector: FC<FlowInspectorProps> = ({ challengeId, participati
               {loadError && (
                 <Center py="xs">
                   <Text c="red" size="sm" role="alert">
-                    {t('game.label.flow.load_error', 'Could not refresh flows. The last successful result is preserved.')}
+                    {t(
+                      'game.label.flow.load_error',
+                      'Could not refresh flows. The last successful result is preserved.'
+                    )}
                   </Text>
                 </Center>
               )}
@@ -281,11 +308,11 @@ export const FlowInspector: FC<FlowInspectorProps> = ({ challengeId, participati
                   <Table.Tbody>
                     {flows.map((flow) => {
                       const dur = dayjs(flow.lastSeenUtc).diff(dayjs(flow.firstSeenUtc), 'millisecond')
-                      const isSelected = selected === flow.connectionPort
+                      const isSelected = selected === flow.connectionPort && selectedPeer === flow.peerIp
                       return (
                         <Table.Tr
-                          key={flow.connectionPort}
-                          onClick={() => setSelected(flow.connectionPort)}
+                          key={`${flow.connectionPort}:${flow.peerIp}`}
+                          onClick={() => selectFlow(flow)}
                           style={{
                             cursor: 'pointer',
                             backgroundColor: isSelected ? 'var(--mantine-color-blue-light)' : undefined,
@@ -302,7 +329,7 @@ export const FlowInspector: FC<FlowInspectorProps> = ({ challengeId, participati
                               })}
                               onClick={(event) => {
                                 event.stopPropagation()
-                                setSelected(flow.connectionPort)
+                                selectFlow(flow)
                               }}
                             >
                               {flow.peerIp}
@@ -334,6 +361,7 @@ export const FlowInspector: FC<FlowInspectorProps> = ({ challengeId, participati
                   participationId={participationId!}
                   filename={filename!}
                   connectionPort={selected}
+                  peerIp={selectedPeer}
                 />
               )}
             </Box>

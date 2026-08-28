@@ -195,6 +195,7 @@ mod m0234_event_vpn_override_expiry;
 mod m0236_exercise_container_operations;
 mod m0237_blob_stage_publication_owner;
 mod m0239_repo_scan_admission;
+mod m0240_honeypot_bucket_capacity;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -416,6 +417,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0236_exercise_container_operations::Migration),
             Box::new(m0237_blob_stage_publication_owner::Migration),
             Box::new(m0239_repo_scan_admission::Migration),
+            Box::new(m0240_honeypot_bucket_capacity::Migration),
         ]
     }
 }
@@ -561,7 +563,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 71..],
+            &names[names.len() - 72..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -634,6 +636,7 @@ mod tests {
                 "m0236_exercise_container_operations",
                 "m0237_blob_stage_publication_owner",
                 "m0239_repo_scan_admission",
+                "m0240_honeypot_bucket_capacity",
             ]
         );
     }

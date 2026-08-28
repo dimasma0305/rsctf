@@ -199,6 +199,8 @@ pub enum Policy {
     PersonalTokenSourceAdmission = 27,
     /// Per-presented-digest admission before a managed personal-token lookup.
     PersonalTokenAdmission = 28,
+    /// Deployment-wide sampling budget for HTTP and TCP honeypot observations.
+    HoneypotAggregate = 29,
     /// Source budget for anonymous and authenticated asset routes, which live
     /// outside the global `/api` middleware.
     /// Values 27 through 29 are reserved by credential and honeypot admission.
@@ -343,6 +345,10 @@ impl Policy {
             Policy::PersonalTokenAdmission => Kind::Bucket {
                 capacity: 60.0,
                 refill_per_sec: 2.0,
+            },
+            Policy::HoneypotAggregate => Kind::Bucket {
+                capacity: 256.0,
+                refill_per_sec: 4.0,
             },
             Policy::AssetRequestSource => Kind::Bucket {
                 capacity: 512.0,

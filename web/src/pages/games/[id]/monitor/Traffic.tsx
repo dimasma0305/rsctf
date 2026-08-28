@@ -187,17 +187,20 @@ const Traffic: FC = () => {
           out.delete('team')
           out.delete('file')
           out.delete('port')
+          out.delete('flowPeer')
         }
         if ('team' in updates) {
           if (updates.team != null) out.set('team', String(updates.team))
           else out.delete('team')
           out.delete('file')
           out.delete('port')
+          out.delete('flowPeer')
         }
         if ('file' in updates) {
           if (updates.file != null) out.set('file', updates.file)
           else out.delete('file')
           out.delete('port')
+          out.delete('flowPeer')
           if (updates.file == null) {
             out.delete('regex')
             out.delete('ip')

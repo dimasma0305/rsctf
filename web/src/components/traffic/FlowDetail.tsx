@@ -2,10 +2,10 @@ import { Badge, Center, Flex, Group, Loader, SegmentedControl, Stack, Text } fro
 import dayjs from 'dayjs'
 import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { boundedRetryDelay } from '@Utils/HttpError'
 import { HunamizeSize } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useUrlState } from '@Hooks/useUrlState'
-import { boundedRetryDelay } from '@Utils/HttpError'
 import api, { TrafficFlowChunk, TrafficFlowDetail, TrafficFlowDirection } from '@Api'
 import { HexAsciiView, ViewMode } from './HexAsciiView'
 
@@ -14,6 +14,7 @@ interface FlowDetailProps {
   participationId: number
   filename: string
   connectionPort: number | null
+  peerIp: string | null
 }
 
 const decodeBase64 = (s: string): Uint8Array => {
@@ -48,7 +49,7 @@ const concatChunks = (
   return { bytes: out, flagOffsets }
 }
 
-export const FlowDetail: FC<FlowDetailProps> = ({ challengeId, participationId, filename, connectionPort }) => {
+export const FlowDetail: FC<FlowDetailProps> = ({ challengeId, participationId, filename, connectionPort, peerIp }) => {
   const { t } = useTranslation()
   const isCompact = useIsMobile(700)
   const [detail, setDetail] = useState<TrafficFlowDetail | null>(null)
@@ -66,11 +67,11 @@ export const FlowDetail: FC<FlowDetailProps> = ({ challengeId, participationId, 
   )
 
   useEffect(() => {
-    if (connectionPort == null) {
+    if (connectionPort == null || peerIp == null) {
       setDetail(null)
       return
     }
-    const requestKey = JSON.stringify([challengeId, participationId, filename, connectionPort])
+    const requestKey = JSON.stringify([challengeId, participationId, filename, connectionPort, peerIp])
     const owner = retryOwner.current
     if (owner.key !== requestKey) {
       if (owner.timer !== null) window.clearTimeout(owner.timer)
@@ -82,7 +83,14 @@ export const FlowDetail: FC<FlowDetailProps> = ({ challengeId, participationId, 
     const abort = new AbortController()
     setLoading(true)
     api.game
-      .gameGetTrafficFlowDetail(challengeId, participationId, filename, connectionPort, { signal: abort.signal })
+      .gameGetTrafficFlowDetail(
+        challengeId,
+        participationId,
+        filename,
+        connectionPort,
+        { signal: abort.signal },
+        { peerIp }
+      )
       .then((res) => {
         if (!abort.signal.aborted) {
           owner.attempts = 0
@@ -111,12 +119,12 @@ export const FlowDetail: FC<FlowDetailProps> = ({ challengeId, participationId, 
         owner.timer = null
       }
     }
-  }, [challengeId, participationId, filename, connectionPort, retryGeneration])
+  }, [challengeId, participationId, filename, connectionPort, peerIp, retryGeneration])
 
   const out = useMemo(() => (detail ? concatChunks(detail.chunks, 'TeamToContainer') : null), [detail])
   const inn = useMemo(() => (detail ? concatChunks(detail.chunks, 'ContainerToTeam') : null), [detail])
 
-  if (connectionPort == null) {
+  if (connectionPort == null || peerIp == null) {
     return (
       <Center h="100%">
         <Text c="dimmed" size="sm">

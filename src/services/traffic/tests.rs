@@ -195,6 +195,32 @@ fn inspected_flow_merges_directions_and_retains_real_payload_detail() {
     let _ = std::fs::remove_file(path);
 }
 
+#[test]
+fn inspected_flow_identity_keeps_equal_client_ports_from_distinct_peers_separate() {
+    let path = scratch("peer-scoped-detail");
+    let client_port = 42_000;
+    let first_team = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), client_port);
+    let second_team = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 4)), client_port);
+    let first_service = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3)), 31_337);
+    let second_service = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)), 31_337);
+    write_capture(
+        &path,
+        &[
+            TrafficPacket::new(first_team, first_service, b"first".to_vec()),
+            TrafficPacket::new(second_team, second_service, b"second".to_vec()),
+        ],
+    )
+    .unwrap();
+
+    let flows = inspect_flows_bounded(&path, u64::MAX, 10, 1024).unwrap();
+    assert_eq!(flows.len(), 2);
+    assert_eq!(flows[0].connection_port, client_port);
+    assert_eq!(flows[1].connection_port, client_port);
+    assert_ne!(flows[0].peer_ip, flows[1].peer_ip);
+    assert_eq!(flows.iter().map(|flow| flow.chunks.len()).sum::<usize>(), 2);
+    let _ = std::fs::remove_file(path);
+}
+
 #[tokio::test]
 async fn immutable_file_version_is_parsed_once_and_shared() {
     let path = scratch("cached-index");

@@ -1,5 +1,6 @@
 use super::*;
 
+#[path = "rate_limiter_tests/credential_admission.rs"]
 mod credential_admission;
 
 #[test]
@@ -522,6 +523,14 @@ fn honeypot_policies_are_distinct_bounded_distributed_buckets() {
     ));
     assert!(redis_key(Policy::HoneypotHttp, "source").starts_with("rl:tb:21:"));
     assert!(redis_key(Policy::HoneypotTcp, "source").starts_with("rl:tb:22:"));
+    assert!(matches!(
+        Policy::HoneypotAggregate.kind(),
+        Kind::Bucket {
+            capacity: 256.0,
+            refill_per_sec: 4.0,
+        }
+    ));
+    assert!(redis_key(Policy::HoneypotAggregate, "telemetry").starts_with("rl:tb:29:"));
 }
 
 #[test]
