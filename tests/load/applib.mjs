@@ -924,10 +924,20 @@ export function prepareKothChecker(gid, cid) {
 }
 
 function buildManagedFixtureImage(tag, dockerfile, label) {
-  const baseImage = mustDocker(
-    docker(['inspect', RSCTF, '--format', '{{.Config.Image}}']),
-    `discover base image for ${label}`
-  ).stdout.trim();
+  const baseReference = process.env.LOAD_FIXTURE_PYTHON_IMAGE ||
+    'python:3.12-alpine@sha256:d09d15e60962ca365d1cd544a48773bac9d33f2fb1b00f2aa0deec78ade7dc31';
+  if (!isImmutableImageReference(baseReference)) {
+    throw new Error('LOAD_FIXTURE_PYTHON_IMAGE must be an immutable repository digest or image ID');
+  }
+  let inspected = docker(['image', 'inspect', baseReference, '--format', '{{.Id}}']);
+  if (inspected.status !== 0) {
+    mustDocker(docker(['pull', baseReference]), `pull ${label} base image`);
+    inspected = docker(['image', 'inspect', baseReference, '--format', '{{.Id}}']);
+  }
+  const baseImageId = mustDocker(inspected, `inspect ${label} base image`).stdout.trim();
+  if (!/^sha256:[a-f0-9]{64}$/.test(baseImageId)) {
+    throw new Error(`${label} base did not resolve to an immutable Docker image ID`);
+  }
   const fixtures = materializeFixtures();
   mustDocker(
     docker([
@@ -938,7 +948,7 @@ function buildManagedFixtureImage(tag, dockerfile, label) {
       '--file',
       dockerfile(fixtures),
       '--build-arg',
-      `BASE_IMAGE=${baseImage}`,
+      `BASE_IMAGE=${baseReference}`,
       fixtures.root,
     ]),
     `build ${label} image`

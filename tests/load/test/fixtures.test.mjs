@@ -19,6 +19,13 @@ test("managed images replace the base server healthcheck with their real probes"
   assert.doesNotMatch(adDockerfile, /healthz/);
 });
 
+test("managed image builds use a pinned compact Python base", () => {
+  const source = readFileSync(new URL("../applib.mjs", import.meta.url), "utf8");
+  assert.match(source, /python:3\.12-alpine@sha256:[a-f0-9]{64}/);
+  assert.match(source, /LOAD_FIXTURE_PYTHON_IMAGE must be an immutable repository digest or image ID/);
+  assert.doesNotMatch(source, /LOAD_FIXTURE_PYTHON_IMAGE \|\|\s*['"]python:3\.12-alpine['"]/);
+});
+
 function reservePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
