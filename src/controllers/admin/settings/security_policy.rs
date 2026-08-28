@@ -9,6 +9,7 @@ use crate::utils::error::{AppError, AppResult};
 /// Persist the entire account/captcha authorization surface in one
 /// transaction. The exclusive policy lock linearizes it against registration,
 /// password admission, recovery, OAuth policy checks, and roster admission.
+#[cfg(test)]
 pub(super) async fn save_security_policy(
     pool: &sqlx::PgPool,
     config: &AppConfig,
@@ -16,54 +17,57 @@ pub(super) async fn save_security_policy(
     captcha: Option<CaptchaConfig>,
     oauth: Option<OAuthConfig>,
 ) -> AppResult<()> {
-    if let Some(account) = account.as_ref() {
-        if account.email_confirmation_required && config.public_url.is_none() {
-            return Err(AppError::bad_request(
-                "Email confirmation requires a canonical RSCTF_PUBLIC_URL",
-            ));
-        }
-        PolicyFlags {
-            enable_browser_fingerprint: account.enable_browser_fingerprint,
-            require_unique_ip_per_team_user: account.require_unique_ip_per_team_user,
-            require_unique_fingerprint_per_team_user: account
-                .require_unique_fingerprint_per_team_user,
-            require_unique_ip_global: account.require_unique_ip_global,
-            require_unique_fingerprint_global: account.require_unique_fingerprint_global,
-        }
-        .validate()?;
-    }
-
     let mut transaction = pool.begin().await.map_err(database_error)?;
     anti_cheat::lock_policy_update(&mut transaction).await?;
-    if let Some(account) = account {
-        write_account_policy(&mut transaction, account).await?;
-    }
-    if let Some(captcha) = captcha {
-        write_captcha_policy(&mut transaction, captcha).await?;
-    }
-    if let Some(oauth) = oauth {
-        write_oauth_policy(&mut transaction, oauth).await?;
-    }
-
-    // Resolve and validate the effective merged state before commit. In
-    // particular, an omitted/empty incoming secret preserves the stored one;
-    // enabling Turnstile with no effective secret rolls the whole update back.
-    CaptchaSettings::load_in_transaction(&mut transaction, config.account.use_captcha).await?;
-    let account = anti_cheat::load_account_policy_after_lock(&mut transaction, config).await?;
-    let oauth_configured =
-        crate::services::oauth_config::OAuthSettings::load_in_transaction(&mut transaction)
-            .await?
-            .any_configured();
-    anti_cheat::validate_oauth_only_registration(&account, config, oauth_configured)?;
+    let updates =
+        prepare_security_updates(&mut transaction, config, account, captcha, oauth).await?;
+    write_updates(&mut transaction, &updates).await?;
+    validate_effective_policy(&mut transaction, config).await?;
     transaction.commit().await.map_err(database_error)?;
     crate::services::captcha::invalidate_settings_snapshot();
     Ok(())
 }
 
-async fn write_account_policy(
+pub(super) async fn prepare_security_updates(
     transaction: &mut Transaction<'_, Postgres>,
-    account: AccountPolicy,
-) -> AppResult<()> {
+    config: &AppConfig,
+    account: Option<AccountPolicy>,
+    captcha: Option<CaptchaConfig>,
+    oauth: Option<OAuthConfig>,
+) -> AppResult<Vec<(String, Option<String>)>> {
+    if let Some(account) = account.as_ref() {
+        validate_account_policy(config, account)?;
+    }
+    let mut updates = Vec::with_capacity(20);
+    if let Some(account) = account {
+        collect_account_policy(&mut updates, account);
+    }
+    if let Some(captcha) = captcha {
+        collect_captcha_policy(&mut updates, captcha);
+    }
+    if let Some(oauth) = oauth {
+        collect_oauth_policy(transaction, &mut updates, oauth).await?;
+    }
+    Ok(updates)
+}
+
+fn validate_account_policy(config: &AppConfig, account: &AccountPolicy) -> AppResult<()> {
+    if account.email_confirmation_required && config.public_url.is_none() {
+        return Err(AppError::bad_request(
+            "Email confirmation requires a canonical RSCTF_PUBLIC_URL",
+        ));
+    }
+    PolicyFlags {
+        enable_browser_fingerprint: account.enable_browser_fingerprint,
+        require_unique_ip_per_team_user: account.require_unique_ip_per_team_user,
+        require_unique_fingerprint_per_team_user: account.require_unique_fingerprint_per_team_user,
+        require_unique_ip_global: account.require_unique_ip_global,
+        require_unique_fingerprint_global: account.require_unique_fingerprint_global,
+    }
+    .validate()
+}
+
+fn collect_account_policy(updates: &mut Vec<(String, Option<String>)>, account: AccountPolicy) {
     let values = [
         (
             "AccountPolicy:AllowRegister",
@@ -104,14 +108,16 @@ async fn write_account_policy(
             account.require_unique_fingerprint_global.to_string(),
         ),
     ];
-    for (key, value) in values {
-        upsert(transaction, key, value).await?;
-    }
-    Ok(())
+    updates.extend(
+        values
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), Some(value))),
+    );
 }
 
-async fn write_oauth_policy(
+async fn collect_oauth_policy(
     transaction: &mut Transaction<'_, Postgres>,
+    updates: &mut Vec<(String, Option<String>)>,
     oauth: OAuthConfig,
 ) -> AppResult<()> {
     let client_id_keys = ["OAuthConfig:GoogleClientId", "OAuthConfig:DiscordClientId"];
@@ -140,7 +146,7 @@ async fn write_oauth_policy(
             let already_persisted = persisted_client_ids.iter().any(|saved| saved == key);
             let fallback = std::env::var(environment_key).ok();
             if should_persist_client_id(already_persisted, &value, fallback.as_deref()) {
-                upsert(transaction, key, value).await?;
+                updates.push((key.to_string(), Some(value)));
             }
         }
     }
@@ -152,7 +158,7 @@ async fn write_oauth_policy(
         ),
     ] {
         if let Some(value) = value.filter(|value| !value.is_empty()) {
-            upsert(transaction, key, value).await?;
+            updates.push((key.to_string(), Some(value)));
         }
     }
     Ok(())
@@ -172,47 +178,69 @@ fn should_persist_client_id(
     environment_fallback != Some(incoming.trim())
 }
 
-async fn write_captcha_policy(
-    transaction: &mut Transaction<'_, Postgres>,
-    captcha: CaptchaConfig,
-) -> AppResult<()> {
-    upsert(transaction, "CaptchaConfig:Provider", captcha.provider).await?;
+fn collect_captcha_policy(updates: &mut Vec<(String, Option<String>)>, captcha: CaptchaConfig) {
+    updates.push(("CaptchaConfig:Provider".to_string(), Some(captcha.provider)));
     if let Some(site_key) = captcha
         .site_key
         .filter(|site_key| !site_key.trim().is_empty())
     {
-        upsert(transaction, "CaptchaConfig:SiteKey", site_key).await?;
+        updates.push(("CaptchaConfig:SiteKey".to_string(), Some(site_key)));
     }
     if let Some(secret) = captcha.secret_key.filter(|secret| !secret.is_empty()) {
-        upsert(transaction, "CaptchaConfig:SecretKey", secret).await?;
+        updates.push(("CaptchaConfig:SecretKey".to_string(), Some(secret)));
     }
     if let Some(hash_pow) = captcha.hash_pow {
-        upsert(
-            transaction,
-            "CaptchaConfig:HashPow:Difficulty",
-            hash_pow.difficulty.to_string(),
-        )
-        .await?;
+        updates.push((
+            "CaptchaConfig:HashPow:Difficulty".to_string(),
+            Some(hash_pow.difficulty.to_string()),
+        ));
     }
-    Ok(())
 }
 
-async fn upsert(
+#[cfg(test)]
+async fn write_updates(
     transaction: &mut Transaction<'_, Postgres>,
-    key: &str,
-    value: String,
+    updates: &[(String, Option<String>)],
 ) -> AppResult<()> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let keys = updates
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    let values = updates
+        .iter()
+        .map(|(_, value)| value.clone())
+        .collect::<Vec<_>>();
     sqlx::query(
         r#"INSERT INTO "Configs" (config_key, value, cache_keys)
-           VALUES ($1, $2, NULL)
+           SELECT key, value, NULL::jsonb
+             FROM UNNEST($1::text[], $2::text[]) AS incoming(key, value)
            ON CONFLICT (config_key) DO UPDATE SET value = EXCLUDED.value"#,
     )
-    .bind(key)
-    .bind(value)
+    .bind(keys)
+    .bind(values)
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
     Ok(())
+}
+
+pub(super) async fn validate_effective_policy(
+    transaction: &mut Transaction<'_, Postgres>,
+    config: &AppConfig,
+) -> AppResult<()> {
+    // Resolve the merged state before commit. Empty incoming secrets preserve
+    // their stored values, so validation must happen after the candidate
+    // set-based write in the same transaction.
+    CaptchaSettings::load_in_transaction(transaction, config.account.use_captcha).await?;
+    let account = anti_cheat::load_account_policy_after_lock(transaction, config).await?;
+    let oauth_configured =
+        crate::services::oauth_config::OAuthSettings::load_in_transaction(transaction)
+            .await?
+            .any_configured();
+    anti_cheat::validate_oauth_only_registration(&account, config, oauth_configured)
 }
 
 fn database_error(error: sqlx::Error) -> AppError {

@@ -39,6 +39,7 @@ pub(crate) mod oauth_config;
 pub(crate) mod participation_evidence;
 pub mod proxy_admission;
 pub mod runtime_topology;
+pub mod settings_branding;
 pub mod submission_feed;
 pub mod suspicion;
 pub mod token;

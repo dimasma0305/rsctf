@@ -157,6 +157,7 @@ mod m0170_admin_credential_jobs;
 mod m0171_admin_password_reset_operations;
 mod m0172_distributed_proxy_admission;
 mod m0175_mail_outbox;
+mod m0176_platform_settings_operations;
 mod m0183_exercise_api_bounds;
 
 #[cfg(test)]
@@ -329,6 +330,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0171_admin_password_reset_operations::Migration),
             Box::new(m0172_distributed_proxy_admission::Migration),
             Box::new(m0175_mail_outbox::Migration),
+            Box::new(m0176_platform_settings_operations::Migration),
             Box::new(m0183_exercise_api_bounds::Migration),
         ]
     }
@@ -475,7 +477,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 35..],
+            &names[names.len() - 37..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -511,6 +513,8 @@ mod tests {
                 "m0170_admin_credential_jobs",
                 "m0171_admin_password_reset_operations",
                 "m0172_distributed_proxy_admission",
+                "m0175_mail_outbox",
+                "m0176_platform_settings_operations",
                 "m0183_exercise_api_bounds",
             ]
         );

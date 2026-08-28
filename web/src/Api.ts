@@ -449,6 +449,14 @@ export interface ProfileUserInfoModel {
 
 /** Global configuration update */
 export interface ConfigEditModel {
+  /** Monotonic authoritative revision returned by GET. */
+  revision?: number;
+  /** Stable mutation intent, required on PUT. */
+  operationId?: string | null;
+  /** Revision observed before editing, required on PUT. */
+  expectedRevision?: number | null;
+  /** Optional branding change consumed by the same settings operation. */
+  brandingAction?: BrandingAction;
   /** User policy */
   accountPolicy?: AccountPolicy | null;
   /** Global configuration */
@@ -473,6 +481,23 @@ export interface ConfigEditModel {
   /** Active container backend summary. The backend type is read-only; the
    *  Jeopardy port-mapping preference is editable. */
   containerProvider?: ContainerProviderInfoModel | null;
+}
+
+export enum BrandingAction {
+  Keep = "Keep",
+  Set = "Set",
+  Clear = "Clear",
+}
+
+export interface SettingsMutationResult {
+  operationId: string;
+  revision: number;
+  brandingHash?: string | null;
+}
+
+export interface SettingsBrandingStageResult {
+  operationId: string;
+  brandingHash: string;
 }
 
 export interface DonationConfig {
@@ -5666,11 +5691,40 @@ export class Api<
      * @request PUT:/api/admin/config
      */
     adminUpdateConfigs: (data: ConfigEditModel, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+      this.request<SettingsMutationResult, RequestResponse>({
         path: `/api/admin/config`,
         method: "PUT",
         body: data,
         type: ContentType.Json,
+        ...params,
+      }),
+
+    /** Reconcile a committed settings intent after an ambiguous response. */
+    adminGetSettingsOperation: (
+      operationId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<SettingsMutationResult, RequestResponse>({
+        path: `/api/admin/config/operations/${operationId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /** Stage an optional logo for one settings intent without publishing it. */
+    adminStageSettingsBranding: (
+      operationId: string,
+      data: {
+        /** @format binary */
+        file?: File | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<SettingsBrandingStageResult, RequestResponse>({
+        path: `/api/admin/config/logo/stage/${operationId}`,
+        method: "POST",
+        body: data,
+        type: ContentType.FormData,
         ...params,
       }),
 

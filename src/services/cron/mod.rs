@@ -289,6 +289,14 @@ async fn run_jobs(state: &SharedState) {
         Err(error) => tracing::warn!(%error, "cron: credential retention sweep failed"),
     }
 
+    match crate::services::settings_branding::purge_expired(state.pg(), state.storage.as_ref(), 128)
+        .await
+    {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: purged expired settings branding stage(s)"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("cron: settings branding retention sweep failed: {e}"),
+    }
+
     match crate::services::git_sync::collect_stale_checker_revisions(state).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: collected stale checker revision(s)"),
         Ok(_) => {}
