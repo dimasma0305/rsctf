@@ -55,3 +55,17 @@ test('instance UI listens for daemon updates and exposes WSS only through the ex
   assert.match(entry, /value=\{proxyEntryMode\}/)
   assert.match(entry, /await wsrx\.delete\(localTraffic\.local\)/)
 })
+
+test('the optional local daemon is contacted only after an explicit player action', () => {
+  const provider = readFileSync('src/components/WsrxProvider.tsx', 'utf8')
+  const manager = readFileSync('src/components/WsrxManager.tsx', 'utf8')
+  const entry = readFileSync('src/components/InstanceEntry.tsx', 'utf8')
+  const optionsEffect = provider.match(
+    /useEffect\(\(\) => \{\s+if \(!wsrxOptions[\s\S]*?wsrx\.setOptions\(getWsrxConfig\(wsrxOptions\)\)[\s\S]*?\}, \[[^\]]+\]\)/
+  )
+
+  assert.ok(optionsEffect)
+  assert.doesNotMatch(optionsEffect[0], /doWsrxConnect/)
+  assert.match(manager, /onClick=\{doWsrxConnect\}/)
+  assert.match(entry, /wsrxState !== WsrxState\.Usable\) doWsrxConnect\(\)/)
+})

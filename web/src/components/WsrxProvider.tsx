@@ -121,8 +121,7 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     if (!wsrxOptions || platformConfig.config.portMapping !== ContainerPortMappingType.PlatformProxy) return
 
     wsrx.setOptions(getWsrxConfig(wsrxOptions))
-    doWsrxConnect()
-  }, [wsrx, wsrxOptions, doWsrxConnect, platformConfig.config.portMapping])
+  }, [wsrx, wsrxOptions, platformConfig.config.portMapping])
 
   useEffect(() => {
     if (platformConfig?.config.title) {
