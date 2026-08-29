@@ -370,21 +370,25 @@ struct KubernetesLaunchIdentity<'a> {
     portable_spec_fingerprint: &'a str,
     security_context: &'a SecurityContext,
     network_policy: Option<&'a NetworkPolicySpec>,
+    ad_service_cidr: Option<&'a str>,
 }
 
 fn kubernetes_launch_fingerprint(
     spec: &ContainerSpec,
     security_context: &SecurityContext,
     private_policy: Option<&NetworkPolicy>,
+    ad_service_cidr: Option<&str>,
 ) -> String {
     let portable_spec_fingerprint = crate::services::container::launch_spec_fingerprint(spec);
     let canonical = KubernetesLaunchIdentity {
-        // v1 binds retries to the effective security context and rendered
-        // NetworkPolicy, including environment-derived cluster identities.
-        revision: 1,
+        // v2 also binds the A&D Service CIDR. A deny-by-default policy does not
+        // render that CIDR, but it still determines whether the assigned
+        // ClusterIP is routable and therefore belongs in the launch identity.
+        revision: 2,
         portable_spec_fingerprint: &portable_spec_fingerprint,
         security_context,
         network_policy: private_policy.and_then(|policy| policy.spec.as_ref()),
+        ad_service_cidr,
     };
     let bytes = serde_json::to_vec(&canonical)
         .expect("the fixed Kubernetes launch identity is always JSON serializable");
@@ -510,10 +514,23 @@ impl ContainerManager for KubernetesContainerManager {
         } else {
             None
         };
+        if let Some(policy) = private_policy.as_mut() {
+            // Namespaced API responses always populate this field. Rendering it
+            // up front keeps structural matching stable for legacy policies
+            // that predate the launch fingerprint label.
+            policy.metadata.namespace = Some(self.namespace.clone());
+        }
         debug_assert_eq!(private_policy.is_some(), has_network_policy);
         let security_context = challenge_security_context();
-        let launch_fingerprint =
-            kubernetes_launch_fingerprint(&spec, &security_context, private_policy.as_ref());
+        let ad_service_cidr = ad_config
+            .as_ref()
+            .map(|config| config.service_cidr.to_string());
+        let launch_fingerprint = kubernetes_launch_fingerprint(
+            &spec,
+            &security_context,
+            private_policy.as_ref(),
+            ad_service_cidr.as_deref(),
+        );
 
         // Environment: caller-supplied vars plus the dynamic flag contract.
         let mut env: Vec<EnvVar> = spec

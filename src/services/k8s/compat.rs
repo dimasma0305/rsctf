@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use k8s_openapi::api::core::v1::{Container, ContainerPort, Pod, Service, ServicePort};
-use k8s_openapi::api::networking::v1::NetworkPolicy;
+use k8s_openapi::api::networking::v1::{NetworkPolicy, NetworkPolicySpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
 const LAUNCH_SPEC_LABEL: &str = "rsctf.launch-spec";
@@ -157,6 +157,13 @@ pub(super) fn legacy_service_matches(actual: &Service, expected: &Service) -> bo
         && actual_spec.load_balancer_class == expected_spec.load_balancer_class
 }
 
+fn network_policy_spec_matches(actual: &NetworkPolicySpec, expected: &NetworkPolicySpec) -> bool {
+    actual.pod_selector == expected.pod_selector
+        && optional_vec_matches(actual.ingress.as_ref(), expected.ingress.as_ref())
+        && optional_vec_matches(actual.egress.as_ref(), expected.egress.as_ref())
+        && optional_vec_matches(actual.policy_types.as_ref(), expected.policy_types.as_ref())
+}
+
 pub(super) fn legacy_policy_matches(actual: &NetworkPolicy, expected: &NetworkPolicy) -> bool {
     let mut expected = expected.clone();
     expected.metadata.labels = without_launch_label(expected.metadata.labels.as_ref());
@@ -167,5 +174,10 @@ pub(super) fn legacy_policy_matches(actual: &NetworkPolicy, expected: &NetworkPo
     {
         labels.remove(LAUNCH_SPEC_LABEL);
     }
-    legacy_metadata_matches(&actual.metadata, &expected.metadata) && actual.spec == expected.spec
+    let specs_match = actual
+        .spec
+        .as_ref()
+        .zip(expected.spec.as_ref())
+        .is_some_and(|(actual, expected)| network_policy_spec_matches(actual, expected));
+    legacy_metadata_matches(&actual.metadata, &expected.metadata) && specs_match
 }

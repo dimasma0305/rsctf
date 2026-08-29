@@ -326,6 +326,30 @@ async fn changed_spec_or_rendered_policy_does_not_adopt_a_kubernetes_crash_orpha
 }
 
 #[tokio::test]
+async fn changed_ad_service_cidr_does_not_adopt_a_kubernetes_crash_orphan() {
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
+    let _environment = RestoreEnv::set(&[
+        ("RSCTF_K8S_AD_SERVICE_CIDR", "10.96.0.0/12"),
+        ("RSCTF_K8S_AD_INGRESS_CIDRS", "192.0.2.0/24"),
+    ]);
+    let (manager, _) = mock_manager(ServiceFailure::None);
+    let mut original = retry_spec(false);
+    original.game_kind = rsctf_worker_protocol::GameKind::AttackDefense;
+    original.ad_network = Some("rsctf-ad".to_string());
+
+    let first = manager.create(original.clone()).await.unwrap();
+    std::env::set_var("RSCTF_K8S_AD_SERVICE_CIDR", "10.240.0.0/16");
+    assert!(matches!(
+        manager.create(original.clone()).await,
+        Err(AppError::Conflict(_))
+    ));
+
+    std::env::set_var("RSCTF_K8S_AD_SERVICE_CIDR", "10.96.0.0/12");
+    let retried = manager.create(original).await.unwrap();
+    assert_eq!(first.id, retried.id);
+}
+
+#[tokio::test]
 async fn retry_discovers_and_validates_the_previous_kubernetes_workload_name() {
     let (manager, resources) = mock_manager(ServiceFailure::None);
     let spec = retry_spec(false);
@@ -402,12 +426,17 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
         eprintln!("skipping live Kubernetes retry regression without RSCTF_K8S_LIVE_RETRY=1");
         return;
     }
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
+    let _environment = RestoreEnv::set(&[
+        ("RSCTF_K8S_AD_SERVICE_CIDR", "10.96.0.0/12"),
+        ("RSCTF_K8S_AD_INGRESS_CIDRS", "192.0.2.0/24"),
+    ]);
     let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
     let manager = KubernetesContainerManager::connect()
         .await
         .expect("connect to the disposable Kubernetes cluster");
     let spec = ContainerSpec {
-        game_kind: rsctf_worker_protocol::GameKind::Jeopardy,
+        game_kind: rsctf_worker_protocol::GameKind::AttackDefense,
         image: IMAGE.to_string(),
         memory_limit: 64,
         cpu_count: 1,
@@ -417,7 +446,7 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
         proxy_only: false,
         env: Vec::new(),
         flag: None,
-        ad_network: None,
+        ad_network: Some("rsctf-ad".to_string()),
         allow_egress: false,
         control_plane_callback_ports: Vec::new(),
         network_mode: crate::utils::enums::NetworkMode::Open,
@@ -425,6 +454,37 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
     };
     let legacy_uid = crate::utils::codec::sha256_str(OPERATION)[..16].to_string();
     let legacy_name = format!("{}-{legacy_uid}", sanitize_image(IMAGE));
+    let legacy_pod = manager
+        .pods()
+        .get(&legacy_name)
+        .await
+        .expect("inspect the previous release's Pod labels");
+    let legacy_labels = legacy_pod
+        .metadata
+        .labels
+        .expect("the previous release's Pod has ownership labels");
+    let config = ad_network_config(false).expect("render the live A&D policy");
+    let mut legacy_policy = ad_network_policy(
+        &legacy_name,
+        &legacy_labels,
+        None,
+        spec.expose_port,
+        spec.allow_egress,
+        &spec.control_plane_callback_ports,
+        &config,
+    );
+    legacy_policy.metadata.namespace = Some(manager.namespace.clone());
+    let persisted_legacy_policy = manager
+        .network_policies()
+        .create(&PostParams::default(), &legacy_policy)
+        .await
+        .expect("create the previous release's NetworkPolicy");
+    assert!(
+        compat::legacy_policy_matches(&persisted_legacy_policy, &legacy_policy),
+        "the Kubernetes API changed the legacy policy shape:\nactual={}\nexpected={}",
+        serde_json::to_string_pretty(&persisted_legacy_policy).unwrap(),
+        serde_json::to_string_pretty(&legacy_policy).unwrap()
+    );
 
     let adopted = manager
         .create(spec.clone())
@@ -441,6 +501,28 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
         .destroy(&adopted.id)
         .await
         .expect("clean up the adopted live workload");
+
+    let mut cidr_bound = spec.clone();
+    cidr_bound.operation_id = Some("rsctf-live-service-cidr".to_string());
+    let current = manager
+        .create(cidr_bound.clone())
+        .await
+        .expect("create a workload bound to the current Service CIDR");
+    std::env::set_var("RSCTF_K8S_AD_SERVICE_CIDR", "10.240.0.0/16");
+    assert!(matches!(
+        manager.create(cidr_bound).await,
+        Err(AppError::Conflict(_))
+    ));
+    std::env::set_var("RSCTF_K8S_AD_SERVICE_CIDR", "10.96.0.0/12");
+    orphans::rollback_owned(
+        manager.pods(),
+        manager.services(),
+        manager.network_policies(),
+        &current.id,
+        &manager.scope,
+    )
+    .await
+    .expect("clean up the Service-CIDR workload");
 
     let quota_namespace = std::env::var("RSCTF_K8S_REJECTION_NAMESPACE")
         .expect("rejection namespace configured by the live script");

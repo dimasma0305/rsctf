@@ -97,7 +97,7 @@ metadata:
       name: ${legacy_name}
       uid: ${legacy_pod_uid}
 spec:
-  type: NodePort
+  type: ClusterIP
   selector:
     app: rsctf-${legacy_uid}
   ports:
@@ -117,6 +117,8 @@ YAML
 RSCTF_K8S_NAMESPACE='rsctf-retry' \
 RSCTF_K8S_PUBLIC_ENTRY='192.0.2.10' \
 RSCTF_K8S_NETWORK_POLICY_ENFORCED='true' \
+RSCTF_K8S_AD_SERVICE_CIDR='10.96.0.0/12' \
+RSCTF_K8S_AD_INGRESS_CIDRS='192.0.2.0/24' \
 RSCTF_K8S_REJECTION_NAMESPACE='rsctf-rejection' \
 RSCTF_K8S_LIVE_RETRY='1' \
   cargo test --locked --lib \
