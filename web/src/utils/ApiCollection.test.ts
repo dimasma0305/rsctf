@@ -22,6 +22,12 @@ test('API collections accept the paginated response used by newer servers', () =
     total: 1,
     paginated: true,
   })
+  assert.deepEqual(decodeApiCollection({ data: items, total: 3 }), {
+    status: 'ready',
+    items,
+    total: 3,
+    paginated: true,
+  })
 })
 
 test('API collections accept simple and explicitly named rolling-upgrade envelopes', () => {

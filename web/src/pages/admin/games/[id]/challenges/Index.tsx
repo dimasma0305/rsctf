@@ -247,15 +247,15 @@ const GameChallengeEdit: FC = () => {
   const onConfirmToggle = async (challenge: ChallengeInfoModel, setDisabled: Dispatch<SetStateAction<boolean>>) => {
     const numId = parseInt(id ?? '-1')
     if (challenge.id == null) return
-    const prepared = prepareChallengeMutation(
-      { isEnabled: !challenge.isEnabled },
-      challengeRevision(challenge),
-      updateOperations.current.get(challenge.id)
-    )
-    updateOperations.current.set(challenge.id, prepared.operation)
     setDisabled(true)
 
     try {
+      const prepared = prepareChallengeMutation(
+        { isEnabled: !challenge.isEnabled },
+        challengeRevision(challenge),
+        updateOperations.current.get(challenge.id)
+      )
+      updateOperations.current.set(challenge.id, prepared.operation)
       await api.edit.editUpdateGameChallenge(numId, challenge.id, prepared.payload)
       updateOperations.current.delete(challenge.id)
       showNotification({

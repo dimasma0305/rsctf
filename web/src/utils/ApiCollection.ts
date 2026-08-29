@@ -35,7 +35,7 @@ export function decodeApiCollection<T>(
     }
 
     const total = hasTotal ? payload.total : undefined
-    const length = hasLength ? payload.length : undefined
+    const length = hasLength ? payload.length : payload.data.length
     if (
       typeof total !== 'number' ||
       !Number.isSafeInteger(total) ||

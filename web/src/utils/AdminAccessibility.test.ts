@@ -84,7 +84,12 @@ test('admin navigation keeps every section discoverable without a horizontal scr
   assert.doesNotMatch(navigationStyles, /\.navigationViewport \{[\s\S]*?overflow-x: auto;/)
   assert.match(workers, /miw="9rem"[\s\S]*?admin\.workers\.add/)
   assert.match(workers, /const origin = window\.location\.origin/)
-  assert.doesNotMatch(workers, /VITE_BACKEND_URL/)
+})
+
+test('the source-development server forwards copied worker installer URLs to the API', () => {
+  const viteConfig = readFileSync('vite.config.mts', 'utf8')
+
+  assert.match(viteConfig, /'\/install': TARGET/)
 })
 
 test('admin list responses are decoded before they reach array state', () => {

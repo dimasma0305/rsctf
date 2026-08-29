@@ -306,18 +306,18 @@ const GameChallengeEdit: FC = () => {
     }
 
     setDisabled(true)
-    const prepared = prepareChallengeMutation(
-      {
-        ...update,
-        deadlineUtc: deadline ? deadline.valueOf() : 0,
-        isEnabled: undefined,
-      },
-      challengeRevision(challenge),
-      updateOperation.current
-    )
-    updateOperation.current = prepared.operation
 
     try {
+      const prepared = prepareChallengeMutation(
+        {
+          ...update,
+          deadlineUtc: deadline ? deadline.valueOf() : 0,
+          isEnabled: undefined,
+        },
+        challengeRevision(challenge),
+        updateOperation.current
+      )
+      updateOperation.current = prepared.operation
       const res = await api.edit.editUpdateGameChallenge(numId, numCId, prepared.payload)
       updateOperation.current = null
       if (!noFeedback) {

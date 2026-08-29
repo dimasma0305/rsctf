@@ -293,8 +293,6 @@ const GameInfoEdit: FC = () => {
       })
       return
     }
-    const prepared = prepareGameInfoSave(updatePayload, saveOperation.current)
-    saveOperation.current = prepared.operation
     const controller = new AbortController()
     saveAbort.current?.abort()
     saveAbort.current = controller
@@ -302,6 +300,8 @@ const GameInfoEdit: FC = () => {
     setDisabled(true)
 
     try {
+      const prepared = prepareGameInfoSave(updatePayload, saveOperation.current)
+      saveOperation.current = prepared.operation
       const response = await api.edit.editUpdateGame(game.id!, prepared.payload, { signal: controller.signal })
       if (saveAbort.current !== controller) return
       saveOperation.current = null

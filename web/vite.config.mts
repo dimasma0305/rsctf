@@ -50,6 +50,7 @@ export default defineConfig(({ mode }) => {
           rewriteWsOrigin: true,
           ws: true,
         },
+        '/install': TARGET,
         '/favicon.webp': TARGET,
       },
     },

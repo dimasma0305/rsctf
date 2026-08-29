@@ -1,3 +1,5 @@
+import { createUuid } from './Uuid'
+
 export interface ChallengeMutationOperation {
   digest: string
   id: string
@@ -19,7 +21,7 @@ export function prepareChallengeMutation<T extends object>(
   payload: T,
   expectedRevision: number | undefined,
   previous: ChallengeMutationOperation | null | undefined,
-  createId: () => string = () => crypto.randomUUID()
+  createId: () => string = createUuid
 ): PreparedChallengeMutation<T> {
   const compatiblePayload = payload as T & { operationId?: unknown; expectedRevision?: unknown }
   const { operationId: _operationId, expectedRevision: _expectedRevision, ...body } = compatiblePayload

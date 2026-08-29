@@ -410,15 +410,15 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
 
   const onChangeFlagTemplate = async () => {
     if (flagTemplate === challenge?.flagTemplate) return
-    const prepared = prepareChallengeMutation(
-      { flagTemplate },
-      challengeRevision(challenge),
-      flagTemplateOperation.current
-    )
-    flagTemplateOperation.current = prepared.operation
     setDisabled(true)
 
     try {
+      const prepared = prepareChallengeMutation(
+        { flagTemplate },
+        challengeRevision(challenge),
+        flagTemplateOperation.current
+      )
+      flagTemplateOperation.current = prepared.operation
       // allow empty flag template to be set (but not null or undefined)
       const updated = await api.edit.editUpdateGameChallenge(numId, numCId, prepared.payload)
       flagTemplateOperation.current = null

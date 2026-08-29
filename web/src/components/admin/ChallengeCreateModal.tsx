@@ -41,18 +41,18 @@ export const ChallengeCreateModal: FC<ChallengeCreateModalProps> = (props) => {
 
     setDisabled(true)
     const numId = parseInt(id ?? '-1')
-    const prepared = prepareChallengeMutation(
-      {
-        title,
-        category: category as ChallengeCategory,
-        type: type as ChallengeType,
-      },
-      undefined,
-      createOperation.current
-    )
-    createOperation.current = prepared.operation
 
     try {
+      const prepared = prepareChallengeMutation(
+        {
+          title,
+          category: category as ChallengeCategory,
+          type: type as ChallengeType,
+        },
+        undefined,
+        createOperation.current
+      )
+      createOperation.current = prepared.operation
       const res = await api.edit.editAddGameChallenge(numId, prepared.payload)
       createOperation.current = null
       showNotification({
