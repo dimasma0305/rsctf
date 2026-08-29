@@ -68,3 +68,69 @@ fn startup_snapshot_recovery_is_jittered_and_capped() {
     assert_ne!(snapshot_retry_delay(3, 1), snapshot_retry_delay(3, 2));
     assert!(snapshot_retry_delay(u32::MAX, 7) <= Duration::from_secs(30));
 }
+
+fn flag_input(peer_id: Uuid, value_hash: &str) -> FlagTransportInput {
+    FlagTransportInput {
+        challenge_id: 7,
+        receiving_user_id: Uuid::from_u128(1),
+        receiving_participation_id: 11,
+        owning_participation_id: 12,
+        peer_id,
+        flag_value_hash: value_hash.to_string(),
+        transport: 0,
+        direction: 1,
+        observed_at_utc: Utc::now(),
+    }
+}
+
+#[test]
+fn flag_dedup_is_retained_until_durable_batch_acknowledgement() {
+    let mut state = CaptureState::default();
+    let flag = flag_input(Uuid::from_u128(2), "flag-hash");
+    let key = flag_dedup_key(3, &flag);
+
+    assert_eq!(
+        track_flag(&mut state.flags, &mut state.seen_flags, 3, flag.clone()),
+        TrackFlagResult::Queued
+    );
+    let batches = completed_batches(&mut state, Utc::now());
+    assert_eq!(batches.len(), 1);
+    assert!(state.seen_flags.contains(&key));
+    assert_eq!(
+        track_flag(&mut state.flags, &mut state.seen_flags, 3, flag.clone()),
+        TrackFlagResult::Duplicate
+    );
+
+    release_flag_dedup(&mut state.seen_flags, std::slice::from_ref(&key));
+    assert_eq!(
+        track_flag(&mut state.flags, &mut state.seen_flags, 3, flag),
+        TrackFlagResult::Queued
+    );
+}
+
+#[test]
+fn acknowledged_flag_dedup_capacity_accepts_new_matches_again() {
+    let mut state = CaptureState::default();
+    for index in 0..MAX_TRACKED_FLOWS {
+        state.seen_flags.insert((
+            3,
+            Uuid::from_u128(index as u128),
+            "flag-hash".to_string(),
+            0,
+            1,
+        ));
+    }
+    let released = (3, Uuid::from_u128(0), "flag-hash".to_string(), 0, 1);
+    let next = flag_input(Uuid::from_u128(MAX_TRACKED_FLOWS as u128 + 1), "next-hash");
+
+    assert_eq!(
+        track_flag(&mut state.flags, &mut state.seen_flags, 3, next.clone()),
+        TrackFlagResult::Capacity
+    );
+    release_flag_dedup(&mut state.seen_flags, &[released]);
+    assert_eq!(
+        track_flag(&mut state.flags, &mut state.seen_flags, 3, next),
+        TrackFlagResult::Queued
+    );
+    assert_eq!(state.seen_flags.len(), MAX_TRACKED_FLOWS);
+}

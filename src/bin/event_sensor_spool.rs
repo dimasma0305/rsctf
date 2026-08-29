@@ -12,6 +12,10 @@ const MAX_SPOOL_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_SENSOR_DROPPED_ROWS: i64 = 100_000_000;
 const MAX_SENSOR_DROPPED_BYTES: i64 = u32::MAX as i64;
 
+#[cfg(test)]
+static FAIL_AFTER_SHED_REPORT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 pub struct DurableSpool {
     directory: PathBuf,
     entries: VecDeque<(PathBuf, u64)>,
@@ -63,59 +67,64 @@ impl DurableSpool {
         self.entries.push_back((final_path.clone(), size));
         self.bytes = self.bytes.saturating_add(size);
 
-        let mut removed = false;
+        let mut retained_entries = self.entries.clone();
+        let mut retained_bytes = self.bytes;
+        let mut target_size = size;
+        let mut removed_paths = Vec::new();
         loop {
-            let mut changed = false;
-            while self.entries.len() > MAX_SPOOL_BATCHES
-                || self.bytes > MAX_SPOOL_BYTES
-                || self.front_expired().await?
+            let front_expired = match retained_entries.front() {
+                Some((path, _)) => entry_expired(path).await?,
+                None => false,
+            };
+            if retained_entries.len() <= MAX_SPOOL_BATCHES
+                && retained_bytes <= MAX_SPOOL_BYTES
+                && !front_expired
             {
-                let Some((path, size)) = self.entries.pop_front() else {
-                    break;
-                };
-                if path == final_path {
-                    anyhow::bail!("bounded telemetry loss report exceeds its spool budget");
-                }
-                let dropped = read_batch(&path).await?;
-                merge_dropped_batch(&mut durable, &dropped, size);
-                tokio::fs::remove_file(path).await?;
-                self.bytes = self.bytes.saturating_sub(size);
-                removed = true;
-                changed = true;
-            }
-            if !changed {
                 break;
             }
-            let replacement = serde_json::to_vec(&durable)?;
-            let replacement_size =
-                replace_synced(&self.directory, &final_path, &replacement).await?;
-            let Some((path, current_size)) = self.entries.back_mut() else {
+            let Some((path, dropped_size)) = retained_entries.pop_front() else {
+                break;
+            };
+            if path == final_path {
+                anyhow::bail!("bounded telemetry loss report exceeds its spool budget");
+            }
+            let dropped = read_batch(&path).await?;
+            merge_dropped_batch(&mut durable, &dropped, dropped_size);
+            encoded = serde_json::to_vec(&durable)?;
+            let replacement_size = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
+            let Some((target_path, retained_target_size)) = retained_entries.back_mut() else {
                 anyhow::bail!("telemetry loss report lost its spool owner");
             };
-            if *path != final_path {
+            if *target_path != final_path {
                 anyhow::bail!("telemetry loss report is not the newest spool entry");
             }
-            self.bytes = self
-                .bytes
-                .saturating_sub(*current_size)
+            retained_bytes = retained_bytes
+                .saturating_sub(dropped_size)
+                .saturating_sub(target_size)
                 .saturating_add(replacement_size);
-            *current_size = replacement_size;
+            *retained_target_size = replacement_size;
+            target_size = replacement_size;
+            removed_paths.push(path);
         }
-        if removed {
-            sync_directory(&self.directory).await?;
+        if removed_paths.is_empty() {
+            return Ok(());
         }
-        Ok(())
-    }
 
-    async fn front_expired(&self) -> anyhow::Result<bool> {
-        let Some((path, _)) = self.entries.front() else {
-            return Ok(false);
-        };
-        let modified = tokio::fs::metadata(path).await?.modified()?;
-        Ok(std::time::SystemTime::now()
-            .duration_since(modified)
-            .unwrap_or_default()
-            > MAX_SPOOL_AGE)
+        // Persist and fsync the loss report before unlinking any source batch.
+        // A crash can therefore replay an old batch and over-report loss, but it
+        // can never erase both the telemetry and the evidence that it was shed.
+        replace_synced(&self.directory, &final_path, &encoded).await?;
+        #[cfg(test)]
+        if FAIL_AFTER_SHED_REPORT.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("injected crash after durable shed report");
+        }
+        for path in &removed_paths {
+            tokio::fs::remove_file(path).await?;
+        }
+        sync_directory(&self.directory).await?;
+        self.entries = retained_entries;
+        self.bytes = retained_bytes;
+        Ok(())
     }
 
     pub async fn front(&self) -> anyhow::Result<Option<TelemetryBatch>> {
@@ -144,6 +153,14 @@ impl DurableSpool {
         sync_directory(&self.directory).await?;
         Ok(())
     }
+}
+
+async fn entry_expired(path: &Path) -> anyhow::Result<bool> {
+    let modified = tokio::fs::metadata(path).await?.modified()?;
+    Ok(std::time::SystemTime::now()
+        .duration_since(modified)
+        .unwrap_or_default()
+        > MAX_SPOOL_AGE)
 }
 
 #[cfg(unix)]
@@ -403,5 +420,39 @@ mod tests {
 
         assert_eq!(report.sensor_dropped_rows, MAX_SENSOR_DROPPED_ROWS);
         assert_eq!(report.sensor_dropped_bytes, MAX_SENSOR_DROPPED_BYTES);
+    }
+
+    #[tokio::test]
+    async fn shed_report_is_durable_before_source_unlink() {
+        let directory = std::env::temp_dir().join(format!(
+            "rsctf-event-sensor-spool-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let mut spool = DurableSpool::open(directory.clone()).await.unwrap();
+        let mut dropped = empty_batch();
+        dropped.sensor_dropped_rows = 7;
+        spool.enqueue(&dropped).await.unwrap();
+        let source = spool.entries.front().unwrap().clone();
+        spool.entries = std::iter::repeat_n(source.clone(), MAX_SPOOL_BATCHES).collect();
+        spool.bytes = source
+            .1
+            .saturating_mul(u64::try_from(MAX_SPOOL_BATCHES).unwrap());
+
+        FAIL_AFTER_SHED_REPORT.store(true, std::sync::atomic::Ordering::SeqCst);
+        let next = empty_batch();
+        let error = spool
+            .enqueue(&next)
+            .await
+            .expect_err("the crash failpoint must stop before source unlink");
+        assert!(error.to_string().contains("injected crash"));
+
+        let target = spool.entries.back().unwrap().0.clone();
+        assert!(tokio::fs::try_exists(&source.0).await.unwrap());
+        assert!(tokio::fs::try_exists(&target).await.unwrap());
+        let durable = read_batch(&target).await.unwrap();
+        assert_eq!(durable.batch_id, next.batch_id);
+        assert_eq!(durable.sensor_dropped_rows, 7);
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
     }
 }

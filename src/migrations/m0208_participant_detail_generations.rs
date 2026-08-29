@@ -131,8 +131,16 @@ AFTER UPDATE OR DELETE ON "Teams"
 FOR EACH ROW EXECUTE FUNCTION bump_participant_detail_from_team();
 
 DROP TRIGGER IF EXISTS tr_participant_detail_account ON "AspNetUsers";
-CREATE TRIGGER tr_participant_detail_account
-AFTER UPDATE OR DELETE ON "AspNetUsers"
+DROP TRIGGER IF EXISTS tr_participant_detail_account_user_name ON "AspNetUsers";
+CREATE TRIGGER tr_participant_detail_account_user_name
+AFTER UPDATE OF user_name ON "AspNetUsers"
+FOR EACH ROW
+WHEN (NEW.user_name IS DISTINCT FROM OLD.user_name)
+EXECUTE FUNCTION bump_participant_detail_from_account();
+
+DROP TRIGGER IF EXISTS tr_participant_detail_account_delete ON "AspNetUsers";
+CREATE TRIGGER tr_participant_detail_account_delete
+AFTER DELETE ON "AspNetUsers"
 FOR EACH ROW EXECUTE FUNCTION bump_participant_detail_from_account();
 
 DROP TRIGGER IF EXISTS tr_participant_detail_division_config ON "DivisionChallengeConfigs";
@@ -168,6 +176,10 @@ impl MigrationTrait for Migration {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
     use super::UP_SQL;
 
     #[test]
@@ -190,6 +202,10 @@ mod tests {
         assert!(UP_SQL.contains("ON \"Submissions\" (game_id, id DESC)"));
         assert!(UP_SQL.contains("AFTER UPDATE OR DELETE ON \"Submissions\""));
         assert!(!UP_SQL.contains("AFTER INSERT OR UPDATE OR DELETE ON \"Submissions\""));
+        assert!(UP_SQL.contains("AFTER UPDATE OF user_name ON \"AspNetUsers\""));
+        assert!(UP_SQL.contains("WHEN (NEW.user_name IS DISTINCT FROM OLD.user_name)"));
+        assert!(UP_SQL.contains("AFTER DELETE ON \"AspNetUsers\""));
+        assert!(!UP_SQL.contains("AFTER UPDATE OR DELETE ON \"AspNetUsers\""));
     }
 
     #[test]
@@ -201,5 +217,96 @@ mod tests {
 
         assert!(!statements_after_creation
             .contains("DROP TRIGGER IF EXISTS tr_participant_detail_submission_mutation"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn account_activity_does_not_invalidate_participant_rows() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("rsctf_m0208_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"CREATE TABLE "Games" (id INTEGER PRIMARY KEY);
+               CREATE TABLE "Submissions" (id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL);
+               CREATE TABLE "Participations" (game_id INTEGER NOT NULL, team_id INTEGER NOT NULL);
+               CREATE TABLE "GameChallenges" (id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL);
+               CREATE TABLE "TeamMembers" (team_id INTEGER NOT NULL, user_id UUID NOT NULL);
+               CREATE TABLE "Teams" (id INTEGER PRIMARY KEY, captain_id UUID);
+               CREATE TABLE "AspNetUsers" (
+                 id UUID PRIMARY KEY, user_name TEXT,
+                 last_visited_utc TIMESTAMPTZ NOT NULL
+               );
+               CREATE TABLE "DivisionChallengeConfigs" (challenge_id INTEGER NOT NULL);
+               CREATE TABLE "Divisions" (game_id INTEGER NOT NULL);
+               INSERT INTO "Games" VALUES (7);
+               INSERT INTO "AspNetUsers" VALUES
+                 ('00000000-0000-4000-8000-000000000208', 'player', clock_timestamp());
+               INSERT INTO "Teams" VALUES
+                 (21, '00000000-0000-4000-8000-000000000208');
+               INSERT INTO "Participations" VALUES (7, 21);"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(UP_SQL).execute(&pool).await.unwrap();
+        sqlx::raw_sql(UP_SQL).execute(&pool).await.unwrap();
+
+        let generation = || async {
+            sqlx::query_scalar::<_, i64>(
+                r#"SELECT generation FROM "ParticipantDetailGenerations" WHERE game_id = 7"#,
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+        assert_eq!(generation().await, 1);
+        sqlx::query(
+            r#"UPDATE "AspNetUsers"
+                  SET last_visited_utc = clock_timestamp(), user_name = user_name
+                WHERE id = '00000000-0000-4000-8000-000000000208'"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(generation().await, 1);
+        sqlx::query(
+            r#"UPDATE "AspNetUsers" SET user_name = 'renamed-player'
+                WHERE id = '00000000-0000-4000-8000-000000000208'"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(generation().await, 2);
+        sqlx::query(
+            r#"DELETE FROM "AspNetUsers"
+                WHERE id = '00000000-0000-4000-8000-000000000208'"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(generation().await, 3);
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
     }
 }
