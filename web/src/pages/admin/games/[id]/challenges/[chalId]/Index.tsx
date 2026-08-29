@@ -189,7 +189,6 @@ const GameChallengeEdit: FC = () => {
   // since onUpdate mutate()s `challenge`, re-running this effect and clearing dirty.
   const savedSnapshotRef = useRef<string>('')
   const savedWorkloadRef = useRef({ enabled: false, text: '' })
-  const [dirty, setDirty] = useState(false)
   const makeSnapshot = (
     info: ChallengeUpdateModel,
     dl: dayjs.Dayjs | null,
@@ -243,25 +242,23 @@ const GameChallengeEdit: FC = () => {
         workloadEnabled,
         workloadText
       )
-      setDirty(false)
     }
   }, [challenge])
 
-  // Recompute dirty against the saved baseline whenever any tracked edit state changes.
-  useEffect(() => {
-    setDirty(
-      makeSnapshot(
-        challengeInfo,
-        deadline,
-        minRate,
-        category,
-        type,
-        networkMode,
-        workloadEditorEnabled,
-        workloadJson
-      ) !== savedSnapshotRef.current
-    )
-  }, [challengeInfo, deadline, minRate, category, type, networkMode, workloadEditorEnabled, workloadJson])
+  // Derive dirtiness in the render that owns the editable values. A second effect used
+  // to compare the pre-hydration values after the load effect had already replaced the
+  // baseline, briefly attaching a beforeunload prompt to an untouched form.
+  const currentSnapshot = makeSnapshot(
+    challengeInfo,
+    deadline,
+    minRate,
+    category,
+    type,
+    networkMode,
+    workloadEditorEnabled,
+    workloadJson
+  )
+  const dirty = savedSnapshotRef.current !== '' && currentSnapshot !== savedSnapshotRef.current
 
   // Warn on tab-close / reload / navigating to an external URL while there are unsaved
   // edits. NOTE: this can't intercept in-app SPA navigation — the app mounts a component
