@@ -124,7 +124,13 @@ async function must(r, what) {
 const unwrap = (r) => (r.json && 'data' in r.json ? r.json.data : r.json);
 
 export async function createGame(body) {
-  const r = await must(await api('POST', '/api/edit/games', { ...jwtOpt(), body }), 'createGame');
+  const r = await must(
+    await api('POST', '/api/edit/games', {
+      ...jwtOpt(),
+      body: { operationId: randomUUID(), ...body },
+    }),
+    'createGame'
+  );
   return unwrap(r).id;
 }
 export async function setGameSchedule(gid, start, end) {
@@ -137,7 +143,7 @@ export async function setGameSchedule(gid, start, end) {
   return must(
     await api('PUT', `/api/edit/games/${gid}`, {
       ...jwtOpt(),
-      body: { ...current, start, end },
+      body: { ...current, operationId: randomUUID(), start, end },
     }),
     'setGameSchedule'
   );
@@ -146,17 +152,27 @@ export async function createChallenge(gid, body) {
   const r = await must(
     await api('POST', `/api/edit/games/${gid}/challenges`, {
       ...jwtOpt(),
-      body,
+      body: { operationId: randomUUID(), ...body },
     }),
     'createChallenge'
   );
   return unwrap(r).id;
 }
 export async function setChallenge(gid, cid, body) {
+  const current = unwrap(
+    await must(
+      await api('GET', `/api/edit/games/${gid}/challenges/${cid}`, jwtOpt()),
+      'getChallenge'
+    )
+  );
   return must(
     await api('PUT', `/api/edit/games/${gid}/challenges/${cid}`, {
       ...jwtOpt(),
-      body,
+      body: {
+        operationId: randomUUID(),
+        expectedRevision: current.revision,
+        ...body,
+      },
     }),
     'setChallenge'
   );
@@ -197,7 +213,10 @@ export async function rebuildChallengeImage(gid, cid, requestedImage, label = 'c
   return assertImmutableBuildRecord(JSON.parse(raw), requestedImage, label);
 }
 export async function addFlags(gid, cid, flags) {
-  const body = flags.map((f) => ({ flag: f }));
+  const body = {
+    operationId: randomUUID(),
+    flags: flags.map((f) => ({ flag: f })),
+  };
   return must(
     await api('POST', `/api/edit/games/${gid}/challenges/${cid}/flags`, {
       ...jwtOpt(),

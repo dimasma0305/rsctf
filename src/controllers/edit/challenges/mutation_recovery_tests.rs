@@ -9,6 +9,20 @@ use super::{
 };
 use crate::controllers::edit::seed_division_configs;
 
+#[test]
+fn projected_update_keeps_bind_values_inside_each_separated_assignment() {
+    let source = include_str!("mutation_recovery.rs");
+    let assignments = source
+        .split_once("let mut set = query.separated")
+        .expect("projected update uses separated assignments")
+        .1
+        .split_once("set.push(\"revision = revision + 1\")")
+        .expect("projected update terminates with the revision assignment")
+        .0;
+    assert!(!assignments.contains(".push_bind("));
+    assert_eq!(assignments.matches("push_bind_unseparated").count(), 40);
+}
+
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn failed_commit_rolls_back_challenge_policy_and_operation_before_exact_replay() {
