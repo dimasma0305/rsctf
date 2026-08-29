@@ -42,7 +42,7 @@ import {
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import localizedFormat from 'dayjs/plugin/localizedFormat'
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router'
 import { IconTabs } from '@Components/IconTabs'
@@ -53,10 +53,16 @@ import { getInputNumber, randomInviteCode, showErrorMsg, tryGetErrorMsg } from '
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { useAdminGame } from '@Hooks/useGame'
 import { useUser } from '@Hooks/useUser'
-import api, { EventVpnOverrideModel, GameInfoModel, Role } from '@Api'
+import api, { EventVpnOverrideModel, Role } from '@Api'
 import classes from '@Styles/AdminGameInfo.module.css'
 import misc from '@Styles/Misc.module.css'
-import { buildGameInfoUpdatePayload, gameInfoDraftChanged } from './gameInfoDraft'
+import {
+  buildGameInfoUpdatePayload,
+  CompatibleGameInfoModel,
+  GameInfoSaveOperation,
+  gameInfoDraftChanged,
+  prepareGameInfoSave,
+} from './gameInfoDraft'
 
 dayjs.extend(localizedFormat)
 
@@ -65,7 +71,7 @@ const GameInfoEdit: FC = () => {
   const numId = parseInt(id ?? '-1')
   const { game: gameSource, mutate } = useAdminGame(numId)
   const { user } = useUser()
-  const [game, setGame] = useState<GameInfoModel>()
+  const [game, setGame] = useState<CompatibleGameInfoModel>()
   const navigate = useNavigate()
 
   const [disabled, setDisabled] = useState(false)
@@ -79,6 +85,9 @@ const GameInfoEdit: FC = () => {
   const [end, setEnd] = useInputState(dayjs())
   const [freeze, setFreeze] = useState<dayjs.Dayjs | null>(null)
   const [wpddl, setWpddl] = useInputState(3)
+  const saveOwner = useRef(false)
+  const saveOperation = useRef<GameInfoSaveOperation | null>(null)
+  const saveAbort = useRef<AbortController | null>(null)
 
   const modals = useModals()
   const clipboard = useClipboard()
@@ -178,6 +187,13 @@ const GameInfoEdit: FC = () => {
     }
   }, [id, gameSource])
 
+  useEffect(
+    () => () => {
+      saveAbort.current?.abort()
+    },
+    []
+  )
+
   useEffect(() => {
     let cancelled = false
     if (!isAdmin || numId < 0) {
@@ -237,7 +253,7 @@ const GameInfoEdit: FC = () => {
   }
 
   const onUpdateInfo = async () => {
-    if (!dirty || !updatePayload) return
+    if (!dirty || !updatePayload || saveOwner.current) return
     if (!game?.title) {
       showNotification({
         color: 'orange',
@@ -270,21 +286,33 @@ const GameInfoEdit: FC = () => {
       })
       return
     }
+    const prepared = prepareGameInfoSave(updatePayload, saveOperation.current)
+    saveOperation.current = prepared.operation
+    const controller = new AbortController()
+    saveAbort.current?.abort()
+    saveAbort.current = controller
+    saveOwner.current = true
     setDisabled(true)
 
     try {
-      await api.edit.editUpdateGame(game.id!, updatePayload)
+      const response = await api.edit.editUpdateGame(game.id!, prepared.payload, { signal: controller.signal })
+      if (saveAbort.current !== controller) return
+      saveOperation.current = null
       showNotification({
         color: 'teal',
         message: t('admin.notification.games.info.info_updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
-      await mutate()
+      await mutate(response.data, { revalidate: false })
       api.game.mutateGameGames()
     } catch (e) {
-      showErrorMsg(e, t)
+      if (!controller.signal.aborted) showErrorMsg(e, t)
     } finally {
-      setDisabled(false)
+      if (saveAbort.current === controller) {
+        saveAbort.current = null
+        saveOwner.current = false
+        setDisabled(false)
+      }
     }
   }
 
