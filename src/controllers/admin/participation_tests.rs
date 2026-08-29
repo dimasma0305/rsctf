@@ -81,6 +81,14 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
           participation_id INTEGER NOT NULL,
           PRIMARY KEY (user_id, game_id)
         );
+        CREATE TABLE "ParticipationProvisionJobs" (
+          participation_id INTEGER PRIMARY KEY,
+          game_id INTEGER NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          lease_owner UUID, lease_until TIMESTAMPTZ, last_error TEXT,
+          updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
         "#,
     )
     .execute(&pool)
@@ -334,6 +342,14 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
           participation_id INTEGER NOT NULL,
           PRIMARY KEY (user_id, game_id)
         );
+        CREATE TABLE "ParticipationProvisionJobs" (
+          participation_id INTEGER PRIMARY KEY,
+          game_id INTEGER NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          lease_owner UUID, lease_until TIMESTAMPTZ, last_error TEXT,
+          updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
         "#,
     )
     .execute(&pool)
@@ -400,6 +416,18 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
     )
     .await
     .unwrap();
+    let queued: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM "ParticipationProvisionJobs"
+                WHERE participation_id = $1 AND game_id = $2
+           )"#,
+    )
+    .bind(identity.id)
+    .bind(identity.game_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(queued, "acceptance did not durably enqueue provisioning");
 
     let (attempting_tx, attempting_rx) = tokio::sync::oneshot::channel();
     let second_pool = pool.clone();
@@ -486,6 +514,17 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
         (ParticipationStatus::Rejected as i16, None, true),
         "the final rejection must win without undoing the durable roster freeze"
     );
+    let queued: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM "ParticipationProvisionJobs"
+                WHERE participation_id = $1
+           )"#,
+    )
+    .bind(identity.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(!queued, "rejection retained stale provisioning work");
 
     // Even an out-of-band stale caller cannot reach its effect: terminal status
     // is checked on the lock-owning session immediately before the closure.
