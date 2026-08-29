@@ -4335,7 +4335,7 @@ dependencies = [
 
 [[package]]
 name = "rsctf"
-version = "0.1.95"
+version = "0.1.96"
 dependencies = [
  "aes-gcm",
  "aho-corasick",
