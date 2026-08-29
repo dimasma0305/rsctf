@@ -226,6 +226,8 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const localTraffic = wsrxInstances.find((traffic) => traffic.remote === wsrxRemoteEntry)
 
   useEffect(() => {
+    if (tunnelRetrying) return
+
     const action = getLocalWsrxTunnelAction({
       mode: proxyEntryMode,
       state: wsrxState,
@@ -271,7 +273,17 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     return () => {
       active = false
     }
-  }, [wsrx, wsrxRemoteEntry, wsrxState, label, localTraffic?.local, proxyEntryMode, t, wsrxOptions.allowLan])
+  }, [
+    wsrx,
+    wsrxRemoteEntry,
+    wsrxState,
+    label,
+    localTraffic?.local,
+    proxyEntryMode,
+    t,
+    tunnelRetrying,
+    wsrxOptions.allowLan,
+  ])
 
   useEffect(() => {
     setTunnelCheckExpired(false)

@@ -90,6 +90,7 @@ test('instance UI listens for daemon updates and exposes WSS only through the ex
   assert.match(entry, /isWssMode \? wsrxRemoteEntry : localEntry/)
   assert.match(entry, /value=\{proxyEntryMode\}/)
   assert.match(entry, /getLocalWsrxTunnelAction\(/)
+  assert.match(entry, /useEffect\(\(\) => \{\s+if \(tunnelRetrying\) return[\s\S]*?getLocalWsrxTunnelAction\(/)
   assert.match(entry, /action === 'reuse'[\s\S]*?setTunnelRequestComplete\(true\)/)
   assert.match(entry, /action === 'rebind'[\s\S]*?await wsrx\.delete\(localTraffic\.local\)/)
   assert.match(entry, /await wsrx\.delete\(localTraffic\.local\)/)
