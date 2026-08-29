@@ -434,7 +434,7 @@ const Guide: FC = () => {
                 <List.Item>
                   {t(
                     'guide.page.play.wsrx_install',
-                    'Download and run WebSocketReflectorX, then keep Local WSRX selected in the instance panel.'
+                    'Download and run WebSocketReflectorX, then select Local WSRX in the instance panel.'
                   )}
                 </List.Item>
                 <List.Item>

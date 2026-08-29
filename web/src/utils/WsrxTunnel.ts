@@ -3,6 +3,19 @@ import { WsrxState } from '@xdsec/wsrx'
 
 export type WsrxTunnelPhase =
   'direct' | 'disconnected' | 'authorization' | 'requesting' | 'connecting' | 'checking' | 'ready' | 'unhealthy'
+export type ProxyEntryMode = 'wsrx' | 'wss'
+export type WsrxRefreshSource = 'automatic' | 'player'
+
+export const DEFAULT_PROXY_ENTRY_MODE: ProxyEntryMode = 'wss'
+
+interface WsrxConnectIntent {
+  mode: ProxyEntryMode
+  source: WsrxRefreshSource
+  state: WsrxState
+}
+
+export const shouldConnectLocalWsrx = ({ mode, source, state }: WsrxConnectIntent) =>
+  source === 'player' && mode === 'wsrx' && state !== WsrxState.Usable
 
 interface WsrxTunnelPhaseInput {
   isPlatformProxy: boolean

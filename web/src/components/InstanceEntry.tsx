@@ -24,15 +24,19 @@ import { HandleWsrxError, useWsrx } from '@Components/WsrxProvider'
 import { isInstanceExtensionWindowOpen, runInstanceExtension } from '@Utils/InstanceLifecycle'
 import { getServerNowMilliseconds, useServerClockOffset, useServerClockTimeout, useServerNow } from '@Utils/ServerClock'
 import { getProxyUrl as getProxyEntry } from '@Utils/Shared'
-import { getWsrxTunnelPhase } from '@Utils/WsrxTunnel'
+import {
+  DEFAULT_PROXY_ENTRY_MODE,
+  getWsrxTunnelPhase,
+  shouldConnectLocalWsrx,
+  type ProxyEntryMode,
+  type WsrxRefreshSource,
+} from '@Utils/WsrxTunnel'
 import { useConfig } from '@Hooks/useConfig'
 import api, { ClientFlagContext, ContainerPortMappingType } from '@Api'
 import classes from '@Styles/InstanceEntry.module.css'
 import misc from '@Styles/Misc.module.css'
 
 dayjs.extend(duration)
-
-type ProxyEntryMode = 'wsrx' | 'wss'
 
 const CAPABILITY_REFRESH_SAFETY_MS = 5 * 60 * 1000
 
@@ -161,7 +165,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   // listener or by explicitly copying the short-lived WSS URL. Never present
   // the latter as though it were a netcat address.
   const isWsrxUsable = isPlatformProxy && wsrxState === WsrxState.Usable
-  const [proxyEntryMode, setProxyEntryMode] = useState<ProxyEntryMode>('wsrx')
+  const [proxyEntryMode, setProxyEntryMode] = useState<ProxyEntryMode>(DEFAULT_PROXY_ENTRY_MODE)
   const [wsrxRemoteEntry, setWsrxRemoteEntry] = useState('')
   const [capabilityExpiresAt, setCapabilityExpiresAt] = useState<number | null>(null)
   const [capabilityAttempt, setCapabilityAttempt] = useState(0)
@@ -264,31 +268,34 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const canUseEntry = !!entry
   const canOpenEntry = canUseEntry && !isWssMode
 
-  const onRefreshProxyEntry = useCallback(async () => {
-    if (!isPlatformProxy || tunnelRetrying) return
+  const onRefreshProxyEntry = useCallback(
+    async (source: WsrxRefreshSource) => {
+      if (!isPlatformProxy || tunnelRetrying) return
 
-    setTunnelRetrying(true)
-    setWsrxRemoteEntry('')
-    setCapabilityExpiresAt(null)
-    setTunnelRequestComplete(false)
-    setTunnelRequestFailed(false)
-    setTunnelCheckExpired(false)
+      setTunnelRetrying(true)
+      setWsrxRemoteEntry('')
+      setCapabilityExpiresAt(null)
+      setTunnelRequestComplete(false)
+      setTunnelRequestFailed(false)
+      setTunnelCheckExpired(false)
 
-    if (wsrxState === WsrxState.Usable && localTraffic?.local) {
-      try {
-        await wsrx.delete(localTraffic.local)
-      } catch (err) {
-        HandleWsrxError(err, t)
+      if (wsrxState === WsrxState.Usable && localTraffic?.local) {
+        try {
+          await wsrx.delete(localTraffic.local)
+        } catch (err) {
+          HandleWsrxError(err, t)
+        }
       }
-    }
 
-    if (proxyEntryMode === 'wsrx' && wsrxState !== WsrxState.Usable) doWsrxConnect()
-    setCapabilityAttempt((attempt) => attempt + 1)
-    setTunnelRetrying(false)
-  }, [doWsrxConnect, isPlatformProxy, localTraffic?.local, proxyEntryMode, t, tunnelRetrying, wsrx, wsrxState])
+      if (shouldConnectLocalWsrx({ mode: proxyEntryMode, source, state: wsrxState })) doWsrxConnect()
+      setCapabilityAttempt((attempt) => attempt + 1)
+      setTunnelRetrying(false)
+    },
+    [doWsrxConnect, isPlatformProxy, localTraffic?.local, proxyEntryMode, t, tunnelRetrying, wsrx, wsrxState]
+  )
 
   useServerClockTimeout(
-    () => void onRefreshProxyEntry(),
+    () => void onRefreshProxyEntry('automatic'),
     isPlatformProxy ? capabilityExpiresAt : null,
     CAPABILITY_REFRESH_SAFETY_MS,
     1000
@@ -353,9 +360,16 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
             <Stack gap="xs" data-guide="wsrx-setup">
               <SegmentedControl
                 value={proxyEntryMode}
-                onChange={(value) => setProxyEntryMode(value as ProxyEntryMode)}
+                onChange={(value) => {
+                  const mode = value as ProxyEntryMode
+                  setProxyEntryMode(mode)
+                  if (shouldConnectLocalWsrx({ mode, source: 'player', state: wsrxState })) doWsrxConnect()
+                }}
                 data={[
-                  { label: t('wsrx.mode.local'), value: 'wsrx' },
+                  {
+                    label: <span data-guide="wsrx-local-mode">{t('wsrx.mode.local')}</span>,
+                    value: 'wsrx',
+                  },
                   { label: t('wsrx.mode.wss'), value: 'wss' },
                 ]}
                 aria-label={t('wsrx.mode.label')}
@@ -411,7 +425,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
               >
                 <ActionIcon
                   aria-label={proxyEntryMode === 'wsrx' ? t('wsrx.button.retry_tunnel') : t('wsrx.button.refresh_url')}
-                  onClick={onRefreshProxyEntry}
+                  onClick={() => void onRefreshProxyEntry('player')}
                   loading={tunnelRetrying}
                 >
                   <Icon path={mdiRefresh} size={1} />

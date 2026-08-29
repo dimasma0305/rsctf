@@ -2,7 +2,7 @@ import { WsrxState } from '@xdsec/wsrx'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { getWsrxTunnelPhase } from './WsrxTunnel'
+import { DEFAULT_PROXY_ENTRY_MODE, getWsrxTunnelPhase, shouldConnectLocalWsrx } from './WsrxTunnel'
 
 const base = {
   isPlatformProxy: true,
@@ -50,7 +50,6 @@ test('instance UI listens for daemon updates and exposes WSS only through the ex
   assert.match(provider, /onInstancesChange\(updateInstances\)/)
   assert.match(entry, /phase === 'ready' \? \(localTraffic\?\.local \?\? ''\) :/)
   assert.match(entry, /setInterval\(\(\) => void wsrx\.sync\(\)/)
-  assert.match(entry, /type ProxyEntryMode = 'wsrx' \| 'wss'/)
   assert.match(entry, /isWssMode \? wsrxRemoteEntry : localEntry/)
   assert.match(entry, /value=\{proxyEntryMode\}/)
   assert.match(entry, /await wsrx\.delete\(localTraffic\.local\)/)
@@ -58,7 +57,6 @@ test('instance UI listens for daemon updates and exposes WSS only through the ex
 
 test('the optional local daemon is contacted only after an explicit player action', () => {
   const provider = readFileSync('src/components/WsrxProvider.tsx', 'utf8')
-  const manager = readFileSync('src/components/WsrxManager.tsx', 'utf8')
   const entry = readFileSync('src/components/InstanceEntry.tsx', 'utf8')
   const optionsEffect = provider.match(
     /useEffect\(\(\) => \{\s+if \(!wsrxOptions[\s\S]*?wsrx\.setOptions\(getWsrxConfig\(wsrxOptions\)\)[\s\S]*?\}, \[[^\]]+\]\)/
@@ -66,6 +64,11 @@ test('the optional local daemon is contacted only after an explicit player actio
 
   assert.ok(optionsEffect)
   assert.doesNotMatch(optionsEffect[0], /doWsrxConnect/)
-  assert.match(manager, /onClick=\{doWsrxConnect\}/)
-  assert.match(entry, /wsrxState !== WsrxState\.Usable\) doWsrxConnect\(\)/)
+  assert.equal(DEFAULT_PROXY_ENTRY_MODE, 'wss')
+  assert.equal(shouldConnectLocalWsrx({ mode: 'wsrx', source: 'automatic', state: WsrxState.Invalid }), false)
+  assert.equal(shouldConnectLocalWsrx({ mode: 'wss', source: 'player', state: WsrxState.Invalid }), false)
+  assert.equal(shouldConnectLocalWsrx({ mode: 'wsrx', source: 'player', state: WsrxState.Invalid }), true)
+  assert.equal(shouldConnectLocalWsrx({ mode: 'wsrx', source: 'player', state: WsrxState.Usable }), false)
+  assert.match(entry, /onRefreshProxyEntry\('automatic'\)/)
+  assert.match(entry, /onRefreshProxyEntry\('player'\)/)
 })
