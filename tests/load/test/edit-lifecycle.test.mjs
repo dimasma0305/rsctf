@@ -615,6 +615,7 @@ test('KotH fixture uses public provisioning and proves exact durable and Docker 
     orchestrator.indexOf('async function main()'),
   );
   assert.match(prepare, /\/api\/edit\/games\/\$\{context\.kothGameId\}\/ad\/EnsureContainers/);
+  assert.match(prepare, /headers: \{ 'idempotency-key': randomUUID\(\) \}/);
   assert.match(prepare, /discoverManagedKothHill\(context\.kothGameId, context\.kothChallengeId\)/);
   assert.match(prepare, /state\.runtimeIds\.push\(hill\.backendId\)/);
   assert.doesNotMatch(prepare, /seedKothTarget|startHill/);

@@ -277,9 +277,10 @@ function isTransientKothRecoveryConflict(response) {
     title === 'checker timed out';
 }
 
-async function uncatalogued(method, path, { body, jwt = A.adminJwt(), expected = 200 } = {}) {
+async function uncatalogued(method, path, { body, headers, jwt = A.adminJwt(), expected = 200 } = {}) {
   const response = await A.api(method, path, {
     body,
+    headers,
     jwt,
     ip: `10.255.1.${(requestIndex++ % 240) + 1}`,
     timeoutMs: 180_000,
@@ -811,7 +812,9 @@ async function prepareAdFixture() {
   await A.addFlags(context.adGameId, context.adChallengeId, [`flag{edit_ad_placeholder_${runKey}}`]);
   await A.setChallenge(context.adGameId, context.adChallengeId, { isEnabled: true });
 
-  await call('edit_ad_ensure_containers');
+  await call('edit_ad_ensure_containers', {
+    headers: { 'idempotency-key': randomUUID() },
+  });
   context.serviceId = Number(await waitForSql(
     `SELECT id FROM "AdTeamServices" WHERE game_id=${context.adGameId} ` +
       `AND challenge_id=${context.adChallengeId} AND container_id IS NOT NULL ORDER BY id LIMIT 1`,
@@ -840,7 +843,9 @@ async function prepareAdFixture() {
     { jwt: identities.managerJwt },
   );
   requireCondition(reenabled.json?.isEnabled === true, 'A&D fixture did not re-enable');
-  await uncatalogued('POST', `/api/edit/games/${context.adGameId}/ad/EnsureContainers`);
+  await uncatalogued('POST', `/api/edit/games/${context.adGameId}/ad/EnsureContainers`, {
+    headers: { 'idempotency-key': randomUUID() },
+  });
   context.serviceId = Number(await waitForSql(
     `SELECT id FROM "AdTeamServices" WHERE game_id=${context.adGameId} ` +
       `AND challenge_id=${context.adChallengeId} AND container_id IS NOT NULL ORDER BY id LIMIT 1`,
@@ -933,7 +938,9 @@ async function prepareKothFixture() {
   };
   saveRecovery();
   await A.setChallenge(context.kothGameId, context.kothChallengeId, { isEnabled: true });
-  await uncatalogued('POST', `/api/edit/games/${context.kothGameId}/ad/EnsureContainers`);
+  await uncatalogued('POST', `/api/edit/games/${context.kothGameId}/ad/EnsureContainers`, {
+    headers: { 'idempotency-key': randomUUID() },
+  });
   const hill = discoverManagedKothHill(context.kothGameId, context.kothChallengeId);
   state.containerIds.push(hill.containerId);
   state.runtimeIds.push(hill.backendId);

@@ -1,6 +1,30 @@
 //! A&D container ensure/provision (EnsureContainers, EnsureInstances, on-accept
 //! provisioning) — split from edit/ad/mod.rs to stay under the 1000-line rule.
 use super::super::*;
+use axum::http::HeaderMap;
+use uuid::Uuid;
+
+const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
+
+fn reconcile_operation_id(headers: &HeaderMap) -> AppResult<Uuid> {
+    let raw = headers
+        .get(IDEMPOTENCY_KEY_HEADER)
+        .ok_or_else(|| AppError::bad_request("Idempotency-Key header is required"))?
+        .to_str()
+        .map_err(|_| AppError::bad_request("Idempotency-Key must be an ASCII UUID"))?;
+    Uuid::parse_str(raw).map_err(|_| AppError::bad_request("Idempotency-Key must be a UUID"))
+}
+
+fn ad_service_operation_id(
+    reconcile_operation_id: Option<Uuid>,
+    game_id: i32,
+    participation_id: i32,
+    challenge_id: i32,
+) -> Option<String> {
+    reconcile_operation_id.map(|operation_id| {
+        format!("ad-ensure:{operation_id}:{game_id}:{participation_id}:{challenge_id}")
+    })
+}
 
 fn should_provision_vpn(
     vpn_enabled: bool,
@@ -123,9 +147,12 @@ pub async fn ad_ensure_containers(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Path(game_id): Path<i32>,
+    headers: HeaderMap,
 ) -> AppResult<MessageResponse> {
+    let operation_id = reconcile_operation_id(&headers)?;
     let game = load_game(&st, game_id).await?;
-    let (launched, failures) = ensure_ad_containers(&st, &game, None, true, true).await?;
+    let (launched, failures) =
+        ensure_ad_containers(&st, &game, None, true, true, Some(operation_id)).await?;
     Ok(MessageResponse::ok(format!(
         "Launched {launched} service container(s){}",
         if failures > 0 {
@@ -165,6 +192,10 @@ pub(crate) async fn ensure_ad_containers(
     // The round pipeline repairs A&D before checking, but KotH only after the
     // checker has persisted a dead-backend receipt for the published holder.
     ensure_koth: bool,
+    // A manual reconcile keeps one request identity across retries. Binding it
+    // to each service lets Docker/Kubernetes adopt a container created before
+    // a lost response or process crash instead of launching a duplicate.
+    reconcile_operation_id: Option<Uuid>,
 ) -> AppResult<(i32, i32)> {
     let all_ad: Vec<game_challenge::Model> = game_challenge::Entity::find()
         .filter(game_challenge::Column::GameId.eq(game.id))
@@ -369,24 +400,23 @@ pub(crate) async fn ensure_ad_containers(
                     continue;
                 }
             };
-            let info = match st
-                .containers
-                .create(ContainerSpec::ad_service(
-                    image,
-                    ContainerResourceLimits {
-                        memory_limit: c.memory_limit.unwrap_or(256),
-                        cpu_count: c.cpu_count.unwrap_or(1),
-                        storage_limit: crate::services::container::storage_limit_or_default(
-                            c.storage_limit,
-                        ),
-                    },
-                    c.expose_port.unwrap_or(80),
-                    p.team_id,
-                    c.ad_allow_egress,
-                    flag,
-                ))
-                .await
-            {
+            let mut spec = ContainerSpec::ad_service(
+                image,
+                ContainerResourceLimits {
+                    memory_limit: c.memory_limit.unwrap_or(256),
+                    cpu_count: c.cpu_count.unwrap_or(1),
+                    storage_limit: crate::services::container::storage_limit_or_default(
+                        c.storage_limit,
+                    ),
+                },
+                c.expose_port.unwrap_or(80),
+                p.team_id,
+                c.ad_allow_egress,
+                flag,
+            );
+            spec.operation_id =
+                ad_service_operation_id(reconcile_operation_id, game.id, p.id, c.id);
+            let info = match st.containers.create(spec).await {
                 Ok(i) => i,
                 Err(_) => {
                     // Best-effort (accept path): register a container-less service
@@ -564,7 +594,45 @@ pub(crate) async fn ensure_ad_containers(
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
-    use super::{should_provision_vpn, should_reconcile_vpn};
+    use axum::http::{HeaderMap, HeaderValue};
+    use uuid::Uuid;
+
+    use super::{
+        ad_service_operation_id, reconcile_operation_id, should_provision_vpn,
+        should_reconcile_vpn, IDEMPOTENCY_KEY_HEADER,
+    };
+
+    #[test]
+    fn reconcile_identity_is_required_and_binds_each_service_retry() {
+        let mut headers = HeaderMap::new();
+        assert!(reconcile_operation_id(&headers).is_err());
+        headers.insert(
+            IDEMPOTENCY_KEY_HEADER,
+            HeaderValue::from_static("not-a-uuid"),
+        );
+        assert!(reconcile_operation_id(&headers).is_err());
+
+        let first = Uuid::new_v4();
+        headers.insert(
+            IDEMPOTENCY_KEY_HEADER,
+            HeaderValue::from_str(&first.to_string()).unwrap(),
+        );
+        assert_eq!(reconcile_operation_id(&headers).unwrap(), first);
+        let service = ad_service_operation_id(Some(first), 7, 11, 13).unwrap();
+        assert_eq!(
+            ad_service_operation_id(Some(first), 7, 11, 13).as_deref(),
+            Some(service.as_str())
+        );
+        assert_ne!(
+            ad_service_operation_id(Some(Uuid::new_v4()), 7, 11, 13).as_deref(),
+            Some(service.as_str())
+        );
+        assert_ne!(
+            ad_service_operation_id(Some(first), 7, 11, 14).as_deref(),
+            Some(service.as_str())
+        );
+        assert_eq!(ad_service_operation_id(None, 7, 11, 13), None);
+    }
 
     #[test]
     fn round_repair_skips_byoc_vpn_reprovisioning() {
@@ -650,7 +718,7 @@ pub(crate) async fn provision_accepted_participation(
     ensure_instances(st, participation_id, game_id).await?;
     if let Some(game) = game::Entity::find_by_id(game_id).one(&st.db).await? {
         let (_, failures) =
-            ensure_ad_containers(st, &game, Some(participation_id), true, true).await?;
+            ensure_ad_containers(st, &game, Some(participation_id), true, true, None).await?;
         if failures > 0 {
             return Err(AppError::unavailable(format!(
                 "{failures} accepted-participation service workload(s) remain unavailable"

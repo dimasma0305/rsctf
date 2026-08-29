@@ -751,21 +751,22 @@ pub(super) async fn finish_prepared_round(
     // owner must repeat readiness work because it cannot trust the old runtime
     // identity. Reload the snapshot either way and never exec a stale container.
     if !newly_prepared {
-        let repair_failures =
-            match crate::controllers::edit::ensure_ad_containers(state, game, None, false, false)
-                .await
-            {
-                Ok((_, failures)) => failures as usize,
-                Err(error) => {
-                    tracing::warn!(
-                        game = game.id,
-                        round = next_number,
-                        %error,
-                        "cron: managed A&D service recovery failed before flag propagation"
-                    );
-                    1
-                }
-            };
+        let repair_failures = match crate::controllers::edit::ensure_ad_containers(
+            state, game, None, false, false, None,
+        )
+        .await
+        {
+            Ok((_, failures)) => failures as usize,
+            Err(error) => {
+                tracing::warn!(
+                    game = game.id,
+                    round = next_number,
+                    %error,
+                    "cron: managed A&D service recovery failed before flag propagation"
+                );
+                1
+            }
+        };
         if repair_failures > 0 {
             tracing::warn!(
                 game = game.id,
