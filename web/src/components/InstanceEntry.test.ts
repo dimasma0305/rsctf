@@ -47,10 +47,8 @@ test('players can explicitly switch between a local netcat address and the scope
 test('the scoped WSS capability is renewed before it can leave a stale local listener', () => {
   assert.match(entry, /setCapabilityExpiresAt\(capability\.expiresAt\)/)
   assert.match(entry, /CAPABILITY_REFRESH_SAFETY_MS/)
-  assert.match(
-    entry,
-    /useServerClockTimeout\([\s\S]*?onRefreshProxyEntry\('automatic'\)[\s\S]*?CAPABILITY_REFRESH_SAFETY_MS/
-  )
+  assert.match(entry, /setCapabilityRefreshAt\(capability\.expiresAt - CAPABILITY_REFRESH_SAFETY_MS\)/)
+  assert.match(entry, /useServerClockTimeout\([\s\S]*?onRefreshProxyEntry\('automatic'\)[\s\S]*?capabilityRefreshAt/)
 })
 
 test('capability renewal acquires a replacement before swapping the live entry', () => {
@@ -64,6 +62,8 @@ test('capability renewal acquires a replacement before swapping the live entry',
   assert.ok(removeOldListener > acquire)
   assert.ok(swapEntry > removeOldListener)
   assert.doesNotMatch(refresh.slice(0, acquire), /setWsrxRemoteEntry\(''\)|setCapabilityExpiresAt\(null\)/)
+  assert.match(refresh, /setCapabilityRefreshAt\(getWsrxCapabilityRetryAt\(/)
+  assert.match(refresh, /isLatestWsrxCapabilityRequest\(requestSequence, capabilityRequestSequence\.current\)/)
 })
 
 test('extension availability follows initial and corrected server clock samples', () => {

@@ -5,9 +5,23 @@ import test from 'node:test'
 import {
   DEFAULT_PROXY_ENTRY_MODE,
   getLocalWsrxTunnelAction,
+  getWsrxCapabilityRetryAt,
   getWsrxTunnelPhase,
+  isLatestWsrxCapabilityRequest,
   shouldConnectLocalWsrx,
 } from './WsrxTunnel'
+
+test('capability ownership rejects a late response and renewal retries stay bounded before expiry', () => {
+  const initialRequest = 1
+  const refreshRequest = 2
+  assert.equal(isLatestWsrxCapabilityRequest(refreshRequest, refreshRequest), true)
+  assert.equal(isLatestWsrxCapabilityRequest(initialRequest, refreshRequest), false)
+
+  const now = 1_000_000
+  assert.equal(getWsrxCapabilityRetryAt(now, now + 120_000), now + 30_000)
+  assert.equal(getWsrxCapabilityRetryAt(now, now + 20_000), now + 15_000)
+  assert.equal(getWsrxCapabilityRetryAt(now, now + 5_000), null)
+})
 
 const base = {
   isPlatformProxy: true,

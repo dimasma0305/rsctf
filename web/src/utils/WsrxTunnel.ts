@@ -7,6 +7,16 @@ export type ProxyEntryMode = 'wsrx' | 'wss'
 export type WsrxRefreshSource = 'automatic' | 'player'
 
 export const DEFAULT_PROXY_ENTRY_MODE: ProxyEntryMode = 'wss'
+export const WSRX_CAPABILITY_RETRY_DELAY_MS = 30_000
+export const WSRX_CAPABILITY_EXPIRY_MARGIN_MS = 5_000
+
+export const isLatestWsrxCapabilityRequest = (requestSequence: number, latestSequence: number) =>
+  requestSequence === latestSequence
+
+export const getWsrxCapabilityRetryAt = (serverNow: number, expiresAt: number) => {
+  const retryAt = Math.min(serverNow + WSRX_CAPABILITY_RETRY_DELAY_MS, expiresAt - WSRX_CAPABILITY_EXPIRY_MARGIN_MS)
+  return retryAt > serverNow ? retryAt : null
+}
 
 interface WsrxConnectIntent {
   mode: ProxyEntryMode
