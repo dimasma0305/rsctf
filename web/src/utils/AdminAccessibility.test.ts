@@ -17,6 +17,7 @@ test('dense operational history uses responsive cards and named controls', () =>
   const builds = readFileSync('src/pages/admin/builds.tsx', 'utf8')
   const buildPresentation = readFileSync('src/components/admin/builds/buildPresentation.ts', 'utf8')
   const logs = readFileSync('src/pages/admin/Logs.tsx', 'utf8')
+  const bindings = readFileSync('src/pages/admin/repo-bindings.tsx', 'utf8')
 
   assert.match(builds, /<BuildHistoryCard/)
   assert.match(builds, /visibleFrom="lg"/)
@@ -30,6 +31,7 @@ test('dense operational history uses responsive cards and named controls', () =>
   assert.match(logs, /hiddenFrom="md"/)
   assert.doesNotMatch(logs, /tableClasses\.overflow/)
   assert.equal((logs.match(/closeButtonProps:/g) ?? []).length, 2)
+  assert.equal((bindings.match(/<AccessibleModal/g) ?? []).length, 2)
 })
 
 test('dense admin inventories use readable breakpoints and manageable pages', () => {
