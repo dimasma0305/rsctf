@@ -82,8 +82,9 @@ const Reset: FC = () => {
     <AccountView
       title={t('account.title.reset')}
       description={t('account.content.reset.description', 'Choose a strong new password for your account.')}
+      onSubmit={onReset}
     >
-      <Stack component="form" w="100%" onSubmit={onReset}>
+      <Stack w="100%">
         <StrengthPasswordInput
           value={pwd}
           onChange={(event) => {
