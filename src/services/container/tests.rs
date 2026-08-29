@@ -443,10 +443,17 @@ async fn retryable_flag_adopts_one_real_docker_workload() {
 
     let first = manager.create(spec()).await.expect("first Docker create");
     let retried = manager.create(spec()).await;
+    let mut changed = spec();
+    changed.memory_limit += 1;
+    let changed_result = manager.create(changed).await;
     let cleanup = manager.destroy(&first.id).await;
     let second = retried.expect("same operation and flag should adopt");
 
     assert_eq!(first.id, second.id, "retry launched a duplicate workload");
+    assert!(matches!(
+        changed_result,
+        Err(crate::utils::error::AppError::Conflict(_))
+    ));
     cleanup.expect("real Docker retry workload cleanup");
 }
 

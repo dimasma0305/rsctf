@@ -7602,13 +7602,27 @@ export class Api<
      * @name EditAdEnsureContainers
      * @request POST:/api/edit/games/{id}/ad/EnsureContainers
      */
-    editAdEnsureContainers: (id: number, operationId: string, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+    editAdEnsureContainers: (
+      id: number,
+      operationIdOrParams?: string | RequestParams,
+      params: RequestParams = {},
+    ) => {
+      const operationId =
+        typeof operationIdOrParams === "string" ? operationIdOrParams : undefined;
+      const requestParams =
+        typeof operationIdOrParams === "string"
+          ? params
+          : operationIdOrParams ?? params;
+      return this.request<void, RequestResponse>({
         path: `/api/edit/games/${id}/ad/EnsureContainers`,
         method: "POST",
-        headers: { "Idempotency-Key": operationId },
-        ...params,
-      }),
+        ...requestParams,
+        headers: {
+          ...requestParams.headers,
+          ...(operationId ? { "Idempotency-Key": operationId } : {}),
+        },
+      });
+    },
 
     /**
      * @description A&D — pause/resume scoring for the whole game (freezes round advance + checks).

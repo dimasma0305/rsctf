@@ -41,6 +41,10 @@ fn manual_reconcile_response(launched: i32, failures: i32) -> AppResult<MessageR
     )))
 }
 
+fn is_manual_operation_conflict(error: &AppError, operation_id: Option<Uuid>) -> bool {
+    operation_id.is_some() && matches!(error, AppError::Conflict(_))
+}
+
 fn should_provision_vpn(
     vpn_enabled: bool,
     game_active: bool,
@@ -439,7 +443,9 @@ pub(crate) async fn ensure_ad_containers(
             spec.operation_id = operation_id;
             let info = match st.containers.create(spec).await {
                 Ok(i) => i,
-                Err(_) => {
+                Err(error) => {
+                    let operation_conflict =
+                        is_manual_operation_conflict(&error, reconcile_operation_id);
                     // Best-effort (accept path): register a container-less service
                     // row so the team shows in the grid without failing the accept.
                     // Gated on `only_participation` so the manual endpoint keeps its
@@ -468,6 +474,9 @@ pub(crate) async fn ensure_ad_containers(
                     }
                     failures += 1;
                     distributed.release().await?;
+                    if operation_conflict {
+                        return Err(error);
+                    }
                     continue;
                 }
             };
@@ -620,8 +629,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        ad_service_operation_id, manual_reconcile_response, reconcile_operation_id,
-        should_provision_vpn, should_reconcile_vpn, IDEMPOTENCY_KEY_HEADER,
+        ad_service_operation_id, is_manual_operation_conflict, manual_reconcile_response,
+        reconcile_operation_id, should_provision_vpn, should_reconcile_vpn, IDEMPOTENCY_KEY_HEADER,
     };
 
     #[test]
@@ -662,6 +671,23 @@ mod tests {
         assert!(matches!(
             manual_reconcile_response(3, 1),
             Err(crate::utils::error::AppError::ServiceUnavailable(_))
+        ));
+    }
+
+    #[test]
+    fn only_a_definitive_manual_workload_conflict_rotates_the_operation() {
+        let operation_id = Some(Uuid::new_v4());
+        assert!(is_manual_operation_conflict(
+            &crate::utils::error::AppError::conflict("changed launch specification"),
+            operation_id
+        ));
+        assert!(!is_manual_operation_conflict(
+            &crate::utils::error::AppError::unavailable("runtime unavailable"),
+            operation_id
+        ));
+        assert!(!is_manual_operation_conflict(
+            &crate::utils::error::AppError::conflict("automatic repair"),
+            None
         ));
     }
 
