@@ -83,6 +83,20 @@ test('admin navigation keeps every section discoverable without a horizontal scr
   assert.match(navigationStyles, /repeat\(auto-fit, minmax\(8\.75rem, 1fr\)\)/)
   assert.doesNotMatch(navigationStyles, /\.navigationViewport \{[\s\S]*?overflow-x: auto;/)
   assert.match(workers, /miw="9rem"[\s\S]*?admin\.workers\.add/)
+  assert.match(workers, /const origin = window\.location\.origin/)
+  assert.doesNotMatch(workers, /VITE_BACKEND_URL/)
+})
+
+test('admin list responses are decoded before they reach array state', () => {
+  const gameInfo = readFileSync('src/pages/admin/games/[id]/Info.tsx', 'utf8')
+  const managers = readFileSync('src/pages/admin/games/[id]/Managers.tsx', 'utf8')
+  const workers = readFileSync('src/pages/admin/workers.tsx', 'utf8')
+
+  assert.match(gameInfo, /requireApiCollection<EventVpnOverrideModel>[\s\S]*?itemKeys: \['overrides'\]/)
+  assert.doesNotMatch(gameInfo, /setVpnOverrides\((?:response|refreshed)\.data\)/)
+  assert.doesNotMatch(managers, /as any/)
+  assert.equal((managers.match(/requireApiCollection</g) ?? []).length, 2)
+  assert.match(workers, /setWorkers\(requireApiCollection<Worker>/)
 })
 
 test('admin dashboard keeps popular-game metrics visible and action labels intact', () => {

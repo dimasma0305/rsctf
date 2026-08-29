@@ -3,20 +3,39 @@ export type ApiCollectionResult<T> =
 
 export type ApiCollectionView = 'loading' | 'ready' | 'stale' | 'failed'
 
+export interface ApiCollectionDecodeOptions {
+  /** Explicit legacy field names that may carry the collection. */
+  itemKeys?: readonly string[]
+  /** Human-readable boundary name used when a required collection is malformed. */
+  label?: string
+}
+
+export type ReadyApiCollection<T> = Extract<ApiCollectionResult<T>, { status: 'ready' }>
+
 /**
- * Accept the released raw-array response and the paginated response used by
- * newer rsctf servers. Keep malformed payloads distinct from loading so the
- * caller can report a contract error instead of rendering an empty list.
+ * Accept raw arrays, the bounded pagination envelope, and explicitly named
+ * legacy collection fields used during rolling upgrades. Keep malformed
+ * payloads distinct from loading so callers never pass an object into array
+ * methods by accident.
  */
-export function decodeApiCollection<T>(payload: unknown): ApiCollectionResult<T> {
+export function decodeApiCollection<T>(
+  payload: unknown,
+  options: ApiCollectionDecodeOptions = {}
+): ApiCollectionResult<T> {
   if (payload === undefined) return { status: 'loading' }
   if (Array.isArray(payload)) {
     return { status: 'ready', items: payload as T[], total: payload.length, paginated: false }
   }
 
   if (typeof payload === 'object' && payload !== null && 'data' in payload && Array.isArray(payload.data)) {
-    const total = 'total' in payload ? payload.total : undefined
-    const length = 'length' in payload ? payload.length : payload.data.length
+    const hasTotal = 'total' in payload
+    const hasLength = 'length' in payload
+    if (!hasTotal && !hasLength) {
+      return { status: 'ready', items: payload.data as T[], total: payload.data.length, paginated: false }
+    }
+
+    const total = hasTotal ? payload.total : undefined
+    const length = hasLength ? payload.length : undefined
     if (
       typeof total !== 'number' ||
       !Number.isSafeInteger(total) ||
@@ -30,7 +49,28 @@ export function decodeApiCollection<T>(payload: unknown): ApiCollectionResult<T>
     return { status: 'ready', items: payload.data as T[], total, paginated: true }
   }
 
+  if (typeof payload === 'object' && payload !== null) {
+    const record = payload as Record<string, unknown>
+    for (const itemKey of options.itemKeys ?? []) {
+      if (!Object.hasOwn(record, itemKey)) continue
+      const items = record[itemKey]
+      if (!Array.isArray(items)) return { status: 'invalid' }
+      return { status: 'ready', items: items as T[], total: items.length, paginated: false }
+    }
+  }
+
   return { status: 'invalid' }
+}
+
+export function requireApiCollection<T>(
+  payload: unknown,
+  options: ApiCollectionDecodeOptions = {}
+): ReadyApiCollection<T> {
+  const collection = decodeApiCollection<T>(payload, options)
+  if (collection.status !== 'ready') {
+    throw new TypeError(`${options.label ?? 'API collection'} response has an invalid collection shape`)
+  }
+  return collection
 }
 
 /** Keep successfully decoded cached data usable when only revalidation fails. */

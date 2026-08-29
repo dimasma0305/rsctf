@@ -19,6 +19,7 @@ import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { requireApiCollection } from '@Utils/ApiCollection'
 import {
   createLatestAutocompleteRequests,
   MANAGER_AUTOCOMPLETE_MAX_CHARS,
@@ -50,7 +51,7 @@ export const Managers: FC = () => {
     setIsLoadingAdmins(true)
     try {
       const res = await api.edit.editGetGameAdmins(gameId)
-      setAdmins((res.data as any).data || res.data)
+      setAdmins(requireApiCollection<UserInfoModel>(res.data, { label: 'Game manager list' }).items)
     } catch (e) {
       showErrorMsg(e, t)
     } finally {
@@ -84,7 +85,11 @@ export const Managers: FC = () => {
     if (!query) return
 
     void autocompleteRequests.current.run(
-      async (signal) => (await api.admin.adminManagerAutocomplete({ query }, { signal })).data,
+      async (signal) =>
+        requireApiCollection<ManagerAutocompleteUserModel>(
+          (await api.admin.adminManagerAutocomplete({ query }, { signal })).data,
+          { label: 'Manager autocomplete list' }
+        ).items,
       {
         setLoading: setIsLoadingUsers,
         setResults: setUsers,

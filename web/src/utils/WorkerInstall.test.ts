@@ -14,6 +14,13 @@ test('worker install command contains only the public HTTPS origin', () => {
   )
 })
 
+test('worker install command permits an exact loopback origin for source development', () => {
+  assert.equal(
+    workerInstallCommand('http://localhost:63000'),
+    `(t=$(mktemp) || exit 1; trap 'rm -f "$t"' 0 HUP INT TERM; wget -q -T 30 -O "$t" http://localhost:63000/install/worker && sh "$t" --server-url http://localhost:63000)`
+  )
+})
+
 test('Windows worker command contains only the public HTTPS origin', () => {
   assert.equal(
     workerWindowsInstallCommand('https://tcp.1pc.tf'),
@@ -35,6 +42,7 @@ test('worker uninstall commands contain only the public HTTPS origin', () => {
 test('worker install command rejects credentials, paths, insecure origins, and shell syntax', () => {
   for (const origin of [
     'http://tcp.1pc.tf',
+    'http://localhost.example',
     'https://user@tcp.1pc.tf',
     'https://tcp.1pc.tf/path',
     'https://tcp.1pc.tf;touch-pwned',

@@ -45,6 +45,7 @@ import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { WithChallengeEdit } from '@Components/admin/WithChallengeEdit'
 import { ScoreFunc } from '@Components/charts/ScoreFunc'
+import { challengeRevision, ChallengeMutationOperation, prepareChallengeMutation } from '@Utils/ChallengeMutation'
 import { getInputNumber, NetworkModeItem, NetworkModeList, showErrorMsg, useNetworkModeMap } from '@Utils/Shared'
 import {
   ChallengeCategoryItem,
@@ -163,6 +164,7 @@ const GameChallengeEdit: FC = () => {
   const [rollingWorkload, setRollingWorkload] = useState(false)
   const workloadToggleRef = useRef<HTMLInputElement>(null)
   const workloadInputRef = useRef<HTMLTextAreaElement>(null)
+  const updateOperation = useRef<ChallengeMutationOperation | null>(null)
   const [currentAcceptCount, setCurrentAcceptCount] = useState(0)
   const [previewOpened, setPreviewOpened] = useState(false)
   const [execOpened, setExecOpened] = useState(false)
@@ -304,13 +306,20 @@ const GameChallengeEdit: FC = () => {
     }
 
     setDisabled(true)
-
-    try {
-      const res = await api.edit.editUpdateGameChallenge(numId, numCId, {
+    const prepared = prepareChallengeMutation(
+      {
         ...update,
         deadlineUtc: deadline ? deadline.valueOf() : 0,
         isEnabled: undefined,
-      })
+      },
+      challengeRevision(challenge),
+      updateOperation.current
+    )
+    updateOperation.current = prepared.operation
+
+    try {
+      const res = await api.edit.editUpdateGameChallenge(numId, numCId, prepared.payload)
+      updateOperation.current = null
       if (!noFeedback) {
         showNotification({
           color: 'teal',
