@@ -570,7 +570,7 @@ mod tests {
         assert!((1..=32).contains(&MAX_DEPLOYMENT_OPERATIONS));
         assert!((1..=8).contains(&MAX_LOCAL_OPERATIONS));
         assert!(OPERATION_DEADLINE <= Duration::from_secs(5 * 60));
-        assert!(MAX_LOCAL_RESULT_KEYS <= 256);
+        assert!((1..=256).contains(&MAX_LOCAL_RESULT_KEYS));
     }
 
     #[tokio::test]

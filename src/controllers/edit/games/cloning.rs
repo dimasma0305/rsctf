@@ -398,6 +398,24 @@ pub async fn clone_game(
     Ok(RequestResponse::ok(new_game_id))
 }
 
+pub async fn delete_writeups(
+    State(st): State<SharedState>,
+    _admin: AdminUser,
+    Path(id): Path<i32>,
+) -> AppResult<RequestResponse<GameInfoModel>> {
+    let game = load_game(&st, id).await?;
+    let deleted_hashes = crate::services::blob_refs::clear_game_writeups(st.pg(), id).await?;
+    for hash in deleted_hashes {
+        if let Err(error) =
+            crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
+                .await
+        {
+            tracing::warn!(%error, %hash, "deleted game writeup purge failed");
+        }
+    }
+    Ok(RequestResponse::ok(GameInfoModel::from_game(&game)))
+}
+
 #[cfg(test)]
 mod clone_contract_tests {
     use super::*;
@@ -454,22 +472,4 @@ mod clone_contract_tests {
         model.expected_challenge_revision += 1;
         assert_ne!(first, clone_request_digest(1, &model, "Clone target"));
     }
-}
-
-pub async fn delete_writeups(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-    Path(id): Path<i32>,
-) -> AppResult<RequestResponse<GameInfoModel>> {
-    let game = load_game(&st, id).await?;
-    let deleted_hashes = crate::services::blob_refs::clear_game_writeups(st.pg(), id).await?;
-    for hash in deleted_hashes {
-        if let Err(error) =
-            crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
-                .await
-        {
-            tracing::warn!(%error, %hash, "deleted game writeup purge failed");
-        }
-    }
-    Ok(RequestResponse::ok(GameInfoModel::from_game(&game)))
 }

@@ -643,7 +643,6 @@ pub async fn state(
 /// restarts their own service container: destroy it, launch a fresh one with a
 /// newly-planted flag, and stamp the self-reset cooldown. Requires the challenge
 /// to allow self-reset and the cooldown to have elapsed.
-
 pub async fn reset_service(
     State(st): State<SharedState>,
     user: CurrentUser,

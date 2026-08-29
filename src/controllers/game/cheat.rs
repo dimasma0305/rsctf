@@ -394,7 +394,7 @@ pub struct CompareQuery {
 /// This GET is deliberately read-only. Detector sweeps run in the background
 /// reconciler; refreshing the report cannot create evidence or change scores.
 pub(super) async fn build_cheat_report(st: &SharedState, id: i32) -> AppResult<CheatReport> {
-    let incidents = collect_cheat_incidents(&st, id).await?;
+    let incidents = collect_cheat_incidents(st, id).await?;
 
     // Canonical one-row-per-participation/challenge solves for RSI. Replayed
     // accepted submissions never inflate similarity or common-solve detail.

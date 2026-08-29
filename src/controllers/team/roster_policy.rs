@@ -131,7 +131,7 @@ pub(crate) async fn ensure_roster_change_allowed(
         .map_err(|error| AppError::internal(error.to_string()))?;
     }
 
-    reject_frozen_state(load_roster_state(&mut **transaction, team_id).await?)
+    reject_frozen_state(load_roster_state(transaction, team_id).await?)
 }
 
 #[cfg(test)]

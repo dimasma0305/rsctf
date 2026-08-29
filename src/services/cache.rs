@@ -493,9 +493,7 @@ impl Cache for RedisCache {
             end
             return 0
         "#;
-        let Some(mut conn) = self.connection().await else {
-            return None;
-        };
+        let mut conn = self.connection().await?;
         tokio::time::timeout(
             REDIS_IO_TIMEOUT,
             redis::Script::new(SCRIPT)

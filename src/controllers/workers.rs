@@ -712,8 +712,8 @@ mod tests {
         let default: WorkerListQuery = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(default.count, DEFAULT_WORKER_PAGE_SIZE);
         assert_eq!(default.skip, 0);
-        assert!(MAX_WORKER_PAGE_SIZE < u64::MAX);
-        assert!(MAX_WORKER_PAGE_OFFSET < u64::MAX);
+        assert_eq!(MAX_WORKER_PAGE_SIZE, 500);
+        assert_eq!(MAX_WORKER_PAGE_OFFSET, 100_000);
         let handler = include_str!("workers.rs");
         assert!(handler.contains("query.count.clamp(1, MAX_WORKER_PAGE_SIZE)"));
         assert!(handler.contains("query.skip.min(MAX_WORKER_PAGE_OFFSET)"));

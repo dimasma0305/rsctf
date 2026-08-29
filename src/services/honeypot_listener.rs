@@ -190,16 +190,16 @@ async fn run_listener(
                         REJECTED_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
-                    connections.spawn(handle_connection(
-                        state.clone(),
-                        name.clone(),
+                    connections.spawn(handle_connection(Connection {
+                        state: state.clone(),
+                        name: name.clone(),
                         port,
-                        banner.clone(),
+                        banner: banner.clone(),
                         socket,
                         peer,
-                        global,
-                        source,
-                    ));
+                        _global: global,
+                        _source: source,
+                    }));
                 }
                 Err(error) => {
                     tracing::warn!(honeypot = %name, port, %error, "honeypot TCP listener stopped");
@@ -218,16 +218,28 @@ async fn run_listener(
     while connections.join_next().await.is_some() {}
 }
 
-async fn handle_connection(
+struct Connection {
     state: SharedState,
     name: String,
     port: u16,
     banner: Option<String>,
-    mut socket: tokio::net::TcpStream,
+    socket: tokio::net::TcpStream,
     peer: std::net::SocketAddr,
     _global: tokio::sync::OwnedSemaphorePermit,
     _source: SourcePermit,
-) {
+}
+
+async fn handle_connection(connection: Connection) {
+    let Connection {
+        state,
+        name,
+        port,
+        banner,
+        mut socket,
+        peer,
+        _global,
+        _source,
+    } = connection;
     let ip = peer.ip().to_string();
     let banner_written = match banner.as_deref() {
         Some(banner) => write_banner_with_deadline(&mut socket, banner, BANNER_WRITE_TIMEOUT).await,

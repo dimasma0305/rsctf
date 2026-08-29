@@ -45,6 +45,8 @@ const PUBLISH_SERVICE_ENDPOINT_SQL: &str = r#"UPDATE "AdTeamServices" service
          )
        )"#;
 
+type ServiceResetRow = (Option<i32>, Option<String>, bool, Option<String>);
+
 fn valid_replacement_endpoint(host: &str, port: i32, container_id: &str) -> bool {
     !host.trim().is_empty() && (1..=65_535).contains(&port) && !container_id.trim().is_empty()
 }
@@ -74,7 +76,7 @@ pub(crate) async fn prepare_service_reset(
 ) -> AppResult<ServiceResetPreparation> {
     let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
     let tx = control.transaction_mut();
-    let current: Option<(Option<i32>, Option<String>, bool, Option<String>)> = sqlx::query_as(
+    let current: Option<ServiceResetRow> = sqlx::query_as(
         r#"SELECT round.id,
                   CASE WHEN OCTET_LENGTH(flag.flag) = 38
                              AND flag.flag ~ '^flag[{][A-Za-z0-9_-]{32}[}]$'

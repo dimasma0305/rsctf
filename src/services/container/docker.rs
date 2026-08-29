@@ -90,34 +90,35 @@ pub(super) fn parse_file_archive(archive: &[u8], limit: usize) -> AppResult<Cont
     use std::io::Read;
 
     let mut archive = tar::Archive::new(archive);
-    let entries = archive.entries().map_err(|error| {
+    let mut entries = archive.entries().map_err(|error| {
         AppError::bad_request(format!("invalid container file archive: {error}"))
     })?;
-    for entry in entries {
-        let entry = entry.map_err(|error| {
-            AppError::bad_request(format!("invalid container file archive entry: {error}"))
-        })?;
-        if !entry.header().entry_type().is_file() {
-            return Err(AppError::bad_request("Only regular files can be previewed"));
-        }
-        let size = entry.size();
-        let take = u64::try_from(limit).unwrap_or(u64::MAX).min(size);
-        let mut bytes = Vec::with_capacity(usize::try_from(take).unwrap_or(limit));
-        entry.take(take).read_to_end(&mut bytes).map_err(|error| {
-            AppError::bad_request(format!("invalid container file data: {error}"))
-        })?;
-        if bytes.len() < usize::try_from(take).unwrap_or(limit) {
-            return Err(AppError::bad_request(
-                "Container file preview ended before its declared size",
-            ));
-        }
-        return Ok(ContainerFile {
-            truncated: size > bytes.len() as u64,
-            size,
-            bytes,
-        });
+    let Some(entry) = entries.next() else {
+        return Err(AppError::not_found("Container file archive was empty"));
+    };
+    let entry = entry.map_err(|error| {
+        AppError::bad_request(format!("invalid container file archive entry: {error}"))
+    })?;
+    if !entry.header().entry_type().is_file() {
+        return Err(AppError::bad_request("Only regular files can be previewed"));
     }
-    Err(AppError::not_found("Container file archive was empty"))
+    let size = entry.size();
+    let take = u64::try_from(limit).unwrap_or(u64::MAX).min(size);
+    let mut bytes = Vec::with_capacity(usize::try_from(take).unwrap_or(limit));
+    entry
+        .take(take)
+        .read_to_end(&mut bytes)
+        .map_err(|error| AppError::bad_request(format!("invalid container file data: {error}")))?;
+    if bytes.len() < usize::try_from(take).unwrap_or(limit) {
+        return Err(AppError::bad_request(
+            "Container file preview ended before its declared size",
+        ));
+    }
+    Ok(ContainerFile {
+        truncated: size > bytes.len() as u64,
+        size,
+        bytes,
+    })
 }
 
 impl DockerContainerManager {

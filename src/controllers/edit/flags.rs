@@ -608,6 +608,84 @@ pub async fn get_flags(
     Ok(ArrayResponse::new(flags, total))
 }
 
+/// `DELETE /api/edit/games/{id}/challenges/{cId}/flags/{fId}` — returns a
+/// `TaskStatus`. RSCTF serializes this enum as a **string**, so we emit the
+/// string literal directly (the port's `TaskStatus` enum is int-repr).
+pub async fn remove_flag(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+    Path((id, c_id, f_id)): Path<(i32, i32, i32)>,
+) -> AppResult<RequestResponse<String>> {
+    manager_or_admin(&st, &user, id).await?;
+    let mut game_control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    acquire_flag_definition_lock(&mut game_control, id, c_id).await?;
+    let removal = match remove_flag_locked(game_control.transaction_mut(), id, c_id, f_id).await {
+        Ok(removal) => removal,
+        Err(error) => {
+            drop(game_control);
+            return Err(error);
+        }
+    };
+    game_control
+        .release()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some(deleted_hash) = removal else {
+        return Ok(RequestResponse::ok("NotFound".to_string()));
+    };
+    if let Some(hash) = deleted_hash {
+        if let Err(error) =
+            crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
+                .await
+        {
+            tracing::warn!(%error, %hash, f_id, "removed flag attachment blob purge deferred");
+        }
+    }
+    Ok(RequestResponse::ok("Success".to_string()))
+}
+
+/// Delete the flag and consume its now-orphaned attachment reference in the
+/// retained definition transaction. `None` means the flag did not exist;
+/// `Some(None)` means it existed without a local blob requiring purge.
+pub(super) async fn remove_flag_locked(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+    challenge_id: i32,
+    flag_id: i32,
+) -> AppResult<Option<Option<String>>> {
+    challenges::reject_pending_mutation(&mut **transaction, game_id, challenge_id).await?;
+    ensure_flag_policy_mutable_locked(transaction, game_id, challenge_id).await?;
+    crate::utils::scoring::lock_jeopardy_flags_exclusive(transaction, challenge_id).await?;
+
+    // Capture the hand-out attachment in the same statement that removes the
+    // flag. The exclusive advisory lock makes this deletion linearizable with
+    // every authoritative submit-side grade, including static flag inserts.
+    let attachment_id: Option<Option<i32>> = sqlx::query_scalar(
+        r#"DELETE FROM "FlagContexts"
+            WHERE id = $1 AND challenge_id = $2
+            RETURNING attachment_id"#,
+    )
+    .bind(flag_id)
+    .bind(challenge_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some(attachment_id) = attachment_id else {
+        return Ok(None);
+    };
+    let deleted_hash = match attachment_id {
+        Some(attachment_id) => {
+            crate::services::blob_refs::delete_attachment_locked(transaction, attachment_id).await?
+        }
+        None => None,
+    };
+    Ok(Some(deleted_hash))
+}
+
+// ============================================================================
+//  Notices
+// ============================================================================
+
 #[cfg(test)]
 mod policy_tests {
     use super::*;
@@ -687,81 +765,3 @@ mod policy_tests {
         pool.close().await;
     }
 }
-
-/// `DELETE /api/edit/games/{id}/challenges/{cId}/flags/{fId}` — returns a
-/// `TaskStatus`. RSCTF serializes this enum as a **string**, so we emit the
-/// string literal directly (the port's `TaskStatus` enum is int-repr).
-pub async fn remove_flag(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-    Path((id, c_id, f_id)): Path<(i32, i32, i32)>,
-) -> AppResult<RequestResponse<String>> {
-    manager_or_admin(&st, &user, id).await?;
-    let mut game_control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
-    acquire_flag_definition_lock(&mut game_control, id, c_id).await?;
-    let removal = match remove_flag_locked(game_control.transaction_mut(), id, c_id, f_id).await {
-        Ok(removal) => removal,
-        Err(error) => {
-            drop(game_control);
-            return Err(error);
-        }
-    };
-    game_control
-        .release()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let Some(deleted_hash) = removal else {
-        return Ok(RequestResponse::ok("NotFound".to_string()));
-    };
-    if let Some(hash) = deleted_hash {
-        if let Err(error) =
-            crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
-                .await
-        {
-            tracing::warn!(%error, %hash, f_id, "removed flag attachment blob purge deferred");
-        }
-    }
-    Ok(RequestResponse::ok("Success".to_string()))
-}
-
-/// Delete the flag and consume its now-orphaned attachment reference in the
-/// retained definition transaction. `None` means the flag did not exist;
-/// `Some(None)` means it existed without a local blob requiring purge.
-pub(super) async fn remove_flag_locked(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    game_id: i32,
-    challenge_id: i32,
-    flag_id: i32,
-) -> AppResult<Option<Option<String>>> {
-    challenges::reject_pending_mutation(&mut **transaction, game_id, challenge_id).await?;
-    ensure_flag_policy_mutable_locked(transaction, game_id, challenge_id).await?;
-    crate::utils::scoring::lock_jeopardy_flags_exclusive(transaction, challenge_id).await?;
-
-    // Capture the hand-out attachment in the same statement that removes the
-    // flag. The exclusive advisory lock makes this deletion linearizable with
-    // every authoritative submit-side grade, including static flag inserts.
-    let attachment_id: Option<Option<i32>> = sqlx::query_scalar(
-        r#"DELETE FROM "FlagContexts"
-            WHERE id = $1 AND challenge_id = $2
-            RETURNING attachment_id"#,
-    )
-    .bind(flag_id)
-    .bind(challenge_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let Some(attachment_id) = attachment_id else {
-        return Ok(None);
-    };
-    let deleted_hash = match attachment_id {
-        Some(attachment_id) => {
-            crate::services::blob_refs::delete_attachment_locked(transaction, attachment_id).await?
-        }
-        None => None,
-    };
-    Ok(Some(deleted_hash))
-}
-
-// ============================================================================
-//  Notices
-// ============================================================================

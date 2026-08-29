@@ -215,15 +215,19 @@ pub(super) async fn replay_avatar_operation(
         .ok_or_else(|| AppError::internal("avatar operation result has an invalid shape"))
 }
 
+pub(super) struct AvatarOperationResult<'a> {
+    pub(super) expected_revision: i64,
+    pub(super) result_revision: i64,
+    pub(super) result: &'a str,
+}
+
 pub(super) async fn store_avatar_operation(
     connection: &mut PgConnection,
     operation_id: Uuid,
     team_id: i32,
     actor_user_id: Uuid,
     digest: &str,
-    expected_revision: i64,
-    result_revision: i64,
-    result: &str,
+    result: AvatarOperationResult<'_>,
 ) -> AppResult<()> {
     let inserted = sqlx::query(
         r#"INSERT INTO "TeamProfileOperations"
@@ -235,9 +239,9 @@ pub(super) async fn store_avatar_operation(
     .bind(team_id)
     .bind(actor_user_id)
     .bind(digest)
-    .bind(expected_revision)
-    .bind(result_revision)
-    .bind(result)
+    .bind(result.expected_revision)
+    .bind(result.result_revision)
+    .bind(result.result)
     .execute(connection)
     .await;
     match inserted {
@@ -294,24 +298,18 @@ pub(super) async fn update_locked(
     super::validate_team_profile(model.name.as_deref(), model.bio.as_deref())?;
     let digest = request_digest(&model)?;
 
-    let preflight = load_profile(&mut **transaction, team_id, false).await?;
+    let preflight = load_profile(transaction, team_id, false).await?;
     if preflight.captain_id != actor_user_id {
         return Err(AppError::Forbidden);
     }
-    if let Some(result) = replay_operation(
-        &mut **transaction,
-        operation_id,
-        team_id,
-        actor_user_id,
-        &digest,
-    )
-    .await?
+    if let Some(result) =
+        replay_operation(transaction, operation_id, team_id, actor_user_id, &digest).await?
     {
         return Ok(result);
     }
 
     super::ensure_roster_change_allowed(transaction, team_id).await?;
-    let current = load_profile(&mut **transaction, team_id, true).await?;
+    let current = load_profile(transaction, team_id, true).await?;
     if current.captain_id != actor_user_id {
         return Err(AppError::Forbidden);
     }
@@ -320,14 +318,14 @@ pub(super) async fn update_locked(
             "Team profile changed in another request; reload and try again",
         ));
     }
-    enforce_mutation_budget(&mut **transaction, team_id, actor_user_id).await?;
+    enforce_mutation_budget(transaction, team_id, actor_user_id).await?;
 
     let requested_name = model.name.unwrap_or_else(|| current.name.clone());
     let requested_bio = model.bio.or_else(|| current.bio.clone());
     if requested_name == current.name && requested_bio == current.bio {
-        let result = load_info(&mut **transaction, current).await?;
+        let result = load_info(transaction, current).await?;
         store_operation(
-            &mut **transaction,
+            transaction,
             operation_id,
             team_id,
             actor_user_id,
@@ -353,9 +351,9 @@ pub(super) async fn update_locked(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::conflict("Team profile changed; reload and try again"))?;
-    let result = load_info(&mut **transaction, updated).await?;
+    let result = load_info(transaction, updated).await?;
     store_operation(
-        &mut **transaction,
+        transaction,
         operation_id,
         team_id,
         actor_user_id,
@@ -364,7 +362,7 @@ pub(super) async fn update_locked(
         &result,
     )
     .await?;
-    enqueue_invalidation(&mut **transaction, team_id, result.profile_revision).await?;
+    enqueue_invalidation(transaction, team_id, result.profile_revision).await?;
     Ok(result)
 }
 

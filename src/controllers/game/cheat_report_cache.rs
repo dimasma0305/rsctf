@@ -14,8 +14,9 @@ pub(super) static CHEAT_REPORT_BUILD_SLOTS: tokio::sync::Semaphore =
 pub(super) static CHEAT_REPORT_FLIGHTS: LazyLock<
     crate::utils::single_flight::SingleFlight<CheatReportFill>,
 > = LazyLock::new(crate::utils::single_flight::SingleFlight::new);
-static CHEAT_REPORT_CACHE: LazyLock<Mutex<HashMap<i32, (Instant, String, Bytes)>>> =
-    LazyLock::new(Default::default);
+type CachedCheatReport = (Instant, String, Bytes);
+type CheatReportCache = Mutex<HashMap<i32, CachedCheatReport>>;
+static CHEAT_REPORT_CACHE: LazyLock<CheatReportCache> = LazyLock::new(Default::default);
 
 #[derive(Clone, Default)]
 pub(super) enum CheatReportFill {

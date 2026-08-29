@@ -156,10 +156,12 @@ pub async fn game_challenge_catalog(
     final_policy::finish_catalog_response(
         st.pg(),
         &user,
-        id,
-        ctx.participation.team_id,
-        ctx.participation.id,
-        visible_ids,
+        final_policy::CatalogResponseScope::new(
+            id,
+            ctx.participation.team_id,
+            ctx.participation.id,
+            visible_ids,
+        ),
         headers
             .get(axum::http::header::IF_NONE_MATCH)
             .and_then(|value| value.to_str().ok()),
@@ -276,8 +278,8 @@ mod tests {
 
     #[test]
     fn participant_projection_cache_is_explicitly_bounded() {
-        assert!(PARTICIPANT_ROWS_MAX_GAMES <= 64);
-        assert!(PARTICIPANT_ROWS_MAX_BYTES <= 512 * 1024);
+        assert!(std::hint::black_box(PARTICIPANT_ROWS_MAX_GAMES) <= 64);
+        assert!(std::hint::black_box(PARTICIPANT_ROWS_MAX_BYTES) <= 512 * 1024);
         assert!(PARTICIPANT_ROWS_TTL <= Duration::from_secs(5));
     }
 

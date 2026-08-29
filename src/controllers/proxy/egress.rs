@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn matcher_rejects_invalid_lengths_before_reserving_overlap() {
         assert!(RollingFlagMatcher::new(&[]).is_none());
-        assert!(RollingFlagMatcher::new(&vec![b'x'; 128]).is_none());
+        assert!(RollingFlagMatcher::new(&[b'x'; 128]).is_none());
         assert!(RollingFlagMatcher::new(b" flag{answer}").is_none());
     }
 

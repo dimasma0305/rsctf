@@ -147,7 +147,7 @@ pub async fn avatar(
         return Err(AppError::conflict("Team is being deleted"));
     }
     if let Some(result) = super::profile::replay_avatar_operation(
-        &mut **roster.transaction_mut(),
+        roster.transaction_mut(),
         operation_id,
         id,
         user.id,
@@ -164,17 +164,19 @@ pub async fn avatar(
             "Team profile changed in another request; reload and try again",
         ));
     }
-    super::profile::enforce_mutation_budget(&mut **roster.transaction_mut(), id, user.id).await?;
+    super::profile::enforce_mutation_budget(roster.transaction_mut(), id, user.id).await?;
     if initial.0.as_deref() == Some(content_hash.as_str()) {
         super::profile::store_avatar_operation(
-            &mut **roster.transaction_mut(),
+            roster.transaction_mut(),
             operation_id,
             id,
             user.id,
             &request_digest,
-            profile_revision,
-            profile_revision,
-            &result_url,
+            super::profile::AvatarOperationResult {
+                expected_revision: profile_revision,
+                result_revision: profile_revision,
+                result: &result_url,
+            },
         )
         .await?;
         roster.release().await?;
@@ -215,7 +217,7 @@ pub async fn avatar(
         return Err(AppError::conflict("Team is being deleted"));
     }
     if let Some(result) = super::profile::replay_avatar_operation(
-        &mut **roster.transaction_mut(),
+        roster.transaction_mut(),
         operation_id,
         id,
         user.id,
@@ -232,7 +234,7 @@ pub async fn avatar(
             "Team profile changed while the avatar was stored; reload and try again",
         ));
     }
-    super::profile::enforce_mutation_budget(&mut **roster.transaction_mut(), id, user.id).await?;
+    super::profile::enforce_mutation_budget(roster.transaction_mut(), id, user.id).await?;
     crate::services::blob_refs::lock_direct_hashes_locked(
         roster.transaction_mut(),
         std::iter::once(staged.blob.hash.as_str()).chain(old_hash.as_deref()),
@@ -254,17 +256,19 @@ pub async fn avatar(
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::conflict("Team profile changed; reload and try again"))?;
     super::profile::store_avatar_operation(
-        &mut **roster.transaction_mut(),
+        roster.transaction_mut(),
         operation_id,
         id,
         user.id,
         &request_digest,
-        profile_revision,
-        revision,
-        &result_url,
+        super::profile::AvatarOperationResult {
+            expected_revision: profile_revision,
+            result_revision: revision,
+            result: &result_url,
+        },
     )
     .await?;
-    super::profile::enqueue_invalidation(&mut **roster.transaction_mut(), id, revision).await?;
+    super::profile::enqueue_invalidation(roster.transaction_mut(), id, revision).await?;
     if let Some(old_hash) = old_hash.as_deref() {
         crate::services::blob_refs::release_direct_hash_locked(roster.transaction_mut(), old_hash)
             .await?;

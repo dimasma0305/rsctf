@@ -381,6 +381,16 @@ pub struct AdminPasswordResetQuery {
     pub operation_id: Uuid,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct AdminPasswordResetOperation {
+    user_id: Uuid,
+    requested_by: Uuid,
+    status: i16,
+    result_ciphertext: Option<Vec<u8>>,
+    result_nonce: Option<Vec<u8>>,
+    result_live: bool,
+}
+
 fn admin_reset_key(secret: &str) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(b"rsctf:admin-password-reset:v1\0");
@@ -450,32 +460,31 @@ pub async fn reset_password(
             "A valid password reset operation ID is required",
         ));
     }
-    let existing: Option<(Uuid, Uuid, i16, Option<Vec<u8>>, Option<Vec<u8>>, bool)> =
-        sqlx::query_as(
-            r#"SELECT user_id, requested_by, status, result_ciphertext, result_nonce,
-                      result_expires_at_utc > clock_timestamp()
+    let existing: Option<AdminPasswordResetOperation> = sqlx::query_as(
+        r#"SELECT user_id, requested_by, status, result_ciphertext, result_nonce,
+                      result_expires_at_utc > clock_timestamp() AS result_live
                  FROM "AdminPasswordResetOperations" WHERE operation_id = $1"#,
-        )
-        .bind(query.operation_id)
-        .fetch_optional(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some((bound_user, bound_admin, status, ciphertext, nonce, live)) = existing {
-        if bound_user != userid || bound_admin != admin.id {
+    )
+    .bind(query.operation_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some(existing) = existing {
+        if existing.user_id != userid || existing.requested_by != admin.id {
             return Err(AppError::conflict(
                 "Password reset operation ID is bound to another request",
             ));
         }
-        if status == 1 {
-            if !live {
+        if existing.status == 1 {
+            if !existing.result_live {
                 return Err(AppError::not_found("Password reset result has expired"));
             }
             let password = decrypt_admin_reset(
                 &st.config.jwt_secret,
                 query.operation_id,
                 userid,
-                ciphertext.as_deref().unwrap_or_default(),
-                nonce.as_deref().unwrap_or_default(),
+                existing.result_ciphertext.as_deref().unwrap_or_default(),
+                existing.result_nonce.as_deref().unwrap_or_default(),
             )?;
             return Ok(super::users_credentials::private_no_store(
                 RequestResponse::ok(password),

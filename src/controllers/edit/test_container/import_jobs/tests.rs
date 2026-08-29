@@ -38,7 +38,7 @@ fn admission_and_workspace_limits_are_compile_time_bounded() {
     assert_eq!(EVENT_ACTIVE_JOBS, 1);
     assert_eq!(LOCAL_WORKSPACE_MIB, 128);
     assert!(TOTAL_JOB_DEADLINE < Duration::from_secs(16 * 60));
-    assert!(ADMISSION_RETRY_SECONDS > 0);
+    const { assert!(ADMISSION_RETRY_SECONDS > 0) };
 }
 
 #[test]

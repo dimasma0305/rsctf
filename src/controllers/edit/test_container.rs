@@ -777,10 +777,12 @@ pub async fn import_from_github(
         id,
         user.id,
         model.operation_id.unwrap_or_else(Uuid::new_v4),
-        repo_url,
-        git_ref,
-        subpath,
-        model.github_token.unwrap_or_default(),
+        import_jobs::GitImportSource {
+            repo_url,
+            git_ref,
+            subpath,
+            token: model.github_token.unwrap_or_default(),
+        },
     )
     .await
 }

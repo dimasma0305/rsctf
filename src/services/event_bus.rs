@@ -838,7 +838,7 @@ mod tests {
         // The maximum accepted A&D flag batch in another game must not enter
         // this target/game receiver's bounded history.
         for cursor in 0..100 {
-            first_replica.publish(received_game_event(8, cursor as i32, cursor as i64));
+            first_replica.publish(received_game_event(8, cursor, cursor as i64));
         }
         for (id, cursor) in [(31, 101), (32, 102), (33, 103)] {
             first_replica.publish(received_game_event(7, id, cursor));

@@ -8,6 +8,9 @@ use tokio::io::AsyncWriteExt;
 const MAX_SPOOL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SPOOL_BATCHES: usize = 2_048;
 const MAX_SPOOL_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+// These are the inclusive bounds enforced by TelemetryBatch::validate.
+const MAX_SENSOR_DROPPED_ROWS: i64 = 100_000_000;
+const MAX_SENSOR_DROPPED_BYTES: i64 = u32::MAX as i64;
 
 pub struct DurableSpool {
     directory: PathBuf,
@@ -41,6 +44,7 @@ impl DurableSpool {
 
     pub async fn enqueue(&mut self, batch: &TelemetryBatch) -> anyhow::Result<()> {
         let mut durable = batch.clone();
+        clamp_loss_counters(&mut durable);
         let mut encoded = serde_json::to_vec(&durable)?;
         if encoded.len() as u64 > MAX_SPOOL_BYTES {
             merge_own_payload_shed(&mut durable, encoded.len());
@@ -118,7 +122,11 @@ impl DurableSpool {
         let Some((path, _)) = self.entries.front() else {
             return Ok(None);
         };
-        Ok(Some(read_batch(path).await?))
+        let mut batch = read_batch(path).await?;
+        // Older spool files may have accumulated unbounded counters. Normalize the
+        // upload view so they can be accepted and acknowledged after an upgrade.
+        clamp_loss_counters(&mut batch);
+        Ok(Some(batch))
     }
 
     pub async fn acknowledge_front(&mut self, batch_id: uuid::Uuid) -> anyhow::Result<()> {
@@ -184,24 +192,39 @@ fn merge_own_payload_shed(batch: &mut TelemetryBatch, encoded_bytes: usize) {
     batch.dns_providers.clear();
     batch.peer_networks.clear();
     batch.flag_transports.clear();
-    batch.sensor_dropped_rows = batch
-        .sensor_dropped_rows
-        .saturating_add(i64::try_from(rows).unwrap_or(i64::MAX));
-    batch.sensor_dropped_bytes = batch
-        .sensor_dropped_bytes
-        .saturating_add(i64::try_from(encoded_bytes).unwrap_or(i64::MAX));
+    merge_loss_counters(
+        batch,
+        u64::try_from(rows).unwrap_or(u64::MAX),
+        u64::try_from(encoded_bytes).unwrap_or(u64::MAX),
+    );
 }
 
 fn merge_dropped_batch(report: &mut TelemetryBatch, dropped: &TelemetryBatch, encoded_bytes: u64) {
     let rows = row_count(dropped);
     let bytes = encoded_bytes
         .saturating_add(u64::try_from(dropped.sensor_dropped_bytes.max(0)).unwrap_or(u64::MAX));
-    report.sensor_dropped_rows = report
-        .sensor_dropped_rows
-        .saturating_add(i64::try_from(rows).unwrap_or(i64::MAX));
-    report.sensor_dropped_bytes = report
+    merge_loss_counters(report, rows, bytes);
+}
+
+fn merge_loss_counters(batch: &mut TelemetryBatch, rows: u64, bytes: u64) {
+    batch.sensor_dropped_rows =
+        bounded_loss_counter(batch.sensor_dropped_rows, rows, MAX_SENSOR_DROPPED_ROWS);
+    batch.sensor_dropped_bytes =
+        bounded_loss_counter(batch.sensor_dropped_bytes, bytes, MAX_SENSOR_DROPPED_BYTES);
+}
+
+fn clamp_loss_counters(batch: &mut TelemetryBatch) {
+    batch.sensor_dropped_rows = batch.sensor_dropped_rows.clamp(0, MAX_SENSOR_DROPPED_ROWS);
+    batch.sensor_dropped_bytes = batch
         .sensor_dropped_bytes
-        .saturating_add(i64::try_from(bytes).unwrap_or(i64::MAX));
+        .clamp(0, MAX_SENSOR_DROPPED_BYTES);
+}
+
+fn bounded_loss_counter(current: i64, additional: u64, maximum: i64) -> i64 {
+    current
+        .clamp(0, maximum)
+        .saturating_add(i64::try_from(additional).unwrap_or(i64::MAX))
+        .min(maximum)
 }
 
 fn row_count(batch: &TelemetryBatch) -> u64 {
@@ -354,5 +377,31 @@ mod tests {
         merge_dropped_batch(&mut report, &dropped, 13);
         assert_eq!(report.sensor_dropped_rows, 7);
         assert_eq!(report.sensor_dropped_bytes, 24);
+    }
+
+    #[test]
+    fn repeated_spool_churn_keeps_loss_report_within_ingest_limits() {
+        let mut report = empty_batch();
+        let mut dropped = empty_batch();
+        dropped.sensor_dropped_rows = 25_000;
+
+        for _ in 0..5_000 {
+            merge_dropped_batch(&mut report, &dropped, 1024 * 1024);
+        }
+
+        assert_eq!(report.sensor_dropped_rows, MAX_SENSOR_DROPPED_ROWS);
+        assert_eq!(report.sensor_dropped_bytes, MAX_SENSOR_DROPPED_BYTES);
+    }
+
+    #[test]
+    fn preexisting_spool_counters_are_normalized_for_upload() {
+        let mut report = empty_batch();
+        report.sensor_dropped_rows = i64::MAX;
+        report.sensor_dropped_bytes = i64::MAX;
+
+        clamp_loss_counters(&mut report);
+
+        assert_eq!(report.sensor_dropped_rows, MAX_SENSOR_DROPPED_ROWS);
+        assert_eq!(report.sensor_dropped_bytes, MAX_SENSOR_DROPPED_BYTES);
     }
 }

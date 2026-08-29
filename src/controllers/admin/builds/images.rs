@@ -57,8 +57,8 @@ const INVENTORY_CACHE_TTL: Duration = Duration::from_secs(5);
 static INVENTORY_GATE: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
 static INVENTORY_FLIGHTS: LazyLock<crate::utils::single_flight::SingleFlight<ImageInventoryFill>> =
     LazyLock::new(crate::utils::single_flight::SingleFlight::new);
-static INVENTORY_CACHE: LazyLock<RwLock<Option<(Instant, Vec<BuildImageModel>)>>> =
-    LazyLock::new(|| RwLock::new(None));
+type InventoryCache = RwLock<Option<(Instant, Vec<BuildImageModel>)>>;
+static INVENTORY_CACHE: LazyLock<InventoryCache> = LazyLock::new(|| RwLock::new(None));
 
 #[derive(Clone, Default)]
 enum ImageInventoryFill {
@@ -659,8 +659,10 @@ mod tests {
 
     #[test]
     fn inventory_daemon_and_database_work_have_explicit_bounds() {
-        assert!(INVENTORY_OWNERSHIP_LIMIT > 0);
-        assert!(INVENTORY_REFERENCE_LIMIT > INVENTORY_OWNERSHIP_LIMIT);
+        const {
+            assert!(INVENTORY_OWNERSHIP_LIMIT > 0);
+            assert!(INVENTORY_REFERENCE_LIMIT > INVENTORY_OWNERSHIP_LIMIT);
+        }
         assert!((1..=8).contains(&INVENTORY_INSPECT_CONCURRENCY));
         let filters = crate::services::container::managed_container_filters(SCOPE);
         let labels = filters.get("label").unwrap();

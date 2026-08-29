@@ -102,6 +102,13 @@ struct JobProjection {
     updated_at: DateTime<Utc>,
 }
 
+pub(super) struct GitImportSource {
+    pub repo_url: String,
+    pub git_ref: Option<String>,
+    pub subpath: Option<PathBuf>,
+    pub token: String,
+}
+
 impl TryFrom<JobProjection> for ChallengeImportJobModel {
     type Error = AppError;
 
@@ -330,11 +337,14 @@ pub(super) async fn enqueue_git(
     game_id: i32,
     actor_user_id: Uuid,
     operation_id: Uuid,
-    repo_url: String,
-    git_ref: Option<String>,
-    subpath: Option<PathBuf>,
-    token: String,
+    source: GitImportSource,
 ) -> AppResult<axum::response::Response> {
+    let GitImportSource {
+        repo_url,
+        git_ref,
+        subpath,
+        token,
+    } = source;
     let repo_url = normalized_github_url(&repo_url)?;
     let subpath = subpath.map(|path| path.to_string_lossy().replace('\\', "/"));
     if subpath

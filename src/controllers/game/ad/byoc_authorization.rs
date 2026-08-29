@@ -99,7 +99,7 @@ impl From<ByocGrantRow> for ByocGrant {
 }
 
 pub(crate) enum ByocAgentAuthorization {
-    Authorized(ByocCapabilityFence),
+    Authorized(Box<ByocCapabilityFence>),
     RetryAt(chrono::DateTime<chrono::Utc>),
     Terminal,
 }
@@ -224,7 +224,7 @@ pub(crate) async fn authorize_byoc_agent_capability(
         authorization.release().await?;
         return Ok(ByocAgentAuthorization::Terminal);
     }
-    Ok(ByocAgentAuthorization::Authorized(authorization))
+    Ok(ByocAgentAuthorization::Authorized(Box::new(authorization)))
 }
 
 #[allow(clippy::too_many_arguments)]

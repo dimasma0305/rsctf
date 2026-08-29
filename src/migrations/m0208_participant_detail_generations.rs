@@ -126,7 +126,6 @@ AFTER INSERT OR UPDATE OR DELETE ON "TeamMembers"
 FOR EACH ROW EXECUTE FUNCTION bump_participant_detail_from_team_row();
 
 DROP TRIGGER IF EXISTS tr_participant_detail_team ON "Teams";
-DROP TRIGGER IF EXISTS tr_participant_detail_submission_mutation ON "Submissions";
 CREATE TRIGGER tr_participant_detail_team
 AFTER UPDATE OR DELETE ON "Teams"
 FOR EACH ROW EXECUTE FUNCTION bump_participant_detail_from_team();
@@ -191,5 +190,16 @@ mod tests {
         assert!(UP_SQL.contains("ON \"Submissions\" (game_id, id DESC)"));
         assert!(UP_SQL.contains("AFTER UPDATE OR DELETE ON \"Submissions\""));
         assert!(!UP_SQL.contains("AFTER INSERT OR UPDATE OR DELETE ON \"Submissions\""));
+    }
+
+    #[test]
+    fn submission_invalidation_trigger_is_not_removed_after_creation() {
+        let create = UP_SQL
+            .find("CREATE TRIGGER tr_participant_detail_submission_mutation")
+            .expect("submission invalidation trigger must be created");
+        let statements_after_creation = &UP_SQL[create..];
+
+        assert!(!statements_after_creation
+            .contains("DROP TRIGGER IF EXISTS tr_participant_detail_submission_mutation"));
     }
 }

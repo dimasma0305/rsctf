@@ -331,14 +331,17 @@ async fn wait_for_ssh_revocation(
     let (mut subscription, owner) = SSH_LEASE_GENERATIONS.subscribe(key);
     if let Some(owner) = owner {
         let jitter = Duration::from_millis(u64::from(participation_id.unsigned_abs() % 1_000));
-        let _ = tokio::spawn(owner.drive(Duration::from_secs(15) + jitter, move || {
-            let st = st.clone();
-            async move {
-                validate_ssh_access(&st, key_id, participation_id, challenge_id)
-                    .await
-                    .is_ok()
-            }
-        }));
+        drop(tokio::spawn(owner.drive(
+            Duration::from_secs(15) + jitter,
+            move || {
+                let st = st.clone();
+                async move {
+                    validate_ssh_access(&st, key_id, participation_id, challenge_id)
+                        .await
+                        .is_ok()
+                }
+            },
+        )));
     }
     subscription.invalidated().await;
 }

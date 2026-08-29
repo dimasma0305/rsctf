@@ -113,7 +113,7 @@ fn deployment_budget_reserves_the_full_per_export_ceiling() {
         MAX_CAPTURE_ARCHIVE_DEPLOYMENT_BYTES,
         MAX_CAPTURE_ARCHIVE_DEPLOYMENT_JOBS * MAX_CAPTURE_ARCHIVE_BYTES as i64
     );
-    assert!(CAPTURE_ARCHIVE_LEASE_SECONDS > 2 * 10);
+    assert!(std::hint::black_box(CAPTURE_ARCHIVE_LEASE_SECONDS) > 2 * 10);
 }
 
 #[test]

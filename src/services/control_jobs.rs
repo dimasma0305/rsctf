@@ -228,6 +228,8 @@ fn can_coalesce_active(
 /// Atomically return an exact retry, coalesce with the active scope, or admit a
 /// new job. The short transaction-wide admission lock makes the deployment-wide
 /// active bound exact without retaining a connection during external work.
+// Keep the established public call shape stable for controllers and integrations.
+#[allow(clippy::too_many_arguments)]
 pub async fn enqueue(
     pool: &sqlx::PgPool,
     kind: ControlJobKind,

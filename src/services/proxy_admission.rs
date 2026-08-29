@@ -324,8 +324,7 @@ impl ProxyAdmission {
             Some(game_id),
             workload_id,
             source_ip,
-            MAX_PER_PARTICIPATION,
-            MAX_PER_USER,
+            (MAX_PER_PARTICIPATION, MAX_PER_USER),
         )
     }
 
@@ -342,8 +341,7 @@ impl ProxyAdmission {
             None,
             workload_id,
             source_ip,
-            MAX_PER_PARTICIPATION,
-            MAX_PER_USER,
+            (MAX_PER_PARTICIPATION, MAX_PER_USER),
         )
     }
 
@@ -359,8 +357,7 @@ impl ProxyAdmission {
             None,
             container_id,
             source_ip,
-            MAX_PER_PREVIEW,
-            MAX_PER_USER,
+            (MAX_PER_PREVIEW, MAX_PER_USER),
         )
     }
 
@@ -379,8 +376,7 @@ impl ProxyAdmission {
             Some(game_id),
             workload_id,
             source_ip,
-            MAX_PER_SSH_SCOPE,
-            MAX_PER_SSH_SCOPE,
+            (MAX_PER_SSH_SCOPE, MAX_PER_SSH_SCOPE),
         )?;
         attach_distributed(
             pool,
@@ -478,9 +474,9 @@ impl ProxyAdmission {
         event_id: Option<i32>,
         workload_id: Uuid,
         source_ip: IpAddr,
-        scope_limit: usize,
-        user_limit: usize,
+        limits: (usize, usize),
     ) -> Option<ProxyPermit> {
+        let (scope_limit, user_limit) = limits;
         let global = increment_counter(&self.inner.global, MAX_GLOBAL)?;
         let user = increment(&self.inner.users, user_id, user_limit)?;
         let source = match increment(&self.inner.sources, source_ip, MAX_PER_SOURCE) {

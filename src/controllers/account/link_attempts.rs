@@ -327,9 +327,9 @@ async fn retain_bounded(
 ) -> AppResult<()> {
     sqlx::query(
         r#"DELETE FROM "AccountLinkAttempts" old
-            WHERE old.expires_at_utc < clock_timestamp() - INTERVAL '7 days'
-               OR (old.account_id = $1 AND old.purpose = $2
-              AND old.ctid IN (
+            WHERE old.account_id = $1 AND old.purpose = $2
+              AND (old.expires_at_utc < clock_timestamp() - INTERVAL '7 days'
+               OR old.ctid IN (
                     SELECT ctid FROM "AccountLinkAttempts"
                      WHERE account_id = $1 AND purpose = $2
                      ORDER BY issued_sequence DESC
@@ -351,4 +351,87 @@ fn invalid_email_change() -> AppError {
 
 fn database_error(error: sqlx::Error) -> AppError {
     AppError::internal(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn retention_never_deletes_another_accounts_expired_links() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("account_link_retention_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE "AccountLinkAttempts" (
+                 token_digest TEXT PRIMARY KEY,
+                 purpose TEXT NOT NULL,
+                 account_id UUID NOT NULL,
+                 expires_at_utc TIMESTAMPTZ NOT NULL,
+                 issued_sequence BIGSERIAL NOT NULL
+               )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let owner = Uuid::new_v4();
+        let unrelated = Uuid::new_v4();
+        sqlx::query(
+            r#"INSERT INTO "AccountLinkAttempts"
+                 (token_digest, purpose, account_id, expires_at_utc)
+               VALUES ('owner-expired', 'registration', $1,
+                         clock_timestamp() - INTERVAL '8 days'),
+                      ('owner-other-purpose', 'email_change', $1,
+                         clock_timestamp() - INTERVAL '8 days'),
+                      ('other-expired', 'registration', $2,
+                         clock_timestamp() - INTERVAL '8 days')"#,
+        )
+        .bind(owner)
+        .bind(unrelated)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut transaction = pool.begin().await.unwrap();
+        retain_bounded(&mut transaction, owner, "registration")
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+
+        let remaining: Vec<String> = sqlx::query_scalar(
+            r#"SELECT token_digest FROM "AccountLinkAttempts" ORDER BY token_digest"#,
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, vec!["other-expired", "owner-other-purpose"]);
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
+    }
 }

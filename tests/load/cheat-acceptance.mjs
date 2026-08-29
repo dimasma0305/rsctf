@@ -607,7 +607,7 @@ async function exerciseSharedIpLogins(
     const userId = cohort.userIds[index];
     const reset = await A.api(
       "DELETE",
-      `/api/admin/users/${encodeURIComponent(userId)}/password`,
+      `/api/admin/users/${encodeURIComponent(userId)}/password?operationId=${randomUUID()}`,
       { jwt: A.adminJwt(), ip: "192.0.2.44" },
     );
     const password = unwrap(reset);
@@ -721,7 +721,7 @@ async function exerciseDistinctIpLogins(gameId, cohort, identities) {
 async function resetLoginCredentials(subject, label) {
   const reset = await A.api(
     "DELETE",
-    `/api/admin/users/${encodeURIComponent(subject.userId)}/password`,
+    `/api/admin/users/${encodeURIComponent(subject.userId)}/password?operationId=${randomUUID()}`,
     { jwt: A.adminJwt(), ip: "192.0.2.44" },
   );
   const password = unwrap(reset);

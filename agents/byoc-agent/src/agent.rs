@@ -271,7 +271,6 @@ fn seed_reconnect_entropy(agent_scope: &str) {
         );
     }
 }
-
 async fn wait_for_operator_restart() {
     std::future::pending::<()>().await;
 }
@@ -307,6 +306,7 @@ fn handshake_failure(
         || status == tokio_tungstenite::tungstenite::http::StatusCode::GONE
         || status == tokio_tungstenite::tungstenite::http::StatusCode::UPGRADE_REQUIRED
         || status.is_client_error()
+            && status != tokio_tungstenite::tungstenite::http::StatusCode::REQUEST_TIMEOUT
             && status != tokio_tungstenite::tungstenite::http::StatusCode::TOO_MANY_REQUESTS
             && status != tokio_tungstenite::tungstenite::http::StatusCode::TOO_EARLY;
     ConnectFailure {
@@ -807,7 +807,7 @@ mod websocket_stream_tests {
     #[test]
     fn transient_handshakes_honor_retry_after_and_cap_it() {
         let failure = handshake_failure(rejection(
-            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::REQUEST_TIMEOUT,
             "transient-overload",
             Some(60),
         ));

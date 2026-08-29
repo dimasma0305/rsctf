@@ -413,13 +413,9 @@ pub async fn submit(
     // Only the caller's current occupied flag and author-defined unoccupied
     // static flags are eligible. Other users' and stale instance flags share
     // the exercise id, so exercise-id-only fallback would cross that boundary.
-    let accepted = eligible_exercise_flag(
-        &mut **distributed.transaction_mut(),
-        id,
-        current.flatten(),
-        answer,
-    )
-    .await?;
+    let accepted =
+        eligible_exercise_flag(distributed.transaction_mut(), id, current.flatten(), answer)
+            .await?;
 
     let result = if accepted {
         AnswerResult::Accepted

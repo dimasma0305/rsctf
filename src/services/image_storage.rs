@@ -914,7 +914,7 @@ async fn cleanup_from_cursor(
         report.candidate_backlog = u64::try_from(remaining).unwrap_or_default();
         report.next_candidate_cursor = (remaining > 0).then(|| last.canonical_ref.clone());
     }
-    let mut outcomes = futures::stream::iter(candidates.into_iter())
+    let mut outcomes = futures::stream::iter(candidates)
         .map(|candidate| {
             let canonical_ref = candidate.canonical_ref.clone();
             let docker = &docker;

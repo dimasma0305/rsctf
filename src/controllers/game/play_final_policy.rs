@@ -32,6 +32,29 @@ pub(super) struct ChallengeResponseScope {
     challenge_id: i32,
 }
 
+pub(super) struct CatalogResponseScope {
+    game_id: i32,
+    team_id: i32,
+    participation_id: i32,
+    challenge_ids: Vec<i32>,
+}
+
+impl CatalogResponseScope {
+    pub(super) fn new(
+        game_id: i32,
+        team_id: i32,
+        participation_id: i32,
+        challenge_ids: Vec<i32>,
+    ) -> Self {
+        Self {
+            game_id,
+            team_id,
+            participation_id,
+            challenge_ids,
+        }
+    }
+}
+
 impl ChallengeResponseScope {
     pub(super) fn new(
         game_id: i32,
@@ -732,10 +755,7 @@ fn private_conditional_response<T: Serialize>(
 pub(super) async fn finish_catalog_response(
     pool: &sqlx::PgPool,
     user: &CurrentUser,
-    game_id: i32,
-    team_id: i32,
-    participation_id: i32,
-    challenge_ids: Vec<i32>,
+    scope: CatalogResponseScope,
     if_none_match: Option<&str>,
     model: GameChallengeCatalogModel,
 ) -> AppResult<Response> {
@@ -743,9 +763,9 @@ pub(super) async fn finish_catalog_response(
         pool,
         user.id,
         &user.security_stamp,
-        game_id,
-        team_id,
-        participation_id,
+        scope.game_id,
+        scope.team_id,
+        scope.participation_id,
         true,
     )
     .await?
@@ -755,10 +775,10 @@ pub(super) async fn finish_catalog_response(
     let result = async {
         let scope = lock_play_scope_on(
             roster.transaction_mut(),
-            game_id,
-            team_id,
-            participation_id,
-            &challenge_ids,
+            scope.game_id,
+            scope.team_id,
+            scope.participation_id,
+            &scope.challenge_ids,
         )
         .await?;
         scope.phase_at_db_clock(roster.transaction_mut()).await?;

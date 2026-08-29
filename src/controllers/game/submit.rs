@@ -48,7 +48,7 @@ async fn grade_variant_answer(
     participation_id: i32,
     answer: &str,
 ) -> AppResult<(AnswerResult, Option<i32>)> {
-    super::submit_flag_policy::ensure_variants(&mut **transaction, game_id, challenge_id).await?;
+    super::submit_flag_policy::ensure_variants(transaction, game_id, challenge_id).await?;
     let variants = sqlx::query_as::<_, (i32, String)>(
         r#"SELECT participation_id, manifest->>'flag'
              FROM "ChallengeVariants"
@@ -594,7 +594,7 @@ pub async fn submit(
     let is_static = challenge_type == ChallengeType::StaticAttachment as i16
         || challenge_type == ChallengeType::StaticContainer as i16;
     if variant_mode == ChallengeVariantMode::Disabled as i16 {
-        super::submit_flag_policy::ensure_flag_contexts(&mut *transaction, challenge_id).await?;
+        super::submit_flag_policy::ensure_flag_contexts(&mut transaction, challenge_id).await?;
     }
     let own_instance: Option<(Option<Uuid>, bool, DateTime<Utc>)> = sqlx::query_as(
         r#"SELECT container_id, is_loaded, last_container_operation

@@ -67,7 +67,7 @@ where
         Json::<CredentialMutationRequest>::from_request(request, state)
             .await
             .map(|Json(request)| Self(request))
-            .map_err(|rejection| axum::response::IntoResponse::into_response(rejection))
+            .map_err(axum::response::IntoResponse::into_response)
     }
 }
 

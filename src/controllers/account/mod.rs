@@ -485,12 +485,14 @@ pub async fn register(
         let outcome = email_confirmation::enqueue_confirmation(
             &st,
             &mut txn,
-            mail_operation_id,
-            id,
-            &security_stamp,
-            &email,
-            token,
-            current_ip.as_deref(),
+            email_confirmation::ConfirmationDelivery {
+                operation_id: mail_operation_id,
+                account_id: id,
+                security_generation: &security_stamp,
+                email: &email,
+                token,
+                source: current_ip.as_deref(),
+            },
         )
         .await?;
         if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {

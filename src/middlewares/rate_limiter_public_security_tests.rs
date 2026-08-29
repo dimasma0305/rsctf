@@ -92,19 +92,22 @@ async fn public_verifier_budget_is_shared_across_replicas() {
     let Kind::Bucket { capacity, .. } = Policy::TeamSignatureAggregate.kind() else {
         panic!("team-signature aggregate must use a bucket")
     };
+    let capacity = capacity as u32;
+    let charge = 64_u32;
+    assert_eq!(capacity % charge, 0);
     let mut allowed = 0_u32;
-    for index in 0..(capacity as u32 + 40) {
+    for index in 0..(capacity / charge + 2) {
         let node = if index % 2 == 0 { &node_a } else { &node_b };
         if node
-            .check(Policy::TeamSignatureAggregate, &partition)
+            .check_weighted(Policy::TeamSignatureAggregate, &partition, charge)
             .await
             .is_ok()
         {
-            allowed += 1;
+            allowed += charge;
         }
     }
     assert_eq!(
-        allowed, capacity as u32,
+        allowed, capacity,
         "public verifier quota must be one deployment-wide budget"
     );
     redis::cmd("DEL")

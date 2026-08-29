@@ -693,10 +693,10 @@ mod tests {
 
     #[test]
     fn observer_context_work_is_explicitly_bounded() {
-        assert!(OBSERVER_CONTEXT_CONCURRENCY <= 16);
+        assert!(std::hint::black_box(OBSERVER_CONTEXT_CONCURRENCY) <= 16);
         assert!(OBSERVER_CONTEXT_DEADLINE <= std::time::Duration::from_secs(2));
         assert!(OBSERVER_CONTEXT_TTL <= std::time::Duration::from_secs(5));
-        assert!(OBSERVER_CONTEXT_MAX_BYTES <= 512 * 1024);
+        assert!(std::hint::black_box(OBSERVER_CONTEXT_MAX_BYTES) <= 512 * 1024);
     }
 
     #[test]

@@ -182,6 +182,8 @@ impl IntoResponse for AppError {
     }
 }
 
+pub type AppResult<T> = Result<T, AppError>;
+
 #[cfg(test)]
 mod tests {
     use axum::http::{header, StatusCode};
@@ -217,5 +219,3 @@ mod tests {
         assert_eq!(response.headers().get("retry-after").unwrap(), "300");
     }
 }
-
-pub type AppResult<T> = Result<T, AppError>;

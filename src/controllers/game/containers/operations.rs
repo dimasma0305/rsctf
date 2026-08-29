@@ -72,23 +72,29 @@ fn database_error(error: sqlx::Error) -> AppError {
     AppError::internal(error.to_string())
 }
 
-fn validate_identity(
-    row: &OperationRow,
-    scope_key: &str,
+struct ExpectedOperationIdentity<'a> {
+    scope_key: &'a str,
     actor_user_id: Uuid,
     game_id: i32,
     participation_id: Option<i32>,
     challenge_id: i32,
     intent: Intent,
     expected_publication_id: Option<Uuid>,
+}
+
+fn validate_identity(
+    row: &OperationRow,
+    expected: &ExpectedOperationIdentity<'_>,
 ) -> AppResult<()> {
-    if row.scope_key != scope_key
-        || row.actor_user_id != actor_user_id
-        || row.game_id != game_id
-        || row.participation_id != participation_id
-        || row.challenge_id != challenge_id
-        || row.intent != intent.as_str()
-        || expected_publication_id.is_some_and(|expected| expected != row.publication_id)
+    if row.scope_key != expected.scope_key
+        || row.actor_user_id != expected.actor_user_id
+        || row.game_id != expected.game_id
+        || row.participation_id != expected.participation_id
+        || row.challenge_id != expected.challenge_id
+        || row.intent != expected.intent.as_str()
+        || expected
+            .expected_publication_id
+            .is_some_and(|publication_id| publication_id != row.publication_id)
     {
         return Err(AppError::conflict(
             "Container operation identity was reused for another intent",
@@ -151,13 +157,15 @@ async fn claim<T: DeserializeOwned>(
     if let Some(mut row) = existing {
         validate_identity(
             &row,
-            scope_key,
-            actor_user_id,
-            game_id,
-            participation_id,
-            challenge_id,
-            intent,
-            expected_publication_id,
+            &ExpectedOperationIdentity {
+                scope_key,
+                actor_user_id,
+                game_id,
+                participation_id,
+                challenge_id,
+                intent,
+                expected_publication_id,
+            },
         )?;
         if row.state == "Succeeded" {
             if matches!(intent, Intent::Create) {
@@ -656,7 +664,7 @@ mod tests {
         assert!((1..=64).contains(&MAX_DEPLOYMENT_OPERATIONS));
         assert!((1..=16).contains(&MAX_LOCAL_OPERATIONS));
         assert!(OPERATION_DEADLINE <= Duration::from_secs(5 * 60));
-        assert!(MAX_LOCAL_RESULT_KEYS <= 512);
+        assert!(std::hint::black_box(MAX_LOCAL_RESULT_KEYS) <= 512);
     }
 
     #[test]
@@ -678,35 +686,41 @@ mod tests {
         };
         assert!(validate_identity(
             &row,
-            "participation:7",
-            actor,
-            2,
-            Some(7),
-            11,
-            Intent::Delete,
-            Some(runtime),
+            &ExpectedOperationIdentity {
+                scope_key: "participation:7",
+                actor_user_id: actor,
+                game_id: 2,
+                participation_id: Some(7),
+                challenge_id: 11,
+                intent: Intent::Delete,
+                expected_publication_id: Some(runtime),
+            },
         )
         .is_ok());
         assert!(validate_identity(
             &row,
-            "participation:7",
-            actor,
-            2,
-            Some(7),
-            11,
-            Intent::Delete,
-            Some(Uuid::new_v4()),
+            &ExpectedOperationIdentity {
+                scope_key: "participation:7",
+                actor_user_id: actor,
+                game_id: 2,
+                participation_id: Some(7),
+                challenge_id: 11,
+                intent: Intent::Delete,
+                expected_publication_id: Some(Uuid::new_v4()),
+            },
         )
         .is_err());
         assert!(validate_identity(
             &row,
-            "participation:7",
-            actor,
-            2,
-            Some(7),
-            11,
-            Intent::Extend,
-            Some(runtime),
+            &ExpectedOperationIdentity {
+                scope_key: "participation:7",
+                actor_user_id: actor,
+                game_id: 2,
+                participation_id: Some(7),
+                challenge_id: 11,
+                intent: Intent::Extend,
+                expected_publication_id: Some(runtime),
+            },
         )
         .is_err());
     }

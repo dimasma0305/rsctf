@@ -63,7 +63,9 @@ fn pre_database_admission_has_tight_bounded_buckets() {
     };
     assert!(token_capacity <= 100.0 && token_refill <= 2.0);
     assert!(source_capacity <= 300.0 && source_refill <= 20.0);
-    assert!(AD_AUTH_CONCURRENCY <= 32);
+    const {
+        assert!(AD_AUTH_CONCURRENCY <= 32);
+    }
     assert!(AD_AUTH_QUERY_TIMEOUT <= Duration::from_secs(2));
 }
 
@@ -98,7 +100,9 @@ fn rotating_invalid_personal_tokens_have_bounded_source_digest_and_query_work() 
             refill_per_sec: 2.0,
         }
     ));
-    assert!(PERSONAL_TOKEN_AUTH_CONCURRENCY <= 16);
+    const {
+        assert!(PERSONAL_TOKEN_AUTH_CONCURRENCY <= 16);
+    }
     assert!(PERSONAL_TOKEN_AUTH_QUERY_TIMEOUT <= Duration::from_secs(2));
     assert!(redis_key(Policy::PersonalTokenSourceAdmission, "source").starts_with("rl:tb:27:"));
     assert!(redis_key(Policy::PersonalTokenAdmission, "digest").starts_with("rl:tb:28:"));

@@ -200,10 +200,10 @@ fn final_scoreboard_is_settled(
     if practice_mode || !acceptance_closed {
         return false;
     }
-    let final_round_sealed = match (latest_round_finalized, scoring_start_round) {
-        (Some(true), _) | (None, None) => true,
-        _ => false,
-    };
+    let final_round_sealed = matches!(
+        (latest_round_finalized, scoring_start_round),
+        (Some(true), _) | (None, None)
+    );
     final_round_sealed
         && scoring_start_round
             .is_none_or(|_| current_epoch > 0 && rollup_epoch.is_some_and(|e| e >= current_epoch))

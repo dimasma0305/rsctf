@@ -197,30 +197,6 @@ pub(super) async fn vpn_proof(
     Ok(RequestResponse::ok(model))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::proof_mint_flight_key;
-    use uuid::Uuid;
-
-    #[test]
-    fn proof_flight_identity_changes_at_every_revocation_boundary() {
-        let user = Uuid::new_v4();
-        let peer = Uuid::new_v4();
-        let baseline = proof_mint_flight_key(user, 7, 9, peer, 2, 11, "stamp-a");
-        for changed in [
-            proof_mint_flight_key(Uuid::new_v4(), 7, 9, peer, 2, 11, "stamp-a"),
-            proof_mint_flight_key(user, 8, 9, peer, 2, 11, "stamp-a"),
-            proof_mint_flight_key(user, 7, 10, peer, 2, 11, "stamp-a"),
-            proof_mint_flight_key(user, 7, 9, Uuid::new_v4(), 2, 11, "stamp-a"),
-            proof_mint_flight_key(user, 7, 9, peer, 3, 11, "stamp-a"),
-            proof_mint_flight_key(user, 7, 9, peer, 2, 12, "stamp-a"),
-            proof_mint_flight_key(user, 7, 9, peer, 2, 11, "stamp-b"),
-        ] {
-            assert_ne!(baseline, changed);
-        }
-    }
-}
-
 pub async fn vpn_config(
     State(st): State<SharedState>,
     user: CurrentUser,
@@ -247,4 +223,28 @@ pub async fn vpn_config(
         config,
     )
         .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::proof_mint_flight_key;
+    use uuid::Uuid;
+
+    #[test]
+    fn proof_flight_identity_changes_at_every_revocation_boundary() {
+        let user = Uuid::new_v4();
+        let peer = Uuid::new_v4();
+        let baseline = proof_mint_flight_key(user, 7, 9, peer, 2, 11, "stamp-a");
+        for changed in [
+            proof_mint_flight_key(Uuid::new_v4(), 7, 9, peer, 2, 11, "stamp-a"),
+            proof_mint_flight_key(user, 8, 9, peer, 2, 11, "stamp-a"),
+            proof_mint_flight_key(user, 7, 10, peer, 2, 11, "stamp-a"),
+            proof_mint_flight_key(user, 7, 9, Uuid::new_v4(), 2, 11, "stamp-a"),
+            proof_mint_flight_key(user, 7, 9, peer, 3, 11, "stamp-a"),
+            proof_mint_flight_key(user, 7, 9, peer, 2, 12, "stamp-a"),
+            proof_mint_flight_key(user, 7, 9, peer, 2, 11, "stamp-b"),
+        ] {
+            assert_ne!(baseline, changed);
+        }
+    }
 }

@@ -91,7 +91,7 @@ fn snapshot_digest_binds_resolved_identity_and_every_budget() {
 
 #[test]
 fn observation_work_has_a_process_ceiling_and_absolute_deadline() {
-    assert!(OBSERVATION_CONCURRENCY <= 8);
+    assert!(std::hint::black_box(OBSERVATION_CONCURRENCY) <= 8);
     assert!(OBSERVATION_DEADLINE <= std::time::Duration::from_secs(15));
 }
 

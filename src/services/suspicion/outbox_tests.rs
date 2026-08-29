@@ -44,8 +44,7 @@ fn games_share_the_configured_competitive_end_and_delayed_final_seal() {
     assert!(RECONCILE_GAMES_SQL.contains("reconciliation.sealed_at_utc IS NULL"));
     assert!(!RECONCILE_GAMES_SQL.contains("practice_mode"));
     assert!(!RECONCILE_GAMES_SQL.contains("Utc::now"));
-    assert!(RECONCILE_GAME_CONCURRENCY > 1);
-    assert!(RECONCILE_GAME_CONCURRENCY < 32);
+    assert!((2..32).contains(&RECONCILE_GAME_CONCURRENCY));
     assert!(RECONCILE_PASS_DEADLINE > GAME_RECONCILE_DEADLINE);
 }
 

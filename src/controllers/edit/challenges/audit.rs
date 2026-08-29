@@ -11,13 +11,14 @@ const MAX_AUDIT_FILE_PATH_BYTES: usize = 512 * 1024;
 const MAX_AUDIT_CACHE_ENTRIES: usize = 16;
 const AUDIT_DOWNLOADS: usize = 4;
 const MAX_BUILD_STATUS_ROWS: i64 = 2_048;
+type AuditProjectionCache = Mutex<VecDeque<(String, Arc<JsonValue>)>>;
 
 static AUDIT_DOWNLOAD_ADMISSION: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(AUDIT_DOWNLOADS)));
 static AUDIT_ARCHIVE_FLIGHTS: LazyLock<
     crate::utils::single_flight::SingleFlight<AuditProjectionFill>,
 > = LazyLock::new(crate::utils::single_flight::SingleFlight::new);
-static AUDIT_PROJECTION_CACHE: LazyLock<Mutex<VecDeque<(String, Arc<JsonValue>)>>> =
+static AUDIT_PROJECTION_CACHE: LazyLock<AuditProjectionCache> =
     LazyLock::new(|| Mutex::new(VecDeque::new()));
 
 #[derive(Clone, Default)]

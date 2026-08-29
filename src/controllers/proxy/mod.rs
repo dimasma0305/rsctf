@@ -868,10 +868,13 @@ async fn wait_for_revocation(lease: InstanceLease) {
     };
     let (mut subscription, owner) = LEASE_GENERATIONS.subscribe(key);
     if let Some(owner) = owner {
-        let _ = tokio::spawn(owner.drive(Duration::from_secs(5) + jitter, move || {
-            let lease = lease.clone();
-            async move { lease_is_valid(&lease).await }
-        }));
+        drop(tokio::spawn(owner.drive(
+            Duration::from_secs(5) + jitter,
+            move || {
+                let lease = lease.clone();
+                async move { lease_is_valid(&lease).await }
+            },
+        )));
     }
     subscription.invalidated().await;
 }

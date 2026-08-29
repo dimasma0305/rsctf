@@ -33,6 +33,15 @@ pub(super) struct PendingConfirmation<'a> {
     pub security_stamp: &'a str,
 }
 
+pub(super) struct ConfirmationDelivery<'a> {
+    pub operation_id: Uuid,
+    pub account_id: Uuid,
+    pub security_generation: &'a str,
+    pub email: &'a str,
+    pub token: &'a str,
+    pub source: Option<&'a str>,
+}
+
 fn digest(value: &[u8]) -> [u8; 32] {
     Sha256::digest(value).into()
 }
@@ -166,29 +175,28 @@ pub(super) fn require_delivery_origin(
 pub(super) async fn enqueue_confirmation(
     st: &SharedState,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    operation_id: Uuid,
-    account_id: Uuid,
-    security_generation: &str,
-    email: &str,
-    token: &str,
-    source: Option<&str>,
+    delivery: ConfirmationDelivery<'_>,
 ) -> AppResult<crate::services::mail_outbox::EnqueueOutcome> {
     let base = require_delivery_origin(st.config.as_ref())?.trim_end_matches('/');
     let link = format!(
-        "{base}/account/verify?token={token}&email={}",
-        encoded_email(email)
+        "{base}/account/verify?token={}&email={}",
+        delivery.token,
+        encoded_email(delivery.email)
     );
-    let (subject, body) =
-        crate::services::mail::confirm_email(email, &link, Some(st.config.global.title.as_str()));
+    let (subject, body) = crate::services::mail::confirm_email(
+        delivery.email,
+        &link,
+        Some(st.config.global.title.as_str()),
+    );
     crate::services::mail_outbox::enqueue_in_transaction(
         transaction,
         crate::services::mail_outbox::MailIntent {
-            operation_id,
+            operation_id: delivery.operation_id,
             purpose: crate::services::mail_outbox::MailPurpose::RegistrationConfirmation,
-            account_id,
-            security_generation,
-            destination: email,
-            source,
+            account_id: delivery.account_id,
+            security_generation: delivery.security_generation,
+            destination: delivery.email,
+            source: delivery.source,
             subject: &subject,
             html_body: &body,
         },
@@ -262,12 +270,14 @@ pub(super) async fn resend_pending_confirmation(
     let outcome = enqueue_confirmation(
         st,
         &mut transaction,
-        operation_id,
-        pending.user_id,
-        pending.security_stamp,
-        pending.email,
-        &token,
-        source,
+        ConfirmationDelivery {
+            operation_id,
+            account_id: pending.user_id,
+            security_generation: pending.security_stamp,
+            email: pending.email,
+            token: &token,
+            source,
+        },
     )
     .await?;
     if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {

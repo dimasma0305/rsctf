@@ -89,15 +89,13 @@ fn validate_intent(intent: &MailIntent<'_>) -> AppResult<()> {
         ));
     }
     crate::services::mail::validate_recipient(intent.destination)?;
-    if intent.destination.as_bytes().len() > 320
+    if intent.destination.len() > 320
         || intent.subject.is_empty()
-        || intent.subject.as_bytes().len() > 256
+        || intent.subject.len() > 256
         || intent.html_body.is_empty()
-        || intent.html_body.as_bytes().len() > 65_536
-        || intent.security_generation.as_bytes().len() > 256
-        || intent
-            .source
-            .is_some_and(|source| source.as_bytes().len() > 256)
+        || intent.html_body.len() > 65_536
+        || intent.security_generation.len() > 256
+        || intent.source.is_some_and(|source| source.len() > 256)
     {
         return Err(AppError::bad_request(
             "Mail intent exceeds supported limits",
@@ -194,12 +192,9 @@ pub async fn enqueue_in_transaction(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
 
-    let message_bytes = i64::try_from(
-        normalized_destination.as_bytes().len()
-            + intent.subject.as_bytes().len()
-            + intent.html_body.as_bytes().len(),
-    )
-    .unwrap_or(i64::MAX);
+    let message_bytes =
+        i64::try_from(normalized_destination.len() + intent.subject.len() + intent.html_body.len())
+            .unwrap_or(i64::MAX);
     if active_count >= MAX_ACTIVE_MESSAGES
         || active_bytes.saturating_add(message_bytes) > MAX_ACTIVE_MESSAGE_BYTES
         || total_count >= MAX_STORED_ROWS

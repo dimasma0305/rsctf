@@ -659,7 +659,7 @@ fn validate_security_fields(model: &mut ConfigEditModel) -> AppResult<()> {
 }
 
 fn canonical_email_domains(input: &str) -> AppResult<String> {
-    if input.as_bytes().len() > 4_096 {
+    if input.len() > 4_096 {
         return Err(AppError::payload_too_large(
             "Email domain list exceeds 4096 UTF-8 bytes",
         ));
@@ -728,7 +728,7 @@ fn validate_optional(
 }
 
 fn validate_text(value: &str, name: &str, maximum: usize, multiline: bool) -> AppResult<()> {
-    if value.as_bytes().len() > maximum {
+    if value.len() > maximum {
         return Err(AppError::payload_too_large(format!(
             "{name} exceeds {maximum} UTF-8 bytes"
         )));

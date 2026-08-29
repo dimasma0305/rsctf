@@ -38,6 +38,25 @@ pub async fn run(arguments: EnrollArgs) -> Result<(), EnrollmentError> {
         ca_path.as_path(),
         config_path.as_path(),
     ];
+    if completed_identity_matches_pending(
+        &key_path,
+        &cert_path,
+        &ca_path,
+        &config_path,
+        &pending_path,
+    )
+    .await?
+    {
+        // Re-establish directory durability before deleting the only recovery
+        // record; this also closes a crash after the final create-new write.
+        sync_parent_directory(&config_path).await?;
+        cleanup_completed_pending(&pending_path).await;
+        tracing::info!(
+            config = %config_path.display(),
+            "worker enrollment was already completed; recovered pending cleanup"
+        );
+        return Ok(());
+    }
     require_new_identity(&identity_paths).await?;
 
     let token = read_token(&arguments).await?;
@@ -85,8 +104,10 @@ pub async fn run(arguments: EnrollArgs) -> Result<(), EnrollmentError> {
         arguments.unix_service_uid,
     )
     .await?;
-    tokio::fs::remove_file(&pending_path).await?;
-    sync_parent_directory(&pending_path).await?;
+    // Every identity file is already create-new, flushed, and parent-synced.
+    // Pending cleanup cannot invalidate the one-use server exchange, so retain
+    // a verifiable recovery record rather than reporting a failed enrollment.
+    cleanup_completed_pending(&pending_path).await;
     tracing::info!(
         worker_id = %config.worker_id,
         config = %config_path.display(),
@@ -220,6 +241,84 @@ async fn require_new_identity(paths: &[&Path]) -> Result<(), EnrollmentError> {
         }
     }
     Ok(())
+}
+
+async fn completed_identity_matches_pending(
+    key_path: &Path,
+    cert_path: &Path,
+    ca_path: &Path,
+    config_path: &Path,
+    pending_path: &Path,
+) -> Result<bool, EnrollmentError> {
+    for path in [key_path, cert_path, ca_path, config_path] {
+        match tokio::fs::symlink_metadata(path).await {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let pending_bytes = match tokio::fs::read(pending_path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let pending: PendingEnrollment = serde_json::from_slice(&pending_bytes)?;
+    if pending.operation_id.is_nil()
+        || pending.private_key.is_empty()
+        || pending.csr_pem.trim().is_empty()
+    {
+        return Err(EnrollmentError::InvalidResponse(
+            "completed enrollment has an invalid pending identity record".to_string(),
+        ));
+    }
+    if tokio::fs::read(key_path).await? != pending.private_key.as_bytes() {
+        return Err(EnrollmentError::InvalidResponse(
+            "completed worker identity does not match its pending enrollment key".to_string(),
+        ));
+    }
+    let certificate = tokio::fs::read(cert_path).await?;
+    let ca = tokio::fs::read(ca_path).await?;
+    if certificate.is_empty() || ca.is_empty() {
+        return Err(EnrollmentError::InvalidResponse(
+            "completed worker identity contains an empty certificate".to_string(),
+        ));
+    }
+    let config: AgentConfig = serde_json::from_slice(&tokio::fs::read(config_path).await?)?;
+    config.validate().map_err(|error| {
+        EnrollmentError::InvalidResponse(format!(
+            "completed worker configuration is invalid: {error}"
+        ))
+    })?;
+    if config.private_key_path != relative_file(key_path)
+        || config.certificate_path != relative_file(cert_path)
+        || config.ca_path != relative_file(ca_path)
+    {
+        return Err(EnrollmentError::InvalidResponse(
+            "completed worker identity references unexpected credential paths".to_string(),
+        ));
+    }
+    Ok(true)
+}
+
+async fn cleanup_completed_pending(path: &Path) {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => {
+            if let Err(error) = sync_parent_directory(path).await {
+                tracing::warn!(
+                    %error,
+                    path = %path.display(),
+                    "worker enrollment completed but pending cleanup was not directory-synced"
+                );
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => tracing::warn!(
+            %error,
+            path = %path.display(),
+            "worker enrollment completed but pending cleanup will be retried"
+        ),
+    }
 }
 
 async fn persist_identity(
@@ -526,6 +625,77 @@ mod tests {
         assert_eq!(first.operation_id, second.operation_id);
         assert_eq!(first.private_key, second.private_key);
         assert_eq!(first.csr_pem, second.csr_pem);
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn completed_identity_retry_requires_the_exact_pending_private_key() {
+        let directory = std::env::temp_dir().join(format!("rsctf-enroll-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir(&directory).await.unwrap();
+        let key = directory.join("worker-key.pem");
+        let cert = directory.join("worker-cert.pem");
+        let ca = directory.join("worker-ca.pem");
+        let config_path = directory.join("worker.json");
+        let pending_path = directory.join("worker-enrollment-pending.json");
+        let private_key = "exact-private-key";
+        let pending = PendingEnrollment {
+            operation_id: uuid::Uuid::new_v4(),
+            private_key: private_key.to_string(),
+            csr_pem: "exact-csr".to_string(),
+        };
+        let config = AgentConfig {
+            worker_id: uuid::Uuid::new_v4(),
+            control_address: "control.example:443".to_string(),
+            data_address: "data.example:443".to_string(),
+            server_name: "worker.example".to_string(),
+            certificate_path: relative_file(&cert),
+            private_key_path: relative_file(&key),
+            ca_path: relative_file(&ca),
+            capacity: None,
+            labels: Default::default(),
+        };
+        tokio::fs::write(&key, private_key).await.unwrap();
+        tokio::fs::write(&cert, b"certificate").await.unwrap();
+        tokio::fs::write(&ca, b"certificate-authority")
+            .await
+            .unwrap();
+        tokio::fs::write(&config_path, serde_json::to_vec(&config).unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&pending_path, serde_json::to_vec(&pending).unwrap())
+            .await
+            .unwrap();
+
+        assert!(
+            completed_identity_matches_pending(&key, &cert, &ca, &config_path, &pending_path)
+                .await
+                .unwrap()
+        );
+        tokio::fs::write(&key, b"different-private-key")
+            .await
+            .unwrap();
+        assert!(matches!(
+            completed_identity_matches_pending(&key, &cert, &ca, &config_path, &pending_path).await,
+            Err(EnrollmentError::InvalidResponse(_))
+        ));
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn completed_identity_cleanup_failure_is_nonfatal_and_retryable() {
+        let directory = std::env::temp_dir().join(format!("rsctf-enroll-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir(&directory).await.unwrap();
+        let pending_path = directory.join("worker-enrollment-pending.json");
+        tokio::fs::create_dir(&pending_path).await.unwrap();
+
+        cleanup_completed_pending(&pending_path).await;
+        assert!(pending_path.is_dir());
+        tokio::fs::remove_dir(&pending_path).await.unwrap();
+        tokio::fs::write(&pending_path, b"retryable pending state")
+            .await
+            .unwrap();
+        cleanup_completed_pending(&pending_path).await;
+        assert!(!pending_path.exists());
         tokio::fs::remove_dir_all(directory).await.unwrap();
     }
 }

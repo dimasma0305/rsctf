@@ -22,7 +22,11 @@ enum SnapshotResult {
 }
 
 enum DatabaseSnapshot {
-    Ready(repo_binding::Model, game_challenge::Model, Vec<String>),
+    Ready(
+        Box<repo_binding::Model>,
+        Box<game_challenge::Model>,
+        Vec<String>,
+    ),
     Retry,
     Skip,
 }
@@ -387,7 +391,11 @@ async fn snapshot_after_checkout(
             })
             .collect()
         };
-        Ok(DatabaseSnapshot::Ready(binding, challenge, flag_texts))
+        Ok(DatabaseSnapshot::Ready(
+            Box::new(binding),
+            Box::new(challenge),
+            flag_texts,
+        ))
     }
     .await;
     game_lock

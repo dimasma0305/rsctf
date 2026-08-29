@@ -659,7 +659,7 @@ mod tests {
 
     #[test]
     fn staging_limits_are_finite() {
-        assert!(LOCAL_STORE_JOBS > 0);
+        assert_ne!(LOCAL_STORE_JOBS, 0);
         assert!(DEPLOYMENT_STORE_JOBS > LOCAL_STORE_JOBS as i64);
         assert!(STORE_DEADLINE <= Duration::from_secs(60));
     }
