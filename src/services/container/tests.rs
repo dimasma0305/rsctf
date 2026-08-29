@@ -382,6 +382,9 @@ fn launch_fingerprint_rejects_stale_runtime_configuration() {
     changed.allow_egress = true;
     assert_ne!(launch_spec_fingerprint(&changed), expected);
     changed = spec.clone();
+    changed.control_plane_callback_ports.push(8080);
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
+    changed = spec.clone();
     changed.network_mode = crate::utils::enums::NetworkMode::Isolated;
     assert_ne!(launch_spec_fingerprint(&changed), expected);
     changed = spec.clone();

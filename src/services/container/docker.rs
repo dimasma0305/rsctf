@@ -153,6 +153,7 @@ struct DockerLaunchSpec<'a> {
     flag: Option<&'a str>,
     ad_network: Option<&'a str>,
     allow_egress: bool,
+    control_plane_callback_ports: &'a [i32],
     network_mode: crate::utils::enums::NetworkMode,
 }
 
@@ -310,11 +311,11 @@ pub(super) fn storage_quota_policy_matches(
 /// Hash every launch-affecting caller input into a non-secret identity label.
 /// Operation and installation identities have their own labels and deliberately
 /// do not affect whether a crash retry represents the same workload.
-pub(super) fn launch_spec_fingerprint(spec: &ContainerSpec) -> String {
+pub(crate) fn launch_spec_fingerprint(spec: &ContainerSpec) -> String {
     let canonical = DockerLaunchSpec {
-        // v4 adds writable-layer and author-selected network isolation. Older
-        // workloads must never be adopted because they lack those boundaries.
-        revision: 4,
+        // v5 adds control-plane callback policy ports. Older workloads must
+        // never be adopted because they do not prove the same egress policy.
+        revision: 5,
         game_kind: spec.game_kind,
         image: &spec.image,
         memory_limit: spec.memory_limit,
@@ -327,10 +328,11 @@ pub(super) fn launch_spec_fingerprint(spec: &ContainerSpec) -> String {
         flag: spec.flag.as_deref(),
         ad_network: spec.ad_network.as_deref(),
         allow_egress: spec.allow_egress,
+        control_plane_callback_ports: &spec.control_plane_callback_ports,
         network_mode: spec.network_mode,
     };
     let bytes = serde_json::to_vec(&canonical)
-        .expect("the fixed Docker launch identity is always JSON serializable");
+        .expect("the fixed container launch identity is always JSON serializable");
     crate::utils::codec::sha256_hex(&bytes)
 }
 

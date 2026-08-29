@@ -15,6 +15,7 @@ pub(super) const APP_LABEL: &str = "app";
 const MANAGED_LABEL: &str = "rsctf.managed";
 const MANAGED_VALUE: &str = "true";
 const CONTAINER_LABEL: &str = "rsctf.container";
+const LAUNCH_SPEC_LABEL: &str = "rsctf.launch-spec";
 const OPERATION_LABEL: &str = "rsctf.operation";
 const SCOPE_LABEL: &str = "rsctf.scope";
 
@@ -34,11 +35,16 @@ pub(super) fn workload_labels(
     uid: &str,
     scope: &str,
     operation_id: Option<&str>,
+    launch_fingerprint: &str,
 ) -> BTreeMap<String, String> {
     let mut labels = BTreeMap::from([
         (APP_LABEL.to_string(), format!("rsctf-{uid}")),
         (MANAGED_LABEL.to_string(), MANAGED_VALUE.to_string()),
         (CONTAINER_LABEL.to_string(), name.to_string()),
+        (
+            LAUNCH_SPEC_LABEL.to_string(),
+            launch_fingerprint_hash(launch_fingerprint),
+        ),
         (SCOPE_LABEL.to_string(), scope.to_string()),
     ]);
     if let Some(operation_id) = operation_id {
@@ -49,6 +55,10 @@ pub(super) fn workload_labels(
 
 fn operation_hash(operation_id: &str) -> String {
     crate::utils::codec::sha256_str(operation_id)[..32].to_string()
+}
+
+fn launch_fingerprint_hash(launch_fingerprint: &str) -> String {
+    crate::utils::codec::sha256_str(launch_fingerprint)[..32].to_string()
 }
 
 fn current_identity(meta: &ObjectMeta, name: &str, scope: &str) -> bool {
@@ -88,6 +98,7 @@ pub(super) async fn adopt<K>(
     name: &str,
     scope: &str,
     operation_id: Option<&str>,
+    launch_fingerprint: &str,
     kind: &str,
 ) -> AppResult<K>
 where
@@ -110,7 +121,13 @@ where
         .and_then(|labels| labels.get(OPERATION_LABEL))
         .map(String::as_str)
         == Some(operation_hash(operation_id).as_str());
-    if !owned_identity(meta, name, scope) || !operation_matches {
+    let launch_spec_matches = meta
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(LAUNCH_SPEC_LABEL))
+        .map(String::as_str)
+        == Some(launch_fingerprint_hash(launch_fingerprint).as_str());
+    if !owned_identity(meta, name, scope) || !operation_matches || !launch_spec_matches {
         return Err(AppError::conflict(format!(
             "{kind} operation identity is owned by a different workload"
         )));
@@ -311,24 +328,37 @@ mod tests {
         assert_ne!(scope, workload_scope("challenges", Some("other")));
 
         let name = "challenge-0123456789abcdef";
-        let labels = workload_labels(name, "0123456789abcdef", &scope, Some("cycle:42"));
+        let labels = workload_labels(
+            name,
+            "0123456789abcdef",
+            &scope,
+            Some("cycle:42"),
+            "launch-spec-a",
+        );
         let meta = metadata(name, labels.clone());
         assert!(current_identity(&meta, name, &scope));
         assert!(!current_identity(&meta, name, "another-scope"));
         assert_eq!(labels.get(CONTAINER_LABEL).map(String::as_str), Some(name));
         assert_eq!(labels.get(MANAGED_LABEL).map(String::as_str), Some("true"));
         assert_eq!(labels.get(OPERATION_LABEL).map(String::len), Some(32));
+        assert_eq!(labels.get(LAUNCH_SPEC_LABEL).map(String::len), Some(32));
     }
 
     #[test]
     fn malformed_or_foreign_managed_identity_is_never_owned() {
         let scope = workload_scope("challenges", Some("control"));
         let name = "challenge-0123456789abcdef";
-        let mut labels = workload_labels(name, "0123456789abcdef", &scope, None);
+        let mut labels = workload_labels(name, "0123456789abcdef", &scope, None, "launch-spec-a");
         labels.insert(CONTAINER_LABEL.to_string(), "another-container".to_string());
         assert!(!owned_identity(&metadata(name, labels), name, &scope));
 
-        let foreign = workload_labels(name, "0123456789abcdef", "foreign-scope", None);
+        let foreign = workload_labels(
+            name,
+            "0123456789abcdef",
+            "foreign-scope",
+            None,
+            "launch-spec-a",
+        );
         assert!(!owned_identity(&metadata(name, foreign), name, &scope));
     }
 
@@ -355,8 +385,10 @@ mod tests {
         let scope = workload_scope("challenges", Some("control"));
         let first = "first-0123456789abcdef";
         let second = "second-fedcba9876543210";
-        let first_labels = workload_labels(first, "0123456789abcdef", &scope, None);
-        let second_labels = workload_labels(second, "fedcba9876543210", &scope, None);
+        let first_labels =
+            workload_labels(first, "0123456789abcdef", &scope, None, "launch-spec-a");
+        let second_labels =
+            workload_labels(second, "fedcba9876543210", &scope, None, "launch-spec-b");
         let mut names = BTreeSet::new();
 
         collect_names(

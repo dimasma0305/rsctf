@@ -63,13 +63,14 @@ mod naming;
 mod policy;
 #[cfg(test)]
 mod tests;
+pub(crate) use self::docker::launch_spec_fingerprint;
 use self::docker::{
     append_snapshot_chunk, docker_network_mode, image_requests_restricted_profile, is_conflict,
-    is_not_found, launch_spec_fingerprint, launch_spec_matches, restricted_profile_matches,
-    restricted_tmpfs_mounts, snapshot_export_slots, stamp_restricted_profile,
-    stamp_storage_quota_policy, storage_quota_policy_matches, validate_docker_container_spec,
-    writable_layer_quota_supported, writable_layer_storage_option, LAUNCH_SPEC_LABEL,
-    MAX_SNAPSHOT_EXPORT_BYTES, SNAPSHOT_EXPORT_ADMISSION_TIMEOUT, SNAPSHOT_EXPORT_MAX_DURATION,
+    is_not_found, launch_spec_matches, restricted_profile_matches, restricted_tmpfs_mounts,
+    snapshot_export_slots, stamp_restricted_profile, stamp_storage_quota_policy,
+    storage_quota_policy_matches, validate_docker_container_spec, writable_layer_quota_supported,
+    writable_layer_storage_option, LAUNCH_SPEC_LABEL, MAX_SNAPSHOT_EXPORT_BYTES,
+    SNAPSHOT_EXPORT_ADMISSION_TIMEOUT, SNAPSHOT_EXPORT_MAX_DURATION,
 };
 pub use backend::{
     should_use_platform_proxy, ContainerBackendKind, ContainerExecAdmission, ContainerExecError,

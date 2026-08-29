@@ -348,6 +348,7 @@ impl ContainerManager for KubernetesContainerManager {
                 "Kubernetes challenge images must use a portable repository digest",
             ));
         }
+        let launch_fingerprint = crate::services::container::launch_spec_fingerprint(&spec);
         // Unique, DNS-safe resource name + the app label that ties the Service
         // to this pod (RSCTF uses a per-instance ResourceId label/selector).
         let uid = spec.operation_id.as_ref().map_or_else(
@@ -425,8 +426,13 @@ impl ContainerManager for KubernetesContainerManager {
             Quantity(format!("{}Mi", spec.storage_limit.min(32))),
         );
 
-        let labels =
-            orphans::workload_labels(&name, &uid, &self.scope, spec.operation_id.as_deref());
+        let labels = orphans::workload_labels(
+            &name,
+            &uid,
+            &self.scope,
+            spec.operation_id.as_deref(),
+            &launch_fingerprint,
+        );
         let app_label = labels[APP_LABEL].clone();
 
         let container = Container {
@@ -502,6 +508,7 @@ impl ContainerManager for KubernetesContainerManager {
                         &name,
                         &self.scope,
                         spec.operation_id.as_deref(),
+                        &launch_fingerprint,
                         "network policy",
                     )
                     .await?;
@@ -523,6 +530,7 @@ impl ContainerManager for KubernetesContainerManager {
                     &name,
                     &self.scope,
                     spec.operation_id.as_deref(),
+                    &launch_fingerprint,
                     "pod",
                 )
                 .await
@@ -598,6 +606,7 @@ impl ContainerManager for KubernetesContainerManager {
                         &name,
                         &self.scope,
                         spec.operation_id.as_deref(),
+                        &launch_fingerprint,
                         "service",
                     )
                     .await
