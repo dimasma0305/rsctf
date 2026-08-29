@@ -53,11 +53,12 @@ import { getInputNumber, randomInviteCode, showErrorMsg, tryGetErrorMsg } from '
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { useAdminGame } from '@Hooks/useGame'
 import { useUser } from '@Hooks/useUser'
-import api, { EventVpnOverrideModel, GameInfoModel, Role } from '@Api'
+import api, { EventVpnOverrideModel, Role } from '@Api'
 import classes from '@Styles/AdminGameInfo.module.css'
 import misc from '@Styles/Misc.module.css'
 import {
   buildGameInfoUpdatePayload,
+  CompatibleGameInfoModel,
   GameInfoSaveOperation,
   gameInfoDraftChanged,
   prepareGameInfoSave,
@@ -70,7 +71,7 @@ const GameInfoEdit: FC = () => {
   const numId = parseInt(id ?? '-1')
   const { game: gameSource, mutate } = useAdminGame(numId)
   const { user } = useUser()
-  const [game, setGame] = useState<GameInfoModel>()
+  const [game, setGame] = useState<CompatibleGameInfoModel>()
   const navigate = useNavigate()
 
   const [disabled, setDisabled] = useState(false)

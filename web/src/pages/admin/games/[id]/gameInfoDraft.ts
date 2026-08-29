@@ -1,5 +1,11 @@
 import type { GameInfoModel } from '@Api'
 
+/** Optional fields exposed by newer settings endpoints while older RSCTF servers ignore them. */
+export type CompatibleGameInfoModel = GameInfoModel & {
+  configurationRevision?: number
+  operationId?: string | null
+}
+
 export interface GameInfoScheduleDraft {
   start: number
   end: number
@@ -14,14 +20,14 @@ export interface GameInfoSaveOperation {
 
 export interface PreparedGameInfoSave {
   operation: GameInfoSaveOperation
-  payload: GameInfoModel
+  payload: CompatibleGameInfoModel
 }
 
 export function buildGameInfoUpdatePayload(
-  game: GameInfoModel,
+  game: CompatibleGameInfoModel,
   schedule: GameInfoScheduleDraft,
   vpnPolicyChanged: boolean
-): GameInfoModel {
+): CompatibleGameInfoModel {
   const { operationId: _operationId, serverTime: _serverTime, ...editableGame } = game
   return {
     ...editableGame,
@@ -33,7 +39,7 @@ export function buildGameInfoUpdatePayload(
 
 /** Keep one idempotency key for retries of the same draft and rotate it after any edit. */
 export function prepareGameInfoSave(
-  payload: GameInfoModel,
+  payload: CompatibleGameInfoModel,
   previous: GameInfoSaveOperation | null,
   createId: () => string = () => crypto.randomUUID()
 ): PreparedGameInfoSave {
@@ -45,6 +51,6 @@ export function prepareGameInfoSave(
   }
 }
 
-export function gameInfoDraftChanged(current: GameInfoModel, saved: GameInfoModel): boolean {
+export function gameInfoDraftChanged(current: CompatibleGameInfoModel, saved: CompatibleGameInfoModel): boolean {
   return JSON.stringify(current) !== JSON.stringify(saved)
 }
