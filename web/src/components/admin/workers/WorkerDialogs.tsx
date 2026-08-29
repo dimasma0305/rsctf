@@ -31,7 +31,7 @@ import classes from '@Styles/AdminWorkers.module.css'
 
 interface WorkerDialogsProps {
   busy: boolean
-  commands: WorkerInstallCommands
+  commands: WorkerInstallCommands | null
   createOpened: boolean
   deleteConfirmation: string
   deleteTarget: Worker | null
@@ -176,40 +176,49 @@ export const WorkerDialogs: FC<WorkerDialogsProps> = ({
             </Text>
           </Stack>
 
-          <Tabs defaultValue="linux">
-            <Tabs.List grow>
-              <Tabs.Tab value="linux">{t('admin.workers.platform.linux', 'Linux')}</Tabs.Tab>
-              <Tabs.Tab value="windows">
-                {t('admin.workers.platform.windows_admin', 'Windows · Administrator PowerShell')}
-              </Tabs.Tab>
-            </Tabs.List>
-            <Tabs.Panel value="linux" pt="md">
-              <CopyCommand
-                command={commands.linux}
-                label={t('admin.workers.copy_linux_install', 'Copy Linux install command')}
-                copiedLabel={t('common.content.copied', 'Copied')}
-              />
-              <Text size="xs" c="dimmed" mt="sm">
-                {t(
-                  'admin.workers.enrollment.linux_note',
-                  'Uses systemd when available and Docker supervision otherwise. Keep storage quota checks enabled for events.'
-                )}
-              </Text>
-            </Tabs.Panel>
-            <Tabs.Panel value="windows" pt="md">
-              <CopyCommand
-                command={commands.windows}
-                label={t('admin.workers.copy_windows_install', 'Copy Windows install command')}
-                copiedLabel={t('common.content.copied', 'Copied')}
-              />
-              <Text size="xs" c="dimmed" mt="sm">
-                {t(
-                  'admin.workers.enrollment.windows_note',
-                  'Native Windows workers require Docker in Windows-container mode. Run PowerShell as Administrator.'
-                )}
-              </Text>
-            </Tabs.Panel>
-          </Tabs>
+          {commands ? (
+            <Tabs defaultValue="linux">
+              <Tabs.List grow>
+                <Tabs.Tab value="linux">{t('admin.workers.platform.linux', 'Linux')}</Tabs.Tab>
+                <Tabs.Tab value="windows">
+                  {t('admin.workers.platform.windows_admin', 'Windows · Administrator PowerShell')}
+                </Tabs.Tab>
+              </Tabs.List>
+              <Tabs.Panel value="linux" pt="md">
+                <CopyCommand
+                  command={commands.linux}
+                  label={t('admin.workers.copy_linux_install', 'Copy Linux install command')}
+                  copiedLabel={t('common.content.copied', 'Copied')}
+                />
+                <Text size="xs" c="dimmed" mt="sm">
+                  {t(
+                    'admin.workers.enrollment.linux_note',
+                    'Uses systemd when available and Docker supervision otherwise. Keep storage quota checks enabled for events.'
+                  )}
+                </Text>
+              </Tabs.Panel>
+              <Tabs.Panel value="windows" pt="md">
+                <CopyCommand
+                  command={commands.windows}
+                  label={t('admin.workers.copy_windows_install', 'Copy Windows install command')}
+                  copiedLabel={t('common.content.copied', 'Copied')}
+                />
+                <Text size="xs" c="dimmed" mt="sm">
+                  {t(
+                    'admin.workers.enrollment.windows_note',
+                    'Native Windows workers require Docker in Windows-container mode. Run PowerShell as Administrator.'
+                  )}
+                </Text>
+              </Tabs.Panel>
+            </Tabs>
+          ) : (
+            <Alert color="blue" icon={<Icon path={mdiInformationOutline} size={0.9} />}>
+              {t(
+                'admin.workers.install.https_required',
+                'Verified install commands are available when this page is opened from an HTTPS origin.'
+              )}
+            </Alert>
+          )}
         </Stack>
       </Modal>
 

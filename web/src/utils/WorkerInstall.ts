@@ -9,6 +9,9 @@ const workerInstallOrigin = (origin: string): string => {
   return parsed.origin
 }
 
+const isLoopbackHost = (hostname: string): boolean =>
+  hostname === 'localhost' || hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(hostname)
+
 const workerUnixCommand = (origin: string, arguments_: string): string => {
   const safeOrigin = workerInstallOrigin(origin)
   return `(t=$(mktemp) || exit 1; trap 'rm -f "$t"' 0 HUP INT TERM; wget -q -T 30 -O "$t" ${safeOrigin}/install/worker && sh "$t" ${arguments_})`
@@ -31,4 +34,25 @@ export const workerUninstallCommand = (origin: string): string => {
 export const workerWindowsUninstallCommand = (origin: string): string => {
   const safeOrigin = workerInstallOrigin(origin)
   return `& ([scriptblock]::Create((Invoke-RestMethod ${safeOrigin}/install/worker.ps1))) -Uninstall`
+}
+
+export const workerInstallCommandsForOrigin = (origin: string, allowLocalHttpDevelopment: boolean) => {
+  const parsed = new URL(origin)
+  if (
+    allowLocalHttpDevelopment &&
+    parsed.protocol === 'http:' &&
+    !parsed.username &&
+    !parsed.password &&
+    parsed.origin === origin &&
+    isLoopbackHost(parsed.hostname)
+  ) {
+    return null
+  }
+
+  return {
+    linux: workerInstallCommand(origin),
+    windows: workerWindowsInstallCommand(origin),
+    linuxUninstall: workerUninstallCommand(origin),
+    windowsUninstall: workerWindowsUninstallCommand(origin),
+  }
 }

@@ -38,22 +38,10 @@ import { Empty } from '@Components/Empty'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { WorkerDialogs } from '@Components/admin/workers/WorkerDialogs'
 import { WorkerRetirement } from '@Components/admin/workers/WorkerRetirement'
-import {
-  CreatedWorker,
-  Enrollment,
-  Worker,
-  WorkerFilter,
-  WorkerInstallCommands,
-  WorkerState,
-} from '@Components/admin/workers/types'
+import { CreatedWorker, Enrollment, Worker, WorkerFilter, WorkerState } from '@Components/admin/workers/types'
 import { showErrorMsg } from '@Utils/Shared'
+import { workerInstallCommandsForOrigin } from '@Utils/WorkerInstall'
 import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
-import {
-  workerInstallCommand,
-  workerUninstallCommand,
-  workerWindowsInstallCommand,
-  workerWindowsUninstallCommand,
-} from '@Utils/WorkerInstall'
 import api, { ContentType } from '@Api'
 import classes from '@Styles/AdminWorkers.module.css'
 
@@ -150,18 +138,13 @@ const Workers: FC = () => {
     successDelay: () => 10_000,
   })
 
-  const installCommands = useMemo<WorkerInstallCommands>(() => {
+  const installCommands = useMemo(() => {
     const origin =
       import.meta.env.DEV && import.meta.env.VITE_BACKEND_URL
         ? new URL(import.meta.env.VITE_BACKEND_URL).origin
         : window.location.origin
 
-    return {
-      linux: workerInstallCommand(origin),
-      windows: workerWindowsInstallCommand(origin),
-      linuxUninstall: workerUninstallCommand(origin),
-      windowsUninstall: workerWindowsUninstallCommand(origin),
-    }
+    return workerInstallCommandsForOrigin(origin, import.meta.env.DEV)
   }, [])
 
   const summary = useMemo(() => {

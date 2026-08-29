@@ -8,7 +8,7 @@ import { WorkerInstallCommands } from '@Components/admin/workers/types'
 import classes from '@Styles/AdminWorkers.module.css'
 
 interface WorkerRetirementProps {
-  commands: WorkerInstallCommands
+  commands: WorkerInstallCommands | null
 }
 
 export const WorkerRetirement: FC<WorkerRetirementProps> = ({ commands }) => {
@@ -82,26 +82,35 @@ export const WorkerRetirement: FC<WorkerRetirementProps> = ({ commands }) => {
                 'The installer refuses to remove a host that still has managed workloads and asks before deleting its certificate and configuration.'
               )}
             </Alert>
-            <Tabs defaultValue="linux">
-              <Tabs.List grow>
-                <Tabs.Tab value="linux">{t('admin.workers.platform.linux', 'Linux')}</Tabs.Tab>
-                <Tabs.Tab value="windows">{t('admin.workers.platform.windows', 'Windows PowerShell')}</Tabs.Tab>
-              </Tabs.List>
-              <Tabs.Panel value="linux" pt="md">
-                <CopyCommand
-                  command={commands.linuxUninstall}
-                  label={t('admin.workers.copy_linux_uninstall', 'Copy Linux uninstall command')}
-                  copiedLabel={t('common.content.copied', 'Copied')}
-                />
-              </Tabs.Panel>
-              <Tabs.Panel value="windows" pt="md">
-                <CopyCommand
-                  command={commands.windowsUninstall}
-                  label={t('admin.workers.copy_windows_uninstall', 'Copy Windows uninstall command')}
-                  copiedLabel={t('common.content.copied', 'Copied')}
-                />
-              </Tabs.Panel>
-            </Tabs>
+            {commands ? (
+              <Tabs defaultValue="linux">
+                <Tabs.List grow>
+                  <Tabs.Tab value="linux">{t('admin.workers.platform.linux', 'Linux')}</Tabs.Tab>
+                  <Tabs.Tab value="windows">{t('admin.workers.platform.windows', 'Windows PowerShell')}</Tabs.Tab>
+                </Tabs.List>
+                <Tabs.Panel value="linux" pt="md">
+                  <CopyCommand
+                    command={commands.linuxUninstall}
+                    label={t('admin.workers.copy_linux_uninstall', 'Copy Linux uninstall command')}
+                    copiedLabel={t('common.content.copied', 'Copied')}
+                  />
+                </Tabs.Panel>
+                <Tabs.Panel value="windows" pt="md">
+                  <CopyCommand
+                    command={commands.windowsUninstall}
+                    label={t('admin.workers.copy_windows_uninstall', 'Copy Windows uninstall command')}
+                    copiedLabel={t('common.content.copied', 'Copied')}
+                  />
+                </Tabs.Panel>
+              </Tabs>
+            ) : (
+              <Alert color="blue" icon={<Icon path={mdiInformationOutline} size={0.9} />}>
+                {t(
+                  'admin.workers.install.https_required',
+                  'Verified install commands are available when this page is opened from an HTTPS origin.'
+                )}
+              </Alert>
+            )}
           </Accordion.Panel>
         </Accordion.Item>
       </Accordion>

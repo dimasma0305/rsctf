@@ -16,13 +16,19 @@ const context = { gameId: 67, challengeId: 326, postId: 'ffac23df' }
 const routes = discoverPageRoutes(context)
 
 test('visual route catalog covers every React page component exactly once', () => {
-  assert.equal(routes.length, 55)
+  assert.equal(routes.length, 53)
   assert.deepEqual(validatePageRoutes(routes), [])
   assert.ok(routes.every((route) => route.sourceFile.endsWith('.tsx')))
   assert.ok(routes.some((route) => route.sourceFile === '[...all].tsx'))
   assert.ok(routes.some((route) => route.path === '/admin/games/67/challenges/326/flags'))
   assert.ok(routes.some((route) => route.path === '/posts/ffac23df/edit'))
+  assert.ok(!routes.some((route) => route.path.endsWith('/eventsecuritysection')))
+  assert.ok(!routes.some((route) => route.path.endsWith('/gamecontentsection')))
   assert.ok(pagesRoot.endsWith(join('web', 'src', 'pages')))
+
+  const info = readFileSync(join(repositoryRoot, 'web/src/pages/admin/games/[id]/Info.tsx'), 'utf8')
+  assert.match(info, /@Components\/admin\/EventSecuritySection/)
+  assert.match(info, /@Components\/admin\/GameContentSection/)
 })
 
 test('visual routes select the least privileged useful browser identity', () => {
@@ -79,7 +85,9 @@ test('game workspace uses one bounded width and container-sized challenge cards'
   )
   assert.match(challengeGrid, /repeat\(auto-fill, minmax\(min\(15rem, 100%\), 1fr\)\)/)
 
-  const mobileTabList = challengeGrid.match(/@media \(max-width: \$mantine-breakpoint-sm\)[\s\S]*?\.tabList\s*\{([^}]+)\}/)?.[1]
+  const mobileTabList = challengeGrid.match(
+    /@media \(max-width: \$mantine-breakpoint-sm\)[\s\S]*?\.tabList\s*\{([^}]+)\}/
+  )?.[1]
   assert.ok(mobileTabList, 'mobile challenge category tabs must have a dedicated layout')
   assert.match(mobileTabList, /width:\s*100%/)
   assert.match(mobileTabList, /max-width:\s*100%/)
@@ -144,8 +152,8 @@ test('visual audit covers ultrawide, desktop, intermediate, and compact breakpoi
 test('visual route shards cover every route exactly once', () => {
   const first = selectRouteShard(routes, parseRouteShard('1/2'))
   const second = selectRouteShard(routes, parseRouteShard('2/2'))
-  assert.equal(first.length, 27)
-  assert.equal(second.length, 28)
+  assert.equal(first.length, 26)
+  assert.equal(second.length, 27)
   assert.deepEqual([...first, ...second], routes)
   assert.throws(() => parseRouteShard('0/2'), /INDEX\/TOTAL/)
   assert.throws(() => parseRouteShard('3/2'), /cannot exceed/)
