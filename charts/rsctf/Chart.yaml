@@ -2,8 +2,8 @@ apiVersion: v2
 name: rsctf
 description: A security-conscious Helm chart for the rsctf CTF platform
 type: application
-version: 0.1.98
-appVersion: "0.1.98"
+version: 0.1.99
+appVersion: "0.1.99"
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/dimasma0305/rsctf
 sources:
