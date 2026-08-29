@@ -23,7 +23,7 @@ import { useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiPuzzleEditOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, PropsWithChildren, useEffect, useState } from 'react'
+import { FC, PropsWithChildren, useEffect, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { Link, useParams } from 'react-router'
 import { AttachmentRemoteEditModal } from '@Components/admin/AttachmentRemoteEditModal'
@@ -31,6 +31,7 @@ import { AttachmentUploadModal } from '@Components/admin/AttachmentUploadModal'
 import { FlagCreateModal } from '@Components/admin/FlagCreateModal'
 import { FlagEditPanel } from '@Components/admin/FlagEditPanel'
 import { WithChallengeEdit } from '@Components/admin/WithChallengeEdit'
+import { challengeRevision, ChallengeMutationOperation, prepareChallengeMutation } from '@Utils/ChallengeMutation'
 import { showErrorMsg } from '@Utils/Shared'
 import { useDisplayInputStyles } from '@Utils/ThemeOverride'
 import { useEditChallenge } from '@Hooks/useEdit'
@@ -289,6 +290,7 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
   const [type, setType] = useState<FileType>(challenge?.attachment?.type ?? FileType.None)
   const [remoteUrl, setRemoteUrl] = useState(challenge?.attachment?.url ?? '')
   const [flagTemplate, setFlagTemplate] = useState(challenge?.flagTemplate ?? '')
+  const flagTemplateOperation = useRef<ChallengeMutationOperation | null>(null)
 
   const modals = useModals()
   const { colorScheme } = useMantineColorScheme()
@@ -411,19 +413,21 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
     setDisabled(true)
 
     try {
+      const prepared = prepareChallengeMutation(
+        { flagTemplate },
+        challengeRevision(challenge),
+        flagTemplateOperation.current
+      )
+      flagTemplateOperation.current = prepared.operation
       // allow empty flag template to be set (but not null or undefined)
-      await api.edit.editUpdateGameChallenge(numId, numCId, { flagTemplate })
+      const updated = await api.edit.editUpdateGameChallenge(numId, numCId, prepared.payload)
+      flagTemplateOperation.current = null
       showNotification({
         color: 'teal',
         message: t('admin.notification.games.challenges.flag_template.updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
-      if (challenge) {
-        mutate({
-          ...challenge,
-          flagTemplate,
-        })
-      }
+      mutate(updated.data)
     } catch (e) {
       showErrorMsg(e, t)
     } finally {

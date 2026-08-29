@@ -33,13 +33,14 @@ import {
   mdiTrashCanOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { Dispatch, FC, SetStateAction, useMemo, useState } from 'react'
+import { Dispatch, FC, SetStateAction, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { BloodBonusModel } from '@Components/admin/BloodBonusModel'
 import { ChallengeCreateModal } from '@Components/admin/ChallengeCreateModal'
 import { ChallengeEditCard } from '@Components/admin/ChallengeEditCard'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { challengeRevision, ChallengeMutationOperation, prepareChallengeMutation } from '@Utils/ChallengeMutation'
 import { showErrorMsg } from '@Utils/Shared'
 import { ChallengeCategoryItem, ChallengeCategoryList, useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { useEditChallenges } from '@Hooks/useEdit'
@@ -67,6 +68,7 @@ const GameChallengeEdit: FC = () => {
   const [engine, setEngine] = useState<EngineFilter>('all')
   const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
   const [disabled, setDisabled] = useState(false)
+  const updateOperations = useRef(new Map<number, ChallengeMutationOperation>())
 
   const { t } = useTranslation()
 
@@ -191,8 +193,20 @@ const GameChallengeEdit: FC = () => {
     setDisabled(true)
     try {
       const results = await Promise.allSettled(
-        ids.map((cid) => api.edit.editUpdateGameChallenge(numId, cid, { isEnabled: enable }))
+        ids.map((cid) => {
+          const challenge = challenges?.find((candidate) => candidate.id === cid)
+          const prepared = prepareChallengeMutation(
+            { isEnabled: enable },
+            challengeRevision(challenge),
+            updateOperations.current.get(cid)
+          )
+          updateOperations.current.set(cid, prepared.operation)
+          return api.edit.editUpdateGameChallenge(numId, cid, prepared.payload)
+        })
       )
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled') updateOperations.current.delete(ids[index])
+      })
       const failed = results.filter((r) => r.status === 'rejected').length
       const ok = ids.length - failed
       showNotification({
@@ -207,7 +221,7 @@ const GameChallengeEdit: FC = () => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
       clearSelection()
-      mutate()
+      await mutate()
     } catch (e) {
       showErrorMsg(e, t)
     } finally {
@@ -232,18 +246,24 @@ const GameChallengeEdit: FC = () => {
 
   const onConfirmToggle = async (challenge: ChallengeInfoModel, setDisabled: Dispatch<SetStateAction<boolean>>) => {
     const numId = parseInt(id ?? '-1')
+    if (challenge.id == null) return
     setDisabled(true)
 
     try {
-      await api.edit.editUpdateGameChallenge(numId, challenge.id!, {
-        isEnabled: !challenge.isEnabled,
-      })
+      const prepared = prepareChallengeMutation(
+        { isEnabled: !challenge.isEnabled },
+        challengeRevision(challenge),
+        updateOperations.current.get(challenge.id)
+      )
+      updateOperations.current.set(challenge.id, prepared.operation)
+      await api.edit.editUpdateGameChallenge(numId, challenge.id, prepared.payload)
+      updateOperations.current.delete(challenge.id)
       showNotification({
         color: 'teal',
         message: t('admin.notification.games.challenges.updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
-      mutate(challenges?.map((c) => (c.id === challenge.id ? { ...c, isEnabled: !challenge.isEnabled } : c)))
+      await mutate()
     } catch (e) {
       showErrorMsg(e, t)
     } finally {

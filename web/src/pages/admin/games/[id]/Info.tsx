@@ -48,6 +48,7 @@ import { useNavigate, useParams } from 'react-router'
 import { IconTabs } from '@Components/IconTabs'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { requireApiCollection } from '@Utils/ApiCollection'
 import { downloadBlob } from '@Utils/ApiHelper'
 import { getInputNumber, randomInviteCode, showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
@@ -65,6 +66,12 @@ import {
 } from './gameInfoDraft'
 
 dayjs.extend(localizedFormat)
+
+const vpnOverrideItems = (payload: unknown): EventVpnOverrideModel[] =>
+  requireApiCollection<EventVpnOverrideModel>(payload, {
+    itemKeys: ['overrides'],
+    label: 'VPN override list',
+  }).items
 
 const GameInfoEdit: FC = () => {
   const { id } = useParams()
@@ -203,7 +210,7 @@ const GameInfoEdit: FC = () => {
     api.eventSecurity
       .listVpnOverrides(numId)
       .then((response) => {
-        if (!cancelled) setVpnOverrides(response.data)
+        if (!cancelled) setVpnOverrides(vpnOverrideItems(response.data))
       })
       .catch(() => {
         if (!cancelled) setVpnOverrides([])
@@ -286,8 +293,6 @@ const GameInfoEdit: FC = () => {
       })
       return
     }
-    const prepared = prepareGameInfoSave(updatePayload, saveOperation.current)
-    saveOperation.current = prepared.operation
     const controller = new AbortController()
     saveAbort.current?.abort()
     saveAbort.current = controller
@@ -295,6 +300,8 @@ const GameInfoEdit: FC = () => {
     setDisabled(true)
 
     try {
+      const prepared = prepareGameInfoSave(updatePayload, saveOperation.current)
+      saveOperation.current = prepared.operation
       const response = await api.edit.editUpdateGame(game.id!, prepared.payload, { signal: controller.signal })
       if (saveAbort.current !== controller) return
       saveOperation.current = null
@@ -416,7 +423,7 @@ const GameInfoEdit: FC = () => {
     try {
       await api.eventSecurity.createVpnOverride(game.id, { reason, durationMinutes })
       const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
-      setVpnOverrides(refreshed.data)
+      setVpnOverrides(vpnOverrideItems(refreshed.data))
       setOverrideReason('')
       showNotification({
         color: 'orange',
@@ -436,7 +443,7 @@ const GameInfoEdit: FC = () => {
     try {
       await api.eventSecurity.revokeVpnOverride(game.id, overrideId)
       const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
-      setVpnOverrides(refreshed.data)
+      setVpnOverrides(vpnOverrideItems(refreshed.data))
       showNotification({
         color: 'teal',
         message: t('admin.event_security.override_revoked', 'Event VPN bypass revoked.'),

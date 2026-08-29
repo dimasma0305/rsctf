@@ -1,3 +1,4 @@
+import { createUuid } from '@Utils/Uuid'
 import type { GameInfoModel } from '@Api'
 
 /** Optional fields exposed by newer settings endpoints while older RSCTF servers ignore them. */
@@ -41,7 +42,7 @@ export function buildGameInfoUpdatePayload(
 export function prepareGameInfoSave(
   payload: CompatibleGameInfoModel,
   previous: GameInfoSaveOperation | null,
-  createId: () => string = () => crypto.randomUUID()
+  createId: () => string = createUuid
 ): PreparedGameInfoSave {
   const digest = JSON.stringify(payload)
   const operation = previous?.digest === digest ? previous : { digest, id: createId() }

@@ -45,6 +45,7 @@ import {
   WorkerInstallCommands,
   WorkerState,
 } from '@Components/admin/workers/types'
+import { requireApiCollection } from '@Utils/ApiCollection'
 import { showErrorMsg } from '@Utils/Shared'
 import {
   workerInstallCommand,
@@ -119,7 +120,7 @@ const Workers: FC = () => {
         method: 'GET',
         format: 'json',
       })
-      setWorkers(response.data)
+      setWorkers(requireApiCollection<Worker>(response.data, { label: 'Worker inventory' }).items)
     } catch (error) {
       showErrorMsg(error, t)
     } finally {
@@ -134,10 +135,7 @@ const Workers: FC = () => {
   }, [loadWorkers])
 
   const installCommands = useMemo<WorkerInstallCommands>(() => {
-    const origin =
-      import.meta.env.DEV && import.meta.env.VITE_BACKEND_URL
-        ? new URL(import.meta.env.VITE_BACKEND_URL).origin
-        : window.location.origin
+    const origin = window.location.origin
 
     return {
       linux: workerInstallCommand(origin),

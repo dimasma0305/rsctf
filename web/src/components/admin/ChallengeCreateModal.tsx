@@ -3,9 +3,10 @@ import { useInputState } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router'
+import { ChallengeMutationOperation, prepareChallengeMutation } from '@Utils/ChallengeMutation'
 import { showErrorMsg } from '@Utils/Shared'
 import {
   ChallengeCategoryItem,
@@ -31,6 +32,7 @@ export const ChallengeCreateModal: FC<ChallengeCreateModalProps> = (props) => {
   const [title, setTitle] = useInputState('')
   const [category, setCategory] = useState<string | null>(null)
   const [type, setType] = useState<string | null>(null)
+  const createOperation = useRef<ChallengeMutationOperation | null>(null)
 
   const { t } = useTranslation()
 
@@ -41,11 +43,18 @@ export const ChallengeCreateModal: FC<ChallengeCreateModalProps> = (props) => {
     const numId = parseInt(id ?? '-1')
 
     try {
-      const res = await api.edit.editAddGameChallenge(numId, {
-        title: title,
-        category: category as ChallengeCategory,
-        type: type as ChallengeType,
-      })
+      const prepared = prepareChallengeMutation(
+        {
+          title,
+          category: category as ChallengeCategory,
+          type: type as ChallengeType,
+        },
+        undefined,
+        createOperation.current
+      )
+      createOperation.current = prepared.operation
+      const res = await api.edit.editAddGameChallenge(numId, prepared.payload)
+      createOperation.current = null
       showNotification({
         color: 'teal',
         message: t('admin.notification.games.challenges.created'),
@@ -61,6 +70,8 @@ export const ChallengeCreateModal: FC<ChallengeCreateModalProps> = (props) => {
   }
 
   const handleClose = () => {
+    if (disabled) return
+    createOperation.current = null
     setTitle('')
     setCategory(null)
     setType(null)
@@ -68,7 +79,7 @@ export const ChallengeCreateModal: FC<ChallengeCreateModalProps> = (props) => {
   }
 
   return (
-    <Modal {...modalProps} onClose={handleClose}>
+    <Modal {...modalProps} onClose={handleClose} closeOnClickOutside={!disabled} closeOnEscape={!disabled}>
       <Stack>
         <TextInput
           label={t('admin.content.games.challenges.title')}

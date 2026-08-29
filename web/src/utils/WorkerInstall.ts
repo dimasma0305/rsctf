@@ -1,7 +1,14 @@
 const workerInstallOrigin = (origin: string): string => {
   const parsed = new URL(origin)
-  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.origin !== origin) {
-    throw new Error('worker installation requires one exact HTTPS origin')
+  const loopbackHttp =
+    parsed.protocol === 'http:' && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')
+  if (
+    (!loopbackHttp && parsed.protocol !== 'https:') ||
+    parsed.username ||
+    parsed.password ||
+    parsed.origin !== origin
+  ) {
+    throw new Error('worker installation requires one exact HTTPS or loopback HTTP origin')
   }
   if (!/^[A-Za-z0-9.-]+(?::[0-9]{1,5})?$/.test(parsed.host)) {
     throw new Error('worker installation origin is not shell-safe')

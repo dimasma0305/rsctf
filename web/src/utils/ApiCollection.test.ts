@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { apiCollectionPageCount, apiCollectionView, decodeApiCollection } from './ApiCollection'
+import { apiCollectionPageCount, apiCollectionView, decodeApiCollection, requireApiCollection } from './ApiCollection'
 
 test('API collections accept the released raw-array response', () => {
   const items = [{ id: 1 }, { id: 2 }]
@@ -22,6 +22,29 @@ test('API collections accept the paginated response used by newer servers', () =
     total: 1,
     paginated: true,
   })
+  assert.deepEqual(decodeApiCollection({ data: items, total: 3 }), {
+    status: 'ready',
+    items,
+    total: 3,
+    paginated: true,
+  })
+})
+
+test('API collections accept simple and explicitly named rolling-upgrade envelopes', () => {
+  const items = [{ id: 1 }]
+
+  assert.deepEqual(decodeApiCollection({ data: items, title: '', status: 200 }), {
+    status: 'ready',
+    items,
+    total: 1,
+    paginated: false,
+  })
+  assert.deepEqual(decodeApiCollection({ overrides: items, policyRevision: 7 }, { itemKeys: ['overrides'] }), {
+    status: 'ready',
+    items,
+    total: 1,
+    paginated: false,
+  })
 })
 
 test('API collections keep loading separate from malformed responses', () => {
@@ -32,6 +55,11 @@ test('API collections keep loading separate from malformed responses', () => {
   assert.deepEqual(decodeApiCollection({ data: [{}], length: 0, total: 1 }), { status: 'invalid' })
   assert.deepEqual(decodeApiCollection({ data: [{}], length: 1, total: 0 }), { status: 'invalid' })
   assert.deepEqual(decodeApiCollection('not a collection'), { status: 'invalid' })
+  assert.deepEqual(decodeApiCollection({ overrides: {} }, { itemKeys: ['overrides'] }), { status: 'invalid' })
+  assert.throws(
+    () => requireApiCollection({ overrides: {} }, { itemKeys: ['overrides'], label: 'VPN override list' }),
+    /VPN override list response has an invalid collection shape/
+  )
 })
 
 test('a revalidation failure keeps a decoded cached collection visible', () => {
