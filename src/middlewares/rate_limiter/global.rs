@@ -8,6 +8,8 @@ use tokio::sync::Semaphore;
 
 use crate::app_state::SharedState;
 
+type AuthenticationResult<T> = Result<T, Box<Response>>;
+
 pub(super) fn check_authenticated_local(identity: String, ip: String) -> Result<(), u64> {
     check(Policy::Global, identity)?;
     check(Policy::GlobalIpBackstop, ip)
@@ -44,26 +46,26 @@ async fn authenticate_ad_bearer(
     st: &SharedState,
     token: &str,
     ip: &str,
-) -> Result<Option<crate::services::ad::api_token::VerifiedTeamToken>, Response> {
+) -> AuthenticationResult<Option<crate::services::ad::api_token::VerifiedTeamToken>> {
     if let Err(retry_after) = check_async(Policy::AdBearerSourceAdmission, ip.to_owned()).await {
-        return Err(too_many_requests(retry_after));
+        return Err(Box::new(too_many_requests(retry_after)));
     }
     let digest = crate::services::ad::api_token::hash(token);
     if let Err(retry_after) =
         check_async(Policy::AdBearerAdmission, format!("presented:{digest}")).await
     {
-        return Err(too_many_requests(retry_after));
+        return Err(Box::new(too_many_requests(retry_after)));
     }
     // The verified partition is a pure function of the presented token hash.
     // Charge every later rejection quota before acquiring a query permit.
     if let Err(retry_after) = check_authenticated_async(format!("ad:{digest}"), ip.to_owned()).await
     {
-        return Err(too_many_requests(retry_after));
+        return Err(Box::new(too_many_requests(retry_after)));
     }
     let permit = AD_AUTH_ADMISSION
         .clone()
         .try_acquire_owned()
-        .map_err(|_| too_many_requests(1))?;
+        .map_err(|_| Box::new(too_many_requests(1)))?;
     let result = tokio::time::timeout(
         AD_AUTH_QUERY_TIMEOUT,
         crate::services::ad::api_token::authenticate(st.pg(), token),
@@ -72,11 +74,13 @@ async fn authenticate_ad_bearer(
     drop(permit);
     match result {
         Ok(Ok(credential)) => Ok(credential),
-        Ok(Err(error)) => Err(error.into_response()),
-        Err(_) => Err(crate::utils::error::AppError::unavailable(
-            "A&D credential verification timed out; retry later",
-        )
-        .into_response()),
+        Ok(Err(error)) => Err(Box::new(error.into_response())),
+        Err(_) => Err(Box::new(
+            crate::utils::error::AppError::unavailable(
+                "A&D credential verification timed out; retry later",
+            )
+            .into_response(),
+        )),
     }
 }
 
@@ -84,10 +88,10 @@ async fn authenticate_personal_bearer(
     st: &SharedState,
     token: &str,
     ip: &str,
-) -> Result<crate::controllers::api_token::VerifiedPersonalToken, Response> {
+) -> AuthenticationResult<crate::controllers::api_token::VerifiedPersonalToken> {
     if let Err(retry_after) = check_async(Policy::PersonalTokenSourceAdmission, ip.to_owned()).await
     {
-        return Err(too_many_requests(retry_after));
+        return Err(Box::new(too_many_requests(retry_after)));
     }
     let digest = crate::utils::codec::sha256_str(token);
     if let Err(retry_after) = check_async(
@@ -96,12 +100,12 @@ async fn authenticate_personal_bearer(
     )
     .await
     {
-        return Err(too_many_requests(retry_after));
+        return Err(Box::new(too_many_requests(retry_after)));
     }
     let permit = PERSONAL_TOKEN_AUTH_ADMISSION
         .clone()
         .try_acquire_owned()
-        .map_err(|_| too_many_requests(1))?;
+        .map_err(|_| Box::new(too_many_requests(1)))?;
     let result = tokio::time::timeout(
         PERSONAL_TOKEN_AUTH_QUERY_TIMEOUT,
         crate::controllers::api_token::authenticate(st, token),
@@ -110,12 +114,14 @@ async fn authenticate_personal_bearer(
     drop(permit);
     match result {
         Ok(Ok(credential)) => Ok(credential),
-        Ok(Err(error)) => Err(error.into_response()),
-        Err(_) => Err(crate::utils::error::AppError::retryable_unavailable(
-            "API token verification timed out; retry later",
-            1,
-        )
-        .into_response()),
+        Ok(Err(error)) => Err(Box::new(error.into_response())),
+        Err(_) => Err(Box::new(
+            crate::utils::error::AppError::retryable_unavailable(
+                "API token verification timed out; retry later",
+                1,
+            )
+            .into_response(),
+        )),
     }
 }
 
@@ -158,7 +164,7 @@ pub async fn global_middleware(
         .await
         {
             Ok(credential) => credential,
-            Err(response) => return response,
+            Err(response) => return *response,
         }
     } else {
         None
@@ -178,7 +184,7 @@ pub async fn global_middleware(
         .await
         {
             Ok(credential) => Some(credential),
-            Err(error) => return error.into_response(),
+            Err(response) => return *response,
         }
     } else {
         None
