@@ -5,6 +5,7 @@ import {
   guideTargetAcceptsKeyboardEntry,
   guideTargetHasKeyboardEntryFocus,
   guideTargetKeyboardActivation,
+  guideTargetMatchesActivation,
 } from './GuideSpotlightModal'
 
 test('keyboard focus activates text-entry guide targets but not action buttons', async () => {
@@ -67,26 +68,45 @@ test('keyboard focus activates text-entry guide targets but not action buttons',
   await browser.happyDOM.close()
 })
 
-test('keyboard focus on a label-associated control activates its visible guide target', async () => {
+test('segmented guide targets advance on the requested radio action, not focus alone', async () => {
   const browser = new Window({ url: 'https://rsctf.test/challenges' })
-  const input = browser.document.createElement('input')
-  input.type = 'radio'
-  input.id = 'proxy-mode-wsrx'
-  const label = browser.document.createElement('label')
-  label.htmlFor = input.id
-  const target = browser.document.createElement('span')
+  const target = browser.document.createElement('div')
   target.dataset.guide = 'wsrx-local-mode'
-  label.append(target)
-  browser.document.body.append(input, label)
+  target.dataset.guideValue = 'wsrx'
 
-  input.focus()
+  const localInput = browser.document.createElement('input')
+  localInput.type = 'radio'
+  localInput.id = 'proxy-mode-wsrx'
+  localInput.value = 'wsrx'
+  const localLabel = browser.document.createElement('label')
+  localLabel.htmlFor = localInput.id
+  const localText = browser.document.createElement('span')
+  localLabel.append(localText)
+
+  const wssInput = browser.document.createElement('input')
+  wssInput.type = 'radio'
+  wssInput.id = 'proxy-mode-wss'
+  wssInput.value = 'wss'
+  const wssLabel = browser.document.createElement('label')
+  wssLabel.htmlFor = wssInput.id
+  const wssText = browser.document.createElement('span')
+  wssLabel.append(wssText)
+
+  target.append(localInput, localLabel, wssInput, wssLabel)
+  browser.document.body.append(target)
+
+  localInput.focus()
   assert.equal(
     guideTargetKeyboardActivation(
       target as unknown as HTMLElement,
       browser.document.activeElement as unknown as Element
     ),
-    'wsrx-local-mode'
+    undefined
   )
+  assert.equal(guideTargetMatchesActivation(target as unknown as HTMLElement, localInput), true)
+  assert.equal(guideTargetMatchesActivation(target as unknown as HTMLElement, localText), true)
+  assert.equal(guideTargetMatchesActivation(target as unknown as HTMLElement, wssInput), false)
+  assert.equal(guideTargetMatchesActivation(target as unknown as HTMLElement, wssText), false)
 
   await browser.happyDOM.close()
 })

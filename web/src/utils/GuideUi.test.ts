@@ -179,6 +179,7 @@ test('delivery tutorials follow the real static, direct, VPN, and WSRX controls'
   assert.match(provider, /WSS URL is not a netcat address/)
   assert.match(instanceEntry, /data-guide="wsrx-setup"/)
   assert.match(instanceEntry, /data-guide="wsrx-local-mode"/)
+  assert.match(instanceEntry, /data-guide="wsrx-local-mode"[\s\S]*data-guide-value="wsrx"/)
   assert.match(instanceEntry, /data-guide="instance-copy"/)
   assert.match(instanceEntry, /descriptionProps=\{isPlatformProxy \? \{ component: 'div' \} : undefined\}/)
   assert.match(challengeModalShell, /withCloseButton = true/)

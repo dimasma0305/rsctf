@@ -4,9 +4,9 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   DEFAULT_PROXY_ENTRY_MODE,
+  getLocalWsrxTunnelAction,
   getWsrxTunnelPhase,
   shouldConnectLocalWsrx,
-  shouldCreateLocalWsrxTunnel,
 } from './WsrxTunnel'
 
 const base = {
@@ -48,18 +48,22 @@ test('missing, failed, and disconnected tunnels never appear ready', () => {
   assert.equal(getWsrxTunnelPhase({ ...base, wsrxState: WsrxState.Pending }), 'authorization')
 })
 
-test('a local listener is created only for an explicit mode without an existing tunnel', () => {
+test('local listener lifecycle creates, reuses, and rebinds the requested scope', () => {
   const intent = {
     mode: 'wsrx' as const,
     state: WsrxState.Usable,
     remoteEntry: base.remoteEntry,
+    allowLan: false,
   }
 
-  assert.equal(shouldCreateLocalWsrxTunnel(intent), true)
-  assert.equal(shouldCreateLocalWsrxTunnel({ ...intent, mode: 'wss' }), false)
-  assert.equal(shouldCreateLocalWsrxTunnel({ ...intent, state: WsrxState.Invalid }), false)
-  assert.equal(shouldCreateLocalWsrxTunnel({ ...intent, remoteEntry: '' }), false)
-  assert.equal(shouldCreateLocalWsrxTunnel({ ...intent, localEntry: '127.0.0.1:31337' }), false)
+  assert.equal(getLocalWsrxTunnelAction(intent), 'create')
+  assert.equal(getLocalWsrxTunnelAction({ ...intent, mode: 'wss' }), 'idle')
+  assert.equal(getLocalWsrxTunnelAction({ ...intent, state: WsrxState.Invalid }), 'idle')
+  assert.equal(getLocalWsrxTunnelAction({ ...intent, remoteEntry: '' }), 'idle')
+  assert.equal(getLocalWsrxTunnelAction({ ...intent, localEntry: '127.0.0.1:31337' }), 'reuse')
+  assert.equal(getLocalWsrxTunnelAction({ ...intent, localEntry: '0.0.0.0:31337' }), 'rebind')
+  assert.equal(getLocalWsrxTunnelAction({ ...intent, allowLan: true, localEntry: '0.0.0.0:31337' }), 'reuse')
+  assert.equal(getLocalWsrxTunnelAction({ ...intent, allowLan: true, localEntry: '127.0.0.1:31337' }), 'rebind')
 })
 
 test('instance UI listens for daemon updates and exposes WSS only through the explicit mode', () => {
@@ -71,7 +75,9 @@ test('instance UI listens for daemon updates and exposes WSS only through the ex
   assert.match(entry, /setInterval\(\(\) => void wsrx\.sync\(\)/)
   assert.match(entry, /isWssMode \? wsrxRemoteEntry : localEntry/)
   assert.match(entry, /value=\{proxyEntryMode\}/)
-  assert.match(entry, /shouldCreateLocalWsrxTunnel\(/)
+  assert.match(entry, /getLocalWsrxTunnelAction\(/)
+  assert.match(entry, /action === 'reuse'[\s\S]*?setTunnelRequestComplete\(true\)/)
+  assert.match(entry, /action === 'rebind'[\s\S]*?await wsrx\.delete\(localTraffic\.local\)/)
   assert.match(entry, /await wsrx\.delete\(localTraffic\.local\)/)
 })
 

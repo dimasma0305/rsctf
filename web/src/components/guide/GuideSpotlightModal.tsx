@@ -57,10 +57,21 @@ export const guideTargetHasKeyboardEntryFocus = (element: HTMLElement, activeEle
   Boolean(activeElement && (element === activeElement || element.contains(activeElement)))
 
 export const guideTargetKeyboardActivation = (element: HTMLElement, activeElement: Element | null) =>
-  guideTargetHasKeyboardEntryFocus(element, activeElement) ||
-  (activeElement !== null && element.closest<HTMLLabelElement>('label')?.control === activeElement)
-    ? element.dataset.guide
-    : undefined
+  guideTargetHasKeyboardEntryFocus(element, activeElement) ? element.dataset.guide : undefined
+
+export const guideTargetMatchesActivation = (element: HTMLElement, eventTarget: EventTarget | null) => {
+  const view = element.ownerDocument.defaultView
+  if (!view || !(eventTarget instanceof view.Node) || !element.contains(eventTarget)) return false
+
+  const requiredValue = element.dataset.guideValue
+  if (!requiredValue) return true
+  if (!(eventTarget instanceof view.Element)) return false
+
+  const control = eventTarget.matches('input')
+    ? (eventTarget as HTMLInputElement)
+    : eventTarget.closest<HTMLLabelElement>('label')?.control
+  return control instanceof view.HTMLInputElement && control.value === requiredValue
+}
 
 const renderedTargets = (selector?: string) => {
   if (!selector) return null
@@ -382,7 +393,7 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
 
     const activatedTarget = (eventTarget: EventTarget | null) => {
       const element = visibleTarget(targetSelector)
-      if (!element || !(eventTarget instanceof Node) || !element.contains(eventTarget)) return null
+      if (!element || !guideTargetMatchesActivation(element, eventTarget)) return null
 
       return element
     }

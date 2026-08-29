@@ -26,9 +26,9 @@ import { getServerNowMilliseconds, useServerClockOffset, useServerClockTimeout, 
 import { getProxyUrl as getProxyEntry } from '@Utils/Shared'
 import {
   DEFAULT_PROXY_ENTRY_MODE,
+  getLocalWsrxTunnelAction,
   getWsrxTunnelPhase,
   shouldConnectLocalWsrx,
-  shouldCreateLocalWsrxTunnel,
   type ProxyEntryMode,
   type WsrxRefreshSource,
 } from '@Utils/WsrxTunnel'
@@ -209,21 +209,32 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const localTraffic = wsrxInstances.find((traffic) => traffic.remote === wsrxRemoteEntry)
 
   useEffect(() => {
-    if (
-      !shouldCreateLocalWsrxTunnel({
-        mode: proxyEntryMode,
-        state: wsrxState,
-        remoteEntry: wsrxRemoteEntry,
-        localEntry: localTraffic?.local,
-      })
-    )
+    const action = getLocalWsrxTunnelAction({
+      mode: proxyEntryMode,
+      state: wsrxState,
+      remoteEntry: wsrxRemoteEntry,
+      localEntry: localTraffic?.local,
+      allowLan: wsrxOptions.allowLan,
+    })
+    if (action === 'idle') return
+    if (action === 'reuse') {
+      setTunnelRequestComplete(true)
+      setTunnelRequestFailed(false)
       return
+    }
 
     const localAddr = wsrxOptions.allowLan ? '0.0.0.0:0' : '127.0.0.1:0'
     let active = true
+    setTunnelRequestComplete(false)
+    setTunnelRequestFailed(false)
 
     const requestProxy = async () => {
       try {
+        if (action === 'rebind' && localTraffic?.local) {
+          await wsrx.delete(localTraffic.local)
+          return
+        }
+
         await wsrx.add({
           label,
           remote: wsrxRemoteEntry,
@@ -367,6 +378,8 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
           isPlatformProxy && (
             <Stack gap="xs" data-guide="wsrx-setup">
               <SegmentedControl
+                data-guide="wsrx-local-mode"
+                data-guide-value="wsrx"
                 value={proxyEntryMode}
                 onChange={(value) => {
                   const mode = value as ProxyEntryMode
@@ -375,7 +388,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
                 }}
                 data={[
                   {
-                    label: <span data-guide="wsrx-local-mode">{t('wsrx.mode.local')}</span>,
+                    label: t('wsrx.mode.local'),
                     value: 'wsrx',
                   },
                   { label: t('wsrx.mode.wss'), value: 'wss' },

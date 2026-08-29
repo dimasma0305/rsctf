@@ -17,15 +17,29 @@ interface WsrxConnectIntent {
 export const shouldConnectLocalWsrx = ({ mode, source, state }: WsrxConnectIntent) =>
   source === 'player' && mode === 'wsrx' && state !== WsrxState.Usable
 
-interface WsrxTunnelCreationIntent {
+export type LocalWsrxTunnelAction = 'idle' | 'create' | 'rebind' | 'reuse'
+
+interface LocalWsrxTunnelIntent {
   mode: ProxyEntryMode
   state: WsrxState
   remoteEntry: string
   localEntry?: string
+  allowLan: boolean
 }
 
-export const shouldCreateLocalWsrxTunnel = ({ mode, state, remoteEntry, localEntry }: WsrxTunnelCreationIntent) =>
-  mode === 'wsrx' && state === WsrxState.Usable && remoteEntry.length > 0 && !localEntry
+export const getLocalWsrxTunnelAction = ({
+  mode,
+  state,
+  remoteEntry,
+  localEntry,
+  allowLan,
+}: LocalWsrxTunnelIntent): LocalWsrxTunnelAction => {
+  if (mode !== 'wsrx' || state !== WsrxState.Usable || remoteEntry.length === 0) return 'idle'
+  if (!localEntry) return 'create'
+
+  const desiredHost = allowLan ? '0.0.0.0' : '127.0.0.1'
+  return localEntry.startsWith(`${desiredHost}:`) ? 'reuse' : 'rebind'
+}
 
 interface WsrxTunnelPhaseInput {
   isPlatformProxy: boolean
