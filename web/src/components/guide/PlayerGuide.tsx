@@ -644,13 +644,13 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
           title: t('guide.feature.wsrx.setup_title', 'Run WSRX on your computer'),
           body: t(
             'guide.feature.wsrx.setup_body',
-            'Keep Local WSRX selected. Download and start WebSocketReflectorX, then approve the browser connection if your computer asks.'
+            'Select Local WSRX. Download and start WebSocketReflectorX, then approve the browser connection if your computer asks.'
           ),
           note: t(
             'guide.feature.wsrx.setup_note',
-            'Connection tools in the navigation bar shows whether the local WSRX app is connected. The platform retries automatically after it starts.'
+            'Connection tools in the navigation bar shows whether the local WSRX app is connected. Use Rebuild local tunnel if it needs another attempt.'
           ),
-          targetSelector: '[data-guide="wsrx-download"]',
+          targetSelector: '[data-guide="wsrx-local-mode"]',
           advanceOnActivate: true,
         },
         {
@@ -662,7 +662,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
           ),
           note: t(
             'guide.feature.wsrx.copy_note',
-            'The WSS URL is not a netcat address. For nc, keep Local WSRX selected and use the 127.0.0.1 address.'
+            'The WSS URL is not a netcat address. For nc, select Local WSRX and use the 127.0.0.1 address.'
           ),
           targetSelector: '[data-guide="instance-copy"][data-entry-mode="wsrx"]',
           advanceOnActivate: true,
