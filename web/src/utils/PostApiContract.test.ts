@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const api = readFileSync('src/Api.ts', 'utf8')
+const adOps = readFileSync('src/pages/admin/games/[id]/AdOps.tsx', 'utf8')
 const newsPage = readFileSync('src/pages/posts/Index.tsx', 'utf8')
 
 const contractSection = (start: string, end: string) => {
@@ -25,4 +26,12 @@ test('legacy posts preserve the complete raw-array API while bounded consumers u
   assert.match(page, /useSWR<ArrayResponseOfPostInfoModel, any>/)
   assert.match(newsPage, /useInfoGetPostsPage\(/)
   assert.doesNotMatch(newsPage, /useInfoGetPosts\(/)
+})
+
+test('A&D container reconcile supplies a fresh idempotency key', () => {
+  const ensure = contractSection('editAdEnsureContainers: (', 'editAdToggleScoringPause: (')
+
+  assert.match(ensure, /operationId: string/)
+  assert.match(ensure, /headers: \{ "Idempotency-Key": operationId \}/)
+  assert.match(adOps, /editAdEnsureContainers\(numId, createUuid\(\)\)/)
 })

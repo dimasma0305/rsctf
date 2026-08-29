@@ -65,6 +65,7 @@ import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
 import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
+import { createUuid } from '@Utils/Uuid'
 import { highlight } from '@Utils/marked/ShikiExtension'
 import { sanitizeMarkdownHtml } from '@Utils/sanitize'
 import {
@@ -949,7 +950,7 @@ const AdOps: FC = () => {
   const ensureContainers = async () => {
     setBusy(true)
     try {
-      await api.edit.editAdEnsureContainers(numId)
+      await api.edit.editAdEnsureContainers(numId, createUuid())
       showNotification({
         color: 'teal',
         icon: <Icon path={mdiCheck} size={1} />,

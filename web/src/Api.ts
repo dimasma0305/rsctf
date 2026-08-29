@@ -7602,10 +7602,11 @@ export class Api<
      * @name EditAdEnsureContainers
      * @request POST:/api/edit/games/{id}/ad/EnsureContainers
      */
-    editAdEnsureContainers: (id: number, params: RequestParams = {}) =>
+    editAdEnsureContainers: (id: number, operationId: string, params: RequestParams = {}) =>
       this.request<void, RequestResponse>({
         path: `/api/edit/games/${id}/ad/EnsureContainers`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         ...params,
       }),
 
