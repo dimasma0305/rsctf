@@ -14,7 +14,7 @@ import misc from '@Styles/Misc.module.css'
  * Wsrx's state will be managed by this component.
  */
 export const WsrxManager: FC = () => {
-  const { wsrxState, wsrxOptions, doWsrxConnect, setWsrxOptions } = useWsrx()
+  const { wsrxState, wsrxOptions, doWsrxConnect, applyWsrxOptions } = useWsrx()
   const { t } = useTranslation()
 
   const [showConfig, setShowConfig] = useState(false)
@@ -22,10 +22,10 @@ export const WsrxManager: FC = () => {
   const [debounced] = useDebouncedValue(option, 300)
 
   useEffect(() => {
-    if (debounced && debounced !== wsrxOptions) {
-      setWsrxOptions(debounced)
-    }
-  }, [debounced, setWsrxOptions])
+    if (debounced.api === wsrxOptions.api && debounced.allowLan === wsrxOptions.allowLan) return
+
+    applyWsrxOptions({ ...debounced, name: wsrxOptions.name })
+  }, [applyWsrxOptions, debounced, wsrxOptions])
 
   return (
     <Stack gap="xs">
