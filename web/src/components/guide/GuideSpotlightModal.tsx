@@ -57,7 +57,10 @@ export const guideTargetHasKeyboardEntryFocus = (element: HTMLElement, activeEle
   Boolean(activeElement && (element === activeElement || element.contains(activeElement)))
 
 export const guideTargetKeyboardActivation = (element: HTMLElement, activeElement: Element | null) =>
-  guideTargetHasKeyboardEntryFocus(element, activeElement) ? element.dataset.guide : undefined
+  guideTargetHasKeyboardEntryFocus(element, activeElement) ||
+  (activeElement !== null && element.closest<HTMLLabelElement>('label')?.control === activeElement)
+    ? element.dataset.guide
+    : undefined
 
 const renderedTargets = (selector?: string) => {
   if (!selector) return null

@@ -52,6 +52,7 @@ test('instance UI listens for daemon updates and exposes WSS only through the ex
   assert.match(entry, /setInterval\(\(\) => void wsrx\.sync\(\)/)
   assert.match(entry, /isWssMode \? wsrxRemoteEntry : localEntry/)
   assert.match(entry, /value=\{proxyEntryMode\}/)
+  assert.match(entry, /if \(proxyEntryMode !== 'wsrx' \|\| !wsrxRemoteEntry \|\| !isWsrxUsable\) return/)
   assert.match(entry, /await wsrx\.delete\(localTraffic\.local\)/)
 })
 

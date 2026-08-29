@@ -66,3 +66,27 @@ test('keyboard focus activates text-entry guide targets but not action buttons',
 
   await browser.happyDOM.close()
 })
+
+test('keyboard focus on a label-associated control activates its visible guide target', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/challenges' })
+  const input = browser.document.createElement('input')
+  input.type = 'radio'
+  input.id = 'proxy-mode-wsrx'
+  const label = browser.document.createElement('label')
+  label.htmlFor = input.id
+  const target = browser.document.createElement('span')
+  target.dataset.guide = 'wsrx-local-mode'
+  label.append(target)
+  browser.document.body.append(input, label)
+
+  input.focus()
+  assert.equal(
+    guideTargetKeyboardActivation(
+      target as unknown as HTMLElement,
+      browser.document.activeElement as unknown as Element
+    ),
+    'wsrx-local-mode'
+  )
+
+  await browser.happyDOM.close()
+})

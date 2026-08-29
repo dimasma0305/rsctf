@@ -209,7 +209,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const localTraffic = wsrxInstances.find((traffic) => traffic.remote === wsrxRemoteEntry)
 
   useEffect(() => {
-    if (!wsrxRemoteEntry || !isWsrxUsable) return
+    if (proxyEntryMode !== 'wsrx' || !wsrxRemoteEntry || !isWsrxUsable) return
 
     const localAddr = wsrxOptions.allowLan ? '0.0.0.0:0' : '127.0.0.1:0'
     let active = true
@@ -235,7 +235,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     return () => {
       active = false
     }
-  }, [wsrx, wsrxRemoteEntry, isWsrxUsable, label, t, wsrxOptions.allowLan])
+  }, [wsrx, wsrxRemoteEntry, isWsrxUsable, label, proxyEntryMode, t, wsrxOptions.allowLan])
 
   useEffect(() => {
     setTunnelCheckExpired(false)

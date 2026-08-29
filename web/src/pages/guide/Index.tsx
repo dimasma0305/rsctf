@@ -425,31 +425,31 @@ const Guide: FC = () => {
             </Card>
             <Card withBorder padding="md">
               <Group justify="space-between" gap="sm" wrap="wrap">
-                <Text fw={700}>{t('guide.page.play.wsrx_title', 'Platform Proxy with Local WSRX')}</Text>
+                <Text fw={700}>{t('guide.page.play.wsrx_title', 'Platform Proxy')}</Text>
                 {config.portMapping === ContainerPortMappingType.PlatformProxy && (
-                  <Badge variant="light">{t('guide.page.play.platform_default', 'Platform default')}</Badge>
+                  <Badge variant="light">{t('guide.page.play.wss_default', 'WSS default')}</Badge>
                 )}
               </Group>
               <List type="ordered" spacing={4} size="sm" mt="xs">
                 <List.Item>
                   {t(
-                    'guide.page.play.wsrx_install',
-                    'Download and run WebSocketReflectorX, then select Local WSRX in the instance panel.'
+                    'guide.page.play.wsrx_wss',
+                    'The instance panel starts in WSS mode. Copy its short-lived wss:// URL only when your client supports WebSockets.'
                   )}
                 </List.Item>
                 <List.Item>
-                  {t('guide.page.play.wsrx_ready', 'Wait for Tunnel ready and copy the local 127.0.0.1 address.')}
+                  {t(
+                    'guide.page.play.wsrx_install',
+                    'For a normal TCP client such as netcat, download and run WebSocketReflectorX, then select Local WSRX.'
+                  )}
+                </List.Item>
+                <List.Item>
+                  {t('guide.page.play.wsrx_ready', 'Wait for Tunnel ready, then copy the local 127.0.0.1 address.')}
                 </List.Item>
                 <List.Item>
                   {t(
                     'guide.page.play.wsrx_use',
-                    'Use nc 127.0.0.1 <port> for TCP. A wss:// URL is for WebSocket clients and cannot be passed directly to netcat.'
-                  )}
-                </List.Item>
-                <List.Item>
-                  {t(
-                    'guide.page.play.wsrx_wss',
-                    'Choose WSS only when your tool supports WebSockets and you intentionally need to copy the raw wss:// address.'
+                    'Use nc 127.0.0.1 <port> for TCP. Do not pass the raw wss:// URL to netcat.'
                   )}
                 </List.Item>
               </List>
