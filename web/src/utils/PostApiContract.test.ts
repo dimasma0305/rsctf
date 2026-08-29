@@ -28,10 +28,15 @@ test('legacy posts preserve the complete raw-array API while bounded consumers u
   assert.doesNotMatch(newsPage, /useInfoGetPosts\(/)
 })
 
-test('A&D container reconcile supplies a fresh idempotency key', () => {
+test('A&D container reconcile supplies a retained idempotency key', () => {
   const ensure = contractSection('editAdEnsureContainers: (', 'editAdToggleScoringPause: (')
 
   assert.match(ensure, /operationId: string/)
   assert.match(ensure, /headers: \{ "Idempotency-Key": operationId \}/)
-  assert.match(adOps, /editAdEnsureContainers\(numId, createUuid\(\)\)/)
+  assert.match(adOps, /const operationId = ensureContainersKey\.current!\.claim\(\)/)
+  assert.match(adOps, /editAdEnsureContainers\(numId, operationId\)/)
+  assert.match(
+    adOps,
+    /await api\.edit\.editAdEnsureContainers[\s\S]*ensureContainersKey\.current!\.complete\(operationId\)/
+  )
 })

@@ -56,16 +56,16 @@ import {
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useEffect, useMemo, useState } from 'react'
+import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
 import { KothOpsPanel } from '@Components/admin/KothOpsPanel'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
 import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import { createUuid } from '@Utils/Uuid'
 import { highlight } from '@Utils/marked/ShikiExtension'
 import { sanitizeMarkdownHtml } from '@Utils/sanitize'
 import {
@@ -867,6 +867,8 @@ const AdOps: FC = () => {
   const modals = useModals()
   const [busy, setBusy] = useState(false)
   const [busyHill, setBusyHill] = useState<number | null>(null)
+  const ensureContainersKey = useRef<RetryableOperationKey | null>(null)
+  ensureContainersKey.current ??= new RetryableOperationKey()
   // Which side of the console is showing. A&D vs KotH challenges are disjoint
   // sets in a game; the switch only appears when both exist (see showViewSwitch).
   const [view, setView] = useState<'ad' | 'koth'>('ad')
@@ -948,9 +950,11 @@ const AdOps: FC = () => {
   }
 
   const ensureContainers = async () => {
+    const operationId = ensureContainersKey.current!.claim()
     setBusy(true)
     try {
-      await api.edit.editAdEnsureContainers(numId, createUuid())
+      await api.edit.editAdEnsureContainers(numId, operationId)
+      ensureContainersKey.current!.complete(operationId)
       showNotification({
         color: 'teal',
         icon: <Icon path={mdiCheck} size={1} />,
