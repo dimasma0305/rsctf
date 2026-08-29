@@ -2,7 +2,12 @@ import { WsrxState } from '@xdsec/wsrx'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { DEFAULT_PROXY_ENTRY_MODE, getWsrxTunnelPhase, shouldConnectLocalWsrx } from './WsrxTunnel'
+import {
+  DEFAULT_PROXY_ENTRY_MODE,
+  getWsrxTunnelPhase,
+  shouldConnectLocalWsrx,
+  shouldCreateLocalWsrxTunnel,
+} from './WsrxTunnel'
 
 const base = {
   isPlatformProxy: true,
@@ -43,6 +48,20 @@ test('missing, failed, and disconnected tunnels never appear ready', () => {
   assert.equal(getWsrxTunnelPhase({ ...base, wsrxState: WsrxState.Pending }), 'authorization')
 })
 
+test('a local listener is created only for an explicit mode without an existing tunnel', () => {
+  const intent = {
+    mode: 'wsrx' as const,
+    state: WsrxState.Usable,
+    remoteEntry: base.remoteEntry,
+  }
+
+  assert.equal(shouldCreateLocalWsrxTunnel(intent), true)
+  assert.equal(shouldCreateLocalWsrxTunnel({ ...intent, mode: 'wss' }), false)
+  assert.equal(shouldCreateLocalWsrxTunnel({ ...intent, state: WsrxState.Invalid }), false)
+  assert.equal(shouldCreateLocalWsrxTunnel({ ...intent, remoteEntry: '' }), false)
+  assert.equal(shouldCreateLocalWsrxTunnel({ ...intent, localEntry: '127.0.0.1:31337' }), false)
+})
+
 test('instance UI listens for daemon updates and exposes WSS only through the explicit mode', () => {
   const provider = readFileSync('src/components/WsrxProvider.tsx', 'utf8')
   const entry = readFileSync('src/components/InstanceEntry.tsx', 'utf8')
@@ -52,13 +71,14 @@ test('instance UI listens for daemon updates and exposes WSS only through the ex
   assert.match(entry, /setInterval\(\(\) => void wsrx\.sync\(\)/)
   assert.match(entry, /isWssMode \? wsrxRemoteEntry : localEntry/)
   assert.match(entry, /value=\{proxyEntryMode\}/)
-  assert.match(entry, /if \(proxyEntryMode !== 'wsrx' \|\| !wsrxRemoteEntry \|\| !isWsrxUsable\) return/)
+  assert.match(entry, /shouldCreateLocalWsrxTunnel\(/)
   assert.match(entry, /await wsrx\.delete\(localTraffic\.local\)/)
 })
 
 test('the optional local daemon is contacted only after an explicit player action', () => {
   const provider = readFileSync('src/components/WsrxProvider.tsx', 'utf8')
   const entry = readFileSync('src/components/InstanceEntry.tsx', 'utf8')
+  const manager = readFileSync('src/components/WsrxManager.tsx', 'utf8')
   const optionsEffect = provider.match(
     /useEffect\(\(\) => \{\s+if \(!wsrxOptions[\s\S]*?wsrx\.setOptions\(getWsrxConfig\(wsrxOptions\)\)[\s\S]*?\}, \[[^\]]+\]\)/
   )
@@ -72,4 +92,6 @@ test('the optional local daemon is contacted only after an explicit player actio
   assert.equal(shouldConnectLocalWsrx({ mode: 'wsrx', source: 'player', state: WsrxState.Usable }), false)
   assert.match(entry, /onRefreshProxyEntry\('automatic'\)/)
   assert.match(entry, /onRefreshProxyEntry\('player'\)/)
+  assert.match(manager, /applyWsrxOptions\(\{ \.\.\.debounced, name: wsrxOptions\.name \}\)/)
+  assert.match(provider, /const applyWsrxOptions = useCallback\([\s\S]*?doWsrxConnect\(\)/)
 })

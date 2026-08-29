@@ -28,6 +28,7 @@ import {
   DEFAULT_PROXY_ENTRY_MODE,
   getWsrxTunnelPhase,
   shouldConnectLocalWsrx,
+  shouldCreateLocalWsrxTunnel,
   type ProxyEntryMode,
   type WsrxRefreshSource,
 } from '@Utils/WsrxTunnel'
@@ -164,7 +165,6 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   // Platform-proxied instances can be used through the managed local WSRX
   // listener or by explicitly copying the short-lived WSS URL. Never present
   // the latter as though it were a netcat address.
-  const isWsrxUsable = isPlatformProxy && wsrxState === WsrxState.Usable
   const [proxyEntryMode, setProxyEntryMode] = useState<ProxyEntryMode>(DEFAULT_PROXY_ENTRY_MODE)
   const [wsrxRemoteEntry, setWsrxRemoteEntry] = useState('')
   const [capabilityExpiresAt, setCapabilityExpiresAt] = useState<number | null>(null)
@@ -209,7 +209,15 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const localTraffic = wsrxInstances.find((traffic) => traffic.remote === wsrxRemoteEntry)
 
   useEffect(() => {
-    if (proxyEntryMode !== 'wsrx' || !wsrxRemoteEntry || !isWsrxUsable) return
+    if (
+      !shouldCreateLocalWsrxTunnel({
+        mode: proxyEntryMode,
+        state: wsrxState,
+        remoteEntry: wsrxRemoteEntry,
+        localEntry: localTraffic?.local,
+      })
+    )
+      return
 
     const localAddr = wsrxOptions.allowLan ? '0.0.0.0:0' : '127.0.0.1:0'
     let active = true
@@ -235,7 +243,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     return () => {
       active = false
     }
-  }, [wsrx, wsrxRemoteEntry, isWsrxUsable, label, proxyEntryMode, t, wsrxOptions.allowLan])
+  }, [wsrx, wsrxRemoteEntry, wsrxState, label, localTraffic?.local, proxyEntryMode, t, wsrxOptions.allowLan])
 
   useEffect(() => {
     setTunnelCheckExpired(false)

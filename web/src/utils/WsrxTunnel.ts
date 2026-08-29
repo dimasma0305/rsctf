@@ -17,6 +17,16 @@ interface WsrxConnectIntent {
 export const shouldConnectLocalWsrx = ({ mode, source, state }: WsrxConnectIntent) =>
   source === 'player' && mode === 'wsrx' && state !== WsrxState.Usable
 
+interface WsrxTunnelCreationIntent {
+  mode: ProxyEntryMode
+  state: WsrxState
+  remoteEntry: string
+  localEntry?: string
+}
+
+export const shouldCreateLocalWsrxTunnel = ({ mode, state, remoteEntry, localEntry }: WsrxTunnelCreationIntent) =>
+  mode === 'wsrx' && state === WsrxState.Usable && remoteEntry.length > 0 && !localEntry
+
 interface WsrxTunnelPhaseInput {
   isPlatformProxy: boolean
   wsrxState: WsrxState

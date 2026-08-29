@@ -71,7 +71,7 @@ interface WsrxContextType {
   wsrxInstances: WsrxInstance[]
   wsrxOptions: CustomWsrxOptions
   doWsrxConnect: () => void
-  setWsrxOptions: (options: CustomWsrxOptions | ((prev: CustomWsrxOptions) => CustomWsrxOptions)) => void
+  applyWsrxOptions: (options: CustomWsrxOptions) => void
 }
 
 const WsrxContext = createContext<WsrxContextType | null>(null)
@@ -97,7 +97,7 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const [wsrxInstances, setWsrxInstances] = useState<WsrxInstance[]>([])
   const platformConfig = useConfig()
 
-  const [wsrxOptions, setWsrxOptions] = useLocalStorage<CustomWsrxOptions>({
+  const [wsrxOptions, persistWsrxOptions] = useLocalStorage<CustomWsrxOptions>({
     key: 'wsrx-options',
     defaultValue: DefaultWsrxOptions,
     getInitialValueInEffect: false,
@@ -117,6 +117,15 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     }
   }, 100)
 
+  const applyWsrxOptions = useCallback(
+    (options: CustomWsrxOptions) => {
+      wsrx.setOptions(getWsrxConfig(options))
+      persistWsrxOptions(options)
+      doWsrxConnect()
+    },
+    [doWsrxConnect, persistWsrxOptions, wsrx]
+  )
+
   useEffect(() => {
     if (!wsrxOptions || platformConfig.config.portMapping !== ContainerPortMappingType.PlatformProxy) return
 
@@ -126,7 +135,7 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   useEffect(() => {
     if (platformConfig?.config.title) {
       const newName = platformConfig.config.title + '::CTF'
-      setWsrxOptions((prevOptions) => {
+      persistWsrxOptions((prevOptions) => {
         if (prevOptions.name === newName) return prevOptions
         return {
           ...prevOptions,
@@ -134,7 +143,7 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         }
       })
     }
-  }, [platformConfig?.config.title, setWsrxOptions])
+  }, [platformConfig?.config.title, persistWsrxOptions])
 
   const updateState = useCallback((newState: WsrxState) => {
     setWsrxState((prev) => {
@@ -170,9 +179,9 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       wsrxInstances,
       wsrxOptions,
       doWsrxConnect,
-      setWsrxOptions,
+      applyWsrxOptions,
     }),
-    [wsrx, wsrxState, wsrxInstances, wsrxOptions, doWsrxConnect, setWsrxOptions]
+    [wsrx, wsrxState, wsrxInstances, wsrxOptions, doWsrxConnect, applyWsrxOptions]
   )
 
   return <WsrxContext.Provider value={contextValue}>{children}</WsrxContext.Provider>
