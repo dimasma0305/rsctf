@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { apiCollectionView, decodeApiCollection } from './ApiCollection'
+import { apiCollectionPageCount, apiCollectionView, decodeApiCollection } from './ApiCollection'
 
 test('API collections accept the released raw-array response', () => {
   const items = [{ id: 1 }, { id: 2 }]
@@ -41,4 +41,10 @@ test('a revalidation failure keeps a decoded cached collection visible', () => {
   assert.equal(apiCollectionView(ready, new Error('temporary failure')), 'stale')
   assert.equal(apiCollectionView({ status: 'loading' }, new Error('initial failure')), 'failed')
   assert.equal(apiCollectionView({ status: 'invalid' }, undefined), 'failed')
+})
+
+test('pagination does not clamp a requested page while its response is loading', () => {
+  assert.equal(apiCollectionPageCount({ status: 'loading' }, 20), undefined)
+  assert.equal(apiCollectionPageCount(decodeApiCollection([{ id: 1 }]), 20), undefined)
+  assert.equal(apiCollectionPageCount(decodeApiCollection({ data: [], length: 0, total: 41 }), 20), 3)
 })

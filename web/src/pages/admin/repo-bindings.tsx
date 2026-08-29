@@ -41,7 +41,7 @@ import { Link } from 'react-router'
 import useSWR from 'swr'
 import { AccessibleModal } from '@Components/AccessibleModal'
 import { AdminPage } from '@Components/admin/AdminPage'
-import { apiCollectionView, decodeApiCollection } from '@Utils/ApiCollection'
+import { apiCollectionPageCount, apiCollectionView, decodeApiCollection } from '@Utils/ApiCollection'
 import { showErrorMsg } from '@Utils/Shared'
 import api, { RepoBindingInfoModel, RepoBindingScanHistoryModel, RepoBindingScanResultModel } from '@Api'
 
@@ -68,13 +68,10 @@ const RepoBindings: FC = () => {
   const bindingCollection = decodeApiCollection<RepoBindingInfoModel>(bindingPayload)
   const bindings = bindingCollection.status === 'ready' ? bindingCollection.items : undefined
   const bindingView = apiCollectionView(bindingCollection, bindingRequestError)
-  const bindingPageCount =
-    bindingCollection.status === 'ready' && bindingCollection.paginated
-      ? Math.max(1, Math.ceil(bindingCollection.total / BINDING_PAGE_SIZE))
-      : 1
+  const bindingPageCount = apiCollectionPageCount(bindingCollection, BINDING_PAGE_SIZE)
 
   useEffect(() => {
-    if (bindingPage <= bindingPageCount) return
+    if (bindingPageCount === undefined || bindingPage <= bindingPageCount) return
     setBindingPage(bindingPageCount)
   }, [bindingPage, bindingPageCount])
 
@@ -602,7 +599,7 @@ const RepoBindings: FC = () => {
                   </Stack>
                 </Paper>
               ))}
-              {bindingCollection.status === 'ready' && bindingCollection.paginated && bindingPageCount > 1 && (
+              {bindingPageCount !== undefined && bindingPageCount > 1 && (
                 <Pagination
                   value={bindingPage}
                   onChange={setBindingPage}

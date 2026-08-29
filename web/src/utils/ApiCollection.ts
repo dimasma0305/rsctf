@@ -39,3 +39,10 @@ export function apiCollectionView<T>(collection: ApiCollectionResult<T>, request
   if (collection.status === 'invalid' || requestError !== undefined) return 'failed'
   return 'loading'
 }
+
+/** Return a page count only when a server pagination response is available. */
+export function apiCollectionPageCount<T>(collection: ApiCollectionResult<T>, pageSize: number): number | undefined {
+  if (collection.status !== 'ready' || !collection.paginated) return undefined
+  if (!Number.isSafeInteger(pageSize) || pageSize <= 0) return undefined
+  return Math.max(1, Math.ceil(collection.total / pageSize))
+}
