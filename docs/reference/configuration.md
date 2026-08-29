@@ -94,8 +94,11 @@ validation and must retain the same short authorization window.
 | `RSCTF_BOOTSTRAP_TOKEN` | Unset | 32+ character secret required for the first administrator while the user table is empty; ignored for later registrations |
 | `RSCTF_EMAIL_CONFIRM` | `false` | Require email-confirmation behavior for later accounts |
 | `RSCTF_ACTIVE_ON_REGISTER` | `true` | Make later registered users active immediately |
+| `RSCTF_USE_CAPTCHA` | `false` | Startup fallback for CAPTCHA enforcement. The installer writes the disabled default explicitly; a policy saved in the Admin UI takes precedence |
 
-`RSCTF_ADMIN_CONFIRM` and `RSCTF_USE_CAPTCHA` are loaded into one startup config structure, but the current live registration/captcha paths do not consistently consume them. Configure the active account/CAPTCHA policy in the Admin UI and test it with a normal account.
+`RSCTF_ADMIN_CONFIRM` is loaded into the startup configuration, but the current
+live registration path does not consume it. Configure account approval with the
+active account policy in the Admin UI and test it with a normal account.
 
 ## Dynamic containers
 

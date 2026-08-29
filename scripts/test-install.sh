@@ -108,6 +108,7 @@ test "$local_identity_key" != "$local_jwt"
 grep -Fxq 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_DOCKER_PROXY_BIND=172.31.253.1' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_CHALLENGE_PROXY_BRIDGE=rsctf-proxy0' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_USE_CAPTCHA=false' "$local_checkout/deploy/.env"
 grep -Fq 'The first-administrator setup token is stored only in' \
   "$TEMP_DIRECTORY/local.out"
 
@@ -131,6 +132,7 @@ test "$identity_key" != "$jwt"
 grep -Fxq 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24' "$target/deploy/.env"
 grep -Fxq 'RSCTF_DOCKER_PROXY_BIND=172.31.253.1' "$target/deploy/.env"
 grep -Fxq 'RSCTF_CHALLENGE_PROXY_BRIDGE=rsctf-proxy0' "$target/deploy/.env"
+grep -Fxq 'RSCTF_USE_CAPTCHA=false' "$target/deploy/.env"
 for helper in \
   compose-maintenance-cutover.sh \
   kubernetes-maintenance-cutover.sh \

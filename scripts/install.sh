@@ -602,6 +602,7 @@ write_new_environment() {
     printf 'RSCTF_DOCKER_SCOPE=%s\n' "$(random_hex 16)"
     printf '\nRSCTF_PUBLIC_URL=%s\n' "$PUBLIC_URL"
     printf 'RSCTF_COOKIE_SECURE=%s\n' "$(cookie_secure_value)"
+    printf 'RSCTF_USE_CAPTCHA=false\n'
     printf 'RSCTF_HTTP_BIND_IP=%s\n' "$HTTP_BIND_IP"
     printf 'RSCTF_HTTP_PORT=%s\n' "$HTTP_PORT"
     printf 'RSCTF_TRUSTED_PROXY_CIDRS=%s\n' "$TRUSTED_PROXY_CIDRS"
@@ -650,6 +651,7 @@ complete_existing_environment() {
   append_env_if_missing RSCTF_DOCKER_SCOPE "$(random_hex 16)"
   append_env_if_missing RSCTF_PUBLIC_URL "$PUBLIC_URL"
   append_env_if_missing RSCTF_COOKIE_SECURE "$(cookie_secure_value)"
+  append_env_if_missing RSCTF_USE_CAPTCHA false
   append_env_if_missing RSCTF_HTTP_BIND_IP "$HTTP_BIND_IP"
   append_env_if_missing RSCTF_HTTP_PORT "$HTTP_PORT"
   if [[ "$(env_get COMPOSE_FILE)" == *compose.caddy.yml* && -z "$TRUSTED_PROXY_CIDRS" ]]; then
