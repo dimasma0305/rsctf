@@ -1,7 +1,9 @@
 import {
   ActionIcon,
+  Alert,
   Anchor,
   Badge,
+  Box,
   Button,
   Center,
   Code,
@@ -9,6 +11,7 @@ import {
   Group,
   Loader,
   NumberInput,
+  Pagination,
   Paper,
   SimpleGrid,
   Stack,
@@ -18,9 +21,10 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core'
-import { Modal } from '@mantine/core'
+import { useMediaQuery } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import {
+  mdiAlertCircleOutline,
   mdiCheck,
   mdiClockOutline,
   mdiDeleteOutline,
@@ -33,21 +37,104 @@ import {
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
+import useSWR from 'swr'
+import { AccessibleModal } from '@Components/AccessibleModal'
 import { AdminPage } from '@Components/admin/AdminPage'
+import { apiCollectionPageCount, apiCollectionView, decodeApiCollection } from '@Utils/ApiCollection'
 import { showErrorMsg } from '@Utils/Shared'
 import api, { RepoBindingInfoModel, RepoBindingScanHistoryModel, RepoBindingScanResultModel } from '@Api'
 
 dayjs.extend(relativeTime)
 
+const BINDING_PAGE_SIZE = 20
+const HISTORY_PAGE_SIZE = 20
+
+interface ResponsivePaginationProps {
+  value: number
+  onChange: (page: number) => void
+  total: number
+  label: string
+}
+
+const ResponsivePagination: FC<ResponsivePaginationProps> = ({ value, onChange, total, label }) => {
+  const { t } = useTranslation()
+  const compact = useMediaQuery('(max-width: 35.99em)', false, { getInitialValueInEffect: false })
+
+  return (
+    <Box component="nav" aria-label={label} w="100%" maw="100%">
+      <Pagination.Root
+        value={value}
+        onChange={onChange}
+        total={total}
+        siblings={compact ? 0 : 1}
+        boundaries={compact ? 0 : 1}
+        size="sm"
+        getItemProps={(page) => ({
+          'aria-label': t('common.pagination.page', {
+            defaultValue: 'Page {{page}}',
+            page,
+          }),
+        })}
+      >
+        <Group justify={compact ? 'center' : 'flex-end'} gap="xs" wrap="nowrap">
+          <Pagination.Previous
+            aria-label={t('common.pagination.previous', 'Previous page')}
+            title={t('common.pagination.previous', 'Previous page')}
+          />
+          {compact ? (
+            <Text size="sm" fw={700} miw="5.75rem" ta="center" aria-live="polite">
+              {t('common.pagination.page_of', {
+                defaultValue: 'Page {{page}} of {{total}}',
+                page: value,
+                total,
+              })}
+            </Text>
+          ) : (
+            <Pagination.Items />
+          )}
+          <Pagination.Next
+            aria-label={t('common.pagination.next', 'Next page')}
+            title={t('common.pagination.next', 'Next page')}
+          />
+        </Group>
+      </Pagination.Root>
+    </Box>
+  )
+}
+
 const RepoBindings: FC = () => {
   const { t } = useTranslation()
+  const [bindingPage, setBindingPage] = useState(1)
+  const [bindingKnownPageCount, setBindingKnownPageCount] = useState<number>()
+  const bindingQuery = { count: BINDING_PAGE_SIZE, skip: (bindingPage - 1) * BINDING_PAGE_SIZE }
   // 3s refresh keeps the CurrentActivity field live during a running
   // scan without hammering the backend. Idle pages get a stable
   // response from the DB query and SWR dedupes; cost is negligible.
-  const { data: bindings, mutate } = api.admin.useAdminListRepoBindings({ refreshInterval: 3000 })
+  const {
+    data: bindingPayload,
+    error: bindingRequestError,
+    mutate,
+  } = useSWR<unknown>(['/api/admin/repobindings', bindingQuery], {
+    keepPreviousData: false,
+    refreshInterval: 3000,
+  })
+  const bindingCollection = decodeApiCollection<RepoBindingInfoModel>(bindingPayload)
+  const bindings = bindingCollection.status === 'ready' ? bindingCollection.items : undefined
+  const bindingView = apiCollectionView(bindingCollection, bindingRequestError)
+  const bindingPageCount = apiCollectionPageCount(bindingCollection, BINDING_PAGE_SIZE)
+
+  useEffect(() => {
+    if (bindingPageCount === undefined || bindingPage <= bindingPageCount) return
+    setBindingPage(bindingPageCount)
+  }, [bindingPage, bindingPageCount])
+
+  useEffect(() => {
+    if (bindingCollection.status !== 'ready') return
+    setBindingKnownPageCount(bindingPageCount)
+  }, [bindingCollection.status, bindingPageCount])
 
   const [repoUrl, setRepoUrl] = useState('')
   const [refValue, setRefValue] = useState('')
@@ -58,6 +145,25 @@ const RepoBindings: FC = () => {
   const [lastResult, setLastResult] = useState<RepoBindingScanResultModel | null>(null)
   const [historyTarget, setHistoryTarget] = useState<RepoBindingInfoModel | null>(null)
   const [history, setHistory] = useState<RepoBindingScanHistoryModel[] | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyLoadFailed, setHistoryLoadFailed] = useState(false)
+  const [historyPage, setHistoryPage] = useState(1)
+  const [historyRequestedPage, setHistoryRequestedPage] = useState(1)
+  const [historyTotal, setHistoryTotal] = useState(0)
+  const [historyPaginated, setHistoryPaginated] = useState(false)
+  const historyOwner = useRef<{ generation: number; controller: AbortController | null }>({
+    generation: 0,
+    controller: null,
+  })
+
+  useEffect(
+    () => () => {
+      historyOwner.current.generation += 1
+      historyOwner.current.controller?.abort()
+      historyOwner.current.controller = null
+    },
+    []
+  )
 
   const flash = (r: RepoBindingScanResultModel) => {
     setLastResult(r)
@@ -110,15 +216,57 @@ const RepoBindings: FC = () => {
     }
   }
 
-  const onOpenHistory = async (b: RepoBindingInfoModel) => {
+  const loadHistory = async (b: RepoBindingInfoModel, page: number) => {
+    const generation = historyOwner.current.generation + 1
+    historyOwner.current.generation = generation
+    historyOwner.current.controller?.abort()
+    const controller = new AbortController()
+    historyOwner.current.controller = controller
+    setHistoryRequestedPage(page)
+    setHistoryLoading(true)
+    setHistoryLoadFailed(false)
+    try {
+      const resp = await api.request<unknown>({
+        path: `/api/admin/repobindings/${b.id}/scans`,
+        method: 'GET',
+        query: { count: HISTORY_PAGE_SIZE, skip: (page - 1) * HISTORY_PAGE_SIZE },
+        format: 'json',
+        signal: controller.signal,
+      })
+      if (controller.signal.aborted || historyOwner.current.generation !== generation) return
+      const result = decodeApiCollection<RepoBindingScanHistoryModel>(resp.data)
+      if (result.status !== 'ready') {
+        setHistory((current) => current ?? [])
+        setHistoryLoadFailed(true)
+        return
+      }
+      setHistory(result.items)
+      setHistoryPage(page)
+      setHistoryTotal(result.total)
+      setHistoryPaginated(result.paginated)
+    } catch (e) {
+      if (controller.signal.aborted || historyOwner.current.generation !== generation) return
+      setHistory((current) => current ?? [])
+      setHistoryLoadFailed(true)
+      showErrorMsg(e, t)
+    } finally {
+      if (historyOwner.current.generation === generation) {
+        historyOwner.current.controller = null
+        setHistoryLoading(false)
+      }
+    }
+  }
+
+  const onOpenHistory = (b: RepoBindingInfoModel) => {
     setHistoryTarget(b)
     setHistory(null)
-    try {
-      const resp = await api.admin.adminGetRepoBindingScans(b.id)
-      setHistory(resp.data)
-    } catch (e) {
-      showErrorMsg(e, t)
-    }
+    setHistoryLoading(true)
+    setHistoryLoadFailed(false)
+    setHistoryPage(1)
+    setHistoryRequestedPage(1)
+    setHistoryTotal(0)
+    setHistoryPaginated(false)
+    void loadHistory(b, 1)
   }
 
   const onTogglePause = async (b: RepoBindingInfoModel) => {
@@ -169,7 +317,7 @@ const RepoBindings: FC = () => {
   }
 
   return (
-    <AdminPage isLoading={!bindings}>
+    <AdminPage isLoading={bindingView === 'loading'}>
       <Container size="xl" mt="md" px={0} w="100%" maw="100%">
         <Stack gap="lg" pb={48}>
           <Stack gap={0}>
@@ -295,7 +443,50 @@ const RepoBindings: FC = () => {
             </Paper>
           )}
 
-          {!bindings || bindings.length === 0 ? (
+          {bindingView === 'stale' && (
+            <Alert
+              color="yellow"
+              icon={<Icon path={mdiAlertCircleOutline} size={1} />}
+              title={t(
+                'admin.content.repo_binding.refresh_failed_title',
+                'Refresh failed — showing the last repository bindings'
+              )}
+              role="status"
+            >
+              <Group justify="space-between" align="center" wrap="wrap">
+                <Text size="sm">
+                  {t(
+                    'admin.content.repo_binding.refresh_failed',
+                    'The latest refresh failed. Existing binding actions remain available.'
+                  )}
+                </Text>
+                <Button size="xs" variant="light" onClick={() => void mutate()}>
+                  {t('admin.button.repo_binding.retry', 'Retry')}
+                </Button>
+              </Group>
+            </Alert>
+          )}
+
+          {bindingView === 'failed' ? (
+            <Alert
+              color="red"
+              icon={<Icon path={mdiAlertCircleOutline} size={1} />}
+              title={t('admin.content.repo_binding.load_failed_title', 'Repository bindings could not be loaded')}
+              role="alert"
+            >
+              <Stack gap="sm" align="flex-start">
+                <Text size="sm">
+                  {t(
+                    'admin.content.repo_binding.load_failed',
+                    'The server returned an invalid response or the request failed.'
+                  )}
+                </Text>
+                <Button size="xs" variant="light" onClick={() => void mutate()}>
+                  {t('admin.button.repo_binding.retry', 'Retry')}
+                </Button>
+              </Stack>
+            </Alert>
+          ) : !bindings || bindings.length === 0 ? (
             <Center h="30vh">
               <Stack gap={0} align="center">
                 <Title order={3} size="h4">
@@ -480,15 +671,32 @@ const RepoBindings: FC = () => {
               ))}
             </Stack>
           )}
+          {bindingKnownPageCount !== undefined && bindingKnownPageCount > 1 && (
+            <ResponsivePagination
+              value={bindingPage}
+              onChange={setBindingPage}
+              total={bindingKnownPageCount}
+              label={t('common.pagination.label', 'Repository binding pages')}
+            />
+          )}
         </Stack>
       </Container>
 
-      <Modal
+      <AccessibleModal
         size="min(64rem, calc(100vw - 2rem))"
         opened={historyTarget != null}
         onClose={() => {
+          historyOwner.current.generation += 1
+          historyOwner.current.controller?.abort()
+          historyOwner.current.controller = null
           setHistoryTarget(null)
           setHistory(null)
+          setHistoryLoading(false)
+          setHistoryLoadFailed(false)
+          setHistoryPage(1)
+          setHistoryRequestedPage(1)
+          setHistoryTotal(0)
+          setHistoryPaginated(false)
         }}
         title={
           <Stack gap={0}>
@@ -505,73 +713,119 @@ const RepoBindings: FC = () => {
       >
         {history === null ? (
           <Center py="xl">
-            <Text c="dimmed">{t('admin.content.repo_binding.history_loading')}</Text>
-          </Center>
-        ) : history.length === 0 ? (
-          <Center py="xl">
-            <Text c="dimmed">{t('admin.content.repo_binding.history_empty')}</Text>
+            <Text c="dimmed" role="status">
+              {t('admin.content.repo_binding.history_loading')}
+            </Text>
           </Center>
         ) : (
-          <Stack gap="sm">
-            {history.map((row) => (
-              <Paper key={row.id} p="sm" withBorder>
-                <Stack gap={6}>
-                  <Group justify="space-between" wrap="wrap">
-                    <Group gap="xs" wrap="wrap">
-                      <Text size="sm" fw="bold">
-                        {dayjs(row.ranAtUtc).fromNow()}
-                      </Text>
-                      <Text size="xs" c="dimmed" ff="monospace">
-                        {dayjs(row.ranAtUtc).format('YYYY-MM-DD HH:mm:ss')}
-                      </Text>
-                    </Group>
-                    {row.commitSha && <Code>{row.commitSha.substring(0, 7)}</Code>}
-                  </Group>
-                  <Group gap="md" wrap="wrap">
-                    <Badge size="xs" color="teal" variant="light">
-                      {t('admin.content.repo_binding.summary.games_created', {
-                        count: row.gamesCreated,
-                        defaultValue: 'games +{{count}}',
-                      })}
-                    </Badge>
-                    <Badge size="xs" color="blue" variant="light">
-                      {t('admin.content.repo_binding.summary.games_updated', {
-                        count: row.gamesUpdated,
-                        defaultValue: 'games ~{{count}}',
-                      })}
-                    </Badge>
-                    <Badge size="xs" color="teal" variant="light">
-                      {t('admin.content.repo_binding.summary.challenges_created_short', {
-                        count: row.challengesImported,
-                        defaultValue: 'chal +{{count}}',
-                      })}
-                    </Badge>
-                    <Badge size="xs" color="blue" variant="light">
-                      {t('admin.content.repo_binding.summary.challenges_updated_short', {
-                        count: row.challengesUpdated,
-                        defaultValue: 'chal ~{{count}}',
-                      })}
-                    </Badge>
-                    <Badge size="xs" color={row.failures > 0 ? 'red' : 'gray'} variant="light">
-                      {t('admin.content.repo_binding.summary.failures', {
-                        count: row.failures,
-                        defaultValue: 'failures {{count}}',
-                      })}
-                    </Badge>
-                  </Group>
-                  {row.messages && (
-                    <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 11, maxHeight: '20vh', overflowY: 'auto' }}>
-                      {row.messages}
-                    </Code>
+          <Stack gap="sm" aria-busy={historyLoading}>
+            {historyLoadFailed && (
+              <Alert
+                color="red"
+                icon={<Icon path={mdiAlertCircleOutline} size={1} />}
+                title={t('admin.content.repo_binding.history_load_failed_title', 'Scan history could not be loaded')}
+                role="alert"
+              >
+                <Stack gap="sm" align="flex-start">
+                  <Text size="sm">
+                    {t(
+                      'admin.content.repo_binding.history_load_failed',
+                      'The server returned an invalid response or the request failed.'
+                    )}
+                  </Text>
+                  {historyTarget && (
+                    <Button
+                      size="xs"
+                      variant="light"
+                      onClick={() => void loadHistory(historyTarget, historyRequestedPage)}
+                    >
+                      {t('admin.button.repo_binding.retry', 'Retry')}
+                    </Button>
                   )}
                 </Stack>
-              </Paper>
-            ))}
+              </Alert>
+            )}
+            {historyLoading && (
+              <Text size="sm" c="dimmed" role="status">
+                {t('admin.content.repo_binding.history_loading')}
+              </Text>
+            )}
+            {history.length === 0 && !historyLoadFailed && !historyLoading ? (
+              <Center py="xl">
+                <Text c="dimmed">{t('admin.content.repo_binding.history_empty')}</Text>
+              </Center>
+            ) : (
+              history.map((row) => (
+                <Paper key={row.id} p="sm" withBorder>
+                  <Stack gap={6}>
+                    <Group justify="space-between" wrap="wrap">
+                      <Group gap="xs" wrap="wrap">
+                        <Text size="sm" fw="bold">
+                          {dayjs(row.ranAtUtc).fromNow()}
+                        </Text>
+                        <Text size="xs" c="dimmed" ff="monospace">
+                          {dayjs(row.ranAtUtc).format('YYYY-MM-DD HH:mm:ss')}
+                        </Text>
+                      </Group>
+                      {row.commitSha && <Code>{row.commitSha.substring(0, 7)}</Code>}
+                    </Group>
+                    <Group gap="md" wrap="wrap">
+                      <Badge size="xs" color="teal" variant="light">
+                        {t('admin.content.repo_binding.summary.games_created', {
+                          count: row.gamesCreated,
+                          defaultValue: 'games +{{count}}',
+                        })}
+                      </Badge>
+                      <Badge size="xs" color="blue" variant="light">
+                        {t('admin.content.repo_binding.summary.games_updated', {
+                          count: row.gamesUpdated,
+                          defaultValue: 'games ~{{count}}',
+                        })}
+                      </Badge>
+                      <Badge size="xs" color="teal" variant="light">
+                        {t('admin.content.repo_binding.summary.challenges_created_short', {
+                          count: row.challengesImported,
+                          defaultValue: 'chal +{{count}}',
+                        })}
+                      </Badge>
+                      <Badge size="xs" color="blue" variant="light">
+                        {t('admin.content.repo_binding.summary.challenges_updated_short', {
+                          count: row.challengesUpdated,
+                          defaultValue: 'chal ~{{count}}',
+                        })}
+                      </Badge>
+                      <Badge size="xs" color={row.failures > 0 ? 'red' : 'gray'} variant="light">
+                        {t('admin.content.repo_binding.summary.failures', {
+                          count: row.failures,
+                          defaultValue: 'failures {{count}}',
+                        })}
+                      </Badge>
+                    </Group>
+                    {row.messages && (
+                      <Code
+                        block
+                        style={{ whiteSpace: 'pre-wrap', fontSize: 11, maxHeight: '20vh', overflowY: 'auto' }}
+                      >
+                        {row.messages}
+                      </Code>
+                    )}
+                  </Stack>
+                </Paper>
+              ))
+            )}
+            {historyPaginated && historyTotal > HISTORY_PAGE_SIZE && historyTarget && (
+              <ResponsivePagination
+                value={historyPage}
+                onChange={(page) => void loadHistory(historyTarget, page)}
+                total={Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE))}
+                label={t('common.pagination.label', 'Repository scan history pages')}
+              />
+            )}
           </Stack>
         )}
-      </Modal>
+      </AccessibleModal>
 
-      <Modal
+      <AccessibleModal
         size="min(36rem, calc(100vw - 2rem))"
         opened={deleteTarget !== null}
         onClose={() => setDeleteTarget(null)}
@@ -589,7 +843,7 @@ const RepoBindings: FC = () => {
             </Button>
           </Group>
         </Stack>
-      </Modal>
+      </AccessibleModal>
     </AdminPage>
   )
 }

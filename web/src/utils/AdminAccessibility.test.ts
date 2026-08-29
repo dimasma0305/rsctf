@@ -17,6 +17,7 @@ test('dense operational history uses responsive cards and named controls', () =>
   const builds = readFileSync('src/pages/admin/builds.tsx', 'utf8')
   const buildPresentation = readFileSync('src/components/admin/builds/buildPresentation.ts', 'utf8')
   const logs = readFileSync('src/pages/admin/Logs.tsx', 'utf8')
+  const bindings = readFileSync('src/pages/admin/repo-bindings.tsx', 'utf8')
 
   assert.match(builds, /<BuildHistoryCard/)
   assert.match(builds, /visibleFrom="lg"/)
@@ -30,6 +31,23 @@ test('dense operational history uses responsive cards and named controls', () =>
   assert.match(logs, /hiddenFrom="md"/)
   assert.doesNotMatch(logs, /tableClasses\.overflow/)
   assert.equal((logs.match(/closeButtonProps:/g) ?? []).length, 2)
+  assert.equal((bindings.match(/<AccessibleModal/g) ?? []).length, 2)
+})
+
+test('repository binding pagination stays compact and mounted while history pages load', () => {
+  const bindings = readFileSync('src/pages/admin/repo-bindings.tsx', 'utf8')
+  const loadHistory = bindings.slice(bindings.indexOf('const loadHistory'), bindings.indexOf('const onOpenHistory'))
+
+  assert.equal((bindings.match(/<ResponsivePagination\s+value=/g) ?? []).length, 2)
+  assert.match(bindings, /useMediaQuery\('\(max-width: 35\.99em\)'/)
+  assert.match(bindings, /compact \? \([\s\S]*?common\.pagination\.page_of[\s\S]*?: \([\s\S]*?<Pagination\.Items/)
+  assert.match(loadHistory, /setHistoryLoading\(true\)/)
+  assert.doesNotMatch(loadHistory, /setHistory\(null\)/)
+  assert.match(bindings, /bindingKnownPageCount !== undefined && bindingKnownPageCount > 1/)
+  assert.match(loadHistory, /setHistoryRequestedPage\(page\)/)
+  assert.equal((bindings.match(/setHistoryPage\(page\)/g) ?? []).length, 1)
+  assert.match(bindings, /loadHistory\(historyTarget, historyRequestedPage\)/)
+  assert.match(bindings, /<Stack gap="sm" aria-busy=\{historyLoading\}>/)
 })
 
 test('dense admin inventories use readable breakpoints and manageable pages', () => {
