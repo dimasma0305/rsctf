@@ -26,7 +26,7 @@ import {
   mdiSwordCross,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useState, useMemo } from 'react'
+import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useParams } from 'react-router'
 import type { AdStateOwner } from '@Components/AdChallengePanel'
@@ -58,6 +58,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ adStateOwner, particip
 
   const categories = Object.keys(challenges ?? {}).sort()
   const [activeTab, setActiveTab] = useState<ChallengeCategory | 'All'>('All')
+  const categoryTabsRef = useRef<HTMLDivElement>(null)
 
   // Sync state if activeTab becomes invalid (e.g. after data load updates categories)
   useEffect(() => {
@@ -65,6 +66,18 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ adStateOwner, particip
       setActiveTab('All')
     }
   }, [categories, activeTab])
+
+  useEffect(() => {
+    if (!isCompact) return
+
+    const scroller = categoryTabsRef.current
+    const activeItem = scroller?.querySelector<HTMLElement>('[role="tab"][data-active]')
+    if (!scroller || !activeItem) return
+
+    const centered = activeItem.offsetLeft - (scroller.clientWidth - activeItem.offsetWidth) / 2
+    const maximum = Math.max(0, scroller.scrollWidth - scroller.clientWidth)
+    scroller.scrollTo({ left: Math.min(maximum, Math.max(0, centered)), behavior: 'auto' })
+  }, [activeTab, isCompact])
 
   const [hideSolved, setHideSolved] = useLocalStorage({
     key: 'hide-solved',
@@ -441,6 +454,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ adStateOwner, particip
             }}
           >
             <Tabs.List
+              ref={categoryTabsRef}
               data-challenge-category-tabs
               aria-label={t('game.label.challenge_category', { defaultValue: 'Filter by category' })}
             >
