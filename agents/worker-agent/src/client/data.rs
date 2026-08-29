@@ -25,14 +25,8 @@ pub async fn run_reconnecting(
     let mut backoff = Backoff::new(Duration::from_secs(1), Duration::from_secs(30));
     loop {
         let connected_at = Instant::now();
-        if let Err(error) = run_lane(
-            &connector,
-            worker_id,
-            session,
-            runtime.clone(),
-            lane_number,
-        )
-        .await
+        if let Err(error) =
+            run_lane(&connector, worker_id, session, runtime.clone(), lane_number).await
         {
             tracing::warn!(lane_number, %error, "worker data lane failed");
             if error.is_terminal() {

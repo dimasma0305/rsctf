@@ -474,7 +474,8 @@ fn spawn_heartbeats(
                     }
                     Err(error) => {
                         consecutive_probe_failures = consecutive_probe_failures.saturating_add(1);
-                        last_probe_error = Some(format!("Docker health probe task failed: {error}"));
+                        last_probe_error =
+                            Some(format!("Docker health probe task failed: {error}"));
                     }
                 }
             }

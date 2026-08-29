@@ -95,19 +95,21 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
     backoff.reset();
     let detected_capacity = loop {
         match tokio::time::timeout(RUNTIME_PROBE_TIMEOUT, runtime.probe()).await {
-            Ok(Ok(())) => match tokio::time::timeout(RUNTIME_PROBE_TIMEOUT, runtime.capacity()).await {
-                Ok(Ok(capacity)) => break capacity,
-                Ok(Err(error)) => {
-                    let delay = backoff.next_delay();
-                    tracing::warn!(%error, ?delay, "Docker capacity probe failed; retrying locally");
-                    tokio::time::sleep(delay).await;
+            Ok(Ok(())) => {
+                match tokio::time::timeout(RUNTIME_PROBE_TIMEOUT, runtime.capacity()).await {
+                    Ok(Ok(capacity)) => break capacity,
+                    Ok(Err(error)) => {
+                        let delay = backoff.next_delay();
+                        tracing::warn!(%error, ?delay, "Docker capacity probe failed; retrying locally");
+                        tokio::time::sleep(delay).await;
+                    }
+                    Err(_) => {
+                        let delay = backoff.next_delay();
+                        tracing::warn!(?delay, "Docker capacity probe timed out; retrying locally");
+                        tokio::time::sleep(delay).await;
+                    }
                 }
-                Err(_) => {
-                    let delay = backoff.next_delay();
-                    tracing::warn!(?delay, "Docker capacity probe timed out; retrying locally");
-                    tokio::time::sleep(delay).await;
-                }
-            },
+            }
             Ok(Err(error)) => {
                 let delay = backoff.next_delay();
                 tracing::warn!(%error, ?delay, "Docker is unavailable; retrying locally");
@@ -171,7 +173,10 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
             }
             Err(_) => {
                 let delay = backoff.next_delay();
-                tracing::warn!(?delay, "Docker pre-connect probe timed out; not advertising worker capacity");
+                tracing::warn!(
+                    ?delay,
+                    "Docker pre-connect probe timed out; not advertising worker capacity"
+                );
                 tokio::time::sleep(delay).await;
                 continue;
             }
@@ -271,16 +276,22 @@ pub enum ClientError {
 impl ClientError {
     fn is_terminal(&self) -> bool {
         match self {
-            Self::Protocol(_) | Self::Configuration(_) | Self::Config(_) | Self::Security(_) => true,
-            Self::Tls(crate::tls::TlsConnectorError::Rustls(_)
+            Self::Protocol(_) | Self::Configuration(_) | Self::Config(_) | Self::Security(_) => {
+                true
+            }
+            Self::Tls(
+                crate::tls::TlsConnectorError::Rustls(_)
                 | crate::tls::TlsConnectorError::IdentityIo(_)
                 | crate::tls::TlsConnectorError::MissingCertificate
                 | crate::tls::TlsConnectorError::MissingPrivateKey
                 | crate::tls::TlsConnectorError::InvalidServerName
-                | crate::tls::TlsConnectorError::AlpnMismatch) => true,
-            Self::Tls(crate::tls::TlsConnectorError::TransportIo(_)
+                | crate::tls::TlsConnectorError::AlpnMismatch,
+            ) => true,
+            Self::Tls(
+                crate::tls::TlsConnectorError::TransportIo(_)
                 | crate::tls::TlsConnectorError::ConnectTimeout
-                | crate::tls::TlsConnectorError::HandshakeTimeout)
+                | crate::tls::TlsConnectorError::HandshakeTimeout,
+            )
             | Self::Runtime(_)
             | Self::Readiness(_)
             | Self::Frame(_)

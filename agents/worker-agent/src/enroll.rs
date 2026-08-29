@@ -117,7 +117,9 @@ async fn send_enrollment(
                     return response.error_for_status().map_err(EnrollmentError::from);
                 }
                 tokio::time::sleep(
-                    retry_after.unwrap_or_else(|| enrollment_jitter(request.operation_id, attempt, backoff)),
+                    retry_after.unwrap_or_else(|| {
+                        enrollment_jitter(request.operation_id, attempt, backoff)
+                    }),
                 )
                 .await;
             }
@@ -142,8 +144,7 @@ fn transient_status(status: reqwest::StatusCode) -> bool {
 fn enrollment_jitter(operation_id: uuid::Uuid, attempt: usize, ceiling: Duration) -> Duration {
     let mut first = [0_u8; 8];
     first.copy_from_slice(&operation_id.as_bytes()[..8]);
-    let mixed = u64::from_be_bytes(first)
-        ^ (attempt as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    let mixed = u64::from_be_bytes(first) ^ (attempt as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
     let ceiling_millis = u64::try_from(ceiling.as_millis()).unwrap_or(u64::MAX);
     Duration::from_millis(mixed % ceiling_millis.saturating_add(1))
 }
@@ -436,7 +437,9 @@ mod tests {
         assert!(!transient_status(reqwest::StatusCode::UNAUTHORIZED));
         let operation = uuid::Uuid::new_v4();
         for attempt in 0..ENROLLMENT_RETRY_ATTEMPTS {
-            assert!(enrollment_jitter(operation, attempt, ENROLLMENT_RETRY_MAX) <= ENROLLMENT_RETRY_MAX);
+            assert!(
+                enrollment_jitter(operation, attempt, ENROLLMENT_RETRY_MAX) <= ENROLLMENT_RETRY_MAX
+            );
         }
     }
 
@@ -515,8 +518,7 @@ mod tests {
 
     #[tokio::test]
     async fn ambiguous_enrollment_reuses_the_persisted_key_csr_and_operation() {
-        let directory =
-            std::env::temp_dir().join(format!("rsctf-enroll-{}", uuid::Uuid::new_v4()));
+        let directory = std::env::temp_dir().join(format!("rsctf-enroll-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir(&directory).await.unwrap();
         let path = directory.join("worker-enrollment-pending.json");
         let first = load_or_create_pending(&path, None).await.unwrap();
