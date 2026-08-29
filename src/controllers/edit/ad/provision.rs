@@ -7,9 +7,13 @@ use uuid::Uuid;
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 
 fn reconcile_operation_id(headers: &HeaderMap) -> AppResult<Uuid> {
-    let raw = headers
-        .get(IDEMPOTENCY_KEY_HEADER)
-        .ok_or_else(|| AppError::bad_request("Idempotency-Key header is required"))?
+    let Some(raw) = headers.get(IDEMPOTENCY_KEY_HEADER) else {
+        // Keep cached pre-idempotency clients and existing operator automation
+        // working during a rolling deployment. Such a request gets protection
+        // within this attempt, but only a client-supplied key can span retries.
+        return Ok(Uuid::new_v4());
+    };
+    let raw = raw
         .to_str()
         .map_err(|_| AppError::bad_request("Idempotency-Key must be an ASCII UUID"))?;
     Uuid::parse_str(raw).map_err(|_| AppError::bad_request("Idempotency-Key must be a UUID"))
@@ -24,6 +28,17 @@ fn ad_service_operation_id(
     reconcile_operation_id.map(|operation_id| {
         format!("ad-ensure:{operation_id}:{game_id}:{participation_id}:{challenge_id}")
     })
+}
+
+fn manual_reconcile_response(launched: i32, failures: i32) -> AppResult<MessageResponse> {
+    if failures > 0 {
+        return Err(AppError::unavailable(format!(
+            "Launched {launched} service container(s), but {failures} workload(s) remain unavailable; retry with the same operation"
+        )));
+    }
+    Ok(MessageResponse::ok(format!(
+        "Launched {launched} service container(s)"
+    )))
 }
 
 fn should_provision_vpn(
@@ -153,14 +168,7 @@ pub async fn ad_ensure_containers(
     let game = load_game(&st, game_id).await?;
     let (launched, failures) =
         ensure_ad_containers(&st, &game, None, true, true, Some(operation_id)).await?;
-    Ok(MessageResponse::ok(format!(
-        "Launched {launched} service container(s){}",
-        if failures > 0 {
-            format!(", {failures} failed (runtime unavailable?)")
-        } else {
-            String::new()
-        }
-    )))
+    manual_reconcile_response(launched, failures)
 }
 
 /// Reusable core of [`ad_ensure_containers`]: launch the platform-hosted A&D
@@ -385,8 +393,22 @@ pub(crate) async fn ensure_ad_containers(
             }
             let team_hash =
                 crate::utils::flag_generator::team_challenge_hash(&salt, c.id, &p.token);
-            let flag =
-                crate::utils::flag_generator::generate_flag(c.flag_template.as_deref(), &team_hash);
+            let operation_id = ad_service_operation_id(reconcile_operation_id, game.id, p.id, c.id);
+            let flag = operation_id.as_deref().map_or_else(
+                || {
+                    crate::utils::flag_generator::generate_flag(
+                        c.flag_template.as_deref(),
+                        &team_hash,
+                    )
+                },
+                |operation_id| {
+                    crate::utils::flag_generator::generate_retryable_flag(
+                        c.flag_template.as_deref(),
+                        &team_hash,
+                        operation_id,
+                    )
+                },
+            );
             let image = match crate::services::challenge_images::runtime_image(st, &c) {
                 Ok(image) => image,
                 Err(error) => {
@@ -414,8 +436,7 @@ pub(crate) async fn ensure_ad_containers(
                 c.ad_allow_egress,
                 flag,
             );
-            spec.operation_id =
-                ad_service_operation_id(reconcile_operation_id, game.id, p.id, c.id);
+            spec.operation_id = operation_id;
             let info = match st.containers.create(spec).await {
                 Ok(i) => i,
                 Err(_) => {
@@ -585,7 +606,8 @@ pub(crate) async fn ensure_ad_containers(
     }
 
     if ensure_koth {
-        crate::controllers::game::koth::ensure_koth_hills(st, game.id).await?;
+        crate::controllers::game::koth::ensure_koth_hills(st, game.id, reconcile_operation_id)
+            .await?;
     }
 
     Ok((launched, failures))
@@ -598,14 +620,14 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        ad_service_operation_id, reconcile_operation_id, should_provision_vpn,
-        should_reconcile_vpn, IDEMPOTENCY_KEY_HEADER,
+        ad_service_operation_id, manual_reconcile_response, reconcile_operation_id,
+        should_provision_vpn, should_reconcile_vpn, IDEMPOTENCY_KEY_HEADER,
     };
 
     #[test]
-    fn reconcile_identity_is_required_and_binds_each_service_retry() {
+    fn reconcile_identity_is_backward_compatible_and_binds_each_service_retry() {
         let mut headers = HeaderMap::new();
-        assert!(reconcile_operation_id(&headers).is_err());
+        assert!(!reconcile_operation_id(&headers).unwrap().is_nil());
         headers.insert(
             IDEMPOTENCY_KEY_HEADER,
             HeaderValue::from_static("not-a-uuid"),
@@ -632,6 +654,15 @@ mod tests {
             Some(service.as_str())
         );
         assert_eq!(ad_service_operation_id(None, 7, 11, 13), None);
+    }
+
+    #[test]
+    fn partial_manual_reconcile_is_not_an_acknowledged_success() {
+        assert!(manual_reconcile_response(3, 0).is_ok());
+        assert!(matches!(
+            manual_reconcile_response(3, 1),
+            Err(crate::utils::error::AppError::ServiceUnavailable(_))
+        ));
     }
 
     #[test]

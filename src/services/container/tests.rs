@@ -410,6 +410,46 @@ fn launch_fingerprint_rejects_stale_runtime_configuration() {
     assert!(!launch_spec_matches(&inspected, &expected));
 }
 
+#[tokio::test]
+async fn retryable_flag_adopts_one_real_docker_workload() {
+    let Ok(image) = std::env::var("RSCTF_REAL_DOCKER_RETRY_IMAGE") else {
+        return;
+    };
+    let Ok(manager) = DockerContainerManager::connect() else {
+        return;
+    };
+    let operation_id = format!("test-retryable-flag:{}", uuid::Uuid::new_v4());
+    let spec = || ContainerSpec {
+        game_kind: rsctf_worker_protocol::GameKind::Jeopardy,
+        image: image.clone(),
+        memory_limit: 64,
+        cpu_count: 1,
+        storage_limit: DEFAULT_CONTAINER_STORAGE_MB,
+        expose_port: 8080,
+        publish_port: false,
+        proxy_only: false,
+        env: Vec::new(),
+        flag: Some(crate::utils::flag_generator::generate_retryable_flag(
+            Some("flag{[GUID]-[UUID]}"),
+            "real-docker-team-secret",
+            &operation_id,
+        )),
+        ad_network: None,
+        allow_egress: false,
+        control_plane_callback_ports: Vec::new(),
+        network_mode: crate::utils::enums::NetworkMode::Isolated,
+        operation_id: Some(operation_id.clone()),
+    };
+
+    let first = manager.create(spec()).await.expect("first Docker create");
+    let retried = manager.create(spec()).await;
+    let cleanup = manager.destroy(&first.id).await;
+    let second = retried.expect("same operation and flag should adopt");
+
+    assert_eq!(first.id, second.id, "retry launched a duplicate workload");
+    cleanup.expect("real Docker retry workload cleanup");
+}
+
 #[test]
 fn storage_and_network_policy_fence_legacy_launch_identities() {
     #[derive(serde::Serialize)]

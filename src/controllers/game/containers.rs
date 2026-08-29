@@ -111,6 +111,7 @@ pub async fn create_container(
                 &st,
                 &challenge,
                 ctx.game.vpn_access_required,
+                None,
             )
             .await?;
             // The shared backend remains a valid challenge-level resource when only

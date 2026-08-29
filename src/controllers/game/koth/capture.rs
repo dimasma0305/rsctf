@@ -22,6 +22,15 @@ fn hill_runtime_availability(
     HillRuntimeAvailability::Ready
 }
 
+fn koth_hill_operation_id(
+    reconcile_operation_id: Option<uuid::Uuid>,
+    game_id: i32,
+    challenge_id: i32,
+) -> Option<String> {
+    reconcile_operation_id
+        .map(|operation_id| format!("koth-ensure:{operation_id}:{game_id}:{challenge_id}"))
+}
+
 /// Clear one exact backend publication before replacement. During active official
 /// scoring a held target requires both a fresh confirmed-dead inspection by the
 /// caller and a durable checker receipt for the same backend and holder.
@@ -182,7 +191,11 @@ async fn publish_replacement_target(
 /// is planted here. Idempotent — skips a hill that already has a running container.
 /// Called from the operator "Ensure containers" action and on startup, so KotH hills
 /// exist before the game runs.
-pub async fn ensure_koth_hills(st: &SharedState, game_id: i32) -> AppResult<u64> {
+pub async fn ensure_koth_hills(
+    st: &SharedState,
+    game_id: i32,
+    reconcile_operation_id: Option<uuid::Uuid>,
+) -> AppResult<u64> {
     let crown_owned: bool = sqlx::query_scalar(
         r#"SELECT koth_scoring_start_round IS NOT NULL
              FROM "Games" WHERE id = $1"#,
@@ -332,12 +345,22 @@ pub async fn ensure_koth_hills(st: &SharedState, game_id: i32) -> AppResult<u64>
                 continue;
             }
             HillRuntimeAvailability::Ready => {
-                match super::super::containers::get_or_create_shared_container_locked(st, &c, true)
-                    .await
+                let operation_id = koth_hill_operation_id(reconcile_operation_id, game_id, c.id);
+                match super::super::containers::get_or_create_shared_container_locked(
+                    st,
+                    &c,
+                    true,
+                    operation_id,
+                )
+                .await
                 {
                     Ok(container) => Some(container),
                     Err(e) => {
                         tracing::warn!(challenge = c.id, error = %e, "ensure_koth_hills: hill container launch failed");
+                        if reconcile_operation_id.is_some() {
+                            distributed.release().await?;
+                            return Err(e);
+                        }
                         None
                     }
                 }
@@ -379,6 +402,22 @@ pub async fn ensure_koth_hills(st: &SharedState, game_id: i32) -> AppResult<u64>
 mod tests {
     use super::*;
     use sqlx::Connection;
+
+    #[test]
+    fn manual_reconcile_identity_is_stable_and_challenge_scoped() {
+        let operation_id = uuid::Uuid::new_v4();
+        let first = koth_hill_operation_id(Some(operation_id), 7, 11).unwrap();
+
+        assert_eq!(
+            koth_hill_operation_id(Some(operation_id), 7, 11).as_deref(),
+            Some(first.as_str())
+        );
+        assert_ne!(
+            koth_hill_operation_id(Some(operation_id), 7, 12).as_deref(),
+            Some(first.as_str())
+        );
+        assert_eq!(koth_hill_operation_id(None, 7, 11), None);
+    }
 
     #[test]
     fn configured_hills_wait_for_a_successful_immutable_build() {
