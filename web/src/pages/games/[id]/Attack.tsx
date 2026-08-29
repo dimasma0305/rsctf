@@ -536,7 +536,7 @@ const ARENA_BODY = `
     <div class="midrow">
       <div class="panel log-panel">
         <div class="phead accent-m"><span class="t">BATTLE LOG</span></div>
-        <div id="log" role="log" aria-live="polite" aria-label="Battle event log"></div>
+        <div id="log" role="log" aria-live="polite" aria-label="Battle event log" tabindex="0"></div>
       </div>
       <div class="panel arena-wrap accent-v">
         <button id="fsBtn" class="fs-btn" title="Fullscreen battle map" aria-label="Fullscreen">⛶</button>
@@ -552,7 +552,7 @@ const ARENA_BODY = `
       <div class="rightcol">
         <div class="panel rank">
           <div class="phead accent-c"><span class="t">RANKING</span><span class="rank-tabs" id="rankTabs"><button data-rm="ad" class="on" aria-pressed="true">A&amp;D</button><button data-rm="koth" aria-pressed="false">KOTH</button><button data-rm="jeopardy" aria-pressed="false">JEO</button></span></div>
-          <div id="ranklist" role="region" aria-label="Live team ranking"></div>
+          <div id="ranklist" role="region" aria-label="Live team ranking" tabindex="0"></div>
         </div>
       </div>
     </div>

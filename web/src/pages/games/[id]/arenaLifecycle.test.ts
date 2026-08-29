@@ -35,6 +35,13 @@ test('live arena URLs match the registered case-sensitive route contract', () =>
   assert.doesNotMatch(arena, /^\s*setTimeout\(/m)
 })
 
+test('live arena scroll regions remain keyboard reachable', () => {
+  const arena = readFileSync('src/pages/games/[id]/Attack.tsx', 'utf8')
+
+  assert.match(arena, /id="log"[^>]*role="log"[^>]*aria-label="Battle event log"[^>]*tabindex="0"/)
+  assert.match(arena, /id="ranklist"[^>]*role="region"[^>]*aria-label="Live team ranking"[^>]*tabindex="0"/)
+})
+
 const eventFormats = [
   {
     name: 'pure A&D',
