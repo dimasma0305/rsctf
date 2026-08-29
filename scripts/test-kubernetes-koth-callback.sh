@@ -118,6 +118,7 @@ RSCTF_K8S_NAMESPACE='rsctf-retry' \
 RSCTF_K8S_PUBLIC_ENTRY='192.0.2.10' \
 RSCTF_K8S_NETWORK_POLICY_ENFORCED='true' \
 RSCTF_K8S_REJECTION_NAMESPACE='rsctf-rejection' \
+RSCTF_K8S_LIVE_RETRY='1' \
   cargo test --locked --lib \
     services::k8s::retry_tests::real_kubernetes_legacy_retry_and_authoritative_rollback \
     -- --ignored --exact

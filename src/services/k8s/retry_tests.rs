@@ -398,6 +398,10 @@ async fn authoritative_service_rejection_rolls_back_a_stable_operation() {
 async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
     const IMAGE: &str = "registry.k8s.io/e2e-test-images/agnhost@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85";
     const OPERATION: &str = "rsctf-live-legacy-operation";
+    if std::env::var("RSCTF_K8S_LIVE_RETRY").ok().as_deref() != Some("1") {
+        eprintln!("skipping live Kubernetes retry regression without RSCTF_K8S_LIVE_RETRY=1");
+        return;
+    }
     let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
     let manager = KubernetesContainerManager::connect()
         .await
