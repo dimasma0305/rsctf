@@ -30,6 +30,7 @@ import {
   getWsrxCapabilityRetryAt,
   getWsrxTunnelPhase,
   isLatestWsrxCapabilityRequest,
+  shouldInvalidateWsrxCapability,
   shouldConnectLocalWsrx,
   type ProxyEntryMode,
   type WsrxRefreshSource,
@@ -177,6 +178,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const [tunnelRetrying, setTunnelRetrying] = useState(false)
   const capabilityRequestSequence = useRef(0)
   const capabilityRefreshInFlight = useRef(false)
+  const currentCapabilityExpiresAt = useRef<number | null>(null)
 
   const requestProxyCapability = useCallback(async () => {
     if (!isPlatformProxy || !instanceEntry) return null
@@ -191,6 +193,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   }, [instanceEntry, isPlatformProxy, isPreview])
 
   useEffect(() => {
+    currentCapabilityExpiresAt.current = null
     setWsrxRemoteEntry('')
     setCapabilityExpiresAt(null)
     setCapabilityRefreshAt(null)
@@ -205,6 +208,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
       try {
         const capability = await requestProxyCapability()
         if (active && capability && isLatestWsrxCapabilityRequest(requestSequence, capabilityRequestSequence.current)) {
+          currentCapabilityExpiresAt.current = capability.expiresAt
           setWsrxRemoteEntry(capability.remoteEntry)
           setCapabilityExpiresAt(capability.expiresAt)
           setCapabilityRefreshAt(capability.expiresAt - CAPABILITY_REFRESH_SAFETY_MS)
@@ -332,6 +336,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
         }
         if (!isLatestWsrxCapabilityRequest(requestSequence, capabilityRequestSequence.current)) return
 
+        currentCapabilityExpiresAt.current = capability.expiresAt
         setWsrxRemoteEntry(capability.remoteEntry)
         setCapabilityExpiresAt(capability.expiresAt)
         setCapabilityRefreshAt(capability.expiresAt - CAPABILITY_REFRESH_SAFETY_MS)
@@ -370,6 +375,31 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     0,
     1000
   )
+
+  const invalidateExpiredProxyCapability = useCallback(() => {
+    if (
+      capabilityExpiresAt === null ||
+      !shouldInvalidateWsrxCapability(
+        getServerNowMilliseconds(),
+        capabilityExpiresAt,
+        currentCapabilityExpiresAt.current
+      )
+    )
+      return
+
+    currentCapabilityExpiresAt.current = null
+    setWsrxRemoteEntry('')
+    setCapabilityExpiresAt(null)
+    setCapabilityRefreshAt(null)
+    setTunnelRequestComplete(false)
+    setTunnelRequestFailed(true)
+    setTunnelCheckExpired(false)
+    if (wsrxState === WsrxState.Usable && localTraffic?.local) {
+      void wsrx.delete(localTraffic.local).catch(() => undefined)
+    }
+  }, [capabilityExpiresAt, localTraffic?.local, wsrx, wsrxState])
+
+  useServerClockTimeout(invalidateExpiredProxyCapability, isPlatformProxy ? capabilityExpiresAt : null, 0, 0)
 
   const tunnelStatusColor = phase === 'ready' ? 'green' : phase === 'unhealthy' ? 'red' : 'orange'
 

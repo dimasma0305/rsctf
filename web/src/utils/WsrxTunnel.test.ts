@@ -8,6 +8,7 @@ import {
   getWsrxCapabilityRetryAt,
   getWsrxTunnelPhase,
   isLatestWsrxCapabilityRequest,
+  shouldInvalidateWsrxCapability,
   shouldConnectLocalWsrx,
 } from './WsrxTunnel'
 
@@ -20,7 +21,11 @@ test('capability ownership rejects a late response and renewal retries stay boun
   const now = 1_000_000
   assert.equal(getWsrxCapabilityRetryAt(now, now + 120_000), now + 30_000)
   assert.equal(getWsrxCapabilityRetryAt(now, now + 20_000), now + 15_000)
-  assert.equal(getWsrxCapabilityRetryAt(now, now + 5_000), null)
+  const expiresAt = now + 5_000
+  assert.equal(getWsrxCapabilityRetryAt(now, expiresAt), null)
+  assert.equal(shouldInvalidateWsrxCapability(expiresAt - 1, expiresAt, expiresAt), false)
+  assert.equal(shouldInvalidateWsrxCapability(expiresAt, expiresAt, expiresAt), true)
+  assert.equal(shouldInvalidateWsrxCapability(expiresAt, expiresAt, expiresAt + 60_000), false)
 })
 
 const base = {
@@ -113,6 +118,8 @@ test('the optional local daemon is contacted only after an explicit player actio
   assert.equal(shouldConnectLocalWsrx({ mode: 'wsrx', source: 'player', state: WsrxState.Usable }), false)
   assert.match(entry, /onRefreshProxyEntry\('automatic'\)/)
   assert.match(entry, /onRefreshProxyEntry\('player'\)/)
+  assert.match(entry, /useServerClockTimeout\([\s\S]*?invalidateExpiredProxyCapability[\s\S]*?capabilityExpiresAt/)
+  assert.match(entry, /setWsrxRemoteEntry\(''\)[\s\S]*?wsrx\.delete\(localTraffic\.local\)/)
   assert.match(manager, /applyWsrxOptions\(\{ \.\.\.debounced, name: wsrxOptions\.name \}\)/)
   assert.match(provider, /const applyWsrxOptions = useCallback\([\s\S]*?doWsrxConnect\(\)/)
 })

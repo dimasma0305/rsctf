@@ -18,6 +18,12 @@ export const getWsrxCapabilityRetryAt = (serverNow: number, expiresAt: number) =
   return retryAt > serverNow ? retryAt : null
 }
 
+export const shouldInvalidateWsrxCapability = (
+  serverNow: number,
+  scheduledExpiresAt: number,
+  currentExpiresAt: number | null
+) => currentExpiresAt === scheduledExpiresAt && serverNow >= scheduledExpiresAt
+
 interface WsrxConnectIntent {
   mode: ProxyEntryMode
   source: WsrxRefreshSource
