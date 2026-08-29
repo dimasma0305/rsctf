@@ -37,19 +37,21 @@ export const useUser = () => {
       )
     },
   })
+  const disposition = profileErrorDisposition(error)
+  const currentUser = disposition === 'anonymous' || disposition === 'banned' ? undefined : user
 
   // A user replacement and an unmount both invalidate retry ownership.
   useEffect(() => {
     retryTimers.current.cancel()
     handledTerminalError.current = null
     return () => retryTimers.current.cancel()
-  }, [user?.userId])
+  }, [currentUser?.userId])
 
   // SWR can retain the same profile while a transient revalidation fails.
   // Cancel its queued retry as soon as that same account recovers.
   useEffect(() => {
-    if (user && !error) retryTimers.current.cancel()
-  }, [user, error])
+    if (currentUser && !error) retryTimers.current.cancel()
+  }, [currentUser, error])
 
   // Terminal session effects cannot live in onErrorRetry: SWR deliberately
   // skips that callback when shouldRetryOnError rejects the status.
@@ -59,7 +61,8 @@ export const useUser = () => {
     handledTerminalError.current = error
     retryTimers.current.cancel()
     setAuthSession(false)
-    void mutate(undefined, { revalidate: false })
+    // Keep the terminal error cached. Clearing it remounts the pending viewer
+    // scope and turns one anonymous probe into an unbounded 401 loop.
 
     if (disposition !== 'banned' || !error || typeof error !== 'object') return
     if (handledBannedProfileErrors.has(error)) return
@@ -76,18 +79,18 @@ export const useUser = () => {
           icon: <Icon path={mdiClose} size={1} />,
         })
       })
-  }, [error, mutate, navigate, t])
+  }, [error, navigate, t])
 
   // Feed the global 401 interceptor's "is there a session?" belief. A loaded
   // profile means logged in; a 401 on the profile probe means anonymous (or
   // expired). This is what lets public pages render for logged-out visitors
   // instead of redirecting them to login on an optional [RequireUser] fetch.
   useEffect(() => {
-    if (user) setAuthSession(true)
-    else if (profileErrorDisposition(error) === 'anonymous') setAuthSession(false)
-  }, [user, error])
+    if (currentUser) setAuthSession(true)
+    else if (disposition === 'anonymous') setAuthSession(false)
+  }, [currentUser, disposition])
 
-  return { user, error, mutate }
+  return { user: currentUser, error, mutate }
 }
 
 export const useUserRole = () => {
