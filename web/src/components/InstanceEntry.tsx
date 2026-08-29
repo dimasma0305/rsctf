@@ -168,11 +168,22 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const [proxyEntryMode, setProxyEntryMode] = useState<ProxyEntryMode>(DEFAULT_PROXY_ENTRY_MODE)
   const [wsrxRemoteEntry, setWsrxRemoteEntry] = useState('')
   const [capabilityExpiresAt, setCapabilityExpiresAt] = useState<number | null>(null)
-  const [capabilityAttempt, setCapabilityAttempt] = useState(0)
   const [tunnelRequestComplete, setTunnelRequestComplete] = useState(false)
   const [tunnelRequestFailed, setTunnelRequestFailed] = useState(false)
   const [tunnelCheckExpired, setTunnelCheckExpired] = useState(false)
   const [tunnelRetrying, setTunnelRetrying] = useState(false)
+
+  const requestProxyCapability = useCallback(async () => {
+    if (!isPlatformProxy || !instanceEntry) return null
+
+    const response = isPreview
+      ? await api.proxy.proxyIssueNoInstanceCapability(instanceEntry)
+      : await api.proxy.proxyIssueInstanceCapability(instanceEntry)
+    return {
+      remoteEntry: getProxyEntry(instanceEntry, isPreview, response.data.token),
+      expiresAt: response.data.expiresAt,
+    }
+  }, [instanceEntry, isPlatformProxy, isPreview])
 
   useEffect(() => {
     setWsrxRemoteEntry('')
@@ -185,12 +196,10 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     let active = true
     const requestCapability = async () => {
       try {
-        const response = isPreview
-          ? await api.proxy.proxyIssueNoInstanceCapability(instanceEntry)
-          : await api.proxy.proxyIssueInstanceCapability(instanceEntry)
-        if (active) {
-          setWsrxRemoteEntry(getProxyEntry(instanceEntry, isPreview, response.data.token))
-          setCapabilityExpiresAt(response.data.expiresAt)
+        const capability = await requestProxyCapability()
+        if (active && capability) {
+          setWsrxRemoteEntry(capability.remoteEntry)
+          setCapabilityExpiresAt(capability.expiresAt)
         }
       } catch (err) {
         if (active) {
@@ -204,7 +213,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     return () => {
       active = false
     }
-  }, [capabilityAttempt, instanceEntry, isPlatformProxy, isPreview, t])
+  }, [instanceEntry, isPlatformProxy, requestProxyCapability, t])
 
   const localTraffic = wsrxInstances.find((traffic) => traffic.remote === wsrxRemoteEntry)
 
@@ -292,25 +301,37 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
       if (!isPlatformProxy || tunnelRetrying) return
 
       setTunnelRetrying(true)
-      setWsrxRemoteEntry('')
-      setCapabilityExpiresAt(null)
-      setTunnelRequestComplete(false)
-      setTunnelRequestFailed(false)
-      setTunnelCheckExpired(false)
+      try {
+        const capability = await requestProxyCapability()
+        if (!capability) return
 
-      if (wsrxState === WsrxState.Usable && localTraffic?.local) {
-        try {
+        if (wsrxState === WsrxState.Usable && localTraffic?.local) {
           await wsrx.delete(localTraffic.local)
-        } catch (err) {
-          HandleWsrxError(err, t)
         }
-      }
 
-      if (shouldConnectLocalWsrx({ mode: proxyEntryMode, source, state: wsrxState })) doWsrxConnect()
-      setCapabilityAttempt((attempt) => attempt + 1)
-      setTunnelRetrying(false)
+        setWsrxRemoteEntry(capability.remoteEntry)
+        setCapabilityExpiresAt(capability.expiresAt)
+        setTunnelRequestComplete(false)
+        setTunnelRequestFailed(false)
+        setTunnelCheckExpired(false)
+        if (shouldConnectLocalWsrx({ mode: proxyEntryMode, source, state: wsrxState })) doWsrxConnect()
+      } catch (err) {
+        HandleWsrxError(err, t)
+      } finally {
+        setTunnelRetrying(false)
+      }
     },
-    [doWsrxConnect, isPlatformProxy, localTraffic?.local, proxyEntryMode, t, tunnelRetrying, wsrx, wsrxState]
+    [
+      doWsrxConnect,
+      isPlatformProxy,
+      localTraffic?.local,
+      proxyEntryMode,
+      requestProxyCapability,
+      t,
+      tunnelRetrying,
+      wsrx,
+      wsrxState,
+    ]
   )
 
   useServerClockTimeout(
