@@ -40,6 +40,7 @@ export const useUser = () => {
       )
     },
   })
+  const errorDisposition = profileErrorDisposition(error)
 
   // A user replacement and an unmount both invalidate retry ownership.
   useEffect(() => {
@@ -57,12 +58,11 @@ export const useUser = () => {
   // Terminal session effects cannot live in onErrorRetry: SWR deliberately
   // skips that callback when shouldRetryOnError rejects the status.
   useEffect(() => {
-    const disposition = profileErrorDisposition(error)
+    const disposition = errorDisposition
     if ((disposition !== 'anonymous' && disposition !== 'banned') || handledTerminalError.current === error) return
     handledTerminalError.current = error
     retryTimers.current.cancel()
     setAuthSession(false)
-    void mutate(undefined, { revalidate: false })
 
     if (disposition !== 'banned' || !error || typeof error !== 'object') return
     if (handledBannedProfileErrors.has(error)) return
@@ -79,7 +79,7 @@ export const useUser = () => {
           icon: <Icon path={mdiClose} size={1} />,
         })
       })
-  }, [error, mutate, navigate, t])
+  }, [error, errorDisposition, navigate, t])
 
   // Feed the global 401 interceptor's "is there a session?" belief. A loaded
   // profile means logged in; a 401 on the profile probe means anonymous (or
@@ -87,10 +87,14 @@ export const useUser = () => {
   // instead of redirecting them to login on an optional [RequireUser] fetch.
   useEffect(() => {
     if (user) setAuthSession(true)
-    else if (profileErrorDisposition(error) === 'anonymous') setAuthSession(false)
-  }, [user, error])
+    else if (errorDisposition === 'anonymous') setAuthSession(false)
+  }, [user, errorDisposition])
 
-  return { user, error, mutate }
+  return {
+    user: errorDisposition === 'anonymous' || errorDisposition === 'banned' ? undefined : user,
+    error,
+    mutate,
+  }
 }
 
 export const useUserRole = () => {

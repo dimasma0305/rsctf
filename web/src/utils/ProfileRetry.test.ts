@@ -217,6 +217,60 @@ test('profile hook defers one bounded retry until visible and online', async (co
   }
 })
 
+test('anonymous profile state remains terminal with multiple hook consumers', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/' })
+  const restoreDom = installTestDom(browser)
+  const { useUser } = await import('../hooks/useUser')
+  const { createInstance } = await import('i18next')
+  const { I18nextProvider, initReactI18next } = await import('react-i18next')
+  const { SWRConfig } = await import('swr')
+  const { MemoryRouter } = await import('react-router')
+  const { createRoot } = await import('react-dom/client')
+  const i18n = createInstance()
+  await i18n.use(initReactI18next).init({ lng: 'en', resources: { en: { translation: {} } } })
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  let reads = 0
+  const fetcher: BareFetcher<ProfileUserInfoModel> = async () => {
+    reads += 1
+    throw { response: { status: 401 } }
+  }
+  const swrConfig: SWRConfiguration = {
+    provider: () => new Map(),
+    fetcher,
+    dedupingInterval: 0,
+  }
+  const Probe: FC = () => {
+    const { user, error } = useUser()
+    return createElement('output', null, user ? 'user' : error ? 'anonymous' : 'loading')
+  }
+  const App: FC = () =>
+    createElement(
+      SWRConfig,
+      { value: swrConfig },
+      createElement(
+        I18nextProvider,
+        { i18n },
+        createElement(MemoryRouter, null, createElement(Probe), createElement(Probe))
+      )
+    )
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    await act(async () => root.render(createElement(App)))
+    await act(async () => Promise.resolve())
+    assert.equal(reads, 1)
+    assert.equal(container.textContent, 'anonymousanonymous')
+  } finally {
+    await act(async () => root.unmount())
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    i18n.off()
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
 test('profile hook cancels a deferred retry when its last consumer unmounts', async (context) => {
   const browser = new Window({ url: 'https://rsctf.test/' })
   const restoreDom = installTestDom(browser)

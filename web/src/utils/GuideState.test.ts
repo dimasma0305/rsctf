@@ -18,6 +18,7 @@ import {
   persistGuidePreferenceUpdate,
   resolveChallengeDeliveryGuide,
   resolveGuideIdentity,
+  retainGuideIdentity,
   retainTeamGuideActivation,
   resumeGuideAfterAccountHandoff,
   resetGuideProgress,
@@ -43,6 +44,14 @@ test('guide identity waits through transient player-profile failures', () => {
   assert.equal(resolveGuideIdentity(undefined, 401), 'guest')
   assert.equal(resolveGuideIdentity(undefined, 500), null)
   assert.equal(resolveGuideIdentity(undefined), null)
+})
+
+test('guide identity does not close an active tour during transient profile cache clearing', () => {
+  assert.equal(retainGuideIdentity(null, null), null)
+  assert.equal(retainGuideIdentity(null, 'guest'), 'guest')
+  assert.equal(retainGuideIdentity('guest', null), 'guest')
+  assert.equal(retainGuideIdentity('guest', 'player-id'), 'player-id')
+  assert.equal(retainGuideIdentity('player-id', 'guest'), 'guest')
 })
 
 test('team guide acknowledges an input click and then follows the enabled action', () => {

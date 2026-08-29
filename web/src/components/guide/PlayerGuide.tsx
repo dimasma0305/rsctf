@@ -41,6 +41,7 @@ import {
   pauseGuide,
   persistGuidePreferenceUpdate,
   resolveGuideIdentity,
+  retainGuideIdentity,
   resetGuideProgress,
   resolveTeamGuideAction,
   retainTeamGuideActivation,
@@ -191,7 +192,10 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
   const location = useLocation()
   const { config } = useConfig()
   const { user, error: userError } = useUser()
-  const identity = resolveGuideIdentity(user?.userId, userError?.status)
+  const resolvedIdentity = resolveGuideIdentity(user?.userId, userError?.status)
+  const identityRef = useRef<string | null>(null)
+  identityRef.current = retainGuideIdentity(identityRef.current, resolvedIdentity)
+  const identity = identityRef.current
   const storageKey = guideStorageKey(identity)
   const [loadedKey, setLoadedKey] = useState<string | null>(null)
   const [preferences, setPreferences] = useState<GuidePreferences>(() => parseGuidePreferences(null))

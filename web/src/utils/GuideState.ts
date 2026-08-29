@@ -53,6 +53,10 @@ export const resolveGuideIdentity = (userId?: string | null, userErrorStatus?: n
   return userErrorStatus === 401 ? 'guest' : null
 }
 
+/** Keep an established scope while SWR transiently clears the profile result. */
+export const retainGuideIdentity = (current: string | null, resolved: string | null): string | null =>
+  resolved ?? current
+
 interface GuideTourTargetContext {
   step: GuideTourStep
   pathname: string
