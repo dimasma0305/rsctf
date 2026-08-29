@@ -27,6 +27,100 @@ kind create cluster \
 
 kubectl create namespace rsctf-system
 kubectl create namespace rsctf-challenges
+kubectl create namespace rsctf-retry
+kubectl create namespace rsctf-rejection
+
+operation_id='rsctf-live-legacy-operation'
+operation_hash="$(printf '%s' "$operation_id" | sha256sum | cut -c1-32)"
+legacy_uid="$(printf '%s' "$operation_id" | sha256sum | cut -c1-16)"
+legacy_name="agnhost-sha256-${legacy_uid}"
+retry_scope="$(printf '%s\0%s' 'rsctf-retry' 'rsctf-retry' | sha256sum | cut -c1-32)"
+retry_image='registry.k8s.io/e2e-test-images/agnhost@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85'
+
+kubectl apply -f - <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${legacy_name}
+  namespace: rsctf-retry
+  labels:
+    app: rsctf-${legacy_uid}
+    rsctf.managed: "true"
+    rsctf.container: ${legacy_name}
+    rsctf.scope: ${retry_scope}
+    rsctf.operation: ${operation_hash}
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  containers:
+    - name: ${legacy_name}
+      image: ${retry_image}
+      ports:
+        - containerPort: 8080
+      resources:
+        limits:
+          cpu: 100m
+          memory: 64Mi
+          ephemeral-storage: 512Mi
+        requests:
+          cpu: 10m
+          memory: 32Mi
+          ephemeral-storage: 32Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          add: [NET_BIND_SERVICE]
+          drop: [ALL]
+        privileged: false
+        runAsGroup: 10000
+        runAsNonRoot: true
+        runAsUser: 10000
+        seccompProfile:
+          type: RuntimeDefault
+YAML
+legacy_pod_uid="$(kubectl get pod --namespace rsctf-retry "$legacy_name" -o jsonpath='{.metadata.uid}')"
+kubectl apply -f - <<YAML
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${legacy_name}
+  namespace: rsctf-retry
+  labels:
+    app: rsctf-${legacy_uid}
+    rsctf.managed: "true"
+    rsctf.container: ${legacy_name}
+    rsctf.scope: ${retry_scope}
+    rsctf.operation: ${operation_hash}
+  ownerReferences:
+    - apiVersion: v1
+      kind: Pod
+      name: ${legacy_name}
+      uid: ${legacy_pod_uid}
+spec:
+  type: NodePort
+  selector:
+    app: rsctf-${legacy_uid}
+  ports:
+    - port: 8080
+      targetPort: 8080
+YAML
+kubectl apply --namespace rsctf-rejection -f - <<'YAML'
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: reject-services
+spec:
+  hard:
+    count/services: "0"
+YAML
+
+RSCTF_K8S_NAMESPACE='rsctf-retry' \
+RSCTF_K8S_PUBLIC_ENTRY='192.0.2.10' \
+RSCTF_K8S_NETWORK_POLICY_ENFORCED='true' \
+RSCTF_K8S_REJECTION_NAMESPACE='rsctf-rejection' \
+  cargo test --locked --lib \
+    services::k8s::retry_tests::real_kubernetes_legacy_retry_and_authoritative_rollback \
+    -- --ignored --exact
 
 kubectl apply -f - <<'YAML'
 apiVersion: v1

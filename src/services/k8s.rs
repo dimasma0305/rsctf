@@ -55,6 +55,7 @@ use crate::services::container::{
 use crate::utils::codec::random_hex;
 use crate::utils::error::{AppError, AppResult};
 
+mod compat;
 mod exec;
 mod metrics;
 mod network;
@@ -241,6 +242,20 @@ impl KubernetesContainerManager {
         )
         .await;
     }
+
+    async fn rollback_operation_workload(&self, name: &str) {
+        if let Err(error) = orphans::rollback_owned(
+            self.pods(),
+            self.services(),
+            self.network_policies(),
+            name,
+            &self.scope,
+        )
+        .await
+        {
+            tracing::warn!(%error, %name, "failed to roll back rejected Kubernetes operation");
+        }
+    }
 }
 
 /// Whether a `kube` error is a Kubernetes `404 Not Found` (object already gone).
@@ -250,6 +265,10 @@ fn is_not_found(err: &kube::Error) -> bool {
 
 fn is_conflict(err: &kube::Error) -> bool {
     matches!(err, kube::Error::Api(ErrorResponse { code: 409, .. }))
+}
+
+fn is_ambiguous_create_error(error: &kube::Error) -> bool {
+    matches!(error, kube::Error::HyperError(_) | kube::Error::Service(_))
 }
 
 /// Map a pod `status.phase` string to a coarse lifecycle status, following the
@@ -421,8 +440,23 @@ impl ContainerManager for KubernetesContainerManager {
         }
         // Unique, DNS-safe resource name + the app label that ties the Service
         // to this pod (RSCTF uses a per-instance ResourceId label/selector).
-        let (name, uid) =
+        let (default_name, default_uid) =
             workload_name_and_uid(&spec.image, &self.scope, spec.operation_id.as_deref());
+        let discovered = if let Some(operation_id) = spec.operation_id.as_deref() {
+            orphans::find_operation_workload(
+                self.pods(),
+                self.services(),
+                self.network_policies(),
+                &self.scope,
+                operation_id,
+            )
+            .await?
+        } else {
+            None
+        };
+        let (name, uid) = discovered
+            .map(|identity| (identity.name, identity.uid))
+            .unwrap_or((default_name, default_uid));
         let ad_internal = spec.ad_network.is_some();
         let isolated = spec.network_mode == crate::utils::enums::NetworkMode::Isolated;
         let internal_only = ad_internal || spec.proxy_only;
@@ -592,6 +626,7 @@ impl ContainerManager for KubernetesContainerManager {
                         spec.operation_id.as_deref(),
                         &launch_fingerprint,
                         "network policy",
+                        |actual| compat::legacy_policy_matches(actual, &policy),
                     )
                     .await?;
                 }
@@ -614,6 +649,7 @@ impl ContainerManager for KubernetesContainerManager {
                     spec.operation_id.as_deref(),
                     &launch_fingerprint,
                     "pod",
+                    |actual| compat::legacy_pod_matches(actual, &pod),
                 )
                 .await
                 {
@@ -633,6 +669,9 @@ impl ContainerManager for KubernetesContainerManager {
                 // when the client saw an error. Removing isolation here
                 // would expose that ambiguous Pod, so retain the policy for
                 // adoption or fail-closed orphan reconciliation.
+                if !is_ambiguous_create_error(&e) {
+                    self.rollback_operation_workload(&name).await;
+                }
                 return Err(AppError::internal(format!("failed to create pod: {e}")));
             }
         };
@@ -693,6 +732,7 @@ impl ContainerManager for KubernetesContainerManager {
                         spec.operation_id.as_deref(),
                         &launch_fingerprint,
                         "service",
+                        |actual| compat::legacy_service_matches(actual, &service),
                     )
                     .await
                     {
@@ -717,7 +757,9 @@ impl ContainerManager for KubernetesContainerManager {
                     // A transport or proxy failure can hide a successful API
                     // write. Retain stable-operation resources so the exact
                     // retry can adopt them without changing the Pod owner UID.
-                    if spec.operation_id.is_none() {
+                    if spec.operation_id.is_some() && !is_ambiguous_create_error(&e) {
+                        self.rollback_operation_workload(&name).await;
+                    } else if spec.operation_id.is_none() {
                         self.rollback_new_pod(&pods, &name, policy_created, adopted)
                             .await;
                     }

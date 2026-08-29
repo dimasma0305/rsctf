@@ -293,6 +293,29 @@ async fn emit_managed_koth_callback_policy_for_live_test() {
         let captured_request = Arc::clone(&captured_request);
         let policy_started = Arc::clone(&captured_policy_started);
         async move {
+            if request.method() == Method::GET {
+                let path = request.uri().path();
+                let (api_version, kind) = if path.ends_with("/pods") {
+                    ("v1", "PodList")
+                } else if path.ends_with("/services") {
+                    ("v1", "ServiceList")
+                } else {
+                    ("networking.k8s.io/v1", "NetworkPolicyList")
+                };
+                let body = serde_json::json!({
+                    "apiVersion": api_version,
+                    "kind": kind,
+                    "metadata": {},
+                    "items": []
+                });
+                return Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(200)
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                        .unwrap(),
+                );
+            }
             assert_eq!(request.method(), Method::POST);
             assert_eq!(
                 request.uri().path(),
@@ -472,6 +495,28 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
         async move {
             let method = request.method().clone();
             let path = request.uri().path().to_string();
+            if method == Method::GET {
+                let (api_version, kind) = if path.ends_with("/pods") {
+                    ("v1", "PodList")
+                } else if path.ends_with("/services") {
+                    ("v1", "ServiceList")
+                } else {
+                    ("networking.k8s.io/v1", "NetworkPolicyList")
+                };
+                let list = serde_json::json!({
+                    "apiVersion": api_version,
+                    "kind": kind,
+                    "metadata": {},
+                    "items": []
+                });
+                return Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, "application/json")
+                        .body(Body::from(serde_json::to_vec(&list).unwrap()))
+                        .unwrap(),
+                );
+            }
             let body = request.into_body().collect_bytes().await.unwrap();
             let mut value: serde_json::Value = serde_json::from_slice(&body).unwrap();
             let name = value["metadata"]["name"].as_str().unwrap().to_string();

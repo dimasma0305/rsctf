@@ -15,6 +15,7 @@ use super::docker::{
     LAUNCH_SPEC_LABEL, RESTRICTED_IMAGE_PROFILE, RESTRICTED_IMAGE_PROFILE_LABEL,
     RESTRICTED_TMPFS_OPTIONS, RESTRICTED_TMPFS_PATH,
 };
+use super::naming::legacy_operation_container_name;
 use super::{
     append_snapshot_chunk, bounded_log_config, bridge_network_matches, container_name,
     docker_workload_scope, game_kind_for_challenge, labels_match_scope, managed_container_filters,
@@ -458,6 +459,18 @@ async fn retryable_flag_adopts_one_real_docker_workload() {
     };
 
     let first = manager.create(spec()).await.expect("first Docker create");
+    let scoped_operation = scoped_operation_id(&manager.scope, Some(&operation_id))
+        .expect("stable operation identity");
+    let legacy_name = legacy_operation_container_name(&image, &[], &scoped_operation);
+    manager
+        .client()
+        .expect("real Docker client")
+        .rename_container(
+            &first.id,
+            bollard::container::RenameContainerOptions { name: legacy_name },
+        )
+        .await
+        .expect("simulate the previous replica's image-prefixed workload name");
     let retried = manager.create(spec()).await;
     let mut changed = spec();
     changed.memory_limit += 1;
