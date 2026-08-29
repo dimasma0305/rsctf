@@ -43,6 +43,10 @@ test('repository binding pagination stays compact and mounted while history page
   assert.match(bindings, /compact \? \([\s\S]*?common\.pagination\.page_of[\s\S]*?: \([\s\S]*?<Pagination\.Items/)
   assert.match(loadHistory, /setHistoryLoading\(true\)/)
   assert.doesNotMatch(loadHistory, /setHistory\(null\)/)
+  assert.match(bindings, /bindingKnownPageCount !== undefined && bindingKnownPageCount > 1/)
+  assert.match(loadHistory, /setHistoryRequestedPage\(page\)/)
+  assert.equal((bindings.match(/setHistoryPage\(page\)/g) ?? []).length, 1)
+  assert.match(bindings, /loadHistory\(historyTarget, historyRequestedPage\)/)
   assert.match(bindings, /<Stack gap="sm" aria-busy=\{historyLoading\}>/)
 })
 

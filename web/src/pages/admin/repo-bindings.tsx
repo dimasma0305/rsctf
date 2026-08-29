@@ -108,6 +108,7 @@ const ResponsivePagination: FC<ResponsivePaginationProps> = ({ value, onChange, 
 const RepoBindings: FC = () => {
   const { t } = useTranslation()
   const [bindingPage, setBindingPage] = useState(1)
+  const [bindingKnownPageCount, setBindingKnownPageCount] = useState<number>()
   const bindingQuery = { count: BINDING_PAGE_SIZE, skip: (bindingPage - 1) * BINDING_PAGE_SIZE }
   // 3s refresh keeps the CurrentActivity field live during a running
   // scan without hammering the backend. Idle pages get a stable
@@ -130,6 +131,11 @@ const RepoBindings: FC = () => {
     setBindingPage(bindingPageCount)
   }, [bindingPage, bindingPageCount])
 
+  useEffect(() => {
+    if (bindingCollection.status !== 'ready') return
+    setBindingKnownPageCount(bindingPageCount)
+  }, [bindingCollection.status, bindingPageCount])
+
   const [repoUrl, setRepoUrl] = useState('')
   const [refValue, setRefValue] = useState('')
   const [githubToken, setGithubToken] = useState('')
@@ -142,6 +148,7 @@ const RepoBindings: FC = () => {
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyLoadFailed, setHistoryLoadFailed] = useState(false)
   const [historyPage, setHistoryPage] = useState(1)
+  const [historyRequestedPage, setHistoryRequestedPage] = useState(1)
   const [historyTotal, setHistoryTotal] = useState(0)
   const [historyPaginated, setHistoryPaginated] = useState(false)
   const historyOwner = useRef<{ generation: number; controller: AbortController | null }>({
@@ -215,6 +222,7 @@ const RepoBindings: FC = () => {
     historyOwner.current.controller?.abort()
     const controller = new AbortController()
     historyOwner.current.controller = controller
+    setHistoryRequestedPage(page)
     setHistoryLoading(true)
     setHistoryLoadFailed(false)
     try {
@@ -233,6 +241,7 @@ const RepoBindings: FC = () => {
         return
       }
       setHistory(result.items)
+      setHistoryPage(page)
       setHistoryTotal(result.total)
       setHistoryPaginated(result.paginated)
     } catch (e) {
@@ -254,6 +263,7 @@ const RepoBindings: FC = () => {
     setHistoryLoading(true)
     setHistoryLoadFailed(false)
     setHistoryPage(1)
+    setHistoryRequestedPage(1)
     setHistoryTotal(0)
     setHistoryPaginated(false)
     void loadHistory(b, 1)
@@ -659,15 +669,15 @@ const RepoBindings: FC = () => {
                   </Stack>
                 </Paper>
               ))}
-              {bindingPageCount !== undefined && bindingPageCount > 1 && (
-                <ResponsivePagination
-                  value={bindingPage}
-                  onChange={setBindingPage}
-                  total={bindingPageCount}
-                  label={t('common.pagination.label', 'Repository binding pages')}
-                />
-              )}
             </Stack>
+          )}
+          {bindingKnownPageCount !== undefined && bindingKnownPageCount > 1 && (
+            <ResponsivePagination
+              value={bindingPage}
+              onChange={setBindingPage}
+              total={bindingKnownPageCount}
+              label={t('common.pagination.label', 'Repository binding pages')}
+            />
           )}
         </Stack>
       </Container>
@@ -684,6 +694,7 @@ const RepoBindings: FC = () => {
           setHistoryLoading(false)
           setHistoryLoadFailed(false)
           setHistoryPage(1)
+          setHistoryRequestedPage(1)
           setHistoryTotal(0)
           setHistoryPaginated(false)
         }}
@@ -723,7 +734,11 @@ const RepoBindings: FC = () => {
                     )}
                   </Text>
                   {historyTarget && (
-                    <Button size="xs" variant="light" onClick={() => void loadHistory(historyTarget, historyPage)}>
+                    <Button
+                      size="xs"
+                      variant="light"
+                      onClick={() => void loadHistory(historyTarget, historyRequestedPage)}
+                    >
                       {t('admin.button.repo_binding.retry', 'Retry')}
                     </Button>
                   )}
@@ -735,7 +750,7 @@ const RepoBindings: FC = () => {
                 {t('admin.content.repo_binding.history_loading')}
               </Text>
             )}
-            {history.length === 0 && !historyLoadFailed ? (
+            {history.length === 0 && !historyLoadFailed && !historyLoading ? (
               <Center py="xl">
                 <Text c="dimmed">{t('admin.content.repo_binding.history_empty')}</Text>
               </Center>
@@ -801,10 +816,7 @@ const RepoBindings: FC = () => {
             {historyPaginated && historyTotal > HISTORY_PAGE_SIZE && historyTarget && (
               <ResponsivePagination
                 value={historyPage}
-                onChange={(page) => {
-                  setHistoryPage(page)
-                  void loadHistory(historyTarget, page)
-                }}
+                onChange={(page) => void loadHistory(historyTarget, page)}
                 total={Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE))}
                 label={t('common.pagination.label', 'Repository scan history pages')}
               />
