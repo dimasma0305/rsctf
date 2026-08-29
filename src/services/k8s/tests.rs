@@ -354,6 +354,8 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
     use tokio::sync::Notify;
     use tower::service_fn;
 
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
+
     struct RestoreEnv(Vec<(&'static str, Option<OsString>)>);
 
     impl RestoreEnv {
@@ -556,119 +558,6 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
     assert!(requests
         .iter()
         .all(|(method, _, _)| *method == Method::POST));
-}
-
-#[tokio::test]
-async fn changed_launch_spec_does_not_adopt_a_kubernetes_crash_orphan() {
-    use std::collections::HashMap;
-    use std::convert::Infallible;
-    use std::sync::{Arc, Mutex};
-
-    use axum::http::{header::CONTENT_TYPE, Method, Request, Response, StatusCode};
-    use kube::client::Body;
-    use tower::service_fn;
-
-    let resources = Arc::new(Mutex::new(HashMap::<String, serde_json::Value>::new()));
-    let captured_resources = Arc::clone(&resources);
-    let service = service_fn(move |request: Request<Body>| {
-        let resources = Arc::clone(&captured_resources);
-        async move {
-            let method = request.method().clone();
-            let path = request.uri().path().to_string();
-            let body = request.into_body().collect_bytes().await.unwrap();
-
-            if method == Method::GET {
-                let value = resources.lock().unwrap().get(&path).cloned().unwrap();
-                return Ok::<_, Infallible>(
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header(CONTENT_TYPE, "application/json")
-                        .body(Body::from(serde_json::to_vec(&value).unwrap()))
-                        .unwrap(),
-                );
-            }
-
-            assert_eq!(method, Method::POST);
-            let mut value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            let name = value["metadata"]["name"].as_str().unwrap().to_string();
-            let resource_path = format!("{path}/{name}");
-            if resources.lock().unwrap().contains_key(&resource_path) {
-                let error = serde_json::json!({
-                    "apiVersion": "v1",
-                    "kind": "Status",
-                    "status": "Failure",
-                    "message": format!("{name} already exists"),
-                    "reason": "AlreadyExists",
-                    "details": { "name": name },
-                    "code": 409
-                });
-                return Ok::<_, Infallible>(
-                    Response::builder()
-                        .status(StatusCode::CONFLICT)
-                        .header(CONTENT_TYPE, "application/json")
-                        .body(Body::from(serde_json::to_vec(&error).unwrap()))
-                        .unwrap(),
-                );
-            }
-
-            if path.ends_with("/pods") {
-                value["metadata"]["uid"] = serde_json::json!(format!("uid-{name}"));
-                value["status"] = serde_json::json!({
-                    "phase": "Running",
-                    "hostIP": "192.0.2.10"
-                });
-            } else if path.ends_with("/services") {
-                value["spec"]["ports"][0]["nodePort"] = serde_json::json!(30080);
-            } else {
-                panic!("unexpected Kubernetes collection path: {path}");
-            }
-            resources
-                .lock()
-                .unwrap()
-                .insert(resource_path, value.clone());
-            Ok::<_, Infallible>(
-                Response::builder()
-                    .status(StatusCode::CREATED)
-                    .header(CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&value).unwrap()))
-                    .unwrap(),
-            )
-        }
-    });
-    let manager = KubernetesContainerManager {
-        client: Client::new(service, "rsctf-challenges"),
-        namespace: "rsctf-challenges".to_string(),
-        scope: orphans::workload_scope("rsctf-challenges", None),
-        public_entry: Some("192.0.2.10".to_string()),
-    };
-    let original = ContainerSpec {
-        game_kind: rsctf_worker_protocol::GameKind::Jeopardy,
-        image: format!("registry.example/challenge@sha256:{}", "a".repeat(64)),
-        memory_limit: 256,
-        cpu_count: 1,
-        storage_limit: crate::services::container::DEFAULT_CONTAINER_STORAGE_MB,
-        expose_port: 8080,
-        publish_port: true,
-        proxy_only: false,
-        env: Vec::new(),
-        flag: Some("flag{stable-retry}".to_string()),
-        ad_network: None,
-        allow_egress: false,
-        control_plane_callback_ports: Vec::new(),
-        network_mode: crate::utils::enums::NetworkMode::Open,
-        operation_id: Some("jeopardy-instance:41:team:7".to_string()),
-    };
-
-    let first = manager.create(original.clone()).await.unwrap();
-    let mut changed = original.clone();
-    changed.memory_limit += 1;
-    assert!(matches!(
-        manager.create(changed).await,
-        Err(AppError::Conflict(_))
-    ));
-
-    let retried = manager.create(original).await.unwrap();
-    assert_eq!(first.id, retried.id);
 }
 
 #[test]

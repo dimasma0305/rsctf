@@ -20,6 +20,8 @@
 //!    publicly node-published, but reachable by permitted cluster peers).
 //!    On service failure the pod is deleted before its isolating policy so a
 //!    half-created instance cannot become reachable during rollback.
+//!    Stable-operation failures retain the Pod and policy until an exact retry
+//!    can adopt a Service whose owner UID matches that Pod.
 //! 3. **destroy** — delete the Service, then the Pod, and only remove its
 //!    NetworkPolicy after the Pod is absent; a `404` is the desired end state.
 //! 4. **query** — get the Pod and map its `status.phase` to a coarse
@@ -38,7 +40,7 @@ use k8s_openapi::api::core::v1::{
     Capabilities, Container, ContainerPort, EnvVar, Pod, PodSpec, ResourceRequirements,
     SeccompProfile, SecurityContext, Service, ServicePort, ServiceSpec,
 };
-use k8s_openapi::api::networking::v1::NetworkPolicy;
+use k8s_openapi::api::networking::v1::{NetworkPolicy, NetworkPolicySpec};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
@@ -57,6 +59,8 @@ mod exec;
 mod metrics;
 mod network;
 mod orphans;
+#[cfg(test)]
+mod retry_tests;
 use metrics::{parse_cpu_cores, parse_memory_bytes};
 use network::{
     ad_network_config, ad_network_policy, isolated_network_policy, isolated_proxy_network_policy,
@@ -79,6 +83,9 @@ const NAMESPACE_ENV: &str = "RSCTF_K8S_NAMESPACE";
 /// Env var advertising the routable node/host IP for NodePort services
 /// (RSCTF `PublicEntry`). When set, [`ContainerInfo::ip`] is this value.
 const PUBLIC_ENTRY_ENV: &str = "RSCTF_K8S_PUBLIC_ENTRY";
+
+#[cfg(test)]
+static KUBERNETES_ENV_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Kubernetes-backed container manager.
 ///
@@ -327,6 +334,60 @@ fn challenge_security_context() -> SecurityContext {
     }
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KubernetesLaunchIdentity<'a> {
+    revision: u8,
+    portable_spec_fingerprint: &'a str,
+    security_context: &'a SecurityContext,
+    network_policy: Option<&'a NetworkPolicySpec>,
+}
+
+fn kubernetes_launch_fingerprint(
+    spec: &ContainerSpec,
+    security_context: &SecurityContext,
+    private_policy: Option<&NetworkPolicy>,
+) -> String {
+    let portable_spec_fingerprint = crate::services::container::launch_spec_fingerprint(spec);
+    let canonical = KubernetesLaunchIdentity {
+        // v1 binds retries to the effective security context and rendered
+        // NetworkPolicy, including environment-derived cluster identities.
+        revision: 1,
+        portable_spec_fingerprint: &portable_spec_fingerprint,
+        security_context,
+        network_policy: private_policy.and_then(|policy| policy.spec.as_ref()),
+    };
+    let bytes = serde_json::to_vec(&canonical)
+        .expect("the fixed Kubernetes launch identity is always JSON serializable");
+    crate::utils::codec::sha256_hex(&bytes)
+}
+
+fn fingerprint_policy_labels() -> BTreeMap<String, String> {
+    BTreeMap::from([(APP_LABEL.to_string(), "rsctf-fingerprint".to_string())])
+}
+
+fn stamp_policy_labels(policy: &mut NetworkPolicy, labels: &BTreeMap<String, String>) {
+    policy.metadata.labels = Some(labels.clone());
+    if let Some(spec) = policy.spec.as_mut() {
+        spec.pod_selector.match_labels = Some(labels.clone());
+    }
+}
+
+fn service_owner_matches_pod(service: &Service, pod_name: &str, pod_uid: &str) -> bool {
+    service
+        .metadata
+        .owner_references
+        .as_ref()
+        .is_some_and(|owners| {
+            owners.iter().any(|owner| {
+                owner.api_version == "v1"
+                    && owner.kind == "Pod"
+                    && owner.name == pod_name
+                    && owner.uid == pod_uid
+            })
+        })
+}
+
 #[async_trait]
 impl ContainerManager for KubernetesContainerManager {
     fn backend_kind(&self) -> ContainerBackendKind {
@@ -348,7 +409,6 @@ impl ContainerManager for KubernetesContainerManager {
                 "Kubernetes challenge images must use a portable repository digest",
             ));
         }
-        let launch_fingerprint = crate::services::container::launch_spec_fingerprint(&spec);
         // Unique, DNS-safe resource name + the app label that ties the Service
         // to this pod (RSCTF uses a per-instance ResourceId label/selector).
         let uid = spec.operation_id.as_ref().map_or_else(
@@ -376,6 +436,43 @@ impl ContainerManager for KubernetesContainerManager {
                 ));
             }
         }
+        let policy_labels = fingerprint_policy_labels();
+        let has_network_policy = network_policy_required(ad_internal, spec.proxy_only, isolated);
+        let mut private_policy = if let Some(config) = ad_config.as_ref() {
+            Some(ad_network_policy(
+                &name,
+                &policy_labels,
+                None,
+                spec.expose_port,
+                spec.allow_egress,
+                &spec.control_plane_callback_ports,
+                config,
+            ))
+        } else if spec.proxy_only && isolated {
+            Some(isolated_proxy_network_policy(
+                &name,
+                &policy_labels,
+                spec.expose_port,
+            )?)
+        } else if spec.proxy_only {
+            Some(proxy_network_policy(
+                &name,
+                &policy_labels,
+                spec.expose_port,
+            )?)
+        } else if isolated {
+            Some(isolated_network_policy(
+                &name,
+                &policy_labels,
+                spec.expose_port,
+            )?)
+        } else {
+            None
+        };
+        debug_assert_eq!(private_policy.is_some(), has_network_policy);
+        let security_context = challenge_security_context();
+        let launch_fingerprint =
+            kubernetes_launch_fingerprint(&spec, &security_context, private_policy.as_ref());
 
         // Environment: caller-supplied vars plus the dynamic flag contract.
         let mut env: Vec<EnvVar> = spec
@@ -433,6 +530,9 @@ impl ContainerManager for KubernetesContainerManager {
             spec.operation_id.as_deref(),
             &launch_fingerprint,
         );
+        if let Some(policy) = private_policy.as_mut() {
+            stamp_policy_labels(policy, &labels);
+        }
         let app_label = labels[APP_LABEL].clone();
 
         let container = Container {
@@ -448,7 +548,7 @@ impl ContainerManager for KubernetesContainerManager {
                 requests: Some(requests),
                 claims: None,
             }),
-            security_context: Some(challenge_security_context()),
+            security_context: Some(security_context),
             ..Default::default()
         };
 
@@ -473,31 +573,6 @@ impl ContainerManager for KubernetesContainerManager {
         // cluster or Internet. The unique selector makes a crash-orphaned policy
         // harmless; normal destroy/rollback still removes it by name.
         let policies = self.network_policies();
-        let has_network_policy = network_policy_required(ad_internal, spec.proxy_only, isolated);
-        let private_policy = if let Some(config) = ad_config.as_ref() {
-            Some(ad_network_policy(
-                &name,
-                &labels,
-                None,
-                spec.expose_port,
-                spec.allow_egress,
-                &spec.control_plane_callback_ports,
-                config,
-            ))
-        } else if spec.proxy_only && isolated {
-            Some(isolated_proxy_network_policy(
-                &name,
-                &labels,
-                spec.expose_port,
-            )?)
-        } else if spec.proxy_only {
-            Some(proxy_network_policy(&name, &labels, spec.expose_port)?)
-        } else if isolated {
-            Some(isolated_network_policy(&name, &labels, spec.expose_port)?)
-        } else {
-            None
-        };
-        debug_assert_eq!(private_policy.is_some(), has_network_policy);
         let mut policy_created = false;
         if let Some(policy) = private_policy {
             match policies.create(&PostParams::default(), &policy).await {
@@ -554,22 +629,25 @@ impl ContainerManager for KubernetesContainerManager {
                 return Err(AppError::internal(format!("failed to create pod: {e}")));
             }
         };
-        let pod_uid = created_pod.metadata.uid.clone();
+        let Some(pod_uid) = created_pod.metadata.uid.clone() else {
+            self.rollback_new_pod(&pods, &name, policy_created, adopted)
+                .await;
+            return Err(AppError::internal(
+                "Kubernetes did not return an ownership UID for the challenge Pod",
+            ));
+        };
 
         // Service exposing the challenge port: A&D and PlatformProxy are not
         // node-published; direct challenges retain NodePort. The Service is
         // owned by the pod; private-policy cleanup applies to A&D and proxy-only
         // Jeopardy workloads.
-        let mut owner_refs = None;
-        if let Some(uid) = pod_uid {
-            owner_refs = Some(vec![OwnerReference {
-                api_version: "v1".to_string(),
-                kind: "Pod".to_string(),
-                name: name.clone(),
-                uid,
-                ..Default::default()
-            }]);
-        }
+        let owner_refs = Some(vec![OwnerReference {
+            api_version: "v1".to_string(),
+            kind: "Pod".to_string(),
+            name: name.clone(),
+            uid: pod_uid.clone(),
+            ..Default::default()
+        }]);
 
         let service = Service {
             metadata: ObjectMeta {
@@ -611,7 +689,16 @@ impl ContainerManager for KubernetesContainerManager {
                     )
                     .await
                     {
-                        Ok(service) => (service, true),
+                        Ok(service) if service_owner_matches_pod(&service, &name, &pod_uid) => {
+                            (service, true)
+                        }
+                        Ok(_) => {
+                            self.rollback_new_pod(&pods, &name, policy_created, adopted)
+                                .await;
+                            return Err(AppError::conflict(
+                                "service operation identity references a different Pod",
+                            ));
+                        }
                         Err(error) => {
                             self.rollback_new_pod(&pods, &name, policy_created, adopted)
                                 .await;
@@ -620,9 +707,13 @@ impl ContainerManager for KubernetesContainerManager {
                     }
                 }
                 Err(e) => {
-                    // Roll back the pod so a failed service create doesn't leak it.
-                    self.rollback_new_pod(&pods, &name, policy_created, adopted)
-                        .await;
+                    // A transport or proxy failure can hide a successful API
+                    // write. Retain stable-operation resources so the exact
+                    // retry can adopt them without changing the Pod owner UID.
+                    if spec.operation_id.is_none() {
+                        self.rollback_new_pod(&pods, &name, policy_created, adopted)
+                            .await;
+                    }
                     return Err(AppError::internal(format!("failed to create service: {e}")));
                 }
             };
