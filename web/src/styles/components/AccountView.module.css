@@ -114,6 +114,7 @@
 
 .card {
   width: min(100%, 31rem);
+  min-width: 0;
   border-color: var(--app-surface-border);
   box-shadow: var(--mantine-shadow-lg);
 }

@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Alert,
   Anchor,
   Badge,
   Button,
@@ -21,6 +22,7 @@ import {
 import { Modal } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import {
+  mdiAlertCircleOutline,
   mdiCheck,
   mdiClockOutline,
   mdiDeleteOutline,
@@ -37,6 +39,7 @@ import { FC, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { AdminPage } from '@Components/admin/AdminPage'
+import { decodeApiCollection } from '@Utils/ApiCollection'
 import { showErrorMsg } from '@Utils/Shared'
 import api, { RepoBindingInfoModel, RepoBindingScanHistoryModel, RepoBindingScanResultModel } from '@Api'
 
@@ -47,7 +50,14 @@ const RepoBindings: FC = () => {
   // 3s refresh keeps the CurrentActivity field live during a running
   // scan without hammering the backend. Idle pages get a stable
   // response from the DB query and SWR dedupes; cost is negligible.
-  const { data: bindings, mutate } = api.admin.useAdminListRepoBindings({ refreshInterval: 3000 })
+  const {
+    data: bindingPayload,
+    error: bindingRequestError,
+    mutate,
+  } = api.admin.useAdminListRepoBindings({ refreshInterval: 3000 })
+  const bindingCollection = decodeApiCollection<RepoBindingInfoModel>(bindingPayload)
+  const bindings = bindingCollection.status === 'ready' ? bindingCollection.items : undefined
+  const bindingLoadFailed = bindingRequestError !== undefined || bindingCollection.status === 'invalid'
 
   const [repoUrl, setRepoUrl] = useState('')
   const [refValue, setRefValue] = useState('')
@@ -58,6 +68,7 @@ const RepoBindings: FC = () => {
   const [lastResult, setLastResult] = useState<RepoBindingScanResultModel | null>(null)
   const [historyTarget, setHistoryTarget] = useState<RepoBindingInfoModel | null>(null)
   const [history, setHistory] = useState<RepoBindingScanHistoryModel[] | null>(null)
+  const [historyLoadFailed, setHistoryLoadFailed] = useState(false)
 
   const flash = (r: RepoBindingScanResultModel) => {
     setLastResult(r)
@@ -113,10 +124,19 @@ const RepoBindings: FC = () => {
   const onOpenHistory = async (b: RepoBindingInfoModel) => {
     setHistoryTarget(b)
     setHistory(null)
+    setHistoryLoadFailed(false)
     try {
       const resp = await api.admin.adminGetRepoBindingScans(b.id)
-      setHistory(resp.data)
+      const result = decodeApiCollection<RepoBindingScanHistoryModel>(resp.data)
+      if (result.status !== 'ready') {
+        setHistory([])
+        setHistoryLoadFailed(true)
+        return
+      }
+      setHistory(result.items)
     } catch (e) {
+      setHistory([])
+      setHistoryLoadFailed(true)
       showErrorMsg(e, t)
     }
   }
@@ -169,7 +189,7 @@ const RepoBindings: FC = () => {
   }
 
   return (
-    <AdminPage isLoading={!bindings}>
+    <AdminPage isLoading={bindingCollection.status === 'loading' && !bindingRequestError}>
       <Container size="xl" mt="md" px={0} w="100%" maw="100%">
         <Stack gap="lg" pb={48}>
           <Stack gap={0}>
@@ -295,7 +315,26 @@ const RepoBindings: FC = () => {
             </Paper>
           )}
 
-          {!bindings || bindings.length === 0 ? (
+          {bindingLoadFailed ? (
+            <Alert
+              color="red"
+              icon={<Icon path={mdiAlertCircleOutline} size={1} />}
+              title={t('admin.content.repo_binding.load_failed_title', 'Repository bindings could not be loaded')}
+              role="alert"
+            >
+              <Stack gap="sm" align="flex-start">
+                <Text size="sm">
+                  {t(
+                    'admin.content.repo_binding.load_failed',
+                    'The server returned an invalid response or the request failed.'
+                  )}
+                </Text>
+                <Button size="xs" variant="light" onClick={() => void mutate()}>
+                  {t('admin.button.repo_binding.retry', 'Retry')}
+                </Button>
+              </Stack>
+            </Alert>
+          ) : !bindings || bindings.length === 0 ? (
             <Center h="30vh">
               <Stack gap={0} align="center">
                 <Title order={3} size="h4">
@@ -489,6 +528,7 @@ const RepoBindings: FC = () => {
         onClose={() => {
           setHistoryTarget(null)
           setHistory(null)
+          setHistoryLoadFailed(false)
         }}
         title={
           <Stack gap={0}>
@@ -507,6 +547,27 @@ const RepoBindings: FC = () => {
           <Center py="xl">
             <Text c="dimmed">{t('admin.content.repo_binding.history_loading')}</Text>
           </Center>
+        ) : historyLoadFailed ? (
+          <Alert
+            color="red"
+            icon={<Icon path={mdiAlertCircleOutline} size={1} />}
+            title={t('admin.content.repo_binding.history_load_failed_title', 'Scan history could not be loaded')}
+            role="alert"
+          >
+            <Stack gap="sm" align="flex-start">
+              <Text size="sm">
+                {t(
+                  'admin.content.repo_binding.history_load_failed',
+                  'The server returned an invalid response or the request failed.'
+                )}
+              </Text>
+              {historyTarget && (
+                <Button size="xs" variant="light" onClick={() => void onOpenHistory(historyTarget)}>
+                  {t('admin.button.repo_binding.retry', 'Retry')}
+                </Button>
+              )}
+            </Stack>
+          </Alert>
         ) : history.length === 0 ? (
           <Center py="xl">
             <Text c="dimmed">{t('admin.content.repo_binding.history_empty')}</Text>
