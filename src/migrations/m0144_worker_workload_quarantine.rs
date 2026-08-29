@@ -58,20 +58,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(
-                r#"
-                DROP INDEX IF EXISTS ix_workerworkloads_reconcile_unquarantined;
-                ALTER TABLE "WorkerWorkloads"
-                    DROP CONSTRAINT IF EXISTS ck_workerworkloads_reconcile_quarantine,
-                    DROP COLUMN IF EXISTS reconcile_quarantine_message,
-                    DROP COLUMN IF EXISTS reconcile_quarantined_at,
-                    DROP COLUMN IF EXISTS reconcile_quarantine_generation;
-                "#,
-            )
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

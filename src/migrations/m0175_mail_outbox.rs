@@ -99,11 +99,6 @@ CREATE INDEX IF NOT EXISTS ix_mail_outbox_terminal
     WHERE delivered_at_utc IS NOT NULL OR dead_at_utc IS NOT NULL;
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "MailDeliverySlots";
-DROP TABLE IF EXISTS "MailOutbox";
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -111,11 +106,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

@@ -103,17 +103,6 @@ CREATE INDEX IF NOT EXISTS ix_bulk_challenge_mutations_recovery
     WHERE state = 1;
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "BulkChallengeMutationOperations";
-DROP TRIGGER IF EXISTS tr_flag_challenge_configuration_revision ON "FlagContexts";
-DROP FUNCTION IF EXISTS bump_flag_challenge_configuration_revision();
-DROP TRIGGER IF EXISTS tr_game_challenge_configuration_revision ON "GameChallenges";
-DROP FUNCTION IF EXISTS bump_challenge_configuration_revision();
-ALTER TABLE "Games"
-    DROP CONSTRAINT IF EXISTS ck_games_challenge_configuration_revision,
-    DROP COLUMN IF EXISTS challenge_configuration_revision;
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -121,11 +110,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

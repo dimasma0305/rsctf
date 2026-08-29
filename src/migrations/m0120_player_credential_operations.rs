@@ -93,11 +93,6 @@ CREATE INDEX IF NOT EXISTS ix_player_credential_operations_expiry
     ON "PlayerCredentialOperations"(expires_at);
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "PlayerCredentialOperations";
-DROP TABLE IF EXISTS "PlayerCredentialRevisions";
-"#;
-
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
@@ -108,11 +103,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

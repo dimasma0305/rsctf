@@ -58,12 +58,6 @@ CREATE INDEX IF NOT EXISTS ix_platform_settings_branding_expiry
     ON "PlatformSettingsBrandingStaging"(expires_at, operation_id);
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "PlatformSettingsBrandingStaging";
-DROP TABLE IF EXISTS "PlatformSettingsOperations";
-DROP TABLE IF EXISTS "PlatformSettingsState";
-"#;
-
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
@@ -74,11 +68,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

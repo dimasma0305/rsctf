@@ -104,18 +104,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(
-                r#"
-DROP TABLE IF EXISTS "VariantGenerationClaims";
-DROP TABLE IF EXISTS "ControlPlaneResourceLeases";
-DROP TABLE IF EXISTS "ControlPlaneJobOperations";
-DROP TABLE IF EXISTS "ControlPlaneJobs";
-"#,
-            )
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

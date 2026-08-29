@@ -34,11 +34,6 @@ CREATE INDEX IF NOT EXISTS ix_game_notice_operations_expiry
     ON "GameNoticeOperations" (created_at_utc, game_id, operation_id);
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "GameNoticeOutbox";
-DROP TABLE IF EXISTS "GameNoticeOperations";
-"#;
-
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
@@ -49,11 +44,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

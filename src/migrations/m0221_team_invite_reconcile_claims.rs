@@ -29,14 +29,6 @@ CREATE INDEX IF NOT EXISTS ix_team_invite_reconcile_pending
     WHERE reconciled_at_utc IS NULL;
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP INDEX IF EXISTS ix_team_invite_reconcile_pending;
-ALTER TABLE "TeamInviteOperations"
-    DROP CONSTRAINT IF EXISTS ck_team_invite_reconcile_claim_pair,
-    DROP COLUMN IF EXISTS reconcile_claim_expires_at_utc,
-    DROP COLUMN IF EXISTS reconcile_claim_id;
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -44,11 +36,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

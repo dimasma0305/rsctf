@@ -11,10 +11,6 @@ CREATE INDEX IF NOT EXISTS ix_submissions_user_accepted_game_challenge
     WHERE user_id IS NOT NULL AND status = 1;
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP INDEX IF EXISTS ix_submissions_user_accepted_game_challenge;
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -22,11 +18,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

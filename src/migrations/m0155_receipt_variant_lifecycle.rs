@@ -126,14 +126,6 @@ ALTER TABLE "ChallengeVariants"
         REFERENCES "Participations"(game_id, id) ON DELETE CASCADE;
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "SolveReceiptAudit";
-DROP INDEX IF EXISTS ix_solve_receipts_expiry;
-DROP INDEX IF EXISTS ux_solve_receipts_attempt;
-ALTER TABLE "SolveReceipts" DROP CONSTRAINT IF EXISTS ck_solve_receipt_attempt_hash;
-ALTER TABLE "SolveReceipts" DROP COLUMN IF EXISTS attempt_hash;
-"#;
-
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
@@ -144,11 +136,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

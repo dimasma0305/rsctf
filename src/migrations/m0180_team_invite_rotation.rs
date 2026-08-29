@@ -44,13 +44,6 @@ CREATE INDEX IF NOT EXISTS ix_team_invite_operations_retention
     ON "TeamInviteOperations" (created_at_utc, team_id, operation_id);
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "TeamInviteOperations";
-ALTER TABLE "Teams"
-    DROP CONSTRAINT IF EXISTS ck_teams_invite_revision,
-    DROP COLUMN IF EXISTS invite_revision;
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -58,11 +51,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

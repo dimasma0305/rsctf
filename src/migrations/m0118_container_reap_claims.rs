@@ -27,16 +27,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(
-                r#"DROP INDEX IF EXISTS ix_containers_expired_reap;
-                   ALTER TABLE "Containers"
-                     DROP COLUMN IF EXISTS reap_claim_token,
-                     DROP COLUMN IF EXISTS reap_after;"#,
-            )
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

@@ -139,27 +139,6 @@ CREATE TRIGGER tr_koth_context_generation AFTER UPDATE OR DELETE ON "AspNetUsers
 FOR EACH ROW EXECUTE FUNCTION bump_koth_context_from_account();
 "#;
 
-pub(crate) const DOWN_SQL: &str = r#"
-DROP TRIGGER IF EXISTS tr_koth_context_generation ON "Teams";
-DROP TRIGGER IF EXISTS tr_koth_context_generation ON "AspNetUsers";
-DROP TRIGGER IF EXISTS tr_koth_context_generation ON "TeamMembers";
-DROP TRIGGER IF EXISTS tr_koth_context_generation ON "Participations";
-DROP TRIGGER IF EXISTS tr_koth_context_generation ON "KothOfficialConfigs";
-DROP TRIGGER IF EXISTS tr_koth_context_generation ON "AdRounds";
-DROP TRIGGER IF EXISTS tr_koth_context_generation ON "KothApiArenaSchemes";
-DROP TRIGGER IF EXISTS tr_koth_context_generation ON "KothCrownCycles";
-DROP TRIGGER IF EXISTS tr_koth_context_generation ON "KothTargets";
-DROP TRIGGER IF EXISTS tr_koth_context_generation ON "KothApiTeamTokens";
-DROP TRIGGER IF EXISTS tr_koth_context_generation ON "KothApiObservers";
-DROP FUNCTION IF EXISTS bump_koth_context_from_team();
-DROP FUNCTION IF EXISTS bump_koth_context_from_account();
-DROP FUNCTION IF EXISTS bump_koth_context_from_team_member();
-DROP FUNCTION IF EXISTS bump_koth_context_from_game();
-DROP FUNCTION IF EXISTS bump_koth_context_from_pair();
-DROP FUNCTION IF EXISTS bump_koth_context_pair(INTEGER, INTEGER);
-DROP TABLE IF EXISTS "KothObserverContextGenerations";
-"#;
-
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
@@ -170,11 +149,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

@@ -249,26 +249,6 @@ SELECT id, end_time_utc, end_time_utc
 ON CONFLICT (game_id) DO NOTHING;
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TRIGGER IF EXISTS trg_games_final_scoreboard_materialization ON "Games";
-DROP TRIGGER IF EXISTS trg_games_scoreboard_repair ON "Games";
-DROP TRIGGER IF EXISTS trg_teams_scoreboard_repair ON "Teams";
-DROP TRIGGER IF EXISTS trg_first_solves_scoreboard_repair ON "FirstSolves";
-DROP TRIGGER IF EXISTS trg_division_configs_scoreboard_repair ON "DivisionChallengeConfigs";
-DROP TRIGGER IF EXISTS trg_submissions_scoreboard_repair ON "Submissions";
-DROP TRIGGER IF EXISTS trg_divisions_scoreboard_repair ON "Divisions";
-DROP TRIGGER IF EXISTS trg_participations_scoreboard_repair ON "Participations";
-DROP TRIGGER IF EXISTS trg_game_challenges_scoreboard_repair ON "GameChallenges";
-DROP FUNCTION IF EXISTS rsctf_enqueue_final_scoreboard_materialization();
-DROP FUNCTION IF EXISTS rsctf_scoreboard_game_repair();
-DROP FUNCTION IF EXISTS rsctf_scoreboard_team_repair();
-DROP FUNCTION IF EXISTS rsctf_scoreboard_first_solve_repair();
-DROP FUNCTION IF EXISTS rsctf_scoreboard_division_config_repair();
-DROP FUNCTION IF EXISTS rsctf_scoreboard_game_row_repair();
-DROP FUNCTION IF EXISTS rsctf_request_final_scoreboard_repair(INTEGER);
-DROP TABLE IF EXISTS "FinalScoreboardMaterializations";
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -276,11 +256,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }
@@ -647,7 +623,10 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert!(!table_exists);
+        assert!(
+            table_exists,
+            "forward-only rollback must retain durable finalization state"
+        );
 
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

@@ -46,12 +46,6 @@ CREATE INDEX IF NOT EXISTS ix_gameconfigurationeffects_pending
     ON "GameConfigurationEffects" (updated_at_utc, game_id);
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "GameConfigurationEffects";
-DROP TABLE IF EXISTS "GameConfigurationOperations";
-ALTER TABLE "Games" DROP COLUMN IF EXISTS configuration_revision;
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -59,11 +53,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

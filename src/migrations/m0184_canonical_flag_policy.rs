@@ -193,18 +193,6 @@ BEGIN
 END $$;
 "#;
 
-const DOWN_SQL: &str = r#"
-ALTER TABLE "FlagContexts"
-    DROP CONSTRAINT IF EXISTS ck_flagcontexts_canonical_normal_flag;
-ALTER TABLE "GameChallenges"
-    DROP CONSTRAINT IF EXISTS ck_gamechallenges_dynamic_flag_template;
-ALTER TABLE "AdFlags"
-    DROP CONSTRAINT IF EXISTS ck_adflags_canonical_flag;
-ALTER TABLE "ChallengeVariants"
-    DROP CONSTRAINT IF EXISTS ck_challengevariants_canonical_flag;
-DROP TABLE IF EXISTS "FlagPolicyViolations";
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -212,11 +200,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

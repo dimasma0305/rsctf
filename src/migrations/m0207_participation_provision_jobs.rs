@@ -22,10 +22,6 @@ CREATE INDEX IF NOT EXISTS ix_participationprovisionjobs_due
     ON "ParticipationProvisionJobs" (next_attempt_at, participation_id);
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "ParticipationProvisionJobs";
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -33,11 +29,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

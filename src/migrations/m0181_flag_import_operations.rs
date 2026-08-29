@@ -47,11 +47,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_flag_contexts_challenge_flag
     WHERE challenge_id IS NOT NULL;
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "FlagImportOperations";
-DROP INDEX IF EXISTS ux_flag_contexts_challenge_flag;
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -59,11 +54,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

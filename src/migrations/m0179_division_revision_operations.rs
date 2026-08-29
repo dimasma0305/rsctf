@@ -29,13 +29,6 @@ CREATE INDEX IF NOT EXISTS ix_division_update_operations_retention
     ON "DivisionUpdateOperations" (created_at_utc, division_id, operation_id);
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "DivisionUpdateOperations";
-ALTER TABLE "Divisions"
-    DROP COLUMN IF EXISTS policy_revision,
-    DROP COLUMN IF EXISTS revision;
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -43,11 +36,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

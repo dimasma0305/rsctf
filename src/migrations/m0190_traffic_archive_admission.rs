@@ -20,10 +20,6 @@ CREATE INDEX IF NOT EXISTS ix_trafficarchiveleases_expiry
     ON "TrafficArchiveLeases" (expires_at_utc);
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "TrafficArchiveLeases";
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -31,11 +27,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

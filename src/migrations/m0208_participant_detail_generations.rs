@@ -152,26 +152,6 @@ AFTER UPDATE ON "Games"
 FOR EACH ROW EXECUTE FUNCTION bump_participant_detail_from_game();
 "#;
 
-pub(crate) const DOWN_SQL: &str = r#"
-DROP TRIGGER IF EXISTS tr_participant_detail_team ON "Teams";
-DROP TRIGGER IF EXISTS tr_participant_detail_game ON "Games";
-DROP TRIGGER IF EXISTS tr_participant_detail_division ON "Divisions";
-DROP TRIGGER IF EXISTS tr_participant_detail_division_config ON "DivisionChallengeConfigs";
-DROP TRIGGER IF EXISTS tr_participant_detail_account ON "AspNetUsers";
-DROP TRIGGER IF EXISTS tr_participant_detail_team_member ON "TeamMembers";
-DROP TRIGGER IF EXISTS tr_participant_detail_challenge ON "GameChallenges";
-DROP TRIGGER IF EXISTS tr_participant_detail_participation ON "Participations";
-DROP FUNCTION IF EXISTS bump_participant_detail_from_team();
-DROP FUNCTION IF EXISTS bump_participant_detail_from_game();
-DROP FUNCTION IF EXISTS bump_participant_detail_from_division_config();
-DROP FUNCTION IF EXISTS bump_participant_detail_from_account();
-DROP FUNCTION IF EXISTS bump_participant_detail_from_team_row();
-DROP FUNCTION IF EXISTS bump_participant_detail_from_game_row();
-DROP FUNCTION IF EXISTS bump_participant_detail_generation(INTEGER);
-DROP TABLE IF EXISTS "ParticipantDetailGenerations";
-DROP INDEX IF EXISTS ix_participant_detail_submission_cursor;
-"#;
-
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
@@ -182,11 +162,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

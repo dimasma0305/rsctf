@@ -10,10 +10,6 @@ CREATE INDEX IF NOT EXISTS ix_solve_receipt_audit_retention
     ON "SolveReceiptAudit" (consumed_at_utc, receipt_id);
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP INDEX IF EXISTS ix_solve_receipt_audit_retention;
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -21,11 +17,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

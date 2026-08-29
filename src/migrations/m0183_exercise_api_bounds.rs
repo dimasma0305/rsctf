@@ -15,11 +15,6 @@ CREATE INDEX IF NOT EXISTS ix_exercisechallenges_published_catalog
     WHERE is_enabled = TRUE;
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP INDEX IF EXISTS ix_exercisechallenges_published_catalog;
-DROP INDEX IF EXISTS ix_flagcontexts_exercise_flag_eligibility;
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -27,11 +22,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

@@ -44,12 +44,6 @@ CREATE INDEX IF NOT EXISTS ix_teamprofileinvalidations_pending
     ON "TeamProfileInvalidations" (updated_at_utc, team_id);
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "TeamProfileInvalidations";
-DROP TABLE IF EXISTS "TeamProfileOperations";
-ALTER TABLE "Teams" DROP COLUMN IF EXISTS profile_revision;
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -57,11 +51,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

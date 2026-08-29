@@ -19,8 +19,6 @@ CREATE INDEX IF NOT EXISTS ix_worker_enrollment_operations_expiry
     WHERE state = 'Completed';
 "#;
 
-const DOWN_SQL: &str = r#"DROP TABLE IF EXISTS "WorkerEnrollmentOperations";"#;
-
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
@@ -31,11 +29,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

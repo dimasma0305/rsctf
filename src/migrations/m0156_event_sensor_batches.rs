@@ -14,8 +14,6 @@ CREATE INDEX IF NOT EXISTS ix_event_telemetry_batches_expiry
     ON "EventTelemetryBatches"(created_at_utc, batch_id);
 "#;
 
-const DOWN_SQL: &str = r#"DROP TABLE IF EXISTS "EventTelemetryBatches";"#;
-
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
@@ -25,11 +23,7 @@ impl MigrationTrait for Migration {
         manager.get_connection().execute_unprepared(UP_SQL).await?;
         Ok(())
     }
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }

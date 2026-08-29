@@ -93,14 +93,6 @@ CREATE TABLE IF NOT EXISTS "ChallengeImportRevisions" (
 );
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "ChallengeImportRevisions";
-DROP TABLE IF EXISTS "ChallengeImportJobs";
-DROP FUNCTION IF EXISTS rsctf_release_challenge_import_source();
-DROP INDEX IF EXISTS ux_gamechallenges_import_source_identity;
-ALTER TABLE "GameChallenges" DROP COLUMN IF EXISTS import_source_identity;
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -108,11 +100,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
         Ok(())
     }
 }
