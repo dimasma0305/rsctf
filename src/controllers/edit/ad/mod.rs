@@ -7,9 +7,11 @@ use super::*;
 
 mod inspector;
 mod provision;
+mod provision_recovery;
 mod state;
 pub use inspector::*;
 pub use provision::*;
+pub(crate) use provision_recovery::*;
 pub use state::*;
 
 /// A&D admin — force round-advance result (`Api.ts` `AdAdvanceRoundResult`).

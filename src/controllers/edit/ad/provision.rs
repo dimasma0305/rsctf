@@ -609,67 +609,29 @@ pub(crate) async fn ensure_instances(
     let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
     let distributed =
         crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &flight_key).await?;
-    let accepted = participation::Entity::find()
-        .filter(participation::Column::Id.eq(participation_id))
-        .filter(participation::Column::GameId.eq(game_id))
-        .filter(participation::Column::Status.eq(ParticipationStatus::Accepted))
-        .one(&st.db)
-        .await?
-        .is_some();
-    if !accepted {
-        distributed.release().await?;
-        return Ok(0);
-    }
-    let existing: std::collections::HashSet<i32> = game_instance::Entity::find()
-        .filter(game_instance::Column::ParticipationId.eq(participation_id))
-        .all(&st.db)
-        .await?
-        .into_iter()
-        .map(|gi| gi.challenge_id)
-        .collect();
-
-    let challenges = game_challenge::Entity::find()
-        .filter(game_challenge::Column::GameId.eq(game_id))
-        .filter(game_challenge::Column::IsEnabled.eq(true))
-        .filter(game_challenge::Column::ReviewStatus.eq(ChallengeReviewStatus::Active))
-        .all(&st.db)
-        .await?;
-
-    let mut inserted = 0;
-    for c in challenges {
-        if existing.contains(&c.id) {
-            continue;
-        }
-        let created: Option<i32> = sqlx::query_scalar(
-            r#"INSERT INTO "GameInstances"
-                 (challenge_id, participation_id, is_loaded, last_container_operation,
-                  flag_id, container_id)
-               SELECT challenge.id, participation.id, FALSE, now(), NULL, NULL
-                 FROM "Participations" participation
-                 JOIN "GameChallenges" challenge
-                   ON challenge.id = $3 AND challenge.game_id = participation.game_id
-                WHERE participation.id = $1
-                  AND participation.game_id = $2
-                  AND participation.status = $4
-                  AND challenge.is_enabled = TRUE
-                  AND challenge.review_status = $5
-                  AND NOT EXISTS (
-                      SELECT 1 FROM "GameInstances" existing
-                       WHERE existing.participation_id = participation.id
-                         AND existing.challenge_id = challenge.id
-                  )
-               RETURNING id"#,
-        )
-        .bind(participation_id)
-        .bind(game_id)
-        .bind(c.id)
-        .bind(ParticipationStatus::Accepted as i16)
-        .bind(ChallengeReviewStatus::Active as i16)
-        .fetch_optional(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        inserted += usize::from(created.is_some());
-    }
+    let inserted = sqlx::query(
+        r#"INSERT INTO "GameInstances"
+              (challenge_id, participation_id, is_loaded, last_container_operation,
+               flag_id, container_id)
+           SELECT challenge.id, participation.id, FALSE, clock_timestamp(), NULL, NULL
+             FROM "Participations" participation
+             JOIN "GameChallenges" challenge
+               ON challenge.game_id = participation.game_id
+            WHERE participation.id = $1
+              AND participation.game_id = $2
+              AND participation.status = $3
+              AND challenge.is_enabled = TRUE
+              AND challenge.review_status = $4
+           ON CONFLICT (participation_id, challenge_id) DO NOTHING"#,
+    )
+    .bind(participation_id)
+    .bind(game_id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected() as usize;
     distributed.release().await?;
     Ok(inserted)
 }
@@ -687,7 +649,13 @@ pub(crate) async fn provision_accepted_participation(
 ) -> AppResult<()> {
     ensure_instances(st, participation_id, game_id).await?;
     if let Some(game) = game::Entity::find_by_id(game_id).one(&st.db).await? {
-        ensure_ad_containers(st, &game, Some(participation_id), true, true).await?;
+        let (_, failures) =
+            ensure_ad_containers(st, &game, Some(participation_id), true, true).await?;
+        if failures > 0 {
+            return Err(AppError::unavailable(format!(
+                "{failures} accepted-participation service workload(s) remain unavailable"
+            )));
+        }
     }
     Ok(())
 }

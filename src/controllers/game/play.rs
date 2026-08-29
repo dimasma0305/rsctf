@@ -617,6 +617,12 @@ pub async fn join_game(
             .execute(&mut **membership_locks.transaction_mut())
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
+        crate::controllers::edit::enqueue_accepted_provisioning(
+            membership_locks.transaction_mut(),
+            id,
+            part_id,
+        )
+        .await?;
     }
 
     // Commit the participation + membership + roster freeze before releasing
@@ -647,8 +653,7 @@ pub async fn join_game(
     // A&D service containers). Mirrors the admin update_participation Accepted
     // branch; provisioning is best-effort so a Docker outage never fails the join.
     if prepare_accepted_resources {
-        if let Err(e) =
-            crate::controllers::edit::provision_accepted_participation(&st, id, part_id).await
+        if let Err(e) = crate::controllers::edit::run_accepted_provisioning_job(&st, part_id).await
         {
             tracing::warn!(
                 game = id,
