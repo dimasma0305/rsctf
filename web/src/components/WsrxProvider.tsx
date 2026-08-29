@@ -185,14 +185,13 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     }
 
     wsrx.setOptions(getWsrxConfig(wsrxOptions))
-    doWsrxConnect()
     return () => {
       connectGeneration.current += 1
       pendingGeneration.current = null
       if (retryTimer.current !== null) clearTimeout(retryTimer.current)
       readinessScheduler.reset()
     }
-  }, [wsrx, wsrxOptions, doWsrxConnect, platformConfig.config.portMapping, readinessScheduler])
+  }, [wsrx, wsrxOptions, platformConfig.config.portMapping, readinessScheduler])
 
   useEffect(() => {
     if (platformConfig?.config.title) {

@@ -46,6 +46,7 @@ test('missing, failed, and disconnected tunnels never appear ready', () => {
 test('instance UI listens for daemon updates and exposes WSS only through the explicit mode', () => {
   const provider = readFileSync('src/components/WsrxProvider.tsx', 'utf8')
   const entry = readFileSync('src/components/InstanceEntry.tsx', 'utf8')
+  const manager = readFileSync('src/components/WsrxManager.tsx', 'utf8')
 
   assert.match(provider, /onInstancesChange\(updateInstances\)/)
   assert.match(entry, /phase === 'ready' \? \(localTraffic\?\.local \?\? ''\) :/)
@@ -58,4 +59,7 @@ test('instance UI listens for daemon updates and exposes WSS only through the ex
   assert.match(entry, /value=\{proxyEntryMode\}/)
   assert.match(entry, /drainingLocals\.current\.add\(oldLocal\)/)
   assert.match(entry, /void wsrx\.delete\(oldLocal\)/)
+  assert.doesNotMatch(provider, /wsrx\.setOptions\(getWsrxConfig\(wsrxOptions\)\)\s*doWsrxConnect\(\)/)
+  assert.match(manager, /useEffect\(\(\) => \{\s*doWsrxConnect\(\)\s*\}, \[doWsrxConnect, wsrxOptions\]\)/)
+  assert.match(entry, /proxyEntryMode, wsrxOptions, wsrxState/)
 })

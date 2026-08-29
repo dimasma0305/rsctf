@@ -22,6 +22,10 @@ export const WsrxManager: FC = () => {
   const [debounced] = useDebouncedValue(option, 300)
 
   useEffect(() => {
+    doWsrxConnect()
+  }, [doWsrxConnect, wsrxOptions])
+
+  useEffect(() => {
     if (debounced && debounced !== wsrxOptions) {
       setWsrxOptions(debounced)
     }

@@ -504,7 +504,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     setTunnelRetrying(true)
     if (proxyEntryMode === 'wsrx' && wsrxState !== WsrxState.Usable) doWsrxConnect()
     setCapabilityAttempt((attempt) => attempt + 1)
-  }, [doWsrxConnect, isPlatformProxy, proxyEntryMode, wsrxState])
+  }, [doWsrxConnect, isPlatformProxy, proxyEntryMode, wsrxOptions, wsrxState])
 
   useServerClockTimeout(
     () => void onRefreshProxyEntry(),
