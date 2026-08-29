@@ -1622,6 +1622,10 @@ export interface GameInfoModel {
   vpnSourceAsnTelemetryEnabled?: boolean;
   /** Record when one event peer appears from several endpoint identities. */
   vpnDeviceSharingTelemetryEnabled?: boolean;
+  /** Optimistic concurrency revision for the complete editable game configuration. */
+  configurationRevision?: number;
+  /** Stable idempotency identity for one settings save intent. */
+  operationId?: string | null;
   /**
    * Response-owned server clock sample for lifecycle display.
    * @format uint64
