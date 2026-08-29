@@ -182,6 +182,12 @@ async fn changed_spec_or_rendered_policy_does_not_adopt_a_kubernetes_crash_orpha
         manager.create(changed).await,
         Err(AppError::Conflict(_))
     ));
+    let mut changed_image = original.clone();
+    changed_image.image = format!("other.registry/renamed@sha256:{}", "b".repeat(64));
+    assert!(matches!(
+        manager.create(changed_image).await,
+        Err(AppError::Conflict(_))
+    ));
 
     std::env::set_var(
         "RSCTF_K8S_CONTROL_POD_LABEL",

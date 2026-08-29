@@ -451,13 +451,8 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
         revision(&original_route),
         "2233445566778899aabbccddeeff0011"
     );
-    let resource_name = |operation: &str| {
-        format!(
-            "{}-{}",
-            sanitize_image(&image),
-            &crate::utils::codec::sha256_str(operation)[..16]
-        )
-    };
+    let scope = orphans::workload_scope("rsctf-challenges", None);
+    let resource_name = |operation: &str| workload_name_and_uid(&image, &scope, Some(operation)).0;
     let original_name = resource_name(&original_operation);
     let changed_name = resource_name(&changed_operation);
     let restored_name = resource_name(&restored_operation);
@@ -512,7 +507,7 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
     let manager = KubernetesContainerManager {
         client: Client::new(service, "rsctf-challenges"),
         namespace: "rsctf-challenges".to_string(),
-        scope: orphans::workload_scope("rsctf-challenges", None),
+        scope,
         public_entry: Some("192.0.2.10".to_string()),
     };
 

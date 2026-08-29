@@ -421,6 +421,19 @@ async fn retryable_flag_adopts_one_real_docker_workload() {
     let Ok(manager) = DockerContainerManager::connect() else {
         return;
     };
+    let inspected = manager
+        .client()
+        .expect("real Docker client")
+        .inspect_image(&image)
+        .await
+        .expect("real retry image is inspectable");
+    let alternate_image = inspected
+        .repo_digests
+        .unwrap_or_default()
+        .into_iter()
+        .chain(inspected.id)
+        .find(|candidate| candidate != &image)
+        .expect("real retry image must expose a second immutable reference");
     let operation_id = format!("test-retryable-flag:{}", uuid::Uuid::new_v4());
     let spec = || ContainerSpec {
         game_kind: rsctf_worker_protocol::GameKind::Jeopardy,
@@ -449,12 +462,30 @@ async fn retryable_flag_adopts_one_real_docker_workload() {
     let mut changed = spec();
     changed.memory_limit += 1;
     let changed_result = manager.create(changed).await;
+    let mut changed_image = spec();
+    changed_image.image = alternate_image;
+    let changed_image_result = manager.create(changed_image).await;
+    for container in [&changed_result, &changed_image_result]
+        .into_iter()
+        .flatten()
+    {
+        if container.id != first.id {
+            manager
+                .destroy(&container.id)
+                .await
+                .expect("unexpected duplicate workload cleanup");
+        }
+    }
     let cleanup = manager.destroy(&first.id).await;
     let second = retried.expect("same operation and flag should adopt");
 
     assert_eq!(first.id, second.id, "retry launched a duplicate workload");
     assert!(matches!(
         changed_result,
+        Err(crate::utils::error::AppError::Conflict(_))
+    ));
+    assert!(matches!(
+        changed_image_result,
         Err(crate::utils::error::AppError::Conflict(_))
     ));
     cleanup.expect("real Docker retry workload cleanup");
@@ -916,7 +947,14 @@ fn recovery_operation_names_are_stable_and_scoped() {
         &env,
         next_operation.as_deref(),
     );
+    let changed_image = container_name(
+        "another.registry/renamed/image:latest",
+        &[("RSCTF_TEAM_ID".to_string(), "99".to_string())],
+        first_operation.as_deref(),
+    );
     assert_eq!(first, retry);
+    assert_eq!(first, changed_image);
+    assert!(first.starts_with("rsctf-operation-"));
     assert_ne!(first, foreign);
     assert_ne!(first, next);
 }

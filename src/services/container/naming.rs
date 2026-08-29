@@ -2,13 +2,17 @@ use bollard::models::ContainerStateStatusEnum;
 
 use super::TEAM_ENV;
 
-/// A readable collision-safe name. A stable operation gets a deterministic
-/// suffix so recovery can adopt the same backend workload.
+/// A readable collision-safe name for one-shot launches. A stable operation
+/// gets a scope-bound deterministic name that excludes mutable launch fields.
 pub(super) fn container_name(
     image: &str,
     env: &[(String, String)],
     operation_id: Option<&str>,
 ) -> String {
+    if let Some(operation_id) = operation_id {
+        let digest = crate::utils::codec::sha256_str(operation_id);
+        return format!("rsctf-operation-{}", &digest[..32]);
+    }
     let base = image.split_once('@').map_or(image, |(image, _)| image);
     let base = base.rsplit_once(':').map_or(base, |(image, _)| image);
     let mut name: String = base
@@ -26,12 +30,7 @@ pub(super) fn container_name(
         name.push_str(team);
     }
     name.push('-');
-    if let Some(operation_id) = operation_id {
-        let digest = crate::utils::codec::sha256_str(operation_id);
-        name.push_str(&digest[..12]);
-    } else {
-        name.push_str(&uuid::Uuid::new_v4().simple().to_string()[..12]);
-    }
+    name.push_str(&uuid::Uuid::new_v4().simple().to_string()[..12]);
     let name = name.trim_matches('-').to_string();
     if name.is_empty() {
         "rsctf-container".to_string()

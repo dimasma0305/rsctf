@@ -300,6 +300,16 @@ fn sanitize_image(image: &str) -> String {
     }
 }
 
+fn workload_name_and_uid(image: &str, scope: &str, operation_id: Option<&str>) -> (String, String) {
+    if let Some(operation_id) = operation_id {
+        let identity = format!("{scope}\0{operation_id}");
+        let uid = crate::utils::codec::sha256_str(&identity)[..16].to_string();
+        return (format!("rsctf-operation-{uid}"), uid);
+    }
+    let uid = random_hex(8);
+    (format!("{}-{uid}", sanitize_image(image)), uid)
+}
+
 fn service_type(internal_only: bool) -> &'static str {
     if internal_only {
         "ClusterIP"
@@ -411,11 +421,8 @@ impl ContainerManager for KubernetesContainerManager {
         }
         // Unique, DNS-safe resource name + the app label that ties the Service
         // to this pod (RSCTF uses a per-instance ResourceId label/selector).
-        let uid = spec.operation_id.as_ref().map_or_else(
-            || random_hex(8),
-            |operation| crate::utils::codec::sha256_str(operation)[..16].to_string(),
-        );
-        let name = format!("{}-{}", sanitize_image(&spec.image), uid);
+        let (name, uid) =
+            workload_name_and_uid(&spec.image, &self.scope, spec.operation_id.as_deref());
         let ad_internal = spec.ad_network.is_some();
         let isolated = spec.network_mode == crate::utils::enums::NetworkMode::Isolated;
         let internal_only = ad_internal || spec.proxy_only;
