@@ -366,10 +366,10 @@ ad:
               </Accordion>
             )}
 
-            <Paper p="lg" withBorder style={disabled ? { opacity: 0.55, pointerEvents: 'none' } : undefined}>
+            <Paper p="lg" withBorder aria-disabled={disabled || undefined}>
               <Stack gap="md">
                 <Dropzone
-                  disabled={busy}
+                  disabled={busy || disabled}
                   multiple={false}
                   maxSize={MAX_SIZE}
                   inputProps={{
@@ -410,7 +410,7 @@ ad:
                       <Text size="lg" fw={700}>
                         {t('game.submit.dropzone.title')}
                       </Text>
-                      <Text size="sm" c="dimmed">
+                      <Text size="sm" style={{ color: 'var(--app-text-muted)' }}>
                         {t('game.submit.dropzone.hint')}
                       </Text>
                     </Stack>
@@ -448,7 +448,7 @@ ad:
                   size="md"
                   leftSection={<Icon path={mdiUpload} size={1} />}
                   loading={busy}
-                  disabled={!file}
+                  disabled={!file || disabled}
                   onClick={submit}
                 >
                   {t('game.submit.button.submit')}
