@@ -785,21 +785,26 @@ export async function teardownNamespace(gameIds) {
 export async function uploadAsset(filename, content) {
   const fd = new FormData();
   fd.append('file', new Blob([content]), filename);
-  const r = await fetch(`${TARGET}/api/assets`, {
+  const r = await fetch(`${TARGET}/api/assets?operationId=${randomUUID()}`, {
     method: 'POST',
     headers: { authorization: `Bearer ${adminJwt()}`, 'x-real-ip': '10.9.9.9' },
     body: fd,
   });
   const j = await r.json().catch(() => null);
-  const hash = Array.isArray(j) ? j[0]?.hash : j?.hash;
-  if (r.status >= 300 || !hash) throw new Error(`uploadAsset → ${r.status} ${JSON.stringify(j)?.slice(0, 120)}`);
-  return hash;
+  const asset = Array.isArray(j) ? j[0] : j;
+  if (r.status >= 300 || !asset?.hash || !asset?.uploadId) {
+    throw new Error(`uploadAsset → ${r.status} ${JSON.stringify(j)?.slice(0, 120)}`);
+  }
+  return { hash: asset.hash, uploadId: asset.uploadId };
 }
-export async function setAttachment(gid, cid, fileHash) {
+export async function setAttachment(gid, cid, asset) {
+  if (!asset?.hash || !asset?.uploadId) {
+    throw new Error('setAttachment requires the hash and uploadId returned by uploadAsset');
+  }
   return must(
     await api('POST', `/api/edit/games/${gid}/challenges/${cid}/attachment`, {
       ...jwtOpt(),
-      body: { attachmentType: 'Local', fileHash },
+      body: { attachmentType: 'Local', fileHash: asset.hash, uploadId: asset.uploadId },
     }),
     'setAttachment'
   );

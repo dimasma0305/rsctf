@@ -513,7 +513,7 @@ pub(super) async fn assert_binding_update_and_delete_fences(
             binding_id,
             crate::controllers::admin::RepoBindingUpdateModel {
                 r#ref: Some("release/latest".to_string()),
-                interval_seconds: Some(17),
+                interval_seconds: Some(600),
                 status: Some("Paused".to_string()),
                 github_token: Some("new-token".to_string()),
                 push_on_edit: Some(true),

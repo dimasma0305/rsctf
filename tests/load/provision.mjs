@@ -355,10 +355,11 @@ async function main() {
   }
   // Give the first static challenge a real downloadable attachment (stresses /assets serving).
   const attachName = 'challenge.zip';
-  const attachHash = await interruptibleMutation(
+  const attachAsset = await interruptibleMutation(
     A.uploadAsset(attachName, 'loadtest-attachment-payload-'.repeat(500))
   );
-  await interruptibleMutation(A.setAttachment(jeoGame, Number(Object.keys(staticFlags)[0]), attachHash));
+  const attachHash = attachAsset.hash;
+  await interruptibleMutation(A.setAttachment(jeoGame, Number(Object.keys(staticFlags)[0]), attachAsset));
   staticCatalog[0].attachmentPath = `/assets/${attachHash}/${attachName}`;
   console.log(`  attachment uploaded (${attachHash.slice(0, 12)}…)`);
   // one container challenge for the container cohort

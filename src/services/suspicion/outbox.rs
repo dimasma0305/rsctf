@@ -939,9 +939,5 @@ pub fn start_evaluation_reconciler(
 }
 
 #[cfg(test)]
-mod test_support;
-#[cfg(test)]
 #[path = "outbox_tests.rs"]
 mod tests;
-#[cfg(test)]
-pub(crate) use test_support::seal_reconciled_game_for_test;

@@ -73,6 +73,29 @@ impl ActiveObserverContext {
         })
     }
 
+    pub(super) fn replay_scope(
+        &self,
+        game_id: i32,
+        challenge_id: i32,
+        eligible_tokens: &[String],
+    ) -> String {
+        // The first accepted observation freezes the objective schema, so that
+        // one field may change while an exact retry is in flight. Every other
+        // live target, reporter, round, and roster fence remains authoritative.
+        opaque_context(OpaqueContext {
+            game_id,
+            challenge_id,
+            target_id: self.target_id,
+            cycle_id: self.cycle_id,
+            reset_attempt: self.reset_attempt,
+            reporting_revision: self.reporting_revision,
+            container_id: &self.container_id,
+            round_id: self.round_id,
+            objective_schema_hash: None,
+            eligible_tokens,
+        })
+    }
+
     pub(super) fn wave_window(&self) -> (DateTime<Utc>, DateTime<Utc>) {
         let lag = chrono::Duration::seconds(
             crate::services::ad::engine::koth_api::API_WAVE_SETTLEMENT_LAG_SECONDS,

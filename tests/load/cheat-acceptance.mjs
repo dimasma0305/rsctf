@@ -296,24 +296,19 @@ function evidence(gameId) {
   );
 }
 
-function honeypotTelemetryState(gameId, subject, afterId) {
+function honeypotTelemetryState(gameId, subject) {
   const id = positiveInteger(gameId, "honeypot game id");
-  const floor = Number(afterId);
-  if (!Number.isSafeInteger(floor) || floor < 0) {
-    throw new Error(`invalid honeypot hit floor: ${afterId}`);
-  }
   return jsonQuery(
     `SELECT json_build_object(` +
-      `'hits',(SELECT COALESCE(json_agg(json_build_array(` +
-      `hit.id,hit.user_id,hit.game_id,hit.participation_id,hit.bait,` +
-      `hit.remote_ip,hit.user_agent,hit.hit_at_utc) ORDER BY hit.id),'[]'::json) ` +
-      `FROM "HoneypotHits" hit WHERE hit.id>${floor} ` +
-      `AND hit.user_agent=${literal(subject.honeypotUserAgent)}),` +
-      `'outboxJobs',(SELECT count(*) FROM "SuspicionEvaluationOutbox" job WHERE ` +
-      `job.rule_kind IN (28,29,31) OR EXISTS (` +
-      `SELECT 1 FROM "HoneypotHits" hit WHERE job.source_kind=1 ` +
-      `AND job.source_id=hit.id AND hit.id>${floor} ` +
-      `AND hit.user_agent=${literal(subject.honeypotUserAgent)})),` +
+      `'buckets',(SELECT COALESCE(json_agg(json_build_array(` +
+      `bucket.user_id,bucket.bait,bucket.source_hash,bucket.user_agent,` +
+      `bucket.hit_count,bucket.last_hit_at_utc) ORDER BY bucket.bait),'[]'::json) ` +
+      `FROM "HoneypotHitBuckets" bucket ` +
+      `WHERE bucket.user_agent=${literal(subject.honeypotUserAgent)}),` +
+      `'legacyHits',(SELECT count(*) FROM "HoneypotHits" hit ` +
+      `WHERE hit.user_agent=${literal(subject.honeypotUserAgent)}),` +
+      `'outboxJobs',(SELECT count(*) FROM "SuspicionEvaluationOutbox" job ` +
+      `WHERE job.rule_kind IN (28,29,31)),` +
       `'suspicionEvents',(SELECT count(*) FROM "SuspicionEvents" ` +
       `WHERE kind IN (28,29,31)),` +
       `'storedScore',(SELECT suspicion_score FROM "Participations" ` +
@@ -324,20 +319,24 @@ function honeypotTelemetryState(gameId, subject, afterId) {
   );
 }
 
-function assertHoneypotTelemetry(gameId, subject, afterId) {
-  const state = honeypotTelemetryState(gameId, subject, afterId);
-  const hits = Array.isArray(state.hits) ? state.hits : [];
-  const actualBaits = hits.map((row) => row[4]).sort();
-  const exactAttribution = hits.every(
-    (row) =>
-      String(row[1]).toLowerCase() === subject.userId.toLowerCase() &&
-      row[2] === null &&
-      row[3] === null,
+function assertHoneypotTelemetry(gameId, subject) {
+  const state = honeypotTelemetryState(gameId, subject);
+  const buckets = Array.isArray(state.buckets) ? state.buckets : [];
+  const actualBaits = buckets.map((row) => row[1]).sort();
+  const exactAttribution = buckets.every(
+    (row) => String(row[0]).toLowerCase() === subject.userId.toLowerCase(),
   );
+  const sourceHashes = new Set(buckets.map((row) => row[2]));
+  const boundedShape =
+    buckets.every((row) => Number(row[4]) === 1) &&
+    sourceHashes.size === 1 &&
+    /^[0-9a-f]{64}$/.test(String(buckets[0]?.[2] || ""));
   if (
-    hits.length !== HONEYPOT_BAITS.length ||
+    buckets.length !== HONEYPOT_BAITS.length ||
     !sameMembers(actualBaits, HONEYPOT_BAITS) ||
     !exactAttribution ||
+    !boundedShape ||
+    Number(state.legacyHits) !== 0 ||
     Number(state.outboxJobs) !== 0 ||
     Number(state.suspicionEvents) !== 0 ||
     state.storedScore === null ||
@@ -345,9 +344,11 @@ function assertHoneypotTelemetry(gameId, subject, afterId) {
   ) {
     throw new Error(
       `honeypot telemetry diverged: ${JSON.stringify({
-        hitCount: hits.length,
+        bucketCount: buckets.length,
         actualBaits,
         exactAttribution,
+        boundedShape,
+        legacyHits: state.legacyHits,
         outboxJobs: state.outboxJobs,
         suspicionEvents: state.suspicionEvents,
         storedScore: state.storedScore,
@@ -591,9 +592,44 @@ function seedWrongAttempts(gameId, challengeId, subject, count, timestampsSql, p
   if (stored !== count) throw new Error(`seeded ${stored}/${count} ${prefix} wrong attempts`);
 }
 
+async function provisionCohortPassword(cohort, label) {
+  const seedUserId = cohort.userIds[0];
+  const reset = await A.api(
+    "DELETE",
+    `/api/admin/users/${encodeURIComponent(seedUserId)}/password?operationId=${randomUUID()}`,
+    { jwt: A.adminJwt(), ip: "192.0.2.44" },
+  );
+  const password = unwrap(reset);
+  if (reset.status !== 200 || typeof password !== "string" || password.length < 8) {
+    throw new Error(`${label} cohort password reset failed: ${reset.status} ${reset.text}`);
+  }
+  const passwordHash = sql(
+    `SELECT password_hash FROM "AspNetUsers" WHERE id=${literal(seedUserId)}::uuid`,
+  );
+  if (!passwordHash.startsWith("$argon2")) {
+    throw new Error(`${label} cohort reset did not persist an Argon2 password hash`);
+  }
+  const userIds = cohort.userIds.map((userId) => `${literal(userId)}::uuid`).join(",");
+  sql(
+    `UPDATE "AspNetUsers" SET password_hash=${literal(passwordHash)} ` +
+      `WHERE id IN (${userIds})`,
+  );
+  const matching = Number(
+    sql(
+      `SELECT count(*) FROM "AspNetUsers" WHERE id IN (${userIds}) ` +
+        `AND password_hash=${literal(passwordHash)}`,
+    ),
+  );
+  if (matching !== cohort.userIds.length) {
+    throw new Error(`${label} cohort password fixture updated ${matching}/${cohort.userIds.length} actors`);
+  }
+  return password;
+}
+
 async function exerciseSharedIpLogins(
   gameId,
   cohort,
+  password,
   indices,
   ip,
   label,
@@ -605,15 +641,6 @@ async function exerciseSharedIpLogins(
   const actors = [];
   for (const index of indices) {
     const userId = cohort.userIds[index];
-    const reset = await A.api(
-      "DELETE",
-      `/api/admin/users/${encodeURIComponent(userId)}/password?operationId=${randomUUID()}`,
-      { jwt: A.adminJwt(), ip: "192.0.2.44" },
-    );
-    const password = unwrap(reset);
-    if (reset.status !== 200 || typeof password !== "string" || password.length < 8) {
-      throw new Error(`${label} password reset failed: ${reset.status} ${reset.text}`);
-    }
     const userName = sql(
       `SELECT user_name FROM "AspNetUsers" WHERE id=${literal(userId)}::uuid`,
     );
@@ -703,12 +730,13 @@ async function exerciseSharedIpLogins(
   };
 }
 
-async function exerciseDistinctIpLogins(gameId, cohort, identities) {
+async function exerciseDistinctIpLogins(gameId, cohort, password, identities) {
   const actors = [];
   for (const { index, ip, label } of identities) {
     const observed = await exerciseSharedIpLogins(
       gameId,
       cohort,
+      password,
       [index],
       ip,
       `${label} live identity`,
@@ -718,15 +746,9 @@ async function exerciseDistinctIpLogins(gameId, cohort, identities) {
   return actors;
 }
 
-async function resetLoginCredentials(subject, label) {
-  const reset = await A.api(
-    "DELETE",
-    `/api/admin/users/${encodeURIComponent(subject.userId)}/password?operationId=${randomUUID()}`,
-    { jwt: A.adminJwt(), ip: "192.0.2.44" },
-  );
-  const password = unwrap(reset);
-  if (reset.status !== 200 || typeof password !== "string" || password.length < 8) {
-    throw new Error(`${label} password reset failed: ${reset.status} ${reset.text}`);
+function loginCredentials(subject, password, label) {
+  if (typeof password !== "string" || password.length < 8) {
+    throw new Error(`${label} lacks its cohort password`);
   }
   const userName = sql(
     `SELECT user_name FROM "AspNetUsers" WHERE id=${literal(subject.userId)}::uuid`,
@@ -1101,6 +1123,7 @@ async function exerciseFinalizationGraceControl() {
     teamMemberCountLimit: 0,
   });
   const cohort = parseCohortSeedResult(sql(cohortSeedQuery(gameId, 2)), 2);
+  const cohortPassword = await provisionCohortPassword(cohort, "finalization-grace");
   await A.setGameSchedule(
     gameId,
     A.nowMs() - 60 * 60 * 1000,
@@ -1109,6 +1132,7 @@ async function exerciseFinalizationGraceControl() {
   const group = await exerciseSharedIpLogins(
     gameId,
     cohort,
+    cohortPassword,
     [0, 1],
     "192.0.2.222",
     "finalization-grace shared network",
@@ -1170,6 +1194,21 @@ async function exerciseFinalizationGraceControl() {
   const endAtMicros = Number(closeout.endAtMicros);
   if (Number(closeout.rows) !== 1 || !Number.isSafeInteger(endAtMicros)) {
     throw new Error("finalization-grace control could not schedule a phase-aligned closeout");
+  }
+  // The incremental reconciler correctly stops selecting a clean active game.
+  // Make the sentinel dirty again so its next attempt is a real worker-cycle
+  // barrier instead of assuming every active game is swept on every tick.
+  const markedSentinel = Number(
+    sql(
+      `WITH marked AS (` +
+        `UPDATE "SuspicionReconciliationState" ` +
+        `SET dirty_generation=dirty_generation+1,dirty_mask=dirty_mask|63 ` +
+        `WHERE game_id=${sentinelId} RETURNING game_id` +
+        `) SELECT count(*) FROM marked`,
+    ),
+  );
+  if (markedSentinel !== 1) {
+    throw new Error("finalization-grace sentinel could not be marked dirty");
   }
   const sentinelAttempt = positiveInteger(phase.attempts, "sentinel phase attempts");
   const stateDuringGrace = await waitFor("phase-aligned finalization-grace cycle", () => {
@@ -1439,8 +1478,9 @@ async function main() {
     attachmentFlag,
   );
   const attachmentName = "cheat-acceptance.txt";
-  const attachmentHash = await A.uploadAsset(attachmentName, "anti-cheat acceptance attachment\n");
-  await A.setAttachment(gameId, attachmentId, attachmentHash);
+  const attachmentAsset = await A.uploadAsset(attachmentName, "anti-cheat acceptance attachment\n");
+  const attachmentHash = attachmentAsset.hash;
+  await A.setAttachment(gameId, attachmentId, attachmentAsset);
   const containerFlag = `flag{cheat_acceptance_container_${now}}`;
   const containerTitle = "cheat-acceptance-container";
   const containerId = await createChallenge(
@@ -1452,6 +1492,7 @@ async function main() {
   );
 
   const cohort = parseCohortSeedResult(sql(cohortSeedQuery(gameId, COHORT_SIZE)), COHORT_SIZE);
+  const cohortPassword = await provisionCohortPassword(cohort, "primary acceptance");
   const flags = seedDynamicInstances(dynamicId, cohort, now);
   const neutralJoiner = provisionNeutralJoiner();
   await exerciseIdentityAwareTeamAccept(neutralJoiner, cohort.teamIds[8]);
@@ -1474,7 +1515,7 @@ async function main() {
     solvedWrongWindow,
     fastDownload,
     fastContainer,
-  ] = await exerciseDistinctIpLogins(gameId, cohort, [
+  ] = await exerciseDistinctIpLogins(gameId, cohort, cohortPassword, [
     { index: 0, ip: "198.51.10.10", label: "stolen-flag actor" },
     { index: 1, ip: "198.51.20.10", label: "flag owner" },
     { index: 2, ip: "198.51.30.10", label: "brute-force actor" },
@@ -1490,6 +1531,7 @@ async function main() {
   const natInitialGroup = await exerciseSharedIpLogins(
     gameId,
     cohort,
+    cohortPassword,
     [4, 5, 6, 7],
     NAT_IP,
     "pre-end shared NAT",
@@ -1499,6 +1541,7 @@ async function main() {
   const contextGroup = await exerciseSharedIpLogins(
     gameId,
     cohort,
+    cohortPassword,
     [12, 13, 14, 15],
     REVIEWABLE_SHARED_IP,
     "four-team shared network",
@@ -1828,16 +1871,13 @@ async function main() {
         "expected 40 mature attempts plus one public kick",
     );
   }
-  const honeypotHitFloor = Number(
-    sql(`SELECT COALESCE(max(id),0) FROM "HoneypotHits"`),
-  );
   for (const bait of HONEYPOT_BAITS) {
     const response = await A.api("GET", bait, playerOptions(honeypot));
     if (response.status !== 404) throw new Error(`honeypot ${bait} returned ${response.status}`);
   }
   await waitFor(
     "authenticated honeypot raw telemetry",
-    () => assertHoneypotTelemetry(gameId, honeypot, honeypotHitFloor),
+    () => assertHoneypotTelemetry(gameId, honeypot),
   );
 
   // Gate actionable request/outbox evidence and raw telemetry before ending the
@@ -1859,8 +1899,9 @@ async function main() {
     }
     return rows;
   });
-  const natFifthCredentials = await resetLoginCredentials(
+  const natFifthCredentials = loginCredentials(
     natFifth,
+    cohortPassword,
     "fifth shared-NAT actor",
   );
 
@@ -1984,7 +2025,7 @@ async function main() {
     throw new Error(`${nonzeroCleanScores} benign/telemetry controls received a suspicion score`);
   }
   assertCompetitiveTimeFence(gameId);
-  assertHoneypotTelemetry(gameId, honeypot, honeypotHitFloor);
+  assertHoneypotTelemetry(gameId, honeypot);
   await waitFor("post-game practice evaluation", () =>
     Number(
       sql(
@@ -2010,7 +2051,7 @@ async function main() {
 
   const beforeReport = ledgerSnapshot(gameId);
   const honeypotBeforeReport = JSON.stringify(
-    assertHoneypotTelemetry(gameId, honeypot, honeypotHitFloor),
+    assertHoneypotTelemetry(gameId, honeypot),
   );
   const reportResponse = await A.api("GET", `/api/game/${gameId}/cheatreport`, {
     jwt: A.adminJwt(),
@@ -2021,7 +2062,7 @@ async function main() {
   }
   const afterReport = ledgerSnapshot(gameId);
   const honeypotAfterReport = JSON.stringify(
-    assertHoneypotTelemetry(gameId, honeypot, honeypotHitFloor),
+    assertHoneypotTelemetry(gameId, honeypot),
   );
   if (afterReport !== beforeReport || honeypotAfterReport !== honeypotBeforeReport) {
     throw new Error("GET /cheatreport mutated sources, evidence, scores, or outbox state");

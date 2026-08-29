@@ -135,7 +135,12 @@ CREATE TRIGGER tr_koth_context_generation AFTER UPDATE OR DELETE ON "Teams"
 FOR EACH ROW EXECUTE FUNCTION bump_koth_context_from_team();
 
 DROP TRIGGER IF EXISTS tr_koth_context_generation ON "AspNetUsers";
-CREATE TRIGGER tr_koth_context_generation AFTER UPDATE OR DELETE ON "AspNetUsers"
+DROP TRIGGER IF EXISTS tr_koth_context_generation_account_role ON "AspNetUsers";
+CREATE TRIGGER tr_koth_context_generation_account_role AFTER UPDATE OF role ON "AspNetUsers"
+FOR EACH ROW WHEN (NEW.role IS DISTINCT FROM OLD.role)
+EXECUTE FUNCTION bump_koth_context_from_account();
+DROP TRIGGER IF EXISTS tr_koth_context_generation_account_delete ON "AspNetUsers";
+CREATE TRIGGER tr_koth_context_generation_account_delete AFTER DELETE ON "AspNetUsers"
 FOR EACH ROW EXECUTE FUNCTION bump_koth_context_from_account();
 "#;
 
@@ -156,7 +161,14 @@ impl MigrationTrait for Migration {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
+    use sea_orm::SqlxPostgresConnector;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    use super::Migration;
     use super::UP_SQL;
+    use sea_orm_migration::{MigrationTrait, SchemaManager};
 
     #[test]
     fn context_generation_covers_context_roster_and_round_inputs() {
@@ -175,5 +187,112 @@ mod tests {
             );
         }
         assert!(UP_SQL.contains("generation = generation.generation + 1"));
+        assert!(UP_SQL.contains(
+            "tr_koth_context_generation_account_role AFTER UPDATE OF role ON \"AspNetUsers\""
+        ));
+        assert!(UP_SQL.contains("WHEN (NEW.role IS DISTINCT FROM OLD.role)"));
+        assert!(UP_SQL
+            .contains("tr_koth_context_generation_account_delete AFTER DELETE ON \"AspNetUsers\""));
+        assert!(!UP_SQL.contains("AFTER UPDATE OR DELETE ON \"AspNetUsers\""));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn account_activity_does_not_invalidate_observer_context() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("rsctf_m0209_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"CREATE TABLE "Games" (id INTEGER PRIMARY KEY);
+               CREATE TABLE "GameChallenges" (id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL);
+               CREATE TABLE "KothApiObservers" (game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL);
+               CREATE TABLE "KothApiTeamTokens" (game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL);
+               CREATE TABLE "KothTargets" (game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL);
+               CREATE TABLE "KothCrownCycles" (game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL);
+               CREATE TABLE "KothApiArenaSchemes" (game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL);
+               CREATE TABLE "AdRounds" (game_id INTEGER NOT NULL);
+               CREATE TABLE "KothOfficialConfigs" (game_id INTEGER NOT NULL);
+               CREATE TABLE "Participations" (game_id INTEGER NOT NULL, team_id INTEGER NOT NULL);
+               CREATE TABLE "Teams" (id INTEGER PRIMARY KEY, captain_id UUID);
+               CREATE TABLE "TeamMembers" (team_id INTEGER NOT NULL, user_id UUID NOT NULL);
+               CREATE TABLE "AspNetUsers" (
+                 id UUID PRIMARY KEY, role SMALLINT NOT NULL,
+                 last_visited_utc TIMESTAMPTZ NOT NULL
+               );
+               INSERT INTO "Games" VALUES (7);
+               INSERT INTO "GameChallenges" VALUES (9, 7);
+               INSERT INTO "KothApiObservers" VALUES (7, 9);
+               INSERT INTO "AspNetUsers" VALUES
+                 ('00000000-0000-4000-8000-000000000209', 1, clock_timestamp());
+               INSERT INTO "Teams" VALUES
+                 (21, '00000000-0000-4000-8000-000000000209');
+               INSERT INTO "Participations" VALUES (7, 21);"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let db = SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone());
+        let manager = SchemaManager::new(&db);
+        Migration.up(&manager).await.unwrap();
+        Migration.up(&manager).await.unwrap();
+
+        let generation = || async {
+            sqlx::query_scalar::<_, i64>(
+                r#"SELECT generation FROM "KothObserverContextGenerations"
+                    WHERE game_id = 7 AND challenge_id = 9"#,
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+        assert_eq!(generation().await, 1);
+        sqlx::query(
+            r#"UPDATE "AspNetUsers"
+                  SET last_visited_utc = clock_timestamp(), role = role
+                WHERE id = '00000000-0000-4000-8000-000000000209'"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(generation().await, 1);
+        sqlx::query(
+            r#"UPDATE "AspNetUsers" SET role = 2
+                WHERE id = '00000000-0000-4000-8000-000000000209'"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(generation().await, 2);
+        sqlx::query(
+            r#"DELETE FROM "AspNetUsers"
+                WHERE id = '00000000-0000-4000-8000-000000000209'"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(generation().await, 3);
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
     }
 }

@@ -512,7 +512,7 @@ fn spawn_heartbeats(
                 });
             }
             heartbeat_count = heartbeat_count.saturating_add(1);
-            let runtime_healthy = consecutive_probe_failures == 0;
+            let runtime_healthy = runtime_probe_is_healthy(consecutive_probe_failures);
             let runtime_error = (!runtime_healthy).then(|| {
                 last_probe_error
                     .clone()
@@ -538,6 +538,10 @@ fn spawn_heartbeats(
             }
         }
     })
+}
+
+fn runtime_probe_is_healthy(consecutive_probe_failures: u8) -> bool {
+    consecutive_probe_failures < 3
 }
 
 async fn run_timed<F>(timeout_ms: u64, operation: F) -> Result<Option<WorkloadStatus>, RuntimeError>
@@ -713,6 +717,15 @@ mod tests {
             detail: Some("x".repeat(MAX_CONTROL_FRAME)),
         });
         assert!(inventory_pages(vec![oversized]).is_err());
+    }
+
+    #[test]
+    fn transient_probe_failures_preserve_the_three_probe_health_threshold() {
+        assert!(runtime_probe_is_healthy(0));
+        assert!(runtime_probe_is_healthy(1));
+        assert!(runtime_probe_is_healthy(2));
+        assert!(!runtime_probe_is_healthy(3));
+        assert!(!runtime_probe_is_healthy(u8::MAX));
     }
 
     #[tokio::test]

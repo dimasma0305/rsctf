@@ -42,8 +42,9 @@ pub(crate) use challenges::{
 };
 pub(crate) use seaorm::publish_staged_blob_in_seaorm_transaction;
 pub(crate) use staging::{
-    load_ready_upload_stage, publish_staged_blob, publish_staged_blob_for_owner,
-    purge_expired_stages, scoped_operation_id, stage_blob, StagedBlob,
+    discard_unpublished_stage, load_ready_upload_stage, publish_staged_blob,
+    publish_staged_blob_for_owner, purge_expired_stages, scoped_operation_id, stage_blob,
+    StagedBlob,
 };
 pub use writeups::clear_game_writeups;
 #[cfg(test)]
@@ -146,8 +147,22 @@ pub async fn store_and_acquire(
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(database_error)?;
-    let file_id = publish_staged_blob(&mut transaction, &staged).await?;
-    transaction.commit().await.map_err(database_error)?;
+    let file_id = match publish_staged_blob(&mut transaction, &staged).await {
+        Ok(file_id) => file_id,
+        Err(error) => {
+            let _ = transaction.rollback().await;
+            if let Err(cleanup_error) = discard_unpublished_stage(pool, storage, &staged).await {
+                tracing::warn!(%cleanup_error, hash = %staged.blob.hash, "standalone blob rollback cleanup deferred");
+            }
+            return Err(error);
+        }
+    };
+    if let Err(error) = transaction.commit().await.map_err(database_error) {
+        if let Err(cleanup_error) = discard_unpublished_stage(pool, storage, &staged).await {
+            tracing::warn!(%cleanup_error, hash = %staged.blob.hash, "uncertain standalone blob cleanup deferred");
+        }
+        return Err(error);
+    }
     Ok((staged.blob, file_id))
 }
 

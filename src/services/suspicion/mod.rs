@@ -526,7 +526,5 @@ pub use container_access::*;
 pub use correlation::*;
 pub use detectors::*;
 pub use honeypot::*;
-#[cfg(test)]
-pub(crate) use outbox::seal_reconciled_game_for_test;
 pub use outbox::*;
 pub use scoring::*;

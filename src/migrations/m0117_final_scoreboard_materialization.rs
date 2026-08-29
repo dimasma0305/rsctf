@@ -153,6 +153,23 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION rsctf_scoreboard_account_repair()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    affected_game_id INTEGER;
+BEGIN
+    FOR affected_game_id IN
+        SELECT DISTINCT submission.game_id
+          FROM "Submissions" submission
+         WHERE submission.user_id = NEW.id
+           AND submission.status = 1
+    LOOP
+        PERFORM rsctf_request_final_scoreboard_repair(affected_game_id);
+    END LOOP;
+    RETURN NEW;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION rsctf_scoreboard_game_repair()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
@@ -195,6 +212,12 @@ DROP TRIGGER IF EXISTS trg_teams_scoreboard_repair ON "Teams";
 CREATE TRIGGER trg_teams_scoreboard_repair
 AFTER UPDATE OF name, avatar_hash ON "Teams"
 FOR EACH ROW EXECUTE FUNCTION rsctf_scoreboard_team_repair();
+DROP TRIGGER IF EXISTS trg_accounts_scoreboard_repair ON "AspNetUsers";
+CREATE TRIGGER trg_accounts_scoreboard_repair
+AFTER UPDATE OF user_name ON "AspNetUsers"
+FOR EACH ROW
+WHEN (NEW.user_name IS DISTINCT FROM OLD.user_name)
+EXECUTE FUNCTION rsctf_scoreboard_account_repair();
 DROP TRIGGER IF EXISTS trg_games_scoreboard_repair ON "Games";
 CREATE TRIGGER trg_games_scoreboard_repair
 AFTER UPDATE OF hidden, practice_mode, start_time_utc, end_time_utc,
@@ -287,6 +310,9 @@ mod tests {
         assert!(UP_SQL.contains("AFTER INSERT ON \"Submissions\""));
         assert!(UP_SQL.contains("FOR EACH ROW WHEN (NEW.status = 1)"));
         assert!(UP_SQL.contains("trg_first_solves_scoreboard_repair"));
+        assert!(UP_SQL.contains("CREATE TRIGGER trg_accounts_scoreboard_repair"));
+        assert!(UP_SQL.contains("AFTER UPDATE OF user_name ON \"AspNetUsers\""));
+        assert!(UP_SQL.contains("submission.user_id = NEW.id"));
         assert!(UP_SQL.contains("IF NEW.practice_mode"));
         assert!(UP_SQL.contains("VALUES (NEW.id, NEW.end_time_utc, NEW.end_time_utc)"));
         assert!(UP_SQL.contains("ON CONFLICT (game_id) DO NOTHING"));
@@ -366,7 +392,8 @@ mod tests {
                );
                CREATE TABLE "Submissions" (
                  id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
-                 status SMALLINT NOT NULL DEFAULT 0
+                 status SMALLINT NOT NULL DEFAULT 0,
+                 user_id UUID
                );
                CREATE TABLE "FirstSolves" (
                  participation_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
@@ -376,6 +403,11 @@ mod tests {
                  id INTEGER PRIMARY KEY, name TEXT NOT NULL,
                  avatar_hash TEXT
                );
+               CREATE TABLE "AspNetUsers" (
+                 id UUID PRIMARY KEY, user_name TEXT
+               );
+               INSERT INTO "AspNetUsers" (id, user_name) VALUES
+                 ('00000000-0000-4000-8000-000000000117', 'old-name');
                INSERT INTO "Games" (id, end_time_utc, practice_mode) VALUES
                  (1, clock_timestamp() - interval '1 minute', FALSE),
                  (2, clock_timestamp() + interval '1 hour', FALSE),
@@ -605,6 +637,38 @@ mod tests {
         .await
         .unwrap();
         assert!(accepted_answer_requested_repair);
+        sqlx::query(
+            r#"UPDATE "FinalScoreboardMaterializations"
+                  SET invalidated_at_utc = clock_timestamp(),
+                      completed_at_utc = clock_timestamp()
+                WHERE game_id = 1"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"UPDATE "Submissions"
+                  SET user_id = '00000000-0000-4000-8000-000000000117'
+                WHERE id = 21"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"UPDATE "AspNetUsers" SET user_name = 'new-name'
+                WHERE id = '00000000-0000-4000-8000-000000000117'"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let solver_rename_requested_repair: bool = sqlx::query_scalar(
+            r#"SELECT completed_at_utc IS NULL AND invalidated_at_utc IS NULL
+                 FROM "FinalScoreboardMaterializations" WHERE game_id = 1"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(solver_rename_requested_repair);
         sqlx::query(r#"DELETE FROM "Games" WHERE id = 1"#)
             .execute(&pool)
             .await

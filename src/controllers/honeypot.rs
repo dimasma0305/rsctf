@@ -15,6 +15,7 @@ use axum::Router;
 use std::net::SocketAddr;
 
 use crate::app_state::SharedState;
+use crate::middlewares::privilege_authentication::MaybeUser;
 /// The bait paths (RSCTF `HoneypotBait`). Any request to one of these is a decoy
 /// hit — none correspond to a real rsctf resource.
 const BAITS: &[&str] = &[
@@ -63,6 +64,7 @@ pub fn router() -> Router<SharedState> {
 /// Every bait route funnels here: retain raw telemetry and return an innocuous 404.
 async fn bait(
     State(st): State<SharedState>,
+    MaybeUser(user): MaybeUser,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     uri: Uri,
     headers: HeaderMap,
@@ -81,7 +83,7 @@ async fn bait(
             .and_then(|value| value.to_str().ok());
         let _ = crate::services::suspicion::enqueue_honeypot_hit(
             &st,
-            None,
+            user.map(|user| user.id),
             &bait_path,
             remote_ip.as_deref(),
             user_agent,

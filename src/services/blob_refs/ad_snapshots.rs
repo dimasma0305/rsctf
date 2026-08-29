@@ -187,7 +187,9 @@ pub async fn store_service_snapshot(
         Ok(snapshot) => snapshot,
         Err(error) => {
             let _ = transaction.rollback().await;
-            if let Err(cleanup_error) = purge_if_unreferenced(pool, storage, &expected_hash).await {
+            if let Err(cleanup_error) =
+                super::discard_unpublished_stage(pool, storage, &staged).await
+            {
                 tracing::warn!(
                     %cleanup_error,
                     hash = %expected_hash,
@@ -198,7 +200,7 @@ pub async fn store_service_snapshot(
         }
     };
     if let Err(error) = transaction.commit().await.map_err(database_error) {
-        if let Err(cleanup_error) = purge_if_unreferenced(pool, storage, &expected_hash).await {
+        if let Err(cleanup_error) = super::discard_unpublished_stage(pool, storage, &staged).await {
             tracing::warn!(
                 %cleanup_error,
                 hash = %expected_hash,

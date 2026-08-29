@@ -604,6 +604,43 @@ fn validate_publication_scope(publication_scope: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// Discard a one-shot stage after its owner transaction definitely failed.
+/// A concurrently published receipt is preserved; only this exact still-ready
+/// operation is removed before the usual fresh reachability-checked purge.
+pub(crate) async fn discard_unpublished_stage(
+    pool: &PgPool,
+    storage: &dyn BlobStorage,
+    staged: &StagedBlob,
+) -> AppResult<bool> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(database_error)?;
+    lock_hash(&mut transaction, &staged.blob.hash)
+        .await
+        .map_err(database_error)?;
+    let removed = sqlx::query_scalar::<_, String>(
+        r#"DELETE FROM "BlobStagingOperations"
+            WHERE operation_id = $1
+              AND owner_scope = $2
+              AND owner_user_id IS NOT DISTINCT FROM $3
+              AND content_hash = $4
+              AND state = 'Ready'
+        RETURNING content_hash"#,
+    )
+    .bind(staged.operation_id)
+    .bind(&staged.owner_scope)
+    .bind(staged.owner_user_id)
+    .bind(&staged.blob.hash)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
+    if removed.is_none() {
+        return Ok(false);
+    }
+    purge_if_unreferenced(pool, storage, &staged.blob.hash).await
+}
+
 /// Reclaim a bounded batch. Published result receipts expire without touching
 /// content; abandoned stages delete only after a fresh owner/reference check.
 pub(crate) async fn purge_expired_stages(

@@ -4,6 +4,11 @@ import test from "node:test";
 
 const source = readFileSync(new URL("../cheat-acceptance.mjs", import.meta.url), "utf8");
 const retainedSource = readFileSync(new URL("../cheat-event.mjs", import.meta.url), "utf8");
+const appSource = readFileSync(new URL("../applib.mjs", import.meta.url), "utf8");
+const honeypotSource = readFileSync(
+  new URL("../../../src/controllers/honeypot.rs", import.meta.url),
+  "utf8",
+);
 const ciSource = readFileSync(new URL("../../../.github/workflows/ci.yml", import.meta.url), "utf8");
 
 test("compact acceptance wires its isolated shared-network journeys", () => {
@@ -22,12 +27,16 @@ test("compact acceptance wires its isolated shared-network journeys", () => {
   assert.match(source, /exerciseFinalizationGraceControl\(/);
   assert.match(source, /finalization-grace reconciler phase/);
   assert.match(source, /phase-aligned finalization-grace cycle/);
+  assert.match(source, /dirty_generation=dirty_generation\+1,dirty_mask=dirty_mask\|63/);
   assert.match(source, /sentinel\.dbNowMicros/);
   assert.match(source, /sealedAtMicros/);
   assert.match(source, /final-only network correlation ran before finalization grace completed/);
   assert.match(source, /assertPostEndLoginExcluded\(/);
   assert.match(source, /rsctf\.identity_neutral_insert/);
   assert.match(source, /account insert lacks same-transaction identity adjudication/);
+  assert.match(source, /async function provisionCohortPassword\(/);
+  assert.match(source, /passwordHash\.startsWith\("\$argon2"\)/);
+  assert.equal((source.match(/\/password\?operationId=\$\{randomUUID\(\)\}/g) || []).length, 1);
   assert.match(source, /exerciseIdentityAwareTeamAccept\(/);
   assert.match(source, /fingerprintProof: proof/);
   assert.match(source, /first_download_at_submit/);
@@ -37,13 +46,19 @@ test("compact acceptance wires its isolated shared-network journeys", () => {
   assert.match(source, /TELEMETRY_ONLY_KINDS = new Set\(\[12, 13, 14, 21, 22, 28, 29, 31\]\)/);
   assert.match(source, /assertNoTelemetryOnlyEvents\(rows\)/);
   assert.match(source, /function assertHoneypotTelemetry\(/);
+  assert.match(source, /FROM "HoneypotHitBuckets" bucket/);
+  assert.match(source, /Number\(state\.legacyHits\) !== 0/);
   assert.match(source, /rsctf-cheat-acceptance\/\$\{now\}/);
-  assert.match(source, /game_id IS NULL/);
-  assert.match(source, /row\[3\] === null/);
+  assert.match(source, /String\(row\[0\]\)\.toLowerCase\(\) === subject\.userId\.toLowerCase\(\)/);
+  assert.match(honeypotSource, /MaybeUser\(user\): MaybeUser/);
+  assert.match(honeypotSource, /user\.map\(\|user\| user\.id\)/);
   assert.match(source, /raw honeypot telemetry appeared as a scored report row/);
   assert.match(source, /abnormalSolves\.length !== 0/);
   assert.match(source, /'lastReconciledAt',last_reconciled_at_utc/);
   assert.match(source, /CHEAT_ACCEPTANCE_ISOLATED/);
+  assert.match(appSource, /\/api\/assets\?operationId=\$\{randomUUID\(\)\}/);
+  assert.match(appSource, /!asset\?\.hash \|\| !asset\?\.uploadId/);
+  assert.match(appSource, /fileHash: asset\.hash, uploadId: asset\.uploadId/);
 });
 
 test("retained cheat drill provisions helper identities through the neutral marker", () => {

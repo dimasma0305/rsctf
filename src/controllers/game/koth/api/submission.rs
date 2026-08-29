@@ -51,7 +51,10 @@ struct ObservationReservation {
 
 enum ObservationAdmission {
     Owner(ObservationReservation),
-    Completed(KothObservationAcceptedModel),
+    Completed {
+        response: KothObservationAcceptedModel,
+        replay_scope: String,
+    },
 }
 
 fn canonical_input_digest(input: &KothArenaSnapshotInput) -> [u8; 32] {
@@ -86,7 +89,6 @@ fn canonical_input_digest(input: &KothArenaSnapshotInput) -> [u8; 32] {
 }
 
 fn observation_request_digest(
-    credential: &SigningCredential,
     game_id: i32,
     challenge_id: i32,
     input: &KothArenaSnapshotInput,
@@ -95,18 +97,10 @@ fn observation_request_digest(
     digest.update(b"rsctf:koth-observation:v1");
     digest.update(game_id.to_be_bytes());
     digest.update(challenge_id.to_be_bytes());
-    match credential.kind {
-        SigningCredentialKind::Observer => digest.update(b"observer"),
-        SigningCredentialKind::TargetReporter {
-            cycle_id,
-            reset_attempt,
-        } => {
-            digest.update(b"target-reporter");
-            digest.update(cycle_id.to_be_bytes());
-            digest.update(reset_attempt.to_be_bytes());
-        }
-    }
-    digest.update(Sha256::digest(credential.secret.as_bytes()));
+    // Authentication is completed before admission. Bind idempotency to the
+    // canonical observation rather than the credential so an authorized
+    // observer can safely retry a target reporter's already-committed body
+    // after the first snapshot freezes its objective schema.
     digest.update(canonical_input_digest(input));
     digest.finalize().into()
 }
@@ -115,21 +109,24 @@ async fn completed_observation(
     pool: &sqlx::PgPool,
     challenge_id: i32,
     request_digest: &[u8; 32],
-) -> AppResult<Option<KothObservationAcceptedModel>> {
-    let value: Option<serde_json::Value> = sqlx::query_scalar(
-        r#"SELECT response FROM "KothApiObservationOperations"
-            WHERE challenge_id = $1 AND request_digest = $2"#,
+) -> AppResult<Option<(KothObservationAcceptedModel, String)>> {
+    let value: Option<(serde_json::Value, String)> = sqlx::query_as(
+        r#"SELECT response, context_hash::text FROM "KothApiObservationOperations"
+            WHERE challenge_id = $1 AND request_digest = $2
+              AND response IS NOT NULL"#,
     )
     .bind(challenge_id)
     .bind(request_digest.as_slice())
     .fetch_optional(pool)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .flatten();
+    .map_err(|error| AppError::internal(error.to_string()))?;
     value
-        .map(serde_json::from_value)
+        .map(|(response, replay_scope)| {
+            serde_json::from_value(response)
+                .map(|response| (response, replay_scope))
+                .map_err(|error| AppError::internal(error.to_string()))
+        })
         .transpose()
-        .map_err(|error| AppError::internal(error.to_string()))
 }
 
 async fn reserve_observation(
@@ -168,8 +165,13 @@ async fn reserve_observation(
         }));
     }
     for _ in 0..20 {
-        if let Some(response) = completed_observation(pool, challenge_id, &request_digest).await? {
-            return Ok(ObservationAdmission::Completed(response));
+        if let Some((response, replay_scope)) =
+            completed_observation(pool, challenge_id, &request_digest).await?
+        {
+            return Ok(ObservationAdmission::Completed {
+                response,
+                replay_scope,
+            });
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
@@ -177,6 +179,31 @@ async fn reserve_observation(
         "An identical Leaderboard observation is still being committed; retry later",
         1,
     ))
+}
+
+async fn validate_completed_replay_scope(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    challenge_id: i32,
+    expected_scope: &str,
+) -> AppResult<()> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let context = load_active_context(&mut *transaction, game_id, challenge_id)
+        .await?
+        .ok_or_else(|| AppError::conflict("Leaderboard KotH context is not active"))?;
+    let eligible_tokens =
+        super::load_eligible_tokens(&mut *transaction, game_id, challenge_id).await?;
+    if context.replay_scope(game_id, challenge_id, &eligible_tokens) != expected_scope {
+        return Err(AppError::conflict(
+            "Leaderboard KotH context changed; fetch context and retry",
+        ));
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))
 }
 
 async fn load_signing_credentials(
@@ -447,12 +474,24 @@ async fn accept_observation(
         &signature,
     )?;
     let input = parse_and_normalize(body)?;
-    let request_digest = observation_request_digest(&credential, game_id, challenge_id, &input);
+    let request_digest = observation_request_digest(game_id, challenge_id, &input);
     let reservation =
         match reserve_observation(pool, game_id, challenge_id, &input.context, request_digest)
             .await?
         {
-            ObservationAdmission::Completed(response) => return Ok(response),
+            ObservationAdmission::Completed {
+                response,
+                replay_scope,
+            } => {
+                validate_completed_replay_scope(
+                    pool,
+                    game_id,
+                    challenge_id,
+                    replay_scope.trim_end(),
+                )
+                .await?;
+                return Ok(response);
+            }
             ObservationAdmission::Owner(reservation) => reservation,
         };
     let submitted_waves = input.waves.len();
@@ -545,6 +584,7 @@ async fn accept_observation(
             "Leaderboard KotH context changed; fetch context and retry",
         ));
     }
+    let replay_scope = context.replay_scope(game_id, challenge_id, &eligible_tokens);
     let frozen_scheme = sqlx::query_as::<_, (Vec<String>, Vec<u8>)>(
         r#"SELECT objective_ids, objective_schema_hash
              FROM "KothApiArenaSchemes"
@@ -735,6 +775,7 @@ async fn accept_observation(
     let stored = sqlx::query(
         r#"UPDATE "KothApiObservationOperations"
               SET response = $4,
+                  context_hash = $5,
                   completed_at = clock_timestamp(),
                   expires_at = clock_timestamp() + interval '10 minutes'
             WHERE challenge_id = $1 AND request_digest = $2
@@ -744,6 +785,7 @@ async fn accept_observation(
     .bind(reservation.request_digest.as_slice())
     .bind(reservation.lease_token)
     .bind(serde_json::to_value(&response).map_err(|error| AppError::internal(error.to_string()))?)
+    .bind(&replay_scope)
     .execute(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
