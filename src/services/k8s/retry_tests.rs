@@ -418,6 +418,25 @@ async fn authoritative_service_rejection_rolls_back_a_stable_operation() {
 }
 
 #[tokio::test]
+async fn terminal_adopted_pod_is_removed_before_the_operation_key_rotates() {
+    let (manager, resources) = mock_manager(ServiceFailure::None);
+    let spec = retry_spec(false);
+    let created = manager.create(spec.clone()).await.unwrap();
+    let pod_path = format!("/api/v1/namespaces/rsctf-challenges/pods/{}", created.id);
+    resources.lock().unwrap().get_mut(&pod_path).unwrap()["status"]["phase"] =
+        serde_json::json!("Failed");
+
+    assert!(matches!(
+        manager.create(spec).await,
+        Err(AppError::Conflict(_))
+    ));
+    assert!(
+        resources.lock().unwrap().is_empty(),
+        "a terminal adopted Pod must not leave its Service or operation resources behind"
+    );
+}
+
+#[tokio::test]
 #[ignore = "requires a disposable Kubernetes cluster prepared by the live regression script"]
 async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
     const IMAGE: &str = "registry.k8s.io/e2e-test-images/agnhost@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85";
@@ -510,19 +529,34 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
         .expect("create a workload bound to the current Service CIDR");
     std::env::set_var("RSCTF_K8S_AD_SERVICE_CIDR", "10.240.0.0/16");
     assert!(matches!(
-        manager.create(cidr_bound).await,
+        manager.create(cidr_bound.clone()).await,
         Err(AppError::Conflict(_))
     ));
     std::env::set_var("RSCTF_K8S_AD_SERVICE_CIDR", "10.96.0.0/12");
-    orphans::rollback_owned(
-        manager.pods(),
-        manager.services(),
-        manager.network_policies(),
-        &current.id,
-        &manager.scope,
-    )
-    .await
-    .expect("clean up the Service-CIDR workload");
+    manager
+        .pods()
+        .patch_status(
+            &current.id,
+            &kube::api::PatchParams::default(),
+            &kube::api::Patch::Merge(&serde_json::json!({
+                "status": { "phase": "Failed" }
+            })),
+        )
+        .await
+        .expect("mark the retry fixture Pod terminal through the real status API");
+    assert!(matches!(
+        manager.create(cidr_bound).await,
+        Err(AppError::Conflict(_))
+    ));
+    assert!(
+        manager
+            .pods()
+            .get_opt(&current.id)
+            .await
+            .expect("inspect terminal retry cleanup")
+            .is_none(),
+        "a terminal adopted Pod remained after the operation was rejected"
+    );
 
     let quota_namespace = std::env::var("RSCTF_K8S_REJECTION_NAMESPACE")
         .expect("rejection namespace configured by the live script");

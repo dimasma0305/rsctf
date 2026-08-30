@@ -699,6 +699,35 @@ impl ContainerManager for KubernetesContainerManager {
                 "Kubernetes did not return an ownership UID for the challenge Pod",
             ));
         };
+        let pod_phase = created_pod
+            .status
+            .as_ref()
+            .and_then(|status| status.phase.as_deref());
+        if phase_liveness(pod_phase) == ContainerLiveness::Stopped {
+            if adopted {
+                orphans::rollback_owned(
+                    pods.clone(),
+                    self.services(),
+                    self.network_policies(),
+                    &name,
+                    &self.scope,
+                )
+                .await
+                .map_err(|error| {
+                    AppError::internal(format!(
+                        "Kubernetes retry adopted a terminal Pod and cleanup failed: {error}"
+                    ))
+                })?;
+                return Err(AppError::conflict(
+                    "Kubernetes retry adopted a terminal Pod; retry with a new operation identity",
+                ));
+            }
+            self.rollback_new_pod(&pods, &name, policy_created, adopted)
+                .await;
+            return Err(AppError::internal(
+                "Kubernetes challenge Pod reached a terminal state before publication",
+            ));
+        }
 
         // Service exposing the challenge port: A&D and PlatformProxy are not
         // node-published; direct challenges retain NodePort. The Service is
