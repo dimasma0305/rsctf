@@ -1314,7 +1314,7 @@ on 2026-08-25.
     `src/controllers/game/ad/byoc_authorization.rs`, and
     `src/services/byoc_tunnel/`.
 
-- [ ] Close the Event-VPN route-casing bypass.
+- [x] Close the Event-VPN route-casing bypass.
   - The middleware recognizes only exact lowercase `api/game` segments, while the
     registered A&D aliases and arena client use mixed-case `/api/Game/{id}/Ad/...`
     paths. Those aliases can therefore skip the live-peer/proof gate.
@@ -2958,7 +2958,7 @@ on 2026-08-25.
     updated cards without a runtime error.
   - Relevant code: `web/src/pages/admin/games/[id]/ChallengeReviews.tsx`.
 
-- [ ] Keep team/event join dialogs and user input intact when enrollment fails.
+- [x] Keep team/event join dialogs and user input intact when enrollment fails.
   - `GameJoinModal` resets its invite/division fields and closes in `finally`; its parent
     catches and reports the API/fingerprint error without rethrowing, so invalid codes
     and transient failures look terminal and force the player to reopen and re-enter
@@ -2985,7 +2985,7 @@ on 2026-08-25.
   - Relevant code: `web/src/components/GameJoinModal.tsx`,
     `web/src/pages/games/[id]/Index.tsx`, and `web/src/pages/Teams.tsx`.
 
-- [ ] Preserve challenge-review drafts and report success only after the review commits.
+- [x] Preserve challenge-review drafts and report success only after the review commits.
   - `GameChallengeModal.onReviewSubmit` catches a failed API request and resolves its
     promise normally. `ChallengeModal` therefore marks the review submitted anyway and,
     for a just-solved challenge, clears the flag and closes the modal, discarding the
@@ -3001,7 +3001,7 @@ on 2026-08-25.
     `web/src/components/ChallengeModal.tsx`, and
     `src/controllers/game/submit_review.rs`.
 
-- [ ] Bind fused anti-cheat evidence and review drafts to the exact participation and
+- [x] Bind fused anti-cheat evidence and review drafts to the exact participation and
   finding being reviewed.
   - `FusedEvidencePanel` retains the previous result when `participationId` changes and
     has no abort/generation check, so it can render the old team's evidence under a new
@@ -3025,7 +3025,7 @@ on 2026-08-25.
     `src/controllers/admin/anti_cheat.rs`, and
     `src/services/event_security/fusion.rs`.
 
-- [ ] Bind KotH receipt/referee dialogs to the hill whose response populated them.
+- [x] Bind KotH receipt/referee dialogs to the hill whose response populated them.
   - `openReceipts` and `openObserver` replace the selected hill and start a new request
     without aborting or generation-checking the prior one. Clicking hill A then B can
     let A's late response render under B's title; either request's `finally` can also
@@ -3055,7 +3055,7 @@ on 2026-08-25.
   - Relevant code: `web/src/components/GameChallengeModal.tsx` and
     `web/src/components/InstanceEntry.tsx`.
 
-- [ ] Stop expired WSRX readiness checks from polling the local daemon forever.
+- [x] Stop expired WSRX readiness checks from polling the local daemon forever.
   - When a newly added tunnel still has `latency === -1`, every matching
     `InstanceEntry` starts its own `wsrx.sync()` interval every 1.5 seconds. The
     eight-second timeout only sets `tunnelCheckExpired`; it neither clears that
@@ -3246,7 +3246,7 @@ on 2026-08-25.
   - Add fake-timer tests covering unmount-before-alignment and rapid hide/show cycles.
   - Relevant code: `web/src/hooks/useTicker.ts`.
 
-- [ ] Reconcile resources after accepted-participation provisioning fails.
+- [x] Reconcile resources after accepted-participation provisioning fails.
   - Keep join persistence atomic, but record or enqueue failed provisioning so generic
     challenge instances are retried automatically.
   - Verify that an accepted team eventually receives every required attachment,
