@@ -1,6 +1,43 @@
 use super::*;
+use crate::services::cache::Cache as _;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::str::FromStr;
+
+#[tokio::test]
+async fn failed_mail_commit_restores_the_previous_ticket_without_overwriting_newer_state() {
+    let cache = crate::services::cache::InMemoryCache::new();
+    cache.set("current", b"old", Some(RECOVERY_TTL)).await;
+    cache
+        .set("ticket:old", b"old-ticket", Some(RECOVERY_TTL))
+        .await;
+
+    let publication =
+        publish_ticket(&cache, "current".into(), "ticket:", b"new", b"new-ticket").await;
+    assert_eq!(
+        cache.get("current").await.as_deref(),
+        Some(b"new".as_slice())
+    );
+    assert!(cache.get("ticket:old").await.is_none());
+    rollback_ticket_publication(&cache, publication).await;
+    assert_eq!(
+        cache.get("current").await.as_deref(),
+        Some(b"old".as_slice())
+    );
+    assert_eq!(
+        cache.get("ticket:old").await.as_deref(),
+        Some(b"old-ticket".as_slice())
+    );
+    assert!(cache.get("ticket:new").await.is_none());
+
+    let publication =
+        publish_ticket(&cache, "current".into(), "ticket:", b"ours", b"ours-ticket").await;
+    cache.set("current", b"newer", Some(RECOVERY_TTL)).await;
+    rollback_ticket_publication(&cache, publication).await;
+    assert_eq!(
+        cache.get("current").await.as_deref(),
+        Some(b"newer".as_slice())
+    );
+}
 
 #[test]
 fn unknown_login_uses_a_valid_dummy_argon2_hash() {

@@ -57,6 +57,17 @@ import { LogoBox } from '@Components/LogoBox'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { webCryptoAvailable } from '@Utils/Crypto'
+import {
+  clearSettingsOperation,
+  dirtySettingsSections,
+  loadSettingsOperation,
+  newSettingsOperationId,
+  ownsSettingsResult,
+  settingsBrandingDigest,
+  settingsRequestSignature,
+  storeSettingsOperation,
+  type SettingsOperationOwner,
+} from '@Utils/SettingsOperations'
 import { getInputNumber, showErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { OnceSWRConfig, useCaptchaConfig, useConfig } from '@Hooks/useConfig'
@@ -82,13 +93,6 @@ import api, {
 } from '@Api'
 import misc from '@Styles/Misc.module.css'
 import classes from '@Styles/Settings.module.css'
-import {
-  dirtySettingsSections,
-  newSettingsOperationId,
-  ownsSettingsResult,
-  settingsRequestSignature,
-  type SettingsOperationOwner,
-} from '@Utils/SettingsOperations'
 import { getAccountUniquenessState, setBrowserFingerprintCollection } from './settingsAccountPolicy'
 
 const Configs: FC = () => {
@@ -133,7 +137,7 @@ const Configs: FC = () => {
   const [activeSection, setActiveSection] = useState<SectionKey>('platform')
   const initialSnapshotRef = useRef<ConfigEditModel | null>(null)
   const saveOwnerRef = useRef(false)
-  const operationRef = useRef<SettingsOperationOwner | null>(null)
+  const operationRef = useRef<SettingsOperationOwner | null>(loadSettingsOperation())
   const [color, setColor] = useState<string | undefined | null>(globalConfig?.customTheme)
   const [logoFile, setLogoFile] = useState<File | null>(null)
   const [brandingAction, setBrandingAction] = useState<BrandingAction>(BrandingAction.Keep)
@@ -175,7 +179,10 @@ const Configs: FC = () => {
         donations: configs.donations,
       }
       const pending = operationRef.current
-      if (pending && (configs.revision ?? 0) > pending.expectedRevision) operationRef.current = null
+      if (pending && (configs.revision ?? 0) > pending.expectedRevision) {
+        operationRef.current = null
+        clearSettingsOperation()
+      }
     }
   }, [configs])
 
@@ -196,10 +203,7 @@ const Configs: FC = () => {
   const dirtySections = initialSnapshotRef.current
     ? dirtySettingsSections(initialSnapshotRef.current, currentSnapshot)
     : {}
-  const dirty =
-    logoFile !== null ||
-    brandingAction !== BrandingAction.Keep ||
-    Object.keys(dirtySections).length > 0
+  const dirty = logoFile !== null || brandingAction !== BrandingAction.Keep || Object.keys(dirtySections).length > 0
 
   const logoPreviewUrl = useMemo(() => (logoFile ? URL.createObjectURL(logoFile) : undefined), [logoFile])
 
@@ -321,6 +325,7 @@ const Configs: FC = () => {
       }
       if ((originalError as { response?: { status?: number } }).response?.status === 409) {
         operationRef.current = null
+        clearSettingsOperation()
         await mutate()
       }
       showErrorMsg(originalError, t)
@@ -392,7 +397,16 @@ const Configs: FC = () => {
       ...dirtySections,
       brandingAction,
     }
-    const signature = settingsRequestSignature(requestBody)
+    let signature: string
+    try {
+      signature = settingsRequestSignature(requestBody, await settingsBrandingDigest(logoFile))
+    } catch (error) {
+      showErrorMsg(error, t)
+      saveOwnerRef.current = false
+      setDisabled(false)
+      setSaved(true)
+      return
+    }
     const expectedRevision = configs.revision ?? 0
     const pending = operationRef.current
     const owner =
@@ -404,6 +418,7 @@ const Configs: FC = () => {
             signature,
           }
     operationRef.current = owner
+    storeSettingsOperation(owner)
     try {
       const result = await updateConfig(
         {
@@ -415,6 +430,7 @@ const Configs: FC = () => {
       )
       if (!result || !ownsSettingsResult(owner, result)) return
       operationRef.current = null
+      clearSettingsOperation()
       setLogoFile(null)
       setBrandingAction(BrandingAction.Keep)
       initialSnapshotRef.current = currentSnapshot

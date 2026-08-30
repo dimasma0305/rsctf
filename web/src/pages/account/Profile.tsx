@@ -22,12 +22,13 @@ import { Dropzone } from '@mantine/dropzone'
 import { notifications, showNotification, updateNotification } from '@mantine/notifications'
 import { mdiAccountOutline, mdiChartBox, mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useMemo, useState } from 'react'
+import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router'
 import { PasswordChangeModal } from '@Components/PasswordChangeModal'
 import { WithNavBar } from '@Components/WithNavbar'
 import { StatsPanel } from '@Components/account/StatsPanel'
+import { beginMailOperation, finishMailOperation, type MailOperationOwner } from '@Utils/MailOperation'
 import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { usePageTitle } from '@Hooks/usePageTitle'
@@ -67,6 +68,7 @@ const Profile: FC = () => {
 
   const [email, setEmail] = useState('')
   const [emailPassword, setEmailPassword] = useState('')
+  const mailOperationRef = useRef<MailOperationOwner | null>(null)
 
   const { t } = useTranslation()
   const avatarModalTitle = t('account.button.change_avatar', { defaultValue: 'Change avatar' })
@@ -153,10 +155,20 @@ const Profile: FC = () => {
 
   const onChangeEmail = async () => {
     if (!email) return
+    const signature = JSON.stringify([email.trim().toLowerCase(), emailPassword])
+    const acquired = beginMailOperation(mailOperationRef.current, signature)
+    if (!acquired.started) return
+    const operation = acquired.owner
+    mailOperationRef.current = operation
+    let completed = false
 
     try {
       setDisabled(true)
-      const res = await api.account.accountChangeEmail({ newMail: email, password: emailPassword })
+      const res = await api.account.accountChangeEmail(
+        { newMail: email, password: emailPassword, operationId: operation.operationId },
+        { signal: operation.controller.signal }
+      )
+      completed = true
       if (res.data.data) {
         showNotification({
           color: 'teal',
@@ -177,8 +189,9 @@ const Profile: FC = () => {
       setEmailPassword('')
       setMailEditOpened(false)
     } catch (e) {
-      showErrorMsg(e, t)
+      if (!operation.controller.signal.aborted) showErrorMsg(e, t)
     } finally {
+      if (mailOperationRef.current === operation) mailOperationRef.current = finishMailOperation(operation, completed)
       setDisabled(false)
     }
   }
@@ -323,7 +336,18 @@ const Profile: FC = () => {
         title={t('account.button.change_password')}
       />
 
-      <Modal opened={mailEditOpened} onClose={() => setMailEditOpened(false)} title={t('account.button.update_email')}>
+      <Modal
+        opened={mailEditOpened}
+        onClose={() => {
+          if (disabled) return
+          mailOperationRef.current?.controller.abort()
+          mailOperationRef.current = null
+          setMailEditOpened(false)
+        }}
+        closeOnClickOutside={!disabled}
+        closeOnEscape={!disabled}
+        title={t('account.button.update_email')}
+      >
         <Stack>
           <Text>
             <Trans i18nKey="account.content.profile.update_email_note"></Trans>
@@ -347,7 +371,10 @@ const Profile: FC = () => {
           <Group justify="right">
             <Button
               variant="default"
+              disabled={disabled}
               onClick={() => {
+                mailOperationRef.current?.controller.abort()
+                mailOperationRef.current = null
                 setEmail(user?.email ?? '')
                 setEmailPassword('')
                 setMailEditOpened(false)
@@ -355,7 +382,7 @@ const Profile: FC = () => {
             >
               {t('common.modal.cancel')}
             </Button>
-            <Button color="orange" onClick={onChangeEmail}>
+            <Button color="orange" disabled={disabled} loading={disabled} onClick={onChangeEmail}>
               {t('common.modal.confirm')}
             </Button>
           </Group>

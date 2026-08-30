@@ -28,8 +28,7 @@ pub struct MailChangeModel {
     #[serde(default)]
     pub password: String,
     /// Stable identity retained when the client did not receive a response.
-    #[serde(default)]
-    pub operation_id: Option<Uuid>,
+    pub operation_id: Uuid,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -60,8 +59,7 @@ pub struct RecoveryModel {
     #[serde(default)]
     pub challenge: Option<String>,
     /// Stable identity retained when the client did not receive a response.
-    #[serde(default)]
-    pub operation_id: Option<Uuid>,
+    pub operation_id: Uuid,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -76,19 +74,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mail_operation_ids_use_the_camel_case_wire_contract_and_remain_optional() {
+    fn mail_operation_ids_use_the_camel_case_wire_contract() {
         let operation_id = Uuid::new_v4();
         let recovery: RecoveryModel = serde_json::from_value(serde_json::json!({
             "email": "player@example.test",
             "operationId": operation_id
         }))
         .unwrap();
-        assert_eq!(recovery.operation_id, Some(operation_id));
+        assert_eq!(recovery.operation_id, operation_id);
 
-        let legacy: RecoveryModel = serde_json::from_value(serde_json::json!({
+        let missing = serde_json::from_value::<RecoveryModel>(serde_json::json!({
             "email": "player@example.test"
-        }))
-        .unwrap();
-        assert_eq!(legacy.operation_id, None);
+        }));
+        assert!(missing.is_err());
     }
 }

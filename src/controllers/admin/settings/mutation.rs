@@ -184,6 +184,9 @@ pub async fn update_config(
     let operation_id = model
         .operation_id
         .ok_or_else(|| AppError::bad_request("operationId is required"))?;
+    if operation_id.is_nil() {
+        return Err(AppError::bad_request("operationId is required"));
+    }
     let expected_revision = model
         .expected_revision
         .filter(|revision| (0..MAX_JS_REVISION).contains(revision))
@@ -366,6 +369,9 @@ pub async fn update_config(
     .map_err(database_error)?;
     transaction.commit().await.map_err(database_error)?;
 
+    if has_security_update {
+        st.captcha_settings.invalidate().await;
+    }
     if donations_enabled.is_some() {
         crate::services::donations::invalidate(st.cache.as_ref()).await;
     }

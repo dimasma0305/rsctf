@@ -179,9 +179,6 @@ pub(crate) use m0116_game_event_feed_pending::UP_SQL as GAME_EVENT_FEED_PENDING_
 pub(crate) use m0242_participation_provision_jobs::UP_SQL as PARTICIPATION_PROVISION_JOBS_SQL;
 #[cfg(test)]
 pub(crate) use m0280_traffic_capture_inventory::UP_SQL as TRAFFIC_CAPTURE_INVENTORY_SQL;
-#[cfg(test)]
-pub(crate) use m0303_mail_outbox::UP_SQL as MAIL_OUTBOX_SQL;
-
 pub struct Migrator;
 
 const EXCLUSIVE_CUTOVER_MIGRATIONS: [&str; 3] = [

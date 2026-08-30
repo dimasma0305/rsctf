@@ -189,7 +189,10 @@ pub async fn register(
     headers: HeaderMap,
     Json(model): Json<RegisterModel>,
 ) -> AppResult<Response> {
-    let mail_operation_id = model.operation_id.unwrap_or_else(Uuid::now_v7);
+    let mail_operation_id = model.operation_id;
+    if mail_operation_id.is_nil() {
+        return Err(AppError::bad_request("operationId is required"));
+    }
     let request_ip = anti_cheat::client_ip(&headers, Some(peer.ip()));
     // Fail fast before policy loading, captcha verification, and Argon2.
     let is_first_preflight = bootstrap::preflight(&st, model.bootstrap_token.as_deref()).await?;

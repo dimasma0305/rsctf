@@ -2002,7 +2002,7 @@ on 2026-08-25.
     `src/middlewares/rate_limiter.rs`, plus a new registered idempotent forward
     migration for durable recovery attempts.
 
-- [ ] Coalesce account-mail intent and deliver it through a bounded durable outbox.
+- [x] Coalesce account-mail intent and deliver it through a bounded durable outbox.
   - Password recovery mints a new token, invalidates the prior link, and starts one
     detached `tokio::spawn` per matching request. Each task constructs a new
     environment-backed `MailSender`, may occupy SMTP for 15 seconds, and then writes an
@@ -2058,7 +2058,7 @@ on 2026-08-25.
     `src/controllers/account/email_confirmation.rs`, `src/services/mail.rs`, and a new
     registered idempotent forward migration for mail intents/outbox delivery.
 
-- [ ] Make the platform-settings save one bounded, revisioned operation.
+- [x] Make the platform-settings save one bounded, revisioned operation.
   - The settings page sends every configuration section even when one field changed.
     `update_config` commits the account/captcha/OAuth group first, then applies global,
     container, email, registry, build-registry, and provider keys through many
@@ -2106,7 +2106,7 @@ on 2026-08-25.
     `src/services/blob_refs.rs`, and a new registered idempotent forward migration for
     settings revisions/operations and staged branding.
 
-- [ ] Make temporary Event-VPN bypass grants exactly-once and bounded.
+- [x] Make temporary Event-VPN bypass grants exactly-once and bounded.
   - Creating an override always inserts a fresh UUID and has no client operation ID or
     expected policy revision. A second tab/operator or a retry after a committed but
     lost response creates another independently active bypass and invalidates policy

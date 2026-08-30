@@ -619,6 +619,7 @@ export function onboarding() {
       password: 'Loadtest1!',
       email: `${u}@load.test`,
       fingerprint: fingerprint(),
+      operationId: submitAttemptId(`register:${__VU}:${__ITER}:${u}`),
     }),
     { headers: { ...hdr(ip), 'Content-Type': 'application/json' } }
   );

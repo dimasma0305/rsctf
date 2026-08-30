@@ -48,10 +48,12 @@ import { useNavigate, useParams } from 'react-router'
 import { IconTabs } from '@Components/IconTabs'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { requireApiCollection } from '@Utils/ApiCollection'
 import { downloadBlob } from '@Utils/ApiHelper'
 import { controlJobResultCount, createOperationId, waitForControlJob } from '@Utils/ControlJobs'
 import { getInputNumber, randomInviteCode, showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
+import { createUuid } from '@Utils/Uuid'
 import { useAdminGame } from '@Hooks/useGame'
 import { useUser } from '@Hooks/useUser'
 import api, { EventVpnOverrideModel, Role } from '@Api'
@@ -66,6 +68,20 @@ import {
 } from './gameInfoDraft'
 
 dayjs.extend(localizedFormat)
+
+const vpnOverrideSnapshot = (payload: unknown) => {
+  const overrides = requireApiCollection<EventVpnOverrideModel>(payload, {
+    itemKeys: ['overrides'],
+    label: 'VPN override list',
+  }).items
+  const policyRevision =
+    payload &&
+    typeof payload === 'object' &&
+    Number.isSafeInteger((payload as { policyRevision?: unknown }).policyRevision)
+      ? ((payload as { policyRevision: number }).policyRevision ?? null)
+      : null
+  return { overrides, policyRevision }
+}
 
 const GameInfoEdit: FC = () => {
   const { id } = useParams()
@@ -84,7 +100,7 @@ const GameInfoEdit: FC = () => {
   const [vpnOverrides, setVpnOverrides] = useState<EventVpnOverrideModel[]>([])
   const [vpnPolicyRevision, setVpnPolicyRevision] = useState<number>(1)
   const vpnMutationOwner = useRef(false)
-  const createOverrideOperation = useRef<string | null>(null)
+  const createOverrideOperation = useRef<{ operationId: string; signature: string } | null>(null)
   const revokeOverrideOperations = useRef(new Map<string, string>())
   const [overrideReason, setOverrideReason] = useState('')
   const [overrideMinutes, setOverrideMinutes] = useState<number | string>(15)
@@ -212,8 +228,9 @@ const GameInfoEdit: FC = () => {
       .listVpnOverrides(numId)
       .then((response) => {
         if (!cancelled) {
-          setVpnOverrides(response.data.overrides)
-          setVpnPolicyRevision(response.data.policyRevision)
+          const snapshot = vpnOverrideSnapshot(response.data)
+          setVpnOverrides(snapshot.overrides)
+          if (snapshot.policyRevision !== null) setVpnPolicyRevision(snapshot.policyRevision)
         }
       })
       .catch(() => {
@@ -463,8 +480,12 @@ const GameInfoEdit: FC = () => {
     }
     vpnMutationOwner.current = true
     setEventSecurityAction('override')
-    const operationId = createOverrideOperation.current ?? crypto.randomUUID()
-    createOverrideOperation.current = operationId
+    const signature = `${reason}\0${durationMinutes}`
+    const operationId =
+      createOverrideOperation.current?.signature === signature
+        ? createOverrideOperation.current.operationId
+        : createUuid()
+    createOverrideOperation.current = { operationId, signature }
     try {
       await api.eventSecurity.createVpnOverride(game.id, {
         reason,
@@ -473,8 +494,9 @@ const GameInfoEdit: FC = () => {
         expectedPolicyRevision: vpnPolicyRevision,
       })
       const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
-      setVpnOverrides(refreshed.data.overrides)
-      setVpnPolicyRevision(refreshed.data.policyRevision)
+      const snapshot = vpnOverrideSnapshot(refreshed.data)
+      setVpnOverrides(snapshot.overrides)
+      if (snapshot.policyRevision !== null) setVpnPolicyRevision(snapshot.policyRevision)
       createOverrideOperation.current = null
       setOverrideReason('')
       showNotification({
@@ -483,6 +505,14 @@ const GameInfoEdit: FC = () => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch (error) {
+      try {
+        const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
+        const snapshot = vpnOverrideSnapshot(refreshed.data)
+        setVpnOverrides(snapshot.overrides)
+        if (snapshot.policyRevision !== null) setVpnPolicyRevision(snapshot.policyRevision)
+      } catch {
+        // Preserve the known operation for an explicit retry when reconciliation is unavailable.
+      }
       showErrorMsg(error, t)
     } finally {
       vpnMutationOwner.current = false
@@ -494,7 +524,7 @@ const GameInfoEdit: FC = () => {
     if (!game?.id || vpnMutationOwner.current) return
     vpnMutationOwner.current = true
     setEventSecurityAction(`revoke:${overrideId}`)
-    const operationId = revokeOverrideOperations.current.get(overrideId) ?? crypto.randomUUID()
+    const operationId = revokeOverrideOperations.current.get(overrideId) ?? createUuid()
     revokeOverrideOperations.current.set(overrideId, operationId)
     try {
       await api.eventSecurity.revokeVpnOverride(game.id, overrideId, {
@@ -502,8 +532,9 @@ const GameInfoEdit: FC = () => {
         expectedPolicyRevision: vpnPolicyRevision,
       })
       const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
-      setVpnOverrides(refreshed.data.overrides)
-      setVpnPolicyRevision(refreshed.data.policyRevision)
+      const snapshot = vpnOverrideSnapshot(refreshed.data)
+      setVpnOverrides(snapshot.overrides)
+      if (snapshot.policyRevision !== null) setVpnPolicyRevision(snapshot.policyRevision)
       revokeOverrideOperations.current.delete(overrideId)
       showNotification({
         color: 'teal',
@@ -511,6 +542,14 @@ const GameInfoEdit: FC = () => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch (error) {
+      try {
+        const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
+        const snapshot = vpnOverrideSnapshot(refreshed.data)
+        setVpnOverrides(snapshot.overrides)
+        if (snapshot.policyRevision !== null) setVpnPolicyRevision(snapshot.policyRevision)
+      } catch {
+        // Preserve the known operation for an explicit retry when reconciliation is unavailable.
+      }
       showErrorMsg(error, t)
     } finally {
       vpnMutationOwner.current = false

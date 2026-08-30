@@ -26,8 +26,7 @@ pub struct RegisterModel {
     #[serde(default)]
     pub bootstrap_token: Option<String>,
     /// Stable identity for reconciling an ambiguous registration/mail commit.
-    #[serde(default)]
-    pub operation_id: Option<Uuid>,
+    pub operation_id: Uuid,
 }
 
 impl fmt::Debug for RegisterModel {

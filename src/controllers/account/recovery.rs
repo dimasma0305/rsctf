@@ -3,6 +3,7 @@
 use super::*;
 use sea_orm::sea_query::Expr;
 use sea_orm::DatabaseTransaction;
+use serde::Deserialize;
 
 const RECOVERY_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 const RECOVERY_RESPONSE_FLOOR: std::time::Duration = std::time::Duration::from_millis(25);
@@ -15,6 +16,113 @@ struct PasswordResetTicket {
 
 fn reset_current_key(user_id: Uuid) -> String {
     format!("pwreset-current:{user_id}")
+}
+
+/// Cache publication paired with a durable mail intent. The database outbox
+/// serializes replacements; this snapshot lets a failed commit restore the
+/// prior usable link without overwriting a newer cache generation.
+struct TicketPublication {
+    current_key: String,
+    ticket_prefix: &'static str,
+    token: Vec<u8>,
+    ticket: Vec<u8>,
+    previous: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+async fn publish_ticket(
+    cache: &dyn crate::services::cache::Cache,
+    current_key: String,
+    ticket_prefix: &'static str,
+    token: &[u8],
+    ticket: &[u8],
+) -> TicketPublication {
+    let previous = if let Some(previous_token) = cache.get(&current_key).await {
+        if cache
+            .compare_and_remove(&current_key, previous_token.as_ref())
+            .await
+        {
+            let previous_key = std::str::from_utf8(&previous_token)
+                .ok()
+                .map(|token| format!("{ticket_prefix}{token}"));
+            if let Some(previous_key) = previous_key {
+                if let Some(previous_ticket) = cache.get(&previous_key).await {
+                    if cache
+                        .compare_and_remove(&previous_key, previous_ticket.as_ref())
+                        .await
+                    {
+                        Some((previous_token.to_vec(), previous_ticket.to_vec()))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let token_text = std::str::from_utf8(token).expect("account tokens are ASCII");
+    cache
+        .set(
+            &format!("{ticket_prefix}{token_text}"),
+            ticket,
+            Some(RECOVERY_TTL),
+        )
+        .await;
+    cache.set(&current_key, token, Some(RECOVERY_TTL)).await;
+    TicketPublication {
+        current_key,
+        ticket_prefix,
+        token: token.to_vec(),
+        ticket: ticket.to_vec(),
+        previous,
+    }
+}
+
+async fn rollback_ticket_publication(
+    cache: &dyn crate::services::cache::Cache,
+    publication: TicketPublication,
+) {
+    if !cache
+        .compare_and_remove(&publication.current_key, &publication.token)
+        .await
+    {
+        return;
+    }
+    let token = std::str::from_utf8(&publication.token).expect("account tokens are ASCII");
+    cache
+        .compare_and_remove(
+            &format!("{}{token}", publication.ticket_prefix),
+            &publication.ticket,
+        )
+        .await;
+    let Some((previous_token, previous_ticket)) = publication.previous else {
+        return;
+    };
+    let Ok(previous_token_text) = std::str::from_utf8(&previous_token) else {
+        return;
+    };
+    let restored = cache
+        .set_if_absent(
+            &format!("{}{previous_token_text}", publication.ticket_prefix),
+            &previous_ticket,
+            Some(RECOVERY_TTL),
+        )
+        .await;
+    if restored {
+        cache
+            .set_if_absent(
+                &publication.current_key,
+                &previous_token,
+                Some(RECOVERY_TTL),
+            )
+            .await;
+    }
 }
 
 pub(crate) fn verify_email_domain(email: &str, domain_list: &str) -> bool {
@@ -342,7 +450,10 @@ pub async fn recovery(
     .await?;
 
     let response_started = tokio::time::Instant::now();
-    let operation_id = model.operation_id.unwrap_or_else(Uuid::now_v7);
+    let operation_id = model.operation_id;
+    if operation_id.is_nil() {
+        return Err(AppError::bad_request("operationId is required"));
+    }
     let request_ip = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()));
     let norm_email = if model.email.len() <= MAX_EMAIL_BYTES {
         model.email.trim().to_uppercase()
@@ -356,7 +467,6 @@ pub async fn recovery(
         .await?
     {
         let token = crate::utils::codec::random_token(32);
-        let key = format!("pwreset:{token}");
         let current_key = reset_current_key(user.id);
         let ticket = PasswordResetTicket {
             user_id: user.id,
@@ -412,16 +522,16 @@ pub async fn recovery(
         .await;
         match outcome {
             Ok(crate::services::mail_outbox::EnqueueOutcome::Inserted) => {
-                invalidate_password_reset_tokens(&st, user.id).await;
-                st.cache.set(&key, &ticket, Some(RECOVERY_TTL)).await;
-                st.cache
-                    .set(&current_key, token.as_bytes(), Some(RECOVERY_TTL))
-                    .await;
+                let publication = publish_ticket(
+                    st.cache.as_ref(),
+                    current_key,
+                    "pwreset:",
+                    token.as_bytes(),
+                    &ticket,
+                )
+                .await;
                 if let Err(error) = transaction.commit().await {
-                    st.cache.remove(&key).await;
-                    st.cache
-                        .compare_and_remove(&current_key, token.as_bytes())
-                        .await;
+                    rollback_ticket_publication(st.cache.as_ref(), publication).await;
                     tracing::error!(%error, operation_id = %operation_id, "password-recovery mail commit failed");
                 }
             }
@@ -562,7 +672,10 @@ pub async fn change_email(
     user: CurrentUser,
     Json(model): Json<MailChangeModel>,
 ) -> AppResult<Response> {
-    let operation_id = model.operation_id.unwrap_or_else(Uuid::now_v7);
+    let operation_id = model.operation_id;
+    if operation_id.is_nil() {
+        return Err(AppError::bad_request("operationId is required"));
+    }
     let request_ip = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()));
     let new_mail = model.new_mail.trim().to_lowercase();
     if new_mail.len() > MAX_EMAIL_BYTES || !new_mail.contains('@') {
@@ -606,7 +719,6 @@ pub async fn change_email(
     let mut refreshed_stamp = None;
     if confirmation_required {
         let token = crate::utils::codec::random_token(32);
-        let key = format!("emailchange:{token}");
         let current_key = format!("emailchange-current:{}", user.id);
         let ticket = EmailChangeTicket {
             user_id: user.id,
@@ -615,10 +727,6 @@ pub async fn change_email(
         };
         let bytes = serde_json::to_vec(&ticket)
             .map_err(|e| AppError::internal(format!("email-change ticket: {e}")))?;
-        st.cache.set(&key, &bytes, Some(RECOVERY_TTL)).await;
-        st.cache
-            .set(&current_key, token.as_bytes(), Some(RECOVERY_TTL))
-            .await;
 
         let encoded = crate::utils::codec::base64_encode(new_mail.as_bytes())
             .replace('+', "%2B")
@@ -639,6 +747,22 @@ pub async fn change_email(
             .begin()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
+        let identity_is_current = sqlx::query_scalar::<_, bool>(
+            r#"SELECT TRUE FROM "AspNetUsers"
+                WHERE id = $1 AND security_stamp = $2
+                  AND email_confirmed = TRUE AND role <> $3
+                FOR SHARE"#,
+        )
+        .bind(user.id)
+        .bind(&expected_stamp)
+        .bind(Role::Banned as i16)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .unwrap_or(false);
+        if !identity_is_current {
+            return Err(AppError::Unauthorized);
+        }
         let outcome = crate::services::mail_outbox::enqueue_in_transaction(
             &mut transaction,
             crate::services::mail_outbox::MailIntent {
@@ -653,23 +777,23 @@ pub async fn change_email(
             },
         )
         .await?;
-        if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {
-            if let Some(previous) = st.cache.get(&current_key).await {
-                if let Ok(previous) = std::str::from_utf8(&previous) {
-                    st.cache.remove(&format!("emailchange:{previous}")).await;
-                }
-            }
-            st.cache.set(&key, &bytes, Some(RECOVERY_TTL)).await;
-            st.cache
-                .set(&current_key, token.as_bytes(), Some(RECOVERY_TTL))
-                .await;
-        }
+        let publication = if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {
+            Some(
+                publish_ticket(
+                    st.cache.as_ref(),
+                    current_key,
+                    "emailchange:",
+                    token.as_bytes(),
+                    &bytes,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
         if let Err(error) = transaction.commit().await {
-            if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {
-                st.cache.remove(&key).await;
-                st.cache
-                    .compare_and_remove(&current_key, token.as_bytes())
-                    .await;
+            if let Some(publication) = publication {
+                rollback_ticket_publication(st.cache.as_ref(), publication).await;
             }
             return Err(AppError::internal(error.to_string()));
         }

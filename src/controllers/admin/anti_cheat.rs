@@ -767,9 +767,18 @@ mod tests {
     fn vpn_override_operation_digest_binds_every_semantic_input() {
         let id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         let create = override_request_digest("create", "incident response", 15, None);
-        assert_eq!(create, override_request_digest("create", "incident response", 15, None));
-        assert_ne!(create, override_request_digest("create", "incident response", 16, None));
-        assert_ne!(create, override_request_digest("create", "different reason", 15, None));
+        assert_eq!(
+            create,
+            override_request_digest("create", "incident response", 15, None)
+        );
+        assert_ne!(
+            create,
+            override_request_digest("create", "incident response", 16, None)
+        );
+        assert_ne!(
+            create,
+            override_request_digest("create", "different reason", 15, None)
+        );
         assert_ne!(create, override_request_digest("revoke", "", 0, Some(id)));
     }
 
