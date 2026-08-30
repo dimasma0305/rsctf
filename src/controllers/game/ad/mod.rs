@@ -39,9 +39,7 @@ use sha2::{Digest, Sha256};
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser};
 use crate::middlewares::rate_limiter::{limited, Policy};
-use crate::models::data::{
-    ad_ssh_key, ad_team_api_token, ad_team_service, game, game_challenge, participation,
-};
+use crate::models::data::{ad_team_service, game, game_challenge, participation};
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationStatus};
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::{MessageResponse, RequestResponse};
@@ -63,9 +61,17 @@ fn common_router() -> Router<SharedState> {
         )
         .route(
             "/api/Game/{id}/Ad/Ssh/Key",
-            get(get_ssh_key).post(upload_ssh_key).delete(delete_ssh_key),
+            get(get_ssh_key)
+                .merge(limited(Policy::CredentialMutation, post(upload_ssh_key)))
+                .merge(limited(
+                    Policy::CredentialMutation,
+                    axum::routing::delete(delete_ssh_key),
+                )),
         )
-        .route("/api/Game/{id}/Ad/Ssh/Key/Generate", post(generate_ssh_key))
+        .route(
+            "/api/Game/{id}/Ad/Ssh/Key/Generate",
+            limited(Policy::CredentialMutation, post(generate_ssh_key)),
+        )
         .route("/api/Game/{id}/Ad/State", get(state))
         .route("/api/Game/{id}/Ad/Submit", post(submit))
         .route("/api/Game/{id}/Ad/Targets", get(targets))
@@ -102,7 +108,12 @@ fn common_router() -> Router<SharedState> {
         )
         .route(
             "/api/Game/{id}/Ad/Token",
-            get(get_token).post(rotate_token).delete(revoke_token),
+            get(get_token)
+                .merge(limited(Policy::CredentialMutation, post(rotate_token)))
+                .merge(limited(
+                    Policy::CredentialMutation,
+                    axum::routing::delete(revoke_token),
+                )),
         )
         .route("/api/Game/{id}/Ad/Vpn/Config", get(download_vpn_config))
         .route(

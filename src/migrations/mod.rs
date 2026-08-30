@@ -137,6 +137,8 @@ mod m0114_submission_feed_cursor;
 mod m0115_flag_egress_feed_cursor;
 mod m0116_game_event_feed_pending;
 mod m0242_participation_provision_jobs;
+mod m0251_koth_referee_retry;
+mod m0252_player_credential_operations;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -288,6 +290,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0115_flag_egress_feed_cursor::Migration),
             Box::new(m0116_game_event_feed_pending::Migration),
             Box::new(m0242_participation_provision_jobs::Migration),
+            Box::new(m0251_koth_referee_retry::Migration),
+            Box::new(m0252_player_credential_operations::Migration),
         ]
     }
 }
@@ -435,8 +439,6 @@ mod tests {
         assert_eq!(
             &names[names.len() - 15..],
             [
-                "m0103_recent_games_candidates",
-                "m0104_post_feed_order",
                 "m0105_manager_autocomplete_indexes",
                 "m0106_submission_idempotency",
                 "m0107_monitor_history_indexes",
@@ -450,6 +452,8 @@ mod tests {
                 "m0115_flag_egress_feed_cursor",
                 "m0116_game_event_feed_pending",
                 "m0242_participation_provision_jobs",
+                "m0251_koth_referee_retry",
+                "m0252_player_credential_operations",
             ]
         );
     }

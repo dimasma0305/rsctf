@@ -158,6 +158,9 @@ pub enum Policy {
     PowIssuanceSource,
     /// Deployment-wide HashPoW issuance budget; all callers share one key.
     PowIssuanceGlobal,
+    /// Tight per-identity defense-in-depth budget for player credential changes.
+    /// Appended to preserve every shipped Redis policy discriminant.
+    CredentialMutation,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -237,6 +240,10 @@ impl Policy {
             Policy::PowIssuanceGlobal => Kind::Bucket {
                 capacity: 256.0,
                 refill_per_sec: 20.0,
+            },
+            Policy::CredentialMutation => Kind::Bucket {
+                capacity: 6.0,
+                refill_per_sec: 0.1,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {

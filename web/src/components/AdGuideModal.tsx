@@ -40,15 +40,30 @@ import {
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useAdToken, AdTokenSection, AdVpnSection, AdTokenRevealModal } from '@Components/AdToolkitSections'
+import { AdTokenOwner, AdTokenSection, AdVpnSection, AdTokenRevealModal } from '@Components/AdToolkitSections'
+import {
+  claimPlayerCredentialOperation,
+  clearPlayerCredentialOperation,
+  ownsPlayerCredentialResult,
+  parsePlayerCredentialRevision,
+  playerCredentialIntent,
+  playerCredentialOperationStorageKey,
+  playerCredentialOperationWasRejected,
+  playerCredentialRevisionSignalKey,
+  playerCredentialStorage,
+  publishPlayerCredentialRevision,
+  withPlayerCredentialLock,
+} from '@Utils/PlayerCredentialOperations'
 import { showErrorMsg } from '@Utils/Shared'
+import { useViewerIdentity } from '@Utils/ViewerIdentity'
 import api from '@Api'
 import misc from '@Styles/Misc.module.css'
 
 interface AdToolkitModalProps extends ModalProps {
   gameId: number
+  tokenOwner: AdTokenOwner
 }
 
 /**
@@ -58,15 +73,27 @@ interface AdToolkitModalProps extends ModalProps {
  * from "Player Guide" because half the content is interactive rather than
  * read-only.
  */
-export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, ...modalProps }) => {
+export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, ...modalProps }) => {
   const { t } = useTranslation()
-  const { adTokenHint, rotating, freshToken, storedToken, forgetToken, tokenModalOpen, closeTokenModal, onRotate } =
-    useAdToken(gameId)
+  const { scope } = useViewerIdentity()
+  const {
+    adTokenHint,
+    rotating,
+    freshToken,
+    storedToken,
+    forgetToken,
+    tokenModalOpen,
+    closeTokenModal,
+    onRotate,
+    revealSource,
+  } = tokenOwner
   const { data: sshKey, mutate: mutateSshKey } = api.game.useAdGameGetSshKey(gameId)
 
   const [sshTab, setSshTab] = useState<string>('paste')
   const [pastedPubkey, setPastedPubkey] = useState('')
   const [sshBusy, setSshBusy] = useState(false)
+  const sshBusyRef = useRef(false)
+  const sshResponseGeneration = useRef(0)
   const [freshPrivKey, setFreshPrivKey] = useState<{
     privateKey: string
     publicKey: string
@@ -74,51 +101,132 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, ...modalProps })
   } | null>(null)
   const [privKeyModalOpen, { open: openPrivKeyModal, close: closePrivKeyModal }] = useDisclosure(false)
 
+  useEffect(() => {
+    sshBusyRef.current = false
+    sshResponseGeneration.current += 1
+    setSshBusy(false)
+    setFreshPrivKey(null)
+    closePrivKeyModal()
+  }, [closePrivKeyModal, gameId, scope])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const signalKey = playerCredentialRevisionSignalKey(gameId, 'ad-ssh')
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== signalKey || !parsePlayerCredentialRevision(event.newValue)) return
+      sshResponseGeneration.current += 1
+      setFreshPrivKey(null)
+      closePrivKeyModal()
+      void mutateSshKey()
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [closePrivKeyModal, gameId, mutateSshKey])
+
+  const runSshOperation = async <T extends { operationId: string; revision: number }>(
+    intent: string,
+    request: (operation: { operationId: string; expectedRevision: number }) => Promise<T>
+  ) => {
+    const storage = playerCredentialStorage()
+    const key = playerCredentialOperationStorageKey(scope, gameId, 'ad-ssh')
+    return withPlayerCredentialLock(key, async () => {
+      const operation = claimPlayerCredentialOperation(storage, key, sshKey?.revision ?? 0, intent)
+      try {
+        const result = await request(operation)
+        if (!ownsPlayerCredentialResult(storage, key, operation, result)) {
+          throw new Error('A stale SSH credential response was ignored')
+        }
+        clearPlayerCredentialOperation(storage, key, operation.operationId)
+        publishPlayerCredentialRevision(storage, playerCredentialRevisionSignalKey(gameId, 'ad-ssh'), {
+          operationId: result.operationId,
+          revision: result.revision,
+        })
+        return result
+      } catch (error) {
+        if (playerCredentialOperationWasRejected(error)) {
+          clearPlayerCredentialOperation(storage, key, operation.operationId)
+        }
+        throw error
+      }
+    })
+  }
+
   const onUploadSshKey = async () => {
-    if (!pastedPubkey.trim()) return
+    const publicKey = pastedPubkey.trim()
+    if (!publicKey || sshBusyRef.current) return
+    sshBusyRef.current = true
     setSshBusy(true)
+    const generation = ++sshResponseGeneration.current
     try {
-      await api.game.adGameUploadSshKey(gameId, { publicKey: pastedPubkey.trim() })
+      const intent = await playerCredentialIntent('upload', publicKey)
+      await runSshOperation(intent, async (operation) => {
+        const { data } = await api.game.adGameUploadSshKey(gameId, { publicKey, ...operation })
+        return data
+      })
+      if (generation !== sshResponseGeneration.current) return
       setPastedPubkey('')
-      mutateSshKey()
+      setFreshPrivKey(null)
+      closePrivKeyModal()
+      await mutateSshKey()
       showNotification({
         color: 'teal',
         message: t('game.notification.ad.ssh.uploaded', 'SSH public key registered'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch (e) {
+      await mutateSshKey().catch(() => undefined)
       showErrorMsg(e, t)
     } finally {
+      sshBusyRef.current = false
       setSshBusy(false)
     }
   }
 
   const onGenerateSshKey = async () => {
+    if (sshBusyRef.current) return
+    sshBusyRef.current = true
     setSshBusy(true)
+    const generation = ++sshResponseGeneration.current
     try {
-      const { data } = await api.game.adGameGenerateSshKey(gameId)
+      const data = await runSshOperation('generate', async (operation) => {
+        const response = await api.game.adGameGenerateSshKey(gameId, operation)
+        return response.data
+      })
+      if (generation !== sshResponseGeneration.current) return
       setFreshPrivKey({ privateKey: data.privateKey, publicKey: data.publicKey, fingerprint: data.fingerprint })
       openPrivKeyModal()
-      mutateSshKey()
+      await mutateSshKey()
     } catch (e) {
+      await mutateSshKey().catch(() => undefined)
       showErrorMsg(e, t)
     } finally {
+      sshBusyRef.current = false
       setSshBusy(false)
     }
   }
 
   const onRevokeSshKey = async () => {
+    if (sshBusyRef.current) return
+    sshBusyRef.current = true
     setSshBusy(true)
+    const generation = ++sshResponseGeneration.current
     try {
-      await api.game.adGameRevokeSshKey(gameId)
-      mutateSshKey()
+      await runSshOperation('revoke', async (operation) => {
+        const response = await api.game.adGameRevokeSshKey(gameId, operation)
+        return response.data
+      })
+      if (generation !== sshResponseGeneration.current) return
+      setFreshPrivKey(null)
+      await mutateSshKey()
       showNotification({
         color: 'orange',
         message: t('game.notification.ad.ssh.revoked', 'SSH key revoked'),
       })
     } catch (e) {
+      await mutateSshKey().catch(() => undefined)
       showErrorMsg(e, t)
     } finally {
+      sshBusyRef.current = false
       setSshBusy(false)
     }
   }
@@ -219,7 +327,7 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, ...modalProps })
               <AdTokenSection
                 hint={adTokenHint}
                 rotating={rotating}
-                onRotate={onRotate}
+                onRotate={() => void onRotate('ad')}
                 storedToken={storedToken}
                 onForget={forgetToken}
                 title={t('game.content.ad.guide.token.title', 'Your API token')}
@@ -757,13 +865,13 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, ...modalProps })
 
       {/* Fresh-token reveal — shared with KotH (see AdToolkitSections). */}
       <AdTokenRevealModal
-        opened={tokenModalOpen}
+        opened={tokenModalOpen && revealSource === 'ad'}
         onClose={closeTokenModal}
         freshToken={freshToken}
         title={t('game.content.ad.token_modal.title', 'Your new A&D API token')}
         warning={t(
           'game.content.ad.token_modal.warning',
-          'This token is now saved in this browser (see “Saved token” in the API-token section) so your scripts can reuse it. Copy it here too if you want it elsewhere — the platform keeps only a hash and can’t show it again. The previous token (if any) has been invalidated.'
+          'Copy this token now. It is kept only in this page session for the command examples; the platform stores only a hash and cannot show it after the page closes. The previous token (if any) has been invalidated.'
         )}
       />
 

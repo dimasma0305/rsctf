@@ -8,6 +8,25 @@ fn ad_submit_capacity() -> u32 {
 }
 
 #[test]
+fn credential_mutations_use_a_tight_appended_identity_bucket() {
+    assert_eq!(
+        Policy::CredentialMutation as u8,
+        Policy::PowIssuanceGlobal as u8 + 1,
+        "new policies must not renumber shipped Redis namespaces"
+    );
+    match Policy::CredentialMutation.kind() {
+        Kind::Bucket {
+            capacity,
+            refill_per_sec,
+        } => {
+            assert_eq!(capacity, 6.0);
+            assert_eq!(refill_per_sec, 0.1);
+        }
+        Kind::Sliding { .. } => panic!("credential mutations require a bounded token bucket"),
+    }
+}
+
+#[test]
 fn ad_submit_burst_configuration_requires_a_bounded_integer() {
     assert_eq!(parse_ad_submit_burst_flags(None), Ok(400));
     assert_eq!(parse_ad_submit_burst_flags(Some("100")), Ok(100));

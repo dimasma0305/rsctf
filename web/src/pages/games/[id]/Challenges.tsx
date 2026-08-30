@@ -14,6 +14,7 @@ import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { AdGuideModal } from '@Components/AdGuideModal'
+import { useAdToken } from '@Components/AdToolkitSections'
 import { ChallengePanel } from '@Components/ChallengePanel'
 import { GameNoticePanel } from '@Components/GameNoticePanel'
 import { KothGuideModal } from '@Components/KothGuideModal'
@@ -61,6 +62,7 @@ const Challenges: FC = () => {
   const { adState } = useAdState(numId, hasAdEngine && !archived)
   const [adGuideOpened, adGuideHandlers] = useDisclosure(false)
   const [kothGuideOpened, kothGuideHandlers] = useDisclosure(false)
+  const tokenOwner = useAdToken(numId, hasAdEngine && !archived)
 
   const roundEndsIn = adRoundSecondsRemaining(
     adState?.roundEndsAt,
@@ -203,9 +205,21 @@ const Challenges: FC = () => {
             </Stack>
           </Flex>
 
-          {hasAdChallenges && <AdGuideModal gameId={numId} opened={adGuideOpened} onClose={adGuideHandlers.close} />}
+          {hasAdChallenges && (
+            <AdGuideModal
+              gameId={numId}
+              tokenOwner={tokenOwner}
+              opened={adGuideOpened}
+              onClose={adGuideHandlers.close}
+            />
+          )}
           {hasKothChallenges && (
-            <KothGuideModal gameId={numId} opened={kothGuideOpened} onClose={kothGuideHandlers.close} />
+            <KothGuideModal
+              gameId={numId}
+              tokenOwner={tokenOwner}
+              opened={kothGuideOpened}
+              onClose={kothGuideHandlers.close}
+            />
           )}
         </WithGameTab>
       </WithRole>

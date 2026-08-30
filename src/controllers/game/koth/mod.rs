@@ -589,7 +589,10 @@ fn common_router() -> Router<SharedState> {
         // Per-hill player token + state (KothChallengePanel polls these).
         .route(
             "/api/game/{id}/ad/koth/{challengeId}/token",
-            get(koth_hill_token).merge(limited(Policy::Container, post(rotate_koth_api_token))),
+            get(koth_hill_token).merge(limited(
+                Policy::CredentialMutation,
+                post(rotate_koth_api_token),
+            )),
         )
         .route(
             "/api/game/{id}/ad/koth/{challengeId}/state",
