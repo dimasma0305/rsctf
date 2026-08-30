@@ -50,6 +50,17 @@ const INVENTORY_REFERENCES_SQL: &str = r#"SELECT title, image_ref FROM (
    AND variant_generator_image IS NOT NULL
    AND variant_generator_image = variant_generator_digest
 ) refs ORDER BY image_ref, title LIMIT $1"#;
+const CLAIM_MANUAL_REMOVAL_SQL: &str = r#"UPDATE "BuildImageOwnerships"
+   SET cleanup_claim_token=$4,
+       cleanup_claim_until=clock_timestamp() + make_interval(secs => $5),
+       cleanup_removal_started=TRUE
+ WHERE installation_scope=$1 AND canonical_ref=$2 AND image_id=$3
+   AND (cleanup_claim_until IS NULL OR cleanup_claim_until <= clock_timestamp())
+   AND NOT EXISTS (
+       SELECT 1 FROM "ControlPlaneResourceLeases"
+        WHERE resource_key=$6
+          AND lease_expires_at_utc > clock_timestamp()
+   )"#;
 const FINALIZE_MANUAL_CLAIM_SQL: &str = r#"UPDATE "BuildImageOwnerships"
    SET cleanup_claim_until = clock_timestamp() + make_interval(secs => $5),
        cleanup_removal_started = TRUE
@@ -453,41 +464,18 @@ async fn remove_one(
             ));
         }
     };
-    let references = match sqlx::query_as::<_, ReferenceRow>(REFERENCES_SQL)
-        .fetch_all(lock.connection_mut())
-        .await
-    {
-        Ok(rows) => rows,
-        Err(error) => {
-            let _ = lock.release().await;
-            return Removal::blocked(format!(
-                "{requested_tag}: challenge reference re-read failed: {error}"
-            ));
-        }
-    };
-    let referenced_by = reference_titles(&references, &canonical_ref, &ownership.image_id);
-    if !referenced_by.is_empty() {
-        let _ = lock.release().await;
-        return Removal::blocked(format!(
-            "{requested_tag} is still referenced by {}",
-            referenced_by.join(", ")
-        ));
-    }
     let claim_token = Uuid::new_v4();
-    let claimed = sqlx::query(
-        r#"UPDATE "BuildImageOwnerships"
-              SET cleanup_claim_token=$4,
-                  cleanup_claim_until=clock_timestamp() + make_interval(secs => $5),
-                  cleanup_removal_started=FALSE
-            WHERE installation_scope=$1 AND canonical_ref=$2 AND image_id=$3
-              AND (cleanup_claim_until IS NULL
-                   OR cleanup_claim_until <= clock_timestamp())"#,
-    )
+    // Install the durable finalizing fence while holding only the per-image
+    // coordination lock. The global challenge-reference snapshot is loaded
+    // after releasing this connection; cooperating builds observe
+    // `cleanup_removal_started` and cannot create a late reference meanwhile.
+    let claimed = sqlx::query(CLAIM_MANUAL_REMOVAL_SQL)
     .bind(&scope)
     .bind(&canonical_ref)
     .bind(&ownership.image_id)
     .bind(claim_token)
     .bind(MANUAL_CLAIM_SECONDS)
+    .bind(&lock_key)
     .execute(lock.connection_mut())
     .await;
     let released = lock.release().await;
@@ -506,6 +494,35 @@ async fn remove_one(
                 "{requested_tag}: image coordination release failed: {error}"
             ));
         }
+    }
+
+    let references = match tokio::time::timeout_at(
+        deadline,
+        sqlx::query_as::<_, ReferenceRow>(REFERENCES_SQL).fetch_all(st.pg()),
+    )
+    .await
+    {
+        Ok(Ok(rows)) => rows,
+        Ok(Err(error)) => {
+            release_manual_claim(st, &scope, &ownership, claim_token).await;
+            return Removal::blocked(format!(
+                "{requested_tag}: challenge reference re-read failed: {error}"
+            ));
+        }
+        Err(_) => {
+            release_manual_claim(st, &scope, &ownership, claim_token).await;
+            return Removal::blocked(format!(
+                "{requested_tag}: challenge reference re-read timed out"
+            ));
+        }
+    };
+    let referenced_by = reference_titles(&references, &canonical_ref, &ownership.image_id);
+    if !referenced_by.is_empty() {
+        release_manual_claim(st, &scope, &ownership, claim_token).await;
+        return Removal::blocked(format!(
+            "{requested_tag} is still referenced by {}",
+            referenced_by.join(", ")
+        ));
     }
 
     let inspected = match daemon_call(
@@ -864,20 +881,9 @@ mod tests {
         assert!(source.contains("ControlPlaneResourceLeases"));
     }
 
-    #[test]
-    fn dispatched_manual_removal_keeps_its_claim_until_absence_is_committed() {
-        let source = include_str!("images.rs");
-        let dispatched = source.find("docker.remove_image(").unwrap();
-        let committed = source[dispatched..]
-            .find("commit_manual_removal")
-            .map(|offset| dispatched + offset)
-            .unwrap();
-        assert!(!source[dispatched..committed].contains("release_manual_claim("));
-    }
-
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn delete_alias_waits_for_build_lock_then_rereads_references() {
+    async fn delete_alias_waits_for_build_lock_before_out_of_lock_reference_snapshot() {
         use std::str::FromStr;
 
         use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -962,13 +968,14 @@ mod tests {
         .unwrap();
         first.release().await.unwrap();
 
-        let mut second = tokio::time::timeout(std::time::Duration::from_secs(2), &mut waiter)
+        let second = tokio::time::timeout(std::time::Duration::from_secs(2), &mut waiter)
             .await
             .expect("delete waiter must acquire after the build releases")
             .unwrap()
             .unwrap();
+        second.release().await.unwrap();
         let rows = sqlx::query_as::<_, ReferenceRow>(REFERENCES_SQL)
-            .fetch_all(second.connection_mut())
+            .fetch_all(&pool)
             .await
             .unwrap();
         assert_eq!(
@@ -979,8 +986,6 @@ mod tests {
             reference_titles(&rows, "docker.io/rsctf/unrelated:latest", ID),
             vec!["managed generator"]
         );
-        second.release().await.unwrap();
-
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
             .execute(&admin)

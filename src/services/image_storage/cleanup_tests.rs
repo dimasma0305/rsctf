@@ -98,6 +98,119 @@ fn candidate_claim_is_bounded_rotating_and_skip_locked() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn large_catalog_claim_uses_the_ordered_index_without_a_catalog_sort() {
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let admin = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(crate::migrations::test_pg_connect_options(&database_url))
+        .await
+        .unwrap();
+    let schema = format!("cleanup_explain_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(
+            crate::migrations::test_pg_connect_options(&database_url)
+                .options([("search_path", schema.as_str())]),
+        )
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        r#"CREATE TABLE "BuildImageOwnerships" (
+             installation_scope TEXT NOT NULL,
+             canonical_ref TEXT NOT NULL,
+             image_id TEXT NOT NULL,
+             updated_at_utc TIMESTAMPTZ NOT NULL,
+             last_used_at_utc TIMESTAMPTZ NULL,
+             cleanup_claim_token UUID NULL,
+             cleanup_claim_until TIMESTAMPTZ NULL,
+             cleanup_removal_started BOOLEAN NOT NULL DEFAULT FALSE,
+             cleanup_checked_at_utc TIMESTAMPTZ NULL,
+             PRIMARY KEY (installation_scope, canonical_ref)
+           )"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(crate::migrations::IMAGE_CLEANUP_ORDER_INDEX_SQL)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "BuildImageOwnerships"
+             (installation_scope, canonical_ref, image_id, updated_at_utc,
+              last_used_at_utc, cleanup_claim_until, cleanup_checked_at_utc)
+           SELECT md5((candidate % 8)::text),
+                  'docker.io/rsctf/catalog/' || candidate::text || ':latest',
+                  'sha256:' || md5(candidate::text) || md5(candidate::text),
+                  clock_timestamp() - interval '30 days',
+                  clock_timestamp() - interval '30 days',
+                  CASE WHEN candidate % 11 = 0
+                       THEN clock_timestamp() + interval '2 minutes' END,
+                  CASE WHEN candidate % 3 = 0 THEN NULL
+                       ELSE clock_timestamp() - make_interval(secs => candidate) END
+             FROM generate_series(1, 100000) AS candidate"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(r#"ANALYZE "BuildImageOwnerships""#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let scope = sqlx::query_scalar::<_, String>("SELECT md5('1')")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let token = Uuid::new_v4();
+    let explain_sql = format!("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {CLAIM_CANDIDATES_SQL}");
+    let plan = sqlx::query_scalar::<_, serde_json::Value>(&explain_sql)
+        .bind(&scope)
+        .bind(false)
+        .bind(Utc::now() - ChronoDuration::days(7))
+        .bind(token)
+        .bind(CLAIM_LEASE_SECONDS)
+        .bind(CLEANUP_BATCH_SIZE)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let rendered = plan.to_string();
+    assert!(
+        rendered.contains("ix_build_image_cleanup_ordered_candidates"),
+        "candidate plan did not use the ordered index: {rendered}"
+    );
+    assert!(
+        !rendered.contains("\"Node Type\":\"Sort\""),
+        "candidate plan sorted the large ownership catalog: {rendered}"
+    );
+    assert!(
+        !rendered.contains("\"Node Type\":\"Seq Scan\""),
+        "candidate plan scanned the large ownership catalog: {rendered}"
+    );
+    let claimed = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*) FROM "BuildImageOwnerships"
+            WHERE cleanup_claim_token = $1"#,
+    )
+    .bind(token)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(claimed, CLEANUP_BATCH_SIZE);
+
+    pool.close().await;
+    sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn cleanup_finalization_waits_for_a_live_durable_build_lease() {
     let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
         .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");

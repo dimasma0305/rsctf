@@ -515,7 +515,7 @@ pub(crate) async fn load_flow_snapshot(
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 struct FlowKey(SocketAddr, SocketAddr);
 
 impl FlowKey {
@@ -755,6 +755,7 @@ fn build_snapshot(
     let mut reader = PcapReader::new(file)
         .map_err(|_| InspectionError::Invalid("Capture is not a valid pcap file".into()))?;
     let mut flows = BTreeMap::<FlowKey, FlowBuilder>::new();
+    let mut rejected_flows = HashSet::<FlowKey>::new();
     let mut snapshot_payload_bytes = 0usize;
     let mut snapshot_chunks = 0usize;
 
@@ -773,20 +774,30 @@ fn build_snapshot(
             continue;
         };
         let key = FlowKey::new(parsed.source, parsed.dest);
-        if !flows.contains_key(&key) && flows.len() >= MAX_CAPTURE_FLOWS {
+        if rejected_flows.contains(&key) {
+            continue;
+        }
+        if !flows.contains_key(&key)
+            && flows.len().saturating_add(rejected_flows.len()) >= MAX_CAPTURE_FLOWS
+        {
             return Err(InspectionError::TooManyFlows);
         }
         let timestamp_utc = packet_timestamp_millis(packet.timestamp);
         if !flows.contains_key(&key) {
-            flows.insert(
-                key.clone(),
-                FlowBuilder::new(
-                    parsed.source,
-                    parsed.dest,
-                    timestamp_utc,
-                    expected.container_port,
-                )?,
-            );
+            let builder = match FlowBuilder::new(
+                parsed.source,
+                parsed.dest,
+                timestamp_utc,
+                expected.container_port,
+            ) {
+                Ok(builder) => builder,
+                Err(InspectionError::AmbiguousEndpoints) => {
+                    rejected_flows.insert(key);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            flows.insert(key.clone(), builder);
         }
         flows
             .get_mut(&key)

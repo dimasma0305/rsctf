@@ -197,9 +197,17 @@ It then holds public scoreboard reads and exact `healthz` checks at fixed arriva
 for at least 35 seconds. No evidence is added in this phase. The queue generation,
 source cursors, job/operation counts, attempts, and last-started timestamp must remain
 unchanged, proving that a large but idle history causes no scheduled detector pass.
-Docker memory/task and PostgreSQL block/temp-I/O deltas are bounded as supporting load
-evidence. The gate mutates one disposable queue generation and therefore fails closed
-without an exact acknowledgement:
+The runner samples application/PostgreSQL CPU and memory, runtime tasks, PostgreSQL
+client-pool occupancy, active/idle-in-transaction/waiting backends, longest transaction,
+and block/temp-I/O counters once per second. Defaults reject a container above 400% CPU,
+more than 40 database clients or active clients, any idle-in-transaction client, more
+than 16 waiting clients, a transaction over 30 seconds, 100,000 block reads, or 64 MiB
+of temporary I/O. Document fixture-specific overrides with `MAX_CPU_PERCENT`,
+`MAX_PG_CONNECTIONS`, `MAX_PG_ACTIVE_CONNECTIONS`,
+`MAX_PG_IDLE_IN_TRANSACTION`, `MAX_PG_WAITING_CONNECTIONS`,
+`MAX_PG_LONGEST_TRANSACTION_SECONDS`, `MAX_PG_BLOCK_READ_DELTA`, and
+`MAX_PG_TEMP_DELTA_MIB`. The gate mutates one disposable queue generation and therefore
+fails closed without an exact acknowledgement:
 
 ```bash
 cd tests/load
@@ -257,9 +265,13 @@ while independently probing the exact `healthz` body. It requires an explicit
 acknowledgement because sampled observations are persisted. The runner rejects
 any response distinguishable from the ordinary decoy 404, dropped arrivals,
 unbounded aggregate rows or stored fields, excessive memory/task growth, or a
-health latency regression. Set `HONEYPOT_TCP_PORT` to one configured protocol
-decoy to add 256 silent sockets and require all of them to close within the
-absolute connection deadline.
+health latency regression. It also samples configured-container CPU and PostgreSQL
+client-pool/activity/block/temp-I/O once per second and applies the same default CPU
+and database ceilings documented for incremental anti-cheat reconciliation above.
+`HONEYPOT_RESOURCE_CONTAINERS` must retain the configured application and PostgreSQL
+container names so an override cannot silently omit either required resource sample.
+Set `HONEYPOT_TCP_PORT` to one configured protocol decoy to add 256 silent sockets
+and require all of them to close within the absolute connection deadline.
 
 ```sh
 HONEYPOT_STRESS_ACK=1 RATE=512 VUS=64 DURATION=20s \
