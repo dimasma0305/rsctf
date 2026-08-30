@@ -14,6 +14,7 @@ use crate::runtime::{runtime_for, RuntimeOptions};
 use crate::tls::MtlsConnector;
 
 const SESSION_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
+const RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
     if arguments.runtime_concurrency == 0 {
@@ -93,18 +94,30 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
     let connector = MtlsConnector::new(config.clone());
     backoff.reset();
     let detected_capacity = loop {
-        match runtime.probe().await {
-            Ok(()) => match runtime.capacity().await {
-                Ok(capacity) => break capacity,
-                Err(error) => {
-                    let delay = backoff.next_delay();
-                    tracing::warn!(%error, ?delay, "Docker capacity probe failed; retrying locally");
-                    tokio::time::sleep(delay).await;
+        match tokio::time::timeout(RUNTIME_PROBE_TIMEOUT, runtime.probe()).await {
+            Ok(Ok(())) => {
+                match tokio::time::timeout(RUNTIME_PROBE_TIMEOUT, runtime.capacity()).await {
+                    Ok(Ok(capacity)) => break capacity,
+                    Ok(Err(error)) => {
+                        let delay = backoff.next_delay();
+                        tracing::warn!(%error, ?delay, "Docker capacity probe failed; retrying locally");
+                        tokio::time::sleep(delay).await;
+                    }
+                    Err(_) => {
+                        let delay = backoff.next_delay();
+                        tracing::warn!(?delay, "Docker capacity probe timed out; retrying locally");
+                        tokio::time::sleep(delay).await;
+                    }
                 }
-            },
-            Err(error) => {
+            }
+            Ok(Err(error)) => {
                 let delay = backoff.next_delay();
                 tracing::warn!(%error, ?delay, "Docker is unavailable; retrying locally");
+                tokio::time::sleep(delay).await;
+            }
+            Err(_) => {
+                let delay = backoff.next_delay();
+                tracing::warn!(?delay, "Docker health probe timed out; retrying locally");
                 tokio::time::sleep(delay).await;
             }
         }
@@ -150,11 +163,23 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
         control::OperationDispatcher::new(runtime.clone(), arguments.runtime_concurrency);
 
     loop {
-        if let Err(error) = runtime.probe().await {
-            let delay = backoff.next_delay();
-            tracing::warn!(%error, ?delay, "Docker became unavailable; not advertising worker capacity");
-            tokio::time::sleep(delay).await;
-            continue;
+        match tokio::time::timeout(RUNTIME_PROBE_TIMEOUT, runtime.probe()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let delay = backoff.next_delay();
+                tracing::warn!(%error, ?delay, "Docker became unavailable; not advertising worker capacity");
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+            Err(_) => {
+                let delay = backoff.next_delay();
+                tracing::warn!(
+                    ?delay,
+                    "Docker pre-connect probe timed out; not advertising worker capacity"
+                );
+                tokio::time::sleep(delay).await;
+                continue;
+            }
         }
         let connected_at = Instant::now();
         let result = control::run_session(
@@ -166,6 +191,15 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
         )
         .await;
         readiness.clear().await?;
+        if let Some(error) = result.as_ref().err().filter(|error| error.is_terminal()) {
+            // The shipped systemd unit uses Restart=on-failure. Returning an
+            // error would restart revoked, incompatible, or misconfigured
+            // identities every five seconds forever. A clean stop is the
+            // explicit quarantined state; an operator restarts the unit after
+            // replacing its credentials or configuration.
+            tracing::error!(%error, "worker control session is terminal; stopping without supervisor reconnect");
+            return Ok(());
+        }
         if connected_at.elapsed() >= Duration::from_secs(60) {
             backoff.reset();
         }
@@ -239,6 +273,33 @@ pub enum ClientError {
     Transport(String),
 }
 
+impl ClientError {
+    fn is_terminal(&self) -> bool {
+        match self {
+            Self::Protocol(_) | Self::Configuration(_) | Self::Config(_) | Self::Security(_) => {
+                true
+            }
+            Self::Tls(
+                crate::tls::TlsConnectorError::Rustls(_)
+                | crate::tls::TlsConnectorError::IdentityIo(_)
+                | crate::tls::TlsConnectorError::MissingCertificate
+                | crate::tls::TlsConnectorError::MissingPrivateKey
+                | crate::tls::TlsConnectorError::InvalidServerName
+                | crate::tls::TlsConnectorError::AlpnMismatch,
+            ) => true,
+            Self::Tls(
+                crate::tls::TlsConnectorError::TransportIo(_)
+                | crate::tls::TlsConnectorError::ConnectTimeout
+                | crate::tls::TlsConnectorError::HandshakeTimeout,
+            )
+            | Self::Runtime(_)
+            | Self::Readiness(_)
+            | Self::Frame(_)
+            | Self::Transport(_) => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +346,13 @@ mod tests {
         ] {
             assert!(matches!(result, Err(ClientError::Configuration(_))));
         }
+    }
+
+    #[test]
+    fn terminal_control_failures_enter_supervisor_quarantine() {
+        assert!(ClientError::Protocol("unsupported revision".into()).is_terminal());
+        assert!(ClientError::Configuration("invalid worker identity".into()).is_terminal());
+        assert!(!ClientError::Transport("connection reset".into()).is_terminal());
+        assert!(!ClientError::Tls(crate::tls::TlsConnectorError::ConnectTimeout).is_terminal());
     }
 }

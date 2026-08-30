@@ -674,7 +674,7 @@ on 2026-08-25.
     `web/src/pages/account/Login.tsx`, `web/src/pages/account/Register.tsx`,
     `web/src/pages/Teams.tsx`, and `web/src/pages/games/[id]/Index.tsx`.
 
-- [ ] Make HashPoW issuance stateless and keep the client from churning expired or
+- [x] Make HashPoW issuance stateless and keep the client from churning expired or
   cross-tab challenges.
   - The anonymous `/api/captcha/powchallenge` route reloads the live captcha settings
     from PostgreSQL and writes a fresh, unique `_HP_*` entry to both local cache and
@@ -714,7 +714,7 @@ on 2026-08-25.
     `src/services/captcha.rs`, `src/services/cache.rs`, and
     `src/middlewares/rate_limiter.rs`.
 
-- [ ] Bound public team-signature verification and anchor its trust decision.
+- [x] Bound public team-signature verification and anchor its trust decision.
   - Anonymous `POST /api/team/verify` accepts both the Ed25519 public key and team token
     from the caller under the generic JSON body limit. It Base64-decodes `publicKey`
     before checking for the required 32 bytes and similarly decodes the unbounded
@@ -1138,7 +1138,7 @@ on 2026-08-25.
     `src/services/git_sync/mod.rs`, `src/utils/upload.rs`, and a new registered
     idempotent forward migration for import jobs/source revisions.
 
-- [ ] Admit bulk ZIP exports before loading their database rows and attachment blobs.
+- [x] Admit bulk ZIP exports before loading their database rows and attachment blobs.
   - One export can collect as many as 2,048 attachment entries and 128 MiB of blob data
     in memory, with per-division and per-challenge query loops. `GAME_EXPORT_SLOTS` is
     acquired only after all of that I/O and allocation, so a request rejected as “busy”
@@ -1174,7 +1174,7 @@ on 2026-08-25.
     `web/src/utils/ApiHelper.tsx`, `src/controllers/edit/transfer.rs`,
     `src/controllers/edit/mod.rs`, and `src/controllers/admin/mod.rs`.
 
-- [ ] Stream and globally admit retained A&D snapshot downloads before allocating their
+- [x] Stream and globally admit retained A&D snapshot downloads before allocating their
   complete bodies.
   - Both the player and admin retained-snapshot paths call `load_bounded` and materialize
     as much as 128 MiB in one `Vec` before constructing the response. The plain anchor
@@ -1202,7 +1202,7 @@ on 2026-08-25.
     `src/controllers/game/ad/scoreboard.rs`, `src/controllers/edit/ad/mod.rs`,
     `src/storage/blob_storage.rs`, and `src/middlewares/rate_limiter.rs`.
 
-- [ ] Bound and cancel live A&D filesystem-diff/file inspection.
+- [x] Bound and cancel live A&D filesystem-diff/file inspection.
   - Opening the forensics modal calls Docker's complete container-changes API and
     returns every changed path without an entry, path-length, response-byte, runtime,
     or concurrency bound. A participant can create a very large change set in its own
@@ -1240,7 +1240,7 @@ on 2026-08-25.
     `src/services/container/docker.rs`, `src/services/container/backend.rs`, and
     `src/middlewares/rate_limiter.rs`.
 
-- [ ] Quarantine poison worker workloads instead of retrying and starving the queue.
+- [x] Quarantine poison worker workloads instead of retrying and starving the queue.
   - The singleton worker reconciler selects the 256 oldest due workloads every 500
     milliseconds. If a persisted spec cannot deserialize into
     `ValidatedWorkloadSpec`, `command_for` logs the error and `continue`s without
@@ -1262,7 +1262,7 @@ on 2026-08-25.
     `src/services/worker_store/workloads.rs`, and
     `src/services/worker/registry.rs`.
 
-- [ ] Make the public attack arena's polling and reconnection load-safe.
+- [x] Make the public attack arena's polling and reconnection load-safe.
   - Replace `setInterval(pollLive, 15000)` with one completion-scheduled, single-flight
     cycle. Add request timeouts, `AbortController` teardown, bounded exponential
     backoff with jitter, visibility/offline suspension, and `Retry-After` handling.
@@ -1327,7 +1327,7 @@ on 2026-08-25.
     `src/controllers/game/ad/mod.rs`, and
     `web/src/utils/EventVpnProof.ts`.
 
-- [ ] Repair live-arena endpoint and match-lifecycle resolution.
+- [x] Repair live-arena endpoint and match-lifecycle resolution.
   - Use the registered lowercase game and standard-scoreboard routes; the current
     mixed-case requests do not load the Jeopardy overlay or event end time.
   - Either implement the documented, bounded attack-history route or remove the dead
@@ -1416,7 +1416,7 @@ on 2026-08-25.
   - Relevant code: `src/hubs/attack.rs`, `src/hubs/signalr.rs`,
     `src/hubs/admission.rs`, and `src/server.rs`.
 
-- [ ] Keep worker heartbeats and data-lane recovery bounded when Docker or the
+- [x] Keep worker heartbeats and data-lane recovery bounded when Docker or the
   network stalls.
   - Each negotiated data lane owns a capped backoff that is never reset. After
     enough historical failures, a lane that had then been healthy for hours can
@@ -1465,7 +1465,7 @@ on 2026-08-25.
     `src/services/worker/listener.rs`, and
     `src/services/worker/listener/admission.rs`.
 
-- [ ] Claim worker enrollment before CSR signing and make an ambiguous exchange
+- [x] Claim worker enrollment before CSR signing and make an ambiguous exchange
   recoverable.
   - `/api/workers/enroll` first resolves a still-live one-use token, then sends the
     caller's CSR to an unrestricted `spawn_blocking` signing task, and consumes the
@@ -1505,7 +1505,7 @@ on 2026-08-25.
     `src/services/worker_store/nodes.rs`, `agents/worker-agent/src/enroll.rs`, and a new
     registered idempotent forward migration for enrollment operations.
 
-- [ ] Make Event-VPN sensor delivery durable, idempotent, and retry-safe.
+- [x] Make Event-VPN sensor delivery durable, idempotent, and retry-safe.
   - A full two-entry capture queue records dropped rows, but after the main loop
     receives a batch it uploads only once. Any timeout or 5xx merely logs an
     error and permanently discards flow, DNS, endpoint, and flag-transport
@@ -1538,7 +1538,7 @@ on 2026-08-25.
     `src/services/event_security/telemetry.rs`,
     `deploy/compose.ad-vpn.yml`, and `deploy/compose.roles.ad-vpn.yml`.
 
-- [ ] Bound and lifecycle-proof trusted solve-receipt and challenge-variant
+- [x] Bound and lifecycle-proof trusted solve-receipt and challenge-variant
   records.
   - Every valid receipt request creates a fresh UUID, nonce, proof, and database
     row. There is no verifier attempt/idempotency key, so a lost response followed
@@ -3267,7 +3267,7 @@ on 2026-08-25.
     `src/hubs/monitor.rs`, `src/services/event_bus.rs`, and the `GameEvents` writers
     under `src/controllers/game/`.
 
-- [ ] Make the live arena recover and reconcile its roster after startup.
+- [x] Make the live arena recover and reconcile its roster after startup.
   - Retry an initial A&D-board failure with bounded backoff; the current `NO LIVE DATA`
     path starts only the clock and animation loop and can never recover.
   - Rebuild or reconcile teams and hills when accepted teams are added, participants
@@ -3455,6 +3455,45 @@ on 2026-08-25.
   - Relevant code: `src/controllers/game/play.rs`,
     `src/controllers/game/scoreboard_board.rs`, and
     `web/src/components/TeamRank.tsx`.
+
+- [ ] Show BYOC-specific recovery when a team's self-hosted A&D service is absent.
+  - A BYOC challenge without a registered service must explain how to enroll or
+    reconnect the team's own agent. It must not tell players to ask an operator to
+    provision a platform-managed container with "Ensure containers".
+  - Derive the empty state from the authoritative challenge delivery mode, including
+    before the first agent heartbeat, and keep managed A&D services on the existing
+    provisioning path.
+  - Add player-component and API-contract regressions for absent, connecting, healthy,
+    stale, and revoked BYOC agents plus an ordinary managed A&D service.
+  - Relevant code: `web/src/components/AdChallengePanel.tsx`, the A&D state wire model,
+    and the BYOC enrollment/agent controllers.
+
+- [ ] Diagnose and remove repeated transient challenge-detail load failures.
+  - Capture the actual failing challenge and solver requests, HTTP status/error code,
+    request identity, and server trace without exposing secrets; do not collapse a
+    VPN disconnect, session expiry, overload, or invalid response into the same generic
+    message.
+  - Preserve last-known-good challenge data during a refresh failure, coalesce the
+    challenge and solver recovery owners, and ensure one failed secondary solver read
+    cannot replace an otherwise valid challenge with the full load-error surface.
+  - Add browser and fixed-rate regressions for cold open, cached refresh, Event-VPN
+    reconnect, session expiry, 429/Retry-After, transient 5xx, and a solver-only failure.
+  - Relevant code: `web/src/components/GameChallengeModal.tsx`,
+    `web/src/components/ChallengeModal.tsx`, `web/src/hooks/useChallengePolling.ts`,
+    `web/src/utils/ChallengePolling.ts`, and the challenge-detail/solver controllers.
+
+- [ ] Keep custom challenge Markdown animations alive while the player edits the flag form.
+  - Typing, receipt-proof input, verdict polling, and unrelated modal state must not
+    replace the sanitized Markdown DOM or restart embedded SVG/CSS animations when the
+    challenge content itself is unchanged.
+  - Preserve sanitization and React ownership; memoize the rendered content boundary
+    rather than permitting arbitrary scripts or moving form state outside its owner.
+  - Add a mounted modal regression with an animated Markdown fixture that types and
+    submits a flag, advances timers, and proves the content node and animation state are
+    not recreated until the challenge ID/content changes.
+  - Relevant code: `web/src/components/MarkdownRenderer.tsx`,
+    `web/src/components/ChallengeModal.tsx`, and
+    `web/src/components/GameChallengeModal.tsx`.
 
 ### Completion gate
 

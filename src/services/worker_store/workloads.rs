@@ -16,6 +16,9 @@ use super::{
 
 mod placement;
 use placement::{placement_retry_delay, select_candidate, MAX_PLACEMENT_LOCK_RETRIES};
+mod quarantine;
+use quarantine::bounded_quarantine_message;
+mod row;
 
 #[derive(Clone, FromRow)]
 struct WorkerWorkloadRow {
@@ -43,63 +46,6 @@ struct WorkerWorkloadRow {
     ready_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
-}
-
-impl TryFrom<WorkerWorkloadRow> for WorkerWorkload {
-    type Error = WorkerStoreError;
-
-    fn try_from(row: WorkerWorkloadRow) -> Result<Self, Self::Error> {
-        let derived_replicas = stored_replica_count(&row.spec)?;
-        if row.reserved_cpu_millis < 0 || row.reserved_memory_bytes < 0 || row.reserved_slots != 1 {
-            return Err(WorkerStoreError::InvalidStoredData(format!(
-                "workload {} has invalid stored resource dimensions",
-                row.id
-            )));
-        }
-        let spec_hash_sha256 = row.spec_hash_sha256.try_into().map_err(|hash: Vec<u8>| {
-            WorkerStoreError::InvalidStoredData(format!(
-                "workload {} has a {}-byte specification hash",
-                row.id,
-                hash.len()
-            ))
-        })?;
-        let definition = WorkloadDefinition {
-            spec: row.spec,
-            spec_hash_sha256,
-            required_os: PlatformOs::parse(&row.required_os)?,
-            required_architecture: row.required_architecture,
-            required_runtime: row.required_runtime,
-            reservation: ResourceReservation {
-                cpu_millis: row.reserved_cpu_millis,
-                memory_bytes: row.reserved_memory_bytes,
-                slots: row.reserved_slots,
-            },
-        };
-        if derived_replicas != row.required_replicas {
-            return Err(WorkerStoreError::InvalidStoredData(format!(
-                "workload {} stores {} required replicas but its specification requires {derived_replicas}",
-                row.id, row.required_replicas
-            )));
-        }
-        Ok(Self {
-            id: row.id,
-            owner_kind: row.owner_kind,
-            owner_key: row.owner_key,
-            worker_id: row.worker_id,
-            assignment_id: row.assignment_id,
-            generation: row.generation,
-            definition,
-            required_labels: row.required_labels,
-            desired_state: WorkloadDesiredState::parse(&row.desired_state)?,
-            observed_state: WorkloadObservedState::parse(&row.observed_state)?,
-            observed_session_epoch: row.observed_session_epoch,
-            observed_message: row.observed_message,
-            observed_at: row.observed_at,
-            ready_at: row.ready_at,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-        })
-    }
 }
 
 pub(super) fn stored_replica_count(spec: &Value) -> Result<i32, WorkerStoreError> {
@@ -705,8 +651,9 @@ impl WorkerStore {
         Ok(ids)
     }
 
-    /// Delay the next periodic retry after a command was queued or the exact
-    /// workload already occupied its bounded in-flight slot. A superseded
+    /// Delay the next periodic retry after a command was queued, the exact
+    /// workload already occupied its bounded in-flight slot, or the durable
+    /// session has not reached this process's live registry yet. A superseded
     /// session or generation cannot postpone current work.
     pub async fn mark_dispatched(
         &self,
@@ -759,6 +706,47 @@ impl WorkerStore {
         .bind(workload_id)
         .bind(assignment_id)
         .bind(generation)
+        .execute(&self.pool)
+        .await
+        .map_err(database_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Fence one exact damaged assignment generation out of periodic dispatch.
+    /// The workload and its reservation remain durable; a newer generation is
+    /// automatically eligible again while this bounded diagnostic is retained.
+    pub async fn quarantine_workload(
+        &self,
+        workload_id: Uuid,
+        assignment_id: Uuid,
+        generation: i64,
+        diagnostic: &str,
+    ) -> Result<bool, WorkerStoreError> {
+        if generation < 1 {
+            return Err(WorkerStoreError::InvalidInput(
+                "quarantine generation must be positive".to_owned(),
+            ));
+        }
+        let diagnostic = bounded_quarantine_message(diagnostic);
+        let result = sqlx::query(
+            r#"UPDATE "WorkerWorkloads"
+                  SET reconcile_quarantine_generation = $3,
+                      reconcile_quarantined_at = clock_timestamp(),
+                      reconcile_quarantine_message = $4,
+                      observed_state = 'Failed',
+                      observed_message = $4,
+                      observed_at = clock_timestamp(),
+                      ready_at = NULL,
+                      updated_at = clock_timestamp()
+                WHERE id = $1
+                  AND assignment_id = $2
+                  AND generation = $3
+                  AND reconcile_quarantine_generation IS DISTINCT FROM $3"#,
+        )
+        .bind(workload_id)
+        .bind(assignment_id)
+        .bind(generation)
+        .bind(diagnostic)
         .execute(&self.pool)
         .await
         .map_err(database_error)?;
@@ -866,6 +854,8 @@ impl WorkerStore {
                                BETWEEN workload.required_replicas AND 512
                       ELSE FALSE
                   END
+                  AND workload.reconcile_quarantine_generation IS DISTINCT FROM
+                      workload.generation
                   AND workload.updated_at <= CASE
                       WHEN workload.desired_state = 'Present'
                        AND workload.observed_state = 'Failed'
@@ -909,17 +899,33 @@ impl WorkerStore {
         .fetch_all(&self.pool)
         .await
         .map_err(database_error)?;
-        let mut workloads = workloads
-            .into_iter()
-            .map(|row| {
-                let workload: WorkerWorkload = row.try_into()?;
-                Ok((workload.id, workload))
-            })
-            .collect::<Result<HashMap<_, _>, WorkerStoreError>>()?;
+        let mut parsed_workloads = HashMap::with_capacity(workloads.len());
+        for row in workloads {
+            let identity = (row.id, row.assignment_id, row.generation);
+            match WorkerWorkload::try_from(row) {
+                Ok(workload) => {
+                    parsed_workloads.insert(workload.id, workload);
+                }
+                Err(error) => {
+                    let diagnostic = format!("invalid stored workload row: {error}");
+                    if self
+                        .quarantine_workload(identity.0, identity.1, identity.2, &diagnostic)
+                        .await?
+                    {
+                        tracing::error!(
+                            workload_id = %identity.0,
+                            generation = identity.2,
+                            %error,
+                            "quarantined damaged worker workload row"
+                        );
+                    }
+                }
+            }
+        }
 
         let mut due = Vec::with_capacity(dispatches.len());
         for dispatch in dispatches {
-            if let Some(workload) = workloads.remove(&dispatch.id) {
+            if let Some(workload) = parsed_workloads.remove(&dispatch.id) {
                 due.push(DueWorkload {
                     workload,
                     session: WorkerSession {

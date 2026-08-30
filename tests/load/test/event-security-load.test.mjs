@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -31,6 +32,13 @@ test("event telemetry stress inputs and the 256 MiB bound are exact", () => {
     disabled: false,
     physicalBytes: 65536,
   });
+});
+
+test("fixed-rate telemetry gives every semantic iteration a durable batch ID", () => {
+  const source = readFileSync(new URL("../k6/event-security.js", import.meta.url), "utf8");
+  assert.match(source, /batchId:\s*batchIdForIteration\(\)/);
+  assert.match(source, /__VU/);
+  assert.match(source, /__ITER/);
 });
 
 test("resource and k6 summaries preserve fixed-rate comparison fields", () => {

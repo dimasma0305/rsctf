@@ -32,7 +32,7 @@ pub enum AppError {
     Conflict(String),
 
     #[error("too many requests")]
-    TooManyRequests,
+    TooManyRequests { retry_after: Option<u64> },
 
     #[error("{0}")]
     PayloadTooLarge(String),
@@ -83,6 +83,17 @@ impl AppError {
     pub fn unavailable(msg: impl Into<String>) -> Self {
         AppError::ServiceUnavailable(msg.into())
     }
+    pub fn too_many_requests(retry_after: u64) -> Self {
+        AppError::TooManyRequests {
+            retry_after: Some(retry_after.max(1)),
+        }
+    }
+    pub fn retryable_unavailable(msg: impl Into<String>, retry_after: u64) -> Self {
+        AppError::RetryableUnavailable {
+            title: msg.into(),
+            retry_after,
+        }
+    }
     pub fn overloaded(msg: impl Into<String>, retry_after_seconds: u64) -> Self {
         AppError::RetryableUnavailable {
             title: msg.into(),
@@ -116,7 +127,7 @@ impl AppError {
             AppError::Forbidden => StatusCode::FORBIDDEN,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
-            AppError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
+            AppError::TooManyRequests { .. } => StatusCode::TOO_MANY_REQUESTS,
             AppError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::ServiceUnavailable(_) | AppError::RetryableUnavailable { .. } => {
                 StatusCode::SERVICE_UNAVAILABLE
@@ -155,8 +166,10 @@ impl IntoResponse for AppError {
             status: body_status,
         };
         let retry_after = match &self {
-            AppError::RetryableUnavailable { retry_after, .. } => Some(*retry_after),
-            AppError::TooManyRequests => Some(1),
+            AppError::TooManyRequests {
+                retry_after: Some(retry_after),
+            }
+            | AppError::RetryableUnavailable { retry_after, .. } => Some(*retry_after),
             _ => None,
         };
         let mut response = (status, Json(body)).into_response();
@@ -177,7 +190,6 @@ mod tests {
     use axum::response::IntoResponse;
 
     use super::AppError;
-
     #[test]
     fn overload_responses_are_typed_and_retryable() {
         let response = AppError::overloaded("capacity is busy", 2).into_response();
@@ -192,9 +204,16 @@ mod tests {
     }
 
     #[test]
-    fn fail_fast_overload_includes_retry_after() {
-        let response = AppError::TooManyRequests.into_response();
+    fn retryable_overload_carries_retry_after() {
+        let response = AppError::too_many_requests(0).into_response();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "1");
+    }
+
+    #[test]
+    fn retryable_unavailable_has_typed_status_and_retry_header() {
+        let response = AppError::retryable_unavailable("busy", 3).into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "3");
     }
 }

@@ -53,6 +53,8 @@ pub struct AppState {
     pub(crate) asset_download_admission: crate::services::asset_admission::AssetDownloadAdmission,
     /// Per-replica row/byte-weighted admission for monitor XLSX snapshots/builds.
     pub(crate) monitor_export_admission: crate::services::monitor_export::MonitorExportAdmission,
+    /// Response-owned local and deployment-wide admission for bulk archives and snapshots.
+    pub(crate) bulk_export_admission: crate::services::bulk_export::BulkExportAdmission,
     /// Bounded handoff to the per-process best-effort user-activity writer.
     /// Requests only `try_send`; the worker owns all PostgreSQL interaction.
     pub(crate) user_activity: crate::middlewares::user_activity::ActivityQueue,
@@ -62,6 +64,11 @@ pub struct AppState {
     /// Silent public honeypot admission plus a bounded aggregate-writer handoff.
     /// Request and TCP tasks never await PostgreSQL for best-effort telemetry.
     pub(crate) honeypot_telemetry: crate::services::honeypot_telemetry::HoneypotTelemetry,
+    /// Short-lived, single-owner Event-VPN sensor contract snapshot.
+    pub(crate) event_sensor_snapshot: crate::services::event_security::SensorSnapshotCache,
+    /// Non-blocking bounded aggregation handoff for proxy flag-egress evidence.
+    /// One supervised writer owns all PostgreSQL interaction.
+    pub(crate) flag_egress_observations: crate::services::flag_egress_observations::Queue,
 }
 
 /// One real-time message: which client hub method to invoke, which game it
@@ -170,10 +177,13 @@ impl AppState {
             proxy_admission: crate::services::proxy_admission::ProxyAdmission::new(),
             asset_download_admission: Default::default(),
             monitor_export_admission: Default::default(),
+            bulk_export_admission: Default::default(),
             events,
             user_activity: crate::middlewares::user_activity::ActivityQueue::new(),
             feed_publication: crate::services::feed_publication::PublicationQueue::new(),
             honeypot_telemetry: crate::services::honeypot_telemetry::HoneypotTelemetry::new(),
+            event_sensor_snapshot: crate::services::event_security::SensorSnapshotCache::new(),
+            flag_egress_observations: Default::default(),
         })
     }
 

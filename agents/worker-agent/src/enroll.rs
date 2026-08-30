@@ -4,6 +4,7 @@ use std::time::Duration;
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use rsctf_worker_protocol::{EnrollmentRequest, EnrollmentResponse};
 use secrecy::{ExposeSecret, SecretString};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
 
@@ -12,8 +13,12 @@ use crate::config::{AgentConfig, EnrollArgs};
 const ENROLLMENT_PATH: &str = "/api/workers/enroll";
 const MAX_ENROLLMENT_TOKEN_BYTES: usize = 4 * 1024;
 const MAX_ENROLLMENT_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_PENDING_ENROLLMENT_BYTES: usize = 128 * 1024;
+const MAX_PENDING_CSR_BYTES: usize = 64 * 1024;
 const ENROLLMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const ENROLLMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const ENROLLMENT_RETRY_ATTEMPTS: usize = 5;
+const ENROLLMENT_RETRY_MAX: Duration = Duration::from_secs(10);
 
 pub async fn run(arguments: EnrollArgs) -> Result<(), EnrollmentError> {
     let server_url = enrollment_url(&arguments.server_url, arguments.allow_insecure_enrollment)?;
@@ -28,6 +33,7 @@ pub async fn run(arguments: EnrollArgs) -> Result<(), EnrollmentError> {
     let cert_path = arguments.state_dir.join("worker-cert.pem");
     let ca_path = arguments.state_dir.join("worker-ca.pem");
     let config_path = arguments.state_dir.join("worker.json");
+    let pending_path = arguments.state_dir.join("worker-enrollment-pending.json");
     let identity_paths = [
         key_path.as_path(),
         cert_path.as_path(),
@@ -43,22 +49,18 @@ pub async fn run(arguments: EnrollArgs) -> Result<(), EnrollmentError> {
         ));
     }
 
-    let (private_key, csr_pem) = generate_csr()?;
+    let pending = load_or_create_pending(&pending_path, arguments.unix_service_uid).await?;
     let request = EnrollmentRequest {
+        operation_id: pending.operation_id,
         token: token.expose_secret().to_owned(),
-        csr_pem,
+        csr_pem: pending.csr_pem.clone(),
     };
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(ENROLLMENT_CONNECT_TIMEOUT)
         .timeout(ENROLLMENT_REQUEST_TIMEOUT)
         .build()?;
-    let response = client
-        .post(server_url)
-        .json(&request)
-        .send()
-        .await?
-        .error_for_status()?;
+    let response = send_enrollment(&client, server_url, &request).await?;
     let response = decode_enrollment_response(response).await?;
     validate_response(&response)?;
     let config = AgentConfig {
@@ -80,17 +82,132 @@ pub async fn run(arguments: EnrollArgs) -> Result<(), EnrollmentError> {
     ];
     persist_identity(
         &key_path,
-        private_key.as_bytes(),
+        pending.private_key.as_bytes(),
         &public_files,
         arguments.unix_service_uid,
     )
     .await?;
+    tokio::fs::remove_file(&pending_path).await?;
+    sync_parent_directory(&pending_path).await?;
     tracing::info!(
         worker_id = %config.worker_id,
         config = %config_path.display(),
         "worker enrollment completed"
     );
     Ok(())
+}
+
+async fn send_enrollment(
+    client: &reqwest::Client,
+    server_url: reqwest::Url,
+    request: &EnrollmentRequest,
+) -> Result<reqwest::Response, EnrollmentError> {
+    let mut backoff = Duration::from_millis(250);
+    for attempt in 0..ENROLLMENT_RETRY_ATTEMPTS {
+        match client.post(server_url.clone()).json(request).send().await {
+            Ok(response) if response.status().is_success() => return Ok(response),
+            Ok(response) => {
+                let status = response.status();
+                let retry_after = response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .map(Duration::from_secs)
+                    .map(|delay| delay.min(ENROLLMENT_RETRY_MAX));
+                if !transient_status(status) || attempt + 1 == ENROLLMENT_RETRY_ATTEMPTS {
+                    return response.error_for_status().map_err(EnrollmentError::from);
+                }
+                tokio::time::sleep(
+                    retry_after.unwrap_or_else(|| {
+                        enrollment_jitter(request.operation_id, attempt, backoff)
+                    }),
+                )
+                .await;
+            }
+            Err(error) => {
+                if attempt + 1 == ENROLLMENT_RETRY_ATTEMPTS {
+                    return Err(error.into());
+                }
+                tokio::time::sleep(enrollment_jitter(request.operation_id, attempt, backoff)).await;
+            }
+        }
+        backoff = backoff.saturating_mul(2).min(ENROLLMENT_RETRY_MAX);
+    }
+    unreachable!("enrollment retry loop always returns on its final attempt")
+}
+
+fn transient_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
+fn enrollment_jitter(operation_id: uuid::Uuid, attempt: usize, ceiling: Duration) -> Duration {
+    let mut first = [0_u8; 8];
+    first.copy_from_slice(&operation_id.as_bytes()[..8]);
+    let mixed = u64::from_be_bytes(first) ^ (attempt as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    let ceiling_millis = u64::try_from(ceiling.as_millis()).unwrap_or(u64::MAX);
+    Duration::from_millis(mixed % ceiling_millis.saturating_add(1))
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingEnrollment {
+    operation_id: uuid::Uuid,
+    private_key: String,
+    csr_pem: String,
+}
+
+async fn load_or_create_pending(
+    path: &Path,
+    unix_service_uid: Option<u32>,
+) -> Result<PendingEnrollment, EnrollmentError> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) => {
+            if !metadata.file_type().is_file() || metadata.len() > MAX_PENDING_ENROLLMENT_BYTES as u64 {
+                return Err(EnrollmentError::InvalidResponse(
+                    "pending enrollment state is not a bounded regular file".to_string(),
+                ));
+            }
+            let mut bytes = Vec::with_capacity(
+                usize::try_from(metadata.len()).unwrap_or(MAX_PENDING_ENROLLMENT_BYTES),
+            );
+            tokio::fs::File::open(path)
+                .await?
+                .take(MAX_PENDING_ENROLLMENT_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+                .await?;
+            if bytes.len() > MAX_PENDING_ENROLLMENT_BYTES {
+                return Err(EnrollmentError::InvalidResponse(
+                    "pending enrollment state exceeds the size limit".to_string(),
+                ));
+            }
+            let pending: PendingEnrollment = serde_json::from_slice(&bytes)?;
+            if pending.operation_id.is_nil()
+                || pending.private_key.is_empty()
+                || pending.csr_pem.is_empty()
+                || pending.csr_pem.len() > MAX_PENDING_CSR_BYTES
+            {
+                return Err(EnrollmentError::InvalidResponse(
+                    "pending enrollment state is invalid".to_string(),
+                ));
+            }
+            return Ok(pending);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let (private_key, csr_pem) = generate_csr()?;
+    let pending = PendingEnrollment {
+        operation_id: uuid::Uuid::new_v4(),
+        private_key,
+        csr_pem,
+    };
+    let encoded = serde_json::to_vec(&pending)?;
+    write_new_file(path, &encoded).await?;
+    crate::security::transfer_state_file(path, unix_service_uid)?;
+    Ok(pending)
 }
 
 async fn decode_enrollment_response(
@@ -170,6 +287,19 @@ async fn persist_identity(
         }
         return Err(error);
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn sync_parent_directory(path: &Path) -> Result<(), std::io::Error> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("enrollment state path has no parent"))?;
+    tokio::fs::File::open(parent).await?.sync_all().await
+}
+
+#[cfg(not(unix))]
+async fn sync_parent_directory(_path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
@@ -290,6 +420,7 @@ async fn write_new_file(path: &Path, contents: &[u8]) -> Result<(), std::io::Err
             ))),
         };
     }
+    sync_parent_directory(path).await?;
     Ok(())
 }
 
@@ -328,6 +459,20 @@ mod tests {
         assert!(enrollment_url("http://ctf.example", false).is_err());
         assert!(enrollment_url("http://127.0.0.1:8080", true).is_ok());
         assert!(enrollment_url("https://user@ctf.example", false).is_err());
+    }
+
+    #[test]
+    fn enrollment_retry_policy_is_bounded_and_only_retries_transient_statuses() {
+        assert!(transient_status(reqwest::StatusCode::REQUEST_TIMEOUT));
+        assert!(transient_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(transient_status(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert!(!transient_status(reqwest::StatusCode::UNAUTHORIZED));
+        let operation = uuid::Uuid::new_v4();
+        for attempt in 0..ENROLLMENT_RETRY_ATTEMPTS {
+            assert!(
+                enrollment_jitter(operation, attempt, ENROLLMENT_RETRY_MAX) <= ENROLLMENT_RETRY_MAX
+            );
+        }
     }
 
     #[tokio::test]
@@ -400,6 +545,37 @@ mod tests {
         assert!(result.is_err());
         assert!(!key.exists());
         assert_eq!(tokio::fs::read(&cert).await.unwrap(), b"existing");
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ambiguous_enrollment_reuses_the_persisted_key_csr_and_operation() {
+        let directory = std::env::temp_dir().join(format!("rsctf-enroll-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir(&directory).await.unwrap();
+        let path = directory.join("worker-enrollment-pending.json");
+        let first = load_or_create_pending(&path, None).await.unwrap();
+        let second = load_or_create_pending(&path, None).await.unwrap();
+        assert_eq!(first.operation_id, second.operation_id);
+        assert_eq!(first.private_key, second.private_key);
+        assert_eq!(first.csr_pem, second.csr_pem);
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_enrollment_state_is_regular_and_byte_bounded() {
+        let directory = std::env::temp_dir().join(format!(
+            "rsctf-enroll-bounds-{}",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir(&directory).await.unwrap();
+        let path = directory.join("worker-enrollment-pending.json");
+        tokio::fs::write(&path, vec![b'x'; MAX_PENDING_ENROLLMENT_BYTES + 1])
+            .await
+            .unwrap();
+        assert!(matches!(
+            load_or_create_pending(&path, None).await,
+            Err(EnrollmentError::InvalidResponse(_))
+        ));
         tokio::fs::remove_dir_all(directory).await.unwrap();
     }
 }

@@ -255,6 +255,7 @@ The managed target reporter then fetches the current scoring fence:
 
 ```http
 GET /api/v1/koth/games/{gameId}/challenges/{challengeId}/context
+If-None-Match: "rsctf-koth-context-..."
 ```
 
 Example response after the objective schema is frozen:
@@ -277,6 +278,13 @@ Example response after the objective schema is frozen:
   "generatedAt": 1785123401000
 }
 ```
+
+The context response includes a strong `ETag`. Retain the last body and send its
+validator on the next poll; an unchanged fence returns `304 Not Modified` with
+no body. `generatedAt` is the durable context-generation timestamp, so cache
+expiry alone does not change either that field or the validator. A roster,
+capability, observer revision, target, cycle, scoring round, event window, or
+objective-schema change advances the generation and returns a new `200` body.
 
 Before the first accepted snapshot, `objectiveIds` is empty and
 `objectiveSchemaHash` is `null`. The reporter supplies the final schema in that
@@ -371,9 +379,13 @@ HMAC-SHA256(
 ```
 
 The timestamp is Unix milliseconds and must be within five minutes of the
-server. Accepted signatures are replay-protected for ten minutes. Within one
-active context, a newly accepted timestamp must be greater than the stored
-timestamp.
+server. RSCTF derives a ten-minute idempotency identity from the authenticated
+reporter scope, opaque context, and canonical snapshot. Wave order and team
+order do not affect that identity. If a response is lost, signing the same
+semantic body with a fresh timestamp returns the original `200` response,
+including its original `acceptedAt`, without replacing the snapshot. Within one
+active context, a different newly accepted snapshot must have a timestamp
+greater than the stored timestamp.
 
 Example success:
 
@@ -401,9 +413,22 @@ identity.
 | `200` | Snapshot staged for the checker; this request itself awards no score. |
 | `400` | JSON, evidence bounds, objective IDs/order, context, or hash shape is invalid. |
 | `401` | Credential, timestamp window, or signature is invalid. These cases intentionally share one response. |
-| `409` | Context changed, snapshot is late/older, a finalized wave changed, replay was detected, or the objective schema differs from the frozen scheme. |
+| `409` | Context changed, snapshot is late/older, a finalized wave changed, or the objective schema differs from the frozen scheme. |
 | `413` | Signed body exceeds 512 KiB. |
-| `429` | Source exceeded the API rate limit; back off. |
+| `429` | Source or referee work admission is full; honor `Retry-After`. |
+| `503` | Identical or distinct referee work is still in flight, or its deadline elapsed; honor `Retry-After`. |
+
+Retryable referee errors add a stable camelCase `code` field to the usual
+`{title,status}` error body and include `Retry-After`. Authentication, schema,
+and evidence-validation failures are permanent for that exact request; do not
+blindly retry them. In particular, refresh the context only for a `409` whose
+structured code is `stale_context`; other `409` responses are permanent.
+
+RSCTF emits structured operational events for every retryable referee response
+(`referee_retry_code`, `http_status`, and `retry_after_seconds`) and for context
+fills and accepted observations (scope, bounded byte/row counts, and elapsed
+milliseconds). These fields provide log-derived admission, latency, and retry
+metrics without changing the public wire contract.
 
 ## Minimal signing example
 

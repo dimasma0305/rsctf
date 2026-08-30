@@ -14,6 +14,7 @@ fn bounds_are_deliberately_small_and_gameplay_independent() {
 #[test]
 fn invalid_bucket_and_raw_values_are_rejected_before_database_work() {
     let batch = TelemetryBatch {
+        batch_id: Uuid::new_v4(),
         game_id: 1,
         flows: vec![FlowBucketInput {
             user_id: Uuid::nil(),

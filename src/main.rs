@@ -582,6 +582,13 @@ fn start_background_services(
     use rsctf::services::cron::{self, RoundSchedulerScope};
 
     let mut required = Vec::new();
+    // Every HTTP-serving process owns a process-local observation queue. Its
+    // supervised writer must therefore run with the same state on every role;
+    // idle roles consume no database work.
+    required.push(RequiredTask::Unit(
+        "flag-egress observation writer",
+        rsctf::services::flag_egress_observations::start_writer(state, shutdown.clone()),
+    ));
     if owns_feed_reconciliation(role) {
         required.push(RequiredTask::Unit(
             "game-event feed cursor reconciler",
@@ -594,6 +601,13 @@ fn start_background_services(
         required.push(RequiredTask::Unit(
             "flag-egress feed cursor reconciler",
             rsctf::services::flag_egress_feed::start_reconciler(state.clone(), shutdown.clone()),
+        ));
+        required.push(RequiredTask::Unit(
+            "solve-receipt lifecycle reconciler",
+            rsctf::services::event_security::start_receipt_maintenance(
+                state.clone(),
+                shutdown.clone(),
+            ),
         ));
     }
     if owns_suspicion_reconciliation(role) {
