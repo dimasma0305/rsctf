@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const api = readFileSync('src/Api.ts', 'utf8')
+const adOps = readFileSync('src/pages/admin/games/[id]/AdOps.tsx', 'utf8')
 const newsPage = readFileSync('src/pages/posts/Index.tsx', 'utf8')
 
 const contractSection = (start: string, end: string) => {
@@ -25,4 +26,20 @@ test('legacy posts preserve the complete raw-array API while bounded consumers u
   assert.match(page, /useSWR<ArrayResponseOfPostInfoModel, any>/)
   assert.match(newsPage, /useInfoGetPostsPage\(/)
   assert.doesNotMatch(newsPage, /useInfoGetPosts\(/)
+})
+
+test('A&D container reconcile supplies a retained idempotency key', () => {
+  const ensure = contractSection('editAdEnsureContainers: (', 'editAdToggleScoringPause: (')
+
+  assert.match(ensure, /operationIdOrParams\?: string \| RequestParams/)
+  assert.match(ensure, /\.\.\.requestParams\.headers/)
+  assert.match(ensure, /"Idempotency-Key": operationId/)
+  assert.match(adOps, /new RetryableOperationKey\(undefined, `rsctf:ad-ensure-containers:\$\{numId\}`\)/)
+  assert.match(adOps, /const operationId = operationOwner\.claim\(\)/)
+  assert.match(adOps, /editAdEnsureContainers\(numId, operationId\)/)
+  assert.match(
+    adOps,
+    /await api\.edit\.editAdEnsureContainers[\s\S]*operationOwner\.complete\(operationId\)/
+  )
+  assert.match(adOps, /httpErrorStatus\(e\) === 409\) operationOwner\.complete\(operationId\)/)
 })

@@ -56,12 +56,14 @@ import {
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useEffect, useMemo, useState } from 'react'
+import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
 import { KothOpsPanel } from '@Components/admin/KothOpsPanel'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { httpErrorStatus } from '@Utils/HttpError'
+import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
 import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
@@ -866,6 +868,13 @@ const AdOps: FC = () => {
   const modals = useModals()
   const [busy, setBusy] = useState(false)
   const [busyHill, setBusyHill] = useState<number | null>(null)
+  const ensureContainersKey = useRef<{ gameId: number; owner: RetryableOperationKey } | null>(null)
+  if (ensureContainersKey.current?.gameId !== numId) {
+    ensureContainersKey.current = {
+      gameId: numId,
+      owner: new RetryableOperationKey(undefined, `rsctf:ad-ensure-containers:${numId}`),
+    }
+  }
   // Which side of the console is showing. A&D vs KotH challenges are disjoint
   // sets in a game; the switch only appears when both exist (see showViewSwitch).
   const [view, setView] = useState<'ad' | 'koth'>('ad')
@@ -947,9 +956,12 @@ const AdOps: FC = () => {
   }
 
   const ensureContainers = async () => {
+    const operationOwner = ensureContainersKey.current!.owner
+    const operationId = operationOwner.claim()
     setBusy(true)
     try {
-      await api.edit.editAdEnsureContainers(numId)
+      await api.edit.editAdEnsureContainers(numId, operationId)
+      operationOwner.complete(operationId)
       showNotification({
         color: 'teal',
         icon: <Icon path={mdiCheck} size={1} />,
@@ -961,6 +973,7 @@ const AdOps: FC = () => {
         mutateKoth()
       }, 3_000)
     } catch (e) {
+      if (httpErrorStatus(e) === 409) operationOwner.complete(operationId)
       showErrorMsg(e, t)
     } finally {
       setBusy(false)

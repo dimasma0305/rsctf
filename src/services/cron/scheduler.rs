@@ -246,7 +246,7 @@ async fn advance_game(
     // every service identity while holding the game lock.
     let game = load_game_model(state, schedule.id).await?;
     let repair_failures = match crate::controllers::edit::ensure_ad_containers(
-        state, &game, None, false, false,
+        state, &game, None, false, false, None,
     )
     .await
     {

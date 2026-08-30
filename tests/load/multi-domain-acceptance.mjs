@@ -482,6 +482,7 @@ async function prepareFixture() {
   const ensured = await A.api('POST', `/api/edit/games/${state.gameId}/ad/EnsureContainers`, {
     jwt: A.adminJwt(),
     ip: '10.251.8.1',
+    headers: { 'idempotency-key': randomUUID() },
     timeoutMs: 180_000,
   });
   requireCondition(ensured.status === 200, `multi-domain provisioning returned ${ensured.status}: ${ensured.text?.slice(0, 300)}`);

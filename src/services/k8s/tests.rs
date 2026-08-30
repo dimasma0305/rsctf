@@ -293,6 +293,29 @@ async fn emit_managed_koth_callback_policy_for_live_test() {
         let captured_request = Arc::clone(&captured_request);
         let policy_started = Arc::clone(&captured_policy_started);
         async move {
+            if request.method() == Method::GET {
+                let path = request.uri().path();
+                let (api_version, kind) = if path.ends_with("/pods") {
+                    ("v1", "PodList")
+                } else if path.ends_with("/services") {
+                    ("v1", "ServiceList")
+                } else {
+                    ("networking.k8s.io/v1", "NetworkPolicyList")
+                };
+                let body = serde_json::json!({
+                    "apiVersion": api_version,
+                    "kind": kind,
+                    "metadata": {},
+                    "items": []
+                });
+                return Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(200)
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                        .unwrap(),
+                );
+            }
             assert_eq!(request.method(), Method::POST);
             assert_eq!(
                 request.uri().path(),
@@ -353,6 +376,8 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
     use kube::client::Body;
     use tokio::sync::Notify;
     use tower::service_fn;
+
+    let _environment_lock = KUBERNETES_ENV_TEST_LOCK.lock().await;
 
     struct RestoreEnv(Vec<(&'static str, Option<OsString>)>);
 
@@ -449,13 +474,8 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
         revision(&original_route),
         "2233445566778899aabbccddeeff0011"
     );
-    let resource_name = |operation: &str| {
-        format!(
-            "{}-{}",
-            sanitize_image(&image),
-            &crate::utils::codec::sha256_str(operation)[..16]
-        )
-    };
+    let scope = orphans::workload_scope("rsctf-challenges", None);
+    let resource_name = |operation: &str| workload_name_and_uid(&image, &scope, Some(operation)).0;
     let original_name = resource_name(&original_operation);
     let changed_name = resource_name(&changed_operation);
     let restored_name = resource_name(&restored_operation);
@@ -475,6 +495,28 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
         async move {
             let method = request.method().clone();
             let path = request.uri().path().to_string();
+            if method == Method::GET {
+                let (api_version, kind) = if path.ends_with("/pods") {
+                    ("v1", "PodList")
+                } else if path.ends_with("/services") {
+                    ("v1", "ServiceList")
+                } else {
+                    ("networking.k8s.io/v1", "NetworkPolicyList")
+                };
+                let list = serde_json::json!({
+                    "apiVersion": api_version,
+                    "kind": kind,
+                    "metadata": {},
+                    "items": []
+                });
+                return Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, "application/json")
+                        .body(Body::from(serde_json::to_vec(&list).unwrap()))
+                        .unwrap(),
+                );
+            }
             let body = request.into_body().collect_bytes().await.unwrap();
             let mut value: serde_json::Value = serde_json::from_slice(&body).unwrap();
             let name = value["metadata"]["name"].as_str().unwrap().to_string();
@@ -510,7 +552,7 @@ async fn changed_routing_identity_does_not_adopt_a_kubernetes_crash_orphan() {
     let manager = KubernetesContainerManager {
         client: Client::new(service, "rsctf-challenges"),
         namespace: "rsctf-challenges".to_string(),
-        scope: orphans::workload_scope("rsctf-challenges", None),
+        scope,
         public_entry: Some("192.0.2.10".to_string()),
     };
 

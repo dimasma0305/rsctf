@@ -382,6 +382,9 @@ fn launch_fingerprint_rejects_stale_runtime_configuration() {
     changed.allow_egress = true;
     assert_ne!(launch_spec_fingerprint(&changed), expected);
     changed = spec.clone();
+    changed.control_plane_callback_ports.push(8080);
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
+    changed = spec.clone();
     changed.network_mode = crate::utils::enums::NetworkMode::Isolated;
     assert_ne!(launch_spec_fingerprint(&changed), expected);
     changed = spec.clone();
@@ -610,6 +613,18 @@ fn concurrent_adopter_start_never_authorizes_creator_cleanup() {
         FailedStartAction::RemoveOwned,
         "a unique non-adoptable failed create remains safe to clean up"
     );
+
+    for terminal in [
+        ContainerStateStatusEnum::EXITED,
+        ContainerStateStatusEnum::DEAD,
+    ] {
+        let inspected = inspected_container_state(terminal);
+        assert_eq!(
+            failed_start_action(true, Some(&inspected)),
+            FailedStartAction::RemoveOwned,
+            "a terminal stable-operation holder must be removed before rotating the key"
+        );
+    }
 
     let paused = inspected_container_state(ContainerStateStatusEnum::PAUSED);
     assert_eq!(
@@ -866,7 +881,14 @@ fn recovery_operation_names_are_stable_and_scoped() {
         &env,
         next_operation.as_deref(),
     );
+    let changed_image = container_name(
+        "another.registry/renamed/image:latest",
+        &[("RSCTF_TEAM_ID".to_string(), "99".to_string())],
+        first_operation.as_deref(),
+    );
     assert_eq!(first, retry);
+    assert_eq!(first, changed_image);
+    assert!(first.starts_with("rsctf-operation-"));
     assert_ne!(first, foreign);
     assert_ne!(first, next);
 }

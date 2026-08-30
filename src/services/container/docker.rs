@@ -13,6 +13,14 @@ use super::{
 };
 use crate::utils::error::{AppError, AppResult};
 
+mod retry;
+pub(crate) use retry::launch_spec_fingerprint;
+#[cfg(test)]
+pub(super) use retry::launch_spec_matches;
+pub(super) use retry::{
+    adopt_operation_container, discover_operation_container, failed_start_action, FailedStartAction,
+};
+
 pub(super) const LAUNCH_SPEC_LABEL: &str = "rsctf.launch-spec";
 pub(super) const STORAGE_QUOTA_LABEL: &str = "rsctf.storage-quota";
 const STORAGE_QUOTA_ENFORCED: &str = "enforced";
@@ -133,35 +141,6 @@ pub(super) fn restricted_profile_matches(
                     .get(RESTRICTED_TMPFS_PATH)
                     .is_some_and(|options| options == RESTRICTED_TMPFS_OPTIONS)
         })
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DockerLaunchSpec<'a> {
-    revision: u8,
-    game_kind: GameKind,
-    image: &'a str,
-    memory_limit: i32,
-    cpu_count: i32,
-    storage_limit: i32,
-    expose_port: i32,
-    #[serde(skip_serializing_if = "is_true")]
-    publish_port: bool,
-    #[serde(skip_serializing_if = "is_false")]
-    proxy_only: bool,
-    env: &'a [(String, String)],
-    flag: Option<&'a str>,
-    ad_network: Option<&'a str>,
-    allow_egress: bool,
-    network_mode: crate::utils::enums::NetworkMode,
-}
-
-fn is_true(value: &bool) -> bool {
-    *value
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 pub(super) const PROXY_BIND_REQUIRED: &str =
@@ -307,52 +286,6 @@ pub(super) fn storage_quota_policy_matches(
         .map_or(enforced, |actual| actual == expected)
 }
 
-/// Hash every launch-affecting caller input into a non-secret identity label.
-/// Operation and installation identities have their own labels and deliberately
-/// do not affect whether a crash retry represents the same workload.
-pub(super) fn launch_spec_fingerprint(spec: &ContainerSpec) -> String {
-    let canonical = DockerLaunchSpec {
-        // v4 adds writable-layer and author-selected network isolation. Older
-        // workloads must never be adopted because they lack those boundaries.
-        revision: 4,
-        game_kind: spec.game_kind,
-        image: &spec.image,
-        memory_limit: spec.memory_limit,
-        cpu_count: spec.cpu_count,
-        storage_limit: spec.storage_limit,
-        expose_port: spec.expose_port,
-        publish_port: spec.publish_port,
-        proxy_only: spec.proxy_only,
-        env: &spec.env,
-        flag: spec.flag.as_deref(),
-        ad_network: spec.ad_network.as_deref(),
-        allow_egress: spec.allow_egress,
-        network_mode: spec.network_mode,
-    };
-    let bytes = serde_json::to_vec(&canonical)
-        .expect("the fixed Docker launch identity is always JSON serializable");
-    crate::utils::codec::sha256_hex(&bytes)
-}
-
-pub(super) fn launch_spec_matches(
-    info: &ContainerInspectResponse,
-    expected_fingerprint: &str,
-) -> bool {
-    info.config
-        .as_ref()
-        .and_then(|config| config.labels.as_ref())
-        .and_then(|labels| labels.get(LAUNCH_SPEC_LABEL))
-        .map(String::as_str)
-        == Some(expected_fingerprint)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum FailedStartAction {
-    TreatAsStarted,
-    RetainForRetry,
-    RemoveOwned,
-}
-
 fn container_is_running(info: &ContainerInspectResponse) -> bool {
     info.state.as_ref().and_then(|state| state.status) == Some(ContainerStateStatusEnum::RUNNING)
 }
@@ -482,27 +415,6 @@ impl DockerContainerManager {
     }
 }
 
-/// Reconcile a failed Docker start without racing an idempotent adopter. A
-/// stable operation is never removed here: another replica may have inspected
-/// the CREATED container and be starting it concurrently.
-pub(super) fn failed_start_action(
-    stable_operation: bool,
-    inspected: Option<&ContainerInspectResponse>,
-) -> FailedStartAction {
-    let status = inspected
-        .and_then(|info| info.state.as_ref())
-        .and_then(|state| state.status);
-    match status {
-        Some(ContainerStateStatusEnum::RUNNING) => FailedStartAction::TreatAsStarted,
-        Some(
-            ContainerStateStatusEnum::CREATED
-            | ContainerStateStatusEnum::EXITED
-            | ContainerStateStatusEnum::DEAD,
-        ) if !stable_operation => FailedStartAction::RemoveOwned,
-        _ => FailedStartAction::RetainForRetry,
-    }
-}
-
 pub(super) fn docker_liveness(state: Option<ContainerStateStatusEnum>) -> ContainerLiveness {
     match state {
         Some(ContainerStateStatusEnum::RUNNING) => ContainerLiveness::Running,
@@ -611,21 +523,45 @@ impl DockerContainerManager {
                 "failed to start container: {error}"
             ))),
             FailedStartAction::RemoveOwned => {
-                if let Some(canonical_id) = inspected.as_ref().and_then(|info| info.id.as_deref()) {
-                    let _ = docker
-                        .remove_container(
-                            canonical_id,
-                            Some(RemoveContainerOptions {
-                                v: false,
-                                force: true,
-                                link: false,
-                            }),
-                        )
-                        .await;
+                let canonical_id = inspected
+                    .as_ref()
+                    .and_then(|info| info.id.as_deref())
+                    .ok_or_else(|| {
+                        AppError::internal(format!(
+                            "failed to start container and cleanup identity was unavailable: {error}"
+                        ))
+                    })?;
+                match docker
+                    .remove_container(
+                        canonical_id,
+                        Some(RemoveContainerOptions {
+                            v: false,
+                            force: true,
+                            link: false,
+                        }),
+                    )
+                    .await
+                {
+                    Ok(())
+                    | Err(bollard::errors::Error::DockerResponseServerError {
+                        status_code: 404,
+                        ..
+                    }) => {}
+                    Err(cleanup_error) => {
+                        return Err(AppError::internal(format!(
+                            "failed to start container ({error}) and cleanup failed: {cleanup_error}"
+                        )));
+                    }
                 }
-                Err(AppError::internal(format!(
-                    "failed to start container: {error}"
-                )))
+                if stable_operation {
+                    Err(AppError::conflict(
+                        "Docker retry reached a terminal container; retry with a new operation identity",
+                    ))
+                } else {
+                    Err(AppError::internal(format!(
+                        "failed to start container: {error}"
+                    )))
+                }
             }
         }
     }

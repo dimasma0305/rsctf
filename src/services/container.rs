@@ -62,14 +62,17 @@ mod logging;
 mod naming;
 mod policy;
 #[cfg(test)]
+mod real_docker_tests;
+#[cfg(test)]
 mod tests;
+pub(crate) use self::docker::launch_spec_fingerprint;
 use self::docker::{
-    append_snapshot_chunk, docker_network_mode, image_requests_restricted_profile, is_conflict,
-    is_not_found, launch_spec_fingerprint, launch_spec_matches, restricted_profile_matches,
+    adopt_operation_container, append_snapshot_chunk, discover_operation_container,
+    docker_network_mode, image_requests_restricted_profile, is_conflict, is_not_found,
     restricted_tmpfs_mounts, snapshot_export_slots, stamp_restricted_profile,
-    stamp_storage_quota_policy, storage_quota_policy_matches, validate_docker_container_spec,
-    writable_layer_quota_supported, writable_layer_storage_option, LAUNCH_SPEC_LABEL,
-    MAX_SNAPSHOT_EXPORT_BYTES, SNAPSHOT_EXPORT_ADMISSION_TIMEOUT, SNAPSHOT_EXPORT_MAX_DURATION,
+    stamp_storage_quota_policy, validate_docker_container_spec, writable_layer_quota_supported,
+    writable_layer_storage_option, LAUNCH_SPEC_LABEL, MAX_SNAPSHOT_EXPORT_BYTES,
+    SNAPSHOT_EXPORT_ADMISSION_TIMEOUT, SNAPSHOT_EXPORT_MAX_DURATION,
 };
 pub use backend::{
     should_use_platform_proxy, ContainerBackendKind, ContainerExecAdmission, ContainerExecError,
@@ -682,76 +685,71 @@ impl ContainerManager for DockerContainerManager {
         // an ownership proof it may be another user's live challenge container.
         let scoped_operation = scoped_operation_id(&self.scope, spec.operation_id.as_deref());
         let mut name = container_name(&spec.image, &spec.env, scoped_operation.as_deref());
-        let (id, adopted) = match docker
-            .create_container(
-                Some(CreateContainerOptions::<String> {
-                    name: name.clone(),
-                    ..Default::default()
-                }),
-                config.clone(),
-            )
-            .await
-        {
-            Ok(created) => (created.id, false),
-            Err(e) if is_conflict(&e) && spec.operation_id.is_some() => {
-                let existing = docker
-                    .inspect_container(&name, None)
-                    .await
-                    .map_err(|inspect| {
-                        AppError::internal(format!(
-                        "container operation {name} conflicted but could not be adopted: {inspect}"
-                    ))
-                    })?;
-                let expected_operation = spec.operation_id.as_deref();
-                let actual_operation = existing
-                    .config
-                    .as_ref()
-                    .and_then(|config| config.labels.as_ref())
-                    .and_then(|labels| labels.get(OPERATION_LABEL))
-                    .map(String::as_str);
-                let actual_image = existing
-                    .config
-                    .as_ref()
-                    .and_then(|config| config.image.as_deref());
-                let scope_matches = existing
-                    .config
-                    .as_ref()
-                    .and_then(|config| config.labels.as_ref())
-                    .is_some_and(|labels| labels_match_scope(Some(labels), &self.scope));
-                if !scope_matches
-                    || actual_operation != expected_operation
-                    || actual_image != Some(spec.image.as_str())
-                    || !launch_spec_matches(&existing, &launch_fingerprint)
-                    || !restricted_profile_matches(&existing, restricted_profile)
-                    || !storage_quota_policy_matches(&existing, storage_quota_enforced)
-                {
-                    return Err(AppError::conflict(
-                        "container operation identity is owned by a different workload",
-                    ));
-                }
-                let id = existing.id.ok_or_else(|| {
-                    AppError::internal("adopted container has no backend identity")
-                })?;
-                (id, true)
-            }
-            Err(e) if is_conflict(&e) => {
-                name = container_name(&spec.image, &spec.env, None);
-                let created = docker
-                    .create_container(
-                        Some(CreateContainerOptions::<String> {
-                            name,
-                            ..Default::default()
-                        }),
-                        config,
+        let discovered = discover_operation_container(
+            docker,
+            &self.scope,
+            &spec,
+            &launch_fingerprint,
+            restricted_profile,
+            storage_quota_enforced,
+        )
+        .await?;
+        let (id, adopted) = if let Some(id) = discovered {
+            (id, true)
+        } else {
+            match docker
+                .create_container(
+                    Some(CreateContainerOptions::<String> {
+                        name: name.clone(),
+                        ..Default::default()
+                    }),
+                    config.clone(),
+                )
+                .await
+            {
+                Ok(created) => (created.id, false),
+                Err(e) if is_conflict(&e) && spec.operation_id.is_some() => {
+                    let existing = docker
+                        .inspect_container(&name, None)
+                        .await
+                        .map_err(|inspect| {
+                            AppError::internal(format!(
+                                "container operation {name} conflicted but could not be adopted: {inspect}"
+                            ))
+                        })?;
+                    let id = adopt_operation_container(
+                        docker,
+                        &existing,
+                        &self.scope,
+                        &spec,
+                        &launch_fingerprint,
+                        restricted_profile,
+                        storage_quota_enforced,
                     )
-                    .await
-                    .map_err(|e| AppError::internal(format!("failed to create container: {e}")))?;
-                (created.id, false)
-            }
-            Err(e) => {
-                return Err(AppError::internal(format!(
-                    "failed to create container: {e}"
-                )));
+                    .await?;
+                    (id, true)
+                }
+                Err(e) if is_conflict(&e) => {
+                    name = container_name(&spec.image, &spec.env, None);
+                    let created = docker
+                        .create_container(
+                            Some(CreateContainerOptions::<String> {
+                                name,
+                                ..Default::default()
+                            }),
+                            config,
+                        )
+                        .await
+                        .map_err(|e| {
+                            AppError::internal(format!("failed to create container: {e}"))
+                        })?;
+                    (created.id, false)
+                }
+                Err(e) => {
+                    return Err(AppError::internal(format!(
+                        "failed to create container: {e}"
+                    )));
+                }
             }
         };
         // 6. Start, reconciling an adopter that won the concurrent start race.
