@@ -200,6 +200,10 @@ struct ReconnectPolicy {
 
 impl ReconnectPolicy {
     fn delay(&mut self, failure: &ConnectFailure) -> Option<Duration> {
+        self.delay_with_sample(failure, reconnect_entropy())
+    }
+
+    fn delay_with_sample(&mut self, failure: &ConnectFailure, sample: u64) -> Option<Duration> {
         if failure.terminal {
             return None;
         }
@@ -211,9 +215,13 @@ impl ReconnectPolicy {
         } else {
             self.attempt = self.attempt.saturating_add(1);
         }
-        failure
-            .retry_after
-            .or_else(|| Some(jittered_reconnect_delay(self.attempt, reconnect_entropy())))
+        let jitter = jittered_reconnect_delay(self.attempt, sample);
+        Some(
+            failure
+                .retry_after
+                .map_or(jitter, |minimum| minimum.saturating_add(jitter))
+                .min(MAXIMUM_SERVER_RETRY_AFTER),
+        )
     }
 }
 
@@ -792,9 +800,12 @@ mod websocket_stream_tests {
             Some(60),
         ));
         assert!(!failure.terminal);
-        assert_eq!(
-            ReconnectPolicy::default().delay(&failure),
-            Some(Duration::from_secs(60))
+        let delay = ReconnectPolicy::default()
+            .delay_with_sample(&failure, 0)
+            .unwrap();
+        assert!(
+            delay >= Duration::from_secs(60) + MINIMUM_RECONNECT_DELAY
+                && delay <= Duration::from_secs(61)
         );
 
         let capped = handshake_failure(rejection(
@@ -802,10 +813,29 @@ mod websocket_stream_tests {
             "retry-at-event-start",
             Some(u64::MAX),
         ));
-        assert_eq!(
-            ReconnectPolicy::default().delay(&capped),
-            Some(MAXIMUM_SERVER_RETRY_AFTER)
-        );
+        let capped_delay = ReconnectPolicy::default().delay_with_sample(&capped, 0);
+        assert_eq!(capped_delay, Some(MAXIMUM_SERVER_RETRY_AFTER));
+    }
+
+    #[test]
+    fn retry_after_cohorts_keep_a_jittered_spread() {
+        let failure = handshake_failure(rejection(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "transient-non-network-replica",
+            Some(30),
+        ));
+        let samples = (0..256)
+            .map(|sample| {
+                ReconnectPolicy::default()
+                    .delay_with_sample(&failure, sample * 7919)
+                    .unwrap()
+            })
+            .collect::<std::collections::HashSet<_>>();
+        assert!(samples.len() > 100, "Retry-After cohort jitter collapsed");
+        assert!(samples.iter().all(|delay| {
+            *delay >= Duration::from_secs(30) + MINIMUM_RECONNECT_DELAY
+                && *delay <= Duration::from_secs(31)
+        }));
     }
 
     #[test]

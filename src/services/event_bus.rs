@@ -8,6 +8,7 @@
 //! outage may be dropped.
 
 use std::collections::{HashSet, VecDeque};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,7 +19,14 @@ use uuid::Uuid;
 
 use crate::app_state::HubEvent;
 
-const LOCAL_QUEUE_CAPACITY: usize = 512;
+#[path = "event_bus/local.rs"]
+mod local;
+
+pub use local::EventReceiver;
+use local::LocalFanout;
+#[cfg(test)]
+use local::LOCAL_QUEUE_CAPACITY;
+
 const OUTBOUND_QUEUE_CAPACITY: usize = 512;
 const DEDUP_CAPACITY: usize = 4_096;
 const MAX_WIRE_BYTES: usize = 256 * 1024;
@@ -26,16 +34,45 @@ const REDIS_IO_TIMEOUT: Duration = Duration::from_millis(750);
 const REDIS_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const REDIS_RETRY_MIN: Duration = Duration::from_secs(1);
 const REDIS_RETRY_MAX: Duration = Duration::from_secs(10);
+const RESYNC_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const RESYNC_TARGET: &str = "InternalFeedResyncRequired";
+const KNOWN_TARGETS: &[&str] = &[
+    "ReceivedAttack",
+    "ReceivedGameEvent",
+    "ReceivedGameNotice",
+    "ReceivedGameNoticeChanged",
+    "ReceivedFlagEgress",
+    "ReceivedLog",
+    "ReceivedSubmissions",
+    "InternalByocRevokeParticipation",
+    "InternalByocRevokeTeam",
+    "InternalByocRevokeChallenge",
+    "InternalTrafficCaptureReconcile",
+    RESYNC_TARGET,
+];
 
 /// Default channel for installations that use Redis only for one RSCTF cluster.
 pub const DEFAULT_REDIS_CHANNEL: &str = "rsctf:hub-events:v1";
+
+/// Fixed-cardinality process-local visibility for fanout loss and retained
+/// target/game shards. No label or map key is exposed, so untrusted game IDs
+/// cannot grow the metrics response.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EventBusOperationalMetrics {
+    pub active_target_queues: usize,
+    pub lagged_receivers: u64,
+    pub distributed_drops: u64,
+    pub distributed_loss_generation: u64,
+    pub subscriber_gaps: u64,
+}
 
 /// Cloneable hub-event handle. Publishing is synchronous and non-blocking: the
 /// event reaches this process immediately and is offered to a bounded Redis
 /// publisher queue when distributed fanout is enabled.
 #[derive(Clone)]
 pub struct EventBus {
-    local: broadcast::Sender<HubEvent>,
+    local: Arc<LocalFanout>,
     distributed: Option<DistributedPublisher>,
 }
 
@@ -94,24 +131,24 @@ impl WireEvent {
             payload: self.payload,
         })
     }
+
+    fn resync(origin: Uuid, generation: u64) -> Self {
+        Self {
+            version: 1,
+            id: Uuid::now_v7(),
+            origin,
+            target: RESYNC_TARGET.to_owned(),
+            game_id: None,
+            payload: serde_json::json!({ "generation": generation }).to_string(),
+        }
+    }
 }
 
 /// Redis is not an authorization boundary. Still, accept only methods the
 /// server itself can publish, both to reject malformed messages and to retain
 /// the allocation-free `&'static str` target used by every WebSocket hot path.
 fn known_target(target: &str) -> Option<&'static str> {
-    match target {
-        "ReceivedAttack" => Some("ReceivedAttack"),
-        "ReceivedGameEvent" => Some("ReceivedGameEvent"),
-        "ReceivedGameNotice" => Some("ReceivedGameNotice"),
-        "ReceivedFlagEgress" => Some("ReceivedFlagEgress"),
-        "ReceivedLog" => Some("ReceivedLog"),
-        "ReceivedSubmissions" => Some("ReceivedSubmissions"),
-        "InternalByocRevokeParticipation" => Some("InternalByocRevokeParticipation"),
-        "InternalByocRevokeChallenge" => Some("InternalByocRevokeChallenge"),
-        "InternalTrafficCaptureReconcile" => Some("InternalTrafficCaptureReconcile"),
-        _ => None,
-    }
+    KNOWN_TARGETS.iter().copied().find(|known| *known == target)
 }
 
 struct InboundDedup {
@@ -149,9 +186,8 @@ impl InboundDedup {
 impl EventBus {
     /// Process-local event delivery, matching the historical single-node behavior.
     pub fn local() -> Self {
-        let (local, _) = broadcast::channel(LOCAL_QUEUE_CAPACITY);
         Self {
-            local,
+            local: Arc::new(LocalFanout::new()),
             distributed: None,
         }
     }
@@ -169,12 +205,18 @@ impl EventBus {
         tokio::runtime::Handle::try_current()
             .map_err(|_| anyhow::anyhow!("distributed event bus requires a Tokio runtime"))?;
         let client = redis::Client::open(redis_url)?;
-        let (local, _) = broadcast::channel(LOCAL_QUEUE_CAPACITY);
+        let local = Arc::new(LocalFanout::new());
         let (outbound, outbound_rx) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
         let origin = Uuid::new_v4();
         let channel = channel.to_string();
 
-        let publisher = tokio::spawn(run_publisher(client.clone(), channel.clone(), outbound_rx));
+        let publisher = tokio::spawn(run_publisher(
+            client.clone(),
+            channel.clone(),
+            origin,
+            outbound_rx,
+            local.clone(),
+        ));
         let subscriber = tokio::spawn(run_subscriber(client, channel, origin, local.clone()));
         let tasks = Arc::new(TaskSet {
             handles: vec![publisher.abort_handle(), subscriber.abort_handle()],
@@ -191,7 +233,30 @@ impl EventBus {
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<HubEvent> {
-        self.local.subscribe()
+        self.local.all.subscribe()
+    }
+
+    /// Compatibility subscription for internal consumers that intentionally
+    /// need every known target for one game. Public hubs should use the exact
+    /// target-scoped form below.
+    pub fn subscribe_game(&self, game_id: i32) -> EventReceiver {
+        self.subscribe_game_targets(game_id, KNOWN_TARGETS)
+    }
+
+    pub fn subscribe_game_targets(
+        &self,
+        game_id: i32,
+        targets: &'static [&'static str],
+    ) -> EventReceiver {
+        self.local.subscribe(Some(game_id), targets)
+    }
+
+    pub fn subscribe_global(&self) -> EventReceiver {
+        self.subscribe_global_targets(KNOWN_TARGETS)
+    }
+
+    pub fn subscribe_global_targets(&self, targets: &'static [&'static str]) -> EventReceiver {
+        self.local.subscribe(None, targets)
     }
 
     /// Publish locally, then offer the same event to other replicas. A full or
@@ -202,16 +267,29 @@ impl EventBus {
             .distributed
             .as_ref()
             .map(|distributed| WireEvent::from_hub(distributed.origin, &event));
-        let _ = self.local.send(event);
+        self.local.publish(event);
         if let (Some(distributed), Some(wire)) = (&self.distributed, wire) {
             if distributed.outbound.try_send(wire).is_err() {
-                tracing::debug!("dropping remote hub event: publisher queue unavailable");
+                self.local.record_distributed_drop("outbound_queue_full");
             }
         }
     }
 
     pub fn is_distributed(&self) -> bool {
         self.distributed.is_some()
+    }
+
+    pub(crate) fn operational_metrics(&self) -> EventBusOperationalMetrics {
+        EventBusOperationalMetrics {
+            active_target_queues: self.local.active_queue_count(),
+            lagged_receivers: self.local.lagged_receivers.load(Ordering::Relaxed),
+            distributed_drops: self.local.distributed_drops.load(Ordering::Relaxed),
+            distributed_loss_generation: self
+                .local
+                .distributed_loss_generation
+                .load(Ordering::Relaxed),
+            subscriber_gaps: self.local.subscriber_gaps.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -224,55 +302,100 @@ impl Default for EventBus {
 async fn run_publisher(
     client: redis::Client,
     channel: String,
+    origin: Uuid,
     mut outbound: mpsc::Receiver<WireEvent>,
+    local: Arc<LocalFanout>,
 ) {
     let mut connection: Option<redis::aio::ConnectionManager> = None;
-    while let Some(event) = outbound.recv().await {
-        let Ok(payload) = serde_json::to_vec(&event) else {
-            continue;
+    let mut acknowledged_loss_generation = 0;
+    let mut resync_retry = tokio::time::interval(RESYNC_RETRY_INTERVAL);
+    resync_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    resync_retry.tick().await;
+    loop {
+        let event = tokio::select! {
+            event = outbound.recv() => event,
+            _ = resync_retry.tick() => None,
         };
-        if payload.len() > MAX_WIRE_BYTES {
-            tracing::debug!(bytes = payload.len(), "dropping oversized remote hub event");
-            continue;
-        }
-
-        if connection.is_none() {
-            connection = match tokio::time::timeout(
-                REDIS_CONNECT_TIMEOUT,
-                crate::utils::redis::connection_manager(&client),
-            )
-            .await
+        let loss_generation = local.distributed_loss_generation.load(Ordering::Acquire);
+        if loss_generation > acknowledged_loss_generation {
+            let marker = WireEvent::resync(origin, loss_generation);
+            if publish_remote(&client, &channel, &marker, &mut connection)
+                .await
+                .is_err()
             {
-                Ok(Ok(connection)) => Some(connection),
-                Ok(Err(error)) => {
-                    tracing::debug!(%error, "hub event publisher could not connect to Redis");
-                    None
+                if event.is_some() {
+                    local.record_distributed_drop("resync_marker_unavailable");
+                } else if outbound.is_closed() {
+                    break;
                 }
-                Err(_) => {
-                    tracing::debug!("hub event publisher Redis connection timed out");
-                    None
-                }
-            };
+                continue;
+            }
+            acknowledged_loss_generation = loss_generation;
         }
-        let Some(mut active) = connection.take() else {
+        let Some(event) = event else {
+            if outbound.is_closed() {
+                break;
+            }
             continue;
         };
-        let result = tokio::time::timeout(
-            REDIS_IO_TIMEOUT,
-            redis::cmd("PUBLISH")
-                .arg(&channel)
-                .arg(payload)
-                .query_async::<i64>(&mut active),
+        if let Err(reason) = publish_remote(&client, &channel, &event, &mut connection).await {
+            local.record_distributed_drop(reason);
+        }
+    }
+}
+
+async fn publish_remote(
+    client: &redis::Client,
+    channel: &str,
+    event: &WireEvent,
+    connection: &mut Option<redis::aio::ConnectionManager>,
+) -> Result<(), &'static str> {
+    let payload = serde_json::to_vec(event).map_err(|_| "encode_failed")?;
+    if payload.len() > MAX_WIRE_BYTES {
+        tracing::debug!(bytes = payload.len(), "dropping oversized remote hub event");
+        return Err("wire_size_exceeded");
+    }
+    if connection.is_none() {
+        *connection = match tokio::time::timeout(
+            REDIS_CONNECT_TIMEOUT,
+            crate::utils::redis::connection_manager(client),
         )
-        .await;
-        match result {
-            Ok(Ok(_)) => connection = Some(active),
+        .await
+        {
+            Ok(Ok(connection)) => Some(connection),
             Ok(Err(error)) => {
-                tracing::debug!(%error, "hub event publish failed; reconnecting on next event");
+                tracing::debug!(%error, "hub event publisher could not connect to Redis");
+                None
             }
             Err(_) => {
-                tracing::debug!("hub event publish timed out; reconnecting on next event");
+                tracing::debug!("hub event publisher Redis connection timed out");
+                None
             }
+        };
+    }
+    let Some(mut active) = connection.take() else {
+        return Err("redis_unavailable");
+    };
+    let result = tokio::time::timeout(
+        REDIS_IO_TIMEOUT,
+        redis::cmd("PUBLISH")
+            .arg(channel)
+            .arg(payload)
+            .query_async::<i64>(&mut active),
+    )
+    .await;
+    match result {
+        Ok(Ok(_)) => {
+            *connection = Some(active);
+            Ok(())
+        }
+        Ok(Err(error)) => {
+            tracing::debug!(%error, "hub event publish failed; reconnecting on next event");
+            Err("redis_publish_failed")
+        }
+        Err(_) => {
+            tracing::debug!("hub event publish timed out; reconnecting on next event");
+            Err("redis_publish_timeout")
         }
     }
 }
@@ -281,10 +404,11 @@ async fn run_subscriber(
     client: redis::Client,
     channel: String,
     origin: Uuid,
-    local: broadcast::Sender<HubEvent>,
+    local: Arc<LocalFanout>,
 ) {
     let mut dedup = InboundDedup::new(origin);
     let mut retry = REDIS_RETRY_MIN;
+    let mut requires_resync = false;
     loop {
         let connected =
             tokio::time::timeout(REDIS_CONNECT_TIMEOUT, client.get_async_pubsub()).await;
@@ -292,12 +416,14 @@ async fn run_subscriber(
             Ok(Ok(pubsub)) => pubsub,
             Ok(Err(error)) => {
                 tracing::debug!(%error, "hub event subscriber could not connect to Redis");
+                requires_resync = true;
                 tokio::time::sleep(retry).await;
                 retry = retry.saturating_mul(2).min(REDIS_RETRY_MAX);
                 continue;
             }
             Err(_) => {
                 tracing::debug!("hub event subscriber Redis connection timed out");
+                requires_resync = true;
                 tokio::time::sleep(retry).await;
                 retry = retry.saturating_mul(2).min(REDIS_RETRY_MAX);
                 continue;
@@ -306,12 +432,16 @@ async fn run_subscriber(
         let subscribed = tokio::time::timeout(REDIS_IO_TIMEOUT, pubsub.subscribe(&channel)).await;
         if !matches!(subscribed, Ok(Ok(()))) {
             tracing::debug!("hub event Redis subscription failed");
+            requires_resync = true;
             tokio::time::sleep(retry).await;
             retry = retry.saturating_mul(2).min(REDIS_RETRY_MAX);
             continue;
         }
 
         retry = REDIS_RETRY_MIN;
+        if std::mem::take(&mut requires_resync) {
+            local.force_resync_after_subscriber_gap();
+        }
         let mut messages = pubsub.on_message();
         while let Some(message) = messages.next().await {
             let Ok(payload) = message.get_payload::<Vec<u8>>() else {
@@ -327,11 +457,12 @@ async fn run_subscriber(
                 continue;
             }
             if let Some(event) = event.into_hub() {
-                let _ = local.send(event);
+                local.publish(event);
             }
         }
 
         tracing::debug!("hub event Redis subscription ended; reconnecting");
+        requires_resync = true;
         tokio::time::sleep(retry).await;
     }
 }
@@ -415,6 +546,42 @@ mod tests {
         .expect("Redis readiness barrier was not delivered");
     }
 
+    async fn wait_for_remote_target_subscription(
+        sender: &EventBus,
+        receiver: &mut EventReceiver,
+        probe: HubEvent,
+    ) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                sender.publish(probe.clone());
+                if let Ok(Ok(received)) =
+                    tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await
+                {
+                    if received.target == probe.target && received.payload == probe.payload {
+                        return;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("Redis target subscription did not become ready");
+
+        let mut barrier = probe;
+        barrier.payload = format!("rsctf-target-ready-barrier:{}", Uuid::new_v4());
+        sender.publish(barrier.clone());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let received = receiver.recv().await.expect("target stream closed");
+                if received.target == barrier.target && received.payload == barrier.payload {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("Redis target readiness barrier was not delivered");
+    }
+
     #[test]
     fn wire_event_round_trips_and_rejects_unknown_targets_or_versions() {
         let origin = Uuid::new_v4();
@@ -454,6 +621,7 @@ mod tests {
     fn internal_control_targets_are_valid_distributed_events() {
         for target in [
             "InternalByocRevokeParticipation",
+            "InternalByocRevokeTeam",
             "InternalByocRevokeChallenge",
             "InternalTrafficCaptureReconcile",
         ] {
@@ -553,6 +721,170 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn per_game_queues_isolate_former_hash_collisions_and_unrelated_targets() {
+        let bus = EventBus::local();
+        let mut game_seven = bus.subscribe_game_targets(7, &["ReceivedGameEvent"]);
+        let mut formerly_colliding_game = bus.subscribe_game_targets(71, &["ReceivedGameEvent"]);
+
+        for cursor in 0..(LOCAL_QUEUE_CAPACITY * 2) {
+            bus.publish(received_game_event(7, cursor as i32, cursor as i64));
+        }
+        bus.publish(received_game_event(71, 1, 1));
+        bus.publish(received_log_event());
+
+        let received = formerly_colliding_game.recv().await.unwrap();
+        assert_eq!(received.game_id, Some(71));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), formerly_colliding_game.recv())
+                .await
+                .is_err()
+        );
+
+        assert!(matches!(
+            game_seven.recv().await,
+            Err(broadcast::error::RecvError::Lagged(_))
+        ));
+        assert_eq!(bus.local.lagged_receivers.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn explicit_all_game_subscription_observes_each_game_without_cross_delivery() {
+        let bus = EventBus::local();
+        let mut all_games = bus.subscribe_global_targets(&["ReceivedGameEvent"]);
+        let mut game_seven = bus.subscribe_game_targets(7, &["ReceivedGameEvent"]);
+
+        bus.publish(received_game_event(7, 1, 1));
+        bus.publish(received_game_event(8, 2, 2));
+
+        assert_eq!(all_games.recv().await.unwrap().game_id, Some(7));
+        assert_eq!(all_games.recv().await.unwrap().game_id, Some(8));
+        assert_eq!(game_seven.recv().await.unwrap().game_id, Some(7));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), game_seven.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn distributed_loss_marker_forces_authoritative_resync() {
+        let bus = EventBus::local();
+        let mut receiver = bus.subscribe_game_targets(7, &["ReceivedGameEvent"]);
+        bus.local.force_resync_after_subscriber_gap();
+
+        assert!(matches!(
+            receiver.recv().await,
+            Err(broadcast::error::RecvError::Lagged(0))
+        ));
+        assert_eq!(bus.local.lagged_receivers.load(Ordering::Relaxed), 1);
+        assert_eq!(bus.local.subscriber_gaps.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn full_distributed_queue_advances_the_resync_generation() {
+        let local = Arc::new(LocalFanout::new());
+        let (outbound, _outbound_rx) = mpsc::channel(1);
+        let bus = EventBus {
+            local: Arc::clone(&local),
+            distributed: Some(DistributedPublisher {
+                origin: Uuid::new_v4(),
+                outbound,
+                _tasks: Arc::new(TaskSet {
+                    handles: Vec::new(),
+                }),
+            }),
+        };
+        bus.publish(received_game_event(7, 1, 1));
+        bus.publish(received_game_event(7, 2, 2));
+
+        assert_eq!(local.distributed_drops.load(Ordering::Relaxed), 1);
+        assert_eq!(local.distributed_loss_generation.load(Ordering::Acquire), 1);
+        assert_eq!(
+            bus.operational_metrics(),
+            EventBusOperationalMetrics {
+                active_target_queues: 0,
+                lagged_receivers: 0,
+                distributed_drops: 1,
+                distributed_loss_generation: 1,
+                subscriber_gaps: 0,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn noisy_target_cannot_evict_a_notice_in_the_same_game() {
+        let bus = EventBus::local();
+        let mut notice = bus.subscribe_game_targets(7, &["ReceivedGameNotice"]);
+        for cursor in 0..(LOCAL_QUEUE_CAPACITY * 2) {
+            bus.publish(received_game_event(7, cursor as i32, cursor as i64));
+        }
+        bus.publish(HubEvent {
+            target: "ReceivedGameNotice",
+            game_id: Some(7),
+            payload: r#"{"id":91}"#.to_owned(),
+        });
+
+        let received = notice.recv().await.unwrap();
+        assert_eq!(received.target, "ReceivedGameNotice");
+        assert_eq!(received.payload, r#"{"id":91}"#);
+        assert_eq!(bus.local.lagged_receivers.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn continuously_ready_target_cannot_starve_a_quiet_target() {
+        let bus = EventBus::local();
+        let mut receiver =
+            bus.subscribe_game_targets(7, &["ReceivedGameEvent", "ReceivedGameNotice"]);
+        for cursor in 0..LOCAL_QUEUE_CAPACITY {
+            bus.publish(received_game_event(7, cursor as i32, cursor as i64));
+        }
+        bus.publish(HubEvent {
+            target: "ReceivedGameNotice",
+            game_id: Some(7),
+            payload: r#"{"id":91}"#.to_owned(),
+        });
+
+        assert_eq!(receiver.recv().await.unwrap().target, "ReceivedGameEvent");
+        assert_eq!(receiver.recv().await.unwrap().target, "ReceivedGameNotice");
+    }
+
+    #[tokio::test]
+    async fn idle_target_game_channels_are_removed_after_the_last_receiver() {
+        let bus = EventBus::local();
+        let receiver = bus.subscribe_game_targets(7, &["ReceivedAttack"]);
+        assert_eq!(bus.local.active_queue_count(), 2);
+        drop(receiver);
+        assert_eq!(bus.local.active_queue_count(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_last_receiver_disconnects_remove_idle_shards() {
+        for _ in 0..128 {
+            let bus = EventBus::local();
+            let first = bus.subscribe_game_targets(7, &["ReceivedAttack"]);
+            let second = bus.subscribe_game_targets(7, &["ReceivedAttack"]);
+            assert_eq!(bus.local.active_queue_count(), 2);
+
+            let barrier = Arc::new(tokio::sync::Barrier::new(3));
+            let first_barrier = Arc::clone(&barrier);
+            let first_drop = tokio::spawn(async move {
+                first_barrier.wait().await;
+                drop(first);
+            });
+            let second_barrier = Arc::clone(&barrier);
+            let second_drop = tokio::spawn(async move {
+                second_barrier.wait().await;
+                drop(second);
+            });
+            barrier.wait().await;
+            first_drop.await.unwrap();
+            second_drop.await.unwrap();
+
+            assert_eq!(bus.local.active_queue_count(), 0);
+        }
+    }
+
     /// Run explicitly with `RSCTF_TEST_REDIS_URL=redis://... cargo test
     /// redis_bus_fans_out_once_between_processes -- --ignored --nocapture`.
     #[tokio::test]
@@ -595,10 +927,19 @@ mod tests {
         let channel = format!("rsctf:test:monitor-events:{}", Uuid::new_v4());
         let first_replica = EventBus::distributed_on(&url, &channel).unwrap();
         let second_replica = EventBus::distributed_on(&url, &channel).unwrap();
-        let mut remote = second_replica.subscribe();
+        let mut remote = second_replica.subscribe_game_targets(7, &["ReceivedGameEvent"]);
 
-        wait_for_remote_subscription(&first_replica, &mut remote, received_game_event(7, -1, -1))
-            .await;
+        wait_for_remote_target_subscription(
+            &first_replica,
+            &mut remote,
+            received_game_event(7, -1, -1),
+        )
+        .await;
+        // The maximum accepted A&D flag batch in another game must not enter
+        // this target/game receiver's bounded history.
+        for cursor in 0..100 {
+            first_replica.publish(received_game_event(8, cursor as i32, cursor as i64));
+        }
         for (id, cursor) in [(31, 101), (32, 102), (33, 103)] {
             first_replica.publish(received_game_event(7, id, cursor));
         }

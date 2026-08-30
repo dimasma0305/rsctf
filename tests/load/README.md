@@ -16,6 +16,7 @@ cd tests/load
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
+      npm run read-only-websocket-flood # read-only feed inbound-abuse gate
       npm run monitor-history # fixed-rate bounded monitor history + durable backfills
       npm run participation-review # fixed-rate bounded 12k-team organizer review
       npm run details-read  # fixed-rate authenticated challenge-details poll
@@ -40,6 +41,22 @@ Requires `k6`, `node`, and `docker exec <PG>` / `docker` access; the stack up wi
 running game (default `GAME=10`, BYOC challenge `CID=68`). BYOC runs require at least
 `N` distinct Accepted participations; the harness fails before spawning when fewer are
 available rather than fabricating participation IDs that production authorization rejects.
+
+### Read-only WebSocket admission
+
+The WebSocket gate alternates raw and SignalR attack feeds at a fixed connection
+arrival rate. It requires the normal greeting or exact SignalR handshake before
+sending unsupported application traffic, requires a policy/frame-size close, and
+checks exact `healthz` on an independent lane:
+
+```sh
+READONLY_WS_FLOOD_ACK=1 WEBSOCKET_GAME=92001 RATE=20 DURATION=30s \
+  SUMMARY_JSON=/tmp/read-only-websocket-flood.json npm run read-only-websocket-flood
+```
+
+It refuses a non-live or hidden event. Remote targets additionally require
+`ALLOW_REMOTE_READONLY_WS_FLOOD` to equal the exact target origin. Run it against
+an isolated stack when collecting CPU/RSS bounds.
 
 ### Admin dashboard aggregates
 

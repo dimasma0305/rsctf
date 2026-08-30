@@ -1281,7 +1281,7 @@ on 2026-08-25.
   - Relevant code: `web/src/pages/games/[id]/Attack.tsx`,
     `src/controllers/game/routes.rs`, and `src/hubs/attack.rs`.
 
-- [ ] Stop stale BYOC agents from forming a permanent synchronized reconnect flood.
+- [x] Stop stale BYOC agents from forming a permanent synchronized reconnect flood.
   - Generated Compose bundles set the tunnel agent to `restart: unless-stopped`. The
     agent makes 20 attempts per minute after every failure at a fixed three-second
     interval forever, including
@@ -1314,6 +1314,19 @@ on 2026-08-25.
     `src/controllers/game/ad/byoc_authorization.rs`, and
     `src/services/byoc_tunnel/`.
 
+- [x] Keep first-time BYOC enrollment distinct from managed-service provisioning.
+  - The player challenge contract now exposes `adSelfHosted` independently of a
+    team-service row, so a BYOC challenge with no connected agent renders the
+    setup/Compose downloads and explains outbound agent enrollment.
+  - Never tell BYOC players to ask an operator to run "Ensure containers"; that
+    action provisions platform-managed services and is not their enrollment path.
+  - Regression coverage models game 13 challenge 50's missing service row and
+    asserts both BYOC downloads remain available without the managed-service prompt.
+  - Relevant code: `src/controllers/game/play.rs`,
+    `src/controllers/game/play_final_policy.rs`, `web/src/Api.ts`,
+    `web/src/components/ChallengeModal.tsx`, and
+    `web/src/components/AdChallengePanel.tsx`.
+
 - [x] Close the Event-VPN route-casing bypass.
   - The middleware recognizes only exact lowercase `api/game` segments, while the
     registered A&D aliases and arena client use mixed-case `/api/Game/{id}/Ad/...`
@@ -1339,7 +1352,7 @@ on 2026-08-25.
   - Relevant code: `web/src/pages/games/[id]/Attack.tsx` and
     `src/controllers/game/routes.rs`.
 
-- [ ] Make scheduled and mutated notices reach already-open player pages.
+- [x] Make scheduled and mutated notices reach already-open player pages.
   - Bound normal-notice content by UTF-8 bytes on the backend and keep the maximum
     safely below the 64-KiB SignalR frame envelope after JSON framing. The editor has no
     `maxLength`, `GameNoticeModel` has no validation, and the route otherwise accepts the
@@ -1383,7 +1396,7 @@ on 2026-08-25.
     `web/src/components/admin/GameNoticeEditModal.tsx`, plus a new registered idempotent
     forward migration for notice operations/outbox delivery.
 
-- [ ] Isolate realtime fan-out so one noisy event cannot starve every connected hub.
+- [x] Isolate realtime fan-out so one noisy event cannot starve every connected hub.
   - Replace or shard the single global 512-entry broadcast queue; filter by target and
     game before unrelated sockets compete for the same bounded history.
   - Treat `RecvError::Lagged` and a full distributed outbound queue as data loss, not a
@@ -1395,7 +1408,7 @@ on 2026-08-25.
   - Relevant code: `src/services/event_bus.rs`, `src/hubs/signalr.rs`,
     `src/hubs/attack.rs`, and `src/controllers/game/ad/submit.rs`.
 
-- [ ] Reject and meter inbound application traffic on read-only WebSocket feeds.
+- [x] Reject and meter inbound application traffic on read-only WebSocket feeds.
   - The raw attack socket silently consumes arbitrary Text and Binary frames. SignalR
     accepts any first Text frame as a valid handshake and then silently consumes every
     client Text/Binary application frame even though these hubs expose no client

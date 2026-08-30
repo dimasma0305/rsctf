@@ -143,6 +143,7 @@ mod m0261_control_plane_jobs;
 mod m0262_challenge_import_jobs;
 mod m0263_control_job_cancellation;
 mod m0264_blob_staging_operations;
+mod m0265_game_notice_delivery;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -299,6 +300,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0262_challenge_import_jobs::Migration),
             Box::new(m0263_control_job_cancellation::Migration),
             Box::new(m0264_blob_staging_operations::Migration),
+            Box::new(m0265_game_notice_delivery::Migration),
         ]
     }
 }
@@ -467,6 +469,7 @@ mod tests {
                 "m0262_challenge_import_jobs",
                 "m0263_control_job_cancellation",
                 "m0264_blob_staging_operations",
+                "m0265_game_notice_delivery",
             ]
         );
     }
