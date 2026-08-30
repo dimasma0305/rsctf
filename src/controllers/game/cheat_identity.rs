@@ -9,6 +9,8 @@ use crate::utils::error::{AppError, AppResult};
 
 const MAX_SHARED_NETWORK_TEAMS: i64 = 4;
 const MAX_IDENTITY_GROUPS: i64 = 200;
+const MAX_IDENTITY_INPUT_ROWS: i64 = 2_000;
+const MAX_IDENTITY_ROWS_PER_VALUE: i64 = 64;
 
 #[derive(Debug, sqlx::FromRow)]
 struct IdentityGroupRow {
@@ -22,7 +24,18 @@ struct IdentityGroupRow {
 }
 
 const IDENTITY_ANALYSIS_SQL: &str = r#"
-    WITH scoped AS (
+    WITH recent AS MATERIALIZED (
+        SELECT observation.*
+          FROM "IdentityObservations" observation
+          JOIN "Games" game ON game.id = observation.game_id
+         WHERE observation.game_id = $1
+           AND observation.team_id IS NOT NULL
+           AND observation.participation_id IS NOT NULL
+           AND observation.observed_at_utc >= game.start_time_utc
+           AND observation.observed_at_utc < game.end_time_utc
+         ORDER BY observation.observed_at_utc DESC, observation.id DESC
+         LIMIT $4
+    ), scoped_ranked AS (
         SELECT observation.id,
                observation.user_id,
                observation.kind,
@@ -30,19 +43,22 @@ const IDENTITY_ANALYSIS_SQL: &str = r#"
                observation.value_hint,
                observation.observed_at_utc,
                observation.team_id,
-               team.name AS team_name
-          FROM "IdentityObservations" observation
-          JOIN "Games" game ON game.id = observation.game_id
+               team.name AS team_name,
+               ROW_NUMBER() OVER (
+                   PARTITION BY observation.kind, observation.value_hash
+                   ORDER BY observation.observed_at_utc DESC, observation.id DESC
+               ) AS value_rank
+          FROM recent observation
           JOIN "Participations" participation
             ON participation.id = observation.participation_id
            AND participation.game_id = observation.game_id
            AND participation.team_id = observation.team_id
           JOIN "Teams" team ON team.id = observation.team_id
-         WHERE observation.game_id = $1
-           AND observation.team_id IS NOT NULL
-           AND observation.participation_id IS NOT NULL
-           AND observation.observed_at_utc >= game.start_time_utc
-           AND observation.observed_at_utc < game.end_time_utc
+    ), scoped AS (
+        SELECT id, user_id, kind, value_hash, value_hint,
+               observed_at_utc, team_id, team_name
+          FROM scoped_ranked
+         WHERE value_rank <= $5
     ), qualified AS (
         SELECT kind, value_hash, COUNT(DISTINCT team_id) AS team_count
           FROM scoped
@@ -176,6 +192,8 @@ pub(super) async fn build_identity_analysis(
         .bind(game_id)
         .bind(MAX_SHARED_NETWORK_TEAMS)
         .bind(MAX_IDENTITY_GROUPS)
+        .bind(MAX_IDENTITY_INPUT_ROWS)
+        .bind(MAX_IDENTITY_ROWS_PER_VALUE)
         .fetch_all(pool)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -298,6 +316,8 @@ mod tests {
             IDENTITY_ANALYSIS_SQL.contains("observation.observed_at_utc >= game.start_time_utc")
         );
         assert!(IDENTITY_ANALYSIS_SQL.contains("observation.observed_at_utc < game.end_time_utc"));
+        assert!(IDENTITY_ANALYSIS_SQL.contains("LIMIT $4"));
+        assert!(IDENTITY_ANALYSIS_SQL.contains("WHERE value_rank <= $5"));
         assert!(!IDENTITY_ANALYSIS_SQL.contains("CURRENT_TIMESTAMP"));
         assert!(!IDENTITY_ANALYSIS_SQL.contains("NOW()"));
     }

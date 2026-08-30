@@ -3438,6 +3438,26 @@ export interface CheatInfoModel {
   submission: Submission & { answer: string; status: AnswerResult; time: number };
 }
 
+/** One stable incident row in the bounded monitor feed. */
+export interface CheatIncidentPageItem extends CheatInfoModel {
+  id: number;
+  /** Unix milliseconds used with id as the older-page keyset cursor. */
+  observedAt: number;
+}
+
+export interface CheatIncidentCursor {
+  observedAt: number;
+  id: number;
+}
+
+/** Bounded initial, older-history, or reconnect-delta incident page. */
+export interface CheatIncidentPage {
+  data: CheatIncidentPageItem[];
+  nextBefore: CheatIncidentCursor | null;
+  checkpointId: number;
+  hasMore: boolean;
+}
+
 /** Team participation information */
 export interface ParticipationModel {
   /**
@@ -3480,6 +3500,10 @@ export interface ChallengeTrafficModel {
    * @format int32
    */
   count?: number;
+  /** Total indexed capture bytes. */
+  size?: number;
+  /** Unix milliseconds of the newest capture. */
+  updateTime?: number;
 }
 
 /** Team traffic information */
@@ -3505,6 +3529,15 @@ export interface TeamTrafficModel {
    * @format int32
    */
   count?: number;
+  /** Total indexed capture bytes. */
+  size?: number;
+  /** Unix milliseconds of the newest capture. */
+  updateTime?: number;
+}
+
+export interface TrafficInventoryPage<T> {
+  items: T[];
+  nextCursor: string | null;
 }
 
 /** File record */

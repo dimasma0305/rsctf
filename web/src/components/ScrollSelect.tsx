@@ -25,6 +25,7 @@ interface ScrollSelectProps extends ScrollAreaProps {
   itemComponentProps?: any
   emptyPlaceholder?: React.ReactNode
   items?: any[]
+  itemKey?: (item: any) => React.Key
   customClick?: boolean
   selectedId?: number | null
   onSelect?: (item: any | null) => void
@@ -56,6 +57,7 @@ export const ScrollSelect: FC<ScrollSelectProps> = (props) => {
     itemComponentProps,
     emptyPlaceholder,
     items,
+    itemKey,
     selectedId,
     onSelect,
     ...ScrollAreaProps
@@ -69,7 +71,7 @@ export const ScrollSelect: FC<ScrollSelectProps> = (props) => {
         <Stack gap={2} w="100%">
           {items.map((item) => (
             <ItemComponent
-              key={item.id}
+              key={itemKey ? itemKey(item) : item.id}
               onClick={onSelect && (() => onSelect(item.id))}
               active={selectedId && selectedId === item.id}
               item={item}

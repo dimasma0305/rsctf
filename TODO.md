@@ -565,7 +565,7 @@ on 2026-08-25.
     `web/src/pages/games/[id]/monitor/Submissions.tsx`,
     `src/controllers/game/scoreboard.rs`, and `src/controllers/game/routes.rs`.
 
-- [ ] Bound traffic-capture inventory reads before one monitor can saturate blocking
+- [x] Bound traffic-capture inventory reads before one monitor can saturate blocking
   workers, storage I/O, and PostgreSQL.
   - The game capture summary walks every challenge and participation directory, loads
     and sorts complete PCAP file lists merely to count them. The team view repeats the
@@ -586,7 +586,7 @@ on 2026-08-25.
   - Relevant code: `src/controllers/game/traffic.rs` and
     `src/controllers/game/routes.rs`.
 
-- [ ] Stop hidden anti-cheat tabs and drill-downs from repeatedly rebuilding complete
+- [x] Stop hidden anti-cheat tabs and drill-downs from repeatedly rebuilding complete
   evidence histories.
   - Mantine keeps inactive tab panels mounted by default. The anti-cheat page therefore
     fetches the complete flag-sharing incident ledger every ten seconds even while the

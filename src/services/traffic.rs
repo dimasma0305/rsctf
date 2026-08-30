@@ -307,6 +307,7 @@ const LIVE_READ_TIMEOUT_MS: i32 = 200;
 const PCAP_GLOBAL_HEADER_BYTES: u64 = 24;
 const PCAP_PACKET_HEADER_BYTES: u64 = 16;
 const FREE_SPACE_CHECK_INTERVAL_BYTES: u64 = 1024 * 1024;
+pub mod inventory;
 mod live_limits;
 use live_limits::{
     enforce_capture_directory_budget, refresh_capture_space_if_needed, rotated_capture_path,
@@ -350,6 +351,7 @@ pub fn capture_live(
         stop,
         LiveCaptureLimits::default(),
         None,
+        None,
     )
 }
 
@@ -364,8 +366,17 @@ fn capture_live_with_startup(
     stop: Arc<AtomicBool>,
     limits: LiveCaptureLimits,
     startup: tokio::sync::oneshot::Sender<Result<(), String>>,
+    reporter: inventory::CaptureInventoryReporter,
 ) -> AppResult<u64> {
-    capture_live_inner(device, bpf_filter, out_path, stop, limits, Some(startup))
+    capture_live_inner(
+        device,
+        bpf_filter,
+        out_path,
+        stop,
+        limits,
+        Some(startup),
+        Some(reporter),
+    )
 }
 
 fn capture_live_inner(
@@ -375,6 +386,7 @@ fn capture_live_inner(
     stop: Arc<AtomicBool>,
     limits: LiveCaptureLimits,
     startup: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    reporter: Option<inventory::CaptureInventoryReporter>,
 ) -> AppResult<u64> {
     // Build an inactive handle, configure it, then activate. `from_device`
     // accepts an `&str` device name via `From<&str> for pcap::Device`.
@@ -397,10 +409,11 @@ fn capture_live_inner(
         let directory = out_path
             .parent()
             .ok_or_else(|| AppError::internal("capture output has no parent directory"))?;
-        enforce_capture_directory_budget(
+        let removed = enforce_capture_directory_budget(
             directory,
             limits.max_directory_bytes,
             limits.max_file_bytes,
+            limits.max_directory_files,
         )?;
         let disk_reservation =
             CaptureDiskReservation::acquire(directory, limits.free_space_floor_bytes)?;
@@ -410,10 +423,14 @@ fn capture_live_inner(
         let savefile = capture
             .savefile(out_path)
             .map_err(|e| pcap_err("create capture savefile", e))?;
-        Ok((capture, savefile, disk_reservation))
+        Ok((capture, savefile, disk_reservation, removed))
     })();
-    let (mut capture, mut savefile, _disk_reservation) = match initialized {
+    let (mut capture, mut savefile, _disk_reservation, _removed) = match initialized {
         Ok(handles) => {
+            if let Some(reporter) = &reporter {
+                reporter.delete_paths(&handles.3);
+                reporter.upsert_path(out_path);
+            }
             if let Some(startup) = startup {
                 let _ = startup.send(Ok(()));
             }
@@ -449,21 +466,31 @@ fn capture_live_inner(
                         .flush()
                         .map_err(|e| pcap_err("flush capture rotation", e))?;
                     drop(savefile);
+                    if let Some(reporter) = &reporter {
+                        reporter.upsert_path(&current_path);
+                    }
                     let directory = current_path
                         .parent()
                         .ok_or_else(|| {
                             AppError::internal("capture output has no parent directory")
                         })?
                         .to_path_buf();
-                    enforce_capture_directory_budget(
+                    let removed = enforce_capture_directory_budget(
                         &directory,
                         limits.max_directory_bytes,
                         limits.max_file_bytes,
+                        limits.max_directory_files,
                     )?;
+                    if let Some(reporter) = &reporter {
+                        reporter.delete_paths(&removed);
+                    }
                     current_path = rotated_capture_path(out_path)?;
                     savefile = capture
                         .savefile(&current_path)
                         .map_err(|e| pcap_err("create rotated capture savefile", e))?;
+                    if let Some(reporter) = &reporter {
+                        reporter.upsert_path(&current_path);
+                    }
                     current_bytes = PCAP_GLOBAL_HEADER_BYTES;
                     next_space_check = FREE_SPACE_CHECK_INTERVAL_BYTES;
                     file_started = std::time::Instant::now();
@@ -498,7 +525,15 @@ fn capture_live_inner(
             // Bounded source (e.g. a savefile) drained — done.
             Err(pcap::Error::NoMorePackets) => break,
             // Any other libpcap error aborts the capture.
-            Err(e) => return Err(pcap_err("read packet", e)),
+            Err(e) => {
+                savefile.flush().map_err(|flush_error| {
+                    pcap_err("flush failed capture savefile", flush_error)
+                })?;
+                if let Some(reporter) = &reporter {
+                    reporter.upsert_path(&current_path);
+                }
+                return Err(pcap_err("read packet", e));
+            }
         }
     }
 
@@ -506,6 +541,9 @@ fn capture_live_inner(
     savefile
         .flush()
         .map_err(|e| pcap_err("flush capture savefile", e))?;
+    if let Some(reporter) = &reporter {
+        reporter.upsert_path(&current_path);
+    }
 
     Ok(packet_count)
 }

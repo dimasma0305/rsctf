@@ -147,6 +147,8 @@ mod m0270_worker_workload_quarantine;
 mod m0271_worker_enrollment_operations;
 mod m0272_event_sensor_batches;
 mod m0273_receipt_variant_lifecycle;
+mod m0280_traffic_capture_inventory;
+mod m0281_anticheat_read_bounds;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -168,6 +170,9 @@ pub(crate) use m0115_flag_egress_feed_cursor::UP_SQL as FLAG_EGRESS_FEED_CURSOR_
 pub(crate) use m0116_game_event_feed_pending::UP_SQL as GAME_EVENT_FEED_PENDING_SQL;
 #[cfg(test)]
 pub(crate) use m0242_participation_provision_jobs::UP_SQL as PARTICIPATION_PROVISION_JOBS_SQL;
+#[cfg(test)]
+pub(crate) use m0280_traffic_capture_inventory::UP_SQL as TRAFFIC_CAPTURE_INVENTORY_SQL;
+
 pub struct Migrator;
 
 const EXCLUSIVE_CUTOVER_MIGRATIONS: [&str; 3] = [
@@ -307,6 +312,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0271_worker_enrollment_operations::Migration),
             Box::new(m0272_event_sensor_batches::Migration),
             Box::new(m0273_receipt_variant_lifecycle::Migration),
+            Box::new(m0280_traffic_capture_inventory::Migration),
+            Box::new(m0281_anticheat_read_bounds::Migration),
         ]
     }
 }
@@ -452,7 +459,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 25..],
+            &names[names.len() - 27..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -479,6 +486,8 @@ mod tests {
                 "m0271_worker_enrollment_operations",
                 "m0272_event_sensor_batches",
                 "m0273_receipt_variant_lifecycle",
+                "m0280_traffic_capture_inventory",
+                "m0281_anticheat_read_bounds",
             ]
         );
     }
