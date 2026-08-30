@@ -247,26 +247,37 @@ Content-Type: application/json
 
 RSCTF returns `{"teamId":"<sha256-token>","teamName":"<official name>"}`.
 The arena must discard the raw token after issuing its narrow local session.
-The token remains valid across rounds, epochs, and health recovery; an explicit
-player rotation invalidates the old value immediately and requires a new arena
-session.
+The token remains valid across rounds, epochs, and health recovery. Manual
+rotation is allowed only before official KotH scoring or while scoring is
+paused; active unpaused scoring returns a conflict without mutating the token,
+context, or evidence. A player's first allowed emergency rotation is immediate;
+later allowed rotations have a 60-second cooldown and return `429 Too Many
+Requests` with `Retry-After`. Security and eligibility revocation bypass both
+gates, replace the stored secret in place, and require a new arena session. The
+dormant row remains eligibility-gated, so a restored team receives the
+already-fresh value without weakening revocation.
 
-The managed target reporter then fetches the current scoring fence:
+The managed target reporter then fetches the current scoring fence. The
+original response remains an exact `v1` object for deployed reporters. Arenas
+that need the permanent cadence bounds opt in explicitly:
 
 ```http
 GET /api/v1/koth/games/{gameId}/challenges/{challengeId}/context
+X-RSCTF-API-Version: v2
 ```
 
 Example response after the objective schema is frozen:
 
 ```json
 {
-  "apiVersion": "v1",
+  "apiVersion": "v2",
   "context": "64-lowercase-hex-characters",
   "cycleNumber": 4,
   "resetAttempt": 1,
   "roundNumber": 17,
+  "cycleStartsAt": 1785122770000,
   "cycleEndsAt": 1785123970000,
+  "scoringEndsAt": 1785123950000,
   "waveWindowStartsAt": 1785123370000,
   "waveWindowEndsAt": 1785123430000,
   "eligibleTokenHashes": [
@@ -283,11 +294,24 @@ Before the first accepted snapshot, `objectiveIds` is empty and
 first submission. Thereafter the context is bound to its hash. `context`
 changes with the scoring round, runtime/recovery identity, objective schema, or
 eligible capability set. A player token rotation therefore requires a fresh
-context before the next submission. The compatibility field `cycleEndsAt` is
-the event's Leaderboard scoring cutoff, not a scheduled reset boundary. A
-challenge that runs multi-minute sessions must not start a new scoreable
-session unless it can finish and report before that timestamp; reconnects to
-an already-running session may continue.
+context before the next submission. `cycleStartsAt` is the durable start of the
+frozen first official scoring round, after event warmup and any readiness delay;
+it is not the mutable event start. The compatibility field `cycleEndsAt` is the
+event deadline. `scoringEndsAt` is the platform's latest admissible evidence
+end, after reserving its settlement lag; an arena's own cadence may yield an
+earlier final complete window but must never exceed this cutoff. None of these
+fields is a scheduled Crown-reset boundary. A fixed-cadence arena should derive
+its permanent first complete wave
+from `cycleStartsAt` (for example,
+`(floor(cycleStartsAt / cadence) + 1) * cadence`) and retain that grid across target
+restarts and later checker rounds. A challenge that runs multi-minute sessions
+must not start a new scoreable session unless it can finish and report at or
+before `scoringEndsAt`; reconnects to an already-running session may continue.
+
+Settlement windows are half-open. Ordinary boundary equality belongs to the
+next round. Only the terminal context publishes `waveWindowEndsAt` one
+millisecond after `scoringEndsAt`, making the exact inclusive platform cutoff
+admissible while rejecting any later wave.
 
 Submit the complete set of finalized waves whose end times fall inside the
 current context's settlement window:
@@ -334,10 +358,13 @@ boundary. The checker waits for that cutoff before it acquires the hill lock,
 then allows the reporter a bounded arrival period. From round two onward, the
 next window starts at the previous cutoff, so the intervals are contiguous and
 no challenge-native wave end can fall into a gap. Use the published window
-fields exactly; do not derive them from the round number or local clock. The
-last published window end is the event's Leaderboard scoring cutoff. The arena
-must not open a new scoreable wave that cannot finalize by that cutoff; the
-remaining 20 seconds are reserved for checking and durable settlement.
+fields exactly for each submission; do not derive them from the round number or
+local clock. They are rolling admission windows, not the arena's historical
+wave-retention floor. `scoringEndsAt` is the event's inclusive Leaderboard
+scoring cutoff; the terminal exclusive `waveWindowEndsAt` is one millisecond
+later. The arena must not open a new scoreable wave that cannot finalize by the
+cutoff; the remaining 20 seconds are reserved for checking and durable
+settlement.
 
 Every completed positive wave with one unique leader must contain exactly one
 `isCrown: true` row for that leader. A tied or zero-result wave has no Crown.

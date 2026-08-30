@@ -277,19 +277,5 @@ pub(super) async fn mint_capabilities(
     st.cache
         .remove(&format!("latestround:{}", cycle.game_id))
         .await;
-    for participation_id in &config.roster {
-        st.cache
-            .remove(&format!(
-                "kothtoken:{}:{}:{}:{}",
-                cycle.game_id, cycle.challenge_id, participation_id, round_number
-            ))
-            .await;
-        st.cache
-            .remove(&format!(
-                "kothtokensall:{}:{}:{}",
-                cycle.game_id, participation_id, round_number
-            ))
-            .await;
-    }
     Ok(())
 }

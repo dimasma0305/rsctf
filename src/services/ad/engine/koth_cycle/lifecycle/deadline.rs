@@ -425,7 +425,7 @@ pub(super) const fn action(phase: CrownPhase, replacement_persisted: bool) -> Ac
 /// Finalized cycle fields and immutable scoring evidence are preserved.
 pub(super) async fn cleanup_completed_cycle(
     st: &SharedState,
-    config: &OfficialConfig,
+    _config: &OfficialConfig,
     cycle: &CycleRow,
     round_number: i32,
 ) -> AppResult<()> {
@@ -467,20 +467,6 @@ pub(super) async fn cleanup_completed_cycle(
         st.cache.remove(&key).await;
     }
     crate::controllers::game::invalidate_combined_scoreboard(st, cycle.game_id).await;
-    for participation_id in &config.roster {
-        st.cache
-            .remove(&format!(
-                "kothtoken:{}:{}:{}:{}",
-                cycle.game_id, cycle.challenge_id, participation_id, round_number
-            ))
-            .await;
-        st.cache
-            .remove(&format!(
-                "kothtokensall:{}:{}:{}",
-                cycle.game_id, participation_id, round_number
-            ))
-            .await;
-    }
     Ok(())
 }
 
@@ -519,7 +505,7 @@ pub(super) async fn complete_active_cycle(
 
 pub(super) async fn terminate_interrupted_cycle(
     st: &SharedState,
-    config: &OfficialConfig,
+    _config: &OfficialConfig,
     cycle: &CycleRow,
     round_number: i32,
 ) -> AppResult<()> {
@@ -612,21 +598,6 @@ pub(super) async fn terminate_interrupted_cycle(
         st.cache.remove(&key).await;
     }
     crate::controllers::game::invalidate_combined_scoreboard(st, cycle.game_id).await;
-    for participation_id in &config.roster {
-        st.cache
-            .remove(&format!(
-                "kothtoken:{}:{}:{}:{}",
-                cycle.game_id, cycle.challenge_id, participation_id, round_number
-            ))
-            .await;
-        st.cache
-            .remove(&format!(
-                "kothtokensall:{}:{}:{}",
-                cycle.game_id, participation_id, round_number
-            ))
-            .await;
-    }
-
     Ok(())
 }
 

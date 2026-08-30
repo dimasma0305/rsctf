@@ -23,22 +23,19 @@ use crate::services::ad::engine::{
     koth_marker::observation_precedes_deadline,
     AdCheckStatus, RoundFinishLease,
 };
-use crate::services::container::{ContainerLiveness, ContainerManager};
+use crate::services::container::ContainerManager;
 use crate::utils::enums::{ParticipationStatus, Role};
 use crate::utils::error::{AppError, AppResult};
 
 mod claims;
+mod eligibility;
+mod liveness;
 mod scheduling;
 
 use claims::{read_claim_input, read_initial_claim_input, stable_claim_outcome};
+use eligibility::lock_eligibility_fence;
+use liveness::{inspect_liveness, ManagedHillLiveness};
 use scheduling::{api_settlement_start_instant, API_MAX_PROBE_BUDGET, KOTH_COMPLETION_MARGIN};
-
-#[derive(Debug, PartialEq, Eq)]
-enum ManagedHillLiveness {
-    Running,
-    Dead(String),
-    Unknown(String),
-}
 
 const PENDING_KOTH_CHALLENGES_SQL: &str = r#"SELECT (frozen.item->>'challengeId')::integer,
               COALESCE(NULLIF(frozen.item->>'claimSource', ''), 'Marker')
@@ -52,20 +49,6 @@ const PENDING_KOTH_CHALLENGES_SQL: &str = r#"SELECT (frozen.item->>'challengeId'
                    AND result.ad_round_id = $2
               )
         ORDER BY (frozen.item->>'challengeId')::integer"#;
-
-async fn inspect_liveness(
-    containers: &dyn ContainerManager,
-    container_id: &str,
-) -> ManagedHillLiveness {
-    match containers.inspect_liveness(container_id).await {
-        Ok(ContainerLiveness::Running) => ManagedHillLiveness::Running,
-        Ok(ContainerLiveness::Stopped) => ManagedHillLiveness::Dead(container_id.to_string()),
-        Ok(ContainerLiveness::Unknown) => {
-            ManagedHillLiveness::Unknown("backend is in a transitional state".to_string())
-        }
-        Err(error) => ManagedHillLiveness::Unknown(error.to_string()),
-    }
-}
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub(super) struct LiveHill {
@@ -116,6 +99,7 @@ async fn load_live_hill(
                     THEN (SELECT COUNT(*) FROM "KothApiTeamTokens" token
                            WHERE token.game_id = target.game_id
                              AND token.challenge_id = target.challenge_id
+                             AND NOT token.revocation_pending
                              AND token.participation_id = ANY(eligible.participation_ids))
                     ELSE (SELECT COUNT(*) FROM "KothTokens" token
                            WHERE token.cycle_id = cycle.id
@@ -204,6 +188,10 @@ async fn reconcile_ineligible_incumbents(
     game_id: i32,
     hill: &LiveHill,
 ) -> AppResult<()> {
+    // Event-scoped API capability rows are deliberately retained with freshly
+    // rotated secrets while a team is ineligible. Eligibility gates auth and
+    // context admission, so those dormant rows are not live incumbents and
+    // must not trigger another security rotation on every checker pass.
     let ineligible_incumbents: Vec<i32> = sqlx::query_scalar(
         r#"SELECT DISTINCT incumbent.participation_id
              FROM (
@@ -229,11 +217,6 @@ async fn reconcile_ineligible_incumbents(
                    FROM "KothClaimStates" claim
                    JOIN "KothTokens" token ON token.id = claim.token_id
                   WHERE claim.target_id = $1 AND claim.cycle_id = $2
-                 UNION ALL
-                 SELECT token.participation_id
-                   FROM "KothApiTeamTokens" token
-                  WHERE token.game_id = $4
-                    AND token.challenge_id = $5
              ) incumbent
             WHERE incumbent.participation_id IS NOT NULL
               AND NOT (incumbent.participation_id = ANY($3))"#,
@@ -241,12 +224,15 @@ async fn reconcile_ineligible_incumbents(
     .bind(hill.target_id)
     .bind(hill.cycle_id)
     .bind(&hill.eligible_roster)
-    .bind(game_id)
-    .bind(hill.challenge_id)
     .fetch_all(&mut *connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    koth_auth::revoke_game_capabilities(connection, game_id, &ineligible_incumbents).await
+    // Eligibility writers own capability-generation changes: participation
+    // suspension records a durable pending request, roster mutations rotate
+    // under the game lock, and account unban is fenced behind teardown. The
+    // checker only removes stale holder projections here; creating a new
+    // request would rotate a just-reconciled suspended incumbent twice.
+    koth_auth::revoke_game_capabilities(connection, game_id, &ineligible_incumbents, false).await
 }
 
 async fn insert_missing_cycle_void(
@@ -364,6 +350,19 @@ async fn check_one_hill(
         lease,
     )
     .await?;
+    crate::services::ad::koth_api_capability::reconcile_pending_event_capabilities(
+        control.transaction_mut(),
+        game_id,
+        Some(challenge_id),
+        None,
+    )
+    .await?;
+    crate::services::ad::koth_api_capability::repair_missing_eligible_event_capabilities(
+        control.transaction_mut(),
+        game_id,
+        challenge_id,
+    )
+    .await?;
     let Some(hill) = load_live_hill(
         &mut *control.transaction_mut(),
         game_id,
@@ -386,6 +385,16 @@ async fn check_one_hill(
         lifecycle.release().await?;
         return Ok(());
     };
+    if hill.claim_source == "Api" {
+        crate::services::ad::koth_api_capability::retain_eligible_unsettled_scores(
+            control.transaction_mut(),
+            game_id,
+            challenge_id,
+            hill.target_id,
+            &hill.eligible_roster,
+        )
+        .await?;
+    }
     reconcile_ineligible_incumbents(&mut *control.transaction_mut(), game_id, &hill).await?;
     let complete_tokens = hill.has_complete_token_window();
     if hill.phase != "Active" || !complete_tokens {
@@ -565,6 +574,20 @@ async fn check_one_hill(
         lease,
     )
     .await?;
+    lock_eligibility_fence(control.transaction_mut()).await?;
+    crate::services::ad::koth_api_capability::reconcile_pending_event_capabilities(
+        control.transaction_mut(),
+        game_id,
+        Some(challenge_id),
+        None,
+    )
+    .await?;
+    crate::services::ad::koth_api_capability::repair_missing_eligible_event_capabilities(
+        control.transaction_mut(),
+        game_id,
+        challenge_id,
+    )
+    .await?;
     let Some(current) = load_live_hill(
         &mut *control.transaction_mut(),
         game_id,
@@ -587,6 +610,16 @@ async fn check_one_hill(
         lifecycle.release().await?;
         return Ok(());
     };
+    if current.claim_source == "Api" {
+        crate::services::ad::koth_api_capability::retain_eligible_unsettled_scores(
+            control.transaction_mut(),
+            game_id,
+            challenge_id,
+            current.target_id,
+            &current.eligible_roster,
+        )
+        .await?;
+    }
     reconcile_ineligible_incumbents(&mut *control.transaction_mut(), game_id, &current).await?;
     let duplicate: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(SELECT 1 FROM "KothControlResults"
@@ -603,6 +636,8 @@ async fn check_one_hill(
         || current.cycle_id != hill.cycle_id
         || current.container_id != hill.container_id
         || current.claim_source != hill.claim_source
+        || current.token_window_attempt != hill.token_window_attempt
+        || current.eligible_roster != hill.eligible_roster
         || current.game_start > observed_at
         || current.round_start > observed_at
         || !observation_precedes_deadline(observed_at, current.round_end)

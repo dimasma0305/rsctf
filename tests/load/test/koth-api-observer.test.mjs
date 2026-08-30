@@ -151,22 +151,41 @@ test('Leaderboard load fixture never crowns zero or incomplete evidence', () => 
 
 test('Leaderboard load fixture requires a complete fenced context window', () => {
   const context = {
-    apiVersion: 'v1',
+    apiVersion: 'v2',
     context: 'a'.repeat(64),
     cycleNumber: 3,
     resetAttempt: 1,
     roundNumber: 7,
+    cycleStartsAt: 67_000,
     cycleEndsAt: 240_000,
+    scoringEndsAt: 220_000,
     waveWindowStartsAt: 120_000,
     waveWindowEndsAt: 180_000,
     generatedAt: 125_000,
     eligibleTokenHashes: ['b'.repeat(64), 'c'.repeat(64)],
   };
   assert.equal(validateKothApiContext(context), context);
+  assert.equal(
+    validateKothApiContext({
+      ...context,
+      scoringEndsAt: 180_000,
+      waveWindowEndsAt: 180_001,
+    }).waveWindowEndsAt,
+    180_001,
+  );
+  const firstCompleteWaveEnd = (cycleStartsAt, cadence) =>
+    (Math.floor(cycleStartsAt / cadence) + 1) * cadence;
+  assert.equal(firstCompleteWaveEnd(context.cycleStartsAt, 60_000), 120_000);
+  assert.equal(firstCompleteWaveEnd(120_000, 60_000), 180_000);
   for (const malformed of [
-    { ...context, apiVersion: 'v2' },
+    { ...context, apiVersion: 'v1' },
+    { ...context, cycleStartsAt: undefined },
+    { ...context, cycleStartsAt: context.waveWindowStartsAt + 1 },
     { ...context, cycleEndsAt: undefined },
-    { ...context, cycleEndsAt: context.waveWindowEndsAt - 1 },
+    { ...context, scoringEndsAt: undefined },
+    { ...context, scoringEndsAt: context.cycleEndsAt + 1 },
+    { ...context, scoringEndsAt: context.waveWindowEndsAt - 2 },
+    { ...context, scoringEndsAt: 180_000, waveWindowEndsAt: 180_002 },
     { ...context, waveWindowEndsAt: context.waveWindowStartsAt },
     { ...context, eligibleTokenHashes: ['b'.repeat(64), 'b'.repeat(64)] },
   ]) {

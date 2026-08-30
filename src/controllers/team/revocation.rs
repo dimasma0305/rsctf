@@ -412,7 +412,7 @@ pub(crate) async fn revoke_participation_capabilities(
             }
         }
     }
-    if let Err(error) = crate::services::ad_engine::revoke_koth_capabilities(
+    if let Err(error) = crate::services::ad_engine::reconcile_koth_capability_revocations(
         &st.db,
         st.cache.as_ref(),
         &[participation_id],

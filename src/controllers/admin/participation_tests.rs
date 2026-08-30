@@ -74,6 +74,35 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
           division_id INTEGER,
           writeup_id INTEGER
         );
+        CREATE TABLE "KothApiTeamTokens" (
+          game_id INTEGER NOT NULL,
+          challenge_id INTEGER NOT NULL,
+          participation_id INTEGER NOT NULL,
+          token TEXT NOT NULL UNIQUE,
+          generation INTEGER NOT NULL DEFAULT 1,
+          rotated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          last_used_at TIMESTAMPTZ,
+          revocation_pending BOOLEAN NOT NULL DEFAULT FALSE,
+          PRIMARY KEY (game_id, challenge_id, participation_id)
+        );
+        CREATE TABLE "KothApiSnapshots" (
+          target_id INTEGER PRIMARY KEY,
+          game_id INTEGER NOT NULL,
+          challenge_id INTEGER NOT NULL,
+          snapshot_hash BYTEA NOT NULL
+        );
+        CREATE TABLE "KothApiSnapshotScores" (
+          target_id INTEGER NOT NULL,
+          wave_id TEXT NOT NULL,
+          participation_id INTEGER NOT NULL,
+          activity_earned BIGINT NOT NULL,
+          activity_possible BIGINT NOT NULL,
+          objective_earned BIGINT NOT NULL,
+          objective_possible BIGINT NOT NULL,
+          objective_count SMALLINT NOT NULL,
+          is_crown BOOLEAN NOT NULL,
+          PRIMARY KEY (target_id, wave_id, participation_id)
+        );
         CREATE TABLE "UserParticipations" (
           user_id UUID NOT NULL,
           game_id INTEGER NOT NULL,
@@ -212,15 +241,50 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
     .execute(&pool)
     .await
     .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "KothApiTeamTokens"
+             (game_id, challenge_id, participation_id, token)
+           VALUES ($1, $2, $3, 'koth_before_suspension')"#,
+    )
+    .bind(identity.game_id)
+    .bind(seed + 4)
+    .bind(identity.id)
+    .execute(&pool)
+    .await
+    .unwrap();
     let mut lease = ParticipationReviewLease::acquire(&pool, identity.team_id)
         .await
         .unwrap();
     persist_participation_status(&mut lease, identity, ParticipationStatus::Suspended, None)
         .await
         .expect("active roster could not be suspended");
+    assert!(
+        sqlx::query_scalar::<_, bool>(
+            r#"SELECT revocation_pending FROM "KothApiTeamTokens"
+                WHERE game_id = $1 AND participation_id = $2"#,
+        )
+        .bind(identity.game_id)
+        .bind(identity.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        "suspension committed without its fail-closed capability request"
+    );
     persist_participation_status(&mut lease, identity, ParticipationStatus::Accepted, None)
         .await
         .expect("active suspended roster could not be reinstated");
+    let restored_capability: (String, i32, bool) = sqlx::query_as(
+        r#"SELECT token, generation, revocation_pending
+             FROM "KothApiTeamTokens"
+            WHERE game_id = $1 AND participation_id = $2"#,
+    )
+    .bind(identity.game_id)
+    .bind(identity.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_ne!(restored_capability.0, "koth_before_suspension");
+    assert_eq!((restored_capability.1, restored_capability.2), (2, false));
     persist_participation_status(&mut lease, identity, ParticipationStatus::Suspended, None)
         .await
         .expect("reinstated roster could not be suspended again");
@@ -334,6 +398,35 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
           status SMALLINT NOT NULL,
           division_id INTEGER,
           writeup_id INTEGER
+        );
+        CREATE TABLE "KothApiTeamTokens" (
+          game_id INTEGER NOT NULL,
+          challenge_id INTEGER NOT NULL,
+          participation_id INTEGER NOT NULL,
+          token TEXT NOT NULL UNIQUE,
+          generation INTEGER NOT NULL DEFAULT 1,
+          rotated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          last_used_at TIMESTAMPTZ,
+          revocation_pending BOOLEAN NOT NULL DEFAULT FALSE,
+          PRIMARY KEY (game_id, challenge_id, participation_id)
+        );
+        CREATE TABLE "KothApiSnapshots" (
+          target_id INTEGER PRIMARY KEY,
+          game_id INTEGER NOT NULL,
+          challenge_id INTEGER NOT NULL,
+          snapshot_hash BYTEA NOT NULL
+        );
+        CREATE TABLE "KothApiSnapshotScores" (
+          target_id INTEGER NOT NULL,
+          wave_id TEXT NOT NULL,
+          participation_id INTEGER NOT NULL,
+          activity_earned BIGINT NOT NULL,
+          activity_possible BIGINT NOT NULL,
+          objective_earned BIGINT NOT NULL,
+          objective_possible BIGINT NOT NULL,
+          objective_count SMALLINT NOT NULL,
+          is_crown BOOLEAN NOT NULL,
+          PRIMARY KEY (target_id, wave_id, participation_id)
         );
         CREATE TABLE "UserParticipations" (
           user_id UUID NOT NULL,

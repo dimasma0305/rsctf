@@ -205,7 +205,8 @@ async fn live_capability_field_excludes_a_banned_snapshot_team() {
         );
         CREATE TEMP TABLE "KothApiTeamTokens" (
           game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
-          participation_id INTEGER NOT NULL, token TEXT NOT NULL
+          participation_id INTEGER NOT NULL, token TEXT NOT NULL,
+          revocation_pending BOOLEAN NOT NULL DEFAULT FALSE
         );
         INSERT INTO "AspNetUsers" VALUES
           ('00000000-0000-0000-0000-000000000021', 1),
@@ -234,7 +235,8 @@ async fn live_capability_field_excludes_a_banned_snapshot_team() {
           (101, 41, 9, 3, 1, 11, NULL),
           (102, 41, 9, 3, 1, 12, NULL),
           (103, 41, 9, 3, 1, 13, NULL);
-        INSERT INTO "KothApiTeamTokens" VALUES
+        INSERT INTO "KothApiTeamTokens"
+          (game_id, challenge_id, participation_id, token) VALUES
           (7, 9, 11, 'koth_team_11'),
           (7, 9, 12, 'koth_team_12'),
           (7, 9, 13, 'koth_team_13');

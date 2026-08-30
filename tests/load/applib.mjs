@@ -1594,7 +1594,7 @@ export function assignUniqueKothApiCrown(teams) {
 export function validateKothApiContext(contextModel) {
   const eligible = contextModel?.eligibleTokenHashes;
   if (
-    contextModel?.apiVersion !== 'v1' ||
+    contextModel?.apiVersion !== 'v2' ||
     typeof contextModel?.context !== 'string' ||
     !/^[0-9a-f]{64}$/.test(contextModel.context) ||
     !Number.isSafeInteger(contextModel?.cycleNumber) ||
@@ -1603,11 +1603,17 @@ export function validateKothApiContext(contextModel) {
     contextModel.resetAttempt < 0 ||
     !Number.isSafeInteger(contextModel?.roundNumber) ||
     contextModel.roundNumber < 1 ||
+    !Number.isSafeInteger(contextModel?.cycleStartsAt) ||
     !Number.isSafeInteger(contextModel?.waveWindowStartsAt) ||
+    contextModel.cycleStartsAt > contextModel.waveWindowStartsAt ||
     !Number.isSafeInteger(contextModel?.waveWindowEndsAt) ||
     contextModel.waveWindowEndsAt <= contextModel.waveWindowStartsAt ||
     !Number.isSafeInteger(contextModel?.cycleEndsAt) ||
-    contextModel.cycleEndsAt < contextModel.waveWindowEndsAt ||
+    contextModel.cycleEndsAt <= contextModel.cycleStartsAt ||
+    !Number.isSafeInteger(contextModel?.scoringEndsAt) ||
+    contextModel.scoringEndsAt <= contextModel.cycleStartsAt ||
+    contextModel.scoringEndsAt > contextModel.cycleEndsAt ||
+    contextModel.scoringEndsAt + 1 < contextModel.waveWindowEndsAt ||
     !Number.isSafeInteger(contextModel?.generatedAt) ||
     !Array.isArray(eligible) ||
     eligible.some((hash) => typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash)) ||
@@ -1640,7 +1646,11 @@ export async function kothApiObservation(
   const contextResponse = await api(
     'GET',
     `/api/v1/koth/games/${gameId}/challenges/${challengeId}/context`,
-    { ip: '10.9.9.10', timeoutMs: requestTimeout() },
+    {
+      ip: '10.9.9.10',
+      timeoutMs: requestTimeout(),
+      headers: { 'x-rsctf-api-version': 'v2' },
+    },
   );
   if (contextResponse.status !== 200) {
     throw new Error(

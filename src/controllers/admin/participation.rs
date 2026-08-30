@@ -236,6 +236,28 @@ async fn persist_participation_status(
         requested_status,
     )?;
     ensure_scored_division_unchanged(competition_scoring_started, live_division_id, division_id)?;
+    if live_status != requested_status {
+        if live_status == ParticipationStatus::Accepted {
+            crate::services::ad::koth_api_capability::request_event_capability_revocation(
+                &mut transaction,
+                identity.game_id,
+                &[identity.id],
+            )
+            .await?;
+        }
+        if requested_status == ParticipationStatus::Accepted {
+            // A prior suspension may have committed its durable request before
+            // external teardown failed. Apply that exact generation before
+            // acceptance can make this participation visible again.
+            crate::services::ad::koth_api_capability::reconcile_pending_event_capabilities(
+                &mut transaction,
+                identity.game_id,
+                None,
+                Some(&[identity.id]),
+            )
+            .await?;
+        }
+    }
     sqlx::query(
         r#"UPDATE "Participations"
               SET status = $1, division_id = $2

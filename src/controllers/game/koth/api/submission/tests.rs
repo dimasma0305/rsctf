@@ -27,6 +27,26 @@ fn wave(id: &str, rows: Vec<ResolvedInputRow>) -> ResolvedWave {
 }
 
 #[test]
+fn ordinary_windows_are_half_open_and_terminal_cutoff_is_inclusive() {
+    let at = |millis| DateTime::from_timestamp_millis(millis).unwrap();
+    assert!(!wave_ends_inside_window(
+        at(180_000),
+        at(120_000),
+        at(180_000)
+    ));
+    assert!(wave_ends_inside_window(
+        at(180_000),
+        at(120_000),
+        at(180_001)
+    ));
+    assert!(!wave_ends_inside_window(
+        at(180_001),
+        at(120_000),
+        at(180_001)
+    ));
+}
+
+#[test]
 fn snapshot_digest_binds_resolved_identity_and_every_budget() {
     let schema = [7; 32];
     let base = snapshot_hash(
@@ -166,7 +186,7 @@ async fn signed_snapshot_is_tick_bound_normalized_replay_safe_and_hash_only() {
             );
             CREATE TEMP TABLE "KothOfficialConfigs" (
               game_id INTEGER PRIMARY KEY, roster_snapshot JSONB,
-              hills_snapshot JSONB
+              hills_snapshot JSONB, scoring_start_round INTEGER
             );
             CREATE TEMP TABLE "KothTargets" (
               id INTEGER PRIMARY KEY, game_id INTEGER,
@@ -219,7 +239,8 @@ async fn signed_snapshot_is_tick_bound_normalized_replay_safe_and_hash_only() {
             );
             CREATE TEMP TABLE "KothApiTeamTokens" (
               game_id INTEGER, challenge_id INTEGER,
-              participation_id INTEGER, token TEXT
+              participation_id INTEGER, token TEXT,
+              revocation_pending BOOLEAN NOT NULL DEFAULT FALSE
             );
             CREATE TEMP TABLE "KothApiSnapshots" (
               target_id INTEGER PRIMARY KEY, game_id INTEGER,
@@ -249,14 +270,22 @@ async fn signed_snapshot_is_tick_bound_normalized_replay_safe_and_hash_only() {
     .unwrap();
     sqlx::raw_sql(
         r#"INSERT INTO "Games" VALUES
-                 (7, clock_timestamp() - interval '1 minute',
+                 (7, clock_timestamp() - interval '4 minutes 13 seconds',
                      clock_timestamp() + interval '1 hour');
                INSERT INTO "KothOfficialConfigs" VALUES
-                 (7, '[11,12]', '[{"challengeId":9,"claimSource":"Api"}]');
+                 (7, '[11,12]', '[{"challengeId":9,"claimSource":"Api"}]', 3);
                INSERT INTO "KothTargets" VALUES (3, 7, 9, 'runtime-a');
                INSERT INTO "KothCrownCycles" VALUES
                  (41, 7, 9, 4, 2, 'runtime-a', 1, 3, 'Active');
                INSERT INTO "AdRounds" VALUES
+                 (47, 7, 1, clock_timestamp() - interval '220 seconds',
+                  clock_timestamp() - interval '180 seconds', TRUE),
+                 (48, 7, 2, clock_timestamp() - interval '180 seconds',
+                  clock_timestamp() - interval '120 seconds', TRUE),
+                 (49, 7, 3, clock_timestamp() - interval '120 seconds',
+                  clock_timestamp() - interval '60 seconds', TRUE),
+                 (50, 7, 4, clock_timestamp() - interval '60 seconds',
+                  clock_timestamp() - interval '10 seconds', TRUE),
                  (51, 7, 5, clock_timestamp() - interval '10 seconds',
                   clock_timestamp() + interval '1 minute', FALSE);
                INSERT INTO "KothApiObservers" VALUES
@@ -267,7 +296,8 @@ async fn signed_snapshot_is_tick_bound_normalized_replay_safe_and_hash_only() {
                   clock_timestamp() + interval '1 hour', NULL);
                INSERT INTO "AspNetUsers" VALUES (101, 1), (102, 1);
                INSERT INTO "Teams" VALUES (21, 101, FALSE), (22, 102, FALSE);
-               INSERT INTO "KothApiTeamTokens" VALUES
+               INSERT INTO "KothApiTeamTokens"
+                 (game_id, challenge_id, participation_id, token) VALUES
                  (7, 9, 11, 'current-token-a'),
                  (7, 9, 12, 'current-token-b');"#,
     )
@@ -290,6 +320,21 @@ async fn signed_snapshot_is_tick_bound_normalized_replay_safe_and_hash_only() {
     .unwrap();
 
     let active_context = load_active_context(&pool, 7, 9).await.unwrap().unwrap();
+    let official_scoring_start: chrono::DateTime<Utc> = sqlx::query_scalar(
+        r#"SELECT start_time_utc FROM "AdRounds"
+            WHERE game_id = 7 AND number = 3"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let event_start: chrono::DateTime<Utc> =
+        sqlx::query_scalar(r#"SELECT start_time_utc FROM "Games" WHERE id = 7"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(active_context.round_number, 5);
+    assert_eq!(active_context.scoring_starts_at, official_scoring_start);
+    assert!(active_context.scoring_starts_at > event_start);
     // Leaderboard arenas are persistent. The compatibility field carries
     // the event cutoff, not the Boot2Root crown-cycle boundary.
     assert!(
@@ -620,4 +665,27 @@ async fn signed_snapshot_is_tick_bound_normalized_replay_safe_and_hash_only() {
         .await
         .unwrap_err();
     assert_eq!(older.status(), axum::http::StatusCode::CONFLICT);
+
+    sqlx::raw_sql(
+        r#"UPDATE "AdRounds" SET finalized = TRUE WHERE id = 51;
+           INSERT INTO "AdRounds" VALUES
+             (52, 7, 6, clock_timestamp() - interval '5 seconds',
+              clock_timestamp() + interval '1 minute', FALSE);"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let later_context = load_active_context(&pool, 7, 9).await.unwrap().unwrap();
+    assert_eq!(later_context.round_number, 6);
+    assert_eq!(later_context.scoring_starts_at, official_scoring_start);
+
+    sqlx::query(
+        r#"UPDATE "Games"
+              SET start_time_utc = clock_timestamp() + interval '1 minute'
+            WHERE id = 7"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(load_active_context(&pool, 7, 9).await.unwrap().is_none());
 }
