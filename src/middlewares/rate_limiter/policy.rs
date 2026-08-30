@@ -1,8 +1,7 @@
 use std::time::Duration;
 
 use super::{
-    ad_submit_burst_flags, AUTHENTICATED_IP_BACKSTOP_PER_MINUTE,
-    CREDENTIAL_IP_ADMISSION_PER_MINUTE,
+    ad_submit_burst_flags, AUTHENTICATED_IP_BACKSTOP_PER_MINUTE, CREDENTIAL_IP_ADMISSION_PER_MINUTE,
 };
 
 /// The rate-limit policies, mirroring RSCTF's `RateLimiter.LimitPolicy` plus the
