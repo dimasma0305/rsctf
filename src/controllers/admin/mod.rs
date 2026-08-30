@@ -171,7 +171,10 @@ pub fn router() -> Router<SharedState> {
             limited(Policy::Concurrency, post(test_email)),
         )
         // --- Bulk rebuild ---
-        .route("/api/admin/games/{gameId}/bulkrebuild", post(bulk_rebuild))
+        .route(
+            "/api/admin/games/{gameId}/bulkrebuild",
+            limited(Policy::Concurrency, post(bulk_rebuild)),
+        )
         // --- Anti-cheat ---
         .route("/api/admin/anticheatblocks", get(list_anti_cheat_blocks))
         .route(
@@ -211,12 +214,16 @@ pub fn router() -> Router<SharedState> {
         .route("/api/admin/builds/inprogress", get(builds_in_progress))
         .route(
             "/api/admin/builds/images",
-            get(build_images).delete(delete_build_image),
+            limited(Policy::Query, get(build_images)),
         )
+        .route("/api/admin/builds/images", delete(delete_build_image))
         .route("/api/admin/builds/bulkdelete", post(bulk_delete_builds))
         .route("/api/admin/builds/prunefailed", post(prune_failed_builds))
         .route("/api/admin/builds/pruneimages", post(prune_images))
-        .route("/api/admin/builds/storage", get(build_storage_status))
+        .route(
+            "/api/admin/builds/storage",
+            limited(Policy::Query, get(build_storage_status)),
+        )
         .route(
             "/api/admin/builds/prunestorage",
             post(cleanup_build_storage),
@@ -224,7 +231,7 @@ pub fn router() -> Router<SharedState> {
         .route("/api/admin/builds/{auditId}", delete(delete_build))
         .route(
             "/api/admin/builds/{auditId}/reenqueue",
-            post(reenqueue_build),
+            limited(Policy::Concurrency, post(reenqueue_build)),
         )
         // --- Repo bindings ---
         .route(

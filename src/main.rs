@@ -633,6 +633,10 @@ fn start_background_services(
     }
     match role {
         RuntimeRole::All | RuntimeRole::Control => {
+            required.push(RequiredTask::Unit(
+                "challenge import worker",
+                rsctf::controllers::edit::start_import_job_worker(state.clone(), shutdown.clone()),
+            ));
             if rsctf::services::ad_vpn::enabled() {
                 required.push(RequiredTask::Unit(
                     "A&D network reconcile",
@@ -704,7 +708,13 @@ fn start_background_services(
                 ),
             ));
         }
-        RuntimeRole::Development | RuntimeRole::Web | RuntimeRole::Migrate => {}
+        RuntimeRole::Development => {
+            required.push(RequiredTask::Unit(
+                "challenge import worker",
+                rsctf::controllers::edit::start_import_job_worker(state.clone(), shutdown.clone()),
+            ));
+        }
+        RuntimeRole::Web | RuntimeRole::Migrate => {}
     }
 
     if let Some(topology) = rsctf::services::runtime_topology::spawn(

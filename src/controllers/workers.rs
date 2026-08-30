@@ -5,7 +5,7 @@
 //! worker keeps its private key locally and exchanges a short-lived opaque
 //! token plus CSR for a client-only certificate signed by the worker CA.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, PRAGMA, RETRY_AFTER};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -38,6 +38,9 @@ const WORKER_SECRET_CACHE_CONTROL: &str = "private, no-store";
 const ENROLLMENT_SIGN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 static ENROLLMENT_SIGNERS: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(4)));
+const DEFAULT_WORKER_PAGE_SIZE: u64 = 200;
+const MAX_WORKER_PAGE_SIZE: u64 = 500;
+const MAX_WORKER_PAGE_OFFSET: u64 = 100_000;
 const WORKER_BOOTSTRAP: &str = include_str!("../../scripts/bootstrap-worker.sh");
 const WINDOWS_WORKER_BOOTSTRAP: &str = include_str!("../../scripts/bootstrap-worker.ps1");
 
@@ -223,13 +226,34 @@ pub struct CreatedWorkerModel {
     pub enrollment: EnrollmentTokenModel,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerListQuery {
+    #[serde(default = "default_worker_page_size")]
+    count: u64,
+    #[serde(default)]
+    skip: u64,
+}
+
+fn default_worker_page_size() -> u64 {
+    DEFAULT_WORKER_PAGE_SIZE
+}
+
 /// `GET /api/admin/workers` — operational metadata only; never returns token
 /// hashes, certificate fingerprints, or CA material.
 pub async fn list_workers(
     State(st): State<SharedState>,
     _admin: AdminUser,
+    Query(query): Query<WorkerListQuery>,
 ) -> AppResult<Json<Vec<WorkerModel>>> {
-    let workers = st.worker_store.list_workers().await.map_err(store_error)?;
+    let workers = st
+        .worker_store
+        .list_workers(
+            query.count.clamp(1, MAX_WORKER_PAGE_SIZE),
+            query.skip.min(MAX_WORKER_PAGE_OFFSET),
+        )
+        .await
+        .map_err(store_error)?;
     Ok(Json(workers.into_iter().map(WorkerModel::from).collect()))
 }
 
@@ -685,6 +709,18 @@ mod tests {
             csr_pem: "csr".into(),
         };
         assert!(validate_enrollment_request(&oversized).is_err());
+    }
+
+    #[test]
+    fn worker_inventory_query_has_explicit_page_bounds() {
+        let default: WorkerListQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(default.count, DEFAULT_WORKER_PAGE_SIZE);
+        assert_eq!(default.skip, 0);
+        assert!(MAX_WORKER_PAGE_SIZE < u64::MAX);
+        assert!(MAX_WORKER_PAGE_OFFSET < u64::MAX);
+        let handler = include_str!("workers.rs");
+        assert!(handler.contains("query.count.clamp(1, MAX_WORKER_PAGE_SIZE)"));
+        assert!(handler.contains("query.skip.min(MAX_WORKER_PAGE_OFFSET)"));
     }
 
     #[test]

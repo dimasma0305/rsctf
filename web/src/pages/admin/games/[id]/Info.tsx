@@ -50,6 +50,7 @@ import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
 import { requireApiCollection } from '@Utils/ApiCollection'
 import { downloadBlob } from '@Utils/ApiHelper'
+import { controlJobResultCount, createOperationId, waitForControlJob } from '@Utils/ControlJobs'
 import { getInputNumber, randomInviteCode, showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { useAdminGame } from '@Hooks/useGame'
@@ -84,6 +85,9 @@ const GameInfoEdit: FC = () => {
   const [disabled, setDisabled] = useState(false)
   const [generatingVariants, setGeneratingVariants] = useState(false)
   const [eventSecurityAction, setEventSecurityAction] = useState<string | null>(null)
+  const variantJobRef = useRef<Promise<void> | null>(null)
+  const derivationJobRef = useRef<Promise<void> | null>(null)
+  const controlJobAbortRef = useRef(new AbortController())
   const [vpnOverrides, setVpnOverrides] = useState<EventVpnOverrideModel[]>([])
   const [overrideReason, setOverrideReason] = useState('')
   const [overrideMinutes, setOverrideMinutes] = useState<number | string>(15)
@@ -360,42 +364,80 @@ const GameInfoEdit: FC = () => {
     )
   }
 
+  useEffect(() => () => controlJobAbortRef.current.abort(), [])
+
   const onGenerateVariants = async () => {
     if (!game?.id) return
-    setGeneratingVariants(true)
-    try {
-      const response = await api.eventSecurity.generateVariants(game.id)
-      showNotification({
-        color: 'teal',
-        message: t('admin.event_security.variants_generated', '{{count}} deterministic variants generated', {
-          count: response.data.generated,
-        }),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-    } catch (error) {
-      showErrorMsg(error, t)
-    } finally {
-      setGeneratingVariants(false)
-    }
+    if (variantJobRef.current) return variantJobRef.current
+    const gameId = game.id
+    const operationId = createOperationId()
+    const task = (async () => {
+      setGeneratingVariants(true)
+      try {
+        let job
+        try {
+          job = (await api.eventSecurity.generateVariants(gameId, operationId)).data
+        } catch (startError) {
+          try {
+            job = (await api.eventSecurity.getControlJobByOperation(operationId)).data
+          } catch {
+            throw startError
+          }
+        }
+        const completed = await waitForControlJob(job, controlJobAbortRef.current.signal)
+        showNotification({
+          color: 'teal',
+          message: t('admin.event_security.variants_generated', '{{count}} deterministic variants generated', {
+            count: controlJobResultCount(completed, 'generated'),
+          }),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) showErrorMsg(error, t)
+      } finally {
+        setGeneratingVariants(false)
+        variantJobRef.current = null
+      }
+    })()
+    variantJobRef.current = task
+    return task
   }
 
   const onDeriveFindings = async () => {
     if (!game?.id) return
-    setEventSecurityAction('derive')
-    try {
-      const response = await api.eventSecurity.deriveFindings(game.id)
-      showNotification({
-        color: 'teal',
-        message: t('admin.event_security.findings_derived', '{{count}} new context findings derived', {
-          count: response.data.inserted,
-        }),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-    } catch (error) {
-      showErrorMsg(error, t)
-    } finally {
-      setEventSecurityAction(null)
-    }
+    if (derivationJobRef.current) return derivationJobRef.current
+    const gameId = game.id
+    const operationId = createOperationId()
+    const task = (async () => {
+      setEventSecurityAction('derive')
+      try {
+        let job
+        try {
+          job = (await api.eventSecurity.deriveFindings(gameId, operationId)).data
+        } catch (startError) {
+          try {
+            job = (await api.eventSecurity.getControlJobByOperation(operationId)).data
+          } catch {
+            throw startError
+          }
+        }
+        const completed = await waitForControlJob(job, controlJobAbortRef.current.signal)
+        showNotification({
+          color: 'teal',
+          message: t('admin.event_security.findings_derived', '{{count}} new context findings derived', {
+            count: controlJobResultCount(completed, 'inserted'),
+          }),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) showErrorMsg(error, t)
+      } finally {
+        setEventSecurityAction(null)
+        derivationJobRef.current = null
+      }
+    })()
+    derivationJobRef.current = task
+    return task
   }
 
   const onCreateVpnOverride = async () => {

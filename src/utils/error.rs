@@ -94,6 +94,12 @@ impl AppError {
             retry_after,
         }
     }
+    pub fn overloaded(msg: impl Into<String>, retry_after_seconds: u64) -> Self {
+        AppError::RetryableUnavailable {
+            title: msg.into(),
+            retry_after: retry_after_seconds.max(1),
+        }
+    }
 
     /// RSCTF `ErrorCode.GameEnded` (10002): 400 with the numeric code in the body.
     /// The React `TeamRank` redirects when `error.status === 10002`.
@@ -184,6 +190,18 @@ mod tests {
     use axum::response::IntoResponse;
 
     use super::AppError;
+    #[test]
+    fn overload_responses_are_typed_and_retryable() {
+        let response = AppError::overloaded("capacity is busy", 2).into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "2");
+    }
+
+    #[test]
+    fn overload_retry_delay_never_serializes_as_zero() {
+        let response = AppError::overloaded("capacity is busy", 0).into_response();
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "1");
+    }
 
     #[test]
     fn retryable_overload_carries_retry_after() {

@@ -4,10 +4,14 @@ use super::{BuildImageModel, DeleteImageQuery, PruneResultModel};
 use axum::extract::{Query, State};
 use bollard::container::ListContainersOptions;
 use bollard::errors::Error as DockerError;
-use bollard::image::{ListImagesOptions, RemoveImageOptions};
+use bollard::image::RemoveImageOptions;
 use bollard::Docker;
 use chrono::{DateTime, Utc};
-use std::collections::{BTreeMap, HashMap};
+use futures::StreamExt;
+use std::collections::BTreeMap;
+use std::sync::{Arc, LazyLock, RwLock};
+use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::AdminUser;
@@ -16,6 +20,8 @@ use crate::utils::shared::RequestResponse;
 
 const OWNERSHIPS_SQL: &str = r#"SELECT canonical_ref, image_id, updated_at_utc, last_used_at_utc
  FROM "BuildImageOwnerships" WHERE installation_scope=$1 ORDER BY canonical_ref"#;
+const INVENTORY_OWNERSHIPS_SQL: &str = r#"SELECT canonical_ref, image_id, updated_at_utc, last_used_at_utc
+ FROM "BuildImageOwnerships" WHERE installation_scope=$1 ORDER BY canonical_ref LIMIT $2"#;
 const OWNERSHIP_SQL: &str = r#"SELECT canonical_ref, image_id, updated_at_utc, last_used_at_utc
  FROM "BuildImageOwnerships" WHERE installation_scope=$1 AND canonical_ref=$2"#;
 const REFERENCES_SQL: &str = r#"
@@ -31,6 +37,57 @@ const REFERENCES_SQL: &str = r#"
    AND variant_generator_build_status = 1
    AND variant_generator_image IS NOT NULL
    AND variant_generator_image = variant_generator_digest"#;
+const INVENTORY_REFERENCES_SQL: &str = r#"SELECT title, image_ref FROM (
+ SELECT title, container_image AS image_ref FROM "GameChallenges"
+ WHERE container_image IS NOT NULL AND BTRIM(container_image)<>''
+ UNION ALL
+ SELECT title, ad_checker_image AS image_ref FROM "GameChallenges"
+ WHERE ad_checker_image IS NOT NULL AND BTRIM(ad_checker_image)<>''
+ UNION ALL
+ SELECT title, variant_generator_image AS image_ref FROM "GameChallenges"
+ WHERE variant_generator_build_context_subdir = 'generator'
+   AND variant_generator_build_status = 1
+   AND variant_generator_image IS NOT NULL
+   AND variant_generator_image = variant_generator_digest
+) refs ORDER BY image_ref, title LIMIT $1"#;
+const INVENTORY_OWNERSHIP_LIMIT: i64 = 512;
+const INVENTORY_REFERENCE_LIMIT: i64 = 10_000;
+const INVENTORY_INSPECT_CONCURRENCY: usize = 4;
+const INVENTORY_CACHE_TTL: Duration = Duration::from_secs(5);
+static INVENTORY_GATE: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
+static INVENTORY_FLIGHTS: LazyLock<crate::utils::single_flight::SingleFlight<ImageInventoryFill>> =
+    LazyLock::new(crate::utils::single_flight::SingleFlight::new);
+static INVENTORY_CACHE: LazyLock<RwLock<Option<(Instant, Vec<BuildImageModel>)>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+#[derive(Clone, Default)]
+enum ImageInventoryFill {
+    Ready(Vec<BuildImageModel>),
+    Busy,
+    #[default]
+    Failed,
+}
+
+fn cached_inventory() -> Option<Vec<BuildImageModel>> {
+    INVENTORY_CACHE
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .filter(|(created, _)| created.elapsed() < INVENTORY_CACHE_TTL)
+        .map(|(_, images)| images.clone())
+}
+
+fn store_inventory(images: Vec<BuildImageModel>) {
+    *INVENTORY_CACHE
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((Instant::now(), images));
+}
+
+fn invalidate_inventory() {
+    *INVENTORY_CACHE
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
 struct OwnershipRow {
@@ -121,28 +178,23 @@ fn validate_inspect(
 async fn inventory(st: &SharedState, docker: &Docker) -> AppResult<Vec<BuildImageModel>> {
     let policy = crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
     let scope = crate::services::container::docker_installation_scope();
-    let ownerships = sqlx::query_as::<_, OwnershipRow>(OWNERSHIPS_SQL)
+    let ownerships = sqlx::query_as::<_, OwnershipRow>(INVENTORY_OWNERSHIPS_SQL)
         .bind(&scope)
+        .bind(INVENTORY_OWNERSHIP_LIMIT)
         .fetch_all(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let references = sqlx::query_as::<_, ReferenceRow>(REFERENCES_SQL)
+    let mut references = sqlx::query_as::<_, ReferenceRow>(INVENTORY_REFERENCES_SQL)
+        .bind(INVENTORY_REFERENCE_LIMIT + 1)
         .fetch_all(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let summaries = docker
-        .list_images(Some(ListImagesOptions::<String> {
-            all: false,
-            ..Default::default()
-        }))
-        .await
-        .map_err(|error| AppError::unavailable(format!("Docker image inventory failed: {error}")))?
-        .into_iter()
-        .map(|summary| (summary.id.clone(), summary))
-        .collect::<HashMap<_, _>>();
+    let references_truncated = references.len() > INVENTORY_REFERENCE_LIMIT as usize;
+    references.truncate(INVENTORY_REFERENCE_LIMIT as usize);
     let container_image_ids = docker
         .list_containers(Some(ListContainersOptions::<String> {
             all: true,
+            filters: crate::services::container::managed_container_filters(&scope),
             ..Default::default()
         }))
         .await
@@ -153,9 +205,18 @@ async fn inventory(st: &SharedState, docker: &Docker) -> AppResult<Vec<BuildImag
         .filter_map(|container| container.image_id)
         .collect::<std::collections::HashSet<_>>();
 
+    let inspected_ownerships =
+        futures::stream::iter(ownerships.into_iter().map(|ownership| async move {
+            let inspected = docker.inspect_image(&ownership.canonical_ref).await;
+            (ownership, inspected)
+        }))
+        .buffer_unordered(INVENTORY_INSPECT_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+
     let mut grouped = BTreeMap::<String, BuildImageModel>::new();
-    for ownership in ownerships {
-        let inspected = match docker.inspect_image(&ownership.canonical_ref).await {
+    for (ownership, inspected) in inspected_ownerships {
+        let inspected = match inspected {
             Ok(inspected) => inspected,
             Err(error) => {
                 tracing::warn!(tag=%ownership.canonical_ref, expected_image_id=%ownership.image_id,
@@ -171,11 +232,6 @@ async fn inventory(st: &SharedState, docker: &Docker) -> AppResult<Vec<BuildImag
                 continue;
             }
         };
-        let Some(summary) = summaries.get(&ownership.image_id) else {
-            tracing::warn!(tag=%ownership.canonical_ref, expected_image_id=%ownership.image_id,
-                "owned build image is missing from Docker list output");
-            continue;
-        };
         let referenced_by =
             reference_titles(&references, &ownership.canonical_ref, &ownership.image_id);
         let entry = grouped
@@ -183,8 +239,8 @@ async fn inventory(st: &SharedState, docker: &Docker) -> AppResult<Vec<BuildImag
             .or_insert_with(|| BuildImageModel {
                 id: ownership.image_id.clone(),
                 tags: Vec::new(),
-                size_bytes: summary.size,
-                created_utc: DateTime::<Utc>::from_timestamp(summary.created, 0),
+                size_bytes: inspected.size.unwrap_or_default(),
+                created_utc: inspected.created,
                 referenced: false,
                 referenced_by: Vec::new(),
                 is_checker: false,
@@ -198,6 +254,11 @@ async fn inventory(st: &SharedState, docker: &Docker) -> AppResult<Vec<BuildImag
         entry.tags.push(tag.clone());
         entry.referenced_by.extend(referenced_by);
         entry.referenced = !entry.referenced_by.is_empty();
+        if references_truncated {
+            // A truncated global reference snapshot must fail safe. The exact
+            // delete path re-reads every reference under its image lock.
+            entry.referenced = true;
+        }
         entry.is_checker |= tag.contains("checker");
         entry.last_used_utc = entry.last_used_utc.max(ownership.last_used_at_utc);
         let expires = ownership
@@ -221,8 +282,51 @@ pub async fn build_images(
     State(st): State<SharedState>,
     _admin: AdminUser,
 ) -> AppResult<RequestResponse<Vec<BuildImageModel>>> {
-    let docker = reachable_docker().await.map_err(AppError::unavailable)?;
-    Ok(RequestResponse::ok(inventory(&st, &docker).await?))
+    if let Some(images) = cached_inventory() {
+        return Ok(RequestResponse::ok(images));
+    }
+    let state = st.clone();
+    let fill = INVENTORY_FLIGHTS
+        .run_with_timeout(
+            "build-image-inventory",
+            Duration::from_secs(60),
+            move || async move {
+                if let Some(images) = cached_inventory() {
+                    return ImageInventoryFill::Ready(images);
+                }
+                let _permit = match INVENTORY_GATE.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => return ImageInventoryFill::Busy,
+                };
+                let docker = match reachable_docker().await {
+                    Ok(docker) => docker,
+                    Err(error) => {
+                        tracing::warn!(%error, "build image inventory daemon unavailable");
+                        return ImageInventoryFill::Failed;
+                    }
+                };
+                match inventory(&state, &docker).await {
+                    Ok(images) => {
+                        store_inventory(images.clone());
+                        ImageInventoryFill::Ready(images)
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "build image inventory failed");
+                        ImageInventoryFill::Failed
+                    }
+                }
+            },
+        )
+        .await;
+    match fill {
+        ImageInventoryFill::Ready(images) => Ok(RequestResponse::ok(images)),
+        ImageInventoryFill::Busy => Err(AppError::unavailable(
+            "Build image inventory is already in progress",
+        )),
+        ImageInventoryFill::Failed => Err(AppError::unavailable(
+            "Build image inventory is temporarily unavailable",
+        )),
+    }
 }
 
 pub async fn build_storage_status(
@@ -239,9 +343,9 @@ pub async fn cleanup_build_storage(
     _admin: AdminUser,
 ) -> AppResult<RequestResponse<crate::services::image_storage::ImageCleanupReport>> {
     let policy = crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
-    Ok(RequestResponse::ok(
-        crate::services::image_storage::cleanup(&st, &policy).await?,
-    ))
+    let report = crate::services::image_storage::cleanup(&st, &policy).await?;
+    invalidate_inventory();
+    Ok(RequestResponse::ok(report))
 }
 
 struct Removal {
@@ -426,6 +530,9 @@ pub async fn delete_build_image(
         }
     };
     let result = remove_one(&st, &docker, &query.tag, query.force).await;
+    if result.removed > 0 {
+        invalidate_inventory();
+    }
     RequestResponse::ok(PruneResultModel {
         removed: result.removed,
         messages: result.messages,
@@ -466,12 +573,16 @@ pub async fn prune_images(
         removed += result.removed;
         messages.extend(result.messages);
     }
+    if removed > 0 {
+        invalidate_inventory();
+    }
     RequestResponse::ok(PruneResultModel { removed, messages })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     const ID: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const OTHER_ID: &str =
@@ -544,6 +655,21 @@ mod tests {
             image_ref: "index.docker.io/rsctf/game/app".to_string(),
         }];
         assert_eq!(reference_titles(&rows, CANONICAL, ID), vec!["active"]);
+    }
+
+    #[test]
+    fn inventory_daemon_and_database_work_have_explicit_bounds() {
+        assert!(INVENTORY_OWNERSHIP_LIMIT > 0);
+        assert!(INVENTORY_REFERENCE_LIMIT > INVENTORY_OWNERSHIP_LIMIT);
+        assert!((1..=8).contains(&INVENTORY_INSPECT_CONCURRENCY));
+        let filters = crate::services::container::managed_container_filters(SCOPE);
+        let labels = filters.get("label").unwrap();
+        assert_eq!(labels.len(), 2);
+        assert!(labels.iter().all(|label| label.ends_with(SCOPE)));
+        let source = include_str!("images.rs");
+        assert!(!source.contains("list_images("));
+        assert!(source.contains("buffer_unordered(INVENTORY_INSPECT_CONCURRENCY)"));
+        assert!(source.contains("run_with_timeout"));
     }
 
     #[tokio::test]

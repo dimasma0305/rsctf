@@ -59,6 +59,8 @@ pub mod game {
         pub ad_snapshot_retention_days: Option<i32>,
         pub ad_scoring_paused: bool,
         pub ad_scoring_paused_at: Option<DateTime<Utc>>,
+        /// Optimistic-concurrency fence for live scoring desired-state commands.
+        pub ad_control_revision: i64,
         /// Number of A&D ticks grouped into one scoring epoch (`1..=64`).
         pub ad_epoch_ticks: i32,
         /// First round included in official epoch scoring. Set once when ready.

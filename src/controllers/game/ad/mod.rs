@@ -44,7 +44,7 @@ use crate::models::data::{
 };
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationStatus};
 use crate::utils::error::{AppError, AppResult};
-use crate::utils::shared::{MessageResponse, RequestResponse};
+use crate::utils::shared::RequestResponse;
 
 // ---------------------------------------------------------------------------
 // Router — paths match Api.ts verbatim (mixed case, case-sensitive).
@@ -55,7 +55,15 @@ fn common_router() -> Router<SharedState> {
         .route("/api/Game/{id}/Ad/Scoreboard", get(scoreboard))
         .route(
             "/api/Game/{id}/Ad/Services/{adTeamServiceId}/Reset",
-            post(reset_service),
+            limited(Policy::Container, post(reset_service)),
+        )
+        .route(
+            "/api/Game/{id}/Ad/ResetJobs/Operations/{operationId}",
+            get(reset_job_by_operation),
+        )
+        .route(
+            "/api/Game/{id}/Ad/ResetJobs/{jobId}",
+            get(reset_job_status).post(cancel_reset_job),
         )
         .route(
             "/api/Game/{id}/Ad/Services/{adTeamServiceId}/Snapshot",
