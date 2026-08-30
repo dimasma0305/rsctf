@@ -38,7 +38,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
     async fn migration_is_replay_safe_and_does_not_infer_player_rotations() {
-        use sqlx::{Connection as _, Executor as _};
+        use sqlx::Connection as _;
 
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
             .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");

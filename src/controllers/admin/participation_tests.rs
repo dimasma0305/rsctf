@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
+use crate::services::cache::InMemoryCache;
+
 #[test]
 fn epoch_boundary_freezes_only_real_division_changes() {
     assert!(ensure_scored_division_unchanged(true, Some(3), Some(4)).is_err());
@@ -51,6 +53,7 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
         .connect_with(options)
         .await
         .unwrap();
+    let cache = InMemoryCache::new();
     sqlx::raw_sql(
         r#"
         CREATE TABLE "Games" (
@@ -59,6 +62,10 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
           ad_scoring_start_round INTEGER,
           koth_scoring_start_round INTEGER,
           deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+        );
+        CREATE TABLE "GameChallenges" (
+          game_id INTEGER NOT NULL,
+          "Type" SMALLINT NOT NULL
         );
         CREATE TABLE "Teams" (
           id INTEGER PRIMARY KEY,
@@ -178,6 +185,7 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
     for error in [
         persist_participation_status(
             &mut pending_game_review,
+            &cache,
             identity,
             ParticipationStatus::Suspended,
             None,
@@ -214,7 +222,7 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
         ParticipationStatus::Pending,
         ParticipationStatus::Unsubmitted,
     ] {
-        let error = persist_participation_status(&mut lease, identity, status, None)
+        let error = persist_participation_status(&mut lease, &cache, identity, status, None)
             .await
             .expect_err("Jeopardy evidence was hidden behind a non-scoring status");
         assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
@@ -255,9 +263,21 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
     let mut lease = ParticipationReviewLease::acquire(&pool, identity.team_id)
         .await
         .unwrap();
-    persist_participation_status(&mut lease, identity, ParticipationStatus::Suspended, None)
-        .await
-        .expect("active roster could not be suspended");
+    let cache_mutation = persist_participation_status(
+        &mut lease,
+        &cache,
+        identity,
+        ParticipationStatus::Suspended,
+        None,
+    )
+    .await
+    .expect("active roster could not be suspended");
+    crate::services::ad::koth_capability_cache::finish_game_epoch_mutation_if_any(
+        &cache,
+        identity.game_id,
+        cache_mutation,
+    )
+    .await;
     assert!(
         sqlx::query_scalar::<_, bool>(
             r#"SELECT revocation_pending FROM "KothApiTeamTokens"
@@ -270,9 +290,21 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
         .unwrap(),
         "suspension committed without its fail-closed capability request"
     );
-    persist_participation_status(&mut lease, identity, ParticipationStatus::Accepted, None)
-        .await
-        .expect("active suspended roster could not be reinstated");
+    let cache_mutation = persist_participation_status(
+        &mut lease,
+        &cache,
+        identity,
+        ParticipationStatus::Accepted,
+        None,
+    )
+    .await
+    .expect("active suspended roster could not be reinstated");
+    crate::services::ad::koth_capability_cache::finish_game_epoch_mutation_if_any(
+        &cache,
+        identity.game_id,
+        cache_mutation,
+    )
+    .await;
     let restored_capability: (String, i32, bool) = sqlx::query_as(
         r#"SELECT token, generation, revocation_pending
              FROM "KothApiTeamTokens"
@@ -285,13 +317,30 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
     .unwrap();
     assert_ne!(restored_capability.0, "koth_before_suspension");
     assert_eq!((restored_capability.1, restored_capability.2), (2, false));
-    persist_participation_status(&mut lease, identity, ParticipationStatus::Suspended, None)
-        .await
-        .expect("reinstated roster could not be suspended again");
-    let error =
-        persist_participation_status(&mut lease, identity, ParticipationStatus::Rejected, None)
-            .await
-            .expect_err("suspended solver was rejected and lost its scoring identity");
+    let cache_mutation = persist_participation_status(
+        &mut lease,
+        &cache,
+        identity,
+        ParticipationStatus::Suspended,
+        None,
+    )
+    .await
+    .expect("reinstated roster could not be suspended again");
+    crate::services::ad::koth_capability_cache::finish_game_epoch_mutation_if_any(
+        &cache,
+        identity.game_id,
+        cache_mutation,
+    )
+    .await;
+    let error = persist_participation_status(
+        &mut lease,
+        &cache,
+        identity,
+        ParticipationStatus::Rejected,
+        None,
+    )
+    .await
+    .expect_err("suspended solver was rejected and lost its scoring identity");
     assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
     assert!(error.to_string().contains("competition evidence"));
     lease.release().await.unwrap();
@@ -373,6 +422,7 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
         .connect_with(options)
         .await
         .unwrap();
+    let cache = Arc::new(InMemoryCache::new());
     sqlx::raw_sql(
         r#"
         CREATE TABLE "Games" (
@@ -381,6 +431,10 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
           ad_scoring_start_round INTEGER,
           koth_scoring_start_round INTEGER,
           deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+        );
+        CREATE TABLE "GameChallenges" (
+          game_id INTEGER NOT NULL,
+          "Type" SMALLINT NOT NULL
         );
         CREATE TABLE "Teams" (
           id INTEGER PRIMARY KEY,
@@ -501,14 +555,21 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
     let mut accepted = ParticipationReviewLease::acquire(&pool, identity.team_id)
         .await
         .unwrap();
-    persist_participation_status(
+    let cache_mutation = persist_participation_status(
         &mut accepted,
+        cache.as_ref(),
         identity,
         ParticipationStatus::Accepted,
         Some(Some(division_id)),
     )
     .await
     .unwrap();
+    crate::services::ad::koth_capability_cache::finish_game_epoch_mutation_if_any(
+        cache.as_ref(),
+        identity.game_id,
+        cache_mutation,
+    )
+    .await;
     let queued: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(
                SELECT 1 FROM "ParticipationProvisionJobs"
@@ -525,17 +586,25 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
     let (attempting_tx, attempting_rx) = tokio::sync::oneshot::channel();
     let second_pool = pool.clone();
     let second_effects = Arc::clone(&effects);
+    let second_cache = Arc::clone(&cache);
     let mut rejected = tokio::spawn(async move {
         attempting_tx.send(()).unwrap();
         let mut lease = acquire_from_other_replica(&second_pool, identity.team_id).await;
-        persist_participation_status(
+        let cache_mutation = persist_participation_status(
             &mut lease,
+            second_cache.as_ref(),
             identity,
             ParticipationStatus::Rejected,
             Some(Some(division_id)),
         )
         .await
         .unwrap();
+        crate::services::ad::koth_capability_cache::finish_game_epoch_mutation_if_any(
+            second_cache.as_ref(),
+            identity.game_id,
+            cache_mutation,
+        )
+        .await;
         let effect_pool = second_pool.clone();
         run_terminal_effect(
             &mut lease,
@@ -661,6 +730,7 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
         .unwrap();
     let error = persist_participation_status(
         &mut status_review,
+        cache.as_ref(),
         identity,
         ParticipationStatus::Accepted,
         Some(Some(other_division_id)),
@@ -773,11 +843,17 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
         .await
         .unwrap();
     let second_pool = pool.clone();
+    let second_cache = Arc::clone(&cache);
     let mut rejection = tokio::spawn(async move {
         let mut lease = acquire_from_other_replica(&second_pool, identity.team_id).await;
-        let result =
-            persist_participation_status(&mut lease, identity, ParticipationStatus::Rejected, None)
-                .await;
+        let result = persist_participation_status(
+            &mut lease,
+            second_cache.as_ref(),
+            identity,
+            ParticipationStatus::Rejected,
+            None,
+        )
+        .await;
         lease.release().await.unwrap();
         result
     });
@@ -824,14 +900,21 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
     let mut sanction = ParticipationReviewLease::acquire(&pool, identity.team_id)
         .await
         .unwrap();
-    persist_participation_status(
+    let cache_mutation = persist_participation_status(
         &mut sanction,
+        cache.as_ref(),
         identity,
         ParticipationStatus::Suspended,
         None,
     )
     .await
     .expect("scoring boundary blocked the administrative suspension");
+    crate::services::ad::koth_capability_cache::finish_game_epoch_mutation_if_any(
+        cache.as_ref(),
+        identity.game_id,
+        cache_mutation,
+    )
+    .await;
     sanction.release().await.unwrap();
 
     // Each engine family independently freezes division interpretation, even

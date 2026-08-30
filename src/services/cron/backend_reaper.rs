@@ -132,11 +132,10 @@ pub(super) async fn reap_ended_backends(state: &SharedState) -> AppResult<u64> {
                 if let Some(backend_id) = backend_id {
                     match state.containers.destroy(&backend_id).await {
                         Ok(()) => {
-                            let mut control =
-                                crate::services::ad::engine::koth_auth::acquire_game_lock(
-                                    &state.db, game_id,
-                                )
-                                .await?;
+                            let mut control = crate::services::ad_engine::acquire_ad_game_lock(
+                                &state.db, game_id,
+                            )
+                            .await?;
                             let changed = sqlx::query(
                                 r#"UPDATE "KothTargets" SET container_id = NULL
                                     WHERE id = $1 AND container_id = $2"#,

@@ -140,7 +140,7 @@ pub(crate) async fn finish_game_epoch_mutation_if_any(
 /// The invalid marker is verified while the exclusive game lock is retained;
 /// the final enabled epoch is published only after the database commit.
 pub(crate) async fn release_game_control(
-    control: crate::services::ad::engine::koth_auth::GameControlLock,
+    control: crate::services::ad_engine::GameControlLock,
     cache: &dyn Cache,
     game_id: i32,
     capability_changed: bool,
