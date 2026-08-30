@@ -429,6 +429,7 @@ pub async fn update_challenge(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         if fenced.rows_affected() != 1 {
+            finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, disable_cache_mutation).await;
             return Err(AppError::conflict(
                 "Challenge eligibility changed; retry the topology update",
             ));
@@ -737,6 +738,9 @@ pub async fn update_challenge(
     )
     .await?;
     let updated = am.update(&st.db).await?;
+    // The token-visible challenge row is an independently committed write.
+    // Later definition/projection failures must not strand its cache marker.
+    finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
     seed_division_configs(
         engine_control
             .as_mut()
@@ -755,7 +759,6 @@ pub async fn update_challenge(
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
     }
-    finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
     if (was_ad_self_hosted || updated.ad_self_hosted)
         && (!updated.ad_self_hosted
             || !updated.is_enabled
@@ -905,18 +908,24 @@ pub async fn delete_challenge(
     // definition-lock transaction. This preserves Jeopardy history once play
     // could have started and closes an in-flight-submit TOCTOU. Committing the
     // short definition mutation before runtime I/O also keeps the pool bounded.
-    deletion::fence_challenge_deletion(definition_lock.transaction_mut(), id, c_id).await?;
+    if let Err(error) =
+        deletion::fence_challenge_deletion(definition_lock.transaction_mut(), id, c_id).await
+    {
+        // This transaction has not attempted commit, so every error rolls back.
+        finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
+        return Err(error);
+    }
     definition_lock.release().await?;
+    // The durable disabled tombstone is now visible. Later projection/runtime
+    // cleanup cannot make this challenge eligible to a token reader again.
+    finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
 
     // Revoke A&D/KotH routes before any backing address can be freed.
     if challenge.challenge_type.uses_ad_engine() {
         if challenge.challenge_type == ChallengeType::KingOfTheHill {
             crate::services::ad_engine::clear_challenge_control(&st.db, id, c_id).await?;
         }
-        finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
         crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
-    } else {
-        finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
     }
     engine_control
         .release()

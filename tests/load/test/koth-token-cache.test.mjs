@@ -19,6 +19,18 @@ const lifecycle = readFileSync(
   new URL('../../../src/services/ad/engine/koth_cycle/lifecycle/capability.rs', import.meta.url),
   'utf8',
 );
+const challengeReview = readFileSync(
+  new URL('../../../src/controllers/edit/challenges/review.rs', import.meta.url),
+  'utf8',
+);
+const adEdit = readFileSync(
+  new URL('../../../src/controllers/edit/ad/mod.rs', import.meta.url),
+  'utf8',
+);
+const challengeEdit = readFileSync(
+  new URL('../../../src/controllers/edit/challenges/mod.rs', import.meta.url),
+  'utf8',
+);
 const panel = readFileSync(
   new URL('../../../web/src/components/KothChallengePanel.tsx', import.meta.url),
   'utf8',
@@ -30,6 +42,13 @@ function section(source, start, end) {
   const to = source.indexOf(end, from + start.length);
   assert.ok(from >= 0 && to > from, `missing section ${start}`);
   return source.slice(from, to);
+}
+
+function assertRestorePrecedes(source, guard, rejection) {
+  const guarded = source.indexOf(guard);
+  const restore = source.indexOf('finish_game_epoch_mutation_if_any', guarded);
+  const rejected = source.indexOf(rejection, guarded);
+  assert.ok(guarded >= 0 && restore > guarded && rejected > restore, `missing restoration for ${guard}`);
 }
 
 test('the five-second managed KotH token poll has a bounded cache hit path', () => {
@@ -96,4 +115,30 @@ test('capability mutations disable before commit and ticket-finalize after it', 
   assert.match(capabilityCache, /stale_finalizer_cannot_overwrite_a_newer_replica_mutation_marker/);
   assert.match(capabilityCache, /newest_replica_mutation_can_publish_after_a_stale_finalizer/);
   assert.match(cache, /local_only_values_never_reach_the_shared_tier_or_another_replica/);
+});
+
+test('deterministic no-write edit exits restore the cache epoch', () => {
+  const approval = section(challengeReview, 'pub async fn approve_challenge', 'pub async fn reject_challenge');
+  assertRestorePrecedes(approval, 'Err(error) =>', 'return Err(error)');
+  assertRestorePrecedes(approval, 'if updated != 1', 'Challenge review state changed');
+  assertRestorePrecedes(challengeReview, 'if rejected != 1', 'Challenge is being deleted');
+  assertRestorePrecedes(adEdit, 'if toggled != 1', 'Challenge is being deleted');
+  assertRestorePrecedes(
+    challengeEdit,
+    'if fenced.rows_affected() != 1',
+    'Challenge eligibility changed',
+  );
+
+  const deletion = section(challengeEdit, 'pub async fn delete_challenge', 'pub(crate) struct BuildOutcome');
+  const fenceFailure = deletion.indexOf('if let Err(error)');
+  const restore = deletion.indexOf('finish_game_epoch_mutation_if_any', fenceFailure);
+  const rejected = deletion.indexOf('return Err(error)', restore);
+  assert.ok(fenceFailure >= 0 && restore > fenceFailure && rejected > restore);
+
+  const approvalCommit = approval.indexOf('lock.release()', approval.indexOf('if updated != 1'));
+  const approvalPublish = approval.indexOf('finish_game_epoch_mutation_if_any', approvalCommit);
+  assert.ok(approvalCommit >= 0 && approvalPublish > approvalCommit);
+  const deletionCommit = deletion.indexOf('definition_lock.release().await?');
+  const deletionPublish = deletion.indexOf('finish_game_epoch_mutation_if_any', deletionCommit);
+  assert.ok(deletionCommit >= 0 && deletionPublish > deletionCommit);
 });

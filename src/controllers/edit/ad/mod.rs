@@ -1,4 +1,5 @@
 //! Edit-facing A&D operator console.
+use crate::services::ad::koth_capability_cache::finish_game_epoch_mutation_if_any;
 use crate::services::container::storage_limit_or_default;
 use axum::extract::Query;
 use axum::response::IntoResponse;
@@ -207,8 +208,12 @@ pub async fn ad_toggle_challenge(
     .map_err(|error| AppError::internal(error.to_string()))?
     .rows_affected();
     if toggled != 1 {
+        finish_game_epoch_mutation_if_any(st.cache.as_ref(), game_id, cache_mutation).await;
         return Err(AppError::conflict("Challenge is being deleted"));
     }
+    // Eligibility committed on the standalone write. Publish its new epoch
+    // before best-effort projection cleanup or the read-only game lock release.
+    finish_game_epoch_mutation_if_any(st.cache.as_ref(), game_id, cache_mutation).await;
     if !is_enabled && challenge.challenge_type == ChallengeType::KingOfTheHill {
         crate::services::ad_engine::clear_challenge_control(&st.db, game_id, challenge_id).await?;
     }
@@ -216,14 +221,6 @@ pub async fn ad_toggle_challenge(
         lock.release()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-    }
-    if let Some(mutation) = cache_mutation {
-        crate::services::ad::koth_capability_cache::finish_game_epoch_mutation(
-            st.cache.as_ref(),
-            game_id,
-            mutation,
-        )
-        .await;
     }
     // Both A&D and KotH challenge membership feeds the shared epoch surfaces.
     // Flush after either engine-backed toggle so KotH eligibility and board
