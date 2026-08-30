@@ -4194,7 +4194,8 @@ export interface SignatureVerifyModel {
    */
   teamToken: string;
   /**
-   * Game public key, Base64 encoded
+   * Canonical stored game public key, Base64 encoded. Verification also
+   * requires a live accepted participation for the signed team.
    * @minLength 1
    */
   publicKey: string;

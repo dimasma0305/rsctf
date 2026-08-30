@@ -3,6 +3,7 @@
 //! envelope so error bodies match the original API shape.
 
 use axum::http::StatusCode;
+use axum::http::{header, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
@@ -125,6 +126,7 @@ struct ErrorBody {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = self.status();
+        let retry_after = matches!(self, AppError::TooManyRequests);
         // Never leak internal error details to clients.
         let title = match &self {
             AppError::Database(_) | AppError::Internal(_) => {
@@ -143,8 +145,26 @@ impl IntoResponse for AppError {
             title,
             status: body_status,
         };
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        if retry_after {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        }
+        response
     }
 }
 
 pub type AppResult<T> = Result<T, AppError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fail_fast_overload_includes_retry_after() {
+        let response = AppError::TooManyRequests.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "1");
+    }
+}

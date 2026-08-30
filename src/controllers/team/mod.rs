@@ -33,6 +33,7 @@ mod lifecycle;
 mod models;
 mod revocation;
 mod roster_policy;
+mod signature;
 pub(crate) use account_lifecycle::{create_team_rows, transfer_captain_locked};
 pub use avatar::avatar;
 pub use models::*;
@@ -43,6 +44,7 @@ pub(crate) use revocation::{
 };
 use revocation::{remove_membership, revoke_team_shared_capabilities_locked};
 pub(crate) use roster_policy::ensure_roster_change_allowed;
+pub use signature::verify_signature;
 
 /// Each user may captain at most this many teams. Mirrors RSCTF `MaxTeamsAllowed`.
 pub(crate) const MAX_TEAMS_ALLOWED: u64 = 3;
@@ -93,7 +95,17 @@ pub fn router() -> Router<SharedState> {
             get(invite_code).put(update_invite_token),
         )
         .route("/api/team/accept", post(accept))
-        .route("/api/team/verify", post(verify_signature))
+        .route(
+            "/api/team/verify",
+            crate::middlewares::rate_limiter::limited(
+                crate::middlewares::rate_limiter::Policy::TeamSignatureGlobal,
+                crate::middlewares::rate_limiter::limited(
+                    crate::middlewares::rate_limiter::Policy::TeamSignatureSource,
+                    post(verify_signature),
+                ),
+            )
+            .layer(DefaultBodyLimit::max(signature::BODY_LIMIT_BYTES)),
+        )
         .route("/api/team/{id}/leave", post(leave))
         .route("/api/team/{id}/kick/{userId}", post(kick_user))
         .route("/api/team/{id}/transfer", put(transfer))
@@ -647,67 +659,6 @@ pub async fn transfer(
     let team = load_team(&st, id).await?;
     let info = to_info(&st, &team, true).await?;
     Ok(RequestResponse::ok(info))
-}
-
-/// `POST /api/team/verify` — verify a team signature. Mirrors RSCTF
-/// `TeamController.VerifySignature` / `CryptoUtils.VerifySignature`:
-///
-/// * `publicKey` is the game's Ed25519 public key, standard-Base64 encoded
-///   (must decode to exactly 32 bytes).
-/// * `teamToken` is `<id>:<signature>` where `<signature>` is the standard-Base64
-///   Ed25519 signature over the UTF-8 bytes of `RSCTF_TEAM_{id}`.
-///
-/// Returns void 200 when the signature is valid, 400 on malformed input, and 401
-/// when the signature does not verify.
-pub async fn verify_signature(
-    State(_st): State<SharedState>,
-    Json(model): Json<SignatureVerifyModel>,
-) -> AppResult<StatusCode> {
-    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-
-    // Public key: Base64 → 32 raw bytes.
-    let pk_bytes = crate::utils::codec::base64_decode(&model.public_key)
-        .ok_or_else(|| AppError::bad_request("Invalid signature"))?;
-    let pk_arr: [u8; 32] = pk_bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| AppError::bad_request("Invalid signature"))?;
-
-    // Team token: `<id>:<signature>` (split on the first colon).
-    let pos = model
-        .team_token
-        .find(':')
-        .ok_or_else(|| AppError::bad_request("Invalid signature"))?;
-    let (id_str, rest) = model.team_token.split_at(pos);
-    let sign = &rest[1..];
-    let team_id: i32 = id_str
-        .parse()
-        .map_err(|_| AppError::bad_request("Invalid signature"))?;
-    if sign.is_empty() {
-        return Err(AppError::bad_request("Invalid signature"));
-    }
-
-    // Data that was signed: `RSCTF_TEAM_{id}`.
-    let data = format!("RSCTF_TEAM_{team_id}");
-
-    // Beyond this point a malformed key/signature is treated as a failed
-    // verification (401), never a 500 — RSCTF surfaces the same Unauthorized.
-    let verified = (|| {
-        let verifying_key = VerifyingKey::from_bytes(&pk_arr).ok()?;
-        let sign_bytes = crate::utils::codec::base64_decode(sign)?;
-        let sign_arr: [u8; 64] = sign_bytes.as_slice().try_into().ok()?;
-        let signature = Signature::from_bytes(&sign_arr);
-        Some(verifying_key.verify(data.as_bytes(), &signature).is_ok())
-    })()
-    .unwrap_or(false);
-
-    if verified {
-        // RSCTF `VerifySignature` returns a bare `Ok()` (empty 200); the client
-        // types the success case as `void`, so emit an empty 200.
-        Ok(StatusCode::OK)
-    } else {
-        Err(AppError::Unauthorized)
-    }
 }
 
 // --- Helpers ---------------------------------------------------------------

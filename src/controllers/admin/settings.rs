@@ -531,6 +531,7 @@ pub async fn update_config(
             o_auth,
         )
         .await?;
+        st.captcha_settings.invalidate().await;
     }
 
     if let Some(g) = model.global_config {
