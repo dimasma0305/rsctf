@@ -9,7 +9,6 @@
 //! success so the React ClientApp stays functional — never a 4xx. Those are
 //! marked with `// TODO`.
 
-use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::header;
 use axum::response::Response;
@@ -25,7 +24,7 @@ use sea_orm::{
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value as JsonValue};
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 use uuid::Uuid;
 
 use crate::app_state::SharedState;

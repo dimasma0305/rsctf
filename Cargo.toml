@@ -1,6 +1,7 @@
 [package]
 name = "rsctf"
 version = "0.1.102"
+autobins = false
 edition = "2021"
 license = "MIT"
 authors = ["rsctf contributors"]
@@ -25,6 +26,10 @@ axum = { version = "0.8", features = ["macros", "multipart", "ws"] }
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.7", features = ["cors", "trace", "fs", "limit", "timeout", "compression-gzip"] }
 futures = "0.3"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+hyperlocal = "0.9"
 flate2 = "1"
 brotli = "8"
 

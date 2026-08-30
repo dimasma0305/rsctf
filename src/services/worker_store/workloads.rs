@@ -16,6 +16,9 @@ use super::{
 
 mod placement;
 use placement::{placement_retry_delay, select_candidate, MAX_PLACEMENT_LOCK_RETRIES};
+mod quarantine;
+use quarantine::bounded_quarantine_message;
+mod row;
 
 #[derive(Clone, FromRow)]
 struct WorkerWorkloadRow {
@@ -43,63 +46,6 @@ struct WorkerWorkloadRow {
     ready_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
-}
-
-impl TryFrom<WorkerWorkloadRow> for WorkerWorkload {
-    type Error = WorkerStoreError;
-
-    fn try_from(row: WorkerWorkloadRow) -> Result<Self, Self::Error> {
-        let derived_replicas = stored_replica_count(&row.spec)?;
-        if row.reserved_cpu_millis < 0 || row.reserved_memory_bytes < 0 || row.reserved_slots != 1 {
-            return Err(WorkerStoreError::InvalidStoredData(format!(
-                "workload {} has invalid stored resource dimensions",
-                row.id
-            )));
-        }
-        let spec_hash_sha256 = row.spec_hash_sha256.try_into().map_err(|hash: Vec<u8>| {
-            WorkerStoreError::InvalidStoredData(format!(
-                "workload {} has a {}-byte specification hash",
-                row.id,
-                hash.len()
-            ))
-        })?;
-        let definition = WorkloadDefinition {
-            spec: row.spec,
-            spec_hash_sha256,
-            required_os: PlatformOs::parse(&row.required_os)?,
-            required_architecture: row.required_architecture,
-            required_runtime: row.required_runtime,
-            reservation: ResourceReservation {
-                cpu_millis: row.reserved_cpu_millis,
-                memory_bytes: row.reserved_memory_bytes,
-                slots: row.reserved_slots,
-            },
-        };
-        if derived_replicas != row.required_replicas {
-            return Err(WorkerStoreError::InvalidStoredData(format!(
-                "workload {} stores {} required replicas but its specification requires {derived_replicas}",
-                row.id, row.required_replicas
-            )));
-        }
-        Ok(Self {
-            id: row.id,
-            owner_kind: row.owner_kind,
-            owner_key: row.owner_key,
-            worker_id: row.worker_id,
-            assignment_id: row.assignment_id,
-            generation: row.generation,
-            definition,
-            required_labels: row.required_labels,
-            desired_state: WorkloadDesiredState::parse(&row.desired_state)?,
-            observed_state: WorkloadObservedState::parse(&row.observed_state)?,
-            observed_session_epoch: row.observed_session_epoch,
-            observed_message: row.observed_message,
-            observed_at: row.observed_at,
-            ready_at: row.ready_at,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-        })
-    }
 }
 
 pub(super) fn stored_replica_count(spec: &Value) -> Result<i32, WorkerStoreError> {
@@ -176,52 +122,6 @@ fn validate_batch(limit: i64) -> Result<(), WorkerStoreError> {
         ));
     }
     Ok(())
-}
-
-const MAX_QUARANTINE_MESSAGE_BYTES: usize = 1_024;
-
-fn bounded_quarantine_message(value: &str) -> String {
-    let mut message = value
-        .chars()
-        .map(|character| {
-            if character.is_control() {
-                ' '
-            } else {
-                character
-            }
-        })
-        .collect::<String>();
-    message = message.trim().to_owned();
-    if message.is_empty() {
-        message = "invalid durable workload definition".to_owned();
-    }
-    if message.len() > MAX_QUARANTINE_MESSAGE_BYTES {
-        let boundary = message
-            .char_indices()
-            .map(|(index, _)| index)
-            .take_while(|index| *index <= MAX_QUARANTINE_MESSAGE_BYTES)
-            .last()
-            .unwrap_or(0);
-        message.truncate(boundary);
-    }
-    message
-}
-
-#[cfg(test)]
-mod quarantine_message_tests {
-    use super::*;
-
-    #[test]
-    fn diagnostic_is_nonempty_sanitized_and_utf8_byte_bounded() {
-        assert_eq!(
-            bounded_quarantine_message("\n\t"),
-            "invalid durable workload definition"
-        );
-        let message = bounded_quarantine_message(&format!("bad\n{}", "🦀".repeat(400)));
-        assert!(!message.chars().any(char::is_control));
-        assert!(message.len() <= MAX_QUARANTINE_MESSAGE_BYTES);
-        assert!(!message.is_empty());
-    }
 }
 
 impl WorkerStore {
@@ -697,8 +597,9 @@ impl WorkerStore {
         Ok(ids)
     }
 
-    /// Delay the next periodic retry after a command was queued or the exact
-    /// workload already occupied its bounded in-flight slot. A superseded
+    /// Delay the next periodic retry after a command was queued, the exact
+    /// workload already occupied its bounded in-flight slot, or the durable
+    /// session has not reached this process's live registry yet. A superseded
     /// session or generation cannot postpone current work.
     pub async fn mark_dispatched(
         &self,

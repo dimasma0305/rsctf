@@ -84,6 +84,12 @@ async fn prune_terminal_workloads(store: &WorkerStore) {
     if deleted > 0 {
         tracing::info!(deleted, "pruned terminal worker workload history");
     }
+    if let Err(error) = store
+        .delete_expired_enrollment_operations(completed_before, MAINTENANCE_BATCH_SIZE)
+        .await
+    {
+        tracing::warn!(%error, "worker enrollment recovery cleanup failed");
+    }
 }
 
 async fn fence_orphaned_containers(store: &WorkerStore) {
@@ -196,7 +202,10 @@ async fn reconcile_batch(store: &WorkerStore, service: &WorkerService) {
 }
 
 fn should_defer_retry(dispatch: &Result<Uuid, WorkerError>) -> bool {
-    matches!(dispatch, Ok(_) | Err(WorkerError::Busy))
+    matches!(
+        dispatch,
+        Ok(_) | Err(WorkerError::Busy | WorkerError::Offline | WorkerError::StaleSession)
+    )
 }
 
 fn command_for(due: &DueWorkload) -> Result<ControlMessage, WorkerError> {
@@ -321,8 +330,9 @@ mod tests {
     fn busy_dispatch_defers_retry_so_the_due_batch_can_advance() {
         assert!(should_defer_retry(&Err(WorkerError::Busy)));
         assert!(should_defer_retry(&Ok(Uuid::new_v4())));
-        assert!(!should_defer_retry(&Err(WorkerError::Offline)));
-        assert!(!should_defer_retry(&Err(WorkerError::StaleSession)));
+        assert!(should_defer_retry(&Err(WorkerError::Offline)));
+        assert!(should_defer_retry(&Err(WorkerError::StaleSession)));
+        assert!(!should_defer_retry(&Err(WorkerError::Authentication)));
     }
 
     #[tokio::test]

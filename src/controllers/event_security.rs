@@ -9,12 +9,13 @@ use axum::http::{header, HeaderMap};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use std::collections::HashMap;
 
 use crate::app_state::SharedState;
 use crate::services::event_security::{
     ingest_batch, issue_solve_receipt, IssueSolveReceipt, IssuedSolveReceipt, SensorFlagPattern,
     SensorGameSnapshot, SensorPeer, SensorSnapshot, TelemetryBatch, TelemetryIngestResult,
-    MAX_PATTERNS, MAX_PATTERN_BYTES,
+    MAX_PATTERNS, MAX_PATTERN_BYTES, MAX_SENSOR_PEERS,
 };
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
@@ -105,6 +106,19 @@ async fn load_sensor_flag_patterns(
 
 async fn sensor_snapshot(State(st): State<SharedState>, headers: HeaderMap) -> AppResult<Response> {
     authorize(&headers, &st.config.event_sensor_token)?;
+    let mut cache = st.event_sensor_snapshot.lock().await;
+    if let Some((created, snapshot)) = cache.as_ref() {
+        if created.elapsed() < std::time::Duration::from_secs(5) {
+            return Ok((
+                [
+                    (header::CACHE_CONTROL, "private, no-store"),
+                    (header::PRAGMA, "no-cache"),
+                ],
+                Json(snapshot.clone()),
+            )
+                .into_response());
+        }
+    }
     let live_endpoints = if crate::services::ad_vpn::enabled() {
         match crate::services::ad_vpn::live_peer_endpoints().await {
             Ok(endpoints) => endpoints,
@@ -136,44 +150,100 @@ async fn sensor_snapshot(State(st): State<SharedState>, headers: HeaderMap) -> A
     .fetch_all(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    let game_ids = games.iter().map(|game| game.0).collect::<Vec<_>>();
+    let mut peers_by_game = HashMap::<i32, Vec<SensorPeer>>::new();
+    let peers = sqlx::query_as::<_, (i32, uuid::Uuid, uuid::Uuid, i32, String, String, i32)>(
+        r#"SELECT game_id, id, user_id, participation_id, public_key, address, generation
+             FROM "EventVpnUserPeers"
+            WHERE game_id = ANY($1) AND revoked_at_utc IS NULL
+            ORDER BY game_id, id
+            LIMIT $2"#,
+    )
+    .bind(&game_ids)
+    .bind(i64::try_from(MAX_SENSOR_PEERS + 1).unwrap_or(i64::MAX))
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if peers.len() > MAX_SENSOR_PEERS {
+        return Err(AppError::unavailable(
+            "Active Event-VPN peers exceed the sensor snapshot limit",
+        ));
+    }
+    for (game_id, peer_id, user_id, participation_id, public_key, address, generation) in peers {
+        peers_by_game.entry(game_id).or_default().push(SensorPeer {
+            endpoint: live_endpoints
+                .get(&public_key)
+                .map(|endpoint| endpoint.ip().to_string()),
+            peer_id,
+            user_id,
+            participation_id,
+            public_key,
+            address,
+            generation,
+        });
+    }
+    let pattern_rows = sqlx::query_as::<_, (i32, i32, i32, String)>(
+        r#"SELECT source.game_id, source.challenge_id,
+                  source.owning_participation_id, source.flag
+             FROM (
+                 SELECT challenge.game_id, challenge.id AS challenge_id,
+                        instance.participation_id AS owning_participation_id, flag.flag
+                   FROM "GameChallenges" challenge
+                   JOIN "Games" game ON game.id = challenge.game_id
+                    AND game.vpn_flag_scan_enabled = TRUE
+                   JOIN "GameInstances" instance ON instance.challenge_id = challenge.id
+                   JOIN "FlagContexts" flag ON flag.id = instance.flag_id
+                  WHERE challenge.game_id = ANY($1) AND challenge.is_enabled = TRUE
+                    AND challenge.review_status = 0 AND challenge."Type" NOT IN (4, 5)
+                 UNION ALL
+                 SELECT variant.game_id, variant.challenge_id, variant.participation_id,
+                        variant.manifest->>'flag'
+                   FROM "ChallengeVariants" variant
+                   JOIN "Games" game ON game.id = variant.game_id
+                    AND game.vpn_flag_scan_enabled = TRUE
+                   JOIN "GameChallenges" challenge
+                     ON challenge.game_id = variant.game_id AND challenge.id = variant.challenge_id
+                  WHERE variant.game_id = ANY($1) AND variant.frozen_at_utc IS NOT NULL
+                    AND challenge.is_enabled = TRUE AND challenge.review_status = 0
+                    AND jsonb_typeof(variant.manifest->'flag') = 'string'
+             ) source
+            ORDER BY source.game_id, source.challenge_id, source.owning_participation_id
+            LIMIT $2"#,
+    )
+    .bind(&game_ids)
+    .bind(i64::try_from(MAX_PATTERNS + 1).unwrap_or(i64::MAX))
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let pattern_bytes = pattern_rows
+        .iter()
+        .map(|row| row.3.len())
+        .fold(0_usize, usize::saturating_add);
+    if pattern_rows.len() > MAX_PATTERNS || pattern_bytes > MAX_PATTERN_BYTES {
+        return Err(AppError::unavailable(
+            "Active event flag patterns exceed the sensor limit",
+        ));
+    }
+    let mut patterns_by_game = HashMap::<i32, Vec<SensorFlagPattern>>::new();
+    for (game_id, challenge_id, owning_participation_id, pattern) in pattern_rows {
+        let value_hash = crate::services::event_security::flag_value_hash(
+            &st.config.event_vpn_credential_key,
+            game_id,
+            challenge_id,
+            &pattern,
+        )?;
+        patterns_by_game
+            .entry(game_id)
+            .or_default()
+            .push(SensorFlagPattern {
+                challenge_id,
+                owning_participation_id,
+                pattern,
+                value_hash: hex::encode(value_hash),
+            });
+    }
     let mut output = Vec::with_capacity(games.len());
-    let mut total_patterns = 0usize;
     for (game_id, behavior, flag_scan, dns, asn, devices) in games {
-        let peers = sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid, i32, String, String, i32)>(
-            r#"SELECT id, user_id, participation_id, public_key, address, generation
-                 FROM "EventVpnUserPeers"
-                WHERE game_id = $1 AND revoked_at_utc IS NULL
-                ORDER BY id"#,
-        )
-        .bind(game_id)
-        .fetch_all(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?
-        .into_iter()
-        .map(
-            |(peer_id, user_id, participation_id, public_key, address, generation)| SensorPeer {
-                endpoint: live_endpoints
-                    .get(&public_key)
-                    .map(|endpoint| endpoint.ip().to_string()),
-                peer_id,
-                user_id,
-                participation_id,
-                public_key,
-                address,
-                generation,
-            },
-        )
-        .collect::<Vec<_>>();
-        let mut flag_patterns = Vec::new();
-        if flag_scan {
-            flag_patterns = load_sensor_flag_patterns(&st, game_id).await?;
-            total_patterns = total_patterns.saturating_add(flag_patterns.len());
-            if total_patterns > MAX_PATTERNS {
-                return Err(AppError::unavailable(
-                    "Active event flag-pattern count exceeds the sensor limit",
-                ));
-            }
-        }
         output.push(SensorGameSnapshot {
             game_id,
             behavior_telemetry_enabled: behavior,
@@ -181,19 +251,25 @@ async fn sensor_snapshot(State(st): State<SharedState>, headers: HeaderMap) -> A
             provider_dns_telemetry_enabled: dns,
             source_asn_telemetry_enabled: asn,
             device_sharing_telemetry_enabled: devices,
-            peers,
-            flag_patterns,
+            peers: peers_by_game.remove(&game_id).unwrap_or_default(),
+            flag_patterns: if flag_scan {
+                patterns_by_game.remove(&game_id).unwrap_or_default()
+            } else {
+                Vec::new()
+            },
         });
     }
+    let snapshot = SensorSnapshot {
+        generated_at_utc: chrono::Utc::now(),
+        games: output,
+    };
+    *cache = Some((tokio::time::Instant::now(), snapshot.clone()));
     Ok((
         [
             (header::CACHE_CONTROL, "private, no-store"),
             (header::PRAGMA, "no-cache"),
         ],
-        Json(SensorSnapshot {
-            generated_at_utc: chrono::Utc::now(),
-            games: output,
-        }),
+        Json(snapshot),
     )
         .into_response())
 }
@@ -285,5 +361,11 @@ mod tests {
         assert!(authorize(&headers, secret).is_ok());
         assert!(authorize(&headers, "different-secret-0123456789abcdef0").is_err());
         assert!(authorize(&headers, "short").is_err());
+        assert!(authorize(&HeaderMap::new(), secret).is_err());
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Basic machine-secret-0123456789abcdef012345"),
+        );
+        assert!(authorize(&headers, secret).is_err());
     }
 }

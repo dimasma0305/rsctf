@@ -111,7 +111,10 @@ test('terminal A&D state failures expose an accessible Retry in live and snapsho
     })
     assert.equal(stateReads, 3, 'explicit Retry performs one fresh state read')
     assert.equal(mounted.container.querySelector('[role="alert"]'), null)
-    assert.match(mounted.container.querySelector('a[download]')?.textContent ?? '', /Download \.tar\.gz/)
+    assert.match(
+      mounted.container.querySelector('button[aria-label="Download .tar.gz"]')?.textContent ?? '',
+      /Download \.tar\.gz/
+    )
 
     await act(async () => mounted.root.unmount())
     mounted = await mount(false, { ...state, services: [] })

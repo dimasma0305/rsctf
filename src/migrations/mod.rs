@@ -138,6 +138,9 @@ mod m0115_flag_egress_feed_cursor;
 mod m0116_game_event_feed_pending;
 mod m0242_participation_provision_jobs;
 mod m0270_worker_workload_quarantine;
+mod m0271_worker_enrollment_operations;
+mod m0272_event_sensor_batches;
+mod m0273_receipt_variant_lifecycle;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -290,6 +293,9 @@ impl MigratorTrait for Migrator {
             Box::new(m0116_game_event_feed_pending::Migration),
             Box::new(m0242_participation_provision_jobs::Migration),
             Box::new(m0270_worker_workload_quarantine::Migration),
+            Box::new(m0271_worker_enrollment_operations::Migration),
+            Box::new(m0272_event_sensor_batches::Migration),
+            Box::new(m0273_receipt_variant_lifecycle::Migration),
         ]
     }
 }
@@ -435,7 +441,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 17..],
+            &names[names.len() - 20..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -453,6 +459,9 @@ mod tests {
                 "m0116_game_event_feed_pending",
                 "m0242_participation_provision_jobs",
                 "m0270_worker_workload_quarantine",
+                "m0271_worker_enrollment_operations",
+                "m0272_event_sensor_batches",
+                "m0273_receipt_variant_lifecycle",
             ]
         );
     }
