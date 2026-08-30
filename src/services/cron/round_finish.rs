@@ -839,9 +839,11 @@ pub(super) async fn finish_prepared_round(
             );
         }
         let result = crate::services::ad_engine::run_checker(
-            &state.db,
-            state.containers.as_ref(),
-            state.cache.as_ref(),
+            crate::services::ad_engine::CheckerDependencies::new(
+                &state.db,
+                state.containers.as_ref(),
+                state.cache.as_ref(),
+            ),
             game.id,
             round_id,
             lease,

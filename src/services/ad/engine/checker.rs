@@ -215,6 +215,28 @@ pub struct CheckerVerdict {
     pub stolen_flags: Vec<String>,
 }
 
+/// Long-lived services shared by both checker passes. Keeping these runtime
+/// dependencies together leaves the round-specific inputs explicit.
+pub(crate) struct CheckerDependencies<'a> {
+    db: &'a DatabaseConnection,
+    containers: &'a dyn crate::services::container::ContainerManager,
+    cache: &'a dyn crate::services::cache::Cache,
+}
+
+impl<'a> CheckerDependencies<'a> {
+    pub(crate) fn new(
+        db: &'a DatabaseConnection,
+        containers: &'a dyn crate::services::container::ContainerManager,
+        cache: &'a dyn crate::services::cache::Cache,
+    ) -> Self {
+        Self {
+            db,
+            containers,
+            cache,
+        }
+    }
+}
+
 /// Run the A&D SLA checker tick for one round. Custom checkers execute as
 /// resource-limited local subprocesses; the built-in fallback is an in-process
 /// TCP probe.
@@ -237,15 +259,18 @@ pub struct CheckerVerdict {
 /// Only a clean checker exit may report `Offline`/`Mumble`, and a checker wall
 /// timeout is `Offline`.
 pub(crate) async fn run_checker(
-    db: &DatabaseConnection,
-    containers: &dyn crate::services::container::ContainerManager,
-    cache: &dyn crate::services::cache::Cache,
+    dependencies: CheckerDependencies<'_>,
     game_id: i32,
     round_id: i32,
     lease: &RoundFinishLease,
     pipeline_deadline: tokio::time::Instant,
     delivery_receipts: tokio::sync::mpsc::UnboundedReceiver<FlagDeliveryReceipt>,
 ) -> AppResult<()> {
+    let CheckerDependencies {
+        db,
+        containers,
+        cache,
+    } = dependencies;
     // Resolve the round; it must belong to this game. An unknown/foreign round
     // has nothing to check (warmup / bad id) — no-op rather than error.
     let round = match ad_round::Entity::find_by_id(round_id).one(db).await? {
