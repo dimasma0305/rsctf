@@ -245,12 +245,21 @@ async fn advance_game(
     // a truthful tick after the platform becomes ready. Preparation revalidates
     // every service identity while holding the game lock.
     let game = load_game_model(state, schedule.id).await?;
-    let repair_failures = match crate::controllers::edit::ensure_ad_containers(
-        state, &game, None, false, false, None,
-    )
+    let repair_failures = match async {
+        let job =
+            crate::controllers::edit::request_ad_reconcile_job(state, schedule.id, false, false)
+                .await?;
+        let job = crate::services::control_jobs::wait_for_terminal(
+            state.pg(),
+            job.id,
+            std::time::Duration::from_secs(90),
+        )
+        .await?;
+        crate::services::control_jobs::result_count(&job, "failures")
+    }
     .await
     {
-        Ok((_, failures)) => failures as usize,
+        Ok(failures) => failures,
         Err(error) => {
             tracing::warn!(
                 game = schedule.id,

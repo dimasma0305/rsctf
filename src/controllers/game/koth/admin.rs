@@ -192,6 +192,7 @@ pub async fn admin_state(
                 challenge_id: h.challenge_id,
                 title: h.title.clone(),
                 is_enabled: h.is_enabled,
+                control_revision: h.control_revision,
                 // Raw docker id of the shared hill container — the admin exec hub
                 // accepts it directly (KotH containers aren't in the `container` table).
                 container_guid: h.container_id.clone().filter(|c| !c.is_empty()),
@@ -251,6 +252,7 @@ pub async fn admin_state(
         latest_round: scoring.latest_round,
         current_round_ends_at: scoring.current_round_ends_at,
         scoring_paused: game.ad_scoring_paused,
+        control_revision: game.ad_control_revision,
         scoring_paused_at: game.ad_scoring_paused_at,
         hills,
         teams: scoring.teams,

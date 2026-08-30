@@ -194,11 +194,18 @@ export interface KothOpsPanelProps {
   koth: AdminKothStateModel
   onShell: (guid: string, title: string) => void
   onToggleHill: (hill: AdminKothHill) => void
-  busyHill: number | null
+  pendingHillStates: ReadonlyMap<number, boolean>
   onMutate: () => Promise<unknown>
 }
 
-export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onToggleHill, busyHill, onMutate }) => {
+export const KothOpsPanel: FC<KothOpsPanelProps> = ({
+  gameId,
+  koth,
+  onShell,
+  onToggleHill,
+  pendingHillStates,
+  onMutate,
+}) => {
   const { t } = useTranslation()
   const [retryingHill, setRetryingHill] = useState<number | null>(null)
   const [auditHill, setAuditHill] = useState<AdminKothHill | null>(null)
@@ -561,6 +568,8 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
               const hasCycle = hill.cycleNumber > 0
               const cooldown = hill.cooldownParticipants
               const isApiArena = hill.claimSource === 'Api'
+              const pendingEnabled = pendingHillStates.get(hill.challengeId)
+              const displayedEnabled = pendingEnabled ?? hill.isEnabled
               return (
                 <Table.Tr key={hill.challengeId}>
                   <Table.Td>
@@ -569,7 +578,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                         <Text fw="bold" size="sm">
                           {hill.title}
                         </Text>
-                        {!hill.isEnabled && (
+                        {!displayedEnabled && (
                           <Badge size="xs" color="gray" variant="outline">
                             {t('common.content.disabled', 'Disabled')}
                           </Badge>
@@ -804,8 +813,9 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                       withArrow
                     >
                       <Switch
-                        checked={hill.isEnabled}
-                        disabled={busyHill === hill.challengeId}
+                        checked={displayedEnabled}
+                        disabled={pendingEnabled !== undefined}
+                        aria-busy={pendingEnabled !== undefined}
                         onChange={() => onToggleHill(hill)}
                         aria-label={t('admin.tooltip.ad_ops.koth.toggle_hill', {
                           title: hill.title,

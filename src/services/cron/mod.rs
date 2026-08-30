@@ -198,6 +198,16 @@ async fn run_with_lease(
 /// not abort the others (mirrors RSCTF running each `CronJob` in its own scope
 /// and swallowing per-job exceptions).
 async fn run_jobs(state: &SharedState) {
+    // Slow operator work is durable in PostgreSQL. Wake a bounded lease owner;
+    // this returns immediately and also recovers jobs whose previous owner died.
+    crate::services::control_jobs::kick(state.clone());
+
+    match crate::services::control_jobs::purge_terminal(state.pg(), 256).await {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: purged retained control-plane job(s)"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("cron: control-plane job retention sweep failed: {e}"),
+    }
+
     match crate::services::traffic::purge_expired_captures(state, 128).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: purged expired traffic capture tree(s)"),
         Ok(_) => {}
@@ -214,6 +224,14 @@ async fn run_jobs(state: &SharedState) {
         Ok(n) if n > 0 => tracing::info!(n, "cron: purged expired A&D service snapshot(s)"),
         Ok(_) => {}
         Err(e) => tracing::warn!("cron: A&D snapshot retention sweep failed: {e}"),
+    }
+
+    match crate::services::blob_refs::purge_expired_stages(state.pg(), state.storage.as_ref(), 128)
+        .await
+    {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: reclaimed expired blob stage(s)"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("cron: blob staging sweep failed: {e}"),
     }
 
     match crate::services::blob_refs::purge_pending(state.pg(), state.storage.as_ref(), 128).await {

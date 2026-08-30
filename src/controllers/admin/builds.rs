@@ -22,7 +22,9 @@ SELECT id AS audit_id,
  WHERE status IN (3, 5)
    AND finished_at_utc IS NULL
  ORDER BY enqueued_at_utc DESC, id DESC
+ LIMIT $1
 "#;
+const MAX_IN_PROGRESS_BUILDS: i64 = 200;
 
 /// RSCTF `PruneResultModel`.
 #[derive(Debug, Serialize)]
@@ -125,7 +127,7 @@ pub struct ChallengeBuildInProgressModel {
 }
 
 /// RSCTF `BuildImageModel` — one `rsctf/*` image on the local docker daemon.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildImageModel {
     pub id: String,
@@ -216,7 +218,8 @@ async fn bulk_rebuild_candidates(
 /// missing-Dockerfile build in the game through the same coordinated build
 /// seam as an interactive rebuild. Challenges already fenced for deletion are
 /// reported as skipped and never reach Docker.
-pub async fn bulk_rebuild(
+#[allow(dead_code)]
+async fn bulk_rebuild_legacy(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Path(game_id): Path<i32>,
@@ -325,6 +328,43 @@ pub async fn bulk_rebuild(
     }))
 }
 
+pub async fn bulk_rebuild(
+    State(st): State<SharedState>,
+    _admin: AdminUser,
+    Path(game_id): Path<i32>,
+    headers: HeaderMap,
+) -> AppResult<(
+    StatusCode,
+    RequestResponse<crate::services::control_jobs::ControlJobModel>,
+)> {
+    let exists =
+        sqlx::query_scalar::<_, bool>(r#"SELECT NOT deletion_pending FROM "Games" WHERE id = $1"#)
+            .bind(game_id)
+            .fetch_optional(st.pg())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+            .ok_or_else(|| AppError::not_found("Game not found"))?;
+    if !exists {
+        return Err(AppError::conflict("Game is being deleted"));
+    }
+    let operation_id = crate::controllers::edit::control_jobs::operation_id(&headers)?;
+    let input = serde_json::json!({ "gameId": game_id, "failedOnly": true });
+    let fingerprint = crate::controllers::edit::control_jobs::fingerprint(&input)?;
+    let job = crate::services::control_jobs::enqueue(
+        st.pg(),
+        crate::services::control_jobs::ControlJobKind::BuildBatch,
+        &format!("game:{game_id}"),
+        game_id,
+        None,
+        operation_id,
+        &fingerprint,
+        input,
+    )
+    .await?;
+    crate::services::control_jobs::kick(st);
+    Ok((StatusCode::ACCEPTED, RequestResponse::ok(job)))
+}
+
 /// `GET /api/admin/builds` — paginated build history, newest first. Optional
 /// `status` / `gameId` filters mirror the generated client; the page ships the
 /// raw `ChallengeBuildAuditModel[]` (the UI filters/paginates in-memory).
@@ -357,6 +397,7 @@ async fn load_builds_in_progress(
     pool: &sqlx::PgPool,
 ) -> AppResult<Vec<ChallengeBuildInProgressModel>> {
     sqlx::query_as::<_, ChallengeBuildInProgressModel>(BUILDS_IN_PROGRESS_SQL)
+        .bind(MAX_IN_PROGRESS_BUILDS)
         .fetch_all(pool)
         .await
         .map_err(|error| AppError::internal(error.to_string()))
@@ -426,7 +467,8 @@ pub async fn bulk_delete_builds(
 /// `AutoRetry`) and echo back the freshly-recorded audit row. Missing/fenced
 /// challenges and failed audit persistence are reported truthfully; no queued
 /// row is fabricated because this binary has no background queue consumer.
-pub async fn reenqueue_build(
+#[allow(dead_code)]
+async fn reenqueue_build_legacy(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Path(audit_id): Path<i32>,
@@ -447,6 +489,35 @@ pub async fn reenqueue_build(
         .ok_or_else(reenqueue_missing_audit_error)?;
 
     Ok(RequestResponse::ok(model.into()))
+}
+
+pub async fn reenqueue_build(
+    State(st): State<SharedState>,
+    _admin: AdminUser,
+    Path(audit_id): Path<i32>,
+    headers: HeaderMap,
+) -> AppResult<(
+    StatusCode,
+    RequestResponse<crate::services::control_jobs::ControlJobModel>,
+)> {
+    let record = build_record::Entity::find_by_id(audit_id)
+        .one(&st.db)
+        .await?
+        .ok_or_else(|| AppError::not_found("Build record not found"))?;
+    let challenge = game_challenge::Entity::find_by_id(record.challenge_id)
+        .one(&st.db)
+        .await?
+        .ok_or_else(reenqueue_missing_challenge_error)?;
+    let operation_id = crate::controllers::edit::control_jobs::operation_id(&headers)?;
+    let job = crate::controllers::edit::enqueue_challenge_build_job(
+        &st,
+        &challenge,
+        "AutoRetry",
+        record.attempt.saturating_add(1),
+        operation_id,
+    )
+    .await?;
+    Ok((StatusCode::ACCEPTED, RequestResponse::ok(job)))
 }
 
 fn reenqueue_missing_challenge_error() -> AppError {

@@ -25,6 +25,7 @@ import relativeTime from 'dayjs/plugin/relativeTime'
 import { FC, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { showErrorMsg } from '@Utils/Shared'
+import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import api, { BuildImageModel } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
 
@@ -62,11 +63,31 @@ export const BuildImagesPanel: FC = () => {
     data: images,
     mutate,
     isLoading,
-  } = api.admin.useAdminListBuildImages({
-    refreshInterval: 30000,
+    error: imageError,
+    isValidating: imagesValidating,
+  } = api.admin.useAdminListBuildImages(CompletionPollSWRConfig)
+  const storageQuery = api.admin.useAdminBuildStorageStatus(CompletionPollSWRConfig)
+  const { data: storage, mutate: mutateStorage } = storageQuery
+
+  useCompletionPolling({
+    key: '/api/admin/builds/images',
+    phase: 'active-images-tab',
+    enabled: true,
+    data: images,
+    error: imageError,
+    isValidating: imagesValidating,
+    mutate,
+    successDelay: () => 30_000,
   })
-  const { data: storage, mutate: mutateStorage } = api.admin.useAdminBuildStorageStatus({
-    refreshInterval: 30000,
+  useCompletionPolling({
+    key: '/api/admin/builds/storage',
+    phase: 'active-images-tab',
+    enabled: true,
+    data: storage,
+    error: storageQuery.error,
+    isValidating: storageQuery.isValidating,
+    mutate: mutateStorage,
+    successDelay: () => 30_000,
   })
 
   const totalBytes = useMemo(() => (images ?? []).reduce((sum, img) => sum + img.sizeBytes, 0), [images])
