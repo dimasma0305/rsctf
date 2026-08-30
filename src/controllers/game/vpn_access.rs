@@ -338,7 +338,7 @@ mod tests {
     fn mint_keys_bind_session_without_exposing_the_security_stamp() {
         let user = CurrentUser {
             id: uuid::Uuid::nil(),
-            role: Role::User,
+            role: crate::utils::enums::Role::User,
             name: "player".to_string(),
             security_stamp: "do-not-expose-this-stamp".to_string(),
         };
