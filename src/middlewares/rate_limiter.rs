@@ -984,5 +984,9 @@ fn too_many_requests(retry_after: u64) -> Response {
 }
 
 #[cfg(test)]
+#[path = "rate_limiter/event_vpn_tests.rs"]
+mod event_vpn_tests;
+
+#[cfg(test)]
 #[path = "rate_limiter_tests.rs"]
 mod tests;
