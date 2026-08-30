@@ -9,6 +9,7 @@ import { ChallengeModal, SolverInfo } from '@Components/ChallengeModal'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
 import { assertJsonResponse, NonJsonResponseError } from '@Utils/ChallengePolling'
 import { encryptApiData } from '@Utils/Crypto'
+import { isEventVpnAccessError } from '@Utils/EventVpnProof'
 import { FlagSubmitAttemptOwner } from '@Utils/FlagSubmitAttempt'
 import { flagVerdictReducer } from '@Utils/FlagVerdict'
 import { createFlagVerdictPoller, sameFlagVerdictIdentity, type FlagVerdictIdentity } from '@Utils/FlagVerdictPolling'
@@ -130,6 +131,11 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
   const pollErrorMessage = (error: unknown, resource: 'challenge' | 'solvers') => {
     if (!error) return undefined
+    if (isEventVpnAccessError(error)) {
+      return error.kind === 'disconnected'
+        ? t('challenge.error.vpn_disconnected', 'Connect to the event VPN, then reopen the challenge.')
+        : t('challenge.error.vpn_unavailable', 'Event VPN verification is temporarily unavailable. Retry shortly.')
+    }
     if (error instanceof NonJsonResponseError) {
       return t(
         'challenge.error.invalid_response',
