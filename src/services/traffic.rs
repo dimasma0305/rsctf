@@ -287,7 +287,7 @@ pub fn list_flows_bounded(
                 bytes: 0,
             });
         entry.packet_count += 1;
-        entry.bytes += parsed.payload_len as u64;
+        entry.bytes += parsed.payload.len() as u64;
     }
 
     if reader.into_reader().limit() == 0 {
@@ -568,10 +568,10 @@ fn pcap_err(context: &str, err: pcap::Error) -> AppError {
 }
 
 /// Result of parsing one raw Ethernet frame down to its TCP four-tuple.
-struct ParsedFrame {
+struct ParsedFrame<'a> {
     source: SocketAddr,
     dest: SocketAddr,
-    payload_len: usize,
+    payload: &'a [u8],
 }
 
 /// Parse an Ethernet / IPv4|IPv6 / TCP frame out of raw bytes.
@@ -580,7 +580,7 @@ struct ParsedFrame {
 /// `None` on anything it does not understand (non-IP ethertype, non-TCP
 /// protocol, IPv6 extension headers, truncation). Mirrors the guarded parse in
 /// RSCTF `PcapFlowExtractor.ReadFlows`.
-fn parse_frame(data: &[u8]) -> Option<ParsedFrame> {
+fn parse_frame(data: &[u8]) -> Option<ParsedFrame<'_>> {
     if data.len() < ETH_HDR_LEN {
         return None;
     }
@@ -595,7 +595,7 @@ fn parse_frame(data: &[u8]) -> Option<ParsedFrame> {
 }
 
 /// Parse an IPv4 packet (`l3` starts at the IP header) into its TCP tuple.
-fn parse_ipv4(l3: &[u8]) -> Option<ParsedFrame> {
+fn parse_ipv4(l3: &[u8]) -> Option<ParsedFrame<'_>> {
     if l3.len() < IPV4_HDR_LEN {
         return None;
     }
@@ -620,7 +620,7 @@ fn parse_ipv4(l3: &[u8]) -> Option<ParsedFrame> {
 /// Only a bare IPv6 header with `next_header == TCP` is handled; extension
 /// headers make the frame `None` (defensive — the synthesiser never emits
 /// them).
-fn parse_ipv6(l3: &[u8]) -> Option<ParsedFrame> {
+fn parse_ipv6(l3: &[u8]) -> Option<ParsedFrame<'_>> {
     if l3.len() < IPV6_HDR_LEN {
         return None;
     }
@@ -640,7 +640,7 @@ fn parse_ipv6(l3: &[u8]) -> Option<ParsedFrame> {
 }
 
 /// Parse a TCP segment (`l4` starts at the TCP header) into a [`ParsedFrame`].
-fn parse_tcp(l4: &[u8], src_ip: IpAddr, dst_ip: IpAddr) -> Option<ParsedFrame> {
+fn parse_tcp(l4: &[u8], src_ip: IpAddr, dst_ip: IpAddr) -> Option<ParsedFrame<'_>> {
     if l4.len() < TCP_HDR_LEN {
         return None;
     }
@@ -651,11 +651,10 @@ fn parse_tcp(l4: &[u8], src_ip: IpAddr, dst_ip: IpAddr) -> Option<ParsedFrame> {
     if data_offset < TCP_HDR_LEN || l4.len() < data_offset {
         return None;
     }
-    let payload_len = l4.len() - data_offset;
     Some(ParsedFrame {
         source: SocketAddr::new(src_ip, src_port),
         dest: SocketAddr::new(dst_ip, dst_port),
-        payload_len,
+        payload: &l4[data_offset..],
     })
 }
 
@@ -789,11 +788,17 @@ fn ones_complement_checksum(bytes: &[u8]) -> u16 {
 // this format/parser module stays focused and below the repository file-size cap.
 
 mod capture;
+mod inspector;
 
 pub(crate) use capture::{destroy_container_after_capture_fence, purge_expired_captures};
 pub use capture::{
     fence_unowned_capture_owner, start_capture_reconciler, start_container_capture,
     stop_container_capture,
+};
+pub(crate) use inspector::{
+    filter_flow_page, invalidate_inspection_directory, invalidate_inspection_path,
+    load_flow_snapshot, validate_flow_id, validate_flow_page_bounds, validate_snapshot_version,
+    FlowDirection, IndexedFlow, InspectionError, ValidatedFlowFilter, DEFAULT_FLOW_PAGE_SIZE,
 };
 
 #[cfg(test)]

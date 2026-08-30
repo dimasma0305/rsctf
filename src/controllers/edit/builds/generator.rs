@@ -95,13 +95,20 @@ async fn publish_generator_build(
     let rows = result.rows_affected();
     if rows == 1 {
         if let Some(ownership) = ownership {
-            sqlx::query(UPSERT_IMAGE_OWNERSHIP_SQL)
+            let upserted = sqlx::query(UPSERT_IMAGE_OWNERSHIP_SQL)
                 .bind(&ownership.installation_scope)
                 .bind(&ownership.canonical_ref)
                 .bind(&ownership.image_id)
                 .execute(&mut **definition_lock.transaction_mut())
                 .await
                 .map_err(|error| AppError::internal(error.to_string()))?;
+            if upserted.rows_affected() != 1 {
+                definition_lock.rollback().await?;
+                return Err(AppError::overloaded(
+                    "Image cleanup is finalizing this generator image; retry publication shortly",
+                    1,
+                ));
+            }
         }
     }
     definition_lock.release().await?;
@@ -135,6 +142,11 @@ pub(crate) async fn run_variant_generator_build(
         Ok(lock) => lock,
         Err(error) => return failed(format!("Generator build coordination failed: {error}")),
     };
+    if let Err(error) = ensure_cleanup_not_finalizing(build_lock.connection_mut(), Some(&tag)).await
+    {
+        drop(build_lock);
+        return failed(error.to_string());
+    }
     let current = sqlx::query_as::<
         _,
         (

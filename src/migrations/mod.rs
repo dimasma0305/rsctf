@@ -145,6 +145,10 @@ mod m0263_control_job_cancellation;
 mod m0264_blob_staging_operations;
 mod m0280_traffic_capture_inventory;
 mod m0281_anticheat_read_bounds;
+mod m0282_docker_image_cleanup_jobs;
+mod m0283_incremental_anticheat_reconciliation;
+mod m0284_anticheat_dirty_outboxes;
+mod m0285_honeypot_telemetry_buckets;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -306,6 +310,10 @@ impl MigratorTrait for Migrator {
             Box::new(m0264_blob_staging_operations::Migration),
             Box::new(m0280_traffic_capture_inventory::Migration),
             Box::new(m0281_anticheat_read_bounds::Migration),
+            Box::new(m0282_docker_image_cleanup_jobs::Migration),
+            Box::new(m0283_incremental_anticheat_reconciliation::Migration),
+            Box::new(m0284_anticheat_dirty_outboxes::Migration),
+            Box::new(m0285_honeypot_telemetry_buckets::Migration),
         ]
     }
 }
@@ -451,7 +459,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 23..],
+            &names[names.len() - 27..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -476,6 +484,10 @@ mod tests {
                 "m0264_blob_staging_operations",
                 "m0280_traffic_capture_inventory",
                 "m0281_anticheat_read_bounds",
+                "m0282_docker_image_cleanup_jobs",
+                "m0283_incremental_anticheat_reconciliation",
+                "m0284_anticheat_dirty_outboxes",
+                "m0285_honeypot_telemetry_buckets",
             ]
         );
     }

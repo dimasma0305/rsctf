@@ -19,7 +19,15 @@ pub(super) async fn execute_claimed(
             let inserted =
                 crate::services::event_security::derive_context_findings(state, job.model.game_id)
                     .await?;
-            Ok(serde_json::json!({ "inserted": inserted }))
+            let generation =
+                super::security_derivation::applied_generation(state.pg(), job.model.game_id)
+                    .await?;
+            let continuing = super::security_derivation::continue_if_dirty(state.pg(), job).await?;
+            Ok(serde_json::json!({
+                "inserted": inserted,
+                "reconciliationGeneration": generation,
+                "continuing": continuing,
+            }))
         }
         "AdReconcile" => {
             let (launched, failures) = crate::controllers::edit::run_ad_reconcile_job(
