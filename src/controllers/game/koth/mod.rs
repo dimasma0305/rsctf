@@ -71,6 +71,7 @@ pub use api::{
 };
 use board::*;
 pub use capture::ensure_koth_hills;
+pub(crate) use capture::ensure_koth_hills_with_operation;
 pub(crate) use eligibility::invalidate_live_hill_cache;
 use eligibility::require_live_hill;
 pub(crate) use lifecycle::invalidate_live_lifecycle_cache;

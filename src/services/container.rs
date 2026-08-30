@@ -62,13 +62,15 @@ mod logging;
 mod naming;
 mod policy;
 #[cfg(test)]
+mod real_docker_tests;
+#[cfg(test)]
 mod tests;
 pub(crate) use self::docker::launch_spec_fingerprint;
 use self::docker::{
-    append_snapshot_chunk, discover_operation_container, docker_network_mode,
-    image_requests_restricted_profile, is_conflict, is_not_found, restricted_tmpfs_mounts,
-    snapshot_export_slots, stamp_restricted_profile, stamp_storage_quota_policy,
-    validate_docker_container_spec, validate_operation_container, writable_layer_quota_supported,
+    adopt_operation_container, append_snapshot_chunk, discover_operation_container,
+    docker_network_mode, image_requests_restricted_profile, is_conflict, is_not_found,
+    restricted_tmpfs_mounts, snapshot_export_slots, stamp_restricted_profile,
+    stamp_storage_quota_policy, validate_docker_container_spec, writable_layer_quota_supported,
     writable_layer_storage_option, LAUNCH_SPEC_LABEL, MAX_SNAPSHOT_EXPORT_BYTES,
     SNAPSHOT_EXPORT_ADMISSION_TIMEOUT, SNAPSHOT_EXPORT_MAX_DURATION,
 };
@@ -715,14 +717,16 @@ impl ContainerManager for DockerContainerManager {
                                 "container operation {name} conflicted but could not be adopted: {inspect}"
                             ))
                         })?;
-                    let id = validate_operation_container(
+                    let id = adopt_operation_container(
+                        docker,
                         &existing,
                         &self.scope,
                         &spec,
                         &launch_fingerprint,
                         restricted_profile,
                         storage_quota_enforced,
-                    )?;
+                    )
+                    .await?;
                     (id, true)
                 }
                 Err(e) if is_conflict(&e) => {

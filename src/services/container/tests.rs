@@ -15,7 +15,6 @@ use super::docker::{
     LAUNCH_SPEC_LABEL, RESTRICTED_IMAGE_PROFILE, RESTRICTED_IMAGE_PROFILE_LABEL,
     RESTRICTED_TMPFS_OPTIONS, RESTRICTED_TMPFS_PATH,
 };
-use super::naming::legacy_operation_container_name;
 use super::{
     append_snapshot_chunk, bounded_log_config, bridge_network_matches, container_name,
     docker_workload_scope, game_kind_for_challenge, labels_match_scope, managed_container_filters,
@@ -414,96 +413,6 @@ fn launch_fingerprint_rejects_stale_runtime_configuration() {
     assert!(!launch_spec_matches(&inspected, &expected));
 }
 
-#[tokio::test]
-async fn retryable_flag_adopts_one_real_docker_workload() {
-    let Ok(image) = std::env::var("RSCTF_REAL_DOCKER_RETRY_IMAGE") else {
-        return;
-    };
-    let Ok(manager) = DockerContainerManager::connect() else {
-        return;
-    };
-    let inspected = manager
-        .client()
-        .expect("real Docker client")
-        .inspect_image(&image)
-        .await
-        .expect("real retry image is inspectable");
-    let alternate_image = inspected
-        .repo_digests
-        .unwrap_or_default()
-        .into_iter()
-        .chain(inspected.id)
-        .find(|candidate| candidate != &image)
-        .expect("real retry image must expose a second immutable reference");
-    let operation_id = format!("test-retryable-flag:{}", uuid::Uuid::new_v4());
-    let spec = || ContainerSpec {
-        game_kind: rsctf_worker_protocol::GameKind::Jeopardy,
-        image: image.clone(),
-        memory_limit: 64,
-        cpu_count: 1,
-        storage_limit: DEFAULT_CONTAINER_STORAGE_MB,
-        expose_port: 8080,
-        publish_port: false,
-        proxy_only: false,
-        env: Vec::new(),
-        flag: Some(crate::utils::flag_generator::generate_retryable_flag(
-            Some("flag{[GUID]-[UUID]}"),
-            "real-docker-team-secret",
-            &operation_id,
-        )),
-        ad_network: None,
-        allow_egress: false,
-        control_plane_callback_ports: Vec::new(),
-        network_mode: crate::utils::enums::NetworkMode::Isolated,
-        operation_id: Some(operation_id.clone()),
-    };
-
-    let first = manager.create(spec()).await.expect("first Docker create");
-    let scoped_operation = scoped_operation_id(&manager.scope, Some(&operation_id))
-        .expect("stable operation identity");
-    let legacy_name = legacy_operation_container_name(&image, &[], &scoped_operation);
-    manager
-        .client()
-        .expect("real Docker client")
-        .rename_container(
-            &first.id,
-            bollard::container::RenameContainerOptions { name: legacy_name },
-        )
-        .await
-        .expect("simulate the previous replica's image-prefixed workload name");
-    let retried = manager.create(spec()).await;
-    let mut changed = spec();
-    changed.memory_limit += 1;
-    let changed_result = manager.create(changed).await;
-    let mut changed_image = spec();
-    changed_image.image = alternate_image;
-    let changed_image_result = manager.create(changed_image).await;
-    for container in [&changed_result, &changed_image_result]
-        .into_iter()
-        .flatten()
-    {
-        if container.id != first.id {
-            manager
-                .destroy(&container.id)
-                .await
-                .expect("unexpected duplicate workload cleanup");
-        }
-    }
-    let cleanup = manager.destroy(&first.id).await;
-    let second = retried.expect("same operation and flag should adopt");
-
-    assert_eq!(first.id, second.id, "retry launched a duplicate workload");
-    assert!(matches!(
-        changed_result,
-        Err(crate::utils::error::AppError::Conflict(_))
-    ));
-    assert!(matches!(
-        changed_image_result,
-        Err(crate::utils::error::AppError::Conflict(_))
-    ));
-    cleanup.expect("real Docker retry workload cleanup");
-}
-
 #[test]
 fn storage_and_network_policy_fence_legacy_launch_identities() {
     #[derive(serde::Serialize)]
@@ -704,6 +613,18 @@ fn concurrent_adopter_start_never_authorizes_creator_cleanup() {
         FailedStartAction::RemoveOwned,
         "a unique non-adoptable failed create remains safe to clean up"
     );
+
+    for terminal in [
+        ContainerStateStatusEnum::EXITED,
+        ContainerStateStatusEnum::DEAD,
+    ] {
+        let inspected = inspected_container_state(terminal);
+        assert_eq!(
+            failed_start_action(true, Some(&inspected)),
+            FailedStartAction::RemoveOwned,
+            "a terminal stable-operation holder must be removed before rotating the key"
+        );
+    }
 
     let paused = inspected_container_state(ContainerStateStatusEnum::PAUSED);
     assert_eq!(

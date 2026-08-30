@@ -865,9 +865,7 @@ pub(super) async fn finish_prepared_round(
     // Repair only after the KotH checker persisted its sample. Held targets in an
     // active scoring game require a matching dead-container receipt, so a partial
     // checker failure cannot silently clear responsibility.
-    if let Err(error) =
-        crate::controllers::game::koth::ensure_koth_hills(state, game.id, None).await
-    {
+    if let Err(error) = crate::controllers::game::koth::ensure_koth_hills(state, game.id).await {
         tracing::warn!(
             game = game.id,
             round = next_number,

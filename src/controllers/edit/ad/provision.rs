@@ -615,8 +615,12 @@ pub(crate) async fn ensure_ad_containers(
     }
 
     if ensure_koth {
-        crate::controllers::game::koth::ensure_koth_hills(st, game.id, reconcile_operation_id)
-            .await?;
+        crate::controllers::game::koth::ensure_koth_hills_with_operation(
+            st,
+            game.id,
+            reconcile_operation_id,
+        )
+        .await?;
     }
 
     Ok((launched, failures))

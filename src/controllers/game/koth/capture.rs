@@ -191,7 +191,11 @@ async fn publish_replacement_target(
 /// is planted here. Idempotent — skips a hill that already has a running container.
 /// Called from the operator "Ensure containers" action and on startup, so KotH hills
 /// exist before the game runs.
-pub async fn ensure_koth_hills(
+pub async fn ensure_koth_hills(st: &SharedState, game_id: i32) -> AppResult<u64> {
+    ensure_koth_hills_with_operation(st, game_id, None).await
+}
+
+pub(crate) async fn ensure_koth_hills_with_operation(
     st: &SharedState,
     game_id: i32,
     reconcile_operation_id: Option<uuid::Uuid>,

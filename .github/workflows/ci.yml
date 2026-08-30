@@ -72,6 +72,15 @@ jobs:
       - name: Build
         run: cargo build --locked
 
+      - name: Test Docker idempotent retry lifecycle
+        run: |
+          docker build --tag rsctf-server-smoke:ci \
+            examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
+          image_id="$(docker image inspect rsctf-server-smoke:ci --format '{{.Id}}')"
+          RSCTF_DOCKER_SCOPE="ci-server-retry" \
+            RSCTF_REAL_DOCKER_RETRY_IMAGE="$image_id" \
+            cargo test --locked retryable_flag_adopts_one_real_docker_workload -- --nocapture
+
       - name: Validate bundled challenge repository with rsctf
         run: >-
           ./target/debug/rsctf challenge check
