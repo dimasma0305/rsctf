@@ -607,7 +607,7 @@ write_new_environment() {
     printf 'RSCTF_HTTP_PORT=%s\n' "$HTTP_PORT"
     printf 'RSCTF_TRUSTED_PROXY_CIDRS=%s\n' "$TRUSTED_PROXY_CIDRS"
     printf '\nRUST_LOG=info\nREDIS_MAXMEMORY=256mb\n'
-    printf 'RSCTF_DB_MAX_CONNECTIONS=33\nRSCTF_PROVISIONING_CONCURRENCY=4\n'
+    printf 'RSCTF_DB_MAX_CONNECTIONS=34\nRSCTF_PROVISIONING_CONCURRENCY=4\n'
     printf 'RSCTF_CONTAINER_MAX_MEMORY_MB=4096\nRSCTF_CONTAINER_MAX_CPU_COUNT=8\n'
     printf '\nRSCTF_DOCKER_PUBLIC_ENTRY=%s\n' "${PUBLIC_ENTRY:-localhost}"
     printf 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24\n'
@@ -633,10 +633,29 @@ append_env_if_missing() {
   fi
 }
 
+migrate_legacy_env_default() {
+  local key=$1 old_value=$2 new_value=$3 assignment_count temporary
+  [[ "$(env_get "$key")" == "$old_value" ]] || return 0
+  assignment_count=$(grep -c "^${key}=" "$ENV_FILE" || true)
+  [[ "$assignment_count" -eq 1 ]] \
+    || die "$ENV_FILE contains duplicate $key assignments; keep one value before upgrading"
+  temporary=$(mktemp "${ENV_FILE}.migration.XXXXXX")
+  if ! awk -v before="${key}=${old_value}" -v after="${key}=${new_value}" \
+    '{ if ($0 == before) print after; else print }' "$ENV_FILE" >"$temporary"; then
+    rm -f -- "$temporary"
+    die "could not migrate the legacy $key default"
+  fi
+  chmod 600 "$temporary"
+  mv -- "$temporary" "$ENV_FILE"
+  info "Raised legacy default $key from $old_value to $new_value for the current safety floor"
+}
+
 complete_existing_environment() {
   local compose_project_name
-  warn "Keeping the existing $ENV_FILE; existing values and secrets will not be replaced"
+  warn "Keeping existing secrets and custom values in $ENV_FILE; recognized legacy safety defaults may be raised"
   umask 077
+  migrate_legacy_env_default RSCTF_DB_MAX_CONNECTIONS 33 34
+  migrate_legacy_env_default RSCTF_CONTROL_DB_MAX_CONNECTIONS 21 22
   append_env_if_missing COMPOSE_PROJECT_NAME rsctf
   compose_project_name="$(env_get COMPOSE_PROJECT_NAME)"
   compose_project_name="${compose_project_name:-rsctf}"
@@ -660,7 +679,7 @@ complete_existing_environment() {
   append_env_if_missing RSCTF_TRUSTED_PROXY_CIDRS "$TRUSTED_PROXY_CIDRS"
   append_env_if_missing RUST_LOG info
   append_env_if_missing REDIS_MAXMEMORY 256mb
-  append_env_if_missing RSCTF_DB_MAX_CONNECTIONS 33
+  append_env_if_missing RSCTF_DB_MAX_CONNECTIONS 34
   append_env_if_missing RSCTF_PROVISIONING_CONCURRENCY 4
   append_env_if_missing RSCTF_CONTAINER_MAX_MEMORY_MB 4096
   append_env_if_missing RSCTF_CONTAINER_MAX_CPU_COUNT 8

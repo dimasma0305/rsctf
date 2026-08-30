@@ -74,7 +74,7 @@ default_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
   --show-only templates/configmap.yaml)"
 assert_contains "$default_config" 'RSCTF_AD_SUBMIT_BURST_FLAGS: "400"' \
   "default A&D submit burst was not rendered"
-assert_contains "$default_config" 'RSCTF_DB_MAX_CONNECTIONS: "33"' \
+assert_contains "$default_config" 'RSCTF_DB_MAX_CONNECTIONS: "34"' \
   "default pool does not cover the all+VPN reconciler floor"
 benchmark_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
   --set config.adSubmitBurstFlags=3200 \
@@ -174,9 +174,9 @@ split_pool=(
   --set trafficCapture.enabled=false
 )
 assert_pool_floor engine engine 16 "${split_pool[@]}"
-assert_pool_floor control control 18 "${split_pool[@]}"
-assert_pool_floor network network 16 "${split_pool[@]}"
-assert_pool_floor all all 30 "${jwt[@]}" --set vpn.enabled=false
+assert_pool_floor control control 19 "${split_pool[@]}"
+assert_pool_floor network network 17 "${split_pool[@]}"
+assert_pool_floor all all 31 "${jwt[@]}" --set vpn.enabled=false
 
 vpn_pool=(
   "${split_pool[@]}"
@@ -185,9 +185,9 @@ vpn_pool=(
   --set vpn.enabled=true
   --set vpn.serverEndpoint=vpn.ctf.example:51820
 )
-assert_pool_floor control-vpn control 21 "${vpn_pool[@]}"
-assert_pool_floor network-vpn network 19 "${vpn_pool[@]}"
-assert_pool_floor all-vpn all 33 "${jwt[@]}" \
+assert_pool_floor control-vpn control 22 "${vpn_pool[@]}"
+assert_pool_floor network-vpn network 20 "${vpn_pool[@]}"
+assert_pool_floor all-vpn all 34 "${jwt[@]}" \
   --set containerBackend=docker \
   --set docker.socket.enabled=true \
   --set vpn.enabled=true \
@@ -226,7 +226,7 @@ if helm template rsctf-control charts/rsctf "${web[@]}" \
   --set workerPlane.existingSecret.name=rsctf-worker-tls \
   --set workerPlane.publicEndpoint=workers.ctf.example:9443 \
   --set workerPlane.serverName=workers.ctf.example \
-  --set config.dbMaxConnections=21 >/dev/null 2>&1; then
+  --set config.dbMaxConnections=22 >/dev/null 2>&1; then
   fail "split control role accepted a hybrid local backend"
 fi
 
@@ -305,7 +305,7 @@ reporter_selector='app.kubernetes.io/name=rsctf,app.kubernetes.io/instance=rsctf
 network_reporter="$(helm template rsctf-network charts/rsctf "${split[@]}" \
   --set runtimeRole=network \
   --set replicaCount=1 \
-  --set config.dbMaxConnections=16 \
+  --set config.dbMaxConnections=17 \
   --set config.kothReporterBaseUrl=http://rsctf-network.rsctf-system.svc:8080 \
   --show-only templates/configmap.yaml \
   --show-only templates/service.yaml)"
@@ -351,7 +351,7 @@ for invalid_reporter_origin in \
   if helm template rsctf-network charts/rsctf "${split[@]}" \
     --set runtimeRole=network \
     --set replicaCount=1 \
-    --set config.dbMaxConnections=16 \
+    --set config.dbMaxConnections=17 \
     --set config.kothReporterBaseUrl="$invalid_reporter_origin" >/dev/null 2>&1; then
     fail "Kubernetes managed reporting accepted an origin outside the rsctf release namespace: $invalid_reporter_origin"
   fi

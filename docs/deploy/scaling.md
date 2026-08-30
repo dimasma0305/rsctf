@@ -212,11 +212,12 @@ migrates, removes every stopped old runtime, and force-recreates only the new
 digest. Migration failure leaves the stopped containers and state file in place
 for a safe retry of the same command; it never runs `up` on failure.
 
-That two-web default budgets `2×26 + 21 = 73` application connections against
-the bundled PostgreSQL limit of 100, preserving migration, administration, and
-rolling-update headroom. Do not add a third default web pool: `3×26 + 21 = 99`
-already exceeds PostgreSQL's ordinary non-reserved capacity. Put PgBouncer in
-front of PostgreSQL or provide a separately reviewed connection budget first.
+That two-web default budgets `2×26 + 22 = 74` application connections against
+the bundled PostgreSQL limit of 100, preserving migration and administration
+headroom during stop-the-world maintenance. It does not leave room for a surge
+web replica: `3×26 + 22 = 100` exceeds PostgreSQL's ordinary non-reserved
+capacity. Put PgBouncer in front of PostgreSQL or provide a separately reviewed
+connection budget first.
 
 For a shared Docker challenge backend, include both overrides so web API replicas
 and the control owner reach the same daemon:
@@ -415,8 +416,8 @@ Secret, PVC, challenge namespace, image tag, and backend configuration. Set
 `kubernetes.createChallengeNamespace: false` on every role; no role release owns
 the namespace resource. At the default concurrency settings, use
 `config.dbMaxConnections: 26` for each web replica and `16` for each engine;
-the control example uses `21`, its exact VPN floor; a network-only owner needs
-16 without VPN or 19 with it.
+the control example uses `22`, its exact VPN floor; a network-only owner needs
+17 without VPN or 20 with it.
 
 When advanced Kubernetes roles enable managed KotH reporting, point both
 `engine` and `web` at the private `network` Service. The `network` release
@@ -579,12 +580,12 @@ checkout. Web needs `5R+2P+13`, reserving eight connections for the bounded
 roster/account-lifecycle paths and four for runtime transitions. The singleton
 all/control/engine suspicion reconciler reserves two connections for its
 retained fence plus nested detector work. A non-VPN `control` therefore needs
-`5R+2P+5`, or `+8` with VPN; `network`, which does not reconcile suspicion,
-remains `5R+2P+3` / `+6`. The monolithic `all` role needs `5R+2P+17` without
-VPN or `5R+2P+20` with it. The one-shot migration role needs two connections.
+`5R+2P+6`, or `+9` with VPN; `network`, which does not reconcile suspicion,
+needs `5R+2P+4` / `+7`. The monolithic `all` role needs `5R+2P+18` without
+VPN or `5R+2P+21` with it. The one-shot migration role needs two connections.
 At the defaults (`R=1`, `P=4`), those floors are 16 for engine, 26 for web,
-18/21 for control, 16/19 for network, and 30/33 for `all`; the Compose control
-example uses 21.
+19/22 for control, 17/20 for network, and 31/34 for `all`; the Compose control
+example uses 22.
 
 ## Graceful scale-down
 
