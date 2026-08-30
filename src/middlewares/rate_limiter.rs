@@ -42,6 +42,23 @@ use sha2::{Digest, Sha256};
 
 use crate::app_state::SharedState;
 
+mod ad;
+mod koth;
+
+pub(crate) use ad::admit_submit as admit_ad_submit;
+#[cfg(test)]
+use ad::{
+    parse_submit_burst_flags as parse_ad_submit_burst_flags,
+    DEFAULT_SUBMIT_BURST_FLAGS as DEFAULT_AD_SUBMIT_BURST_FLAGS,
+};
+pub(crate) use koth::admit_authenticated as admit_koth_capability_auth;
+#[cfg(test)]
+use koth::{
+    is_auth_request as is_koth_capability_auth_request,
+    parse_source_admission as parse_koth_capability_ip_admission,
+    partition_key as koth_capability_partition_key,
+};
+
 static AUTHENTICATED_IP_BACKSTOP_PER_MINUTE: LazyLock<u32> = LazyLock::new(|| {
     std::env::var("RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE")
         .ok()
@@ -58,49 +75,11 @@ static CREDENTIAL_IP_ADMISSION_PER_MINUTE: LazyLock<u32> = LazyLock::new(|| {
         .unwrap_or(30_000)
 });
 
-/// Maximum distinct plausible flags one participation may enqueue immediately.
-/// Four maximum-size batches leave room for ordinary exploit retries without
-/// turning the fixed-rate test allowance into a five-minute production burst.
-const MIN_AD_SUBMIT_BURST_FLAGS: u32 = 100;
-const DEFAULT_AD_SUBMIT_BURST_FLAGS: u32 = 400;
-const MAX_AD_SUBMIT_BURST_FLAGS: u32 = 3_200;
-
-fn parse_ad_submit_burst_flags(value: Option<&str>) -> Result<u32, String> {
-    let Some(value) = value else {
-        return Ok(DEFAULT_AD_SUBMIT_BURST_FLAGS);
-    };
-    let parsed = value.parse::<u32>().map_err(|_| {
-        format!(
-            "RSCTF_AD_SUBMIT_BURST_FLAGS must be an integer from \
-             {MIN_AD_SUBMIT_BURST_FLAGS} through {MAX_AD_SUBMIT_BURST_FLAGS}"
-        )
-    })?;
-    if !(MIN_AD_SUBMIT_BURST_FLAGS..=MAX_AD_SUBMIT_BURST_FLAGS).contains(&parsed) {
-        return Err(format!(
-            "RSCTF_AD_SUBMIT_BURST_FLAGS must be an integer from \
-             {MIN_AD_SUBMIT_BURST_FLAGS} through {MAX_AD_SUBMIT_BURST_FLAGS}"
-        ));
-    }
-    Ok(parsed)
-}
-
-static AD_SUBMIT_BURST_FLAGS: LazyLock<Result<u32, String>> = LazyLock::new(|| {
-    parse_ad_submit_burst_flags(std::env::var("RSCTF_AD_SUBMIT_BURST_FLAGS").ok().as_deref())
-});
-
-/// Reject an invalid explicit A&D work budget before the server accepts traffic.
+/// Reject invalid explicit work/admission budgets before accepting traffic.
 pub fn validate_configuration() -> anyhow::Result<()> {
-    AD_SUBMIT_BURST_FLAGS
-        .as_ref()
-        .map(|_| ())
-        .map_err(|message| anyhow::anyhow!(message.clone()))
-}
-
-fn ad_submit_burst_flags() -> u32 {
-    AD_SUBMIT_BURST_FLAGS
-        .as_ref()
-        .copied()
-        .unwrap_or_else(|message| panic!("{message}"))
+    ad::validate_configuration().map_err(anyhow::Error::msg)?;
+    koth::validate_configuration().map_err(anyhow::Error::msg)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +124,9 @@ pub enum Policy {
     /// Per-identity ceiling for player submission-verdict recovery. Appended to
     /// preserve every shipped Redis policy discriminant.
     Verdict,
+    /// Dedicated source-IP admission for managed KotH capability exchange.
+    /// Appended to preserve every shipped Redis policy discriminant.
+    KothCapabilityAdmission,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -184,13 +166,14 @@ impl Policy {
                     refill_per_sec: capacity / 60.0,
                 }
             }
+            Policy::KothCapabilityAdmission => koth::source_admission_kind(),
             // A maximum-size batch may contain 100 distinct flags. Bound the
             // default immediate queue to four such batches while limiting
             // sustained lookup work to ten flags/s per participation. The
             // larger opt-in ceiling exists only for an isolated fixed-rate
             // campaign that deliberately needs a longer pre-funded window.
             Policy::AdSubmit => Kind::Bucket {
-                capacity: ad_submit_burst_flags() as f64,
+                capacity: ad::submit_burst_flags() as f64,
                 refill_per_sec: 10.0,
             },
             Policy::PrivilegedHubAdmission => Kind::Bucket {
@@ -463,6 +446,7 @@ fn partition_key(policy: Policy, req: &Request) -> String {
             | Policy::Register
             | Policy::GlobalIpBackstop
             | Policy::CredentialIpAdmission
+            | Policy::KothCapabilityAdmission
             | Policy::PrivilegedHubAdmission
             | Policy::PublicHubAdmission
     ) {
@@ -819,22 +803,6 @@ async fn check_weighted_async(policy: Policy, key: String, cost: u32) -> Result<
     }
 }
 
-/// Enforce the team-scoped A&D work budget after authentication has resolved a
-/// canonical participation. Returning the normal 429 response preserves the
-/// public error envelope and `Retry-After` header.
-pub(crate) async fn admit_ad_submit(
-    game_id: i32,
-    participation_id: i32,
-    distinct_plausible_flags: usize,
-) -> Option<Response> {
-    let cost = u32::try_from(distinct_plausible_flags.max(1)).unwrap_or(u32::MAX);
-    let key = format!("game:{game_id}:participation:{participation_id}");
-    check_weighted_async(Policy::AdSubmit, key, cost)
-        .await
-        .err()
-        .map(too_many_requests)
-}
-
 fn check_authenticated_local(identity: String, ip: String) -> Result<(), u64> {
     check(Policy::Global, identity)?;
     check(Policy::GlobalIpBackstop, ip)
@@ -871,6 +839,18 @@ pub async fn global_middleware(
         return next.run(req).await;
     }
     let ip = client_ip(&req);
+    if koth::is_auth_request(req.method(), req.uri().path()) {
+        // All managed arena requests share one container address. Charge a
+        // dedicated high source bucket before parsing the body or touching
+        // PostgreSQL, then let the handler apply canonical participation
+        // fairness after authentication. This bucket is intentionally distinct
+        // from the anonymous Global bucket used by reporter context/observation
+        // traffic, so a player login wave cannot consume the reporter quota.
+        if let Some(response) = koth::admit_source(ip).await {
+            return response;
+        }
+        return next.run(req).await;
+    }
     let credential = crate::middlewares::privilege_authentication::session_token(req.headers());
     if credential.is_some() {
         // This high source ceiling is deliberately separate from per-account

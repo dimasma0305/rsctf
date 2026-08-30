@@ -18,6 +18,9 @@ pub(crate) use rotation::{
 
 #[derive(Debug, sqlx::FromRow)]
 pub(crate) struct AuthenticatedApiTeam {
+    pub(crate) game_id: i32,
+    pub(crate) challenge_id: i32,
+    pub(crate) participation_id: i32,
     pub(crate) team_name: String,
 }
 
@@ -499,7 +502,7 @@ pub(crate) async fn authenticate(
                 )
              RETURNING credential.participation_id
            )
-           SELECT team_name FROM eligible"#,
+           SELECT game_id, challenge_id, participation_id, team_name FROM eligible"#,
     )
     .bind(token)
     .bind(game_id)
@@ -668,6 +671,9 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        assert_eq!(identity.game_id, 7);
+        assert_eq!(identity.challenge_id, 9);
+        assert_eq!(identity.participation_id, 11);
         assert_eq!(identity.team_name, "Tempo Crew");
 
         let mut rotation = connection.begin().await.unwrap();

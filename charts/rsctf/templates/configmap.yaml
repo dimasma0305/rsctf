@@ -52,6 +52,7 @@ data:
   RSCTF_CHECKER_PROCESS_BUDGET: {{ .Values.config.checkerProcessBudget | quote }}
   RSCTF_DISTRIBUTED_RATELIMIT: {{ ternary "false" "true" (eq .Values.runtimeRole "all") | quote }}
   RSCTF_AD_SUBMIT_BURST_FLAGS: {{ .Values.config.adSubmitBurstFlags | quote }}
+  RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE: {{ .Values.config.kothCapabilityIpAdmissionPerMinute | quote }}
   RSCTF_SUSPICION_RECONCILE_SECONDS: {{ .Values.config.suspicionReconcileSeconds | quote }}
   RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS: {{ .Values.config.suspicionFinalizeGraceSeconds | quote }}
   RSCTF_CONTAINER_MAX_MEMORY_MB: {{ .Values.config.containerMaxMemoryMb | quote }}

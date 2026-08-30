@@ -1,6 +1,7 @@
 //! Public token exchange used by a Leaderboard challenge coordinator.
 
 use axum::extract::{Json, State};
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::app_state::SharedState;
@@ -24,11 +25,18 @@ pub struct KothCapabilityIdentityModel {
     team_name: String,
 }
 
+fn validated_token(raw: &str) -> Option<&str> {
+    let token = raw.trim();
+    crate::services::ad::koth_api_capability::is_well_formed(token).then_some(token)
+}
+
 pub async fn authenticate_capability(
     State(st): State<SharedState>,
     Json(request): Json<KothCapabilityAuthenticationRequest>,
-) -> AppResult<RequestResponse<KothCapabilityIdentityModel>> {
-    let token = request.token.trim();
+) -> AppResult<Response> {
+    // Reject ambiguous and attacker-sized values before acquiring PostgreSQL.
+    // The service repeats this check as defense in depth for non-HTTP callers.
+    let token = validated_token(&request.token).ok_or(AppError::Unauthorized)?;
     let mut connection = st
         .pg()
         .acquire()
@@ -42,16 +50,28 @@ pub async fn authenticate_capability(
     )
     .await?
     .ok_or(AppError::Unauthorized)?;
+    drop(connection);
+
+    if let Some(response) = crate::middlewares::rate_limiter::admit_koth_capability_auth(
+        identity.game_id,
+        identity.challenge_id,
+        identity.participation_id,
+    )
+    .await
+    {
+        return Ok(response);
+    }
 
     Ok(RequestResponse::ok(KothCapabilityIdentityModel {
         team_id: crate::services::ad::koth_api_capability::token_hash_hex(token),
         team_name: identity.team_name,
-    }))
+    })
+    .into_response())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::KothCapabilityAuthenticationRequest;
+    use super::{validated_token, KothCapabilityAuthenticationRequest};
 
     #[test]
     fn scope_and_token_are_all_required_and_unknown_fields_fail() {
@@ -67,5 +87,15 @@ mod tests {
             r#"{"token":"koth_12345678","gameId":7,"challengeId":9,"teamId":1}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn token_shape_is_normalized_before_database_authentication() {
+        assert_eq!(
+            validated_token("  koth_exampleToken-123456  "),
+            Some("koth_exampleToken-123456")
+        );
+        assert_eq!(validated_token("koth_short"), None);
+        assert_eq!(validated_token(&format!("koth_{}", "a".repeat(129))), None);
     }
 }

@@ -326,7 +326,7 @@
     "config": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["publicUrl", "kothReporterBaseUrl", "cookieSecure", "trustedProxyCidrs", "jwtTtlSeconds", "allowRegister", "allowPasswordRegistration", "emailConfirm", "adminConfirm", "activeOnRegister", "useCaptcha", "migrate", "logLevel", "provisioningConcurrency", "repoScanConcurrency", "dbMaxConnections", "checkerUidBase", "checkerProcessBudget", "adSubmitBurstFlags", "suspicionReconcileSeconds", "suspicionFinalizeGraceSeconds", "containerMaxMemoryMb", "containerMaxCpuCount"],
+      "required": ["publicUrl", "kothReporterBaseUrl", "cookieSecure", "trustedProxyCidrs", "jwtTtlSeconds", "allowRegister", "allowPasswordRegistration", "emailConfirm", "adminConfirm", "activeOnRegister", "useCaptcha", "migrate", "logLevel", "provisioningConcurrency", "repoScanConcurrency", "dbMaxConnections", "checkerUidBase", "checkerProcessBudget", "adSubmitBurstFlags", "kothCapabilityIpAdmissionPerMinute", "suspicionReconcileSeconds", "suspicionFinalizeGraceSeconds", "containerMaxMemoryMb", "containerMaxCpuCount"],
       "properties": {
         "publicUrl": {"type": "string", "pattern": "^(|https?://[^[:space:]]+)$"},
         "kothReporterBaseUrl": {"type": "string", "pattern": "^(|https?://[^[:space:]/?#@]+/?)$"},
@@ -347,6 +347,7 @@
         "checkerUidBase": {"type": "integer", "minimum": 1, "maximum": 65534, "description": "First otherwise-unused numeric UID reserved for process checker isolation."},
         "checkerProcessBudget": {"type": "integer", "minimum": 1, "maximum": 256, "description": "Reserved UID count and per-process custom-checker concurrency bound."},
         "adSubmitBurstFlags": {"type": "integer", "minimum": 100, "maximum": 3200, "description": "Immediate per-participation A&D flag-work budget before the fixed 10 flags/second refill."},
+        "kothCapabilityIpAdmissionPerMinute": {"type": "integer", "minimum": 3000, "maximum": 1000000, "description": "Shared-arena source admission before managed Leaderboard KotH capability lookup."},
         "suspicionReconcileSeconds": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "All/control/engine full-history anti-cheat sweep interval."},
         "suspicionFinalizeGraceSeconds": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "Ended-game pause before the barrier-backed final anti-cheat pass."},
         "containerMaxMemoryMb": {"type": "integer", "minimum": 1},
