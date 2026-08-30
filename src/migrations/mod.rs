@@ -138,6 +138,8 @@ mod m0115_flag_egress_feed_cursor;
 mod m0116_game_event_feed_pending;
 mod m0242_participation_provision_jobs;
 mod m0250_team_signature_key_index;
+mod m0251_koth_referee_retry;
+mod m0252_player_credential_operations;
 mod m0260_ad_control_revisions;
 mod m0261_control_plane_jobs;
 mod m0262_challenge_import_jobs;
@@ -303,6 +305,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0116_game_event_feed_pending::Migration),
             Box::new(m0242_participation_provision_jobs::Migration),
             Box::new(m0250_team_signature_key_index::Migration),
+            Box::new(m0251_koth_referee_retry::Migration),
+            Box::new(m0252_player_credential_operations::Migration),
             Box::new(m0260_ad_control_revisions::Migration),
             Box::new(m0261_control_plane_jobs::Migration),
             Box::new(m0262_challenge_import_jobs::Migration),
@@ -459,7 +463,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 27..],
+            &names[names.len() - 29..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -477,6 +481,8 @@ mod tests {
                 "m0116_game_event_feed_pending",
                 "m0242_participation_provision_jobs",
                 "m0250_team_signature_key_index",
+                "m0251_koth_referee_retry",
+                "m0252_player_credential_operations",
                 "m0260_ad_control_revisions",
                 "m0261_control_plane_jobs",
                 "m0262_challenge_import_jobs",

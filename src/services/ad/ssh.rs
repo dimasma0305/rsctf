@@ -229,6 +229,7 @@ async fn load_host_key(st: &SharedState) -> PrivateKey {
 async fn validate_ssh_access(
     st: &SharedState,
     key_id: i32,
+    expected_fingerprint: &str,
     participation_id: i32,
     challenge_id: i32,
 ) -> Result<game_challenge::Model, &'static str> {
@@ -236,7 +237,9 @@ async fn validate_ssh_access(
         .one(&st.db)
         .await
         .map_err(|_| "database error")?
-        .filter(|key| key.participation_id == participation_id)
+        .filter(|key| {
+            key.participation_id == participation_id && key.fingerprint == expected_fingerprint
+        })
         .ok_or("SSH key has been revoked")?;
 
     let part = participation::Entity::find_by_id(participation_id)
@@ -300,6 +303,7 @@ impl russh::server::Server for Bastion {
         BastionHandler {
             st: self.st.clone(),
             ssh_key_id: None,
+            ssh_fingerprint: None,
             participation_id: None,
             challenge_id: None,
             cols: 80,
@@ -316,6 +320,8 @@ struct BastionHandler {
     st: SharedState,
     /// The concrete credential row must remain present for the session's lease.
     ssh_key_id: Option<i32>,
+    /// Upserts preserve the row ID, so the lease must also bind the exact key.
+    ssh_fingerprint: Option<String>,
     /// Resolved at auth time from the offered key's registered `AdSshKey`.
     participation_id: Option<i32>,
     /// The SSH username — the challenge id to shell into.
@@ -347,11 +353,12 @@ impl BastionHandler {
         }
         let pid = self.participation_id.ok_or("not authenticated")?;
         let key_id = self.ssh_key_id.ok_or("not authenticated")?;
+        let key_fingerprint = self.ssh_fingerprint.clone().ok_or("not authenticated")?;
         let cid = self
             .challenge_id
             .ok_or("connect as ssh <challenge-id>@host (the number before @)")?;
 
-        let challenge = validate_ssh_access(&self.st, key_id, pid, cid).await?;
+        let challenge = validate_ssh_access(&self.st, key_id, &key_fingerprint, pid, cid).await?;
 
         // Throttle BEFORE opening anything (docker exec or tunnel stream); the slot
         // lives on the handler, so a dropped connection releases it.
@@ -363,7 +370,7 @@ impl BastionHandler {
         // challenges fall through to the local docker-exec path below.
         if challenge.ad_self_hosted {
             return self
-                .open_shell_byoc(key_id, pid, cid, channel, handle)
+                .open_shell_byoc(key_id, key_fingerprint, pid, cid, channel, handle)
                 .await;
         }
 
@@ -452,7 +459,10 @@ impl BastionHandler {
                         Some(Err(_)) | None => break,
                     },
                     _ = lease.tick() => {
-                        if validate_ssh_access(&st, key_id, pid, cid).await.is_err() {
+                        if validate_ssh_access(&st, key_id, &key_fingerprint, pid, cid)
+                            .await
+                            .is_err()
+                        {
                             let _ = handle.disconnect(
                                 Disconnect::ByApplication,
                                 "SSH authorization revoked".to_string(),
@@ -476,6 +486,7 @@ impl BastionHandler {
     async fn open_shell_byoc(
         &mut self,
         key_id: i32,
+        key_fingerprint: String,
         pid: i32,
         cid: i32,
         channel: ChannelId,
@@ -519,7 +530,10 @@ impl BastionHandler {
                         }
                     },
                     _ = lease.tick() => {
-                        if validate_ssh_access(&st, key_id, pid, cid).await.is_err() {
+                        if validate_ssh_access(&st, key_id, &key_fingerprint, pid, cid)
+                            .await
+                            .is_err()
+                        {
                             let _ = handle.disconnect(
                                 Disconnect::ByApplication,
                                 "SSH authorization revoked".to_string(),
@@ -558,17 +572,31 @@ impl Handler for BastionHandler {
             .await
         {
             Ok(Some(key))
-                if validate_ssh_access(&self.st, key.id, key.participation_id, challenge_id)
-                    .await
-                    .is_ok() =>
+                if validate_ssh_access(
+                    &self.st,
+                    key.id,
+                    &fingerprint,
+                    key.participation_id,
+                    challenge_id,
+                )
+                .await
+                .is_ok() =>
             {
                 self.ssh_key_id = Some(key.id);
+                self.ssh_fingerprint = Some(fingerprint.clone());
                 self.participation_id = Some(key.participation_id);
                 self.challenge_id = Some(challenge_id);
-                // Best-effort last-used bump.
-                let mut am: ad_ssh_key::ActiveModel = key.into();
-                am.last_used_at_utc = Set(Some(chrono::Utc::now()));
-                let _ = am.update(&self.st.db).await;
+                // Best-effort last-used bump, guarded against a concurrent
+                // upsert stamping the replacement credential as already used.
+                let _ = sqlx::query(
+                    r#"UPDATE "AdSshKeys" SET last_used_at_utc = $3
+                        WHERE id = $1 AND fingerprint = $2"#,
+                )
+                .bind(key.id)
+                .bind(&fingerprint)
+                .bind(chrono::Utc::now())
+                .execute(self.st.pg())
+                .await;
                 Ok(Auth::Accept)
             }
             _ => Ok(Auth::Reject {

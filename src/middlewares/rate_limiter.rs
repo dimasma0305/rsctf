@@ -161,6 +161,9 @@ pub enum Policy {
     PowIssuanceSource,
     /// Deployment-wide HashPoW issuance budget; all callers share one key.
     PowIssuanceGlobal,
+    /// Tight per-identity defense-in-depth budget for player credential changes.
+    /// Appended to preserve every shipped Redis policy discriminant.
+    CredentialMutation,
     /// Anonymous source budget for bounded Ed25519 team-token verification.
     TeamSignatureSource,
     /// Deployment-wide CPU/query budget for team-token verification.
@@ -247,6 +250,10 @@ impl Policy {
             Policy::PowIssuanceGlobal => Kind::Bucket {
                 capacity: 256.0,
                 refill_per_sec: 20.0,
+            },
+            Policy::CredentialMutation => Kind::Bucket {
+                capacity: 6.0,
+                refill_per_sec: 0.1,
             },
             Policy::TeamSignatureSource => Kind::Bucket {
                 capacity: 20.0,

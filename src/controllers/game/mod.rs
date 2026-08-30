@@ -9,6 +9,7 @@
 pub mod ad;
 mod cheat_capabilities;
 mod cheat_identity;
+pub(crate) mod credential_operations;
 pub mod koth;
 mod monitor_history;
 #[cfg(test)]

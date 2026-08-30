@@ -5,18 +5,20 @@
 //! the only component that can turn a stable, healthy snapshot into score.
 
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, KeyInit, Mac};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::app_state::SharedState;
 use crate::utils::enums::{ParticipationStatus, Role};
 use crate::utils::error::{AppError, AppResult};
-use crate::utils::shared::RequestResponse;
 
 mod admin;
+mod admission;
 mod authentication;
 mod submission;
 
@@ -28,6 +30,9 @@ pub(super) const TIMESTAMP_HEADER: &str = "x-rsctf-timestamp";
 pub(super) const SIGNATURE_HEADER: &str = "x-rsctf-signature";
 pub(super) const SIGNATURE_PREFIX: &str = "sha256=";
 pub(super) const MAX_CLOCK_SKEW_MS: u64 = 5 * 60 * 1_000;
+pub(super) const CONTEXT_INACTIVE_MESSAGE: &str = "Leaderboard KotH context is not active";
+pub(super) const STALE_CONTEXT_MESSAGE: &str =
+    "Leaderboard KotH context changed; fetch context and retry";
 pub(super) const INSERT_REPLAY_SQL: &str = r#"INSERT INTO "KothApiRequestReplays"
              (request_hash, challenge_id, expires_at)
            VALUES ($1, $2, clock_timestamp() + interval '10 minutes')
@@ -111,7 +116,7 @@ pub struct KothObserverContextModel {
     generated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KothObservationAcceptedModel {
     pub(super) accepted: bool,
@@ -123,6 +128,105 @@ pub struct KothObservationAcceptedModel {
     pub(super) recognized_teams: usize,
     #[serde(with = "crate::utils::datetime::millis")]
     pub(super) accepted_at: DateTime<Utc>,
+}
+
+const OBSERVER_CONTEXT_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+const OBSERVER_CONTEXT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+const OBSERVER_CONTEXT_FILL_DEADLINE: std::time::Duration = std::time::Duration::from_millis(1_800);
+const OBSERVER_CONTEXT_MAX_BYTES: usize = 512 * 1_024;
+const OBSERVER_CONTEXT_VALIDATOR_BYTES: usize = 32;
+const OBSERVER_CONTEXT_CACHE_MAX_BYTES: usize =
+    OBSERVER_CONTEXT_VALIDATOR_BYTES + OBSERVER_CONTEXT_MAX_BYTES;
+const OBSERVER_CONTEXT_GLOBAL_WEIGHT: usize = 16;
+const OBSERVER_CONTEXT_CHALLENGE_WEIGHT: usize = 4;
+static OBSERVER_CONTEXT_ADMISSION: std::sync::LazyLock<admission::WeightedAdmission> =
+    std::sync::LazyLock::new(|| admission::WeightedAdmission::new(OBSERVER_CONTEXT_GLOBAL_WEIGHT));
+static OBSERVER_CONTEXT_SF: std::sync::LazyLock<
+    crate::utils::single_flight::SingleFlight<ContextFill>,
+> = std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
+
+#[derive(Clone, Default)]
+enum ContextFill {
+    Ready {
+        generation: i64,
+        context: CachedObserverContext,
+    },
+    Inactive,
+    TooLarge,
+    #[default]
+    Failed,
+}
+
+#[derive(Clone)]
+struct CachedObserverContext {
+    body: bytes::Bytes,
+    validator: [u8; OBSERVER_CONTEXT_VALIDATOR_BYTES],
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RetryableRefereeError {
+    title: String,
+    status: u16,
+    code: &'static str,
+}
+
+pub(super) fn retry_after_response(error: AppError, code: &'static str, seconds: u64) -> Response {
+    let status = error.status();
+    let retry_after_seconds = seconds.max(1);
+    tracing::warn!(
+        referee_retry_code = code,
+        http_status = status.as_u16(),
+        retry_after_seconds,
+        "KotH referee request returned a retryable response"
+    );
+    let mut response = (
+        status,
+        Json(RetryableRefereeError {
+            title: error.to_string(),
+            status: status.as_u16(),
+            code,
+        }),
+    )
+        .into_response();
+    response.headers_mut().insert(
+        header::RETRY_AFTER,
+        HeaderValue::from_str(&retry_after_seconds.to_string())
+            .expect("positive integer Retry-After is a valid header"),
+    );
+    response
+}
+
+fn observer_context_cache_key(game_id: i32, challenge_id: i32, generation: i64) -> String {
+    format!("_KothObserverContextV5_{game_id}_{challenge_id}_{generation}")
+}
+
+fn fresh_observer_context(body: bytes::Bytes) -> CachedObserverContext {
+    CachedObserverContext {
+        validator: Sha256::digest(&body).into(),
+        body,
+    }
+}
+
+fn encode_observer_context_cache(context: &CachedObserverContext) -> bytes::Bytes {
+    let mut encoded = Vec::with_capacity(OBSERVER_CONTEXT_VALIDATOR_BYTES + context.body.len());
+    encoded.extend_from_slice(&context.validator);
+    encoded.extend_from_slice(&context.body);
+    bytes::Bytes::from(encoded)
+}
+
+fn decode_observer_context_cache(encoded: bytes::Bytes) -> Option<CachedObserverContext> {
+    if encoded.len() <= OBSERVER_CONTEXT_VALIDATOR_BYTES
+        || encoded.len() > OBSERVER_CONTEXT_CACHE_MAX_BYTES
+    {
+        return None;
+    }
+    let mut validator = [0_u8; OBSERVER_CONTEXT_VALIDATOR_BYTES];
+    validator.copy_from_slice(&encoded[..OBSERVER_CONTEXT_VALIDATOR_BYTES]);
+    Some(CachedObserverContext {
+        body: encoded.slice(OBSERVER_CONTEXT_VALIDATOR_BYTES..),
+        validator,
+    })
 }
 
 pub(super) async fn load_active_context<'e, E>(
@@ -198,7 +302,12 @@ where
     .bind(challenge_id)
     .fetch_optional(executor)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))
+    .map_err(|error| {
+        admission::referee_database_error(
+            error,
+            "Leaderboard KotH context is temporarily unavailable",
+        )
+    })
 }
 
 pub(super) async fn load_eligible_tokens<'e, E>(
@@ -250,41 +359,273 @@ where
     .bind(Role::Banned as i16)
     .fetch_all(executor)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))
+    .map_err(|error| {
+        admission::referee_database_error(
+            error,
+            "Leaderboard KotH context is temporarily unavailable",
+        )
+    })
+}
+
+async fn context_generation(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    challenge_id: i32,
+) -> AppResult<Option<i64>> {
+    sqlx::query_scalar(
+        r#"SELECT generation FROM "KothObserverContextGenerations"
+            WHERE game_id = $1 AND challenge_id = $2"#,
+    )
+    .bind(game_id)
+    .bind(challenge_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| {
+        admission::referee_database_error(
+            error,
+            "Leaderboard KotH context is temporarily unavailable",
+        )
+    })
+}
+
+async fn build_observer_context(
+    st: &SharedState,
+    game_id: i32,
+    challenge_id: i32,
+) -> AppResult<ContextFill> {
+    let mut transaction = crate::utils::database::begin_read_only_repeatable_read(st.pg())
+        .await
+        .map_err(|error| {
+            admission::referee_database_error(
+                error,
+                "Leaderboard KotH context is temporarily unavailable",
+            )
+        })?;
+    let generation: Option<(i64, DateTime<Utc>)> = sqlx::query_as(
+        r#"SELECT generation, generated_at
+              FROM "KothObserverContextGenerations"
+             WHERE game_id = $1 AND challenge_id = $2"#,
+    )
+    .bind(game_id)
+    .bind(challenge_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some((generation, generated_at)) = generation else {
+        return Ok(ContextFill::Inactive);
+    };
+    let Some(context) = load_active_context(&mut *transaction, game_id, challenge_id).await? else {
+        return Ok(ContextFill::Inactive);
+    };
+    let eligible_tokens = load_eligible_tokens(&mut *transaction, game_id, challenge_id).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if eligible_tokens.len() > super::api_contract::MAX_TEAM_ENTRIES {
+        return Ok(ContextFill::TooLarge);
+    }
+    let (wave_window_starts_at, wave_window_ends_at) = context.wave_window();
+    let body = bytes::Bytes::from(
+        serde_json::to_vec(&KothObserverContextModel {
+            api_version: "v1",
+            context: context.opaque_context(game_id, challenge_id, &eligible_tokens),
+            cycle_number: context.cycle_number,
+            reset_attempt: context.reset_attempt,
+            round_number: context.round_number,
+            cycle_ends_at: context.cycle_ends_at,
+            wave_window_starts_at,
+            wave_window_ends_at,
+            eligible_token_hashes: eligible_tokens
+                .iter()
+                .map(|token| crate::services::ad::koth_api_capability::token_hash_hex(token))
+                .collect(),
+            objective_ids: context.objective_ids.clone().unwrap_or_default(),
+            objective_schema_hash: context.objective_schema_hash.as_ref().map(hex::encode),
+            generated_at,
+        })
+        .map_err(|error| AppError::internal(error.to_string()))?,
+    );
+    if body.len() > OBSERVER_CONTEXT_MAX_BYTES {
+        return Ok(ContextFill::TooLarge);
+    }
+    Ok(ContextFill::Ready {
+        generation,
+        context: fresh_observer_context(body),
+    })
+}
+
+async fn observer_context_body(
+    st: &SharedState,
+    game_id: i32,
+    challenge_id: i32,
+) -> AppResult<CachedObserverContext> {
+    let generation = context_generation(st.pg(), game_id, challenge_id)
+        .await?
+        .ok_or_else(|| AppError::conflict(CONTEXT_INACTIVE_MESSAGE))?;
+    let key = observer_context_cache_key(game_id, challenge_id, generation);
+    if let Some(encoded) = st.cache.get(&key).await {
+        if let Some(context) = decode_observer_context_cache(encoded) {
+            tracing::debug!(
+                referee_operation = "context",
+                cache_status = "hit",
+                game_id,
+                challenge_id,
+                generation,
+                response_bytes = context.body.len(),
+                "served cached KotH referee context"
+            );
+            return Ok(context);
+        }
+        st.cache.remove(&key).await;
+    }
+    let st_for_fill = st.clone();
+    let key_for_fill = key.clone();
+    let filled = OBSERVER_CONTEXT_SF
+        .run_with_timeout(&key, OBSERVER_CONTEXT_FILL_DEADLINE, move || async move {
+            if let Some(encoded) = st_for_fill.cache.get(&key_for_fill).await {
+                if let Some(context) = decode_observer_context_cache(encoded) {
+                    return ContextFill::Ready {
+                        generation,
+                        context,
+                    };
+                }
+                st_for_fill.cache.remove(&key_for_fill).await;
+            }
+            let fill_started = std::time::Instant::now();
+            match build_observer_context(&st_for_fill, game_id, challenge_id).await {
+                Ok(ContextFill::Ready {
+                    generation: built_generation,
+                    context,
+                }) => {
+                    let built_key =
+                        observer_context_cache_key(game_id, challenge_id, built_generation);
+                    let encoded = encode_observer_context_cache(&context);
+                    st_for_fill
+                        .cache
+                        .set(&built_key, &encoded, Some(OBSERVER_CONTEXT_TTL))
+                        .await;
+                    tracing::info!(
+                        referee_operation = "context_fill",
+                        game_id,
+                        challenge_id,
+                        generation = built_generation,
+                        response_bytes = context.body.len(),
+                        elapsed_ms = fill_started.elapsed().as_millis(),
+                        "built KotH referee context"
+                    );
+                    ContextFill::Ready {
+                        generation: built_generation,
+                        context,
+                    }
+                }
+                Ok(other) => other,
+                Err(error) => {
+                    tracing::warn!(
+                        game_id,
+                        challenge_id,
+                        error = %error,
+                        "KotH observer context cache fill failed"
+                    );
+                    ContextFill::Failed
+                }
+            }
+        })
+        .await;
+    match filled {
+        ContextFill::Ready { context, .. } => Ok(context),
+        ContextFill::Inactive => Err(AppError::conflict(CONTEXT_INACTIVE_MESSAGE)),
+        ContextFill::TooLarge => Err(AppError::conflict(
+            "Leaderboard KotH context exceeds the supported response size",
+        )),
+        ContextFill::Failed => Err(AppError::unavailable(
+            "Leaderboard KotH context is temporarily unavailable",
+        )),
+    }
+}
+
+fn if_none_match(headers: &HeaderMap, etag: &str) -> bool {
+    fn weak_value(value: &str) -> &str {
+        let value = value.trim();
+        value.strip_prefix("W/").unwrap_or(value)
+    }
+    headers.get_all(header::IF_NONE_MATCH).iter().any(|value| {
+        value.to_str().is_ok_and(|value| {
+            value.split(',').any(|candidate| {
+                let candidate = candidate.trim();
+                candidate == "*" || weak_value(candidate) == weak_value(etag)
+            })
+        })
+    })
+}
+
+fn context_response(context: CachedObserverContext, headers: &HeaderMap) -> AppResult<Response> {
+    let etag = format!("\"rsctf-koth-context-{}\"", hex::encode(context.validator));
+    let mut response = if if_none_match(headers, &etag) {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else {
+        context.body.into_response()
+    };
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=0, must-revalidate"),
+    );
+    response.headers_mut().insert(
+        header::ETAG,
+        HeaderValue::from_str(&etag).map_err(|error| AppError::internal(error.to_string()))?,
+    );
+    if response.status() != StatusCode::NOT_MODIFIED {
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+    }
+    Ok(response)
 }
 
 /// Public, non-secret fence bound to the exact container, cycle, and scoring tick.
 pub async fn observer_context(
     State(st): State<SharedState>,
     Path((game_id, challenge_id)): Path<(i32, i32)>,
-) -> AppResult<RequestResponse<KothObserverContextModel>> {
-    let context = load_active_context(st.pg(), game_id, challenge_id)
-        .await?
-        .ok_or_else(|| AppError::conflict("Leaderboard KotH context is not active"))?;
-    let (wave_window_starts_at, wave_window_ends_at) = context.wave_window();
-    let eligible_tokens = load_eligible_tokens(st.pg(), game_id, challenge_id).await?;
-    if eligible_tokens.len() > super::api_contract::MAX_TEAM_ENTRIES {
-        return Err(AppError::conflict(
-            "Leaderboard KotH roster exceeds the supported 2,000 teams",
+    headers: HeaderMap,
+) -> AppResult<Response> {
+    let scope = format!("context:{game_id}:{challenge_id}");
+    let Some(_permit) =
+        OBSERVER_CONTEXT_ADMISSION.try_acquire(scope, 1, OBSERVER_CONTEXT_CHALLENGE_WEIGHT)
+    else {
+        return Ok(retry_after_response(
+            AppError::too_many_requests(1),
+            "koth_context_admission",
+            1,
         ));
-    }
-    Ok(RequestResponse::ok(KothObserverContextModel {
-        api_version: "v1",
-        context: context.opaque_context(game_id, challenge_id, &eligible_tokens),
-        cycle_number: context.cycle_number,
-        reset_attempt: context.reset_attempt,
-        round_number: context.round_number,
-        cycle_ends_at: context.cycle_ends_at,
-        wave_window_starts_at,
-        wave_window_ends_at,
-        eligible_token_hashes: eligible_tokens
-            .iter()
-            .map(|token| crate::services::ad::koth_api_capability::token_hash_hex(token))
-            .collect(),
-        objective_ids: context.objective_ids.clone().unwrap_or_default(),
-        objective_schema_hash: context.objective_schema_hash.as_ref().map(hex::encode),
-        generated_at: Utc::now(),
-    }))
+    };
+    let body = match tokio::time::timeout(
+        OBSERVER_CONTEXT_DEADLINE,
+        observer_context_body(&st, game_id, challenge_id),
+    )
+    .await
+    {
+        Ok(Ok(body)) => body,
+        Ok(Err(error @ AppError::ServiceUnavailable(_))) => {
+            return Ok(retry_after_response(error, "koth_context_unavailable", 1));
+        }
+        Ok(Err(AppError::Conflict(title))) if title == CONTEXT_INACTIVE_MESSAGE => {
+            return Ok(retry_after_response(
+                AppError::Conflict(title),
+                "stale_context",
+                1,
+            ));
+        }
+        Ok(Err(error)) => return Err(error),
+        Err(_) => {
+            return Ok(retry_after_response(
+                AppError::unavailable("Leaderboard KotH context timed out; retry later"),
+                "koth_context_timeout",
+                1,
+            ));
+        }
+    };
+    context_response(body, &headers)
 }
 
 pub(super) fn parse_timestamp(headers: &HeaderMap, now_ms: i64) -> AppResult<(i64, &str)> {
@@ -545,6 +886,83 @@ mod tests {
         assert_eq!(value["waveWindowEndsAt"], 230_123_i64);
         assert!(value.get("cycle_ends_at").is_none());
         assert_eq!(value.as_object().unwrap().len(), 12);
+    }
+
+    #[tokio::test]
+    async fn observer_context_etag_is_stable_and_accepts_weak_lists_and_star() {
+        let body = bytes::Bytes::from_static(br#"{"context":"stable"}"#);
+        let context = fresh_observer_context(body);
+        let first = context_response(context.clone(), &HeaderMap::new()).unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let etag = first.headers()[header::ETAG].clone();
+        assert_eq!(
+            first.headers()[header::CACHE_CONTROL],
+            "public, max-age=0, must-revalidate"
+        );
+
+        let mut conditional = HeaderMap::new();
+        conditional.insert(
+            header::IF_NONE_MATCH,
+            HeaderValue::from_str(&format!("\"unrelated\", W/{}", etag.to_str().unwrap())).unwrap(),
+        );
+        let unchanged = context_response(context.clone(), &conditional).unwrap();
+        assert_eq!(unchanged.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(unchanged.headers()[header::ETAG], etag);
+        assert!(axum::body::to_bytes(unchanged.into_body(), 1)
+            .await
+            .unwrap()
+            .is_empty());
+
+        conditional.insert(header::IF_NONE_MATCH, HeaderValue::from_static("*"));
+        assert_eq!(
+            context_response(context, &conditional).unwrap().status(),
+            StatusCode::NOT_MODIFIED
+        );
+    }
+
+    #[test]
+    fn cached_context_validator_is_reused_without_rehashing_the_roster_body() {
+        let expected_validator = [0x5a_u8; OBSERVER_CONTEXT_VALIDATOR_BYTES];
+        let context = CachedObserverContext {
+            body: bytes::Bytes::from(vec![b'x'; OBSERVER_CONTEXT_MAX_BYTES]),
+            validator: expected_validator,
+        };
+        let encoded = encode_observer_context_cache(&context);
+        assert_eq!(encoded.len(), OBSERVER_CONTEXT_CACHE_MAX_BYTES);
+        let cached = decode_observer_context_cache(encoded).unwrap();
+        let response = context_response(cached, &HeaderMap::new()).unwrap();
+        assert_eq!(
+            response.headers()[header::ETAG],
+            format!("\"rsctf-koth-context-{}\"", hex::encode(expected_validator))
+        );
+    }
+
+    #[test]
+    fn observer_context_cache_and_work_bounds_are_explicit() {
+        assert_ne!(
+            observer_context_cache_key(7, 9, 41),
+            observer_context_cache_key(7, 9, 42)
+        );
+        assert!(OBSERVER_CONTEXT_TTL <= std::time::Duration::from_secs(5));
+        assert!(OBSERVER_CONTEXT_DEADLINE <= std::time::Duration::from_secs(2));
+        assert!(OBSERVER_CONTEXT_MAX_BYTES <= 512 * 1_024);
+        assert_eq!(
+            OBSERVER_CONTEXT_CACHE_MAX_BYTES,
+            OBSERVER_CONTEXT_MAX_BYTES + OBSERVER_CONTEXT_VALIDATOR_BYTES
+        );
+        assert!(OBSERVER_CONTEXT_CHALLENGE_WEIGHT < OBSERVER_CONTEXT_GLOBAL_WEIGHT);
+    }
+
+    #[test]
+    fn transient_referee_database_failures_are_retryable_without_hiding_query_bugs() {
+        assert_eq!(
+            admission::referee_database_error(sqlx::Error::PoolTimedOut, "retry").status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            admission::referee_database_error(sqlx::Error::RowNotFound, "retry").status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[test]
