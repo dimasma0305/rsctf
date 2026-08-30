@@ -3456,6 +3456,45 @@ on 2026-08-25.
     `src/controllers/game/scoreboard_board.rs`, and
     `web/src/components/TeamRank.tsx`.
 
+- [ ] Show BYOC-specific recovery when a team's self-hosted A&D service is absent.
+  - A BYOC challenge without a registered service must explain how to enroll or
+    reconnect the team's own agent. It must not tell players to ask an operator to
+    provision a platform-managed container with "Ensure containers".
+  - Derive the empty state from the authoritative challenge delivery mode, including
+    before the first agent heartbeat, and keep managed A&D services on the existing
+    provisioning path.
+  - Add player-component and API-contract regressions for absent, connecting, healthy,
+    stale, and revoked BYOC agents plus an ordinary managed A&D service.
+  - Relevant code: `web/src/components/AdChallengePanel.tsx`, the A&D state wire model,
+    and the BYOC enrollment/agent controllers.
+
+- [ ] Diagnose and remove repeated transient challenge-detail load failures.
+  - Capture the actual failing challenge and solver requests, HTTP status/error code,
+    request identity, and server trace without exposing secrets; do not collapse a
+    VPN disconnect, session expiry, overload, or invalid response into the same generic
+    message.
+  - Preserve last-known-good challenge data during a refresh failure, coalesce the
+    challenge and solver recovery owners, and ensure one failed secondary solver read
+    cannot replace an otherwise valid challenge with the full load-error surface.
+  - Add browser and fixed-rate regressions for cold open, cached refresh, Event-VPN
+    reconnect, session expiry, 429/Retry-After, transient 5xx, and a solver-only failure.
+  - Relevant code: `web/src/components/GameChallengeModal.tsx`,
+    `web/src/components/ChallengeModal.tsx`, `web/src/hooks/useChallengePolling.ts`,
+    `web/src/utils/ChallengePolling.ts`, and the challenge-detail/solver controllers.
+
+- [ ] Keep custom challenge Markdown animations alive while the player edits the flag form.
+  - Typing, receipt-proof input, verdict polling, and unrelated modal state must not
+    replace the sanitized Markdown DOM or restart embedded SVG/CSS animations when the
+    challenge content itself is unchanged.
+  - Preserve sanitization and React ownership; memoize the rendered content boundary
+    rather than permitting arbitrary scripts or moving form state outside its owner.
+  - Add a mounted modal regression with an animated Markdown fixture that types and
+    submits a flag, advances timers, and proves the content node and animation state are
+    not recreated until the challenge ID/content changes.
+  - Relevant code: `web/src/components/MarkdownRenderer.tsx`,
+    `web/src/components/ChallengeModal.tsx`, and
+    `web/src/components/GameChallengeModal.tsx`.
+
 ### Completion gate
 
 - [ ] Run `cargo build` with zero warnings and `cargo test` with the required
