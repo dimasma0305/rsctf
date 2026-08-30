@@ -127,7 +127,7 @@ test('challenge modal ticks only while an open deadline needs updates', async (c
   }
 })
 
-test('editing and submitting a flag preserves unchanged animated Markdown DOM', async () => {
+test('editing and submitting a flag preserves unchanged animated Markdown DOM', async (context) => {
   const browser = new Window({ url: 'https://rsctf.test/' })
   const restoreDom = installTestDom(browser)
   const i18n = i18next.createInstance()
@@ -161,6 +161,7 @@ test('editing and submitting a flag preserves unchanged animated Markdown DOM', 
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   let submissions = 0
   let replaceContent: (() => void) | undefined
+  let animationTimer: ReturnType<typeof setInterval> | undefined
 
   const Harness: FC = () => {
     const [flag, setFlag] = useState('')
@@ -217,7 +218,14 @@ test('editing and submitting a flag preserves unchanged animated Markdown DOM', 
     assert.ok(form)
     assert.ok(input)
     assert.ok(initialAnimation)
-    initialAnimation.dataset.frame = 'running-37'
+    let frame = 0
+    context.mock.timers.enable({ apis: ['setInterval'] })
+    animationTimer = setInterval(() => {
+      frame += 1
+      initialAnimation.dataset.frame = `running-${frame}`
+    }, 100)
+    context.mock.timers.tick(300)
+    assert.equal(initialAnimation.dataset.frame, 'running-3')
 
     await act(async () => {
       const setValue = Object.getOwnPropertyDescriptor(browser.HTMLInputElement.prototype, 'value')?.set
@@ -226,9 +234,10 @@ test('editing and submitting a flag preserves unchanged animated Markdown DOM', 
       input.dispatchEvent(new browser.Event('input', { bubbles: true }))
       input.dispatchEvent(new browser.Event('change', { bubbles: true }))
     })
+    context.mock.timers.tick(200)
     const afterTyping = browser.document.querySelector<HTMLElement>('.tower-animation')
     assert.equal(afterTyping, initialAnimation)
-    assert.equal(afterTyping?.dataset.frame, 'running-37')
+    assert.equal(afterTyping?.dataset.frame, 'running-5')
 
     await act(async () => {
       form.dispatchEvent(new browser.Event('submit', { bubbles: true, cancelable: true }))
@@ -241,6 +250,8 @@ test('editing and submitting a flag preserves unchanged animated Markdown DOM', 
     assert.notEqual(replacedAnimation, initialAnimation)
     assert.equal(replacedAnimation?.textContent, 'new animation')
   } finally {
+    if (animationTimer !== undefined) clearInterval(animationTimer)
+    context.mock.timers.reset()
     await act(async () => root.unmount())
     delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
     await browser.happyDOM.close()
