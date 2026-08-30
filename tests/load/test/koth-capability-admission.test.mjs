@@ -99,7 +99,7 @@ test('the isolated abuse ceiling is configurable without allowing undersized ros
   for (const compose of [localCompose, deployCompose]) {
     assert.match(
       compose,
-      /RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE:[^\n]*:-30000/,
+      /RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE:[^\n]*:-6000/,
     );
   }
   for (const documentation of [
@@ -118,7 +118,7 @@ test('the isolated abuse ceiling is configurable without allowing undersized ros
 });
 
 test('Helm forwards and bounds managed KotH capability admission', () => {
-  assert.match(chartValues, /kothCapabilityIpAdmissionPerMinute:\s*30000/);
+  assert.match(chartValues, /kothCapabilityIpAdmissionPerMinute:\s*6000/);
   assert.match(
     chartConfigMap,
     /RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE: \{\{ \.Values\.config\.kothCapabilityIpAdmissionPerMinute \| quote \}\}/,
@@ -144,9 +144,16 @@ test('Helm forwards and bounds managed KotH capability admission', () => {
 
 test('capability shape and source abuse are bounded before database authentication', () => {
   const shapeCheck = authentication.indexOf('validated_token(&request.token)');
+  const concurrencyCheck = authentication.indexOf(
+    'try_database_lookup_slot()',
+    shapeCheck,
+  );
   const poolAcquire = authentication.indexOf('.pg()');
   assert.ok(shapeCheck >= 0 && shapeCheck < poolAcquire);
+  assert.ok(concurrencyCheck > shapeCheck && concurrencyCheck < poolAcquire);
   assert.match(authentication, /is_well_formed\(token\)/);
+  assert.match(authentication, /DATABASE_LOOKUP_CONCURRENCY:\s*usize\s*=\s*8/);
+  assert.match(authentication, /too_many_requests\(1\)/);
   assert.match(
     kothRoutes,
     /post\(authenticate_capability\)\.layer\(DefaultBodyLimit::max\(1_024\)\)/,

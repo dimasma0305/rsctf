@@ -50,11 +50,10 @@ npm run managed-koth
 
 Start that disposable stack with
 `RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE=3000`. This is intentionally
-lower than the production default of 30,000 per minute: the default supplies a
-30,000-request burst and refills at 500 requests per second, comfortably above
-the legitimate 100-per-second profile. The isolated 3,000 limit refills at 50
-per second, allowing the later 200-per-second abuse phase to prove admission
-without changing production defaults.
+lower than the production default of 6,000 per minute: the default supplies a
+6,000-request burst and refills at the legitimate 100-per-second profile. The
+isolated 3,000 limit refills at 50 per second, allowing the later 200-per-second
+abuse phase to prove admission without changing production defaults.
 
 Capability files live only in a mode-0600 temporary directory and are removed
 during cleanup. Reporter secrets stay in process memory, are never written to an

@@ -74,7 +74,7 @@ default_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
   --show-only templates/configmap.yaml)"
 assert_contains "$default_config" 'RSCTF_AD_SUBMIT_BURST_FLAGS: "400"' \
   "default A&D submit burst was not rendered"
-assert_contains "$default_config" 'RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE: "30000"' \
+assert_contains "$default_config" 'RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE: "6000"' \
   "default managed KotH capability admission was not rendered"
 assert_contains "$default_config" 'RSCTF_DB_MAX_CONNECTIONS: "34"' \
   "default pool does not cover the all+VPN reconciler floor"

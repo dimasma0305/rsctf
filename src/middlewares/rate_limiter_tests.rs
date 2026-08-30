@@ -24,12 +24,9 @@ fn ad_submit_burst_configuration_requires_a_bounded_integer() {
 
 #[test]
 fn koth_capability_source_configuration_preserves_roster_capacity() {
-    assert_eq!(parse_koth_capability_ip_admission(None), Ok(30_000));
+    assert_eq!(parse_koth_capability_ip_admission(None), Ok(6_000));
     assert_eq!(parse_koth_capability_ip_admission(Some("3000")), Ok(3_000));
-    assert_eq!(
-        parse_koth_capability_ip_admission(Some("30000")),
-        Ok(30_000)
-    );
+    assert_eq!(parse_koth_capability_ip_admission(Some("6000")), Ok(6_000));
     assert_eq!(
         parse_koth_capability_ip_admission(Some("1000000")),
         Ok(1_000_000)

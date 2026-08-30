@@ -19,7 +19,7 @@ Restart rsctf after changing a startup value. Settings changed in **Admin → Se
 | `RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS` | `360` | Pause after configured game end before the barrier-backed final anti-cheat pass (`1..3600` seconds) |
 | `RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE` | `120000` | High shared-source ceiling after credential validation (`12000..1000000`) |
 | `RSCTF_CREDENTIAL_IP_ADMISSION_PER_MINUTE` | `30000` | Cheap shared-source ceiling before bearer verification/token lookup (`3000..1000000`) |
-| `RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE` | `30000` | Dedicated shared-arena ceiling before managed Leaderboard KotH capability lookup (`3000..1000000`) |
+| `RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE` | `6000` | Dedicated shared-arena ceiling before managed Leaderboard KotH capability lookup (`3000..1000000`) |
 | `RSCTF_JWT_SECRET` | Insecure development placeholder | Session signing secret; deployment validation requires at least 32 bytes and rejects known defaults |
 | `RSCTF_IDENTITY_HASH_KEY` | Required | Dedicated 32+ byte HMAC key for pseudonymous identity evidence; keep stable across replicas, restarts, and JWT rotations |
 | `RSCTF_JWT_TTL_SECS` | `604800` | Session lifetime in seconds; must be positive |
@@ -316,13 +316,14 @@ before signature or database verification. Login, recovery, registration, mail,
 and OAuth-start limits remain strictly IP-scoped.
 
 Managed Leaderboard KotH capability exchange has a separate source bucket,
-`RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE` (default `30000`, valid
-`3000..1000000`). The default bucket refills at 500 requests/second, above the
-maintained 2,000-team fixed-rate profile of 100 authentications/second. After a
-capability is verified, the ordinary 150 requests/minute allowance is applied to
-its canonical game, challenge, and participation. Reporter context and
-observation traffic therefore keeps a separate rate-limit budget during a
-shared-source login wave.
+`RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE` (default `6000`, valid
+`3000..1000000`). The default bucket refills at the maintained 2,000-team
+fixed-rate profile of 100 authentications/second and holds three complete waves.
+At most eight capability lookups per web process may occupy PostgreSQL at once;
+excess work receives `429` with `Retry-After`. After a capability is verified,
+the ordinary 150 requests/minute allowance is applied to its canonical game,
+challenge, and participation. Reporter context and observation traffic therefore
+keeps a separate rate-limit budget during a shared-source login wave.
 The Helm equivalent is `config.kothCapabilityIpAdmissionPerMinute`.
 
 A&D submission is charged by distinct plausible flags, not HTTP requests. The

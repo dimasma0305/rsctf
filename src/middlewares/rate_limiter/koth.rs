@@ -8,11 +8,11 @@ use axum::response::Response;
 use super::{check_async, too_many_requests, Kind, Policy};
 
 /// A managed arena legitimately authenticates every roster member through one
-/// challenge-container source address. The default 30,000-token bucket refills
-/// at 500/s, comfortably above the fixed 2,000-team lifecycle profile of 100
-/// authentications/s while retaining a finite invalid-capability ceiling.
+/// challenge-container source address. The default 6,000-token bucket refills
+/// at the fixed 2,000-team lifecycle profile of 100 authentications/s. A
+/// separate concurrency gate bounds the instantaneous PostgreSQL workload.
 const MIN_SOURCE_ADMISSION_PER_MINUTE: u32 = 3_000;
-const DEFAULT_SOURCE_ADMISSION_PER_MINUTE: u32 = 30_000;
+const DEFAULT_SOURCE_ADMISSION_PER_MINUTE: u32 = 6_000;
 const MAX_SOURCE_ADMISSION_PER_MINUTE: u32 = 1_000_000;
 const AUTH_PATH: &str = "/api/v1/koth/capability/authenticate";
 

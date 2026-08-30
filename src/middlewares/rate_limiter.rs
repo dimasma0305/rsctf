@@ -943,7 +943,7 @@ async fn run_policy(policy: Policy, req: Request, next: Next) -> Response {
 /// Build the 429 response: RSCTF's `RequestResponse { title, status }` envelope
 /// (via [`crate::utils::shared::MessageResponse`]) plus a `Retry-After` header in
 /// whole seconds.
-fn too_many_requests(retry_after: u64) -> Response {
+pub(crate) fn too_many_requests(retry_after: u64) -> Response {
     let mut resp = crate::utils::shared::MessageResponse::new(
         format!("Too many requests. Please retry after {retry_after} seconds."),
         429,
