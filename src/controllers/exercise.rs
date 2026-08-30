@@ -1,22 +1,25 @@
 //! controllers/exercise.rs — ported from RSCTF `Controllers/ExerciseController.cs`.
 //! Standalone per-user practice challenges (no game/team scope).
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::http::HeaderMap;
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::CurrentUser;
 use crate::middlewares::rate_limiter::{limited, Policy};
-use crate::models::data::{container, exercise_challenge, exercise_instance, flag_context};
+use crate::models::data::{container, exercise_challenge, exercise_instance};
 use crate::services::container::ContainerSpec;
 use crate::utils::enums::{AnswerResult, ChallengeCategory, ContainerStatus};
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::flag_generator;
 use crate::utils::shared::{ArrayResponse, MessageResponse, RequestResponse};
+
+mod operations;
 
 const DEFAULT_EXERCISE_PAGE_SIZE: u64 = 24;
 const MAX_EXERCISE_PAGE_SIZE: u64 = 50;
@@ -24,6 +27,7 @@ const MAX_EXERCISE_CATALOG_ROWS: u64 = 500;
 const MAX_AUTO_DESTROY_PER_CREATE: usize = 2;
 const MAX_TRACKED_EXERCISE_CONTAINERS: usize = 64;
 const EXERCISE_OVERLOAD_RETRY_SECONDS: u64 = 2;
+const MAX_EXERCISE_SUBMIT_BODY_BYTES: usize = 1_024;
 
 const ELIGIBLE_EXERCISE_FLAG_SQL: &str = r#"SELECT EXISTS (
     SELECT 1
@@ -56,7 +60,10 @@ pub fn router() -> Router<SharedState> {
         .route("/api/exercise", limited(Policy::Query, get(list)))
         .route(
             "/api/exercise/{id}",
-            get(detail).merge(limited(Policy::Submit, axum::routing::post(submit))),
+            get(detail).merge(
+                limited(Policy::Submit, axum::routing::post(submit))
+                    .layer(DefaultBodyLimit::max(MAX_EXERCISE_SUBMIT_BODY_BYTES)),
+            ),
         )
         .route(
             "/api/exercise/{id}/container",
@@ -132,18 +139,14 @@ pub struct FlagSubmit {
 }
 
 fn validated_exercise_answer(value: &str) -> AppResult<&str> {
-    if value.len() > crate::controllers::game::MAX_FLAG_LENGTH {
-        return Err(AppError::bad_request("Flag is too long"));
-    }
     let answer = value.trim();
     if answer.is_empty() {
         return Err(AppError::bad_request("A flag is required"));
     }
+    if answer.len() > crate::controllers::game::MAX_FLAG_LENGTH {
+        return Err(AppError::bad_request("Flag is too long"));
+    }
     Ok(answer)
-}
-
-fn user_container_lock_key(user_id: uuid::Uuid) -> String {
-    format!("exercise-container-user:{user_id}")
 }
 
 #[derive(sqlx::FromRow)]
@@ -414,13 +417,9 @@ pub async fn submit(
     // Only the caller's current occupied flag and author-defined unoccupied
     // static flags are eligible. Other users' and stale instance flags share
     // the exercise id, so exercise-id-only fallback would cross that boundary.
-    let accepted = eligible_exercise_flag(
-        &mut **distributed.transaction_mut(),
-        id,
-        current.flatten(),
-        answer,
-    )
-    .await?;
+    let accepted =
+        eligible_exercise_flag(distributed.transaction_mut(), id, current.flatten(), answer)
+            .await?;
 
     let result = if accepted {
         AnswerResult::Accepted
@@ -453,8 +452,48 @@ pub async fn submit(
 pub async fn create_container(
     State(st): State<SharedState>,
     user: CurrentUser,
+    headers: HeaderMap,
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<String>> {
+    // Reject hidden/nonexistent definitions before reserving durable work.
+    let _ = load_exercise(&st, id).await?;
+    let request = operations::operation_request(&headers)?;
+    let operation_id = request.operation_id;
+    let expected_container_id = user_instance(&st, id, user.id)
+        .await?
+        .and_then(|instance| instance.container_id);
+    let operation = match operations::claim_create(
+        st.pg(),
+        operation_id,
+        user.id,
+        id,
+        expected_container_id,
+        request.may_adopt_stale,
+    )
+    .await?
+    {
+        operations::ClaimOutcome::Recovered(entry) => return Ok(RequestResponse::ok(entry)),
+        operations::ClaimOutcome::Following => {
+            let entry = operations::wait_for_result(st.pg(), operation_id).await?;
+            return Ok(RequestResponse::ok(entry));
+        }
+        operations::ClaimOutcome::Owned(operation) => operation,
+    };
+    let owner_st = st.clone();
+    let owner_user = user.clone();
+    let owner_operation = operation.clone();
+    let owner = operations::spawn_owner(st.pg().clone(), operation, async move {
+        perform_create_container(owner_st, owner_user, id, owner_operation).await
+    });
+    Ok(RequestResponse::ok(operations::await_owner(owner).await?))
+}
+
+async fn perform_create_container(
+    st: SharedState,
+    user: CurrentUser,
+    id: i32,
+    operation: operations::ClaimedOperation,
+) -> AppResult<String> {
     let e = load_exercise(&st, id).await?;
     if !e.challenge_type.is_container() {
         return Err(AppError::bad_request("Exercise has no container"));
@@ -483,20 +522,8 @@ pub async fn create_container(
             && crate::services::challenge_images::shared_docker_daemon_acknowledged(),
     )?;
 
-    // Serialize get-or-create for this user/exercise. Without the in-lock re-read,
-    // concurrent or repeated POSTs overwrite the instance pointer and orphan every
-    // previously created backend container.
-    let flight_key = user_container_lock_key(user.id);
-    let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
-    let Some(distributed) =
-        crate::utils::single_flight::PgSessionAdvisoryLock::try_acquire_exercise_runtime(
-            st.pg(),
-            &flight_key,
-        )
-        .await?
-    else {
-        return Err(AppError::too_many_requests(EXERCISE_OVERLOAD_RETRY_SECONDS));
-    };
+    // The durable active-user operation owns this lifecycle across replicas.
+    // No pooled connection is retained while Docker or a worker is inspected.
     let mut existing = user_instance(&st, id, user.id).await?;
     if let Some(instance) = existing.as_mut() {
         if let Some(container_id) = instance.container_id {
@@ -508,8 +535,7 @@ pub async fn create_container(
                     && current.status == ContainerStatus::Running
                     && st.containers.is_running(&current.container_id).await
                 {
-                    distributed.release().await?;
-                    return Ok(RequestResponse::ok(current.entry()));
+                    return Ok(current.entry());
                 }
                 destroy_owned_exercise_container_with(
                     st.pg(),
@@ -543,7 +569,6 @@ pub async fn create_container(
     let maximum = usize::try_from(container_policy.max_exercise_container_count_per_user)
         .map_err(|_| AppError::internal("invalid exercise container limit"))?;
     if maximum == 0 || maximum > MAX_TRACKED_EXERCISE_CONTAINERS {
-        distributed.release().await?;
         return Err(AppError::internal("invalid exercise container limit"));
     }
     let inventory_limit = maximum
@@ -553,7 +578,6 @@ pub async fn create_container(
     let owned = other_owned_containers(st.pg(), user.id, id, inventory_limit).await?;
     if owned.len() >= maximum {
         if !container_policy.auto_destroy_on_limit_reached {
-            distributed.release().await?;
             return Err(AppError::bad_request(format!(
                 "The number of exercise containers cannot exceed {}",
                 container_policy.max_exercise_container_count_per_user
@@ -561,7 +585,6 @@ pub async fn create_container(
         }
         let remove_count = owned.len() - maximum + 1;
         if remove_count > MAX_AUTO_DESTROY_PER_CREATE {
-            distributed.release().await?;
             return Err(AppError::too_many_requests(EXERCISE_OVERLOAD_RETRY_SECONDS));
         }
         for old in owned.into_iter().take(remove_count) {
@@ -580,10 +603,10 @@ pub async fn create_container(
         }
     }
 
-    let flag = flag_generator::generate_flag(
+    let flag = flag_generator::generate_flag_checked(
         e.flag_template.as_deref(),
         &flag_generator::exercise_user_hash(st.config.identity_hash_key.as_bytes(), id, user.id),
-    );
+    )?;
     let game_kind = crate::services::container::game_kind_for_challenge(e.challenge_type);
     let platform_proxy =
         crate::controllers::admin::container_port_mapping(&st).await == "PlatformProxy";
@@ -593,7 +616,7 @@ pub async fn create_container(
         platform_proxy,
         false,
     );
-    let cuuid = uuid::Uuid::new_v4();
+    let cuuid = operation.publication_id;
     let info = st
         .containers
         .create(ContainerSpec {
@@ -611,74 +634,75 @@ pub async fn create_container(
             allow_egress: true,
             control_plane_callback_ports: Vec::new(),
             network_mode: crate::utils::enums::NetworkMode::Open,
-            operation_id: Some(format!("container:{cuuid}")),
+            operation_id: Some(format!("exercise-container:{}", operation.operation_id)),
         })
         .await?;
 
     let backend_id = info.id.clone();
     let mut created_flag_id = None;
     let mut linked_exercise_instance_id = None;
-    let existing_exercise_instance_id = existing.as_ref().map(|instance| instance.id);
-    let persisted: AppResult<container::Model> = async {
+    let mut publication_outcome_ambiguous = false;
+    let persisted: AppResult<String> = async {
         let now = Utc::now();
-        let flag_row = flag_context::ActiveModel {
-            flag: Set(flag),
-            is_occupied: Set(true),
-            attachment_id: Set(None),
-            challenge_id: Set(None),
-            exercise_id: Set(Some(id)),
-            ..Default::default()
-        }
-        .insert(&st.db)
-        .await?;
-        created_flag_id = Some(flag_row.id);
+        let stop_at = now + chrono::Duration::minutes(i64::from(container_policy.default_lifetime));
+        let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        let flag_id = sqlx::query_scalar::<_, i32>(
+            r#"INSERT INTO "FlagContexts"
+                   (flag, is_occupied, attachment_id, challenge_id, exercise_id)
+               VALUES ($1, TRUE, NULL, NULL, $2)
+               RETURNING id"#,
+        )
+        .bind(&flag)
+        .bind(id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        created_flag_id = Some(flag_id);
 
-        let c = container::ActiveModel {
-            id: Set(cuuid),
-            image: Set(image),
-            container_id: Set(info.id),
-            status: Set(ContainerStatus::Running),
-            started_at: Set(now),
-            expect_stop_at: Set(
-                now + chrono::Duration::minutes(i64::from(container_policy.default_lifetime))
-            ),
-            is_proxy: Set(is_proxy),
-            ip: Set(info.ip),
-            port: Set(info.port),
-            public_ip: Set(None),
-            public_port: Set(None),
-            game_instance_id: Set(None),
-            exercise_instance_id: Set(existing_exercise_instance_id),
-            ad_team_service_id: Set(None),
-        }
-        .insert(&st.db)
-        .await?;
+        sqlx::query(
+            r#"INSERT INTO "Containers"
+                   (id, image, container_id, status, started_at, expect_stop_at,
+                    is_proxy, ip, port, public_ip, public_port, game_instance_id,
+                    exercise_instance_id, ad_team_service_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                       NULL, NULL, NULL, NULL, NULL)"#,
+        )
+        .bind(cuuid)
+        .bind(&image)
+        .bind(&backend_id)
+        .bind(ContainerStatus::Running as i16)
+        .bind(now)
+        .bind(stop_at)
+        .bind(is_proxy)
+        .bind(&info.ip)
+        .bind(info.port)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
 
-        let exercise_instance = match existing {
-            Some(i) => {
-                let mut am: exercise_instance::ActiveModel = i.into();
-                am.container_id = Set(Some(cuuid));
-                am.flag_id = Set(Some(flag_row.id));
-                am.is_loaded = Set(true);
-                am.last_container_operation = Set(now);
-                am.update(&st.db).await?
-            }
-            None => {
-                exercise_instance::ActiveModel {
-                    exercise_id: Set(id),
-                    user_id: Set(user.id),
-                    is_loaded: Set(true),
-                    is_solved: Set(false),
-                    flag_id: Set(Some(flag_row.id)),
-                    container_id: Set(Some(cuuid)),
-                    last_container_operation: Set(now),
-                    ..Default::default()
-                }
-                .insert(&st.db)
-                .await?
-            }
-        };
-        linked_exercise_instance_id = Some(exercise_instance.id);
+        let exercise_instance_id = sqlx::query_scalar::<_, i32>(
+            r#"INSERT INTO "ExerciseInstances"
+                    (exercise_id, user_id, is_loaded, is_solved, flag_id,
+                     container_id, last_container_operation)
+               VALUES ($1, $2, TRUE, FALSE, $3, $4, $5)
+               ON CONFLICT (user_id, exercise_id) DO UPDATE
+                   SET is_loaded = TRUE,
+                       flag_id = EXCLUDED.flag_id,
+                       container_id = EXCLUDED.container_id,
+                       last_container_operation = EXCLUDED.last_container_operation
+               RETURNING id"#,
+        )
+        .bind(id)
+        .bind(user.id)
+        .bind(flag_id)
+        .bind(cuuid)
+        .bind(now)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        linked_exercise_instance_id = Some(exercise_instance_id);
 
         // Persist both sides of the ownership relation. Existing deployments
         // historically populated only ExerciseInstances.container_id; the
@@ -704,10 +728,10 @@ pub async fn create_container(
                   )"#,
         )
         .bind(cuuid)
-        .bind(exercise_instance.id)
+        .bind(exercise_instance_id)
         .bind(id)
         .bind(user.id)
-        .execute(st.pg())
+        .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         if linked.rows_affected() != 1 {
@@ -716,12 +740,62 @@ pub async fn create_container(
             ));
         }
 
-        Ok(c)
+        let entry = if is_proxy {
+            cuuid.to_string()
+        } else {
+            format!("{}:{}", info.ip, info.port)
+        };
+        if let Err(commit_error) = transaction.commit().await {
+            let published = sqlx::query_scalar::<_, bool>(
+                r#"SELECT EXISTS(
+                       SELECT 1
+                         FROM "Containers" container
+                         JOIN "ExerciseInstances" instance
+                           ON instance.id = container.exercise_instance_id
+                          AND instance.container_id = container.id
+                        WHERE container.id = $1
+                          AND container.container_id = $2
+                          AND container.status = $3
+                          AND instance.id = $4
+                          AND instance.user_id = $5
+                          AND instance.exercise_id = $6
+                          AND instance.flag_id = $7
+                          AND instance.is_loaded = TRUE
+                   )"#,
+            )
+            .bind(cuuid)
+            .bind(&backend_id)
+            .bind(ContainerStatus::Running as i16)
+            .bind(exercise_instance_id)
+            .bind(user.id)
+            .bind(id)
+            .bind(flag_id)
+            .fetch_one(st.pg())
+            .await;
+            match published {
+                Ok(true) => {
+                    tracing::warn!(
+                        %cuuid,
+                        %commit_error,
+                        "recovered ambiguous exercise publication commit"
+                    );
+                }
+                Ok(false) => return Err(AppError::internal(commit_error.to_string())),
+                Err(recovery_error) => {
+                    publication_outcome_ambiguous = true;
+                    return Err(AppError::internal(format!(
+                        "exercise publication outcome is unavailable; retry the same operation ID: {commit_error}; recovery query failed: {recovery_error}"
+                    )));
+                }
+            }
+        }
+        Ok(entry)
     }
     .await;
 
-    let c = match persisted {
-        Ok(c) => c,
+    let entry = match persisted {
+        Ok(entry) => entry,
+        Err(err) if publication_outcome_ambiguous => return Err(err),
         Err(err) => {
             if let Err(destroy_error) = destroy_owned_exercise_container_with(
                 st.pg(),
@@ -746,31 +820,66 @@ pub async fn create_container(
         }
     };
 
-    distributed.release().await?;
-    Ok(RequestResponse::ok(c.entry()))
+    Ok(entry)
 }
 
 /// `DELETE /api/exercise/{id}/container` — tear down the user's container.
 pub async fn destroy_container(
     State(st): State<SharedState>,
     user: CurrentUser,
+    headers: HeaderMap,
     Path(id): Path<i32>,
 ) -> AppResult<MessageResponse> {
-    let lock_key = user_container_lock_key(user.id);
-    let _instance_guard = crate::utils::single_flight::coalesce(&lock_key).await;
-    let Some(distributed) =
-        crate::utils::single_flight::PgSessionAdvisoryLock::try_acquire_exercise_runtime(
-            st.pg(),
-            &lock_key,
-        )
+    let request = operations::operation_request(&headers)?;
+    let operation_id = request.operation_id;
+    let expected_container_id = user_instance(&st, id, user.id)
         .await?
-    else {
-        return Err(AppError::too_many_requests(EXERCISE_OVERLOAD_RETRY_SECONDS));
+        .and_then(|instance| instance.container_id);
+    let operation = match operations::claim_delete(
+        st.pg(),
+        operation_id,
+        user.id,
+        id,
+        expected_container_id,
+        request.may_adopt_stale,
+    )
+    .await?
+    {
+        operations::ClaimOutcome::Recovered(()) => {
+            return Ok(MessageResponse::ok("Container destroyed"));
+        }
+        operations::ClaimOutcome::Following => {
+            operations::wait_for_result::<()>(st.pg(), operation_id).await?;
+            return Ok(MessageResponse::ok("Container destroyed"));
+        }
+        operations::ClaimOutcome::Owned(operation) => operation,
     };
-    let inst = user_instance(&st, id, user.id)
-        .await?
-        .ok_or_else(|| AppError::not_found("No instance"))?;
+    let owner_st = st.clone();
+    let owner_user = user.clone();
+    let owner_operation = operation.clone();
+    let owner = operations::spawn_owner(st.pg().clone(), operation, async move {
+        perform_destroy_container(owner_st, owner_user, id, owner_operation.publication_id).await
+    });
+    operations::await_owner(owner).await?;
+    Ok(MessageResponse::ok("Container destroyed"))
+}
+
+async fn perform_destroy_container(
+    st: SharedState,
+    user: CurrentUser,
+    id: i32,
+    expected_container_id: uuid::Uuid,
+) -> AppResult<()> {
+    let Some(inst) = user_instance(&st, id, user.id).await? else {
+        // An exact retry after a committed-but-lost response is success.
+        return Ok(());
+    };
     if let Some(cuuid) = inst.container_id {
+        if cuuid != expected_container_id {
+            return Err(AppError::conflict(
+                "The exercise instance changed; refresh before deleting it",
+            ));
+        }
         if let Some(c) = container::Entity::find_by_id(cuuid).one(&st.db).await? {
             destroy_owned_exercise_container_with(
                 st.pg(),
@@ -789,167 +898,9 @@ pub async fn destroy_container(
                 .await?;
         }
     }
-    distributed.release().await?;
-    Ok(MessageResponse::ok("Container destroyed"))
+    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn failed_destroy_never_reaches_exercise_owner_cleanup() {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgres://rsctf:rsctf@127.0.0.1:1/rsctf")
-            .unwrap();
-        let error = destroy_owned_exercise_container_with(
-            &pool,
-            Some(7),
-            uuid::Uuid::nil(),
-            "runtime-7",
-            None,
-            async { Err(AppError::internal("injected destroy failure")) },
-        )
-        .await
-        .unwrap_err();
-
-        assert_eq!(error.to_string(), "injected destroy failure");
-    }
-
-    #[test]
-    fn eligible_flags_are_scoped_to_current_dynamic_or_static_rows() {
-        assert!(ELIGIBLE_EXERCISE_FLAG_SQL.contains("exercise_id = $1"));
-        assert!(ELIGIBLE_EXERCISE_FLAG_SQL.contains("flag.flag = $3"));
-        assert!(ELIGIBLE_EXERCISE_FLAG_SQL.contains("flag.id = $2 AND flag.is_occupied = TRUE"));
-        assert!(ELIGIBLE_EXERCISE_FLAG_SQL.contains("OR flag.is_occupied = FALSE"));
-    }
-
-    #[test]
-    fn exercise_answer_uses_the_normal_flag_byte_limit() {
-        assert!(validated_exercise_answer(&"a".repeat(127)).is_ok());
-        assert!(matches!(
-            validated_exercise_answer(&"a".repeat(128)),
-            Err(AppError::BadRequest(message)) if message == "Flag is too long"
-        ));
-        assert!(validated_exercise_answer("  \t").is_err());
-    }
-
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn exercise_flags_reject_other_owners_and_cleanup_stale_instances() {
-        use sqlx::postgres::PgPoolOptions;
-
-        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
-        let admin = PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&database_url)
-            .await
-            .unwrap();
-        let schema = format!("exercise_flags_{}", uuid::Uuid::new_v4().simple());
-        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
-            .execute(&admin)
-            .await
-            .unwrap();
-        let options = crate::migrations::test_pg_connect_options(&database_url)
-            .options([("search_path", schema.as_str())]);
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect_with(options)
-            .await
-            .unwrap();
-        sqlx::raw_sql(
-            r#"
-            CREATE TABLE "FlagContexts" (
-              id SERIAL PRIMARY KEY, flag TEXT NOT NULL,
-              is_occupied BOOLEAN NOT NULL, exercise_id INTEGER
-            );
-            CREATE TABLE "ExerciseInstances" (
-              id INTEGER PRIMARY KEY, container_id UUID,
-              is_loaded BOOLEAN NOT NULL, flag_id INTEGER
-            );
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        let own_flag_id = sqlx::query_scalar::<_, i32>(
-            r#"INSERT INTO "FlagContexts" (flag, is_occupied, exercise_id)
-               VALUES ('flag{own}', TRUE, 9) RETURNING id"#,
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"INSERT INTO "FlagContexts" (flag, is_occupied, exercise_id)
-               VALUES ('flag{other}', TRUE, 9), ('flag{static}', FALSE, 9)"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let mut connection = pool.acquire().await.unwrap();
-        assert!(
-            eligible_exercise_flag(&mut connection, 9, Some(own_flag_id), "flag{own}")
-                .await
-                .unwrap()
-        );
-        assert!(
-            eligible_exercise_flag(&mut connection, 9, Some(own_flag_id), "flag{static}")
-                .await
-                .unwrap()
-        );
-        assert!(
-            !eligible_exercise_flag(&mut connection, 9, Some(own_flag_id), "flag{other}")
-                .await
-                .unwrap()
-        );
-        assert!(
-            eligible_exercise_flag(&mut connection, 9, None, "flag{static}")
-                .await
-                .unwrap()
-        );
-        assert!(
-            !eligible_exercise_flag(&mut connection, 9, None, "flag{own}")
-                .await
-                .unwrap()
-        );
-        drop(connection);
-
-        let container_id = uuid::Uuid::new_v4();
-        sqlx::query(r#"INSERT INTO "ExerciseInstances" VALUES (41, $1, TRUE, $2)"#)
-            .bind(container_id)
-            .bind(own_flag_id)
-            .execute(&pool)
-            .await
-            .unwrap();
-        clear_exercise_container_owner(&pool, Some(41), container_id, None, Some(own_flag_id))
-            .await
-            .unwrap();
-        assert_eq!(
-            sqlx::query_as::<_, (Option<uuid::Uuid>, bool, Option<i32>)>(
-                r#"SELECT container_id, is_loaded, flag_id
-                     FROM "ExerciseInstances" WHERE id = 41"#,
-            )
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
-            (None, false, None)
-        );
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "FlagContexts" WHERE id = $1"#)
-                .bind(own_flag_id)
-                .fetch_one(&pool)
-                .await
-                .unwrap(),
-            0
-        );
-
-        pool.close().await;
-        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
-            .execute(&admin)
-            .await
-            .unwrap();
-        admin.close().await;
-    }
-}
+#[path = "exercise/tests.rs"]
+mod tests;
