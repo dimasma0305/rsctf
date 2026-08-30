@@ -674,7 +674,7 @@ on 2026-08-25.
     `web/src/pages/account/Login.tsx`, `web/src/pages/account/Register.tsx`,
     `web/src/pages/Teams.tsx`, and `web/src/pages/games/[id]/Index.tsx`.
 
-- [ ] Make HashPoW issuance stateless and keep the client from churning expired or
+- [x] Make HashPoW issuance stateless and keep the client from churning expired or
   cross-tab challenges.
   - The anonymous `/api/captcha/powchallenge` route reloads the live captcha settings
     from PostgreSQL and writes a fresh, unique `_HP_*` entry to both local cache and
@@ -714,7 +714,7 @@ on 2026-08-25.
     `src/services/captcha.rs`, `src/services/cache.rs`, and
     `src/middlewares/rate_limiter.rs`.
 
-- [ ] Bound public team-signature verification and anchor its trust decision.
+- [x] Bound public team-signature verification and anchor its trust decision.
   - Anonymous `POST /api/team/verify` accepts both the Ed25519 public key and team token
     from the caller under the generic JSON body limit. It Base64-decodes `publicKey`
     before checking for the required 32 bytes and similarly decodes the unbounded
@@ -1262,7 +1262,7 @@ on 2026-08-25.
     `src/services/worker_store/workloads.rs`, and
     `src/services/worker/registry.rs`.
 
-- [ ] Make the public attack arena's polling and reconnection load-safe.
+- [x] Make the public attack arena's polling and reconnection load-safe.
   - Replace `setInterval(pollLive, 15000)` with one completion-scheduled, single-flight
     cycle. Add request timeouts, `AbortController` teardown, bounded exponential
     backoff with jitter, visibility/offline suspension, and `Retry-After` handling.
@@ -1314,7 +1314,7 @@ on 2026-08-25.
     `src/controllers/game/ad/byoc_authorization.rs`, and
     `src/services/byoc_tunnel/`.
 
-- [ ] Close the Event-VPN route-casing bypass.
+- [x] Close the Event-VPN route-casing bypass.
   - The middleware recognizes only exact lowercase `api/game` segments, while the
     registered A&D aliases and arena client use mixed-case `/api/Game/{id}/Ad/...`
     paths. Those aliases can therefore skip the live-peer/proof gate.
@@ -1327,7 +1327,7 @@ on 2026-08-25.
     `src/controllers/game/ad/mod.rs`, and
     `web/src/utils/EventVpnProof.ts`.
 
-- [ ] Repair live-arena endpoint and match-lifecycle resolution.
+- [x] Repair live-arena endpoint and match-lifecycle resolution.
   - Use the registered lowercase game and standard-scoreboard routes; the current
     mixed-case requests do not load the Jeopardy overlay or event end time.
   - Either implement the documented, bounded attack-history route or remove the dead
@@ -2958,7 +2958,7 @@ on 2026-08-25.
     updated cards without a runtime error.
   - Relevant code: `web/src/pages/admin/games/[id]/ChallengeReviews.tsx`.
 
-- [ ] Keep team/event join dialogs and user input intact when enrollment fails.
+- [x] Keep team/event join dialogs and user input intact when enrollment fails.
   - `GameJoinModal` resets its invite/division fields and closes in `finally`; its parent
     catches and reports the API/fingerprint error without rethrowing, so invalid codes
     and transient failures look terminal and force the player to reopen and re-enter
@@ -2985,7 +2985,7 @@ on 2026-08-25.
   - Relevant code: `web/src/components/GameJoinModal.tsx`,
     `web/src/pages/games/[id]/Index.tsx`, and `web/src/pages/Teams.tsx`.
 
-- [ ] Preserve challenge-review drafts and report success only after the review commits.
+- [x] Preserve challenge-review drafts and report success only after the review commits.
   - `GameChallengeModal.onReviewSubmit` catches a failed API request and resolves its
     promise normally. `ChallengeModal` therefore marks the review submitted anyway and,
     for a just-solved challenge, clears the flag and closes the modal, discarding the
@@ -3001,7 +3001,7 @@ on 2026-08-25.
     `web/src/components/ChallengeModal.tsx`, and
     `src/controllers/game/submit_review.rs`.
 
-- [ ] Bind fused anti-cheat evidence and review drafts to the exact participation and
+- [x] Bind fused anti-cheat evidence and review drafts to the exact participation and
   finding being reviewed.
   - `FusedEvidencePanel` retains the previous result when `participationId` changes and
     has no abort/generation check, so it can render the old team's evidence under a new
@@ -3025,7 +3025,7 @@ on 2026-08-25.
     `src/controllers/admin/anti_cheat.rs`, and
     `src/services/event_security/fusion.rs`.
 
-- [ ] Bind KotH receipt/referee dialogs to the hill whose response populated them.
+- [x] Bind KotH receipt/referee dialogs to the hill whose response populated them.
   - `openReceipts` and `openObserver` replace the selected hill and start a new request
     without aborting or generation-checking the prior one. Clicking hill A then B can
     let A's late response render under B's title; either request's `finally` can also
@@ -3055,7 +3055,7 @@ on 2026-08-25.
   - Relevant code: `web/src/components/GameChallengeModal.tsx` and
     `web/src/components/InstanceEntry.tsx`.
 
-- [ ] Stop expired WSRX readiness checks from polling the local daemon forever.
+- [x] Stop expired WSRX readiness checks from polling the local daemon forever.
   - When a newly added tunnel still has `latency === -1`, every matching
     `InstanceEntry` starts its own `wsrx.sync()` interval every 1.5 seconds. The
     eight-second timeout only sets `tunnelCheckExpired`; it neither clears that
@@ -3246,7 +3246,7 @@ on 2026-08-25.
   - Add fake-timer tests covering unmount-before-alignment and rapid hide/show cycles.
   - Relevant code: `web/src/hooks/useTicker.ts`.
 
-- [ ] Reconcile resources after accepted-participation provisioning fails.
+- [x] Reconcile resources after accepted-participation provisioning fails.
   - Keep join persistence atomic, but record or enqueue failed provisioning so generic
     challenge instances are retried automatically.
   - Verify that an accepted team eventually receives every required attachment,
@@ -3267,7 +3267,7 @@ on 2026-08-25.
     `src/hubs/monitor.rs`, `src/services/event_bus.rs`, and the `GameEvents` writers
     under `src/controllers/game/`.
 
-- [ ] Make the live arena recover and reconcile its roster after startup.
+- [x] Make the live arena recover and reconcile its roster after startup.
   - Retry an initial A&D-board failure with bounded backoff; the current `NO LIVE DATA`
     path starts only the clock and animation loop and can never recover.
   - Rebuild or reconcile teams and hills when accepted teams are added, participants

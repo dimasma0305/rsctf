@@ -1,7 +1,7 @@
 //! Player-facing Attack & Defense endpoints, ported from RSCTF's
 //! `Controllers/GameController.cs` A&D surface. All routes live under the
-//! `/api/Game/{id}/Ad/...` prefix (mixed-case, matching the documented frontend
-//! contract — axum matches paths case-sensitively).
+//! canonical lowercase `/api/game/{id}/ad/...` prefix. Historical mixed-case
+//! aliases remain for downloaded clients and external integrations.
 //!
 //! # Attack & Defense engine — flow overview
 //!
@@ -52,6 +52,7 @@ use crate::utils::shared::RequestResponse;
 
 fn common_router() -> Router<SharedState> {
     Router::new()
+        .route("/api/game/{id}/ad/scoreboard", get(scoreboard))
         .route("/api/Game/{id}/Ad/Scoreboard", get(scoreboard))
         .route(
             "/api/Game/{id}/Ad/Services/{adTeamServiceId}/Reset",
