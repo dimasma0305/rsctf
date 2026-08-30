@@ -195,9 +195,9 @@ pub(crate) use flag_delivery::{
     FLAG_DELIVERY_PUBLICATION_RESERVE_SECONDS, PUBLICATION_DEADLINE_REASON,
 };
 pub(crate) use koth_auth::{
-    acquire_game_lock as acquire_ad_game_lock, clear_challenge_control, game_lock_key,
-    revoke_koth_capabilities, revoke_koth_capabilities_locked, GameControlLock,
-    KothCapabilityCacheInvalidation,
+    acquire_game_lock as acquire_ad_game_lock, clear_challenge_control,
+    clear_challenge_control_locked, game_lock_key, revoke_koth_capabilities,
+    revoke_koth_capabilities_locked, GameControlLock, KothCapabilityCacheInvalidation,
 };
 pub(crate) use persistence::{complete_missing_koth_results, finalize_ended_round_checks};
 pub use reducers::*;

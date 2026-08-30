@@ -7,6 +7,7 @@ struct PreparedAttachment {
     file_type: FileType,
     file_hash: Option<String>,
     remote_url: Option<String>,
+    upload_stage: Option<crate::services::blob_refs::StagedBlob>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -26,7 +27,26 @@ pub async fn update_attachment(
     Json(model): Json<AttachmentCreateModel>,
 ) -> AppResult<RequestResponse<i32>> {
     manager_or_admin(&st, &user, id).await?;
-    let prepared = prepare_attachment(model.attachment_type, model.file_hash, model.remote_url)?;
+    let mut prepared =
+        prepare_attachment(model.attachment_type, model.file_hash, model.remote_url)?;
+    if let Some(upload_id) = model.upload_id {
+        let prepared = prepared
+            .as_mut()
+            .ok_or_else(|| AppError::bad_request("An uploadId requires a local attachment"))?;
+        if prepared.file_type != FileType::Local {
+            return Err(AppError::bad_request(
+                "An uploadId requires a local attachment",
+            ));
+        }
+        let hash = prepared
+            .file_hash
+            .as_deref()
+            .ok_or_else(|| AppError::bad_request("A local attachment requires fileHash"))?;
+        prepared.upload_stage = Some(
+            crate::services::blob_refs::load_ready_upload_stage(st.pg(), upload_id, user.id, hash)
+                .await?,
+        );
+    }
     let mut definition_lock =
         crate::services::challenge_workloads::acquire_definition_lock(st.pg(), id, c_id).await?;
     let swap = match replace_attachment_locked(
@@ -90,6 +110,7 @@ fn prepare_attachment(
         file_type,
         file_hash,
         remote_url,
+        upload_stage: None,
     }))
 }
 
@@ -123,6 +144,16 @@ async fn replace_attachment_locked(
 
     let new_attachment_id = if let Some(prepared) = prepared {
         let local_file_id = match (prepared.file_type, prepared.file_hash.as_deref()) {
+            (FileType::Local, Some(_)) if prepared.upload_stage.is_some() => Some(
+                crate::services::blob_refs::publish_staged_blob(
+                    transaction,
+                    prepared
+                        .upload_stage
+                        .as_ref()
+                        .expect("checked upload stage"),
+                )
+                .await?,
+            ),
             (FileType::Local, Some(hash)) if !hash.is_empty() => {
                 sqlx::query_scalar::<_, i32>(r#"SELECT id FROM "Files" WHERE hash = $1"#)
                     .bind(hash)
@@ -176,36 +207,6 @@ async fn replace_attachment_locked(
         attachment_id: new_attachment_id,
         deleted_hash,
     })
-}
-
-/// Materialize an `Attachment` row from the wire model, resolving a `Local`
-/// file by hash. `None`/absent type means "no attachment" (returns `None`).
-/// Mirrors `AttachmentCreateModel.ToAttachment`.
-pub(crate) async fn build_attachment(
-    st: &SharedState,
-    file_type: Option<FileType>,
-    file_hash: Option<String>,
-    remote_url: Option<String>,
-) -> AppResult<Option<i32>> {
-    let Some(prepared) = prepare_attachment(file_type, file_hash, remote_url)? else {
-        return Ok(None);
-    };
-    let local_file_id = match (prepared.file_type, prepared.file_hash) {
-        (FileType::Local, Some(hash)) if !hash.is_empty() => local_file::Entity::find()
-            .filter(local_file::Column::Hash.eq(hash))
-            .one(&st.db)
-            .await?
-            .map(|f| f.id),
-        _ => None,
-    };
-    let am = attachment::ActiveModel {
-        file_type: Set(prepared.file_type),
-        remote_url: Set(prepared.remote_url),
-        local_file_id: Set(local_file_id),
-        ..Default::default()
-    };
-    let created = am.insert(&st.db).await?;
-    Ok(Some(created.id))
 }
 
 pub(crate) fn validate_remote_attachment_url(raw: &str) -> AppResult<String> {

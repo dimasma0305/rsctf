@@ -477,6 +477,8 @@ pub struct FlagCreateModel {
     #[serde(default)]
     pub file_hash: Option<String>,
     #[serde(default)]
+    pub upload_id: Option<Uuid>,
+    #[serde(default)]
     pub remote_url: Option<String>,
 }
 
@@ -489,6 +491,8 @@ pub struct AttachmentCreateModel {
     pub attachment_type: Option<FileType>,
     #[serde(default)]
     pub file_hash: Option<String>,
+    #[serde(default)]
+    pub upload_id: Option<Uuid>,
     #[serde(default)]
     pub remote_url: Option<String>,
 }

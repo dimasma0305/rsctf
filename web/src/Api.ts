@@ -862,6 +862,8 @@ export interface TeamInfoModel {
   avatar?: string | null;
   /** Is locked */
   locked?: boolean;
+  /** Monotonic team profile revision */
+  profileRevision?: number;
   /** Team members */
   members?: TeamUserInfoModel[] | null;
 }
@@ -1167,6 +1169,10 @@ export interface LocalFile {
    * @minLength 1
    */
   name: string;
+  /** Staged upload identity consumed atomically with its attachment owner. */
+  uploadId?: string | null;
+  /** @format int64 */
+  size?: number;
 }
 
 /** This record represents the response for an API token request. */
@@ -1624,6 +1630,10 @@ export interface GameInfoModel {
   vpnSourceAsnTelemetryEnabled?: boolean;
   /** Record when one event peer appears from several endpoint identities. */
   vpnDeviceSharingTelemetryEnabled?: boolean;
+  /** Optimistic concurrency revision for the complete editable game configuration. */
+  configurationRevision?: number;
+  /** Stable idempotency identity for one settings save intent. */
+  operationId?: string | null;
   /**
    * Response-owned server clock sample for lifecycle display.
    * @format uint64
@@ -2776,6 +2786,8 @@ export interface AttachmentCreateModel {
   attachmentType?: FileType;
   /** File hash (local file) */
   fileHash?: string | null;
+  /** Opaque staged-upload identity returned by the assets API. */
+  uploadId?: string | null;
   /** File URL (remote file) */
   remoteUrl?: string | null;
 }
@@ -2792,6 +2804,8 @@ export interface FlagCreateModel {
   attachmentType?: FileType;
   /** File hash (local file) */
   fileHash?: string | null;
+  /** Opaque staged-upload identity returned by the assets API. */
+  uploadId?: string | null;
   /** File URL (remote file) */
   remoteUrl?: string | null;
 }
@@ -4294,6 +4308,10 @@ export interface TeamUpdateModel {
    * @maxLength 255
    */
   bio?: string | null;
+  /** Expected team profile revision */
+  profileRevision?: number;
+  /** Stable identity for retrying this update */
+  operationId?: string;
 }
 
 export interface TeamTransferModel {
@@ -6530,6 +6548,8 @@ export class Api<
       query?: {
         /** Unified filename */
         filename?: string | null;
+        /** Stable identity for a replayable upload/consume flow. */
+        operationId?: string | null;
       },
       params: RequestParams = {},
     ) =>
@@ -10881,6 +10901,10 @@ export class Api<
       data: {
         /** @format binary */
         file?: File | null;
+        /** Stable identity for retrying this avatar publication. */
+        operationId?: string | null;
+        /** @format int64 */
+        profileRevision?: number;
       },
       params: RequestParams = {},
     ) =>

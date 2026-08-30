@@ -100,6 +100,7 @@ async fn branding_delete_atomically_tombstones_once_and_retry_purges() {
     .execute(&pool)
     .await
     .unwrap();
+    crate::services::blob_refs::test_support::install_operation_tables(&pool).await;
 
     let storage = MemoryStorage::default();
     let (branding, _) =

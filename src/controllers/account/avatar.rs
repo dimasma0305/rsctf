@@ -31,6 +31,17 @@ pub async fn avatar(
         return Err(AppError::bad_request("Invalid avatar file size"));
     }
 
+    let staged = crate::services::blob_refs::stage_blob(
+        st.pg(),
+        st.storage.as_ref(),
+        uuid::Uuid::new_v4(),
+        "account-avatar",
+        Some(user.id),
+        "avatar",
+        &bytes,
+    )
+    .await?;
+
     let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -43,27 +54,33 @@ pub async fn avatar(
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("User not found"))?
     .0;
-    let (blob, _) = crate::services::blob_refs::store_and_acquire_in_transaction(
-        st.storage.as_ref(),
+    crate::services::blob_refs::lock_direct_hashes_locked(
         &mut transaction,
-        "avatar",
-        &bytes,
+        std::iter::once(staged.blob.hash.as_str()).chain(old_hash.as_deref()),
     )
     .await?;
+    crate::services::blob_refs::publish_staged_blob(&mut transaction, &staged).await?;
+    let blob = staged.blob;
     sqlx::query(r#"UPDATE "AspNetUsers" SET avatar_hash = $2 WHERE id = $1"#)
         .bind(user.id)
         .bind(&blob.hash)
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some(old_hash) = old_hash.as_deref() {
+        crate::services::blob_refs::release_direct_hash_locked(&mut transaction, old_hash).await?;
+    }
     transaction
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     if let Some(old_hash) = old_hash {
-        if let Err(error) =
-            crate::services::blob_refs::release_and_purge(st.pg(), st.storage.as_ref(), &old_hash)
-                .await
+        if let Err(error) = crate::services::blob_refs::purge_if_unreferenced(
+            st.pg(),
+            st.storage.as_ref(),
+            &old_hash,
+        )
+        .await
         {
             tracing::warn!(%error, hash = %old_hash, "old user avatar purge failed");
         }

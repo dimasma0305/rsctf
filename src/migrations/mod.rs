@@ -149,6 +149,11 @@ mod m0272_event_sensor_batches;
 mod m0273_receipt_variant_lifecycle;
 mod m0280_traffic_capture_inventory;
 mod m0281_anticheat_read_bounds;
+mod m0310_player_container_operations;
+mod m0311_blob_deletion_operations;
+mod m0312_traffic_archive_admission;
+mod m0313_game_configuration_operations;
+mod m0314_team_profile_operations;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -314,6 +319,11 @@ impl MigratorTrait for Migrator {
             Box::new(m0273_receipt_variant_lifecycle::Migration),
             Box::new(m0280_traffic_capture_inventory::Migration),
             Box::new(m0281_anticheat_read_bounds::Migration),
+            Box::new(m0310_player_container_operations::Migration),
+            Box::new(m0311_blob_deletion_operations::Migration),
+            Box::new(m0312_traffic_archive_admission::Migration),
+            Box::new(m0313_game_configuration_operations::Migration),
+            Box::new(m0314_team_profile_operations::Migration),
         ]
     }
 }
@@ -459,7 +469,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 27..],
+            &names[names.len() - 32..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -488,6 +498,11 @@ mod tests {
                 "m0273_receipt_variant_lifecycle",
                 "m0280_traffic_capture_inventory",
                 "m0281_anticheat_read_bounds",
+                "m0310_player_container_operations",
+                "m0311_blob_deletion_operations",
+                "m0312_traffic_archive_admission",
+                "m0313_game_configuration_operations",
+                "m0314_team_profile_operations",
             ]
         );
     }

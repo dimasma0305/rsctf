@@ -25,7 +25,7 @@ import { useModals } from '@mantine/modals'
 import { notifications, showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose, mdiContentCopy, mdiLinkVariant, mdiLockOutline, mdiRefresh, mdiStar } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ScrollingText } from '@Components/ScrollingText'
 import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
@@ -112,6 +112,9 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
   const [avatarFile, setAvatarFile] = useState<File | null>(null)
   const [inviteCode, setInviteCode] = useState('')
   const [disabled, setDisabled] = useState(false)
+  const mutationOwner = useRef<AbortController | null>(null)
+  const profileOperation = useRef<{ digest: string; id: string } | null>(null)
+  const avatarOperation = useRef<{ digest: string; id: string } | null>(null)
   const { data: teams, mutate: mutateTeams } = api.team.useTeamGetTeamsInfo()
 
   const clipboard = useClipboard()
@@ -137,7 +140,19 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
 
   useEffect(() => {
     setTeamInfo(team)
+    profileOperation.current = null
+    avatarOperation.current = null
+    mutationOwner.current?.abort()
+    mutationOwner.current = null
+    setDisabled(false)
   }, [team])
+
+  useEffect(
+    () => () => {
+      mutationOwner.current?.abort()
+    },
+    []
+  )
 
   useEffect(() => {
     const fetchCode = async () => {
@@ -269,7 +284,16 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
   }
 
   const onChangeAvatar = async () => {
-    if (!avatarFile || !teamInfo?.id) return
+    if (!avatarFile || !teamInfo?.id || mutationOwner.current) return
+    const profileRevision = teamInfo.profileRevision ?? 0
+    const digest = `${avatarFile.name}:${avatarFile.size}:${avatarFile.lastModified}:${profileRevision}`
+    if (avatarOperation.current?.digest !== digest) {
+      avatarOperation.current = { digest, id: crypto.randomUUID() }
+    }
+    const operationId = avatarOperation.current?.id
+    if (!operationId) return
+    const owner = new AbortController()
+    mutationOwner.current = owner
     setDisabled(true)
     notifications.clean()
     showNotification({
@@ -281,9 +305,17 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
     })
 
     try {
-      const data = await api.team.teamAvatar(teamInfo.id, {
-        file: avatarFile,
-      })
+      const data = await api.team.teamAvatar(
+        teamInfo.id,
+        {
+          file: avatarFile,
+          operationId,
+          profileRevision,
+        },
+        {
+          signal: owner.signal,
+        }
+      )
       updateNotification({
         id: 'upload-avatar',
         color: 'teal',
@@ -293,7 +325,13 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
         loading: false,
       })
       setAvatarFile(null)
-      const newTeamInfo = { ...teamInfo, avatar: data.data }
+      avatarOperation.current = null
+      const avatarChanged = data.data !== teamInfo.avatar
+      const newTeamInfo = {
+        ...teamInfo,
+        avatar: data.data,
+        profileRevision: profileRevision + (avatarChanged ? 1 : 0),
+      }
       setTeamInfo(newTeamInfo)
       mutateTeams(
         teams?.map((x) => (x.id === teamInfo.id ? newTeamInfo : x)),
@@ -312,36 +350,72 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
         loading: false,
       })
     } finally {
-      setDisabled(false)
-      setDropzoneOpened(false)
+      if (mutationOwner.current === owner) {
+        mutationOwner.current = null
+        setDisabled(false)
+        setDropzoneOpened(false)
+      }
     }
   }
 
   const onSaveChange = async () => {
-    if (!teamInfo || !teamInfo?.id) return
+    if (!teamInfo?.id || !team || mutationOwner.current) return
+    const name = teamInfo.name?.trim() ?? ''
+    const bio = teamInfo.bio ?? ''
+    if (name === (team.name?.trim() ?? '') && bio === (team.bio ?? '')) return
+
+    const profileRevision = teamInfo.profileRevision ?? 0
+    const digest = JSON.stringify({ name, bio, profileRevision })
+    if (profileOperation.current?.digest !== digest) {
+      profileOperation.current = { digest, id: crypto.randomUUID() }
+    }
+    const operationId = profileOperation.current?.id
+    if (!operationId) return
+    const owner = new AbortController()
+    mutationOwner.current = owner
+    setDisabled(true)
 
     try {
-      await api.team.teamUpdateTeam(teamInfo.id, teamInfo)
+      const response = await api.team.teamUpdateTeam(
+        teamInfo.id,
+        {
+          name,
+          bio,
+          profileRevision,
+          operationId,
+        },
+        { signal: owner.signal }
+      )
+      const saved = response.data
+      setTeamInfo(saved)
+      profileOperation.current = null
       showNotification({
         color: 'teal',
         message: t('team.notification.updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
       mutateTeams(
-        teams?.map((x) => (x.id === teamInfo.id ? teamInfo : x)),
+        teams?.map((x) => (x.id === teamInfo.id ? saved : x)),
         {
           revalidate: false,
         }
       )
     } catch (e) {
-      showErrorMsg(e, t)
+      if (!owner.signal.aborted) showErrorMsg(e, t)
+    } finally {
+      if (mutationOwner.current === owner) {
+        mutationOwner.current = null
+        setDisabled(false)
+      }
     }
   }
 
   return (
     <Modal
       {...modalProps}
+      withCloseButton={!disabled && (modalProps.withCloseButton ?? true)}
       onClose={() => {
+        if (disabled) return
         setDropzoneOpened(false)
         props.onClose()
       }}
@@ -364,7 +438,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
                 placeholder={team?.name ?? 'ctfteam'}
                 w="100%"
                 value={teamInfo?.name ?? 'team'}
-                disabled={!isCaptain || locked}
+                disabled={!isCaptain || locked || disabled}
                 maxLength={128}
                 onChange={(event) => setTeamInfo({ ...teamInfo, name: event.target.value })}
               />
@@ -380,13 +454,13 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
                 radius="xl"
                 size={70}
                 src={teamInfo?.avatar}
-                role={isCaptain && !locked ? 'button' : undefined}
-                tabIndex={isCaptain && !locked ? 0 : undefined}
-                aria-label={isCaptain && !locked ? avatarModalTitle : undefined}
-                style={isCaptain && !locked ? { cursor: 'pointer' } : undefined}
-                onClick={() => isCaptain && !locked && setDropzoneOpened(true)}
+                role={isCaptain && !locked && !disabled ? 'button' : undefined}
+                tabIndex={isCaptain && !locked && !disabled ? 0 : undefined}
+                aria-label={isCaptain && !locked && !disabled ? avatarModalTitle : undefined}
+                style={isCaptain && !locked && !disabled ? { cursor: 'pointer' } : undefined}
+                onClick={() => isCaptain && !locked && !disabled && setDropzoneOpened(true)}
                 onKeyDown={(event) => {
-                  if (isCaptain && !locked && (event.key === 'Enter' || event.key === ' ')) {
+                  if (isCaptain && !locked && !disabled && (event.key === 'Enter' || event.key === ' ')) {
                     event.preventDefault()
                     setDropzoneOpened(true)
                   }
@@ -420,7 +494,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
                     <ActionIcon
                       size="sm"
                       aria-label={t('team.label.refresh_code', 'Refresh invitation code')}
-                      disabled={locked}
+                      disabled={locked || disabled}
                       onClick={onRefreshInviteCode}
                     >
                       <Icon path={mdiRefresh} size={1} />
@@ -475,7 +549,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
           placeholder={teamInfo?.bio ?? t('team.placeholder.bio')}
           value={teamInfo?.bio ?? ''}
           w="100%"
-          disabled={!isCaptain || locked}
+          disabled={!isCaptain || locked || disabled}
           maxLength={4096}
           autosize
           minRows={2}
@@ -504,7 +578,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
               crew.map((user) => (
                 <TeamMemberInfo
                   key={user.id}
-                  isCaptain={isCaptain && !locked}
+                  isCaptain={isCaptain && !locked && !disabled}
                   user={user}
                   onTransferCaptain={(user: TeamUserInfoModel) => {
                     modals.openConfirmModal({
@@ -547,7 +621,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
             fullWidth
             color="red"
             variant="outline"
-            disabled={isCaptain && locked}
+            disabled={disabled || (isCaptain && locked)}
             onClick={() => {
               modals.openConfirmModal({
                 title: isCaptain ? t('team.content.disband.confirm.title') : t('team.content.leave.confirm.title'),
@@ -570,7 +644,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
           >
             {isCaptain ? t('team.button.disband') : t('team.button.leave')}
           </Button>
-          <Button fullWidth disabled={!isCaptain || locked} onClick={onSaveChange}>
+          <Button fullWidth disabled={!isCaptain || locked || disabled} loading={disabled} onClick={onSaveChange}>
             {t('team.button.save')}
           </Button>
         </Group>
@@ -579,9 +653,9 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
       {/* 更新头像浮窗 */}
       <Modal
         opened={dropzoneOpened}
-        onClose={() => setDropzoneOpened(false)}
+        onClose={() => !disabled && setDropzoneOpened(false)}
         title={avatarModalTitle}
-        withCloseButton
+        withCloseButton={!disabled}
         zIndex={1000}
       >
         <VisuallyHidden id="team-avatar-upload-instructions">
@@ -590,7 +664,10 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
         <Dropzone
           aria-label={avatarModalTitle}
           aria-describedby="team-avatar-upload-instructions"
-          onDrop={(files) => setAvatarFile(files[0])}
+          onDrop={(files) => {
+            avatarOperation.current = null
+            setAvatarFile(files[0])
+          }}
           onReject={() => {
             showNotification({
               color: 'red',

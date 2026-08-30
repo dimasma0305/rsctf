@@ -20,7 +20,7 @@ import {
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { showErrorMsg } from '@Utils/Shared'
@@ -38,6 +38,7 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
 
   const [progress, setProgress] = useState(0)
   const [files, setFiles] = useState<File[]>([])
+  const operationIdRef = useRef<string | null>(null)
 
   const theme = useMantineTheme()
   const { colorScheme } = useMantineColorScheme()
@@ -58,11 +59,12 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
     setDisabled(true)
 
     try {
+      operationIdRef.current ??= crypto.randomUUID()
       const data = await api.assets.assetsUpload(
         {
           files,
         },
-        { filename: uploadFileName },
+        { filename: uploadFileName, operationId: operationIdRef.current },
         {
           onUploadProgress: (e) => {
             setProgress((e.loaded / (e.total ?? 1)) * 90)
@@ -79,6 +81,7 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
             flag: files[idx].name,
             attachmentType: FileType.Local,
             fileHash: f.hash,
+            uploadId: f.uploadId,
           }))
         )
 
@@ -89,6 +92,7 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
           icon: <Icon path={mdiCheck} size={1} />,
         })
         setFiles([])
+        operationIdRef.current = null
         mutate()
         props.onClose()
       }
@@ -135,7 +139,10 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
                     </Text>
                     <ActionIcon
                       aria-label={t('common.button.remove', 'Remove {{name}}', { name: file.name })}
-                      onClick={() => setFiles(files.filter((f) => f !== file))}
+                      onClick={() => {
+                        operationIdRef.current = null
+                        setFiles(files.filter((f) => f !== file))
+                      }}
                     >
                       <Icon path={mdiClose} size={1} />
                     </ActionIcon>
@@ -146,7 +153,20 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
           )}
         </ScrollArea>
         <Group grow>
-          <FileButton multiple onChange={setFiles}>
+          <FileButton
+            multiple
+            onChange={(selected) => {
+              if (selected.length > 32) {
+                showNotification({
+                  color: 'orange',
+                  message: t('admin.notification.upload.too_many_files', 'Select at most 32 files per upload.'),
+                })
+                return
+              }
+              operationIdRef.current = null
+              setFiles(selected)
+            }}
+          >
             {(props) => (
               <Button {...props} disabled={disabled}>
                 {t('common.button.select_file')}

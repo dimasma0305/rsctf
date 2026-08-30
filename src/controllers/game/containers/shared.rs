@@ -8,12 +8,15 @@ pub(crate) async fn get_or_create_shared_container_locked(
     st: &SharedState,
     challenge: &game_challenge::Model,
     vpn_access_required: bool,
-    reconcile_operation_id: Option<String>,
+    caller: Option<LiveParticipationIdentity<'_>>,
+    lifecycle_operation_id: Uuid,
+    publication_id: Uuid,
+    runtime_operation_id: Option<String>,
 ) -> AppResult<container::Model> {
     let container_policy =
         crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
     let game_id = challenge.game_id;
-    let (challenge, workload, identity, publication_fence, legacy_image) =
+    let (challenge, workload, identity, _publication_fence, legacy_image) =
         load_shared_definition_snapshot(st, game_id, challenge.id).await?;
 
     if let Some(sid) = challenge.shared_container_id {
@@ -67,9 +70,9 @@ pub(crate) async fn get_or_create_shared_container_locked(
         platform_proxy,
         vpn_access_required,
     );
-    let container_uuid = uuid::Uuid::new_v4();
+    let container_uuid = publication_id;
     let operation_id =
-        Some(reconcile_operation_id.unwrap_or_else(|| format!("container:{container_uuid}")));
+        runtime_operation_id.or_else(|| Some(format!("player-container:{lifecycle_operation_id}")));
     let info = match workload {
         Some(spec) => {
             st.containers
@@ -104,85 +107,123 @@ pub(crate) async fn get_or_create_shared_container_locked(
     };
 
     let backend_id = info.id.clone();
-    let (definition_lock, challenge) = match acquire_shared_publication_lock(
-        st,
-        game_id,
-        challenge.id,
-        &publication_fence,
-        selected_static_flag.as_deref(),
-    )
-    .await
-    {
-        Ok(value) => value,
+    let now = Utc::now();
+    let stop_at = now + chrono::Duration::minutes(i64::from(container_policy.default_lifetime));
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let publication: AppResult<container::Model> = async {
+        if let Some(caller) = caller {
+            crate::utils::single_flight::acquire_transaction_advisory_lock_shared(
+                &mut transaction,
+                &crate::services::live_roster::lock_key(caller.team_id),
+            )
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        }
+        crate::utils::single_flight::acquire_transaction_advisory_lock(
+            &mut transaction,
+            &crate::services::challenge_workloads::definition_lock_key(game_id, challenge.id),
+        )
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        ensure_publication_definition_current(
+            &mut transaction,
+            game_id,
+            challenge.id,
+            &challenge,
+            selected_static_flag.as_deref(),
+        )
+        .await?;
+        if let Some(caller) = caller {
+            if !player_container_request_is_eligible(
+                &mut transaction,
+                caller,
+                challenge.id,
+                ContainerRequestMode::Shared,
+            )
+            .await?
+            {
+                return Err(AppError::Forbidden);
+            }
+        }
+        sqlx::query(
+            r#"INSERT INTO "Containers"
+                   (id, image, container_id, status, started_at, expect_stop_at,
+                    is_proxy, ip, port, public_ip, public_port,
+                    game_instance_id, exercise_instance_id, ad_team_service_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                       NULL, NULL, NULL, NULL, NULL)"#,
+        )
+        .bind(container_uuid)
+        .bind(&identity)
+        .bind(&backend_id)
+        .bind(ContainerStatus::Running as i16)
+        .bind(now)
+        .bind(stop_at)
+        .bind(is_proxy)
+        .bind(&info.ip)
+        .bind(info.port)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        let linked = sqlx::query(
+            r#"UPDATE "GameChallenges"
+                  SET shared_container_id = $2
+                WHERE id = $1 AND shared_container_id IS NULL"#,
+        )
+        .bind(challenge.id)
+        .bind(container_uuid)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if linked.rows_affected() != 1 {
+            return Err(AppError::conflict(
+                "Shared container ownership changed during publication",
+            ));
+        }
+        Ok(container::Model {
+            id: container_uuid,
+            image: identity.clone(),
+            container_id: backend_id.clone(),
+            status: ContainerStatus::Running,
+            started_at: now,
+            expect_stop_at: stop_at,
+            is_proxy,
+            ip: info.ip.clone(),
+            port: info.port,
+            public_ip: None,
+            public_port: None,
+            game_instance_id: None,
+            exercise_instance_id: None,
+            ad_team_service_id: None,
+        })
+    }
+    .await;
+    let c = match publication {
+        Ok(c) => c,
         Err(error) => {
+            transaction.rollback().await.map_err(|rollback_error| {
+                AppError::internal(format!("{error}; rollback failed: {rollback_error}"))
+            })?;
             if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
-                tracing::warn!(%backend_id, error = %destroy_error, "stale unpublished shared container destroy failed");
+                tracing::warn!(%backend_id, error = %destroy_error, "unpublished shared container destroy failed");
             }
             return Err(error);
         }
     };
-    let now = Utc::now();
-    let stop_at = now + chrono::Duration::minutes(i64::from(container_policy.default_lifetime));
-    let persisted: AppResult<container::Model> = async {
-        let txn = crate::utils::database::begin_seaorm_transaction(&st.db).await?;
-        let c = container::ActiveModel {
-            id: Set(container_uuid),
-            image: Set(identity),
-            container_id: Set(info.id),
-            status: Set(ContainerStatus::Running),
-            started_at: Set(now),
-            expect_stop_at: Set(stop_at),
-            is_proxy: Set(is_proxy),
-            ip: Set(info.ip),
-            port: Set(info.port),
-            public_ip: Set(None),
-            public_port: Set(None),
-            game_instance_id: Set(None),
-            exercise_instance_id: Set(None),
-            ad_team_service_id: Set(None),
+    if let Err(commit_error) = transaction.commit().await {
+        let recovered = container::Entity::find_by_id(container_uuid)
+            .one(&st.db)
+            .await?
+            .filter(|published| published.container_id == backend_id);
+        if let Some(recovered) = recovered {
+            return Ok(recovered);
         }
-        .insert(&txn)
-        .await?;
-        game_challenge::ActiveModel {
-            id: Set(challenge.id),
-            shared_container_id: Set(Some(container_uuid)),
-            ..Default::default()
+        if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
+            tracing::warn!(%backend_id, error = %destroy_error, "ambiguous shared container destroy failed");
         }
-        .update(&txn)
-        .await?;
-        txn.commit().await?;
-        Ok(c)
+        return Err(AppError::internal(commit_error.to_string()));
     }
-    .await;
-    definition_lock.release().await?;
-
-    let c = match persisted {
-        Ok(c) => c,
-        Err(err) => {
-            if let Err(cleanup_error) =
-                revoke_published_shared_container(st, challenge.id, container_uuid, &backend_id)
-                    .await
-            {
-                tracing::error!(%backend_id, %cleanup_error, "shared container publication rollback failed; retaining durable owner for retry");
-                return Err(AppError::internal(format!(
-                    "{err}; shared container rollback failed: {cleanup_error}"
-                )));
-            }
-            return Err(err);
-        }
-    };
-
-    let stale_error = match load_eligible_shared_challenge(st, challenge.id).await {
-        Ok(current) if current.shared_container_id == Some(container_uuid) => None,
-        Ok(_) => Some(AppError::bad_request(
-            "Shared container ownership changed during publication",
-        )),
-        Err(error) => Some(error),
-    };
-    if let Some(error) = stale_error {
-        revoke_published_shared_container(st, challenge.id, container_uuid, &backend_id).await?;
-        return Err(error);
-    }
-
     Ok(c)
 }

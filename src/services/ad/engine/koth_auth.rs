@@ -4,6 +4,15 @@ use sea_orm::DatabaseConnection;
 
 use crate::utils::error::{AppError, AppResult};
 
+/// Preserve PostgreSQL headroom even while legacy mutation paths are being
+/// converted to use their game-control connection directly. Admission happens
+/// before the first checkout and never queues behind a retained transaction.
+const GAME_CONTROL_CONCURRENCY: usize = 4;
+static GAME_CONTROL_ADMISSION: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Arc::new(tokio::sync::Semaphore::new(GAME_CONTROL_CONCURRENCY))
+    });
+
 pub(crate) fn game_lock_key(game_id: i32) -> String {
     format!("koth-control:{game_id}")
 }
@@ -15,6 +24,7 @@ pub(crate) fn game_lock_key(game_id: i32) -> String {
 pub(crate) struct GameControlLock {
     database: crate::utils::single_flight::PgAdvisoryLock,
     local: crate::utils::single_flight::CoalesceGuard,
+    admission: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl GameControlLock {
@@ -23,9 +33,14 @@ impl GameControlLock {
     }
 
     pub(crate) async fn release(self) -> anyhow::Result<()> {
-        let Self { database, local } = self;
+        let Self {
+            database,
+            local,
+            admission,
+        } = self;
         let result = database.release().await;
         drop(local);
+        drop(admission);
         result
     }
 }
@@ -36,13 +51,21 @@ pub(crate) async fn acquire_game_lock(
 ) -> AppResult<GameControlLock> {
     let key = game_lock_key(game_id);
     let local = crate::utils::single_flight::coalesce(&key).await;
+    let admission = GAME_CONTROL_ADMISSION
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AppError::unavailable("Game configuration capacity is busy; retry shortly"))?;
     let database = crate::utils::single_flight::PgAdvisoryLock::acquire(
         db.get_postgres_connection_pool(),
         &key,
     )
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(GameControlLock { database, local })
+    Ok(GameControlLock {
+        database,
+        local,
+        admission,
+    })
 }
 
 /// Clear the published holder for one hill while its game control lock is held.
@@ -51,6 +74,17 @@ pub(crate) async fn clear_challenge_control(
     game_id: i32,
     challenge_id: i32,
 ) -> AppResult<()> {
+    clear_challenge_control_locked(db.get_postgres_connection_pool(), game_id, challenge_id).await
+}
+
+pub(crate) async fn clear_challenge_control_locked<'e, E>(
+    executor: E,
+    game_id: i32,
+    challenge_id: i32,
+) -> AppResult<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     sqlx::query(
         r#"UPDATE "KothTargets"
               SET holder_participation_id = NULL, held_since = NULL
@@ -58,7 +92,7 @@ pub(crate) async fn clear_challenge_control(
     )
     .bind(game_id)
     .bind(challenge_id)
-    .execute(db.get_postgres_connection_pool())
+    .execute(executor)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(())

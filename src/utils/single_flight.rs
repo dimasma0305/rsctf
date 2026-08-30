@@ -74,7 +74,8 @@ impl<T: Clone + Default + Send + 'static> SingleFlight<T> {
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = T> + Send + 'static,
     {
-        self.run_with_timeout(key, LEADER_TIMEOUT, f).await
+        self.run_with_limit(key, LEADER_TIMEOUT, usize::MAX, f)
+            .await
     }
 
     /// Run a detached single-flight operation with a caller-selected deadline.
@@ -86,6 +87,28 @@ impl<T: Clone + Default + Send + 'static> SingleFlight<T> {
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = T> + Send + 'static,
     {
+        self.run_with_limit(key, timeout, usize::MAX, f).await
+    }
+
+    /// Run a detached flight while bounding the number of distinct active keys.
+    /// Existing followers always join their key; only a new leader is rejected
+    /// when the ceiling is full. This is intended for caller-controlled cache
+    /// keys such as content hashes, where same-key coalescing alone does not
+    /// protect the process from a rotating-key flood.
+    pub async fn run_with_limit<F, Fut>(
+        &'static self,
+        key: &str,
+        timeout: Duration,
+        max_distinct_keys: usize,
+        f: F,
+    ) -> T
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = T> + Send + 'static,
+    {
+        if max_distinct_keys == 0 {
+            return T::default();
+        }
         // Every caller subscribes before the leader starts, so a very fast
         // recompute cannot publish between map lookup and subscription.
         let (mut receiver, leader) = {
@@ -93,6 +116,9 @@ impl<T: Clone + Default + Send + 'static> SingleFlight<T> {
             match map.get(key) {
                 Some(tx) => (tx.subscribe(), None),
                 None => {
+                    if map.len() >= max_distinct_keys {
+                        return T::default();
+                    }
                     let (tx, _) = broadcast::channel(1);
                     let receiver = tx.subscribe();
                     map.insert(key.to_string(), tx);
@@ -218,6 +244,37 @@ mod tests {
             .run_with_timeout("bounded", Duration::from_secs(1), || async { true })
             .await;
         assert!(retried);
+    }
+
+    #[tokio::test]
+    async fn distinct_key_limit_rejects_only_new_leaders() {
+        let flight: &'static SingleFlight<Option<usize>> = Box::leak(Box::new(SingleFlight::new()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let leader_calls = calls.clone();
+        let leader = tokio::spawn(flight.run_with_limit(
+            "first",
+            Duration::from_secs(1),
+            1,
+            move || async move {
+                leader_calls.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                Some(7)
+            },
+        ));
+        while calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        let rejected = flight
+            .run_with_limit("second", Duration::from_secs(1), 1, || async { Some(9) })
+            .await;
+        assert_eq!(rejected, None);
+        let follower = flight
+            .run_with_limit("first", Duration::from_secs(1), 1, || async { Some(11) })
+            .await;
+        assert_eq!(follower, Some(7));
+        assert_eq!(leader.await.unwrap(), Some(7));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -480,16 +537,17 @@ impl PgAdvisoryLock {
     }
 
     /// Runtime eligibility transitions retain their cross-replica fence while
-    /// taking game/definition locks and reconciling external runtimes. Admit
-    /// one such outer operation per replica before checking out PostgreSQL so
-    /// distinct challenges cannot fill a small pool with transactions that all
-    /// need a second connection to make progress. This gate stays independent
-    /// from definition and provisioning because transition operations nest both.
-    pub async fn acquire_transition(pool: &sqlx::PgPool, key: &str) -> anyhow::Result<Self> {
+    /// reconciling external runtimes. Use a close-on-drop session lease so no
+    /// database transaction spans that I/O, and admit only one outer operation
+    /// per replica to preserve pool headroom for its short inner transactions.
+    pub async fn acquire_transition(
+        pool: &sqlx::PgPool,
+        key: &str,
+    ) -> anyhow::Result<PgSessionAdvisoryLock> {
         static GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
             std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
         let permit = GATE.clone().acquire_owned().await?;
-        Self::acquire_with_permit(pool, key, Some(permit)).await
+        PgSessionAdvisoryLock::acquire_with_permit(pool, key, Some(permit)).await
     }
 
     /// Distributed lock for mutable image-tag builds.

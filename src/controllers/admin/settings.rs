@@ -776,6 +776,17 @@ pub async fn logo_upload(
         return Err(AppError::bad_request("File is too large"));
     }
 
+    let staged = crate::services::blob_refs::stage_blob(
+        st.pg(),
+        st.storage.as_ref(),
+        uuid::Uuid::new_v4(),
+        "platform-branding",
+        None,
+        &name,
+        &bytes,
+    )
+    .await?;
+
     let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -797,13 +808,13 @@ pub async fn logo_upload(
     .map_err(|error| AppError::internal(error.to_string()))?
     .into_iter()
     .collect();
-    let (blob, _) = crate::services::blob_refs::store_and_acquire_in_transaction(
-        st.storage.as_ref(),
+    crate::services::blob_refs::lock_direct_hashes_locked(
         &mut transaction,
-        &name,
-        &bytes,
+        std::iter::once(staged.blob.hash.as_str()).chain(old_hashes.iter().map(String::as_str)),
     )
     .await?;
+    crate::services::blob_refs::publish_staged_blob(&mut transaction, &staged).await?;
+    let blob = staged.blob;
     for key in ["GlobalConfig:LogoHash", "GlobalConfig:FaviconHash"] {
         sqlx::query(
             r#"INSERT INTO "Configs" (config_key, value, cache_keys)
@@ -816,15 +827,21 @@ pub async fn logo_upload(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     }
+    for old_hash in &old_hashes {
+        crate::services::blob_refs::release_direct_hash_locked(&mut transaction, old_hash).await?;
+    }
     transaction
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
     for old_hash in old_hashes {
-        if let Err(error) =
-            crate::services::blob_refs::release_and_purge(st.pg(), st.storage.as_ref(), &old_hash)
-                .await
+        if let Err(error) = crate::services::blob_refs::purge_if_unreferenced(
+            st.pg(),
+            st.storage.as_ref(),
+            &old_hash,
+        )
+        .await
         {
             tracing::warn!(%error, hash = %old_hash, "old branding blob purge failed");
         }

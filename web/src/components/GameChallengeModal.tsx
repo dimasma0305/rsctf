@@ -3,7 +3,7 @@ import { useInputState } from '@mantine/hooks'
 import { notifications, showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { FC, MutableRefObject, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChallengeModal, SolverInfo } from '@Components/ChallengeModal'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
@@ -53,6 +53,49 @@ interface GameChallengeModalProps extends ModalProps {
 
 interface PendingFlagVerdict extends FlagVerdictIdentity {
   attemptId: string
+}
+
+type ContainerOperationKind = 'create' | 'delete' | 'extend'
+type ContainerOperationOwner = { scope: string; id: string }
+
+const operationStorageKey = (kind: ContainerOperationKind) => `rsctf:container-operation:${kind}`
+
+const retainContainerOperation = (
+  kind: ContainerOperationKind,
+  ownerRef: MutableRefObject<ContainerOperationOwner | null>,
+  scope: string
+) => {
+  if (ownerRef.current?.scope === scope) return ownerRef.current.id
+  let owner: ContainerOperationOwner | null = null
+  try {
+    const stored = sessionStorage.getItem(operationStorageKey(kind))
+    const candidate = stored ? (JSON.parse(stored) as Partial<ContainerOperationOwner>) : null
+    if (candidate?.scope === scope && typeof candidate.id === 'string') {
+      owner = { scope, id: candidate.id }
+    }
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+  owner ??= { scope, id: crypto.randomUUID() }
+  ownerRef.current = owner
+  try {
+    sessionStorage.setItem(operationStorageKey(kind), JSON.stringify(owner))
+  } catch {
+    // The in-memory ref still preserves identity for this modal lifetime.
+  }
+  return owner.id
+}
+
+const clearContainerOperation = (
+  kind: ContainerOperationKind,
+  ownerRef: MutableRefObject<ContainerOperationOwner | null>
+) => {
+  ownerRef.current = null
+  try {
+    sessionStorage.removeItem(operationStorageKey(kind))
+  } catch {
+    // Nothing else is required after the authoritative operation completed.
+  }
 }
 
 export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
@@ -186,6 +229,9 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   const [solvedChallengeId, setSolvedChallengeId] = useState<number | null>(null)
   const [flagVerdict, dispatchFlagVerdict] = useReducer(flagVerdictReducer, null)
   const submitAttemptOwnerRef = useRef<FlagSubmitAttemptOwner | null>(null)
+  const containerCreateOperationRef = useRef<ContainerOperationOwner | null>(null)
+  const containerDeleteOperationRef = useRef<ContainerOperationOwner | null>(null)
+  const containerExtendOperationRef = useRef<ContainerOperationOwner | null>(null)
   if (submitAttemptOwnerRef.current === null) {
     submitAttemptOwnerRef.current = new FlagSubmitAttemptOwner()
   }
@@ -236,8 +282,13 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     setDisabled(true)
 
     try {
-      const res = await api.game.gameCreateContainer(gameId, challengeId)
+      const scope = `${gameId}:${challengeId}`
+      const operationId = retainContainerOperation('create', containerCreateOperationRef, scope)
+      const res = await api.game.gameCreateContainer(gameId, challengeId, {
+        headers: { 'X-RSCTF-Operation-Id': operationId },
+      })
       if (!(await confirmCreatedInstance(res.data, mutate))) return
+      clearContainerOperation('create', containerCreateOperationRef)
       showNotification({
         color: 'teal',
         title: t('challenge.notification.instance.created.title'),
@@ -260,14 +311,20 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
           const expectedContainerId = latest.context?.instanceId
           if (!expectedContainerId)
             throw new Error('The refreshed challenge response is missing its instance identity.')
-          await api.game.gameDeleteContainer(gameId, challengeId, {
-            expectedContainerId,
-          })
+          const scope = `${gameId}:${challengeId}:${expectedContainerId}`
+          const operationId = retainContainerOperation('delete', containerDeleteOperationRef, scope)
+          await api.game.gameDeleteContainer(
+            gameId,
+            challengeId,
+            { expectedContainerId },
+            { headers: { 'X-RSCTF-Operation-Id': operationId } }
+          )
         },
         publishAbsent: async (deleted) => {
           await mutate((current) => clearDestroyedInstanceContext(current, deleted), { revalidate: false })
         },
       })
+      clearContainerOperation('delete', containerDeleteOperationRef)
       showNotification({
         color: 'teal',
         title: t('challenge.notification.instance.destroyed.title'),
@@ -298,14 +355,26 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
         refresh: mutate,
         extend: async (expectedContainerId) =>
           (
-            await api.game.gameExtendContainerLifetime(gameId, challengeId, {
-              expectedContainerId,
-            })
+            await api.game.gameExtendContainerLifetime(
+              gameId,
+              challengeId,
+              { expectedContainerId },
+              {
+                headers: {
+                  'X-RSCTF-Operation-Id': retainContainerOperation(
+                    'extend',
+                    containerExtendOperationRef,
+                    `${gameId}:${challengeId}:${expectedContainerId}`
+                  ),
+                },
+              }
+            )
           ).data,
         publish: async (extension) => {
           await mutate((latest) => mergeExtendedInstanceContext(latest, extension), { revalidate: false })
         },
       })
+      clearContainerOperation('extend', containerExtendOperationRef)
     } finally {
       setDisabled(false)
     }

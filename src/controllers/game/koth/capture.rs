@@ -354,6 +354,9 @@ pub(crate) async fn ensure_koth_hills_with_operation(
                     st,
                     &c,
                     true,
+                    None,
+                    uuid::Uuid::new_v4(),
+                    uuid::Uuid::new_v4(),
                     operation_id,
                 )
                 .await

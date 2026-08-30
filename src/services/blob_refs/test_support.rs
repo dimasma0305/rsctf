@@ -7,6 +7,37 @@ use tokio::sync::Notify;
 
 use super::*;
 
+pub(crate) async fn install_operation_tables(pool: &sqlx::PgPool) {
+    sqlx::raw_sql(
+        r#"
+        CREATE TABLE IF NOT EXISTS "BlobStagingOperations" (
+            operation_id UUID PRIMARY KEY,
+            owner_scope TEXT NOT NULL,
+            owner_user_id UUID NULL,
+            content_hash VARCHAR(64) NOT NULL,
+            file_name VARCHAR(255) NOT NULL,
+            file_size BIGINT NOT NULL,
+            state VARCHAR(16) NOT NULL,
+            created_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+            lease_expires_at_utc TIMESTAMPTZ NOT NULL,
+            published_at_utc TIMESTAMPTZ NULL,
+            last_error TEXT NULL
+        );
+        CREATE TABLE IF NOT EXISTS "BlobDeletionOperations" (
+            content_hash VARCHAR(64) PRIMARY KEY,
+            operation_id UUID NOT NULL,
+            state VARCHAR(16) NOT NULL,
+            lease_expires_at_utc TIMESTAMPTZ NOT NULL,
+            updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+            last_error TEXT NULL
+        );
+        "#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 #[derive(Default)]
 pub(super) struct CoordinatedStorage {
     pub(super) blobs: Mutex<HashSet<String>>,

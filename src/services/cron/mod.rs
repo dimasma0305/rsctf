@@ -240,6 +240,32 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: deferred blob purge failed: {e}"),
     }
 
+    match crate::controllers::edit::process_configuration_effects(state).await {
+        Ok(n) if n > 0 => tracing::debug!(n, "cron: applied game configuration effect(s)"),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "cron: game configuration effects failed"),
+    }
+
+    match crate::controllers::team::process_profile_invalidations(state).await {
+        Ok(n) if n > 0 => tracing::debug!(n, "cron: applied team profile invalidation(s)"),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "cron: team profile invalidations failed"),
+    }
+
+    match crate::services::blob_refs::purge_expired_stages(state.pg(), state.storage.as_ref(), 128)
+        .await
+    {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: reclaimed expired blob stage(s)"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("cron: blob staging sweep failed: {e}"),
+    }
+
+    match crate::controllers::game::purge_terminal_operations(state.pg(), 128).await {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: purged terminal player container operation(s)"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("cron: player container operation sweep failed: {e}"),
+    }
+
     match crate::services::git_sync::collect_stale_checker_revisions(state).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: collected stale checker revision(s)"),
         Ok(_) => {}
