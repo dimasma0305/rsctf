@@ -17,6 +17,7 @@ cd tests/load
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
       npm run read-only-websocket-flood # read-only feed inbound-abuse gate
+      npm run proxy-traffic-admission # acknowledged line-rate proxy byte-work gate
       npm run monitor-history # fixed-rate bounded monitor history + durable backfills
       npm run monitor-evidence-inventory # fixed-rate traffic + anti-cheat bounded reads
       npm run participation-review # fixed-rate bounded 12k-team organizer review
@@ -61,6 +62,48 @@ READONLY_WS_FLOOD_ACK=1 WEBSOCKET_GAME=92001 RATE=20 DURATION=30s \
 It refuses a non-live or hidden event and any non-loopback target. Run it against
 an isolated local stack: the runner samples the exact `RSCTF_CONTAINER` and fails
 when its CPU or memory exceeds the configured bounds.
+
+### Proxy traffic admission
+
+This gate opens authenticated platform-proxy streams at a constant arrival rate and
+writes bounded maximum-size frames on each established stream. It accepts only a normal
+close or the stable proxy-traffic policy close, while an independent lane requires an
+exact, responsive `healthz`. Point `TARGET` at the load balancer to exercise shared
+Redis byte credits and PostgreSQL live-session leases across replicas. The stream lane
+varies `X-Forwarded-For`; configure the disposable load balancer's address in
+`RSCTF_TRUSTED_PROXY_CIDRS` when exercising independent source buckets. Without that
+trust configuration, rsctf correctly ignores the header and the run exercises a
+many-account, single-NAT source bucket instead.
+
+Prepare a mode-`0600` JSON file containing between 1 and 512 real disposable endpoint
+objects. For the normal WSRX path, `url` is the complete scoped URL returned after
+capability minting, including `?capability=...`, for example
+`{"url":"wss://.../api/proxy/CONTAINER?capability=REDACTED"}`. Do not put that proxy capability in an
+`Authorization` header: it is query-bound. A fixture deliberately exercising ordinary
+session authentication may instead provide an optional `bearerToken` or exact
+`sessionCookie` (`RSCTF_Token=...`) alongside the uncredentialed URL. Every endpoint
+must use the same origin as `TARGET`; the runner rejects unauthenticated or duplicate rows, symlinks,
+oversized files, unacknowledged traffic, and remote targets without an exact-origin
+acknowledgement. It also verifies that the credential fixture is byte-identical after
+the run. The maximum accepted schedule is one hour, 512 arrivals per second, and 4,096
+VUs, so a typo cannot create unbounded local work.
+
+```sh
+PROXY_TRAFFIC_LOAD_ACK=1 \
+PROXY_TRAFFIC_ENDPOINTS_FILE=/tmp/proxy-traffic-endpoints.json \
+RATE=2 FRAME_BYTES=65536 FRAME_INTERVAL_MS=10 STREAM_MS=10000 DURATION=30s \
+SUMMARY_JSON=/tmp/proxy-traffic-admission.json npm run proxy-traffic-admission
+```
+
+For a non-loopback target, also set `ALLOW_REMOTE_PROXY_TRAFFIC_LOAD` to the exact
+HTTP(S) origin of `TARGET`. The acceptance baseline is zero server 5xx, health failures,
+and dropped arrivals; fewer than 0.1% handshake or unexpected-close failures; health
+p95 below 800 ms; and handshake p95 below 3 seconds. A valid byte-budget rejection is
+counted separately as `proxy_budget_closes`, and an HTTP 429 carrying a positive
+`Retry-After` is counted as `proxy_admission_rejections`; neither is a transport
+failure. Retain the full `SUMMARY_JSON` distribution and application/PostgreSQL CPU
+and RAM samples from the same fixture, host, replica count, rate, and duration for
+before/after claims.
 
 ### Admin dashboard aggregates
 
@@ -296,6 +339,7 @@ tests/load/
   scoreboard-evidence.mjs isolated accepted-history versus FirstSolves DB benchmark
   scoreboard-conditional.mjs read-only standard/KotH encoding, validator, CPU/RAM benchmark
   player.mjs        → runs k6/player.js         (npm run player)
+  proxy-traffic-admission.mjs → bounded authenticated proxy byte-work gate
   ad-submit-batch.mjs → runs k6/ad-submit-batch.js (npm run ad-submit-batch)
   redis-outage.mjs  → stops/restores one acknowledged disposable Redis + runs k6/redis-outage.js
   image-storage.mjs → validates a queued fixture + runs k6/image-storage.js
@@ -317,6 +361,7 @@ tests/load/
     event-security.js  fixed-rate empty-control and aggregate sensor-ingest phases
     news-feed.js     fixed-rate conditional homepage-feed reads
     player.js         A&D + KotH player: poll format/Overall boards, tokens/state, submit flags
+    proxy-traffic-admission.js fixed-rate maximum-frame proxy streams plus health
     ad-submit-batch.js fixed-rate 100-entry repeated/distinct A&D submit batches
     redis-outage.js   fixed-rate malformed requests while Redis is unavailable
     image-storage.js  fixed-rate first-demand build burst + continuous health probes

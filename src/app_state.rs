@@ -63,6 +63,9 @@ pub struct AppState {
     pub(crate) feed_publication: crate::services::feed_publication::PublicationQueue,
     /// Short-lived, single-owner Event-VPN sensor contract snapshot.
     pub(crate) event_sensor_snapshot: crate::services::event_security::SensorSnapshotCache,
+    /// Non-blocking bounded aggregation handoff for proxy flag-egress evidence.
+    /// One supervised writer owns all PostgreSQL interaction.
+    pub(crate) flag_egress_observations: crate::services::flag_egress_observations::Queue,
 }
 
 /// One real-time message: which client hub method to invoke, which game it
@@ -177,6 +180,7 @@ impl AppState {
             user_activity: crate::middlewares::user_activity::ActivityQueue::new(),
             feed_publication: crate::services::feed_publication::PublicationQueue::new(),
             event_sensor_snapshot: crate::services::event_security::SensorSnapshotCache::new(),
+            flag_egress_observations: Default::default(),
         })
     }
 

@@ -171,6 +171,15 @@ pub enum Policy {
     /// Trusted solve-verifier issuance work. Appended to preserve every
     /// previously shipped Redis policy discriminant.
     SolveReceipt,
+    /// Distributed churn budget for authenticated proxy subjects, workloads,
+    /// and participations. Appended to preserve shipped discriminants.
+    ProxyOpen,
+    /// Higher-capacity source/NAT backstop for proxy-open churn.
+    /// Appended to preserve shipped discriminants.
+    ProxySourceOpen,
+    /// Coarse cross-replica proxy byte credits. Per-frame work remains behind
+    /// strict process/session ceilings and never performs a Redis round trip.
+    ProxyTraffic,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -266,6 +275,20 @@ impl Policy {
             Policy::SolveReceipt => Kind::Bucket {
                 capacity: 128.0,
                 refill_per_sec: 16.0,
+            },
+            Policy::ProxyOpen => Kind::Bucket {
+                capacity: 32.0,
+                refill_per_sec: 4.0,
+            },
+            Policy::ProxySourceOpen => Kind::Bucket {
+                capacity: 512.0,
+                refill_per_sec: 32.0,
+            },
+            // Units are 64 KiB. This preserves a 1 GiB interactive/bulk burst
+            // while bounding sustained deployment-wide work at 64 MiB/s.
+            Policy::ProxyTraffic => Kind::Bucket {
+                capacity: 16_384.0,
+                refill_per_sec: 1_024.0,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {
@@ -704,6 +727,75 @@ impl DistributedLimiter {
         redis_or_local(result, || check_weighted(policy, ip.to_owned(), cost))
     }
 
+    /// Lease one coarse byte-credit chunk from every hierarchy dimension in a
+    /// single Redis transaction. A denial does not partially charge any key.
+    async fn check_proxy_traffic(&self, partitions: [&str; 5], costs: [u32; 5]) -> Result<(), u64> {
+        const SCRIPT: &str = r#"
+            local capacity = tonumber(ARGV[1])
+            local refill_per_sec = tonumber(ARGV[2])
+            local clock = redis.call('TIME')
+            local now_ms = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+            local next_tokens = {}
+            local next_last_ms = {}
+            local retry_ms = 0
+
+            for index, key in ipairs(KEYS) do
+                local cost = tonumber(ARGV[index + 2])
+                local tokens = tonumber(redis.call('HGET', key, 'tokens'))
+                local last_ms = tonumber(redis.call('HGET', key, 'last_ms'))
+                if not tokens or not last_ms then
+                    tokens = capacity
+                    last_ms = now_ms
+                else
+                    tokens = math.max(0, math.min(capacity, tokens))
+                    if now_ms > last_ms then
+                        tokens = math.min(capacity, tokens + ((now_ms - last_ms) * refill_per_sec / 1000))
+                        last_ms = now_ms
+                    end
+                end
+                next_tokens[index] = tokens
+                next_last_ms[index] = last_ms
+                if cost > capacity then
+                    retry_ms = math.max(retry_ms, math.ceil(capacity * 1000 / refill_per_sec))
+                elseif tokens < cost then
+                    retry_ms = math.max(retry_ms, math.ceil((cost - tokens) * 1000 / refill_per_sec))
+                end
+            end
+
+            if retry_ms > 0 then return math.max(1, retry_ms) end
+            for index, key in ipairs(KEYS) do
+                local tokens = next_tokens[index] - tonumber(ARGV[index + 2])
+                redis.call('HSET', key, 'tokens', tokens, 'last_ms', next_last_ms[index])
+                local full_in_ms = math.ceil((capacity - tokens) * 1000 / refill_per_sec)
+                redis.call('PEXPIRE', key, math.max(1, full_in_ms))
+            end
+            return 0
+        "#;
+        let Kind::Bucket {
+            capacity,
+            refill_per_sec,
+        } = Policy::ProxyTraffic.kind()
+        else {
+            return Err(1);
+        };
+        let keys = partitions.map(|partition| redis_key(Policy::ProxyTraffic, partition));
+        let mut conn = self.conn.clone();
+        let result = redis_with_timeout(async {
+            let script = redis::Script::new(SCRIPT);
+            let mut invocation = script.prepare_invoke();
+            for key in &keys {
+                invocation.key(key);
+            }
+            invocation.arg(capacity).arg(refill_per_sec);
+            for cost in costs {
+                invocation.arg(cost.max(1));
+            }
+            invocation.invoke_async(&mut conn).await
+        })
+        .await;
+        redis_or_local(result, || Ok(()))
+    }
+
     /// Check the authenticated identity ceiling and source-IP backstop in one
     /// atomic Redis invocation. The script deliberately processes Global first
     /// and returns immediately when it rejects, leaving the backstop untouched;
@@ -904,6 +996,84 @@ pub(crate) async fn admit_ad_submit(
         .await
         .err()
         .map(too_many_requests)
+}
+
+/// Charge proxy-open churn before target resolution. Capability-authenticated
+/// WSRX requests pass their verified account subject here too.
+pub(crate) async fn admit_proxy_open(
+    subject: uuid::Uuid,
+    source: &str,
+    workload: uuid::Uuid,
+    participation_id: Option<i32>,
+) -> Option<Response> {
+    let subject_check = check_async(Policy::ProxyOpen, format!("subject:{subject}"));
+    let workload_check = check_async(Policy::ProxyOpen, format!("workload:{workload}"));
+    let source_check = check_async(Policy::ProxySourceOpen, format!("source:{source}"));
+    let participation_check = async {
+        match participation_id {
+            Some(participation_id) => {
+                check_async(
+                    Policy::ProxyOpen,
+                    format!("participation:{participation_id}"),
+                )
+                .await
+            }
+            None => Ok(()),
+        }
+    };
+    let (subject, workload, source, participation) = tokio::join!(
+        subject_check,
+        workload_check,
+        source_check,
+        participation_check
+    );
+    [subject, workload, source, participation]
+        .into_iter()
+        .filter_map(Result::err)
+        .max()
+        .map(too_many_requests)
+}
+
+/// Charge the canonical participation once target resolution has identified it.
+pub(crate) async fn admit_proxy_participation(participation_id: i32) -> Option<Response> {
+    check_async(
+        Policy::ProxyOpen,
+        format!("participation:{participation_id}"),
+    )
+    .await
+    .err()
+    .map(too_many_requests)
+}
+
+/// Lease a multi-dimensional byte-credit chunk. Redis is consulted only once
+/// per coarse chunk; frames within that chunk stay entirely process-local.
+pub(crate) async fn admit_proxy_traffic_credit(
+    subject: uuid::Uuid,
+    scope: &str,
+    source: std::net::IpAddr,
+    workload: uuid::Uuid,
+    bytes: usize,
+) -> Result<(), u64> {
+    const CREDIT_UNIT_BYTES: usize = 64 * 1024;
+    let Some(distributed) = DISTRIBUTED.get() else {
+        return Ok(());
+    };
+    let units = bytes
+        .div_ceil(CREDIT_UNIT_BYTES)
+        .try_into()
+        .unwrap_or(u32::MAX)
+        .max(1);
+    let source_units = units.div_ceil(8).max(1);
+    let subject = format!("subject:{subject}");
+    let scope = format!("scope:{scope}");
+    let source = format!("source:{source}");
+    let workload = format!("workload:{workload}");
+    distributed
+        .check_proxy_traffic(
+            ["global", &subject, &scope, &source, &workload],
+            [units, units, units, source_units, units],
+        )
+        .await
 }
 
 fn check_authenticated_local(identity: String, ip: String) -> Result<(), u64> {
