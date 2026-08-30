@@ -17,8 +17,8 @@ test('closed challenge modals own no detail, solver, A&D, or KotH polling key', 
   assert.match(shell, /KothChallengePanel[\s\S]*active=\{Boolean\(modalProps\.opened\)\}/)
   assert.match(shell, /AdChallengePanel[\s\S]*active=\{Boolean\(modalProps\.opened\)\}/)
   assert.match(hook, /const liveKey = active && key \? key : null/)
-  assert.match(hook, /revalidateOnFocus: pausedKey !== key/)
-  assert.match(hook, /revalidateOnReconnect: pausedKey !== key/)
+  assert.match(hook, /revalidateOnFocus: revalidateOnFocus && pausedKey !== key/)
+  assert.match(hook, /revalidateOnReconnect: revalidateOnReconnect && pausedKey !== key/)
   assert.match(hook, /failureCount\.current = 0[\s\S]*setPausedKey\(null\)[\s\S]*cancel\(\)/)
 })
 

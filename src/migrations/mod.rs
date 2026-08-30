@@ -137,6 +137,8 @@ mod m0114_submission_feed_cursor;
 mod m0115_flag_egress_feed_cursor;
 mod m0116_game_event_feed_pending;
 mod m0242_participation_provision_jobs;
+mod m0280_traffic_capture_inventory;
+mod m0281_anticheat_read_bounds;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -158,6 +160,8 @@ pub(crate) use m0115_flag_egress_feed_cursor::UP_SQL as FLAG_EGRESS_FEED_CURSOR_
 pub(crate) use m0116_game_event_feed_pending::UP_SQL as GAME_EVENT_FEED_PENDING_SQL;
 #[cfg(test)]
 pub(crate) use m0242_participation_provision_jobs::UP_SQL as PARTICIPATION_PROVISION_JOBS_SQL;
+#[cfg(test)]
+pub(crate) use m0280_traffic_capture_inventory::UP_SQL as TRAFFIC_CAPTURE_INVENTORY_SQL;
 
 pub struct Migrator;
 
@@ -288,6 +292,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0115_flag_egress_feed_cursor::Migration),
             Box::new(m0116_game_event_feed_pending::Migration),
             Box::new(m0242_participation_provision_jobs::Migration),
+            Box::new(m0280_traffic_capture_inventory::Migration),
+            Box::new(m0281_anticheat_read_bounds::Migration),
         ]
     }
 }
@@ -433,7 +439,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 15..],
+            &names[names.len() - 17..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -450,6 +456,8 @@ mod tests {
                 "m0115_flag_egress_feed_cursor",
                 "m0116_game_event_feed_pending",
                 "m0242_participation_provision_jobs",
+                "m0280_traffic_capture_inventory",
+                "m0281_anticheat_read_bounds",
             ]
         );
     }

@@ -232,7 +232,117 @@ async fn report_survives_rotation_and_paginates_by_stable_incident_id() {
     assert_eq!(page_two.len(), 1);
     assert_eq!(page_two[0].answer, "flag-one");
 
-    let canonical = canonical_solves(&fixture.pool, 1, &[]).await.unwrap();
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO "Submissions" VALUES
+          (314, 1, 202, 11, 102, NULL, 'older-high-id', 3,
+           '2026-06-01T11:00:00Z');
+        INSERT INTO "CheatInfo" VALUES
+          (500, 1, 314, 202, 201, 11, 'submission:314',
+           '2026-06-01T11:00:00Z', '{}', 1);
+        "#,
+    )
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+
+    let first_page = load_cheat_incident_page_rows(
+        &fixture.pool,
+        1,
+        CheatIncidentWindow::Descending {
+            before_observed_at: None,
+            before_id: None,
+        },
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first_page.len(), 2, "page loader uses a MAX + 1 probe");
+    let stable_before = (first_page[0].observed_at_utc, first_page[0].incident_id);
+    assert_eq!(stable_before.1, 402);
+    assert_eq!(first_page[0].checkpoint_id, 500);
+
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO "Submissions" VALUES
+          (311, 1, 202, 11, 102,
+           '00000000-0000-0000-0000-000000000002', 'flag-three', 3,
+           '2026-06-01T12:02:00Z');
+        INSERT INTO "CheatInfo" VALUES
+          (501, 1, 311, 202, 201, 11, 'submission:311',
+           '2026-06-01T12:02:00Z', '{}', 1);
+        "#,
+    )
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+    let older = load_cheat_incident_page_rows(
+        &fixture.pool,
+        1,
+        CheatIncidentWindow::Descending {
+            before_observed_at: Some(stable_before.0.timestamp_millis()),
+            before_id: Some(stable_before.1),
+        },
+        100,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        older.iter().map(|row| row.incident_id).collect::<Vec<_>>(),
+        vec![401, 500],
+        "a concurrent insert cannot duplicate or displace an older keyset page"
+    );
+    let delta = load_cheat_incident_page_rows(
+        &fixture.pool,
+        1,
+        CheatIncidentWindow::Delta { after_id: 500 },
+        100,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        delta.iter().map(|row| row.incident_id).collect::<Vec<_>>(),
+        vec![501]
+    );
+
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO "Submissions" VALUES
+          (312, 1, 202, 11, 102, NULL, 'same-ms-a', 3,
+           '2026-06-01T12:03:00.000100Z'),
+          (313, 1, 202, 11, 102, NULL, 'same-ms-b', 3,
+           '2026-06-01T12:03:00.000900Z');
+        INSERT INTO "CheatInfo" VALUES
+          (502, 1, 312, 202, 201, 11, 'submission:312',
+           '2026-06-01T12:03:00.000100Z', '{}', 1),
+          (503, 1, 313, 202, 201, 11, 'submission:313',
+           '2026-06-01T12:03:00.000900Z', '{}', 1);
+        "#,
+    )
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+    let same_millisecond = load_cheat_incident_page_rows(
+        &fixture.pool,
+        1,
+        CheatIncidentWindow::Descending {
+            before_observed_at: Some(
+                "2026-06-01T12:03:00Z"
+                    .parse::<DateTime<Utc>>()
+                    .unwrap()
+                    .timestamp_millis(),
+            ),
+            before_id: Some(503),
+        },
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(same_millisecond[0].incident_id, 502);
+
+    let canonical = canonical_solves_bounded(&fixture.pool, 1, &[201, 202], 512, 1_024)
+        .await
+        .unwrap();
     assert_eq!(canonical.len(), 1, "accepted replay must not inflate RSI");
     assert_eq!(
         canonical[0].submit_time_utc.to_rfc3339(),
@@ -262,14 +372,16 @@ async fn report_survives_rotation_and_paginates_by_stable_incident_id() {
     .execute(&fixture.pool)
     .await
     .unwrap();
-    let practice = canonical_solves(&fixture.pool, 2, &[]).await.unwrap();
+    let practice = canonical_solves_bounded(&fixture.pool, 2, &[203, 204], 512, 1_024)
+        .await
+        .unwrap();
     assert_eq!(
         practice.len(),
         1,
         "practice solves at/after end stay out of reports"
     );
     assert_eq!(practice[0].challenge_id, 13);
-    let compared = canonical_solves(&fixture.pool, 2, &[203, 204])
+    let compared = canonical_solves_bounded(&fixture.pool, 2, &[203, 204], 512, 1_024)
         .await
         .unwrap();
     assert_eq!(
@@ -311,7 +423,7 @@ async fn report_survives_rotation_and_paginates_by_stable_incident_id() {
         .unwrap();
     assert_eq!(
         global_cheats.len(),
-        3,
+        7,
         "admin feed uses the same strict window"
     );
     sqlx::query(
@@ -348,6 +460,35 @@ async fn ordinary_suspicion_events_are_not_stolen_flag_reports() {
         .await
         .unwrap()
         .is_empty());
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn compare_rejects_more_than_the_canonical_solve_bound() {
+    let fixture = CheatReportFixture::create().await;
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO "GameChallenges" (id, game_id, title)
+        SELECT 1000 + n, 1, 'bounded-' || n::text
+          FROM generate_series(1, 513) n;
+        INSERT INTO "Submissions"
+          (id, game_id, participation_id, challenge_id, team_id, user_id,
+           answer, status, submit_time_utc)
+        SELECT 2000 + n, 1, 201, 1000 + n, 101, NULL,
+               'answer-' || n::text, 1,
+               '2026-06-01T00:00:00Z'::timestamptz + n * interval '1 second'
+          FROM generate_series(1, 513) n;
+        INSERT INTO "FirstSolves" (participation_id, challenge_id, submission_id)
+        SELECT 201, 1000 + n, 2000 + n
+          FROM generate_series(1, 513) n;
+        "#,
+    )
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+    let result = canonical_solves_bounded(&fixture.pool, 1, &[201], 512, 1_024).await;
+    assert!(matches!(result, Err(AppError::PayloadTooLarge(_))));
     fixture.cleanup().await;
 }
 
@@ -717,7 +858,13 @@ async fn report_queries_succeed_on_a_database_enforced_read_only_connection() {
             .len(),
         2
     );
-    assert_eq!(canonical_solves(&pool, 1, &[]).await.unwrap().len(), 1);
+    assert_eq!(
+        canonical_solves_bounded(&pool, 1, &[201, 202], 512, 1_024)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     let _ = super::super::cheat_identity::build_identity_analysis(&pool, 1)
         .await
         .unwrap();
@@ -745,11 +892,82 @@ async fn report_queries_succeed_on_a_database_enforced_read_only_connection() {
 }
 
 #[test]
+fn incident_page_query_caps_and_rejects_ambiguous_cursors() {
+    let (limit, window) = bounded_cheat_incident_window(&CheatInfoPageQuery {
+        limit: Some(u64::MAX),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(limit, CHEAT_INCIDENT_PAGE_MAX as i64);
+    assert!(matches!(window, CheatIncidentWindow::Descending { .. }));
+
+    let ambiguous = bounded_cheat_incident_window(&CheatInfoPageQuery {
+        after_id: Some(4),
+        before_id: Some(3),
+        before_observed_at: Some(1_000),
+        ..Default::default()
+    });
+    assert!(matches!(ambiguous, Err(AppError::BadRequest(_))));
+    let partial = bounded_cheat_incident_window(&CheatInfoPageQuery {
+        before_id: Some(3),
+        ..Default::default()
+    });
+    assert!(matches!(partial, Err(AppError::BadRequest(_))));
+}
+
+#[test]
+fn report_pair_count_and_total_lcs_work_are_bounded() {
+    let mut too_many_pairs = BTreeMap::new();
+    for id in 0..=MAX_REPORT_PAIRS as i32 {
+        too_many_pairs.insert(
+            (id * 2, id * 2 + 1),
+            (
+                (id * 2, id * 2, format!("left-{id}")),
+                (id * 2 + 1, id * 2 + 1, format!("right-{id}")),
+            ),
+        );
+    }
+    assert!(matches!(
+        validate_report_pair_count(&too_many_pairs),
+        Err(AppError::PayloadTooLarge(_))
+    ));
+
+    let pair_count = MAX_REPORT_LCS_CELLS / (512 * 512) + 1;
+    let mut pairs = BTreeMap::new();
+    let mut solves = Vec::new();
+    for pair in 0..pair_count as i32 {
+        let left = pair * 2;
+        let right = left + 1;
+        pairs.insert(
+            (left, right),
+            (
+                (left, left, format!("left-{pair}")),
+                (right, right, format!("right-{pair}")),
+            ),
+        );
+        for challenge in 0..512 {
+            for participation_id in [left, right] {
+                solves.push(CanonicalSolveRow {
+                    participation_id,
+                    challenge_id: challenge,
+                    challenge_title: format!("challenge-{challenge}"),
+                    submit_time_utc: DateTime::from_timestamp(i64::from(challenge), 0).unwrap(),
+                });
+            }
+        }
+    }
+    assert!(matches!(
+        build_collusion_groups(pairs, solves),
+        Err(AppError::PayloadTooLarge(_))
+    ));
+}
+
+#[test]
 fn report_routes_keep_monitor_and_admin_role_extractors_and_no_sweeps() {
     let game_source = include_str!("cheat.rs");
     let report_start = game_source.find("pub async fn cheat_report(").unwrap();
     let report_end = game_source[report_start..]
-        .find("pub async fn cheat_report_compare(")
+        .find("const MAX_REPORT_INCIDENTS")
         .map(|offset| report_start + offset)
         .unwrap();
     let report_handler = &game_source[report_start..report_end];
@@ -759,6 +977,14 @@ fn report_routes_keep_monitor_and_admin_role_extractors_and_no_sweeps() {
     assert!(!report_handler.contains("run_correlation_checks"));
     assert!(!report_handler.contains("run_container_access_checks"));
     assert!(!report_handler.contains("run_honeypot_chain_checks"));
+
+    let compare_source = include_str!("cheat_compare.rs");
+    let compare_start = compare_source
+        .find("pub async fn cheat_report_compare(")
+        .unwrap();
+    let compare_handler = &compare_source[compare_start..];
+    assert!(compare_handler.contains("_user: MonitorUser"));
+    assert!(compare_handler.contains("spawn_blocking"));
 
     let admin_source = include_str!("../admin/anti_cheat.rs");
     assert!(admin_source.contains("_admin: AdminUser"));

@@ -62,6 +62,8 @@ pub(super) fn capture_limits() -> crate::services::traffic::LiveCaptureLimits {
         16 * 1024 * MIB,
     )
     .max(max_file_bytes);
+    let max_directory_files =
+        configured_bytes("RSCTF_CAPTURE_MAX_PARTICIPATION_FILES", 256, 1, 4_096) as usize;
     let free_space_floor_bytes = configured_bytes(
         "RSCTF_CAPTURE_FREE_SPACE_FLOOR_BYTES",
         512 * MIB,
@@ -72,6 +74,7 @@ pub(super) fn capture_limits() -> crate::services::traffic::LiveCaptureLimits {
     crate::services::traffic::LiveCaptureLimits {
         max_file_bytes,
         max_directory_bytes,
+        max_directory_files,
         free_space_floor_bytes,
         max_file_duration: Duration::from_secs(max_file_seconds),
     }

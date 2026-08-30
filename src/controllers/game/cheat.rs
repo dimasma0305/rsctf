@@ -1,4 +1,7 @@
 //! Cheat detection: immutable flag-sharing evidence + collusion (RSI) reporting.
+#[cfg(test)]
+use super::cheat_compare::canonical_solves_bounded;
+use super::cheat_compare::{canonical_report_solves, collusion_metrics, CanonicalSolveRow};
 use super::*;
 
 #[derive(Debug, Default, sqlx::FromRow)]
@@ -58,6 +61,12 @@ async fn load_reconciliation_report_state(
 /// participation status remain presentation-only.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub(crate) struct CheatIncidentRow {
+    /// Game-wide incident-id high-water mark from the same query snapshot.
+    /// Legacy loaders populate this with zero because they never expose a
+    /// reconnect checkpoint.
+    pub(crate) checkpoint_id: i32,
+    pub(crate) incident_id: i32,
+    pub(crate) observed_at_utc: DateTime<Utc>,
     pub(crate) source_participation_id: i32,
     pub(crate) source_team_id: i32,
     pub(crate) source_team_name: String,
@@ -148,11 +157,21 @@ impl CheatIncidentRow {
             },
         })
     }
+
+    fn into_page_item(self) -> AppResult<CheatIncidentPageItem> {
+        let id = self.incident_id;
+        let observed_at = self.observed_at_utc;
+        Ok(CheatIncidentPageItem {
+            id,
+            observed_at,
+            incident: self.into_model()?,
+        })
+    }
 }
 
 /// Load immutable flag-sharing incidents. `game_id = None` is the admin-global
-/// feed; monitor reads pass a game id. A null SQL limit intentionally means
-/// "all rows" for the established per-game response contract.
+/// feed; monitor reads pass a game id. Every request handler supplies a finite
+/// limit; a null limit remains only for focused internal/fixture inspection.
 pub(crate) async fn load_cheat_incident_rows(
     pool: &sqlx::PgPool,
     game_id: Option<i32>,
@@ -160,7 +179,10 @@ pub(crate) async fn load_cheat_incident_rows(
     offset: i64,
 ) -> AppResult<Vec<CheatIncidentRow>> {
     sqlx::query_as::<_, CheatIncidentRow>(
-        r#"SELECT cheat.source_participation_id,
+        r#"SELECT 0::INTEGER AS checkpoint_id,
+                  cheat.id AS incident_id,
+                  cheat.observed_at_utc,
+                  cheat.source_participation_id,
                   source_part.team_id AS source_team_id,
                   COALESCE(
                       NULLIF(cheat.evidence_payload->>'sourceTeamName', ''),
@@ -231,10 +253,258 @@ pub(crate) async fn load_cheat_incident_rows(
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
+const CHEAT_INCIDENT_PAGE_DEFAULT: u64 = 50;
+const CHEAT_INCIDENT_PAGE_MAX: u64 = 100;
+
+/// Stable cursor for the descending immutable incident history.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheatIncidentCursor {
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub observed_at: DateTime<Utc>,
+    pub id: i32,
+}
+
+/// One bounded incident-feed row. `flatten` preserves the legacy incident
+/// fields while adding the immutable identity required for reconnects.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheatIncidentPageItem {
+    pub id: i32,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub observed_at: DateTime<Utc>,
+    #[serde(flatten)]
+    pub incident: CheatInfoModel,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheatIncidentPage {
+    pub data: Vec<CheatIncidentPageItem>,
+    pub next_before: Option<CheatIncidentCursor>,
+    pub checkpoint_id: i32,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheatInfoPageQuery {
+    #[serde(default)]
+    pub limit: Option<u64>,
+    #[serde(default)]
+    pub before_observed_at: Option<i64>,
+    #[serde(default)]
+    pub before_id: Option<i32>,
+    #[serde(default)]
+    pub after_id: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheatIncidentWindow {
+    Descending {
+        before_observed_at: Option<i64>,
+        before_id: Option<i32>,
+    },
+    Delta {
+        after_id: i32,
+    },
+}
+
+fn bounded_cheat_incident_window(
+    query: &CheatInfoPageQuery,
+) -> AppResult<(i64, CheatIncidentWindow)> {
+    let limit = query
+        .limit
+        .unwrap_or(CHEAT_INCIDENT_PAGE_DEFAULT)
+        .clamp(1, CHEAT_INCIDENT_PAGE_MAX) as i64;
+    if query.after_id.is_some() && (query.before_observed_at.is_some() || query.before_id.is_some())
+    {
+        return Err(AppError::bad_request(
+            "afterId cannot be combined with a before cursor",
+        ));
+    }
+    if query.before_observed_at.is_some() != query.before_id.is_some() {
+        return Err(AppError::bad_request(
+            "beforeObservedAt and beforeId must be supplied together",
+        ));
+    }
+    if let Some(after_id) = query.after_id {
+        if after_id < 0 {
+            return Err(AppError::bad_request("afterId must not be negative"));
+        }
+        return Ok((limit, CheatIncidentWindow::Delta { after_id }));
+    }
+    if query
+        .before_observed_at
+        .is_some_and(|millis| DateTime::from_timestamp_millis(millis).is_none())
+    {
+        return Err(AppError::bad_request("beforeObservedAt is out of range"));
+    }
+    if query.before_id.is_some_and(|id| id < 0) {
+        return Err(AppError::bad_request("beforeId must not be negative"));
+    }
+    Ok((
+        limit,
+        CheatIncidentWindow::Descending {
+            before_observed_at: query.before_observed_at,
+            before_id: query.before_id,
+        },
+    ))
+}
+
+async fn load_cheat_incident_page_rows(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    window: CheatIncidentWindow,
+    limit: i64,
+) -> AppResult<Vec<CheatIncidentRow>> {
+    let (after_id, before_observed_at, before_id) = match window {
+        CheatIncidentWindow::Descending {
+            before_observed_at,
+            before_id,
+        } => (None, before_observed_at, before_id),
+        CheatIncidentWindow::Delta { after_id } => (Some(after_id), None, None),
+    };
+    sqlx::query_as::<_, CheatIncidentRow>(
+        r#"WITH checkpoint AS (
+               SELECT COALESCE(MAX(candidate.id), 0)::INTEGER AS checkpoint_id
+                 FROM "CheatInfo" candidate
+                WHERE candidate.game_id = $1
+           )
+           SELECT checkpoint.checkpoint_id,
+                  cheat.id AS incident_id,
+                  cheat.observed_at_utc,
+                  cheat.source_participation_id,
+                  source_part.team_id AS source_team_id,
+                  COALESCE(NULLIF(cheat.evidence_payload->>'sourceTeamName', ''),
+                           source_team.name) AS source_team_name,
+                  source_team.avatar_hash AS source_avatar_hash,
+                  source_part.status AS source_status,
+                  source_part.division_id AS source_division_id,
+                  source_division.name AS source_division_name,
+                  cheat.submit_participation_id,
+                  submit_part.team_id AS submit_team_id,
+                  COALESCE(NULLIF(cheat.evidence_payload->>'submitTeamName', ''),
+                           submit_team.name) AS submit_team_name,
+                  submit_team.avatar_hash AS submit_avatar_hash,
+                  submit_part.status AS submit_status,
+                  submit_part.division_id AS submit_division_id,
+                  submit_division.name AS submit_division_name,
+                  submission.answer,
+                  submission.status AS answer_status,
+                  submission.submit_time_utc,
+                  COALESCE(NULLIF(cheat.evidence_payload->>'submitUserName', ''),
+                           account.user_name) AS user_name,
+                  COALESCE(NULLIF(cheat.evidence_payload->>'challengeTitle', ''),
+                           challenge.title) AS challenge_title
+             FROM "CheatInfo" cheat
+       CROSS JOIN checkpoint
+             JOIN "Games" game ON game.id = cheat.game_id
+             JOIN "Submissions" submission
+               ON submission.id = cheat.submission_id
+              AND submission.game_id = cheat.game_id
+              AND submission.participation_id = cheat.submit_participation_id
+              AND submission.challenge_id = cheat.challenge_id
+             JOIN "Participations" source_part
+               ON source_part.id = cheat.source_participation_id
+              AND source_part.game_id = cheat.game_id
+             JOIN "Teams" source_team ON source_team.id = source_part.team_id
+        LEFT JOIN "Divisions" source_division
+               ON source_division.id = source_part.division_id
+              AND source_division.game_id = cheat.game_id
+             JOIN "Participations" submit_part
+               ON submit_part.id = cheat.submit_participation_id
+              AND submit_part.game_id = cheat.game_id
+             JOIN "Teams" submit_team ON submit_team.id = submit_part.team_id
+        LEFT JOIN "Divisions" submit_division
+               ON submit_division.id = submit_part.division_id
+              AND submit_division.game_id = cheat.game_id
+             JOIN "GameChallenges" challenge
+               ON challenge.id = cheat.challenge_id
+              AND challenge.game_id = cheat.game_id
+        LEFT JOIN "AspNetUsers" account ON account.id = submission.user_id
+            WHERE cheat.game_id = $1
+              AND cheat.observed_at_utc = submission.submit_time_utc
+              AND cheat.observed_at_utc >= game.start_time_utc
+              AND cheat.observed_at_utc < game.end_time_utc
+              AND (($2::INTEGER IS NOT NULL AND cheat.id > $2)
+                   OR ($2::INTEGER IS NULL
+                       AND ($4::INTEGER IS NULL
+                            OR (cheat.observed_at_utc, cheat.id) < (
+                                SELECT cursor.observed_at_utc, cursor.id
+                                  FROM "CheatInfo" cursor
+                                 WHERE cursor.game_id = $1
+                                   AND cursor.id = $4
+                                   AND FLOOR(EXTRACT(EPOCH FROM cursor.observed_at_utc) * 1000)::BIGINT = $3
+                            ))))
+            ORDER BY CASE WHEN $2::INTEGER IS NOT NULL THEN cheat.id END ASC,
+                     CASE WHEN $2::INTEGER IS NULL THEN cheat.observed_at_utc END DESC,
+                     CASE WHEN $2::INTEGER IS NULL THEN cheat.id END DESC
+            LIMIT $5"#,
+    )
+    .bind(game_id)
+    .bind(after_id)
+    .bind(before_observed_at)
+    .bind(before_id)
+    .bind(limit.saturating_add(1))
+    .fetch_all(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
+/// Bounded immutable incident history and reconnect delta feed.
+pub async fn cheat_info_page(
+    State(st): State<SharedState>,
+    _user: MonitorUser,
+    Path(id): Path<i32>,
+    Query(query): Query<CheatInfoPageQuery>,
+) -> AppResult<RequestResponse<CheatIncidentPage>> {
+    let _ = load_game(&st, id).await?;
+    let (limit, window) = bounded_cheat_incident_window(&query)?;
+    let mut rows = load_cheat_incident_page_rows(st.pg(), id, window, limit).await?;
+    let has_more = rows.len() > limit as usize;
+    rows.truncate(limit as usize);
+    let snapshot_checkpoint_id = rows
+        .first()
+        .map(|row| row.checkpoint_id)
+        .or(query.after_id)
+        .unwrap_or(0);
+    // A full page of ascending deltas may stop before the query snapshot's
+    // high-water mark. Advance only through the emitted rows so the next delta
+    // cannot skip the remainder; every other response publishes the whole-game
+    // snapshot checkpoint selected above.
+    let checkpoint_id = if has_more && matches!(window, CheatIncidentWindow::Delta { .. }) {
+        rows.last()
+            .map(|row| row.incident_id)
+            .unwrap_or(snapshot_checkpoint_id)
+    } else {
+        snapshot_checkpoint_id
+    };
+    let next_before = if has_more && matches!(window, CheatIncidentWindow::Descending { .. }) {
+        rows.last().map(|row| CheatIncidentCursor {
+            observed_at: row.observed_at_utc,
+            id: row.incident_id,
+        })
+    } else {
+        None
+    };
+    let data = rows
+        .into_iter()
+        .map(CheatIncidentRow::into_page_item)
+        .collect::<AppResult<Vec<_>>>()?;
+    Ok(RequestResponse::ok(CheatIncidentPage {
+        data,
+        next_before,
+        checkpoint_id,
+        has_more,
+    }))
+}
+
 /// `GET /api/game/{id}/cheatinfo` — requires Monitor.
 ///
 /// Flag ownership is captured transactionally at submit time in `CheatInfo`; this
-/// read never consults mutable instance/flag state.
+/// read never consults mutable instance/flag state. The compatibility array is
+/// capped to the newest 100 incidents; new clients use [`cheat_info_page`].
 pub async fn cheat_info(
     State(st): State<SharedState>,
     _user: MonitorUser,
@@ -249,19 +519,11 @@ pub async fn cheat_info(
 /// list) and `cheatreport` (grouped into collusion groups). Detection strategy is
 /// documented on [`cheat_info`].
 async fn collect_cheat_incidents(st: &SharedState, id: i32) -> AppResult<Vec<CheatInfoModel>> {
-    load_cheat_incident_rows(st.pg(), Some(id), None, 0)
+    load_cheat_incident_rows(st.pg(), Some(id), Some(CHEAT_INCIDENT_PAGE_MAX as i64), 0)
         .await?
         .into_iter()
         .map(CheatIncidentRow::into_model)
         .collect()
-}
-
-/// Query for the collusion `compare` endpoint (`?participationA=&participationB=`).
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CompareQuery {
-    pub participation_a: i32,
-    pub participation_b: i32,
 }
 
 /// `GET /api/game/{id}/cheatreport` — requires Monitor.
@@ -285,45 +547,84 @@ pub async fn cheat_report(
     State(st): State<SharedState>,
     _user: MonitorUser,
     Path(id): Path<i32>,
-) -> AppResult<RequestResponse<CheatReport>> {
+    headers: HeaderMap,
+) -> AppResult<Response> {
     let _ = load_game(&st, id).await?;
+    super::cheat_report_cache::serve_report(&st, id, &headers).await
+}
 
-    let incidents = collect_cheat_incidents(&st, id).await?;
+const MAX_REPORT_INCIDENTS: i64 = 2_000;
+const MAX_REPORT_PAIRS: usize = 100;
+const MAX_REPORT_LCS_CELLS: usize = 8_000_000;
 
-    // Canonical one-row-per-participation/challenge solves for RSI. Replayed
-    // accepted submissions never inflate similarity or common-solve detail.
-    let subs = canonical_solves(st.pg(), id, &[]).await?;
-    let titles: HashMap<i32, String> = subs
+type TeamRef = (i32, i32, String); // (participation_id, team_id, team_name)
+
+fn incident_pairs(incidents: &[CheatInfoModel]) -> BTreeMap<(i32, i32), (TeamRef, TeamRef)> {
+    let mut pairs = BTreeMap::new();
+    for incident in incidents {
+        let name_of = |participation: &ParticipationModel| {
+            participation
+                .team
+                .name
+                .clone()
+                .unwrap_or_else(|| "Unknown".to_string())
+        };
+        let left = (
+            incident.owned_team.id,
+            incident.owned_team.team.id,
+            name_of(&incident.owned_team),
+        );
+        let right = (
+            incident.submit_team.id,
+            incident.submit_team.team.id,
+            name_of(&incident.submit_team),
+        );
+        let (first, second) = if left.0 <= right.0 {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        pairs.entry((first.0, second.0)).or_insert((first, second));
+    }
+    pairs
+}
+
+fn validate_report_pair_count(pairs: &BTreeMap<(i32, i32), (TeamRef, TeamRef)>) -> AppResult<()> {
+    if pairs.len() > MAX_REPORT_PAIRS {
+        return Err(AppError::payload_too_large(format!(
+            "Anti-cheat report is limited to {MAX_REPORT_PAIRS} collusion pairs"
+        )));
+    }
+    Ok(())
+}
+
+fn build_collusion_groups(
+    pairs: BTreeMap<(i32, i32), (TeamRef, TeamRef)>,
+    solves: Vec<CanonicalSolveRow>,
+) -> AppResult<Vec<Json>> {
+    let titles: HashMap<i32, String> = solves
         .iter()
         .map(|solve| (solve.challenge_id, solve.challenge_title.clone()))
         .collect();
-    let mut by_part: HashMap<i32, Vec<CanonicalSolveRow>> = HashMap::new();
-    for s in subs {
-        by_part.entry(s.participation_id).or_default().push(s);
+    let mut by_part = HashMap::<i32, Vec<CanonicalSolveRow>>::new();
+    for solve in solves {
+        by_part
+            .entry(solve.participation_id)
+            .or_default()
+            .push(solve);
     }
-    // Group incidents by the unordered participation pair; the lower participation
-    // id is the first team so the grouping and team order are deterministic.
-    type TeamRef = (i32, i32, String); // (participation_id, team_id, team_name)
-    let mut pairs: BTreeMap<(i32, i32), (TeamRef, TeamRef)> = BTreeMap::new();
-    for inc in &incidents {
-        let name_of =
-            |p: &ParticipationModel| p.team.name.clone().unwrap_or_else(|| "Unknown".to_string());
-        let a: TeamRef = (
-            inc.owned_team.id,
-            inc.owned_team.team.id,
-            name_of(&inc.owned_team),
-        );
-        let b: TeamRef = (
-            inc.submit_team.id,
-            inc.submit_team.team.id,
-            name_of(&inc.submit_team),
-        );
-        let (first, second) = if a.0 <= b.0 { (a, b) } else { (b, a) };
-        pairs.entry((first.0, second.0)).or_insert((first, second));
+    let lcs_cells = pairs.values().try_fold(0_usize, |total, (first, second)| {
+        let left = by_part.get(&first.0).map_or(0, Vec::len);
+        let right = by_part.get(&second.0).map_or(0, Vec::len);
+        total.checked_add(left.saturating_mul(right))
+    });
+    if !matches!(lcs_cells, Some(cells) if cells <= MAX_REPORT_LCS_CELLS) {
+        return Err(AppError::payload_too_large(format!(
+            "Anti-cheat report pair comparison is limited to {MAX_REPORT_LCS_CELLS} LCS cells"
+        )));
     }
-
-    let empty: Vec<CanonicalSolveRow> = Vec::new();
-    let mut collusion_groups: Vec<Json> = Vec::new();
+    let empty = Vec::new();
+    let mut groups = Vec::with_capacity(pairs.len());
     for (first, second) in pairs.into_values() {
         let sub_a = by_part.get(&first.0).unwrap_or(&empty);
         let sub_b = by_part.get(&second.0).unwrap_or(&empty);
@@ -335,7 +636,7 @@ pub async fn cheat_report(
             common.len(),
             rsi * 100.0
         );
-        collusion_groups.push(serde_json::json!({
+        groups.push(serde_json::json!({
             "teams": [
                 { "id": first.1, "name": first.2, "participationId": first.0 },
                 { "id": second.1, "name": second.2, "participationId": second.0 },
@@ -346,20 +647,61 @@ pub async fn cheat_report(
             "detailedSolves": detailed,
         }));
     }
-    // Highest-similarity pairs first.
-    collusion_groups.sort_by(|a, b| {
-        let ra = a["averageRsi"].as_f64().unwrap_or(0.0);
-        let rb = b["averageRsi"].as_f64().unwrap_or(0.0);
-        rb.partial_cmp(&ra).unwrap_or(std::cmp::Ordering::Equal)
+    groups.sort_by(|left, right| {
+        let left_rsi = left["averageRsi"].as_f64().unwrap_or(0.0);
+        let right_rsi = right["averageRsi"].as_f64().unwrap_or(0.0);
+        right_rsi
+            .partial_cmp(&left_rsi)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
+    Ok(groups)
+}
+
+pub(super) async fn build_cheat_report(st: &SharedState, id: i32) -> AppResult<CheatReport> {
+    let mut incident_rows = load_cheat_incident_rows(
+        st.pg(),
+        Some(id),
+        Some(MAX_REPORT_INCIDENTS.saturating_add(1)),
+        0,
+    )
+    .await?;
+    if incident_rows.len() > MAX_REPORT_INCIDENTS as usize {
+        return Err(AppError::payload_too_large(format!(
+            "Anti-cheat report is limited to {MAX_REPORT_INCIDENTS} flag-sharing incidents"
+        )));
+    }
+    let incidents = incident_rows
+        .drain(..)
+        .map(CheatIncidentRow::into_model)
+        .collect::<AppResult<Vec<_>>>()?;
+    let pairs = incident_pairs(&incidents);
+    validate_report_pair_count(&pairs)?;
+    let participation_ids = pairs
+        .values()
+        .flat_map(|(first, second)| [first.0, second.0])
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    // Canonical one-row-per-participation/challenge solves for RSI. Replayed
+    // accepted submissions never inflate similarity or common-solve detail.
+    let solves = canonical_report_solves(st.pg(), id, &participation_ids).await?;
+    let collusion_groups =
+        tokio::task::spawn_blocking(move || build_collusion_groups(pairs, solves))
+            .await
+            .map_err(|error| {
+                AppError::internal(format!("anti-cheat report task failed: {error}"))
+            })??;
 
     let (suspicion_list, abnormal_solves) = build_suspicion_sections(st.pg(), id).await?;
     let (ip_analysis, identity_overlaps) =
         super::cheat_identity::build_identity_analysis(st.pg(), id).await?;
     let reconciliation = load_reconciliation_report_state(st.pg(), id).await?;
 
-    Ok(RequestResponse::ok(CheatReport {
-        generated_at: Utc::now(),
+    Ok(CheatReport {
+        // Once sealed, this timestamp is deterministic across cache expiry and
+        // replicas; live versions retain their actual build time.
+        generated_at: reconciliation.sealed_at.unwrap_or_else(Utc::now),
         evidence_closed_at: reconciliation.evidence_closed_at,
         last_reconciled_at: reconciliation.last_reconciled_at,
         sealed_at: reconciliation.sealed_at,
@@ -372,7 +714,7 @@ pub async fn cheat_report(
         identity_overlaps,
         abnormal_solves,
         detector_capabilities: super::cheat_capabilities::detector_capabilities(),
-    }))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -403,23 +745,11 @@ struct ReportSuspicionRow {
     team_id: i32,
     team_name: String,
     participation_status: i16,
+    challenge_name: Option<String>,
+    solve_time: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct AcceptedSolveRow {
-    participation_id: i32,
-    challenge_id: i32,
-    challenge_name: String,
-    solve_time: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-struct CanonicalSolveRow {
-    participation_id: i32,
-    challenge_id: i32,
-    challenge_title: String,
-    submit_time_utc: DateTime<Utc>,
-}
+const MAX_REPORT_SUSPICION_EVENTS: i64 = 10_000;
 
 fn is_abnormal_solve(ty: crate::services::suspicion::SuspicionType) -> bool {
     use crate::services::suspicion::SuspicionType::*;
@@ -451,7 +781,15 @@ async fn build_suspicion_sections(
 
     // One set-based read supplies event, participation and display-team data.
     let events = sqlx::query_as::<_, ReportSuspicionRow>(
-        r#"SELECT event.id AS event_id,
+        r#"WITH bounded_events AS MATERIALIZED (
+               SELECT event.*
+                 FROM "SuspicionEvents" event
+                WHERE event.game_id = $1
+                  AND event.evidence_key NOT LIKE 'legacy-untrusted:%'
+                ORDER BY event.created_at DESC, event.id DESC
+                LIMIT $2
+             )
+           SELECT event.id AS event_id,
                   event.participation_id,
                   event.challenge_id,
                   event.kind,
@@ -460,20 +798,42 @@ async fn build_suspicion_sections(
                   event.created_at,
                   participation.team_id,
                   team.name AS team_name,
-                  participation.status AS participation_status
-             FROM "SuspicionEvents" event
+                  participation.status AS participation_status,
+                  challenge.title AS challenge_name,
+                  solve_submission.submit_time_utc AS solve_time
+             FROM bounded_events event
              JOIN "Participations" participation
                ON participation.id = event.participation_id
               AND participation.game_id = event.game_id
              JOIN "Teams" team ON team.id = participation.team_id
-            WHERE event.game_id = $1
-              AND event.evidence_key NOT LIKE 'legacy-untrusted:%'
+        LEFT JOIN "FirstSolves" first_solve
+               ON first_solve.participation_id = event.participation_id
+              AND first_solve.challenge_id = event.challenge_id
+        LEFT JOIN "Submissions" solve_submission
+               ON solve_submission.id = first_solve.submission_id
+              AND solve_submission.game_id = event.game_id
+              AND solve_submission.participation_id = event.participation_id
+              AND solve_submission.challenge_id = event.challenge_id
+              AND solve_submission.status = $3
+        LEFT JOIN "Games" game ON game.id = event.game_id
+        LEFT JOIN "GameChallenges" challenge
+               ON challenge.id = event.challenge_id
+              AND challenge.game_id = event.game_id
+              AND solve_submission.submit_time_utc >= game.start_time_utc
+              AND solve_submission.submit_time_utc < game.end_time_utc
             ORDER BY event.created_at DESC, event.id DESC"#,
     )
     .bind(game_id)
+    .bind(MAX_REPORT_SUSPICION_EVENTS.saturating_add(1))
+    .bind(AnswerResult::Accepted as i16)
     .fetch_all(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    if events.len() > MAX_REPORT_SUSPICION_EVENTS as usize {
+        return Err(AppError::payload_too_large(format!(
+            "Anti-cheat report is limited to {MAX_REPORT_SUSPICION_EVENTS} suspicion events"
+        )));
+    }
     if events.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
@@ -593,44 +953,6 @@ async fn build_suspicion_sections(
     });
     let suspicion_list = rows.into_iter().map(|r| r.4).collect();
 
-    let solved = sqlx::query_as::<_, AcceptedSolveRow>(
-        r#"SELECT DISTINCT ON (submission.participation_id, submission.challenge_id)
-                  submission.participation_id,
-                  submission.challenge_id,
-                  challenge.title AS challenge_name,
-                  submission.submit_time_utc AS solve_time
-             FROM "FirstSolves" first_solve
-             JOIN "Submissions" submission
-               ON submission.id = first_solve.submission_id
-              AND submission.participation_id = first_solve.participation_id
-              AND submission.challenge_id = first_solve.challenge_id
-             JOIN "GameChallenges" challenge
-               ON challenge.id = submission.challenge_id
-              AND challenge.game_id = submission.game_id
-             JOIN "Participations" participation
-               ON participation.id = first_solve.participation_id
-              AND participation.game_id = submission.game_id
-             JOIN "Games" game
-               ON game.id = submission.game_id
-            WHERE participation.game_id = $1
-              AND submission.status = $2
-              AND submission.submit_time_utc >= game.start_time_utc
-              AND submission.submit_time_utc < game.end_time_utc
-            ORDER BY submission.participation_id,
-                     submission.challenge_id,
-                     submission.submit_time_utc,
-                     submission.id"#,
-    )
-    .bind(game_id)
-    .bind(AnswerResult::Accepted as i16)
-    .fetch_all(pool)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let solved: HashMap<(i32, i32), AcceptedSolveRow> = solved
-        .into_iter()
-        .map(|row| ((row.participation_id, row.challenge_id), row))
-        .collect();
-
     let mut abnormal: Vec<(DateTime<Utc>, i32, Json)> = Vec::new();
     for event in &events {
         let Some(ty) = SuspicionType::from_kind(event.kind).filter(|ty| is_abnormal_solve(*ty))
@@ -640,21 +962,23 @@ async fn build_suspicion_sections(
         let Some(challenge_id) = event.challenge_id else {
             continue;
         };
-        let Some(solve) = solved.get(&(event.participation_id, challenge_id)) else {
+        let (Some(challenge_name), Some(solve_time)) =
+            (event.challenge_name.as_deref(), event.solve_time)
+        else {
             continue;
         };
         abnormal.push((
-            solve.solve_time,
+            solve_time,
             event.event_id,
             serde_json::json!({
                 "eventId": event.event_id,
                 "teamId": event.team_id,
                 "teamName": event.team_name,
                 "challengeId": challenge_id,
-                "challengeName": solve.challenge_name,
+                "challengeName": challenge_name,
                 "type": ty.code(),
                 "details": ty.default_entry().1,
-                "solveTime": solve.solve_time.timestamp_millis(),
+                "solveTime": solve_time.timestamp_millis(),
             }),
         ));
     }
@@ -664,198 +988,6 @@ async fn build_suspicion_sections(
         suspicion_list,
         abnormal.into_iter().map(|(_, _, row)| row).collect(),
     ))
-}
-
-/// `GET /api/game/{id}/cheatreport/compare` — requires Monitor.
-///
-/// Mirrors RSCTF `CheatReportController.Compare`: for two participations in the
-/// game, compute the RSI (`0.7·Jaccard(solved sets) + 0.3·LCS(solve order)`) and
-/// the per-common-challenge solve-time detail rows.
-pub async fn cheat_report_compare(
-    State(st): State<SharedState>,
-    _user: MonitorUser,
-    Path(id): Path<i32>,
-    Query(q): Query<CompareQuery>,
-) -> AppResult<RequestResponse<CollusionCompareResult>> {
-    let _ = load_game(&st, id).await?;
-
-    if q.participation_a == q.participation_b {
-        return Err(AppError::bad_request(
-            "Cannot compare a participation with itself.",
-        ));
-    }
-
-    // Validate both ids in one game-scoped query.
-    let requested = [q.participation_a, q.participation_b];
-    let found = sqlx::query_scalar::<_, i32>(
-        r#"SELECT id
-             FROM "Participations"
-            WHERE game_id = $1 AND id = ANY($2::INTEGER[])"#,
-    )
-    .bind(id)
-    .bind(&requested[..])
-    .fetch_all(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if found.len() != requested.len() {
-        return Err(AppError::bad_request(
-            "One or both participations were not found in this game.",
-        ));
-    }
-
-    let solves = canonical_solves(st.pg(), id, &[q.participation_a, q.participation_b]).await?;
-    let titles: HashMap<i32, String> = solves
-        .iter()
-        .map(|solve| (solve.challenge_id, solve.challenge_title.clone()))
-        .collect();
-    let (sub_a, sub_b): (Vec<_>, Vec<_>) = solves
-        .into_iter()
-        .partition(|solve| solve.participation_id == q.participation_a);
-
-    let (rsi, _common, details) = collusion_metrics(&sub_a, &sub_b, &titles);
-    Ok(RequestResponse::ok(CollusionCompareResult { rsi, details }))
-}
-
-/// Canonical first solves in deterministic solve order. An empty participation
-/// filter selects the whole game.
-async fn canonical_solves(
-    pool: &sqlx::PgPool,
-    game_id: i32,
-    participation_ids: &[i32],
-) -> AppResult<Vec<CanonicalSolveRow>> {
-    sqlx::query_as::<_, CanonicalSolveRow>(
-        r#"SELECT first_solve.participation_id,
-                  first_solve.challenge_id,
-                  challenge.title AS challenge_title,
-                  submission.submit_time_utc
-             FROM "FirstSolves" first_solve
-             JOIN "Submissions" submission
-               ON submission.id = first_solve.submission_id
-              AND submission.participation_id = first_solve.participation_id
-              AND submission.challenge_id = first_solve.challenge_id
-             JOIN "Participations" participation
-               ON participation.id = first_solve.participation_id
-              AND participation.game_id = submission.game_id
-             JOIN "Games" game
-               ON game.id = submission.game_id
-             JOIN "GameChallenges" challenge
-               ON challenge.id = first_solve.challenge_id
-              AND challenge.game_id = submission.game_id
-            WHERE participation.game_id = $1
-              AND submission.status = $2
-              AND submission.submit_time_utc >= game.start_time_utc
-              AND submission.submit_time_utc < game.end_time_utc
-              AND (CARDINALITY($3::INTEGER[]) = 0
-                   OR first_solve.participation_id = ANY($3))
-            ORDER BY submission.submit_time_utc, submission.id"#,
-    )
-    .bind(game_id)
-    .bind(AnswerResult::Accepted as i16)
-    .bind(participation_ids)
-    .fetch_all(pool)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))
-}
-
-/// Length of the longest common subsequence of two challenge-id sequences
-/// (mirrors RSCTF `GetLongestCommonSubsequence`, rolling one-row DP).
-fn lcs_len(a: &[i32], b: &[i32]) -> usize {
-    if a.is_empty() || b.is_empty() {
-        return 0;
-    }
-    let m = b.len();
-    let mut dp = vec![0usize; m + 1];
-    for &x in a {
-        let mut prev = 0usize;
-        for j in 0..m {
-            let tmp = dp[j + 1];
-            dp[j + 1] = if x == b[j] {
-                prev + 1
-            } else {
-                dp[j + 1].max(dp[j])
-            };
-            prev = tmp;
-        }
-    }
-    dp[m]
-}
-
-/// RSI + common-solve overlap between two participations' accepted submissions.
-///
-/// Returns `(rsi, commonSolveTitles, detailedSolves)` where `rsi =
-/// 0.7·Jaccard(solved sets) + 0.3·(LCS(solve order)/min(len))`, mirroring RSCTF.
-/// `detailedSolves` are `SequenceSuspectDetail`-shaped JSON rows, ordered by
-/// solve-time gap (closest first), capped at 50, then by team-A solve time.
-fn collusion_metrics(
-    sub_a: &[CanonicalSolveRow],
-    sub_b: &[CanonicalSolveRow],
-    titles: &HashMap<i32, String>,
-) -> (f64, Vec<String>, Vec<Json>) {
-    let seq_a: Vec<i32> = sub_a.iter().map(|s| s.challenge_id).collect();
-    let seq_b: Vec<i32> = sub_b.iter().map(|s| s.challenge_id).collect();
-    let set_a: HashSet<i32> = seq_a.iter().copied().collect();
-    let set_b: HashSet<i32> = seq_b.iter().copied().collect();
-
-    let mut inter: Vec<i32> = set_a
-        .iter()
-        .copied()
-        .filter(|c| set_b.contains(c))
-        .collect();
-    inter.sort_unstable();
-    let union = set_a.union(&set_b).count();
-    let jaccard = if union == 0 {
-        0.0
-    } else {
-        inter.len() as f64 / union as f64
-    };
-    let lcs = lcs_len(&seq_a, &seq_b);
-    let min_len = seq_a.len().min(seq_b.len());
-    let lcs_score = if min_len == 0 {
-        0.0
-    } else {
-        lcs as f64 / min_len as f64
-    };
-    let rsi = jaccard * 0.7 + lcs_score * 0.3;
-
-    // Earliest accepted solve time per side (submissions are ascending, so the
-    // first match is the earliest solve of that challenge).
-    let mut rows: Vec<(String, DateTime<Utc>, DateTime<Utc>, f64)> = Vec::new();
-    let mut common_solves: Vec<String> = Vec::new();
-    for cid in &inter {
-        let name = titles
-            .get(cid)
-            .cloned()
-            .unwrap_or_else(|| "Unknown".to_string());
-        common_solves.push(name.clone());
-        let ta = sub_a
-            .iter()
-            .find(|s| s.challenge_id == *cid)
-            .map(|s| s.submit_time_utc);
-        let tb = sub_b
-            .iter()
-            .find(|s| s.challenge_id == *cid)
-            .map(|s| s.submit_time_utc);
-        if let (Some(ta), Some(tb)) = (ta, tb) {
-            let diff = ((ta - tb).num_milliseconds().abs() as f64) / 1000.0;
-            rows.push((name, ta, tb, diff));
-        }
-    }
-    rows.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
-    rows.truncate(50);
-    rows.sort_by_key(|row| row.1);
-
-    let detailed: Vec<Json> = rows
-        .into_iter()
-        .map(|(name, ta, tb, diff)| {
-            serde_json::json!({
-                "challengeName": name,
-                "timeA": ta.timestamp_millis(),
-                "timeB": tb.timestamp_millis(),
-                "timeDiff": diff,
-            })
-        })
-        .collect();
-    (rsi, common_solves, detailed)
 }
 
 #[cfg(test)]

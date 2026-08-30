@@ -940,7 +940,9 @@ fn participation_token(g: &game::Model, team_id: i32) -> AppResult<String> {
 
 mod catalog;
 pub(crate) mod cheat;
+mod cheat_compare;
 mod cheat_evidence;
+mod cheat_report_cache;
 mod combined_scoreboard;
 mod containers;
 mod lookups;
@@ -958,6 +960,7 @@ mod writeup;
 
 pub use catalog::*;
 pub use cheat::*;
+pub use cheat_compare::*;
 pub use cheat_evidence::*;
 pub use combined_scoreboard::*;
 pub use containers::*;
