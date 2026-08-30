@@ -16,14 +16,21 @@ Before release, require:
 
 ```sh
 cargo fmt --all -- --check
-cargo build --all-targets
-cargo test
+scripts/bounded-cargo.sh build --all-targets
+scripts/bounded-cargo.sh test
 find src -name '*.rs' -print0 | xargs -0 wc -l | awk '$1>1000 && $2!="total"'
 cd web && pnpm check && pnpm lint:check && pnpm test && pnpm build
 ```
 
 `cargo build` must finish with zero errors and zero warnings. Keep focused test output
 in the handoff, including expected environment-only skips or ignored tests.
+
+The bounded wrapper is mandatory for local focused and full Rust checks. It serializes
+all worktrees on one Git-common-dir lock, reuses one target directory, defaults to two
+Cargo/Rayon workers, and places work in a systemd service capped at 200% CPU and 12 GiB
+RAM. Override those bounds only for an explicitly isolated build host. When `sccache`
+is installed, the wrapper enables a bounded shared cache automatically. CI may use an
+equivalent stricter container/cgroup instead.
 
 ## Immutable production release
 
