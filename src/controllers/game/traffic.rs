@@ -13,6 +13,7 @@ const MAX_CAPTURE_ARCHIVE_DEPLOYMENT_JOBS: i64 = 2;
 const CAPTURE_ARCHIVE_CHUNK_BYTES: usize = 64 * 1024;
 const CAPTURE_ARCHIVE_LEASE_SECONDS: i64 = 30;
 const CAPTURE_ARCHIVE_STREAM_SECONDS: u64 = 300;
+const CAPTURE_ARCHIVE_RETRY_SECONDS: u64 = 2;
 const CAPTURE_ARCHIVE_ADVISORY_KEY: i64 = 1_195_722_091;
 const MAX_INSPECT_CAPTURE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_CAPTURE_FLOWS: usize = 20_000;
@@ -204,8 +205,9 @@ async fn acquire_archive_lease(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     if !locked {
-        return Err(AppError::unavailable(
+        return Err(AppError::retryable_unavailable(
             "Capture archive admission is busy; retry shortly",
+            CAPTURE_ARCHIVE_RETRY_SECONDS,
         ));
     }
     sqlx::query(r#"DELETE FROM "TrafficArchiveLeases" WHERE expires_at_utc <= CURRENT_TIMESTAMP"#)
@@ -237,8 +239,9 @@ async fn acquire_archive_lease(
         || reserved.saturating_add(MAX_CAPTURE_ARCHIVE_BYTES as i64)
             > MAX_CAPTURE_ARCHIVE_DEPLOYMENT_BYTES
     {
-        return Err(AppError::unavailable(
+        return Err(AppError::retryable_unavailable(
             "Capture archive capacity is busy; retry shortly",
+            CAPTURE_ARCHIVE_RETRY_SECONDS,
         ));
     }
 
@@ -462,7 +465,12 @@ pub async fn get_all_traffic(
     let permit = CAPTURE_ARCHIVE_SLOTS
         .clone()
         .try_acquire_owned()
-        .map_err(|_| AppError::unavailable("Capture archive capacity is busy; retry shortly"))?;
+        .map_err(|_| {
+            AppError::retryable_unavailable(
+                "Capture archive capacity is busy; retry shortly",
+                CAPTURE_ARCHIVE_RETRY_SECONDS,
+            )
+        })?;
     let operation_id = acquire_archive_lease(st.pg(), cid, pid).await?;
     let names =
         match crate::services::traffic::inventory::archive_file_names(st.pg(), &root, cid, pid)
@@ -829,6 +837,20 @@ mod traffic_admission_tests {
             MAX_CAPTURE_ARCHIVE_DEPLOYMENT_JOBS * MAX_CAPTURE_ARCHIVE_BYTES as i64
         );
         assert!(CAPTURE_ARCHIVE_LEASE_SECONDS > 2 * 10);
+    }
+
+    #[test]
+    fn archive_overload_is_retryable() {
+        use axum::response::IntoResponse as _;
+
+        let response =
+            AppError::retryable_unavailable("capture archive busy", CAPTURE_ARCHIVE_RETRY_SECONDS)
+                .into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers()[header::RETRY_AFTER].to_str().unwrap(),
+            CAPTURE_ARCHIVE_RETRY_SECONDS.to_string().as_str()
+        );
     }
 
     #[tokio::test]

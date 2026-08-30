@@ -271,15 +271,22 @@ pub async fn store_and_replace_challenge_attachment(
         Ok(deleted_hash) => deleted_hash,
         Err(error) => {
             let _ = transaction.rollback().await;
-            if let Some(hash) = expected_hash.as_deref() {
-                let _ = purge_if_unreferenced(pool, storage, hash).await;
+            if let Some(stage) = staged.as_ref() {
+                if let Err(cleanup_error) =
+                    super::discard_unpublished_stage(pool, storage, stage).await
+                {
+                    tracing::warn!(%cleanup_error, hash = %stage.blob.hash, "failed attachment rollback cleanup deferred");
+                }
             }
             return Err(error);
         }
     };
     if let Err(error) = transaction.commit().await.map_err(database_error) {
-        if let Some(hash) = expected_hash.as_deref() {
-            let _ = purge_if_unreferenced(pool, storage, hash).await;
+        if let Some(stage) = staged.as_ref() {
+            if let Err(cleanup_error) = super::discard_unpublished_stage(pool, storage, stage).await
+            {
+                tracing::warn!(%cleanup_error, hash = %stage.blob.hash, "uncertain attachment cleanup deferred");
+            }
         }
         return Err(error);
     }

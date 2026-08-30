@@ -38,6 +38,7 @@ static PROVISIONING_GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaph
     });
 static EXERCISE_GRADING_GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(8)));
+const EXERCISE_GRADING_DEPLOYMENT_SLOTS: usize = 8;
 static EXERCISE_RUNTIME_GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
 use tokio::sync::broadcast;
@@ -201,7 +202,10 @@ impl<T: Clone + Default + Send + 'static> Default for SingleFlight<T> {
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
-    use super::{advisory_lock_key, coalesce, PgAdvisoryLock, SingleFlight, COALESCE_FLIGHTS};
+    use super::{
+        advisory_lock_key, coalesce, try_acquire_exercise_grading_slot, PgAdvisoryLock,
+        SingleFlight, COALESCE_FLIGHTS, EXERCISE_GRADING_DEPLOYMENT_SLOTS,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -339,6 +343,38 @@ mod tests {
         assert!(writer_acquired);
         writer.rollback().await.unwrap();
     }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn exercise_grading_slots_are_shared_across_pool_connections() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections((EXERCISE_GRADING_DEPLOYMENT_SLOTS + 1) as u32)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let mut owners = Vec::with_capacity(EXERCISE_GRADING_DEPLOYMENT_SLOTS);
+        for ordinal in 0..EXERCISE_GRADING_DEPLOYMENT_SLOTS {
+            let mut transaction = pool.begin().await.unwrap();
+            assert!(try_acquire_exercise_grading_slot(
+                &mut transaction,
+                &format!("grading-owner-{ordinal}"),
+            )
+            .await
+            .unwrap());
+            owners.push(transaction);
+        }
+        let mut rejected = pool.begin().await.unwrap();
+        assert!(
+            !try_acquire_exercise_grading_slot(&mut rejected, "grading-over-capacity")
+                .await
+                .unwrap()
+        );
+        rejected.rollback().await.unwrap();
+        drop(owners);
+        pool.close().await;
+    }
 }
 
 /// Owned per-key guard. The key map stores only weak references, so cancellation
@@ -439,6 +475,29 @@ pub(crate) async fn try_acquire_transaction_advisory_lock(
         .await?)
 }
 
+/// Claim one member of a fixed PostgreSQL advisory-lock set on the grading
+/// transaction itself. Unlike the process semaphore, these locks are shared by
+/// every replica and therefore keep aggregate practice grading below the pool
+/// headroom budget without checking out a second connection.
+async fn try_acquire_exercise_grading_slot(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    key: &str,
+) -> anyhow::Result<bool> {
+    let first = (advisory_lock_key(key) as u64 % EXERCISE_GRADING_DEPLOYMENT_SLOTS as u64) as usize;
+    for offset in 0..EXERCISE_GRADING_DEPLOYMENT_SLOTS {
+        let slot = (first + offset) % EXERCISE_GRADING_DEPLOYMENT_SLOTS;
+        let lock_key = advisory_lock_key(&format!("rsctf:exercise-grading-admission:{slot}"));
+        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+            .bind(lock_key)
+            .fetch_one(&mut **transaction)
+            .await?;
+        if acquired {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 impl PgAdvisoryLock {
     pub async fn acquire(pool: &sqlx::PgPool, key: &str) -> anyhow::Result<Self> {
         Self::acquire_with_permit(pool, key, None).await
@@ -469,6 +528,10 @@ impl PgAdvisoryLock {
             .fetch_one(&mut *transaction)
             .await?;
         if !acquired {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        if !try_acquire_exercise_grading_slot(&mut transaction, key).await? {
             transaction.rollback().await?;
             return Ok(None);
         }
