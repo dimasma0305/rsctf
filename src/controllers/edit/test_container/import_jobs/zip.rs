@@ -140,7 +140,7 @@ async fn stage_and_publish_zip(
                 &error,
                 AppError::ServiceUnavailable(_)
                     | AppError::RetryableUnavailable { .. }
-                    | AppError::TooManyRequests
+                    | AppError::TooManyRequests { .. }
             ) {
                 defer_zip_staging(st.pg(), job_id, staging_owner).await?;
             } else {

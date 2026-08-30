@@ -9,7 +9,6 @@
 //! success so the React ClientApp stays functional — never a 4xx. Those are
 //! marked with `// TODO`.
 
-use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::header;
 use axum::response::Response;
@@ -25,7 +24,7 @@ use sea_orm::{
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value as JsonValue};
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 use uuid::Uuid;
 
 use crate::app_state::SharedState;
@@ -842,7 +841,7 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/File",
-            get(ad_service_file),
+            limited(Policy::Container, get(ad_service_file)),
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Inspector",
@@ -862,15 +861,15 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Snapshot/Changes",
-            get(ad_snapshot_changes),
+            limited(Policy::Container, get(ad_snapshot_changes)),
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/SnapshotDiff",
-            get(ad_snapshot_diff),
+            limited(Policy::Container, get(ad_snapshot_diff)),
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Snapshots",
-            get(ad_service_snapshots),
+            limited(Policy::Container, get(ad_service_snapshots)),
         )
 }
 

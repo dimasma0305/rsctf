@@ -63,7 +63,10 @@ services:
       RSCTF_EVENT_SENSOR_TOKEN: ${RSCTF_EVENT_SENSOR_TOKEN:-}
       RSCTF_EVENT_SENSOR_INTERFACE: wg0
       RSCTF_EVENT_SENSOR_ASN_FILE: ${RSCTF_EVENT_SENSOR_ASN_FILE:-}
+      RSCTF_EVENT_SENSOR_SPOOL_DIR: /var/lib/rsctf-event-sensor/spool
       RUST_LOG: ${RSCTF_EVENT_SENSOR_LOG:-info}
+    volumes:
+      - rsctf-event-sensor-spool:/var/lib/rsctf-event-sensor/spool
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=8m,mode=1777
 
@@ -74,3 +77,6 @@ networks:
     ipam:
       config:
         - subnet: ${RSCTF_AD_VPN_SERVICES_CIDR:-10.13.40.0/24}
+
+volumes:
+  rsctf-event-sensor-spool:

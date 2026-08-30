@@ -977,6 +977,8 @@ export interface WriteupInfoModel {
   divisions?: Record<string, string>;
   /** Writeups list */
   writeups?: WriteupInfo[];
+  /** Total matching writeups */
+  total?: number;
 }
 
 export interface WriteupInfo {
@@ -2340,11 +2342,30 @@ export interface AdBatchSubmitResultModel {
 export interface AdTokenGenerateResultModel {
   token: string;
   hint: string;
-  rotatedAt: string;
+  operationId: string;
+  revision: number;
+  participationId: number;
+  teamId: number;
+  /** Unix milliseconds. */
+  recoveryExpiresAt: number;
+  /** Unix milliseconds. */
+  rotatedAt: number;
+}
+
+export interface PlayerCredentialMutationModel {
+  operationId: string;
+  expectedRevision: number;
+}
+
+export interface PlayerCredentialMutationResultModel {
+  operationId: string;
+  revision: number;
+  /** Unix milliseconds. */
+  recoveryExpiresAt: number;
 }
 
 /** A&D SSH key — body for POST /api/Game/{id}/Ad/Ssh/Key. */
-export interface AdSshKeyUploadModel {
+export interface AdSshKeyUploadModel extends PlayerCredentialMutationModel {
   publicKey: string;
 }
 
@@ -2354,11 +2375,17 @@ export interface AdSshKeyInfoModel {
   algorithm: string;
   fingerprint: string;
   platformGenerated: boolean;
-  createdAt?: string | null;
-  lastUsedAt?: string | null;
+  /** Unix milliseconds. */
+  createdAt?: number | null;
+  /** Unix milliseconds. */
+  lastUsedAt?: number | null;
   /** Hostname:port the player ssh's to (Ad:Ssh:PublicHost/Port). */
   jumpHost?: string | null;
+  revision: number;
 }
+
+/** A&D SSH key — successful upload response with mutation ownership. */
+export interface AdSshKeyMutationResultModel extends AdSshKeyInfoModel, PlayerCredentialMutationResultModel {}
 
 /** A&D SSH key — server-generated keypair (private key shown once). */
 export interface AdSshKeyGeneratedModel {
@@ -2366,7 +2393,12 @@ export interface AdSshKeyGeneratedModel {
   publicKey: string;
   privateKey: string;
   fingerprint: string;
-  createdAt: string;
+  operationId: string;
+  revision: number;
+  /** Unix milliseconds. */
+  recoveryExpiresAt: number;
+  /** Unix milliseconds. */
+  createdAt: number;
 }
 
 export interface AdEpochScoreModel {
@@ -2450,11 +2482,17 @@ export interface AdScoreboardModel {
 export interface AdTokenHintModel {
   exists: boolean;
   hint: string;
-  createdAt?: string | null;
-  lastRotatedAt?: string | null;
-  lastUsedAt?: string | null;
+  /** Unix milliseconds. */
+  createdAt?: number | null;
+  /** Unix milliseconds. */
+  lastRotatedAt?: number | null;
+  /** Unix milliseconds. */
+  lastUsedAt?: number | null;
   /** True iff caller is captain of the participating team. */
   canManage: boolean;
+  revision: number;
+  participationId: number;
+  teamId: number;
 }
 
 /** A&D — per-service row in the player's state view. */
@@ -2612,6 +2650,10 @@ export interface AdSnapshotChangesModel {
   /** True when computed live from the running container (mid-game), not a stored snapshot. */
   live?: boolean;
   changes: AdSnapshotChange[];
+  /** Total runtime entries observed before response sanitization and caps. */
+  observedChanges?: number;
+  /** True when unsafe or excess entries were omitted from this bounded response. */
+  truncated?: boolean;
   /** Path categories filtered out of `changes` (runtime/churn blacklist), shown via the info button. */
   filteredCategories?: string[];
 }
@@ -3436,6 +3478,26 @@ export interface CheatInfoModel {
   submission: Submission & { answer: string; status: AnswerResult; time: number };
 }
 
+/** One stable incident row in the bounded monitor feed. */
+export interface CheatIncidentPageItem extends CheatInfoModel {
+  id: number;
+  /** Unix milliseconds used with id as the older-page keyset cursor. */
+  observedAt: number;
+}
+
+export interface CheatIncidentCursor {
+  observedAt: number;
+  id: number;
+}
+
+/** Bounded initial, older-history, or reconnect-delta incident page. */
+export interface CheatIncidentPage {
+  data: CheatIncidentPageItem[];
+  nextBefore: CheatIncidentCursor | null;
+  checkpointId: number;
+  hasMore: boolean;
+}
+
 /** Team participation information */
 export interface ParticipationModel {
   /**
@@ -3478,6 +3540,10 @@ export interface ChallengeTrafficModel {
    * @format int32
    */
   count?: number;
+  /** Total indexed capture bytes. */
+  size?: number;
+  /** Unix milliseconds of the newest capture. */
+  updateTime?: number;
 }
 
 /** Team traffic information */
@@ -3503,6 +3569,15 @@ export interface TeamTrafficModel {
    * @format int32
    */
   count?: number;
+  /** Total indexed capture bytes. */
+  size?: number;
+  /** Unix milliseconds of the newest capture. */
+  updateTime?: number;
+}
+
+export interface TrafficInventoryPage<T> {
+  items: T[];
+  nextCursor: string | null;
 }
 
 /** File record */
@@ -5899,10 +5974,15 @@ export class Api<
      * @summary Get all Writeup basic information
      * @request GET:/api/admin/writeups/{id}
      */
-    adminWriteups: (id: number, params: RequestParams = {}) =>
+    adminWriteups: (
+      id: number,
+      query?: { count?: number; skip?: number; divisionId?: number },
+      params: RequestParams = {},
+    ) =>
       this.request<WriteupInfoModel, RequestResponse>({
         path: `/api/admin/writeups/${id}`,
         method: "GET",
+        query: query,
         format: "json",
         ...params,
       }),
@@ -5916,11 +5996,12 @@ export class Api<
      */
     useAdminWriteups: (
       id: number,
+      query?: { count?: number; skip?: number; divisionId?: number },
       options?: SWRConfiguration,
       doFetch: boolean = true,
     ) =>
       useSWR<WriteupInfoModel, RequestResponse>(
-        doFetch ? `/api/admin/writeups/${id}` : null,
+        doFetch ? [`/api/admin/writeups/${id}`, query] : null,
         options,
       ),
 
@@ -5934,9 +6015,10 @@ export class Api<
      */
     mutateAdminWriteups: (
       id: number,
+      query?: { count?: number; skip?: number; divisionId?: number },
       data?: WriteupInfoModel | Promise<WriteupInfoModel>,
       options?: MutatorOptions,
-    ) => mutate<WriteupInfoModel>(`/api/admin/writeups/${id}`, data, options),
+    ) => mutate<WriteupInfoModel>([`/api/admin/writeups/${id}`, query], data, options),
 
     /**
      * @description List configured repo bindings
@@ -9819,10 +9901,16 @@ export class Api<
      * @name GameAdRotateToken
      * @request POST:/api/Game/{id}/Ad/Token
      */
-    gameAdRotateToken: (id: number, params: RequestParams = {}) =>
+    gameAdRotateToken: (
+      id: number,
+      data: PlayerCredentialMutationModel,
+      params: RequestParams = {},
+    ) =>
       this.request<AdTokenGenerateResultModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Token`,
         method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -9874,10 +9962,17 @@ export class Api<
      * @name GameAdRevokeToken
      * @request DELETE:/api/Game/{id}/Ad/Token
      */
-    gameAdRevokeToken: (id: number, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+    gameAdRevokeToken: (
+      id: number,
+      data: PlayerCredentialMutationModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<PlayerCredentialMutationResultModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Token`,
         method: "DELETE",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
         ...params,
       }),
 
@@ -9888,7 +9983,7 @@ export class Api<
      * @request POST:/api/Game/{id}/Ad/Ssh/Key
      */
     adGameUploadSshKey: (id: number, data: AdSshKeyUploadModel, params: RequestParams = {}) =>
-      this.request<AdSshKeyInfoModel, RequestResponse>({
+      this.request<AdSshKeyMutationResultModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Ssh/Key`,
         method: "POST",
         body: data,
@@ -9903,10 +9998,16 @@ export class Api<
      * @name AdGameGenerateSshKey
      * @request POST:/api/Game/{id}/Ad/Ssh/Key/Generate
      */
-    adGameGenerateSshKey: (id: number, params: RequestParams = {}) =>
+    adGameGenerateSshKey: (
+      id: number,
+      data: PlayerCredentialMutationModel,
+      params: RequestParams = {},
+    ) =>
       this.request<AdSshKeyGeneratedModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Ssh/Key/Generate`,
         method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -9947,10 +10048,17 @@ export class Api<
      * @name AdGameRevokeSshKey
      * @request DELETE:/api/Game/{id}/Ad/Ssh/Key
      */
-    adGameRevokeSshKey: (id: number, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+    adGameRevokeSshKey: (
+      id: number,
+      data: PlayerCredentialMutationModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<PlayerCredentialMutationResultModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Ssh/Key`,
         method: "DELETE",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
         ...params,
       }),
 

@@ -42,6 +42,9 @@ use sha2::{Digest, Sha256};
 
 use crate::app_state::SharedState;
 
+mod receipt_admission;
+pub(crate) use receipt_admission::admit_solve_receipt_issuance;
+
 static AUTHENTICATED_IP_BACKSTOP_PER_MINUTE: LazyLock<u32> = LazyLock::new(|| {
     std::env::var("RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE")
         .ok()
@@ -158,10 +161,16 @@ pub enum Policy {
     PowIssuanceSource,
     /// Deployment-wide HashPoW issuance budget; all callers share one key.
     PowIssuanceGlobal,
+    /// Tight per-identity defense-in-depth budget for player credential changes.
+    /// Appended to preserve every shipped Redis policy discriminant.
+    CredentialMutation,
     /// Anonymous source budget for bounded Ed25519 team-token verification.
     TeamSignatureSource,
     /// Deployment-wide CPU/query budget for team-token verification.
     TeamSignatureGlobal,
+    /// Trusted solve-verifier issuance work. Appended to preserve every
+    /// previously shipped Redis policy discriminant.
+    SolveReceipt,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -242,6 +251,10 @@ impl Policy {
                 capacity: 256.0,
                 refill_per_sec: 20.0,
             },
+            Policy::CredentialMutation => Kind::Bucket {
+                capacity: 6.0,
+                refill_per_sec: 0.1,
+            },
             Policy::TeamSignatureSource => Kind::Bucket {
                 capacity: 20.0,
                 refill_per_sec: 1.0,
@@ -249,6 +262,10 @@ impl Policy {
             Policy::TeamSignatureGlobal => Kind::Bucket {
                 capacity: 256.0,
                 refill_per_sec: 32.0,
+            },
+            Policy::SolveReceipt => Kind::Bucket {
+                capacity: 128.0,
+                refill_per_sec: 16.0,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {

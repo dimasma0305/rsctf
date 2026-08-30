@@ -324,31 +324,57 @@ pub(super) fn client_key(headers: &HeaderMap, peer: IpAddr) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+fn record_inbound_attempt_with(
+    counters: &OperationalCounters,
+    bytes: usize,
+    admitted: bool,
+) {
+    saturating_increment(&counters.inbound_frames, 1);
+    saturating_increment(
+        &counters.inbound_bytes,
+        u64::try_from(bytes).unwrap_or(u64::MAX),
+    );
+    if !admitted {
+        saturating_increment(&counters.inbound_quota_rejections, 1);
+    }
+}
+
+fn meter_inbound_frame_with(
+    window: &InboundWindow,
+    counters: &OperationalCounters,
+    bytes: usize,
+    second: u64,
+    locally_admitted: bool,
+    frame_limit: u64,
+    byte_limit: u64,
+) -> bool {
+    // Debit every application-observed frame from the process-wide backstop,
+    // including a frame that is already over the per-connection or 64 KiB
+    // protocol ceiling. Otherwise many independently rejected sockets could
+    // collectively bypass the aggregate byte budget.
+    let globally_admitted = window.admit(bytes, second, frame_limit, byte_limit);
+    let admitted = locally_admitted && globally_admitted;
+    record_inbound_attempt_with(counters, bytes, admitted);
+    admitted
+}
+
 /// Cheap process-wide abuse backstop for application frames received after a
 /// read-only feed is admitted. A one-second fixed window is deliberately
 /// lock-free; per-connection token buckets apply the finer fairness boundary.
-pub(super) fn try_inbound_frame(bytes: usize) -> bool {
+pub(super) fn meter_inbound_frame(bytes: usize, locally_admitted: bool) -> bool {
     let second = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    INBOUND_WINDOW.admit(
+    meter_inbound_frame_with(
+        &INBOUND_WINDOW,
+        &OPERATIONAL_COUNTERS,
         bytes,
         second,
+        locally_admitted,
         MAX_INBOUND_FRAMES_PER_SECOND,
         MAX_INBOUND_BYTES_PER_SECOND,
     )
-}
-
-pub(super) fn record_inbound_attempt(bytes: usize, admitted: bool) {
-    saturating_increment(&OPERATIONAL_COUNTERS.inbound_frames, 1);
-    saturating_increment(
-        &OPERATIONAL_COUNTERS.inbound_bytes,
-        u64::try_from(bytes).unwrap_or(u64::MAX),
-    );
-    if !admitted {
-        saturating_increment(&OPERATIONAL_COUNTERS.inbound_quota_rejections, 1);
-    }
 }
 
 pub(super) fn record_protocol_rejection() {
@@ -504,5 +530,28 @@ mod tests {
         assert!(boundary.admit(1, 19, 2, 8));
         assert!(!boundary.admit(1, 20, 2, 8));
         assert_eq!(boundary.second.load(Ordering::Acquire), 20);
+    }
+
+    #[test]
+    fn metering_debits_and_records_even_locally_rejected_frames() {
+        let window = InboundWindow::new();
+        let counters = OperationalCounters::new();
+
+        assert!(meter_inbound_frame_with(
+            &window, &counters, 4, 10, true, 3, 8,
+        ));
+        assert!(!meter_inbound_frame_with(
+            &window, &counters, 5, 10, true, 3, 8,
+        ));
+        assert!(!meter_inbound_frame_with(
+            &window, &counters, 1, 10, false, 3, 8,
+        ));
+
+        let snapshot = counters.snapshot();
+        assert_eq!(snapshot.inbound_frames, 3);
+        assert_eq!(snapshot.inbound_bytes, 10);
+        assert_eq!(snapshot.inbound_quota_rejections, 2);
+        assert_eq!(window.frames.load(Ordering::Acquire), 3);
+        assert_eq!(window.bytes.load(Ordering::Acquire), 10);
     }
 }

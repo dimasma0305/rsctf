@@ -141,7 +141,18 @@ async fn serve_raw(
         tokio::select! {
             msg = ws_rx.next() => match msg {
                 Some(Ok(Message::Text(value))) => {
-                    let _ = inbound.admit(value.len());
+                    if value.len() > signalr::MAX_WS_MESSAGE_BYTES {
+                        let _ = admission::meter_inbound_frame(value.len(), true);
+                        admission::record_protocol_rejection();
+                        admission::record_close(admission::CloseReason::Protocol);
+                        let _ = tx.send(signalr::too_big_close()).await;
+                        break;
+                    }
+                    if !inbound.admit(value.len()) {
+                        admission::record_close(admission::CloseReason::Quota);
+                        let _ = tx.send(signalr::policy_close("inbound feed quota exceeded")).await;
+                        break;
+                    }
                     admission::record_protocol_rejection();
                     admission::record_close(admission::CloseReason::Protocol);
                     let _ = tx.send(Message::Close(Some(CloseFrame {
@@ -151,7 +162,18 @@ async fn serve_raw(
                     break;
                 }
                 Some(Ok(Message::Binary(value))) => {
-                    let _ = inbound.admit(value.len());
+                    if value.len() > signalr::MAX_WS_MESSAGE_BYTES {
+                        let _ = admission::meter_inbound_frame(value.len(), true);
+                        admission::record_protocol_rejection();
+                        admission::record_close(admission::CloseReason::Protocol);
+                        let _ = tx.send(signalr::too_big_close()).await;
+                        break;
+                    }
+                    if !inbound.admit(value.len()) {
+                        admission::record_close(admission::CloseReason::Quota);
+                        let _ = tx.send(signalr::policy_close("inbound feed quota exceeded")).await;
+                        break;
+                    }
                     admission::record_protocol_rejection();
                     admission::record_close(admission::CloseReason::Protocol);
                     let _ = tx.send(Message::Close(Some(CloseFrame {
@@ -164,6 +186,7 @@ async fn serve_raw(
                     idle.as_mut().reset(Instant::now() + Duration::from_secs(90));
                     if !inbound.admit(value.len()) {
                         admission::record_close(admission::CloseReason::Quota);
+                        let _ = tx.send(signalr::policy_close("inbound feed quota exceeded")).await;
                         break;
                     }
                     if tx.send(Message::Pong(value)).await.is_err() { break; }
@@ -172,6 +195,7 @@ async fn serve_raw(
                     idle.as_mut().reset(Instant::now() + Duration::from_secs(90));
                     if !inbound.admit(value.len()) {
                         admission::record_close(admission::CloseReason::Quota);
+                        let _ = tx.send(signalr::policy_close("inbound feed quota exceeded")).await;
                         break;
                     }
                 }
@@ -179,9 +203,8 @@ async fn serve_raw(
             },
             ev = rx.recv() => match ev {
                 Ok(event) => {
-                    // Only this game's attack broadcasts. `game_id: None` on an event
-                    // means a game-wide broadcast → deliver to every game's feed.
-                    let game_ok = event.game_id.is_none_or(|eg| eg == game_id);
+                    // Only this game's validated attack events reach this shard.
+                    let game_ok = event.game_id == Some(game_id);
                     if event.target != "ReceivedAttack" || !game_ok {
                         continue;
                     }

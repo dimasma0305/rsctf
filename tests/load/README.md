@@ -18,6 +18,7 @@ N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
       npm run read-only-websocket-flood # read-only feed inbound-abuse gate
       npm run monitor-history # fixed-rate bounded monitor history + durable backfills
+      npm run monitor-evidence-inventory # fixed-rate traffic + anti-cheat bounded reads
       npm run participation-review # fixed-rate bounded 12k-team organizer review
       npm run details-read  # fixed-rate authenticated challenge-details poll
       npm run challenge-modal-read # bounded detail + solver modal reads
@@ -44,19 +45,22 @@ available rather than fabricating participation IDs that production authorizatio
 
 ### Read-only WebSocket admission
 
-The WebSocket gate alternates raw and SignalR attack feeds at a fixed connection
-arrival rate. It requires the normal greeting or exact SignalR handshake before
-sending unsupported application traffic, requires a policy/frame-size close, and
-checks exact `healthz` on an independent lane:
+The WebSocket gate drives raw and SignalR attack feeds at a fixed connection
+arrival rate. It distinguishes the exact 64-KiB application boundary from a
+one-byte-oversized transport rejection, covers burst and sustained frame quotas,
+and checks exact `healthz` on an independent lane. Preflight probes also cover an
+invalid handshake, the 128-connection client ceiling and permit reuse, and the
+90-second idle close. A tagged notice is created, observed over SignalR during the
+flood, and deleted before the gate exits.
 
 ```sh
 READONLY_WS_FLOOD_ACK=1 WEBSOCKET_GAME=92001 RATE=20 DURATION=30s \
   SUMMARY_JSON=/tmp/read-only-websocket-flood.json npm run read-only-websocket-flood
 ```
 
-It refuses a non-live or hidden event. Remote targets additionally require
-`ALLOW_REMOTE_READONLY_WS_FLOOD` to equal the exact target origin. Run it against
-an isolated stack when collecting CPU/RSS bounds.
+It refuses a non-live or hidden event and any non-loopback target. Run it against
+an isolated local stack: the runner samples the exact `RSCTF_CONTAINER` and fails
+when its CPU or memory exceeds the configured bounds.
 
 ### Admin dashboard aggregates
 
@@ -99,6 +103,35 @@ IDs or cursors, non-ascending backfill cursors, oversized bodies, row-limit viol
 iterations, with p95 below 800 ms. Use a
 disposable/local stack when raising `RATE`; the Query policy deliberately limits
 sustained work per monitor identity.
+
+### Traffic and anti-cheat monitor inventory
+
+`monitor-evidence-inventory` holds one arrival schedule across traffic challenge,
+team, and file cursor pages plus the anti-cheat incident page/delta, cached report,
+event evidence, and pair comparison. It requires a prepared real-filesystem/PostgreSQL
+fixture (by default 20 capture challenges, 500 capture buckets, 5,000 indexed PCAPs,
+1,000 flag-sharing incidents, and 5,000 suspicion events) and at least four disposable
+Monitor/Admin identities:
+
+```sh
+MONITOR_EVIDENCE_GAME=92001 RATE=4 VUS=32 DURATION=30s \
+  SUMMARY_JSON=/tmp/monitor-evidence-inventory.json npm run monitor-evidence-inventory
+```
+
+The gate rotates identities and source IPs to measure bounded work instead of one
+limiter bucket. It rejects pages over 100 rows, duplicate or unstable incident IDs,
+oversized bodies, malformed drill-downs, 5xx/429 responses, dropped arrivals, and a
+busy response without `Retry-After`. A separate fixed-rate probe requires the exact
+`healthz` body `ok` with p95 below 500 ms. The runner also samples the configured
+Docker application/PostgreSQL containers and PostgreSQL I/O counters once per second,
+then fails on excessive task/thread, memory, block-I/O, block-read, or temporary-I/O
+growth. Override `MONITOR_EVIDENCE_RESOURCE_CONTAINERS`, `MAX_MEMORY_DELTA_MIB`,
+`MAX_TASK_DELTA`, `MAX_BLOCK_IO_DELTA_MIB`, `MAX_PG_BLOCK_READ_DELTA`, or
+`MAX_PG_TEMP_DELTA_MIB` for a documented fixture. Resource evidence is written beside
+`SUMMARY_JSON` (or to `RESOURCE_JSON`); the runner deliberately does not fabricate
+PCAP files. It also counts regular PCAPs below `/data/files/capture` inside the
+application container; set `MONITOR_EVIDENCE_CAPTURE_ROOT` when the prepared stack
+mounts the capture root elsewhere.
 
 ### Bounded participation review
 
@@ -233,11 +266,11 @@ tests/load/
   byoc-agents.mjs   BYOC tunnel fleet: seed rows, start/stop N relay agents, list listeners
   fixtures.mjs      materializes the exact checker + shared flag service used by lifecycle
   admin-fixtures.mjs focused SQL, HTTP, Docker-image, CSR, and recovery helpers for admin acceptance
-  admin-lifecycle.js pure 62-operation admin catalog, response contracts, and target-safety rules
+  admin-lifecycle.js pure 75-operation admin catalog, response contracts, and target-safety rules
   admin-lifecycle.mjs destructive disposable admin lifecycle (npm run admin-lifecycle)
   admin-dashboard.js bounded dashboard/trend/activity response contracts
   admin-dashboard.mjs tagged large-history fixture and cleanup (npm run admin-dashboard)
-  edit-lifecycle.js exact 67-operation `/api/edit` catalog + wire validators
+  edit-lifecycle.js exact 79-operation `/api/edit` catalog + wire validators
   edit-lifecycle.mjs future/A&D/KotH organizer lifecycle (npm run edit-lifecycle)
   multi-domain-acceptance.js pure two-service/two-hill isolation contracts
   multi-domain-acceptance.mjs focused multi-domain acceptance (npm run multi-domain)

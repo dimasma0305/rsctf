@@ -4,6 +4,7 @@ import { mdiAlertCircleOutline, mdiConsole, mdiDownload, mdiRefresh, mdiRestart,
 import { Icon } from '@mdi/react'
 import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { createOperationId, waitForControlJob } from '@Utils/ControlJobs'
 import { showErrorMsg } from '@Utils/Shared'
@@ -166,16 +167,14 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
           {t('game.content.ad.snapshot', 'Post-game snapshot')}:
         </Text>
         <Tooltip label={t('game.tooltip.ad.snapshot', 'Download the final container filesystem as a TAR archive.')}>
-          <Button
-            component="a"
-            href={api.game.gameAdDownloadSnapshotUrl(gameId, service.adTeamServiceId)}
-            download
+          <SnapshotDownloadButton
+            url={api.game.gameAdDownloadSnapshotUrl(gameId, service.adTeamServiceId)}
+            filename={`ad-snapshot-service${service.adTeamServiceId}.tar.gz`}
+            downloadKey={`player:snapshot:${gameId}:${service.adTeamServiceId}`}
+            label={t('game.button.ad.download_snapshot', 'Download .tar.gz')}
             size="compact-xs"
             variant="light"
-            leftSection={<Icon path={mdiDownload} size={0.7} />}
-          >
-            {t('game.button.ad.download_snapshot', 'Download .tar.gz')}
-          </Button>
+          />
         </Tooltip>
       </Group>
     ) : null

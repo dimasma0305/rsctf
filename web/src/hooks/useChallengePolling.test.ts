@@ -278,3 +278,107 @@ test('an explicit recovery clears the terminal latch for a later bounded transie
     restoreDom()
   }
 })
+
+test('a one-shot drill-down stays at one request across ten minutes, focus, and reconnect', async (context) => {
+  const browser = new Window({ url: 'https://rsctf.test/games/1/monitor/cheat' })
+  const restoreDom = installTestDom(browser)
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+  const { useChallengePolling } = await import('./useChallengePolling')
+  const { SWRConfig } = await import('swr')
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  let calls = 0
+
+  const Probe: FC<{ active: boolean }> = ({ active }) => {
+    useChallengePolling({
+      key: active ? '/anti-cheat/evidence/17#one-shot' : null,
+      active,
+      refreshInterval: 0,
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false,
+      request: async () => {
+        calls += 1
+        return { ok: true }
+      },
+    })
+    return null
+  }
+  const cache = new Map()
+  const Scope: FC<{ active: boolean }> = ({ active }) =>
+    createElement(
+      SWRConfig,
+      { value: { provider: () => cache, dedupingInterval: 0, isVisible: () => true, isOnline: () => true } },
+      createElement(Probe, { active })
+    )
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    await act(async () => root.render(createElement(Scope, { active: true })))
+    assert.equal(calls, 1)
+    await act(async () => {
+      browser.dispatchEvent(new browser.Event('focus'))
+      browser.dispatchEvent(new browser.Event('online'))
+      context.mock.timers.tick(10 * 60_000)
+    })
+    assert.equal(calls, 1)
+
+    await act(async () => root.render(createElement(Scope, { active: false })))
+    await act(async () => context.mock.timers.tick(10 * 60_000))
+    assert.equal(calls, 1)
+  } finally {
+    await act(async () => root.unmount())
+    context.mock.timers.reset()
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('a data-dependent cadence stops report polling as soon as the sealed snapshot arrives', async (context) => {
+  const browser = new Window({ url: 'https://rsctf.test/games/1/monitor/cheat' })
+  const restoreDom = installTestDom(browser)
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+  const { useChallengePolling } = await import('./useChallengePolling')
+  const { SWRConfig } = await import('swr')
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  let calls = 0
+
+  const Probe: FC = () => {
+    useChallengePolling({
+      key: '/anti-cheat/report#conditional',
+      active: true,
+      refreshInterval: (report) => (report?.sealed ? 0 : 1_000),
+      request: async () => ({ sealed: ++calls >= 2 }),
+    })
+    return null
+  }
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    await act(async () =>
+      root.render(
+        createElement(
+          SWRConfig,
+          { value: { provider: () => new Map(), dedupingInterval: 0, isVisible: () => true, isOnline: () => true } },
+          createElement(Probe)
+        )
+      )
+    )
+    assert.equal(calls, 1)
+    await act(async () => context.mock.timers.tick(1_000))
+    assert.equal(calls, 2)
+    await act(async () => context.mock.timers.tick(10 * 60_000))
+    assert.equal(calls, 2)
+  } finally {
+    await act(async () => root.unmount())
+    context.mock.timers.reset()
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})

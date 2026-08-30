@@ -1,7 +1,8 @@
 use chrono::{DateTime, Timelike, Utc};
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
+use sqlx::Acquire;
 use uuid::Uuid;
 
 use crate::app_state::SharedState;
@@ -107,6 +108,7 @@ pub struct FlagTransportInput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetryBatch {
+    pub batch_id: Uuid,
     pub game_id: i32,
     #[serde(default)]
     pub flows: Vec<FlowBucketInput>,
@@ -124,7 +126,7 @@ pub struct TelemetryBatch {
     pub sensor_dropped_bytes: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetryIngestResult {
     pub accepted_rows: usize,
@@ -544,13 +546,66 @@ pub async fn ingest_batch(
     st: &SharedState,
     batch: &TelemetryBatch,
 ) -> AppResult<TelemetryIngestResult> {
+    ingest_batch_with_pool(st.pg(), batch).await
+}
+
+async fn ingest_batch_with_pool(
+    pool: &sqlx::PgPool,
+    batch: &TelemetryBatch,
+) -> AppResult<TelemetryIngestResult> {
     batch.validate()?;
-    let estimated = batch.estimated_bytes()?;
-    let mut transaction = st
-        .pg()
+    if batch.batch_id.is_nil() {
+        return Err(AppError::bad_request("Invalid telemetry batch ID"));
+    }
+    let fingerprint: [u8; 32] = sha2::Sha256::digest(
+        serde_json::to_vec(batch)
+            .map_err(|error| AppError::internal(format!("encode telemetry batch: {error}")))?,
+    )
+    .into();
+    let mut transaction = pool
         .begin()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    let claimed = sqlx::query_scalar::<_, Uuid>(
+        r#"INSERT INTO "EventTelemetryBatches"
+                (batch_id, game_id, request_fingerprint)
+           VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING batch_id"#,
+    )
+    .bind(batch.batch_id)
+    .bind(batch.game_id)
+    .bind(fingerprint.as_slice())
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if claimed.is_none() {
+        let replay = sqlx::query_as::<_, (i32, Vec<u8>, Option<serde_json::Value>)>(
+            r#"SELECT game_id, request_fingerprint, result
+                 FROM "EventTelemetryBatches" WHERE batch_id = $1 FOR UPDATE"#,
+        )
+        .bind(batch.batch_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        let Some((game_id, stored_fingerprint, result)) = replay else {
+            return Err(AppError::conflict(
+                "Telemetry batch is already being processed",
+            ));
+        };
+        if game_id != batch.game_id || stored_fingerprint.as_slice() != fingerprint.as_slice() {
+            return Err(AppError::conflict(
+                "Telemetry batch ID was reused with different content",
+            ));
+        }
+        let result = result
+            .ok_or_else(|| AppError::unavailable("Telemetry batch result is not yet available"))?;
+        let result = serde_json::from_value(result)
+            .map_err(|error| AppError::internal(format!("decode telemetry replay: {error}")))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(result);
+    }
     let policy: Option<(bool, bool, bool, bool, bool)> = sqlx::query_as(
         r#"SELECT vpn_behavior_telemetry_enabled, vpn_flag_scan_enabled,
                   vpn_provider_dns_telemetry_enabled,
@@ -566,16 +621,18 @@ pub async fn ingest_batch(
         return Err(AppError::not_found("Game not found"));
     };
     if !(policy.0 || policy.1 || policy.2 || policy.3 || policy.4) {
-        transaction
-            .rollback()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        return Ok(TelemetryIngestResult {
+        let result = TelemetryIngestResult {
             accepted_rows: 0,
             duplicate_or_invalid_rows: batch.row_count(),
             dropped_for_quota: false,
             logical_bytes: 0,
-        });
+        };
+        complete_batch(&mut transaction, batch.batch_id, &result).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(result);
     }
     if batch.sensor_dropped_rows > 0 {
         sqlx::query(
@@ -596,10 +653,36 @@ pub async fn ingest_batch(
         .map_err(|error| AppError::internal(error.to_string()))?;
     }
     let (event_bytes, disabled, global_bytes) = lock_usage(&mut transaction, batch.game_id).await?;
-    if disabled
-        || event_bytes.saturating_add(estimated) > EVENT_LOGICAL_QUOTA_BYTES
-        || global_bytes.saturating_add(estimated) > GLOBAL_LOGICAL_QUOTA_BYTES
-    {
+
+    // Discover novelty while both usage rows are locked, but keep the inserted
+    // rows in a savepoint until the quota decision is made. This charges only
+    // rows that actually won their immutable deduplication key. In particular,
+    // an exact row replay remains successful even when an event is already at
+    // its quota; rejecting it would make sensor retry behavior depend on disk
+    // pressure rather than on the durable row identity.
+    let mut novel_rows = transaction
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let flow_count = insert_flows(&mut novel_rows, batch.game_id, &batch.flows).await?;
+    let dns_count = insert_dns(&mut novel_rows, batch.game_id, &batch.dns_providers).await?;
+    let network_count =
+        insert_networks(&mut novel_rows, batch.game_id, &batch.peer_networks).await?;
+    let flag_count = insert_flags(&mut novel_rows, batch.game_id, &batch.flag_transports).await?;
+    let accepted = flow_count + dns_count + network_count + flag_count;
+    let actual = i64::try_from(flow_count).unwrap_or(i64::MAX) * FLOW_LOGICAL_BYTES
+        + i64::try_from(dns_count).unwrap_or(i64::MAX) * DNS_LOGICAL_BYTES
+        + i64::try_from(network_count).unwrap_or(i64::MAX) * NETWORK_LOGICAL_BYTES
+        + i64::try_from(flag_count).unwrap_or(i64::MAX) * FLAG_LOGICAL_BYTES;
+    let quota_exceeded = actual > 0
+        && (disabled
+            || event_bytes.saturating_add(actual) > EVENT_LOGICAL_QUOTA_BYTES
+            || global_bytes.saturating_add(actual) > GLOBAL_LOGICAL_QUOTA_BYTES);
+    if quota_exceeded {
+        novel_rows
+            .rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         sqlx::query(
             r#"UPDATE "AntiCheatTelemetryUsage"
                   SET disabled_at_utc = COALESCE(disabled_at_utc, clock_timestamp()),
@@ -621,33 +704,28 @@ pub async fn ingest_batch(
                    observed_at_utc = clock_timestamp()"#,
         )
         .bind(batch.game_id)
-        .bind(i64::try_from(batch.row_count()).unwrap_or(i64::MAX))
-        .bind(estimated)
+        .bind(i64::try_from(accepted).unwrap_or(i64::MAX))
+        .bind(actual)
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+        let result = TelemetryIngestResult {
+            accepted_rows: 0,
+            duplicate_or_invalid_rows: batch.row_count().saturating_sub(accepted),
+            dropped_for_quota: true,
+            logical_bytes: 0,
+        };
+        complete_batch(&mut transaction, batch.batch_id, &result).await?;
         transaction
             .commit()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-        return Ok(TelemetryIngestResult {
-            accepted_rows: 0,
-            duplicate_or_invalid_rows: 0,
-            dropped_for_quota: true,
-            logical_bytes: 0,
-        });
+        return Ok(result);
     }
-
-    let flow_count = insert_flows(&mut transaction, batch.game_id, &batch.flows).await?;
-    let dns_count = insert_dns(&mut transaction, batch.game_id, &batch.dns_providers).await?;
-    let network_count =
-        insert_networks(&mut transaction, batch.game_id, &batch.peer_networks).await?;
-    let flag_count = insert_flags(&mut transaction, batch.game_id, &batch.flag_transports).await?;
-    let accepted = flow_count + dns_count + network_count + flag_count;
-    let actual = i64::try_from(flow_count).unwrap_or(i64::MAX) * FLOW_LOGICAL_BYTES
-        + i64::try_from(dns_count).unwrap_or(i64::MAX) * DNS_LOGICAL_BYTES
-        + i64::try_from(network_count).unwrap_or(i64::MAX) * NETWORK_LOGICAL_BYTES
-        + i64::try_from(flag_count).unwrap_or(i64::MAX) * FLAG_LOGICAL_BYTES;
+    novel_rows
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     if actual > 0 {
         sqlx::query(
             r#"UPDATE "AntiCheatTelemetryUsage"
@@ -675,16 +753,40 @@ pub async fn ingest_batch(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     }
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(TelemetryIngestResult {
+    let result = TelemetryIngestResult {
         accepted_rows: accepted,
         duplicate_or_invalid_rows: batch.row_count().saturating_sub(accepted),
         dropped_for_quota: false,
         logical_bytes: actual,
-    })
+    };
+    complete_batch(&mut transaction, batch.batch_id, &result).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(result)
+}
+
+async fn complete_batch(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    batch_id: Uuid,
+    result: &TelemetryIngestResult,
+) -> AppResult<()> {
+    sqlx::query(
+        r#"UPDATE "EventTelemetryBatches"
+              SET result = $2, completed_at_utc = clock_timestamp()
+            WHERE batch_id = $1"#,
+    )
+    .bind(batch_id)
+    .bind(
+        serde_json::to_value(result).map_err(|error| {
+            AppError::internal(format!("encode telemetry ingest result: {error}"))
+        })?,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(())
 }
 
 pub async fn purge_game_telemetry(
@@ -770,6 +872,10 @@ pub async fn purge_game_telemetry(
 }
 
 #[cfg(test)]
+#[path = "telemetry_pg_tests.rs"]
+mod pg_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -787,6 +893,7 @@ mod tests {
     #[test]
     fn invalid_bucket_and_raw_values_are_rejected_before_database_work() {
         let batch = TelemetryBatch {
+            batch_id: Uuid::new_v4(),
             game_id: 1,
             flows: vec![FlowBucketInput {
                 user_id: Uuid::nil(),

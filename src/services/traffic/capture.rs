@@ -188,6 +188,7 @@ impl CaptureRegistry {
         failure_wakeup: &Arc<tokio::sync::Notify>,
         desired: &HashMap<String, CaptureSpec>,
         storage_root: &Path,
+        inventory: &super::inventory::CaptureInventoryQueue,
     ) -> Vec<CaptureFailure> {
         let mut failures = self.reap_finished().await;
         self.retry_after.retain(|id, _| desired.contains_key(id));
@@ -211,7 +212,10 @@ impl CaptureRegistry {
             {
                 continue;
             }
-            if let Some(failure) = self.start(state, failure_wakeup, spec, storage_root).await {
+            if let Some(failure) = self
+                .start(state, failure_wakeup, spec, storage_root, inventory)
+                .await
+            {
                 failures.push(failure);
             }
         }
@@ -224,6 +228,7 @@ impl CaptureRegistry {
         failure_wakeup: &Arc<tokio::sync::Notify>,
         spec: CaptureSpec,
         storage_root: &Path,
+        inventory: &super::inventory::CaptureInventoryQueue,
     ) -> Option<CaptureFailure> {
         let out_dir = spec.output_dir(storage_root);
         if let Err(error) = std::fs::create_dir_all(&out_dir) {
@@ -250,6 +255,11 @@ impl CaptureRegistry {
         let thread_stop = stop.clone();
         let thread_state = state.clone();
         let thread_failure_wakeup = failure_wakeup.clone();
+        let inventory = super::inventory::CaptureInventoryReporter::new(
+            inventory.clone(),
+            spec.challenge_id,
+            spec.participation_id,
+        );
         let (startup_tx, startup_rx) = tokio::sync::oneshot::channel();
         let container_id = spec.container_id.clone();
         let thread_name = format!(
@@ -274,6 +284,7 @@ impl CaptureRegistry {
                     capture_stop,
                     capture_limits(),
                     startup_tx,
+                    inventory,
                 )
                 .map_err(|error| {
                     tracing::warn!(
@@ -664,6 +675,7 @@ async fn reconcile_owner_pass(
     captures: &mut CaptureRegistry,
     storage_root: &Path,
     capture_supported: bool,
+    inventory: &super::inventory::CaptureInventoryQueue,
 ) -> Result<bool, sqlx::Error> {
     // Snapshot before applying. A request that races this pass advances a newer
     // generation and remains pending; this pass never acknowledges unseen work.
@@ -675,7 +687,13 @@ async fn reconcile_owner_pass(
         HashMap::new()
     };
     let mut capture_failures = captures
-        .reconcile(state, failure_wakeup, &capture_desired, storage_root)
+        .reconcile(
+            state,
+            failure_wakeup,
+            &capture_desired,
+            storage_root,
+            inventory,
+        )
         .await;
     if !capture_supported {
         capture_failures.extend(desired.values().cloned().map(|spec| {
@@ -790,6 +808,11 @@ async fn run_capture_reconciler(
 ) {
     let mut events = state.events.subscribe_global_targets(&[RECONCILE_EVENT]);
     let failure_wakeup = Arc::new(tokio::sync::Notify::new());
+    if let Err(error) = super::inventory::mark_reconcile_required(state.pg()).await {
+        tracing::error!(%error, "traffic capture inventory startup fence failed");
+        return;
+    }
+    let (inventory, inventory_worker) = super::inventory::start_mutation_worker(state.pg().clone());
 
     let capture_supported =
         capture_enabled() && state.containers.backend_kind() == ContainerBackendKind::Docker;
@@ -890,6 +913,7 @@ async fn run_capture_reconciler(
             &mut captures,
             &storage_root,
             capture_supported,
+            &inventory,
         )
         .await;
         match pass {
@@ -937,6 +961,14 @@ async fn run_capture_reconciler(
     }
 
     shutdown::drain_owner(&state, owner_token, heartbeat, lease, &mut captures).await;
+    drop(captures);
+    drop(inventory);
+    if tokio::time::timeout(Duration::from_secs(10), inventory_worker)
+        .await
+        .is_err()
+    {
+        tracing::warn!("traffic capture inventory worker did not drain before shutdown");
+    }
     tracing::info!("traffic capture reconciler stopped");
 }
 

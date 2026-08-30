@@ -3,15 +3,19 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 const source = readFileSync('src/components/monitor/CheatSubmissionLog.tsx', 'utf8')
+const feedHook = readFileSync('src/hooks/useCheatIncidentFeed.ts', 'utf8')
 
-test('the suspicious submission feed refreshes and exposes request failures', () => {
-  assert.match(source, /const CHEAT_INFO_REFRESH_INTERVAL_MS = 10_000/)
-  assert.match(source, /refreshInterval: CHEAT_INFO_REFRESH_INTERVAL_MS/)
-  assert.match(source, /revalidateOnReconnect: true/)
-  assert.match(source, /keepPreviousData: false/)
-  assert.match(source, /if \(error && !cheatInfo\)/)
+test('the suspicious submission feed is capped, reconnect-safe, and exposes request failures', () => {
+  assert.match(source, /useCheatIncidentFeed\(gameId, active\)/)
+  assert.match(feedHook, /INCIDENT_PAGE_SIZE = 100/)
+  assert.match(feedHook, /afterId/)
+  assert.match(feedHook, /beforeObservedAt/)
+  assert.match(feedHook, /beforeId/)
+  assert.match(feedHook, /refreshInterval: cadence/)
+  assert.match(source, /if \(error && cheatInfo\.length === 0\)/)
   assert.match(source, /tryGetErrorMsg\(error, t\)/)
   assert.match(source, /onClick=\{\(\) => void refresh\(\)\}/)
+  assert.match(source, /Load older incidents/)
 })
 
 test('the suspicious submission feed does not mutate SWR data and uses deterministic row keys', () => {
@@ -19,7 +23,7 @@ test('the suspicious submission feed does not mutate SWR data and uses determini
   assert.match(source, /const occurrences = new Map<string, number>\(\)/)
   assert.match(source, /key: JSON\.stringify\(\[signature, occurrence\]\)/)
   assert.match(source, /key=\{submissionInfo\.key\}/)
-  assert.match(source, /useMemo\(\(\) => ToCheatTeamInfo\(cheatInfo \?\? \[\]\), \[cheatInfo\]\)/)
+  assert.match(source, /useMemo\(\(\) => ToCheatTeamInfo\(cheatInfo\), \[cheatInfo\]\)/)
 })
 
 test('both suspicious submission views are named keyboard-accessible regions with an empty state', () => {

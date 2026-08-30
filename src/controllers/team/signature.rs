@@ -140,7 +140,7 @@ pub async fn verify_signature(
     let parsed = parse(model)?;
     let permit = Arc::clone(&VERIFY_SLOTS)
         .try_acquire_owned()
-        .map_err(|_| AppError::TooManyRequests)?;
+        .map_err(|_| AppError::too_many_requests(1))?;
     let public_key = parsed.public_key_text.clone();
     let team_id = parsed.team_id;
     let verified = tokio::task::spawn_blocking(move || verify_crypto(&parsed))

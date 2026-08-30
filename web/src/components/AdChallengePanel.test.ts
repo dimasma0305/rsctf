@@ -62,7 +62,13 @@ test('A&D failures stay retryable and a missing BYOC row never requests managed 
 
   const { createRoot } = await import('react-dom/client')
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
-  const mount = async (snapshotOnly: boolean, fallbackState?: AdStateModel, selfHosted = false) => {
+  const mount = async (
+    snapshotOnly: boolean,
+    fallbackState?: AdStateModel,
+    selfHosted = false,
+    gameId = 41,
+    challengeId = 7
+  ) => {
     const container = browser.document.createElement('div')
     browser.document.body.append(container)
     const root = createRoot(container)
@@ -80,12 +86,12 @@ test('A&D failures stay retryable and a missing BYOC row never requests managed 
                 value: {
                   provider: () => new Map(),
                   dedupingInterval: 0,
-                  fallback: fallbackState ? { '/api/Game/41/Ad/State': fallbackState } : {},
+                  fallback: fallbackState ? { [`/api/Game/${gameId}/Ad/State`]: fallbackState } : {},
                 },
               },
               createElement(AdChallengePanel, {
-                gameId: 41,
-                challengeId: 7,
+                gameId,
+                challengeId,
                 active: true,
                 selfHosted,
                 snapshotOnly,
@@ -117,7 +123,10 @@ test('A&D failures stay retryable and a missing BYOC row never requests managed 
     })
     assert.equal(stateReads, 3, 'explicit Retry performs one fresh state read')
     assert.equal(mounted.container.querySelector('[role="alert"]'), null)
-    assert.match(mounted.container.querySelector('a[download]')?.textContent ?? '', /Download \.tar\.gz/)
+    assert.match(
+      mounted.container.querySelector('button[aria-label="Download .tar.gz"]')?.textContent ?? '',
+      /Download \.tar\.gz/
+    )
 
     await act(async () => mounted.root.unmount())
     mounted = await mount(false, { ...state, services: [] })
@@ -126,12 +135,14 @@ test('A&D failures stay retryable and a missing BYOC row never requests managed 
     assert.ok(mounted.container.querySelector('button[aria-label="Retry A&D state"]'))
 
     await act(async () => mounted.root.unmount())
-    mounted = await mount(false, { ...state, services: [] }, true)
+    // Exact reported dev regression: game 13, challenge 50 is BYOC and has no
+    // service row before its first agent enrollment.
+    mounted = await mount(false, { ...state, services: [] }, true, 13, 50)
     const byocText = mounted.container.textContent ?? ''
     assert.match(byocText, /self-hosted BYOC challenge/i)
     assert.doesNotMatch(byocText, /No service for your team yet|Ensure containers/i)
-    assert.ok(mounted.container.querySelector('a[href="/api/Game/41/Ad/Byoc/Setup/7"][download]'))
-    assert.ok(mounted.container.querySelector('a[href="/api/Game/41/Ad/Byoc/Compose/7"][download]'))
+    assert.ok(mounted.container.querySelector('a[href="/api/Game/13/Ad/Byoc/Setup/50"][download]'))
+    assert.ok(mounted.container.querySelector('a[href="/api/Game/13/Ad/Byoc/Compose/50"][download]'))
   } finally {
     await act(async () => mounted.root.unmount())
     gameApi.gameAdState = originalState

@@ -16,7 +16,7 @@ use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use std::collections::HashMap;
 use tokio::sync::broadcast::error::RecvError;
-use tokio::time::{interval, timeout, Duration, Instant};
+use tokio::time::{interval, timeout_at, Duration, Instant};
 
 use crate::app_state::{HubEvent, SharedState};
 use crate::hubs::admission;
@@ -30,7 +30,11 @@ use crate::utils::error::AppError;
 
 /// SignalR record separator (0x1E) that terminates every message.
 const RS: char = '\u{1e}';
-const MAX_WS_MESSAGE_BYTES: usize = 64 * 1024;
+pub(super) const MAX_WS_MESSAGE_BYTES: usize = 64 * 1024;
+// Leave one transport byte above the application ceiling so the service can
+// return an explicit RFC 6455 message-too-big close at the exact boundary.
+// Larger frames still fail in tungstenite before reaching application code.
+const TRANSPORT_WS_MESSAGE_BYTES: usize = MAX_WS_MESSAGE_BYTES + 1;
 const WRITE_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_WRITE_BUFFER_BYTES: usize = 1024 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -103,8 +107,7 @@ impl InboundBudget {
         self.byte_tokens = (self.byte_tokens + elapsed * CLIENT_BYTE_RATE).min(CLIENT_BYTE_BURST);
         let byte_cost = bytes as f64;
         let local_admitted = self.frame_tokens >= 1.0 && self.byte_tokens >= byte_cost;
-        let admitted = local_admitted && admission::try_inbound_frame(bytes);
-        admission::record_inbound_attempt(bytes, admitted);
+        let admitted = admission::meter_inbound_frame(bytes, local_admitted);
         if !admitted {
             return false;
         }
@@ -156,11 +159,22 @@ fn client_message(text: &str) -> ClientMessageDisposition {
     }
 }
 
-fn policy_close(reason: &'static str) -> Message {
+pub(super) fn policy_close(reason: &'static str) -> Message {
     Message::Close(Some(CloseFrame {
         code: close_code::POLICY,
         reason: reason.into(),
     }))
+}
+
+pub(super) fn too_big_close() -> Message {
+    Message::Close(Some(CloseFrame {
+        code: close_code::SIZE,
+        reason: "read-only feed message exceeds 64 KiB".into(),
+    }))
+}
+
+fn feed_resync_frame() -> String {
+    format!("{{\"type\":7,\"error\":\"feed resync required\",\"allowReconnect\":true}}{RS}")
 }
 
 /// Apply one conservative transport envelope to every read-only broadcast hub.
@@ -170,8 +184,8 @@ fn policy_close(reason: &'static str) -> Message {
 pub fn bounded_upgrade(ws: WebSocketUpgrade) -> WebSocketUpgrade {
     ws.write_buffer_size(WRITE_BUFFER_BYTES)
         .max_write_buffer_size(MAX_WRITE_BUFFER_BYTES)
-        .max_message_size(MAX_WS_MESSAGE_BYTES)
-        .max_frame_size(MAX_WS_MESSAGE_BYTES)
+        .max_message_size(TRANSPORT_WS_MESSAGE_BYTES)
+        .max_frame_size(TRANSPORT_WS_MESSAGE_BYTES)
 }
 
 /// `POST /hub/{name}/negotiate` — advertise the WebSocket transport only.
@@ -315,9 +329,9 @@ pub async fn public_game_scope(
 
 /// Drive one SignalR connection: complete the handshake, then forward the
 /// event-bus messages this hub serves — those whose `target` is in `targets` and
-/// whose game matches `game_id` (a connection with no game filter sees all
-/// games; a game-scoped event with no game id is broadcast to all) — invoking
-/// the event's own `target`, and answer pings until the socket closes.
+/// whose game matches `game_id` (a connection with no game filter sees every
+/// game-scoped event for its selected targets) — invoking the event's own
+/// `target`, and answer pings until the socket closes.
 pub(super) async fn serve(
     socket: WebSocket,
     mut rx: EventReceiver,
@@ -329,33 +343,82 @@ pub(super) async fn serve(
     let (mut tx, mut ws_rx) = socket.split();
     let mut inbound = InboundBudget::new();
 
-    // 1) Handshake: the client's first frame is `{"protocol":"json","version":1}`.
-    match timeout(HANDSHAKE_TIMEOUT, ws_rx.next()).await {
-        Ok(Some(Ok(Message::Text(text)))) => {
-            if !inbound.admit(text.len()) {
-                admission::record_close(admission::CloseReason::Quota);
-                let _ = tx.send(policy_close("inbound feed quota exceeded")).await;
-                return;
+    // 1) Handshake: wait at most one absolute five-second window for the
+    // client's `{"protocol":"json","version":1}` record. Standards-level
+    // Ping/Pong frames may precede it, but every inbound frame is metered.
+    let handshake_deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+    loop {
+        match timeout_at(handshake_deadline, ws_rx.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                if text.len() > MAX_WS_MESSAGE_BYTES {
+                    let _ = admission::meter_inbound_frame(text.len(), true);
+                    admission::record_protocol_rejection();
+                    admission::record_close(admission::CloseReason::Protocol);
+                    let _ = tx.send(too_big_close()).await;
+                    return;
+                }
+                if !inbound.admit(text.len()) {
+                    admission::record_close(admission::CloseReason::Quota);
+                    let _ = tx.send(policy_close("inbound feed quota exceeded")).await;
+                    return;
+                }
+                if !valid_handshake(text.as_str()) {
+                    admission::record_protocol_rejection();
+                    admission::record_close(admission::CloseReason::InvalidHandshake);
+                    let _ = tx.send(policy_close("invalid SignalR handshake")).await;
+                    return;
+                }
+                if tx
+                    .send(Message::Text(format!("{{}}{RS}").into()))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                break;
             }
-            if !valid_handshake(text.as_str()) {
+            Ok(Some(Ok(Message::Ping(value)))) => {
+                if !inbound.admit(value.len()) {
+                    admission::record_close(admission::CloseReason::Quota);
+                    let _ = tx.send(policy_close("inbound feed quota exceeded")).await;
+                    return;
+                }
+                if tx.send(Message::Pong(value)).await.is_err() {
+                    return;
+                }
+            }
+            Ok(Some(Ok(Message::Pong(value)))) => {
+                if !inbound.admit(value.len()) {
+                    admission::record_close(admission::CloseReason::Quota);
+                    let _ = tx.send(policy_close("inbound feed quota exceeded")).await;
+                    return;
+                }
+            }
+            Ok(Some(Ok(Message::Binary(value)))) => {
+                if value.len() > MAX_WS_MESSAGE_BYTES {
+                    let _ = admission::meter_inbound_frame(value.len(), true);
+                    admission::record_protocol_rejection();
+                    admission::record_close(admission::CloseReason::Protocol);
+                    let _ = tx.send(too_big_close()).await;
+                    return;
+                }
+                if !inbound.admit(value.len()) {
+                    admission::record_close(admission::CloseReason::Quota);
+                    let _ = tx.send(policy_close("inbound feed quota exceeded")).await;
+                    return;
+                }
                 admission::record_protocol_rejection();
                 admission::record_close(admission::CloseReason::InvalidHandshake);
                 let _ = tx.send(policy_close("invalid SignalR handshake")).await;
                 return;
             }
-            if tx
-                .send(Message::Text(format!("{{}}{RS}").into()))
-                .await
-                .is_err()
-            {
+            Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) | Ok(None) => return,
+            Err(_) => {
+                admission::record_protocol_rejection();
+                admission::record_close(admission::CloseReason::InvalidHandshake);
+                let _ = tx.send(policy_close("invalid SignalR handshake")).await;
                 return;
             }
-        }
-        _ => {
-            admission::record_protocol_rejection();
-            admission::record_close(admission::CloseReason::InvalidHandshake);
-            let _ = tx.send(policy_close("invalid SignalR handshake")).await;
-            return;
         }
     }
 
@@ -368,6 +431,13 @@ pub(super) async fn serve(
             msg = ws_rx.next() => match msg {
                 Some(Ok(Message::Text(text))) => {
                     idle.as_mut().reset(Instant::now() + READ_IDLE_TIMEOUT);
+                    if text.len() > MAX_WS_MESSAGE_BYTES {
+                        let _ = admission::meter_inbound_frame(text.len(), true);
+                        admission::record_protocol_rejection();
+                        admission::record_close(admission::CloseReason::Protocol);
+                        let _ = tx.send(too_big_close()).await;
+                        break;
+                    }
                     if !inbound.admit(text.len()) {
                         admission::record_close(admission::CloseReason::Quota);
                         let _ = tx.send(policy_close("inbound feed quota exceeded")).await;
@@ -389,6 +459,7 @@ pub(super) async fn serve(
                     idle.as_mut().reset(Instant::now() + READ_IDLE_TIMEOUT);
                     if !inbound.admit(value.len()) {
                         admission::record_close(admission::CloseReason::Quota);
+                        let _ = tx.send(policy_close("inbound feed quota exceeded")).await;
                         break;
                     }
                     if tx.send(Message::Pong(value)).await.is_err() { break; }
@@ -397,11 +468,23 @@ pub(super) async fn serve(
                     idle.as_mut().reset(Instant::now() + READ_IDLE_TIMEOUT);
                     if !inbound.admit(value.len()) {
                         admission::record_close(admission::CloseReason::Quota);
+                        let _ = tx.send(policy_close("inbound feed quota exceeded")).await;
                         break;
                     }
                 }
                 Some(Ok(Message::Binary(value))) => {
-                    let _ = inbound.admit(value.len());
+                    if value.len() > MAX_WS_MESSAGE_BYTES {
+                        let _ = admission::meter_inbound_frame(value.len(), true);
+                        admission::record_protocol_rejection();
+                        admission::record_close(admission::CloseReason::Protocol);
+                        let _ = tx.send(too_big_close()).await;
+                        break;
+                    }
+                    if !inbound.admit(value.len()) {
+                        admission::record_close(admission::CloseReason::Quota);
+                        let _ = tx.send(policy_close("inbound feed quota exceeded")).await;
+                        break;
+                    }
                     admission::record_protocol_rejection();
                     admission::record_close(admission::CloseReason::Protocol);
                     let _ = tx.send(policy_close("binary application frames are unsupported")).await;
@@ -427,7 +510,7 @@ pub(super) async fn serve(
                 Err(RecvError::Lagged(skipped)) => {
                     tracing::warn!(skipped, "SignalR feed lost realtime events; forcing authoritative reconnect");
                     admission::record_close(admission::CloseReason::FeedResync);
-                    let _ = tx.send(Message::Text(format!("{{\"type\":7,\"error\":\"feed resync required\"}}{RS}").into())).await;
+                    let _ = tx.send(Message::Text(feed_resync_frame().into())).await;
                     break;
                 }
                 Err(RecvError::Closed) => break,
@@ -455,9 +538,9 @@ pub(crate) fn event_matches(
     connection_game_id: Option<i32>,
     event: &HubEvent,
 ) -> bool {
-    let game_ok = match (event.game_id, connection_game_id) {
-        (Some(event_game), Some(connection_game)) => event_game == connection_game,
-        _ => true,
+    let game_ok = match connection_game_id {
+        Some(connection_game) => event.game_id == Some(connection_game),
+        None => true,
     };
     targets.contains(&event.target) && game_ok
 }
@@ -520,6 +603,14 @@ mod tests {
         assert!(event_matches(&["ReceivedGameEvent"], Some(7), &event));
         assert!(!event_matches(&["ReceivedGameEvent"], Some(8), &event));
         assert!(!event_matches(&["ReceivedSubmissions"], Some(7), &event));
+        assert!(!event_matches(
+            &["ReceivedGameEvent"],
+            Some(7),
+            &HubEvent {
+                game_id: None,
+                ..event
+            },
+        ));
     }
 
     #[test]
@@ -536,6 +627,16 @@ mod tests {
         ] {
             assert!(!valid_handshake(invalid), "accepted {invalid:?}");
         }
+    }
+
+    #[test]
+    fn transport_envelope_leaves_only_the_explicit_too_big_close_boundary() {
+        assert_eq!(MAX_WS_MESSAGE_BYTES, 65_536);
+        assert_eq!(TRANSPORT_WS_MESSAGE_BYTES, MAX_WS_MESSAGE_BYTES + 1);
+        let Message::Close(Some(frame)) = too_big_close() else {
+            panic!("too-big response must be a close frame");
+        };
+        assert_eq!(frame.code, close_code::SIZE);
     }
 
     #[test]
@@ -578,5 +679,14 @@ mod tests {
         assert!(!budget.admit(1));
         budget.updated = Instant::now() - Duration::from_secs(1);
         assert!(budget.admit(1));
+    }
+
+    #[test]
+    fn feed_resync_close_requests_immediate_signalr_reconnect() {
+        let frame = feed_resync_frame();
+        let payload = frame.strip_suffix(RS).unwrap();
+        let message: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(message["type"], 7);
+        assert_eq!(message["allowReconnect"], true);
     }
 }

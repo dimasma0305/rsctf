@@ -36,6 +36,15 @@ fn challenge_model() -> ChallengeDetailModel {
     }
 }
 
+#[test]
+fn challenge_detail_serializes_byoc_runtime_ownership_without_a_service_row() {
+    let mut model = challenge_model();
+    model.ad_self_hosted = true;
+
+    let wire = serde_json::to_value(model).unwrap();
+    assert_eq!(wire["adSelfHosted"], true);
+}
+
 fn shared_container(container_id: Uuid, expect_stop_at: DateTime<Utc>) -> container::Model {
     container::Model {
         id: container_id,

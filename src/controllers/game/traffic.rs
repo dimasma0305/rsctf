@@ -6,12 +6,28 @@ use std::io::Read;
 // Traffic capture metadata and pcap serving for the singleton capture worker.
 // ---------------------------------------------------------------------------
 
-const MAX_CAPTURE_ARCHIVE_FILES: usize = 256;
 const MAX_CAPTURE_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_INSPECT_CAPTURE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_CAPTURE_FLOWS: usize = 20_000;
-static CAPTURE_ARCHIVE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
-static CAPTURE_FLOW_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+static CAPTURE_ARCHIVE_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
+static CAPTURE_FLOW_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
+
+async fn spawn_blocking_with_permit<T, F>(
+    permit: tokio::sync::OwnedSemaphorePermit,
+    work: F,
+) -> Result<T, tokio::task::JoinError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    })
+    .await
+}
 
 /// `GET /api/game/games/{id}/captures`
 /// Root dir for per-(challenge, participation) pcaps:
@@ -41,56 +57,40 @@ fn safe_capture_name(name: &str) -> AppResult<&str> {
     Ok(name)
 }
 
-/// The `.pcap` files directly inside `dir` (sorted, newest first by mtime).
-fn list_pcaps(dir: &std::path::Path) -> Vec<std::fs::DirEntry> {
-    let mut v: Vec<_> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| {
-            e.path()
-                .extension()
-                .and_then(|x| x.to_str())
-                .is_some_and(|x| x.eq_ignore_ascii_case("pcap"))
-        })
-        .collect();
-    v.sort_by_key(|e| std::cmp::Reverse(e.metadata().ok().and_then(|m| m.modified().ok())));
-    v
-}
-
 /// `GET /api/game/games/{id}/captures` — each challenge + its total pcap count.
 pub async fn game_captures(
     State(st): State<SharedState>,
     _user: MonitorUser,
     Path(id): Path<i32>,
-) -> AppResult<RequestResponse<Vec<Json>>> {
-    let challenges = game_challenge::Entity::find()
-        .filter(game_challenge::Column::GameId.eq(id))
-        .all(&st.db)
-        .await?;
+) -> AppResult<RequestResponse<Vec<crate::services::traffic::inventory::ChallengeCaptureItem>>> {
     let root = capture_root(&st);
-    let out = tokio::task::spawn_blocking(move || {
-        challenges
-            .into_iter()
-            .map(|c| {
-                let cdir = root.join(c.id.to_string());
-                let count: usize = std::fs::read_dir(&cdir)
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .filter(|e| e.path().is_dir())
-                    .map(|e| list_pcaps(&e.path()).len())
-                    .sum();
-                serde_json::json!({
-                    "id": c.id, "title": c.title, "category": c.category,
-                    "type": c.challenge_type, "isEnabled": c.is_enabled, "count": count,
-                })
-            })
-            .collect()
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("capture listing task failed: {error}")))?;
-    Ok(RequestResponse::ok(out))
+    let page = crate::services::traffic::inventory::challenge_page(
+        st.pg(),
+        &root,
+        id,
+        &crate::services::traffic::inventory::CapturePageQuery::capped(100),
+    )
+    .await?;
+    Ok(RequestResponse::ok(page.items))
+}
+
+/// Cursor-paged challenge capture inventory for large monitor views.
+pub async fn game_captures_page(
+    State(st): State<SharedState>,
+    _user: MonitorUser,
+    Path(id): Path<i32>,
+    Query(query): Query<crate::services::traffic::inventory::CapturePageQuery>,
+) -> AppResult<
+    RequestResponse<
+        crate::services::traffic::inventory::CapturePage<
+            crate::services::traffic::inventory::ChallengeCaptureItem,
+        >,
+    >,
+> {
+    let root = capture_root(&st);
+    let page =
+        crate::services::traffic::inventory::challenge_page(st.pg(), &root, id, &query).await?;
+    Ok(RequestResponse::ok(page))
 }
 
 /// `GET /api/game/captures/{challengeId}` — one row per participation with pcaps.
@@ -98,39 +98,34 @@ pub async fn team_traffic(
     State(st): State<SharedState>,
     _user: MonitorUser,
     Path(cid): Path<i32>,
-) -> AppResult<RequestResponse<Vec<Json>>> {
-    let cdir = capture_root(&st).join(cid.to_string());
-    let captures = tokio::task::spawn_blocking(move || {
-        std::fs::read_dir(&cdir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|entry| entry.path().is_dir())
-            .filter_map(|entry| {
-                let pid = entry.file_name().to_str()?.parse::<i32>().ok()?;
-                Some((pid, list_pcaps(&entry.path()).len()))
-            })
-            .collect::<Vec<_>>()
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("capture listing task failed: {error}")))?;
-    let mut out = Vec::new();
-    for (pid, count) in captures {
-        // Resolve the team behind the participation for display.
-        let (team_id, name, avatar) =
-            match participation::Entity::find_by_id(pid).one(&st.db).await? {
-                Some(p) => match team::Entity::find_by_id(p.team_id).one(&st.db).await? {
-                    Some(t) => (p.team_id, t.name.clone(), t.avatar_url()),
-                    None => (p.team_id, String::new(), None),
-                },
-                None => (0, String::new(), None),
-            };
-        out.push(serde_json::json!({
-            "id": pid, "teamId": team_id, "name": name,
-            "division": Json::Null, "avatar": avatar, "count": count,
-        }));
-    }
-    Ok(RequestResponse::ok(out))
+) -> AppResult<RequestResponse<Vec<crate::services::traffic::inventory::TeamCaptureItem>>> {
+    let root = capture_root(&st);
+    let page = crate::services::traffic::inventory::team_page(
+        st.pg(),
+        &root,
+        cid,
+        &crate::services::traffic::inventory::CapturePageQuery::capped(100),
+    )
+    .await?;
+    Ok(RequestResponse::ok(page.items))
+}
+
+/// Cursor-paged team capture inventory using one bounded SQL join.
+pub async fn team_traffic_page(
+    State(st): State<SharedState>,
+    _user: MonitorUser,
+    Path(cid): Path<i32>,
+    Query(query): Query<crate::services::traffic::inventory::CapturePageQuery>,
+) -> AppResult<
+    RequestResponse<
+        crate::services::traffic::inventory::CapturePage<
+            crate::services::traffic::inventory::TeamCaptureItem,
+        >,
+    >,
+> {
+    let root = capture_root(&st);
+    let page = crate::services::traffic::inventory::team_page(st.pg(), &root, cid, &query).await?;
+    Ok(RequestResponse::ok(page))
 }
 
 /// `GET /api/game/captures/{challengeId}/{partId}` — the pcap files (FileRecord).
@@ -138,32 +133,36 @@ pub async fn traffic_files(
     State(st): State<SharedState>,
     _user: MonitorUser,
     Path((cid, pid)): Path<(i32, i32)>,
-) -> AppResult<RequestResponse<Vec<Json>>> {
-    let dir = capture_root(&st)
-        .join(cid.to_string())
-        .join(pid.to_string());
-    let out = tokio::task::spawn_blocking(move || {
-        list_pcaps(&dir)
-            .into_iter()
-            .map(|e| {
-                let meta = e.metadata().ok();
-                let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                let update = meta
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                serde_json::json!({
-                    "fileName": e.file_name().to_string_lossy(),
-                    "size": size,
-                    "updateTime": update,
-                })
-            })
-            .collect()
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("capture listing task failed: {error}")))?;
-    Ok(RequestResponse::ok(out))
+) -> AppResult<RequestResponse<Vec<crate::services::traffic::inventory::CaptureFileItem>>> {
+    let root = capture_root(&st);
+    let page = crate::services::traffic::inventory::file_page(
+        st.pg(),
+        &root,
+        cid,
+        pid,
+        &crate::services::traffic::inventory::CapturePageQuery::capped(100),
+    )
+    .await?;
+    Ok(RequestResponse::ok(page.items))
+}
+
+/// Cursor-paged file inventory, newest first with a stable filename tie-break.
+pub async fn traffic_files_page(
+    State(st): State<SharedState>,
+    _user: MonitorUser,
+    Path((cid, pid)): Path<(i32, i32)>,
+    Query(query): Query<crate::services::traffic::inventory::CapturePageQuery>,
+) -> AppResult<
+    RequestResponse<
+        crate::services::traffic::inventory::CapturePage<
+            crate::services::traffic::inventory::CaptureFileItem,
+        >,
+    >,
+> {
+    let root = capture_root(&st);
+    let page =
+        crate::services::traffic::inventory::file_page(st.pg(), &root, cid, pid, &query).await?;
+    Ok(RequestResponse::ok(page))
 }
 
 /// `GET /api/game/captures/{challengeId}/{partId}/all` — zip of the pcaps.
@@ -172,28 +171,37 @@ pub async fn get_all_traffic(
     _user: MonitorUser,
     Path((cid, pid)): Path<(i32, i32)>,
 ) -> AppResult<Response> {
-    let dir = capture_root(&st)
-        .join(cid.to_string())
-        .join(pid.to_string());
-    let _permit = CAPTURE_ARCHIVE_SLOTS
-        .try_acquire()
+    let root = capture_root(&st);
+    let permit = CAPTURE_ARCHIVE_SLOTS
+        .clone()
+        .try_acquire_owned()
         .map_err(|_| AppError::unavailable("Capture archive capacity is busy; retry shortly"))?;
-    let buf = tokio::task::spawn_blocking(move || -> AppResult<Vec<u8>> {
-        let files = list_pcaps(&dir);
-        if files.is_empty() {
+    let names =
+        crate::services::traffic::inventory::archive_file_names(st.pg(), &root, cid, pid).await?;
+    let dir = root.join(cid.to_string()).join(pid.to_string());
+    let buf = spawn_blocking_with_permit(permit, move || -> AppResult<Vec<u8>> {
+        if names.is_empty() {
             return Err(AppError::not_found("No captures for this participation"));
         }
-        if files.len() > MAX_CAPTURE_ARCHIVE_FILES {
-            return Err(AppError::bad_request(
-                "Too many captures to archive; download them individually",
-            ));
-        }
-        let declared_total = files.iter().try_fold(0u64, |total, entry| {
-            entry
-                .metadata()
-                .ok()
-                .and_then(|metadata| total.checked_add(metadata.len()))
-        });
+        let files = names
+            .into_iter()
+            .map(|name| {
+                let path = dir.join(&name);
+                let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+                    AppError::internal(format!("capture metadata {}: {error}", path.display()))
+                })?;
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err(AppError::internal(format!(
+                        "capture archive entry is not a regular file: {}",
+                        path.display()
+                    )));
+                }
+                Ok((name, path, metadata.len()))
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+        let declared_total = files
+            .iter()
+            .try_fold(0u64, |total, (_, _, size)| total.checked_add(*size));
         if declared_total.is_none_or(|total| total > MAX_CAPTURE_ARCHIVE_BYTES) {
             return Err(AppError::bad_request(
                 "Captures are too large to archive; download them individually",
@@ -205,11 +213,10 @@ pub async fn get_all_traffic(
         let opts: zip::write::FileOptions<()> =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         let mut written = 0u64;
-        for e in files {
-            let name = e.file_name().to_string_lossy().to_string();
+        for (name, path, _) in files {
             zip.start_file(name, opts)
                 .map_err(|err| AppError::internal(format!("zip: {err}")))?;
-            let file = std::fs::File::open(e.path())
+            let file = std::fs::File::open(path)
                 .map_err(|error| AppError::internal(format!("capture open: {error}")))?;
             let remaining = MAX_CAPTURE_ARCHIVE_BYTES.saturating_sub(written);
             let copied = std::io::copy(&mut file.take(remaining + 1), &mut zip)
@@ -249,12 +256,20 @@ pub async fn delete_all_traffic(
     let dir = capture_root(&st)
         .join(cid.to_string())
         .join(pid.to_string());
+    crate::services::traffic::inventory::mark_reconcile_required(st.pg()).await?;
     if let Err(error) = tokio::fs::remove_dir_all(&dir).await {
         if error.kind() != std::io::ErrorKind::NotFound {
+            crate::services::traffic::inventory::mark_reconcile_required_after_failure(st.pg())
+                .await;
             return Err(AppError::internal(format!(
                 "could not delete captures: {error}"
             )));
         }
+    }
+    if let Err(error) = crate::services::traffic::inventory::delete_bucket(st.pg(), cid, pid).await
+    {
+        crate::services::traffic::inventory::mark_reconcile_required_after_failure(st.pg()).await;
+        return Err(error);
     }
     Ok(StatusCode::OK)
 }
@@ -270,6 +285,12 @@ pub async fn get_traffic_file(
         .join(cid.to_string())
         .join(pid.to_string())
         .join(name);
+    let path_metadata = tokio::fs::symlink_metadata(&path)
+        .await
+        .map_err(|_| AppError::not_found("Capture not found"))?;
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+        return Err(AppError::not_found("Capture not found"));
+    }
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|_| AppError::not_found("Capture not found"))?;
@@ -313,12 +334,21 @@ pub async fn delete_traffic_file(
         .join(cid.to_string())
         .join(pid.to_string())
         .join(name);
+    crate::services::traffic::inventory::mark_reconcile_required(st.pg()).await?;
     if let Err(error) = tokio::fs::remove_file(&path).await {
         if error.kind() != std::io::ErrorKind::NotFound {
+            crate::services::traffic::inventory::mark_reconcile_required_after_failure(st.pg())
+                .await;
             return Err(AppError::internal(format!(
                 "could not delete capture: {error}"
             )));
         }
+    }
+    if let Err(error) =
+        crate::services::traffic::inventory::delete_file(st.pg(), cid, pid, name).await
+    {
+        crate::services::traffic::inventory::mark_reconcile_required_after_failure(st.pg()).await;
+        return Err(error);
     }
     Ok(StatusCode::OK)
 }
@@ -335,10 +365,11 @@ pub async fn traffic_flows(
         .join(cid.to_string())
         .join(pid.to_string())
         .join(name);
-    let _permit = CAPTURE_FLOW_SLOTS
-        .try_acquire()
+    let permit = CAPTURE_FLOW_SLOTS
+        .clone()
+        .try_acquire_owned()
         .map_err(|_| AppError::unavailable("Capture inspection capacity is busy; retry shortly"))?;
-    let flows = tokio::task::spawn_blocking(move || {
+    let flows = spawn_blocking_with_permit(permit, move || {
         crate::services::traffic::list_flows_bounded(
             &path,
             MAX_INSPECT_CAPTURE_BYTES,
@@ -372,10 +403,11 @@ pub async fn traffic_flow_detail(
         .join(pid.to_string())
         .join(name);
     let port = connection_port.to_string();
-    let _permit = CAPTURE_FLOW_SLOTS
-        .try_acquire()
+    let permit = CAPTURE_FLOW_SLOTS
+        .clone()
+        .try_acquire_owned()
         .map_err(|_| AppError::unavailable("Capture inspection capacity is busy; retry shortly"))?;
-    let flows = tokio::task::spawn_blocking(move || {
+    let flows = spawn_blocking_with_permit(permit, move || {
         crate::services::traffic::list_flows_bounded(
             &path,
             MAX_INSPECT_CAPTURE_BYTES,
@@ -402,4 +434,41 @@ pub async fn traffic_flow_detail(
         bytes_in: flow.as_ref().map(|f| f.bytes as i64).unwrap_or(0),
         ..Default::default()
     }))
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::spawn_blocking_with_permit;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn blocking_work_retains_admission_after_waiter_cancellation() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = gate.clone().acquire_owned().await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let waiter = tokio::spawn(spawn_blocking_with_permit(permit, move || {
+            let _ = started_tx.send(());
+            let _ = finish_rx.recv();
+        }));
+
+        started_rx.await.unwrap();
+        waiter.abort();
+        let _ = waiter.await;
+        assert!(gate.clone().try_acquire_owned().is_err());
+
+        finish_tx.send(()).unwrap();
+        let released = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Ok(permit) = gate.clone().try_acquire_owned() {
+                    break permit;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("blocking work retained the permit after it completed");
+        drop(released);
+    }
 }

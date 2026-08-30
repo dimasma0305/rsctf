@@ -1,5 +1,7 @@
 import {
   ActionIcon,
+  Alert,
+  Button,
   Center,
   Divider,
   Grid,
@@ -17,7 +19,6 @@ import { useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose, mdiDeleteForeverOutline, mdiDownloadMultiple } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import dayjs from 'dayjs'
 import { CSSProperties, FC, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams, useSearchParams } from 'react-router'
@@ -28,14 +29,14 @@ import { FlowInspector } from '@Components/traffic/FlowInspector'
 import { useLanguage } from '@Utils/I18n'
 import { showErrorMsg } from '@Utils/Shared'
 import { HunamizeSize } from '@Utils/Shared'
+import { tryGetErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import api, { FileRecord } from '@Api'
+import { useTrafficInventory } from '@Hooks/useTrafficInventory'
+import api, { ChallengeTrafficModel, FileRecord, TeamTrafficModel } from '@Api'
 
-const SWROptions = {
-  refreshInterval: 0,
-  shouldRetryOnError: false,
-  revalidateOnFocus: false,
-}
+const challengeTrafficKey = (item: ChallengeTrafficModel) => String(item.id)
+const teamTrafficKey = (item: TeamTrafficModel) => String(item.id)
+const fileTrafficKey = (item: FileRecord) => item.fileName ?? ''
 
 const Traffic: FC = () => {
   const { id } = useParams()
@@ -98,20 +99,38 @@ const Traffic: FC = () => {
   const modals = useModals()
   const isCompact = useIsMobile(1200)
 
-  const { data: challengeTraffic, mutate: mutateChallenges } = api.game.useGameGetChallengesWithTrafficCapturing(
-    gameId,
-    SWROptions
+  const {
+    items: challengeTraffic,
+    error: challengeError,
+    isLoading: challengesLoading,
+    hasMore: hasMoreChallenges,
+    loadMore: loadMoreChallenges,
+    reload: mutateChallenges,
+  } = useTrafficInventory<ChallengeTrafficModel>(
+    gameId > 0 ? `/api/game/games/${gameId}/captures/page` : null,
+    challengeTrafficKey
   )
-  const { data: teamTraffic, mutate: mutateTeams } = api.game.useGameGetChallengeTraffic(
-    challengeId ?? 0,
-    SWROptions,
-    !!challengeId
+  const {
+    items: teamTraffic,
+    error: teamError,
+    isLoading: teamsLoading,
+    hasMore: hasMoreTeams,
+    loadMore: loadMoreTeams,
+    reload: mutateTeams,
+  } = useTrafficInventory<TeamTrafficModel>(
+    challengeId ? `/api/game/captures/${challengeId}/page` : null,
+    teamTrafficKey
   )
-  const { data: fileRecords, mutate: mutateTraffic } = api.game.useGameGetTeamTrafficAll(
-    challengeId ?? 0,
-    participationId ?? 0,
-    SWROptions,
-    !!challengeId && !!participationId
+  const {
+    items: fileRecords,
+    error: filesError,
+    isLoading: filesLoading,
+    hasMore: hasMoreFiles,
+    loadMore: loadMoreFiles,
+    reload: mutateTraffic,
+  } = useTrafficInventory<FileRecord>(
+    challengeId && participationId ? `/api/game/captures/${challengeId}/${participationId}/page` : null,
+    fileTrafficKey
   )
 
   const onDownload = (item: FileRecord) => {
@@ -153,8 +172,8 @@ const Traffic: FC = () => {
     } catch (e) {
       showErrorMsg(e, t)
     } finally {
-      mutateTeams()
-      mutateTraffic()
+      void mutateTeams()
+      void mutateTraffic()
       setDisabled(false)
     }
   }
@@ -174,16 +193,17 @@ const Traffic: FC = () => {
     } catch (e) {
       showErrorMsg(e, t)
     } finally {
-      mutateTraffic()
-      mutateTeams()
-      mutateChallenges()
+      void mutateTraffic()
+      void mutateTeams()
+      void mutateChallenges()
       setDisabled(false)
     }
   }
 
-  const totalFileSize = fileRecords?.reduce((acc, cur) => acc + (cur?.size ?? 0), 0) ?? 0
-
-  const orderedFileRecords = fileRecords?.sort((a, b) => dayjs(b.updateTime).diff(dayjs(a.updateTime))) ?? []
+  const totalFileSize =
+    teamTraffic.find((team) => team.id === participationId)?.size ??
+    fileRecords.reduce((acc, cur) => acc + (cur?.size ?? 0), 0)
+  const inventoryError = challengeError ?? teamError ?? filesError
 
   const dividerColor = colorScheme === 'dark' ? theme.colors.dark[4] : theme.colors.gray[4]
   const innerStyle: CSSProperties = isCompact
@@ -194,12 +214,14 @@ const Traffic: FC = () => {
   const fileScrollHeight = isCompact ? 'clamp(14rem, 36vh, 21rem)' : scrollHeight
   const headerHeight = rem(32)
 
-  challengeTraffic?.sort((a, b) => a.category?.localeCompare(b.category ?? '') ?? 0)
-  teamTraffic?.sort((a, b) => (a.teamId ?? 0) - (b.teamId ?? 0))
-
   return (
-    <WithGameMonitor isLoading={!challengeTraffic}>
-      {!challengeTraffic || challengeTraffic?.length === 0 ? (
+    <WithGameMonitor isLoading={challengesLoading && challengeTraffic.length === 0}>
+      {inventoryError != null && (
+        <Alert color="red" mb="sm" role="alert" title={t('common.error.encountered')}>
+          {tryGetErrorMsg(inventoryError, t)}
+        </Alert>
+      )}
+      {challengeTraffic.length === 0 ? (
         <Center mih={isCompact ? rem(240) : 'calc(100vh - 140px)'}>
           <Stack gap={0}>
             <Title order={2}>{t('game.content.no_traffic.title')}</Title>
@@ -223,6 +245,17 @@ const Traffic: FC = () => {
                 onSelect={(id) => setNav({ chal: id })}
                 h={scrollHeight}
               />
+              {hasMoreChallenges && (
+                <Button
+                  fullWidth
+                  size="compact-xs"
+                  variant="subtle"
+                  loading={challengesLoading}
+                  onClick={() => void loadMoreChallenges()}
+                >
+                  {t('common.action.load_more', 'Load more')}
+                </Button>
+              )}
             </Grid.Col>
             <Grid.Col span={{ base: 12, lg: 3 }} style={innerStyle}>
               <Group h={headerHeight} pb="3px" px="xs">
@@ -238,6 +271,17 @@ const Traffic: FC = () => {
                 onSelect={(id) => setNav({ team: id })}
                 h={scrollHeight}
               />
+              {hasMoreTeams && (
+                <Button
+                  fullWidth
+                  size="compact-xs"
+                  variant="subtle"
+                  loading={teamsLoading}
+                  onClick={() => void loadMoreTeams()}
+                >
+                  {t('common.action.load_more', 'Load more')}
+                </Button>
+              )}
             </Grid.Col>
             <Grid.Col span={{ base: 12, lg: 6 }}>
               <Group h={headerHeight} pb="3px" px="xs" justify="space-between" wrap="nowrap">
@@ -278,6 +322,7 @@ const Traffic: FC = () => {
               <Divider size="sm" />
               <ScrollSelect
                 itemComponent={FileItem}
+                itemKey={fileTrafficKey}
                 itemComponentProps={{
                   onDownload,
                   onDelete,
@@ -286,9 +331,20 @@ const Traffic: FC = () => {
                   t,
                   locale,
                 }}
-                items={orderedFileRecords}
+                items={fileRecords}
                 h={fileScrollHeight}
               />
+              {hasMoreFiles && (
+                <Button
+                  fullWidth
+                  size="compact-xs"
+                  variant="subtle"
+                  loading={filesLoading}
+                  onClick={() => void loadMoreFiles()}
+                >
+                  {t('common.action.load_more', 'Load more')}
+                </Button>
+              )}
             </Grid.Col>
           </Grid>
         </Paper>

@@ -6,6 +6,9 @@ use uuid::Uuid;
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnrollmentRequest {
+    /// Stable identifier persisted before the first exchange. Ambiguous
+    /// retries reuse this value and the exact same CSR.
+    pub operation_id: Uuid,
     pub token: String,
     pub csr_pem: String,
 }

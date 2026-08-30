@@ -184,6 +184,10 @@ on 2026-08-25.
     failures into empty success values, and honor `Retry-After` where retry is valid.
   - Cancel modal requests on close/unmount and pause nonessential polling while the
     page is hidden or offline.
+  - Treat challenge detail as mutation-driven after its initial open. Do not replace
+    usable cached material with a red modal-wide error because a redundant two-minute
+    refresh, focus event, or reconnect briefly failed; explicit workload/submission
+    mutations reconcile the detail through the existing cache owner.
   - Page and cap the solver read. The closed modal requests it every 30 seconds without
     `count`; the backend rebuilds/reads the whole scoreboard, scans every team, clones
     every matching solver, and sorts the complete result before returning it.
@@ -565,7 +569,7 @@ on 2026-08-25.
     `web/src/pages/games/[id]/monitor/Submissions.tsx`,
     `src/controllers/game/scoreboard.rs`, and `src/controllers/game/routes.rs`.
 
-- [ ] Bound traffic-capture inventory reads before one monitor can saturate blocking
+- [x] Bound traffic-capture inventory reads before one monitor can saturate blocking
   workers, storage I/O, and PostgreSQL.
   - The game capture summary walks every challenge and participation directory, loads
     and sorts complete PCAP file lists merely to count them. The team view repeats the
@@ -586,7 +590,7 @@ on 2026-08-25.
   - Relevant code: `src/controllers/game/traffic.rs` and
     `src/controllers/game/routes.rs`.
 
-- [ ] Stop hidden anti-cheat tabs and drill-downs from repeatedly rebuilding complete
+- [x] Stop hidden anti-cheat tabs and drill-downs from repeatedly rebuilding complete
   evidence histories.
   - Mantine keeps inactive tab panels mounted by default. The anti-cheat page therefore
     fetches the complete flag-sharing incident ledger every ten seconds even while the
@@ -1138,7 +1142,7 @@ on 2026-08-25.
     `src/services/git_sync/mod.rs`, `src/utils/upload.rs`, and a new registered
     idempotent forward migration for import jobs/source revisions.
 
-- [ ] Admit bulk ZIP exports before loading their database rows and attachment blobs.
+- [x] Admit bulk ZIP exports before loading their database rows and attachment blobs.
   - One export can collect as many as 2,048 attachment entries and 128 MiB of blob data
     in memory, with per-division and per-challenge query loops. `GAME_EXPORT_SLOTS` is
     acquired only after all of that I/O and allocation, so a request rejected as “busy”
@@ -1174,7 +1178,7 @@ on 2026-08-25.
     `web/src/utils/ApiHelper.tsx`, `src/controllers/edit/transfer.rs`,
     `src/controllers/edit/mod.rs`, and `src/controllers/admin/mod.rs`.
 
-- [ ] Stream and globally admit retained A&D snapshot downloads before allocating their
+- [x] Stream and globally admit retained A&D snapshot downloads before allocating their
   complete bodies.
   - Both the player and admin retained-snapshot paths call `load_bounded` and materialize
     as much as 128 MiB in one `Vec` before constructing the response. The plain anchor
@@ -1202,7 +1206,7 @@ on 2026-08-25.
     `src/controllers/game/ad/scoreboard.rs`, `src/controllers/edit/ad/mod.rs`,
     `src/storage/blob_storage.rs`, and `src/middlewares/rate_limiter.rs`.
 
-- [ ] Bound and cancel live A&D filesystem-diff/file inspection.
+- [x] Bound and cancel live A&D filesystem-diff/file inspection.
   - Opening the forensics modal calls Docker's complete container-changes API and
     returns every changed path without an entry, path-length, response-byte, runtime,
     or concurrency bound. A participant can create a very large change set in its own
@@ -1240,7 +1244,7 @@ on 2026-08-25.
     `src/services/container/docker.rs`, `src/services/container/backend.rs`, and
     `src/middlewares/rate_limiter.rs`.
 
-- [ ] Quarantine poison worker workloads instead of retrying and starving the queue.
+- [x] Quarantine poison worker workloads instead of retrying and starving the queue.
   - The singleton worker reconciler selects the 256 oldest due workloads every 500
     milliseconds. If a persisted spec cannot deserialize into
     `ValidatedWorkloadSpec`, `command_for` logs the error and `continue`s without
@@ -1429,7 +1433,7 @@ on 2026-08-25.
   - Relevant code: `src/hubs/attack.rs`, `src/hubs/signalr.rs`,
     `src/hubs/admission.rs`, and `src/server.rs`.
 
-- [ ] Keep worker heartbeats and data-lane recovery bounded when Docker or the
+- [x] Keep worker heartbeats and data-lane recovery bounded when Docker or the
   network stalls.
   - Each negotiated data lane owns a capped backoff that is never reset. After
     enough historical failures, a lane that had then been healthy for hours can
@@ -1478,7 +1482,7 @@ on 2026-08-25.
     `src/services/worker/listener.rs`, and
     `src/services/worker/listener/admission.rs`.
 
-- [ ] Claim worker enrollment before CSR signing and make an ambiguous exchange
+- [x] Claim worker enrollment before CSR signing and make an ambiguous exchange
   recoverable.
   - `/api/workers/enroll` first resolves a still-live one-use token, then sends the
     caller's CSR to an unrestricted `spawn_blocking` signing task, and consumes the
@@ -1518,7 +1522,7 @@ on 2026-08-25.
     `src/services/worker_store/nodes.rs`, `agents/worker-agent/src/enroll.rs`, and a new
     registered idempotent forward migration for enrollment operations.
 
-- [ ] Make Event-VPN sensor delivery durable, idempotent, and retry-safe.
+- [x] Make Event-VPN sensor delivery durable, idempotent, and retry-safe.
   - A full two-entry capture queue records dropped rows, but after the main loop
     receives a batch it uploads only once. Any timeout or 5xx merely logs an
     error and permanently discards flow, DNS, endpoint, and flag-transport
@@ -1551,7 +1555,7 @@ on 2026-08-25.
     `src/services/event_security/telemetry.rs`,
     `deploy/compose.ad-vpn.yml`, and `deploy/compose.roles.ad-vpn.yml`.
 
-- [ ] Bound and lifecycle-proof trusted solve-receipt and challenge-variant
+- [x] Bound and lifecycle-proof trusted solve-receipt and challenge-variant
   records.
   - Every valid receipt request creates a fresh UUID, nonce, proof, and database
     row. There is no verifier attempt/idempotency key, so a lost response followed
