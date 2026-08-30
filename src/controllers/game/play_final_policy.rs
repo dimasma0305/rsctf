@@ -668,6 +668,27 @@ pub(super) async fn finish_details_response(
     challenge_ids: Vec<i32>,
     model: GameDetailModel,
 ) -> AppResult<Response> {
+    finish_scoped_model_response(
+        pool,
+        user,
+        game_id,
+        team_id,
+        participation_id,
+        challenge_ids,
+        model,
+    )
+    .await
+}
+
+async fn finish_scoped_model_response<T: Serialize>(
+    pool: &sqlx::PgPool,
+    user: &CurrentUser,
+    game_id: i32,
+    team_id: i32,
+    participation_id: i32,
+    challenge_ids: Vec<i32>,
+    model: T,
+) -> AppResult<Response> {
     let Some(mut roster) = crate::services::live_roster::try_acquire_participation_fence(
         pool,
         user.id,
@@ -693,6 +714,46 @@ pub(super) async fn finish_details_response(
         .await?;
         scope.phase_at_db_clock(roster.transaction_mut()).await?;
         Ok(RequestResponse::ok(model).into_response())
+    }
+    .await;
+    release_with_result(roster, result).await
+}
+
+pub(super) async fn finish_participant_response(
+    pool: &sqlx::PgPool,
+    user: &CurrentUser,
+    game_id: i32,
+    team_id: i32,
+    participation_id: i32,
+    challenge_ids: Vec<i32>,
+    bundle: bytes::Bytes,
+    headers: &HeaderMap,
+) -> AppResult<Response> {
+    let Some(mut roster) = crate::services::live_roster::try_acquire_participation_fence(
+        pool,
+        user.id,
+        &user.security_stamp,
+        game_id,
+        team_id,
+        participation_id,
+        true,
+    )
+    .await?
+    else {
+        return Err(AppError::Forbidden);
+    };
+
+    let result = async {
+        let scope = lock_play_scope_on(
+            roster.transaction_mut(),
+            game_id,
+            team_id,
+            participation_id,
+            &challenge_ids,
+        )
+        .await?;
+        scope.phase_at_db_clock(roster.transaction_mut()).await?;
+        super::scoreboard_encoding::scoped_response(bundle, headers, "participant-private")
     }
     .await;
     release_with_result(roster, result).await

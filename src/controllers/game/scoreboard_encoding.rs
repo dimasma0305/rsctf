@@ -24,6 +24,19 @@ const MAX_CACHE_BUNDLE_SIZE: usize = 4 * 1024 * 1024;
 const MAX_WIRE_REPRESENTATION_SIZE: usize = 8 * 1024 * 1024;
 const CACHE_CONTROL_VALUE: &str = "private, no-cache, max-age=0";
 const SCOREBOARD_VERSION_HEADER: &str = "x-scoreboard-version";
+const FINAL_SCOREBOARD_CACHE_TTL: std::time::Duration =
+    std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+pub(super) fn final_or_live_cache_ttl(
+    immutable_final: bool,
+    live_ttl: std::time::Duration,
+) -> std::time::Duration {
+    if immutable_final {
+        FINAL_SCOREBOARD_CACHE_TTL
+    } else {
+        live_ttl
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Encoding {
@@ -373,6 +386,15 @@ pub(super) async fn build_stable_bundle(
     })
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
+}
+
+/// Build a semantically versioned private JSON response without a volatile
+/// generation field. Compact participant projections use this so unchanged
+/// polls can return 304 without parsing or transferring the same body again.
+pub(super) async fn build_versioned_bundle(raw: Bytes, scope: String) -> AppResult<BuiltBoardBody> {
+    tokio::task::spawn_blocking(move || encode_bundle(raw, scope.as_bytes(), None))
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
 }
 
 fn etag_for(
@@ -772,5 +794,15 @@ mod tests {
         let response = response(raw, &headers("br, identity;q=0")).unwrap();
         assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
         assert_eq!(response.headers()[header::VARY], "Accept-Encoding");
+    }
+
+    #[test]
+    fn immutable_final_boards_use_a_long_bounded_ttl() {
+        let live = std::time::Duration::from_secs(5);
+        assert_eq!(final_or_live_cache_ttl(false, live), live);
+        assert_eq!(
+            final_or_live_cache_ttl(true, live),
+            std::time::Duration::from_secs(7 * 24 * 60 * 60)
+        );
     }
 }

@@ -67,6 +67,9 @@ pub async fn timeline(
     if !super::can_view_koth_standings(game.hidden, is_monitor) {
         return Err(AppError::not_found("Game not found"));
     }
+    if Utc::now() < game.start_time_utc && !is_monitor {
+        return Err(AppError::game_not_started());
+    }
     let key = if is_monitor {
         format!("_KothTimeline_{game_id}")
     } else {

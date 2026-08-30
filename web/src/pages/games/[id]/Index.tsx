@@ -34,7 +34,7 @@ import { GameProgress } from '@Components/GameProgress'
 import { Markdown } from '@Components/MarkdownRenderer'
 import { WithNavBar } from '@Components/WithNavbar'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
-import { encryptApiData } from '@Utils/Crypto'
+import { collectEncryptedFingerprintIdentity } from '@Utils/FingerprintIdentity'
 import { useLanguage } from '@Utils/I18n'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
@@ -133,37 +133,25 @@ const GameDetail: FC = () => {
     [ParticipationStatus.Unsubmitted, t('game.participation.actions.unsubmitted')],
   ])
 
-  const onSubmitJoin = async (info: GameJoinModel) => {
+  const onSubmitJoin = async (info: GameJoinModel, signal: AbortSignal) => {
     try {
-      if (!numId) return
+      if (!numId) return false
 
       const identity = config.enableBrowserFingerprint
-        ? await (async () => {
-            const challengeResponse = await api.account.accountFingerprintChallenge()
-            const challenge = challengeResponse.data.data
-            if (!challenge?.nonce || !challenge.requiredSignals) {
-              throw new Error('Invalid fingerprint challenge')
-            }
-            const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
-            const payload = await getFingerprintPayload({
-              nonce: challenge.nonce,
-              requiredSignals: challenge.requiredSignals,
-            })
-            return {
-              fingerprint: await encryptApiData(t, payload.fingerprint, config.apiPublicKey),
-              fingerprintProof: await encryptApiData(t, payload.proof, config.apiPublicKey),
-            }
-          })()
+        ? await collectEncryptedFingerprintIdentity(t, config.apiPublicKey, signal)
         : {}
-      await api.game.gameJoinGame(numId, { ...info, ...identity })
+      await api.game.gameJoinGame(numId, { ...info, ...identity }, { signal })
       showNotification({
         color: 'teal',
         message: t('game.notification.joined'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
-      mutate()
+      await mutate()
+      return true
     } catch (err) {
-      return showErrorMsg(err, t)
+      if (signal.aborted) return false
+      showErrorMsg(err, t)
+      return false
     }
   }
 

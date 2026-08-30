@@ -254,7 +254,7 @@ pub async fn review_finding(
     status: FindingReviewStatus,
     note: Option<&str>,
 ) -> AppResult<()> {
-    if note.is_some_and(|value| value.len() > 4_000) {
+    if note.is_some_and(|value| value.chars().count() > 4_000) {
         return Err(AppError::bad_request("Review note is too long"));
     }
     let inserted = sqlx::query(

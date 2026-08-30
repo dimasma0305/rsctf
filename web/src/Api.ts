@@ -3698,6 +3698,12 @@ export interface GameDetailModel {
   writeupDeadline: number;
 }
 
+/** Compact live participant projection; challenge catalog and team token are bootstrap-only. */
+export interface GameParticipantDeltaModel {
+  /** Current scoreboard row for the caller's team. */
+  rank?: ScoreboardItem | null;
+}
+
 /** Participation for review (Admin). Kept for the legacy raw-array endpoint. */
 export interface ParticipationInfoModel {
   /** @format int32 */
@@ -4150,6 +4156,11 @@ export interface HashPowChallenge {
    * @format int32
    */
   difficulty?: number;
+  /**
+   * Absolute proof expiry
+   * @format int64
+   */
+  expiresAt?: number;
 }
 
 /** Team information update */
@@ -8052,6 +8063,36 @@ export class Api<
       data?: GameDetailModel | Promise<GameDetailModel>,
       options?: MutatorOptions,
     ) => mutate<GameDetailModel>(`/api/game/${id}/details`, data, options),
+
+    /**
+     * @description Retrieves only the caller team's live scoreboard projection.
+     * @tags Game
+     * @name GameParticipantDelta
+     * @request GET:/api/game/{id}/details/participant
+     */
+    gameParticipantDelta: (id: number, params: RequestParams = {}) =>
+      this.request<GameParticipantDeltaModel, RequestResponse>({
+        path: `/api/game/${id}/details/participant`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useGameParticipantDelta: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<GameParticipantDeltaModel, RequestResponse>(
+        doFetch ? `/api/game/${id}/details/participant` : null,
+        options,
+      ),
+
+    mutateGameParticipantDelta: (
+      id: number,
+      data?: GameParticipantDeltaModel | Promise<GameParticipantDeltaModel>,
+      options?: MutatorOptions,
+    ) => mutate<GameParticipantDeltaModel>(`/api/game/${id}/details/participant`, data, options),
 
     /**
      * @description Retrieves game cheat data; requires Monitor permission

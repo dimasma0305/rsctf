@@ -32,7 +32,7 @@ import {
   mdiTrashCanOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useMemo, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   type KothObserverOperationKind,
@@ -214,6 +214,10 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
   const observerMutationGenerationRef = useRef(0)
   const observerMutationRef = useRef<KothObserverOperationOwner | null>(null)
   const observerBusyRef = useRef(false)
+  const auditHillRef = useRef<AdminKothHill | null>(null)
+  const auditGenerationRef = useRef(0)
+  const auditAbortRef = useRef<AbortController | null>(null)
+  const observerAbortRef = useRef<AbortController | null>(null)
   const enabledHills = useMemo(() => koth.hills.filter((hill) => hill.isEnabled), [koth.hills])
   const hasResetInProgress = useMemo(
     () => koth.hills.some((hill) => hill.isEnabled && hill.cycleNumber > 0 && isKothResetTransition(hill.resetPhase)),
@@ -221,6 +225,11 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
   )
 
   const openReceipts = async (hill: AdminKothHill) => {
+    auditAbortRef.current?.abort()
+    const controller = new AbortController()
+    auditAbortRef.current = controller
+    auditHillRef.current = hill
+    const generation = ++auditGenerationRef.current
     setAuditHill(hill)
     setAudit(null)
     setAuditLoading(true)
@@ -229,15 +238,32 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
         path: `/api/edit/games/${gameId}/ad/koth/${hill.challengeId}/receipts`,
         method: 'GET',
         format: 'json',
+        signal: controller.signal,
       })
       const body = response.data
-      setAudit('data' in body ? body.data : body)
+      const result = 'data' in body ? body.data : body
+      if (
+        auditGenerationRef.current === generation &&
+        auditHillRef.current?.challengeId === hill.challengeId &&
+        result.challengeId === hill.challengeId
+      ) {
+        setAudit(result)
+      }
     } catch (error) {
-      showErrorMsg(error, t)
+      if (!controller.signal.aborted && auditGenerationRef.current === generation) showErrorMsg(error, t)
     } finally {
-      setAuditLoading(false)
+      if (auditGenerationRef.current === generation) setAuditLoading(false)
     }
   }
+
+  const closeReceipts = useCallback(() => {
+    auditGenerationRef.current += 1
+    auditAbortRef.current?.abort()
+    auditHillRef.current = null
+    setAuditHill(null)
+    setAudit(null)
+    setAuditLoading(false)
+  }, [])
 
   const recoverHill = async (hill: AdminKothHill) => {
     setRetryingHill(hill.challengeId)
@@ -280,6 +306,9 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
       return
     }
     observerHillRef.current = hill
+    observerAbortRef.current?.abort()
+    const controller = new AbortController()
+    observerAbortRef.current = controller
     const viewGeneration = ++observerViewGenerationRef.current
     setObserverHill(hill)
     setObserver(null)
@@ -289,27 +318,50 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
         path: observerPath(hill),
         method: 'GET',
         format: 'json',
+        signal: controller.signal,
       })
       if (
         observerHillRef.current?.challengeId === hill.challengeId &&
-        observerViewGenerationRef.current === viewGeneration
+        observerViewGenerationRef.current === viewGeneration &&
+        response.data.challengeId === hill.challengeId
       ) {
         setObserver(response.data)
       }
     } catch (error) {
-      showErrorMsg(error, t)
+      if (!controller.signal.aborted && observerViewGenerationRef.current === viewGeneration) showErrorMsg(error, t)
     } finally {
       if (observerViewGenerationRef.current === viewGeneration) setObserverLoading(false)
     }
   }
 
-  const closeObserver = () => {
+  const closeObserver = useCallback(() => {
+    observerAbortRef.current?.abort()
     observerHillRef.current = null
     observerViewGenerationRef.current += 1
     setObserverHill(null)
     setObserver(null)
     setObserverLoading(false)
-  }
+  }, [])
+
+  useEffect(() => {
+    const challengeIds = new Set(koth.hills.map((hill) => hill.challengeId))
+    if (auditHillRef.current && !challengeIds.has(auditHillRef.current.challengeId)) closeReceipts()
+    if (observerHillRef.current && !challengeIds.has(observerHillRef.current.challengeId)) closeObserver()
+  }, [closeObserver, closeReceipts, gameId, koth.hills])
+
+  useEffect(
+    () => {
+      closeReceipts()
+      closeObserver()
+      return () => {
+        auditGenerationRef.current += 1
+        observerViewGenerationRef.current += 1
+        auditAbortRef.current?.abort()
+        observerAbortRef.current?.abort()
+      }
+    },
+    [closeObserver, closeReceipts, gameId]
+  )
 
   const observerOperationPath = (operation: KothObserverOperationOwner) =>
     `${observerPath({ challengeId: operation.challengeId })}/operations/${operation.operationId}`
@@ -442,7 +494,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
 
   const beginObserverOperation = (kind: KothObserverOperationKind) => {
     const hill = observerHillRef.current
-    if (!hill || !observer) return
+    if (!hill || !observer || observer.challengeId !== hill.challengeId) return
     const pending = observerMutationRef.current
     if (pending) {
       void runObserverOperation(pending, true)
@@ -464,7 +516,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
   const rotateObserver = () => beginObserverOperation('Rotate')
 
   const revokeObserver = async () => {
-    if (!observerHill || !observer?.configured) return
+    if (!observerHill || !observer?.configured || observer.challengeId !== observerHill.challengeId) return
     if (
       !window.confirm(
         t(
@@ -890,10 +942,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
 
       <Modal
         opened={auditHill !== null}
-        onClose={() => {
-          setAuditHill(null)
-          setAudit(null)
-        }}
+        onClose={closeReceipts}
         size="xl"
         centered
         title={t('admin.content.ad_ops.koth.receipts_title', {
@@ -942,7 +991,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
           defaultValue: 'Leaderboard scoring — {{hill}}',
         })}
       >
-        {observerLoading || !observer ? (
+        {observerLoading || !observer || observer.challengeId !== observerHill?.challengeId ? (
           <Text size="sm" c="dimmed">
             {t('admin.content.ad_ops.koth.observer_loading', 'Loading scoring configuration…')}
           </Text>
@@ -1107,7 +1156,10 @@ X-RSCTF-Signature: sha256=<HMAC-SHA256>
               </Button>
               <Button
                 leftSection={<Icon path={mdiKeyVariant} size={0.8} />}
-                disabled={observer.claimSource === 'Marker' && (observerHill?.cycleNumber ?? 0) > 0}
+                disabled={
+                  observer.challengeId !== observerHill?.challengeId ||
+                  (observer.claimSource === 'Marker' && (observerHill?.cycleNumber ?? 0) > 0)
+                }
                 loading={observerBusy}
                 onClick={rotateObserver}
               >

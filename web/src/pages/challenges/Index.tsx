@@ -111,7 +111,14 @@ const ChallengeCatalog: FC = () => {
       mode: challengeMode ?? undefined,
       solved: solveFilter === 'all' ? undefined : solveFilter === 'solved',
     },
-    { refreshInterval: 60_000 },
+    {
+      refreshInterval: 0,
+      refreshWhenHidden: false,
+      refreshWhenOffline: false,
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false,
+      shouldRetryOnError: false,
+    },
     Boolean(user)
   )
 

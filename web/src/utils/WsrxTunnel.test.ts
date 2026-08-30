@@ -91,7 +91,10 @@ test('instance UI listens for daemon updates and exposes WSS only through the ex
 
   assert.match(provider, /onInstancesChange\(updateInstances\)/)
   assert.match(entry, /phase === 'ready' \? \(localTraffic\?\.local \?\? ''\) :/)
-  assert.match(entry, /setInterval\(\(\) => void wsrx\.sync\(\)/)
+  assert.match(entry, /watchPendingTunnel\(wsrxRemoteEntry/)
+  assert.doesNotMatch(entry, /setInterval\(\(\) => void wsrx\.sync\(\)/)
+  assert.match(provider, /syncInFlight/)
+  assert.match(provider, /ACCELERATED_SYNC_WINDOW_MS = 8_000/)
   assert.match(entry, /isWssMode \? wsrxRemoteEntry : localEntry/)
   assert.match(entry, /value=\{proxyEntryMode\}/)
   assert.match(entry, /getLocalWsrxTunnelAction\(/)

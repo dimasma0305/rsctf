@@ -524,17 +524,48 @@ export const useGameTeamInfo = (numId: number, shouldPoll: boolean = true) => {
   const polling = status === GameStatus.OnGoing && shouldPoll
 
   const {
-    data: teamInfo,
-    error,
-    mutate,
+    data: bootstrap,
+    error: bootstrapError,
+    mutate: mutateBootstrap,
   } = api.game.useGameChallengesWithTeamInfo(numId, {
     ...OnceSWRConfig,
     shouldRetryOnError: false,
-    refreshInterval: polling ? 10 * 1000 : 0,
   })
-  useRevalidateWhenPollingStops(polling, mutate)
 
-  return { teamInfo, game, error, mutate }
+  const participant = api.game.useGameParticipantDelta(
+    numId,
+    {
+      ...CompletionPollSWRConfig,
+      compare: Object.is,
+    },
+    numId > 0
+  )
+  useCompletionPolling({
+    key: numId > 0 ? `/api/game/${numId}/details/participant` : '',
+    phase: `${status}:${polling ? 'active' : 'inactive'}`,
+    enabled: polling,
+    data: participant.data,
+    error: participant.error,
+    isValidating: participant.isValidating,
+    mutate: participant.mutate,
+    successDelay: () => jitterPollingDelay(10_000),
+  })
+  useRevalidateWhenPollingStops(polling, participant.mutate)
+
+  const teamInfo = useMemo(() => {
+    if (!bootstrap) return bootstrap
+    return {
+      ...bootstrap,
+      rank: participant.data?.rank ?? bootstrap.rank,
+    }
+  }, [bootstrap, participant.data])
+
+  const mutate = async () => {
+    const [nextBootstrap] = await Promise.all([mutateBootstrap(), participant.mutate()])
+    return nextBootstrap
+  }
+
+  return { teamInfo, game, error: participant.error ?? bootstrapError, mutate }
 }
 
 /** A&D — player state poll (own team's containers + flags). Pass doFetch=false

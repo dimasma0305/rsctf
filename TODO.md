@@ -197,7 +197,7 @@ on 2026-08-25.
     `web/src/components/KothChallengePanel.tsx`,
     `src/controllers/game/scoreboard.rs`, and `src/server.rs`.
 
-- [ ] Split the ten-second player-details poll from the event-wide scoreboard and
+- [x] Split the ten-second player-details poll from the event-wide scoreboard and
   challenge catalog.
   - Every ongoing challenge view polls `/api/game/{id}/details` every ten seconds.
     Although the scoreboard build is cached, each request deserializes the complete
@@ -266,7 +266,7 @@ on 2026-08-25.
     `web/src/components/KothChallengePanel.tsx`, and
     `web/src/pages/games/[id]/Scoreboard.tsx`.
 
-- [ ] Stop the post-event maintenance job from creating a six-hour scoreboard cache
+- [x] Stop the post-event maintenance job from creating a six-hour scoreboard cache
   churn loop.
   - Every 30 seconds, `flush_stale_scoreboards` finds every game ended within six hours
     and deletes 12 cache keys. Despite its comment, that includes live, stale, and
@@ -288,7 +288,7 @@ on 2026-08-25.
     `src/services/cron/round_finish.rs`, `src/controllers/game/ad/scoreboard.rs`,
     `src/controllers/game/koth/mod.rs`, and `web/src/hooks/useGame.ts`.
 
-- [ ] Bound container reaping and orphan detection so maintenance cannot overwhelm a
+- [x] Bound container reaping and orphan detection so maintenance cannot overwhelm a
   live event's database and runtime backend.
   - The 30-second leader pass loads every expired container and destroys them serially
     with no batch or time budget. A backlog can turn one maintenance tick into a long
@@ -443,7 +443,7 @@ on 2026-08-25.
     `src/controllers/game/koth/mod.rs`, and a new registered idempotent forward
     migration for credential operations/revisions.
 
-- [ ] Admit A&D bearer traffic before its PostgreSQL authentication query.
+- [x] Admit A&D bearer traffic before its PostgreSQL authentication query.
   - The global middleware recognizes a syntactically valid `ad_...` bearer and calls
     `api_token::authenticate` before applying the normal 150-request-per-minute
     identity/IP ceiling. The only earlier guard is the credential source-IP bucket,
@@ -505,7 +505,7 @@ on 2026-08-25.
   - Relevant code: `web/src/App.tsx`, `web/src/pages/admin/Dashboard.tsx`,
     `src/controllers/admin/mod.rs`, and `src/controllers/admin/anti_cheat.rs`.
 
-- [ ] Do not persist the complete SWR cache, secrets, and unbounded search history in
+- [x] Do not persist the complete SWR cache, secrets, and unbounded search history in
   browser storage.
   - The custom cache stores every SWR state indefinitely, serializes the complete map,
     and gzip-compresses it synchronously on the main thread every dirty period. A long
@@ -527,7 +527,7 @@ on 2026-08-25.
   - Relevant code: `web/src/utils/Cache.ts`, `web/src/App.tsx`,
     `web/src/hooks/useUser.tsx`, and `web/src/components/KothChallengePanel.tsx`.
 
-- [ ] Stop carrying a plaintext team API bearer across logout and account changes.
+- [x] Stop carrying a plaintext team API bearer across logout and account changes.
   - Rotating the A&D/KotH token automatically writes the complete bearer to
     `localStorage` under `ad-api-token-{gameId}`. The key contains no user,
     participation, or team identity, and logout clears neither it nor other keys with
@@ -636,7 +636,7 @@ on 2026-08-25.
     `src/controllers/game/cheat_evidence_sources.rs`, and
     `src/controllers/game/routes.rs`.
 
-- [ ] Make browser-fingerprint collection failure-isolated so one optional probe cannot
+- [x] Make browser-fingerprint collection failure-isolated so one optional probe cannot
   block login, registration, team join, and event join.
   - Fix the consent handoff in both authentication forms. `onAccept` calls
     `setAccepted(true)` and immediately invokes `executeLogin`/`executeRegister`; those
@@ -749,7 +749,7 @@ on 2026-08-25.
     `src/middlewares/rate_limiter.rs`, game public-key/participation resolution, and the
     generated `teamVerifySignature` client contract in `web/src/Api.ts`.
 
-- [ ] Close the pre-start and participation-status challenge/standings metadata leak.
+- [x] Close the pre-start and participation-status challenge/standings metadata leak.
   - `GET /api/game/{id}` currently includes enabled challenge titles, types, categories,
     and scores for an accepted participant before kickoff. In practice mode, any
     participation row—including pending or rejected—passes the metadata gate.

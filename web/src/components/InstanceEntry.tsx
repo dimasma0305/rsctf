@@ -99,7 +99,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const { test: isPreview, label, context, disabled, onCreate, onDestroy } = props
   const showLifecycle = props.lifecycleControls ?? !isPreview
   const supportsExtend = !!props.onExtend
-  const { wsrx, wsrxState, wsrxInstances, wsrxOptions, doWsrxConnect } = useWsrx()
+  const { wsrx, wsrxState, wsrxInstances, wsrxOptions, doWsrxConnect, watchPendingTunnel } = useWsrx()
 
   const { config } = useConfig()
   const clipBoard = useClipboard()
@@ -176,6 +176,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const [tunnelRequestFailed, setTunnelRequestFailed] = useState(false)
   const [tunnelCheckExpired, setTunnelCheckExpired] = useState(false)
   const [tunnelRetrying, setTunnelRetrying] = useState(false)
+  const [readinessGeneration, setReadinessGeneration] = useState(0)
   const capabilityRequestSequence = useRef(0)
   const capabilityRefreshInFlight = useRef(false)
   const currentCapabilityExpiresAt = useRef<number | null>(null)
@@ -293,16 +294,10 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     setTunnelCheckExpired(false)
     if (!localTraffic || localTraffic.latency !== -1) return
 
-    // The desktop daemon calculates latency after returning from POST /pool.
-    // Pull the result promptly instead of waiting for the client's 15-second
-    // background refresh before deciding whether the local address is usable.
-    const refresh = window.setInterval(() => void wsrx.sync().catch(() => undefined), 1500)
-    const timeout = window.setTimeout(() => setTunnelCheckExpired(true), 8000)
-    return () => {
-      window.clearInterval(refresh)
-      window.clearTimeout(timeout)
-    }
-  }, [localTraffic?.latency, localTraffic?.local, wsrx, wsrxRemoteEntry])
+    // One provider-owned completion scheduler serves every pending entry and
+    // falls back to the daemon library's ordinary sync after this bounded window.
+    return watchPendingTunnel(wsrxRemoteEntry, () => setTunnelCheckExpired(true))
+  }, [localTraffic?.latency, localTraffic?.local, readinessGeneration, watchPendingTunnel, wsrxRemoteEntry])
 
   const phase = getWsrxTunnelPhase({
     isPlatformProxy,
@@ -343,6 +338,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
         setTunnelRequestComplete(false)
         setTunnelRequestFailed(false)
         setTunnelCheckExpired(false)
+        setReadinessGeneration((generation) => generation + 1)
         if (shouldConnectLocalWsrx({ mode: proxyEntryMode, source, state: wsrxState })) doWsrxConnect()
       } catch (err) {
         if (isLatestWsrxCapabilityRequest(requestSequence, capabilityRequestSequence.current)) {

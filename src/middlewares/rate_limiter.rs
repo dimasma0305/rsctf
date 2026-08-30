@@ -34,7 +34,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, Request, State as AxumState};
-use axum::http::{header, HeaderValue};
+use axum::http::{header, HeaderValue, Method};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::MethodRouter;
@@ -57,6 +57,11 @@ static CREDENTIAL_IP_ADMISSION_PER_MINUTE: LazyLock<u32> = LazyLock::new(|| {
         .filter(|value| (3_000..=1_000_000).contains(value))
         .unwrap_or(30_000)
 });
+
+const AD_AUTH_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
+const AD_AUTH_CONCURRENCY: usize = 32;
+static AD_AUTH_SLOTS: LazyLock<tokio::sync::Semaphore> =
+    LazyLock::new(|| tokio::sync::Semaphore::new(AD_AUTH_CONCURRENCY));
 
 /// Maximum distinct plausible flags one participation may enqueue immediately.
 /// Four maximum-size batches leave room for ordinary exploit retries without
@@ -145,6 +150,14 @@ pub enum Policy {
     /// Per-identity ceiling for player submission-verdict recovery. Appended to
     /// preserve every shipped Redis policy discriminant.
     Verdict,
+    /// Fixed-shape A&D bearer digest admission before PostgreSQL.
+    AdAuthTokenAdmission,
+    /// Source-IP backstop for rotating A&D bearer strings.
+    AdAuthSourceAdmission,
+    /// Tight anonymous per-source HashPoW issuance budget.
+    PowIssuanceSource,
+    /// Deployment-wide HashPoW issuance budget; all callers share one key.
+    PowIssuanceGlobal,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -208,6 +221,22 @@ impl Policy {
             Policy::Verdict => Kind::Bucket {
                 capacity: 30.0,
                 refill_per_sec: 0.5,
+            },
+            Policy::AdAuthTokenAdmission => Kind::Bucket {
+                capacity: 120.0,
+                refill_per_sec: 2.0,
+            },
+            Policy::AdAuthSourceAdmission => Kind::Bucket {
+                capacity: 1_200.0,
+                refill_per_sec: 20.0,
+            },
+            Policy::PowIssuanceSource => Kind::Bucket {
+                capacity: 8.0,
+                refill_per_sec: 0.2,
+            },
+            Policy::PowIssuanceGlobal => Kind::Bucket {
+                capacity: 256.0,
+                refill_per_sec: 20.0,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {
@@ -454,6 +483,9 @@ fn client_ip(req: &Request) -> String {
 struct VerifiedSessionPartitionKey(String);
 
 fn partition_key(policy: Policy, req: &Request) -> String {
+    if policy == Policy::PowIssuanceGlobal {
+        return "hashpow-issuance-global".to_string();
+    }
     // Credential, registration, recovery, mail, and OAuth-start abuse remains
     // strictly source-IP scoped. A valid-but-revoked JWT must never create a
     // fresh brute-force/mail bucket for these anonymous-facing routes.
@@ -465,6 +497,7 @@ fn partition_key(policy: Policy, req: &Request) -> String {
             | Policy::CredentialIpAdmission
             | Policy::PrivilegedHubAdmission
             | Policy::PublicHubAdmission
+            | Policy::PowIssuanceSource
     ) {
         return client_ip(req);
     }
@@ -850,6 +883,37 @@ async fn check_authenticated_async(identity: String, ip: String) -> Result<(), u
     }
 }
 
+fn supports_ad_bearer(method: &Method, path: &str) -> bool {
+    let normalized = path.to_ascii_lowercase();
+    let segments: Vec<&str> = normalized
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let valid_game = segments
+        .get(2)
+        .and_then(|value| value.parse::<i32>().ok())
+        .is_some_and(|game_id| game_id > 0);
+    if !valid_game || segments.get(0..2) != Some(&["api", "game"]) {
+        return false;
+    }
+    matches!(
+        (method, segments.as_slice()),
+        (&Method::POST, ["api", "game", _, "ad", "submit"])
+            | (&Method::GET, ["api", "game", _, "ad", "targets"])
+            | (&Method::GET, ["api", "game", _, "ad", "koth", "token"])
+            | (&Method::GET, ["api", "game", _, "ad", "koth", "hills"])
+    )
+}
+
+async fn admit_ad_authentication(token: &str, ip: &str) -> Result<(), u64> {
+    let token_key = format!("ad-auth:{}", crate::services::ad::api_token::hash(token));
+    let (token_result, source_result) = tokio::join!(
+        check_async(Policy::AdAuthTokenAdmission, token_key),
+        check_async(Policy::AdAuthSourceAdmission, ip.to_owned()),
+    );
+    token_result.and(source_result)
+}
+
 // ---------------------------------------------------------------------------
 // Middleware / decorator API
 // ---------------------------------------------------------------------------
@@ -881,20 +945,31 @@ pub async fn global_middleware(
         }
     }
 
-    let attempted_ad = credential
-        .as_deref()
-        .is_some_and(crate::services::ad::api_token::is_well_formed);
+    let attempted_ad = supports_ad_bearer(req.method(), req.uri().path())
+        && credential
+            .as_deref()
+            .is_some_and(crate::services::ad::api_token::is_well_formed);
     let verified_ad = if attempted_ad {
-        match crate::services::ad::api_token::authenticate(
-            st.pg(),
-            credential
-                .as_deref()
-                .expect("attempted A&D token is present"),
+        let token = credential
+            .as_deref()
+            .expect("attempted A&D token is present");
+        if let Err(retry_after) = admit_ad_authentication(token, &ip).await {
+            return too_many_requests(retry_after);
+        }
+        let Ok(_slot) = AD_AUTH_SLOTS.try_acquire() else {
+            return too_many_requests(1);
+        };
+        let authentication = tokio::time::timeout(
+            AD_AUTH_QUERY_TIMEOUT,
+            crate::services::ad::api_token::authenticate(st.pg(), token),
         )
-        .await
-        {
-            Ok(credential) => credential,
-            Err(error) => return error.into_response(),
+        .await;
+        match authentication {
+            Err(_) => return too_many_requests(1),
+            Ok(result) => match result {
+                Ok(credential) => credential,
+                Err(error) => return error.into_response(),
+            },
         }
     } else {
         None
@@ -934,6 +1009,39 @@ pub async fn global_middleware(
         }
     }
     next.run(req).await
+}
+
+#[cfg(test)]
+mod ad_auth_admission_tests {
+    use super::supports_ad_bearer;
+    use axum::http::Method;
+
+    #[test]
+    fn authenticates_ad_bearers_only_on_dual_auth_routes() {
+        for path in [
+            "/api/Game/7/Ad/Submit",
+            "/api/Game/7/Ad/Targets",
+            "/api/game/7/ad/targets",
+            "/api/Game/7/Ad/Koth/Token",
+            "/api/Game/7/Ad/Koth/Hills",
+        ] {
+            let method = if path.ends_with("Submit") {
+                Method::POST
+            } else {
+                Method::GET
+            };
+            assert!(supports_ad_bearer(&method, path), "{path}");
+        }
+        for (method, path) in [
+            (Method::GET, "/api/Game/7/Ad/Submit"),
+            (Method::GET, "/api/game/7/details"),
+            (Method::GET, "/api/admin/users"),
+            (Method::GET, "/api/Game/nope/Ad/Targets"),
+            (Method::POST, "/api/Game/7/Ad/Token"),
+        ] {
+            assert!(!supports_ad_bearer(&method, path), "{path}");
+        }
+    }
 }
 
 /// Decorate a single route handler with a named policy — the axum analogue of

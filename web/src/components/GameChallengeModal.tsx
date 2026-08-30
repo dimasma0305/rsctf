@@ -402,6 +402,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       })
     } catch (e) {
       showErrorMsg(e, t)
+      throw e
     }
   }
 

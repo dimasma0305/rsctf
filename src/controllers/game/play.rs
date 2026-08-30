@@ -5,6 +5,10 @@ use super::*;
 #[path = "play_final_policy.rs"]
 mod final_policy;
 
+#[path = "play_participant.rs"]
+mod participant;
+pub use participant::*;
+
 const MAX_RECENT_GAMES: usize = 50;
 
 // Ended games use exact time since end, upcoming games use exact time until
@@ -184,6 +188,17 @@ pub async fn recent_games(
 #[path = "play_recent_games_tests.rs"]
 mod recent_games_tests;
 
+fn can_view_challenge_catalog(
+    is_monitor: bool,
+    participation_status: Option<ParticipationStatus>,
+    start_time_utc: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> bool {
+    is_monitor
+        || (now >= start_time_utc
+            && participation_status.is_some_and(|status| status == ParticipationStatus::Accepted))
+}
+
 /// `GET /api/game/{id}` — detailed game info incl. caller's participation.
 pub async fn game_details(
     State(st): State<SharedState>,
@@ -197,10 +212,15 @@ pub async fn game_details(
         return Err(AppError::not_found("Game not found"));
     }
 
-    let team_count = participation::Entity::find()
-        .filter(participation::Column::GameId.eq(id))
-        .count(&st.db)
-        .await? as i64;
+    let team_count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)::bigint FROM "Participations"
+            WHERE game_id = $1 AND status = $2"#,
+    )
+    .bind(id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
 
     let divisions = division::Entity::find()
         .filter(division::Column::GameId.eq(id))
@@ -230,16 +250,38 @@ pub async fn game_details(
         None => (ParticipationStatus::Unsubmitted, None, None),
     };
 
-    // Challenge panel — visible to accepted participants (and in practice mode).
-    let can_view = matches!(&part, Some(p) if p.status == ParticipationStatus::Accepted)
-        || (g.practice_mode && part.is_some());
+    // Challenge metadata follows the same kickoff and accepted-participation
+    // boundary as playable challenge details. Practice mode changes scoring and
+    // post-event reuse; it never upgrades pending/rejected participation.
+    let can_view = can_view_challenge_catalog(
+        is_monitor,
+        part.as_ref().map(|participation| participation.status),
+        g.start_time_utc,
+        Utc::now(),
+    );
     let challenges = if can_view {
-        let list = game_challenge::Entity::find()
+        let mut list = game_challenge::Entity::find()
             .filter(game_challenge::Column::GameId.eq(id))
             .filter(game_challenge::Column::IsEnabled.eq(true))
             .filter(game_challenge::Column::ReviewStatus.eq(ChallengeReviewStatus::Active))
             .all(&st.db)
             .await?;
+        if let Some(participation) = part
+            .as_ref()
+            .filter(|participation| participation.status == ParticipationStatus::Accepted)
+        {
+            let challenge_ids = list
+                .iter()
+                .map(|challenge| challenge.id)
+                .collect::<Vec<_>>();
+            let permissions =
+                effective_permissions_batch(&st, participation, &challenge_ids).await?;
+            list.retain(|challenge| {
+                permissions
+                    .get(&challenge.id)
+                    .is_none_or(|permission| permission.contains(GamePermission::VIEW_CHALLENGE))
+            });
+        }
         // Challenges this participation has solved.
         let solved: HashSet<i32> = match &part {
             Some(p) => submission::Entity::find()
@@ -951,3 +993,43 @@ pub async fn get_challenge(
 #[cfg(test)]
 #[path = "play_projection_tests.rs"]
 mod detail_projection_tests;
+
+#[cfg(test)]
+mod catalog_access_tests {
+    use super::*;
+
+    #[test]
+    fn catalog_requires_kickoff_and_accepted_participation() {
+        let now = Utc::now();
+        let started = now - chrono::Duration::seconds(1);
+        let upcoming = now + chrono::Duration::seconds(1);
+
+        assert!(!can_view_challenge_catalog(false, None, started, now));
+        for status in [
+            ParticipationStatus::Pending,
+            ParticipationStatus::Rejected,
+            ParticipationStatus::Suspended,
+            ParticipationStatus::Unsubmitted,
+        ] {
+            assert!(!can_view_challenge_catalog(
+                false,
+                Some(status),
+                started,
+                now
+            ));
+        }
+        assert!(!can_view_challenge_catalog(
+            false,
+            Some(ParticipationStatus::Accepted),
+            upcoming,
+            now
+        ));
+        assert!(can_view_challenge_catalog(
+            false,
+            Some(ParticipationStatus::Accepted),
+            started,
+            now
+        ));
+        assert!(can_view_challenge_catalog(true, None, upcoming, now));
+    }
+}

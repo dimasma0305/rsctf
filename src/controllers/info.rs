@@ -159,6 +159,9 @@ pub struct HashPowChallenge {
     pub id: String,
     pub challenge: String,
     pub difficulty: i32,
+    /// Absolute Unix time in milliseconds; the browser refreshes before this
+    /// boundary instead of submitting an already-expired proof.
+    pub expires_at: i64,
 }
 
 pub fn router() -> Router<SharedState> {
@@ -169,7 +172,16 @@ pub fn router() -> Router<SharedState> {
         .route("/api/posts/page", get(get_posts_page))
         .route("/api/posts/{id}", get(get_post))
         .route("/api/captcha", get(get_captcha))
-        .route("/api/captcha/powchallenge", get(get_pow_challenge))
+        .route(
+            "/api/captcha/powchallenge",
+            crate::middlewares::rate_limiter::limited(
+                crate::middlewares::rate_limiter::Policy::PowIssuanceGlobal,
+                crate::middlewares::rate_limiter::limited(
+                    crate::middlewares::rate_limiter::Policy::PowIssuanceSource,
+                    get(get_pow_challenge),
+                ),
+            ),
+        )
 }
 
 /// `GET /api/Config` — client-facing site configuration.
@@ -391,32 +403,17 @@ pub async fn get_pow_challenge(
     // source the verify step reads), so the client solves the PoW at exactly the
     // difficulty the server later checks against.
     let settings = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
-    let difficulty = if settings.provider == "HashPow" {
-        settings.difficulty
-    } else {
-        // "None"/Turnstile: no PoW challenge to issue — RSCTF returns 404.
-        return Err(AppError::not_found("PoW challenge is not available"));
-    };
-
-    // RSCTF: 8 random challenge bytes (returned as lowercase hex) keyed by a
-    // 12-char random hex id. We store the hex challenge string itself so the
-    // verifier hashes exactly what the client was handed.
-    let id = codec::random_hex(6); // 6 bytes -> 12 hex chars
-    let challenge = codec::random_hex(8); // 8 bytes -> 16 hex chars
-
-    // CacheKey.HashPow(id) => "_HP_{id}"; 5-minute expiry.
-    st.cache
-        .set(
-            &format!("_HP_{id}"),
-            challenge.as_bytes(),
-            Some(std::time::Duration::from_secs(5 * 60)),
-        )
-        .await;
+    let issued = crate::services::captcha::issue_hashpow_challenge(
+        &settings,
+        st.config.jwt_secret.as_bytes(),
+        Utc::now().timestamp(),
+    )?;
 
     Ok(RequestResponse::ok(HashPowChallenge {
-        id,
-        challenge,
-        difficulty: difficulty as i32,
+        id: issued.id,
+        challenge: issued.challenge,
+        difficulty: issued.difficulty as i32,
+        expires_at: issued.expires_at.saturating_mul(1_000),
     }))
 }
 

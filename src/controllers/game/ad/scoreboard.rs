@@ -146,6 +146,10 @@ fn scoreboard_cache_key(game_id: i32, is_monitor: bool) -> String {
     }
 }
 
+fn live_operational_value<T>(archived: bool, value: T) -> Option<T> {
+    (!archived).then_some(value)
+}
+
 /// Remove every A&D board representation after a destructive, visibility, or
 /// configuration mutation. Routine round/submit invalidations intentionally
 /// remove only the five-second fresh key so SWR can bridge an expensive rebuild.
@@ -180,7 +184,10 @@ async fn hard_invalidate_ad_scoreboard_cache(
     );
 }
 
-fn revision_disposition(expected: &str, observed: Option<&str>) -> RevisionDisposition {
+fn revision_disposition(
+    expected: &crate::services::ad::scoring::AdScoreboardRevision,
+    observed: Option<&crate::services::ad::scoring::AdScoreboardRevision>,
+) -> RevisionDisposition {
     match observed {
         None => RevisionDisposition::Missing,
         Some(observed) if observed == expected => RevisionDisposition::Current,
@@ -274,7 +281,7 @@ async fn build_scoreboard_bundle_attempt(
                 return ScoreboardBuildAttempt::Complete(ScoreboardFillResult::Failed);
             }
         };
-    match revision_disposition(&before, after_build.as_deref()) {
+    match revision_disposition(&before, after_build.as_ref()) {
         RevisionDisposition::Current => {}
         RevisionDisposition::Changed => {
             hard_invalidate_ad_scoreboard_cache(st.cache.as_ref(), id).await;
@@ -289,12 +296,18 @@ async fn build_scoreboard_bundle_attempt(
     }
 
     if built.cacheable {
+        let fresh_ttl = super::scoreboard_encoding::final_or_live_cache_ttl(
+            before.immutable_final,
+            AD_SCOREBOARD_FRESH_TTL,
+        );
+        let stale_ttl = super::scoreboard_encoding::final_or_live_cache_ttl(
+            before.immutable_final,
+            AD_SCOREBOARD_STALE_TTL,
+        );
         st.cache
-            .set(current_key, &built.bytes, Some(AD_SCOREBOARD_FRESH_TTL))
+            .set(current_key, &built.bytes, Some(fresh_ttl))
             .await;
-        st.cache
-            .set(stale_key, &built.bytes, Some(AD_SCOREBOARD_STALE_TTL))
-            .await;
+        st.cache.set(stale_key, &built.bytes, Some(stale_ttl)).await;
 
         // Close the post-check/publication race: if a mutation committed and
         // hard-invalidated between validation and either SET, discard both
@@ -311,7 +324,7 @@ async fn build_scoreboard_bundle_attempt(
                     return ScoreboardBuildAttempt::Complete(ScoreboardFillResult::Failed);
                 }
             };
-        match revision_disposition(&before, after_publish.as_deref()) {
+        match revision_disposition(&before, after_publish.as_ref()) {
             RevisionDisposition::Current => {}
             RevisionDisposition::Changed => {
                 hard_invalidate_ad_scoreboard_cache(st.cache.as_ref(), id).await;
@@ -398,6 +411,13 @@ pub async fn scoreboard(
     headers: HeaderMap,
 ) -> AppResult<Response> {
     let is_monitor = maybe.as_ref().is_some_and(|user| user.is_monitor());
+    let game = crate::controllers::game::load_game_cached(&st, id).await?;
+    if game.hidden && !is_monitor {
+        return Err(AppError::not_found("Game not found"));
+    }
+    if Utc::now() < game.start_time_utc && !is_monitor {
+        return Err(AppError::game_not_started());
+    }
     let cache_key = scoreboard_cache_key(id, is_monitor);
     if let Some(bytes) = cached_scoreboard_bundle(st.cache.as_ref(), &cache_key).await {
         return super::scoreboard_encoding::response(bytes, &headers);
@@ -451,7 +471,6 @@ pub(crate) async fn build_ad_scoreboard_cached(
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct AdStateCtx {
     reset_cooldown_secs: i64,
-    end_time_utc: chrono::DateTime<chrono::Utc>,
     allow_snapshot: bool,
     epoch_ticks: i32,
     start_round: Option<i32>,
@@ -514,9 +533,9 @@ async fn state_ctx_cached(st: &SharedState, id: i32) -> AppResult<AdStateCtx> {
 }
 
 async fn build_state_ctx(st: &SharedState, id: i32) -> AppResult<AdStateCtx> {
-    let (reset_minutes, end_time_utc, allow_snapshot, epoch_ticks, start_round) =
-        sqlx::query_as::<_, (Option<i32>, DateTime<Utc>, bool, i32, Option<i32>)>(
-            r#"SELECT ad_reset_cooldown_minutes, end_time_utc, ad_allow_snapshot_download,
+    let (reset_minutes, allow_snapshot, epoch_ticks, start_round) =
+        sqlx::query_as::<_, (Option<i32>, bool, i32, Option<i32>)>(
+            r#"SELECT ad_reset_cooldown_minutes, ad_allow_snapshot_download,
                       ad_epoch_ticks, ad_scoring_start_round
              FROM "Games" WHERE id = $1"#,
         )
@@ -537,7 +556,6 @@ async fn build_state_ctx(st: &SharedState, id: i32) -> AppResult<AdStateCtx> {
         reset_cooldown_secs: reset_minutes
             .map(|minutes| minutes as i64 * 60)
             .unwrap_or(RESET_COOLDOWN_SECS_DEFAULT),
-        end_time_utc,
         allow_snapshot,
         epoch_ticks: epoch_ticks.clamp(1, 64),
         start_round: start_round.map(|round| round.max(1)),
@@ -572,16 +590,13 @@ pub async fn state(
     .await?
     .ok_or(AppError::Forbidden)?;
 
-    // Post-game snapshot policy. `snapshot_available` per service must be the EXACT
-    // success condition of the `Snapshot` download route below (or the client's download
-    // button lies): the game is over, download is enabled, and the service has a platform
-    // container that isn't a self-hosted (BYOC) relay.
     let now = Utc::now();
-    let snapshots_downloadable = now >= ctx.end_time_utc && ctx.allow_snapshot;
-
     // One statement keeps the fresh round/services/checks/flags tail on one
-    // MVCC snapshot and avoids four sequential pool checkouts/round trips.
+    // MVCC snapshot, applies the event window with PostgreSQL's clock, and
+    // avoids four sequential pool checkouts/round trips.
     let super::state_tail::AdStateTail {
+        event_started,
+        event_ended,
         current_round,
         round_started_at,
         round_ends_at,
@@ -591,6 +606,14 @@ pub async fn state(
         scoring_paused_at,
         services,
     } = super::state_tail::load(&mut **roster.transaction_mut(), id, part.id).await?;
+    if !event_started {
+        roster.release().await?;
+        return Err(AppError::game_not_started());
+    }
+    let archived = event_ended;
+    // `snapshot_available` per service must be the exact success condition of
+    // the Snapshot route: event ended, enabled, and a platform container.
+    let snapshots_downloadable = event_ended && ctx.allow_snapshot;
 
     let items = services
         .into_iter()
@@ -616,15 +639,15 @@ pub async fn state(
                 ad_team_service_id: s.id,
                 challenge_id: s.challenge_id,
                 challenge_title,
-                container_ip: Some(s.host),
-                container_port: Some(s.port),
-                current_flag: s.current_flag,
+                container_ip: live_operational_value(archived, s.host),
+                container_port: live_operational_value(archived, s.port),
+                current_flag: live_operational_value(archived, s.current_flag).flatten(),
                 last_check_status,
                 last_reset_at: s.last_reset_at,
                 // Self-hosted (BYOC): nothing on our side to relaunch, so never offer
                 // the reset button (RSCTF State reduction 1388: `&& !AdSelfHosted`).
-                can_reset: allow_self_reset && cooldown_remaining == 0 && !self_hosted,
-                reset_cooldown_seconds_remaining: (cooldown_remaining > 0)
+                can_reset: !archived && allow_self_reset && cooldown_remaining == 0 && !self_hosted,
+                reset_cooldown_seconds_remaining: (!archived && cooldown_remaining > 0)
                     .then_some(cooldown_remaining),
                 snapshot_available,
                 self_hosted: Some(self_hosted),

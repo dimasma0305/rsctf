@@ -12,12 +12,11 @@
 //! `tokio::time::interval`, a best-effort Redis `SET NX` leader lock, and a
 //! fixed set of DB-backed jobs run every tick:
 //!
-//!   * [`reap_expired_containers`] — destroy container rows whose
+//!   * bounded expired/orphan container maintenance — destroy rows whose
 //!     `expect_stop_at` has passed (mirrors `RuntimeCronJobs.ContainerChecker`
 //!     + `ContainerRepository.DestroyContainer`).
-//!   * [`flush_stale_scoreboards`] — evict the live scoreboard cache keys for
-//!     recently-ended games plus the recent-games list (mirrors
-//!     `CacheHelper.FlushScoreboardCache` / `FlushRecentGamesCache`).
+//!   * refresh the time-relative recent-games list. Final scoreboard caches are
+//!     immutable long-lived entries and are not churned by maintenance.
 //!   * the round scheduler — for every running Attack-Defense game whose
 //!     current round has ended, advance it: finalize the round, open round
 //!     `N+1` sized from `ad_tick_seconds`, and plant a fresh rotating `ad_flag`
@@ -30,16 +29,14 @@
 
 use std::time::Duration as StdDuration;
 
-use chrono::{Duration, Utc};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-
 use crate::app_state::SharedState;
-use crate::models::data::{ad_team_service, container, game, koth_target};
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType};
 use crate::utils::error::AppResult;
+use chrono::Utc;
 
 mod backend_reaper;
 mod delivery_health;
+mod maintenance;
 mod round_finish;
 mod scheduler;
 
@@ -68,14 +65,6 @@ const MAINTENANCE_TICK_SECONDS: u64 = 30;
 /// KotH). A game with many hung/offline services can make its checker pass take
 /// minutes; this stops it blocking every other game, the reaper, and the next tick (#5).
 pub(super) const ADVANCE_BUDGET_SECS: u64 = 240;
-const ORPHAN_GRACE_SECS: u64 = 60;
-static ORPHAN_FIRST_SEEN: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-
-/// How far back a game counts as "recently ended" for the stale-scoreboard
-/// sweep. Bounds the flush work so it doesn't re-touch every game forever.
-const RECENT_ENDED_HOURS: i64 = 6;
 
 /// Which games one round-scheduler replica is eligible to drive.
 ///
@@ -264,7 +253,7 @@ async fn run_jobs(state: &SharedState) {
         Err(error) => tracing::warn!(%error, "cron: Docker storage cleanup failed"),
     }
 
-    match reap_expired_containers(state).await {
+    match maintenance::reap_expired_containers(state).await {
         Ok(n) if n > 0 => tracing::info!("cron: reaped {n} expired container(s)"),
         Ok(_) => {}
         Err(e) => tracing::warn!("cron: container reaper failed: {e}"),
@@ -298,17 +287,13 @@ async fn run_jobs(state: &SharedState) {
         Err(error) => tracing::warn!(%error, "cron: accepted-participation recovery failed"),
     }
 
-    match sweep_orphan_containers(state).await {
+    match maintenance::sweep_orphan_containers(state).await {
         Ok(n) if n > 0 => tracing::info!("cron: swept {n} orphan container(s) (no DB row)"),
         Ok(_) => {}
         Err(e) => tracing::warn!("cron: orphan sweep failed: {e}"),
     }
 
-    match flush_stale_scoreboards(state).await {
-        Ok(n) if n > 0 => tracing::debug!("cron: flushed scoreboard cache for {n} game(s)"),
-        Ok(_) => {}
-        Err(e) => tracing::warn!("cron: scoreboard flush failed: {e}"),
-    }
+    refresh_recent_games_cache(state).await;
 
     // KotH accrual needs no dedicated job: the live holder snapshot on
     // `koth_target` (`holder_participation_id` + `held_since`) is authoritative,
@@ -585,43 +570,6 @@ impl LeaderLock {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Job 1 — container reaper (RSCTF `RuntimeCronJobs.ContainerChecker`).
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Destroy every container whose `expect_stop_at` has passed: clear the owning
-/// `game_instance` link, tear down the backing runtime workload, then delete the
-/// row. Returns the number of containers reaped.
-///
-/// This mirrors `admin.rs::destroy_instance` per row so the periodic reaper and
-/// the manual admin teardown can't drift apart. A backend `destroy` failure is
-/// best-effort (logged, not fatal): the row is still deleted so a vanished
-/// daemon can't wedge the table.
-async fn reap_expired_containers(state: &SharedState) -> AppResult<u64> {
-    let now = Utc::now();
-
-    let expired = container::Entity::find()
-        .filter(container::Column::ExpectStopAt.lt(now))
-        .all(&state.db)
-        .await?;
-
-    let mut reaped = 0u64;
-    for c in expired {
-        match crate::controllers::game::destroy_managed_container_row(state, &c, true).await {
-            Ok(true) => reaped += 1,
-            Ok(false) => {}
-            Err(error) => tracing::warn!(
-                container = %c.id,
-                backend_id = %c.container_id,
-                %error,
-                "cron: endpoint revocation failed; retaining expired container"
-            ),
-        }
-    }
-
-    Ok(reaped)
-}
-
 async fn complete_ended_ad_checks(state: &SharedState) -> AppResult<u64> {
     let game_ids: Vec<i32> = sqlx::query_scalar(
         r#"SELECT game.id
@@ -726,238 +674,14 @@ async fn complete_ended_ad_checks(state: &SharedState) -> AppResult<u64> {
     Ok(completed)
 }
 
-/// Destroy every platform-managed container still running on the backend whose
-/// owning `Containers` row has vanished — the leak the reaper above can't catch
-/// because it only walks DB rows. Covers a create that started the container but
-/// failed to persist its row, and a row deleted without a backend destroy. Match
-/// is by id prefix (the DB stores the full 64-char id; the daemon may report
-/// either), so a live tracked container is never swept.
-async fn sweep_orphan_containers(state: &SharedState) -> AppResult<u64> {
-    let managed = state.containers.list_managed().await;
-    if managed.is_empty() {
-        return Ok(0);
-    }
-    let mut known: Vec<String> = container::Entity::find()
-        .filter(container::Column::ContainerId.ne(""))
-        .all(&state.db)
-        .await?
-        .into_iter()
-        .map(|c| c.container_id)
-        .collect();
-    // A&D / KotH per-team service containers live in `ad_team_service`, NOT the
-    // `container` table — without this they look orphaned and the sweep destroys
-    // them every tick, leaving every platform-hosted service permanently Offline.
-    known.extend(
-        ad_team_service::Entity::find()
-            .filter(ad_team_service::Column::ContainerId.is_not_null())
-            .filter(ad_team_service::Column::ContainerId.ne(""))
-            .all(&state.db)
-            .await?
-            .into_iter()
-            .filter_map(|s| s.container_id),
-    );
-    known.extend(
-        koth_target::Entity::find()
-            .filter(koth_target::Column::ContainerId.is_not_null())
-            .filter(koth_target::Column::ContainerId.ne(""))
-            .all(&state.db)
-            .await?
-            .into_iter()
-            .filter_map(|target| target.container_id),
-    );
-    // During a crown reset, runtime ownership is persisted on the cycle before
-    // publication to KothTargets, and old ownership remains there while audit
-    // snapshot/destruction retries. Protect both crash-recovery windows. Ended
-    // cycles have completed their explicit cleanup and no longer own runtimes.
-    known.extend(
-        sqlx::query_scalar::<_, String>(
-            r#"SELECT DISTINCT runtime_id
-                 FROM "KothCrownCycles" cycle
-                 CROSS JOIN LATERAL unnest(ARRAY[
-                   cycle.old_container_id, cycle.replacement_container_id
-                 ]) runtime(runtime_id)
-                WHERE cycle.phase <> 'Ended'
-                  AND NULLIF(BTRIM(runtime_id), '') IS NOT NULL"#,
-        )
-        .fetch_all(state.pg())
-        .await
-        .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))?,
-    );
-    let is_known = |id: &str| container_id_is_known(id, &known);
-    // A backend is visible just before its bookkeeping transaction commits.
-    // Require it to remain unowned for a full grace window so the orphan sweep
-    // cannot destroy an in-flight shared/A&D container between create and insert.
-    let now = std::time::Instant::now();
-    let managed_set: std::collections::HashSet<&str> = managed.iter().map(String::as_str).collect();
-    let mut ready = Vec::new();
-    {
-        let mut first_seen = ORPHAN_FIRST_SEEN
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        first_seen.retain(|id, _| managed_set.contains(id.as_str()) && !is_known(id));
-        for id in &managed {
-            if is_known(id) {
-                continue;
-            }
-            let seen = first_seen.entry(id.clone()).or_insert(now);
-            if now.duration_since(*seen) >= StdDuration::from_secs(ORPHAN_GRACE_SECS) {
-                ready.push(id.clone());
-            }
-        }
-    }
-    let mut swept = 0u64;
-    for id in ready {
-        if let Err(error) =
-            crate::services::ad_vpn::deactivate_backend_endpoint(&state.db, &id).await
-        {
-            tracing::warn!(backend_id = %id, %error, "cron: orphan endpoint revocation failed");
-            continue;
-        }
-        if let Err(e) = state.containers.destroy(&id).await {
-            tracing::warn!(backend_id = %id, "cron: orphan destroy failed: {e}");
-        } else {
-            ORPHAN_FIRST_SEEN
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&id);
-            swept += 1;
-        }
-    }
-    Ok(swept)
-}
-
-fn container_id_is_known(id: &str, known: &[String]) -> bool {
-    known.iter().any(|candidate| {
-        candidate == id
-            || (docker_id_shape(id)
-                && docker_id_shape(candidate)
-                && (id.starts_with(candidate) || candidate.starts_with(id)))
-    })
-}
-
-fn docker_id_shape(value: &str) -> bool {
-    (12..=64).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Job 2 — scoreboard cache maintenance
-//   (RSCTF `CacheHelper.FlushScoreboardCache` / `FlushRecentGamesCache`).
+// Job 2 — discovery cache maintenance.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Evict stale scoreboard cache so it recomputes on next read. Drops the global
-/// recent-games list plus the LIVE scoreboard keys for games that ended within
-/// the last [`RECENT_ENDED_HOURS`] hours.
-///
-/// Only the live boards are evicted, never the frozen variants — matching
-/// RSCTF's `FlushAdScoreboardCache`, which leaves the frozen boards to rebuild
-/// lazily on read. In-game boards are kept fresh by the event-driven flushes in
-/// the controllers, so this sweep deliberately targets only recently-ended games
-/// (whose final standings no longer receive those events). Returns the number of
-/// games whose keys were flushed.
-async fn flush_stale_scoreboards(state: &SharedState) -> AppResult<u64> {
-    let now = Utc::now();
-    let cutoff = now - Duration::hours(RECENT_ENDED_HOURS);
-
-    // Recent-games list (RSCTF `CacheKey.RecentGames`) — cheap, always refreshed.
+/// Event discovery is time-relative, so its legacy cache remains short-lived.
+/// Final scoreboards are immutable seven-day entries after close and must not be
+/// deleted on every maintenance tick; mutation paths retain explicit repair
+/// invalidation for exceptional corrections.
+async fn refresh_recent_games_cache(state: &SharedState) {
     state.cache.remove("_RecentGames").await;
-
-    let ended = game::Entity::find()
-        .filter(game::Column::EndTimeUtc.lt(now))
-        .filter(game::Column::EndTimeUtc.gte(cutoff))
-        .all(&state.db)
-        .await?;
-
-    let mut flushed = 0u64;
-    for g in &ended {
-        evict_scoreboard_cache(state.cache.as_ref(), g.id).await;
-        flushed += 1;
-    }
-
-    Ok(flushed)
-}
-
-async fn evict_scoreboard_cache(cache: &dyn crate::services::cache::Cache, game_id: i32) {
-    for key in scoreboard_cache_keys(game_id) {
-        cache.remove(&key).await;
-    }
-}
-
-/// Scoreboard cache entries whose time-dependent view changes at event close.
-fn scoreboard_cache_keys(game_id: i32) -> [String; 16] {
-    [
-        format!("_ScoreBoard_{game_id}"),
-        format!("_ScoreBoardFrozen_{game_id}"),
-        format!("_ScoreBoardWireV2_{game_id}"),
-        format!("_ScoreBoardWireV2Frozen_{game_id}"),
-        format!("_AdScoreBoard_{game_id}"),
-        format!("_AdScoreBoard_{game_id}:stale"),
-        format!("_AdScoreBoardFrozen_{game_id}"),
-        format!("_AdScoreBoardFrozen_{game_id}:stale"),
-        format!("_KothScoreBoard_{game_id}"),
-        format!("_KothScoreBoardFrozen_{game_id}"),
-        format!("_KothScoreBoardWireV2_{game_id}"),
-        format!("_KothScoreBoardWireV2Frozen_{game_id}"),
-        format!("_KothTimeline_{game_id}"),
-        format!("_KothTimelineFrozen_{game_id}"),
-        format!("_CombinedScoreBoardByChallenge_{game_id}"),
-        format!("_CombinedScoreBoardByChallengeFrozen_{game_id}"),
-    ]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{container_id_is_known, evict_scoreboard_cache, scoreboard_cache_keys};
-    use crate::services::cache::{Cache, InMemoryCache};
-
-    #[test]
-    fn orphan_identity_matching_accepts_full_and_daemon_short_ids_only() {
-        let known = vec!["abcdef1234567890".to_string()];
-        assert!(container_id_is_known("abcdef1234567890", &known));
-        assert!(container_id_is_known("abcdef123456", &known));
-        assert!(container_id_is_known("abcdef1234567890ffff", &known));
-        assert!(!container_id_is_known("fedcba123456", &known));
-        assert!(!container_id_is_known("abc", &known));
-
-        let named = vec!["rsctf-koth-cycle-17".to_string()];
-        assert!(container_id_is_known("rsctf-koth-cycle-17", &named));
-        assert!(!container_id_is_known("rsctf-koth-cycle", &named));
-        assert!(!container_id_is_known("rsctf-koth-cycle-17-extra", &named));
-    }
-
-    #[tokio::test]
-    async fn ended_event_sweep_removes_legacy_and_versioned_scoreboard_keys() {
-        let cache = InMemoryCache::new();
-        let game_id = 17;
-        let keys = scoreboard_cache_keys(game_id);
-        for expected in [
-            "_ScoreBoardWireV2_17",
-            "_ScoreBoardWireV2Frozen_17",
-            "_KothScoreBoardWireV2_17",
-            "_KothScoreBoardWireV2Frozen_17",
-        ] {
-            assert!(keys.iter().any(|key| key == expected), "missing {expected}");
-        }
-        for key in keys {
-            cache.set(&key, b"cached", None).await;
-        }
-        cache.set("unrelated", b"keep", None).await;
-
-        evict_scoreboard_cache(&cache, game_id).await;
-
-        assert!(cache
-            .get("_CombinedScoreBoardByChallenge_17")
-            .await
-            .is_none());
-        assert!(cache
-            .get("_CombinedScoreBoardByChallengeFrozen_17")
-            .await
-            .is_none());
-        for key in scoreboard_cache_keys(game_id) {
-            assert!(cache.get(&key).await.is_none(), "{key} survived");
-        }
-        assert_eq!(
-            cache.get("unrelated").await.as_deref(),
-            Some(b"keep".as_slice())
-        );
-    }
 }

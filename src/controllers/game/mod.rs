@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::middlewares::rate_limiter::{limited, Policy};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -176,7 +176,7 @@ pub type GameEventModel = crate::services::game_event_feed::GameEventMessage;
 pub type MonitorSubmissionModel = crate::services::submission_feed::SubmissionMessage;
 
 /// RSCTF `ChallengeItem` (a solved cell on the scoreboard).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeItem {
     pub id: i32,
@@ -189,7 +189,7 @@ pub struct ChallengeItem {
 }
 
 /// RSCTF `ScoreboardItem`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardItem {
     pub id: i32,

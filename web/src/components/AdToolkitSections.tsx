@@ -1,11 +1,12 @@
 import { Accordion, ActionIcon, Alert, Box, Button, Code, CopyButton, Group, Modal, Stack, Text, Tooltip } from '@mantine/core'
-import { useDisclosure, useLocalStorage } from '@mantine/hooks'
+import { useDisclosure } from '@mantine/hooks'
 import { mdiAlertCircleOutline, mdiCheck, mdiContentCopy, mdiDownload, mdiEye, mdiEyeOff, mdiKeyChain, mdiVpn } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { showErrorMsg } from '@Utils/Shared'
+import { useViewerIdentity } from '@Utils/ViewerIdentity'
 import { useAdTokenHint } from '@Hooks/useGame'
 import api, { AdTokenHintModel } from '@Api'
 import misc from '@Styles/Misc.module.css'
@@ -19,46 +20,47 @@ import misc from '@Styles/Misc.module.css'
  * caller's curl examples can render with the real Bearer token for the rest
  * of the session; the DB only stores an HMAC hash, so it's gone on reload.
  *
- * `storedToken` persists the plaintext to this browser's localStorage (keyed
- * per game) so a player's bot/scripts can grab it later without re-rotating
- * (which would invalidate the token their bot is already using). It's the same
- * one string for both engines. This is a deliberate convenience/exposure
- * tradeoff — surfaced in the UI with a security note + a "Forget" control, and
- * a rotation overwrites it (the old value is invalid anyway).
+ * `storedToken` is session-memory only. It is cleared on account/game changes
+ * and disappears on reload, so a shared browser cannot reveal another
+ * account's still-valid team credential after logout.
  *
  * @param onRotated optional callback fired after a successful rotation — KotH
  *   uses it to show a success notification; A&D leaves it off.
  */
 export const useAdToken = (gameId: number, onRotated?: () => void) => {
   const { t } = useTranslation()
+  const { scope } = useViewerIdentity()
   const { adTokenHint, mutate: mutateHint } = useAdTokenHint(gameId)
 
   const [rotating, setRotating] = useState(false)
   const [freshToken, setFreshToken] = useState<string | null>(null)
-  // Per-game so switching games never surfaces the wrong token. JSON-serialized
-  // by Mantine; null when nothing has been saved (or after Forget).
-  // getInitialValueInEffect:false → read synchronously on first render (SPA, no
-  // SSR) so the curl examples render with the saved token immediately instead of
-  // flashing the <your-token> placeholder for a frame.
-  const [storedToken, setStoredToken] = useLocalStorage<string | null>({
-    key: `ad-api-token-${gameId}`,
-    defaultValue: null,
-    getInitialValueInEffect: false,
-  })
+  const [storedToken, setStoredToken] = useState<string | null>(null)
+  const rotatingRef = useRef(false)
   const [tokenModalOpen, { open: openTokenModal, close: closeTokenModal }] = useDisclosure(false)
 
+  useEffect(() => {
+    rotatingRef.current = false
+    setRotating(false)
+    setFreshToken(null)
+    setStoredToken(null)
+    closeTokenModal()
+  }, [closeTokenModal, gameId, scope])
+
   const onRotate = async () => {
+    if (rotatingRef.current) return
+    rotatingRef.current = true
     setRotating(true)
     try {
       const { data } = await api.game.gameAdRotateToken(gameId)
       setFreshToken(data.token)
-      setStoredToken(data.token) // persist for bot/script reuse across reloads
+      setStoredToken(data.token)
       openTokenModal()
       mutateHint()
       onRotated?.()
     } catch (e) {
       showErrorMsg(e, t)
     } finally {
+      rotatingRef.current = false
       setRotating(false)
     }
   }
