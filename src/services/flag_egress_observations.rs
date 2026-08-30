@@ -1,0 +1,459 @@
+//! Bounded, supervised flag-egress observation writer.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use tokio::sync::{mpsc, watch};
+use uuid::Uuid;
+
+use crate::app_state::SharedState;
+
+const QUEUE_CAPACITY: usize = 2_048;
+const MAX_AGGREGATES: usize = 4_096;
+const MAX_FLUSH: usize = 256;
+const MAX_FLUSH_BACKOFF: Duration = Duration::from_secs(5);
+const FLUSH_DEADLINE: Duration = Duration::from_millis(1_500);
+const FEED_PUBLICATION_DEADLINE: Duration = Duration::from_millis(500);
+static QUEUE_DROPS: AtomicU64 = AtomicU64::new(0);
+static AGGREGATE_DROPS: AtomicU64 = AtomicU64::new(0);
+static FLUSH_FAILURES: AtomicU64 = AtomicU64::new(0);
+static FLUSH_RETRIES: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FlagEgressObservationMetrics {
+    pub queued: usize,
+    pub queue_capacity: usize,
+    pub queue_drops: u64,
+    pub aggregate_drops: u64,
+    pub flush_failures: u64,
+    pub flush_retries: u64,
+}
+
+fn record_overflow(counter: &AtomicU64, boundary: &'static str) {
+    record_overflow_count(counter, boundary, 1);
+}
+
+fn record_overflow_count(counter: &AtomicU64, boundary: &'static str, count: u64) {
+    let dropped = counter
+        .fetch_add(count, Ordering::Relaxed)
+        .saturating_add(count);
+    if dropped.is_power_of_two() {
+        tracing::warn!(
+            dropped,
+            boundary,
+            "flag-egress telemetry was shed at a bounded boundary"
+        );
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum FlushError {
+    #[error("participation evidence is sealed")]
+    Sealed,
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+pub(crate) fn record_queue_drop() {
+    record_overflow(&QUEUE_DROPS, "queue");
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct ObservationKey {
+    pub game_id: i32,
+    pub participation_id: i32,
+    pub challenge_id: i32,
+    pub container_id: Uuid,
+    pub remote_ip: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Observation {
+    pub key: ObservationKey,
+    pub observed_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Clone)]
+pub(crate) struct Queue {
+    inner: Arc<QueueInner>,
+}
+
+struct QueueInner {
+    sender: mpsc::Sender<Observation>,
+    receiver: Mutex<Option<mpsc::Receiver<Observation>>>,
+}
+
+impl Queue {
+    pub(crate) fn new() -> Self {
+        let (sender, receiver) = mpsc::channel(QUEUE_CAPACITY);
+        Self {
+            inner: Arc::new(QueueInner {
+                sender,
+                receiver: Mutex::new(Some(receiver)),
+            }),
+        }
+    }
+
+    pub(crate) fn enqueue(&self, observation: Observation) -> bool {
+        self.inner.sender.try_send(observation).is_ok()
+    }
+
+    fn take_receiver(&self) -> Option<mpsc::Receiver<Observation>> {
+        self.inner
+            .receiver
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+
+    fn metrics(&self) -> FlagEgressObservationMetrics {
+        FlagEgressObservationMetrics {
+            queued: self
+                .inner
+                .sender
+                .max_capacity()
+                .saturating_sub(self.inner.sender.capacity()),
+            queue_capacity: self.inner.sender.max_capacity(),
+            queue_drops: QUEUE_DROPS.load(Ordering::Relaxed),
+            aggregate_drops: AGGREGATE_DROPS.load(Ordering::Relaxed),
+            flush_failures: FLUSH_FAILURES.load(Ordering::Relaxed),
+            flush_retries: FLUSH_RETRIES.load(Ordering::Relaxed),
+        }
+    }
+}
+
+impl Default for Queue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Process-local bounded-writer counters for operational monitoring.
+pub fn observation_metrics(state: &SharedState) -> FlagEgressObservationMetrics {
+    state.flag_egress_observations.metrics()
+}
+
+fn retry_delay(failures: u32, seed: u64) -> Duration {
+    let multiplier = 1u32 << failures.saturating_sub(1).min(4);
+    let base = Duration::from_millis(250).saturating_mul(multiplier);
+    let jitter_ceiling = u64::try_from((base / 4).as_millis()).unwrap_or(u64::MAX);
+    let jitter = Duration::from_millis(seed % jitter_ceiling.saturating_add(1));
+    base.saturating_add(jitter).min(MAX_FLUSH_BACKOFF)
+}
+
+#[derive(Default)]
+struct FlushSchedule {
+    failures: u32,
+    retry_at: Option<tokio::time::Instant>,
+}
+
+impl FlushSchedule {
+    fn ready(&self) -> bool {
+        self.retry_at
+            .is_none_or(|retry_at| tokio::time::Instant::now() >= retry_at)
+    }
+
+    fn record(&mut self, succeeded: bool) {
+        if succeeded {
+            self.failures = 0;
+            self.retry_at = None;
+            return;
+        }
+        FLUSH_FAILURES.fetch_add(1, Ordering::Relaxed);
+        self.failures = self.failures.saturating_add(1);
+        let seed = rand::random::<u64>();
+        self.retry_at = Some(tokio::time::Instant::now() + retry_delay(self.failures, seed));
+    }
+
+    fn record_attempt(&self) {
+        if self.failures > 0 {
+            FLUSH_RETRIES.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Aggregate {
+    key: ObservationKey,
+    count: i64,
+    first_seen: chrono::DateTime<chrono::Utc>,
+    last_seen: chrono::DateTime<chrono::Utc>,
+}
+
+fn aggregate(map: &mut HashMap<ObservationKey, Aggregate>, observation: Observation) {
+    if let Some(current) = map.get_mut(&observation.key) {
+        current.count = current.count.saturating_add(1);
+        current.first_seen = current.first_seen.min(observation.observed_at);
+        current.last_seen = current.last_seen.max(observation.observed_at);
+    } else if map.len() < MAX_AGGREGATES {
+        map.insert(
+            observation.key.clone(),
+            Aggregate {
+                key: observation.key,
+                count: 1,
+                first_seen: observation.observed_at,
+                last_seen: observation.observed_at,
+            },
+        );
+    } else {
+        record_overflow(&AGGREGATE_DROPS, "aggregate");
+    }
+}
+
+async fn flush(
+    state: &SharedState,
+    map: &mut HashMap<ObservationKey, Aggregate>,
+    publish_realtime: bool,
+) -> bool {
+    let Some(game_id) = map.keys().next().map(|key| key.game_id) else {
+        return true;
+    };
+    let keys = map
+        .keys()
+        .filter(|key| key.game_id == game_id)
+        .take(MAX_FLUSH)
+        .cloned()
+        .collect::<Vec<_>>();
+    if keys.is_empty() {
+        return true;
+    }
+    let rows = keys
+        .iter()
+        .filter_map(|key| map.get(key))
+        .map(|row| {
+            serde_json::json!({
+                "gameId": row.key.game_id,
+                "participationId": row.key.participation_id,
+                "challengeId": row.key.challenge_id,
+                "containerId": row.key.container_id,
+                "remoteIp": row.key.remote_ip,
+                "count": row.count,
+                "firstSeen": row.first_seen,
+                "lastSeen": row.last_seen,
+            })
+        })
+        .collect::<Vec<_>>();
+    let write = async {
+        let mut transaction = state.pg().begin().await.map_err(FlushError::Database)?;
+        // Lock one sorted participation set per challenge, not once per
+        // observation. This preserves the canonical evidence lock order while
+        // bounding round trips by the number of challenge scopes in the batch.
+        let mut scopes = BTreeMap::<i32, BTreeSet<i32>>::new();
+        for row in keys.iter().filter_map(|key| map.get(key)) {
+            scopes
+                .entry(row.key.challenge_id)
+                .or_default()
+                .insert(row.key.participation_id);
+        }
+        for (challenge_id, participation_ids) in scopes {
+            let participation_ids = participation_ids.into_iter().collect::<Vec<_>>();
+            let locked = crate::services::participation_evidence::lock_audit_insert_scope(
+                &mut transaction,
+                game_id,
+                Some(challenge_id),
+                &participation_ids,
+            )
+            .await
+            .map_err(|error| FlushError::Database(sqlx::Error::Protocol(error.to_string())))?;
+            if !locked {
+                return Err(FlushError::Sealed);
+            }
+        }
+        let ids = sqlx::query_scalar::<_, i32>(
+            r#"WITH input AS (
+                   SELECT * FROM jsonb_to_recordset($1::jsonb) AS row(
+                       "gameId" integer, "participationId" integer,
+                       "challengeId" integer, "containerId" uuid,
+                       "remoteIp" text, "count" bigint,
+                       "firstSeen" timestamptz, "lastSeen" timestamptz)
+               )
+               INSERT INTO "FlagEgressEvents"
+                   (game_id, participation_id, challenge_id, container_id,
+                    remote_ip, remote_port, hit_count, first_seen_utc, last_seen_utc)
+               SELECT row."gameId", row."participationId", row."challengeId",
+                      row."containerId", row."remoteIp", 0,
+                      LEAST(row."count", 2147483647)::integer,
+                      row."firstSeen", row."lastSeen" FROM input row
+               ON CONFLICT
+                   (game_id, participation_id, challenge_id,
+                    (COALESCE(container_id::text, ''::text)), remote_ip, remote_port)
+               DO UPDATE SET
+                   hit_count = LEAST("FlagEgressEvents".hit_count::bigint + EXCLUDED.hit_count, 2147483647)::integer,
+                   first_seen_utc = LEAST("FlagEgressEvents".first_seen_utc, EXCLUDED.first_seen_utc),
+                   last_seen_utc = GREATEST("FlagEgressEvents".last_seen_utc, EXCLUDED.last_seen_utc)
+               RETURNING id"#,
+        )
+        .bind(serde_json::Value::Array(rows))
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(FlushError::Database)?;
+        transaction.commit().await.map_err(FlushError::Database)?;
+        Ok::<_, FlushError>(ids)
+    };
+    match tokio::time::timeout(FLUSH_DEADLINE, write).await {
+        Ok(Ok(ids)) => {
+            for key in keys {
+                map.remove(&key);
+            }
+            if publish_realtime {
+                match tokio::time::timeout(
+                    FEED_PUBLICATION_DEADLINE,
+                    crate::services::flag_egress_feed::publish_committed_batch(
+                        state.pg(),
+                        &state.events,
+                        game_id,
+                        &ids,
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        tracing::debug!(game_id, %error, "flag-egress batch publication failed; HTTP backfill remains authoritative")
+                    }
+                    Err(_) => tracing::debug!(
+                        game_id,
+                        "flag-egress batch publication timed out; HTTP backfill remains authoritative"
+                    ),
+                }
+            }
+            true
+        }
+        Ok(Err(FlushError::Sealed)) => {
+            let dropped = keys
+                .iter()
+                .filter_map(|key| map.remove(key))
+                .map(|row| u64::try_from(row.count).unwrap_or(u64::MAX))
+                .fold(0_u64, u64::saturating_add);
+            record_overflow_count(&AGGREGATE_DROPS, "sealed", dropped);
+            true
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "flag-egress observation flush failed");
+            false
+        }
+        Err(_) => {
+            tracing::warn!("flag-egress observation flush timed out");
+            false
+        }
+    }
+}
+
+pub fn start_writer(
+    state: &SharedState,
+    mut shutdown: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    let receiver = state.flag_egress_observations.take_receiver();
+    let state = state.clone();
+    tokio::spawn(async move {
+        let Some(mut receiver) = receiver else {
+            tracing::warn!("flag-egress observation writer was started more than once");
+            return;
+        };
+        let mut aggregates = HashMap::new();
+        let mut flush_schedule = FlushSchedule::default();
+        let mut interval = tokio::time::interval(Duration::from_millis(250));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() { break; }
+                }
+                observation = receiver.recv() => {
+                    let Some(observation) = observation else { break; };
+                    aggregate(&mut aggregates, observation);
+                }
+                _ = interval.tick(), if flush_schedule.ready() => {
+                    flush_schedule.record_attempt();
+                    let succeeded = flush(&state, &mut aggregates, true).await;
+                    flush_schedule.record(succeeded);
+                },
+            }
+            if aggregates.len() >= MAX_AGGREGATES && flush_schedule.ready() {
+                flush_schedule.record_attempt();
+                let succeeded = flush(&state, &mut aggregates, true).await;
+                flush_schedule.record(succeeded);
+            }
+        }
+        while let Ok(observation) = receiver.try_recv() {
+            aggregate(&mut aggregates, observation);
+        }
+        for _ in 0..16 {
+            if aggregates.is_empty() {
+                break;
+            }
+            if !flush(&state, &mut aggregates, false).await {
+                FLUSH_FAILURES.fetch_add(1, Ordering::Relaxed);
+                break;
+            }
+        }
+        if !aggregates.is_empty() {
+            let dropped = aggregates
+                .values()
+                .map(|row| u64::try_from(row.count).unwrap_or(u64::MAX))
+                .fold(0_u64, u64::saturating_add);
+            record_overflow_count(&AGGREGATE_DROPS, "shutdown", dropped);
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queue_and_aggregate_memory_are_strictly_bounded() {
+        assert_eq!(QUEUE_CAPACITY, 2_048);
+        assert_eq!(MAX_AGGREGATES, 4_096);
+        assert_eq!(MAX_FLUSH, 256);
+    }
+
+    #[test]
+    fn retry_backoff_is_jittered_and_strictly_capped() {
+        assert_eq!(retry_delay(1, 0), Duration::from_millis(250));
+        assert!(retry_delay(2, 1) > retry_delay(2, 0));
+        for failure in 1..=64 {
+            assert!(retry_delay(failure, u64::MAX) <= MAX_FLUSH_BACKOFF);
+        }
+    }
+
+    #[test]
+    fn metrics_export_queue_occupancy_and_fixed_capacity() {
+        let queue = Queue::new();
+        let before = queue.metrics();
+        assert_eq!(before.queued, 0);
+        assert_eq!(before.queue_capacity, QUEUE_CAPACITY);
+        assert!(queue.enqueue(observation(1)));
+        assert_eq!(queue.metrics().queued, 1);
+    }
+
+    fn observation(index: u32) -> Observation {
+        Observation {
+            key: ObservationKey {
+                game_id: 1,
+                participation_id: 2,
+                challenge_id: 3,
+                container_id: Uuid::from_u128(u128::from(index)),
+                remote_ip: "192.0.2.10".to_owned(),
+            },
+            observed_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn fixed_rate_reconnect_bursts_coalesce_and_never_expand_the_bound() {
+        let mut map = HashMap::new();
+        for _ in 0..10_000 {
+            aggregate(&mut map, observation(1));
+        }
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.values().next().unwrap().count, 10_000);
+
+        for index in 0..10_000 {
+            aggregate(&mut map, observation(index));
+        }
+        assert_eq!(map.len(), MAX_AGGREGATES);
+    }
+}

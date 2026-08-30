@@ -151,6 +151,7 @@ mod m0272_event_sensor_batches;
 mod m0273_receipt_variant_lifecycle;
 mod m0280_traffic_capture_inventory;
 mod m0281_anticheat_read_bounds;
+mod m0290_distributed_proxy_admission;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -318,6 +319,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0273_receipt_variant_lifecycle::Migration),
             Box::new(m0280_traffic_capture_inventory::Migration),
             Box::new(m0281_anticheat_read_bounds::Migration),
+            Box::new(m0290_distributed_proxy_admission::Migration),
         ]
     }
 }
@@ -463,7 +465,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 29..],
+            &names[names.len() - 30..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -494,6 +496,7 @@ mod tests {
                 "m0273_receipt_variant_lifecycle",
                 "m0280_traffic_capture_inventory",
                 "m0281_anticheat_read_bounds",
+                "m0290_distributed_proxy_admission",
             ]
         );
     }
