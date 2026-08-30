@@ -248,6 +248,24 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: settings branding retention sweep failed: {e}"),
     }
 
+    match crate::controllers::edit::recover_bulk_delete_jobs(state).await {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: resumed bounded bulk challenge deletion(s)"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("cron: bulk challenge deletion recovery failed: {e}"),
+    }
+
+    match crate::controllers::team::recover_pending_invite_rotations(state, 8).await {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: reconciled pending invite rotation(s)"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("cron: invite rotation recovery failed: {e}"),
+    }
+
+    match crate::services::admin_mutation_retention::purge_expired(state.pg(), 128).await {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: purged retained admin mutation operation(s)"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("cron: admin mutation retention sweep failed: {e}"),
+    }
+
     match crate::services::git_sync::collect_stale_checker_revisions(state).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: collected stale checker revision(s)"),
         Ok(_) => {}

@@ -23,6 +23,7 @@ pub use audit::{
     list_challenge_build_statuses, rebuild_challenge,
 };
 pub use bulk::mutate_challenges_bulk;
+pub(crate) use bulk::recover_delete_jobs as recover_bulk_delete_jobs;
 pub(crate) use deletion::reject_pending_mutation;
 pub(crate) use lifecycle::destroy_challenge_containers;
 use lifecycle::destroy_test_container_locked;

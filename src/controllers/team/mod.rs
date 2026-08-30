@@ -36,6 +36,7 @@ mod roster_policy;
 mod signature;
 pub(crate) use account_lifecycle::{create_team_rows, transfer_captain_locked};
 pub use avatar::avatar;
+pub(crate) use invite::recover_pending_invite_rotations;
 pub use invite::{invite_code, update_invite_token};
 pub use models::*;
 pub(crate) use revocation::{

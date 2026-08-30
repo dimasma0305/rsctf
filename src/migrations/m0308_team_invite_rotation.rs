@@ -43,6 +43,9 @@ CREATE TABLE IF NOT EXISTS "TeamInviteOperations" (
 CREATE INDEX IF NOT EXISTS ix_team_invite_operations_retention
     ON "TeamInviteOperations" (created_at_utc, team_id, operation_id)
     WHERE reconciled_at_utc IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_team_invite_operations_pending
+    ON "TeamInviteOperations" (created_at_utc, team_id, operation_id)
+    WHERE reconciled_at_utc IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_team_invite_operations_revision
     ON "TeamInviteOperations" (team_id, result_revision);
 "#;
@@ -80,5 +83,6 @@ mod tests {
         assert!(UP_SQL.contains("result_revision = expected_revision + 1"));
         assert!(UP_SQL.contains("reconciled_at_utc"));
         assert!(UP_SQL.contains("WHERE reconciled_at_utc IS NOT NULL"));
+        assert!(UP_SQL.contains("WHERE reconciled_at_utc IS NULL"));
     }
 }

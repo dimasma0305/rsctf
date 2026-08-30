@@ -944,6 +944,7 @@ impl ManagerInfoModel {
 mod ad;
 mod builds;
 mod challenges;
+pub(crate) use challenges::recover_bulk_delete_jobs;
 mod deletion_locks;
 mod divisions;
 mod event_security;

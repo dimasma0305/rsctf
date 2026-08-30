@@ -623,6 +623,13 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
+            r#"INSERT INTO "GameChallenges" (id, game_id, "Type", flag_template)
+               VALUES (12, 1, 3, '')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
             r#"INSERT INTO "FlagContexts" (challenge_id, flag)
                VALUES (10, 'flag{same}'), (10, 'flag{same}'), (11, $1)"#,
         )
@@ -664,6 +671,43 @@ mod tests {
                 .await
                 .unwrap();
         assert!(!invalid_challenge_enabled);
+        let default_template: (bool, Option<String>) = sqlx::query_as(
+            r#"SELECT is_enabled, flag_template FROM "GameChallenges" WHERE id = 12"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(default_template, (true, None));
+        sqlx::query(
+            r#"INSERT INTO "GameChallenges" (id, game_id, "Type", flag_template)
+               VALUES (13, 1, 0, '')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(r#"UPDATE "GameChallenges" SET "Type" = 3 WHERE id = 13"#)
+            .execute(&pool)
+            .await
+            .expect("the runtime default empty template must survive a type transition");
+        sqlx::query(
+            r#"INSERT INTO "GameChallenges" (id, game_id, "Type", flag_template)
+               VALUES (14, 1, 0, ' ')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let invalid_transition =
+            sqlx::query(r#"UPDATE "GameChallenges" SET "Type" = 3 WHERE id = 14"#)
+                .execute(&pool)
+                .await
+                .unwrap_err();
+        assert_eq!(
+            invalid_transition
+                .as_database_error()
+                .and_then(|error| error.code())
+                .as_deref(),
+            Some("23514")
+        );
 
         let duplicate_flag = sqlx::query(
             r#"INSERT INTO "FlagContexts" (challenge_id, flag) VALUES (10, 'flag{same}')"#,

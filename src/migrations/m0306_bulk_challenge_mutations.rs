@@ -95,6 +95,10 @@ CREATE INDEX IF NOT EXISTS ix_bulk_challenge_mutations_retention
 CREATE INDEX IF NOT EXISTS ix_bulk_challenge_mutations_recovery
     ON "BulkChallengeMutationOperations" (lease_expires_at_utc, game_id, operation_id)
     WHERE state = 1;
+CREATE INDEX IF NOT EXISTS ix_bulk_challenge_mutations_abandoned
+    ON "BulkChallengeMutationOperations" (created_at_utc, lease_expires_at_utc,
+                                           game_id, operation_id)
+    WHERE state IN (0, 1);
 "#;
 
 const DOWN_SQL: &str = r#"
@@ -133,5 +137,6 @@ mod tests {
         assert!(UP_SQL.contains("PRIMARY KEY (game_id, operation_id)"));
         assert!(UP_SQL.contains("CARDINALITY(challenge_ids) BETWEEN 1 AND 100"));
         assert!(UP_SQL.contains("jsonb_array_length(result) <= 100"));
+        assert!(UP_SQL.contains("ix_bulk_challenge_mutations_abandoned"));
     }
 }

@@ -103,6 +103,40 @@ async fn reconcile_invite_rotation(
         .map_err(|error| AppError::internal(error.to_string()))
 }
 
+/// Retry a bounded page of committed invite rotations whose aggregate BYOC
+/// teardown did not finish before the originating request ended. PostgreSQL
+/// advisory ownership inside `reconcile_invite_rotation` keeps this safe when
+/// several replicas observe the same pending row.
+pub(crate) async fn recover_pending_invite_rotations(
+    st: &SharedState,
+    limit: i64,
+) -> AppResult<u64> {
+    let rows = sqlx::query_as::<_, (i32, Uuid)>(
+        r#"SELECT team_id, operation_id
+             FROM "TeamInviteOperations"
+            WHERE reconciled_at_utc IS NULL
+            ORDER BY created_at_utc, team_id, operation_id
+            LIMIT $1"#,
+    )
+    .bind(limit.clamp(1, 16))
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut recovered = 0_u64;
+    for (team_id, operation_id) in rows {
+        match reconcile_invite_rotation(st, team_id, operation_id).await {
+            Ok(()) => recovered = recovered.saturating_add(1),
+            Err(error) => tracing::warn!(
+                %error,
+                team_id,
+                %operation_id,
+                "invite rotation reconciliation remains pending"
+            ),
+        }
+    }
+    Ok(recovered)
+}
+
 /// `PUT /api/team/{id}/invite` — regenerate the invite token (captain only).
 pub async fn update_invite_token(
     State(st): State<SharedState>,

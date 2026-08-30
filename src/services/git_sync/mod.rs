@@ -465,8 +465,7 @@ pub(super) async fn import_manifest_inner(
             .as_deref()
             .unwrap_or_default()
             .iter()
-            .map(|flag| flag.trim().to_string())
-            .filter(|flag| !flag.is_empty())
+            .cloned()
             .collect::<Vec<_>>()
     };
     requested_static_flags.sort();

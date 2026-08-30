@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS "FlagImportOperations" (
 CREATE INDEX IF NOT EXISTS ix_flag_import_operations_retention
     ON "FlagImportOperations" (completed_at_utc, challenge_id, operation_id)
     WHERE state = 1;
+CREATE INDEX IF NOT EXISTS ix_flag_import_operations_abandoned
+    ON "FlagImportOperations" (created_at_utc, lease_expires_at_utc,
+                               challenge_id, operation_id)
+    WHERE state = 0;
 ALTER TABLE "FlagContexts"
     ADD COLUMN IF NOT EXISTS canonical_identity_enforced BOOLEAN NOT NULL DEFAULT TRUE;
 WITH ranked AS (
@@ -62,6 +66,16 @@ CREATE TABLE IF NOT EXISTS "FlagPolicyViolations" (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_flag_policy_violations_identity
     ON "FlagPolicyViolations"
        (challenge_id, violation_type, COALESCE(flag_context_id, 0));
+
+-- Empty author input has always selected the bounded default generator, and
+-- the editor already persists that state as NULL. Canonicalize equivalent
+-- legacy whitespace-only rows before auditing so a harmless representation
+-- mismatch cannot disable an otherwise valid challenge.
+UPDATE "GameChallenges"
+   SET flag_template = NULL
+ WHERE "Type" = 3
+   AND flag_template IS NOT NULL
+   AND flag_template ~ '^[[:space:]]*$';
 
 INSERT INTO "FlagPolicyViolations"
     (challenge_id, flag_context_id, violation_type, observed_bytes)
@@ -117,9 +131,10 @@ SELECT challenge.id, NULL, 'dynamic_template',
                - LENGTH(REPLACE(challenge.flag_template, '[TEAM_HASH]', '')))
              / LENGTH('[TEAM_HASH]')
            ) AS expanded_bytes
-  FROM "GameChallenges" challenge
+ FROM "GameChallenges" challenge
  WHERE challenge."Type" = 3
    AND challenge.flag_template IS NOT NULL
+   AND challenge.flag_template <> ''
    AND (
        challenge.flag_template ~ '(^[[:space:]])|([[:space:]]$)'
        OR NOT (
@@ -206,6 +221,7 @@ BEGIN
           CHECK (
               "Type" <> 3
               OR flag_template IS NULL
+              OR flag_template = ''
               OR (
                   flag_template !~ '(^[[:space:]])|([[:space:]]$)'
                   AND (
@@ -277,6 +293,7 @@ mod tests {
         assert!(UP_SQL.contains("PRIMARY KEY (challenge_id, operation_id)"));
         assert!(UP_SQL.contains("lease_token       UUID NOT NULL"));
         assert!(UP_SQL.contains("inserted_count <= 100"));
+        assert!(UP_SQL.contains("ix_flag_import_operations_abandoned"));
         assert!(
             UP_SQL.contains("CREATE UNIQUE INDEX IF NOT EXISTS ux_flag_contexts_challenge_flag")
         );
@@ -298,6 +315,8 @@ mod tests {
 
     #[test]
     fn database_template_formula_matches_runtime_replacement_deltas() {
+        assert!(UP_SQL.contains("flag_template ~ '^[[:space:]]*$'"));
+        assert!(UP_SQL.contains("OR flag_template = ''"));
         assert!(UP_SQL.contains("+ 30::BIGINT *"));
         assert!(UP_SQL.contains("REPLACE(flag_template, '[GUID]', '')"));
         assert!(UP_SQL.contains("REPLACE(flag_template, '[UUID]', '')"));

@@ -63,7 +63,7 @@ pub(super) fn validate_pending_manifest(model: &ChallengeYaml) -> AppResult<()> 
         )));
     }
     for flag in model.flags.as_deref().unwrap_or_default() {
-        crate::utils::flag_policy::validate_normal(flag.trim())
+        crate::utils::flag_policy::validate_normal(flag)
             .map_err(|error| AppError::bad_request(error.to_string()))?;
     }
     if model
@@ -137,6 +137,8 @@ mod tests {
         assert!(validate_pending_manifest(&manifest).is_err());
         manifest.flags = Some(vec!["界".repeat(43)]);
         assert!(validate_pending_manifest(&manifest).is_err());
+        manifest.flags = Some(vec![" flag{not-canonical}".to_string()]);
+        assert!(validate_pending_manifest(&manifest).is_err());
     }
 
     #[test]
@@ -151,6 +153,12 @@ mod tests {
             ChallengeType::StaticAttachment,
             None,
             &["x".repeat(128)],
+        )
+        .is_err());
+        assert!(validate_flag_definition(
+            ChallengeType::StaticAttachment,
+            None,
+            &["flag{not-canonical} ".to_string()],
         )
         .is_err());
         assert!(validate_flag_definition(
