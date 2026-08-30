@@ -207,6 +207,36 @@ async fn configured_service_port_orients_high_port_response_first_capture() {
     let _ = std::fs::remove_file(path);
 }
 
+#[tokio::test]
+async fn ambiguous_service_port_flow_does_not_discard_valid_capture_flows() {
+    let path = scratch("ambiguous-service-port");
+    let ambiguous_peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 8, 0, 10)), 8_080);
+    let container = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(172, 20, 0, 10)), 8_080);
+    let valid_peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 8, 0, 11)), 41_234);
+    write_capture(
+        &path,
+        &[
+            packet(ambiguous_peer, container, b"ambiguous-one", 10),
+            packet(container, ambiguous_peer, b"ambiguous-two", 11),
+            packet(valid_peer, container, b"valid-request", 12),
+            packet(container, valid_peer, b"valid-response", 13),
+        ],
+    )
+    .unwrap();
+
+    let snapshot = load_flow_snapshot(&path, container.port(), None)
+        .await
+        .unwrap();
+    assert_eq!(snapshot.flows().len(), 1);
+    let flow = &snapshot.flows()[0];
+    assert_eq!(flow.connection_port, valid_peer.port());
+    assert_eq!(flow.peer_ip, valid_peer.ip().to_string());
+    assert_eq!((flow.packets_out, flow.packets_in), (1, 1));
+    assert_eq!(flow.chunks[0].payload, b"valid-request");
+    assert_eq!(flow.chunks[1].payload, b"valid-response");
+    let _ = std::fs::remove_file(path);
+}
+
 #[test]
 fn an_active_parse_version_cannot_be_registered_twice() {
     let version = format!("active-{}", uuid::Uuid::new_v4());
