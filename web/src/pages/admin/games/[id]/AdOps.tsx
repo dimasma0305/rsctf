@@ -62,8 +62,10 @@ import { useLocation, useNavigate, useParams } from 'react-router'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
 import { KothOpsPanel } from '@Components/admin/KothOpsPanel'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
-import { useServerNow } from '@Utils/ServerClock'
 import { controlJobResultCount, createOperationId, waitForControlJob } from '@Utils/ControlJobs'
+import { httpErrorStatus } from '@Utils/HttpError'
+import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
+import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { highlight } from '@Utils/marked/ShikiExtension'
@@ -875,6 +877,13 @@ const AdOps: FC = () => {
   const scoringCommandRef = useRef<Promise<void> | null>(null)
   const ensureJobRef = useRef<Promise<void> | null>(null)
   const ensureAbortRef = useRef(new AbortController())
+  const ensureContainersKey = useRef<{ gameId: number; owner: RetryableOperationKey } | null>(null)
+  if (ensureContainersKey.current?.gameId !== numId) {
+    ensureContainersKey.current = {
+      gameId: numId,
+      owner: new RetryableOperationKey(undefined, `rsctf:ad-ensure-containers:${numId}`),
+    }
+  }
   useEffect(() => () => ensureAbortRef.current.abort(), [])
   // Which side of the console is showing. A&D vs KotH challenges are disjoint
   // sets in a game; the switch only appears when both exist (see showViewSwitch).
@@ -974,7 +983,8 @@ const AdOps: FC = () => {
 
   const ensureContainers = async () => {
     if (ensureJobRef.current) return ensureJobRef.current
-    const operationId = createOperationId()
+    const operationOwner = ensureContainersKey.current!.owner
+    const operationId = operationOwner.claim()
     const task = (async () => {
       setBusy(true)
       try {
@@ -982,6 +992,7 @@ const AdOps: FC = () => {
         try {
           job = (await api.edit.editAdEnsureContainers(numId, operationId)).data
         } catch (startError) {
+          if (httpErrorStatus(startError) === 409) throw startError
           try {
             job = (await api.eventSecurity.getControlJobByOperation(operationId)).data
           } catch {
@@ -989,6 +1000,7 @@ const AdOps: FC = () => {
           }
         }
         const completed = await waitForControlJob(job, ensureAbortRef.current.signal)
+        operationOwner.complete(operationId)
         const launched = controlJobResultCount(completed, 'launched')
         const failures = controlJobResultCount(completed, 'failures')
         showNotification({
@@ -1003,6 +1015,7 @@ const AdOps: FC = () => {
         })
         await Promise.all([mutate(), mutateKoth()])
       } catch (e) {
+        if (httpErrorStatus(e) === 409) operationOwner.complete(operationId)
         if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
       } finally {
         setBusy(false)
@@ -1050,9 +1063,7 @@ const AdOps: FC = () => {
               ).data
             } catch (error) {
               if (controller.signal.aborted) throw error
-              job = (
-                await api.eventSecurity.getControlJobByOperation(operationId, { signal: controller.signal })
-              ).data
+              job = (await api.eventSecurity.getControlJobByOperation(operationId, { signal: controller.signal })).data
             }
             await waitForControlJob(job, controller.signal)
             showNotification({

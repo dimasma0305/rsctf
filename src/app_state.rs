@@ -20,6 +20,9 @@ pub struct AppState {
     pub cache: Arc<dyn Cache>,
     pub storage: Arc<dyn BlobStorage>,
     pub token: TokenService,
+    /// Single-flight public captcha-policy snapshot. Authentication itself
+    /// always revalidates against the authoritative transactional policy.
+    pub captcha_settings: crate::services::captcha::CaptchaSettingsSnapshot,
     pub containers: Arc<dyn ContainerManager>,
     /// Bounded, short-lived dependency readiness cache for `/healthz`.
     pub readiness: ReadinessProbe,
@@ -153,6 +156,7 @@ impl AppState {
             cache,
             storage,
             token,
+            captcha_settings: Default::default(),
             containers,
             readiness: ReadinessProbe::new(),
             topology,

@@ -156,6 +156,7 @@ impl IntoResponse for AppError {
         };
         let retry_after = match &self {
             AppError::RetryableUnavailable { retry_after, .. } => Some(*retry_after),
+            AppError::TooManyRequests => Some(1),
             _ => None,
         };
         let mut response = (status, Json(body)).into_response();
@@ -187,6 +188,13 @@ mod tests {
     #[test]
     fn overload_retry_delay_never_serializes_as_zero() {
         let response = AppError::overloaded("capacity is busy", 0).into_response();
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "1");
+    }
+
+    #[test]
+    fn fail_fast_overload_includes_retry_after() {
+        let response = AppError::TooManyRequests.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "1");
     }
 }

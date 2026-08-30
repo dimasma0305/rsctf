@@ -4274,7 +4274,8 @@ export interface SignatureVerifyModel {
    */
   teamToken: string;
   /**
-   * Game public key, Base64 encoded
+   * Canonical stored game public key, Base64 encoded. Verification also
+   * requires a live accepted participation for the signed team.
    * @minLength 1
    */
   publicKey: string;
@@ -7710,13 +7711,27 @@ export class Api<
      * @name EditAdEnsureContainers
      * @request POST:/api/edit/games/{id}/ad/EnsureContainers
      */
-    editAdEnsureContainers: (id: number, operationId: string, params: RequestParams = {}) =>
-      this.request<ControlJobModel, RequestResponse>({
+    editAdEnsureContainers: (
+      id: number,
+      operationIdOrParams?: string | RequestParams,
+      params: RequestParams = {},
+    ) => {
+      const operationId =
+        typeof operationIdOrParams === "string" ? operationIdOrParams : undefined;
+      const requestParams =
+        typeof operationIdOrParams === "string"
+          ? params
+          : operationIdOrParams ?? params;
+      return this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/ad/EnsureContainers`,
         method: "POST",
-        ...params,
-        headers: { ...params.headers, "Idempotency-Key": operationId },
-      }),
+        ...requestParams,
+        headers: {
+          ...requestParams.headers,
+          ...(operationId ? { "Idempotency-Key": operationId } : {}),
+        },
+      });
+    },
 
     /**
      * @description A&D — pause/resume scoring for the whole game (freezes round advance + checks).
