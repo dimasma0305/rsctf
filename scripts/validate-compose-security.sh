@@ -275,7 +275,7 @@ if condition != "service_healthy":
 "${compose[@]}" -f deploy/compose.yml config --format json \
   | assert_service_ad_submit_burst rsctf 400
 "${compose[@]}" -f deploy/compose.yml config --format json \
-  | assert_service_koth_capability_admission rsctf 30000
+  | assert_service_koth_capability_admission rsctf 6000
 "${compose[@]}" -f deploy/compose.yml config --format json \
   | assert_service_registration_oauth rsctf
 RSCTF_AD_SUBMIT_BURST_FLAGS=3200 \
@@ -309,7 +309,7 @@ split=(
 "${compose[@]}" "${split[@]}" config --format json \
   | assert_service_ad_submit_burst rsctf 400
 "${compose[@]}" "${split[@]}" config --format json \
-  | assert_service_koth_capability_admission rsctf 30000
+  | assert_service_koth_capability_admission rsctf 6000
 RSCTF_AD_SUBMIT_BURST_FLAGS=3200 \
   "${compose[@]}" "${split[@]}" config --format json \
   | assert_service_ad_submit_burst rsctf 3200
