@@ -72,8 +72,9 @@ pub struct AppState {
 }
 
 /// One real-time message: which client hub method to invoke, which game it
-/// belongs to (for per-connection filtering; `None` = broadcast to all games),
-/// and the already-shaped JSON payload that becomes the invocation argument.
+/// belongs to, and the already-shaped JSON payload that becomes the invocation
+/// argument. Game-facing targets require `Some(game_id)`; `None` is reserved
+/// for explicitly cataloged global/internal targets.
 #[derive(Clone, Debug)]
 pub struct HubEvent {
     pub target: &'static str,

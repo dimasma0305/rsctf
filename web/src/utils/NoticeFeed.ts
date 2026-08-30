@@ -8,6 +8,12 @@ export interface NoticePushResult {
   rows: GameNotice[]
 }
 
+/** Drop the socket-owned copy before an authoritative update/delete refresh.
+ * A deleted row is absent from the HTTP snapshot, so generic reconciliation
+ * cannot distinguish it from a live row that arrived after the snapshot. */
+export const invalidateGameNotice = (id: number, live: readonly GameNotice[]) =>
+  live.filter((notice) => notice.id !== id)
+
 const noticeIdentity = (notice: GameNotice) => notice.id
 
 const compareGameNotices = (left: GameNotice, right: GameNotice) => {

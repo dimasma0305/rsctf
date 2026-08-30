@@ -1,7 +1,7 @@
 // Worst-case: a mass BYOC reconnect storm. Bring up N tunnels, then RESTART rsctf so
-// every agent's WebSocket drops and they all reconnect on their 3s backoff at once —
-// the nastiest realistic event (an operator redeploy/crash mid-game). Measures whether
-// rsctf stays responsive (/livez) and dependency-ready (/healthz) through the storm.
+// every agent's WebSocket drops at the same instant — the nastiest realistic event
+// (an operator redeploy/crash mid-game). Assert that client jitter spreads successful
+// reconnects while rsctf stays responsive (/livez) and dependency-ready (/healthz).
 //   `N=120 npm run worst-case`
 import { execFileSync } from 'node:child_process';
 import { assertByocRestartTarget } from './byoc-harness.js';
@@ -36,19 +36,38 @@ function verifyAgentReconnects(sinceMs, expected) {
     throw new Error(`reconnect evidence expected ${expected} relay containers, found ${names.length}`);
   }
   const since = new Date(sinceMs).toISOString();
+  const connectedAt = [];
   for (const name of names) {
     const inspected = checkedDocker(['inspect', name], `inspect reconnected BYOC relay ${name}`);
     const [resource] = JSON.parse(inspected.stdout);
     if (!resource?.State?.Running) throw new Error(`BYOC relay ${name} stopped during reconnect`);
     const logs = checkedDocker(
-      ['logs', '--since', since, name],
+      ['logs', '--timestamps', '--since', since, name],
       `read reconnect evidence from BYOC relay ${name}`,
     );
-    if (!/tunnel connected/i.test(`${logs.stdout}\n${logs.stderr}`)) {
+    const lines = `${logs.stdout}\n${logs.stderr}`
+      .split('\n')
+      .filter((line) => /tunnel connected/i.test(line));
+    if (lines.length === 0) {
       throw new Error(`BYOC relay ${name} did not record a fresh tunnel connection after restart`);
     }
+    const timestamp = Date.parse(lines.at(-1).trim().split(/\s+/, 1)[0]);
+    if (!Number.isFinite(timestamp) || timestamp < sinceMs) {
+      throw new Error(`BYOC relay ${name} emitted unusable reconnect timing evidence`);
+    }
+    connectedAt.push(timestamp);
   }
-  return names.length;
+  const spreadMs = Math.max(...connectedAt) - Math.min(...connectedAt);
+  const minimumSpreadMs = Number(process.env.MIN_RECONNECT_SPREAD_MS || 250);
+  if (!Number.isSafeInteger(minimumSpreadMs) || minimumSpreadMs < 0 || minimumSpreadMs > 30_000) {
+    throw new Error('MIN_RECONNECT_SPREAD_MS must be an integer between 0 and 30000');
+  }
+  if (expected >= 20 && spreadMs < minimumSpreadMs) {
+    throw new Error(
+      `BYOC reconnect cohort collapsed into ${spreadMs}ms (minimum ${minimumSpreadMs}ms)`,
+    );
+  }
+  return { count: names.length, spreadMs };
 }
 
 function health(path) {
@@ -91,7 +110,7 @@ async function main() {
 
   await sleep(2000);
   const t0 = Date.now();
-  console.log('  RESTARTING rsctf → all agents reconnect on 3s backoff, at once ...');
+  console.log('  RESTARTING rsctf → all agent sockets drop on one synchronized clock ...');
   let reconnectError;
   let reconnectSeconds;
   try {
@@ -101,9 +120,12 @@ async function main() {
       throw new Error(`${RSCTF} did not preserve identity and advance StartedAt across restart`);
     }
     await byoc.waitTunnels(N, 60);
-    verifyAgentReconnects(t0, N);
+    const reconnectEvidence = verifyAgentReconnects(t0, N);
     reconnectSeconds = ((Date.now() - t0) / 1000) | 0;
-    console.log(`  exactly ${N} tunnels re-registered at T0+${reconnectSeconds}s`);
+    console.log(
+      `  exactly ${reconnectEvidence.count} tunnels re-registered at T0+${reconnectSeconds}s ` +
+        `across ${reconnectEvidence.spreadMs}ms`,
+    );
   } catch (error) {
     reconnectError = error;
   }

@@ -1,20 +1,13 @@
 import { Alert, Badge, Button, CopyButton, Group, Loader, Stack, Text, Tooltip } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
-import {
-  mdiAlertCircleOutline,
-  mdiConsole,
-  mdiDownload,
-  mdiRefresh,
-  mdiRestart,
-  mdiServerNetwork,
-} from '@mdi/js'
+import { mdiAlertCircleOutline, mdiConsole, mdiDownload, mdiRefresh, mdiRestart, mdiServerNetwork } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
-import { showErrorMsg } from '@Utils/Shared'
 import { createOperationId, waitForControlJob } from '@Utils/ControlJobs'
+import { showErrorMsg } from '@Utils/Shared'
 import { useChallengePolling } from '@Hooks/useChallengePolling'
 import api, { AdSshKeyInfoModel, AdStateModel, AdTeamServiceStateModel } from '@Api'
 import misc from '@Styles/Misc.module.css'
@@ -38,6 +31,9 @@ interface AdChallengePanelProps {
   gameId: number
   challengeId: number
   active: boolean
+  /** Authoritative challenge ownership from the player challenge DTO. This is
+   * available before the first BYOC agent creates a team-service row. */
+  selfHosted?: boolean
   /**
    * Render ONLY the post-game snapshot (service backup) download, hiding the
    * live defending/SSH/reset state. Used after the game ends in practice mode,
@@ -47,6 +43,68 @@ interface AdChallengePanelProps {
   snapshotOnly?: boolean
 }
 
+interface ByocEnrollmentProps {
+  gameId: number
+  challengeId: number
+  waitingForFirstConnection?: boolean
+}
+
+const ByocEnrollment: FC<ByocEnrollmentProps> = ({ gameId, challengeId, waitingForFirstConnection }) => {
+  const { t } = useTranslation()
+  return (
+    <Alert
+      icon={<Icon path={mdiServerNetwork} size={1} aria-hidden="true" />}
+      color="blue"
+      variant="light"
+      p="xs"
+      title={waitingForFirstConnection ? t('game.content.ad.byoc.setup_title', 'Set up your BYOC service') : undefined}
+    >
+      <Stack gap={6}>
+        <Text size="xs">
+          {waitingForFirstConnection
+            ? t(
+                'game.content.ad.byoc.waiting_description',
+                'This is a self-hosted BYOC challenge; RSCTF will not provision a service container. Download setup.sh and run it on your service host. Its agent connects outbound and registers your service here.'
+              )
+            : t(
+                'game.content.ad.byoc.description',
+                'Self-hosted challenge — run it on a dedicated machine. Download setup.sh and run `sh setup.sh`: it pulls the service and connects with one outbound connection. The script contains team credentials; keep it private and delete the downloaded copy after setup.'
+              )}
+        </Text>
+        <Group gap="xs" wrap="wrap">
+          <Button
+            component="a"
+            href={`/api/Game/${gameId}/Ad/Byoc/Setup/${challengeId}`}
+            download
+            size="compact-xs"
+            variant="light"
+            leftSection={<Icon path={mdiDownload} size={0.7} aria-hidden="true" />}
+          >
+            {t('game.button.ad.byoc.download', 'Download setup.sh')}
+          </Button>
+          <Tooltip
+            label={t(
+              'game.tooltip.ad.byoc.byo',
+              'Prefer to run your own modified service instead of the one we ship? Get a docker-compose to fill in.'
+            )}
+          >
+            <Button
+              component="a"
+              href={`/api/Game/${gameId}/Ad/Byoc/Compose/${challengeId}`}
+              download
+              size="compact-xs"
+              variant="subtle"
+              color="gray"
+            >
+              {t('game.button.ad.byoc.byo', 'Bring your own service')}
+            </Button>
+          </Tooltip>
+        </Group>
+      </Stack>
+    </Alert>
+  )
+}
+
 /**
  * Per-challenge A&amp;D status block: container IP+port, the current flag the
  * team should defend, the latest health-check verdict, and a reset-to-baseline
@@ -54,7 +112,13 @@ interface AdChallengePanelProps {
  * Toolkit modal (sidebar button) so this panel only shows live per-team
  * operational state.
  */
-export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeId, active, snapshotOnly }) => {
+export const AdChallengePanel: FC<AdChallengePanelProps> = ({
+  gameId,
+  challengeId,
+  active,
+  selfHosted = false,
+  snapshotOnly,
+}) => {
   const { t } = useTranslation()
   const stateRequest = useCallback(
     async (signal: AbortSignal) => {
@@ -92,6 +156,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
   useEffect(() => () => resetAbortRef.current?.abort(), [])
 
   const service: AdTeamServiceStateModel | undefined = adState?.services.find((s) => s.challengeId === challengeId)
+  const isSelfHosted = selfHosted || service?.selfHosted === true
 
   // The team's post-game service backup (the defended container, as a loadable
   // Docker image). Stays available after the game ends so players can keep it.
@@ -234,9 +299,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
           ).data
         } catch (error) {
           if (controller.signal.aborted) throw error
-          job = (
-            await api.game.gameAdResetJobByOperation(gameId, operationId, { signal: controller.signal })
-          ).data
+          job = (await api.game.gameAdResetJobByOperation(gameId, operationId, { signal: controller.signal })).data
         }
         await waitForControlJob(
           job,
@@ -274,7 +337,9 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
   }
 
   if (!service) {
-    const noService = (
+    const missingService = isSelfHosted ? (
+      <ByocEnrollment gameId={gameId} challengeId={challengeId} waitingForFirstConnection />
+    ) : (
       <Alert
         icon={<Icon path={mdiAlertCircleOutline} size={1} aria-hidden="true" />}
         color="orange"
@@ -286,11 +351,11 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
         )}
       </Alert>
     )
-    if (!stateFailure) return noService
+    if (!stateFailure) return missingService
     return (
       <Stack gap="xs">
         {stateFailure}
-        {noService}
+        {missingService}
       </Stack>
     )
   }
@@ -314,7 +379,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
         {/* Reset rebuilds an RSCTF-hosted container. For self-hosted (BYOC) the
             real container lives on the team's machine — they reset it there — so
             the relay reset would only confuse; hide it. */}
-        {!service.selfHosted && (
+        {!isSelfHosted && (
           <Tooltip
             label={
               !service.canReset && service.resetCooldownSecondsRemaining
@@ -341,47 +406,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
         )}
       </Group>
 
-      {service.selfHosted && (
-        <Alert icon={<Icon path={mdiServerNetwork} size={1} />} color="blue" variant="light" p="xs">
-          <Stack gap={6}>
-            <Text size="xs">
-              {t(
-                'game.content.ad.byoc.description',
-                'Self-hosted challenge — run it on a dedicated machine. Download setup.sh and run `sh setup.sh`: it pulls the service and connects with one outbound connection. The script contains team credentials; keep it private and delete the downloaded copy after setup.'
-              )}
-            </Text>
-            <Group gap="xs">
-              <Button
-                component="a"
-                href={`/api/Game/${gameId}/Ad/Byoc/Setup/${challengeId}`}
-                download
-                size="compact-xs"
-                variant="light"
-                leftSection={<Icon path={mdiDownload} size={0.7} />}
-              >
-                {t('game.button.ad.byoc.download', 'Download setup.sh')}
-              </Button>
-              <Tooltip
-                label={t(
-                  'game.tooltip.ad.byoc.byo',
-                  'Prefer to run your own modified service instead of the one we ship? Get a docker-compose to fill in.'
-                )}
-              >
-                <Button
-                  component="a"
-                  href={`/api/Game/${gameId}/Ad/Byoc/Compose/${challengeId}`}
-                  download
-                  size="compact-xs"
-                  variant="subtle"
-                  color="gray"
-                >
-                  {t('game.button.ad.byoc.byo', 'Bring your own service')}
-                </Button>
-              </Tooltip>
-            </Group>
-          </Stack>
-        </Alert>
-      )}
+      {isSelfHosted && <ByocEnrollment gameId={gameId} challengeId={challengeId} />}
 
       {service.containerIp && (
         <Group gap={6} align="center" wrap="nowrap">
@@ -477,7 +502,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
 
       {/* SSH-jump reaches the RSCTF-hosted container; for self-hosted (BYOC) there
           is none (the team's service is on their own machine), so hide the hint. */}
-      {!service.selfHosted && renderSshHint()}
+      {!isSelfHosted && renderSshHint()}
 
       {snapshotDownload}
     </Stack>

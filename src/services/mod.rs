@@ -34,6 +34,7 @@ pub mod k8s;
 pub(crate) mod live_roster;
 pub mod mail;
 pub(crate) mod monitor_export;
+pub mod notice_delivery;
 pub(crate) mod oauth_config;
 pub(crate) mod participation_evidence;
 pub mod proxy_admission;

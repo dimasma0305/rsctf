@@ -105,6 +105,10 @@ fn token(team_secret: &str) -> String {
     super::super::byoc::byoc_token("adbyocimage:", "game-secret", team_secret, 11, 13)
 }
 
+fn agent_token(team_secret: &str) -> String {
+    super::super::byoc::byoc_token("adbyocagent:", "game-secret", team_secret, 11, 13)
+}
+
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn roster_revocation_waits_until_capability_fence_releases() {
@@ -220,5 +224,62 @@ async fn pending_game_or_challenge_cannot_issue_a_byoc_grant() {
             .is_none(),
         "a deletion-pending game issued a fresh BYOC grant"
     );
+    cleanup(admin, pool, schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn agent_authorization_distinguishes_prestart_retry_from_terminal_revocation() {
+    let (admin, pool, schema) = test_pool().await;
+    let bearer = agent_token("team-secret");
+    let start = Utc::now() + Duration::minutes(10);
+    let end = start + Duration::hours(1);
+    sqlx::query(r#"UPDATE "Games" SET start_time_utc = $1, end_time_utc = $2 WHERE id = 3"#)
+        .bind(start)
+        .bind(end)
+        .execute(&pool)
+        .await
+        .unwrap();
+    match authorize_byoc_agent_capability(&pool, 3, 11, 13, &bearer)
+        .await
+        .unwrap()
+    {
+        ByocAgentAuthorization::RetryAt(retry_at) => assert_eq!(retry_at, start),
+        ByocAgentAuthorization::Authorized(authorization) => {
+            authorization.release().await.unwrap();
+            panic!("a pre-start agent was admitted")
+        }
+        ByocAgentAuthorization::Terminal => panic!("a pre-start capability became terminal"),
+    }
+
+    sqlx::query(r#"UPDATE "Games" SET start_time_utc = $1, end_time_utc = $2 WHERE id = 3"#)
+        .bind(Utc::now() - Duration::hours(2))
+        .bind(Utc::now() - Duration::hours(1))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        authorize_byoc_agent_capability(&pool, 3, 11, 13, &bearer)
+            .await
+            .unwrap(),
+        ByocAgentAuthorization::Terminal
+    ));
+
+    sqlx::query(r#"UPDATE "Games" SET start_time_utc = $1, end_time_utc = $2 WHERE id = 3"#)
+        .bind(Utc::now() - Duration::hours(1))
+        .bind(Utc::now() + Duration::hours(1))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"UPDATE "GameChallenges" SET is_enabled = FALSE WHERE id = 13"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        authorize_byoc_agent_capability(&pool, 3, 11, 13, &bearer)
+            .await
+            .unwrap(),
+        ByocAgentAuthorization::Terminal
+    ));
     cleanup(admin, pool, schema).await;
 }

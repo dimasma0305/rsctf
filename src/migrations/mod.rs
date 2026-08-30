@@ -145,6 +145,7 @@ mod m0261_control_plane_jobs;
 mod m0262_challenge_import_jobs;
 mod m0263_control_job_cancellation;
 mod m0264_blob_staging_operations;
+mod m0265_game_notice_delivery;
 mod m0270_worker_workload_quarantine;
 mod m0271_worker_enrollment_operations;
 mod m0272_event_sensor_batches;
@@ -317,6 +318,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0262_challenge_import_jobs::Migration),
             Box::new(m0263_control_job_cancellation::Migration),
             Box::new(m0264_blob_staging_operations::Migration),
+            Box::new(m0265_game_notice_delivery::Migration),
             Box::new(m0270_worker_workload_quarantine::Migration),
             Box::new(m0271_worker_enrollment_operations::Migration),
             Box::new(m0272_event_sensor_batches::Migration),
@@ -473,7 +475,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 34..],
+            &names[names.len() - 35..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -498,6 +500,7 @@ mod tests {
                 "m0262_challenge_import_jobs",
                 "m0263_control_job_cancellation",
                 "m0264_blob_staging_operations",
+                "m0265_game_notice_delivery",
                 "m0270_worker_workload_quarantine",
                 "m0271_worker_enrollment_operations",
                 "m0272_event_sensor_batches",

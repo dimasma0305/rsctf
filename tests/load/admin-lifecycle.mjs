@@ -1,9 +1,9 @@
 // Exhaustive disposable admin-plane acceptance and fixed-rate read simulation.
 // This intentionally covers every registered admin operation once with its real
 // contract, then hands the live fixture to k6 for replica/read-path pressure.
-import { randomUUID } from 'node:crypto';
+import { randomUUID } from "node:crypto";
 
-import * as A from './applib.mjs';
+import * as A from "./applib.mjs";
 import {
   ADMIN_OPERATIONS,
   ADMIN_SIGNALR_SURFACES,
@@ -17,7 +17,7 @@ import {
   assertStableZeroResidualSnapshots,
   stableReplicaProjection,
   validateAdminResponse,
-} from './admin-lifecycle.js';
+} from "./admin-lifecycle.js";
 import {
   adminApi,
   acquireAdminLifecycleDatabaseLock,
@@ -43,41 +43,62 @@ import {
   teamByName,
   unwrap,
   userByEmail,
-} from './admin-fixtures.mjs';
-import { countContainerFatalLogs } from './log-audit.mjs';
-import { docker, mintJwt, PG, RSCTF, runK6, sql, TARGET } from './lib.mjs';
+} from "./admin-fixtures.mjs";
+import { countContainerFatalLogs } from "./log-audit.mjs";
+import { docker, mintJwt, PG, RSCTF, runK6, sql, TARGET } from "./lib.mjs";
 import {
   acquireExclusiveProcessLock,
   loadOrchestrationLockPath,
-} from './process-control.mjs';
+} from "./process-control.mjs";
 
 const tag = `adm${Date.now().toString(36)}`;
 const recoveryPath = `/tmp/rsctf-admin-lifecycle-${tag}.json`;
-const rawWebTargets = String(process.env.WEB_TARGETS || '').trim();
-const webTargets = (rawWebTargets.startsWith('[') ? JSON.parse(rawWebTargets) : rawWebTargets.split(','))
-  .map((target) => target.trim().replace(/\/$/, ''))
+const rawWebTargets = String(process.env.WEB_TARGETS || "").trim();
+const webTargets = (
+  rawWebTargets.startsWith("[")
+    ? JSON.parse(rawWebTargets)
+    : rawWebTargets.split(",")
+)
+  .map((target) => target.trim().replace(/\/$/, ""))
   .filter(Boolean);
-const controlTarget = String(process.env.CONTROL_TARGET || TARGET).replace(/\/$/, '');
-const containerImage = process.env.ADMIN_CONTAINER_IMAGE || 'nginx:alpine';
-const repositoryUrl = process.env.ADMIN_REPOSITORY_URL || 'https://github.com/dimasma0305/rsctf-challenges.git';
-const repositoryRef = process.env.ADMIN_REPOSITORY_REF || 'main';
-const repositoryExpectedCommit = String(process.env.ADMIN_REPOSITORY_EXPECTED_COMMIT || '').trim();
-const reportableAcceptance = process.env.RSCTF_ACCEPTANCE_REPORTABLE === '1';
-if (repositoryExpectedCommit && !/^[0-9a-f]{40}$/i.test(repositoryExpectedCommit)) {
-  throw new Error('ADMIN_REPOSITORY_EXPECTED_COMMIT must be a full 40-character Git commit');
+const controlTarget = String(process.env.CONTROL_TARGET || TARGET).replace(
+  /\/$/,
+  "",
+);
+const containerImage = process.env.ADMIN_CONTAINER_IMAGE || "nginx:alpine";
+const repositoryUrl =
+  process.env.ADMIN_REPOSITORY_URL ||
+  "https://github.com/dimasma0305/rsctf-challenges.git";
+const repositoryRef = process.env.ADMIN_REPOSITORY_REF || "main";
+const repositoryExpectedCommit = String(
+  process.env.ADMIN_REPOSITORY_EXPECTED_COMMIT || "",
+).trim();
+const reportableAcceptance = process.env.RSCTF_ACCEPTANCE_REPORTABLE === "1";
+if (
+  repositoryExpectedCommit &&
+  !/^[0-9a-f]{40}$/i.test(repositoryExpectedCommit)
+) {
+  throw new Error(
+    "ADMIN_REPOSITORY_EXPECTED_COMMIT must be a full 40-character Git commit",
+  );
 }
 if (reportableAcceptance && !repositoryExpectedCommit) {
-  throw new Error('RSCTF_ACCEPTANCE_REPORTABLE=1 requires ADMIN_REPOSITORY_EXPECTED_COMMIT');
+  throw new Error(
+    "RSCTF_ACCEPTANCE_REPORTABLE=1 requires ADMIN_REPOSITORY_EXPECTED_COMMIT",
+  );
 }
-const redisContainer = process.env.REDIS_CONTAINER || PG.replace(/-db-(\d+)$/, '-redis-$1');
+const redisContainer =
+  process.env.REDIS_CONTAINER || PG.replace(/-db-(\d+)$/, "-redis-$1");
 const runStartedAt = Date.now();
-const serverContainers = [...new Set([
-  RSCTF,
-  ...String(process.env.ADMIN_RSCTF_CONTAINERS || '')
-    .split(',')
-    .map((name) => name.trim())
-    .filter(Boolean),
-])];
+const serverContainers = [
+  ...new Set([
+    RSCTF,
+    ...String(process.env.ADMIN_RSCTF_CONTAINERS || "")
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean),
+  ]),
+];
 
 const state = {
   schemaVersion: 2,
@@ -130,7 +151,9 @@ function saveRecovery() {
 }
 
 function canonicalPath(path) {
-  return String(path).split('?')[0].replace(/\{[^}]+\}/g, '{}');
+  return String(path)
+    .split("?")[0]
+    .replace(/\{[^}]+\}/g, "{}");
 }
 
 function operationFor(method, template) {
@@ -163,8 +186,13 @@ async function call(method, template, path, options = {}) {
   const started = performance.now();
   const response = await adminApi(method, path, options);
   const operation = recordCoverage(method, template, response);
-  timing.push({ id: operation.id, ms: Math.round((performance.now() - started) * 100) / 100 });
-  console.log(`  ✓ ${operation.id} (${response.status}, ${timing.at(-1).ms} ms)`);
+  timing.push({
+    id: operation.id,
+    ms: Math.round((performance.now() - started) * 100) / 100,
+  });
+  console.log(
+    `  ✓ ${operation.id} (${response.status}, ${timing.at(-1).ms} ms)`,
+  );
   return response;
 }
 
@@ -173,8 +201,13 @@ async function callRaw(method, template, path, options = {}, expected = 200) {
   const response = await rawRequest(method, path, options);
   expectStatus(response, expected, `${method} ${path}`);
   const operation = recordCoverage(method, template, response);
-  timing.push({ id: operation.id, ms: Math.round((performance.now() - started) * 100) / 100 });
-  console.log(`  ✓ ${operation.id} (${response.status}, ${timing.at(-1).ms} ms)`);
+  timing.push({
+    id: operation.id,
+    ms: Math.round((performance.now() - started) * 100) / 100,
+  });
+  console.log(
+    `  ✓ ${operation.id} (${response.status}, ${timing.at(-1).ms} ms)`,
+  );
   return response;
 }
 
@@ -183,22 +216,32 @@ function requireCondition(condition, message) {
 }
 
 function inspectComposeContainer(container, label) {
-  const inspected = docker(['inspect', container]);
-  requireCondition(inspected.status === 0, `cannot inspect declared disposable ${label} ${container}`);
+  const inspected = docker(["inspect", container]);
+  requireCondition(
+    inspected.status === 0,
+    `cannot inspect declared disposable ${label} ${container}`,
+  );
   let records;
   try {
     records = JSON.parse(inspected.stdout);
   } catch (error) {
-    throw new Error(`cannot parse ${label} ${container} inspection: ${error.message}`);
+    throw new Error(
+      `cannot parse ${label} ${container} inspection: ${error.message}`,
+    );
   }
-  requireCondition(Array.isArray(records) && records.length === 1, `${label} ${container} inspection is ambiguous`);
+  requireCondition(
+    Array.isArray(records) && records.length === 1,
+    `${label} ${container} inspection is ambiguous`,
+  );
   const record = records[0];
   return {
     name: container,
     environment: record?.Config?.Env,
-    project: record?.Config?.Labels?.['com.docker.compose.project'],
-    service: record?.Config?.Labels?.['com.docker.compose.service'],
-    networkAddresses: Object.values(record?.NetworkSettings?.Networks || {}).flatMap((network) =>
+    project: record?.Config?.Labels?.["com.docker.compose.project"],
+    service: record?.Config?.Labels?.["com.docker.compose.service"],
+    networkAddresses: Object.values(
+      record?.NetworkSettings?.Networks || {},
+    ).flatMap((network) =>
       [network?.IPAddress, network?.GlobalIPv6Address].filter(Boolean),
     ),
   };
@@ -207,12 +250,14 @@ function inspectComposeContainer(container, label) {
 function assertDisposableRuntimeMarker(targets) {
   // This is intentionally the first backing-service inspection in main(). No
   // sql(), Redis mutation, or authenticated application request may precede it.
-  const servers = serverContainers.map((container) => inspectComposeContainer(container, 'server'));
+  const servers = serverContainers.map((container) =>
+    inspectComposeContainer(container, "server"),
+  );
   assertDisposableComposeTopology({
     marker: process.env.ADMIN_LIFECYCLE_STACK_MARKER,
     servers,
-    postgres: inspectComposeContainer(PG, 'PostgreSQL'),
-    redis: inspectComposeContainer(redisContainer, 'Redis'),
+    postgres: inspectComposeContainer(PG, "PostgreSQL"),
+    redis: inspectComposeContainer(redisContainer, "Redis"),
   });
   assertDirectAdminOriginBindings({
     webTargets: targets.webTargets,
@@ -221,7 +266,7 @@ function assertDisposableRuntimeMarker(targets) {
   });
   for (const server of servers) {
     requireCondition(
-      server.environment.includes('RSCTF_STORAGE_BACKEND=local'),
+      server.environment.includes("RSCTF_STORAGE_BACKEND=local"),
       `${server.name} must use the disposable local blob backend for exact leak auditing`,
     );
   }
@@ -229,56 +274,71 @@ function assertDisposableRuntimeMarker(targets) {
 
 async function assertRuntimeRoles() {
   const expected = [
-    [TARGET, 'web'],
-    ...webTargets.map((target) => [target, 'web']),
-    [controlTarget, 'control'],
+    [TARGET, "web"],
+    ...webTargets.map((target) => [target, "web"]),
+    [controlTarget, "control"],
   ];
   for (const [endpoint, role] of expected) {
-    const health = await rawRequest('GET', '/healthz', {
+    const health = await rawRequest("GET", "/healthz", {
       baseUrl: endpoint,
       jwt: null,
       ip: null,
     });
-    requireCondition(health.status === 200, `${endpoint} failed /healthz preflight`);
     requireCondition(
-      health.headers.get('x-rsctf-role') === role,
-      `${endpoint} reports role ${health.headers.get('x-rsctf-role') || '<missing>'}, expected ${role}`,
+      health.status === 200,
+      `${endpoint} failed /healthz preflight`,
+    );
+    requireCondition(
+      health.headers.get("x-rsctf-role") === role,
+      `${endpoint} reports role ${health.headers.get("x-rsctf-role") || "<missing>"}, expected ${role}`,
     );
   }
 }
 
 async function assertGlobalAdminMutationBaseline() {
-  const failed = Number(sql('SELECT count(*) FROM "BuildRecords" WHERE status=2'));
-  const active = Number(sql('SELECT count(*) FROM "BuildRecords" WHERE status IN (3,5)'));
+  const failed = Number(
+    sql('SELECT count(*) FROM "BuildRecords" WHERE status=2'),
+  );
+  const active = Number(
+    sql('SELECT count(*) FROM "BuildRecords" WHERE status IN (3,5)'),
+  );
   requireCondition(
     failed === 0 && active === 0,
     `global build-prune baseline is not empty (failed=${failed}, building/queued=${active})`,
   );
-  const inventory = await adminApi('GET', '/api/admin/builds/images');
-  expectStatus(inventory, 200, 'global owned-image baseline');
+  const inventory = await adminApi("GET", "/api/admin/builds/images");
+  expectStatus(inventory, 200, "global owned-image baseline");
   requireCondition(
-    validateAdminResponse('admin_build_images_get', inventory),
-    'global owned-image baseline returned a malformed inventory',
+    validateAdminResponse("admin_build_images_get", inventory),
+    "global owned-image baseline returned a malformed inventory",
   );
   const orphaned = (inventory.json || []).filter(
-    (image) => !Array.isArray(image.referencedBy) || image.referencedBy.length === 0,
+    (image) =>
+      !Array.isArray(image.referencedBy) || image.referencedBy.length === 0,
   );
   requireCondition(
     orphaned.length === 0,
     `global image-prune baseline contains ${orphaned.length} pre-existing unreferenced image(s)`,
   );
-  state.globalMutationBaseline = { failedBuilds: failed, activeBuilds: active, orphanedImages: 0 };
+  state.globalMutationBaseline = {
+    failedBuilds: failed,
+    activeBuilds: active,
+    orphanedImages: 0,
+  };
   saveRecovery();
 }
 
-function buildRecordInventory(predicate = 'TRUE') {
+function buildRecordInventory(predicate = "TRUE") {
   const raw = sql(
     `SELECT COALESCE(json_agg(json_build_object(` +
       `'id',id,'gameId',game_id,'status',status) ORDER BY id),'[]'::json)::text ` +
       `FROM "BuildRecords" WHERE ${predicate}`,
   );
-  const parsed = JSON.parse(raw || '[]');
-  requireCondition(Array.isArray(parsed), 'build-record inventory is not an array');
+  const parsed = JSON.parse(raw || "[]");
+  requireCondition(
+    Array.isArray(parsed),
+    "build-record inventory is not an array",
+  );
   return parsed;
 }
 
@@ -287,32 +347,42 @@ function sameJson(left, right) {
 }
 
 function normalizedManagedImageTag(value) {
-  let image = String(value || '').trim().toLowerCase();
-  image = image.replace(/^(?:docker\.io|index\.docker\.io)\//, '');
-  const slash = image.lastIndexOf('/');
-  if (!image.slice(slash + 1).includes(':')) image += ':latest';
+  let image = String(value || "")
+    .trim()
+    .toLowerCase();
+  image = image.replace(/^(?:docker\.io|index\.docker\.io)\//, "");
+  const slash = image.lastIndexOf("/");
+  if (!image.slice(slash + 1).includes(":")) image += ":latest";
   return image;
 }
 
 function canonicalManagedImageTag(value) {
   const normalized = normalizedManagedImageTag(value);
-  return normalized ? `docker.io/${normalized}` : '';
+  return normalized ? `docker.io/${normalized}` : "";
 }
 
 function imageSlug(title) {
   const slug = String(title)
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return slug || 'challenge';
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "challenge";
 }
 
 function scratchBuildImagePlan(gameId) {
-  const id = positiveId(gameId, 'scratch build game');
+  const id = positiveId(gameId, "scratch build game");
   return [
-    { role: 'delete', title: `Admin Image Delete ${tag}`, flag: `flag{admin_image_delete_${tag}}` },
-    { role: 'prune', title: `Admin Image Prune ${tag}`, flag: `flag{admin_image_prune_${tag}}` },
+    {
+      role: "delete",
+      title: `Admin Image Delete ${tag}`,
+      flag: `flag{admin_image_delete_${tag}}`,
+    },
+    {
+      role: "prune",
+      title: `Admin Image Prune ${tag}`,
+      flag: `flag{admin_image_prune_${tag}}`,
+    },
   ].map((fixture) => ({
     ...fixture,
     gameId: id,
@@ -326,55 +396,77 @@ function scratchBuildImagePlan(gameId) {
 
 function imageInventoryHas(records, imageRef) {
   const wanted = normalizedManagedImageTag(imageRef);
-  return Array.isArray(records) && records.some((image) =>
-    Array.isArray(image.tags) && image.tags.some((candidate) =>
-      normalizedManagedImageTag(candidate) === wanted));
+  return (
+    Array.isArray(records) &&
+    records.some(
+      (image) =>
+        Array.isArray(image.tags) &&
+        image.tags.some(
+          (candidate) => normalizedManagedImageTag(candidate) === wanted,
+        ),
+    )
+  );
 }
 
 async function ownedImageInventory() {
-  const response = await adminApi('GET', '/api/admin/builds/images');
-  expectStatus(response, 200, 'owned build image inventory');
+  const response = await adminApi("GET", "/api/admin/builds/images");
+  expectStatus(response, 200, "owned build image inventory");
   requireCondition(
-    validateAdminResponse('admin_build_images_get', response),
-    'owned build image inventory returned malformed records',
+    validateAdminResponse("admin_build_images_get", response),
+    "owned build image inventory returned malformed records",
   );
   return response.json;
 }
 
 function scratchBuildRows(fixtures) {
-  const titles = fixtures.map((fixture) => sqlLiteral(fixture.title)).join(',');
-  return JSON.parse(sql(
-    `SELECT COALESCE(json_agg(json_build_object(` +
-      `'id',id,'title',title,'status',build_status,'imageRef',container_image,` +
-      `'digest',build_image_digest,'archiveHash',original_archive_blob_path,` +
-      `'log',last_build_log) ORDER BY id),'[]'::json)::text ` +
-      `FROM "GameChallenges" WHERE game_id=${positiveId(fixtures[0].gameId, 'scratch build game')} ` +
-      `AND title IN (${titles})`,
-  ) || '[]');
+  const titles = fixtures.map((fixture) => sqlLiteral(fixture.title)).join(",");
+  return JSON.parse(
+    sql(
+      `SELECT COALESCE(json_agg(json_build_object(` +
+        `'id',id,'title',title,'status',build_status,'imageRef',container_image,` +
+        `'digest',build_image_digest,'archiveHash',original_archive_blob_path,` +
+        `'log',last_build_log) ORDER BY id),'[]'::json)::text ` +
+        `FROM "GameChallenges" WHERE game_id=${positiveId(fixtures[0].gameId, "scratch build game")} ` +
+        `AND title IN (${titles})`,
+    ) || "[]",
+  );
 }
 
 async function waitForOwnedScratchBuilds(fixtures, timeoutMs = 180_000) {
   const deadline = Date.now() + timeoutMs;
-  let last = 'no challenge rows';
+  let last = "no challenge rows";
   while (Date.now() <= deadline) {
     const rows = scratchBuildRows(fixtures);
     const failed = rows.find((row) => [2, 4, 6].includes(Number(row.status)));
-    if (failed) throw new Error(`scratch image build failed for ${failed.title}: ${failed.log || `status ${failed.status}`}`);
+    if (failed)
+      throw new Error(
+        `scratch image build failed for ${failed.title}: ${failed.log || `status ${failed.status}`}`,
+      );
     if (
       rows.length === fixtures.length &&
-      rows.every((row) => Number(row.status) === 1 && typeof row.digest === 'string' && row.digest.length > 0)
+      rows.every(
+        (row) =>
+          Number(row.status) === 1 &&
+          typeof row.digest === "string" &&
+          row.digest.length > 0,
+      )
     ) {
       for (const fixture of fixtures) {
         const row = rows.find((candidate) => candidate.title === fixture.title);
         requireCondition(row, `scratch build row omitted ${fixture.title}`);
         requireCondition(
-          normalizedManagedImageTag(row.imageRef) === normalizedManagedImageTag(fixture.imageRef),
+          normalizedManagedImageTag(row.imageRef) ===
+            normalizedManagedImageTag(fixture.imageRef),
           `${fixture.title} published unexpected image ${row.imageRef}`,
         );
-        fixture.challengeId = positiveId(row.id, `${fixture.role} scratch challenge`);
+        fixture.challengeId = positiveId(
+          row.id,
+          `${fixture.role} scratch challenge`,
+        );
         fixture.imageRef = row.imageRef;
         requireCondition(
-          typeof row.archiveHash === 'string' && /^[a-f0-9]{64}$/.test(row.archiveHash),
+          typeof row.archiveHash === "string" &&
+            /^[a-f0-9]{64}$/.test(row.archiveHash),
           `${fixture.title} did not retain its trusted source archive`,
         );
         fixture.archiveHash = row.archiveHash;
@@ -382,7 +474,9 @@ async function waitForOwnedScratchBuilds(fixtures, timeoutMs = 180_000) {
       saveRecovery();
       const inventory = await ownedImageInventory();
       try {
-        assertBuildImageFixtureInventory(inventory, fixtures, { referenced: true });
+        assertBuildImageFixtureInventory(inventory, fixtures, {
+          referenced: true,
+        });
         return inventory;
       } catch (error) {
         last = error.message;
@@ -392,41 +486,60 @@ async function waitForOwnedScratchBuilds(fixtures, timeoutMs = 180_000) {
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new Error(`scratch builds did not publish owned inventory within ${timeoutMs} ms: ${last}`);
+  throw new Error(
+    `scratch builds did not publish owned inventory within ${timeoutMs} ms: ${last}`,
+  );
 }
 
 async function deleteScratchBuildDefinition(fixture) {
-  const rows = String(sql(
-    `SELECT id FROM "GameChallenges" WHERE game_id=${positiveId(fixture.gameId, 'scratch build game')} ` +
-      `AND title=${sqlLiteral(fixture.title)} ORDER BY id`,
-  ) || '').split('\n').filter(Boolean).map(Number);
-  requireCondition(rows.length <= 1, `scratch challenge title is ambiguous: ${fixture.title}`);
+  const rows = String(
+    sql(
+      `SELECT id FROM "GameChallenges" WHERE game_id=${positiveId(fixture.gameId, "scratch build game")} ` +
+        `AND title=${sqlLiteral(fixture.title)} ORDER BY id`,
+    ) || "",
+  )
+    .split("\n")
+    .filter(Boolean)
+    .map(Number);
+  requireCondition(
+    rows.length <= 1,
+    `scratch challenge title is ambiguous: ${fixture.title}`,
+  );
   if (rows.length === 0) {
     fixture.definitionDeleted = true;
     return false;
   }
   const challengeId = positiveId(rows[0], `${fixture.role} scratch challenge`);
   if (fixture.challengeId) {
-    requireCondition(challengeId === fixture.challengeId, `${fixture.title} identity changed before deletion`);
+    requireCondition(
+      challengeId === fixture.challengeId,
+      `${fixture.title} identity changed before deletion`,
+    );
   }
   const response = await A.api(
-    'DELETE',
-    `/api/edit/games/${positiveId(fixture.gameId, 'scratch build game')}/challenges/${challengeId}`,
+    "DELETE",
+    `/api/edit/games/${positiveId(fixture.gameId, "scratch build game")}/challenges/${challengeId}`,
     { jwt: A.adminJwt(), timeoutMs: 180_000 },
   );
   expectStatus(response, 200, `delete scratch challenge ${fixture.title}`);
   requireCondition(
-    Number(sql(`SELECT count(*) FROM "GameChallenges" WHERE id=${challengeId}`)) === 0,
+    Number(
+      sql(`SELECT count(*) FROM "GameChallenges" WHERE id=${challengeId}`),
+    ) === 0,
     `scratch challenge ${fixture.title} survived normal application deletion`,
   );
   if (fixture.archiveHash) {
     requireCondition(
-      Number(sql(`SELECT count(*) FROM "Files" WHERE hash=${sqlLiteral(fixture.archiveHash)}`)) === 0,
+      Number(
+        sql(
+          `SELECT count(*) FROM "Files" WHERE hash=${sqlLiteral(fixture.archiveHash)}`,
+        ),
+      ) === 0,
       `scratch challenge ${fixture.title} retained source-archive metadata`,
     );
     const blobPath = `/data/files/${fixture.archiveHash.slice(0, 2)}/${fixture.archiveHash.slice(2, 4)}/${fixture.archiveHash}`;
     requireCondition(
-      docker(['exec', RSCTF, 'test', '!', '-e', blobPath]).status === 0,
+      docker(["exec", RSCTF, "test", "!", "-e", blobPath]).status === 0,
       `scratch challenge ${fixture.title} retained source-archive bytes`,
     );
   }
@@ -440,14 +553,14 @@ async function cleanupOwnedScratchImage(fixture) {
   const inventory = await ownedImageInventory();
   if (!imageInventoryHas(inventory, fixture.imageRef)) {
     requireCondition(
-      docker(['image', 'inspect', fixture.imageRef]).status !== 0,
+      docker(["image", "inspect", fixture.imageRef]).status !== 0,
       `${fixture.imageRef} exists outside the installation-owned inventory`,
     );
     fixture.imageRemoved = true;
     return false;
   }
   const response = await adminApi(
-    'DELETE',
+    "DELETE",
     `/api/admin/builds/images?tag=${encodeURIComponent(fixture.imageRef)}&force=false`,
     { timeoutMs: 180_000 },
   );
@@ -456,7 +569,7 @@ async function cleanupOwnedScratchImage(fixture) {
     `cleanup could not remove owned image ${fixture.imageRef}: ${response.text}`,
   );
   requireCondition(
-    docker(['image', 'inspect', fixture.imageRef]).status !== 0,
+    docker(["image", "inspect", fixture.imageRef]).status !== 0,
     `owned image ${fixture.imageRef} survived application cleanup`,
   );
   fixture.imageRemoved = true;
@@ -466,13 +579,13 @@ async function cleanupOwnedScratchImage(fixture) {
 
 function websocketUrl(baseUrl, path) {
   const url = new URL(path, `${baseUrl}/`);
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   return url.toString();
 }
 
 async function expectAdminWebSocketRejected(baseUrl, token, label) {
   await new Promise((resolve, reject) => {
-    const suffix = token ? `?access_token=${encodeURIComponent(token)}` : '';
+    const suffix = token ? `?access_token=${encodeURIComponent(token)}` : "";
     const socket = new WebSocket(websocketUrl(baseUrl, `/hub/admin${suffix}`));
     let settled = false;
     const finish = (action, value) => {
@@ -483,30 +596,46 @@ async function expectAdminWebSocketRejected(baseUrl, token, label) {
     };
     const timeout = setTimeout(() => {
       socket.close();
-      finish(reject, new Error(`${label} admin SignalR connection did not terminate`));
+      finish(
+        reject,
+        new Error(`${label} admin SignalR connection did not terminate`),
+      );
     }, 5_000);
-    socket.addEventListener('open', () => {
-      socket.close();
-      finish(reject, new Error(`admin SignalR accepted ${label} credentials`));
-    }, { once: true });
-    socket.addEventListener('error', () => finish(resolve), { once: true });
-    socket.addEventListener('close', () => finish(resolve), { once: true });
+    socket.addEventListener(
+      "open",
+      () => {
+        socket.close();
+        finish(
+          reject,
+          new Error(`admin SignalR accepted ${label} credentials`),
+        );
+      },
+      { once: true },
+    );
+    socket.addEventListener("error", () => finish(resolve), { once: true });
+    socket.addEventListener("close", () => finish(resolve), { once: true });
   });
 }
 
-async function assertAdminSignalRAuth(baseUrl, { adminToken, ordinaryToken, monitorToken }) {
-  const negotiatePath = '/hub/admin/negotiate?negotiateVersion=1';
+async function assertAdminSignalRAuth(
+  baseUrl,
+  { adminToken, ordinaryToken, monitorToken },
+) {
+  const negotiatePath = "/hub/admin/negotiate?negotiateVersion=1";
   for (const [label, jwt, expected] of [
-    ['missing', null, 401],
-    ['ordinary', ordinaryToken, 403],
-    ['Monitor', monitorToken, 403],
+    ["missing", null, 401],
+    ["ordinary", ordinaryToken, 403],
+    ["Monitor", monitorToken, 403],
   ]) {
-    const response = await rawRequest('POST', negotiatePath, {
+    const response = await rawRequest("POST", negotiatePath, {
       baseUrl,
       jwt,
-      ip: `10.253.4.${expected === 401 ? 1 : expected === 403 && label === 'ordinary' ? 2 : 3}`,
-      headers: { 'content-type': 'text/plain;charset=UTF-8', connection: 'close' },
-      body: '',
+      ip: `10.253.4.${expected === 401 ? 1 : expected === 403 && label === "ordinary" ? 2 : 3}`,
+      headers: {
+        "content-type": "text/plain;charset=UTF-8",
+        connection: "close",
+      },
+      body: "",
       timeoutMs: 10_000,
       // This probe follows a five-minute child k6 process. One stale Undici
       // socket may race Caddy's idle close; retry only an approved pre-response
@@ -514,44 +643,61 @@ async function assertAdminSignalRAuth(baseUrl, { adminToken, ordinaryToken, moni
       networkRetries: 1,
     });
     state.evidence.signalRNegotiateNetworkRetries =
-      (state.evidence.signalRNegotiateNetworkRetries || 0) + response.attempts - 1;
+      (state.evidence.signalRNegotiateNetworkRetries || 0) +
+      response.attempts -
+      1;
     requireCondition(
       response.status === expected,
       `${label} admin SignalR negotiate returned ${response.status}, expected ${expected}`,
     );
   }
 
-  await expectAdminWebSocketRejected(baseUrl, null, 'missing');
-  await expectAdminWebSocketRejected(baseUrl, ordinaryToken, 'ordinary');
-  await expectAdminWebSocketRejected(baseUrl, monitorToken, 'Monitor');
+  await expectAdminWebSocketRejected(baseUrl, null, "missing");
+  await expectAdminWebSocketRejected(baseUrl, ordinaryToken, "ordinary");
+  await expectAdminWebSocketRejected(baseUrl, monitorToken, "Monitor");
 
   await new Promise((resolve, reject) => {
     const path = `/hub/admin?access_token=${encodeURIComponent(adminToken)}`;
     const socket = new WebSocket(websocketUrl(baseUrl, path));
     const timeout = setTimeout(() => {
       socket.close();
-      reject(new Error('authenticated admin SignalR handshake timed out'));
+      reject(new Error("authenticated admin SignalR handshake timed out"));
     }, 5_000);
     let opened = false;
-    socket.addEventListener('open', () => {
-      opened = true;
-      socket.send('{"protocol":"json","version":1}\u001e');
-    }, { once: true });
-    socket.addEventListener('message', (event) => {
-      const frames = String(event.data).split('\u001e').map((frame) => frame.trim()).filter(Boolean);
-      if (!frames.includes('{}')) return;
+    socket.addEventListener(
+      "open",
+      () => {
+        opened = true;
+        socket.send('{"protocol":"json","version":1}\u001e');
+      },
+      { once: true },
+    );
+    socket.addEventListener("message", (event) => {
+      const frames = String(event.data)
+        .split("\u001e")
+        .map((frame) => frame.trim())
+        .filter(Boolean);
+      if (!frames.includes("{}")) return;
       clearTimeout(timeout);
       socket.close();
       resolve();
     });
-    socket.addEventListener('error', () => {
-      clearTimeout(timeout);
-      reject(new Error('authenticated admin SignalR connection failed'));
-    }, { once: true });
-    socket.addEventListener('close', () => {
+    socket.addEventListener(
+      "error",
+      () => {
+        clearTimeout(timeout);
+        reject(new Error("authenticated admin SignalR connection failed"));
+      },
+      { once: true },
+    );
+    socket.addEventListener("close", () => {
       if (!opened) {
         clearTimeout(timeout);
-        reject(new Error('authenticated admin SignalR connection closed before upgrade'));
+        reject(
+          new Error(
+            "authenticated admin SignalR connection closed before upgrade",
+          ),
+        );
       }
     });
   });
@@ -573,20 +719,27 @@ function materializeCatalogPath(template, fixture) {
   };
   let path = template.replace(/\{([^}]+)\}/g, (_, key) => {
     const normalized = key.toLowerCase();
-    if (normalized === 'id' && template.includes('/instances/')) return fixture.containerId;
-    if (normalized === 'id' && template.includes('/anticheatblocks/')) return fixture.antiCheatId;
-    if (normalized === 'id' && template.includes('/repobindings/')) return fixture.bindingId;
-    if (normalized === 'id' && template.includes('/teams/')) return fixture.teamId;
-    if (normalized === 'id' && template.includes('/participation/')) return fixture.participationId;
-    if (normalized === 'id' && template.includes('/workers/')) return fixture.workerId;
+    if (normalized === "id" && template.includes("/instances/"))
+      return fixture.containerId;
+    if (normalized === "id" && template.includes("/anticheatblocks/"))
+      return fixture.antiCheatId;
+    if (normalized === "id" && template.includes("/repobindings/"))
+      return fixture.bindingId;
+    if (normalized === "id" && template.includes("/teams/"))
+      return fixture.teamId;
+    if (normalized === "id" && template.includes("/participation/"))
+      return fixture.participationId;
+    if (normalized === "id" && template.includes("/workers/"))
+      return fixture.workerId;
     return values[normalized] ?? fixture.gameId;
   });
-  if (template === '/api/admin/builds/images') path += '?tag=rsctf/admin-auth-probe:none&force=false';
+  if (template === "/api/admin/builds/images")
+    path += "?tag=rsctf/admin-auth-probe:none&force=false";
   return path;
 }
 
 async function authorizationMatrix(fixture) {
-  console.log('\nauthorization matrix (every operation)…');
+  console.log("\nauthorization matrix (every operation)…");
   const unrelated = mintJwt(fixture.userId, undefined, 1);
   const alternateUnrelated = mintJwt(fixture.alternateUserId, undefined, 1);
   const monitor = mintJwt(fixture.monitorUserId, fixture.monitorStamp, 2);
@@ -603,9 +756,12 @@ async function authorizationMatrix(fixture) {
   let index = 0;
   let monitorChecks = 0;
   for (const operation of ADMIN_OPERATIONS) {
-    if (operation.path === '/api/workers/enroll') continue;
+    if (operation.path === "/api/workers/enroll") continue;
     const path = materializeCatalogPath(operation.path, fixture);
-    const body = operation.method === 'GET' || operation.method === 'DELETE' ? undefined : {};
+    const body =
+      operation.method === "GET" || operation.method === "DELETE"
+        ? undefined
+        : {};
     const unauthenticated = await A.api(operation.method, path, {
       body,
       ip: `10.253.1.${(index % 240) + 1}`,
@@ -618,7 +774,8 @@ async function authorizationMatrix(fixture) {
     // The two diagnostic routes share the intentionally tight Concurrency
     // bucket. Use a second ordinary account for the latter so this auth test
     // measures authorization rather than tripping a 10-second rate limit.
-    const unprivilegedJwt = operation.id === 'admin_email_test' ? alternateUnrelated : unrelated;
+    const unprivilegedJwt =
+      operation.id === "admin_email_test" ? alternateUnrelated : unrelated;
     const unprivileged = await A.api(operation.method, path, {
       body,
       jwt: unprivilegedJwt,
@@ -629,8 +786,9 @@ async function authorizationMatrix(fixture) {
       unprivileged.status === 403,
       `${operation.id} unprivileged authorization returned ${unprivileged.status}`,
     );
-    if (operation.auth === 'admin') {
-      const monitorJwt = operation.id === 'admin_email_test' ? alternateMonitor : monitor;
+    if (operation.auth === "admin") {
+      const monitorJwt =
+        operation.id === "admin_email_test" ? alternateMonitor : monitor;
       const monitorResponse = await A.api(operation.method, path, {
         body,
         jwt: monitorJwt,
@@ -647,12 +805,12 @@ async function authorizationMatrix(fixture) {
   }
 
   const crossGameMutation = await A.api(
-    'PUT',
+    "PUT",
     `/api/admin/participation/${fixture.participationId}`,
     {
-      body: { status: 'Suspended' },
+      body: { status: "Suspended" },
       jwt: crossGameManager,
-      ip: '10.253.6.1',
+      ip: "10.253.6.1",
       timeoutMs: 30_000,
     },
   );
@@ -661,14 +819,17 @@ async function authorizationMatrix(fixture) {
     `cross-game manager authorization returned ${crossGameMutation.status}`,
   );
   requireCondition(
-    Number(sql(`SELECT status FROM "Participations" WHERE id=${fixture.participationId}`)) ===
-      PARTICIPATION_STATUS.Accepted,
-    'cross-game manager changed participation state despite rejection',
+    Number(
+      sql(
+        `SELECT status FROM "Participations" WHERE id=${fixture.participationId}`,
+      ),
+    ) === PARTICIPATION_STATUS.Accepted,
+    "cross-game manager changed participation state despite rejection",
   );
 
-  const invalidEnrollment = await A.api('POST', '/api/workers/enroll', {
-    body: { token: 'invalid-admin-lifecycle-token', csrPem: 'invalid-csr' },
-    ip: '10.253.3.1',
+  const invalidEnrollment = await A.api("POST", "/api/workers/enroll", {
+    body: { token: "invalid-admin-lifecycle-token", csrPem: "invalid-csr" },
+    ip: "10.253.3.1",
   });
   requireCondition(
     invalidEnrollment.status === 401,
@@ -681,7 +842,7 @@ async function authorizationMatrix(fixture) {
 }
 
 async function identityLifecycle() {
-  console.log('\nidentity, team, and configuration lifecycle…');
+  console.log("\nidentity, team, and configuration lifecycle…");
   const names = {
     profileEmail: `${tag}.profile@admin.invalid`,
     managerEmail: `${tag}.manager@admin.invalid`,
@@ -692,38 +853,38 @@ async function identityLifecycle() {
     cacheDeleteEmail: `${tag}.cache-delete@admin.invalid`,
     team: `ADMINLT-${tag}`,
   };
-  await call('POST', '/api/admin/users', '/api/admin/users', {
+  await call("POST", "/api/admin/users", "/api/admin/users", {
     body: [
       {
         userName: `${tag}profile`,
         password: `Adm-${tag}-Profile!9`,
         email: names.profileEmail,
-        realName: 'Admin lifecycle profile',
+        realName: "Admin lifecycle profile",
       },
       {
         userName: `${tag}manager`,
         password: `Adm-${tag}-Manager!9`,
         email: names.managerEmail,
-        realName: 'Admin lifecycle manager',
+        realName: "Admin lifecycle manager",
       },
       {
         userName: `${tag}captain`,
         password: `Adm-${tag}-Captain!9`,
         email: names.captainEmail,
-        realName: 'Admin lifecycle captain',
+        realName: "Admin lifecycle captain",
         teamName: names.team,
       },
       {
         userName: `${tag}poller`,
         password: `Adm-${tag}-Poller!9`,
         email: names.pollerEmail,
-        realName: 'Admin lifecycle poller',
+        realName: "Admin lifecycle poller",
       },
       {
         userName: `${tag}monitor`,
         password: `Adm-${tag}-Monitor!9`,
         email: names.monitorEmail,
-        realName: 'Admin lifecycle alternate monitor',
+        realName: "Admin lifecycle alternate monitor",
       },
     ],
   });
@@ -738,151 +899,221 @@ async function identityLifecycle() {
   state.teamIds.push(team.id);
   saveRecovery();
 
-  const importedResponse = await call('POST', '/api/admin/users/import', '/api/admin/users/import', {
-    body: {
-      rows: [
-        {
-          email: names.importEmail,
-          realName: 'Admin lifecycle imported user',
-          userNameOverride: `${tag}import`,
-        },
-        {
-          email: names.cacheDeleteEmail,
-          realName: 'Admin lifecycle cached credential deletion user',
-          userNameOverride: `${tag}cachedelete`,
-        },
-      ],
-      teamMode: 'none',
-      emailConfirmed: true,
+  const importedResponse = await call(
+    "POST",
+    "/api/admin/users/import",
+    "/api/admin/users/import",
+    {
+      body: {
+        rows: [
+          {
+            email: names.importEmail,
+            realName: "Admin lifecycle imported user",
+            userNameOverride: `${tag}import`,
+          },
+          {
+            email: names.cacheDeleteEmail,
+            realName: "Admin lifecycle cached credential deletion user",
+            userNameOverride: `${tag}cachedelete`,
+          },
+        ],
+        teamMode: "none",
+        emailConfirmed: true,
+      },
     },
-  });
-  const importedModel = exactJson(importedResponse, 'user import');
-  requireCondition(importedModel.created === 2, 'user import did not create exactly two users');
+  );
+  const importedModel = exactJson(importedResponse, "user import");
   requireCondition(
-    importedResponse.json?.users?.length === 2 && importedResponse.json.users.every(
-      (user) => typeof user.password === 'string' && user.password.length >= 8,
-    ),
-    'user import did not return both one-time passwords',
+    importedModel.created === 2,
+    "user import did not create exactly two users",
+  );
+  requireCondition(
+    importedResponse.json?.users?.length === 2 &&
+      importedResponse.json.users.every(
+        (user) =>
+          typeof user.password === "string" && user.password.length >= 8,
+      ),
+    "user import did not return both one-time passwords",
   );
   const imported = userByEmail(names.importEmail);
   const cacheDelete = userByEmail(names.cacheDeleteEmail);
   state.userIds.push(imported.id, cacheDelete.id);
-  state.credentialCacheKeys = [names.importEmail, names.cacheDeleteEmail]
-    .map((email) => `credimport:${email.trim().toUpperCase()}`);
+  state.credentialCacheKeys = [names.importEmail, names.cacheDeleteEmail].map(
+    (email) => `credimport:${email.trim().toUpperCase()}`,
+  );
   requireCondition(
     redisKeyExists(state.credentialCacheKeys[1]) === 1,
-    'import did not publish the deletion-regression credential into shared Redis',
+    "import did not publish the deletion-regression credential into shared Redis",
   );
   state.evidence.cachedCredentialUserId = cacheDelete.id;
   // Publish the fixture as soon as every identity exists so cleanup remains
   // possible when a later assertion fails before role promotion completes.
-  fixtureUsers = { names, profile, manager, captain, poller, monitor, imported, cacheDelete, team };
+  fixtureUsers = {
+    names,
+    profile,
+    manager,
+    captain,
+    poller,
+    monitor,
+    imported,
+    cacheDelete,
+    team,
+  };
   saveRecovery();
 
-  const list = await call('GET', '/api/admin/users', `/api/admin/users?count=500&search=${tag}`);
+  const list = await call(
+    "GET",
+    "/api/admin/users",
+    `/api/admin/users?count=500&search=${tag}`,
+  );
   requireCondition(
     Array.isArray(list.json?.data) && list.json.data.length >= 7,
-    'admin user list did not include the identity fixture',
+    "admin user list did not include the identity fixture",
   );
   const search = await call(
-    'POST',
-    '/api/admin/users/search',
+    "POST",
+    "/api/admin/users/search",
     `/api/admin/users/search?hint=${encodeURIComponent(tag)}`,
   );
-  requireCondition(search.json?.total >= 7, 'admin user search did not use the query hint');
+  requireCondition(
+    search.json?.total >= 7,
+    "admin user search did not use the query hint",
+  );
   const detail = await call(
-    'GET',
-    '/api/admin/users/{userid}',
+    "GET",
+    "/api/admin/users/{userid}",
     `/api/admin/users/${profile.id}`,
   );
-  requireCondition(detail.json?.userId === profile.id, 'admin user detail returned the wrong user');
-  await call('PUT', '/api/admin/users/{userid}', `/api/admin/users/${profile.id}`, {
-    body: { bio: `profile updated by ${tag}`, phone: '+6200000000' },
-  });
+  requireCondition(
+    detail.json?.userId === profile.id,
+    "admin user detail returned the wrong user",
+  );
+  await call(
+    "PUT",
+    "/api/admin/users/{userid}",
+    `/api/admin/users/${profile.id}`,
+    {
+      body: { bio: `profile updated by ${tag}`, phone: "+6200000000" },
+    },
+  );
 
   const reset = await callRaw(
-    'DELETE',
-    '/api/admin/users/{userid}/password',
+    "DELETE",
+    "/api/admin/users/{userid}/password",
     `/api/admin/users/${profile.id}/password`,
   );
   requireCondition(
-    /private/i.test(reset.headers.get('cache-control') || '') &&
-      /no-store/i.test(reset.headers.get('cache-control') || ''),
-    'password reset response is missing private, no-store',
+    /private/i.test(reset.headers.get("cache-control") || "") &&
+      /no-store/i.test(reset.headers.get("cache-control") || ""),
+    "password reset response is missing private, no-store",
   );
-  requireCondition(typeof reset.json === 'string' && reset.json.length >= 8, 'password reset did not return a password');
-
-  await call('DELETE', '/api/admin/users/{userid}', `/api/admin/users/${profile.id}`);
   requireCondition(
-    Number(sql(`SELECT count(*) FROM "AspNetUsers" WHERE id=${sqlLiteral(profile.id)}::uuid`)) === 0,
-    'admin user delete left the profile fixture behind',
+    typeof reset.json === "string" && reset.json.length >= 8,
+    "password reset did not return a password",
+  );
+
+  await call(
+    "DELETE",
+    "/api/admin/users/{userid}",
+    `/api/admin/users/${profile.id}`,
+  );
+  requireCondition(
+    Number(
+      sql(
+        `SELECT count(*) FROM "AspNetUsers" WHERE id=${sqlLiteral(profile.id)}::uuid`,
+      ),
+    ) === 0,
+    "admin user delete left the profile fixture behind",
   );
   // Keep every created identity in the recovery ledger after its ordinary
   // delete so the final audit can prove the exact UUID remains absent.
 
   const credentialSend = await callRaw(
-    'POST',
-    '/api/admin/users/credentials/send',
-    '/api/admin/users/credentials/send',
+    "POST",
+    "/api/admin/users/credentials/send",
+    "/api/admin/users/credentials/send",
     {
-      headers: { 'content-type': 'application/json' },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        items: [{
-          email: names.importEmail,
-          userName: importedModel.users.find((user) => user.email === names.importEmail)?.userName,
-        }],
+        items: [
+          {
+            email: names.importEmail,
+            userName: importedModel.users.find(
+              (user) => user.email === names.importEmail,
+            )?.userName,
+          },
+        ],
       }),
     },
   );
   requireCondition(
-    /private/i.test(credentialSend.headers.get('cache-control') || '') &&
-      /no-store/i.test(credentialSend.headers.get('cache-control') || ''),
-    'credential delivery response is missing private, no-store',
+    /private/i.test(credentialSend.headers.get("cache-control") || "") &&
+      /no-store/i.test(credentialSend.headers.get("cache-control") || ""),
+    "credential delivery response is missing private, no-store",
   );
   requireCondition(
-    Number(credentialSend.json?.sent) + Number(credentialSend.json?.failed) === 1,
-    'credential delivery did not return one truthful per-recipient result',
+    Number(credentialSend.json?.sent) + Number(credentialSend.json?.failed) ===
+      1,
+    "credential delivery did not return one truthful per-recipient result",
   );
-  if (process.env.ADMIN_REQUIRE_SMTP === '1') {
-    requireCondition(credentialSend.json.sent === 1, `required SMTP delivery failed: ${credentialSend.text}`);
+  if (process.env.ADMIN_REQUIRE_SMTP === "1") {
+    requireCondition(
+      credentialSend.json.sent === 1,
+      `required SMTP delivery failed: ${credentialSend.text}`,
+    );
   } else {
     requireCondition(
       credentialSend.json.sent === 0 && credentialSend.json.failed === 1,
-      'an unconfigured SMTP sender falsely reported credential delivery',
+      "an unconfigured SMTP sender falsely reported credential delivery",
     );
   }
 
   const teamCount = Number(sql('SELECT count(*) FROM "Teams"'));
   const teamSkip = Math.max(0, teamCount - 500);
   const teams = await call(
-    'GET',
-    '/api/admin/teams',
+    "GET",
+    "/api/admin/teams",
     `/api/admin/teams?count=500&skip=${teamSkip}`,
   );
-  requireCondition(teams.json?.data?.some((item) => item.id === team.id), 'admin team list omitted fixture team');
+  requireCondition(
+    teams.json?.data?.some((item) => item.id === team.id),
+    "admin team list omitted fixture team",
+  );
   const teamSearch = await call(
-    'POST',
-    '/api/admin/teams/search',
+    "POST",
+    "/api/admin/teams/search",
     `/api/admin/teams/search?hint=${encodeURIComponent(tag)}`,
   );
-  requireCondition(teamSearch.json?.data?.some((item) => item.id === team.id), 'team search omitted fixture team');
-  await call('PUT', '/api/admin/teams/{id}', `/api/admin/teams/${team.id}`, {
+  requireCondition(
+    teamSearch.json?.data?.some((item) => item.id === team.id),
+    "team search omitted fixture team",
+  );
+  await call("PUT", "/api/admin/teams/{id}", `/api/admin/teams/${team.id}`, {
     body: { bio: `team updated by ${tag}`, locked: false },
   });
 
   // A distinct admin identity keeps fixed-rate k6 polling out of the mutation
   // identity's distributed rate-limit bucket.
-  await adminApi('PUT', `/api/admin/users/${poller.id}`, { body: { role: 'Admin' } });
+  await adminApi("PUT", `/api/admin/users/${poller.id}`, {
+    body: { role: "Admin" },
+  });
   const promotedPoller = userByEmail(names.pollerEmail);
-  requireCondition(promotedPoller.role === 3, 'polling identity was not promoted to Admin');
+  requireCondition(
+    promotedPoller.role === 3,
+    "polling identity was not promoted to Admin",
+  );
 
-  await adminApi('PUT', `/api/admin/users/${imported.id}`, { body: { role: 'Monitor' } });
-  await adminApi('PUT', `/api/admin/users/${monitor.id}`, { body: { role: 'Monitor' } });
+  await adminApi("PUT", `/api/admin/users/${imported.id}`, {
+    body: { role: "Monitor" },
+  });
+  await adminApi("PUT", `/api/admin/users/${monitor.id}`, {
+    body: { role: "Monitor" },
+  });
   const promotedImported = userByEmail(names.importEmail);
   const promotedMonitor = userByEmail(names.monitorEmail);
   requireCondition(
     promotedImported.role === 2 && promotedMonitor.role === 2,
-    'authorization identities were not promoted to Monitor',
+    "authorization identities were not promoted to Monitor",
   );
 
   fixtureUsers = {
@@ -900,9 +1131,9 @@ async function identityLifecycle() {
 }
 
 async function configurationLifecycle() {
-  const initial = await call('GET', '/api/admin/config', '/api/admin/config');
-  const model = exactJson(initial, 'admin config');
-  requireCondition(model.globalConfig, 'admin config omitted globalConfig');
+  const initial = await call("GET", "/api/admin/config", "/api/admin/config");
+  const model = exactJson(initial, "admin config");
+  requireCondition(model.globalConfig, "admin config omitted globalConfig");
   originalGlobalConfig = structuredClone(model.globalConfig);
   // Persist the restore value before the first global mutation. A hard-killed
   // runner cannot execute finally-cleanup, so its mode-0600 manifest must
@@ -911,7 +1142,7 @@ async function configurationLifecycle() {
   saveRecovery();
   requireCondition(
     !originalGlobalConfig.logoHash && !originalGlobalConfig.faviconHash,
-    'branding lifecycle requires an empty disposable branding slot',
+    "branding lifecycle requires an empty disposable branding slot",
   );
 
   const changed = {
@@ -919,9 +1150,11 @@ async function configurationLifecycle() {
     title: `RSCTF admin lifecycle ${tag}`,
     slogan: `replica convergence ${tag}`,
   };
-  await call('PUT', '/api/admin/config', '/api/admin/config', { body: { globalConfig: changed } });
+  await call("PUT", "/api/admin/config", "/api/admin/config", {
+    body: { globalConfig: changed },
+  });
   for (const [index, baseUrl] of webTargets.entries()) {
-    const replica = await adminApi('GET', '/api/admin/config', {
+    const replica = await adminApi("GET", "/api/admin/config", {
       baseUrl,
       ip: `10.252.10.${index + 1}`,
     });
@@ -932,56 +1165,79 @@ async function configurationLifecycle() {
   }
 
   const onePixelPng = Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
-    'base64',
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
   );
-  const uploaded = await multipartRequest('/api/admin/config/logo', {
+  const uploaded = await multipartRequest("/api/admin/config/logo", {
     filename: `${tag}.png`,
     content: onePixelPng,
-    contentType: 'image/png',
+    contentType: "image/png",
   });
-  recordCoverage('POST', '/api/admin/config/logo', uploaded);
-  console.log('  ✓ admin.config.logo.upload');
-  const afterUpload = await adminApi('GET', '/api/admin/config');
+  recordCoverage("POST", "/api/admin/config/logo", uploaded);
+  console.log("  ✓ admin.config.logo.upload");
+  const afterUpload = await adminApi("GET", "/api/admin/config");
   const logoHash = afterUpload.json?.globalConfig?.logoHash;
   requireCondition(
-    typeof logoHash === 'string' && logoHash === afterUpload.json?.globalConfig?.faviconHash,
-    'logo upload did not atomically publish matching logo/favicon hashes',
+    typeof logoHash === "string" &&
+      logoHash === afterUpload.json?.globalConfig?.faviconHash,
+    "logo upload did not atomically publish matching logo/favicon hashes",
   );
-  const asset = await rawRequest('GET', `/assets/${logoHash}/${tag}.png`, { jwt: null, ip: null });
-  requireCondition(asset.status === 200 && asset.bytes.length === onePixelPng.length, 'uploaded logo is not servable');
+  const asset = await rawRequest("GET", `/assets/${logoHash}/${tag}.png`, {
+    jwt: null,
+    ip: null,
+  });
+  requireCondition(
+    asset.status === 200 && asset.bytes.length === onePixelPng.length,
+    "uploaded logo is not servable",
+  );
 
-  await call('DELETE', '/api/admin/config/logo', '/api/admin/config/logo');
-  const afterDelete = await adminApi('GET', '/api/admin/config');
+  await call("DELETE", "/api/admin/config/logo", "/api/admin/config/logo");
+  const afterDelete = await adminApi("GET", "/api/admin/config");
   requireCondition(
     afterDelete.json?.globalConfig?.logoHash === null &&
       afterDelete.json?.globalConfig?.faviconHash === null,
-    'logo delete did not clear both branding hashes',
+    "logo delete did not clear both branding hashes",
   );
 
-  const myIp = await call('GET', '/api/admin/MyIp', '/api/admin/MyIp');
-  requireCondition(typeof myIp.json?.detectedIp === 'string', 'MyIp did not resolve an address');
-  await call('POST', '/api/admin/captcha/test', '/api/admin/captcha/test', {
-    body: { config: { provider: 'HashPow' } },
+  const myIp = await call("GET", "/api/admin/MyIp", "/api/admin/MyIp");
+  requireCondition(
+    typeof myIp.json?.detectedIp === "string",
+    "MyIp did not resolve an address",
+  );
+  await call("POST", "/api/admin/captcha/test", "/api/admin/captcha/test", {
+    body: { config: { provider: "HashPow" } },
   });
   const diagnosticJwt = mintJwt(
     fixtureUsers.poller.id,
     userByEmail(fixtureUsers.names.pollerEmail).stamp,
     3,
   );
-  const email = await call('POST', '/api/admin/email/test', '/api/admin/email/test', {
-    jwt: diagnosticJwt,
-    body: {
-      config: { senderAddress: 'not-a-mailbox', smtp: { host: '127.0.0.1', port: 1 } },
-      recipient: `${tag}@admin.invalid`,
+  const email = await call(
+    "POST",
+    "/api/admin/email/test",
+    "/api/admin/email/test",
+    {
+      jwt: diagnosticJwt,
+      body: {
+        config: {
+          senderAddress: "not-a-mailbox",
+          smtp: { host: "127.0.0.1", port: 1 },
+        },
+        recipient: `${tag}@admin.invalid`,
+      },
+      expected: 400,
     },
-    expected: 400,
-  });
-  requireCondition(/not sent|failed|smtp/i.test(email.text), 'email diagnostic did not explain its rejected delivery');
+  );
+  requireCondition(
+    /not sent|failed|smtp/i.test(email.text),
+    "email diagnostic did not explain its rejected delivery",
+  );
 }
 
 async function eventFixture() {
-  console.log('\nevent, participation, submission, writeup, A&D, and container fixture…');
+  console.log(
+    "\nevent, participation, submission, writeup, A&D, and container fixture…",
+  );
   const now = A.nowMs();
   fixtureGame = await A.createGame({
     title: `ADMIN-LIFECYCLE-${tag}`,
@@ -1020,32 +1276,45 @@ async function eventFixture() {
     `INSERT INTO "GameManagers"(game_id,user_id) VALUES (` +
       `${fixtureGame},${sqlLiteral(fixtureUsers.manager.id)}::uuid)`,
   );
-  const managerJwt = mintJwt(fixtureUsers.manager.id, fixtureUsers.manager.stamp, 1);
-  const unrelatedCheck = await A.api(
-    'PUT',
-    `/api/admin/participation/${fixtureParticipation}`,
-    { jwt: playerJwt, body: { status: 'Suspended' }, ip: '10.252.20.1' },
+  const managerJwt = mintJwt(
+    fixtureUsers.manager.id,
+    fixtureUsers.manager.stamp,
+    1,
   );
-  requireCondition(unrelatedCheck.status === 403, 'unrelated player could mutate participation state');
-  await call(
-    'PUT',
-    '/api/admin/participation/{id}',
+  const unrelatedCheck = await A.api(
+    "PUT",
     `/api/admin/participation/${fixtureParticipation}`,
-    { jwt: managerJwt, body: { status: 'Suspended' }, ip: '10.252.20.2' },
+    { jwt: playerJwt, body: { status: "Suspended" }, ip: "10.252.20.1" },
   );
   requireCondition(
-    Number(sql(`SELECT status FROM "Participations" WHERE id=${fixtureParticipation}`)) ===
-      PARTICIPATION_STATUS.Suspended,
-    'same-game manager mutation returned success without persisting Suspended',
+    unrelatedCheck.status === 403,
+    "unrelated player could mutate participation state",
   );
-  await adminApi('PUT', `/api/admin/participation/${fixtureParticipation}`, {
-    body: { status: 'Accepted' },
-    ip: '10.252.20.3',
+  await call(
+    "PUT",
+    "/api/admin/participation/{id}",
+    `/api/admin/participation/${fixtureParticipation}`,
+    { jwt: managerJwt, body: { status: "Suspended" }, ip: "10.252.20.2" },
+  );
+  requireCondition(
+    Number(
+      sql(
+        `SELECT status FROM "Participations" WHERE id=${fixtureParticipation}`,
+      ),
+    ) === PARTICIPATION_STATUS.Suspended,
+    "same-game manager mutation returned success without persisting Suspended",
+  );
+  await adminApi("PUT", `/api/admin/participation/${fixtureParticipation}`, {
+    body: { status: "Accepted" },
+    ip: "10.252.20.3",
   });
   requireCondition(
-    Number(sql(`SELECT status FROM "Participations" WHERE id=${fixtureParticipation}`)) ===
-      PARTICIPATION_STATUS.Accepted,
-    'participation did not return to Accepted',
+    Number(
+      sql(
+        `SELECT status FROM "Participations" WHERE id=${fixtureParticipation}`,
+      ),
+    ) === PARTICIPATION_STATUS.Accepted,
+    "participation did not return to Accepted",
   );
 
   authorizationGameId = await A.createGame({
@@ -1063,20 +1332,20 @@ async function eventFixture() {
   sql(
     `BEGIN; ` +
       `DELETE FROM "GameManagers" WHERE game_id=${fixtureGame} ` +
-        `AND user_id=${sqlLiteral(fixtureUsers.manager.id)}::uuid; ` +
+      `AND user_id=${sqlLiteral(fixtureUsers.manager.id)}::uuid; ` +
       `INSERT INTO "GameManagers"(game_id,user_id) VALUES (` +
-        `${authorizationGameId},${sqlLiteral(fixtureUsers.manager.id)}::uuid); ` +
+      `${authorizationGameId},${sqlLiteral(fixtureUsers.manager.id)}::uuid); ` +
       `COMMIT;`,
   );
   saveRecovery();
 
   fixtureChallenge = await A.createChallenge(fixtureGame, {
     title: `admin-static-${tag}`,
-    category: 'Web',
-    type: 'StaticAttachment',
+    category: "Web",
+    type: "StaticAttachment",
   });
   await A.setChallenge(fixtureGame, fixtureChallenge, {
-    content: 'admin lifecycle challenge',
+    content: "admin lifecycle challenge",
     originalScore: 1000,
     minScoreRate: 0.25,
     difficulty: 2,
@@ -1087,8 +1356,8 @@ async function eventFixture() {
 
   fixtureContainerChallenge = await A.createChallenge(fixtureGame, {
     title: `admin-box-${tag}`,
-    category: 'Pwn',
-    type: 'StaticContainer',
+    category: "Pwn",
+    type: "StaticContainer",
   });
   await A.setChallenge(fixtureGame, fixtureContainerChallenge, {
     containerImage,
@@ -1101,37 +1370,50 @@ async function eventFixture() {
     fixtureGame,
     fixtureContainerChallenge,
     containerImage,
-    'admin lifecycle container challenge',
+    "admin lifecycle container challenge",
   );
-  await A.addFlags(fixtureGame, fixtureContainerChallenge, [`flag{admin_box_${tag}}`]);
-  await A.setChallenge(fixtureGame, fixtureContainerChallenge, { isEnabled: true });
+  await A.addFlags(fixtureGame, fixtureContainerChallenge, [
+    `flag{admin_box_${tag}}`,
+  ]);
+  await A.setChallenge(fixtureGame, fixtureContainerChallenge, {
+    isEnabled: true,
+  });
 
   fixtureAdChallenge = await A.createChallenge(fixtureGame, {
     title: `admin-ad-${tag}`,
-    category: 'Pwn',
-    type: 'AttackDefense',
+    category: "Pwn",
+    type: "AttackDefense",
   });
-  const checkerDirectory = A.prepareExactChecker(fixtureGame, fixtureAdChallenge);
+  const checkerDirectory = A.prepareExactChecker(
+    fixtureGame,
+    fixtureAdChallenge,
+  );
   await A.setChallenge(fixtureGame, fixtureAdChallenge, {
     adSelfHosted: true,
     adAllowSelfReset: true,
     adCheckerImage: checkerDirectory,
   });
-  await A.addFlags(fixtureGame, fixtureAdChallenge, ['flag{admin_ad_placeholder}']);
+  await A.addFlags(fixtureGame, fixtureAdChallenge, [
+    "flag{admin_ad_placeholder}",
+  ]);
   await A.setChallenge(fixtureGame, fixtureAdChallenge, { isEnabled: true });
 
   const solve = await A.api(
-    'POST',
+    "POST",
     `/api/game/${fixtureGame}/challenges/${fixtureChallenge}`,
-    { jwt: playerJwt, ip: '10.252.21.1', body: { flag: fixtureFlag, attemptId: randomUUID() } },
+    {
+      jwt: playerJwt,
+      ip: "10.252.21.1",
+      body: { flag: fixtureFlag, attemptId: randomUUID() },
+    },
   );
-  expectStatus(solve, 200, 'fixture challenge solve');
+  expectStatus(solve, 200, "fixture challenge solve");
   await adminApi(
-    'POST',
+    "POST",
     `/api/game/${fixtureGame}/challenges/${fixtureChallenge}/review`,
     {
       jwt: playerJwt,
-      ip: '10.252.21.2',
+      ip: "10.252.21.2",
       body: { rating: 4, comment: `admin lifecycle review ${tag}` },
     },
   );
@@ -1142,17 +1424,17 @@ async function eventFixture() {
   await multipartRequest(`/api/game/${fixtureGame}/writeup`, {
     filename: `${tag}.pdf`,
     content: minimalPdf,
-    contentType: 'application/pdf',
+    contentType: "application/pdf",
     jwt: playerJwt,
-    ip: '10.252.21.3',
+    ip: "10.252.21.3",
   });
   const writeupArtifact = JSON.parse(
     sql(
       `SELECT json_build_object(` +
         `'id',file.id,'hash',file.hash,'referenceCount',file.reference_count` +
-      `)::text FROM "Participations" participation ` +
-      `JOIN "Files" file ON file.id=participation.writeup_id ` +
-      `WHERE participation.id=${fixtureParticipation} AND participation.game_id=${fixtureGame}`,
+        `)::text FROM "Participations" participation ` +
+        `JOIN "Files" file ON file.id=participation.writeup_id ` +
+        `WHERE participation.id=${fixtureParticipation} AND participation.game_id=${fixtureGame}`,
     ),
   );
   requireCondition(
@@ -1165,21 +1447,24 @@ async function eventFixture() {
   saveRecovery();
 
   const containerResponse = await A.api(
-    'POST',
+    "POST",
     `/api/game/${fixtureGame}/container/${fixtureContainerChallenge}`,
-    { jwt: playerJwt, ip: '10.252.21.4', timeoutMs: 120_000 },
+    { jwt: playerJwt, ip: "10.252.21.4", timeoutMs: 120_000 },
   );
-  expectStatus(containerResponse, 200, 'fixture container create');
+  expectStatus(containerResponse, 200, "fixture container create");
   containerGuid = containerResponse.json?.id;
   requireCondition(
-    /^[0-9a-f-]{36}$/i.test(containerGuid || ''),
+    /^[0-9a-f-]{36}$/i.test(containerGuid || ""),
     `container create returned an invalid id: ${containerResponse.text}`,
   );
   state.containerIds.push(containerGuid);
   containerRuntimeId = sql(
     `SELECT container_id FROM "Containers" WHERE id=${sqlLiteral(containerGuid)}::uuid`,
   );
-  requireCondition(containerRuntimeId.length > 0, 'fixture container row omitted its runtime id');
+  requireCondition(
+    containerRuntimeId.length > 0,
+    "fixture container row omitted its runtime id",
+  );
   state.runtimeContainerIds.push(containerRuntimeId);
 
   const submissionId = positiveId(
@@ -1188,43 +1473,43 @@ async function eventFixture() {
         `AND participation_id=${fixtureParticipation} AND challenge_id=${fixtureChallenge} ` +
         `ORDER BY id DESC LIMIT 1`,
     ),
-    'fixture submission',
+    "fixture submission",
   );
   state.evidence.submissionId = submissionId;
   state.evidence.suspicionId = positiveId(
     sql(
       `WITH inserted AS (` +
         `INSERT INTO "SuspicionEvents"(` +
-          `game_id,participation_id,challenge_id,kind,evidence_key,score_delta,created_at) VALUES (` +
-          `${fixtureGame},${fixtureParticipation},${fixtureChallenge},0,` +
-          `${sqlLiteral(`submission:${submissionId}`)},10,clock_timestamp()) RETURNING id` +
+        `game_id,participation_id,challenge_id,kind,evidence_key,score_delta,created_at) VALUES (` +
+        `${fixtureGame},${fixtureParticipation},${fixtureChallenge},0,` +
+        `${sqlLiteral(`submission:${submissionId}`)},10,clock_timestamp()) RETURNING id` +
         `) SELECT id FROM inserted`,
     ),
-    'suspicion event',
+    "suspicion event",
   );
   state.evidence.flagEgressId = positiveId(
     sql(
       `WITH inserted AS (` +
         `INSERT INTO "FlagEgressEvents"(` +
-          `game_id,participation_id,challenge_id,container_id,remote_ip,remote_port,hit_count,` +
-          `first_seen_utc,last_seen_utc) VALUES (` +
-          `${fixtureGame},${fixtureParticipation},${fixtureChallenge},NULL,'203.0.113.10',31337,2,` +
-          `clock_timestamp(),clock_timestamp()) RETURNING id` +
+        `game_id,participation_id,challenge_id,container_id,remote_ip,remote_port,hit_count,` +
+        `first_seen_utc,last_seen_utc) VALUES (` +
+        `${fixtureGame},${fixtureParticipation},${fixtureChallenge},NULL,'203.0.113.10',31337,2,` +
+        `clock_timestamp(),clock_timestamp()) RETURNING id` +
         `) SELECT id FROM inserted`,
     ),
-    'flag egress event',
+    "flag egress event",
   );
   antiCheatBlockId = positiveId(
     sql(
       `WITH inserted AS (` +
         `INSERT INTO "AntiCheatBlocks"(` +
-          `user_id,user_name,conflict_user_id,conflict_user_name,kind,conflicting_value,occurred_at_utc) ` +
-          `VALUES (${sqlLiteral(playerId)}::uuid,${sqlLiteral(`${tag}-player`)},` +
-          `${sqlLiteral(cohort.userIds[1])}::uuid,${sqlLiteral(`${tag}-peer`)},'Ip','203.0.113.10',` +
-          `clock_timestamp()) RETURNING id` +
+        `user_id,user_name,conflict_user_id,conflict_user_name,kind,conflicting_value,occurred_at_utc) ` +
+        `VALUES (${sqlLiteral(playerId)}::uuid,${sqlLiteral(`${tag}-player`)},` +
+        `${sqlLiteral(cohort.userIds[1])}::uuid,${sqlLiteral(`${tag}-peer`)},'Ip','203.0.113.10',` +
+        `clock_timestamp()) RETURNING id` +
         `) SELECT id FROM inserted`,
     ),
-    'anti-cheat block',
+    "anti-cheat block",
   );
   state.evidence.antiCheatBlockId = antiCheatBlockId;
   saveRecovery();
@@ -1233,14 +1518,17 @@ async function eventFixture() {
 }
 
 async function runtimeImageRepairLifecycle() {
-  console.log('\nmissing local challenge image repair…');
+  console.log("\nmissing local challenge image repair…");
   requireCondition(
-    authorizationGameId && fixtureParticipation && fixturePlayerId && fixturePlayerJwt,
-    'runtime repair drill requires the initialized event identities',
+    authorizationGameId &&
+      fixtureParticipation &&
+      fixturePlayerId &&
+      fixturePlayerJwt,
+    "runtime repair drill requires the initialized event identities",
   );
   const title = `Admin Runtime Repair ${tag}`;
   runtimeRepairFixture = {
-    role: 'runtime-repair',
+    role: "runtime-repair",
     title,
     flag: `flag{admin_runtime_repair_${tag}}`,
     gameId: authorizationGameId,
@@ -1253,34 +1541,42 @@ async function runtimeImageRepairLifecycle() {
   state.buildImageFixtures.push(runtimeRepairFixture);
   saveRecovery();
 
-  const sourceArchive = runnableChallengeArchive([{
-    title,
-    flag: runtimeRepairFixture.flag,
-    exposePort: 80,
-    dockerfile:
-      `FROM nginx:alpine\n` +
-      `RUN printf 'rsctf runtime repair ${tag}\\n' > /usr/share/nginx/html/index.html\n`,
-  }]);
+  const sourceArchive = runnableChallengeArchive([
+    {
+      title,
+      flag: runtimeRepairFixture.flag,
+      exposePort: 80,
+      dockerfile:
+        `FROM nginx:alpine\n` +
+        `RUN printf 'rsctf runtime repair ${tag}\\n' > /usr/share/nginx/html/index.html\n`,
+    },
+  ]);
   const imported = await multipartRequest(
     `/api/edit/games/${authorizationGameId}/challenges/import`,
     {
       filename: `${tag}-runtime-repair.zip`,
       content: sourceArchive,
-      contentType: 'application/zip',
+      contentType: "application/zip",
       timeoutMs: 300_000,
-      label: 'trusted runtime-repair challenge import',
+      label: "trusted runtime-repair challenge import",
     },
   );
   requireCondition(
-    imported.json?.imported === 1 && imported.json?.updated === 0 && imported.json?.failed === 0,
+    imported.json?.imported === 1 &&
+      imported.json?.updated === 0 &&
+      imported.json?.failed === 0,
     `trusted runtime-repair import failed: ${imported.text}`,
   );
   await waitForOwnedScratchBuilds([runtimeRepairFixture], 300_000);
-  await A.setChallenge(authorizationGameId, runtimeRepairFixture.challengeId, { isEnabled: true });
+  await A.setChallenge(authorizationGameId, runtimeRepairFixture.challengeId, {
+    isEnabled: true,
+  });
 
   const teamId = positiveId(
-    sql(`SELECT team_id FROM "Participations" WHERE id=${fixtureParticipation}`),
-    'runtime repair team',
+    sql(
+      `SELECT team_id FROM "Participations" WHERE id=${fixtureParticipation}`,
+    ),
+    "runtime repair team",
   );
   const repairParticipationId = positiveId(
     sql(
@@ -1288,13 +1584,13 @@ async function runtimeImageRepairLifecycle() {
         `INSERT INTO "Participations"(status,token,game_id,team_id,division_id,suspicion_score) ` +
         `VALUES (1,substr(md5(gen_random_uuid()::text),1,16),${authorizationGameId},${teamId},NULL,0) ` +
         `RETURNING id` +
-      `), linked AS (` +
+        `), linked AS (` +
         `INSERT INTO "UserParticipations"(user_id,game_id,team_id,participation_id) ` +
         `SELECT ${sqlLiteral(fixturePlayerId)}::uuid,${authorizationGameId},${teamId},id FROM participation ` +
         `RETURNING participation_id` +
-      `) SELECT participation_id FROM linked`,
+        `) SELECT participation_id FROM linked`,
     ),
-    'runtime repair participation',
+    "runtime repair participation",
   );
   state.participationIds.push(repairParticipationId);
   saveRecovery();
@@ -1308,32 +1604,41 @@ async function runtimeImageRepairLifecycle() {
         `WHERE id=${authorizationGameId} AND title=${sqlLiteral(`ADMIN-AUTHORIZATION-${tag}`)} ` +
         `RETURNING id`,
     );
-    requireCondition(Number(activated) === authorizationGameId, 'runtime repair game activation failed closed');
+    requireCondition(
+      Number(activated) === authorizationGameId,
+      "runtime repair game activation failed closed",
+    );
 
     const oldImage = sql(
       `SELECT build_image_digest FROM "GameChallenges" ` +
         `WHERE id=${runtimeRepairFixture.challengeId} AND game_id=${authorizationGameId} AND build_status=1`,
     );
-    requireCondition(/^sha256:[a-f0-9]{64}$/.test(oldImage), 'repair fixture has no daemon-local image id');
-    const removal = docker(['image', 'rm', '--force', oldImage]);
     requireCondition(
-      removal.status === 0 && docker(['image', 'inspect', oldImage]).status !== 0,
+      /^sha256:[a-f0-9]{64}$/.test(oldImage),
+      "repair fixture has no daemon-local image id",
+    );
+    const removal = docker(["image", "rm", "--force", oldImage]);
+    requireCondition(
+      removal.status === 0 &&
+        docker(["image", "inspect", oldImage]).status !== 0,
       `could not emulate external image pruning: ${String(removal.stderr || removal.stdout).trim()}`,
     );
 
-    const beforeRepairs = Number(sql(
-      `SELECT count(*) FROM "BuildRecords" WHERE challenge_id=${runtimeRepairFixture.challengeId} ` +
-        `AND trigger='RuntimeRepair'`,
-    ));
-    const response = await A.api(
-      'POST',
-      `/api/game/${authorizationGameId}/container/${runtimeRepairFixture.challengeId}`,
-      { jwt: fixturePlayerJwt, ip: '10.252.21.40', timeoutMs: 300_000 },
+    const beforeRepairs = Number(
+      sql(
+        `SELECT count(*) FROM "BuildRecords" WHERE challenge_id=${runtimeRepairFixture.challengeId} ` +
+          `AND trigger='RuntimeRepair'`,
+      ),
     );
-    expectStatus(response, 200, 'container start after external image prune');
+    const response = await A.api(
+      "POST",
+      `/api/game/${authorizationGameId}/container/${runtimeRepairFixture.challengeId}`,
+      { jwt: fixturePlayerJwt, ip: "10.252.21.40", timeoutMs: 300_000 },
+    );
+    expectStatus(response, 200, "container start after external image prune");
     runtimeRepairContainerGuid = response.json?.id;
     requireCondition(
-      /^[0-9a-f-]{36}$/i.test(runtimeRepairContainerGuid || ''),
+      /^[0-9a-f-]{36}$/i.test(runtimeRepairContainerGuid || ""),
       `runtime repair start returned an invalid container id: ${response.text}`,
     );
     state.containerIds.push(runtimeRepairContainerGuid);
@@ -1341,18 +1646,25 @@ async function runtimeImageRepairLifecycle() {
       `SELECT container_id FROM "Containers" ` +
         `WHERE id=${sqlLiteral(runtimeRepairContainerGuid)}::uuid`,
     );
-    requireCondition(runtimeRepairContainerId.length > 0, 'runtime repair container omitted its backend id');
+    requireCondition(
+      runtimeRepairContainerId.length > 0,
+      "runtime repair container omitted its backend id",
+    );
     state.runtimeContainerIds.push(runtimeRepairContainerId);
 
-    const repairAudit = JSON.parse(sql(
-      `SELECT json_build_object(` +
-        `'count',count(*),'successes',count(*) FILTER (WHERE status=1),` +
-        `'failures',count(*) FILTER (WHERE status<>1)` +
-      `)::text FROM "BuildRecords" WHERE challenge_id=${runtimeRepairFixture.challengeId} ` +
-        `AND trigger='RuntimeRepair'`,
-    ));
+    const repairAudit = JSON.parse(
+      sql(
+        `SELECT json_build_object(` +
+          `'count',count(*),'successes',count(*) FILTER (WHERE status=1),` +
+          `'failures',count(*) FILTER (WHERE status<>1)` +
+          `)::text FROM "BuildRecords" WHERE challenge_id=${runtimeRepairFixture.challengeId} ` +
+          `AND trigger='RuntimeRepair'`,
+      ),
+    );
     requireCondition(
-      repairAudit.count === beforeRepairs + 1 && repairAudit.successes === 1 && repairAudit.failures === 0,
+      repairAudit.count === beforeRepairs + 1 &&
+        repairAudit.successes === 1 &&
+        repairAudit.failures === 0,
       `runtime repair audit is not exact: ${JSON.stringify(repairAudit)}`,
     );
     const repairedImage = sql(
@@ -1360,9 +1672,9 @@ async function runtimeImageRepairLifecycle() {
     );
     requireCondition(
       /^sha256:[a-f0-9]{64}$/.test(repairedImage) &&
-        docker(['image', 'inspect', repairedImage]).status === 0 &&
-        docker(['container', 'inspect', runtimeRepairContainerId]).status === 0,
-      'automatic repair did not republish a launchable immutable image',
+        docker(["image", "inspect", repairedImage]).status === 0 &&
+        docker(["container", "inspect", runtimeRepairContainerId]).status === 0,
+      "automatic repair did not republish a launchable immutable image",
     );
     state.evidence.runtimeImageRepair = {
       challengeId: runtimeRepairFixture.challengeId,
@@ -1370,7 +1682,9 @@ async function runtimeImageRepairLifecycle() {
       repairedImage,
       buildRecords: repairAudit,
     };
-    console.log(`  ✓ pruned ${oldImage.slice(0, 19)}… rebuilt once and launched successfully`);
+    console.log(
+      `  ✓ pruned ${oldImage.slice(0, 19)}… rebuilt once and launched successfully`,
+    );
     saveRecovery();
   } catch (error) {
     drillError = error;
@@ -1383,108 +1697,143 @@ async function runtimeImageRepairLifecycle() {
       cleanupErrors.push(`${label}: ${error.message}`);
     }
   };
-  await cleanup('runtime repair container', async () => {
+  await cleanup("runtime repair container", async () => {
     if (!runtimeRepairContainerGuid) return;
     const response = await adminApi(
-      'DELETE',
+      "DELETE",
       `/api/admin/instances/${runtimeRepairContainerGuid}`,
       { timeoutMs: 120_000 },
     );
-    expectStatus(response, 200, 'runtime repair container cleanup');
+    expectStatus(response, 200, "runtime repair container cleanup");
     requireCondition(
-      docker(['container', 'inspect', runtimeRepairContainerId]).status !== 0,
-      'runtime repair Docker container survived cleanup',
+      docker(["container", "inspect", runtimeRepairContainerId]).status !== 0,
+      "runtime repair Docker container survived cleanup",
     );
     runtimeRepairContainerGuid = null;
     runtimeRepairContainerId = null;
   });
-  await cleanup('runtime repair schedule and participation', async () => {
+  await cleanup("runtime repair schedule and participation", async () => {
     sql(
       `BEGIN; ` +
         `DELETE FROM "UserParticipations" WHERE participation_id=${repairParticipationId}; ` +
         `DELETE FROM "Participations" WHERE id=${repairParticipationId} AND game_id=${authorizationGameId}; ` +
         `UPDATE "Games" SET start_time_utc=clock_timestamp()+interval '1 day', ` +
-          `end_time_utc=clock_timestamp()+interval '2 days' ` +
-          `WHERE id=${authorizationGameId} AND title=${sqlLiteral(`ADMIN-AUTHORIZATION-${tag}`)}; ` +
+        `end_time_utc=clock_timestamp()+interval '2 days' ` +
+        `WHERE id=${authorizationGameId} AND title=${sqlLiteral(`ADMIN-AUTHORIZATION-${tag}`)}; ` +
         `COMMIT;`,
     );
   });
-  await cleanup('runtime repair challenge definition', async () => {
+  await cleanup("runtime repair challenge definition", async () => {
     await deleteScratchBuildDefinition(runtimeRepairFixture);
   });
-  await cleanup('runtime repair image', async () => {
+  await cleanup("runtime repair image", async () => {
     await cleanupOwnedScratchImage(runtimeRepairFixture);
   });
   if (drillError || cleanupErrors.length) {
     const details = [];
     if (drillError) details.push(drillError.stack || drillError.message);
     details.push(...cleanupErrors);
-    throw new Error(details.join('; '));
+    throw new Error(details.join("; "));
   }
 }
 
 async function observabilityAndRuntime() {
-  console.log('\nadmin observability and runtime endpoints…');
-  const dashboard = await call('GET', '/api/admin/dashboard', '/api/admin/dashboard');
-  requireCondition(dashboard.json?.systemStats?.userCount > 0, 'dashboard user count is not populated');
+  console.log("\nadmin observability and runtime endpoints…");
+  const dashboard = await call(
+    "GET",
+    "/api/admin/dashboard",
+    "/api/admin/dashboard",
+  );
+  requireCondition(
+    dashboard.json?.systemStats?.userCount > 0,
+    "dashboard user count is not populated",
+  );
+  const realtime = await call(
+    "GET",
+    "/api/admin/realtime/metrics",
+    "/api/admin/realtime/metrics",
+  );
+  requireCondition(
+    realtime.json?.websocket?.startedAtUnixMs > 0 &&
+      realtime.json.websocket.startedAtUnixMs <= Date.now(),
+    "realtime operational metrics omitted a valid process start time",
+  );
 
   const egress = await call(
-    'GET',
-    '/api/admin/Games/{id}/FlagEgress',
+    "GET",
+    "/api/admin/Games/{id}/FlagEgress",
     `/api/admin/Games/${fixtureGame}/FlagEgress?count=20&skip=0`,
   );
   requireCondition(
     egress.json?.data?.some((item) => item.id === state.evidence.flagEgressId),
-    'flag-egress feed omitted the fixture event',
+    "flag-egress feed omitted the fixture event",
   );
   const egressBackfill = await call(
-    'GET',
-    '/api/admin/Games/{id}/FlagEgress/backfill',
+    "GET",
+    "/api/admin/Games/{id}/FlagEgress/backfill",
     `/api/admin/Games/${fixtureGame}/FlagEgress/backfill?after=0&limit=20`,
   );
   requireCondition(
-    egressBackfill.json?.events?.some((item) =>
-      item.id === state.evidence.flagEgressId && Number.isSafeInteger(item.cursor)),
-    'flag-egress reconnect feed omitted the fixture event or cursor',
+    egressBackfill.json?.events?.some(
+      (item) =>
+        item.id === state.evidence.flagEgressId &&
+        Number.isSafeInteger(item.cursor),
+    ),
+    "flag-egress reconnect feed omitted the fixture event or cursor",
   );
 
   const trend = await call(
-    'GET',
-    '/api/admin/submissiontrend',
-    '/api/admin/submissiontrend?range=Day',
+    "GET",
+    "/api/admin/submissiontrend",
+    "/api/admin/submissiontrend?range=Day",
   );
-  requireCondition(Array.isArray(trend.json) && trend.json.some((bucket) => bucket.count > 0), 'Day trend is empty');
-  for (const range of ['Week', 'Month', 'Year']) {
-    const response = await adminApi('GET', `/api/admin/submissiontrend?range=${range}`);
-    requireCondition(Array.isArray(response.json), `${range} trend is not an array`);
+  requireCondition(
+    Array.isArray(trend.json) && trend.json.some((bucket) => bucket.count > 0),
+    "Day trend is empty",
+  );
+  for (const range of ["Week", "Month", "Year"]) {
+    const response = await adminApi(
+      "GET",
+      `/api/admin/submissiontrend?range=${range}`,
+    );
+    requireCondition(
+      Array.isArray(response.json),
+      `${range} trend is not an array`,
+    );
   }
 
-  const reviews = await call('GET', '/api/admin/reviews', '/api/admin/reviews?count=100&skip=0');
+  const reviews = await call(
+    "GET",
+    "/api/admin/reviews",
+    "/api/admin/reviews?count=100&skip=0",
+  );
   requireCondition(
     reviews.json?.some((review) => review.challengeId === fixtureChallenge),
-    'review feed omitted the fixture review',
+    "review feed omitted the fixture review",
   );
   const cheats = await call(
-    'GET',
-    '/api/admin/cheat-reports',
-    '/api/admin/cheat-reports?count=100&skip=0',
+    "GET",
+    "/api/admin/cheat-reports",
+    "/api/admin/cheat-reports?count=100&skip=0",
   );
   requireCondition(
-    cheats.json?.some((report) => report.submitTeam?.id === fixtureParticipation),
-    'cheat report feed omitted the fixture suspicion',
+    cheats.json?.some(
+      (report) => report.submitTeam?.id === fixtureParticipation,
+    ),
+    "cheat report feed omitted the fixture suspicion",
   );
   const derived = await call(
-    'POST',
-    '/api/admin/games/{gameId}/anti-cheat/derive',
+    "POST",
+    "/api/admin/games/{gameId}/anti-cheat/derive",
     `/api/admin/games/${fixtureGame}/anti-cheat/derive`,
   );
   requireCondition(
     Number.isSafeInteger(derived.json?.inserted) && derived.json.inserted >= 0,
-    'event-security derivation returned an invalid insert count',
+    "event-security derivation returned an invalid insert count",
   );
   const fused = await call(
-    'GET',
-    '/api/admin/games/{gameId}/anti-cheat/fusion/{participationId}',
+    "GET",
+    "/api/admin/games/{gameId}/anti-cheat/fusion/{participationId}",
     `/api/admin/games/${fixtureGame}/anti-cheat/fusion/${fixtureParticipation}`,
   );
   requireCondition(
@@ -1493,89 +1842,115 @@ async function observabilityAndRuntime() {
       Array.isArray(fused.json?.families) &&
       Array.isArray(fused.json?.findings) &&
       Array.isArray(fused.json?.relationships),
-    'event-security fusion returned a malformed evidence breakdown',
+    "event-security fusion returned a malformed evidence breakdown",
   );
   await call(
-    'POST',
-    '/api/admin/games/{gameId}/anti-cheat/findings/{findingId}/review',
+    "POST",
+    "/api/admin/games/{gameId}/anti-cheat/findings/{findingId}/review",
     `/api/admin/games/${fixtureGame}/anti-cheat/findings/9223372036854775807/review`,
-    { body: { status: 'needsMoreEvidence', note: `missing fixture ${tag}` }, expected: 404 },
+    {
+      body: { status: "needsMoreEvidence", note: `missing fixture ${tag}` },
+      expected: 404,
+    },
   );
   await call(
-    'POST',
-    '/api/admin/games/{gameId}/anti-cheat/telemetry/purge',
+    "POST",
+    "/api/admin/games/{gameId}/anti-cheat/telemetry/purge",
     `/api/admin/games/${fixtureGame}/anti-cheat/telemetry/purge`,
-    { body: { reason: 'short' }, expected: 400 },
+    { body: { reason: "short" }, expected: 400 },
   );
   await call(
-    'POST',
-    '/api/admin/games/{gameId}/vpn-override',
+    "POST",
+    "/api/admin/games/{gameId}/vpn-override",
     `/api/admin/games/${fixtureGame}/vpn-override`,
-    { body: { reason: `invalid zero-duration override ${tag}`, durationMinutes: 0 }, expected: 400 },
+    {
+      body: {
+        reason: `invalid zero-duration override ${tag}`,
+        durationMinutes: 0,
+      },
+      expected: 400,
+    },
   );
   const overrides = await call(
-    'GET',
-    '/api/admin/games/{gameId}/vpn-overrides',
+    "GET",
+    "/api/admin/games/{gameId}/vpn-overrides",
     `/api/admin/games/${fixtureGame}/vpn-overrides`,
   );
-  requireCondition(Array.isArray(overrides.json), 'VPN override history is not an array');
+  requireCondition(
+    Array.isArray(overrides.json),
+    "VPN override history is not an array",
+  );
   await call(
-    'POST',
-    '/api/admin/games/{gameId}/vpn-override/{overrideId}/revoke',
+    "POST",
+    "/api/admin/games/{gameId}/vpn-override/{overrideId}/revoke",
     `/api/admin/games/${fixtureGame}/vpn-override/${randomUUID()}/revoke`,
     { expected: 404 },
   );
-  const writeups = await call('GET', '/api/admin/writeups', '/api/admin/writeups?count=100&skip=0');
+  const writeups = await call(
+    "GET",
+    "/api/admin/writeups",
+    "/api/admin/writeups?count=100&skip=0",
+  );
   requireCondition(
     writeups.json?.some((writeup) => writeup.id === fixtureParticipation),
-    'global writeup feed omitted the fixture PDF',
+    "global writeup feed omitted the fixture PDF",
   );
   const gameWriteups = await call(
-    'GET',
-    '/api/admin/writeups/{id}',
+    "GET",
+    "/api/admin/writeups/{id}",
     `/api/admin/writeups/${fixtureGame}`,
   );
   requireCondition(
-    gameWriteups.json?.writeups?.some((writeup) => writeup.id === fixtureParticipation),
-    'game writeup feed omitted the fixture PDF',
+    gameWriteups.json?.writeups?.some(
+      (writeup) => writeup.id === fixtureParticipation,
+    ),
+    "game writeup feed omitted the fixture PDF",
   );
   const archive = await callRaw(
-    'GET',
-    '/api/admin/writeups/{id}/all',
+    "GET",
+    "/api/admin/writeups/{id}/all",
     `/api/admin/writeups/${fixtureGame}/all`,
   );
   requireCondition(
-    archive.headers.get('content-type') === 'application/zip' &&
-      archive.bytes[0] === 0x50 && archive.bytes[1] === 0x4b,
-    'writeup archive is not a ZIP payload',
+    archive.headers.get("content-type") === "application/zip" &&
+      archive.bytes[0] === 0x50 &&
+      archive.bytes[1] === 0x4b,
+    "writeup archive is not a ZIP payload",
   );
 
   const logs = await call(
-    'GET',
-    '/api/admin/logs',
-    `/api/admin/logs?count=100&skip=0&search=${encodeURIComponent('AdminController')}`,
+    "GET",
+    "/api/admin/logs",
+    `/api/admin/logs?count=100&skip=0&search=${encodeURIComponent("AdminController")}`,
   );
-  requireCondition(Array.isArray(logs.json), 'admin logs response is not an array');
-  const files = await call('GET', '/api/admin/files', '/api/admin/files?count=100&skip=0');
+  requireCondition(
+    Array.isArray(logs.json),
+    "admin logs response is not an array",
+  );
+  const files = await call(
+    "GET",
+    "/api/admin/files",
+    "/api/admin/files?count=100&skip=0",
+  );
   requireCondition(
     files.json?.data?.some((file) => /Writeup-/i.test(file.name)),
-    'file inventory omitted the fixture writeup',
+    "file inventory omitted the fixture writeup",
   );
 
   const instances = await call(
-    'GET',
-    '/api/admin/instances',
-    '/api/admin/instances?count=50&skip=0&includeRuntimeStats=true',
+    "GET",
+    "/api/admin/instances",
+    "/api/admin/instances?count=50&skip=0&includeRuntimeStats=true",
   );
   const fixtureInstance = instances.json?.data?.find(
     (instance) => instance.containerGuid === containerGuid,
   );
   requireCondition(
     fixtureInstance,
-    'instance inventory omitted the live fixture container',
+    "instance inventory omitted the live fixture container",
   );
   requireCondition(
-    fixtureInstance.ownerKind === 'Team' &&
+    fixtureInstance.ownerKind === "Team" &&
       Number.isSafeInteger(fixtureInstance.team?.id) &&
       fixtureInstance.team?.name?.length > 0,
     `instance inventory omitted its team owner: ${JSON.stringify(fixtureInstance)}`,
@@ -1586,90 +1961,108 @@ async function observabilityAndRuntime() {
     `instance inventory omitted its challenge: ${JSON.stringify(fixtureInstance)}`,
   );
   requireCondition(
-    typeof fixtureInstance.isProxy === 'boolean',
+    typeof fixtureInstance.isProxy === "boolean",
     `instance inventory omitted its proxy capability: ${JSON.stringify(fixtureInstance)}`,
   );
   requireCondition(
-    ['Available', 'Unavailable'].includes(fixtureInstance.runtimeStats?.availability) &&
-      Number.isFinite(fixtureInstance.runtimeStats?.sampledAt),
+    ["Available", "Unavailable"].includes(
+      fixtureInstance.runtimeStats?.availability,
+    ) && Number.isFinite(fixtureInstance.runtimeStats?.sampledAt),
     `instance inventory omitted its bounded runtime sample: ${JSON.stringify(fixtureInstance)}`,
   );
   const filteredInstances = await call(
-    'GET',
-    '/api/admin/instances',
+    "GET",
+    "/api/admin/instances",
     `/api/admin/instances?count=50&skip=0&teamId=${fixtureInstance.team.id}` +
       `&challengeId=${fixtureInstance.challenge.id}`,
   );
   requireCondition(
     filteredInstances.json?.total >= 1 &&
-      filteredInstances.json?.data?.some((instance) => instance.containerGuid === containerGuid),
+      filteredInstances.json?.data?.some(
+        (instance) => instance.containerGuid === containerGuid,
+      ),
     `authoritative instance filters omitted their matching row: ${JSON.stringify(filteredInstances.json)}`,
   );
   const teamOptions = await call(
-    'GET',
-    '/api/admin/instances/filter-options',
+    "GET",
+    "/api/admin/instances/filter-options",
     `/api/admin/instances/filter-options?kind=Team&count=30&search=${encodeURIComponent(fixtureInstance.team.name)}`,
   );
   const challengeOptions = await call(
-    'GET',
-    '/api/admin/instances/filter-options',
+    "GET",
+    "/api/admin/instances/filter-options",
     `/api/admin/instances/filter-options?kind=Challenge&count=30&search=${encodeURIComponent(fixtureInstance.challenge.title)}`,
   );
   requireCondition(
-    teamOptions.json?.data?.some((option) => option.id === fixtureInstance.team.id) &&
-      challengeOptions.json?.data?.some((option) => option.id === fixtureInstance.challenge.id),
-    'active instance filter option discovery omitted the fixture ownership dimensions',
+    teamOptions.json?.data?.some(
+      (option) => option.id === fixtureInstance.team.id,
+    ) &&
+      challengeOptions.json?.data?.some(
+        (option) => option.id === fixtureInstance.challenge.id,
+      ),
+    "active instance filter option discovery omitted the fixture ownership dimensions",
   );
   const stats = await call(
-    'GET',
-    '/api/admin/instances/{id}/stats',
+    "GET",
+    "/api/admin/instances/{id}/stats",
     `/api/admin/instances/${containerGuid}/stats`,
   );
-  requireCondition(Number.isFinite(stats.json?.cpuPercent), 'instance stats omitted cpuPercent');
+  requireCondition(
+    Number.isFinite(stats.json?.cpuPercent),
+    "instance stats omitted cpuPercent",
+  );
 
   const antiCheat = await call(
-    'GET',
-    '/api/admin/anticheatblocks',
-    '/api/admin/anticheatblocks?count=100',
+    "GET",
+    "/api/admin/anticheatblocks",
+    "/api/admin/anticheatblocks?count=100",
   );
   requireCondition(
     antiCheat.json?.some((block) => block.id === antiCheatBlockId),
-    'anti-cheat inventory omitted the fixture block',
+    "anti-cheat inventory omitted the fixture block",
   );
   await call(
-    'DELETE',
-    '/api/admin/anticheatblocks/{id}',
+    "DELETE",
+    "/api/admin/anticheatblocks/{id}",
     `/api/admin/anticheatblocks/${antiCheatBlockId}`,
   );
   requireCondition(
-    Number(sql(`SELECT count(*) FROM "AntiCheatBlocks" WHERE id=${antiCheatBlockId}`)) === 0,
-    'anti-cheat block delete did not persist',
+    Number(
+      sql(
+        `SELECT count(*) FROM "AntiCheatBlocks" WHERE id=${antiCheatBlockId}`,
+      ),
+    ) === 0,
+    "anti-cheat block delete did not persist",
   );
   antiCheatBlockId = null;
 
   // Read consistency is asserted on stable projections; volatile timestamps and
   // request-origin fields are deliberately excluded by the catalog helper.
   for (const operation of [
-    operationFor('GET', '/api/admin/dashboard'),
-    operationFor('GET', '/api/admin/config'),
-    operationFor('GET', '/api/admin/teams'),
-    operationFor('GET', '/api/admin/builds'),
+    operationFor("GET", "/api/admin/dashboard"),
+    operationFor("GET", "/api/admin/config"),
+    operationFor("GET", "/api/admin/teams"),
+    operationFor("GET", "/api/admin/builds"),
   ]) {
-    const actualPath = operation.path === '/api/admin/teams'
-      ? '/api/admin/teams?count=100&skip=0'
-      : operation.path === '/api/admin/builds'
-        ? `/api/admin/builds?count=100&skip=0&gameId=${fixtureGame}`
-        : operation.path;
+    const actualPath =
+      operation.path === "/api/admin/teams"
+        ? "/api/admin/teams?count=100&skip=0"
+        : operation.path === "/api/admin/builds"
+          ? `/api/admin/builds?count=100&skip=0&gameId=${fixtureGame}`
+          : operation.path;
     const projections = [];
     for (const [index, baseUrl] of webTargets.entries()) {
-      const response = await adminApi('GET', actualPath, {
+      const response = await adminApi("GET", actualPath, {
         baseUrl,
         ip: `10.252.30.${index + 1}`,
       });
       projections.push(stableReplicaProjection(operation.id, response.json));
     }
     requireCondition(
-      projections.every((projection) => JSON.stringify(projection) === JSON.stringify(projections[0])),
+      projections.every(
+        (projection) =>
+          JSON.stringify(projection) === JSON.stringify(projections[0]),
+      ),
       `${operation.id} diverged between web replicas`,
     );
   }
@@ -1681,17 +2074,17 @@ async function observabilityAndRuntime() {
 }
 
 async function buildLifecycle() {
-  console.log('\nbuild history and installation-owned image lifecycle…');
+  console.log("\nbuild history and installation-owned image lifecycle…");
   const storagePolicyKeys = [
-    'ContainerPolicy:ImageIdleRetentionHours',
-    'ContainerPolicy:BuildCacheRetentionHours',
-    'ContainerPolicy:MinimumFreeStorageGiB',
+    "ContainerPolicy:ImageIdleRetentionHours",
+    "ContainerPolicy:BuildCacheRetentionHours",
+    "ContainerPolicy:MinimumFreeStorageGiB",
   ];
   const storagePolicySnapshot = JSON.parse(
     sql(
       `SELECT COALESCE(json_agg(json_build_object('key',config_key,'value',value) ` +
         `ORDER BY config_key),'[]'::json)::text FROM "Configs" ` +
-        `WHERE config_key IN (${storagePolicyKeys.map(sqlLiteral).join(',')})`,
+        `WHERE config_key IN (${storagePolicyKeys.map(sqlLiteral).join(",")})`,
     ),
   );
   try {
@@ -1703,55 +2096,70 @@ async function buildLifecycle() {
         `ON CONFLICT (config_key) DO UPDATE SET value=EXCLUDED.value`,
     );
     const storage = await call(
-      'GET',
-      '/api/admin/builds/storage',
-      '/api/admin/builds/storage',
+      "GET",
+      "/api/admin/builds/storage",
+      "/api/admin/builds/storage",
     );
     requireCondition(
-      storage.json?.filesystemTotalBytes >= storage.json?.filesystemAvailableBytes &&
-        storage.json?.minimumFreeBytes === 0 && storage.json?.lowStorage === false,
+      storage.json?.filesystemTotalBytes >=
+        storage.json?.filesystemAvailableBytes &&
+        storage.json?.minimumFreeBytes === 0 &&
+        storage.json?.lowStorage === false,
       `build storage status is inconsistent: ${storage.text}`,
     );
     const cleanup = await call(
-      'POST',
-      '/api/admin/builds/prunestorage',
-      '/api/admin/builds/prunestorage',
+      "POST",
+      "/api/admin/builds/prunestorage",
+      "/api/admin/builds/prunestorage",
       { timeoutMs: 180_000 },
     );
     requireCondition(
-      cleanup.json?.pressureMode === false && cleanup.json?.minimumFreeBytes === 0,
+      cleanup.json?.pressureMode === false &&
+        cleanup.json?.minimumFreeBytes === 0,
       `bounded storage cleanup ignored its safe fixture policy: ${cleanup.text}`,
     );
   } finally {
     sql(
       `BEGIN; DELETE FROM "Configs" WHERE config_key IN (` +
-        `${storagePolicyKeys.map(sqlLiteral).join(',')}); ` +
-        storagePolicySnapshot.map((row) =>
-          `INSERT INTO "Configs"(config_key,value,cache_keys) VALUES (` +
-            `${sqlLiteral(row.key)},${row.value === null ? 'NULL' : sqlLiteral(row.value)},NULL);`,
-        ).join(' ') +
+        `${storagePolicyKeys.map(sqlLiteral).join(",")}); ` +
+        storagePolicySnapshot
+          .map(
+            (row) =>
+              `INSERT INTO "Configs"(config_key,value,cache_keys) VALUES (` +
+              `${sqlLiteral(row.key)},${row.value === null ? "NULL" : sqlLiteral(row.value)},NULL);`,
+          )
+          .join(" ") +
         ` COMMIT;`,
     );
   }
   // Bulk rebuild is a retry action, not a rebuild-all action. Force the exact
   // disposable challenge into Failed and require a real new attempt.
   const beforeBulk = Number(
-    sql(`SELECT count(*) FROM "BuildRecords" WHERE challenge_id=${fixtureContainerChallenge}`),
+    sql(
+      `SELECT count(*) FROM "BuildRecords" WHERE challenge_id=${fixtureContainerChallenge}`,
+    ),
   );
   sql(
     `UPDATE "GameChallenges" SET build_status=2 WHERE id=${fixtureContainerChallenge} ` +
       `AND game_id=${fixtureGame}`,
   );
   const bulk = await call(
-    'POST',
-    '/api/admin/games/{gameId}/bulkrebuild',
+    "POST",
+    "/api/admin/games/{gameId}/bulkrebuild",
     `/api/admin/games/${fixtureGame}/bulkrebuild`,
     { timeoutMs: 180_000 },
   );
-  requireCondition(bulk.json?.enqueued >= 1, `bulk rebuild remained a no-op: ${bulk.text}`);
   requireCondition(
-    Number(sql(`SELECT count(*) FROM "BuildRecords" WHERE challenge_id=${fixtureContainerChallenge}`)) > beforeBulk,
-    'bulk rebuild did not create a durable audit row',
+    bulk.json?.enqueued >= 1,
+    `bulk rebuild remained a no-op: ${bulk.text}`,
+  );
+  requireCondition(
+    Number(
+      sql(
+        `SELECT count(*) FROM "BuildRecords" WHERE challenge_id=${fixtureContainerChallenge}`,
+      ),
+    ) > beforeBulk,
+    "bulk rebuild did not create a durable audit row",
   );
 
   const queuedId = insertBuildRecord({
@@ -1790,15 +2198,22 @@ async function buildLifecycle() {
   saveRecovery();
 
   const builds = await call(
-    'GET',
-    '/api/admin/builds',
+    "GET",
+    "/api/admin/builds",
     `/api/admin/builds?count=500&skip=0&gameId=${fixtureGame}`,
   );
-  requireCondition(builds.json?.some((record) => record.id === failedId), 'build history omitted fixture rows');
-  const inProgress = await call('GET', '/api/admin/builds/inprogress', '/api/admin/builds/inprogress');
+  requireCondition(
+    builds.json?.some((record) => record.id === failedId),
+    "build history omitted fixture rows",
+  );
+  const inProgress = await call(
+    "GET",
+    "/api/admin/builds/inprogress",
+    "/api/admin/builds/inprogress",
+  );
   requireCondition(
     inProgress.json?.some((record) => record.auditId === queuedId),
-    'in-progress build feed omitted queued fixture',
+    "in-progress build feed omitted queued fixture",
   );
 
   const retrySource = positiveId(
@@ -1806,47 +2221,71 @@ async function buildLifecycle() {
       `SELECT id FROM "BuildRecords" WHERE challenge_id=${fixtureContainerChallenge} ` +
         `AND id<>${queuedId} ORDER BY id DESC LIMIT 1`,
     ),
-    'retry source build',
+    "retry source build",
   );
   const retry = await call(
-    'POST',
-    '/api/admin/builds/{auditId}/reenqueue',
+    "POST",
+    "/api/admin/builds/{auditId}/reenqueue",
     `/api/admin/builds/${retrySource}/reenqueue`,
     { timeoutMs: 180_000 },
   );
-  requireCondition(retry.json?.attempt >= 2, 'build re-enqueue did not advance the attempt');
+  requireCondition(
+    retry.json?.attempt >= 2,
+    "build re-enqueue did not advance the attempt",
+  );
   state.buildRecordIds.push(retry.json.id);
 
-  await call('DELETE', '/api/admin/builds/{auditId}', `/api/admin/builds/${deleteId}`);
-  requireCondition(Number(sql(`SELECT count(*) FROM "BuildRecords" WHERE id=${deleteId}`)) === 0, 'single build delete failed');
+  await call(
+    "DELETE",
+    "/api/admin/builds/{auditId}",
+    `/api/admin/builds/${deleteId}`,
+  );
+  requireCondition(
+    Number(sql(`SELECT count(*) FROM "BuildRecords" WHERE id=${deleteId}`)) ===
+      0,
+    "single build delete failed",
+  );
 
   const bulkDelete = await call(
-    'POST',
-    '/api/admin/builds/bulkdelete',
-    '/api/admin/builds/bulkdelete',
+    "POST",
+    "/api/admin/builds/bulkdelete",
+    "/api/admin/builds/bulkdelete",
     { body: bulkDeleteIds },
   );
-  requireCondition(bulkDelete.json?.removed === bulkDeleteIds.length, 'bulk build delete count is wrong');
+  requireCondition(
+    bulkDelete.json?.removed === bulkDeleteIds.length,
+    "bulk build delete count is wrong",
+  );
 
   // The endpoint is intentionally installation-global. Make its complete
   // candidate set exact immediately before the request, and ensure no build is
   // still capable of transitioning into Failed while that request is in flight.
-  sql(`UPDATE "BuildRecords" SET status=1, finished_at_utc=clock_timestamp() WHERE id=${queuedId}`);
+  sql(
+    `UPDATE "BuildRecords" SET status=1, finished_at_utc=clock_timestamp() WHERE id=${queuedId}`,
+  );
   assertExactFailedBuildPruneCandidates(buildRecordInventory(), failedId);
-  const unrelatedBuildSnapshot = buildRecordInventory(`game_id<>${fixtureGame}`);
+  const unrelatedBuildSnapshot = buildRecordInventory(
+    `game_id<>${fixtureGame}`,
+  );
   const pruneFailed = await call(
-    'POST',
-    '/api/admin/builds/prunefailed',
-    '/api/admin/builds/prunefailed',
-  );
-  requireCondition(pruneFailed.json?.removed === 1, 'failed-build pruning did not remove exactly one row');
-  requireCondition(
-    buildRecordInventory('status=2').length === 0,
-    'failed-build pruning left a failed row after its exact candidate snapshot',
+    "POST",
+    "/api/admin/builds/prunefailed",
+    "/api/admin/builds/prunefailed",
   );
   requireCondition(
-    sameJson(buildRecordInventory(`game_id<>${fixtureGame}`), unrelatedBuildSnapshot),
-    'failed-build pruning changed unrelated build inventory',
+    pruneFailed.json?.removed === 1,
+    "failed-build pruning did not remove exactly one row",
+  );
+  requireCondition(
+    buildRecordInventory("status=2").length === 0,
+    "failed-build pruning left a failed row after its exact candidate snapshot",
+  );
+  requireCondition(
+    sameJson(
+      buildRecordInventory(`game_id<>${fixtureGame}`),
+      unrelatedBuildSnapshot,
+    ),
+    "failed-build pruning changed unrelated build inventory",
   );
 
   // Build two real installation-owned images through the trusted import path.
@@ -1861,114 +2300,169 @@ async function buildLifecycle() {
     {
       filename: `${tag}-owned-images.zip`,
       content: sourceArchive,
-      contentType: 'application/zip',
+      contentType: "application/zip",
       timeoutMs: 300_000,
-      label: 'trusted FROM-scratch image import',
+      label: "trusted FROM-scratch image import",
     },
   );
   requireCondition(
-    importedImages.json?.imported === 2 && importedImages.json?.updated === 0 && importedImages.json?.failed === 0,
+    importedImages.json?.imported === 2 &&
+      importedImages.json?.updated === 0 &&
+      importedImages.json?.failed === 0,
     `trusted scratch import failed: ${importedImages.text}`,
   );
   await waitForOwnedScratchBuilds(imageFixtures);
 
-  const images = await call('GET', '/api/admin/builds/images', '/api/admin/builds/images');
-  assertBuildImageFixtureInventory(images.json, imageFixtures, { referenced: true });
-  const visibleTags = new Set((images.json || []).flatMap((image) => image.tags || []).map(normalizedManagedImageTag));
+  const images = await call(
+    "GET",
+    "/api/admin/builds/images",
+    "/api/admin/builds/images",
+  );
+  assertBuildImageFixtureInventory(images.json, imageFixtures, {
+    referenced: true,
+  });
+  const visibleTags = new Set(
+    (images.json || [])
+      .flatMap((image) => image.tags || [])
+      .map(normalizedManagedImageTag),
+  );
   requireCondition(
-    !visibleTags.has(normalizedManagedImageTag('rsctf/67/twin-tokens:latest')),
-    'image inventory crossed the installation ownership boundary',
+    !visibleTags.has(normalizedManagedImageTag("rsctf/67/twin-tokens:latest")),
+    "image inventory crossed the installation ownership boundary",
   );
 
-  const deleteFixture = imageFixtures.find((fixture) => fixture.role === 'delete');
-  const pruneFixture = imageFixtures.find((fixture) => fixture.role === 'prune');
-  requireCondition(deleteFixture && pruneFixture, 'scratch image roles are incomplete');
+  const deleteFixture = imageFixtures.find(
+    (fixture) => fixture.role === "delete",
+  );
+  const pruneFixture = imageFixtures.find(
+    (fixture) => fixture.role === "prune",
+  );
+  requireCondition(
+    deleteFixture && pruneFixture,
+    "scratch image roles are incomplete",
+  );
 
   // `force=true` is advisory only: an exact live definition must still block
   // deletion, and global pruning must preserve both referenced images.
   const protectedDelete = await adminApi(
-    'DELETE',
+    "DELETE",
     `/api/admin/builds/images?tag=${encodeURIComponent(deleteFixture.imageRef)}&force=true`,
     { timeoutMs: 180_000 },
   );
   requireCondition(
-    validateAdminResponse('admin_build_image_delete', protectedDelete) &&
+    validateAdminResponse("admin_build_image_delete", protectedDelete) &&
       protectedDelete.json?.removed === 0 &&
-      protectedDelete.json?.messages?.some((message) =>
-        /still referenced/i.test(message) && message.includes(deleteFixture.title)),
+      protectedDelete.json?.messages?.some(
+        (message) =>
+          /still referenced/i.test(message) &&
+          message.includes(deleteFixture.title),
+      ),
     `force bypassed a referenced image or returned weak evidence: ${protectedDelete.text}`,
   );
-  const protectedPrune = await adminApi('POST', '/api/admin/builds/pruneimages', { timeoutMs: 180_000 });
-  const protectedMessages = (protectedPrune.json?.messages || []).join('\n');
+  const protectedPrune = await adminApi(
+    "POST",
+    "/api/admin/builds/pruneimages",
+    { timeoutMs: 180_000 },
+  );
+  const protectedMessages = (protectedPrune.json?.messages || []).join("\n");
   requireCondition(
-    validateAdminResponse('admin_build_images_prune', protectedPrune) &&
+    validateAdminResponse("admin_build_images_prune", protectedPrune) &&
       protectedPrune.json?.removed === 0 &&
-      imageFixtures.every((fixture) => protectedMessages.includes(fixture.title)),
+      imageFixtures.every((fixture) =>
+        protectedMessages.includes(fixture.title),
+      ),
     `prune did not protect both referenced images: ${protectedPrune.text}`,
   );
   for (const fixture of imageFixtures) {
     requireCondition(
-      docker(['image', 'inspect', fixture.imageRef]).status === 0,
+      docker(["image", "inspect", fixture.imageRef]).status === 0,
       `referenced image ${fixture.imageRef} disappeared during protection checks`,
     );
   }
 
-  for (const fixture of imageFixtures) await deleteScratchBuildDefinition(fixture);
+  for (const fixture of imageFixtures)
+    await deleteScratchBuildDefinition(fixture);
   const orphanedInventory = await ownedImageInventory();
-  assertBuildImageFixtureInventory(orphanedInventory, imageFixtures, { referenced: false });
+  assertBuildImageFixtureInventory(orphanedInventory, imageFixtures, {
+    referenced: false,
+  });
 
   const deletedImage = await call(
-    'DELETE',
-    '/api/admin/builds/images',
+    "DELETE",
+    "/api/admin/builds/images",
     `/api/admin/builds/images?tag=${encodeURIComponent(deleteFixture.imageRef)}&force=false`,
   );
-  requireCondition(deletedImage.json?.removed === 1, `exact owned image delete failed: ${deletedImage.text}`);
   requireCondition(
-    docker(['image', 'inspect', deleteFixture.imageRef]).status !== 0,
-    'exactly deleted image tag still exists',
+    deletedImage.json?.removed === 1,
+    `exact owned image delete failed: ${deletedImage.text}`,
+  );
+  requireCondition(
+    docker(["image", "inspect", deleteFixture.imageRef]).status !== 0,
+    "exactly deleted image tag still exists",
   );
   deleteFixture.imageRemoved = true;
   saveRecovery();
 
   const prunedImages = await call(
-    'POST',
-    '/api/admin/builds/pruneimages',
-    '/api/admin/builds/pruneimages',
+    "POST",
+    "/api/admin/builds/pruneimages",
+    "/api/admin/builds/pruneimages",
   );
-  requireCondition(prunedImages.json?.removed === 1, `owned orphan image prune was not exact: ${prunedImages.text}`);
   requireCondition(
-    docker(['image', 'inspect', pruneFixture.imageRef]).status !== 0,
-    'pruned image tag still exists',
+    prunedImages.json?.removed === 1,
+    `owned orphan image prune was not exact: ${prunedImages.text}`,
+  );
+  requireCondition(
+    docker(["image", "inspect", pruneFixture.imageRef]).status !== 0,
+    "pruned image tag still exists",
   );
   pruneFixture.imageRemoved = true;
   const finalInventory = await ownedImageInventory();
   requireCondition(
-    imageFixtures.every((fixture) => !imageInventoryHas(finalInventory, fixture.imageRef)),
-    'owned image inventory retained a deleted scratch fixture',
+    imageFixtures.every(
+      (fixture) => !imageInventoryHas(finalInventory, fixture.imageRef),
+    ),
+    "owned image inventory retained a deleted scratch fixture",
   );
-  const ownershipRefs = imageFixtures.map((fixture) => sqlLiteral(canonicalManagedImageTag(fixture.imageRef))).join(',');
+  const ownershipRefs = imageFixtures
+    .map((fixture) => sqlLiteral(canonicalManagedImageTag(fixture.imageRef)))
+    .join(",");
   requireCondition(
-    Number(sql(`SELECT count(*) FROM "BuildImageOwnerships" WHERE canonical_ref IN (${ownershipRefs})`)) === 0,
-    'owned image cleanup retained a durable ownership row',
+    Number(
+      sql(
+        `SELECT count(*) FROM "BuildImageOwnerships" WHERE canonical_ref IN (${ownershipRefs})`,
+      ),
+    ) === 0,
+    "owned image cleanup retained a durable ownership row",
   );
   saveRecovery();
 }
 
 async function repositoryLifecycle() {
-  console.log('\nrepository binding lifecycle…');
+  console.log("\nrepository binding lifecycle…");
   const before = Number(sql('SELECT COALESCE(MAX(id),0) FROM "RepoBindings"'));
-  const created = await call('POST', '/api/admin/repobindings', '/api/admin/repobindings', {
-    body: {
-      repoUrl: repositoryUrl,
-      ref: repositoryRef,
-      intervalSeconds: 300,
-      runImmediately: false,
+  const created = await call(
+    "POST",
+    "/api/admin/repobindings",
+    "/api/admin/repobindings",
+    {
+      body: {
+        repoUrl: repositoryUrl,
+        ref: repositoryRef,
+        intervalSeconds: 300,
+        runImmediately: false,
+      },
     },
-  });
-  requireCondition(created.json?.failures === 0, `repository binding create failed: ${created.text}`);
+  );
+  requireCondition(
+    created.json?.failures === 0,
+    `repository binding create failed: ${created.text}`,
+  );
   repoBindingId = positiveId(
-    sql(`SELECT id FROM "RepoBindings" WHERE id>${before} ORDER BY id DESC LIMIT 1`),
-    'repository binding',
+    sql(
+      `SELECT id FROM "RepoBindings" WHERE id>${before} ORDER BY id DESC LIMIT 1`,
+    ),
+    "repository binding",
   );
   state.repoBindingIds.push(repoBindingId);
   saveRecovery();
@@ -1992,8 +2486,8 @@ async function repositoryLifecycle() {
   state.gameIds.push(repoGameId);
   repoChallengeId = await A.createChallenge(repoGameId, {
     title: `repo-solve-${tag}`,
-    category: 'Misc',
-    type: 'StaticAttachment',
+    category: "Misc",
+    type: "StaticAttachment",
   });
   await A.setChallenge(repoGameId, repoChallengeId, {
     content: `repository solve preservation ${tag}`,
@@ -2015,14 +2509,20 @@ async function repositoryLifecycle() {
   );
   const repoPlayerJwt = mintJwt(repoCohort.userIds[0], repoPlayerStamp, 1);
   const solved = await A.api(
-    'POST',
+    "POST",
     `/api/game/${repoGameId}/challenges/${repoChallengeId}`,
-    { jwt: repoPlayerJwt, ip: '10.252.24.1', body: { flag: repoFlag, attemptId: randomUUID() } },
+    {
+      jwt: repoPlayerJwt,
+      ip: "10.252.24.1",
+      body: { flag: repoFlag, attemptId: randomUUID() },
+    },
   );
-  expectStatus(solved, 200, 'repository preservation solve');
-  const repoSubmissionId = positiveId(solved.json?.data ?? solved.json, 'repository submission');
-  const sourceIdentity =
-    `binding/${repoBindingId}/challenges/Jeopardy/Misc/static-handout/challenge.yaml`;
+  expectStatus(solved, 200, "repository preservation solve");
+  const repoSubmissionId = positiveId(
+    solved.json?.data ?? solved.json,
+    "repository submission",
+  );
+  const sourceIdentity = `binding/${repoBindingId}/challenges/Jeopardy/Misc/static-handout/challenge.yaml`;
   sql(
     `UPDATE "Games" SET repo_binding_id=${repoBindingId}, event_manifest_path='.gzevent' ` +
       `WHERE id=${repoGameId}; ` +
@@ -2046,28 +2546,35 @@ async function repositoryLifecycle() {
           `'acceptedCount',challenge.accepted_count,` +
           `'submissionCount',challenge.submission_count,` +
           `'submissionRows',(SELECT count(*) FROM "Submissions" submission ` +
-            `WHERE submission.game_id=${repoGameId} AND submission.challenge_id=challenge.id),` +
+          `WHERE submission.game_id=${repoGameId} AND submission.challenge_id=challenge.id),` +
           `'submissionId',(SELECT min(id) FROM "Submissions" submission ` +
-            `WHERE submission.game_id=${repoGameId} AND submission.challenge_id=challenge.id),` +
+          `WHERE submission.game_id=${repoGameId} AND submission.challenge_id=challenge.id),` +
           `'firstSolveRows',(SELECT count(*) FROM "FirstSolves" first_solve ` +
-            `WHERE first_solve.challenge_id=challenge.id),` +
+          `WHERE first_solve.challenge_id=challenge.id),` +
           `'firstSolveSubmissionId',(SELECT min(submission_id) FROM "FirstSolves" first_solve ` +
-            `WHERE first_solve.challenge_id=challenge.id),` +
+          `WHERE first_solve.challenge_id=challenge.id),` +
           `'flags',COALESCE((SELECT json_agg(flag.flag ORDER BY flag.flag) FROM "FlagContexts" flag ` +
-            `WHERE flag.challenge_id=challenge.id),'[]'::json),` +
+          `WHERE flag.challenge_id=challenge.id),'[]'::json),` +
           `'sourceIdentity',challenge.source_yaml_path` +
-        `)::text FROM "GameChallenges" challenge ` +
-        `WHERE challenge.id=${repoChallengeId} AND challenge.game_id=${repoGameId}`,
+          `)::text FROM "GameChallenges" challenge ` +
+          `WHERE challenge.id=${repoChallengeId} AND challenge.game_id=${repoGameId}`,
       ),
     );
-    const board = await A.api('GET', `/api/game/${repoGameId}/scoreboard`, {
+    const board = await A.api("GET", `/api/game/${repoGameId}/scoreboard`, {
       jwt: A.adminJwt(),
-      ip: '10.252.24.2',
+      ip: "10.252.24.2",
     });
-    expectStatus(board, 200, 'repository preservation scoreboard');
-    const item = board.json?.items?.find((candidate) => candidate.id === repoCohort.teamIds[0]);
-    const cell = item?.solvedChallenges?.find((candidate) => candidate.id === repoChallengeId);
-    requireCondition(item && cell, 'repository preservation solve is missing from the scoreboard');
+    expectStatus(board, 200, "repository preservation scoreboard");
+    const item = board.json?.items?.find(
+      (candidate) => candidate.id === repoCohort.teamIds[0],
+    );
+    const cell = item?.solvedChallenges?.find(
+      (candidate) => candidate.id === repoChallengeId,
+    );
+    requireCondition(
+      item && cell,
+      "repository preservation solve is missing from the scoreboard",
+    );
     return {
       database,
       scoreboard: {
@@ -2089,22 +2596,32 @@ async function repositoryLifecycle() {
   );
   saveRecovery();
 
-  const bindings = await call('GET', '/api/admin/repobindings', '/api/admin/repobindings');
-  requireCondition(bindings.json?.some((binding) => binding.id === repoBindingId), 'binding list omitted fixture');
-  const paused = await call(
-    'PUT',
-    '/api/admin/repobindings/{id}',
-    `/api/admin/repobindings/${repoBindingId}`,
-    { body: { intervalSeconds: 600, status: 'Paused', pushOnEdit: false } },
+  const bindings = await call(
+    "GET",
+    "/api/admin/repobindings",
+    "/api/admin/repobindings",
   );
-  requireCondition(paused.json?.status === 'Paused', 'repository binding did not pause');
-  await adminApi('PUT', `/api/admin/repobindings/${repoBindingId}`, {
-    body: { status: 'Active' },
+  requireCondition(
+    bindings.json?.some((binding) => binding.id === repoBindingId),
+    "binding list omitted fixture",
+  );
+  const paused = await call(
+    "PUT",
+    "/api/admin/repobindings/{id}",
+    `/api/admin/repobindings/${repoBindingId}`,
+    { body: { intervalSeconds: 600, status: "Paused", pushOnEdit: false } },
+  );
+  requireCondition(
+    paused.json?.status === "Paused",
+    "repository binding did not pause",
+  );
+  await adminApi("PUT", `/api/admin/repobindings/${repoBindingId}`, {
+    body: { status: "Active" },
   });
 
   const scan = await call(
-    'POST',
-    '/api/admin/repobindings/{id}/scan',
+    "POST",
+    "/api/admin/repobindings/{id}/scan",
     `/api/admin/repobindings/${repoBindingId}/scan`,
     { timeoutMs: 300_000 },
   );
@@ -2112,16 +2629,23 @@ async function repositoryLifecycle() {
     scan.json?.gamesUpdated === 1 &&
       scan.json?.challengesUpdated >= 1 &&
       scan.json?.failures === 1 &&
-      scan.json?.messages?.some((message) =>
-        message.includes(`challenge #${repoChallengeId}`) && /grading\/scoring changes were retained/i.test(message)),
+      scan.json?.messages?.some(
+        (message) =>
+          message.includes(`challenge #${repoChallengeId}`) &&
+          /grading\/scoring changes were retained/i.test(message),
+      ),
     `repository scan did not report the one intentional solved-grading fence: ${scan.text}`,
   );
   const observedCommit = sql(
     `SELECT COALESCE(last_commit_sha,'') FROM "RepoBindings" WHERE id=${repoBindingId}`,
   );
-  requireCondition(/^[0-9a-f]{40}$/i.test(observedCommit), 'repository scan omitted its exact commit identity');
   requireCondition(
-    !repositoryExpectedCommit || observedCommit.toLowerCase() === repositoryExpectedCommit.toLowerCase(),
+    /^[0-9a-f]{40}$/i.test(observedCommit),
+    "repository scan omitted its exact commit identity",
+  );
+  requireCondition(
+    !repositoryExpectedCommit ||
+      observedCommit.toLowerCase() === repositoryExpectedCommit.toLowerCase(),
     `repository scan resolved ${observedCommit}, expected ${repositoryExpectedCommit}`,
   );
   const afterFirstScan = await solveSnapshot();
@@ -2133,11 +2657,15 @@ async function repositoryLifecycle() {
   // A failed-to-apply grading mutation is deliberately retryable at the same
   // commit. Exercise that real HTTP retry too; it must remain idempotent and
   // preserve the exact evidence a second time.
-  const retriedScan = await adminApi('POST', `/api/admin/repobindings/${repoBindingId}/scan`, {
-    timeoutMs: 300_000,
-  });
+  const retriedScan = await adminApi(
+    "POST",
+    `/api/admin/repobindings/${repoBindingId}/scan`,
+    {
+      timeoutMs: 300_000,
+    },
+  );
   requireCondition(
-    validateAdminResponse('admin_repo_binding_scan', retriedScan) &&
+    validateAdminResponse("admin_repo_binding_scan", retriedScan) &&
       retriedScan.json?.failures === 1 &&
       retriedScan.json?.gamesUpdated === 1,
     `same-commit repository retry was not controlled: ${retriedScan.text}`,
@@ -2157,38 +2685,44 @@ async function repositoryLifecycle() {
     commit: observedCommit,
   };
   const history = await call(
-    'GET',
-    '/api/admin/repobindings/{id}/scans',
+    "GET",
+    "/api/admin/repobindings/{id}/scans",
     `/api/admin/repobindings/${repoBindingId}/scans`,
   );
-  requireCondition(history.json?.length >= 2, 'repository scan retry history is incomplete');
+  requireCondition(
+    history.json?.length >= 2,
+    "repository scan retry history is incomplete",
+  );
   // Retain the scanned binding through the all-origin read matrix. Cleanup
   // performs the catalogued delete and verifies its checkout is gone.
   saveRecovery();
 }
 
 async function adAdminLifecycle() {
-  console.log('\nA&D admin lifecycle…');
+  console.log("\nA&D admin lifecycle…");
   const service = await call(
-    'POST',
-    '/api/ad/admin/{game_id}/Services',
+    "POST",
+    "/api/ad/admin/{game_id}/Services",
     `/api/ad/admin/${fixtureGame}/Services`,
     {
       body: {
         participationId: fixtureParticipation,
         challengeId: fixtureAdChallenge,
-        host: 'admin-lifecycle.invalid',
+        host: "admin-lifecycle.invalid",
         port: 31337,
       },
     },
   );
-  requireCondition(service.json?.participationId === fixtureParticipation, 'A&D service registration returned wrong owner');
+  requireCondition(
+    service.json?.participationId === fixtureParticipation,
+    "A&D service registration returned wrong owner",
+  );
   const serviceId = service.json.adTeamServiceId;
-  await adminApi('POST', `/api/ad/admin/${fixtureGame}/Services`, {
+  await adminApi("POST", `/api/ad/admin/${fixtureGame}/Services`, {
     body: {
       participationId: fixtureParticipation,
       challengeId: fixtureAdChallenge,
-      host: 'admin-lifecycle-updated.invalid',
+      host: "admin-lifecycle-updated.invalid",
       port: 31338,
     },
   });
@@ -2199,152 +2733,210 @@ async function adAdminLifecycle() {
           `AND participation_id=${fixtureParticipation} AND challenge_id=${fixtureAdChallenge}`,
       ),
     ) === 1,
-    'A&D service upsert created duplicates',
+    "A&D service upsert created duplicates",
   );
   const services = await call(
-    'GET',
-    '/api/ad/admin/{game_id}/Services',
+    "GET",
+    "/api/ad/admin/{game_id}/Services",
     `/api/ad/admin/${fixtureGame}/Services`,
   );
   requireCondition(
-    services.json?.some((item) => item.adTeamServiceId === serviceId && item.port === 31338),
-    'A&D service inventory did not return the upserted endpoint',
+    services.json?.some(
+      (item) => item.adTeamServiceId === serviceId && item.port === 31338,
+    ),
+    "A&D service inventory did not return the upserted endpoint",
   );
   const rounds = await call(
-    'GET',
-    '/api/ad/admin/{game_id}/Rounds',
+    "GET",
+    "/api/ad/admin/{game_id}/Rounds",
     `/api/ad/admin/${fixtureGame}/Rounds`,
   );
-  requireCondition(Array.isArray(rounds.json), 'A&D rounds response is not an array');
-  const beforeRoundCount = Number(sql(`SELECT count(*) FROM "AdRounds" WHERE game_id=${fixtureGame}`));
+  requireCondition(
+    Array.isArray(rounds.json),
+    "A&D rounds response is not an array",
+  );
+  const beforeRoundCount = Number(
+    sql(`SELECT count(*) FROM "AdRounds" WHERE game_id=${fixtureGame}`),
+  );
   const advance = await call(
-    'POST',
-    '/api/ad/admin/{game_id}/Round/Advance',
+    "POST",
+    "/api/ad/admin/{game_id}/Round/Advance",
     `/api/ad/admin/${fixtureGame}/Round/Advance`,
     { expected: 400 },
   );
-  requireCondition(/disabled/i.test(advance.text), 'manual round advance did not explain its rejection');
   requireCondition(
-    Number(sql(`SELECT count(*) FROM "AdRounds" WHERE game_id=${fixtureGame}`)) === beforeRoundCount,
-    'manual round advance wrote an official round',
+    /disabled/i.test(advance.text),
+    "manual round advance did not explain its rejection",
+  );
+  requireCondition(
+    Number(
+      sql(`SELECT count(*) FROM "AdRounds" WHERE game_id=${fixtureGame}`),
+    ) === beforeRoundCount,
+    "manual round advance wrote an official round",
   );
 }
 
 async function workerLifecycle() {
-  console.log('\ntrusted worker administration and enrollment…');
-  const created = await call('POST', '/api/admin/workers', '/api/admin/workers', {
-    body: { name: `admin-lifecycle-${tag}` },
-  });
+  console.log("\ntrusted worker administration and enrollment…");
+  const created = await call(
+    "POST",
+    "/api/admin/workers",
+    "/api/admin/workers",
+    {
+      body: { name: `admin-lifecycle-${tag}` },
+    },
+  );
   workerId = created.json?.worker?.id;
-  requireCondition(/^[0-9a-f-]{36}$/i.test(workerId || ''), `worker create failed: ${created.text}`);
-  requireCondition(typeof created.json?.enrollment?.token === 'string', 'worker create omitted enrollment token');
+  requireCondition(
+    /^[0-9a-f-]{36}$/i.test(workerId || ""),
+    `worker create failed: ${created.text}`,
+  );
+  requireCondition(
+    typeof created.json?.enrollment?.token === "string",
+    "worker create omitted enrollment token",
+  );
   state.workerIds.push(workerId);
   saveRecovery();
 
-  const workers = await call('GET', '/api/admin/workers', '/api/admin/workers');
-  requireCondition(workers.json?.some((worker) => worker.id === workerId), 'worker inventory omitted fixture');
-  const directWorkers = await adminApi('GET', '/api/admin/workers', {
+  const workers = await call("GET", "/api/admin/workers", "/api/admin/workers");
+  requireCondition(
+    workers.json?.some((worker) => worker.id === workerId),
+    "worker inventory omitted fixture",
+  );
+  const directWorkers = await adminApi("GET", "/api/admin/workers", {
     baseUrl: controlTarget,
-    ip: '10.252.40.10',
+    ip: "10.252.40.10",
   });
   requireCondition(
     directWorkers.json?.some((worker) => worker.id === workerId),
-    'direct control replica does not share the public worker inventory',
+    "direct control replica does not share the public worker inventory",
   );
   const rotated = await call(
-    'POST',
-    '/api/admin/workers/{id}/token',
+    "POST",
+    "/api/admin/workers/{id}/token",
     `/api/admin/workers/${workerId}/token`,
   );
   requireCondition(
-    typeof rotated.json?.token === 'string' && rotated.json.token !== created.json.enrollment.token,
-    'worker token rotation did not replace the one-use token',
+    typeof rotated.json?.token === "string" &&
+      rotated.json.token !== created.json.enrollment.token,
+    "worker token rotation did not replace the one-use token",
   );
 
   const csrPem = createWorkerCsr();
   const enrollment = await call(
-    'POST',
-    '/api/workers/enroll',
-    '/api/workers/enroll',
+    "POST",
+    "/api/workers/enroll",
+    "/api/workers/enroll",
     {
       jwt: null,
       body: { token: rotated.json.token, csrPem },
-      ip: '10.252.40.1',
+      ip: "10.252.40.1",
     },
   );
   requireCondition(
-    enrollment.json?.workerId === workerId && /BEGIN CERTIFICATE/.test(enrollment.json?.certificatePem || ''),
-    'worker enrollment did not return its signed client certificate',
+    enrollment.json?.workerId === workerId &&
+      /BEGIN CERTIFICATE/.test(enrollment.json?.certificatePem || ""),
+    "worker enrollment did not return its signed client certificate",
   );
-  const replay = await A.api('POST', '/api/workers/enroll', {
+  const replay = await A.api("POST", "/api/workers/enroll", {
     body: { token: rotated.json.token, csrPem },
-    ip: '10.252.40.2',
+    ip: "10.252.40.2",
   });
-  requireCondition(replay.status === 401, `consumed worker token replay returned ${replay.status}`);
+  requireCondition(
+    replay.status === 401,
+    `consumed worker token replay returned ${replay.status}`,
+  );
 
   const draining = await call(
-    'PUT',
-    '/api/admin/workers/{id}/state',
+    "PUT",
+    "/api/admin/workers/{id}/state",
     `/api/admin/workers/${workerId}/state`,
-    { body: { state: 'Draining' } },
+    { body: { state: "Draining" } },
   );
-  requireCondition(draining.json?.administrativeState === 'Draining', 'worker did not enter Draining');
-  for (const desired of ['Disabled', 'Enabled']) {
-    const response = await adminApi('PUT', `/api/admin/workers/${workerId}/state`, {
-      body: { state: desired },
-    });
-    requireCondition(response.json?.administrativeState === desired, `worker did not enter ${desired}`);
+  requireCondition(
+    draining.json?.administrativeState === "Draining",
+    "worker did not enter Draining",
+  );
+  for (const desired of ["Disabled", "Enabled"]) {
+    const response = await adminApi(
+      "PUT",
+      `/api/admin/workers/${workerId}/state`,
+      {
+        body: { state: desired },
+      },
+    );
+    requireCondition(
+      response.json?.administrativeState === desired,
+      `worker did not enter ${desired}`,
+    );
   }
 
-  const unused = await adminApi('POST', '/api/admin/workers', {
+  const unused = await adminApi("POST", "/api/admin/workers", {
     body: { name: `admin-lifecycle-unused-${tag}` },
   });
   const unusedWorkerId = unused.json?.worker?.id;
-  requireCondition(/^[0-9a-f-]{36}$/i.test(unusedWorkerId || ''), `unused worker create failed: ${unused.text}`);
+  requireCondition(
+    /^[0-9a-f-]{36}$/i.test(unusedWorkerId || ""),
+    `unused worker create failed: ${unused.text}`,
+  );
   state.workerIds.push(unusedWorkerId);
   saveRecovery();
 
-  const enabledDelete = await adminApi('DELETE', `/api/admin/workers/${unusedWorkerId}`);
+  const enabledDelete = await adminApi(
+    "DELETE",
+    `/api/admin/workers/${unusedWorkerId}`,
+  );
   requireCondition(
     enabledDelete.status === 409 && /Disabled/i.test(enabledDelete.text),
     `enabled unused worker deletion returned ${enabledDelete.status}: ${enabledDelete.text}`,
   );
-  const disabledUnused = await adminApi('PUT', `/api/admin/workers/${unusedWorkerId}/state`, {
-    body: { state: 'Disabled' },
-  });
+  const disabledUnused = await adminApi(
+    "PUT",
+    `/api/admin/workers/${unusedWorkerId}/state`,
+    {
+      body: { state: "Disabled" },
+    },
+  );
   requireCondition(
-    disabledUnused.json?.administrativeState === 'Disabled',
-    'unused worker did not enter Disabled',
+    disabledUnused.json?.administrativeState === "Disabled",
+    "unused worker did not enter Disabled",
   );
   const deletedUnused = await call(
-    'DELETE',
-    '/api/admin/workers/{id}',
+    "DELETE",
+    "/api/admin/workers/{id}",
     `/api/admin/workers/${unusedWorkerId}`,
   );
-  requireCondition(deletedUnused.status === 204, `unused worker deletion returned ${deletedUnused.status}`);
+  requireCondition(
+    deletedUnused.status === 204,
+    `unused worker deletion returned ${deletedUnused.status}`,
+  );
   state.workerIds = state.workerIds.filter((id) => id !== unusedWorkerId);
   saveRecovery();
 
-  const afterDelete = await adminApi('GET', '/api/admin/workers');
+  const afterDelete = await adminApi("GET", "/api/admin/workers");
   requireCondition(
     !afterDelete.json?.some((worker) => worker.id === unusedWorkerId),
-    'deleted unused worker remained in inventory',
+    "deleted unused worker remained in inventory",
   );
 }
 
 async function signalRAndLoadSimulation() {
-  console.log('\nadmin SignalR and fixed-rate replica simulation…');
+  console.log("\nadmin SignalR and fixed-rate replica simulation…");
   const negotiate = await rawRequest(
-    'POST',
-    '/hub/admin/negotiate?negotiateVersion=1',
-    { headers: { 'content-type': 'text/plain;charset=UTF-8' }, body: '' },
+    "POST",
+    "/hub/admin/negotiate?negotiateVersion=1",
+    { headers: { "content-type": "text/plain;charset=UTF-8" }, body: "" },
   );
   requireCondition(
-    negotiate.status === 200 && typeof negotiate.json?.connectionToken === 'string',
+    negotiate.status === 200 &&
+      typeof negotiate.json?.connectionToken === "string",
     `admin SignalR negotiate failed: ${negotiate.status} ${negotiate.text.slice(0, 200)}`,
   );
-  covered.add('admin_signalr_negotiate');
-  requireCondition(ADMIN_SIGNALR_SURFACES.length >= 2, 'admin SignalR catalog is incomplete');
+  covered.add("admin_signalr_negotiate");
+  requireCondition(
+    ADMIN_SIGNALR_SURFACES.length >= 2,
+    "admin SignalR catalog is incomplete",
+  );
 
   const pollerJwt = mintJwt(
     fixtureUsers.poller.id,
@@ -2361,31 +2953,40 @@ async function signalRAndLoadSimulation() {
     userByEmail(fixtureUsers.names.monitorEmail).stamp,
     2,
   );
-  const summaryPath = process.env.SUMMARY_JSON || `/tmp/rsctf-admin-lifecycle-${tag}-k6.json`;
+  const summaryPath =
+    process.env.SUMMARY_JSON || `/tmp/rsctf-admin-lifecycle-${tag}-k6.json`;
   const before = docker([
-    'stats',
-    '--no-stream',
-    '--format',
-    '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}',
-    ...[RSCTF, ...String(process.env.ADMIN_RSCTF_CONTAINERS || '').split(',').filter(Boolean)],
+    "stats",
+    "--no-stream",
+    "--format",
+    "{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}",
+    ...[
+      RSCTF,
+      ...String(process.env.ADMIN_RSCTF_CONTAINERS || "")
+        .split(",")
+        .filter(Boolean),
+    ],
   ]).stdout.trim();
   const loadStartedAt = Date.now();
   state.load = {
     summaryPath,
     startedAt: loadStartedAt,
-    resourcesBefore: before.split('\n'),
+    resourcesBefore: before.split("\n"),
   };
   saveRecovery();
-  const status = runK6('admin-lifecycle.js', {
+  const status = runK6("admin-lifecycle.js", {
     TARGET,
     ADMIN_LIFECYCLE_DISPOSABLE: process.env.ADMIN_LIFECYCLE_DISPOSABLE,
     CONFIRM_ADMIN_TARGET: process.env.CONFIRM_ADMIN_TARGET,
-    WEB_TARGETS: webTargets.join(','),
+    WEB_TARGETS: webTargets.join(","),
     CONTROL_TARGET: controlTarget,
     CONFIRM_ADMIN_WEB_TARGETS: process.env.CONFIRM_ADMIN_WEB_TARGETS,
     CONFIRM_ADMIN_CONTROL_TARGET: process.env.CONFIRM_ADMIN_CONTROL_TARGET,
     ...(process.env.ALLOW_REMOTE_ADMIN_LIFECYCLE
-      ? { ALLOW_REMOTE_ADMIN_LIFECYCLE: process.env.ALLOW_REMOTE_ADMIN_LIFECYCLE }
+      ? {
+          ALLOW_REMOTE_ADMIN_LIFECYCLE:
+            process.env.ALLOW_REMOTE_ADMIN_LIFECYCLE,
+        }
       : {}),
     ADMIN_TOKEN: pollerJwt,
     ADMIN_CONTEXT: JSON.stringify({
@@ -2395,23 +2996,31 @@ async function signalRAndLoadSimulation() {
       instanceId: containerGuid,
       bindingId: repoBindingId,
     }),
-    DURATION: process.env.DURATION || '30s',
+    DURATION: process.env.DURATION || "30s",
     RATE: process.env.RATE || 1,
     VUS: process.env.VUS || 4,
     SUMMARY_JSON: summaryPath,
   });
-  requireCondition(status === 0, `admin k6 simulation failed with status ${status}`);
+  requireCondition(
+    status === 0,
+    `admin k6 simulation failed with status ${status}`,
+  );
   const after = docker([
-    'stats',
-    '--no-stream',
-    '--format',
-    '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}',
-    ...[RSCTF, ...String(process.env.ADMIN_RSCTF_CONTAINERS || '').split(',').filter(Boolean)],
+    "stats",
+    "--no-stream",
+    "--format",
+    "{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}",
+    ...[
+      RSCTF,
+      ...String(process.env.ADMIN_RSCTF_CONTAINERS || "")
+        .split(",")
+        .filter(Boolean),
+    ],
   ]).stdout.trim();
   state.load = {
     ...state.load,
     completedAt: Date.now(),
-    resourcesAfter: after.split('\n'),
+    resourcesAfter: after.split("\n"),
   };
   saveRecovery();
   await assertAdminSignalRAuth(TARGET, {
@@ -2419,21 +3028,41 @@ async function signalRAndLoadSimulation() {
     ordinaryToken: ordinaryJwt,
     monitorToken: monitorJwt,
   });
-  covered.add('admin_signalr_connect');
-  console.log('  ✓ admin_signalr_connect (unauthorized rejected; authenticated handshake completed)');
+  covered.add("admin_signalr_connect");
+  console.log(
+    "  ✓ admin_signalr_connect (unauthorized rejected; authenticated handshake completed)",
+  );
 }
 
 async function deleteIdentityFixture() {
   if (!fixtureUsers) return;
   const tryDeleteUser = async (id) => {
-    if (!id || Number(sql(`SELECT count(*) FROM "AspNetUsers" WHERE id=${sqlLiteral(id)}::uuid`)) === 0) return;
-    await adminApi('DELETE', `/api/admin/users/${id}`, { timeoutMs: 120_000 });
+    if (
+      !id ||
+      Number(
+        sql(
+          `SELECT count(*) FROM "AspNetUsers" WHERE id=${sqlLiteral(id)}::uuid`,
+        ),
+      ) === 0
+    )
+      return;
+    await adminApi("DELETE", `/api/admin/users/${id}`, { timeoutMs: 120_000 });
   };
 
-  if (fixtureUsers.team?.id && Number(sql(`SELECT count(*) FROM "Teams" WHERE id=${fixtureUsers.team.id}`)) > 0) {
-    await call('DELETE', '/api/admin/teams/{id}', `/api/admin/teams/${fixtureUsers.team.id}`, {
-      timeoutMs: 120_000,
-    });
+  if (
+    fixtureUsers.team?.id &&
+    Number(
+      sql(`SELECT count(*) FROM "Teams" WHERE id=${fixtureUsers.team.id}`),
+    ) > 0
+  ) {
+    await call(
+      "DELETE",
+      "/api/admin/teams/{id}",
+      `/api/admin/teams/${fixtureUsers.team.id}`,
+      {
+        timeoutMs: 120_000,
+      },
+    );
   }
   // Directly demote the temporary polling admin; the API correctly forbids one
   // admin from mutating another administrator.
@@ -2454,18 +3083,27 @@ async function deleteIdentityFixture() {
 }
 
 function integerArraySql(values) {
-  const normalized = [...new Set((values || []).map((value) => positiveId(value, 'residual integer id')))];
-  return normalized.length ? `ARRAY[${normalized.join(',')}]::integer[]` : 'ARRAY[]::integer[]';
+  const normalized = [
+    ...new Set(
+      (values || []).map((value) => positiveId(value, "residual integer id")),
+    ),
+  ];
+  return normalized.length
+    ? `ARRAY[${normalized.join(",")}]::integer[]`
+    : "ARRAY[]::integer[]";
 }
 
 function uuidArraySql(values) {
   const normalized = [...new Set((values || []).map(String))];
   for (const value of normalized) {
-    requireCondition(/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value), `invalid residual UUID ${value}`);
+    requireCondition(
+      /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value),
+      `invalid residual UUID ${value}`,
+    );
   }
   return normalized.length
-    ? `ARRAY[${normalized.map((value) => `${sqlLiteral(value)}::uuid`).join(',')}]`
-    : 'ARRAY[]::uuid[]';
+    ? `ARRAY[${normalized.map((value) => `${sqlLiteral(value)}::uuid`).join(",")}]`
+    : "ARRAY[]::uuid[]";
 }
 
 function exactIdCount(table, ids, { uuid = false } = {}) {
@@ -2475,21 +3113,39 @@ function exactIdCount(table, ids, { uuid = false } = {}) {
 
 function redisKeyExists(key) {
   requireCondition(
-    typeof key === 'string' && key.startsWith('credimport:') && !/[\r\n\0]/.test(key),
+    typeof key === "string" &&
+      key.startsWith("credimport:") &&
+      !/[\r\n\0]/.test(key),
     `invalid credential cache key ${key}`,
   );
-  const result = docker(['exec', redisContainer, 'redis-cli', '--raw', 'EXISTS', key]);
-  requireCondition(result.status === 0, `Redis EXISTS failed for ${key}: ${result.stderr.trim()}`);
+  const result = docker([
+    "exec",
+    redisContainer,
+    "redis-cli",
+    "--raw",
+    "EXISTS",
+    key,
+  ]);
+  requireCondition(
+    result.status === 0,
+    `Redis EXISTS failed for ${key}: ${result.stderr.trim()}`,
+  );
   const exists = Number(result.stdout.trim());
-  requireCondition(exists === 0 || exists === 1, `Redis returned an invalid EXISTS result for ${key}`);
+  requireCondition(
+    exists === 0 || exists === 1,
+    `Redis returned an invalid EXISTS result for ${key}`,
+  );
   return exists;
 }
 
 function containerPathExists(path) {
-  const present = docker(['exec', RSCTF, 'test', '-e', path]);
+  const present = docker(["exec", RSCTF, "test", "-e", path]);
   if (present.status === 0) return true;
-  const absent = docker(['exec', RSCTF, 'test', '!', '-e', path]);
-  requireCondition(absent.status === 0, `could not inspect ${path}: ${present.stderr.trim()}`);
+  const absent = docker(["exec", RSCTF, "test", "!", "-e", path]);
+  requireCondition(
+    absent.status === 0,
+    `could not inspect ${path}: ${present.stderr.trim()}`,
+  );
   return false;
 }
 
@@ -2497,90 +3153,120 @@ function exactResidualSnapshot() {
   const gameIds = integerArraySql(state.gameIds);
   const workerIds = uuidArraySql(state.workerIds);
   const evidence = state.evidence || {};
-  const buildImageFixtures = Array.isArray(state.buildImageFixtures) ? state.buildImageFixtures : [];
-  const buildTitles = buildImageFixtures.map((fixture) => sqlLiteral(fixture.title));
+  const buildImageFixtures = Array.isArray(state.buildImageFixtures)
+    ? state.buildImageFixtures
+    : [];
+  const buildTitles = buildImageFixtures.map((fixture) =>
+    sqlLiteral(fixture.title),
+  );
   const buildCanonicalRefs = buildImageFixtures.map((fixture) =>
-    sqlLiteral(canonicalManagedImageTag(fixture.imageRef)));
+    sqlLiteral(canonicalManagedImageTag(fixture.imageRef)),
+  );
   const buildArchiveHashes = buildImageFixtures
-    .map((fixture) => String(fixture.archiveHash || ''))
+    .map((fixture) => String(fixture.archiveHash || ""))
     .filter((hash) => /^[a-f0-9]{64}$/.test(hash));
-  const writeupHash = String(evidence.writeup?.hash || '');
+  const writeupHash = String(evidence.writeup?.hash || "");
   const writeupPath = /^[0-9a-f]{64}$/.test(writeupHash)
     ? `/data/files/${writeupHash.slice(0, 2)}/${writeupHash.slice(2, 4)}/${writeupHash}`
     : null;
   return Object.freeze({
-    games: exactIdCount('Games', state.gameIds),
+    games: exactIdCount("Games", state.gameIds),
     gameNamespace: Number(
       sql(
         `SELECT count(*) FROM "Games" WHERE title IN (` +
           `${sqlLiteral(`ADMIN-LIFECYCLE-${tag}`)},${sqlLiteral(`ADMIN-AUTHORIZATION-${tag}`)})`,
       ),
     ),
-    users: exactIdCount('AspNetUsers', state.userIds, { uuid: true }),
+    users: exactIdCount("AspNetUsers", state.userIds, { uuid: true }),
     userNamespace: Number(
-      sql(`SELECT count(*) FROM "AspNetUsers" WHERE email LIKE ${sqlLiteral(`${tag}.%@admin.invalid`)}`),
+      sql(
+        `SELECT count(*) FROM "AspNetUsers" WHERE email LIKE ${sqlLiteral(`${tag}.%@admin.invalid`)}`,
+      ),
     ),
-    teams: exactIdCount('Teams', state.teamIds),
+    teams: exactIdCount("Teams", state.teamIds),
     teamNamespace: Number(
       sql(
         `SELECT count(*) FROM "Teams" WHERE id=ANY(${integerArraySql(state.teamIds)}) ` +
           `OR name=${sqlLiteral(`ADMINLT-${tag}`)}`,
       ),
     ),
-    participations: exactIdCount('Participations', state.participationIds),
-    workers: exactIdCount('WorkerNodes', state.workerIds, { uuid: true }),
+    participations: exactIdCount("Participations", state.participationIds),
+    workers: exactIdCount("WorkerNodes", state.workerIds, { uuid: true }),
     workerNamespace: Number(
-      sql(`SELECT count(*) FROM "WorkerNodes" WHERE name=${sqlLiteral(`admin-lifecycle-${tag}`)}`),
+      sql(
+        `SELECT count(*) FROM "WorkerNodes" WHERE name=${sqlLiteral(`admin-lifecycle-${tag}`)}`,
+      ),
     ),
     workerWorkloads: Number(
-      sql(`SELECT count(*) FROM "WorkerWorkloads" WHERE worker_id=ANY(${workerIds})`),
+      sql(
+        `SELECT count(*) FROM "WorkerWorkloads" WHERE worker_id=ANY(${workerIds})`,
+      ),
     ),
-    bindings: exactIdCount('RepoBindings', state.repoBindingIds),
-    repositoryCheckouts: state.repoBindingIds.filter(
-      (id) => containerPathExists(`/data/files/repos/${positiveId(id, 'repository binding')}`),
+    bindings: exactIdCount("RepoBindings", state.repoBindingIds),
+    repositoryCheckouts: state.repoBindingIds.filter((id) =>
+      containerPathExists(
+        `/data/files/repos/${positiveId(id, "repository binding")}`,
+      ),
     ).length,
-    buildRecords: exactIdCount('BuildRecords', state.buildRecordIds),
+    buildRecords: exactIdCount("BuildRecords", state.buildRecordIds),
     gameBuildRecords: Number(
       sql(`SELECT count(*) FROM "BuildRecords" WHERE game_id=ANY(${gameIds})`),
     ),
     scratchBuildDefinitions: buildTitles.length
-      ? Number(sql(`SELECT count(*) FROM "GameChallenges" WHERE title IN (${buildTitles.join(',')})`))
+      ? Number(
+          sql(
+            `SELECT count(*) FROM "GameChallenges" WHERE title IN (${buildTitles.join(",")})`,
+          ),
+        )
       : 0,
     scratchBuildOwnerships: buildCanonicalRefs.length
-      ? Number(sql(
-          `SELECT count(*) FROM "BuildImageOwnerships" ` +
-            `WHERE canonical_ref IN (${buildCanonicalRefs.join(',')})`,
-        ))
+      ? Number(
+          sql(
+            `SELECT count(*) FROM "BuildImageOwnerships" ` +
+              `WHERE canonical_ref IN (${buildCanonicalRefs.join(",")})`,
+          ),
+        )
       : 0,
     scratchBuildDockerTags: buildImageFixtures.filter(
-      (fixture) => docker(['image', 'inspect', fixture.imageRef]).status === 0,
+      (fixture) => docker(["image", "inspect", fixture.imageRef]).status === 0,
     ).length,
     scratchBuildArchiveFiles: buildArchiveHashes.length
-      ? Number(sql(`SELECT count(*) FROM "Files" WHERE hash IN (${buildArchiveHashes.map(sqlLiteral).join(',')})`))
+      ? Number(
+          sql(
+            `SELECT count(*) FROM "Files" WHERE hash IN (${buildArchiveHashes.map(sqlLiteral).join(",")})`,
+          ),
+        )
       : 0,
     physicalScratchBuildArchives: buildArchiveHashes.filter((hash) =>
-      containerPathExists(`/data/files/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash}`),
+      containerPathExists(
+        `/data/files/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash}`,
+      ),
     ).length,
-    containers: exactIdCount('Containers', state.containerIds, { uuid: true }),
+    containers: exactIdCount("Containers", state.containerIds, { uuid: true }),
     runtimeContainers: state.runtimeContainerIds.filter(
-      (id) => docker(['container', 'inspect', id]).status === 0,
+      (id) => docker(["container", "inspect", id]).status === 0,
     ).length,
     submissions: evidence.submissionId
-      ? exactIdCount('Submissions', [evidence.submissionId])
+      ? exactIdCount("Submissions", [evidence.submissionId])
       : 0,
     suspicionEvents: evidence.suspicionId
-      ? exactIdCount('SuspicionEvents', [evidence.suspicionId])
+      ? exactIdCount("SuspicionEvents", [evidence.suspicionId])
       : 0,
     flagEgressEvents: evidence.flagEgressId
-      ? exactIdCount('FlagEgressEvents', [evidence.flagEgressId])
+      ? exactIdCount("FlagEgressEvents", [evidence.flagEgressId])
       : 0,
     antiCheatBlocks: evidence.antiCheatBlockId
-      ? exactIdCount('AntiCheatBlocks', [evidence.antiCheatBlockId])
+      ? exactIdCount("AntiCheatBlocks", [evidence.antiCheatBlockId])
       : 0,
-    writeupFiles: evidence.writeup?.id ? exactIdCount('Files', [evidence.writeup.id]) : 0,
-    physicalWriteupBlobs: writeupPath && containerPathExists(writeupPath) ? 1 : 0,
-    checkerDirectories: state.gameIds.filter(
-      (id) => containerPathExists(`/data/files/checkers/load/${positiveId(id, 'checker game')}`),
+    writeupFiles: evidence.writeup?.id
+      ? exactIdCount("Files", [evidence.writeup.id])
+      : 0,
+    physicalWriteupBlobs:
+      writeupPath && containerPathExists(writeupPath) ? 1 : 0,
+    checkerDirectories: state.gameIds.filter((id) =>
+      containerPathExists(
+        `/data/files/checkers/load/${positiveId(id, "checker game")}`,
+      ),
     ).length,
     credentialRedisKeys: state.credentialCacheKeys.reduce(
       (count, key) => count + redisKeyExists(key),
@@ -2593,7 +3279,7 @@ async function assertStableExactCleanup() {
   const delayMs = Number(process.env.ADMIN_CLEANUP_STABILITY_MS || 2_000);
   requireCondition(
     Number.isSafeInteger(delayMs) && delayMs >= 1_000 && delayMs <= 10_000,
-    'ADMIN_CLEANUP_STABILITY_MS must be an integer from 1000 through 10000',
+    "ADMIN_CLEANUP_STABILITY_MS must be an integer from 1000 through 10000",
   );
   const passes = [];
   for (let pass = 0; pass < 2; pass += 1) {
@@ -2607,7 +3293,7 @@ async function assertStableExactCleanup() {
 }
 
 async function cleanup() {
-  console.log('\ncleanup and leak audit…');
+  console.log("\ncleanup and leak audit…");
   const errors = [];
   const attempt = async (label, action) => {
     try {
@@ -2617,50 +3303,63 @@ async function cleanup() {
     }
   };
 
-  await attempt('live fixture container', async () => {
+  await attempt("live fixture container", async () => {
     if (!containerGuid) return;
-    if (covered.has('admin_instance_delete')) {
-      await adminApi('DELETE', `/api/admin/instances/${containerGuid}`, { timeoutMs: 120_000 });
+    if (covered.has("admin_instance_delete")) {
+      await adminApi("DELETE", `/api/admin/instances/${containerGuid}`, {
+        timeoutMs: 120_000,
+      });
     } else {
       await call(
-        'DELETE',
-        '/api/admin/instances/{id}',
+        "DELETE",
+        "/api/admin/instances/{id}",
         `/api/admin/instances/${containerGuid}`,
         { timeoutMs: 120_000 },
       );
     }
     requireCondition(
-      Number(sql(`SELECT count(*) FROM "Containers" WHERE id=${sqlLiteral(containerGuid)}::uuid`)) === 0,
-      'admin instance destroy left its database row',
+      Number(
+        sql(
+          `SELECT count(*) FROM "Containers" WHERE id=${sqlLiteral(containerGuid)}::uuid`,
+        ),
+      ) === 0,
+      "admin instance destroy left its database row",
     );
     requireCondition(
-      docker(['container', 'inspect', containerRuntimeId]).status !== 0,
-      'admin instance destroy left its Docker runtime behind',
+      docker(["container", "inspect", containerRuntimeId]).status !== 0,
+      "admin instance destroy left its Docker runtime behind",
     );
     containerGuid = null;
     containerRuntimeId = null;
   });
-  await attempt('runtime repair container', async () => {
+  await attempt("runtime repair container", async () => {
     if (!runtimeRepairContainerGuid) return;
     const response = await adminApi(
-      'DELETE',
+      "DELETE",
       `/api/admin/instances/${runtimeRepairContainerGuid}`,
       { timeoutMs: 120_000 },
     );
-    if (response.status !== 404) expectStatus(response, 200, 'runtime repair container cleanup');
+    if (response.status !== 404)
+      expectStatus(response, 200, "runtime repair container cleanup");
     requireCondition(
-      !runtimeRepairContainerId || docker(['container', 'inspect', runtimeRepairContainerId]).status !== 0,
-      'runtime repair container survived fallback cleanup',
+      !runtimeRepairContainerId ||
+        docker(["container", "inspect", runtimeRepairContainerId]).status !== 0,
+      "runtime repair container survived fallback cleanup",
     );
     runtimeRepairContainerGuid = null;
     runtimeRepairContainerId = null;
   });
-  await attempt('repository binding', async () => {
+  await attempt("repository binding", async () => {
     if (!repoBindingId) return;
     const deletingId = repoBindingId;
     let bindingDeleted = false;
-    if (repoGameId && Number(sql(`SELECT count(*) FROM "Games" WHERE id=${repoGameId}`)) > 0) {
-      const currentTitle = sql(`SELECT title FROM "Games" WHERE id=${repoGameId}`);
+    if (
+      repoGameId &&
+      Number(sql(`SELECT count(*) FROM "Games" WHERE id=${repoGameId}`)) > 0
+    ) {
+      const currentTitle = sql(
+        `SELECT title FROM "Games" WHERE id=${repoGameId}`,
+      );
       requireCondition(
         currentTitle === `LOADTEST-ADMIN-REPO-${tag}`,
         `repository fixture ${repoGameId} changed identity to ${currentTitle}`,
@@ -2691,16 +3390,21 @@ async function cleanup() {
             `'id',id,'sourcePath',source_yaml_path,'imageRef',container_image,` +
             `'archiveHash',original_archive_blob_path,` +
             `'attachmentHash',(SELECT file.hash FROM "Attachments" attachment ` +
-              `JOIN "Files" file ON file.id=attachment.local_file_id ` +
-              `WHERE attachment.id="GameChallenges".attachment_id)` +
-          `) ORDER BY id),'[]'::json)::text FROM "GameChallenges" ` +
-          `WHERE game_id=${repoGameId} AND source_yaml_path LIKE ` +
+            `JOIN "Files" file ON file.id=attachment.local_file_id ` +
+            `WHERE attachment.id="GameChallenges".attachment_id)` +
+            `) ORDER BY id),'[]'::json)::text FROM "GameChallenges" ` +
+            `WHERE game_id=${repoGameId} AND source_yaml_path LIKE ` +
             `${sqlLiteral(`binding/${deletingId}/%`)}`,
-        ) || '[]',
+        ) || "[]",
       );
-      requireCondition(Array.isArray(imported), 'repository cleanup inventory is malformed');
+      requireCondition(
+        Array.isArray(imported),
+        "repository cleanup inventory is malformed",
+      );
       const totalChallengeCount = Number(
-        sql(`SELECT count(*) FROM "GameChallenges" WHERE game_id=${repoGameId}`),
+        sql(
+          `SELECT count(*) FROM "GameChallenges" WHERE game_id=${repoGameId}`,
+        ),
       );
       requireCondition(
         imported.length > 0 && imported.length === totalChallengeCount,
@@ -2708,13 +3412,18 @@ async function cleanup() {
           `${imported.length} belong to binding ${deletingId}`,
       );
       requireCondition(
-        imported.filter((challenge) => Number(challenge.id) === Number(repoChallengeId)).length === 1,
+        imported.filter(
+          (challenge) => Number(challenge.id) === Number(repoChallengeId),
+        ).length === 1,
         `repository fixture ${repoGameId} does not contain exactly one protected challenge ` +
           `${repoChallengeId}`,
       );
       requireCondition(
         imported.every((challenge) =>
-          String(challenge.sourcePath || '').startsWith(`binding/${deletingId}/`)),
+          String(challenge.sourcePath || "").startsWith(
+            `binding/${deletingId}/`,
+          ),
+        ),
         `repository fixture ${repoGameId} contains an unexpected source path`,
       );
       state.evidence.repositoryArtifacts = imported;
@@ -2722,26 +3431,39 @@ async function cleanup() {
 
       // Stop every future scan and detach the retained game before changing
       // its disposable cleanup schedule or any imported definition.
-      if (covered.has('admin_repo_binding_delete')) {
-        await adminApi('DELETE', `/api/admin/repobindings/${deletingId}`, { timeoutMs: 300_000 });
+      if (covered.has("admin_repo_binding_delete")) {
+        await adminApi("DELETE", `/api/admin/repobindings/${deletingId}`, {
+          timeoutMs: 300_000,
+        });
       } else {
         await call(
-          'DELETE',
-          '/api/admin/repobindings/{id}',
+          "DELETE",
+          "/api/admin/repobindings/{id}",
           `/api/admin/repobindings/${deletingId}`,
           { timeoutMs: 300_000 },
         );
       }
       requireCondition(
-        Number(sql(`SELECT count(*) FROM "RepoBindings" WHERE id=${deletingId}`)) === 0,
-        'repository binding delete did not persist',
+        Number(
+          sql(`SELECT count(*) FROM "RepoBindings" WHERE id=${deletingId}`),
+        ) === 0,
+        "repository binding delete did not persist",
       );
       requireCondition(
-        Number(sql(`SELECT count(*) FROM "Games" WHERE id=${repoGameId} AND repo_binding_id IS NULL`)) === 1,
-        'repository binding delete did not detach its retained fixture game',
+        Number(
+          sql(
+            `SELECT count(*) FROM "Games" WHERE id=${repoGameId} AND repo_binding_id IS NULL`,
+          ),
+        ) === 1,
+        "repository binding delete did not detach its retained fixture game",
       );
       const checkout = docker([
-        'exec', RSCTF, 'test', '!', '-e', `/data/files/repos/${deletingId}`,
+        "exec",
+        RSCTF,
+        "test",
+        "!",
+        "-e",
+        `/data/files/repos/${deletingId}`,
       ]);
       requireCondition(
         checkout.status === 0,
@@ -2757,7 +3479,12 @@ async function cleanup() {
       // pre-start state; the solved challenge remains protected by its durable
       // submission and first-solve evidence.
       const rescheduled = sql(
-        repositoryCleanupRescheduleSql(repoGameId, deletingId, repoChallengeId, tag),
+        repositoryCleanupRescheduleSql(
+          repoGameId,
+          deletingId,
+          repoChallengeId,
+          tag,
+        ),
       );
       requireCondition(
         Number(rescheduled) === repoGameId,
@@ -2765,30 +3492,53 @@ async function cleanup() {
       );
 
       for (const challenge of imported) {
-        const challengeId = positiveId(challenge.id, 'repository cleanup challenge');
+        const challengeId = positiveId(
+          challenge.id,
+          "repository cleanup challenge",
+        );
         if (challengeId === repoChallengeId) continue;
         const response = await A.api(
-          'DELETE',
+          "DELETE",
           `/api/edit/games/${repoGameId}/challenges/${challengeId}`,
           { jwt: A.adminJwt(), timeoutMs: 180_000 },
         );
-        expectStatus(response, 200, `repository challenge ${challengeId} cleanup`);
+        expectStatus(
+          response,
+          200,
+          `repository challenge ${challengeId} cleanup`,
+        );
         requireCondition(
-          Number(sql(`SELECT count(*) FROM "GameChallenges" WHERE id=${challengeId}`)) === 0,
+          Number(
+            sql(
+              `SELECT count(*) FROM "GameChallenges" WHERE id=${challengeId}`,
+            ),
+          ) === 0,
           `repository challenge ${challengeId} survived application cleanup`,
         );
       }
 
       if (
         repoChallengeId &&
-        Number(sql(`SELECT count(*) FROM "GameChallenges" WHERE id=${repoChallengeId}`)) > 0
+        Number(
+          sql(
+            `SELECT count(*) FROM "GameChallenges" WHERE id=${repoChallengeId}`,
+          ),
+        ) > 0
       ) {
         const detached = await A.api(
-          'POST',
+          "POST",
           `/api/edit/games/${repoGameId}/challenges/${repoChallengeId}/attachment`,
-          { jwt: A.adminJwt(), body: { attachmentType: 'None' }, timeoutMs: 120_000 },
+          {
+            jwt: A.adminJwt(),
+            body: { attachmentType: "None" },
+            timeoutMs: 120_000,
+          },
         );
-        expectStatus(detached, 200, 'repository solved-challenge attachment detach');
+        expectStatus(
+          detached,
+          200,
+          "repository solved-challenge attachment detach",
+        );
         requireCondition(
           Number(
             sql(
@@ -2796,11 +3546,13 @@ async function cleanup() {
                 `WHERE id=${repoChallengeId} AND attachment_id IS NOT NULL`,
             ),
           ) === 0,
-          'repository solved challenge retained attachment metadata',
+          "repository solved challenge retained attachment metadata",
         );
       }
 
-      const imageRefs = [...new Set(imported.map((row) => row.imageRef).filter(Boolean))];
+      const imageRefs = [
+        ...new Set(imported.map((row) => row.imageRef).filter(Boolean)),
+      ];
       for (const imageRef of imageRefs) {
         await cleanupOwnedScratchImage({ imageRef, imageRemoved: false });
       }
@@ -2808,16 +3560,20 @@ async function cleanup() {
         for (const hash of [row.archiveHash, row.attachmentHash].map(String)) {
           if (!/^[0-9a-f]{64}$/.test(hash)) continue;
           requireCondition(
-            Number(sql(`SELECT count(*) FROM "Files" WHERE hash=${sqlLiteral(hash)}`)) === 0,
+            Number(
+              sql(
+                `SELECT count(*) FROM "Files" WHERE hash=${sqlLiteral(hash)}`,
+              ),
+            ) === 0,
             `repository challenge cleanup retained blob metadata ${hash}`,
           );
           requireCondition(
             docker([
-              'exec',
+              "exec",
               RSCTF,
-              'test',
-              '!',
-              '-e',
+              "test",
+              "!",
+              "-e",
               `/data/files/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash}`,
             ]).status === 0,
             `repository challenge cleanup retained blob bytes ${hash}`,
@@ -2825,10 +3581,10 @@ async function cleanup() {
         }
       }
       const checkerCleanup = docker([
-        'exec',
+        "exec",
         RSCTF,
-        'rm',
-        '-rf',
+        "rm",
+        "-rf",
         `/data/files/checkers/load/${repoGameId}`,
       ]);
       requireCondition(
@@ -2837,22 +3593,31 @@ async function cleanup() {
       );
     }
     if (!bindingDeleted) {
-      if (covered.has('admin_repo_binding_delete')) {
-        await adminApi('DELETE', `/api/admin/repobindings/${deletingId}`, { timeoutMs: 300_000 });
+      if (covered.has("admin_repo_binding_delete")) {
+        await adminApi("DELETE", `/api/admin/repobindings/${deletingId}`, {
+          timeoutMs: 300_000,
+        });
       } else {
         await call(
-          'DELETE',
-          '/api/admin/repobindings/{id}',
+          "DELETE",
+          "/api/admin/repobindings/{id}",
           `/api/admin/repobindings/${deletingId}`,
           { timeoutMs: 300_000 },
         );
       }
       requireCondition(
-        Number(sql(`SELECT count(*) FROM "RepoBindings" WHERE id=${deletingId}`)) === 0,
-        'repository binding delete did not persist',
+        Number(
+          sql(`SELECT count(*) FROM "RepoBindings" WHERE id=${deletingId}`),
+        ) === 0,
+        "repository binding delete did not persist",
       );
       const checkout = docker([
-        'exec', RSCTF, 'test', '!', '-e', `/data/files/repos/${deletingId}`,
+        "exec",
+        RSCTF,
+        "test",
+        "!",
+        "-e",
+        `/data/files/repos/${deletingId}`,
       ]);
       requireCondition(
         checkout.status === 0,
@@ -2861,29 +3626,31 @@ async function cleanup() {
     }
     repoBindingId = null;
   });
-  await attempt('worker rows', async () => {
+  await attempt("worker rows", async () => {
     for (const id of state.workerIds) {
-      sql(`DELETE FROM "WorkerWorkloads" WHERE worker_id=${sqlLiteral(id)}::uuid`);
+      sql(
+        `DELETE FROM "WorkerWorkloads" WHERE worker_id=${sqlLiteral(id)}::uuid`,
+      );
       sql(`DELETE FROM "WorkerNodes" WHERE id=${sqlLiteral(id)}::uuid`);
     }
   });
-  await attempt('admin build records', async () => {
+  await attempt("admin build records", async () => {
     const ownedGameIds = integerArraySql(state.gameIds);
     sql(`DELETE FROM "BuildRecords" WHERE game_id=ANY(${ownedGameIds})`);
   });
-  await attempt('runtime repair fixture reset', async () => {
+  await attempt("runtime repair fixture reset", async () => {
     if (!authorizationGameId) return;
     sql(
       `BEGIN; ` +
         `DELETE FROM "UserParticipations" WHERE game_id=${authorizationGameId}; ` +
         `DELETE FROM "Participations" WHERE game_id=${authorizationGameId}; ` +
         `UPDATE "Games" SET start_time_utc=clock_timestamp()+interval '1 day', ` +
-          `end_time_utc=clock_timestamp()+interval '2 days' ` +
-          `WHERE id=${authorizationGameId} AND title=${sqlLiteral(`ADMIN-AUTHORIZATION-${tag}`)}; ` +
+        `end_time_utc=clock_timestamp()+interval '2 days' ` +
+        `WHERE id=${authorizationGameId} AND title=${sqlLiteral(`ADMIN-AUTHORIZATION-${tag}`)}; ` +
         `COMMIT;`,
     );
   });
-  await attempt('owned scratch build images', async () => {
+  await attempt("owned scratch build images", async () => {
     for (const fixture of state.buildImageFixtures) {
       await deleteScratchBuildDefinition(fixture);
     }
@@ -2891,11 +3658,13 @@ async function cleanup() {
       await cleanupOwnedScratchImage(fixture);
     }
   });
-  await attempt('repository solve event', async () => {
+  await attempt("repository solve event", async () => {
     if (!repoGameId) return;
     const deletingId = repoGameId;
     const expectedTitle = `LOADTEST-ADMIN-REPO-${tag}`;
-    const currentTitle = sql(`SELECT title FROM "Games" WHERE id=${deletingId}`);
+    const currentTitle = sql(
+      `SELECT title FROM "Games" WHERE id=${deletingId}`,
+    );
     if (!currentTitle) {
       repoGameId = null;
       repoChallengeId = null;
@@ -2910,11 +3679,12 @@ async function cleanup() {
         `SELECT COALESCE(json_agg(json_build_object('id',id,'sourcePath',source_yaml_path) ` +
           `ORDER BY id),'[]'::json)::text FROM "GameChallenges" ` +
           `WHERE game_id=${deletingId}`,
-      ) || '[]',
+      ) || "[]",
     );
-    const capturedChallenge = state.evidence.repositoryArtifacts?.filter(
-      (challenge) => Number(challenge.id) === Number(repoChallengeId),
-    ) ?? [];
+    const capturedChallenge =
+      state.evidence.repositoryArtifacts?.filter(
+        (challenge) => Number(challenge.id) === Number(repoChallengeId),
+      ) ?? [];
     requireCondition(
       repoChallengeId &&
         capturedChallenge.length === 1 &&
@@ -2927,7 +3697,9 @@ async function cleanup() {
     const protectedDeletion = await A.deleteGame(deletingId);
     requireCondition(
       protectedDeletion.status === 400 &&
-        /cannot be permanently deleted after it has started/i.test(protectedDeletion.text),
+        /cannot be permanently deleted after it has started/i.test(
+          protectedDeletion.text,
+        ),
       `repository solve retention policy changed: ${protectedDeletion.status} ` +
         `${protectedDeletion.text.slice(0, 300)}`,
     );
@@ -2935,10 +3707,12 @@ async function cleanup() {
     repoGameId = null;
     repoChallengeId = null;
   });
-  await attempt('cross-game manager fixture', async () => {
+  await attempt("cross-game manager fixture", async () => {
     if (!authorizationGameId) return;
     const deletingId = authorizationGameId;
-    const currentTitle = sql(`SELECT title FROM "Games" WHERE id=${deletingId}`);
+    const currentTitle = sql(
+      `SELECT title FROM "Games" WHERE id=${deletingId}`,
+    );
     if (!currentTitle) {
       authorizationGameId = null;
       return;
@@ -2954,26 +3728,29 @@ async function cleanup() {
     );
     requireCondition(
       Number(sql(`SELECT count(*) FROM "Games" WHERE id=${deletingId}`)) === 0,
-      'authorization game survived its application delete',
+      "authorization game survived its application delete",
     );
     authorizationGameId = null;
   });
-  await attempt('event namespace', async () => {
-    if (fixtureGame && Number(sql(`SELECT count(*) FROM "Games" WHERE id=${fixtureGame}`)) > 0) {
+  await attempt("event namespace", async () => {
+    if (
+      fixtureGame &&
+      Number(sql(`SELECT count(*) FROM "Games" WHERE id=${fixtureGame}`)) > 0
+    ) {
       // Wait for any in-flight checker pass and prevent another round from
       // starting while the disposable checker tree and database graph vanish.
       await A.setAdScoringPaused(fixtureGame, true);
       // Preserve blob reference accounting: the disposable fixture's writeup
       // is the only file owner it creates, and must be released by application
       // code before the exact SQL fallback can remove competition rows.
-      await adminApi('DELETE', `/api/edit/games/${fixtureGame}/writeups`, {
+      await adminApi("DELETE", `/api/edit/games/${fixtureGame}/writeups`, {
         timeoutMs: 120_000,
       });
       const writeupResidual = Number(
         sql(
           `SELECT count(*) FROM "Files" file WHERE ` +
             (state.evidence.writeup
-              ? `file.id=${positiveId(state.evidence.writeup.id, 'writeup file')} AND ` +
+              ? `file.id=${positiveId(state.evidence.writeup.id, "writeup file")} AND ` +
                 `file.hash=${sqlLiteral(state.evidence.writeup.hash)}`
               : `file.name LIKE ${sqlLiteral(`Writeup-${fixtureGame}-%`)}`),
         ),
@@ -2984,9 +3761,19 @@ async function cleanup() {
       );
       if (state.evidence.writeup) {
         const hash = String(state.evidence.writeup.hash);
-        requireCondition(/^[0-9a-f]{64}$/.test(hash), 'recovery manifest contains an invalid writeup hash');
+        requireCondition(
+          /^[0-9a-f]{64}$/.test(hash),
+          "recovery manifest contains an invalid writeup hash",
+        );
         const storedBlob = `/data/files/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash}`;
-        const physicalResidual = docker(['exec', RSCTF, 'test', '!', '-e', storedBlob]);
+        const physicalResidual = docker([
+          "exec",
+          RSCTF,
+          "test",
+          "!",
+          "-e",
+          storedBlob,
+        ]);
         requireCondition(
           physicalResidual.status === 0,
           `writeup release left physical blob ${hash}; refusing SQL fallback`,
@@ -2996,7 +3783,9 @@ async function cleanup() {
       const protectedDeletion = await A.deleteGame(fixtureGame);
       requireCondition(
         protectedDeletion.status === 400 &&
-          /cannot be permanently deleted after it has started/i.test(protectedDeletion.text),
+          /cannot be permanently deleted after it has started/i.test(
+            protectedDeletion.text,
+          ),
         `started fixture delete policy changed: ${protectedDeletion.status} ${protectedDeletion.text.slice(0, 300)}`,
       );
 
@@ -3007,14 +3796,18 @@ async function cleanup() {
         ...disposableAdminGameRuntimeIds(fixtureGame, tag),
       ];
       requireCondition(
-        Number(sql(`SELECT count(*) FROM "GameChallenges" WHERE game_id=${fixtureGame} AND "Type"=5`)) === 0,
-        'admin fixture unexpectedly owns a KotH runtime',
+        Number(
+          sql(
+            `SELECT count(*) FROM "GameChallenges" WHERE game_id=${fixtureGame} AND "Type"=5`,
+          ),
+        ) === 0,
+        "admin fixture unexpectedly owns a KotH runtime",
       );
       const checkerCleanup = docker([
-        'exec',
+        "exec",
         RSCTF,
-        'rm',
-        '-rf',
+        "rm",
+        "-rf",
         `/data/files/checkers/load/${fixtureGame}`,
       ]);
       requireCondition(
@@ -3025,53 +3818,72 @@ async function cleanup() {
       fixtureGame = null;
     }
   });
-  await attempt('identity fixture', deleteIdentityFixture);
-  await attempt('remaining identity namespace', async () => {
+  await attempt("identity fixture", deleteIdentityFixture);
+  await attempt("remaining identity namespace", async () => {
     const remainingTeamId = sql(
       `SELECT id FROM "Teams" WHERE name=${sqlLiteral(`ADMINLT-${tag}`)} ORDER BY id DESC LIMIT 1`,
     );
     if (remainingTeamId) {
-      await adminApi('DELETE', `/api/admin/teams/${positiveId(remainingTeamId, 'cleanup team')}`, {
-        timeoutMs: 120_000,
-      });
+      await adminApi(
+        "DELETE",
+        `/api/admin/teams/${positiveId(remainingTeamId, "cleanup team")}`,
+        {
+          timeoutMs: 120_000,
+        },
+      );
     }
     const remainingUserIds = String(
       sql(
         `SELECT COALESCE(string_agg(id::text, ','), '') FROM "AspNetUsers" ` +
           `WHERE email LIKE ${sqlLiteral(`${tag}.%@admin.invalid`)}`,
       ),
-    ).split(',').filter(Boolean);
+    )
+      .split(",")
+      .filter(Boolean);
     for (const id of remainingUserIds) {
       sql(
         `UPDATE "AspNetUsers" SET role=1, security_stamp=gen_random_uuid()::text ` +
           `WHERE id=${sqlLiteral(id)}::uuid AND role=3`,
       );
-      await adminApi('DELETE', `/api/admin/users/${id}`, { timeoutMs: 120_000 });
+      await adminApi("DELETE", `/api/admin/users/${id}`, {
+        timeoutMs: 120_000,
+      });
     }
   });
-  await attempt('profile user', async () => {
+  await attempt("profile user", async () => {
     if (!fixtureUsers?.profile?.id) return;
-    if (Number(sql(`SELECT count(*) FROM "AspNetUsers" WHERE id=${sqlLiteral(fixtureUsers.profile.id)}::uuid`)) > 0) {
-      await adminApi('DELETE', `/api/admin/users/${fixtureUsers.profile.id}`);
+    if (
+      Number(
+        sql(
+          `SELECT count(*) FROM "AspNetUsers" WHERE id=${sqlLiteral(fixtureUsers.profile.id)}::uuid`,
+        ),
+      ) > 0
+    ) {
+      await adminApi("DELETE", `/api/admin/users/${fixtureUsers.profile.id}`);
     }
   });
-  await attempt('global configuration restore', async () => {
+  await attempt("global configuration restore", async () => {
     const restoreConfig = originalGlobalConfig || state.originalGlobalConfig;
     if (restoreConfig) {
       // update_config deliberately ignores branding hashes. The logo endpoint
       // is the only operation that clears the references and purges the blob,
       // so run its idempotent delete even if the main scenario failed between
       // upload and its ordinary delete step.
-      await adminApi('DELETE', '/api/admin/config/logo');
-      await adminApi('PUT', '/api/admin/config', { body: { globalConfig: restoreConfig } });
+      await adminApi("DELETE", "/api/admin/config/logo");
+      await adminApi("PUT", "/api/admin/config", {
+        body: { globalConfig: restoreConfig },
+      });
     }
   });
-  await attempt('remaining namespaced evidence', async () => {
-    if (antiCheatBlockId) sql(`DELETE FROM "AntiCheatBlocks" WHERE id=${antiCheatBlockId}`);
+  await attempt("remaining namespaced evidence", async () => {
+    if (antiCheatBlockId)
+      sql(`DELETE FROM "AntiCheatBlocks" WHERE id=${antiCheatBlockId}`);
   });
-  await attempt('stable exact residual audit', assertStableExactCleanup);
-  if (errors.length) throw new Error(errors.join('; '));
-  console.log('  ✓ exact database, Redis, blob, checkout, worker, and container resources stayed absent');
+  await attempt("stable exact residual audit", assertStableExactCleanup);
+  if (errors.length) throw new Error(errors.join("; "));
+  console.log(
+    "  ✓ exact database, Redis, blob, checkout, worker, and container resources stayed absent",
+  );
 }
 
 async function main() {
@@ -3081,16 +3893,19 @@ async function main() {
     before: inspectUniformServerRuntimeIdentity(serverContainers),
     after: null,
   };
-  requireCondition(webTargets.length >= 2, 'WEB_TARGETS must name at least two direct web replicas');
+  requireCondition(
+    webTargets.length >= 2,
+    "WEB_TARGETS must name at least two direct web replicas",
+  );
   saveRecovery();
   lock = await acquireExclusiveProcessLock(loadOrchestrationLockPath, {
-    label: 'RSCTF admin lifecycle',
+    label: "RSCTF admin lifecycle",
     metadata: { target: TARGET, tag },
   });
   databaseLock = await acquireAdminLifecycleDatabaseLock();
 
   console.log(`RSCTF exhaustive admin lifecycle → ${TARGET}`);
-  console.log(`  web replicas: ${webTargets.join(', ')}`);
+  console.log(`  web replicas: ${webTargets.join(", ")}`);
   console.log(`  control endpoint: ${controlTarget}`);
   console.log(`  PostgreSQL: ${PG}; runtime owner: ${RSCTF}`);
   await A.preflight();
@@ -3143,13 +3958,18 @@ async function main() {
   }
   if (primaryError || cleanupError) {
     const parts = [];
-    if (primaryError) parts.push(`scenario: ${primaryError.stack || primaryError.message}`);
-    if (cleanupError) parts.push(`cleanup: ${cleanupError.stack || cleanupError.message}`);
-    throw new Error(parts.join('\n'));
+    if (primaryError)
+      parts.push(`scenario: ${primaryError.stack || primaryError.message}`);
+    if (cleanupError)
+      parts.push(`cleanup: ${cleanupError.stack || cleanupError.message}`);
+    throw new Error(parts.join("\n"));
   }
 
   const completion = assertCompleteCoverage(covered, { includeSignalR: true });
-  requireCondition(completion !== false, 'admin operation coverage is incomplete');
+  requireCondition(
+    completion !== false,
+    "admin operation coverage is incomplete",
+  );
   const startingRuntimeIdentity = state.evidence.runtimeIdentity.before;
   state.evidence.runtimeIdentity.after = inspectUnchangedServerRuntimeIdentity(
     startingRuntimeIdentity,
@@ -3157,18 +3977,25 @@ async function main() {
   );
   saveRecovery();
   const fatalLogsByContainer = Object.fromEntries(
-    originalServerRuntimeLogTargets(startingRuntimeIdentity).map(({ name, containerId }) => [
-      name,
-      {
-        containerId,
-        fatalLineCount: countContainerFatalLogs(containerId, runStartedAt),
-      },
-    ]),
+    originalServerRuntimeLogTargets(startingRuntimeIdentity).map(
+      ({ name, containerId }) => [
+        name,
+        {
+          containerId,
+          fatalLineCount: countContainerFatalLogs(containerId, runStartedAt),
+        },
+      ],
+    ),
   );
   state.evidence.fatalLogAudit = fatalLogsByContainer;
-  const fatalLogs = Object.values(fatalLogsByContainer)
-    .reduce((count, value) => count + value.fatalLineCount, 0);
-  requireCondition(fatalLogs === 0, `runtime log audit found ${fatalLogs} panic/fatal records`);
+  const fatalLogs = Object.values(fatalLogsByContainer).reduce(
+    (count, value) => count + value.fatalLineCount,
+    0,
+  );
+  requireCondition(
+    fatalLogs === 0,
+    `runtime log audit found ${fatalLogs} panic/fatal records`,
+  );
   // Close the replacement/restart race around the log read itself. Names must
   // still resolve to the exact starting container ids after their immutable-id
   // logs have been consumed.
@@ -3182,15 +4009,21 @@ async function main() {
   state.timing = timing;
   saveRecovery();
 
-  const values = timing.map((sample) => sample.ms).sort((left, right) => left - right);
-  const percentile = (fraction) => values[Math.min(values.length - 1, Math.floor(values.length * fraction))] || 0;
-  console.log('\nadmin lifecycle passed');
-  console.log(`  operations and realtime surfaces: ${covered.size}/${completion.required}`);
+  const values = timing
+    .map((sample) => sample.ms)
+    .sort((left, right) => left - right);
+  const percentile = (fraction) =>
+    values[Math.min(values.length - 1, Math.floor(values.length * fraction))] ||
+    0;
+  console.log("\nadmin lifecycle passed");
+  console.log(
+    `  operations and realtime surfaces: ${covered.size}/${completion.required}`,
+  );
   console.log(
     `  one-shot route latency: median=${percentile(0.5)} ms p95=${percentile(0.95)} ms ` +
       `max=${values.at(-1) || 0} ms`,
   );
-  console.log(`  k6 summary: ${state.load?.summaryPath || 'not exported'}`);
+  console.log(`  k6 summary: ${state.load?.summaryPath || "not exported"}`);
   console.log(`  recovery/audit manifest: ${recoveryPath}`);
 }
 
@@ -3199,9 +4032,12 @@ try {
 } finally {
   await databaseLock?.release();
   await lock?.release();
-  if (!shouldRetainLifecycleManifest({
-    completed: state.completed,
-    cleanupVerified: state.completed,
-    keep: process.env.KEEP_ADMIN_MANIFEST,
-  })) removeRecovery(recoveryPath);
+  if (
+    !shouldRetainLifecycleManifest({
+      completed: state.completed,
+      cleanupVerified: state.completed,
+      keep: process.env.KEEP_ADMIN_MANIFEST,
+    })
+  )
+    removeRecovery(recoveryPath);
 }

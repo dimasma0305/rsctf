@@ -82,6 +82,10 @@ pub fn router() -> Router<SharedState> {
     Router::new()
         // --- Diagnostics ---
         .route("/api/admin/MyIp", get(my_ip))
+        .route(
+            "/api/admin/realtime/metrics",
+            limited(Policy::Query, get(realtime::realtime_metrics)),
+        )
         // --- Config ---
         .route("/api/admin/config", get(get_config).put(update_config))
         .route(
@@ -910,6 +914,7 @@ mod dashboard;
 mod diagnostics;
 mod instances;
 mod logs;
+mod realtime;
 mod repo_bindings;
 mod settings;
 mod teams;

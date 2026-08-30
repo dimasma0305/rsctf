@@ -806,7 +806,7 @@ async fn run_capture_reconciler(
     state: SharedState,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
-    let mut events = state.events.subscribe();
+    let mut events = state.events.subscribe_global_targets(&[RECONCILE_EVENT]);
     let failure_wakeup = Arc::new(tokio::sync::Notify::new());
     if let Err(error) = super::inventory::mark_reconcile_required(state.pg()).await {
         tracing::error!(%error, "traffic capture inventory startup fence failed");
