@@ -352,6 +352,11 @@ mod tests {
               heartbeat_at TIMESTAMPTZ, lease_expires_at TIMESTAMPTZ,
               draining BOOLEAN NOT NULL
             );
+            CREATE TABLE "{schema}"."TrafficCaptureLiveEndpoints" (
+              service_id INTEGER PRIMARY KEY, container_id TEXT NOT NULL,
+              host TEXT NOT NULL, port INTEGER NOT NULL, owner_id UUID NOT NULL,
+              owner_epoch BIGINT NOT NULL, acknowledged_at TIMESTAMPTZ NOT NULL
+            );
             INSERT INTO "{schema}"."TrafficCaptureOwnerState"
               VALUES (1, NULL, 0, NULL, NULL, TRUE);
             "#
