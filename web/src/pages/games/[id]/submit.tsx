@@ -12,7 +12,7 @@ import {
   mdiUpload,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { WithGameTab } from '@Components/WithGameTab'
@@ -26,9 +26,75 @@ import {
   downloadBlob,
 } from '@Utils/SubmitTemplates'
 import { useGame } from '@Hooks/useGame'
-import api, { ChallengeImportResult, Role } from '@Api'
+import api, { ChallengeImportJobModel, ChallengeImportResult, Role } from '@Api'
 
 const MAX_SIZE = 64 * 1024 * 1024
+const JOB_POLL_MS = 1_500
+
+class ImportJobFailedError extends Error {}
+
+const abortError = () => new DOMException('Import polling cancelled', 'AbortError')
+
+const waitForDelay = (signal: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortError())
+      return
+    }
+    const finish = () => {
+      signal.removeEventListener('abort', cancel)
+      resolve()
+    }
+    const cancel = () => {
+      window.clearTimeout(timer)
+      reject(abortError())
+    }
+    const timer = window.setTimeout(finish, JOB_POLL_MS)
+    signal.addEventListener('abort', cancel, { once: true })
+  })
+
+const pageIsActive = () => document.visibilityState !== 'hidden' && navigator.onLine !== false
+
+const waitForPageActive = (signal: AbortSignal) => {
+  if (signal.aborted) return Promise.reject(abortError())
+  if (pageIsActive()) return Promise.resolve()
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      document.removeEventListener('visibilitychange', check)
+      window.removeEventListener('online', check)
+      signal.removeEventListener('abort', cancel)
+    }
+    const check = () => {
+      if (!pageIsActive()) return
+      cleanup()
+      resolve()
+    }
+    const cancel = () => {
+      cleanup()
+      reject(abortError())
+    }
+    document.addEventListener('visibilitychange', check)
+    window.addEventListener('online', check)
+    signal.addEventListener('abort', cancel, { once: true })
+  })
+}
+
+const waitForImport = async (
+  gameId: number,
+  initial: ChallengeImportJobModel,
+  signal: AbortSignal
+): Promise<ChallengeImportResult> => {
+  let job = initial
+  while (job.status === 'Queued' || job.status === 'Running') {
+    await waitForPageActive(signal)
+    await waitForDelay(signal)
+    await waitForPageActive(signal)
+    job = (await api.edit.editGetChallengeImportJob(gameId, job.jobId, { signal })).data
+  }
+  if (job.status === 'Failed') throw new ImportJobFailedError(job.error ?? 'Challenge import failed')
+  if (!job.result) throw new Error('Challenge import completed without a result')
+  return job.result
+}
 
 const Submit: FC = () => {
   const { id } = useParams()
@@ -42,6 +108,15 @@ const Submit: FC = () => {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<ChallengeImportResult | null>(null)
   const [file, setFile] = useState<File | null>(null)
+  const activeRequest = useRef<AbortController | null>(null)
+  const operationId = useRef<string | null>(null)
+
+  useEffect(
+    () => () => {
+      activeRequest.current?.abort()
+    },
+    []
+  )
 
   const submit = async () => {
     if (!file) {
@@ -50,9 +125,16 @@ const Submit: FC = () => {
     }
     setBusy(true)
     setResult(null)
+    const controller = new AbortController()
+    activeRequest.current?.abort()
+    activeRequest.current = controller
     try {
-      const resp = await api.edit.editSubmitChallenge(gameId, file)
-      setResult(resp.data)
+      operationId.current ??= crypto.randomUUID()
+      const admitted = await api.edit.editSubmitChallenge(gameId, file, operationId.current, {
+        signal: controller.signal,
+      })
+      const completed = await waitForImport(gameId, admitted.data, controller.signal)
+      setResult(completed)
       showNotification({
         color: 'teal',
         title: t('game.submit.notification.submitted'),
@@ -60,9 +142,13 @@ const Submit: FC = () => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch (e) {
-      showErrorMsg(e, t)
+      if (e instanceof ImportJobFailedError) operationId.current = null
+      if (!controller.signal.aborted) showErrorMsg(e, t)
     } finally {
-      setBusy(false)
+      if (activeRequest.current === controller) {
+        activeRequest.current = null
+        setBusy(false)
+      }
     }
   }
 
@@ -283,6 +369,7 @@ ad:
             <Paper p="lg" withBorder style={disabled ? { opacity: 0.55, pointerEvents: 'none' } : undefined}>
               <Stack gap="md">
                 <Dropzone
+                  disabled={busy}
                   multiple={false}
                   maxSize={MAX_SIZE}
                   inputProps={{
@@ -295,7 +382,11 @@ ad:
                     'application/zip': ['.zip'],
                     'application/x-zip-compressed': ['.zip'],
                   }}
-                  onDrop={(files) => setFile(files[0] ?? null)}
+                  onDrop={(files) => {
+                    setFile(files[0] ?? null)
+                    operationId.current = null
+                    setResult(null)
+                  }}
                   onReject={(rejections) => {
                     const msg = rejections[0]?.errors[0]?.message ?? t('game.submit.dropzone.rejected')
                     showErrorMsg(new Error(msg), t)
@@ -337,7 +428,17 @@ ad:
                         {HunamizeSize(file.size)}
                       </Badge>
                     </Group>
-                    <Button size="xs" variant="subtle" color="gray" onClick={() => setFile(null)} disabled={busy}>
+                    <Button
+                      size="xs"
+                      variant="subtle"
+                      color="gray"
+                      onClick={() => {
+                        setFile(null)
+                        operationId.current = null
+                        setResult(null)
+                      }}
+                      disabled={busy}
+                    >
                       {t('game.submit.button.clear')}
                     </Button>
                   </Group>

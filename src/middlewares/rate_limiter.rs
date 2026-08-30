@@ -161,6 +161,10 @@ pub enum Policy {
     /// Tight per-identity defense-in-depth budget for player credential changes.
     /// Appended to preserve every shipped Redis policy discriminant.
     CredentialMutation,
+    /// Anonymous source budget for bounded Ed25519 team-token verification.
+    TeamSignatureSource,
+    /// Deployment-wide CPU/query budget for team-token verification.
+    TeamSignatureGlobal,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -244,6 +248,14 @@ impl Policy {
             Policy::CredentialMutation => Kind::Bucket {
                 capacity: 6.0,
                 refill_per_sec: 0.1,
+            },
+            Policy::TeamSignatureSource => Kind::Bucket {
+                capacity: 20.0,
+                refill_per_sec: 1.0,
+            },
+            Policy::TeamSignatureGlobal => Kind::Bucket {
+                capacity: 256.0,
+                refill_per_sec: 32.0,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {
@@ -490,8 +502,16 @@ fn client_ip(req: &Request) -> String {
 struct VerifiedSessionPartitionKey(String);
 
 fn partition_key(policy: Policy, req: &Request) -> String {
-    if policy == Policy::PowIssuanceGlobal {
-        return "hashpow-issuance-global".to_string();
+    if matches!(
+        policy,
+        Policy::PowIssuanceGlobal | Policy::TeamSignatureGlobal
+    ) {
+        return match policy {
+            Policy::PowIssuanceGlobal => "hashpow-issuance-global",
+            Policy::TeamSignatureGlobal => "team-signature-global",
+            _ => unreachable!(),
+        }
+        .to_string();
     }
     // Credential, registration, recovery, mail, and OAuth-start abuse remains
     // strictly source-IP scoped. A valid-but-revoked JWT must never create a
@@ -505,6 +525,7 @@ fn partition_key(policy: Policy, req: &Request) -> String {
             | Policy::PrivilegedHubAdmission
             | Policy::PublicHubAdmission
             | Policy::PowIssuanceSource
+            | Policy::TeamSignatureSource
     ) {
         return client_ip(req);
     }

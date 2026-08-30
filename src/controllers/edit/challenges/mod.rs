@@ -17,17 +17,22 @@ mod workload;
 
 pub use attachments::update_attachment;
 pub(crate) use attachments::{build_attachment, validate_remote_attachment_url};
-pub use audit::{get_challenge_audit_meta, rebuild_challenge};
+pub use audit::{
+    download_challenge_audit_archive, get_challenge_audit_meta, get_challenge_build_status,
+    list_challenge_build_statuses, rebuild_challenge,
+};
 pub(crate) use deletion::reject_pending_mutation;
 pub(crate) use lifecycle::destroy_challenge_containers;
 use lifecycle::destroy_test_container_locked;
 #[cfg(test)]
 pub(crate) use repo_push::commit_latest_to_checkout_for_test;
 pub use review::{approve_challenge, list_pending_challenges, reject_challenge};
+pub(crate) use workload::execute_workload_rollout_job;
 pub use workload::rollout_workloads;
 
 const INSERTABLE_GAME_SQL: &str =
     r#"SELECT NOT deletion_pending FROM "Games" WHERE id = $1 FOR SHARE"#;
+const MAX_EDIT_CHALLENGES: u64 = 2_048;
 
 // ============================================================================
 //  Game challenges
@@ -43,6 +48,8 @@ pub async fn get_challenges(
     let challenges = game_challenge::Entity::find()
         .filter(game_challenge::Column::GameId.eq(id))
         .filter(game_challenge::Column::ReviewStatus.eq(ChallengeReviewStatus::Active))
+        .order_by_asc(game_challenge::Column::Id)
+        .limit(MAX_EDIT_CHALLENGES)
         .all(&st.db)
         .await?;
 

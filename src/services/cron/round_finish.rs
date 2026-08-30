@@ -751,12 +751,21 @@ pub(super) async fn finish_prepared_round(
     // owner must repeat readiness work because it cannot trust the old runtime
     // identity. Reload the snapshot either way and never exec a stale container.
     if !newly_prepared {
-        let repair_failures = match crate::controllers::edit::ensure_ad_containers(
-            state, game, None, false, false, None,
-        )
+        let repair_failures = match async {
+            let job =
+                crate::controllers::edit::request_ad_reconcile_job(state, game.id, false, false)
+                    .await?;
+            let remaining = pipeline_deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .min(std::time::Duration::from_secs(90));
+            let job =
+                crate::services::control_jobs::wait_for_terminal(state.pg(), job.id, remaining)
+                    .await?;
+            crate::services::control_jobs::result_count(&job, "failures")
+        }
         .await
         {
-            Ok((_, failures)) => failures as usize,
+            Ok(failures) => failures,
             Err(error) => {
                 tracing::warn!(
                     game = game.id,

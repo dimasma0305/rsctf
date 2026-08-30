@@ -17,6 +17,7 @@ mod challenges;
 #[cfg(test)]
 mod poster_tests;
 mod seaorm;
+mod staging;
 #[cfg(test)]
 mod test_support;
 mod writeups;
@@ -36,6 +37,9 @@ pub(crate) use challenges::{
     delete_challenge_locked, delete_game_challenges_locked, purge_deleted_challenge_artifacts,
 };
 pub(crate) use seaorm::store_and_acquire_in_seaorm_transaction;
+pub(crate) use staging::{
+    publish_staged_blob, purge_expired_stages, scoped_operation_id, stage_blob, StagedBlob,
+};
 pub use writeups::clear_game_writeups;
 #[cfg(test)]
 use writeups::replace_writeup;
@@ -337,6 +341,12 @@ pub async fn purge_if_unreferenced(
                OR EXISTS(
                     SELECT 1 FROM "GameChallenges"
                      WHERE original_archive_blob_path = $1
+               )
+               OR EXISTS(
+                    SELECT 1 FROM "BlobStagingOperations" stage
+                     WHERE stage.content_hash = $1
+                       AND stage.state <> 'Published'
+                       AND stage.lease_expires_at_utc > clock_timestamp()
                )"#,
     )
     .bind(hash)
@@ -368,9 +378,15 @@ pub async fn purge_if_unreferenced(
 /// separate work queue or schema migration.
 pub async fn purge_pending(pool: &PgPool, storage: &dyn BlobStorage, limit: i64) -> AppResult<u64> {
     let hashes = sqlx::query_scalar::<_, String>(
-        r#"SELECT hash FROM "Files"
-            WHERE reference_count <= 0
-            ORDER BY id
+        r#"SELECT file.hash FROM "Files" file
+            WHERE file.reference_count <= 0
+              AND NOT EXISTS (
+                  SELECT 1 FROM "BlobStagingOperations" stage
+                   WHERE stage.content_hash = file.hash
+                     AND stage.state <> 'Published'
+                     AND stage.lease_expires_at_utc > clock_timestamp()
+              )
+            ORDER BY file.id
             LIMIT $1"#,
     )
     .bind(limit.clamp(1, 256))

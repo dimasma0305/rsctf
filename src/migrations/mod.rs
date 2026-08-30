@@ -137,8 +137,14 @@ mod m0114_submission_feed_cursor;
 mod m0115_flag_egress_feed_cursor;
 mod m0116_game_event_feed_pending;
 mod m0242_participation_provision_jobs;
+mod m0250_team_signature_key_index;
 mod m0251_koth_referee_retry;
 mod m0252_player_credential_operations;
+mod m0260_ad_control_revisions;
+mod m0261_control_plane_jobs;
+mod m0262_challenge_import_jobs;
+mod m0263_control_job_cancellation;
+mod m0264_blob_staging_operations;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -160,7 +166,6 @@ pub(crate) use m0115_flag_egress_feed_cursor::UP_SQL as FLAG_EGRESS_FEED_CURSOR_
 pub(crate) use m0116_game_event_feed_pending::UP_SQL as GAME_EVENT_FEED_PENDING_SQL;
 #[cfg(test)]
 pub(crate) use m0242_participation_provision_jobs::UP_SQL as PARTICIPATION_PROVISION_JOBS_SQL;
-
 pub struct Migrator;
 
 const EXCLUSIVE_CUTOVER_MIGRATIONS: [&str; 3] = [
@@ -290,8 +295,14 @@ impl MigratorTrait for Migrator {
             Box::new(m0115_flag_egress_feed_cursor::Migration),
             Box::new(m0116_game_event_feed_pending::Migration),
             Box::new(m0242_participation_provision_jobs::Migration),
+            Box::new(m0250_team_signature_key_index::Migration),
             Box::new(m0251_koth_referee_retry::Migration),
             Box::new(m0252_player_credential_operations::Migration),
+            Box::new(m0260_ad_control_revisions::Migration),
+            Box::new(m0261_control_plane_jobs::Migration),
+            Box::new(m0262_challenge_import_jobs::Migration),
+            Box::new(m0263_control_job_cancellation::Migration),
+            Box::new(m0264_blob_staging_operations::Migration),
         ]
     }
 }
@@ -437,8 +448,10 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 15..],
+            &names[names.len() - 23..],
             [
+                "m0103_recent_games_candidates",
+                "m0104_post_feed_order",
                 "m0105_manager_autocomplete_indexes",
                 "m0106_submission_idempotency",
                 "m0107_monitor_history_indexes",
@@ -452,8 +465,14 @@ mod tests {
                 "m0115_flag_egress_feed_cursor",
                 "m0116_game_event_feed_pending",
                 "m0242_participation_provision_jobs",
+                "m0250_team_signature_key_index",
                 "m0251_koth_referee_retry",
                 "m0252_player_credential_operations",
+                "m0260_ad_control_revisions",
+                "m0261_control_plane_jobs",
+                "m0262_challenge_import_jobs",
+                "m0263_control_job_cancellation",
+                "m0264_blob_staging_operations",
             ]
         );
     }

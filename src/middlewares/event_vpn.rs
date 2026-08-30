@@ -29,14 +29,23 @@ static PROOF_SUBJECT_FLIGHT: LazyLock<
 
 fn protected_game_path(path: &str) -> Option<i32> {
     let mut segments = path.split('/').filter(|segment| !segment.is_empty());
-    if segments.next()? != "api" || segments.next()? != "game" {
+    if !segments.next()?.eq_ignore_ascii_case("api")
+        || !segments.next()?.eq_ignore_ascii_case("game")
+    {
         return None;
     }
-    let game_id = segments.next()?.parse().ok()?;
+    let game_id = segments.next()?.parse::<i32>().ok()?;
+    if game_id <= 0 {
+        return None;
+    }
     let suffix = segments.next();
     // Joining, the public event summary, enrollment, and the connectivity check
     // must remain reachable before a participant has a VPN profile.
-    if suffix.is_none() || matches!(suffix, Some("vpn" | "check")) {
+    if suffix.is_none()
+        || suffix.is_some_and(|segment| {
+            segment.eq_ignore_ascii_case("vpn") || segment.eq_ignore_ascii_case("check")
+        })
+    {
         return None;
     }
     Some(game_id)
@@ -183,10 +192,16 @@ mod tests {
     fn only_post_enrollment_game_paths_are_protected() {
         assert_eq!(protected_game_path("/api/game/7/details"), Some(7));
         assert_eq!(protected_game_path("/api/game/7/scoreboard"), Some(7));
+        assert_eq!(protected_game_path("/api/Game/7/Ad/Targets"), Some(7));
+        assert_eq!(protected_game_path("/API/gAmE/7/kOtH/hills"), Some(7));
         assert_eq!(protected_game_path("/api/game/7"), None);
         assert_eq!(protected_game_path("/api/game/7/check"), None);
         assert_eq!(protected_game_path("/api/game/7/vpn/config"), None);
+        assert_eq!(protected_game_path("/api/Game/7/Check"), None);
+        assert_eq!(protected_game_path("/api/Game/7/Vpn/Config"), None);
         assert_eq!(protected_game_path("/api/game/recent"), None);
+        assert_eq!(protected_game_path("/api/game/0/details"), None);
+        assert_eq!(protected_game_path("/api/game/-1/details"), None);
         assert_eq!(protected_game_path("/api/edit/games/7"), None);
     }
 }

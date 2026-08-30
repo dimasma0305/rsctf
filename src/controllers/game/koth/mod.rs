@@ -233,6 +233,7 @@ pub struct AdminKothHill {
     pub challenge_id: i32,
     pub title: String,
     pub is_enabled: bool,
+    pub control_revision: i64,
     /// Shared hill container id (koth_target.container_id), when platform-hosted.
     pub container_guid: Option<String>,
     pub container_ip: Option<String>,
@@ -283,6 +284,7 @@ pub struct AdminKothStateModel {
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub current_round_ends_at: Option<DateTime<Utc>>,
     pub scoring_paused: bool,
+    pub control_revision: i64,
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub scoring_paused_at: Option<DateTime<Utc>>,
     pub hills: Vec<AdminKothHill>,

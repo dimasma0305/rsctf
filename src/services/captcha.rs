@@ -18,7 +18,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use hmac::{Hmac, KeyInit, Mac};
@@ -39,6 +39,8 @@ const MAX_CAPTCHA_TOKEN_BYTES: usize = 4 * 1024;
 const HASHPOW_CHALLENGE_TTL_SECS: i64 = 5 * 60;
 const HASHPOW_CLOCK_SKEW_SECS: i64 = 5;
 const HASHPOW_SIGNING_DOMAIN: &[u8] = b"rsctf-hashpow-challenge-v1\0";
+const CAPTCHA_SETTINGS_SNAPSHOT_TTL: Duration = Duration::from_secs(15);
+const CAPTCHA_SETTINGS_QUERY_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct HashPowClaims {
@@ -381,6 +383,57 @@ pub struct CaptchaSettings {
     secret_key: Option<String>,
 }
 
+struct CachedCaptchaSettings {
+    loaded_at: Instant,
+    fallback_use_captcha: bool,
+    settings: CaptchaSettings,
+}
+
+/// Small process-local, single-flight snapshot for anonymous captcha discovery
+/// and HashPoW issuance. Account mutations still load the policy under their
+/// database authorization fence; this cache only prevents anonymous challenge
+/// requests from turning into one PostgreSQL query each.
+#[derive(Default)]
+pub struct CaptchaSettingsSnapshot {
+    cached: tokio::sync::Mutex<Option<CachedCaptchaSettings>>,
+}
+
+impl CaptchaSettingsSnapshot {
+    pub async fn load(
+        &self,
+        pool: &PgPool,
+        fallback_use_captcha: bool,
+    ) -> AppResult<CaptchaSettings> {
+        let mut cached = self.cached.lock().await;
+        if let Some(entry) = cached.as_ref().filter(|entry| {
+            entry.fallback_use_captcha == fallback_use_captcha
+                && entry.loaded_at.elapsed() < CAPTCHA_SETTINGS_SNAPSHOT_TTL
+        }) {
+            return Ok(entry.settings.clone());
+        }
+
+        let settings = tokio::time::timeout(
+            CAPTCHA_SETTINGS_QUERY_TIMEOUT,
+            CaptchaSettings::load(pool, fallback_use_captcha),
+        )
+        .await
+        .map_err(|_| AppError::unavailable("captcha policy lookup timed out"))??;
+        *cached = Some(CachedCaptchaSettings {
+            loaded_at: Instant::now(),
+            fallback_use_captcha,
+            settings: settings.clone(),
+        });
+        Ok(settings)
+    }
+
+    /// Invalidate immediately after an accepted local settings mutation. Other
+    /// replicas retain only the explicit short TTL, while signed challenge
+    /// policy revisions make any stale issuance unusable after a policy change.
+    pub async fn invalidate(&self) {
+        *self.cached.lock().await = None;
+    }
+}
+
 /// Opaque digest of every setting that determines whether a locally supplied
 /// captcha token is valid. It is request-local and never crosses the wire.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -625,8 +678,12 @@ fn database_error(error: sqlx::Error) -> AppError {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
     use crate::services::cache::{Cache, InMemoryCache};
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    use uuid::Uuid;
 
     #[test]
     fn leading_zeros_counts_bits() {
@@ -761,6 +818,18 @@ mod tests {
             })
             .expect("an 8-bit answer exists well within range");
         let token = format!("{}:{answer}", issued.id);
+
+        let mut changed_values = values.clone();
+        changed_values.insert(
+            "CaptchaConfig:HashPow:Difficulty".to_string(),
+            Some("9".to_string()),
+        );
+        let changed = CaptchaSettings::from_values(&changed_values, false).unwrap();
+        assert!(!verify_hashpow(&token, &changed, KEY, &cache, now).await);
+        let mut tampered_id = issued.id.clone().into_bytes();
+        tampered_id[0] = if tampered_id[0] == b'A' { b'B' } else { b'A' };
+        let tampered = format!("{}:{answer}", String::from_utf8(tampered_id).unwrap());
+        assert!(!verify_hashpow(&tampered, &settings, KEY, &cache, now).await);
         assert!(verify_hashpow(&token, &settings, KEY, &cache, now).await);
         assert!(!verify_hashpow(&token, &settings, KEY, &cache, now).await);
         assert!(
@@ -776,6 +845,14 @@ mod tests {
             )
             .await
         );
+
+        let mut disabled_values = values;
+        disabled_values.insert(
+            "AccountPolicy:UseCaptcha".to_string(),
+            Some("false".to_string()),
+        );
+        let disabled = CaptchaSettings::from_values(&disabled_values, false).unwrap();
+        assert!(issue_hashpow_challenge(&disabled, KEY, now).is_err());
     }
 
     #[tokio::test]
@@ -830,5 +907,65 @@ mod tests {
             accepted += usize::from(task.await.unwrap());
         }
         assert_eq!(accepted, 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn public_policy_snapshot_is_cached_and_explicitly_invalidated() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("rsctf_captcha_snapshot_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE "Configs" (
+                config_key TEXT PRIMARY KEY,
+                value TEXT
+            );
+            INSERT INTO "Configs" VALUES
+                ('AccountPolicy:UseCaptcha', 'true'),
+                ('CaptchaConfig:Provider', 'HashPow'),
+                ('CaptchaConfig:HashPow:Difficulty', '8');
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let snapshot = CaptchaSettingsSnapshot::default();
+        assert!(snapshot.load(&pool, false).await.unwrap().use_captcha);
+        sqlx::query(
+            r#"UPDATE "Configs"
+                  SET value = 'false'
+                WHERE config_key = 'AccountPolicy:UseCaptcha'"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(snapshot.load(&pool, false).await.unwrap().use_captcha);
+        snapshot.invalidate().await;
+        assert!(!snapshot.load(&pool, false).await.unwrap().use_captcha);
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
     }
 }

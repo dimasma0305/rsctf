@@ -415,6 +415,7 @@ mod tests {
             challenge_type,
             hints: None,
             is_enabled: false,
+            ad_control_revision: 1,
             deadline_utc: None,
             submission_limit: 0,
             accepted_count: 0,

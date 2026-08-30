@@ -302,7 +302,11 @@ impl WorkerStore {
         row.map(TryInto::try_into).transpose()
     }
 
-    pub async fn list_workers(&self) -> Result<Vec<WorkerNode>, WorkerStoreError> {
+    pub async fn list_workers(
+        &self,
+        count: u64,
+        skip: u64,
+    ) -> Result<Vec<WorkerNode>, WorkerStoreError> {
         let rows = sqlx::query_as::<_, WorkerNodeRow>(
             r#"SELECT id, name, administrative_state, platform_os,
                       platform_architecture, runtime_kind, runtime_version,
@@ -312,8 +316,11 @@ impl WorkerStore {
                       session_id, session_epoch, boot_id, heartbeat_at,
                       lease_expires_at, created_at, updated_at
                  FROM "WorkerNodes"
-             ORDER BY LOWER(name), id"#,
+             ORDER BY LOWER(name), id
+                LIMIT $1 OFFSET $2"#,
         )
+        .bind(i64::try_from(count).unwrap_or(i64::MAX))
+        .bind(i64::try_from(skip).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
         .await
         .map_err(database_error)?;

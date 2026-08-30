@@ -101,7 +101,7 @@ test('admin list responses are decoded before they reach array state', () => {
   assert.doesNotMatch(gameInfo, /setVpnOverrides\((?:response|refreshed)\.data\)/)
   assert.doesNotMatch(managers, /as any/)
   assert.equal((managers.match(/requireApiCollection</g) ?? []).length, 2)
-  assert.match(workers, /setWorkers\(requireApiCollection<Worker>/)
+  assert.match(workers, /return requireApiCollection<Worker>[\s\S]*?\.items/)
 })
 
 test('admin dashboard keeps popular-game metrics visible and action labels intact', () => {

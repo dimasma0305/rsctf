@@ -205,6 +205,39 @@ fn named_policy_reuses_verified_session_partition_key() {
 }
 
 #[test]
+fn team_signature_admission_has_source_and_deployment_partitions() {
+    let mut request = Request::builder()
+        .header("x-real-ip", "192.0.2.44")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(
+        "192.0.2.44:1234".parse::<SocketAddr>().unwrap(),
+    ));
+    assert_eq!(
+        partition_key(Policy::TeamSignatureSource, &request),
+        "192.0.2.44"
+    );
+    assert_eq!(
+        partition_key(Policy::TeamSignatureGlobal, &request),
+        "team-signature-global"
+    );
+    assert!(matches!(
+        Policy::TeamSignatureSource.kind(),
+        Kind::Bucket {
+            capacity: 20.0,
+            refill_per_sec: 1.0
+        }
+    ));
+    assert!(matches!(
+        Policy::TeamSignatureGlobal.kind(),
+        Kind::Bucket {
+            capacity: 256.0,
+            refill_per_sec: 32.0
+        }
+    ));
+}
+
+#[test]
 fn ad_submit_budget_charges_distinct_work_atomically() {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
