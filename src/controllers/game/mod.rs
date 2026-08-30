@@ -37,9 +37,8 @@ use uuid::Uuid;
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser, MonitorUser};
 use crate::models::data::{
-    attachment, challenge_review, container, division, division_challenge_config, flag_context,
-    game, game_challenge, game_instance, game_notice, local_file, participation, submission, team,
-    team_member, user,
+    attachment, challenge_review, container, division, flag_context, game, game_challenge,
+    game_instance, game_notice, local_file, participation, submission, team, team_member, user,
 };
 use crate::services::container::ContainerSpec;
 use crate::utils::crypto_utils::ct_eq;
@@ -745,29 +744,39 @@ async fn effective_permissions_batch(
     };
 
     let overrides_key = format!("div_overrides:v3:{}:{div_id}", part.game_id);
-    let overrides: std::collections::HashMap<i32, i32> =
-        if let Some(bytes) = st.cache.get(&overrides_key).await {
-            serde_json::from_slice(&bytes).unwrap_or_default()
-        } else {
-            let db_overrides: std::collections::HashMap<i32, i32> =
-                division_challenge_config::Entity::find()
-                    .filter(division_challenge_config::Column::DivisionId.eq(div_id))
-                    .all(&st.db)
-                    .await?
-                    .into_iter()
-                    .map(|c| (c.challenge_id, c.permissions))
-                    .collect();
-            if let Ok(json) = serde_json::to_vec(&db_overrides) {
-                st.cache
-                    .set(
-                        &overrides_key,
-                        &json,
-                        Some(std::time::Duration::from_secs(10)),
-                    )
-                    .await;
-            }
-            db_overrides
-        };
+    let overrides: std::collections::HashMap<i32, i32> = if let Some(bytes) =
+        st.cache.get(&overrides_key).await
+    {
+        serde_json::from_slice(&bytes).unwrap_or_default()
+    } else {
+        let rows = sqlx::query_as::<_, (i32, i32)>(
+            r#"SELECT challenge_id, permissions
+                     FROM "DivisionChallengeConfigs"
+                    WHERE division_id = $1
+                    ORDER BY challenge_id
+                    LIMIT 513"#,
+        )
+        .bind(div_id)
+        .fetch_all(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if rows.len() > 512 {
+            return Err(AppError::unavailable(
+                    "Division permissions exceed the supported bound; ask an administrator to repair them",
+                ));
+        }
+        let db_overrides: std::collections::HashMap<i32, i32> = rows.into_iter().collect();
+        if let Ok(json) = serde_json::to_vec(&db_overrides) {
+            st.cache
+                .set(
+                    &overrides_key,
+                    &json,
+                    Some(std::time::Duration::from_secs(10)),
+                )
+                .await;
+        }
+        db_overrides
+    };
 
     Ok(challenge_ids
         .iter()

@@ -225,11 +225,8 @@ pub async fn execute_job(
         Some(flag) => crate::utils::flag_generator::validate_stored_ad_flag(flag)?,
         None => {
             let salt = crate::utils::flag_generator::team_hash_salt(&game.private_key);
-            let team_hash = crate::utils::flag_generator::team_challenge_hash(
-                &salt,
-                challenge.id,
-                &part.token,
-            );
+            let team_hash =
+                crate::utils::flag_generator::team_challenge_hash(&salt, challenge.id, &part.token);
             crate::utils::flag_generator::generate_retryable_ad_flag(
                 &team_hash,
                 &job.operation_id.to_string(),

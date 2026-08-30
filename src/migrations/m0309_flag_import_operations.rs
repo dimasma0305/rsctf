@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS "FlagImportOperations" (
     actor_user_id     UUID NOT NULL,
     request_digest    BYTEA NOT NULL CHECK (OCTET_LENGTH(request_digest) = 32),
     state             SMALLINT NOT NULL DEFAULT 0 CHECK (state IN (0, 1)),
+    lease_token       UUID NOT NULL,
     inserted_count    INTEGER NULL CHECK (inserted_count >= 0 AND inserted_count <= 100),
     duplicate_count   INTEGER NULL CHECK (duplicate_count >= 0 AND duplicate_count <= 100),
     lease_expires_at_utc TIMESTAMPTZ NOT NULL
@@ -33,18 +34,21 @@ CREATE TABLE IF NOT EXISTS "FlagImportOperations" (
 CREATE INDEX IF NOT EXISTS ix_flag_import_operations_retention
     ON "FlagImportOperations" (completed_at_utc, challenge_id, operation_id)
     WHERE state = 1;
+ALTER TABLE "FlagContexts"
+    ADD COLUMN IF NOT EXISTS canonical_identity_enforced BOOLEAN NOT NULL DEFAULT TRUE;
 WITH ranked AS (
     SELECT id,
            ROW_NUMBER() OVER (PARTITION BY challenge_id, flag ORDER BY id) AS ordinal
       FROM "FlagContexts"
      WHERE challenge_id IS NOT NULL
 )
-DELETE FROM "FlagContexts" context
- USING ranked
+UPDATE "FlagContexts" context
+   SET canonical_identity_enforced = FALSE
+  FROM ranked
  WHERE context.id = ranked.id AND ranked.ordinal > 1;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_flag_contexts_challenge_flag
     ON "FlagContexts" (challenge_id, flag)
-    WHERE challenge_id IS NOT NULL;
+    WHERE challenge_id IS NOT NULL AND canonical_identity_enforced;
 CREATE TABLE IF NOT EXISTS "FlagPolicyViolations" (
     id BIGSERIAL PRIMARY KEY,
     challenge_id INTEGER NOT NULL
@@ -78,51 +82,7 @@ SELECT service.challenge_id, NULL, 'ad_flag:' || flag.id::TEXT,
   JOIN "AdTeamServices" service ON service.id = flag.team_service_id
  WHERE NOT (
        OCTET_LENGTH(flag.flag) = 38
-       AND flag.flag ~ '^flag[{][A-Za-z0-9_-]{32}[}]"#;
-
-const DOWN_SQL: &str = r#"ALTER TABLE "FlagContexts"
-    DROP CONSTRAINT IF EXISTS ck_flagcontexts_canonical_normal_flag;
-ALTER TABLE "GameChallenges"
-    DROP CONSTRAINT IF EXISTS ck_gamechallenges_dynamic_flag_template;
-ALTER TABLE "AdFlags"
-    DROP CONSTRAINT IF EXISTS ck_adflags_canonical_flag;
-ALTER TABLE "ChallengeVariants"
-    DROP CONSTRAINT IF EXISTS ck_challengevariants_canonical_flag;
-DROP TABLE IF EXISTS "FlagPolicyViolations";
-DROP TABLE IF EXISTS "FlagImportOperations";
-DROP INDEX IF EXISTS ux_flag_contexts_challenge_flag;
-"#;
-
-#[async_trait::async_trait]
-impl MigrationTrait for Migration {
-    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager.get_connection().execute_unprepared(UP_SQL).await?;
-        Ok(())
-    }
-
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::UP_SQL;
-
-    #[test]
-    fn imports_have_one_identity_bounded_results_and_indexed_duplicate_checks() {
-        assert!(UP_SQL.contains("PRIMARY KEY (challenge_id, operation_id)"));
-        assert!(UP_SQL.contains("inserted_count <= 100"));
-        assert!(
-            UP_SQL.contains("CREATE UNIQUE INDEX IF NOT EXISTS ux_flag_contexts_challenge_flag")
-        );
-    }
-}
-
+       AND flag.flag ~ '^flag[{][A-Za-z0-9_-]{32}[}]$'
    )
 ON CONFLICT DO NOTHING;
 
@@ -194,7 +154,7 @@ UPDATE "GameChallenges" challenge
         WHERE violation.challenge_id = challenge.id
    );
 
-DO $
+DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
@@ -218,43 +178,7 @@ BEGIN
           ADD CONSTRAINT ck_adflags_canonical_flag
           CHECK (
               OCTET_LENGTH(flag) = 38
-              AND flag ~ '^flag[{][A-Za-z0-9_-]{32}[}]"#;
-
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "FlagImportOperations";
-DROP INDEX IF EXISTS ux_flag_contexts_challenge_flag;
-"#;
-
-#[async_trait::async_trait]
-impl MigrationTrait for Migration {
-    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager.get_connection().execute_unprepared(UP_SQL).await?;
-        Ok(())
-    }
-
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::UP_SQL;
-
-    #[test]
-    fn imports_have_one_identity_bounded_results_and_indexed_duplicate_checks() {
-        assert!(UP_SQL.contains("PRIMARY KEY (challenge_id, operation_id)"));
-        assert!(UP_SQL.contains("inserted_count <= 100"));
-        assert!(
-            UP_SQL.contains("CREATE UNIQUE INDEX IF NOT EXISTS ux_flag_contexts_challenge_flag")
-        );
-    }
-}
-
+              AND flag ~ '^flag[{][A-Za-z0-9_-]{32}[}]$'
           ) NOT VALID;
     END IF;
 
@@ -308,12 +232,24 @@ mod tests {
               )
           ) NOT VALID;
     END IF;
-END $;
+END $$;
+
 "#;
 
 const DOWN_SQL: &str = r#"
+ALTER TABLE "FlagContexts"
+    DROP CONSTRAINT IF EXISTS ck_flagcontexts_canonical_normal_flag;
+ALTER TABLE "GameChallenges"
+    DROP CONSTRAINT IF EXISTS ck_gamechallenges_dynamic_flag_template;
+ALTER TABLE "AdFlags"
+    DROP CONSTRAINT IF EXISTS ck_adflags_canonical_flag;
+ALTER TABLE "ChallengeVariants"
+    DROP CONSTRAINT IF EXISTS ck_challengevariants_canonical_flag;
+DROP TABLE IF EXISTS "FlagPolicyViolations";
 DROP TABLE IF EXISTS "FlagImportOperations";
 DROP INDEX IF EXISTS ux_flag_contexts_challenge_flag;
+ALTER TABLE "FlagContexts"
+    DROP COLUMN IF EXISTS canonical_identity_enforced;
 "#;
 
 #[async_trait::async_trait]
@@ -339,10 +275,33 @@ mod tests {
     #[test]
     fn imports_have_one_identity_bounded_results_and_indexed_duplicate_checks() {
         assert!(UP_SQL.contains("PRIMARY KEY (challenge_id, operation_id)"));
+        assert!(UP_SQL.contains("lease_token       UUID NOT NULL"));
         assert!(UP_SQL.contains("inserted_count <= 100"));
         assert!(
             UP_SQL.contains("CREATE UNIQUE INDEX IF NOT EXISTS ux_flag_contexts_challenge_flag")
         );
+        assert!(UP_SQL.contains("canonical_identity_enforced = FALSE"));
+        assert!(!UP_SQL.contains("DELETE FROM \"FlagContexts\" context"));
+    }
+
+    #[test]
+    fn canonical_policy_reports_and_disables_without_truncating_legacy_answers() {
+        assert!(UP_SQL.contains("FlagPolicyViolations"));
+        assert!(UP_SQL.contains("OCTET_LENGTH(flag.flag) BETWEEN 1 AND 127"));
+        assert!(UP_SQL.contains("ck_adflags_canonical_flag"));
+        assert!(UP_SQL.contains("ck_challengevariants_canonical_flag"));
+        assert!(UP_SQL.contains("SET is_enabled = FALSE"));
+        assert!(UP_SQL.contains("NOT VALID"));
+        assert!(!UP_SQL.contains("LEFT(flag.flag"));
+        assert!(!UP_SQL.contains("SET flag ="));
+    }
+
+    #[test]
+    fn database_template_formula_matches_runtime_replacement_deltas() {
+        assert!(UP_SQL.contains("+ 30::BIGINT *"));
+        assert!(UP_SQL.contains("REPLACE(flag_template, '[GUID]', '')"));
+        assert!(UP_SQL.contains("REPLACE(flag_template, '[UUID]', '')"));
+        assert!(UP_SQL.contains("+ 5::BIGINT *"));
+        assert!(UP_SQL.contains("REPLACE(flag_template, '[TEAM_HASH]', '')"));
     }
 }
-

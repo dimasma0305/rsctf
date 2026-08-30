@@ -14,6 +14,9 @@ export const validateFlagRows = (rows: FlagCreateModel[]): string | null => {
     if (bytes === 0 || bytes > MAX_FLAG_BYTES) {
       return `Every flag must contain 1 to ${MAX_FLAG_BYTES} UTF-8 bytes.`
     }
+    if (row.flag.trim() !== row.flag) {
+      return 'Flags cannot start or end with whitespace.'
+    }
     if (row.remoteUrl && byteLength(row.remoteUrl) > MAX_FLAG_URL_BYTES) {
       return `Every attachment URL must be at most ${MAX_FLAG_URL_BYTES} UTF-8 bytes.`
     }

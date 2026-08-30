@@ -10,6 +10,17 @@ ALTER TABLE "Divisions"
     ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1,
     ADD COLUMN IF NOT EXISTS policy_revision BIGINT NOT NULL DEFAULT 1;
 
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'ck_divisions_revision_order'
+           AND conrelid = '"Divisions"'::regclass
+    ) THEN
+        ALTER TABLE "Divisions" ADD CONSTRAINT ck_divisions_revision_order
+            CHECK (revision >= 1 AND policy_revision >= 1 AND policy_revision <= revision);
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS "DivisionUpdateOperations" (
     division_id       INTEGER NOT NULL,
     operation_id      UUID NOT NULL,
@@ -32,6 +43,7 @@ CREATE INDEX IF NOT EXISTS ix_division_update_operations_retention
 const DOWN_SQL: &str = r#"
 DROP TABLE IF EXISTS "DivisionUpdateOperations";
 ALTER TABLE "Divisions"
+    DROP CONSTRAINT IF EXISTS ck_divisions_revision_order,
     DROP COLUMN IF EXISTS policy_revision,
     DROP COLUMN IF EXISTS revision;
 "#;

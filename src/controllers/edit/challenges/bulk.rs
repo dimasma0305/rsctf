@@ -342,10 +342,12 @@ async fn complete_desired_state(
         .map_err(|error| AppError::internal(error.to_string()))?;
 
     cleanup_operations(st).await;
-    if let Err(error) = crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await {
-        tracing::warn!(%error, game_id, "bulk challenge VPN reconciliation deferred");
+    if !changed_ids.is_empty() {
+        if let Err(error) = crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await {
+            tracing::warn!(%error, game_id, "bulk challenge VPN reconciliation deferred");
+        }
+        flush_game_scoreboards(st, game_id).await;
     }
-    flush_game_scoreboards(st, game_id).await;
     if desired && game_state.2 && !changed_titles.is_empty() {
         let values = serde_json::json!(changed_titles);
         let notice = sqlx::query_as::<_, (i32, DateTime<Utc>)>(
@@ -583,7 +585,7 @@ async fn run_delete_job(
     .fetch_one(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    sqlx::query(
+    let completion = sqlx::query(
         r#"UPDATE "BulkChallengeMutationOperations"
               SET state = 2, result_revision = $3, lease_token = NULL,
                   completed_at_utc = clock_timestamp()
@@ -597,6 +599,9 @@ async fn run_delete_job(
     .execute(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    if completion.rows_affected() != 1 {
+        return Ok(());
+    }
     flush_game_scoreboards(st, game_id).await;
     cleanup_operations(st).await;
     Ok(())

@@ -65,7 +65,7 @@ export const FlagCreateModal: FC<ModalProps> = (props) => {
   }
 
   return (
-    <Modal {...props}>
+    <Modal {...props} closeOnClickOutside={!disabled} closeOnEscape={!disabled}>
       <Stack>
         <Text size="sm">
           <Trans i18nKey="admin.content.games.challenges.flag.create" />

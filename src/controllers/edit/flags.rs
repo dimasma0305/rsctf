@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 
 const MAX_FLAGS_PER_IMPORT: usize = 100;
 const MAX_FLAGS_PER_CHALLENGE: i64 = 512;
-const MAX_FLAG_BYTES: usize = 127;
+const MAX_FLAG_BYTES: usize = crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES;
 const MAX_FLAG_REMOTE_URL_BYTES: usize = 2_048;
 const MAX_FLAG_FILE_HASH_BYTES: usize = 256;
 
@@ -13,6 +13,19 @@ const MAX_FLAG_FILE_HASH_BYTES: usize = 256;
 pub struct FlagImportResult {
     pub inserted: i32,
     pub duplicates: i32,
+}
+
+enum FlagImportMutation {
+    Applied {
+        duplicates: i32,
+        inserted: std::collections::HashSet<String>,
+    },
+    Replayed(FlagImportResult),
+}
+
+enum FlagImportReservation {
+    Acquired(Uuid),
+    Replayed(FlagImportResult),
 }
 
 fn validate_flag_import(flags: &[FlagCreateModel]) -> AppResult<()> {
@@ -44,13 +57,20 @@ fn validate_flag_import(flags: &[FlagCreateModel]) -> AppResult<()> {
     Ok(())
 }
 
-async fn abandon_flag_import(pool: &sqlx::PgPool, challenge_id: i32, operation_id: Uuid) {
+async fn abandon_flag_import(
+    pool: &sqlx::PgPool,
+    challenge_id: i32,
+    operation_id: Uuid,
+    lease_token: Uuid,
+) {
     if let Err(error) = sqlx::query(
         r#"DELETE FROM "FlagImportOperations"
-            WHERE challenge_id = $1 AND operation_id = $2 AND state = 0"#,
+            WHERE challenge_id = $1 AND operation_id = $2 AND state = 0
+              AND lease_token = $3"#,
     )
     .bind(challenge_id)
     .bind(operation_id)
+    .bind(lease_token)
     .execute(pool)
     .await
     {
@@ -64,23 +84,25 @@ async fn reserve_flag_import(
     actor_user_id: Uuid,
     operation_id: Uuid,
     request_digest: &[u8],
-) -> AppResult<Option<FlagImportResult>> {
-    let inserted = sqlx::query_scalar::<_, bool>(
+) -> AppResult<FlagImportReservation> {
+    let lease_token = Uuid::new_v4();
+    let inserted = sqlx::query_scalar::<_, Uuid>(
         r#"INSERT INTO "FlagImportOperations"
-             (challenge_id, operation_id, actor_user_id, request_digest)
-           VALUES ($1, $2, $3, $4)
+             (challenge_id, operation_id, actor_user_id, request_digest, lease_token)
+           VALUES ($1, $2, $3, $4, $5)
            ON CONFLICT (challenge_id, operation_id) DO NOTHING
-           RETURNING TRUE"#,
+           RETURNING lease_token"#,
     )
     .bind(challenge_id)
     .bind(operation_id)
     .bind(actor_user_id)
     .bind(request_digest)
+    .bind(lease_token)
     .fetch_optional(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     if inserted.is_some() {
-        return Ok(None);
+        return Ok(FlagImportReservation::Acquired(lease_token));
     }
     let stored = sqlx::query_as::<_, (Uuid, Vec<u8>, i16, Option<i32>, Option<i32>, bool)>(
         r#"SELECT actor_user_id, request_digest, state, inserted_count,
@@ -99,7 +121,7 @@ async fn reserve_flag_import(
         ));
     }
     if stored.2 == 1 {
-        return Ok(Some(FlagImportResult {
+        return Ok(FlagImportReservation::Replayed(FlagImportResult {
             inserted: stored.3.unwrap_or_default(),
             duplicates: stored.4.unwrap_or_default(),
         }));
@@ -111,12 +133,14 @@ async fn reserve_flag_import(
     }
     let reclaimed = sqlx::query(
         r#"UPDATE "FlagImportOperations"
-              SET lease_expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
+              SET lease_token = $3,
+                  lease_expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
             WHERE challenge_id = $1 AND operation_id = $2 AND state = 0
               AND lease_expires_at_utc <= clock_timestamp()"#,
     )
     .bind(challenge_id)
     .bind(operation_id)
+    .bind(lease_token)
     .execute(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -125,7 +149,7 @@ async fn reserve_flag_import(
             "This flag import was reclaimed by another request",
         ));
     }
-    Ok(None)
+    Ok(FlagImportReservation::Acquired(lease_token))
 }
 
 async fn cleanup_staged_flag_attachments(st: &SharedState, flags: &[(String, Option<i32>)]) {
@@ -193,12 +217,16 @@ pub async fn add_flags(
         ));
     }
     validate_flag_import(&request.flags)?;
+    // Canonical validation is side-effect free, so do it before reserving the
+    // durable operation. Invalid input must not leave a lease that blocks a
+    // corrected retry using the same client-owned operation identity.
+    validate_authored_flags(&request.flags)?;
     let request_digest = Sha256::digest(
         serde_json::to_vec(&request.flags)
             .map_err(|error| AppError::internal(error.to_string()))?,
     )
     .to_vec();
-    if let Some(result) = reserve_flag_import(
+    let lease_token = match reserve_flag_import(
         st.pg(),
         c_id,
         user.id,
@@ -207,8 +235,9 @@ pub async fn add_flags(
     )
     .await?
     {
-        return Ok(RequestResponse::ok(result));
-    }
+        FlagImportReservation::Acquired(lease_token) => lease_token,
+        FlagImportReservation::Replayed(result) => return Ok(RequestResponse::ok(result)),
+    };
 
     let mut seen = std::collections::HashSet::with_capacity(request.flags.len());
     let mut body_duplicates = 0_i32;
@@ -222,11 +251,6 @@ pub async fn add_flags(
         })
         .collect::<Vec<_>>();
 
-    // Reject impossible answers before attachment staging or lock acquisition.
-    // Player submissions trim the answer and accept at most 127 UTF-8 bytes, so
-    // every authored static value must already be in that exact canonical form.
-    validate_authored_flags(&models)?;
-
     // Attachment creation does not alter grading policy. Materialize it before
     // taking the flag-policy lock so submissions are not held up by blob lookup.
     let mut flags = Vec::with_capacity(models.len());
@@ -237,7 +261,7 @@ pub async fn add_flags(
                 Ok(attachment_id) => attachment_id,
                 Err(error) => {
                     cleanup_staged_flag_attachments(&st, &flags).await;
-                    abandon_flag_import(st.pg(), c_id, request.operation_id).await;
+                    abandon_flag_import(st.pg(), c_id, request.operation_id, lease_token).await;
                     return Err(error);
                 }
             };
@@ -251,7 +275,7 @@ pub async fn add_flags(
         Ok(lock) => lock,
         Err(error) => {
             cleanup_staged_flag_attachments(&st, &flags).await;
-            abandon_flag_import(st.pg(), c_id, request.operation_id).await;
+            abandon_flag_import(st.pg(), c_id, request.operation_id, lease_token).await;
             return Err(error);
         }
     };
@@ -266,11 +290,11 @@ pub async fn add_flags(
         Err(error) => {
             drop(game_control);
             cleanup_staged_flag_attachments(&st, &flags).await;
-            abandon_flag_import(st.pg(), c_id, request.operation_id).await;
+            abandon_flag_import(st.pg(), c_id, request.operation_id, lease_token).await;
             return Err(AppError::internal(error.to_string()));
         }
     };
-    let mutation: AppResult<(i32, std::collections::HashSet<String>)> = async {
+    let mutation: AppResult<FlagImportMutation> = async {
         // Deletion may have won after the intentionally lock-free attachment
         // staging. Recheck both durable fences in this retained transaction so
         // their key-share row locks survive until every flag insert commits.
@@ -282,6 +306,33 @@ pub async fn add_flags(
             c_id,
         )
         .await?;
+
+        // Attachment staging can outlive the five-minute recovery lease. Two
+        // reclaimers may therefore arrive at this lock with the same identity;
+        // serialize on the durable row and recover the winner's exact result
+        // before attempting any grading-row mutation.
+        let operation = sqlx::query_as::<_, (i16, Option<i32>, Option<i32>, Uuid)>(
+            r#"SELECT state, inserted_count, duplicate_count, lease_token
+                 FROM "FlagImportOperations"
+                WHERE challenge_id = $1 AND operation_id = $2
+                FOR UPDATE"#,
+        )
+        .bind(c_id)
+        .bind(request.operation_id)
+        .fetch_one(&mut **definition_lock.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if operation.0 == 1 {
+            return Ok(FlagImportMutation::Replayed(FlagImportResult {
+                inserted: operation.1.unwrap_or_default(),
+                duplicates: operation.2.unwrap_or_default(),
+            }));
+        }
+        if operation.3 != lease_token {
+            return Err(AppError::conflict(
+                "This flag import was reclaimed by another request",
+            ));
+        }
 
         let current_count = sqlx::query_scalar::<_, i64>(
             r#"SELECT COUNT(*)::bigint FROM "FlagContexts" WHERE challenge_id = $1"#,
@@ -318,7 +369,8 @@ pub async fn add_flags(
                          WHERE existing.challenge_id = $1
                            AND existing.flag = desired.flag
                     )
-                   ON CONFLICT (challenge_id, flag) WHERE challenge_id IS NOT NULL
+                   ON CONFLICT (challenge_id, flag)
+                   WHERE challenge_id IS NOT NULL AND canonical_identity_enforced
                    DO NOTHING
                    RETURNING flag
                ) SELECT flag FROM inserted"#,
@@ -339,19 +391,26 @@ pub async fn add_flags(
         }
         let inserted_count = inserted_set.len() as i32;
         let duplicate_count = body_duplicates + flags.len() as i32 - inserted_count;
-        sqlx::query(
+        let completion = sqlx::query(
             r#"UPDATE "FlagImportOperations"
                   SET state = 1, inserted_count = $3, duplicate_count = $4,
                       completed_at_utc = clock_timestamp()
-                WHERE challenge_id = $1 AND operation_id = $2 AND state = 0"#,
+                WHERE challenge_id = $1 AND operation_id = $2 AND state = 0
+                  AND lease_token = $5"#,
         )
         .bind(c_id)
         .bind(request.operation_id)
         .bind(inserted_count)
         .bind(duplicate_count)
+        .bind(lease_token)
         .execute(&mut **definition_lock.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+        if completion.rows_affected() != 1 {
+            return Err(AppError::conflict(
+                "The flag import lease changed while it was being committed",
+            ));
+        }
         sqlx::query(
             r#"WITH expired AS (
                    SELECT challenge_id, operation_id
@@ -369,17 +428,20 @@ pub async fn add_flags(
         .execute(&mut **definition_lock.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-        Ok((duplicate_count, inserted_set))
+        Ok(FlagImportMutation::Applied {
+            duplicates: duplicate_count,
+            inserted: inserted_set,
+        })
     }
     .await;
 
-    let (duplicates, inserted_set) = match mutation {
+    let mutation = match mutation {
         Ok(result) => result,
         Err(error) => {
             drop(definition_lock);
             drop(game_control);
             cleanup_staged_flag_attachments(&st, &flags).await;
-            abandon_flag_import(st.pg(), c_id, request.operation_id).await;
+            abandon_flag_import(st.pg(), c_id, request.operation_id, lease_token).await;
             return Err(error);
         }
     };
@@ -393,6 +455,16 @@ pub async fn add_flags(
     if let Err(error) = game_control.release().await {
         tracing::warn!(%error, id, c_id, "flag-policy game lock release failed after commit");
     }
+    let (duplicates, inserted_set) = match mutation {
+        FlagImportMutation::Replayed(result) => {
+            cleanup_staged_flag_attachments(&st, &flags).await;
+            return Ok(RequestResponse::ok(result));
+        }
+        FlagImportMutation::Applied {
+            duplicates,
+            inserted,
+        } => (duplicates, inserted),
+    };
     let duplicate_attachments = flags
         .iter()
         .filter(|(flag, _)| !inserted_set.contains(flag))

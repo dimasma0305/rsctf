@@ -69,6 +69,31 @@ const AUTHORIZATION_LEASE_SECONDS: u64 = 15;
 /// published, its endpoint remains stable until authorization expires.
 const FAILED_ACTIVATION_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
 
+const DISCONNECT_TEAM_SERVICES_SQL: &str = r#"
+    UPDATE "AdTeamServices" service
+       SET host = '', port = 0, status = 2
+      FROM "Participations" participation,
+           "GameChallenges" challenge
+     WHERE participation.id = service.participation_id
+       AND participation.team_id = $1
+       AND challenge.id = service.challenge_id
+       AND challenge.ad_self_hosted = TRUE
+       AND service.container_id IS NULL
+       AND (service.host <> '' OR service.port <> 0 OR service.status <> 2)
+"#;
+
+#[cfg(test)]
+mod team_disconnect_tests {
+    use super::DISCONNECT_TEAM_SERVICES_SQL;
+
+    #[test]
+    fn team_revocation_is_one_set_based_active_service_update() {
+        assert!(DISCONNECT_TEAM_SERVICES_SQL.contains("participation.team_id = $1"));
+        assert!(DISCONNECT_TEAM_SERVICES_SQL.contains("service.status <> 2"));
+        assert!(!DISCONNECT_TEAM_SERVICES_SQL.contains("ANY("));
+    }
+}
+
 /// A request to open a new outbound yamux stream, answered with the stream.
 type OpenReq = oneshot::Sender<Result<yamux::Stream, ()>>;
 
@@ -327,13 +352,32 @@ impl Registry {
         team_id: i32,
         propagate: bool,
     ) -> AppResult<()> {
-        let participation_ids = sqlx::query_scalar::<_, i32>(
-            r#"SELECT id FROM "Participations" WHERE team_id = $1 ORDER BY id"#,
-        )
-        .bind(team_id)
-        .fetch_all(db.get_postgres_connection_pool())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+        // Only resolve participations represented by a live local endpoint.
+        // Team history is intentionally unbounded, while this registry is the
+        // finite runtime set that this replica can actually revoke.
+        let endpoint_candidates = {
+            let registry = self.endpoints.lock().await;
+            registry
+                .keys()
+                .map(|(participation_id, _)| *participation_id)
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        let participation_ids = if endpoint_candidates.is_empty() {
+            Vec::new()
+        } else {
+            sqlx::query_scalar::<_, i32>(
+                r#"SELECT id FROM "Participations"
+                    WHERE team_id = $1 AND id = ANY($2)
+                    ORDER BY id"#,
+            )
+            .bind(team_id)
+            .bind(&endpoint_candidates)
+            .fetch_all(db.get_postgres_connection_pool())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+        };
         let participation_set = participation_ids.iter().copied().collect::<HashSet<_>>();
         {
             let mut generations = self.authorization_generations.write().await;
@@ -356,30 +400,18 @@ impl Registry {
                 .filter_map(|key| registry.remove(&key))
                 .collect::<Vec<_>>()
         };
-        let handles = futures::stream::iter(endpoints.iter())
+        let handles = futures::stream::iter(endpoints.iter().cloned())
             .map(|endpoint| async move { endpoint.revoke().await })
             .buffer_unordered(16)
             .filter_map(future::ready)
             .collect::<Vec<_>>()
             .await;
         let revocation = async {
-            if !participation_ids.is_empty() {
-                sqlx::query(
-                    r#"UPDATE "AdTeamServices" service
-                          SET host = '', port = 0, status = 2
-                        WHERE service.participation_id = ANY($1)
-                          AND service.container_id IS NULL
-                          AND EXISTS (
-                              SELECT 1 FROM "GameChallenges" challenge
-                               WHERE challenge.id = service.challenge_id
-                                 AND challenge.ad_self_hosted = TRUE
-                          )"#,
-                )
-                .bind(&participation_ids)
+            sqlx::query(DISCONNECT_TEAM_SERVICES_SQL)
+                .bind(team_id)
                 .execute(db.get_postgres_connection_pool())
                 .await
                 .map_err(|error| AppError::internal(error.to_string()))?;
-            }
             crate::services::ad_vpn::ensure_hub_and_sync(db).await
         }
         .await;

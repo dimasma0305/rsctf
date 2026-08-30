@@ -34,7 +34,7 @@ END $$;
 
 DROP TRIGGER IF EXISTS tr_game_challenge_configuration_revision ON "GameChallenges";
 CREATE TRIGGER tr_game_challenge_configuration_revision
-AFTER INSERT OR DELETE OR UPDATE OF is_enabled, deletion_pending, review_status, "Type"
+AFTER INSERT OR DELETE OR UPDATE OF is_enabled, deletion_pending, review_status, "Type", ad_self_hosted
 ON "GameChallenges" FOR EACH ROW
 EXECUTE FUNCTION bump_challenge_configuration_revision();
 

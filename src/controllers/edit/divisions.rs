@@ -40,7 +40,7 @@ struct DivisionDetailRow {
     revision: i64,
     policy_revision: i64,
     config_count: i64,
-    challenge_configs: Value,
+    challenge_configs: JsonValue,
 }
 
 impl TryFrom<DivisionDetailRow> for DivisionDetailModel {
@@ -169,8 +169,8 @@ fn validate_division_input(
 /// - `Some([])` → remove every per-challenge config for the division;
 /// - `Some([...])` → delete the rows for challenges NOT in the set, then upsert
 ///   each provided `(challengeId, permissions)` (permissions default `All`).
-async fn validate_challenge_configs(
-    st: &SharedState,
+async fn validate_challenge_configs_locked(
+    connection: &mut sqlx::PgConnection,
     game_id: i32,
     configs: Option<&[DivisionChallengeConfigInput]>,
 ) -> AppResult<()> {
@@ -187,7 +187,7 @@ async fn validate_challenge_configs(
         )
         .bind(game_id)
         .bind(&ids)
-        .fetch_one(st.pg())
+        .fetch_one(&mut *connection)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         if valid != ids.len() as i64 {
@@ -381,7 +381,6 @@ pub async fn create_division(
         model.default_permissions,
         model.challenge_configs.as_deref(),
     )?;
-    validate_challenge_configs(&st, id, model.challenge_configs.as_deref()).await?;
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
     require_game_mutable(control.transaction_mut(), id).await?;
     if competition_scoring_started_locked(control.transaction_mut(), id).await? {
@@ -389,12 +388,30 @@ pub async fn create_division(
             "Divisions cannot be added after competition scoring has started.",
         ));
     }
+    validate_challenge_configs_locked(
+        control.transaction_mut(),
+        id,
+        model.challenge_configs.as_deref(),
+    )
+    .await?;
+    let division_count = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*)::bigint FROM "Divisions" WHERE game_id = $1"#,
+    )
+    .bind(id)
+    .fetch_one(&mut **control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if division_count >= MAX_DIVISIONS {
+        return Err(AppError::payload_too_large(format!(
+            "An event may contain at most {MAX_DIVISIONS} divisions"
+        )));
+    }
     let created_id: i32 = sqlx::query_scalar(
         r#"INSERT INTO "Divisions" (game_id, name, invite_code, default_permissions)
            VALUES ($1, $2, $3, $4) RETURNING id"#,
     )
     .bind(id)
-    .bind(&model.name)
+    .bind(model.name.trim())
     .bind(&model.invite_code)
     .bind(model.default_permissions.unwrap_or(GamePermission::ALL))
     .fetch_one(&mut **control.transaction_mut())
@@ -438,13 +455,18 @@ pub async fn update_division(
         model.default_permissions,
         model.challenge_configs.as_deref(),
     )?;
-    validate_challenge_configs(&st, id, model.challenge_configs.as_deref()).await?;
     let request_digest = Sha256::digest(
         serde_json::to_vec(&model).map_err(|error| AppError::internal(error.to_string()))?,
     )
     .to_vec();
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
     require_game_mutable(control.transaction_mut(), id).await?;
+    validate_challenge_configs_locked(
+        control.transaction_mut(),
+        id,
+        model.challenge_configs.as_deref(),
+    )
+    .await?;
     let current = sqlx::query_as::<_, (String, Option<String>, i32, i64, i64)>(
         r#"SELECT name, invite_code, default_permissions, revision, policy_revision
              FROM "Divisions"

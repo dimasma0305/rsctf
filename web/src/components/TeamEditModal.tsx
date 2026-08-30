@@ -155,6 +155,9 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
       if (generation !== inviteRequestGeneration.current) return
       setInviteCode(response.data.code)
       setInviteRevision(response.data.revision)
+      // An authoritative read reconciles an ambiguous rotation. The next
+      // Refresh is a new intent and must not reuse the recovered operation ID.
+      inviteOperationId.current = null
     } catch {
       if (generation === inviteRequestGeneration.current) setInviteLoadError(true)
     } finally {
@@ -281,29 +284,38 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
 
     inviteMutationOwner.current = true
     setInviteLoading(true)
+    const generation = ++inviteRequestGeneration.current
+    const targetTeamId = team.id
+    const observedRevision = inviteRevision
     const operationId = inviteOperationId.current ?? crypto.randomUUID()
     inviteOperationId.current = operationId
     try {
-      const response = await api.team.teamUpdateInviteToken(team.id, {
+      const response = await api.team.teamUpdateInviteToken(targetTeamId, {
         operationId,
-        expectedRevision: inviteRevision,
+        expectedRevision: observedRevision,
       })
-      if (response.data.revision >= inviteRevision) {
+      if (
+        generation === inviteRequestGeneration.current &&
+        props.opened &&
+        teamId === targetTeamId &&
+        response.data.revision >= observedRevision
+      ) {
         setInviteCode(response.data.code)
         setInviteRevision(response.data.revision)
+        inviteOperationId.current = null
+        setInviteLoadError(false)
+        showNotification({
+          color: 'teal',
+          message: t('team.notification.invite_code.updated'),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
       }
-      inviteOperationId.current = null
-      showNotification({
-        color: 'teal',
-        message: t('team.notification.invite_code.updated'),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
     } catch (e) {
       showErrorMsg(e, t)
-      setInviteLoadError(true)
+      if (generation === inviteRequestGeneration.current) setInviteLoadError(true)
     } finally {
       inviteMutationOwner.current = false
-      setInviteLoading(false)
+      if (generation === inviteRequestGeneration.current) setInviteLoading(false)
     }
   }
 

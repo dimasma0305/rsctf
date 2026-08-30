@@ -25,18 +25,20 @@ pub async fn invite_code(
     user: CurrentUser,
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<TeamInviteModel>> {
-    let team = load_team(&st, id).await?;
-    require_captain(&team, &user)?;
-    let revision = sqlx::query_scalar::<_, i64>(
-        r#"SELECT invite_revision FROM "Teams" WHERE id = $1 AND deletion_pending = FALSE"#,
+    let (captain_id, name, token, revision) = sqlx::query_as::<_, (Uuid, String, String, i64)>(
+        r#"SELECT captain_id, name, invite_token, invite_revision
+                 FROM "Teams" WHERE id = $1 AND deletion_pending = FALSE"#,
     )
     .bind(id)
     .fetch_optional(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Team not found"))?;
+    if captain_id != user.id {
+        return Err(AppError::Forbidden);
+    }
     Ok(RequestResponse::ok(TeamInviteModel {
-        code: team.invite_code(),
+        code: format!("{name}:{id}:{token}"),
         revision,
     }))
 }
@@ -51,8 +53,8 @@ async fn reconcile_invite_rotation(
         crate::utils::single_flight::PgSessionAdvisoryLock::acquire_roster(st.pg(), &key)
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-    let pending = sqlx::query_scalar::<_, bool>(
-        r#"SELECT reconciled_at_utc IS NULL
+    let pending = sqlx::query_as::<_, (bool, i64)>(
+        r#"SELECT reconciled_at_utc IS NULL, result_revision
              FROM "TeamInviteOperations"
             WHERE team_id = $1 AND operation_id = $2"#,
     )
@@ -62,20 +64,39 @@ async fn reconcile_invite_rotation(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::conflict("Invite rotation operation expired"))?;
-    if pending {
+    if pending.0 {
         st.byoc.disconnect_team(&st.db, team_id).await?;
+        // A successful disconnect also covers every older credential rotation.
+        // Fence the update by the revision observed before teardown so a newer
+        // rotation committed while this external work ran remains pending and
+        // performs its own disconnect.
         sqlx::query(
             r#"UPDATE "TeamInviteOperations"
                   SET reconciled_at_utc = clock_timestamp()
-                WHERE team_id = $1 AND operation_id = $2
+                WHERE team_id = $1 AND result_revision <= $2
                   AND reconciled_at_utc IS NULL"#,
         )
         .bind(team_id)
-        .bind(operation_id)
+        .bind(pending.1)
         .execute(lease.connection_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     }
+    sqlx::query(
+        r#"WITH expired AS (
+               SELECT team_id, operation_id FROM "TeamInviteOperations"
+                WHERE reconciled_at_utc IS NOT NULL
+                  AND created_at_utc < clock_timestamp() - INTERVAL '30 days'
+                ORDER BY created_at_utc, team_id, operation_id
+                LIMIT 128
+           )
+           DELETE FROM "TeamInviteOperations" operation USING expired
+            WHERE operation.team_id = expired.team_id
+              AND operation.operation_id = expired.operation_id"#,
+    )
+    .execute(lease.connection_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     lease
         .release()
         .await
@@ -97,15 +118,17 @@ pub async fn update_invite_token(
     let mut roster = acquire_roster_mutation(st.pg(), id).await?;
     require_team_mutable(roster.transaction_mut(), id).await?;
     ensure_roster_change_allowed(roster.transaction_mut(), id).await?;
-    let team = load_team(&st, id).await?;
-    require_captain(&team, &user)?;
-    let current_revision = sqlx::query_scalar::<_, i64>(
-        r#"SELECT invite_revision FROM "Teams" WHERE id = $1 FOR UPDATE"#,
+    let (captain_id, team_name, current_revision) = sqlx::query_as::<_, (Uuid, String, i64)>(
+        r#"SELECT captain_id, name, invite_revision
+             FROM "Teams" WHERE id = $1 FOR UPDATE"#,
     )
     .bind(id)
     .fetch_one(&mut **roster.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    if captain_id != user.id {
+        return Err(AppError::Forbidden);
+    }
     let stored = sqlx::query_as::<_, (Uuid, i64, i64, String)>(
         r#"SELECT actor_user_id, expected_revision, result_revision, result_token
              FROM "TeamInviteOperations"
@@ -158,26 +181,12 @@ pub async fn update_invite_token(
         .execute(&mut **roster.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-        sqlx::query(
-            r#"WITH expired AS (
-                   SELECT team_id, operation_id FROM "TeamInviteOperations"
-                    WHERE created_at_utc < clock_timestamp() - INTERVAL '30 days'
-                    ORDER BY created_at_utc, team_id, operation_id
-                    LIMIT 128
-               )
-               DELETE FROM "TeamInviteOperations" operation USING expired
-                WHERE operation.team_id = expired.team_id
-                  AND operation.operation_id = expired.operation_id"#,
-        )
-        .execute(&mut **roster.transaction_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
         (token, revision)
     };
     let _local_owner = roster.release_for_external().await?;
     reconcile_invite_rotation(&st, id, request.operation_id).await?;
     Ok(RequestResponse::ok(TeamInviteModel {
-        code: format!("{}:{}:{}", team.name, id, token),
+        code: format!("{team_name}:{id}:{token}"),
         revision: result_revision,
     }))
 }

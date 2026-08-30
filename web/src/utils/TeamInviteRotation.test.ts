@@ -8,7 +8,8 @@ test('invite rotation has a synchronous owner and stable operation identity', ()
   assert.match(source, /inviteMutationOwner = useRef\(false\)/)
   assert.match(source, /if \(!team\?\.id \|\| inviteRevision == null \|\| inviteMutationOwner\.current\) return/)
   assert.match(source, /inviteOperationId\.current \?\? crypto\.randomUUID\(\)/)
-  assert.match(source, /expectedRevision: inviteRevision/)
+  assert.match(source, /expectedRevision: observedRevision/)
+  assert.match(source, /generation === inviteRequestGeneration\.current/)
 })
 
 test('invite secret reads run only for an open modal and expose retry', () => {

@@ -287,52 +287,6 @@ pub async fn download_challenge_audit_archive(
         .map_err(|error| AppError::internal(error.to_string()))
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChallengeBuildStatusModel {
-    build_status: ChallengeBuildStatus,
-    last_build_log: Option<String>,
-}
-
-/// Compact polling owner for the edit screen. It deliberately excludes flags,
-/// attachments, storage capabilities, and test-container state.
-pub async fn get_challenge_build_status(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-    Path((id, c_id)): Path<(i32, i32)>,
-) -> AppResult<RequestResponse<ChallengeBuildStatusModel>> {
-    manager_or_admin(&st, &user, id).await?;
-    let row = sqlx::query_as::<_, (i16, Option<String>)>(
-        r#"SELECT build_status, last_build_log
-             FROM "GameChallenges"
-            WHERE game_id = $1 AND id = $2"#,
-    )
-    .bind(id)
-    .bind(c_id)
-    .fetch_optional(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("Challenge not found"))?;
-    let build_status = match row.0 {
-        value if value == ChallengeBuildStatus::None as i16 => ChallengeBuildStatus::None,
-        value if value == ChallengeBuildStatus::Success as i16 => ChallengeBuildStatus::Success,
-        value if value == ChallengeBuildStatus::Failed as i16 => ChallengeBuildStatus::Failed,
-        value if value == ChallengeBuildStatus::Building as i16 => ChallengeBuildStatus::Building,
-        value if value == ChallengeBuildStatus::NotApplicable as i16 => {
-            ChallengeBuildStatus::NotApplicable
-        }
-        value if value == ChallengeBuildStatus::Queued as i16 => ChallengeBuildStatus::Queued,
-        value if value == ChallengeBuildStatus::MissingDockerfile as i16 => {
-            ChallengeBuildStatus::MissingDockerfile
-        }
-        _ => return Err(AppError::internal("Invalid challenge build status")),
-    };
-    Ok(RequestResponse::ok(ChallengeBuildStatusModel {
-        build_status,
-        last_build_log: row.1,
-    }))
-}
-
 /// `GET /api/edit/games/{id}/challenges/{cId}/auditmeta` — parsed audit metadata
 /// (`ChallengeAuditModel`). Mirrors `EditController.GetChallengeAuditMeta`: opens
 /// the challenge's persisted `original_archive_blob_path`, extracts it, and returns

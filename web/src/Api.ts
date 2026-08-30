@@ -8190,18 +8190,6 @@ export class Api<
         ...params,
       }),
 
-    editGetChallengeBuildStatus: (
-      id: number,
-      cId: number,
-      params: RequestParams = {},
-    ) =>
-      this.request<ChallengeBuildStatusModel, RequestResponse>({
-        path: `/api/edit/games/${id}/challenges/${cId}/buildstatus`,
-        method: "GET",
-        format: "json",
-        ...params,
-      }),
-
     /**
      * @description Compact build status for one challenge. Does not load or parse the retained source archive.
      * @tags Edit
@@ -11121,7 +11109,7 @@ export class Api<
       options?: SWRConfiguration,
       doFetch: boolean = true,
     ) =>
-      useSWR<string, RequestResponse>(
+      useSWR<TeamInviteModel, RequestResponse>(
         doFetch ? `/api/team/${id}/invite` : null,
         options,
       ),
@@ -11136,9 +11124,9 @@ export class Api<
      */
     mutateTeamInviteCode: (
       id: number,
-      data?: string | Promise<string>,
+      data?: TeamInviteModel | Promise<TeamInviteModel>,
       options?: MutatorOptions,
-    ) => mutate<string>(`/api/team/${id}/invite`, data, options),
+    ) => mutate<TeamInviteModel>(`/api/team/${id}/invite`, data, options),
 
     /**
      * @description User kick API, kick user with corresponding ID, requires team creator permission

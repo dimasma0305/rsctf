@@ -60,7 +60,7 @@ export const AttachmentRemoteEditModal: FC<ModalProps> = (props) => {
   }
 
   return (
-    <Modal {...props}>
+    <Modal {...props} closeOnClickOutside={!disabled} closeOnEscape={!disabled}>
       <Stack>
         <Text>
           {t('admin.content.games.challenges.attachment.instruction.remote.content')}
@@ -82,6 +82,7 @@ export const AttachmentRemoteEditModal: FC<ModalProps> = (props) => {
           minRows={8}
           maxRows={12}
           value={text}
+          disabled={disabled}
           classNames={{ input: misc.ffmono }}
           onChange={(e) => {
             operationId.current = null
