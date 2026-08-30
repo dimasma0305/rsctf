@@ -120,6 +120,7 @@ pub(super) async fn reap_ended_backends(state: &SharedState) -> AppResult<u64> {
                 });
             if ended && (target.container_id.is_some() || !target.host.is_empty()) {
                 let backend_id = target.container_id.clone();
+                let game_id = target.game_id;
                 let mut active: koth_target::ActiveModel = target.into();
                 active.host = Set(String::new());
                 active.port = Set(0);
@@ -131,15 +132,29 @@ pub(super) async fn reap_ended_backends(state: &SharedState) -> AppResult<u64> {
                 if let Some(backend_id) = backend_id {
                     match state.containers.destroy(&backend_id).await {
                         Ok(()) => {
-                            sqlx::query(
+                            let mut control =
+                                crate::services::ad::engine::koth_auth::acquire_game_lock(
+                                    &state.db, game_id,
+                                )
+                                .await?;
+                            let changed = sqlx::query(
                                 r#"UPDATE "KothTargets" SET container_id = NULL
                                     WHERE id = $1 AND container_id = $2"#,
                             )
                             .bind(target_id)
                             .bind(&backend_id)
-                            .execute(state.pg())
+                            .execute(&mut **control.transaction_mut())
                             .await
-                            .map_err(|error| AppError::internal(error.to_string()))?;
+                            .map_err(|error| AppError::internal(error.to_string()))?
+                            .rows_affected()
+                                == 1;
+                            crate::services::ad::koth_capability_cache::release_game_control(
+                                control,
+                                state.cache.as_ref(),
+                                game_id,
+                                changed,
+                            )
+                            .await?;
                             cleaned = true;
                         }
                         Err(error) => tracing::warn!(

@@ -225,6 +225,17 @@ pub async fn approve_challenge(
         ChallengeBuildStatus::Success
     };
 
+    let cache_mutation = if challenge.challenge_type == ChallengeType::KingOfTheHill {
+        Some(
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
+                st.cache.as_ref(),
+                id,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let updated = if let Some(control) = engine_control.as_mut() {
         sqlx::query(
             r#"UPDATE "GameChallenges"
@@ -294,6 +305,14 @@ pub async fn approve_challenge(
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
     }
+    if let Some(mutation) = cache_mutation {
+        crate::services::ad::koth_capability_cache::finish_game_epoch_mutation(
+            st.cache.as_ref(),
+            id,
+            mutation,
+        )
+        .await;
+    }
     if let Some(guard) = checker_artifact_guard.take() {
         guard
             .release()
@@ -333,6 +352,17 @@ pub async fn reject_challenge(
         ));
     }
     crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id).await?;
+    let cache_mutation = if challenge.challenge_type == ChallengeType::KingOfTheHill {
+        Some(
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
+                st.cache.as_ref(),
+                id,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let rejected = sqlx::query(
         r#"UPDATE "GameChallenges"
               SET review_status = $3,
@@ -359,6 +389,14 @@ pub async fn reject_challenge(
         lock.release()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    if let Some(mutation) = cache_mutation {
+        crate::services::ad::koth_capability_cache::finish_game_epoch_mutation(
+            st.cache.as_ref(),
+            id,
+            mutation,
+        )
+        .await;
     }
     flush_game_scoreboards(&st, id).await;
     st.byoc.disconnect_challenge(&st.db, c_id).await?;

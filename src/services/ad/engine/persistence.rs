@@ -1,6 +1,7 @@
 //! Transactional persistence for checker verdicts.
 
 use super::*;
+use crate::services::ad::koth_capability_cache::release_game_control;
 use std::collections::HashMap;
 
 const CHECK_RESULT_BATCH_SIZE: usize = 64;
@@ -237,6 +238,7 @@ pub(super) async fn complete_missing_koth_results_transaction(
 /// explicit infrastructure fallback after an immutable epoch is materialized.
 pub(crate) async fn finalize_ended_round_checks(
     db: &DatabaseConnection,
+    cache: &dyn crate::services::cache::Cache,
     game_id: i32,
     grace_seconds: i64,
 ) -> AppResult<bool> {
@@ -378,8 +380,7 @@ pub(crate) async fn finalize_ended_round_checks(
     .execute(&mut **control_lock.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-
-    sqlx::query(
+    let completed_cycles = sqlx::query(
         r#"UPDATE "KothCrownCycles" cycle
               SET phase = 'Completed',
                   actual_end_round = COALESCE(
@@ -403,18 +404,14 @@ pub(crate) async fn finalize_ended_round_checks(
     .bind(game_id)
     .execute(&mut **control_lock.transaction_mut())
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
     sqlx::query(r#"UPDATE "AdRounds" SET finalized = TRUE WHERE id = ANY($1)"#)
         .bind(&round_ids)
         .execute(&mut **control_lock.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-
-    control_lock
-        .release()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    release_game_control(control_lock, cache, game_id, completed_cycles > 0).await?;
     Ok(true)
 }
 
@@ -976,8 +973,11 @@ mod batch_tests {
         .execute(pool)
         .await
         .unwrap();
-
-        assert!(finalize_ended_round_checks(&db, 41, 0).await.unwrap());
+        let cache = crate::services::cache::InMemoryCache::new();
+        let finalized = finalize_ended_round_checks(&db, &cache, 41, 0)
+            .await
+            .unwrap();
+        assert!(finalized);
         let receipt: (Option<i64>, Option<i32>, bool, Option<i32>, i32) = sqlx::query_as(
             r#"SELECT cycle_id, confirmation_streak, is_scorable,
                       confirmed_participation_id, token_window_attempt

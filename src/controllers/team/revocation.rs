@@ -477,8 +477,12 @@ async fn revoke_team_shared_capabilities_inner(
     let koth_cache_invalidation = if part_ids.is_empty() {
         None
     } else if let Some(transaction) = locked_transaction {
-        match crate::services::ad_engine::revoke_koth_capabilities_locked(transaction, &part_ids)
-            .await
+        match crate::services::ad_engine::revoke_koth_capabilities_locked(
+            transaction,
+            st.cache.as_ref(),
+            &part_ids,
+        )
+        .await
         {
             Ok(invalidation) => Some(invalidation),
             Err(error) => {

@@ -239,6 +239,7 @@ pub struct CheckerVerdict {
 pub(crate) async fn run_checker(
     db: &DatabaseConnection,
     containers: &dyn crate::services::container::ContainerManager,
+    cache: &dyn crate::services::cache::Cache,
     game_id: i32,
     round_id: i32,
     lease: &RoundFinishLease,
@@ -335,6 +336,7 @@ pub(crate) async fn run_checker(
     let koth_pass = koth::check_hills(
         db,
         containers,
+        cache,
         game_id,
         &round,
         &checker_dirs,

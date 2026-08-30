@@ -182,6 +182,17 @@ pub async fn ad_toggle_challenge(
     crate::controllers::edit::reject_pending_mutation(st.pg(), game_id, challenge_id).await?;
 
     let is_enabled = !challenge.is_enabled;
+    let cache_mutation = if challenge.challenge_type == ChallengeType::KingOfTheHill {
+        Some(
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
+                st.cache.as_ref(),
+                game_id,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let toggled = sqlx::query(
         r#"UPDATE "GameChallenges"
               SET is_enabled = $3
@@ -205,6 +216,14 @@ pub async fn ad_toggle_challenge(
         lock.release()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    if let Some(mutation) = cache_mutation {
+        crate::services::ad::koth_capability_cache::finish_game_epoch_mutation(
+            st.cache.as_ref(),
+            game_id,
+            mutation,
+        )
+        .await;
     }
     // Both A&D and KotH challenge membership feeds the shared epoch surfaces.
     // Flush after either engine-backed toggle so KotH eligibility and board

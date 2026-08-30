@@ -838,16 +838,18 @@ pub(super) async fn finish_prepared_round(
                 "cron: KotH crown-cycle transition remains pending"
             );
         }
-        crate::services::ad_engine::run_checker(
+        let result = crate::services::ad_engine::run_checker(
             &state.db,
             state.containers.as_ref(),
+            state.cache.as_ref(),
             game.id,
             round_id,
             lease,
             pipeline_deadline,
             receipt_receiver,
         )
-        .await
+        .await;
+        result
     };
     let (delivery, checker) =
         run_publication_with_checker(publisher, checker_after_hill_transition).await;

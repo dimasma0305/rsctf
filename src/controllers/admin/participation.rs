@@ -10,7 +10,7 @@ use sqlx::Connection as _;
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::CurrentUser;
-use crate::utils::enums::ParticipationStatus;
+use crate::utils::enums::{ChallengeType, ParticipationStatus};
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::MessageResponse;
 
@@ -110,10 +110,11 @@ impl ParticipationReviewLease {
 
 async fn persist_participation_status(
     lease: &mut ParticipationReviewLease,
+    cache: &dyn crate::services::cache::Cache,
     identity: ParticipationIdentity,
     requested_status: ParticipationStatus,
     requested_division_id: Option<Option<i32>>,
-) -> AppResult<()> {
+) -> AppResult<Option<crate::services::ad::koth_capability_cache::GameEpochMutation>> {
     let mut transaction = lease
         .connection_mut()
         .begin()
@@ -296,10 +297,37 @@ async fn persist_participation_status(
         crate::controllers::edit::cancel_accepted_provisioning(&mut transaction, identity.id)
             .await?;
     }
+    let has_koth = if live_status != requested_status {
+        sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(
+                   SELECT 1 FROM "GameChallenges"
+                    WHERE game_id = $1 AND "Type" = $2
+               )"#,
+        )
+        .bind(identity.game_id)
+        .bind(ChallengeType::KingOfTheHill as i16)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+    } else {
+        false
+    };
+    let cache_mutation = if has_koth {
+        Some(
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
+                cache,
+                identity.game_id,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     transaction
         .commit()
         .await
-        .map_err(|error| AppError::internal(error.to_string()))
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(cache_mutation)
 }
 
 async fn resolve_requested_division(
@@ -503,8 +531,22 @@ pub async fn update_participation(
 
     if let Some(requested_status) = model.status {
         let mut lease = ParticipationReviewLease::acquire(st.pg(), identity.team_id).await?;
-        persist_participation_status(&mut lease, identity, requested_status, model.division_id)
-            .await?;
+        let cache_mutation = persist_participation_status(
+            &mut lease,
+            st.cache.as_ref(),
+            identity,
+            requested_status,
+            model.division_id,
+        )
+        .await?;
+        if let Some(mutation) = cache_mutation {
+            crate::services::ad::koth_capability_cache::finish_game_epoch_mutation(
+                st.cache.as_ref(),
+                identity.game_id,
+                mutation,
+            )
+            .await;
+        }
 
         let effect = run_terminal_effect(&mut lease, identity, requested_status, || async {
             if requested_status == ParticipationStatus::Accepted {

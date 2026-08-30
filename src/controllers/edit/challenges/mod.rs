@@ -1,5 +1,8 @@
 //! edit: challenge CRUD/attachments (see edit/mod.rs for the router + shared DTOs/helpers).
 use super::*;
+use crate::services::ad::koth_capability_cache::{
+    begin_game_epoch_mutation_if, finish_game_epoch_mutation_if_any,
+};
 
 mod attachments;
 mod audit;
@@ -407,6 +410,12 @@ pub async fn update_challenge(
         // finish first or fail their final definition/eligibility CAS. A crash
         // or teardown failure leaves the challenge disabled, never half-old and
         // half-new while still playable.
+        let disable_cache_mutation = begin_game_epoch_mutation_if(
+            st.cache.as_ref(),
+            id,
+            ch_type == ChallengeType::KingOfTheHill,
+        )
+        .await?;
         let fenced = sqlx::query(
             r#"UPDATE "GameChallenges"
                   SET is_enabled = FALSE
@@ -424,6 +433,7 @@ pub async fn update_challenge(
                 "Challenge eligibility changed; retry the topology update",
             ));
         }
+        finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, disable_cache_mutation).await;
         workload::release_update_lock(workload_lock.take()).await?;
         if let Some(lock) = engine_control.take() {
             lock.release()
@@ -720,6 +730,12 @@ pub async fn update_challenge(
         am.receipt_verifier_identity = Set((!value.is_empty()).then(|| value.to_owned()));
     }
 
+    let cache_mutation = begin_game_epoch_mutation_if(
+        st.cache.as_ref(),
+        id,
+        ch_type == ChallengeType::KingOfTheHill,
+    )
+    .await?;
     let updated = am.update(&st.db).await?;
     seed_division_configs(
         engine_control
@@ -739,6 +755,7 @@ pub async fn update_challenge(
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
     }
+    finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
     if (was_ad_self_hosted || updated.ad_self_hosted)
         && (!updated.ad_self_hosted
             || !updated.is_enabled
@@ -877,6 +894,12 @@ pub async fn delete_challenge(
             "A&D/KotH challenges cannot be deleted after epoch scoring has started.",
         ));
     }
+    let cache_mutation = begin_game_epoch_mutation_if(
+        st.cache.as_ref(),
+        id,
+        challenge.challenge_type == ChallengeType::KingOfTheHill,
+    )
+    .await?;
 
     // The JFLG-exclusive predicate and the durable disabled marker share the
     // definition-lock transaction. This preserves Jeopardy history once play
@@ -890,7 +913,10 @@ pub async fn delete_challenge(
         if challenge.challenge_type == ChallengeType::KingOfTheHill {
             crate::services::ad_engine::clear_challenge_control(&st.db, id, c_id).await?;
         }
+        finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
         crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+    } else {
+        finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
     }
     engine_control
         .release()

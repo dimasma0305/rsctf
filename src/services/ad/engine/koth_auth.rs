@@ -196,6 +196,7 @@ pub(crate) async fn revoke_game_capabilities(
 #[derive(Debug)]
 struct KothGameCacheInvalidation {
     game_id: i32,
+    mutation: crate::services::ad::koth_capability_cache::GameEpochMutation,
 }
 
 /// Projection cache keys captured while the caller's game locks are held.
@@ -207,16 +208,22 @@ pub(crate) struct KothCapabilityCacheInvalidation {
 impl KothCapabilityCacheInvalidation {
     pub(crate) async fn apply(self, cache: &dyn crate::services::cache::Cache) {
         for game in self.games {
-            invalidate_capability_cache(cache, &game).await;
+            invalidate_capability_cache(cache, game).await;
         }
     }
 }
 
 async fn invalidate_capability_cache(
     cache: &dyn crate::services::cache::Cache,
-    game: &KothGameCacheInvalidation,
+    game: KothGameCacheInvalidation,
 ) {
     cache.remove(&format!("latestround:{}", game.game_id)).await;
+    crate::services::ad::koth_capability_cache::finish_game_epoch_mutation(
+        cache,
+        game.game_id,
+        game.mutation,
+    )
+    .await;
 }
 
 async fn load_games_for_participations(
@@ -246,6 +253,7 @@ async fn load_games_for_participations(
 /// caller and must run after commit.
 pub(crate) async fn revoke_koth_capabilities_locked(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    cache: &dyn crate::services::cache::Cache,
     participation_ids: &[i32],
 ) -> AppResult<KothCapabilityCacheInvalidation> {
     if participation_ids.is_empty() {
@@ -269,9 +277,15 @@ pub(crate) async fn revoke_koth_capabilities_locked(
     let mut invalidation = KothCapabilityCacheInvalidation::default();
     for (game_id, ids) in by_game {
         revoke_game_capabilities(transaction, game_id, &ids, true).await?;
+        // Disable cache selection before the caller's roster/game mutation
+        // commits. `apply` publishes the final enabled namespace after commit;
+        // if that publication fails, readers remain on live PostgreSQL.
+        let mutation =
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(cache, game_id)
+                .await?;
         invalidation
             .games
-            .push(KothGameCacheInvalidation { game_id });
+            .push(KothGameCacheInvalidation { game_id, mutation });
     }
     Ok(invalidation)
 }
@@ -292,13 +306,16 @@ pub(crate) async fn revoke_koth_capabilities(
     for (game_id, ids) in by_game {
         let mut lock = acquire_game_lock(db, game_id).await?;
         revoke_game_capabilities(&mut *lock.transaction_mut(), game_id, &ids, true).await?;
+        let mutation =
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(cache, game_id)
+                .await?;
         lock.release()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
 
         // Token responses contain bearer capabilities, so revocation must evict
         // both response shapes as well as any stale shared round pointer.
-        invalidate_capability_cache(cache, &KothGameCacheInvalidation { game_id }).await;
+        invalidate_capability_cache(cache, KothGameCacheInvalidation { game_id, mutation }).await;
     }
     Ok(())
 }
@@ -315,10 +332,13 @@ pub(crate) async fn reconcile_koth_capability_revocations(
     for (game_id, ids) in by_game {
         let mut lock = acquire_game_lock(db, game_id).await?;
         revoke_game_capabilities(&mut *lock.transaction_mut(), game_id, &ids, false).await?;
+        let mutation =
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(cache, game_id)
+                .await?;
         lock.release()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-        invalidate_capability_cache(cache, &KothGameCacheInvalidation { game_id }).await;
+        invalidate_capability_cache(cache, KothGameCacheInvalidation { game_id, mutation }).await;
     }
     Ok(())
 }
@@ -576,7 +596,8 @@ mod tests {
         )
         .await
         .unwrap();
-        let invalidation = revoke_koth_capabilities_locked(&mut transaction, &[12])
+        let cache = crate::services::cache::InMemoryCache::new();
+        let invalidation = revoke_koth_capabilities_locked(&mut transaction, &cache, &[12])
             .await
             .expect("locked revocation tried to reacquire its game lock");
         let second_revoked: bool =

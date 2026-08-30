@@ -200,6 +200,27 @@ pub async fn koth_hill_token(
     let part = resolve_participation(&st, &user, id).await?;
     require_live_hill(&st, id, challenge_id).await?;
 
+    let cached_round = load_latest_round_cached(&st, id).await?;
+    let cached_epoch =
+        crate::services::ad::koth_capability_cache::current_game_epoch(st.cache.as_ref(), id).await;
+    // Cache I/O and JSON decoding happen before retaining a PostgreSQL
+    // connection. The model remains untrusted until both the live-caller fence
+    // and the authoritative epoch comparison below succeed.
+    let cached_model = if let Some(epoch) = cached_epoch.as_deref() {
+        let key = crate::services::ad::koth_capability_cache::hill_token_key(
+            id,
+            challenge_id,
+            part.id,
+            cached_round,
+            epoch,
+        );
+        st.cache
+            .get_local(&key)
+            .await
+            .and_then(|bytes| serde_json::from_slice::<KothTokenModel>(&bytes).ok())
+    } else {
+        None
+    };
     let caller = KothTokenCaller::Session {
         user_id: user.id,
         security_stamp: user.security_stamp.clone(),
@@ -209,12 +230,20 @@ pub async fn koth_hill_token(
         roster.release().await?;
         return Err(AppError::Forbidden);
     }
+    let live_epoch =
+        crate::services::ad::koth_capability_cache::current_game_epoch(st.cache.as_ref(), id).await;
+    if cached_epoch.as_deref() == live_epoch.as_deref() {
+        if let (Some(_), Some(model)) = (live_epoch.as_deref(), cached_model) {
+            roster.release().await?;
+            return Ok(no_store_token_response(model));
+        }
+    }
     let latest_round = load_latest_round_on(roster.transaction_mut(), id).await?;
 
     // API arenas take the primary-key fast path. The second value distinguishes
     // a missing token on an already-issued API hill from a Marker hill without
     // reparsing the frozen JSON snapshot on every cache fill.
-    let stable: (Option<String>, bool) = sqlx::query_as(
+    let stable: (Option<String>, bool, bool) = sqlx::query_as(
         r#"SELECT
              (SELECT token
                 FROM "KothApiTeamTokens"
@@ -228,14 +257,27 @@ pub async fn koth_hill_token(
                    ON (hill->>'challengeId')::integer = $2
                   AND COALESCE(NULLIF(hill->>'claimSource', ''), 'Marker') = 'Api'
                 WHERE config.game_id = $1
+             ),
+             EXISTS (
+               SELECT 1 FROM "GameChallenges" challenge
+                WHERE challenge.id = $2 AND challenge.game_id = $1
+                  AND challenge.is_enabled = TRUE
+                  AND challenge.review_status = $4
+                  AND challenge."Type" = $5
              )"#,
     )
     .bind(id)
     .bind(challenge_id)
     .bind(part.id)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .bind(ChallengeType::KingOfTheHill as i16)
     .fetch_one(&mut **roster.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    if !stable.2 {
+        roster.release().await?;
+        return Err(AppError::not_found("Active KotH hill not found"));
+    }
     let (token, status) = if let Some(token) = stable.0 {
         (Some(token), "ready".to_string())
     } else if stable.1 {
@@ -274,6 +316,25 @@ pub async fn koth_hill_token(
         token,
         status,
     };
+    if let (Some(epoch), Ok(json)) = (live_epoch.as_deref(), serde_json::to_vec(&model)) {
+        let key = crate::services::ad::koth_capability_cache::hill_token_key(
+            id,
+            challenge_id,
+            part.id,
+            latest_round,
+            epoch,
+        );
+        // Warmup and reset-gap models are cached too. Capability publication
+        // disables this namespace before commit, so a negative fill cannot hide
+        // a newly issued token.
+        st.cache
+            .set_local(
+                &key,
+                &json,
+                Some(crate::services::ad::koth_capability_cache::TOKEN_MODEL_CACHE_TTL),
+            )
+            .await;
+    }
     roster.release().await?;
     Ok(no_store_token_response(model))
 }
@@ -322,19 +383,42 @@ pub async fn koth_token_all(
             security_stamp: session_security_stamp.ok_or(AppError::Unauthorized)?,
         }
     };
+    let cached_round = load_latest_round_cached(&st, id).await?;
+    let cached_epoch =
+        crate::services::ad::koth_capability_cache::current_game_epoch(st.cache.as_ref(), id).await;
+    let cached_model = if let Some(epoch) = cached_epoch.as_deref() {
+        let key = crate::services::ad::koth_capability_cache::all_tokens_key(
+            id,
+            part.id,
+            cached_round,
+            epoch,
+        );
+        st.cache
+            .get_local(&key)
+            .await
+            .and_then(|bytes| serde_json::from_slice::<Vec<KothHillTokenModel>>(&bytes).ok())
+    } else {
+        None
+    };
     let mut roster = acquire_koth_token_read_fence(&st, part.team_id).await?;
     if !koth_token_caller_is_live(roster.transaction_mut(), &caller, &part).await? {
         roster.release().await?;
         return Err(AppError::Unauthorized);
     }
-    let latest_round = load_latest_round_on(roster.transaction_mut(), id).await?;
-    if latest_round == 0 {
-        roster.release().await?;
-        return Ok(no_store_token_response(Vec::<KothHillTokenModel>::new()));
+    let live_epoch =
+        crate::services::ad::koth_capability_cache::current_game_epoch(st.cache.as_ref(), id).await;
+    if cached_epoch.as_deref() == live_epoch.as_deref() {
+        if let (Some(_), Some(model)) = (live_epoch.as_deref(), cached_model) {
+            roster.release().await?;
+            return Ok(no_store_token_response(model));
+        }
     }
-
-    let out: Vec<KothHillTokenModel> = sqlx::query_as::<_, (i32, String)>(
-        r#"WITH frozen_hills AS (
+    let latest_round = load_latest_round_on(roster.transaction_mut(), id).await?;
+    let out: Vec<KothHillTokenModel> = if latest_round == 0 {
+        Vec::new()
+    } else {
+        sqlx::query_as::<_, (i32, String)>(
+            r#"WITH frozen_hills AS (
              SELECT (hill->>'challengeId')::integer AS challenge_id,
                     COALESCE(NULLIF(hill->>'claimSource', ''), 'Marker') AS claim_source
                FROM "KothOfficialConfigs" config,
@@ -369,21 +453,37 @@ pub async fn koth_token_all(
               AND token.reset_attempt = cycle.reset_attempt
               AND token.participation_id = $2 AND token.revoked_at IS NULL
             ORDER BY challenge_id"#,
-    )
-    .bind(id)
-    .bind(part.id)
-    .bind(ChallengeReviewStatus::Active as i16)
-    .bind(ChallengeType::KingOfTheHill as i16)
-    .fetch_all(&mut **roster.transaction_mut())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .into_iter()
-    .map(|(challenge_id, token)| KothHillTokenModel {
-        challenge_id,
-        token,
-    })
-    .collect();
+        )
+        .bind(id)
+        .bind(part.id)
+        .bind(ChallengeReviewStatus::Active as i16)
+        .bind(ChallengeType::KingOfTheHill as i16)
+        .fetch_all(&mut **roster.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .into_iter()
+        .map(|(challenge_id, token)| KothHillTokenModel {
+            challenge_id,
+            token,
+        })
+        .collect()
+    };
 
+    if let (Some(epoch), Ok(json)) = (live_epoch.as_deref(), serde_json::to_vec(&out)) {
+        let key = crate::services::ad::koth_capability_cache::all_tokens_key(
+            id,
+            part.id,
+            latest_round,
+            epoch,
+        );
+        st.cache
+            .set_local(
+                &key,
+                &json,
+                Some(crate::services::ad::koth_capability_cache::TOKEN_MODEL_CACHE_TTL),
+            )
+            .await;
+    }
     roster.release().await?;
     Ok(no_store_token_response(out))
 }
@@ -425,13 +525,14 @@ pub async fn rotate_koth_api_token(
             "Leaderboard capability rotation is available before official scoring or while scoring is paused",
         ));
     }
-    crate::services::ad::koth_api_capability::reconcile_pending_event_capabilities(
-        roster.transaction_mut(),
-        id,
-        Some(challenge_id),
-        Some(&[part.id]),
-    )
-    .await?;
+    let reconciled =
+        crate::services::ad::koth_api_capability::reconcile_pending_event_capabilities(
+            roster.transaction_mut(),
+            id,
+            Some(challenge_id),
+            Some(&[part.id]),
+        )
+        .await?;
     let token = match crate::services::ad::koth_api_capability::rotate_player_api_capability(
         roster.transaction_mut(),
         id,
@@ -444,7 +545,26 @@ pub async fn rotate_koth_api_token(
         crate::services::ad::koth_api_capability::PlayerApiTokenRotation::Cooldown {
             retry_after_seconds,
         } => {
+            let cache_mutation = if reconciled.is_empty() {
+                None
+            } else {
+                Some(
+                    crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
+                        st.cache.as_ref(),
+                        id,
+                    )
+                    .await?,
+                )
+            };
             roster.release().await?;
+            if let Some(mutation) = cache_mutation {
+                crate::services::ad::koth_capability_cache::finish_game_epoch_mutation(
+                    st.cache.as_ref(),
+                    id,
+                    mutation,
+                )
+                .await;
+            }
             return Ok(token_rotation_cooldown_response(retry_after_seconds));
         }
     };
@@ -456,7 +576,18 @@ pub async fn rotate_koth_api_token(
     )
     .await?;
     let latest_round = load_latest_round_on(roster.transaction_mut(), id).await?;
+    let cache_mutation = crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
+        st.cache.as_ref(),
+        id,
+    )
+    .await?;
     roster.release().await?;
+    crate::services::ad::koth_capability_cache::finish_game_epoch_mutation(
+        st.cache.as_ref(),
+        id,
+        cache_mutation,
+    )
+    .await;
     Ok(no_store_token_response(KothTokenModel {
         round: latest_round,
         token: Some(token),
