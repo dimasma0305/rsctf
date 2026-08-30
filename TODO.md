@@ -778,7 +778,7 @@ on 2026-08-25.
     `src/controllers/game/ad/targets.rs`, `src/controllers/game/koth/timeline.rs`, and
     `src/controllers/game/koth/eligibility.rs`.
 
-- [ ] Collapse control-plane per-card and fixed-interval polling into bounded owners.
+- [x] Collapse control-plane per-card and fixed-interval polling into bounded owners.
   - Every queued/building `ChallengeEditCard` currently starts its own two-second
     interval, and every interval invokes the same full challenge-list `mutate`. The
     request schedule therefore grows with the number of simultaneous builds instead
@@ -820,7 +820,7 @@ on 2026-08-25.
     `src/services/worker_store/nodes.rs`, and
     `src/controllers/admin/builds/images.rs`.
 
-- [ ] Turn manual and bulk image rebuilds into idempotent bounded jobs before Docker.
+- [x] Turn manual and bulk image rebuilds into idempotent bounded jobs before Docker.
   - All three manual-build controls use component-local React state as the only
     duplicate guard and call the same unadorned synchronous POST. A rapid activation
     before rerender, another surface/tab, or another organizer can submit the same
@@ -864,7 +864,7 @@ on 2026-08-25.
     `src/controllers/edit/builds.rs`, `src/controllers/admin/builds.rs`,
     `src/utils/single_flight.rs`, and a new registered idempotent forward migration.
 
-- [ ] Single-flight deterministic variant generation before scanning or launching work.
+- [x] Single-flight deterministic variant generation before scanning or launching work.
   - The organizer button uses React state as its only duplicate guard. A rapid second
     activation before rerender, another tab, another manager, or another replica can
     submit the same plain POST concurrently; the route has no heavy-work policy,
@@ -905,7 +905,7 @@ on 2026-08-25.
     `src/services/event_security/fusion.rs`, and a new registered idempotent forward
     migration for durable job/claim state.
 
-- [ ] Make “Save and roll out” idempotent per workload revision before advancing a
+- [x] Make “Save and roll out” idempotent per workload revision before advancing a
   worker generation.
   - The button's React state is only a same-render usability guard. A rapid second
     activation, another tab/operator, or a retry after a lost response can send the
@@ -949,7 +949,7 @@ on 2026-08-25.
     `src/services/challenge_workloads.rs`, `src/utils/single_flight.rs`, and a new
     registered idempotent forward migration for rollout jobs/revisions.
 
-- [ ] Coalesce manual A&D/KotH “Ensure containers” with scheduled reconciliation.
+- [x] Coalesce manual A&D/KotH “Ensure containers” with scheduled reconciliation.
   - The console reports “reconcile queued,” but the POST actually awaits a synchronous
     full-game pass. Component-local `busy` state cannot stop a same-render activation,
     another tab/operator, or a scheduler pass from starting the same work.
@@ -990,7 +990,7 @@ on 2026-08-25.
     `src/utils/single_flight.rs`, and a new registered idempotent forward migration for
     reconcile jobs/generations.
 
-- [ ] Make player and operator A&D resets idempotent and independently load-limited.
+- [x] Make player and operator A&D resets idempotent and independently load-limited.
   - Both clients call a synchronous destroy/create endpoint but announce “Reset
     queued.” The player has only component-local `resetting` state, and the operator
     has no per-service in-flight state after its confirmation closes, so a rapid
@@ -1036,7 +1036,7 @@ on 2026-08-25.
     `src/middlewares/rate_limiter.rs`, and a new registered idempotent forward
     migration for reset jobs/generations.
 
-- [ ] Replace live scoring/challenge toggles with idempotent desired-state commands.
+- [x] Replace live scoring/challenge toggles with idempotent desired-state commands.
   - `ScoringPause` flips the stored value without a request body. If its successful
     response is lost, an operator retry resumes scoring; a rapid duplicate or another
     organizer looking at stale state does the same. A duplicated resume can pause the
@@ -1068,7 +1068,7 @@ on 2026-08-25.
     `src/services/ad/engine/`, `src/services/challenge_workloads.rs`, and the
     event/challenge configuration revision persistence.
 
-- [ ] Split challenge-build status polling from source-archive inspection.
+- [x] Split challenge-build status polling from source-archive inspection.
   - While a reviewed challenge is `Queued` or `Building`, `ChallengeAuditModal`
     requests `auditmeta` every two seconds even though only build status/log can
     change. Each request reloads as much as 72 MiB from blob storage, then reparses a
@@ -1097,7 +1097,7 @@ on 2026-08-25.
     `src/controllers/edit/challenges/audit.rs`, `src/controllers/edit/mod.rs`,
     `src/server.rs`, and `src/utils/upload.rs`.
 
-- [ ] Make challenge ZIP/Git imports admission- and cancellation-safe before creating
+- [x] Make challenge ZIP/Git imports admission- and cancellation-safe before creating
   temporary checkouts.
   - Public/trusted ZIP imports create `rsctf-import-*`, hand extraction to an
     uncancellable `spawn_blocking` task, and remove the directory only after the
