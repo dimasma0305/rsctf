@@ -43,6 +43,8 @@ pub struct AccountVerifyModel {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PasswordResetModel {
+    /// Stable identity retained when the client did not receive a response.
+    pub operation_id: Uuid,
     #[serde(default)]
     pub password: String,
     #[serde(default)]

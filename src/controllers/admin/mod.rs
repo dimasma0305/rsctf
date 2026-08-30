@@ -143,7 +143,14 @@ pub fn router() -> Router<SharedState> {
         )
         // --- Users ---
         .route("/api/admin/users", get(users).post(add_users))
-        .route("/api/admin/users/import", post(import_users))
+        .route(
+            "/api/admin/users/import",
+            post(import_users).layer(DefaultBodyLimit::max(1024 * 1024)),
+        )
+        .route(
+            "/api/admin/users/import/{operationId}",
+            get(recover_import_job),
+        )
         .route("/api/admin/users/credentials/send", post(send_credentials))
         .route("/api/admin/users/search", post(search_users))
         .route(
@@ -930,7 +937,9 @@ mod settings;
 mod teams;
 mod users;
 mod users_bulk_identity;
+mod users_credential_admission;
 mod users_credentials;
+mod users_import_results;
 mod users_mutate;
 pub use anti_cheat::*;
 pub use builds::*;
@@ -943,4 +952,5 @@ pub use settings::*;
 pub use teams::*;
 pub use users::*;
 pub use users_credentials::*;
+pub use users_import_results::recover_import_job;
 pub use users_mutate::*;

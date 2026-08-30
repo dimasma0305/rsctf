@@ -1,6 +1,12 @@
 //! Admin user mutation handlers (update/delete/reset-password) — split from
 //! users.rs to keep each file under the 1000-line rule.
 use super::*;
+use aes_gcm::aead::consts::U12;
+use aes_gcm::aead::{Aead, KeyInit, Payload};
+use aes_gcm::{Aes256Gcm, Nonce};
+use axum::extract::ConnectInfo;
+use sha2::{Digest, Sha256};
+use std::net::SocketAddr;
 
 fn role_change_requires_stamp_rotation(current: Role, requested: Option<Role>) -> bool {
     requested.is_some_and(|role| role != current)
@@ -369,17 +375,124 @@ async fn affected_team_ids(pool: &sqlx::PgPool, user_id: Uuid) -> AppResult<Vec<
 
 /// `DELETE /api/admin/users/{userid}/password` — reset the user's password to a
 /// freshly generated value and return the plaintext (RSCTF `string` success).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminPasswordResetQuery {
+    pub operation_id: Uuid,
+}
+
+fn admin_reset_key(secret: &str) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"rsctf:admin-password-reset:v1\0");
+    digest.update(secret.as_bytes());
+    digest.finalize().into()
+}
+
+fn admin_reset_aad(operation_id: Uuid, user_id: Uuid) -> Vec<u8> {
+    format!("v1:{operation_id}:{user_id}").into_bytes()
+}
+
+fn encrypt_admin_reset(
+    secret: &str,
+    operation_id: Uuid,
+    user_id: Uuid,
+    password: &str,
+) -> AppResult<(Vec<u8>, [u8; 12])> {
+    let cipher = Aes256Gcm::new_from_slice(&admin_reset_key(secret))
+        .map_err(|_| AppError::internal("initialize admin reset encryption"))?;
+    let nonce: [u8; 12] = rand::random();
+    let nonce_value: Nonce<U12> = nonce.into();
+    let ciphertext = cipher
+        .encrypt(
+            &nonce_value,
+            Payload {
+                msg: password.as_bytes(),
+                aad: &admin_reset_aad(operation_id, user_id),
+            },
+        )
+        .map_err(|_| AppError::internal("encrypt admin reset result"))?;
+    Ok((ciphertext, nonce))
+}
+
+fn decrypt_admin_reset(
+    secret: &str,
+    operation_id: Uuid,
+    user_id: Uuid,
+    ciphertext: &[u8],
+    nonce: &[u8],
+) -> AppResult<String> {
+    let cipher = Aes256Gcm::new_from_slice(&admin_reset_key(secret))
+        .map_err(|_| AppError::internal("initialize admin reset encryption"))?;
+    let nonce = Nonce::<U12>::try_from(nonce)
+        .map_err(|_| AppError::internal("invalid admin reset nonce"))?;
+    let plaintext = cipher
+        .decrypt(
+            &nonce,
+            Payload {
+                msg: ciphertext,
+                aad: &admin_reset_aad(operation_id, user_id),
+            },
+        )
+        .map_err(|_| AppError::unavailable("Password reset result cannot be recovered"))?;
+    String::from_utf8(plaintext).map_err(|_| AppError::internal("invalid admin reset result"))
+}
+
 pub async fn reset_password(
     State(st): State<SharedState>,
-    _admin: AdminUser,
+    AdminUser(admin): AdminUser,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(userid): Path<Uuid>,
+    Query(query): Query<AdminPasswordResetQuery>,
 ) -> AppResult<Response> {
-    let password = generate_password();
-    let hash = hash_password_async(password.clone()).await?;
-
-    let txn = crate::controllers::account::locked_registration_transaction(&st).await?;
+    if query.operation_id.is_nil() {
+        return Err(AppError::bad_request(
+            "A valid password-reset operation ID is required",
+        ));
+    }
+    let existing: Option<(Uuid, Uuid, i16, Option<Vec<u8>>, Option<Vec<u8>>, bool)> =
+        sqlx::query_as(
+            r#"SELECT user_id, requested_by, status, result_ciphertext, result_nonce,
+                      result_expires_at_utc > clock_timestamp()
+                 FROM "AdminPasswordResetOperations" WHERE operation_id = $1"#,
+        )
+        .bind(query.operation_id)
+        .fetch_optional(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some((bound_user, bound_admin, status, ciphertext, nonce, live)) = existing {
+        if bound_user != userid || bound_admin != admin.id {
+            return Err(AppError::conflict(
+                "Password reset operation ID is bound to another request",
+            ));
+        }
+        if status == 1 {
+            if !live {
+                return Err(AppError::not_found("Password reset result has expired"));
+            }
+            let password = decrypt_admin_reset(
+                &st.config.jwt_secret,
+                query.operation_id,
+                userid,
+                ciphertext.as_deref().unwrap_or_default(),
+                nonce.as_deref().unwrap_or_default(),
+            )?;
+            return Ok(super::users_credentials::private_no_store(
+                RequestResponse::ok(password),
+            ));
+        }
+    }
+    let source = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()))
+        .unwrap_or_else(|| peer.ip().to_string());
+    let source_scope = format!("credential-source:{source}");
+    let mut credential_work = crate::services::credential_admission::try_acquire_scopes(
+        st.pg(),
+        crate::services::credential_admission::CredentialWorkClass::Interactive,
+        &[&source_scope],
+    )
+    .await?;
     let target = user::Entity::find_by_id(userid)
-        .one(&txn)
+        .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("User not found"))?;
     if target.role == Role::Admin {
@@ -387,21 +500,122 @@ pub async fn reset_password(
             "Administrator passwords must be changed from the account security flow",
         ));
     }
+    let target_stamp = target
+        .security_stamp
+        .clone()
+        .ok_or_else(|| AppError::conflict("User credential state is unavailable"))?;
+    let mut learned_scopes = vec![format!("credential-account:{userid}:{target_stamp}")];
+    if let Some(normalized_email) = target.normalized_email.as_deref() {
+        learned_scopes.push(format!("credential-email:{normalized_email}"));
+    }
+    let learned_scope_refs = learned_scopes
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    credential_work.try_add_scopes(&learned_scope_refs).await?;
+    let lease_token = Uuid::new_v4();
+    sqlx::query(
+        r#"UPDATE "AdminPasswordResetOperations"
+              SET status = 2
+            WHERE user_id = $1 AND operation_id <> $2 AND status = 0
+              AND lease_expires_at_utc <= clock_timestamp()"#,
+    )
+    .bind(userid)
+    .bind(query.operation_id)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let reserved = sqlx::query(
+        r#"INSERT INTO "AdminPasswordResetOperations"
+               (operation_id, user_id, requested_by, lease_token, lease_expires_at_utc)
+           VALUES ($1, $2, $3, $4, clock_timestamp() + INTERVAL '45 seconds')
+           ON CONFLICT (operation_id) DO UPDATE
+             SET lease_token = EXCLUDED.lease_token,
+                 lease_expires_at_utc = EXCLUDED.lease_expires_at_utc,
+                 result_expires_at_utc = clock_timestamp() + INTERVAL '15 minutes'
+           WHERE "AdminPasswordResetOperations".user_id = EXCLUDED.user_id
+             AND "AdminPasswordResetOperations".requested_by = EXCLUDED.requested_by
+             AND "AdminPasswordResetOperations".status = 0
+             AND "AdminPasswordResetOperations".lease_expires_at_utc <= clock_timestamp()"#,
+    )
+    .bind(query.operation_id)
+    .bind(userid)
+    .bind(admin.id)
+    .bind(lease_token)
+    .execute(st.pg())
+    .await;
+    match reserved {
+        Ok(result) if result.rows_affected() == 1 => {}
+        Ok(_) => return Err(AppError::too_many_requests(1)),
+        Err(error) if crate::utils::error::is_unique_violation(&error) => {
+            return Err(AppError::too_many_requests(1));
+        }
+        Err(error) => return Err(AppError::internal(error.to_string())),
+    }
+    let password = generate_password();
+    let hash = hash_password_async(password.clone()).await?;
+    credential_work.ensure_owned().await?;
     let credential_email_to_invalidate = target.normalized_email.clone();
-
-    let mut am: user::ActiveModel = target.into();
-    am.password_hash = Set(Some(hash));
-    am.security_stamp = Set(Some(Uuid::new_v4().to_string()));
-    am.update(&txn).await?;
-    // Keep the account row locked until the import-only plaintext has been
-    // removed. A concurrent credential email either consumes the old value
-    // before this reset linearizes, or observes the cache removal afterwards;
-    // it can never send the pre-reset password after the new hash commits.
+    let (ciphertext, nonce) =
+        encrypt_admin_reset(&st.config.jwt_secret, query.operation_id, userid, &password)?;
+    let mut transaction = st
+        .pg()
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let updated = sqlx::query(
+        r#"UPDATE "AspNetUsers"
+              SET password_hash = $2, security_stamp = $3
+            WHERE id = $1 AND security_stamp = $4 AND role <> $5"#,
+    )
+    .bind(userid)
+    .bind(hash)
+    .bind(Uuid::new_v4().to_string())
+    .bind(&target_stamp)
+    .bind(Role::Admin as i16)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    if updated != 1 {
+        transaction
+            .rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Err(AppError::conflict("User credential changed concurrently"));
+    }
+    let completed = sqlx::query(
+        r#"UPDATE "AdminPasswordResetOperations"
+              SET status = 1, result_ciphertext = $3, result_nonce = $4,
+                  completed_at_utc = clock_timestamp(),
+                  result_expires_at_utc = clock_timestamp() + INTERVAL '15 minutes'
+            WHERE operation_id = $1 AND lease_token = $2 AND status = 0"#,
+    )
+    .bind(query.operation_id)
+    .bind(lease_token)
+    .bind(ciphertext)
+    .bind(nonce.as_slice())
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    if completed != 1 {
+        transaction
+            .rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Err(AppError::conflict(
+            "Password reset operation lost its lease",
+        ));
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     if let Some(email) = credential_email_to_invalidate {
         super::users_credentials::invalidate_import_credential(st.cache.as_ref(), userid, &email)
             .await;
     }
-    txn.commit().await?;
 
     Ok(super::users_credentials::private_no_store(
         RequestResponse::ok(password),

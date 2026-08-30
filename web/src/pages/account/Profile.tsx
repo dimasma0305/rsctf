@@ -62,7 +62,6 @@ const Profile: FC = () => {
   }, [avatarPreview])
 
   const [disabled, setDisabled] = useState(false)
-
   const [mailEditOpened, setMailEditOpened] = useState(false)
   const [pwdChangeOpened, setPwdChangeOpened] = useState(false)
 
@@ -161,7 +160,6 @@ const Profile: FC = () => {
     const operation = acquired.owner
     mailOperationRef.current = operation
     let completed = false
-
     try {
       setDisabled(true)
       const res = await api.account.accountChangeEmail(
@@ -347,6 +345,7 @@ const Profile: FC = () => {
         closeOnClickOutside={!disabled}
         closeOnEscape={!disabled}
         title={t('account.button.update_email')}
+        withCloseButton={!disabled}
       >
         <Stack>
           <Text>
@@ -359,6 +358,7 @@ const Profile: FC = () => {
             w="100%"
             placeholder={user?.email ?? 'player@example.com'}
             value={email}
+            disabled={disabled}
             onChange={(event) => setEmail(event.target.value)}
           />
           <PasswordInput
@@ -366,6 +366,7 @@ const Profile: FC = () => {
             label={t('account.label.password_current', 'Current password')}
             autoComplete="current-password"
             value={emailPassword}
+            disabled={disabled}
             onChange={(event) => setEmailPassword(event.currentTarget.value)}
           />
           <Group justify="right">

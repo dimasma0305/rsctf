@@ -64,11 +64,16 @@ fn registration_disposition(
 mod avatar;
 mod bootstrap;
 mod email_confirmation;
+mod email_change_support;
+mod email_policy;
+mod password_policy;
 mod profile_bounds;
 mod recovery;
 mod request_models;
 pub use avatar::avatar;
 pub use email_confirmation::verify;
+pub(crate) use email_policy::*;
+pub(super) use password_policy::validate_password;
 use profile_bounds::load_user;
 pub(crate) use profile_bounds::validate_profile_fields;
 pub use recovery::*;
@@ -115,7 +120,6 @@ pub fn router() -> Router<SharedState> {
         .route("/api/account/verify", post(verify))
 }
 
-// ---------------------------------------------------------------------------
 // Local response DTOs (camelCase; must match Api.ts interfaces exactly).
 // ---------------------------------------------------------------------------
 
@@ -901,43 +905,6 @@ pub(super) fn set_cookie(resp: &mut Response, cookie: &str) -> AppResult<()> {
     let value = HeaderValue::from_str(cookie)
         .map_err(|e| AppError::internal(format!("invalid Set-Cookie: {e}")))?;
     resp.headers_mut().insert(SET_COOKIE, value);
-    Ok(())
-}
-
-/// Mirror of RSCTF's ASP.NET Identity password policy (IdentityExtension:
-/// `RequireNonAlphanumeric = false`, `RequireDigit = true`, `RequireUppercase =
-/// true`, `RequireLowercase = true`, `RequiredLength = 6`). RSCTF runs this inside
-/// `UserManager.CreateAsync` / `ChangePasswordAsync` / `ResetPasswordAsync` and
-/// surfaces the first failing validator's description through `HandleIdentityError`
-/// as a 400. We reproduce Identity's `PasswordValidator` check order (length, then
-/// digit, lowercase, uppercase) and its default `IdentityError` descriptions so the
-/// 400 body matches RSCTF's.
-pub(super) fn validate_password(pw: &str) -> AppResult<()> {
-    if pw.len() > MAX_PASSWORD_BYTES {
-        return Err(AppError::bad_request(format!(
-            "Passwords cannot exceed {MAX_PASSWORD_BYTES} bytes."
-        )));
-    }
-    if pw.chars().count() < 6 {
-        return Err(AppError::bad_request(
-            "Passwords must be at least 6 characters.",
-        ));
-    }
-    if !pw.chars().any(|c| c.is_ascii_digit()) {
-        return Err(AppError::bad_request(
-            "Passwords must have at least one digit ('0'-'9').",
-        ));
-    }
-    if !pw.chars().any(char::is_lowercase) {
-        return Err(AppError::bad_request(
-            "Passwords must have at least one lowercase ('a'-'z').",
-        ));
-    }
-    if !pw.chars().any(char::is_uppercase) {
-        return Err(AppError::bad_request(
-            "Passwords must have at least one uppercase ('A'-'Z').",
-        ));
-    }
     Ok(())
 }
 

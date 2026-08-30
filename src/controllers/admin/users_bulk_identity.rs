@@ -46,6 +46,17 @@ pub(super) struct ImportCredentialWrite<'a> {
     pub password: &'a str,
 }
 
+pub(super) struct DurableImportResult<'a> {
+    pub state: &'a crate::app_state::SharedState,
+    pub operation_id: Uuid,
+    pub row_index: usize,
+    pub lease_token: Uuid,
+    pub email: &'a str,
+    pub real_name: &'a str,
+    pub password: &'a str,
+    pub team_name: Option<&'a str>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct ProvisionedUser {
     pub id: Uuid,
@@ -434,6 +445,7 @@ async fn unique_user_name(
     }
 }
 
+#[cfg(test)]
 pub(super) async fn provision_import_user(
     pool: &sqlx::PgPool,
     write: ImportUserWrite<'_>,
@@ -441,6 +453,38 @@ pub(super) async fn provision_import_user(
     team_name: Option<&str>,
     cached_team_id: Option<i32>,
 ) -> AppResult<ImportProvision> {
+    provision_import_user_inner(pool, write, credential, team_name, cached_team_id, None)
+        .await
+        .map(|(provision, _)| provision)
+}
+
+pub(super) async fn provision_import_user_durable(
+    pool: &sqlx::PgPool,
+    write: ImportUserWrite<'_>,
+    credential: ImportCredentialWrite<'_>,
+    team_name: Option<&str>,
+    cached_team_id: Option<i32>,
+    durable: DurableImportResult<'_>,
+) -> AppResult<(ImportProvision, Option<super::users::ImportUserResult>)> {
+    provision_import_user_inner(
+        pool,
+        write,
+        credential,
+        team_name,
+        cached_team_id,
+        Some(durable),
+    )
+    .await
+}
+
+async fn provision_import_user_inner(
+    pool: &sqlx::PgPool,
+    write: ImportUserWrite<'_>,
+    credential: ImportCredentialWrite<'_>,
+    team_name: Option<&str>,
+    cached_team_id: Option<i32>,
+    durable: Option<DurableImportResult<'_>>,
+) -> AppResult<(ImportProvision, Option<super::users::ImportUserResult>)> {
     let mut transaction = registration_transaction(pool).await?;
     crate::services::anti_cheat::mark_identity_neutral_insert(&mut transaction).await?;
     let prospective_matches: Vec<(Uuid, i16, Option<String>)> = sqlx::query_as(
@@ -454,8 +498,9 @@ pub(super) async fn provision_import_user(
     .map_err(database_error)?;
     if prospective_matches.len() > 1 {
         transaction.rollback().await.map_err(database_error)?;
-        return Ok(ImportProvision::Skipped(
-            "email belongs to multiple existing accounts",
+        return Ok((
+            ImportProvision::Skipped("email belongs to multiple existing accounts"),
+            None,
         ));
     }
     let prospective_id = prospective_matches
@@ -482,8 +527,9 @@ pub(super) async fn provision_import_user(
     }
     if matches.len() > 1 {
         transaction.rollback().await.map_err(database_error)?;
-        return Ok(ImportProvision::Skipped(
-            "email belongs to multiple existing accounts",
+        return Ok((
+            ImportProvision::Skipped("email belongs to multiple existing accounts"),
+            None,
         ));
     }
 
@@ -492,8 +538,11 @@ pub(super) async fn provision_import_user(
         Some((id, role, user_name)) => {
             if role == Role::Admin as i16 || role == Role::Banned as i16 {
                 transaction.rollback().await.map_err(database_error)?;
-                return Ok(ImportProvision::Skipped(
-                    "administrator or banned accounts cannot be updated by import",
+                return Ok((
+                    ImportProvision::Skipped(
+                        "administrator or banned accounts cannot be updated by import",
+                    ),
+                    None,
                 ));
             }
             sqlx::query(
@@ -539,6 +588,29 @@ pub(super) async fn provision_import_user(
         }
     };
     let team_id = assign_team(&mut transaction, team_target, id, already_member).await?;
+    let durable_result = if let Some(durable) = durable {
+        let result = super::users::ImportUserResult {
+            email: durable.email.to_string(),
+            real_name: durable.real_name.to_string(),
+            user_name: user_name.clone(),
+            password: durable.password.to_string(),
+            team_name: durable.team_name.map(str::to_string),
+            status: if created { "created" } else { "updated" }.to_string(),
+            error: None,
+        };
+        super::users_import_results::store_import_result_in_transaction(
+            &mut transaction,
+            durable.state,
+            durable.operation_id,
+            durable.row_index,
+            durable.lease_token,
+            &result,
+        )
+        .await?;
+        Some(result)
+    } else {
+        None
+    };
     // Publish the plaintext before the identity transaction commits, while the
     // global registration lock and this user's row lock still serialize every
     // competing import/email mutation. Delivery revalidates id + email + stamp,
@@ -561,13 +633,16 @@ pub(super) async fn provision_import_user(
         .await;
         return Err(database_error(error));
     }
-    Ok(ImportProvision::Provisioned(ProvisionedUser {
-        id,
-        user_name,
-        security_stamp,
-        team_id,
-        created,
-    }))
+    Ok((
+        ImportProvision::Provisioned(ProvisionedUser {
+            id,
+            user_name,
+            security_stamp,
+            team_id,
+            created,
+        }),
+        durable_result,
+    ))
 }
 
 #[cfg(test)]

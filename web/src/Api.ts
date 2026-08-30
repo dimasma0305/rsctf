@@ -298,6 +298,8 @@ export type RecoveryModel = ModelWithCaptcha & {
 
 /** Account password reset */
 export interface PasswordResetModel {
+  /** Stable across retries of this reset attempt. */
+  operationId: string;
   /**
    * Password
    * @minLength 1
@@ -1689,6 +1691,44 @@ export interface ArrayResponseOfGameInfoModel {
    * @format int32
    */
   total?: number;
+}
+
+/** Idempotent request to clone a game and its challenge definitions. */
+export interface GameCloneModel {
+  /** Stable across retries of the same organizer action. */
+  operationId: string;
+  title: string;
+  /** @format int64 */
+  startTimeUtc: number;
+  /** @format int64 */
+  endTimeUtc: number;
+  includeChallenges: boolean;
+}
+
+export interface AdminUserImportRowResult {
+  email: string;
+  realName: string;
+  userName: string;
+  password: string;
+  teamName?: string;
+  status: "created" | "updated" | "skipped";
+  error?: string;
+}
+
+export interface AdminUserImportResult {
+  total: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  users: AdminUserImportRowResult[];
+}
+
+export interface AdminUserImportJobStatus {
+  operationId: string;
+  status: string;
+  total: number;
+  completed: number;
+  result?: AdminUserImportResult | null;
 }
 
 /**
@@ -5583,10 +5623,19 @@ export class Api<
      * @summary Reset user password
      * @request DELETE:/api/admin/users/{userid}/password
      */
-    adminResetPassword: (userid: string, params: RequestParams = {}) =>
+    adminResetPassword: (userid: string, operationId: string, params: RequestParams = {}) =>
       this.request<string, RequestResponse>({
         path: `/api/admin/users/${userid}/password`,
         method: "DELETE",
+        query: { operationId },
+        format: "json",
+        ...params,
+      }),
+
+    adminRecoverUserImport: (operationId: string, params: RequestParams = {}) =>
+      this.request<AdminUserImportJobStatus, RequestResponse>({
+        path: `/api/admin/users/import/${operationId}`,
+        method: "GET",
         format: "json",
         ...params,
       }),
@@ -6845,6 +6894,25 @@ export class Api<
     editAddGame: (data: GameInfoModel, params: RequestParams = {}) =>
       this.request<GameInfoModel, RequestResponse>({
         path: `/api/edit/games`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Reusing an operation ID with identical input returns the
+     * original hidden destination game.
+     *
+     * @tags Edit
+     * @name EditCloneGame
+     * @summary Clone Game
+     * @request POST:/api/edit/games/{id}/clone
+     */
+    editCloneGame: (id: number, data: GameCloneModel, params: RequestParams = {}) =>
+      this.request<number, RequestResponse>({
+        path: `/api/edit/games/${id}/clone`,
         method: "POST",
         body: data,
         type: ContentType.Json,

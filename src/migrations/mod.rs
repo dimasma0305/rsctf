@@ -20,6 +20,10 @@ pub(crate) fn test_pg_connect_options(database_url: &str) -> sqlx::postgres::PgC
         .application_name(test_process_application_name())
 }
 
+#[cfg(test)]
+mod admin_mutation_migration_tests;
+#[cfg(test)]
+mod credential_workflow_tests;
 mod m0001_init;
 mod m0002_extra;
 mod m0003_managers;
@@ -149,6 +153,9 @@ mod m0272_event_sensor_batches;
 mod m0273_receipt_variant_lifecycle;
 mod m0280_traffic_capture_inventory;
 mod m0281_anticheat_read_bounds;
+mod m0300_game_clone_operations;
+mod m0301_admin_credential_jobs;
+mod m0302_credential_mutation_recovery;
 mod m0303_mail_outbox;
 mod m0304_platform_settings_operations;
 mod m0305_event_vpn_override_operations;
@@ -320,6 +327,9 @@ impl MigratorTrait for Migrator {
             Box::new(m0273_receipt_variant_lifecycle::Migration),
             Box::new(m0280_traffic_capture_inventory::Migration),
             Box::new(m0281_anticheat_read_bounds::Migration),
+            Box::new(m0300_game_clone_operations::Migration),
+            Box::new(m0301_admin_credential_jobs::Migration),
+            Box::new(m0302_credential_mutation_recovery::Migration),
             Box::new(m0303_mail_outbox::Migration),
             Box::new(m0304_platform_settings_operations::Migration),
             Box::new(m0305_event_vpn_override_operations::Migration),
@@ -472,7 +482,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 34..],
+            &names[names.len() - 37..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -501,6 +511,9 @@ mod tests {
                 "m0273_receipt_variant_lifecycle",
                 "m0280_traffic_capture_inventory",
                 "m0281_anticheat_read_bounds",
+                "m0300_game_clone_operations",
+                "m0301_admin_credential_jobs",
+                "m0302_credential_mutation_recovery",
                 "m0303_mail_outbox",
                 "m0304_platform_settings_operations",
                 "m0305_event_vpn_override_operations",
@@ -526,363 +539,6 @@ mod tests {
             migration_ledger_diff(&expected, &applied),
             (vec!["m0002".to_owned()], vec!["m9999".to_owned()])
         );
-    }
-
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_identity() {
-        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
-        let admin = PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&database_url)
-            .await
-            .unwrap();
-        let schema = format!("rsctf_admin_mutations_{}", uuid::Uuid::new_v4().simple());
-        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
-            .execute(&admin)
-            .await
-            .unwrap();
-        let options = PgConnectOptions::from_str(&database_url)
-            .unwrap()
-            .options([("search_path", schema.as_str())]);
-        let pool = PgPoolOptions::new()
-            .max_connections(4)
-            .connect_with(options)
-            .await
-            .unwrap();
-        sqlx::raw_sql(
-            r#"
-            CREATE TABLE "AspNetUsers" (id UUID PRIMARY KEY);
-            CREATE TABLE "Games" (id INTEGER PRIMARY KEY);
-            CREATE TABLE "GameChallenges" (
-                id INTEGER PRIMARY KEY,
-                game_id INTEGER NOT NULL REFERENCES "Games"(id),
-                is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-                deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
-                review_status SMALLINT NOT NULL DEFAULT 1,
-                "Type" SMALLINT NOT NULL DEFAULT 0,
-                ad_self_hosted BOOLEAN NOT NULL DEFAULT FALSE,
-                flag_template TEXT NULL
-            );
-            CREATE TABLE "FlagContexts" (
-                id SERIAL PRIMARY KEY,
-                challenge_id INTEGER NULL REFERENCES "GameChallenges"(id),
-                flag TEXT NOT NULL
-            );
-            CREATE TABLE "Divisions" (id INTEGER PRIMARY KEY);
-            CREATE TABLE "Teams" (id INTEGER PRIMARY KEY);
-            CREATE TABLE "AdTeamServices" (
-                id INTEGER PRIMARY KEY,
-                challenge_id INTEGER NOT NULL REFERENCES "GameChallenges"(id)
-            );
-            CREATE TABLE "AdFlags" (
-                id INTEGER PRIMARY KEY,
-                team_service_id INTEGER NOT NULL REFERENCES "AdTeamServices"(id),
-                flag TEXT NOT NULL
-            );
-            CREATE TABLE "ChallengeVariants" (
-                id UUID PRIMARY KEY,
-                challenge_id INTEGER NOT NULL REFERENCES "GameChallenges"(id),
-                manifest JSONB NOT NULL
-            );
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        sqlx::raw_sql(super::m0306_bulk_challenge_mutations::UP_SQL)
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::raw_sql(super::m0307_division_revision_operations::UP_SQL)
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::raw_sql(super::m0308_team_invite_rotation::UP_SQL)
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let actor = uuid::Uuid::new_v4();
-        sqlx::query(r#"INSERT INTO "AspNetUsers" VALUES ($1)"#)
-            .bind(actor)
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query(r#"INSERT INTO "Games" (id) VALUES (1)"#)
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query(
-            r#"INSERT INTO "GameChallenges" (id, game_id, "Type")
-               VALUES (10, 1, 0), (11, 1, 0)"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"INSERT INTO "GameChallenges" (id, game_id, "Type", flag_template)
-               VALUES (12, 1, 3, '')"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"INSERT INTO "FlagContexts" (challenge_id, flag)
-               VALUES (10, 'flag{same}'), (10, 'flag{same}'), (11, $1)"#,
-        )
-        .bind("x".repeat(128))
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(r#"INSERT INTO "Divisions" (id) VALUES (20)"#)
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query(r#"INSERT INTO "Teams" (id) VALUES (30)"#)
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        sqlx::raw_sql(super::m0309_flag_import_operations::UP_SQL)
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let duplicate_rows: (i64, i64) = sqlx::query_as(
-            r#"SELECT COUNT(*)::bigint,
-                      COUNT(*) FILTER (WHERE canonical_identity_enforced)::bigint
-                 FROM "FlagContexts"
-                WHERE challenge_id = 10 AND flag = 'flag{same}'"#,
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            duplicate_rows,
-            (2, 1),
-            "legacy duplicate flags were deleted"
-        );
-        let invalid_challenge_enabled: bool =
-            sqlx::query_scalar(r#"SELECT is_enabled FROM "GameChallenges" WHERE id = 11"#)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert!(!invalid_challenge_enabled);
-        let default_template: (bool, Option<String>) = sqlx::query_as(
-            r#"SELECT is_enabled, flag_template FROM "GameChallenges" WHERE id = 12"#,
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(default_template, (true, None));
-        sqlx::query(
-            r#"INSERT INTO "GameChallenges" (id, game_id, "Type", flag_template)
-               VALUES (13, 1, 0, '')"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(r#"UPDATE "GameChallenges" SET "Type" = 3 WHERE id = 13"#)
-            .execute(&pool)
-            .await
-            .expect("the runtime default empty template must survive a type transition");
-        sqlx::query(
-            r#"INSERT INTO "GameChallenges" (id, game_id, "Type", flag_template)
-               VALUES (14, 1, 0, ' ')"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        let invalid_transition =
-            sqlx::query(r#"UPDATE "GameChallenges" SET "Type" = 3 WHERE id = 14"#)
-                .execute(&pool)
-                .await
-                .unwrap_err();
-        assert_eq!(
-            invalid_transition
-                .as_database_error()
-                .and_then(|error| error.code())
-                .as_deref(),
-            Some("23514")
-        );
-
-        let duplicate_flag = sqlx::query(
-            r#"INSERT INTO "FlagContexts" (challenge_id, flag) VALUES (10, 'flag{same}')"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap_err();
-        assert_eq!(
-            duplicate_flag
-                .as_database_error()
-                .and_then(|error| error.code())
-                .as_deref(),
-            Some("23505")
-        );
-        let oversized_flag =
-            sqlx::query(r#"INSERT INTO "FlagContexts" (challenge_id, flag) VALUES (10, $1)"#)
-                .bind("y".repeat(128))
-                .execute(&pool)
-                .await
-                .unwrap_err();
-        assert_eq!(
-            oversized_flag
-                .as_database_error()
-                .and_then(|error| error.code())
-                .as_deref(),
-            Some("23514")
-        );
-
-        let digest = vec![0_u8; 32];
-        let bulk_operation = uuid::Uuid::new_v4();
-        sqlx::query(
-            r#"INSERT INTO "BulkChallengeMutationOperations"
-                 (game_id, operation_id, actor_user_id, expected_revision, action,
-                  challenge_ids, request_digest)
-               VALUES (1, $1, $2, 1, 0, ARRAY[10], $3)"#,
-        )
-        .bind(bulk_operation)
-        .bind(actor)
-        .bind(&digest)
-        .execute(&pool)
-        .await
-        .unwrap();
-        let duplicate_bulk = sqlx::query(
-            r#"INSERT INTO "BulkChallengeMutationOperations"
-                 (game_id, operation_id, actor_user_id, expected_revision, action,
-                  challenge_ids, request_digest)
-               VALUES (1, $1, $2, 1, 0, ARRAY[10], $3)"#,
-        )
-        .bind(bulk_operation)
-        .bind(actor)
-        .bind(&digest)
-        .execute(&pool)
-        .await
-        .unwrap_err();
-        assert_eq!(
-            duplicate_bulk
-                .as_database_error()
-                .and_then(|error| error.code())
-                .as_deref(),
-            Some("23505")
-        );
-
-        let division_operation = uuid::Uuid::new_v4();
-        sqlx::query(
-            r#"INSERT INTO "DivisionUpdateOperations"
-                 (division_id, operation_id, actor_user_id, request_digest,
-                  expected_revision, result_revision)
-               VALUES (20, $1, $2, $3, 1, 1)"#,
-        )
-        .bind(division_operation)
-        .bind(actor)
-        .bind(&digest)
-        .execute(&pool)
-        .await
-        .unwrap();
-        let duplicate_division = sqlx::query(
-            r#"INSERT INTO "DivisionUpdateOperations"
-                 (division_id, operation_id, actor_user_id, request_digest,
-                  expected_revision, result_revision)
-               VALUES (20, $1, $2, $3, 1, 1)"#,
-        )
-        .bind(division_operation)
-        .bind(actor)
-        .bind(&digest)
-        .execute(&pool)
-        .await
-        .unwrap_err();
-        assert_eq!(
-            duplicate_division
-                .as_database_error()
-                .and_then(|error| error.code())
-                .as_deref(),
-            Some("23505")
-        );
-        let invite_operation = uuid::Uuid::new_v4();
-        sqlx::query(
-            r#"INSERT INTO "TeamInviteOperations"
-                 (team_id, operation_id, actor_user_id, expected_revision,
-                  result_revision, result_token)
-               VALUES (30, $1, $2, 1, 2, $3)"#,
-        )
-        .bind(invite_operation)
-        .bind(actor)
-        .bind("a".repeat(32))
-        .execute(&pool)
-        .await
-        .unwrap();
-        let duplicate_invite_revision = sqlx::query(
-            r#"INSERT INTO "TeamInviteOperations"
-                 (team_id, operation_id, actor_user_id, expected_revision,
-                  result_revision, result_token)
-               VALUES (30, $1, $2, 1, 2, $3)"#,
-        )
-        .bind(uuid::Uuid::new_v4())
-        .bind(actor)
-        .bind("b".repeat(32))
-        .execute(&pool)
-        .await
-        .unwrap_err();
-        assert_eq!(
-            duplicate_invite_revision
-                .as_database_error()
-                .and_then(|error| error.code())
-                .as_deref(),
-            Some("23505")
-        );
-        let flag_operation = uuid::Uuid::new_v4();
-        sqlx::query(
-            r#"INSERT INTO "FlagImportOperations"
-                 (challenge_id, operation_id, actor_user_id, request_digest, lease_token)
-               VALUES (10, $1, $2, $3, $4)"#,
-        )
-        .bind(flag_operation)
-        .bind(actor)
-        .bind(&digest)
-        .bind(uuid::Uuid::new_v4())
-        .execute(&pool)
-        .await
-        .unwrap();
-        let duplicate_flag_operation = sqlx::query(
-            r#"INSERT INTO "FlagImportOperations"
-                 (challenge_id, operation_id, actor_user_id, request_digest, lease_token)
-               VALUES (10, $1, $2, $3, $4)"#,
-        )
-        .bind(flag_operation)
-        .bind(actor)
-        .bind(&digest)
-        .bind(uuid::Uuid::new_v4())
-        .execute(&pool)
-        .await
-        .unwrap_err();
-        assert_eq!(
-            duplicate_flag_operation
-                .as_database_error()
-                .and_then(|error| error.code())
-                .as_deref(),
-            Some("23505")
-        );
-
-        let revision: i64 = sqlx::query_scalar(
-            r#"SELECT challenge_configuration_revision FROM "Games" WHERE id = 1"#,
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert!(
-            revision > 1,
-            "challenge and flag triggers did not advance revision"
-        );
-
-        pool.close().await;
-        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
-            .execute(&admin)
-            .await
-            .unwrap();
     }
 
     #[tokio::test]

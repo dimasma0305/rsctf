@@ -208,6 +208,12 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: control-plane job retention sweep failed: {e}"),
     }
 
+    match crate::services::credential_admission::purge_expired(state.pg(), 256).await {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: purged expired credential workflow row(s)"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("cron: credential workflow retention sweep failed: {e}"),
+    }
+
     match crate::services::traffic::purge_expired_captures(state, 128).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: purged expired traffic capture tree(s)"),
         Ok(_) => {}

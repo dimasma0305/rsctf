@@ -1865,7 +1865,7 @@ on 2026-08-25.
     `src/services/suspicion/honeypot.rs`, `src/middlewares/rate_limiter.rs`,
     `src/server.rs`, and `src/migrations/m0018_honeypot_hit.rs`.
 
-- [ ] Repair the game-clone route contract and make cloning bounded and replayable.
+- [x] Repair the game-clone route contract and make cloning bounded and replayable.
   - `CloneGameModal` posts to lowercase `/api/edit/games/{id}/clone`, while Axum
     registers only case-sensitive `/api/edit/games/{id}/Clone`. The organizer action
     therefore never reaches `clone_game`; depending on fallback routing it receives
@@ -1897,7 +1897,7 @@ on 2026-08-25.
     `src/controllers/edit/mod.rs`, `src/controllers/edit/games/cloning.rs`,
     `src/server.rs`, and a new registered idempotent forward migration for clone jobs.
 
-- [ ] Bound and idempotently recover admin user imports and password issuance.
+- [x] Bound and idempotently recover admin user imports and password issuance.
   - `UserImportModal` parses every CSV row into React state and sends the complete list;
     neither it nor `ImportRequest` enforces a row count. The default JSON byte limit is
     not a work limit: many minimal rows still cause one serial Argon2 hash, provisioning
@@ -1933,7 +1933,7 @@ on 2026-08-25.
     `src/utils/crypto_utils.rs`, and a new registered idempotent forward migration for
     credential jobs/results.
 
-- [ ] Fail fast on duplicate credential mutations before they queue Argon2 work.
+- [x] Fail fast on duplicate credential mutations before they queue Argon2 work.
   - `PasswordChangeModal` has no pending state or synchronous in-flight guard, so rapid
     click/Enter activation can dispatch several `PUT /api/account/changepassword`
     requests. Every concurrent request can load the same security stamp and password

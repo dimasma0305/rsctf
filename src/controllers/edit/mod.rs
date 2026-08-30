@@ -20,7 +20,7 @@ use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, Set, TransactionTrait,
+    QuerySelect, Set,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -507,6 +507,7 @@ pub struct AttachmentCreateModel {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameCloneModel {
+    pub operation_id: Uuid,
     #[serde(default)]
     pub title: String,
     #[serde(default = "epoch", with = "crate::utils::datetime::millis")]
@@ -651,6 +652,9 @@ impl PendingChallengeModel {
 //  Router
 // ============================================================================
 
+const GAME_CLONE_COMPAT_ROUTE: &str = "/api/edit/games/{id}/Clone";
+const GAME_CLONE_CANONICAL_ROUTE: &str = "/api/edit/games/{id}/clone";
+
 pub fn router() -> Router<SharedState> {
     Router::new()
         .route(
@@ -677,7 +681,8 @@ pub fn router() -> Router<SharedState> {
             get(get_game).put(update_game).delete(delete_game),
         )
         .route("/api/edit/games/{id}/HashSalt", get(get_hash_salt))
-        .route("/api/edit/games/{id}/Clone", post(clone_game))
+        .route(GAME_CLONE_COMPAT_ROUTE, post(clone_game))
+        .route(GAME_CLONE_CANONICAL_ROUTE, post(clone_game))
         .route(
             "/api/edit/games/{id}/variants",
             get(event_security::list_variants),

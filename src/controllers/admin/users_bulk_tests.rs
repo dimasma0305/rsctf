@@ -653,7 +653,7 @@ async fn failed_team_assignment_rolls_back_recredential_and_creation() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn later_full_team_failure_is_a_skipped_row_without_losing_other_results() {
-    use super::super::users::{import_row_step, ImportUserResult};
+    use super::super::users::{import_row_step, terminal_import_row_reason, ImportUserResult};
     use crate::controllers::admin::users_credentials::credential_cache_key;
 
     let harness = Harness::new().await;
@@ -713,7 +713,7 @@ async fn later_full_team_failure_is_a_skipped_row_without_losing_other_results()
         error: None,
     }];
 
-    let second_reason = import_row_step(
+    let second_error = import_row_step(
         provision_import_user(
             &harness.pool,
             import_write("SECOND@EXAMPLE.TEST", "second-hash"),
@@ -726,6 +726,8 @@ async fn later_full_team_failure_is_a_skipped_row_without_losing_other_results()
         "provision",
     )
     .expect_err("full team unexpectedly accepted the second row");
+    let second_reason = terminal_import_row_reason(&second_error)
+        .expect("a full team is a deterministic skipped-row result");
     response_rows.push(ImportUserResult {
         email: "second@example.test".to_string(),
         real_name: "Second".to_string(),
