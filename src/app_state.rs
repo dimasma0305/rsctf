@@ -56,6 +56,9 @@ pub struct AppState {
     /// Bounded post-commit handoff for submission and game-event live feeds.
     /// Cursor backfill remains authoritative if this best-effort queue is full.
     pub(crate) feed_publication: crate::services::feed_publication::PublicationQueue,
+    /// Non-blocking bounded aggregation handoff for proxy flag-egress evidence.
+    /// One supervised writer owns all PostgreSQL interaction.
+    pub(crate) flag_egress_observations: crate::services::flag_egress_observations::Queue,
 }
 
 /// One real-time message: which client hub method to invoke, which game it
@@ -166,6 +169,7 @@ impl AppState {
             events,
             user_activity: crate::middlewares::user_activity::ActivityQueue::new(),
             feed_publication: crate::services::feed_publication::PublicationQueue::new(),
+            flag_egress_observations: Default::default(),
         })
     }
 

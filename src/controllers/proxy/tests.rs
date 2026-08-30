@@ -1,5 +1,8 @@
+use super::authorization::exercise_lease_is_valid;
+use super::transport::{normal_close, transport_failure_close, BUFFER_SIZE};
 use super::*;
-use axum::extract::ws::close_code;
+use crate::utils::enums::Role;
+use axum::extract::ws::{close_code, Message};
 
 #[test]
 fn proxy_client_messages_have_a_small_memory_bound() {
@@ -25,6 +28,42 @@ fn proxy_close_frames_use_explicit_generic_codes() {
     let failed = frame(transport_failure_close());
     assert_eq!(failed.code, close_code::ERROR);
     assert_eq!(failed.reason.as_str(), "proxy transport failed");
+}
+
+#[test]
+fn proxy_churn_admission_precedes_live_identity_and_target_queries() {
+    let source = include_str!("mod.rs");
+    let player = &source[source.find("async fn proxy_for_instance").unwrap()
+        ..source.find("async fn proxy_for_noinstance").unwrap()];
+    let subject = player.find("proxy_subject(").unwrap();
+    let open_budget = player.find("admit_proxy_open(").unwrap();
+    let live_identity = player.find("proxy_user(").unwrap();
+    let target = player.find("resolve_instance_target(").unwrap();
+    assert!(subject < open_budget && open_budget < live_identity && live_identity < target);
+
+    let preview = &source[source.find("async fn proxy_for_noinstance").unwrap()
+        ..source.find("struct InstanceAccess").unwrap()];
+    let subject = preview.find("proxy_subject(").unwrap();
+    let open_budget = preview.find("admit_proxy_open(").unwrap();
+    let live_identity = preview.find("proxy_user(").unwrap();
+    let admission = preview.find("try_acquire_preview_distributed").unwrap();
+    let target = preview.find("resolve_noinstance_target(").unwrap();
+    assert!(
+        subject < open_budget
+            && open_budget < live_identity
+            && live_identity < admission
+            && admission < target
+    );
+}
+
+#[test]
+fn non_game_routes_revalidate_after_upgrade_before_backend_connect() {
+    let source = include_str!("mod.rs");
+    let run = &source[source.find("async fn run_or_close").unwrap()
+        ..source.find("async fn proxy_session").unwrap()];
+    let final_lease = run.find("lease_is_valid(lease).await").unwrap();
+    let dial = run.find("TcpStream::connect").unwrap();
+    assert!(final_lease < dial);
 }
 
 fn exercise_row(user_id: Uuid) -> ExerciseAccessRow {
@@ -171,6 +210,14 @@ async fn exercise_lease_revokes_when_the_account_session_changes() {
         .execute(&pool)
         .await
         .unwrap();
+    // Established sessions poll on a five-second cadence and the shared
+    // authorization result is allowed a much smaller bounded freshness
+    // window. Exercise the next authoritative lease check, not a deliberately
+    // fresh cached result from the preceding assertion.
+    tokio::time::sleep(
+        super::authorization::EXERCISE_LEASE_FRESHNESS + std::time::Duration::from_millis(25),
+    )
+    .await;
     assert!(!live().await);
 
     sqlx::query(
