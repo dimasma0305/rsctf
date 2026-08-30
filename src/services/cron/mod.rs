@@ -214,6 +214,25 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: credential workflow retention sweep failed: {e}"),
     }
 
+    match purge_expired_koth_observation_operations(state, 128).await {
+        Ok(n) if n > 0 => {
+            tracing::info!(n, "cron: purged expired KotH observation operation(s)")
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("cron: KotH observation operation sweep failed: {e}"),
+    }
+
+    match purge_expired_player_credential_operations(state, 128).await {
+        Ok(n) if n > 0 => {
+            tracing::info!(
+                n,
+                "cron: purged expired player credential recovery record(s)"
+            )
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("cron: player credential recovery sweep failed: {e}"),
+    }
+
     match crate::services::traffic::purge_expired_captures(state, 128).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: purged expired traffic capture tree(s)"),
         Ok(_) => {}
@@ -350,6 +369,57 @@ async fn run_jobs(state: &SharedState) {
     // and the scoreboard builder in `controllers::koth` credits the current
     // holder `(now - held_since)` seconds at render time, so the still-open hold
     // window is always accounted for without persisting anything per tick.
+}
+
+/// Completed referee responses are recoverable for ten minutes. Remove a
+/// bounded, skip-locked batch so abandoned reservations and results do not
+/// accumulate when no further submission arrives for that challenge.
+async fn purge_expired_koth_observation_operations(
+    state: &SharedState,
+    limit: i64,
+) -> AppResult<u64> {
+    sqlx::query(
+        r#"DELETE FROM "KothApiObservationOperations" operation
+            USING (
+              SELECT challenge_id, request_digest
+                FROM "KothApiObservationOperations"
+               WHERE expires_at <= clock_timestamp()
+               ORDER BY expires_at
+               LIMIT $1 FOR UPDATE SKIP LOCKED
+            ) expired
+            WHERE operation.challenge_id = expired.challenge_id
+              AND operation.request_digest = expired.request_digest"#,
+    )
+    .bind(limit.clamp(1, 1024))
+    .execute(state.pg())
+    .await
+    .map(|result| result.rows_affected())
+    .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))
+}
+
+/// Encrypted recovery is intentionally short-lived. The maintenance leader
+/// physically removes a bounded batch on every pass; mutation requests also
+/// purge their own expired operation so expiry never depends on this job for
+/// authorization correctness.
+pub(crate) async fn purge_expired_player_credential_operations(
+    state: &SharedState,
+    limit: i64,
+) -> AppResult<u64> {
+    sqlx::query(
+        r#"DELETE FROM "PlayerCredentialOperations" operation
+            USING (
+              SELECT operation_id FROM "PlayerCredentialOperations"
+               WHERE expires_at <= clock_timestamp()
+               ORDER BY expires_at
+               LIMIT $1 FOR UPDATE SKIP LOCKED
+            ) expired
+            WHERE operation.operation_id = expired.operation_id"#,
+    )
+    .bind(limit.clamp(1, 1024))
+    .execute(state.pg())
+    .await
+    .map(|result| result.rows_affected())
+    .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))
 }
 
 async fn run_round_jobs(state: &SharedState, scope: RoundSchedulerScope) {

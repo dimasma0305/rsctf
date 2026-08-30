@@ -250,6 +250,21 @@ pub async fn latest_cursor(pool: &sqlx::PgPool, game_id: i32) -> anyhow::Result<
     .await?)
 }
 
+pub(crate) async fn publish_committed_batch(
+    pool: &sqlx::PgPool,
+    events: &EventBus,
+    game_id: i32,
+    event_ids: &[i32],
+) -> anyhow::Result<()> {
+    if event_ids.is_empty() {
+        return Ok(());
+    }
+    let mut connection = pool.acquire().await?;
+    let messages = committed_by_ids_on(&mut connection, game_id, event_ids, 256).await?;
+    publish_messages(events, messages);
+    Ok(())
+}
+
 pub(super) async fn committed_by_ids_on(
     connection: &mut PgConnection,
     game_id: i32,

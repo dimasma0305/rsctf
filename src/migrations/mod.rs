@@ -142,6 +142,8 @@ mod m0115_flag_egress_feed_cursor;
 mod m0116_game_event_feed_pending;
 mod m0242_participation_provision_jobs;
 mod m0250_team_signature_key_index;
+mod m0251_koth_referee_retry;
+mod m0252_player_credential_operations;
 mod m0260_ad_control_revisions;
 mod m0261_control_plane_jobs;
 mod m0262_challenge_import_jobs;
@@ -153,6 +155,7 @@ mod m0272_event_sensor_batches;
 mod m0273_receipt_variant_lifecycle;
 mod m0280_traffic_capture_inventory;
 mod m0281_anticheat_read_bounds;
+mod m0290_distributed_proxy_admission;
 mod m0300_game_clone_operations;
 mod m0301_admin_credential_jobs;
 mod m0302_credential_mutation_recovery;
@@ -316,6 +319,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0116_game_event_feed_pending::Migration),
             Box::new(m0242_participation_provision_jobs::Migration),
             Box::new(m0250_team_signature_key_index::Migration),
+            Box::new(m0251_koth_referee_retry::Migration),
+            Box::new(m0252_player_credential_operations::Migration),
             Box::new(m0260_ad_control_revisions::Migration),
             Box::new(m0261_control_plane_jobs::Migration),
             Box::new(m0262_challenge_import_jobs::Migration),
@@ -327,6 +332,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0273_receipt_variant_lifecycle::Migration),
             Box::new(m0280_traffic_capture_inventory::Migration),
             Box::new(m0281_anticheat_read_bounds::Migration),
+            Box::new(m0290_distributed_proxy_admission::Migration),
             Box::new(m0300_game_clone_operations::Migration),
             Box::new(m0301_admin_credential_jobs::Migration),
             Box::new(m0302_credential_mutation_recovery::Migration),
@@ -482,7 +488,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 37..],
+            &names[names.len() - 40..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -500,6 +506,8 @@ mod tests {
                 "m0116_game_event_feed_pending",
                 "m0242_participation_provision_jobs",
                 "m0250_team_signature_key_index",
+                "m0251_koth_referee_retry",
+                "m0252_player_credential_operations",
                 "m0260_ad_control_revisions",
                 "m0261_control_plane_jobs",
                 "m0262_challenge_import_jobs",
@@ -511,6 +519,7 @@ mod tests {
                 "m0273_receipt_variant_lifecycle",
                 "m0280_traffic_capture_inventory",
                 "m0281_anticheat_read_bounds",
+                "m0290_distributed_proxy_admission",
                 "m0300_game_clone_operations",
                 "m0301_admin_credential_jobs",
                 "m0302_credential_mutation_recovery",
