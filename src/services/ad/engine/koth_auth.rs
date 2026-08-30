@@ -329,6 +329,8 @@ mod tests {
 
     use super::{game_lock_key, revoke_game_capabilities, revoke_koth_capabilities_locked};
 
+    type CapabilityRetryState = (Vec<(i32, i32, String)>, Vec<(i32, Vec<u8>)>);
+
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
     async fn revocation_clears_live_projection_without_rewriting_history() {
@@ -481,7 +483,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(api_state, (3, 2, true, true, true, true, true));
-        let before_retry: (Vec<(i32, i32, String)>, Vec<(i32, Vec<u8>)>) = (
+        let before_retry: CapabilityRetryState = (
             sqlx::query_as(
                 r#"SELECT challenge_id, generation, token
                      FROM "KothApiTeamTokens"
@@ -507,7 +509,7 @@ mod tests {
             .await
             .unwrap();
         teardown_retry.commit().await.unwrap();
-        let after_retry: (Vec<(i32, i32, String)>, Vec<(i32, Vec<u8>)>) = (
+        let after_retry: CapabilityRetryState = (
             sqlx::query_as(
                 r#"SELECT challenge_id, generation, token
                      FROM "KothApiTeamTokens"
