@@ -88,7 +88,13 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   } = useChallengePolling<ChallengeDetailModel>({
     key: gameId > 0 && challengeId > 0 ? `/api/game/${gameId}/challenges/${challengeId}` : null,
     active: readEnabled,
-    refreshInterval: 120 * 1000,
+    // Challenge material is stable while this modal is open. Container,
+    // submission, and review mutations explicitly reconcile through `mutate`;
+    // periodically replacing a valid cached detail with a transient refresh
+    // error only hides usable challenge content from the player.
+    refreshInterval: 0,
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
     request: challengeRequest,
   })
 

@@ -11,7 +11,7 @@ import { InlineMarkdown } from '@Components/MarkdownRenderer'
 import { reconcileLiveRows } from '@Utils/FeedReconciliation'
 import { useLanguage } from '@Utils/I18n'
 import { currentListSnapshotRows, LatestListRequest, type ListSnapshot } from '@Utils/LatestRequest'
-import { MAX_GAME_NOTICE_ROWS, mergeGameNotices, receiveGameNotice } from '@Utils/NoticeFeed'
+import { invalidateGameNotice, MAX_GAME_NOTICE_ROWS, mergeGameNotices, receiveGameNotice } from '@Utils/NoticeFeed'
 import { NoticTypeIconMap } from '@Utils/Shared'
 import { NOTICE_FALLBACK_POLL_MS } from '@Utils/SignalRRecovery'
 import { useViewerIdentity } from '@Utils/ViewerIdentity'
@@ -133,6 +133,17 @@ export const GameNoticePanel: FC = () => {
     url: `/hub/user?game=${numId}`,
     ownerKey: noticeScope,
     handlers: {
+      ReceivedGameNoticeChanged: (raw) => {
+        const changedId = (raw as { id?: unknown })?.id
+        if (typeof changedId === 'number' && Number.isSafeInteger(changedId)) {
+          const liveRows = currentListSnapshotRows(noticeScope, newNotices.current) ?? []
+          newNotices.current = {
+            scope: noticeScope,
+            rows: invalidateGameNotice(changedId, liveRows),
+          }
+        }
+        void fetchNotices().catch(() => undefined)
+      },
       ReceivedGameNotice: (raw) => {
         const message = raw as GameNotice
         const liveRows = currentListSnapshotRows(noticeScope, newNotices.current) ?? []

@@ -1678,6 +1678,10 @@ export interface GameNoticeModel {
    * @minLength 1
    */
   content: string;
+  /** Stable client identity used to recover an exactly-once mutation result. */
+  operationId: string;
+  /** Unix milliseconds; null publishes immediately and omission preserves an update schedule. */
+  publishAt?: number | null;
 }
 
 export interface Division {
@@ -3982,6 +3986,8 @@ export interface ChallengeDetailModel {
   userComment?: string | null;
   solveReceiptMode?: SolveReceiptMode;
   receiptVerifierIdentity?: string | null;
+  /** True when this A&D service runs on the team's host through the BYOC agent. */
+  adSelfHosted?: boolean;
   /** Public identity of this team's deterministic variant; never includes its answer. */
   variant?: ClientChallengeVariant | null;
 }

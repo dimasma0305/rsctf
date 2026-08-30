@@ -603,6 +603,10 @@ fn start_background_services(
             rsctf::services::flag_egress_feed::start_reconciler(state.clone(), shutdown.clone()),
         ));
         required.push(RequiredTask::Unit(
+            "normal-notice delivery reconciler",
+            rsctf::services::notice_delivery::start_reconciler(state.clone(), shutdown.clone()),
+        ));
+        required.push(RequiredTask::Unit(
             "solve-receipt lifecycle reconciler",
             rsctf::services::event_security::start_receipt_maintenance(
                 state.clone(),

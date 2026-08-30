@@ -963,6 +963,7 @@ pub async fn get_challenge(
         user_comment,
         solve_receipt_mode: challenge.solve_receipt_mode,
         receipt_verifier_identity: challenge.receipt_verifier_identity,
+        ad_self_hosted: challenge.ad_self_hosted,
         variant: variant.map(|row| ClientChallengeVariant {
             id: row.id,
             revision: row.revision,

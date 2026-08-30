@@ -37,7 +37,9 @@ pub(super) fn build_setup_compose(
         "  # The tunnel agent — public image, token baked in. Don't edit.".into(),
         "  rsctf-agent:".into(),
         format!("    image: {}", compose_scalar(&ctx.agent_image)),
-        "    restart: unless-stopped".into(),
+        // The agent retries transient failures itself and exits for revoked or
+        // expired credentials. Bound Docker restarts for unexpected crashes.
+        "    restart: \"on-failure:5\"".into(),
         "    read_only: true".into(),
         "    cap_drop:".into(),
         "      - ALL".into(),
@@ -101,7 +103,9 @@ pub(super) fn build_compose(game_id: i32, challenge_id: i32, ctx: &ByocContext) 
         "  # The tunnel agent — public image, token baked in. Don't edit this.".into(),
         "  rsctf-agent:".into(),
         format!("    image: {}", compose_scalar(&ctx.agent_image)),
-        "    restart: unless-stopped".into(),
+        // The agent retries transient failures itself and exits for revoked or
+        // expired credentials. Bound Docker restarts for unexpected crashes.
+        "    restart: \"on-failure:5\"".into(),
         "    read_only: true".into(),
         "    cap_drop:".into(),
         "      - ALL".into(),

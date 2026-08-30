@@ -16,6 +16,7 @@ cd tests/load
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
+      npm run read-only-websocket-flood # read-only feed inbound-abuse gate
       npm run proxy-traffic-admission # acknowledged line-rate proxy byte-work gate
       npm run monitor-history # fixed-rate bounded monitor history + durable backfills
       npm run monitor-evidence-inventory # fixed-rate traffic + anti-cheat bounded reads
@@ -42,6 +43,25 @@ Requires `k6`, `node`, and `docker exec <PG>` / `docker` access; the stack up wi
 running game (default `GAME=10`, BYOC challenge `CID=68`). BYOC runs require at least
 `N` distinct Accepted participations; the harness fails before spawning when fewer are
 available rather than fabricating participation IDs that production authorization rejects.
+
+### Read-only WebSocket admission
+
+The WebSocket gate drives raw and SignalR attack feeds at a fixed connection
+arrival rate. It distinguishes the exact 64-KiB application boundary from a
+one-byte-oversized transport rejection, covers burst and sustained frame quotas,
+and checks exact `healthz` on an independent lane. Preflight probes also cover an
+invalid handshake, the 128-connection client ceiling and permit reuse, and the
+90-second idle close. A tagged notice is created, observed over SignalR during the
+flood, and deleted before the gate exits.
+
+```sh
+READONLY_WS_FLOOD_ACK=1 WEBSOCKET_GAME=92001 RATE=20 DURATION=30s \
+  SUMMARY_JSON=/tmp/read-only-websocket-flood.json npm run read-only-websocket-flood
+```
+
+It refuses a non-live or hidden event and any non-loopback target. Run it against
+an isolated local stack: the runner samples the exact `RSCTF_CONTAINER` and fails
+when its CPU or memory exceeds the configured bounds.
 
 ### Proxy traffic admission
 
@@ -289,11 +309,11 @@ tests/load/
   byoc-agents.mjs   BYOC tunnel fleet: seed rows, start/stop N relay agents, list listeners
   fixtures.mjs      materializes the exact checker + shared flag service used by lifecycle
   admin-fixtures.mjs focused SQL, HTTP, Docker-image, CSR, and recovery helpers for admin acceptance
-  admin-lifecycle.js pure 62-operation admin catalog, response contracts, and target-safety rules
+  admin-lifecycle.js pure 75-operation admin catalog, response contracts, and target-safety rules
   admin-lifecycle.mjs destructive disposable admin lifecycle (npm run admin-lifecycle)
   admin-dashboard.js bounded dashboard/trend/activity response contracts
   admin-dashboard.mjs tagged large-history fixture and cleanup (npm run admin-dashboard)
-  edit-lifecycle.js exact 67-operation `/api/edit` catalog + wire validators
+  edit-lifecycle.js exact 79-operation `/api/edit` catalog + wire validators
   edit-lifecycle.mjs future/A&D/KotH organizer lifecycle (npm run edit-lifecycle)
   multi-domain-acceptance.js pure two-service/two-hill isolation contracts
   multi-domain-acceptance.mjs focused multi-domain acceptance (npm run multi-domain)
