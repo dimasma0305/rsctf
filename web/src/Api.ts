@@ -1831,6 +1831,7 @@ export interface WorkloadSpec {
 export interface WorkloadRolloutModel {
   matched: number;
   updated: number;
+  alreadyCurrent: number;
   stale: number;
   incompatible: number;
   insufficientCapacity: number;
@@ -2566,6 +2567,8 @@ export interface AdChallengeStateModel {
   challengeId: number;
   title: string;
   isEnabled: boolean;
+  /** Optimistic-concurrency fence for enabled-state commands. */
+  controlRevision: number;
   tickSeconds: number;
   flagLifetimeTicks: number;
   teamsWithLiveContainer?: number | null;
@@ -2665,6 +2668,8 @@ export interface AdGameStateModel {
   /** @format uint64 */
   roundEndsAt?: number | null;
   scoringPaused: boolean;
+  /** Optimistic-concurrency fence for scoring desired-state commands. */
+  controlRevision: number;
   /** When scoring was paused (null if running) — the UI freezes the round timer at this instant. */
   /** @format uint64 */
   scoringPausedAt?: number | null;
@@ -2700,6 +2705,7 @@ export interface AdLiveStateModel {
   /** @format uint64 */
   roundEndsAt?: number | null;
   scoringPaused: boolean;
+  controlRevision: number;
   /** @format uint64 */
   scoringPausedAt?: number | null;
   /** @format uint64 */
@@ -2711,6 +2717,51 @@ export interface AdLiveStateModel {
 export interface AdOverrideCheckModel {
   newStatus: AdCheckStatus;
   note?: string | null;
+}
+
+export interface AdScoringDesiredState {
+  paused: boolean;
+  revision: number;
+}
+
+export interface AdScoringCommandResult {
+  scoringPaused: boolean;
+  revision: number;
+}
+
+export interface AdChallengeDesiredState {
+  enabled: boolean;
+  revision: number;
+}
+
+export interface AdChallengeCommandResult {
+  isEnabled: boolean;
+  revision: number;
+}
+
+export type ControlJobStatus = "Queued" | "Running" | "Succeeded" | "Failed" | "Cancelled";
+
+export interface ControlJobModel {
+  id: string;
+  kind: string;
+  scopeKey: string;
+  gameId: number;
+  challengeId?: number | null;
+  operationId: string;
+  fingerprint: string;
+  status: ControlJobStatus;
+  progressCurrent: number;
+  progressTotal: number;
+  requestedGeneration: number;
+  result?: Record<string, unknown> | null;
+  error?: string | null;
+  cancellationRequested: boolean;
+  /** @format uint64 */
+  createdAtUtc: number;
+  /** @format uint64 */
+  updatedAtUtc: number;
+  /** @format uint64 */
+  finishedAtUtc?: number | null;
 }
 
 /** New attachment information (Edit) */
@@ -3534,8 +3585,22 @@ export interface ChallengeImportResult {
   messages: string[]
 }
 
+export type ChallengeImportJobStatus = "Queued" | "Running" | "Succeeded" | "Failed"
+
+/** Durable identity and terminal result for one admitted challenge import. */
+export interface ChallengeImportJobModel {
+  jobId: string
+  status: ChallengeImportJobStatus
+  result?: ChallengeImportResult | null
+  error?: string | null
+  createdAt: number
+  updatedAt: number
+}
+
 /** Body for POST /api/Edit/Games/{id}/Challenges/ImportFromGitHub */
 export interface ImportFromGitHubModel {
+  /** Stable UUID used to recover an exact retry without duplicating work. */
+  operationId?: string | null
   repoUrl: string
   ref?: string | null
   subpath?: string | null
@@ -3647,6 +3712,21 @@ export interface ChallengeAuditModel {
   archiveAvailable: boolean
   buildStatus?: ChallengeBuildStatus
   lastBuildLog?: string | null
+}
+
+/** Compact mutable challenge-build state. Source archive inspection is a separate immutable read. */
+export interface ChallengeBuildStatusModel {
+  challengeId: number
+  buildStatus: ChallengeBuildStatus
+  lastBuildLog?: string | null
+  archiveAvailable: boolean
+  archiveVersion?: string | null
+}
+
+/** Compact parent-list state; logs and archive metadata belong to the detail resource. */
+export interface ChallengeBuildListStatusModel {
+  challengeId: number
+  buildStatus: ChallengeBuildStatus
 }
 
 /** Row returned by GET .../PendingChallenges (includes Pending + Rejected) */
@@ -4227,7 +4307,8 @@ export interface SignatureVerifyModel {
    */
   teamToken: string;
   /**
-   * Game public key, Base64 encoded
+   * Canonical stored game public key, Base64 encoded. Verification also
+   * requires a live accepted participation for the signed team.
    * @minLength 1
    */
   publicKey: string;
@@ -6105,10 +6186,11 @@ export class Api<
      * @name AdminBulkRebuildFailed
      * @request POST:/api/admin/games/{gameId}/bulkrebuild
      */
-    adminBulkRebuildFailed: (gameId: number, params: RequestParams = {}) =>
-      this.request<BulkRebuildResultModel, RequestResponse>({
+    adminBulkRebuildFailed: (gameId: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/admin/games/${gameId}/bulkrebuild`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),
@@ -6244,10 +6326,11 @@ export class Api<
      * @name AdminReenqueueBuild
      * @request POST:/api/admin/builds/{auditId}/reenqueue
      */
-    adminReenqueueBuild: (auditId: number, params: RequestParams = {}) =>
-      this.request<ChallengeAuditModel, RequestResponse>({
+    adminReenqueueBuild: (auditId: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/admin/builds/${auditId}/reenqueue`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),
@@ -6757,11 +6840,13 @@ export class Api<
     editRolloutChallengeWorkloads: (
       id: number,
       cId: number,
+      operationId: string,
       params: RequestParams = {},
     ) =>
-      this.request<WorkloadRolloutModel, RequestResponse>({
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${cId}/workload/rollout`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),
@@ -7599,10 +7684,17 @@ export class Api<
      * @name EditAdToggleChallenge
      * @request POST:/api/edit/games/{id}/ad/Challenges/{challengeId}/Toggle
      */
-    editAdToggleChallenge: (id: number, challengeId: number, params: RequestParams = {}) =>
-      this.request<{ isEnabled: boolean }, RequestResponse>({
+    editAdToggleChallenge: (
+      id: number,
+      challengeId: number,
+      data: AdChallengeDesiredState,
+      params: RequestParams = {},
+    ) =>
+      this.request<AdChallengeCommandResult, RequestResponse>({
         path: `/api/edit/games/${id}/ad/Challenges/${challengeId}/Toggle`,
         method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -7613,10 +7705,16 @@ export class Api<
      * @name EditAdForceRestart
      * @request POST:/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Restart
      */
-    editAdForceRestart: (id: number, adTeamServiceId: number, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+    editAdForceRestart: (
+      id: number,
+      adTeamServiceId: number,
+      operationId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/ad/Services/${adTeamServiceId}/Restart`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         ...params,
       }),
 
@@ -7657,7 +7755,7 @@ export class Api<
         typeof operationIdOrParams === "string"
           ? params
           : operationIdOrParams ?? params;
-      return this.request<void, RequestResponse>({
+      return this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/ad/EnsureContainers`,
         method: "POST",
         ...requestParams,
@@ -7674,10 +7772,12 @@ export class Api<
      * @name EditAdToggleScoringPause
      * @request POST:/api/edit/games/{id}/ad/ScoringPause
      */
-    editAdToggleScoringPause: (id: number, params: RequestParams = {}) =>
-      this.request<{ scoringPaused: boolean }, RequestResponse>({
+    editAdToggleScoringPause: (id: number, data: AdScoringDesiredState, params: RequestParams = {}) =>
+      this.request<AdScoringCommandResult, RequestResponse>({
         path: `/api/edit/games/${id}/ad/ScoringPause`,
         method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -7877,11 +7977,13 @@ export class Api<
     editSubmitChallenge: (
       id: number,
       archive: File,
+      operationId: string,
       params: RequestParams = {},
     ) => {
       const fd = new FormData()
       fd.append("archive", archive)
-      return this.request<ChallengeImportResult, RequestResponse>({
+      fd.append("operationId", operationId)
+      return this.request<ChallengeImportJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/submit`,
         method: "POST",
         body: fd,
@@ -7900,11 +8002,13 @@ export class Api<
     editImportChallenge: (
       id: number,
       archive: File,
+      operationId: string,
       params: RequestParams = {},
     ) => {
       const fd = new FormData()
       fd.append("archive", archive)
-      return this.request<ChallengeImportResult, RequestResponse>({
+      fd.append("operationId", operationId)
+      return this.request<ChallengeImportJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/import`,
         method: "POST",
         body: fd,
@@ -7925,11 +8029,30 @@ export class Api<
       data: ImportFromGitHubModel,
       params: RequestParams = {},
     ) =>
-      this.request<ChallengeImportResult, RequestResponse>({
+      this.request<ChallengeImportJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/importfromgithub`,
         method: "POST",
         body: data,
         type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Recover the status/result of an admitted challenge import.
+     *
+     * @tags Edit
+     * @name EditGetChallengeImportJob
+     * @request GET:/api/edit/games/{id}/challenges/importjobs/{jobId}
+     */
+    editGetChallengeImportJob: (
+      id: number,
+      jobId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeImportJobModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/importjobs/${jobId}`,
+        method: "GET",
         format: "json",
         ...params,
       }),
@@ -7993,6 +8116,59 @@ export class Api<
       }),
 
     /**
+     * @description Compact build status for one challenge. Does not load or parse the retained source archive.
+     * @tags Edit
+     * @name EditGetChallengeBuildStatus
+     * @request GET:/api/edit/games/{id}/challenges/{cId}/buildstatus
+     */
+    editGetChallengeBuildStatus: (
+      id: number,
+      cId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeBuildStatusModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/buildstatus`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useEditGetChallengeBuildStatus: (
+      id: number,
+      cId: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ChallengeBuildStatusModel, RequestResponse>(
+        doFetch ? `/api/edit/games/${id}/challenges/${cId}/buildstatus` : null,
+        options,
+      ),
+
+    /**
+     * @description Compact build-status inventory for all active challenges in one event.
+     * @tags Edit
+     * @name EditGetChallengeBuildStatuses
+     * @request GET:/api/edit/games/{id}/challenges/buildstatuses
+     */
+    editGetChallengeBuildStatuses: (id: number, params: RequestParams = {}) =>
+      this.request<ChallengeBuildListStatusModel[], RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/buildstatuses`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useEditGetChallengeBuildStatuses: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ChallengeBuildListStatusModel[], RequestResponse>(
+        doFetch ? `/api/edit/games/${id}/challenges/buildstatuses` : null,
+        options,
+      ),
+
+    /**
      * @description Re-run the auto-build pipeline against a challenge's persisted archive.
      * @tags Edit
      * @name EditRebuildChallengeImage
@@ -8001,11 +8177,13 @@ export class Api<
     editRebuildChallengeImage: (
       id: number,
       cId: number,
+      operationId: string,
       params: RequestParams = {},
     ) =>
-      this.request<ChallengeAuditModel, RequestResponse>({
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${cId}/rebuild`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),
@@ -9585,10 +9763,40 @@ export class Api<
      * @name GameAdResetService
      * @request POST:/api/Game/{id}/Ad/Services/{adTeamServiceId}/Reset
      */
-    gameAdResetService: (id: number, adTeamServiceId: number, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+    gameAdResetService: (
+      id: number,
+      adTeamServiceId: number,
+      operationId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Services/${adTeamServiceId}/Reset`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
+        ...params,
+      }),
+
+    gameAdResetJob: (id: number, jobId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/ResetJobs/${jobId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    gameAdCancelResetJob: (id: number, jobId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/ResetJobs/${jobId}`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    gameAdResetJobByOperation: (id: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/ResetJobs/Operations/${operationId}`,
+        method: "GET",
+        format: "json",
         ...params,
       }),
 
@@ -10958,6 +11166,30 @@ export class Api<
   };
 
   eventSecurity = {
+    getControlJob: (jobId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/edit/jobs/${jobId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    cancelControlJob: (jobId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/edit/jobs/${jobId}`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    getControlJobByOperation: (operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/edit/jobs/operations/${operationId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
     gameVpnChallenge: (gameId: number, params: RequestParams = {}) =>
       this.request<EventVpnChallengeModel, RequestResponse>({
         path: `/api/game/${gameId}/vpn/challenge`,
@@ -10996,18 +11228,20 @@ export class Api<
         ...params,
       }),
 
-    generateVariants: (gameId: number, params: RequestParams = {}) =>
-      this.request<{ generated: number }, RequestResponse>({
+    generateVariants: (gameId: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${gameId}/variants/generate`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),
 
-    deriveFindings: (gameId: number, params: RequestParams = {}) =>
-      this.request<{ inserted: number }, RequestResponse>({
+    deriveFindings: (gameId: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/admin/games/${gameId}/anti-cheat/derive`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),

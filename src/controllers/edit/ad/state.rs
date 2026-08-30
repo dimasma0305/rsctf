@@ -62,6 +62,7 @@ pub struct AdChallengeStateModel {
     pub challenge_id: i32,
     pub title: String,
     pub is_enabled: bool,
+    pub control_revision: i64,
     pub tick_seconds: i32,
     pub flag_lifetime_ticks: i32,
     pub teams_with_live_container: Option<i32>,
@@ -103,6 +104,7 @@ pub struct AdGameStateModel {
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub round_ends_at: Option<DateTime<Utc>>,
     pub scoring_paused: bool,
+    pub control_revision: i64,
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub scoring_paused_at: Option<DateTime<Utc>>,
     pub challenges: Vec<AdChallengeStateModel>,
@@ -141,6 +143,7 @@ pub struct AdLiveStateModel {
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub round_ends_at: Option<DateTime<Utc>>,
     pub scoring_paused: bool,
+    pub control_revision: i64,
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub scoring_paused_at: Option<DateTime<Utc>>,
     #[serde(with = "crate::utils::datetime::millis")]
@@ -158,6 +161,7 @@ struct LatestAdCheckRow {
 #[derive(Debug, sqlx::FromRow)]
 struct AdLiveGameRow {
     scoring_paused: bool,
+    control_revision: i64,
     scoring_paused_at: Option<DateTime<Utc>>,
     round_id: Option<i32>,
     current_round: Option<i32>,
@@ -210,6 +214,7 @@ async fn load_ad_live_projection(
     record_ad_live_query();
     let game = sqlx::query_as::<_, AdLiveGameRow>(
         r#"SELECT game.ad_scoring_paused AS scoring_paused,
+                  game.ad_control_revision AS control_revision,
                   game.ad_scoring_paused_at AS scoring_paused_at,
                   round.id AS round_id, round.number AS current_round,
                   round.start_time_utc AS round_started_at,
@@ -302,6 +307,7 @@ pub async fn ad_live_state(
         round_started_at: game.round_started_at,
         round_ends_at: game.round_ends_at,
         scoring_paused: game.scoring_paused,
+        control_revision: game.control_revision,
         scoring_paused_at: game.scoring_paused_at,
         server_time: Utc::now(),
         services,
@@ -440,6 +446,7 @@ pub async fn ad_state(
             challenge_id: challenge.id,
             title: challenge.title.clone(),
             is_enabled: challenge.is_enabled,
+            control_revision: challenge.ad_control_revision,
             tick_seconds,
             flag_lifetime_ticks,
             teams_with_live_container: Some(
@@ -457,6 +464,7 @@ pub async fn ad_state(
         round_started_at: current_round.as_ref().map(|round| round.start_time_utc),
         round_ends_at: current_round.as_ref().map(|round| round.end_time_utc),
         scoring_paused: game.ad_scoring_paused,
+        control_revision: game.ad_control_revision,
         scoring_paused_at: game.ad_scoring_paused_at,
         challenges,
         teams,

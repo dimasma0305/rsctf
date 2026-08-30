@@ -353,6 +353,7 @@ pub enum PlacementOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DefinitionUpdateOutcome {
     Updated { generation: i64 },
+    AlreadyCurrent { generation: i64 },
     Stale,
     WorkerNoLongerCompatible,
     InsufficientCapacity,

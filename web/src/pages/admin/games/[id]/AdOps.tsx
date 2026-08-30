@@ -62,6 +62,7 @@ import { useLocation, useNavigate, useParams } from 'react-router'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
 import { KothOpsPanel } from '@Components/admin/KothOpsPanel'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { controlJobResultCount, createOperationId, waitForControlJob } from '@Utils/ControlJobs'
 import { httpErrorStatus } from '@Utils/HttpError'
 import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
 import { useServerNow } from '@Utils/ServerClock'
@@ -867,7 +868,15 @@ const AdOps: FC = () => {
   const { t } = useTranslation()
   const modals = useModals()
   const [busy, setBusy] = useState(false)
-  const [busyHill, setBusyHill] = useState<number | null>(null)
+  const [pendingHillStates, setPendingHillStates] = useState<Map<number, boolean>>(new Map())
+  const [pendingScoringPaused, setPendingScoringPaused] = useState<boolean | null>(null)
+  const resetJobsRef = useRef(new Map<number, Promise<void>>())
+  const resetAbortRef = useRef(new Map<number, AbortController>())
+  const [resettingServices, setResettingServices] = useState<Set<number>>(new Set())
+  const hillCommandRef = useRef(new Map<number, Promise<void>>())
+  const scoringCommandRef = useRef<Promise<void> | null>(null)
+  const ensureJobRef = useRef<Promise<void> | null>(null)
+  const ensureAbortRef = useRef(new AbortController())
   const ensureContainersKey = useRef<{ gameId: number; owner: RetryableOperationKey } | null>(null)
   if (ensureContainersKey.current?.gameId !== numId) {
     ensureContainersKey.current = {
@@ -875,6 +884,7 @@ const AdOps: FC = () => {
       owner: new RetryableOperationKey(undefined, `rsctf:ad-ensure-containers:${numId}`),
     }
   }
+  useEffect(() => () => ensureAbortRef.current.abort(), [])
   // Which side of the console is showing. A&D vs KotH challenges are disjoint
   // sets in a game; the switch only appears when both exist (see showViewSwitch).
   const [view, setView] = useState<'ad' | 'koth'>('ad')
@@ -944,40 +954,76 @@ const AdOps: FC = () => {
     (fetchKoth && koth === undefined && !kothError)
 
   const toggleHill = async (hill: AdminKothHill) => {
-    setBusyHill(hill.challengeId)
-    try {
-      await api.edit.editAdToggleChallenge(numId, hill.challengeId)
-      await mutateKoth()
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setBusyHill(null)
-    }
+    const active = hillCommandRef.current.get(hill.challengeId)
+    if (active) return active
+    const desiredEnabled = !hill.isEnabled
+    const command = (async () => {
+      setPendingHillStates((current) => new Map(current).set(hill.challengeId, desiredEnabled))
+      try {
+        await api.edit.editAdToggleChallenge(numId, hill.challengeId, {
+          enabled: desiredEnabled,
+          revision: hill.controlRevision,
+        })
+        await mutateKoth()
+      } catch (e) {
+        await mutateKoth()
+        showErrorMsg(e, t)
+      } finally {
+        setPendingHillStates((current) => {
+          const next = new Map(current)
+          next.delete(hill.challengeId)
+          return next
+        })
+        hillCommandRef.current.delete(hill.challengeId)
+      }
+    })()
+    hillCommandRef.current.set(hill.challengeId, command)
+    return command
   }
 
   const ensureContainers = async () => {
+    if (ensureJobRef.current) return ensureJobRef.current
     const operationOwner = ensureContainersKey.current!.owner
     const operationId = operationOwner.claim()
-    setBusy(true)
-    try {
-      await api.edit.editAdEnsureContainers(numId, operationId)
-      operationOwner.complete(operationId)
-      showNotification({
-        color: 'teal',
-        icon: <Icon path={mdiCheck} size={1} />,
-        title: t('admin.notification.ad_ops.ensure_queued.title', 'Container reconcile queued'),
-        message: t('admin.notification.ad_ops.ensure_queued.message', 'Missing A&D containers will spin up shortly.'),
-      })
-      setTimeout(() => {
-        mutate()
-        mutateKoth()
-      }, 3_000)
-    } catch (e) {
-      if (httpErrorStatus(e) === 409) operationOwner.complete(operationId)
-      showErrorMsg(e, t)
-    } finally {
-      setBusy(false)
-    }
+    const task = (async () => {
+      setBusy(true)
+      try {
+        let job
+        try {
+          job = (await api.edit.editAdEnsureContainers(numId, operationId)).data
+        } catch (startError) {
+          if (httpErrorStatus(startError) === 409) throw startError
+          try {
+            job = (await api.eventSecurity.getControlJobByOperation(operationId)).data
+          } catch {
+            throw startError
+          }
+        }
+        const completed = await waitForControlJob(job, ensureAbortRef.current.signal)
+        operationOwner.complete(operationId)
+        const launched = controlJobResultCount(completed, 'launched')
+        const failures = controlJobResultCount(completed, 'failures')
+        showNotification({
+          color: failures === 0 ? 'teal' : 'orange',
+          icon: <Icon path={failures === 0 ? mdiCheck : mdiAlertCircleOutline} size={1} />,
+          title: t('admin.notification.ad_ops.ensure_queued.title', 'Container reconcile completed'),
+          message: t(
+            'admin.notification.ad_ops.ensure_completed.message',
+            '{{launched}} launched, {{failures}} failed.',
+            { launched, failures }
+          ),
+        })
+        await Promise.all([mutate(), mutateKoth()])
+      } catch (e) {
+        if (httpErrorStatus(e) === 409) operationOwner.complete(operationId)
+        if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+      } finally {
+        setBusy(false)
+        ensureJobRef.current = null
+      }
+    })()
+    ensureJobRef.current = task
+    return task
   }
 
   // Reset = destroy the running container and recreate it from the challenge
@@ -1000,44 +1046,93 @@ const AdOps: FC = () => {
         cancel: t('admin.content.ad_ops.reset_confirm.cancel', 'Cancel'),
       },
       confirmProps: { color: 'red' },
-      onConfirm: async () => {
-        try {
-          await api.edit.editAdForceRestart(numId, cell.adTeamServiceId)
-          showNotification({
-            color: 'teal',
-            icon: <Icon path={mdiRestart} size={1} />,
-            title: t('admin.notification.ad_ops.restart_queued.title', 'Reset queued'),
-            message: t(
-              'admin.notification.ad_ops.restart_queued.message',
-              'Container will be recreated from the base image in seconds.'
-            ),
-          })
-          setTimeout(() => mutate(), 3_000)
-        } catch (e) {
-          showErrorMsg(e, t)
-        }
+      onConfirm: () => {
+        if (resetJobsRef.current.has(cell.adTeamServiceId)) return
+        const operationId = createOperationId()
+        const controller = new AbortController()
+        resetAbortRef.current.set(cell.adTeamServiceId, controller)
+        setResettingServices((current) => new Set(current).add(cell.adTeamServiceId))
+        const request = (async () => {
+          try {
+            let job
+            try {
+              job = (
+                await api.edit.editAdForceRestart(numId, cell.adTeamServiceId, operationId, {
+                  signal: controller.signal,
+                })
+              ).data
+            } catch (error) {
+              if (controller.signal.aborted) throw error
+              job = (await api.eventSecurity.getControlJobByOperation(operationId, { signal: controller.signal })).data
+            }
+            await waitForControlJob(job, controller.signal)
+            showNotification({
+              color: 'teal',
+              icon: <Icon path={mdiRestart} size={1} />,
+              title: t('admin.notification.ad_ops.restart_queued.title', 'Reset queued'),
+              message: t(
+                'admin.notification.ad_ops.restart_queued.message',
+                'Container will be recreated from the base image in seconds.'
+              ),
+            })
+            await mutate()
+          } catch (e) {
+            if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+          } finally {
+            resetJobsRef.current.delete(cell.adTeamServiceId)
+            resetAbortRef.current.delete(cell.adTeamServiceId)
+            setResettingServices((current) => {
+              const next = new Set(current)
+              next.delete(cell.adTeamServiceId)
+              return next
+            })
+          }
+        })()
+        resetJobsRef.current.set(cell.adTeamServiceId, request)
       },
     })
   }
 
+  useEffect(
+    () => () => {
+      resetAbortRef.current.forEach((controller) => controller.abort())
+      resetAbortRef.current.clear()
+    },
+    []
+  )
+
   const toggleScoringPause = async () => {
-    setBusy(true)
-    try {
-      const { data } = await api.edit.editAdToggleScoringPause(numId)
-      showNotification({
-        color: data.scoringPaused ? 'orange' : 'teal',
-        icon: <Icon path={data.scoringPaused ? mdiPauseCircleOutline : mdiCheck} size={1} />,
-        message: data.scoringPaused
-          ? t('admin.notification.ad_ops.scoring_paused', 'Scoring paused — rounds + checks frozen.')
-          : t('admin.notification.ad_ops.scoring_resumed', 'Scoring resumed.'),
-      })
-      mutate()
-      mutateKoth()
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setBusy(false)
-    }
+    if (scoringCommandRef.current) return scoringCommandRef.current
+    const snapshot = showKoth ? koth : state
+    if (!snapshot) return
+    const desiredPaused = !snapshot.scoringPaused
+    const command = (async () => {
+      setBusy(true)
+      setPendingScoringPaused(desiredPaused)
+      try {
+        const { data } = await api.edit.editAdToggleScoringPause(numId, {
+          paused: desiredPaused,
+          revision: snapshot.controlRevision,
+        })
+        showNotification({
+          color: data.scoringPaused ? 'orange' : 'teal',
+          icon: <Icon path={data.scoringPaused ? mdiPauseCircleOutline : mdiCheck} size={1} />,
+          message: data.scoringPaused
+            ? t('admin.notification.ad_ops.scoring_paused', 'Scoring paused — rounds + checks frozen.')
+            : t('admin.notification.ad_ops.scoring_resumed', 'Scoring resumed.'),
+        })
+        await Promise.all([mutate(), mutateKoth()])
+      } catch (e) {
+        await Promise.all([mutate(), mutateKoth()])
+        showErrorMsg(e, t)
+      } finally {
+        setBusy(false)
+        setPendingScoringPaused(null)
+        scoringCommandRef.current = null
+      }
+    })()
+    scoringCommandRef.current = command
+    return command
   }
 
   const overrideCheck = async (checkId: number, newStatus: AdCheckStatus) => {
@@ -1121,6 +1216,7 @@ const AdOps: FC = () => {
     roundStartedAt: null,
     roundEndsAt: null,
     scoringPaused: false,
+    controlRevision: 1,
     scoringPausedAt: null,
     challenges: [],
     teams: [],
@@ -1129,6 +1225,7 @@ const AdOps: FC = () => {
   // While paused, freeze the countdown at the pause instant — the round isn't
   // burning time (resume shifts its end forward), so the timer must stop too.
   const scoringPaused = showKoth ? (koth?.scoringPaused ?? false) : adState.scoringPaused
+  const displayedScoringPaused = pendingScoringPaused ?? scoringPaused
   const scoringPausedAt = showKoth ? koth?.scoringPausedAt : adState.scoringPausedAt
   const currentRound = showKoth ? koth?.latestRound : adState.currentRound
   const roundEndsAt = showKoth ? koth?.currentRoundEndsAt : adState.roundEndsAt
@@ -1335,16 +1432,21 @@ const AdOps: FC = () => {
                 {t('admin.button.ad_ops.ensure_containers', 'Ensure containers')}
               </Button>
               <Button
-                leftSection={<Icon path={scoringPaused ? mdiPlayCircle : mdiPauseCircleOutline} size={0.9} />}
+                leftSection={<Icon path={displayedScoringPaused ? mdiPlayCircle : mdiPauseCircleOutline} size={0.9} />}
                 variant="default"
-                color={scoringPaused ? 'teal' : 'orange'}
+                color={displayedScoringPaused ? 'teal' : 'orange'}
                 size={isMobile ? 'xs' : 'sm'}
                 disabled={busy}
+                aria-busy={pendingScoringPaused !== null}
                 onClick={toggleScoringPause}
               >
-                {scoringPaused
-                  ? t('admin.button.ad_ops.resume_scoring', 'Resume scoring')
-                  : t('admin.button.ad_ops.pause_scoring', 'Pause scoring')}
+                {pendingScoringPaused === true
+                  ? t('admin.button.ad_ops.pausing_scoring', 'Pausing scoring…')
+                  : pendingScoringPaused === false
+                    ? t('admin.button.ad_ops.resuming_scoring', 'Resuming scoring…')
+                    : scoringPaused
+                      ? t('admin.button.ad_ops.resume_scoring', 'Resume scoring')
+                      : t('admin.button.ad_ops.pause_scoring', 'Pause scoring')}
               </Button>
             </Group>
           </Group>
@@ -1412,7 +1514,7 @@ const AdOps: FC = () => {
               koth={koth}
               onShell={openShell}
               onToggleHill={toggleHill}
-              busyHill={busyHill}
+              pendingHillStates={pendingHillStates}
               onMutate={() => mutateKoth()}
             />
           ) : adState.teams.length === 0 ? (
@@ -1572,6 +1674,8 @@ const AdOps: FC = () => {
                                         size={44}
                                         variant="subtle"
                                         color="gray"
+                                        loading={resettingServices.has(cell.adTeamServiceId)}
+                                        disabled={resettingServices.has(cell.adTeamServiceId)}
                                         aria-label={t(
                                           'admin.tooltip.ad_ops.reset',
                                           'Reset container to its base image'

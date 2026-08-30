@@ -320,7 +320,7 @@
           "editor_description": "Enter camelCase JSON. Registry images require immutable sha256 digests; replace the example digest. Static and dynamic container workloads require flagTarget. V1 injects RSCTF_FLAG only into flagTarget.service; flagTarget.path is validated and reserved but is not written. The server validates the specification again before saving.",
           "save_and_rollout": "Save and roll out",
           "rollout_requires_stateless": "Live rollout is unavailable because these services are stateful: {{services}}. Save the definition for future launches, then drain and recreate existing instances deliberately.",
-          "rollout_result": "Rollout matched {{matched}} workload(s): {{updated}} updated, {{stale}} stale, {{incompatible}} incompatible, {{insufficientCapacity}} without capacity, {{failed}} failed.",
+          "rollout_result": "Rollout matched {{matched}} workload(s): {{updated}} updated, {{alreadyCurrent}} already current, {{stale}} stale, {{incompatible}} incompatible, {{insufficientCapacity}} without capacity, {{failed}} failed.",
           "load_example": "Load Linux example",
           "clear": "Clear workload",
           "invalid": "Workload JSON is invalid: {{message}}"
