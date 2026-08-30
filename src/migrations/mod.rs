@@ -137,6 +137,7 @@ mod m0114_submission_feed_cursor;
 mod m0115_flag_egress_feed_cursor;
 mod m0116_game_event_feed_pending;
 mod m0242_participation_provision_jobs;
+mod m0250_team_signature_key_index;
 mod m0270_worker_workload_quarantine;
 mod m0271_worker_enrollment_operations;
 mod m0272_event_sensor_batches;
@@ -292,6 +293,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0115_flag_egress_feed_cursor::Migration),
             Box::new(m0116_game_event_feed_pending::Migration),
             Box::new(m0242_participation_provision_jobs::Migration),
+            Box::new(m0250_team_signature_key_index::Migration),
             Box::new(m0270_worker_workload_quarantine::Migration),
             Box::new(m0271_worker_enrollment_operations::Migration),
             Box::new(m0272_event_sensor_batches::Migration),
@@ -458,6 +460,7 @@ mod tests {
                 "m0115_flag_egress_feed_cursor",
                 "m0116_game_event_feed_pending",
                 "m0242_participation_provision_jobs",
+                "m0250_team_signature_key_index",
                 "m0270_worker_workload_quarantine",
                 "m0271_worker_enrollment_operations",
                 "m0272_event_sensor_batches",

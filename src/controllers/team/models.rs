@@ -18,6 +18,10 @@ pub struct TeamTransferModel {
 }
 
 /// Body for `POST /verify` — `SignatureVerifyModel`.
+///
+/// `publicKey` identifies the canonical game key; it is not accepted as a
+/// caller-selected trust root. The endpoint also requires the token's team to
+/// have a current accepted participation in that live game.
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignatureVerifyModel {

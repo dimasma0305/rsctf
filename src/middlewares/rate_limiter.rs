@@ -161,6 +161,10 @@ pub enum Policy {
     PowIssuanceSource,
     /// Deployment-wide HashPoW issuance budget; all callers share one key.
     PowIssuanceGlobal,
+    /// Anonymous source budget for bounded Ed25519 team-token verification.
+    TeamSignatureSource,
+    /// Deployment-wide CPU/query budget for team-token verification.
+    TeamSignatureGlobal,
     /// Trusted solve-verifier issuance work. Appended to preserve every
     /// previously shipped Redis policy discriminant.
     SolveReceipt,
@@ -243,6 +247,14 @@ impl Policy {
             Policy::PowIssuanceGlobal => Kind::Bucket {
                 capacity: 256.0,
                 refill_per_sec: 20.0,
+            },
+            Policy::TeamSignatureSource => Kind::Bucket {
+                capacity: 20.0,
+                refill_per_sec: 1.0,
+            },
+            Policy::TeamSignatureGlobal => Kind::Bucket {
+                capacity: 256.0,
+                refill_per_sec: 32.0,
             },
             Policy::SolveReceipt => Kind::Bucket {
                 capacity: 128.0,
@@ -493,8 +505,16 @@ fn client_ip(req: &Request) -> String {
 struct VerifiedSessionPartitionKey(String);
 
 fn partition_key(policy: Policy, req: &Request) -> String {
-    if policy == Policy::PowIssuanceGlobal {
-        return "hashpow-issuance-global".to_string();
+    if matches!(
+        policy,
+        Policy::PowIssuanceGlobal | Policy::TeamSignatureGlobal
+    ) {
+        return match policy {
+            Policy::PowIssuanceGlobal => "hashpow-issuance-global",
+            Policy::TeamSignatureGlobal => "team-signature-global",
+            _ => unreachable!(),
+        }
+        .to_string();
     }
     // Credential, registration, recovery, mail, and OAuth-start abuse remains
     // strictly source-IP scoped. A valid-but-revoked JWT must never create a
@@ -508,6 +528,7 @@ fn partition_key(policy: Policy, req: &Request) -> String {
             | Policy::PrivilegedHubAdmission
             | Policy::PublicHubAdmission
             | Policy::PowIssuanceSource
+            | Policy::TeamSignatureSource
     ) {
         return client_ip(req);
     }

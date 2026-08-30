@@ -15,7 +15,6 @@ use std::collections::BTreeMap;
 
 use crate::app_state::SharedState;
 use crate::models::data::{config, post, user};
-use crate::services::captcha::CaptchaSettings;
 use crate::utils::codec;
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::{ArrayResponse, RequestResponse};
@@ -370,7 +369,10 @@ pub async fn get_post(
 pub async fn get_captcha(
     State(st): State<SharedState>,
 ) -> AppResult<RequestResponse<ClientCaptchaInfoModel>> {
-    let settings = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
+    let settings = st
+        .captcha_settings
+        .load(st.pg(), st.config.account.use_captcha)
+        .await?;
     // RSCTF `InfoController` (line 148): advertise the captcha provider to the
     // client ONLY when AccountPolicy.UseCaptcha is enabled. Otherwise the
     // login/register captcha widget still renders — and for HashPow it grinds a
@@ -388,21 +390,22 @@ pub async fn get_captcha(
 
 /// `GET /api/captcha/powchallenge` — proof-of-work challenge.
 ///
-/// Ports RSCTF `InfoController.PowChallenge`. When the configured captcha
-/// provider is `HashPow`, mint a fresh random challenge plus a short-lived
-/// cache entry (5-minute sliding window, matching RSCTF) so the paired
-/// verification step can later confirm the client's nonce, and return the
-/// `HashPowChallenge` shape the client expects. For any other provider
+/// When the configured captcha provider is `HashPow`, mint a signed,
+/// self-contained challenge. Issuance creates no per-challenge cache entry;
+/// verification writes only a bounded one-use marker after valid work. For any other provider
 /// (notably `None`) RSCTF has no PoW to issue and returns `404 NotFound`,
 /// so we do the same.
 ///
 pub async fn get_pow_challenge(
     State(st): State<SharedState>,
 ) -> AppResult<RequestResponse<HashPowChallenge>> {
-    // The provider + difficulty come from the LIVE captcha config (the same
-    // source the verify step reads), so the client solves the PoW at exactly the
-    // difficulty the server later checks against.
-    let settings = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
+    // Anonymous requests share one short-lived, invalidatable settings read.
+    // Verification reloads the authoritative policy, so a changed revision
+    // invalidates every outstanding challenge even across replicas.
+    let settings = st
+        .captcha_settings
+        .load(st.pg(), st.config.account.use_captcha)
+        .await?;
     let issued = crate::services::captcha::issue_hashpow_challenge(
         &settings,
         st.config.jwt_secret.as_bytes(),
