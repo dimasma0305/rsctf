@@ -11,7 +11,7 @@ Restart rsctf after changing a startup value. Settings changed in **Admin → Se
 | `RSCTF_ROLE` | `all` | `all`, `web`, `control`, `engine`, `network`, one-shot `migrate`, or loopback-only `development`; see the [scaling guide](../deploy/scaling) and [source-development guide](./source-development) |
 | `RSCTF_BIND` | `0.0.0.0:8080` | HTTP listen address inside the process/container |
 | `RSCTF_DATABASE_URL` | Local development URL | PostgreSQL connection URL; required in deployment |
-| `RSCTF_DB_MAX_CONNECTIONS` | `33` | Per-process database connection cap; computed minimum described below |
+| `RSCTF_DB_MAX_CONNECTIONS` | `34` | Per-process database connection cap; computed minimum described below |
 | `RSCTF_REDIS_URL` | Unset | Redis cache URL; when configured, Redis is required for readiness and reconnects after an outage |
 | `RSCTF_DISTRIBUTED_RATELIMIT` | `false` | Share rate limits through Redis for multiple replicas |
 | `RSCTF_AD_SUBMIT_BURST_FLAGS` | `400` | Immediate per-participation A&D flag-work budget before the fixed 10 flags/s refill (`100..3200`) |
@@ -264,24 +264,25 @@ challenge-definition guards while its model write needs a fifth connection. Let 
 | One-shot `migrate` | `2` |
 | `engine` | `5R + 2P + 3` |
 | `web` | `5R + 2P + 13` |
-| Non-VPN `control` | `5R + 2P + 5` |
-| Active VPN-owning `control` | `5R + 2P + 8` |
-| Non-VPN `network` | `5R + 2P + 3` |
-| Active VPN-owning `network` | `5R + 2P + 6` |
-| Non-VPN `all` | `5R + 2P + 17` |
-| Active VPN-owning `all` | `5R + 2P + 20` |
+| Non-VPN `control` | `5R + 2P + 6` |
+| Active VPN-owning `control` | `5R + 2P + 9` |
+| Non-VPN `network` | `5R + 2P + 4` |
+| Active VPN-owning `network` | `5R + 2P + 7` |
+| Non-VPN `all` | `5R + 2P + 18` |
+| Active VPN-owning `all` | `5R + 2P + 21` |
 
 The migration role uses only the pool's two baseline connections. A network
-owner retains both the network/BYOC lease and the traffic-capture lease even
-without VPN, plus one progress connection. The VPN allowance additionally
-covers its `LISTEN` connection and nested kernel/allocation reconciliation.
+owner retains the network/BYOC lease, the traffic-capture lease, and an isolated
+capture-heartbeat connection even without VPN, plus one progress connection.
+The VPN allowance additionally covers its `LISTEN` connection and nested
+kernel/allocation reconciliation.
 Monolithic and web roles reserve eight connections for bounded roster and
 account lifecycle operations, plus four for the independently bounded runtime
 transition path; each can retain a lock while issuing nested work. The
 all/development/control/engine suspicion reconciler reserves one fence plus one nested
 checkout. At the defaults (`R=1`, `P=4`), engine needs 16 connections, web
-needs 26, control needs 18 without VPN or 21 with it, network needs 16 or 19,
-`development` needs 28, and `all` needs 30 or 33. Keep additional headroom for
+needs 26, control needs 19 without VPN or 22 with it, network needs 17 or 20,
+`development` needs 28, and `all` needs 31 or 34. Keep additional headroom for
 ordinary request bursts where practical.
 
 Checker and flag work is bounded by the persisted round deadline. Evidence that

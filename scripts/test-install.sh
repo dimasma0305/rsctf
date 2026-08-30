@@ -109,8 +109,72 @@ grep -Fxq 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24' "$local_checkout/deploy
 grep -Fxq 'RSCTF_DOCKER_PROXY_BIND=172.31.253.1' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_CHALLENGE_PROXY_BRIDGE=rsctf-proxy0' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_USE_CAPTCHA=false' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=34' "$local_checkout/deploy/.env"
 grep -Fq 'The first-administrator setup token is stored only in' \
   "$TEMP_DIRECTORY/local.out"
+
+sed -i \
+  -e 's/^RSCTF_DB_MAX_CONNECTIONS=34$/RSCTF_DB_MAX_CONNECTIONS=33/' \
+  -e 's/^RSCTF_PROVISIONING_CONCURRENCY=4$/RSCTF_PROVISIONING_CONCURRENCY=7/' \
+  "$local_checkout/deploy/.env"
+printf 'RSCTF_CONTROL_DB_MAX_CONNECTIONS=21\n' >>"$local_checkout/deploy/.env"
+env \
+  PATH="$TEST_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  RSCTF_INSTALLER_FIXTURE="$VALID_FIXTURE" \
+  RSCTF_TEST_CURL_LOG="$TEMP_DIRECTORY/local-curl.log" \
+  RSCTF_TEST_GH_LOG="$TEMP_DIRECTORY/gh.log" \
+  bash "$local_checkout/scripts/install.sh" \
+    --image "$PINNED_IMAGE" \
+    --mode local \
+    --without-docker \
+    --non-interactive \
+    --configure-only \
+    >"$TEMP_DIRECTORY/local-upgrade.out" 2>&1
+grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=34' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_CONTROL_DB_MAX_CONNECTIONS=22' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_PROVISIONING_CONCURRENCY=7' "$local_checkout/deploy/.env"
+
+sed -i \
+  -e 's/^RSCTF_DB_MAX_CONNECTIONS=34$/RSCTF_DB_MAX_CONNECTIONS=35/' \
+  -e 's/^RSCTF_CONTROL_DB_MAX_CONNECTIONS=22$/RSCTF_CONTROL_DB_MAX_CONNECTIONS=23/' \
+  "$local_checkout/deploy/.env"
+env \
+  PATH="$TEST_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  RSCTF_INSTALLER_FIXTURE="$VALID_FIXTURE" \
+  RSCTF_TEST_CURL_LOG="$TEMP_DIRECTORY/local-curl.log" \
+  RSCTF_TEST_GH_LOG="$TEMP_DIRECTORY/gh.log" \
+  bash "$local_checkout/scripts/install.sh" \
+    --image "$PINNED_IMAGE" \
+    --mode local \
+    --without-docker \
+    --non-interactive \
+    --configure-only \
+    >"$TEMP_DIRECTORY/local-custom.out" 2>&1
+grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=35' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_CONTROL_DB_MAX_CONNECTIONS=23' "$local_checkout/deploy/.env"
+
+cp "$local_checkout/deploy/.env" "$TEMP_DIRECTORY/local-before-duplicate.env"
+printf 'RSCTF_DB_MAX_CONNECTIONS=33\n' >>"$local_checkout/deploy/.env"
+cp "$local_checkout/deploy/.env" "$TEMP_DIRECTORY/local-with-duplicate.env"
+if env \
+  PATH="$TEST_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  RSCTF_INSTALLER_FIXTURE="$VALID_FIXTURE" \
+  RSCTF_TEST_CURL_LOG="$TEMP_DIRECTORY/local-curl.log" \
+  RSCTF_TEST_GH_LOG="$TEMP_DIRECTORY/gh.log" \
+  bash "$local_checkout/scripts/install.sh" \
+    --image "$PINNED_IMAGE" \
+    --mode local \
+    --without-docker \
+    --non-interactive \
+    --configure-only \
+    >"$TEMP_DIRECTORY/local-duplicate.out" 2>&1; then
+  printf 'installer accepted duplicate pool assignments\n' >&2
+  exit 1
+fi
+grep -Fq 'contains duplicate RSCTF_DB_MAX_CONNECTIONS assignments' \
+  "$TEMP_DIRECTORY/local-duplicate.out"
+cmp "$TEMP_DIRECTORY/local-with-duplicate.env" "$local_checkout/deploy/.env"
+mv "$TEMP_DIRECTORY/local-before-duplicate.env" "$local_checkout/deploy/.env"
 
 output="$TEMP_DIRECTORY/success.out"
 target="$TEMP_DIRECTORY/installed-rsctf"
@@ -133,6 +197,7 @@ grep -Fxq 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24' "$target/deploy/.env"
 grep -Fxq 'RSCTF_DOCKER_PROXY_BIND=172.31.253.1' "$target/deploy/.env"
 grep -Fxq 'RSCTF_CHALLENGE_PROXY_BRIDGE=rsctf-proxy0' "$target/deploy/.env"
 grep -Fxq 'RSCTF_USE_CAPTCHA=false' "$target/deploy/.env"
+grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=34' "$target/deploy/.env"
 for helper in \
   compose-maintenance-cutover.sh \
   kubernetes-maintenance-cutover.sh \

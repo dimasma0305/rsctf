@@ -8,7 +8,7 @@
 # maintenance-cutover script so no old role writes during incompatible schema
 # changes. Then:
 # The bundled PostgreSQL default safely budgets two 26-connection web pools
-# plus the 21-connection control pool. Read docs/deploy/scaling.md and provide
+# plus the 22-connection control pool. Read docs/deploy/scaling.md and provide
 # PgBouncer or a larger reviewed database budget before adding a third web.
 #   docker compose up -d --scale rsctf=2
 services:
@@ -125,7 +125,7 @@ services:
       RSCTF_S3_SECRET_KEY: ${RSCTF_S3_SECRET_KEY:-}
       RSCTF_ASSET_SIGNED_URL_TTL_SECS: ${RSCTF_ASSET_SIGNED_URL_TTL_SECS:-0}
       RSCTF_MIGRATE: "0"
-      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_CONTROL_DB_MAX_CONNECTIONS:-21}
+      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_CONTROL_DB_MAX_CONNECTIONS:-22}
       RSCTF_SUSPICION_RECONCILE_SECONDS: ${RSCTF_SUSPICION_RECONCILE_SECONDS:-30}
       RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS: ${RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS:-360}
       RSCTF_PROVISIONING_CONCURRENCY: ${RSCTF_PROVISIONING_CONCURRENCY:-4}

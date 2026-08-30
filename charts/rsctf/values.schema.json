@@ -343,7 +343,7 @@
         "logLevel": {"type": "string", "minLength": 1},
         "provisioningConcurrency": {"type": "integer", "minimum": 1, "description": "P in the database pool floor; each concurrent provisioning operation may retain two connections."},
         "repoScanConcurrency": {"type": "integer", "minimum": 1, "maximum": 4, "description": "R in the database pool floor; a checker-bearing repository scan may briefly retain five connections."},
-        "dbMaxConnections": {"type": "integer", "minimum": 2, "description": "Per-process pool cap. Required minimum is 2 for migrate; 5R+2P+3 for engine; 5R+2P+13 for web; 5R+2P+5 or +8 for non-VPN/VPN control; 5R+2P+3 or +6 for network; and 5R+2P+17 or +20 for all."},
+        "dbMaxConnections": {"type": "integer", "minimum": 2, "description": "Per-process pool cap. Required minimum is 2 for migrate; 5R+2P+3 for engine; 5R+2P+13 for web; 5R+2P+6 or +9 for non-VPN/VPN control; 5R+2P+4 or +7 for network; and 5R+2P+18 or +21 for all."},
         "checkerUidBase": {"type": "integer", "minimum": 1, "maximum": 65534, "description": "First otherwise-unused numeric UID reserved for process checker isolation."},
         "checkerProcessBudget": {"type": "integer", "minimum": 1, "maximum": 256, "description": "Reserved UID count and per-process custom-checker concurrency bound."},
         "adSubmitBurstFlags": {"type": "integer", "minimum": 100, "maximum": 3200, "description": "Immediate per-participation A&D flag-work budget before the fixed 10 flags/second refill."},
