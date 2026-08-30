@@ -252,10 +252,11 @@ pub(crate) async fn force_rotate_event_capabilities(
     Ok(requested)
 }
 
-/// Atomically perform one player-requested emergency rotation. Generation one
-/// is the original lifecycle-issued credential and may rotate immediately;
-/// every later player rotation observes the per-row cooldown. Security/admin
-/// revocation uses [`force_rotate_event_capabilities`] and bypasses this gate.
+/// Atomically perform one player-requested emergency rotation. A capability
+/// without a prior player rotation may rotate immediately; every later player
+/// rotation observes the per-row cooldown. Security/admin revocation uses
+/// [`force_rotate_event_capabilities`] without consuming or resetting this
+/// player-only cooldown.
 pub(crate) async fn rotate_player_api_capability(
     connection: &mut sqlx::PgConnection,
     game_id: i32,
@@ -265,17 +266,19 @@ pub(crate) async fn rotate_player_api_capability(
     let candidate = fresh_api_token();
     let rotated = sqlx::query_scalar(
         r#"INSERT INTO "KothApiTeamTokens"
-                   (game_id, challenge_id, participation_id, token, generation)
-               VALUES ($1, $2, $3, $4, 2)
+                   (game_id, challenge_id, participation_id, token, generation,
+                    last_player_rotated_at)
+               VALUES ($1, $2, $3, $4, 2, clock_timestamp())
                ON CONFLICT (game_id, challenge_id, participation_id) DO UPDATE
                  SET token = EXCLUDED.token,
                      generation = "KothApiTeamTokens".generation + 1,
                      rotated_at = clock_timestamp(),
+                     last_player_rotated_at = clock_timestamp(),
                      last_used_at = NULL
                WHERE NOT "KothApiTeamTokens".revocation_pending
                  AND (
-                     "KothApiTeamTokens".generation = 1
-                     OR "KothApiTeamTokens".rotated_at
+                     "KothApiTeamTokens".last_player_rotated_at IS NULL
+                     OR "KothApiTeamTokens".last_player_rotated_at
                           <= clock_timestamp()
                              - ($5::bigint * interval '1 second')
                  )
@@ -297,7 +300,7 @@ pub(crate) async fn rotate_player_api_capability(
         r#"SELECT GREATEST(
                     1,
                     CEIL(EXTRACT(EPOCH FROM (
-                        rotated_at
+                        last_player_rotated_at
                         + ($4::bigint * interval '1 second')
                         - clock_timestamp()
                     )))::bigint

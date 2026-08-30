@@ -138,6 +138,7 @@ mod m0115_flag_egress_feed_cursor;
 mod m0116_game_event_feed_pending;
 mod m0242_participation_provision_jobs;
 mod m0243_koth_api_revocation_fence;
+mod m0244_koth_api_player_rotation_cooldown;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -290,6 +291,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0116_game_event_feed_pending::Migration),
             Box::new(m0242_participation_provision_jobs::Migration),
             Box::new(m0243_koth_api_revocation_fence::Migration),
+            Box::new(m0244_koth_api_player_rotation_cooldown::Migration),
         ]
     }
 }
@@ -435,7 +437,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 16..],
+            &names[names.len() - 17..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -453,6 +455,7 @@ mod tests {
                 "m0116_game_event_feed_pending",
                 "m0242_participation_provision_jobs",
                 "m0243_koth_api_revocation_fence",
+                "m0244_koth_api_player_rotation_cooldown",
             ]
         );
     }

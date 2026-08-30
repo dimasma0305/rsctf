@@ -253,9 +253,10 @@ paused; active unpaused scoring returns a conflict without mutating the token,
 context, or evidence. A player's first allowed emergency rotation is immediate;
 later allowed rotations have a 60-second cooldown and return `429 Too Many
 Requests` with `Retry-After`. Security and eligibility revocation bypass both
-gates, replace the stored secret in place, and require a new arena session. The
-dormant row remains eligibility-gated, so a restored team receives the
-already-fresh value without weakening revocation.
+gates, do not consume or reset the player-only cooldown, replace the stored
+secret in place, and require a new arena session. The dormant row remains
+eligibility-gated, so a restored team receives the already-fresh value without
+weakening revocation and may still use its first emergency rotation immediately.
 
 The managed target reporter then fetches the current scoring fence. The
 original response remains an exact `v1` object for deployed reporters. Arenas

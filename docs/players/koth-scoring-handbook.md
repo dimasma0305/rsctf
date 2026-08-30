@@ -207,7 +207,8 @@ while organizers have paused scoring. Active unpaused scoring rejects manual
 rotation without changing the token or evidence. The first allowed emergency
 rotation is immediate; further allowed rotations have a 60-second cooldown and
 return `429` with `Retry-After`. Security and eligibility revocation are never
-delayed by that cooldown. A successful rotation immediately removes the old
+delayed by that cooldown and do not consume or reset the player-only timer. A
+successful rotation immediately removes the old
 digest from the eligible set and clears only that team's current unsettled rows;
 every other team's
 evidence and already settled epoch evidence remain immutable. An ineligible
