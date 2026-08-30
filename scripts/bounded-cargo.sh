@@ -68,7 +68,7 @@ command+=("$cargo_bin" "$@")
 
 if [[ "${RSCTF_BOUNDED_CARGO_DRY_RUN:-0}" == "1" ]]; then
   printf 'repo_root=%s\n' "$repo_root"
-  printf 'lock=%s\n' "${git_common_dir}/rsctf-cargo-build.lock"
+  printf 'lock=%s\n' "${git_common_dir}/rsctf-build.lock"
   printf 'cpu_quota=%s\n' "$cpu_quota"
   printf 'memory_max=%s\n' "$memory_max"
   printf 'jobs=%s\n' "$jobs"
@@ -80,7 +80,7 @@ if [[ "${RSCTF_BOUNDED_CARGO_DRY_RUN:-0}" == "1" ]]; then
 fi
 
 mkdir -p -- "$target_dir"
-lock_path="${git_common_dir}/rsctf-cargo-build.lock"
+lock_path="${git_common_dir}/rsctf-build.lock"
 exec 9>"$lock_path"
 if ! flock -w "$lock_wait" 9; then
   echo "bounded-cargo: another RSCTF build still owns the shared compile slot" >&2
