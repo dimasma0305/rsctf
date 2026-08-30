@@ -180,6 +180,12 @@ pub enum Policy {
     /// Coarse cross-replica proxy byte credits. Per-frame work remains behind
     /// strict process/session ceilings and never performs a Redis round trip.
     ProxyTraffic,
+    /// Per-session Event-VPN challenge/proof mint budget. Appended to preserve
+    /// every previously shipped Redis policy discriminant.
+    EventVpnMint,
+    /// Deployment-wide Event-VPN mint work budget. Appended to preserve every
+    /// previously shipped Redis policy discriminant.
+    EventVpnMintGlobal,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -289,6 +295,19 @@ impl Policy {
             Policy::ProxyTraffic => Kind::Bucket {
                 capacity: 16_384.0,
                 refill_per_sec: 1_024.0,
+            },
+            // One browser normally performs two mint requests every thirty
+            // seconds. Six complete exchanges may burst, then recover at one
+            // full exchange every two seconds per authenticated session.
+            Policy::EventVpnMint => Kind::Bucket {
+                capacity: 12.0,
+                refill_per_sec: 1.0,
+            },
+            // Shared deployment ceiling before any Event-VPN policy, roster,
+            // or live-peer query. Local semaphores bound retained connections.
+            Policy::EventVpnMintGlobal => Kind::Bucket {
+                capacity: 512.0,
+                refill_per_sec: 64.0,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {
@@ -537,11 +556,12 @@ struct VerifiedSessionPartitionKey(String);
 fn partition_key(policy: Policy, req: &Request) -> String {
     if matches!(
         policy,
-        Policy::PowIssuanceGlobal | Policy::TeamSignatureGlobal
+        Policy::PowIssuanceGlobal | Policy::TeamSignatureGlobal | Policy::EventVpnMintGlobal
     ) {
         return match policy {
             Policy::PowIssuanceGlobal => "hashpow-issuance-global",
             Policy::TeamSignatureGlobal => "team-signature-global",
+            Policy::EventVpnMintGlobal => "event-vpn-mint-global",
             _ => unreachable!(),
         }
         .to_string();
