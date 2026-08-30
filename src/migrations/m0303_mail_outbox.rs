@@ -86,6 +86,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_mail_outbox_current_generation
     ON "MailOutbox" (account_id, purpose)
     WHERE superseded_at_utc IS NULL;
 
+CREATE TABLE IF NOT EXISTS "EmailChangeTickets" (
+    operation_id       UUID PRIMARY KEY
+        REFERENCES "MailOutbox" (operation_id) ON DELETE CASCADE,
+    token_hash         BYTEA NOT NULL UNIQUE
+        CHECK (octet_length(token_hash) = 32),
+    account_id         UUID NOT NULL
+        REFERENCES "AspNetUsers" (id) ON DELETE CASCADE,
+    security_stamp     TEXT NOT NULL
+        CHECK (octet_length(security_stamp) BETWEEN 1 AND 256),
+    new_email          VARCHAR(320) NOT NULL
+        CHECK (octet_length(new_email) BETWEEN 3 AND 320),
+    normalized_email   VARCHAR(320) NOT NULL
+        CHECK (octet_length(normalized_email) BETWEEN 3 AND 320),
+    expires_at_utc     TIMESTAMPTZ NOT NULL,
+    superseded_at_utc  TIMESTAMPTZ NULL,
+    consumed_at_utc    TIMESTAMPTZ NULL,
+    created_at_utc     TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    CONSTRAINT ck_email_change_ticket_terminal
+        CHECK (NOT (superseded_at_utc IS NOT NULL AND consumed_at_utc IS NOT NULL))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_email_change_ticket_current_account
+    ON "EmailChangeTickets" (account_id)
+    WHERE superseded_at_utc IS NULL AND consumed_at_utc IS NULL;
+CREATE INDEX IF NOT EXISTS ix_email_change_ticket_expiry
+    ON "EmailChangeTickets" (expires_at_utc, operation_id)
+    WHERE superseded_at_utc IS NULL AND consumed_at_utc IS NULL;
+
 CREATE INDEX IF NOT EXISTS ix_mail_outbox_destination_admission
     ON "MailOutbox" (destination_digest, created_at_utc DESC);
 
@@ -100,6 +128,7 @@ CREATE INDEX IF NOT EXISTS ix_mail_outbox_terminal
 "#;
 
 const DOWN_SQL: &str = r#"
+DROP TABLE IF EXISTS "EmailChangeTickets";
 DROP TABLE IF EXISTS "MailDeliverySlots";
 DROP TABLE IF EXISTS "MailOutbox";
 "#;
@@ -132,6 +161,8 @@ mod tests {
         assert!(UP_SQL.contains("ix_mail_outbox_pending"));
         assert!(UP_SQL.contains("ix_mail_outbox_terminal"));
         assert!(UP_SQL.contains("ux_mail_outbox_current_generation"));
+        assert!(UP_SQL.contains("EmailChangeTickets"));
+        assert!(UP_SQL.contains("ux_email_change_ticket_current_account"));
         assert!(UP_SQL.contains("destination_digest"));
         assert!(UP_SQL.contains("source_digest"));
     }

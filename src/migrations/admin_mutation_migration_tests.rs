@@ -66,6 +66,10 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
     .await
     .unwrap();
 
+    sqlx::raw_sql(super::m0303_mail_outbox::UP_SQL)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::raw_sql(super::m0306_bulk_challenge_mutations::UP_SQL)
         .execute(&pool)
         .await
@@ -85,6 +89,96 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
         .execute(&pool)
         .await
         .unwrap();
+    let first_mail_operation = uuid::Uuid::new_v4();
+    let second_mail_operation = uuid::Uuid::new_v4();
+    let mail_digest = vec![3_u8; 32];
+    for operation_id in [first_mail_operation, second_mail_operation] {
+        sqlx::query(
+            r#"INSERT INTO "MailOutbox"
+                 (operation_id, purpose, account_id, security_generation_digest,
+                  destination, destination_digest, request_digest, subject, html_body)
+               VALUES ($1, 2, $2, $3, 'new@example.test', $3, $3, 'Change', 'body')"#,
+        )
+        .bind(operation_id)
+        .bind(actor)
+        .bind(&mail_digest)
+        .execute(&pool)
+        .await
+        .unwrap();
+        if operation_id == first_mail_operation {
+            sqlx::query(
+                r#"UPDATE "MailOutbox" SET superseded_at_utc = clock_timestamp()
+                    WHERE operation_id = $1"#,
+            )
+            .bind(operation_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    }
+    sqlx::query(
+        r#"INSERT INTO "EmailChangeTickets"
+             (operation_id, token_hash, account_id, security_stamp, new_email,
+              normalized_email, expires_at_utc, superseded_at_utc)
+           VALUES ($1, $2, $3, 'stamp', 'old@example.test',
+                   'OLD@EXAMPLE.TEST', clock_timestamp() + INTERVAL '15 minutes',
+                   clock_timestamp())"#,
+    )
+    .bind(first_mail_operation)
+    .bind(vec![4_u8; 32])
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "EmailChangeTickets"
+             (operation_id, token_hash, account_id, security_stamp, new_email,
+              normalized_email, expires_at_utc)
+           VALUES ($1, $2, $3, 'stamp', 'new@example.test',
+                   'NEW@EXAMPLE.TEST', clock_timestamp() + INTERVAL '15 minutes')"#,
+    )
+    .bind(second_mail_operation)
+    .bind(vec![5_u8; 32])
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .expect("a superseded email-change ticket permits one new current link");
+    let third_mail_operation = uuid::Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO "MailOutbox"
+             (operation_id, purpose, account_id, security_generation_digest,
+              destination, destination_digest, request_digest, subject, html_body,
+              superseded_at_utc)
+           VALUES ($1, 2, $2, $3, 'third@example.test', $3, $3, 'Change',
+                   'body', clock_timestamp())"#,
+    )
+    .bind(third_mail_operation)
+    .bind(actor)
+    .bind(&mail_digest)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let duplicate_current_ticket = sqlx::query(
+        r#"INSERT INTO "EmailChangeTickets"
+             (operation_id, token_hash, account_id, security_stamp, new_email,
+              normalized_email, expires_at_utc)
+           VALUES ($1, $2, $3, 'stamp', 'third@example.test',
+                   'THIRD@EXAMPLE.TEST', clock_timestamp() + INTERVAL '15 minutes')"#,
+    )
+    .bind(third_mail_operation)
+    .bind(vec![6_u8; 32])
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap_err();
+    assert_eq!(
+        duplicate_current_ticket
+            .as_database_error()
+            .and_then(|error| error.code())
+            .as_deref(),
+        Some("23505"),
+        "one account may expose only one current email-change ticket"
+    );
     sqlx::query(r#"INSERT INTO "Games" (id) VALUES (1)"#)
         .execute(&pool)
         .await
@@ -145,12 +239,11 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
             .await
             .unwrap();
     assert!(!invalid_challenge_enabled);
-    let default_template: (bool, Option<String>) = sqlx::query_as(
-        r#"SELECT is_enabled, flag_template FROM "GameChallenges" WHERE id = 12"#,
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let default_template: (bool, Option<String>) =
+        sqlx::query_as(r#"SELECT is_enabled, flag_template FROM "GameChallenges" WHERE id = 12"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(default_template, (true, None));
     sqlx::query(
         r#"INSERT INTO "GameChallenges" (id, game_id, "Type", flag_template)
@@ -170,11 +263,10 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
     .execute(&pool)
     .await
     .unwrap();
-    let invalid_transition =
-        sqlx::query(r#"UPDATE "GameChallenges" SET "Type" = 3 WHERE id = 14"#)
-            .execute(&pool)
-            .await
-            .unwrap_err();
+    let invalid_transition = sqlx::query(r#"UPDATE "GameChallenges" SET "Type" = 3 WHERE id = 14"#)
+        .execute(&pool)
+        .await
+        .unwrap_err();
     assert_eq!(
         invalid_transition
             .as_database_error()
@@ -183,12 +275,11 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
         Some("23514")
     );
 
-    let duplicate_flag = sqlx::query(
-        r#"INSERT INTO "FlagContexts" (challenge_id, flag) VALUES (10, 'flag{same}')"#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap_err();
+    let duplicate_flag =
+        sqlx::query(r#"INSERT INTO "FlagContexts" (challenge_id, flag) VALUES (10, 'flag{same}')"#)
+            .execute(&pool)
+            .await
+            .unwrap_err();
     assert_eq!(
         duplicate_flag
             .as_database_error()
@@ -341,12 +432,11 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
         Some("23505")
     );
 
-    let revision: i64 = sqlx::query_scalar(
-        r#"SELECT challenge_configuration_revision FROM "Games" WHERE id = 1"#,
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let revision: i64 =
+        sqlx::query_scalar(r#"SELECT challenge_configuration_revision FROM "Games" WHERE id = 1"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert!(
         revision > 1,
         "challenge and flag triggers did not advance revision"

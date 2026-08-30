@@ -63,8 +63,8 @@ fn registration_disposition(
 
 mod avatar;
 mod bootstrap;
-mod email_confirmation;
 mod email_change_support;
+mod email_confirmation;
 mod email_policy;
 mod password_policy;
 mod profile_bounds;

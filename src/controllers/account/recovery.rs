@@ -11,9 +11,9 @@ use reset_ticket_store::{
 };
 
 use super::email_change_support::{
-    email_confirmation_required, publish_ticket, rollback_ticket_publication,
-    update_email_serialized, EmailUpdateMode, EmailUpdateOutcome, EmailUpdateRequest,
-    ACCOUNT_LINK_TTL,
+    confirm_email_change_ticket, email_confirmation_required, insert_email_change_ticket,
+    publish_ticket, update_email_serialized, EmailUpdateMode, EmailUpdateOutcome,
+    EmailUpdateRequest, ACCOUNT_LINK_TTL,
 };
 
 const RECOVERY_TTL: std::time::Duration = ACCOUNT_LINK_TTL;
@@ -231,10 +231,8 @@ pub async fn recovery(
                 "{base}/account/reset?token={token}&email={}",
                 crate::utils::codec::base64_encode(user_email.as_bytes())
             );
-            let (subject, body) = crate::services::mail::reset_password(
-                &link,
-                Some(st.config.global.title.as_str()),
-            );
+            let (subject, body) =
+                crate::services::mail::reset_password(&link, Some(st.config.global.title.as_str()));
             let outcome = crate::services::mail_outbox::enqueue_in_transaction(
                 &mut transaction,
                 crate::services::mail_outbox::MailIntent {
@@ -496,6 +494,20 @@ pub async fn password_reset(
 
     let new_hash = hash_password_async(model.password.clone()).await?;
     credential_work.ensure_owned().await?;
+    let renewed_attempt = sqlx::query(
+        r#"UPDATE "PasswordResetAttempts"
+              SET lease_expires_at_utc = clock_timestamp() + INTERVAL '45 seconds'
+            WHERE operation_id = $1 AND lease_token = $2 AND status = 0"#,
+    )
+    .bind(model.operation_id)
+    .bind(lease_token)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    if renewed_attempt != 1 {
+        return Err(AppError::conflict("Password reset attempt lost its lease"));
+    }
 
     // Authorize the write against the same security stamp. A concurrent logout or
     // password change either wins first and makes this affect zero rows, or wins
@@ -712,25 +724,33 @@ pub async fn change_email(
             },
         )
         .await?;
-        let publication = if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {
-            Some(
-                publish_ticket(
-                    st.cache.as_ref(),
-                    current_key,
-                    "emailchange:",
-                    token.as_bytes(),
-                    &bytes,
-                )
-                .await,
+        let inserted = outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted;
+        if inserted {
+            insert_email_change_ticket(
+                &mut transaction,
+                operation_id,
+                user.id,
+                &expected_stamp,
+                &new_mail,
+                &token,
             )
-        } else {
-            None
-        };
-        if let Err(error) = transaction.commit().await {
-            if let Some(publication) = publication {
-                rollback_ticket_publication(st.cache.as_ref(), publication).await;
-            }
-            return Err(AppError::internal(error.to_string()));
+            .await?;
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        if inserted {
+            // Compatibility mirror for a rolling upgrade. The durable ticket is
+            // authoritative, so cache latency or loss cannot invalidate mail.
+            let _ = publish_ticket(
+                st.cache.as_ref(),
+                current_key,
+                "emailchange:",
+                token.as_bytes(),
+                &bytes,
+            )
+            .await;
         }
     } else {
         let new_stamp = Uuid::new_v4().to_string();
@@ -792,6 +812,37 @@ pub async fn mail_change_confirm(
             "Invalid or expired email-change token",
         ));
     }
+    let supplied_email = crate::utils::codec::base64_decode(&model.email)
+        .and_then(|b| String::from_utf8(b).ok())
+        .filter(|email| email.len() <= MAX_EMAIL_BYTES)
+        .map(|email| email.trim().to_lowercase())
+        .ok_or_else(|| AppError::bad_request("Invalid email"))?;
+    if let Some(confirmed) = confirm_email_change_ticket(
+        st.pg(),
+        st.config.as_ref(),
+        &model.token,
+        &supplied_email,
+    )
+    .await?
+    {
+        let current_key = format!("emailchange-current:{}", confirmed.user_id);
+        st.cache
+            .compare_and_remove(&current_key, model.token.as_bytes())
+            .await;
+        st.cache.remove(&format!("emailchange:{}", model.token)).await;
+        crate::services::audit::info(
+            &st,
+            "AccountController",
+            Some(confirmed.user_name.clone()),
+            None,
+            format!("User {} changed email", confirmed.user_name),
+        )
+        .await;
+        return Ok(MessageResponse::ok(""));
+    }
+
+    // Compatibility for links issued by a pre-outbox replica during a rolling
+    // upgrade. New links always use the durable transaction above.
     let key = format!("emailchange:{}", model.token);
     let ticket_bytes = st
         .cache
@@ -800,11 +851,6 @@ pub async fn mail_change_confirm(
         .ok_or_else(|| AppError::bad_request("Invalid or expired email-change token"))?;
     let ticket: EmailChangeTicket = serde_json::from_slice(&ticket_bytes)
         .map_err(|_| AppError::bad_request("Invalid or expired email-change token"))?;
-    let supplied_email = crate::utils::codec::base64_decode(&model.email)
-        .and_then(|b| String::from_utf8(b).ok())
-        .filter(|email| email.len() <= MAX_EMAIL_BYTES)
-        .map(|email| email.trim().to_lowercase())
-        .ok_or_else(|| AppError::bad_request("Invalid email"))?;
     if supplied_email != ticket.new_email {
         return Err(AppError::bad_request("Invalid email"));
     }

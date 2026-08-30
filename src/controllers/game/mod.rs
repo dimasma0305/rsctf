@@ -37,8 +37,9 @@ use uuid::Uuid;
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser, MonitorUser};
 use crate::models::data::{
-    attachment, challenge_review, container, division, flag_context, game, game_challenge,
-    game_instance, game_notice, local_file, participation, submission, team, team_member, user,
+    attachment, challenge_review, container, division, division_challenge_config, flag_context,
+    game, game_challenge, game_instance, game_notice, local_file, participation, submission, team,
+    team_member, user,
 };
 use crate::services::container::ContainerSpec;
 use crate::utils::crypto_utils::ct_eq;
