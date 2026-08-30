@@ -253,18 +253,20 @@ async fn run_durable_challenge_build(
     .fetch_optional(st.pg())
     .await;
     let mut outcome = match current {
-        Ok(Some((container_image, original_archive_blob_path, build_context_subdir)))
-            if (BuildFingerprint {
+        Ok(Some((container_image, original_archive_blob_path, build_context_subdir))) => {
+            let current = BuildFingerprint {
                 container_image,
                 original_archive_blob_path,
                 build_context_subdir,
-            }) == requested =>
-        {
-            build_challenge_image(st, challenge).await
+            };
+            if current == requested {
+                build_challenge_image(st, challenge).await
+            } else {
+                superseded_build_outcome(
+                    "Build cancelled because the challenge definition changed while it was queued.",
+                )
+            }
         }
-        Ok(Some(_)) => superseded_build_outcome(
-            "Build cancelled because the challenge definition changed while it was queued.",
-        ),
         Ok(None) => superseded_build_outcome(
             "Build cancelled because the challenge or event is being deleted.",
         ),

@@ -226,6 +226,14 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: A&D snapshot retention sweep failed: {e}"),
     }
 
+    match crate::services::blob_refs::purge_expired_stages(state.pg(), state.storage.as_ref(), 128)
+        .await
+    {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: reclaimed expired blob stage(s)"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("cron: blob staging sweep failed: {e}"),
+    }
+
     match crate::services::blob_refs::purge_pending(state.pg(), state.storage.as_ref(), 128).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: purged deferred blob tombstone(s)"),
         Ok(_) => {}

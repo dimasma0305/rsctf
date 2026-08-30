@@ -137,10 +137,11 @@ mod m0114_submission_feed_cursor;
 mod m0115_flag_egress_feed_cursor;
 mod m0116_game_event_feed_pending;
 mod m0242_participation_provision_jobs;
-mod m0133_ad_control_revisions;
-mod m0135_control_plane_jobs;
-mod m0143_challenge_import_jobs;
-mod m0232_control_job_cancellation;
+mod m0260_ad_control_revisions;
+mod m0261_control_plane_jobs;
+mod m0262_challenge_import_jobs;
+mod m0263_control_job_cancellation;
+mod m0264_blob_staging_operations;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -162,11 +163,6 @@ pub(crate) use m0115_flag_egress_feed_cursor::UP_SQL as FLAG_EGRESS_FEED_CURSOR_
 pub(crate) use m0116_game_event_feed_pending::UP_SQL as GAME_EVENT_FEED_PENDING_SQL;
 #[cfg(test)]
 pub(crate) use m0242_participation_provision_jobs::UP_SQL as PARTICIPATION_PROVISION_JOBS_SQL;
-#[cfg(test)]
-pub(crate) use m0143_challenge_import_jobs::UP_SQL as CHALLENGE_IMPORT_JOBS_SQL;
-#[cfg(test)]
-pub(crate) use m0232_control_job_cancellation::UP_SQL as CONTROL_JOB_CANCELLATION_SQL;
-
 pub struct Migrator;
 
 const EXCLUSIVE_CUTOVER_MIGRATIONS: [&str; 3] = [
@@ -296,10 +292,11 @@ impl MigratorTrait for Migrator {
             Box::new(m0115_flag_egress_feed_cursor::Migration),
             Box::new(m0116_game_event_feed_pending::Migration),
             Box::new(m0242_participation_provision_jobs::Migration),
-            Box::new(m0133_ad_control_revisions::Migration),
-            Box::new(m0135_control_plane_jobs::Migration),
-            Box::new(m0143_challenge_import_jobs::Migration),
-            Box::new(m0232_control_job_cancellation::Migration),
+            Box::new(m0260_ad_control_revisions::Migration),
+            Box::new(m0261_control_plane_jobs::Migration),
+            Box::new(m0262_challenge_import_jobs::Migration),
+            Box::new(m0263_control_job_cancellation::Migration),
+            Box::new(m0264_blob_staging_operations::Migration),
         ]
     }
 }
@@ -445,7 +442,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 19..],
+            &names[names.len() - 20..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -462,10 +459,11 @@ mod tests {
                 "m0115_flag_egress_feed_cursor",
                 "m0116_game_event_feed_pending",
                 "m0242_participation_provision_jobs",
-                "m0133_ad_control_revisions",
-                "m0135_control_plane_jobs",
-                "m0143_challenge_import_jobs",
-                "m0232_control_job_cancellation",
+                "m0260_ad_control_revisions",
+                "m0261_control_plane_jobs",
+                "m0262_challenge_import_jobs",
+                "m0263_control_job_cancellation",
+                "m0264_blob_staging_operations",
             ]
         );
     }

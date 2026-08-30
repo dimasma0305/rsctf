@@ -33,31 +33,21 @@ END $$;
 
 pub struct Migration;
 
+impl MigrationName for Migration {
+    fn name(&self) -> &str {
+        "m0260_ad_control_revisions"
+    }
+}
+
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
-    fn name(&self) -> &str {
-        "m0133_ad_control_revisions"
-    }
-
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager.get_connection().execute_unprepared(UP_SQL).await?;
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(
-                r#"
-ALTER TABLE "GameChallenges"
-    DROP CONSTRAINT IF EXISTS ck_game_challenges_ad_control_revision,
-    DROP COLUMN IF EXISTS ad_control_revision;
-ALTER TABLE "Games"
-    DROP CONSTRAINT IF EXISTS ck_games_ad_control_revision,
-    DROP COLUMN IF EXISTS ad_control_revision;
-"#,
-            )
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
+        // Production migrations are forward-only; retain revision fences.
         Ok(())
     }
 }

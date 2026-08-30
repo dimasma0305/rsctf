@@ -96,29 +96,21 @@ CREATE INDEX IF NOT EXISTS ix_variant_generation_claim_recovery
 
 pub struct Migration;
 
+impl MigrationName for Migration {
+    fn name(&self) -> &str {
+        "m0261_control_plane_jobs"
+    }
+}
+
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
-    fn name(&self) -> &str {
-        "m0135_control_plane_jobs"
-    }
-
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager.get_connection().execute_unprepared(UP_SQL).await?;
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(
-                r#"
-DROP TABLE IF EXISTS "VariantGenerationClaims";
-DROP TABLE IF EXISTS "ControlPlaneResourceLeases";
-DROP TABLE IF EXISTS "ControlPlaneJobOperations";
-DROP TABLE IF EXISTS "ControlPlaneJobs";
-"#,
-            )
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
+        // Production migrations are forward-only; retain durable job receipts.
         Ok(())
     }
 }

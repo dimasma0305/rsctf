@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::utils::error::{AppError, AppResult};
 
 const MAX_GIT_TOKEN_BYTES: usize = 4 * 1024;
+pub(super) type EncryptedTokenParts = (Option<Vec<u8>>, Option<Vec<u8>>);
 
 pub(super) fn normalized_github_url(raw: &str) -> AppResult<String> {
     let mut url =
@@ -43,7 +44,7 @@ pub(super) fn encrypt_token(
     game_id: i32,
     actor_user_id: Uuid,
     token: &str,
-) -> AppResult<(Option<Vec<u8>>, Option<Vec<u8>>)> {
+) -> AppResult<EncryptedTokenParts> {
     if token.is_empty() {
         return Ok((None, None));
     }

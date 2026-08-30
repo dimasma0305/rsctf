@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS "ChallengeImportJobs" (
     source_kind SMALLINT NOT NULL CHECK (source_kind IN (0, 1)),
     import_policy SMALLINT NOT NULL CHECK (import_policy IN (0, 1)),
     source_key TEXT NOT NULL CHECK (octet_length(source_key) BETWEEN 1 AND 2048),
+    source_staged BOOLEAN NOT NULL DEFAULT TRUE,
     source_file_id INTEGER REFERENCES "Files" (id) ON DELETE RESTRICT,
     repo_url TEXT CHECK (repo_url IS NULL OR octet_length(repo_url) BETWEEN 1 AND 2048),
     git_ref TEXT CHECK (git_ref IS NULL OR octet_length(git_ref) BETWEEN 1 AND 255),
@@ -44,15 +45,56 @@ CREATE TABLE IF NOT EXISTS "ChallengeImportJobs" (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     expires_at TIMESTAMPTZ NOT NULL DEFAULT (clock_timestamp() + INTERVAL '24 hours'),
     UNIQUE (game_id, actor_user_id, operation_id),
-    CHECK (
-        (source_kind = 0 AND (source_file_id IS NOT NULL OR status IN (2, 3)) AND repo_url IS NULL
-            AND token_ciphertext IS NULL AND token_nonce IS NULL)
+    CONSTRAINT ck_challengeimportjobs_source_fields_v2 CHECK (
+        (source_kind = 0 AND repo_url IS NULL
+            AND token_ciphertext IS NULL AND token_nonce IS NULL
+            AND (source_file_id IS NOT NULL OR status IN (2, 3)
+                OR (source_staged = FALSE AND status = 0)))
         OR
-        (source_kind = 1 AND source_file_id IS NULL AND repo_url IS NOT NULL
+        (source_kind = 1 AND source_file_id IS NULL AND source_staged = TRUE
+            AND repo_url IS NOT NULL
             AND ((token_ciphertext IS NULL AND token_nonce IS NULL)
                 OR (token_ciphertext IS NOT NULL AND octet_length(token_nonce) = 12)))
     )
 );
+
+ALTER TABLE "ChallengeImportJobs"
+    ADD COLUMN IF NOT EXISTS source_staged BOOLEAN NOT NULL DEFAULT TRUE;
+
+DO $migration$
+DECLARE
+    constraint_name TEXT;
+BEGIN
+    FOR constraint_name IN
+        SELECT conname
+          FROM pg_constraint
+         WHERE conrelid = '"ChallengeImportJobs"'::regclass
+           AND contype = 'c'
+           AND position('source_file_id' IN pg_get_constraintdef(oid)) > 0
+           AND position('repo_url' IN pg_get_constraintdef(oid)) > 0
+    LOOP
+        EXECUTE format(
+            'ALTER TABLE "ChallengeImportJobs" DROP CONSTRAINT %I',
+            constraint_name
+        );
+    END LOOP;
+END
+$migration$;
+
+ALTER TABLE "ChallengeImportJobs"
+    ADD CONSTRAINT ck_challengeimportjobs_source_fields_v2 CHECK (
+        (source_kind = 0 AND repo_url IS NULL
+            AND token_ciphertext IS NULL AND token_nonce IS NULL
+            AND (source_file_id IS NOT NULL OR status IN (2, 3)
+                OR (source_staged = FALSE AND status = 0)))
+        OR
+        (source_kind = 1 AND source_file_id IS NULL AND source_staged = TRUE
+            AND repo_url IS NOT NULL
+            AND ((token_ciphertext IS NULL AND token_nonce IS NULL)
+                OR (token_ciphertext IS NOT NULL AND octet_length(token_nonce) = 12)))
+    ) NOT VALID;
+ALTER TABLE "ChallengeImportJobs"
+    VALIDATE CONSTRAINT ck_challengeimportjobs_source_fields_v2;
 
 CREATE INDEX IF NOT EXISTS ix_challengeimportjobs_claim
     ON "ChallengeImportJobs" (status, lease_expires_at, created_at)
@@ -93,14 +135,6 @@ CREATE TABLE IF NOT EXISTS "ChallengeImportRevisions" (
 );
 "#;
 
-const DOWN_SQL: &str = r#"
-DROP TABLE IF EXISTS "ChallengeImportRevisions";
-DROP TABLE IF EXISTS "ChallengeImportJobs";
-DROP FUNCTION IF EXISTS rsctf_release_challenge_import_source();
-DROP INDEX IF EXISTS ux_gamechallenges_import_source_identity;
-ALTER TABLE "GameChallenges" DROP COLUMN IF EXISTS import_source_identity;
-"#;
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -108,11 +142,8 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(DOWN_SQL)
-            .await?;
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
+        // Production migrations are forward-only; retain import receipts.
         Ok(())
     }
 }
@@ -132,6 +163,10 @@ mod tests {
         assert!(UP_SQL.contains("octet_length(token_nonce) = 12"));
         assert!(UP_SQL.contains("octet_length(token_ciphertext) <= 8192"));
         assert!(UP_SQL.contains("source_file_id IS NOT NULL OR status IN (2, 3)"));
+        assert!(UP_SQL.contains("source_staged = FALSE AND status = 0"));
+        assert!(
+            UP_SQL.contains("source_kind = 1 AND source_file_id IS NULL AND source_staged = TRUE")
+        );
         assert!(UP_SQL.contains("tr_challengeimportjobs_release_source"));
         assert!(UP_SQL.contains("GREATEST(reference_count - 1, 0)"));
         assert!(UP_SQL.contains("ux_gamechallenges_import_source_identity"));
@@ -147,7 +182,7 @@ mod tests {
             .connect_with(crate::migrations::test_pg_connect_options(&database_url))
             .await
             .unwrap();
-        let schema = format!("rsctf_m0143_{}", uuid::Uuid::new_v4().simple());
+        let schema = format!("rsctf_m0262_{}", uuid::Uuid::new_v4().simple());
         sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
             .execute(&admin)
             .await
@@ -210,6 +245,35 @@ mod tests {
             "exactly one operation insert wins"
         );
         let owner_id = if first.1.is_ok() { first.0 } else { second.0 };
+
+        sqlx::query(
+            r#"INSERT INTO "ChallengeImportJobs"
+                  (id, game_id, actor_user_id, operation_id, source_kind,
+                   import_policy, source_key, source_staged)
+                VALUES ($1, 7, $2, $3, 0, 0, 'zip-reservation', FALSE)"#,
+        )
+        .bind(uuid::Uuid::new_v4())
+        .bind(actor)
+        .bind(uuid::Uuid::new_v4())
+        .execute(&pool)
+        .await
+        .expect("unstaged ZIP admission is a valid queued reservation");
+        assert!(
+            sqlx::query(
+                r#"INSERT INTO "ChallengeImportJobs"
+                      (id, game_id, actor_user_id, operation_id, source_kind,
+                       import_policy, source_key, source_staged, repo_url)
+                    VALUES ($1, 7, $2, $3, 1, 0, 'unstaged-git', FALSE,
+                            'https://github.com/TCP1P/repo.git')"#,
+            )
+            .bind(uuid::Uuid::new_v4())
+            .bind(actor)
+            .bind(uuid::Uuid::new_v4())
+            .execute(&pool)
+            .await
+            .is_err(),
+            "Git jobs cannot bypass source readiness"
+        );
 
         sqlx::query(
             r#"INSERT INTO "GameChallenges" (id, game_id, import_source_identity)

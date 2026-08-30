@@ -169,3 +169,24 @@ impl IntoResponse for AppError {
 }
 
 pub type AppResult<T> = Result<T, AppError>;
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+
+    use super::AppError;
+
+    #[test]
+    fn overload_responses_are_typed_and_retryable() {
+        let response = AppError::overloaded("capacity is busy", 2).into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "2");
+    }
+
+    #[test]
+    fn overload_retry_delay_never_serializes_as_zero() {
+        let response = AppError::overloaded("capacity is busy", 0).into_response();
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "1");
+    }
+}

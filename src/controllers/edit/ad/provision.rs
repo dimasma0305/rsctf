@@ -324,7 +324,7 @@ pub(crate) async fn run_ad_reconcile_job(
         crate::controllers::game::koth::ensure_koth_hills_with_operation(
             st,
             game.id,
-            Some(operation_id),
+            Some(claimed.model.operation_id),
         )
         .await?;
     }
@@ -826,8 +826,7 @@ mod tests {
 
     use super::{
         ad_service_operation_id, is_manual_operation_conflict, reconcile_operation_id,
-        should_ensure_network, should_provision_vpn, should_reconcile_vpn,
-        IDEMPOTENCY_KEY_HEADER,
+        should_ensure_network, should_provision_vpn, should_reconcile_vpn, IDEMPOTENCY_KEY_HEADER,
     };
 
     #[test]

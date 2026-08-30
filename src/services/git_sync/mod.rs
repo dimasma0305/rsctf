@@ -86,12 +86,14 @@ pub(crate) use reviewed::prepare_checker as prepare_reviewed_checker;
 
 mod git;
 use git::run_git;
+#[cfg(test)]
+use git::{
+    checkout_usage_exceeds, url_without_credentials, validate_checkout_tree, validate_sync_repo_url,
+};
 pub use git::{
     head_sha, lock_checkout, lock_checkout_distributed, sync_repo, validate_binding_repo_url,
     validate_git_ref, validate_github_repo_url, CheckoutLockGuard, GitCredentials,
 };
-#[cfg(test)]
-use git::{url_without_credentials, validate_checkout_tree, validate_sync_repo_url};
 mod package;
 use package::{find_dockerfile_context, image_tag, parse_enum, resolve_category, zip_context_dir};
 mod generator;
