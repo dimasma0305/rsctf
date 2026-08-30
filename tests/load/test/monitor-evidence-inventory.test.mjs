@@ -20,6 +20,18 @@ test('traffic and anti-cheat monitor reads share a fixed-rate bounded contract g
   assert.match(scenario, /response\.status === 304/);
   assert.match(scenario, /response\.status === 503/);
   assert.match(scenario, /retry-after/);
+  assert.match(scenario, /http\.batch/);
+  assert.match(scenario, /regexPattern=/);
+  assert.match(scenario, /peerIpContains=/);
+  assert.match(scenario, /direction=/);
+  assert.match(scenario, /flagsOnly=true/);
+  assert.match(scenario, /contract: 'invalidRegex'/);
+  assert.match(scenario, /contract: 'flowDetail'/);
+  assert.match(scenario, /snapshotVersion=\$\{FLOW\.snapshotVersion\}/);
+  assert.match(scenario, /flowId=\$\{FLOW\.flowId\}/);
+  assert.match(scenario, /monitor_inventory_flow_newest_mismatch: \['rate==0'\]/);
+  assert.match(scenario, /newestResponse\.status === 200/);
+  assert.match(scenario, /responseByteLimit/);
   assert.match(scenario, /dropped_iterations: \['count==0'\]/);
   assert.match(scenario, /monitor_inventory_health_ms: \['p\(95\)<500'\]/);
   assert.doesNotMatch(scenario, /http\.(?:post|put|patch|del|delete)\(/);
@@ -32,6 +44,14 @@ test('runner requires a large real inventory and protects minted monitor credent
   assert.match(runner, /MONITOR_EVIDENCE_CAPTURE_ROOT/);
   assert.match(runner, /'-type', 'f', '-iname', '\*\.pcap'/);
   assert.match(runner, /filesystemFiles < minimums\.files/);
+  assert.match(runner, /"TrafficCaptureFiles" file/);
+  assert.match(runner, /FLOW_SEED_CANDIDATE_LIMIT = 8/);
+  assert.match(runner, /FLOW_SEED_MAX_CAPTURE_BYTES = 256 \* 1024 \* 1024/);
+  assert.match(runner, /seedFlowFixture/);
+  assert.match(runner, /page=1&pageSize=1/);
+  assert.match(runner, /boundedResponseText/);
+  assert.match(runner, /snapshotVersion: body\.snapshotVersion/);
+  assert.match(runner, /flowId: summary\.flowId/);
   assert.match(runner, /"CheatInfo"/);
   assert.match(runner, /"SuspicionEvents"/);
   assert.match(runner, /WHERE role IN \(2,3\)/);
@@ -60,6 +80,8 @@ test('every inventory and evidence route uses named query admission', () => {
     'game_captures_page',
     'team_traffic_page',
     'traffic_files_page',
+    'traffic_flows',
+    'traffic_flow_detail',
   ]) {
     assert.match(routes, new RegExp(`limited\\(Policy::Query, get\\(${handler}\\)\\)`));
   }

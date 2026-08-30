@@ -152,6 +152,10 @@ mod m0272_event_sensor_batches;
 mod m0273_receipt_variant_lifecycle;
 mod m0280_traffic_capture_inventory;
 mod m0281_anticheat_read_bounds;
+mod m0282_docker_image_cleanup_jobs;
+mod m0283_incremental_anticheat_reconciliation;
+mod m0284_anticheat_dirty_outboxes;
+mod m0285_honeypot_telemetry_buckets;
 mod m0290_distributed_proxy_admission;
 
 #[cfg(test)]
@@ -321,6 +325,10 @@ impl MigratorTrait for Migrator {
             Box::new(m0273_receipt_variant_lifecycle::Migration),
             Box::new(m0280_traffic_capture_inventory::Migration),
             Box::new(m0281_anticheat_read_bounds::Migration),
+            Box::new(m0282_docker_image_cleanup_jobs::Migration),
+            Box::new(m0283_incremental_anticheat_reconciliation::Migration),
+            Box::new(m0284_anticheat_dirty_outboxes::Migration),
+            Box::new(m0285_honeypot_telemetry_buckets::Migration),
             Box::new(m0290_distributed_proxy_admission::Migration),
         ]
     }
@@ -467,7 +475,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 30..],
+            &names[names.len() - 35..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -499,6 +507,10 @@ mod tests {
                 "m0273_receipt_variant_lifecycle",
                 "m0280_traffic_capture_inventory",
                 "m0281_anticheat_read_bounds",
+                "m0282_docker_image_cleanup_jobs",
+                "m0283_incremental_anticheat_reconciliation",
+                "m0284_anticheat_dirty_outboxes",
+                "m0285_honeypot_telemetry_buckets",
                 "m0290_distributed_proxy_admission",
             ]
         );

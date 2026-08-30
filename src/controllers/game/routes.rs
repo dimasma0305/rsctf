@@ -190,13 +190,27 @@ fn router_with_domains(
         )
         .route(
             "/api/game/captures/{challengeId}/{partId}/{filename}/flows",
-            get(traffic_flows),
+            limited(Policy::Query, get(traffic_flows)),
         )
         .route(
             "/api/game/captures/{challengeId}/{partId}/{filename}/flow/{connectionPort}",
-            get(traffic_flow_detail),
+            limited(Policy::Query, get(traffic_flow_detail)),
         )
         // Player-facing A&D + KotH controllers live under this game area.
         .merge(ad_router)
         .merge(koth_router)
+}
+
+#[cfg(test)]
+mod traffic_route_contract_tests {
+    #[test]
+    fn flow_inspection_routes_keep_named_query_admission() {
+        let source = include_str!("routes.rs");
+        for handler in ["traffic_flows", "traffic_flow_detail"] {
+            assert!(
+                source.contains(&format!("limited(Policy::Query, get({handler}))")),
+                "{handler} must retain named query-work admission"
+            );
+        }
+    }
 }

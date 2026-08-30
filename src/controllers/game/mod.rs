@@ -476,22 +476,6 @@ pub struct CheatInfoModel {
     pub submission: SubmissionModel,
 }
 
-/// RSCTF `TrafficFlowDetail` (extends `TrafficFlowSummary`).
-#[derive(Debug, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct TrafficFlowDetail {
-    pub connection_port: i32,
-    pub first_seen_utc: String,
-    pub last_seen_utc: String,
-    pub peer_ip: String,
-    pub packets_in: i64,
-    pub packets_out: i64,
-    pub bytes_in: i64,
-    pub bytes_out: i64,
-    pub flag_hits: i64,
-    pub chunks: Vec<Json>,
-}
-
 /// RSCTF `GameJoinModel`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -4400,6 +4400,7 @@ dependencies = [
  "rand 0.10.2",
  "rcgen",
  "redis",
+ "regex",
  "reqwest 0.12.28",
  "rsctf-worker-protocol",
  "russh",

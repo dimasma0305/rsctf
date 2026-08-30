@@ -42,6 +42,8 @@ fn games_share_the_configured_competitive_end_and_delayed_final_seal() {
     assert!(RECONCILE_GAMES_SQL.contains("game.end_time_utc > observed_clock.db_now"));
     assert!(RECONCILE_GAMES_SQL.contains("<= observed_clock.db_now"));
     assert!(RECONCILE_GAMES_SQL.contains("reconciliation.sealed_at_utc IS NULL"));
+    assert!(RECONCILE_GAMES_SQL.contains("queue.desired_generation > queue.applied_generation"));
+    assert!(RECONCILE_GAMES_SQL.contains("LIMIT $2"));
     assert!(!RECONCILE_GAMES_SQL.contains("practice_mode"));
     assert!(!RECONCILE_GAMES_SQL.contains("Utc::now"));
 }
@@ -102,6 +104,15 @@ async fn scheduler_closes_intake_after_grace_and_waits_for_every_job() {
           lease_token UUID,
           lease_expires_at_utc TIMESTAMPTZ
         );
+        CREATE TABLE "AntiCheatReconciliationQueue" (
+          game_id INTEGER PRIMARY KEY REFERENCES "Games"(id),
+          desired_generation BIGINT NOT NULL DEFAULT 0,
+          applied_generation BIGINT NOT NULL DEFAULT 0,
+          final_applied_at_utc TIMESTAMPTZ,
+          available_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          lease_expires_at_utc TIMESTAMPTZ,
+          updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
         INSERT INTO "Games" (id, start_time_utc, end_time_utc) VALUES
           (1, clock_timestamp() - INTERVAL '1 hour',
               clock_timestamp() + INTERVAL '1 hour'),
@@ -112,9 +123,15 @@ async fn scheduler_closes_intake_after_grace_and_waits_for_every_job() {
               clock_timestamp() - INTERVAL '61 seconds'),
           (5, clock_timestamp() - INTERVAL '2 hours',
               clock_timestamp() - INTERVAL '61 seconds');
-        INSERT INTO "SuspicionReconciliationState"
-          (game_id, evidence_closed_at_utc, sealed_at_utc, attempts)
-        VALUES (4, clock_timestamp(), clock_timestamp(), 1);
+        INSERT INTO "SuspicionReconciliationState" (game_id, attempts)
+        SELECT id, 0 FROM "Games";
+        UPDATE "SuspicionReconciliationState"
+           SET evidence_closed_at_utc = clock_timestamp(),
+               sealed_at_utc = clock_timestamp(), attempts = 1
+         WHERE game_id = 4;
+        INSERT INTO "AntiCheatReconciliationQueue"
+          (game_id, desired_generation, applied_generation)
+        SELECT id, CASE WHEN id = 1 THEN 1 ELSE 0 END, 0 FROM "Games";
         "#,
     )
     .execute(&pool)
@@ -123,10 +140,11 @@ async fn scheduler_closes_intake_after_grace_and_waits_for_every_job() {
 
     let phases: Vec<(i32, bool)> = sqlx::query_as(RECONCILE_GAMES_SQL)
         .bind(60_i64)
+        .bind(32_i64)
         .fetch_all(&pool)
         .await
         .unwrap();
-    assert_eq!(phases, vec![(1, false), (3, true), (5, true)]);
+    assert_eq!(phases, vec![(3, true), (5, true), (1, false)]);
 
     // A pre-barrier producer owns Games FOR SHARE and commits more than one
     // worker batch of intents, including a live lease. Closure must wait for

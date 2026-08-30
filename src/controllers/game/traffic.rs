@@ -1,5 +1,6 @@
 //! Traffic-capture serving: pcap listing/download/flows.
 use super::*;
+use base64::Engine as _;
 use std::io::Read;
 
 // ---------------------------------------------------------------------------
@@ -7,12 +8,13 @@ use std::io::Read;
 // ---------------------------------------------------------------------------
 
 const MAX_CAPTURE_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_INSPECT_CAPTURE_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_CAPTURE_FLOWS: usize = 20_000;
+const FLOW_FILTER_SLOTS: usize = 2;
 static CAPTURE_ARCHIVE_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
-static CAPTURE_FLOW_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
+static FLOW_FILTER_CAPACITY: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Arc::new(tokio::sync::Semaphore::new(FLOW_FILTER_SLOTS))
+    });
 
 async fn spawn_blocking_with_permit<T, F>(
     permit: tokio::sync::OwnedSemaphorePermit,
@@ -55,6 +57,165 @@ fn safe_capture_name(name: &str) -> AppResult<&str> {
         return Err(AppError::bad_request("Invalid capture file name"));
     }
     Ok(name)
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub enum TrafficFlowDirection {
+    ContainerToTeam,
+    TeamToContainer,
+}
+
+impl From<TrafficFlowDirection> for crate::services::traffic::FlowDirection {
+    fn from(direction: TrafficFlowDirection) -> Self {
+        match direction {
+            TrafficFlowDirection::ContainerToTeam => Self::ContainerToTeam,
+            TrafficFlowDirection::TeamToContainer => Self::TeamToContainer,
+        }
+    }
+}
+
+impl From<crate::services::traffic::FlowDirection> for TrafficFlowDirection {
+    fn from(direction: crate::services::traffic::FlowDirection) -> Self {
+        match direction {
+            crate::services::traffic::FlowDirection::ContainerToTeam => Self::ContainerToTeam,
+            crate::services::traffic::FlowDirection::TeamToContainer => Self::TeamToContainer,
+        }
+    }
+}
+
+fn default_flow_page() -> u32 {
+    1
+}
+
+fn default_flow_page_size() -> u16 {
+    crate::services::traffic::DEFAULT_FLOW_PAGE_SIZE
+}
+
+/// Bounded filters and pagination for one immutable capture snapshot.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TrafficFlowQuery {
+    #[serde(default)]
+    regex_pattern: Option<String>,
+    #[serde(default)]
+    peer_ip_contains: Option<String>,
+    #[serde(default)]
+    start_utc: Option<i64>,
+    #[serde(default)]
+    end_utc: Option<i64>,
+    #[serde(default)]
+    direction: Option<TrafficFlowDirection>,
+    #[serde(default)]
+    flags_only: bool,
+    #[serde(default = "default_flow_page")]
+    page: u32,
+    #[serde(default = "default_flow_page_size")]
+    page_size: u16,
+}
+
+impl TrafficFlowQuery {
+    fn validated_filter(&self) -> Result<crate::services::traffic::ValidatedFlowFilter, AppError> {
+        crate::services::traffic::ValidatedFlowFilter::new(
+            self.regex_pattern.as_deref(),
+            self.peer_ip_contains.as_deref(),
+            self.start_utc,
+            self.end_utc,
+            self.direction.map(Into::into),
+            self.flags_only,
+        )
+        .map_err(Into::into)
+    }
+}
+
+async fn configured_capture_port(st: &SharedState, challenge_id: i32) -> AppResult<u16> {
+    let port = sqlx::query_scalar::<_, Option<i32>>(
+        r#"SELECT expose_port FROM "GameChallenges"
+            WHERE id = $1 AND enable_traffic_capture = TRUE"#,
+    )
+    .bind(challenge_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .flatten()
+    .ok_or_else(|| AppError::not_found("Capture challenge service port not found"))?;
+    u16::try_from(port)
+        .ok()
+        .filter(|port| *port > 0)
+        .ok_or_else(|| AppError::bad_request("Capture challenge has an invalid service port"))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TrafficFlowDetailQuery {
+    #[serde(default)]
+    snapshot_version: Option<String>,
+    #[serde(default)]
+    flow_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficFlowSummaryModel {
+    pub flow_id: String,
+    pub connection_port: u16,
+    pub first_seen_utc: i64,
+    pub last_seen_utc: i64,
+    pub peer_ip: String,
+    pub packets_in: u64,
+    pub packets_out: u64,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub flag_hits: u32,
+    pub payload_truncated: bool,
+}
+
+impl From<&crate::services::traffic::IndexedFlow> for TrafficFlowSummaryModel {
+    fn from(flow: &crate::services::traffic::IndexedFlow) -> Self {
+        Self {
+            flow_id: flow.flow_id.clone(),
+            connection_port: flow.connection_port,
+            first_seen_utc: flow.first_seen_utc,
+            last_seen_utc: flow.last_seen_utc,
+            peer_ip: flow.peer_ip.clone(),
+            packets_in: flow.packets_in,
+            packets_out: flow.packets_out,
+            bytes_in: flow.bytes_in,
+            bytes_out: flow.bytes_out,
+            flag_hits: flow.flag_hits,
+            payload_truncated: flow.payload_truncated,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficFlowPageModel {
+    pub items: Vec<TrafficFlowSummaryModel>,
+    pub page: u32,
+    pub page_size: u16,
+    pub total_items: usize,
+    pub total_pages: usize,
+    pub snapshot_version: String,
+    pub indexed_payload_bytes: usize,
+    pub payload_truncated: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficFlowChunkModel {
+    pub direction: TrafficFlowDirection,
+    pub timestamp_utc: i64,
+    pub payload_base64: String,
+    pub flag_offsets: Vec<u32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficFlowDetailModel {
+    #[serde(flatten)]
+    pub summary: TrafficFlowSummaryModel,
+    pub snapshot_version: String,
+    pub chunks: Vec<TrafficFlowChunkModel>,
 }
 
 /// `GET /api/game/games/{id}/captures` — each challenge + its total pcap count.
@@ -256,6 +417,7 @@ pub async fn delete_all_traffic(
     let dir = capture_root(&st)
         .join(cid.to_string())
         .join(pid.to_string());
+    crate::services::traffic::invalidate_inspection_directory(&dir);
     crate::services::traffic::inventory::mark_reconcile_required(st.pg()).await?;
     if let Err(error) = tokio::fs::remove_dir_all(&dir).await {
         if error.kind() != std::io::ErrorKind::NotFound {
@@ -334,6 +496,7 @@ pub async fn delete_traffic_file(
         .join(cid.to_string())
         .join(pid.to_string())
         .join(name);
+    crate::services::traffic::invalidate_inspection_path(&path);
     crate::services::traffic::inventory::mark_reconcile_required(st.pg()).await?;
     if let Err(error) = tokio::fs::remove_file(&path).await {
         if error.kind() != std::io::ErrorKind::NotFound {
@@ -353,41 +516,60 @@ pub async fn delete_traffic_file(
     Ok(StatusCode::OK)
 }
 
-/// `GET /api/game/captures/{challengeId}/{partId}/{filename}/flows` — the TCP/UDP
-/// flows parsed out of the pcap (`services::traffic::list_flows`).
+/// `GET /api/game/captures/{challengeId}/{partId}/{filename}/flows` — a bounded,
+/// filterable page from the immutable PCAP flow snapshot.
 pub async fn traffic_flows(
     State(st): State<SharedState>,
     _user: MonitorUser,
     Path((cid, pid, filename)): Path<(i32, i32, String)>,
-) -> AppResult<RequestResponse<Vec<Json>>> {
+    Query(query): Query<TrafficFlowQuery>,
+) -> AppResult<RequestResponse<TrafficFlowPageModel>> {
     let name = safe_capture_name(&filename)?;
     let path = capture_root(&st)
         .join(cid.to_string())
         .join(pid.to_string())
         .join(name);
-    let permit = CAPTURE_FLOW_SLOTS
+    let filter = query.validated_filter()?;
+    crate::services::traffic::validate_flow_page_bounds(query.page, query.page_size)
+        .map_err(AppError::from)?;
+    let container_port = configured_capture_port(&st, cid).await?;
+    let snapshot = crate::services::traffic::load_flow_snapshot(&path, container_port, None)
+        .await
+        .map_err(AppError::from)?;
+    let filter_permit = FLOW_FILTER_CAPACITY
         .clone()
         .try_acquire_owned()
-        .map_err(|_| AppError::unavailable("Capture inspection capacity is busy; retry shortly"))?;
-    let flows = spawn_blocking_with_permit(permit, move || {
-        crate::services::traffic::list_flows_bounded(
-            &path,
-            MAX_INSPECT_CAPTURE_BYTES,
-            MAX_CAPTURE_FLOWS,
+        .map_err(|_| {
+            AppError::overloaded("Traffic flow filter capacity is busy; retry shortly", 1)
+        })?;
+    let filter_snapshot = std::sync::Arc::clone(&snapshot);
+    let page = spawn_blocking_with_permit(filter_permit, move || {
+        crate::services::traffic::filter_flow_page(
+            &filter_snapshot,
+            &filter,
+            query.page,
+            query.page_size,
         )
     })
     .await
-    .map_err(|error| AppError::internal(format!("capture inspection task failed: {error}")))??;
-    let out = flows
+    .map_err(|error| AppError::internal(format!("traffic flow filter task failed: {error}")))?
+    .map_err(AppError::from)?;
+    let items = page
+        .indices
         .into_iter()
-        .map(|f| {
-            serde_json::json!({
-                "src": f.src, "dst": f.dst,
-                "packetCount": f.packet_count, "bytes": f.bytes,
-            })
-        })
+        .map(|index| TrafficFlowSummaryModel::from(&snapshot.flows()[index]))
         .collect();
-    Ok(RequestResponse::ok(out))
+    let page_size = usize::from(query.page_size);
+    Ok(RequestResponse::ok(TrafficFlowPageModel {
+        items,
+        page: query.page,
+        page_size: query.page_size,
+        total_items: page.total_items,
+        total_pages: page.total_items.div_ceil(page_size),
+        snapshot_version: snapshot.version().to_owned(),
+        indexed_payload_bytes: snapshot.indexed_payload_bytes(),
+        payload_truncated: snapshot.payload_truncated(),
+    }))
 }
 
 /// `GET /api/game/captures/{challengeId}/{partId}/{filename}/flow/{connectionPort}`
@@ -396,44 +578,64 @@ pub async fn traffic_flow_detail(
     State(st): State<SharedState>,
     _user: MonitorUser,
     Path((cid, pid, filename, connection_port)): Path<(i32, i32, String, i32)>,
-) -> AppResult<RequestResponse<TrafficFlowDetail>> {
+    Query(query): Query<TrafficFlowDetailQuery>,
+) -> AppResult<RequestResponse<TrafficFlowDetailModel>> {
     let name = safe_capture_name(&filename)?;
     let path = capture_root(&st)
         .join(cid.to_string())
         .join(pid.to_string())
         .join(name);
-    let port = connection_port.to_string();
-    let permit = CAPTURE_FLOW_SLOTS
+    let container_port = configured_capture_port(&st, cid).await?;
+    let connection_port = u16::try_from(connection_port)
+        .ok()
+        .filter(|port| *port > 0)
+        .ok_or_else(|| AppError::bad_request("connectionPort must be between 1 and 65535"))?;
+    if let Some(version) = query.snapshot_version.as_deref() {
+        crate::services::traffic::validate_snapshot_version(version).map_err(AppError::from)?;
+    }
+    if let Some(flow_id) = query.flow_id.as_deref() {
+        crate::services::traffic::validate_flow_id(flow_id).map_err(AppError::from)?;
+    }
+    let snapshot = crate::services::traffic::load_flow_snapshot(
+        &path,
+        container_port,
+        query.snapshot_version.as_deref(),
+    )
+    .await
+    .map_err(AppError::from)?;
+    let detail_permit = FLOW_FILTER_CAPACITY
         .clone()
         .try_acquire_owned()
-        .map_err(|_| AppError::unavailable("Capture inspection capacity is busy; retry shortly"))?;
-    let flows = spawn_blocking_with_permit(permit, move || {
-        crate::services::traffic::list_flows_bounded(
-            &path,
-            MAX_INSPECT_CAPTURE_BYTES,
-            MAX_CAPTURE_FLOWS,
-        )
+        .map_err(|_| {
+            AppError::overloaded("Traffic flow detail capacity is busy; retry shortly", 1)
+        })?;
+    let detail_snapshot = std::sync::Arc::clone(&snapshot);
+    let flow_id = query.flow_id;
+    let detail = spawn_blocking_with_permit(detail_permit, move || {
+        let Some(flow) = detail_snapshot.flow(connection_port, flow_id.as_deref())? else {
+            return Ok(None);
+        };
+        let chunks = flow
+            .chunks
+            .iter()
+            .map(|chunk| TrafficFlowChunkModel {
+                direction: chunk.direction.into(),
+                timestamp_utc: chunk.timestamp_utc,
+                payload_base64: base64::engine::general_purpose::STANDARD.encode(&chunk.payload),
+                flag_offsets: chunk.flag_offsets.clone(),
+            })
+            .collect();
+        Ok::<_, crate::services::traffic::InspectionError>(Some(TrafficFlowDetailModel {
+            summary: TrafficFlowSummaryModel::from(flow),
+            snapshot_version: detail_snapshot.version().to_owned(),
+            chunks,
+        }))
     })
     .await
-    .map_err(|error| AppError::internal(format!("capture inspection task failed: {error}")))??;
-    let flow = flows
-        .into_iter()
-        .find(|f| f.src.ends_with(&format!(":{port}")) || f.dst.ends_with(&format!(":{port}")));
-    Ok(RequestResponse::ok(TrafficFlowDetail {
-        connection_port,
-        peer_ip: flow
-            .as_ref()
-            .map(|f| {
-                f.dst
-                    .rsplit_once(':')
-                    .map(|(ip, _)| ip.to_string())
-                    .unwrap_or_else(|| f.dst.clone())
-            })
-            .unwrap_or_default(),
-        packets_in: flow.as_ref().map(|f| f.packet_count as i64).unwrap_or(0),
-        bytes_in: flow.as_ref().map(|f| f.bytes as i64).unwrap_or(0),
-        ..Default::default()
-    }))
+    .map_err(|error| AppError::internal(format!("traffic flow detail task failed: {error}")))?
+    .map_err(AppError::from)?
+    .ok_or_else(|| AppError::not_found("Flow not found in this capture snapshot"))?;
+    Ok(RequestResponse::ok(detail))
 }
 
 #[cfg(test)]
@@ -470,5 +672,119 @@ mod cancellation_tests {
         .await
         .expect("blocking work retained the permit after it completed");
         drop(released);
+    }
+}
+
+#[cfg(test)]
+mod flow_contract_tests {
+    use super::*;
+
+    #[test]
+    fn flow_query_is_camel_case_typed_and_rejects_unknown_or_invalid_filters() {
+        let query: TrafficFlowQuery = serde_json::from_value(serde_json::json!({
+            "regexPattern": "flag\\{",
+            "peerIpContains": "10.8:",
+            "direction": "TeamToContainer",
+            "flagsOnly": true,
+            "page": 2,
+            "pageSize": 25
+        }))
+        .unwrap();
+        assert_eq!(query.page, 2);
+        assert_eq!(query.page_size, 25);
+        assert!(query.validated_filter().is_ok());
+
+        assert!(
+            serde_json::from_value::<TrafficFlowQuery>(serde_json::json!({
+                "payloadRegex": "ignored-contract-field"
+            }))
+            .is_err()
+        );
+        let invalid: TrafficFlowQuery = serde_json::from_value(serde_json::json!({
+            "regexPattern": "(",
+            "page": 1,
+            "pageSize": 50
+        }))
+        .unwrap();
+        assert_eq!(
+            invalid.validated_filter().unwrap_err().status(),
+            StatusCode::BAD_REQUEST
+        );
+
+        let detail: TrafficFlowDetailQuery = serde_json::from_value(serde_json::json!({
+            "snapshotVersion": "a".repeat(32),
+            "flowId": "04ac1400041f90040a080007b043"
+        }))
+        .unwrap();
+        assert!(
+            crate::services::traffic::validate_flow_id(detail.flow_id.as_deref().unwrap()).is_ok()
+        );
+        assert!(
+            serde_json::from_value::<TrafficFlowDetailQuery>(serde_json::json!({
+                "src": "unsupported"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn summary_page_and_detail_share_one_numeric_timestamp_contract() {
+        let summary = TrafficFlowSummaryModel {
+            flow_id: "04ac1400041f90040a080007b043".into(),
+            connection_port: 45_123,
+            first_seen_utc: 1_001,
+            last_seen_utc: 1_030,
+            peer_ip: "10.8.0.7".into(),
+            packets_in: 1,
+            packets_out: 2,
+            bytes_in: 17,
+            bytes_out: 20,
+            flag_hits: 1,
+            payload_truncated: false,
+        };
+        let detail = TrafficFlowDetailModel {
+            summary: summary.clone(),
+            snapshot_version: "a".repeat(32),
+            chunks: vec![TrafficFlowChunkModel {
+                direction: TrafficFlowDirection::TeamToContainer,
+                timestamp_utc: 1_001,
+                payload_base64: "ZmxhZ3thbHBoYX0=".into(),
+                flag_offsets: vec![0],
+            }],
+        };
+        let detail = serde_json::to_value(detail).unwrap();
+        assert_eq!(detail["flowId"], "04ac1400041f90040a080007b043");
+        assert_eq!(detail["connectionPort"], 45_123);
+        assert_eq!(detail["firstSeenUtc"], 1_001);
+        assert_eq!(detail["chunks"][0]["timestampUtc"], 1_001);
+        assert_eq!(detail["chunks"][0]["direction"], "TeamToContainer");
+        assert!(detail.get("src").is_none());
+        assert!(detail.get("dst").is_none());
+
+        let page = serde_json::to_value(TrafficFlowPageModel {
+            items: vec![summary],
+            page: 1,
+            page_size: 50,
+            total_items: 1,
+            total_pages: 1,
+            snapshot_version: "a".repeat(32),
+            indexed_payload_bytes: 17,
+            payload_truncated: false,
+        })
+        .unwrap();
+        assert_eq!(page["items"][0]["connectionPort"], 45_123);
+        assert_eq!(page["snapshotVersion"], "a".repeat(32));
+    }
+
+    #[test]
+    fn cached_inspector_work_is_bounded_and_never_runs_on_tokio_workers() {
+        assert!(FLOW_FILTER_SLOTS > 0 && FLOW_FILTER_SLOTS <= 4);
+        let source = include_str!("traffic.rs");
+        assert!(source.contains("FLOW_FILTER_CAPACITY"));
+        assert!(source.contains("try_acquire_owned()"));
+        assert!(source.contains("spawn_blocking_with_permit(filter_permit"));
+        assert!(source.contains("spawn_blocking_with_permit(detail_permit"));
+        assert!(source.contains("Traffic flow filter capacity is busy; retry shortly"));
+        assert!(source.contains("Traffic flow detail capacity is busy; retry shortly"));
     }
 }

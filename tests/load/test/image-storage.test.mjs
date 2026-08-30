@@ -72,6 +72,15 @@ test('k6 uses a fixed arrival burst and fails on health or start loss', () => {
   assert.match(k6, /dropped_iterations: \['count==0'\]/);
 });
 
+test('cleanup phase keeps health and ended-event closeout on fixed arrival rates', () => {
+  assert.match(k6, /IMAGE_STORAGE_PHASE/);
+  assert.match(k6, /health_during_cleanup/);
+  assert.match(k6, /event_closeout_during_cleanup/);
+  assert.match(k6, /event_closeout_failure: \['rate==0'\]/);
+  assert.match(k6, /event_closeout_ms: \['p\(95\)<1000'\]/);
+  assert.match(k6, /event_closeout_during_image_cleanup/);
+});
+
 test('runner refuses ambient targets and proves exactly one RuntimeStart build', () => {
   assert.match(runner, /IMAGE_STORAGE_STRESS_ACK === '1'/);
   assert.match(runner, /ALLOW_REMOTE_IMAGE_STORAGE_STRESS/);
@@ -79,4 +88,21 @@ test('runner refuses ambient targets and proves exactly one RuntimeStart build',
   assert.match(runner, /audit\.runtimeBuilds !== beforeBuilds \+ 1/);
   assert.match(runner, /audit\.containers !== players\.length/);
   assert.doesNotMatch(runner, /UPDATE "GameChallenges"|DELETE FROM "BuildImageOwnerships"/);
+});
+
+test('runner forces and audits one durable bounded scheduled cleanup', () => {
+  assert.match(runner, /ImageCleanupSchedules/);
+  assert.match(runner, /next_run_at_utc=clock_timestamp\(\)/);
+  assert.match(runner, /waitForScheduledCleanup/);
+  assert.match(runner, /lastClaimed > 32/);
+  assert.match(runner, /lastBacklog < expectedCleanupBacklog/);
+  assert.match(runner, /stableAfterFixedRateProbe = true/);
+  assert.match(runner, /IMAGE_STORAGE_CLOSEOUT_ACK/);
+});
+
+test('hung Docker coverage is opt-in and only validates an external bounded fault proxy', () => {
+  assert.match(runner, /IMAGE_STORAGE_HUNG_DOCKER_ACK === 'external-fault-proxy'/);
+  assert.match(runner, /EXPECTED_CLEANUP_MIN_MS/);
+  assert.match(runner, /timed out\|deadline\|budget/);
+  assert.doesNotMatch(runner, /docker.*pause|systemctl.*docker|kill.*dockerd/i);
 });
