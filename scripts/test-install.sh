@@ -153,6 +153,29 @@ env \
 grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=35' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_CONTROL_DB_MAX_CONNECTIONS=23' "$local_checkout/deploy/.env"
 
+cp "$local_checkout/deploy/.env" "$TEMP_DIRECTORY/local-before-duplicate.env"
+printf 'RSCTF_DB_MAX_CONNECTIONS=33\n' >>"$local_checkout/deploy/.env"
+cp "$local_checkout/deploy/.env" "$TEMP_DIRECTORY/local-with-duplicate.env"
+if env \
+  PATH="$TEST_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  RSCTF_INSTALLER_FIXTURE="$VALID_FIXTURE" \
+  RSCTF_TEST_CURL_LOG="$TEMP_DIRECTORY/local-curl.log" \
+  RSCTF_TEST_GH_LOG="$TEMP_DIRECTORY/gh.log" \
+  bash "$local_checkout/scripts/install.sh" \
+    --image "$PINNED_IMAGE" \
+    --mode local \
+    --without-docker \
+    --non-interactive \
+    --configure-only \
+    >"$TEMP_DIRECTORY/local-duplicate.out" 2>&1; then
+  printf 'installer accepted duplicate pool assignments\n' >&2
+  exit 1
+fi
+grep -Fq 'contains duplicate RSCTF_DB_MAX_CONNECTIONS assignments' \
+  "$TEMP_DIRECTORY/local-duplicate.out"
+cmp "$TEMP_DIRECTORY/local-with-duplicate.env" "$local_checkout/deploy/.env"
+mv "$TEMP_DIRECTORY/local-before-duplicate.env" "$local_checkout/deploy/.env"
+
 output="$TEMP_DIRECTORY/success.out"
 target="$TEMP_DIRECTORY/installed-rsctf"
 RSCTF_TEST_ENV_ARGS=()

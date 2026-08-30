@@ -635,10 +635,11 @@ append_env_if_missing() {
 
 migrate_legacy_env_default() {
   local key=$1 old_value=$2 new_value=$3 assignment_count temporary
-  [[ "$(env_get "$key")" == "$old_value" ]] || return 0
   assignment_count=$(grep -c "^${key}=" "$ENV_FILE" || true)
-  [[ "$assignment_count" -eq 1 ]] \
+  [[ "$assignment_count" -le 1 ]] \
     || die "$ENV_FILE contains duplicate $key assignments; keep one value before upgrading"
+  [[ "$assignment_count" -eq 1 ]] || return 0
+  [[ "$(env_get "$key")" == "$old_value" ]] || return 0
   temporary=$(mktemp "${ENV_FILE}.migration.XXXXXX")
   if ! awk -v before="${key}=${old_value}" -v after="${key}=${new_value}" \
     '{ if ($0 == before) print after; else print }' "$ENV_FILE" >"$temporary"; then
