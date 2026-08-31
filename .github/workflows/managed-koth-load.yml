@@ -202,11 +202,17 @@ jobs:
             -f deploy/compose.docker.yml \
             -f tests/load/managed-koth.compose.yml \
             config --quiet
-          docker compose \
-            -f deploy/compose.yml \
-            -f deploy/compose.docker.yml \
-            -f tests/load/managed-koth.compose.yml \
-            up --detach --wait --wait-timeout 300
+          compose=(
+            docker compose
+            -f deploy/compose.yml
+            -f deploy/compose.docker.yml
+            -f tests/load/managed-koth.compose.yml
+          )
+          if ! "${compose[@]}" up --detach --wait --wait-timeout 300; then
+            "${compose[@]}" ps --all
+            "${compose[@]}" logs --no-color --tail 200 rsctf
+            exit 1
+          fi
           body="$(curl --fail --silent --show-error "$TARGET/healthz")"
           test "$body" = "ok"
 
