@@ -157,6 +157,40 @@ test('reporter status is bounded, secret-free, and proves all capability identit
   );
 });
 
+test('reporter status retains a bounded secret-free unhealthy reason', () => {
+  const status = {
+    reporterConfigured: true,
+    reporterHealthy: false,
+    successfulReports: 0,
+    submittedWaves: 0,
+    contextRefreshes: 1,
+    eligibleRoster: 2_000,
+    uniqueAuthenticated: 2_000,
+    uniqueActivePlayed: 64,
+    invalidAuthentications: 0,
+    lastRound: 9,
+    lastContext: 'a'.repeat(64),
+    lastError: 'HTTP 409',
+  };
+  assert.equal(validateManagedReporterStatus(status), status);
+  assert.throws(
+    () => validateManagedReporterStatus(status, {}),
+    /reporter is unhealthy: HTTP 409/,
+  );
+  assert.throws(
+    () => validateManagedReporterStatus({ ...status, lastError: null }),
+    /status is malformed/,
+  );
+  assert.throws(
+    () => validateManagedReporterStatus({ ...status, lastError: 'x'.repeat(301) }),
+    /status is malformed/,
+  );
+  assert.throws(
+    () => validateManagedReporterStatus({ ...status, lastError: 'HTTP 409\nforged' }),
+    /status is malformed/,
+  );
+});
+
 test('integrity contract requires separately reported dense 2k waves and exact zeroes', () => {
   const evidence = {
     rosterCount: 2_000,
