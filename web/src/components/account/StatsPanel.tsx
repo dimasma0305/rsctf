@@ -35,20 +35,13 @@ import type { EChartsOption } from 'echarts'
 import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate } from 'react-router'
-import useSWR from 'swr'
 import { EchartsContainer } from '@Components/charts/EchartsContainer'
 import { useLanguage } from '@Utils/I18n'
+import { OnceSWRConfig } from '@Hooks/useConfig'
+import api, { UserStatsModel } from '@Api'
 import classes from '@Pages/account/Stats.module.css'
 
 dayjs.extend(relativeTime)
-
-interface UserStatsModel {
-  totalSolves: number
-  totalFirstBloods: number
-  gamesParticipated: number
-  solvesByCategory: Record<string, number>
-  games: { gameId: number; gameTitle: string; endTimeUtc: string; solves: number }[]
-}
 
 const CATEGORY_COLORS: Record<string, string> = {
   Misc: 'gray',
@@ -68,12 +61,6 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 const catColor = (cat: string) => CATEGORY_COLORS[cat] ?? 'blue'
 
-const fetcher = (url: string) =>
-  fetch(url, { credentials: 'include' }).then((r) => {
-    if (!r.ok) throw new Error(`Request failed with status ${r.status}`)
-    return r.json()
-  })
-
 /** The user's CTF statistics, rendered as a self-contained panel (no page chrome). */
 export const StatsPanel: FC = () => {
   const { t } = useTranslation()
@@ -82,7 +69,7 @@ export const StatsPanel: FC = () => {
   const { colorScheme } = useMantineColorScheme()
   const navigate = useNavigate()
 
-  const { data: stats, error, isLoading, mutate } = useSWR<UserStatsModel>('/api/account/stats', fetcher)
+  const { data: stats, error, isLoading, mutate } = api.account.useAccountStats(OnceSWRConfig)
 
   const sortedCategories = useMemo(
     () => Object.entries(stats?.solvesByCategory ?? {}).sort((a, b) => b[1] - a[1]),
@@ -149,8 +136,8 @@ export const StatsPanel: FC = () => {
   if (error || !stats) {
     return (
       <Center py={64}>
-        <Stack align="center" gap="md">
-          <Icon path={mdiAlertCircleOutline} size={3} color={theme.colors.red[5]} />
+        <Stack align="center" gap="md" role="alert">
+          <Icon path={mdiAlertCircleOutline} size={3} color={theme.colors.red[5]} aria-hidden="true" />
           <Text c="dimmed">{t('account.stats.error', 'Failed to load your stats. Please try again.')}</Text>
           <Button variant="light" leftSection={<Icon path={mdiRefresh} size={0.9} />} onClick={() => mutate()}>
             {t('common.button.retry', 'Retry')}

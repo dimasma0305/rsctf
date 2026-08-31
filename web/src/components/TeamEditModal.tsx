@@ -27,6 +27,7 @@ import { mdiCheck, mdiClose, mdiContentCopy, mdiLinkVariant, mdiLockOutline, mdi
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import type { KeyedMutator } from 'swr'
 import { ScrollingText } from '@Components/ScrollingText'
 import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
@@ -37,6 +38,8 @@ import styles from '@Styles/TeamEditModal.module.css'
 interface TeamEditModalProps extends ModalProps {
   team: TeamInfoModel | null
   isCaptain: boolean
+  teams?: TeamInfoModel[]
+  mutateTeams: KeyedMutator<TeamInfoModel[]>
 }
 
 interface TeamMemberInfoProps {
@@ -103,7 +106,7 @@ const TeamMemberInfo: FC<TeamMemberInfoProps> = (props) => {
 }
 
 export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
-  const { team, isCaptain, ...modalProps } = props
+  const { team, isCaptain, teams, mutateTeams, ...modalProps } = props
 
   const teamId = team?.id
 
@@ -112,7 +115,6 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
   const [avatarFile, setAvatarFile] = useState<File | null>(null)
   const [inviteCode, setInviteCode] = useState('')
   const [disabled, setDisabled] = useState(false)
-  const { data: teams, mutate: mutateTeams } = api.team.useTeamGetTeamsInfo()
 
   const clipboard = useClipboard()
   const locked = teamInfo?.locked ?? false
@@ -141,14 +143,14 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
 
   useEffect(() => {
     const fetchCode = async () => {
-      if (!isCaptain || !teamId || inviteCode) return
+      if (!modalProps.opened || !isCaptain || !teamId || inviteCode) return
 
       const code = await api.team.teamInviteCode(teamId!)
       setInviteCode(code.data)
     }
 
     fetchCode()
-  }, [inviteCode, isCaptain, teamId])
+  }, [inviteCode, isCaptain, modalProps.opened, teamId])
 
   const onConfirmLeaveTeam = async () => {
     if (!teamInfo || isCaptain) return
@@ -200,7 +202,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
     if (!teamInfo || !isCaptain) return
 
     try {
-      await api.team.teamTransfer(teamInfo.id!, {
+      const response = await api.team.teamTransfer(teamInfo.id!, {
         newCaptainId: userId,
       })
       showNotification({
@@ -209,8 +211,9 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
         message: t('team.notification.updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
+      setTeamInfo(response.data)
       mutateTeams(
-        teams?.map((x) => (x.id === teamInfo.id ? teamInfo : x)),
+        teams?.map((x) => (x.id === teamInfo.id ? response.data : x)),
         {
           revalidate: false,
         }
@@ -224,15 +227,16 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
     if (!teamInfo?.id || !isCaptain) return
 
     try {
-      await api.team.teamKickUser(teamInfo.id, userId)
+      const response = await api.team.teamKickUser(teamInfo.id, userId)
       showNotification({
         color: 'teal',
         title: t('team.notification.kick.success'),
         message: t('team.notification.updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
+      setTeamInfo(response.data)
       mutateTeams(
-        teams?.map((x) => (x.id === teamInfo.id ? teamInfo : x)),
+        teams?.map((x) => (x.id === teamInfo.id ? response.data : x)),
         {
           revalidate: false,
         }
@@ -321,14 +325,15 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
     if (!teamInfo || !teamInfo?.id) return
 
     try {
-      await api.team.teamUpdateTeam(teamInfo.id, teamInfo)
+      const response = await api.team.teamUpdateTeam(teamInfo.id, teamInfo)
       showNotification({
         color: 'teal',
         message: t('team.notification.updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
+      setTeamInfo(response.data)
       mutateTeams(
-        teams?.map((x) => (x.id === teamInfo.id ? teamInfo : x)),
+        teams?.map((x) => (x.id === teamInfo.id ? response.data : x)),
         {
           revalidate: false,
         }

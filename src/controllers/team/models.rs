@@ -60,3 +60,13 @@ pub struct TeamInfoModel {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<TeamUserInfoModel>>,
 }
+
+/// Compact team choice for event enrollment. Roster/profile data is omitted
+/// because the join form needs only an identifier and display name.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamSelectorInfoModel {
+    pub id: i32,
+    pub name: String,
+    pub captain: bool,
+}

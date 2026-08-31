@@ -12,9 +12,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use chrono::Utc;
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
-};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, Set};
 use serde::Deserialize;
 use std::net::SocketAddr;
 use uuid::Uuid;
@@ -31,12 +29,14 @@ mod account_lifecycle;
 mod avatar;
 mod lifecycle;
 mod models;
+mod reads;
 mod revocation;
 mod roster_policy;
 mod signature;
 pub(crate) use account_lifecycle::{create_team_rows, transfer_captain_locked};
 pub use avatar::avatar;
 pub use models::*;
+use reads::{load_team_selector, load_user_team_infos};
 pub(crate) use revocation::{
     acquire_roster_mutation, invalidate_removed_membership_cache, mark_team_participations_revoked,
     require_team_mutable, revoke_participation_capabilities, revoke_team_shared_capabilities,
@@ -86,6 +86,7 @@ mod profile_tests {
 pub fn router() -> Router<SharedState> {
     Router::new()
         .route("/api/team", get(get_teams_info).post(create_team))
+        .route("/api/team/selector", get(get_team_selector))
         .route(
             "/api/team/{id}",
             get(get_basic_info).put(update_team).delete(delete_team),
@@ -134,12 +135,19 @@ pub async fn get_teams_info(
     State(st): State<SharedState>,
     user: CurrentUser,
 ) -> AppResult<RequestResponse<Vec<TeamInfoModel>>> {
-    let teams = user_teams(&st, user.id).await?;
-    let mut out = Vec::with_capacity(teams.len());
-    for team in &teams {
-        out.push(to_info(&st, team, true).await?);
-    }
-    Ok(RequestResponse::ok(out))
+    Ok(RequestResponse::ok(
+        load_user_team_infos(st.pg(), user.id).await?,
+    ))
+}
+
+/// `GET /api/team/selector` — compact, bounded team choices for event joins.
+pub async fn get_team_selector(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+) -> AppResult<RequestResponse<Vec<TeamSelectorInfoModel>>> {
+    Ok(RequestResponse::ok(
+        load_team_selector(st.pg(), user.id).await?,
+    ))
 }
 
 /// `POST /api/team` — create a team; creator becomes captain.
@@ -730,28 +738,6 @@ async fn to_info(
         locked: team.locked,
         members,
     })
-}
-
-/// Every team the user captains or is a roster member of, ordered by id.
-async fn user_teams(st: &SharedState, user_id: Uuid) -> AppResult<Vec<team::Model>> {
-    let member_team_ids: Vec<i32> = team_member::Entity::find()
-        .filter(team_member::Column::UserId.eq(user_id))
-        .all(&st.db)
-        .await?
-        .into_iter()
-        .map(|r| r.team_id)
-        .collect();
-
-    let mut cond = team::Column::CaptainId.eq(user_id);
-    if !member_team_ids.is_empty() {
-        cond = cond.or(team::Column::Id.is_in(member_team_ids));
-    }
-    let teams = team::Entity::find()
-        .filter(cond)
-        .order_by_asc(team::Column::Id)
-        .all(&st.db)
-        .await?;
-    Ok(teams)
 }
 
 /// Distinct ids of the games the team has (or had) a participation in.

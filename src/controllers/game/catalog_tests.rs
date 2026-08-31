@@ -142,9 +142,10 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
           division_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
           permissions INTEGER NOT NULL, PRIMARY KEY (division_id, challenge_id)
         );
-        CREATE TABLE "Submissions" (
+        CREATE TABLE "FirstSolves" (
           participation_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
-          status SMALLINT NOT NULL
+          submission_id INTEGER NOT NULL,
+          PRIMARY KEY (participation_id, challenge_id)
         );
         "#,
     )
@@ -162,7 +163,9 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
           (4, 'Future event', FALSE, clock_timestamp() + interval '1 hour', clock_timestamp() + interval '1 day'),
           (5, 'Hidden event', TRUE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
           (6, 'Denied division', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
-          (7, 'Allowed division', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day')"#,
+          (7, 'Allowed division', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
+          (8, 'Suspended event', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
+          (9, 'Rejected event', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day')"#,
     )
     .execute(&pool)
     .await
@@ -179,7 +182,9 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
           (401, 4, 'Future Reverse', 4, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (501, 5, 'Hidden Forensics', 6, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (601, 6, 'Denied Mobile', 8, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
-          (701, 7, 'Allowed Blockchain', 5, 3, 1000, 0.01, 5, 0, 0, TRUE, 0)"#,
+          (701, 7, 'Allowed Blockchain', 5, 3, 1000, 0.01, 5, 0, 0, TRUE, 0),
+          (801, 8, 'Suspended Misc', 0, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
+          (901, 9, 'Rejected Misc', 0, 0, 1000, 0.01, 5, 0, 0, TRUE, 0)"#,
     )
     .execute(&pool)
     .await
@@ -188,7 +193,8 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
         r#"INSERT INTO "Participations" VALUES
           (11, 1, 11, 1, NULL), (22, 2, 22, 1, NULL), (33, 3, 33, 0, NULL),
           (44, 4, 44, 1, NULL), (55, 5, 55, 1, NULL),
-          (66, 6, 66, 1, 60), (77, 7, 77, 1, 70)"#,
+          (66, 6, 66, 1, 60), (77, 7, 77, 1, 70),
+          (88, 8, 88, 3, NULL), (99, 9, 99, 2, NULL)"#,
     )
     .execute(&pool)
     .await
@@ -196,7 +202,8 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
     sqlx::query(
         r#"INSERT INTO "UserParticipations" VALUES
           ($1, 1, 11, 11), ($2, 2, 22, 22), ($1, 3, 33, 33),
-          ($1, 4, 44, 44), ($1, 5, 55, 55), ($1, 6, 66, 66), ($1, 7, 77, 77)"#,
+          ($1, 4, 44, 44), ($1, 5, 55, 55), ($1, 6, 66, 66), ($1, 7, 77, 77),
+          ($1, 8, 88, 88), ($1, 9, 99, 99)"#,
     )
     .bind(player)
     .bind(other)
@@ -207,7 +214,7 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query(r#"INSERT INTO "Submissions" VALUES (11, 101, 1)"#)
+    sqlx::query(r#"INSERT INTO "FirstSolves" VALUES (11, 101, 1001)"#)
         .execute(&pool)
         .await
         .unwrap();

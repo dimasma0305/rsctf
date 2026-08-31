@@ -158,6 +158,7 @@ mod m0284_anticheat_dirty_outboxes;
 mod m0285_honeypot_telemetry_buckets;
 mod m0286_docker_image_cleanup_order;
 mod m0290_distributed_proxy_admission;
+mod m0340_player_read_indexes;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -334,6 +335,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0285_honeypot_telemetry_buckets::Migration),
             Box::new(m0286_docker_image_cleanup_order::Migration),
             Box::new(m0290_distributed_proxy_admission::Migration),
+            Box::new(m0340_player_read_indexes::Migration),
         ]
     }
 }
@@ -479,7 +481,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 36..],
+            &names[names.len() - 37..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -517,6 +519,7 @@ mod tests {
                 "m0285_honeypot_telemetry_buckets",
                 "m0286_docker_image_cleanup_order",
                 "m0290_distributed_proxy_admission",
+                "m0340_player_read_indexes",
             ]
         );
     }

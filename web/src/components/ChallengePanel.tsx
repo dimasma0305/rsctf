@@ -29,6 +29,7 @@ import { Icon } from '@mdi/react'
 import { FC, useEffect, useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useParams } from 'react-router'
+import type { AdStateOwner } from '@Components/AdChallengePanel'
 import { ChallengeCard } from '@Components/ChallengeCard'
 import { Empty } from '@Components/Empty'
 import { GameChallengeModal } from '@Components/GameChallengeModal'
@@ -41,9 +42,10 @@ import classes from '@Styles/ChallengePanel.module.css'
 
 type ChallengePanelProps = {
   teamState: ReturnType<typeof useGameTeamInfo>
+  adStateOwner?: AdStateOwner
 }
 
-export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState }) => {
+export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwner }) => {
   const { hash } = useLocation()
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
@@ -599,6 +601,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState }) => {
           title={challenge?.title ?? ''}
           score={challenge?.score ?? 0}
           challengeId={challenge.id}
+          adStateOwner={adStateOwner}
         />
       )}
     </>

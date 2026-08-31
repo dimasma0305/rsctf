@@ -4,6 +4,7 @@ import { mdiAlertCircleOutline, mdiConsole, mdiDownload, mdiRefresh, mdiRestart,
 import { Icon } from '@mdi/react'
 import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import type { KeyedMutator } from 'swr'
 import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { createOperationId, waitForControlJob } from '@Utils/ControlJobs'
@@ -41,6 +42,13 @@ interface AdChallengePanelProps {
    * defended-service backup must still be downloadable.
    */
   snapshotOnly?: boolean
+  stateOwner?: AdStateOwner
+}
+
+export interface AdStateOwner {
+  data?: AdStateModel
+  error?: unknown
+  mutate: KeyedMutator<AdStateModel>
 }
 
 interface ByocEnrollmentProps {
@@ -118,6 +126,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
   active,
   selfHosted = false,
   snapshotOnly,
+  stateOwner,
 }) => {
   const { t } = useTranslation()
   const stateRequest = useCallback(
@@ -127,16 +136,15 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
     },
     [gameId]
   )
-  const {
-    data: adState,
-    error: stateError,
-    mutate: mutateState,
-  } = useChallengePolling<AdStateModel>({
+  const polledState = useChallengePolling<AdStateModel>({
     key: gameId > 0 ? `/api/Game/${gameId}/Ad/State` : null,
-    active,
+    active: active && !stateOwner,
     refreshInterval: snapshotOnly ? 0 : 10_000,
     request: stateRequest,
   })
+  const adState = stateOwner?.data ?? polledState.data
+  const stateError = stateOwner?.error ?? polledState.error
+  const mutateState = stateOwner?.mutate ?? polledState.mutate
   const sshRequest = useCallback(
     async (signal: AbortSignal) => {
       const response = await api.game.adGameGetSshKey(gameId, { signal })

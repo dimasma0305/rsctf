@@ -286,13 +286,7 @@ async fn load_challenge_catalog(
                        challenge.original_score, challenge.min_score_rate,
                        challenge.difficulty, challenge.accepted_count,
                        challenge.score_curve,
-                       EXISTS (
-                           SELECT 1
-                             FROM "Submissions" submission
-                            WHERE submission.participation_id = eligible.id
-                              AND submission.challenge_id = challenge.id
-                              AND submission.status = $5
-                       ) AS solved,
+                       first_solve.challenge_id IS NOT NULL AS solved,
                        game.id AS game_id, game.title AS game_title,
                        game.start_time_utc AS game_start,
                        game.end_time_utc AS game_end
@@ -305,6 +299,9 @@ async fn load_challenge_catalog(
                   LEFT JOIN "DivisionChallengeConfigs" permission
                     ON permission.division_id = eligible.division_id
                    AND permission.challenge_id = challenge.id
+                  LEFT JOIN "FirstSolves" first_solve
+                    ON first_solve.participation_id = eligible.id
+                   AND first_solve.challenge_id = challenge.id
                  WHERE game.hidden = FALSE
                    AND game.start_time_utc <= clock_timestamp()
                    AND challenge.is_enabled = TRUE
@@ -319,29 +316,28 @@ async fn load_challenge_catalog(
             )
             SELECT catalog.*, COUNT(*) OVER () AS total_count
               FROM catalog
-             WHERE ($6::text IS NULL
-                    OR STRPOS(LOWER(CONCAT_WS(' ', catalog.title, catalog.game_title)), LOWER($6)) > 0
-                    OR catalog.id::text = $6
-                    OR catalog.game_id::text = $6)
-               AND ($7::int IS NULL OR catalog.game_id = $7)
-               AND ($8::smallint IS NULL OR catalog.category = $8)
+             WHERE ($5::text IS NULL
+                    OR STRPOS(LOWER(CONCAT_WS(' ', catalog.title, catalog.game_title)), LOWER($5)) > 0
+                    OR catalog.id::text = $5
+                    OR catalog.game_id::text = $5)
+               AND ($6::int IS NULL OR catalog.game_id = $6)
+               AND ($7::smallint IS NULL OR catalog.category = $7)
                AND (
-                    $9::text IS NULL
-                    OR ($9 = 'jeopardy' AND catalog.challenge_type NOT IN ($10, $11))
-                    OR ($9 = 'attackDefense' AND catalog.challenge_type = $10)
-                    OR ($9 = 'koth' AND catalog.challenge_type = $11)
+                    $8::text IS NULL
+                    OR ($8 = 'jeopardy' AND catalog.challenge_type NOT IN ($9, $10))
+                    OR ($8 = 'attackDefense' AND catalog.challenge_type = $9)
+                    OR ($8 = 'koth' AND catalog.challenge_type = $10)
                )
-               AND ($12::smallint IS NULL OR catalog.challenge_type = $12)
-               AND ($13::boolean IS NULL OR catalog.solved = $13)
+               AND ($11::smallint IS NULL OR catalog.challenge_type = $11)
+               AND ($12::boolean IS NULL OR catalog.solved = $12)
              ORDER BY catalog.solved, catalog.game_start DESC,
                       catalog.game_id DESC, catalog.category, catalog.id
-             OFFSET $14 LIMIT $15"#,
+             OFFSET $13 LIMIT $14"#,
     )
     .bind(user_id)
     .bind(ParticipationStatus::Accepted as i16)
     .bind(ChallengeReviewStatus::Active as i16)
     .bind(GamePermission::VIEW_CHALLENGE)
-    .bind(AnswerResult::Accepted as i16)
     .bind(search.as_deref())
     .bind(query.game_id)
     .bind(query.category.map(|category| category as i16))

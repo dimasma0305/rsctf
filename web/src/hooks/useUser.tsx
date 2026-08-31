@@ -1,12 +1,13 @@
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
 import { useSWRConfig } from 'swr'
 import { setAuthSession } from '@Utils/AuthState'
 import { clearLegacySensitiveBrowserStorage } from '@Utils/Cache'
+import { invalidatePlayerReads, TEAM_SELECTOR_PATH } from '@Utils/PlayerReadCache'
 import { createProfileRetryTimers, profileErrorDisposition, profileRetryScheduleDelay } from '@Utils/ProfileRetry'
 import api from '@Api'
 
@@ -100,10 +101,11 @@ export const useUserRole = () => {
 }
 
 export const useTeams = () => {
+  const { mutate: mutateCache } = useSWRConfig()
   const {
     data: teams,
     error,
-    mutate,
+    mutate: mutateTeams,
   } = api.team.useTeamGetTeamsInfo({
     refreshInterval: 0,
     refreshWhenHidden: false,
@@ -113,7 +115,33 @@ export const useTeams = () => {
     revalidateOnReconnect: false,
   })
 
+  const mutate: typeof mutateTeams = useCallback(
+    async (...args: Parameters<typeof mutateTeams>) => {
+      const result = await mutateTeams(...args)
+      await invalidatePlayerReads(mutateCache, [TEAM_SELECTOR_PATH])
+      return result
+    },
+    [mutateCache, mutateTeams]
+  )
+
   return { teams, error, mutate }
+}
+
+/** Compact, one-shot team choices for event enrollment. */
+export const useTeamSelector = (active = true) => {
+  const query = api.team.useTeamGetSelector(
+    {
+      refreshInterval: 0,
+      refreshWhenHidden: false,
+      refreshWhenOffline: false,
+      shouldRetryOnError: false,
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false,
+    },
+    active
+  )
+
+  return { teams: query.data, error: query.error, mutate: query.mutate }
 }
 
 export const useLogOut = () => {

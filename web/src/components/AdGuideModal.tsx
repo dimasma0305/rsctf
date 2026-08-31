@@ -58,6 +58,7 @@ import {
 } from '@Utils/PlayerCredentialOperations'
 import { showErrorMsg } from '@Utils/Shared'
 import { useViewerIdentity } from '@Utils/ViewerIdentity'
+import { OnceSWRConfig } from '@Hooks/useConfig'
 import api from '@Api'
 import misc from '@Styles/Misc.module.css'
 
@@ -87,7 +88,11 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, ...m
     onRotate,
     revealSource,
   } = tokenOwner
-  const { data: sshKey, mutate: mutateSshKey } = api.game.useAdGameGetSshKey(gameId)
+  const { data: sshKey, mutate: mutateSshKey } = api.game.useAdGameGetSshKey(
+    gameId,
+    OnceSWRConfig,
+    Boolean(modalProps.opened && gameId > 0)
+  )
 
   const [sshTab, setSshTab] = useState<string>('paste')
   const [pastedPubkey, setPastedPubkey] = useState('')
