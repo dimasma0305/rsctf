@@ -232,10 +232,11 @@ mod tests {
     #[test]
     fn list_is_one_bounded_aggregate_and_history_is_capped() {
         let source = include_str!("queries.rs");
-        assert!(source.contains("LEFT JOIN LATERAL"));
-        assert!(source.contains("COUNT(*) OVER()"));
-        assert!(source.contains("query.count.clamp(1, 100)"));
-        assert!(source.contains("query.count.clamp(1, 20)"));
-        assert!(!source.contains("Entity::find"));
+        let production = source.rsplit_once("\n#[cfg(test)]\nmod tests {").unwrap().0;
+        assert!(production.contains("LEFT JOIN LATERAL"));
+        assert!(production.contains("COUNT(*) OVER()"));
+        assert!(production.contains("query.count.clamp(1, 100)"));
+        assert!(production.contains("query.count.clamp(1, 20)"));
+        assert!(!production.contains("Entity::find"));
     }
 }

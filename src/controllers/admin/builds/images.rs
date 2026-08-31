@@ -872,13 +872,15 @@ mod tests {
         assert_eq!(labels.len(), 2);
         assert!(labels.iter().all(|label| label.ends_with(SCOPE)));
         let source = include_str!("images.rs");
-        assert!(!source.contains("list_images("));
-        assert!(source.contains("buffer_unordered(INVENTORY_INSPECT_CONCURRENCY)"));
-        assert!(source.contains("run_with_timeout"));
-        assert!(source.contains("OR cleanup_claim_until <= clock_timestamp()"));
-        assert!(source.contains("SET cleanup_claim_until = clock_timestamp()"));
-        assert!(source.contains("cleanup_removal_started = TRUE"));
-        assert!(source.contains("ControlPlaneResourceLeases"));
+        let production = source.rsplit_once("\n#[cfg(test)]\nmod tests {").unwrap().0;
+        assert!(!production.contains(".list_images("));
+        assert!(production.contains("docker.list_containers"));
+        assert!(production.contains("buffer_unordered(INVENTORY_INSPECT_CONCURRENCY)"));
+        assert!(production.contains("run_with_timeout"));
+        assert!(production.contains("OR cleanup_claim_until <= clock_timestamp()"));
+        assert!(production.contains("SET cleanup_claim_until = clock_timestamp()"));
+        assert!(production.contains("cleanup_removal_started = TRUE"));
+        assert!(production.contains("ControlPlaneResourceLeases"));
     }
 
     #[tokio::test]

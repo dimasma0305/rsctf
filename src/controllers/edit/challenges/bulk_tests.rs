@@ -44,9 +44,15 @@ fn bulk_admission_and_long_reconciliation_do_not_queue_http_handlers() {
         .split_once("pub async fn mutate_challenges_bulk(")
         .unwrap()
         .1;
-    assert!(handler.contains("complete_desired_state(\n                &st,"));
-    assert!(handler.contains("lease_token,\n                false,"));
-    assert!(handler.contains("spawn_desired_state_job_with_permit("));
+    assert!(handler.contains("try_acquire_owned()"));
+    let compact_handler = handler.split_whitespace().collect::<String>();
+    let prepare = compact_handler
+        .find("complete_desired_state(&st,game_id,&request,lease_token,false).await")
+        .expect("the request performs only the short desired-state preparation");
+    let reconcile = compact_handler
+        .find("spawn_desired_state_job_with_permit(st.clone(),game_id,request.clone(),lease_token,permit,)")
+        .expect("long reconciliation owns the nonqueued admission permit");
+    assert!(prepare < reconcile);
 }
 
 #[test]

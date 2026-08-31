@@ -65,9 +65,13 @@ mod tests {
     #[test]
     fn every_request_is_a_fixed_size_index_ordered_delete() {
         let source = include_str!("mutation_retention.rs");
-        assert_eq!(source.matches("LIMIT $1").count(), 2);
-        assert_eq!(source.matches(".bind(CLEANUP_BATCH)").count(), 2);
-        assert!(source.contains("ORDER BY expires_at_utc"));
-        assert!(source.contains("MissedTickBehavior::Delay"));
+        let production = source
+            .split_once("#[cfg(test)]")
+            .expect("retention source keeps tests after production code")
+            .0;
+        assert_eq!(production.matches("LIMIT $1").count(), 2);
+        assert_eq!(production.matches(".bind(CLEANUP_BATCH)").count(), 2);
+        assert!(production.contains("ORDER BY expires_at_utc"));
+        assert!(production.contains("MissedTickBehavior::Delay"));
     }
 }

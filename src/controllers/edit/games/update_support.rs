@@ -363,7 +363,8 @@ mod tests {
                 "start_time_utc": "2026-01-01T00:00:00Z", "end_time_utc": "2026-01-02T00:00:00Z",
                 "writeup_deadline": "2026-01-03T00:00:00Z", "freeze_time_utc": null,
                 "writeup_note": "", "blood_bonus_value": 0, "repo_binding_id": null,
-                "event_manifest_path": null, "vpn_access_required": false,
+                "event_manifest_path": null, "challenge_configuration_revision": 0,
+                "vpn_access_required": false,
                 "vpn_behavior_telemetry_enabled": false, "vpn_flag_scan_enabled": false,
                 "vpn_provider_dns_telemetry_enabled": false, "vpn_source_asn_telemetry_enabled": false,
                 "vpn_device_sharing_telemetry_enabled": false, "configuration_revision": 0,
@@ -372,7 +373,7 @@ mod tests {
                 "ad_min_grace_period_seconds": null, "koth_refresh_ticks": null,
                 "koth_hold_points_per_tick": null, "ad_allow_snapshot_download": true,
                 "ad_snapshot_retention_days": null, "ad_scoring_paused": false,
-                "ad_scoring_paused_at": null, "ad_epoch_ticks": 8,
+                "ad_scoring_paused_at": null, "ad_control_revision": 0, "ad_epoch_ticks": 8,
                 "ad_scoring_start_round": null, "koth_scoring_start_round": null,
                 "koth_epoch_ticks": 12, "koth_cycle_ticks": 3,
                 "koth_champion_cooldown_ticks": 1, "koth_claim_confirmation_ticks": 2

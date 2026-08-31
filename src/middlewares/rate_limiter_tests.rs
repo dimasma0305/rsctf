@@ -55,10 +55,10 @@ fn managed_api_lookup_admission_is_appended_and_source_partitioned() {
             refill_per_sec: 10.0,
         }
     ));
-    let request = Request::builder()
-        .header("x-real-ip", "192.0.2.61")
-        .body(axum::body::Body::empty())
-        .unwrap();
+    let mut request = Request::builder().body(axum::body::Body::empty()).unwrap();
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        "192.0.2.61:1234".parse::<std::net::SocketAddr>().unwrap(),
+    ));
     assert_eq!(
         partition_key(Policy::ManagedApiAuthSourceAdmission, &request),
         "192.0.2.61"

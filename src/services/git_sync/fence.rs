@@ -405,9 +405,16 @@ pub(super) async fn reacquire_import(
 mod tests {
     use super::super::repository::REPOSITORY_MANIFEST_LOOKUP_SQL;
 
+    fn implementation_source() -> &'static str {
+        include_str!("fence.rs")
+            .split_once("\n#[cfg(test)]\nmod tests")
+            .expect("fence source must retain its test-module boundary")
+            .0
+    }
+
     #[test]
     fn revision_queries_use_database_owned_mvcc_fences() {
-        let source = include_str!("fence.rs");
+        let source = implementation_source();
         assert!(source.matches("xmin::text").count() >= 2);
         assert!(source.contains("game settings changed while repository content was staged"));
         assert!(source.contains("challenge changed while repository content was staged"));
@@ -420,7 +427,7 @@ mod tests {
         assert!(REPOSITORY_MANIFEST_LOOKUP_SQL.contains("LIMIT 2"));
         assert!(REPOSITORY_MANIFEST_LOOKUP_SQL.contains("reverse(replace(source_yaml_path"));
         assert!(REPOSITORY_MANIFEST_LOOKUP_SQL.contains("LIKE $4 ESCAPE '!'"));
-        let source = include_str!("fence.rs");
+        let source = implementation_source();
         assert!(!source.contains("repository_manifest_identity_matches"));
         assert!(!source.contains("SELECT id, source_yaml_path"));
     }

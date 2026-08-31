@@ -333,6 +333,10 @@ mod tests {
 
     use super::*;
 
+    const FLAG_A: &str = "flag{AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA}";
+    const FLAG_B: &str = "flag{BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB}";
+    const FLAG_C: &str = "flag{CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC}";
+
     fn handle(id: u64) -> (TunnelHandle, mpsc::Receiver<super::super::OpenReq>) {
         let (open, receiver) = mpsc::channel(4);
         let (_closed_tx, closed) = watch::channel(false);
@@ -426,8 +430,7 @@ mod tests {
     #[tokio::test]
     async fn restart_hydrated_replay_gates_forwarding_and_fences_superseded_ack() {
         let endpoint = RelayEndpoint::bind("127.0.0.1".to_string()).await.unwrap();
-        let FlagRetention::Accepted(retained) =
-            endpoint.retain_flag(70, "current-flag").await.unwrap()
+        let FlagRetention::Accepted(retained) = endpoint.retain_flag(70, FLAG_A).await.unwrap()
         else {
             panic!("current flag was not retained")
         };
@@ -458,14 +461,13 @@ mod tests {
     #[tokio::test]
     async fn newer_retained_sequence_invalidates_an_in_flight_ack() {
         let endpoint = RelayEndpoint::bind("127.0.0.1".to_string()).await.unwrap();
-        let FlagRetention::Accepted(first) = endpoint.retain_flag(80, "first").await.unwrap()
-        else {
+        let FlagRetention::Accepted(first) = endpoint.retain_flag(80, FLAG_A).await.unwrap() else {
             panic!("first flag was not retained")
         };
         let (session, _open) = handle(50);
         assert!(endpoint.attach(session).await.is_ok());
 
-        let FlagRetention::Accepted(second) = endpoint.retain_flag(81, "second").await.unwrap()
+        let FlagRetention::Accepted(second) = endpoint.retain_flag(81, FLAG_B).await.unwrap()
         else {
             panic!("second flag was not retained")
         };
@@ -481,17 +483,17 @@ mod tests {
     #[tokio::test]
     async fn stale_hydration_cannot_downgrade_and_equal_conflict_fails_closed() {
         let endpoint = RelayEndpoint::bind("127.0.0.1".to_string()).await.unwrap();
-        let FlagRetention::Accepted(current) = endpoint.retain_flag(91, "new").await.unwrap()
+        let FlagRetention::Accepted(current) = endpoint.retain_flag(91, FLAG_B).await.unwrap()
         else {
             panic!("current flag was not retained")
         };
         assert_eq!(
-            endpoint.retain_flag(90, "old").await,
+            endpoint.retain_flag(90, FLAG_A).await,
             Ok(FlagRetention::Stale(current.clone()))
         );
         assert_eq!(endpoint.retained_flag().await, Some(current));
         assert_eq!(
-            endpoint.retain_flag(91, "forged").await,
+            endpoint.retain_flag(91, FLAG_C).await,
             Err(FlagRetentionError::SequenceConflict)
         );
         let (session, _open) = handle(60);

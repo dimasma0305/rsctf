@@ -710,18 +710,24 @@ mod queue_contract_tests {
     #[test]
     fn push_queue_is_durable_coalescing_batched_and_recoverable() {
         let source = include_str!("repo_push.rs");
-        assert!(source.contains("WITH due_candidates AS MATERIALIZED"));
-        assert!(source.contains("LIMIT 64"));
-        assert!(source.contains("FOR UPDATE OF binding SKIP LOCKED"));
-        assert!(source.contains("lease_expires_at_utc <= clock_timestamp()"));
-        assert!(source.contains("LIMIT $1"));
-        assert!(source.contains("git_sync::push_files"));
-        assert!(source.contains("target_revision <= $4"));
-        assert!(source.contains("acquire_transaction_advisory_lock"));
-        assert!(source.contains("fetch_all(&mut **game_lock.transaction_mut())"));
-        assert!(!source.contains("pub(super) fn spawn"));
-        let release = source.find("game_lock\n        .release()").unwrap();
-        let read = source.find("tokio::fs::read_to_string(&manifest)").unwrap();
+        let production = source
+            .split_once("#[cfg(test)]\nmod queue_contract_tests")
+            .expect("queue contract tests remain after the production worker")
+            .0;
+        assert!(production.contains("WITH due_candidates AS MATERIALIZED"));
+        assert!(production.contains("LIMIT 64"));
+        assert!(production.contains("FOR UPDATE OF binding SKIP LOCKED"));
+        assert!(production.contains("lease_expires_at_utc <= clock_timestamp()"));
+        assert!(production.contains("LIMIT $1"));
+        assert!(production.contains("git_sync::push_files"));
+        assert!(production.contains("target_revision <= $4"));
+        assert!(production.contains("acquire_transaction_advisory_lock"));
+        assert!(production.contains("fetch_all(&mut **game_lock.transaction_mut())"));
+        assert!(!production.contains("pub(super) fn spawn"));
+        let release = production.find("game_lock\n        .release()").unwrap();
+        let read = production
+            .find("tokio::fs::read_to_string(&manifest)")
+            .unwrap();
         assert!(release < read);
     }
 }

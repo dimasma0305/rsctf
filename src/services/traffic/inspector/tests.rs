@@ -48,7 +48,7 @@ async fn real_pcap_contract_groups_directions_and_serves_functional_detail() {
     assert_eq!(flow.flag_hits, 1);
     assert_eq!(flow.chunks.len(), 3);
     assert_eq!(flow.chunks[0].payload, b"GET /flag{alpha}");
-    assert_eq!(flow.chunks[0].flag_offsets, vec![4]);
+    assert_eq!(flow.chunks[0].flag_offsets, vec![5]);
 
     let same = load_flow_snapshot(&path, container.port(), Some(snapshot.version()))
         .await

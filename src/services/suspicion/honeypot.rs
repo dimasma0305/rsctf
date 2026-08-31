@@ -46,10 +46,14 @@ mod tests {
     #[test]
     fn source_contains_no_request_path_database_write_or_participant_attribution() {
         let source = include_str!("honeypot.rs");
-        assert!(!source.contains(".execute("));
-        assert!(!source.contains("SuspicionEvaluationOutbox"));
-        assert!(!source.contains("SuspicionEvents"));
-        assert!(source.contains("enqueue_http"));
-        assert!(source.contains("enqueue_tcp"));
+        let production = source
+            .split_once("#[cfg(test)]")
+            .expect("honeypot source keeps tests after production code")
+            .0;
+        assert!(!production.contains(".execute("));
+        assert!(!production.contains("SuspicionEvaluationOutbox"));
+        assert!(!production.contains("SuspicionEvents"));
+        assert!(production.contains("enqueue_http"));
+        assert!(production.contains("enqueue_tcp"));
     }
 }

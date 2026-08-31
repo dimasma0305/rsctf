@@ -834,9 +834,12 @@ mod supervision_tests {
     #[test]
     fn image_cleanup_cannot_cancel_event_critical_maintenance() {
         let source = include_str!("mod.rs");
-        assert!(source.contains("tokio::spawn(maintenance_supervisor("));
-        assert!(source.contains("tokio::spawn(image_cleanup::supervise("));
-        assert!(source.contains("tokio::join!("));
-        assert!(!source.contains("scheduled_cleanup(state)"));
+        let (production, _) = source
+            .rsplit_once("\n#[cfg(test)]\nmod supervision_tests")
+            .expect("supervision tests remain separate from production code");
+        assert!(production.contains("tokio::spawn(maintenance_supervisor("));
+        assert!(production.contains("tokio::spawn(image_cleanup::supervise("));
+        assert!(production.contains("tokio::join!("));
+        assert!(!production.contains("scheduled_cleanup(state)"));
     }
 }

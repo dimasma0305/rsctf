@@ -54,7 +54,7 @@ fn game_delete_stamps_server_time_after_delayed_teardown() {
         .find("pub async fn delete_game(")
         .expect("delete_game controller exists");
     let delete_end = source[delete_start..]
-        .find("/// `GET /api/edit/games/{id}/HashSalt`")
+        .find("\nmod cloning;")
         .map(|offset| delete_start + offset)
         .expect("delete_game controller boundary exists");
     let delete = &source[delete_start..delete_end];
