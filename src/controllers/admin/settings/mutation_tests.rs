@@ -133,6 +133,10 @@ async fn failed_nth_write_rolls_back_and_completed_operation_replays() {
           result_revision BIGINT NOT NULL, branding_hash TEXT,
           completed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
+        CREATE TABLE "PlatformSettingsBrandingStaging" (
+          operation_id UUID PRIMARY KEY, actor_user_id UUID,
+          blob_hash TEXT NOT NULL
+        );
         INSERT INTO "PlatformSettingsState" VALUES (1, 0, clock_timestamp());
         INSERT INTO "Configs" VALUES
           ('GlobalConfig:Title', 'old-title', NULL),
@@ -203,17 +207,83 @@ async fn failed_nth_write_rolls_back_and_completed_operation_replays() {
     committed.commit().await.unwrap();
 
     let mut replay = pool.begin().await.unwrap();
-    assert_eq!(lock_settings_revision(&mut replay).await.unwrap(), 1);
-    let operation = load_operation(&mut replay, operation_id)
+    let operation = match admit_settings_operation(&mut replay, operation_id, actor, 0, &digest)
         .await
         .unwrap()
-        .unwrap();
+    {
+        SettingsOperationAdmission::Replay(operation) => operation,
+        SettingsOperationAdmission::Fresh => {
+            panic!("committed endpoint operation was not replayed")
+        }
+    };
     assert_eq!(operation.actor_user_id, Some(actor));
     assert_eq!(operation.request_digest, digest);
     assert_eq!(operation.expected_revision, 0);
     assert_eq!(operation.result_revision, 1);
     replay.rollback().await.unwrap();
     assert_eq!(config_values(&pool).await, vec!["new-slogan", "new-title"]);
+
+    for (candidate_actor, candidate_digest) in
+        [(Uuid::new_v4(), digest.clone()), (actor, vec![7_u8; 32])]
+    {
+        let mut conflict = pool.begin().await.unwrap();
+        let error = admit_settings_operation(
+            &mut conflict,
+            operation_id,
+            candidate_actor,
+            0,
+            &candidate_digest,
+        )
+        .await
+        .expect_err("operation identity must stay bound to actor and request");
+        assert_eq!(error.status(), axum::http::StatusCode::CONFLICT);
+        conflict.rollback().await.unwrap();
+    }
+
+    let mut stale = pool.begin().await.unwrap();
+    let stale_error = admit_settings_operation(&mut stale, Uuid::new_v4(), actor, 0, &digest)
+        .await
+        .expect_err("a new operation cannot overwrite a newer settings revision");
+    assert_eq!(stale_error.status(), axum::http::StatusCode::CONFLICT);
+    stale.rollback().await.unwrap();
+
+    let branding_operation = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO "PlatformSettingsBrandingStaging"
+             (operation_id, actor_user_id, blob_hash) VALUES ($1, $2, 'sha256:brand')"#,
+    )
+    .bind(branding_operation)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut branding = pool.begin().await.unwrap();
+    assert_eq!(
+        resolve_branding_hash(
+            &mut branding,
+            branding_operation,
+            actor,
+            BrandingAction::Set,
+            None,
+        )
+        .await
+        .unwrap()
+        .as_deref(),
+        Some("sha256:brand")
+    );
+    branding.rollback().await.unwrap();
+    let mut wrong_branding_actor = pool.begin().await.unwrap();
+    let error = resolve_branding_hash(
+        &mut wrong_branding_actor,
+        branding_operation,
+        Uuid::new_v4(),
+        BrandingAction::Set,
+        None,
+    )
+    .await
+    .expect_err("a staged logo cannot cross administrator identities");
+    assert_eq!(error.status(), axum::http::StatusCode::CONFLICT);
+    wrong_branding_actor.rollback().await.unwrap();
 
     pool.close().await;
     sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

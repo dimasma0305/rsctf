@@ -2172,6 +2172,27 @@ export interface FlagInfoModel {
   attachment?: Attachment | null;
 }
 
+export interface FlagPolicyViolationModel {
+  flagContextId?: number | null;
+  violationType: string;
+  observedBytes: number;
+  /** @format int64 */
+  detectedAtUtc: number;
+}
+
+export interface FlagPageModel {
+  items: FlagInfoModel[];
+  /** @format int64 */
+  total: number;
+  /** @format int64 */
+  offset: number;
+  /** @format int64 */
+  limit: number;
+  /** @format int64 */
+  violationCount: number;
+  violations: FlagPolicyViolationModel[];
+}
+
 /** Basic challenge information (Edit) */
 export interface ChallengeInfoModel {
   /**
@@ -7115,6 +7136,19 @@ export class Api<
         method: "POST",
         body: data,
         type: ContentType.Json,
+        ...params,
+      }),
+
+    editGetFlags: (
+      id: number,
+      cId: number,
+      query?: { offset?: number; limit?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<FlagPageModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/flags`,
+        method: "GET",
+        query,
         ...params,
       }),
 

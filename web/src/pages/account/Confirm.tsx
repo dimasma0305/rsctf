@@ -86,7 +86,7 @@ const Confirm: FC = () => {
           <Text size="md" fw={500}>
             {t('account.content.confirm.message')}
           </Text>
-          <Button mt="lg" type="submit" w={{ base: '100%', xs: '50%' }} disabled={disabled}>
+          <Button mt="lg" type="submit" w={{ base: '100%', xs: '50%' }} disabled={disabled} loading={disabled}>
             {t('account.button.confirm_email')}
           </Button>
         </>

@@ -189,6 +189,8 @@ mod m0323_repo_binding_scheduler;
 mod m0330_mail_preparation_slots;
 mod m0331_username_scoreboard_invalidation;
 mod m0332_repository_manifest_lookup;
+mod m0333_account_mail_consumption;
+mod m0334_flag_import_staging;
 mod m0340_player_read_indexes;
 
 #[cfg(test)]
@@ -403,6 +405,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0330_mail_preparation_slots::Migration),
             Box::new(m0331_username_scoreboard_invalidation::Migration),
             Box::new(m0332_repository_manifest_lookup::Migration),
+            Box::new(m0333_account_mail_consumption::Migration),
+            Box::new(m0334_flag_import_staging::Migration),
             Box::new(m0340_player_read_indexes::Migration),
         ]
     }
@@ -548,10 +552,10 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 166);
+        assert_eq!(names.len(), 168);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
-            &names[names.len() - 64..],
+            &names[names.len() - 66..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -616,6 +620,8 @@ mod tests {
                 "m0330_mail_preparation_slots",
                 "m0331_username_scoreboard_invalidation",
                 "m0332_repository_manifest_lookup",
+                "m0333_account_mail_consumption",
+                "m0334_flag_import_staging",
                 "m0340_player_read_indexes",
             ]
         );

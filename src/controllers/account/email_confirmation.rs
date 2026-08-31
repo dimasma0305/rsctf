@@ -388,33 +388,58 @@ async fn confirm_token(
             .fetch_one(&mut *transaction)
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-    if database_now >= claims.expires_at_unix {
-        return Err(AppError::bad_request(
-            "Invalid or expired email-confirmation token",
-        ));
-    }
     if let Some(operation_id) = claims.operation_id {
-        let is_current: bool = sqlx::query_scalar(
-            r#"SELECT EXISTS (
-                   SELECT 1
-                     FROM "MailOutbox"
-                    WHERE operation_id = $1
-                      AND account_id = $2
-                      AND purpose = $3
-                      AND superseded_at_utc IS NULL
-               )"#,
+        let outbox = sqlx::query_as::<_, (Option<chrono::DateTime<Utc>>, bool)>(
+            r#"SELECT consumed_at_utc, superseded_at_utc IS NULL
+                 FROM "MailOutbox"
+                WHERE operation_id = $1
+                  AND account_id = $2
+                  AND purpose = $3"#,
         )
         .bind(operation_id)
         .bind(claims.user_id)
         .bind(crate::services::mail_outbox::MailPurpose::RegistrationConfirmation as i16)
-        .fetch_one(&mut *transaction)
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+        let Some((consumed_at, is_current)) = outbox else {
+            return Err(AppError::bad_request(
+                "Invalid or expired email-confirmation token",
+            ));
+        };
+        if consumed_at.is_some() {
+            let name = sqlx::query_scalar::<_, String>(
+                r#"SELECT COALESCE(user_name, '') FROM "AspNetUsers" WHERE id = $1"#,
+            )
+            .bind(claims.user_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+            .ok_or_else(|| AppError::bad_request("Invalid or expired email-confirmation token"))?;
+            if let Some(attempt) = attempt.as_ref() {
+                super::link_attempts::complete(
+                    &mut transaction,
+                    attempt,
+                    &serde_json::json!({ "status": "verified", "name": name.clone() }),
+                )
+                .await?;
+            }
+            transaction
+                .commit()
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+            return Ok((name, false));
+        }
         if !is_current {
             return Err(AppError::bad_request(
                 "Invalid or expired email-confirmation token",
             ));
         }
+    }
+    if database_now >= claims.expires_at_unix {
+        return Err(AppError::bad_request(
+            "Invalid or expired email-confirmation token",
+        ));
     }
     let locked: Option<(Option<String>, String)> = sqlx::query_as(
         r#"SELECT user_name, security_stamp
@@ -473,6 +498,25 @@ async fn confirm_token(
             &serde_json::json!({ "status": "verified", "name": name.clone() }),
         )
         .await?;
+    }
+    if let Some(operation_id) = claims.operation_id {
+        let consumed = sqlx::query(
+            r#"UPDATE "MailOutbox"
+                  SET consumed_at_utc = COALESCE(consumed_at_utc, clock_timestamp())
+                WHERE operation_id = $1 AND account_id = $2 AND purpose = $3
+                  AND superseded_at_utc IS NULL"#,
+        )
+        .bind(operation_id)
+        .bind(claims.user_id)
+        .bind(crate::services::mail_outbox::MailPurpose::RegistrationConfirmation as i16)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if consumed.rows_affected() != 1 {
+            return Err(AppError::conflict(
+                "Email-confirmation generation changed while it was consumed",
+            ));
+        }
     }
     transaction
         .commit()
@@ -636,7 +680,8 @@ mod tests {
                  operation_id UUID PRIMARY KEY,
                  account_id UUID NOT NULL,
                  purpose SMALLINT NOT NULL,
-                 superseded_at_utc TIMESTAMPTZ
+                 superseded_at_utc TIMESTAMPTZ,
+                 consumed_at_utc TIMESTAMPTZ
                );
                CREATE TABLE "AccountLinkAttempts" (
                  token_digest BYTEA PRIMARY KEY,
@@ -745,14 +790,26 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        assert_eq!(
-            confirm_token(&pool, &config, &model).await.unwrap(),
-            ("pending".to_string(), true)
+        let (first_tab, second_tab) = tokio::join!(
+            confirm_token(&pool, &config, &model),
+            confirm_token(&pool, &config, &model)
         );
-        assert_eq!(
-            confirm_token(&pool, &config, &model).await.unwrap(),
-            ("pending".to_string(), false)
-        );
+        let first_tab = first_tab.unwrap();
+        let second_tab = second_tab.unwrap();
+        assert_eq!(first_tab.0, "pending");
+        assert_eq!(second_tab.0, "pending");
+        assert_ne!(first_tab.1, second_tab.1);
+        let terminal: (bool, bool) = sqlx::query_as(
+            r#"SELECT outbox.consumed_at_utc IS NOT NULL, attempt.result IS NOT NULL
+                 FROM "MailOutbox" outbox
+                 JOIN "AccountLinkAttempts" attempt ON attempt.account_id = outbox.account_id
+                WHERE outbox.operation_id = $1"#,
+        )
+        .bind(operation_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(terminal, (true, true));
 
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
