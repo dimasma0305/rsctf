@@ -1,8 +1,8 @@
 use std::path::Path;
 
-use sea_orm::{ConnectionTrait, DatabaseBackend, EntityTrait, Statement};
+use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 
-use super::{game_challenge, repository, ImportPolicy, ManifestImportResult};
+use super::{repository, ImportPolicy, ManifestImportResult};
 use crate::app_state::SharedState;
 use crate::utils::error::{AppError, AppResult};
 
@@ -93,29 +93,6 @@ pub(super) fn durable_repo_manifest_path(
                 &relative.to_string_lossy().replace('\\', "/"),
             )
         })
-}
-
-pub(super) async fn find_imported_challenge(
-    st: &SharedState,
-    game_id: i32,
-    source_identity: &str,
-) -> AppResult<Option<game_challenge::Model>> {
-    let challenge_id = sqlx::query_scalar::<_, i32>(
-        r#"SELECT id FROM "GameChallenges"
-            WHERE game_id = $1 AND import_source_identity = $2"#,
-    )
-    .bind(game_id)
-    .bind(source_identity)
-    .fetch_optional(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-
-    match challenge_id {
-        Some(challenge_id) => Ok(game_challenge::Entity::find_by_id(challenge_id)
-            .one(&st.db)
-            .await?),
-        None => Ok(None),
-    }
 }
 
 pub(super) async fn associate_import_source_identity(

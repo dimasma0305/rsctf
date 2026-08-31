@@ -168,6 +168,7 @@ mod m0316_exercise_container_operations;
 mod m0317_blob_stage_publication_owner;
 mod m0318_player_container_operation_recovery;
 mod m0319_exercise_container_operation_recovery;
+mod m0320_repository_manifest_lookup;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -201,6 +202,8 @@ pub(crate) use m0316_exercise_container_operations::UP_SQL as EXERCISE_CONTAINER
 pub(crate) use m0318_player_container_operation_recovery::UP_SQL as PLAYER_OPERATION_RECOVERY_SQL;
 #[cfg(test)]
 pub(crate) use m0319_exercise_container_operation_recovery::UP_SQL as EXERCISE_OPERATION_RECOVERY_SQL;
+#[cfg(test)]
+pub(crate) use m0320_repository_manifest_lookup::UP_SQL as REPOSITORY_MANIFEST_LOOKUP_INDEX_SQL;
 
 pub struct Migrator;
 
@@ -362,6 +365,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0317_blob_stage_publication_owner::Migration),
             Box::new(m0318_player_container_operation_recovery::Migration),
             Box::new(m0319_exercise_container_operation_recovery::Migration),
+            Box::new(m0320_repository_manifest_lookup::Migration),
         ]
     }
 }
@@ -507,7 +511,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 46..],
+            &names[names.len() - 47..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -555,6 +559,7 @@ mod tests {
                 "m0317_blob_stage_publication_owner",
                 "m0318_player_container_operation_recovery",
                 "m0319_exercise_container_operation_recovery",
+                "m0320_repository_manifest_lookup",
             ]
         );
     }

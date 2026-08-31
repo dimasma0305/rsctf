@@ -1,6 +1,7 @@
 use super::*;
 
 mod repository_concurrency;
+mod repository_identity_plan;
 mod repository_regression;
 mod variant_generator_regression;
 

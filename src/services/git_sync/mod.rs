@@ -124,12 +124,9 @@ pub use validation::{
     RepositoryValidationReport,
 };
 mod repository;
-use repository::find_repository_challenge;
 pub(crate) use repository::{manifest_candidate_in_checkout, tombstone_missing_challenges};
 mod import_identity;
-use import_identity::{
-    associate_import_source_identity, durable_repo_manifest_path, find_imported_challenge,
-};
+use import_identity::{associate_import_source_identity, durable_repo_manifest_path};
 pub use import_identity::{
     import_manifest, import_manifest_with_source_identity, import_repository_snapshot_manifest,
 };

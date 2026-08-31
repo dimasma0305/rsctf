@@ -1,68 +1,57 @@
 use std::path::{Component, Path, PathBuf};
 
-use sea_orm::EntityTrait;
-
 use crate::app_state::SharedState;
-use crate::models::data::game_challenge;
 use crate::utils::enums::ChallengeType;
 use crate::utils::error::{AppError, AppResult};
 
-/// Resolve only the durable repository identity. Same-title manual rows are
-/// deliberately never adopted: a title is presentation, not ownership proof.
-pub(super) async fn find_repository_challenge(
-    st: &SharedState,
-    game_id: i32,
-    binding_id: Option<i32>,
-    source_yaml_path: Option<&str>,
-) -> AppResult<Option<game_challenge::Model>> {
-    let Some(source_yaml_path) = source_yaml_path else {
-        return Ok(None);
-    };
-    let candidates = sqlx::query_as::<_, (i32, String)>(
-        r#"SELECT id, source_yaml_path
-             FROM "GameChallenges"
-            WHERE game_id = $1 AND source_yaml_path IS NOT NULL
-            ORDER BY id"#,
-    )
-    .bind(game_id)
-    .fetch_all(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let ids = candidates
-        .into_iter()
-        .filter_map(|(id, stored)| {
-            repository_manifest_identity_matches(&stored, binding_id, source_yaml_path)
-                .then_some(id)
-        })
-        .collect::<Vec<_>>();
-    match ids.as_slice() {
-        [] => Ok(None),
-        [challenge_id] => game_challenge::Entity::find_by_id(*challenge_id)
-            .one(&st.db)
-            .await
-            .map_err(Into::into),
-        _ => Err(AppError::bad_request(
-            "repository manifest is already linked to multiple challenges",
-        )),
-    }
-}
+/// Bounded identity lookup used while an import owns the game-control
+/// transaction. The SQL compares the canonical identity directly and uses the
+/// reverse-path index for the two legacy forms; it never scans all challenges
+/// and filters their paths in Rust.
+pub(super) const REPOSITORY_MANIFEST_LOOKUP_SQL: &str = r#"
+SELECT id
+  FROM "GameChallenges"
+ WHERE game_id = $1
+   AND source_yaml_path IS NOT NULL
+   AND (
+        reverse(replace(source_yaml_path, E'\\', '/')) =
+            reverse(replace($2, E'\\', '/'))
+        OR ($3::text IS NOT NULL AND
+            reverse(replace(source_yaml_path, E'\\', '/')) =
+                reverse(replace($3, E'\\', '/')))
+        OR ($4::text IS NOT NULL
+            AND (left(replace(source_yaml_path, E'\\', '/'), 1) = '/'
+                 OR substring(source_yaml_path FROM 2 FOR 1) = ':')
+            AND reverse(replace(source_yaml_path, E'\\', '/')) LIKE $4 ESCAPE '!')
+   )
+ LIMIT 2
+"#;
 
-/// Match the canonical binding-scoped identity and the two legacy path forms.
-/// Kept as a pure helper so imports can resolve identity on their already-owned
-/// game-control transaction without checking out another database connection.
-pub(super) fn repository_manifest_identity_matches(
-    stored: &str,
+/// Derive the exact relative legacy identity and an escaped reverse-prefix
+/// pattern for the historical absolute checkout path. `%`, `_`, and the escape
+/// character are data even when an authored repository path contains them.
+pub(super) fn legacy_manifest_lookup_parameters(
     binding_id: Option<i32>,
     source_yaml_path: &str,
-) -> bool {
+) -> (Option<String>, Option<String>) {
     let legacy_relative =
         binding_id.and_then(|binding_id| relative_manifest_identity(binding_id, source_yaml_path));
-    stored == source_yaml_path
-        || binding_id
+    let legacy_suffix_pattern =
+        binding_id
             .zip(legacy_relative.as_deref())
-            .is_some_and(|(binding_id, relative)| {
-                stored == relative || legacy_repo_manifest_matches(stored, binding_id, relative)
-            })
+            .map(|(binding_id, relative)| {
+                let suffix = format!("/repos/{binding_id}/{}", relative.trim_start_matches('/'));
+                let mut pattern = String::with_capacity(suffix.len() + 8);
+                for character in suffix.chars().rev() {
+                    if matches!(character, '!' | '%' | '_') {
+                        pattern.push('!');
+                    }
+                    pattern.push(character);
+                }
+                pattern.push('%');
+                pattern
+            });
+    (legacy_relative, legacy_suffix_pattern)
 }
 
 pub(super) fn scoped_manifest_identity(binding_id: i32, relative: &str) -> String {
@@ -77,23 +66,6 @@ fn relative_manifest_identity(binding_id: i32, stored: &str) -> Option<String> {
         .strip_prefix(&format!("binding/{binding_id}/"))
         .filter(|relative| !relative.is_empty())
         .map(str::to_owned)
-}
-
-/// Legacy releases persisted the replica-local absolute checkout path. Match
-/// only the exact managed `repos/<binding>/<relative manifest>` suffix so a
-/// different storage-root prefix can migrate the row without title adoption.
-fn legacy_repo_manifest_matches(stored: &str, binding_id: i32, relative: &str) -> bool {
-    let normalized = stored.replace('\\', "/");
-    let is_absolute = normalized.starts_with('/')
-        || normalized
-            .as_bytes()
-            .get(1)
-            .is_some_and(|separator| *separator == b':');
-    is_absolute
-        && normalized.ends_with(&format!(
-            "/repos/{binding_id}/{}",
-            relative.trim_start_matches('/')
-        ))
 }
 
 /// Resolve a stored binding-relative manifest below one checkout. Absolute

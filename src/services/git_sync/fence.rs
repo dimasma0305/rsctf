@@ -9,7 +9,8 @@ use std::path::Path;
 
 use super::{
     durable_repo_manifest_path, game, game_challenge,
-    repository::repository_manifest_identity_matches, ImportPolicy,
+    repository::{legacy_manifest_lookup_parameters, REPOSITORY_MANIFEST_LOOKUP_SQL},
+    ImportPolicy,
 };
 use crate::app_state::SharedState;
 use crate::utils::error::{AppError, AppResult};
@@ -121,7 +122,7 @@ async fn resolve_existing_locked(
         Some(source_identity) => sqlx::query_scalar::<_, i32>(
             r#"SELECT id FROM "GameChallenges"
                     WHERE game_id = $1 AND import_source_identity = $2
-                    ORDER BY id"#,
+                    LIMIT 2"#,
         )
         .bind(game_id)
         .bind(source_identity)
@@ -132,26 +133,16 @@ async fn resolve_existing_locked(
             let Some(source_yaml_path) = source_yaml_path else {
                 return Ok(None);
             };
-            sqlx::query_as::<_, (i32, String)>(
-                r#"SELECT id, source_yaml_path
-                     FROM "GameChallenges"
-                    WHERE game_id = $1 AND source_yaml_path IS NOT NULL
-                    ORDER BY id"#,
-            )
-            .bind(game_id)
-            .fetch_all(&mut *connection)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?
-            .into_iter()
-            .filter_map(|(id, stored)| {
-                repository_manifest_identity_matches(
-                    &stored,
-                    game.repo_binding_id,
-                    source_yaml_path,
-                )
-                .then_some(id)
-            })
-            .collect()
+            let (legacy_relative, legacy_suffix_pattern) =
+                legacy_manifest_lookup_parameters(game.repo_binding_id, source_yaml_path);
+            sqlx::query_scalar::<_, i32>(REPOSITORY_MANIFEST_LOOKUP_SQL)
+                .bind(game_id)
+                .bind(source_yaml_path)
+                .bind(legacy_relative)
+                .bind(legacy_suffix_pattern)
+                .fetch_all(&mut *connection)
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?
         }
     };
     match ids.as_slice() {
@@ -420,5 +411,15 @@ mod tests {
         assert!(source.contains("challenge changed while repository content was staged"));
         assert!(source.contains("try_definition(game_lock.transaction_mut()"));
         assert!(!source.contains("try_acquire_definition_lock("));
+    }
+
+    #[test]
+    fn repository_identity_queries_bound_ambiguity_inside_postgres() {
+        assert!(REPOSITORY_MANIFEST_LOOKUP_SQL.contains("LIMIT 2"));
+        assert!(REPOSITORY_MANIFEST_LOOKUP_SQL.contains("reverse(replace(source_yaml_path"));
+        assert!(REPOSITORY_MANIFEST_LOOKUP_SQL.contains("LIKE $4 ESCAPE '!'"));
+        let source = include_str!("fence.rs");
+        assert!(!source.contains("repository_manifest_identity_matches"));
+        assert!(!source.contains("SELECT id, source_yaml_path"));
     }
 }
