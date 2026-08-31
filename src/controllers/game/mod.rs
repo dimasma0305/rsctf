@@ -345,6 +345,9 @@ pub struct ChallengeDetailModel {
     pub user_comment: Option<String>,
     pub solve_receipt_mode: SolveReceiptMode,
     pub receipt_verifier_identity: Option<String>,
+    /// Player-visible A&D runtime ownership. BYOC challenges need this even
+    /// before their first agent connection creates a team-service row.
+    pub ad_self_hosted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variant: Option<ClientChallengeVariant>,
 }

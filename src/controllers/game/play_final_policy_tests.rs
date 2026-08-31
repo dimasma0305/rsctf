@@ -31,8 +31,18 @@ fn challenge_model() -> ChallengeDetailModel {
         user_comment: None,
         solve_receipt_mode: SolveReceiptMode::Disabled,
         receipt_verifier_identity: None,
+        ad_self_hosted: false,
         variant: None,
     }
+}
+
+#[test]
+fn challenge_detail_serializes_byoc_runtime_ownership_without_a_service_row() {
+    let mut model = challenge_model();
+    model.ad_self_hosted = true;
+
+    let wire = serde_json::to_value(model).unwrap();
+    assert_eq!(wire["adSelfHosted"], true);
 }
 
 fn shared_container(container_id: Uuid, expect_stop_at: DateTime<Utc>) -> container::Model {
@@ -71,6 +81,7 @@ fn response_grant(container: container::Model) -> PreparedChallengeGrant {
             container_image: Some("image@sha256:test".into()),
             expose_port: Some(31337),
             shared_container_id: Some(container.id),
+            ad_self_hosted: false,
         },
         attachment: PreparedAttachment::Observed {
             attachment: Some(attachment::Model {
@@ -200,7 +211,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
           attachment_id INTEGER, submission_limit INTEGER NOT NULL,
           deadline_utc TIMESTAMPTZ, enable_shared_container BOOLEAN NOT NULL,
           workload_spec JSONB, container_image TEXT, expose_port INTEGER,
-          shared_container_id UUID
+          shared_container_id UUID, ad_self_hosted BOOLEAN NOT NULL
         );
         CREATE TABLE "DivisionChallengeConfigs" (
           division_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
@@ -295,10 +306,11 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
              (id, game_id, title, content, category, "Type", hints,
               is_enabled, review_status, deletion_pending, attachment_id,
               submission_limit, deadline_utc, enable_shared_container,
-              workload_spec, container_image, expose_port, shared_container_id)
+              workload_spec, container_image, expose_port, shared_container_id,
+              ad_self_hosted)
            VALUES (4, 1, 'challenge', 'content', 0, 1, NULL,
                    TRUE, 0, FALSE, 8, 0, NULL, TRUE,
-                   NULL, 'image@sha256:test', 31337, $1)"#,
+                   NULL, 'image@sha256:test', 31337, $1, FALSE)"#,
     )
     .bind(runtime_id)
     .execute(&pool)
@@ -347,6 +359,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
     let live_json: serde_json::Value = serde_json::from_slice(&live_body).unwrap();
     assert_eq!(live_json["context"]["instanceId"], runtime.id.to_string());
     assert_eq!(live_json["context"]["instanceEntry"], "203.0.113.4:41337");
+    assert_eq!(live_json["adSelfHosted"], false);
     let event_count: i64 = sqlx::query_scalar(r#"SELECT COUNT(*) FROM "GameEvents""#)
         .fetch_one(&pool)
         .await
@@ -404,6 +417,30 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
         Err(AppError::NotFound(_))
     ));
     sqlx::query(r#"UPDATE "GameChallenges" SET content = 'content' WHERE id = 4"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Runtime ownership drives the player enrollment path and is fenced just
+    // like private content: a concurrent managed/BYOC conversion must beat a
+    // stale modal response.
+    sqlx::query(r#"UPDATE "GameChallenges" SET ad_self_hosted = TRUE WHERE id = 4"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        finish_challenge_response(
+            &pool,
+            &events,
+            &user,
+            ChallengeResponseScope::new(1, 2, 3, 4),
+            response_grant(runtime.clone()),
+            prepared_response(&runtime),
+        )
+        .await,
+        Err(AppError::NotFound(_))
+    ));
+    sqlx::query(r#"UPDATE "GameChallenges" SET ad_self_hosted = FALSE WHERE id = 4"#)
         .execute(&pool)
         .await
         .unwrap();

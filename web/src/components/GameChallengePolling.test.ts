@@ -19,7 +19,68 @@ test('closed challenge modals own no detail, solver, A&D, or KotH polling key', 
   assert.match(hook, /const liveKey = active && key \? key : null/)
   assert.match(hook, /revalidateOnFocus: pausedKey !== key/)
   assert.match(hook, /revalidateOnReconnect: pausedKey !== key/)
-  assert.match(hook, /failureCount\.current = 0[\s\S]*setPausedKey\(null\)[\s\S]*cancel\(\)/)
+  assert.match(hook, /failureCount\.current = 0[\s\S]*setPausedKey\(null\)[\s\S]*return cancel/)
+  assert.doesNotMatch(
+    hook,
+    /failureCount\.current = 0[\s\S]*setPausedKey\(null\)[\s\S]*cancel\(\)[\s\S]*return cancel/
+  )
+})
+
+test('an open challenge detail is mutation-driven instead of periodically replacing cached content with a transient error', () => {
+  const detailOwner = modal.slice(
+    modal.indexOf('useChallengePolling<ChallengeDetailModel>'),
+    modal.indexOf('const solverRequest')
+  )
+  assert.match(detailOwner, /refreshInterval: 0/)
+  assert.match(detailOwner, /revalidateOnFocus: false/)
+  assert.match(detailOwner, /revalidateOnReconnect: false/)
+  assert.match(modal, /confirmCreatedInstance\(res\.data, mutate\)/)
+  assert.match(modal, /refresh: mutate/)
+  assert.match(
+    modal,
+    /loadError=\{challenge === undefined \? pollErrorMessage\(challengeError, 'challenge'\) : undefined\}/
+  )
+  assert.match(
+    modal,
+    /refreshError=\{challenge !== undefined \? pollErrorMessage\(challengeError, 'challenge'\) : undefined\}/
+  )
+  assert.match(
+    modal,
+    /solverError=\{challenge !== undefined \? pollErrorMessage\(solverError, 'solvers'\) : undefined\}/
+  )
+})
+
+test('detail and solver diagnostics share one recovery owner and carry safe request identities', () => {
+  assert.match(modal, /const recoveryOwner = useMemo\(createChallengeRecoveryOwner, \[\]\)/)
+  assert.equal([...modal.matchAll(/recoveryOwner,/g)].length, 2)
+  assert.match(modal, /recoveryKey: 'challenge-detail'/)
+  assert.match(modal, /recoveryKey: 'challenge-solvers'/)
+  assert.equal([...modal.matchAll(/headers: challengeRequestHeaders\(requestId\)/g)].length, 2)
+  assert.match(modal, /captureChallengeReadFailure\(error, 'challenge', requestId\)/)
+  assert.match(modal, /captureChallengeReadFailure\(error, 'solvers', requestId\)/)
+  assert.match(modal, /Promise\.allSettled\(reads\)/)
+})
+
+test('solver-only failure remains secondary and typed failures do not collapse into one message', () => {
+  assert.match(shell, /solverError[\s\S]*color="yellow"/)
+  assert.match(modal, /error\.kind === 'disconnected'/)
+  assert.match(modal, /error\.kind === 'rate-limited'/)
+  assert.match(modal, /status === 401/)
+  assert.match(modal, /status === 403/)
+  assert.match(modal, /status === 429/)
+  assert.match(modal, /status !== null && status >= 500/)
+  assert.match(modal, /Request reference/)
+})
+
+test('the challenge-detail BYOC ownership contract reaches the A&D panel before a service row exists', () => {
+  const challengeDetailContract = apiContract.slice(
+    apiContract.indexOf('export interface ChallengeDetailModel'),
+    apiContract.indexOf('export interface ChallengeSolverPreviewModel')
+  )
+  assert.match(challengeDetailContract, /adSelfHosted\?: boolean/)
+  assert.match(shell, /selfHosted=\{challenge\?\.adSelfHosted === true\}/)
+  assert.match(apiContract, /export enum AdServiceDeliveryState/)
+  assert.match(apiContract, /deliveryState: AdServiceDeliveryState/)
 })
 
 test('challenge list no longer polls the nonexistent review summary route', () => {

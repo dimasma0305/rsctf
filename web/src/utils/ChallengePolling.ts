@@ -1,4 +1,5 @@
 import { httpErrorStatus, retryAfterMilliseconds } from '@Utils/ProfileRetry'
+import { createUuid } from '@Utils/Uuid'
 
 export const MAX_CHALLENGE_POLL_RETRIES = 3
 export const MAX_CHALLENGE_RETRY_AFTER_MS = 5 * 60_000
@@ -9,13 +10,91 @@ type ErrorWithCode = {
   name?: unknown
 }
 
+export type ChallengeReadResource = 'challenge' | 'solvers'
+
+export interface ChallengeReadFailure {
+  resource: ChallengeReadResource
+  /** Random, bounded identifier also recorded in the server request span. */
+  requestId: string
+  /** Optional upstream/server trace identifier from a response header. */
+  serverTraceId?: string
+  retryAfterMilliseconds?: number
+}
+
+const READ_FAILURES = new WeakMap<object, ChallengeReadFailure>()
+const SAFE_DIAGNOSTIC_ID = /^[A-Za-z0-9._:-]{8,128}$/
+
+type ErrorWithResponseHeaders = {
+  response?: {
+    headers?: unknown
+  }
+}
+
+const responseHeader = (value: unknown, name: string): string | null => {
+  if (!value || typeof value !== 'object') return null
+  const headers = (value as ErrorWithResponseHeaders).response?.headers
+  if (!headers || typeof headers !== 'object') return null
+  const getter = (headers as { get?: unknown }).get
+  if (typeof getter === 'function') {
+    const result = getter.call(headers, name)
+    return typeof result === 'string' ? result : null
+  }
+  const record = headers as Record<string, unknown>
+  const result = Object.entries(record).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1]
+  return typeof result === 'string' ? result : typeof result === 'number' ? String(result) : null
+}
+
+const safeDiagnosticId = (value: string | null) => {
+  const normalized = value?.trim() ?? ''
+  return SAFE_DIAGNOSTIC_ID.test(normalized) ? normalized : undefined
+}
+
+const responseTraceId = (error: unknown) => {
+  for (const name of ['x-rsctf-request-id', 'x-request-id', 'x-correlation-id']) {
+    const identifier = safeDiagnosticId(responseHeader(error, name))
+    if (identifier) return identifier
+  }
+  const traceparent = responseHeader(error, 'traceparent')?.trim()
+  const traceId = traceparent?.match(/^\d\d-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$/i)?.[1]
+  return safeDiagnosticId(traceId ?? null)
+}
+
+export const createChallengeRequestId = (resource: ChallengeReadResource) => `challenge-${resource}-${createUuid()}`
+
+export const challengeRequestHeaders = (requestId: string) => ({
+  'x-rsctf-request-id': requestId,
+})
+
+/**
+ * Retain the original transport error (notably EventVpnAccessError and AxiosError)
+ * while attaching a safe support reference outside the serialized/logged payload.
+ */
+export const captureChallengeReadFailure = (error: unknown, resource: ChallengeReadResource, requestId: string) => {
+  const normalized =
+    error && typeof error === 'object' ? error : new Error('Challenge request failed', { cause: error })
+  const retryAfter = retryAfterMilliseconds(normalized)
+  READ_FAILURES.set(normalized, {
+    resource,
+    requestId,
+    serverTraceId: responseTraceId(normalized),
+    retryAfterMilliseconds:
+      retryAfter !== null && retryAfter >= 0 && retryAfter <= MAX_CHALLENGE_RETRY_AFTER_MS ? retryAfter : undefined,
+  })
+  return normalized
+}
+
+export const challengeReadFailure = (error: unknown) =>
+  error && typeof error === 'object' ? READ_FAILURES.get(error) : undefined
+
 export class NonJsonResponseError extends Error {
   readonly status: number
+  readonly response: { status: number; headers?: unknown }
 
-  constructor(status: number, contentType: string | null) {
+  constructor(status: number, contentType: string | null, headers?: unknown) {
     super(`Expected a JSON response, received ${contentType || 'an unknown content type'}`)
     this.name = 'NonJsonResponseError'
     this.status = status
+    this.response = { status, headers }
   }
 }
 
@@ -41,7 +120,7 @@ export const assertJsonResponse = <T>(response: {
       : (headers as Record<string, unknown> | undefined)?.['content-type']
 
   if (!isJsonContentType(contentType)) {
-    throw new NonJsonResponseError(response.status, typeof contentType === 'string' ? contentType : null)
+    throw new NonJsonResponseError(response.status, typeof contentType === 'string' ? contentType : null, headers)
   }
   return response.data
 }
@@ -103,3 +182,61 @@ export const createChallengePollOwner = () => {
     },
   }
 }
+
+type RecoveryEntry = {
+  dueAt: number
+  action: () => void
+}
+
+/**
+ * One timer for all reads owned by a challenge modal. Detail and solver failures
+ * retain independent Retry-After deadlines, but simultaneous recovery never
+ * creates a timer per resource.
+ */
+export const createChallengeRecoveryOwner = () => {
+  const entries = new Map<string, RecoveryEntry>()
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  const arm = () => {
+    if (timer !== null) clearTimeout(timer)
+    timer = null
+    if (entries.size === 0) return
+    const now = Date.now()
+    const nextDue = Math.min(...Array.from(entries.values(), (entry) => entry.dueAt))
+    timer = setTimeout(
+      () => {
+        timer = null
+        const readyAt = Date.now()
+        const ready: RecoveryEntry[] = []
+        for (const [key, entry] of entries) {
+          if (entry.dueAt > readyAt) continue
+          entries.delete(key)
+          ready.push(entry)
+        }
+        arm()
+        for (const entry of ready) entry.action()
+      },
+      Math.max(0, nextDue - now)
+    )
+  }
+
+  return {
+    schedule(key: string, delay: number, action: () => void) {
+      entries.set(key, { dueAt: Date.now() + Math.max(0, delay), action })
+      arm()
+    },
+    cancel(key: string) {
+      if (!entries.delete(key)) return
+      arm()
+    },
+    cancelAll() {
+      entries.clear()
+      if (timer !== null) clearTimeout(timer)
+      timer = null
+    },
+    pendingEntryCount: () => entries.size,
+    pendingTimerCount: () => (timer === null ? 0 : 1),
+  }
+}
+
+export type ChallengeRecoveryOwner = ReturnType<typeof createChallengeRecoveryOwner>

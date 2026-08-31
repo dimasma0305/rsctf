@@ -112,6 +112,7 @@ struct PreparedChallenge {
     container_image: Option<String>,
     expose_port: Option<i32>,
     shared_container_id: Option<Uuid>,
+    ad_self_hosted: bool,
 }
 
 #[derive(Debug)]
@@ -139,6 +140,7 @@ impl PreparedChallengeGrant {
                 container_image: challenge.container_image.clone(),
                 expose_port: challenge.expose_port,
                 shared_container_id: challenge.shared_container_id,
+                ad_self_hosted: challenge.ad_self_hosted,
             },
             attachment: PreparedAttachment::NotEmitted,
             runtime: PreparedRuntime::None,
@@ -248,7 +250,9 @@ impl PreparedChallengeGrant {
                     && model.context.close_time == Some(container.expect_stop_at)
             }
         };
-        attachment_matches && runtime_matches
+        attachment_matches
+            && runtime_matches
+            && model.ad_self_hosted == self.challenge.ad_self_hosted
     }
 }
 
@@ -388,6 +392,7 @@ struct ChallengePayloadRow {
     container_image: Option<String>,
     expose_port: Option<i32>,
     shared_container_id: Option<Uuid>,
+    ad_self_hosted: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -445,6 +450,7 @@ fn challenge_payload_matches(current: &ChallengePayloadRow, expected: &PreparedC
         && current.container_image == expected.container_image
         && current.expose_port == expected.expose_port
         && current.shared_container_id == expected.shared_container_id
+        && current.ad_self_hosted == expected.ad_self_hosted
 }
 
 fn container_matches(current: &ContainerRow, expected: &container::Model) -> bool {
@@ -605,7 +611,7 @@ async fn lock_challenge_payload_on(
         r#"SELECT title, content, category, "Type" AS challenge_type, hints,
                   attachment_id, submission_limit, deadline_utc,
                   enable_shared_container, workload_spec, container_image,
-                  expose_port, shared_container_id
+                  expose_port, shared_container_id, ad_self_hosted
              FROM "GameChallenges"
             WHERE id = $1 AND game_id = $2
               AND is_enabled = TRUE
