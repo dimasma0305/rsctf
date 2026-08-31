@@ -51,6 +51,10 @@ test('managed KotH runner uses only the injected reporter and keeps credentials 
 });
 
 test('managed KotH recovery reconstructs a dense prefix then resolves a new runtime', () => {
+  const restart = runner.slice(
+    runner.indexOf('async function restartManagedReporterProcess('),
+    runner.indexOf('function integritySnapshot()'),
+  );
   assert.match(runner, /append-only reporter prefix reconstruction/);
   assert.match(runner, /reconstructed\.hash === restart\.before\.hash/);
   assert.match(runner, /A\.adScoringPaused\(current\.gameId\)/);
@@ -59,6 +63,11 @@ test('managed KotH recovery reconstructs a dense prefix then resolves a new runt
   assert.match(runner, /snapshotRows/);
   assert.match(runner, /uniqueCrownRounds/);
   assert.match(runner, /crownMismatches/);
+  assert.match(
+    restart,
+    /waitUntil\([\s\S]*async \(\) => \{[\s\S]*inspectManagedTarget[\s\S]*await exactHealth\(candidate\.arenaUrl/,
+  );
+  assert.doesNotMatch(restart, /\);\n  await exactHealth\(sameTarget\.arenaUrl/);
 });
 
 test('managed KotH traffic is fixed-arrival and gates auth abuse independently', () => {

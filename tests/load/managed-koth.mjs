@@ -628,13 +628,19 @@ async function restartManagedReporterProcess(target, reporterBaseUrl) {
   requireCondition(restarted.status === 0, 'managed reporter process restart failed');
   const sameTarget = await waitUntil(
     'same-generation managed reporter restart',
-    async () => inspectManagedTarget(targetDatabaseSnapshot(current.gameId, current.challengeId), reporterBaseUrl),
+    async () => {
+      const candidate = inspectManagedTarget(
+        targetDatabaseSnapshot(current.gameId, current.challengeId),
+        reporterBaseUrl,
+      );
+      await exactHealth(candidate.arenaUrl, 'restarted managed target');
+      return candidate;
+    },
     (candidate) => candidate.containerId === target.containerId &&
       candidate.resetAttempt === target.resetAttempt &&
       candidate.credentialRevision === target.credentialRevision,
     120,
   );
-  await exactHealth(sameTarget.arenaUrl, 'restarted managed target');
   await waitUntil(
     'restarted reporter context',
     () => reporterStatus(sameTarget),
