@@ -1,12 +1,6 @@
 //! services/container.rs — ported from RSCTF `Services/Container/*`.
 //!
-//! Container-orchestration abstraction layer. This is a pure library module
-//! (no HTTP surface). It mirrors RSCTF's `Services/Container/Manager/IContainerManager`
-//! which exposes create / destroy / stats over a pluggable backend (Docker or
-//! Kubernetes). Here we define the async [`ContainerManager`] trait plus two
-//! implementations: a [`NoopContainerManager`] (used when no backend is
-//! configured) and a real [`DockerContainerManager`] backed by the `bollard`
-//! crate.
+//! Container orchestration through a no-op, Docker, or Kubernetes backend.
 //!
 //! Docker uses `bollard` through the local daemon and preserves managed ownership.
 //! 2. **Create** — for each per-instance challenge we:
@@ -57,6 +51,7 @@ mod docker;
 mod docker_change_api;
 mod logging;
 mod naming;
+mod operation_lookup;
 mod policy;
 #[cfg(test)]
 mod real_docker_tests;
@@ -552,6 +547,10 @@ impl ContainerManager for DockerContainerManager {
                 Vec::new()
             }
         }
+    }
+
+    async fn find_operation_runtime(&self, operation_id: &str) -> AppResult<Option<String>> {
+        operation_lookup::find_operation_runtime(self, operation_id).await
     }
 
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo> {

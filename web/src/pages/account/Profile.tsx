@@ -28,6 +28,7 @@ import { useSearchParams } from 'react-router'
 import { PasswordChangeModal } from '@Components/PasswordChangeModal'
 import { WithNavBar } from '@Components/WithNavbar'
 import { StatsPanel } from '@Components/account/StatsPanel'
+import { BLOB_OPERATION_HEADER, BlobUploadOperation, retainBlobUploadOperation } from '@Utils/BlobUploadOperations'
 import { beginMailOperation, finishMailOperation, type MailOperationOwner } from '@Utils/MailOperation'
 import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
@@ -53,6 +54,7 @@ const Profile: FC = () => {
     realName: user?.realName,
   })
   const [avatarFile, setAvatarFile] = useState<File | null>(null)
+  const avatarOperation = useRef<BlobUploadOperation | null>(null)
 
   const avatarPreview = useMemo(() => (avatarFile ? URL.createObjectURL(avatarFile) : null), [avatarFile])
 
@@ -105,7 +107,11 @@ const Profile: FC = () => {
     })
 
     try {
-      await api.account.accountAvatar({ file: avatarFile })
+      avatarOperation.current = retainBlobUploadOperation(avatarOperation.current, avatarFile)
+      await api.account.accountAvatar(
+        { file: avatarFile },
+        { headers: { [BLOB_OPERATION_HEADER]: avatarOperation.current.id } }
+      )
       updateNotification({
         id: 'upload-avatar',
         color: 'teal',
@@ -117,6 +123,7 @@ const Profile: FC = () => {
       setDisabled(false)
       mutate()
       setAvatarFile(null)
+      avatarOperation.current = null
     } catch (err) {
       updateNotification({
         id: 'upload-avatar',
@@ -397,7 +404,11 @@ const Profile: FC = () => {
         <Dropzone
           aria-label={avatarModalTitle}
           aria-describedby="profile-avatar-upload-instructions"
-          onDrop={(files) => setAvatarFile(files[0])}
+          onDrop={(files) => {
+            const file = files[0]
+            avatarOperation.current = retainBlobUploadOperation(avatarOperation.current, file)
+            setAvatarFile(file)
+          }}
           onReject={() => {
             showNotification({
               color: 'red',

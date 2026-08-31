@@ -42,6 +42,10 @@ use crate::app_state::SharedState;
 
 mod receipt_admission;
 pub(crate) use receipt_admission::admit_solve_receipt_issuance;
+mod work_admission;
+pub(crate) use work_admission::{
+    admit_asset_gate_miss, admit_asset_request, admit_asset_response_bytes,
+};
 
 static AUTHENTICATED_IP_BACKSTOP_PER_MINUTE: LazyLock<u32> = LazyLock::new(|| {
     std::env::var("RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE")

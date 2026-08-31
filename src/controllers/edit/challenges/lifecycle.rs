@@ -17,6 +17,18 @@ pub(super) async fn runtime_definition_snapshot(
     challenge_id: i32,
     challenge_type: ChallengeType,
 ) -> AppResult<RuntimeDefinitionSnapshot> {
+    let mut connection = pool
+        .acquire()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    runtime_definition_snapshot_locked(&mut connection, challenge_id, challenge_type).await
+}
+
+pub(super) async fn runtime_definition_snapshot_locked(
+    connection: &mut sqlx::PgConnection,
+    challenge_id: i32,
+    challenge_type: ChallengeType,
+) -> AppResult<RuntimeDefinitionSnapshot> {
     let row = sqlx::query_scalar::<_, serde_json::Value>(
         r#"SELECT to_jsonb(challenge) - ARRAY[
                     'id', 'game_id', 'title', 'content', 'category', 'hints',
@@ -28,7 +40,7 @@ pub(super) async fn runtime_definition_snapshot(
             WHERE challenge.id = $1"#,
     )
     .bind(challenge_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Challenge not found"))?;
@@ -40,7 +52,7 @@ pub(super) async fn runtime_definition_snapshot(
                 ORDER BY flag"#,
         )
         .bind(challenge_id)
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?
     } else {

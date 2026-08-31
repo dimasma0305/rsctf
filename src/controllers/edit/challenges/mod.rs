@@ -9,6 +9,7 @@ mod deletion;
 mod deletion_tests;
 mod hints;
 mod lifecycle;
+mod mutation_sql;
 mod repo_push;
 mod review;
 mod scoring;
@@ -17,7 +18,7 @@ mod scoring_lock_tests;
 mod workload;
 
 pub use attachments::update_attachment;
-pub(crate) use attachments::{build_attachment, validate_remote_attachment_url};
+pub(crate) use attachments::validate_remote_attachment_url;
 pub use audit::{
     download_challenge_audit_archive, get_challenge_audit_meta, get_challenge_build_status,
     list_challenge_build_statuses, rebuild_challenge,
@@ -118,34 +119,8 @@ pub async fn add_challenge(
         super::games::validate_koth_game_shape_locked(control.transaction_mut(), id).await?;
     }
 
-    let am = game_challenge::ActiveModel {
-        game_id: Set(id),
-        title: Set(model.title),
-        content: Set(String::new()),
-        category: Set(model.category),
-        challenge_type: Set(model.challenge_type),
-        is_enabled: Set(false),
-        submission_limit: Set(crate::utils::scoring::DEFAULT_CHALLENGE_SUBMISSION_LIMIT),
-        accepted_count: Set(0),
-        submission_count: Set(0),
-        review_status: Set(ChallengeReviewStatus::Active),
-        build_status: Set(ChallengeBuildStatus::None),
-        original_score: Set(crate::utils::scoring::DEFAULT_JEOPARDY_ORIGINAL_SCORE),
-        min_score_rate: Set(crate::utils::scoring::DEFAULT_JEOPARDY_MIN_SCORE_RATE),
-        difficulty: Set(crate::utils::scoring::DEFAULT_JEOPARDY_DIFFICULTY),
-        score_curve: Set(ScoreCurve::Standard),
-        // RSCTF `Challenge.NetworkMode` defaults to `Open`.
-        network_mode: Set(Some(NetworkMode::Open)),
-        enable_traffic_capture: Set(false),
-        enable_shared_container: Set(false),
-        disable_blood_bonus: Set(true),
-        ad_allow_egress: Set(false),
-        ad_allow_self_reset: Set(false),
-        ad_ssh_requires_flag: Set(false),
-        ad_self_hosted: Set(false),
-        ..Default::default()
-    };
-    let created = am.insert(&st.db).await?;
+    let created =
+        mutation_sql::insert_challenge_locked(control.transaction_mut(), id, &model).await?;
     seed_division_configs(control.transaction_mut(), id, created.id).await?;
     if let Some(control) = engine_control {
         control
@@ -153,6 +128,8 @@ pub async fn add_challenge(
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
     }
+    // The response is assembled only after the atomic challenge + division
+    // transaction commits; no nested checkout is needed while control is held.
     flush_game_scoreboards(&st, id).await;
     Ok(RequestResponse::ok(
         ChallengeEditDetailModel::from_challenge(&st, &created, Vec::new()).await?,
@@ -248,10 +225,19 @@ pub async fn update_challenge(
     };
     let mut engine_control =
         Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?);
-    let mut workload_lock =
-        workload::acquire_update_lock_for_model(st.pg(), id, c_id, &model).await?;
-    let challenge = load_challenge(&st, id, c_id).await?;
-    deletion::reject_pending_mutation(st.pg(), id, c_id).await?;
+    let control = engine_control
+        .as_mut()
+        .expect("challenge update holds the game control lock");
+    if workload::update_changes_runtime_definition(&model) {
+        crate::utils::single_flight::acquire_transaction_advisory_lock(
+            control.transaction_mut(),
+            &crate::services::challenge_workloads::definition_lock_key(id, c_id),
+        )
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    let challenge = load_challenge_locked(control.transaction_mut(), id, c_id).await?;
+    deletion::reject_pending_mutation(&mut **control.transaction_mut(), id, c_id).await?;
     let ch_type = challenge.challenge_type;
     crate::utils::scoring::validate_challenge_scoring(
         model.original_score.unwrap_or(challenge.original_score),
@@ -270,9 +256,6 @@ pub async fn update_challenge(
     // A normal submit locks Games before its challenge-scoped grading lock.
     // Preserve that order here so the global boundary and this challenge's
     // policy are both linearizable without a lock inversion.
-    let control = engine_control
-        .as_mut()
-        .expect("challenge update holds the game control lock");
     let competition_scoring_started =
         competition_scoring_started_locked(control.transaction_mut(), id).await?;
     crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id).await?;
@@ -325,7 +308,14 @@ pub async fn update_challenge(
         && (was_shared_managed != requested_shared_managed
             || was_ad_self_hosted != requested_ad_self_hosted);
     let transition_definition = if active_topology_flip {
-        Some(lifecycle::runtime_definition_snapshot(st.pg(), c_id, challenge.challenge_type).await?)
+        Some(
+            lifecycle::runtime_definition_snapshot_locked(
+                control.transaction_mut(),
+                c_id,
+                challenge.challenge_type,
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -422,7 +412,7 @@ pub async fn update_challenge(
         )
         .bind(c_id)
         .bind(id)
-        .execute(st.pg())
+        .execute(&mut **control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         if fenced.rows_affected() != 1 {
@@ -430,7 +420,6 @@ pub async fn update_challenge(
                 "Challenge eligibility changed; retry the topology update",
             ));
         }
-        workload::release_update_lock(workload_lock.take()).await?;
         if let Some(lock) = engine_control.take() {
             lock.release()
                 .await
@@ -452,19 +441,31 @@ pub async fn update_challenge(
                 "A&D/KotH scoring started while the topology transition was draining; the challenge remains disabled",
             ));
         }
+        crate::utils::single_flight::acquire_transaction_advisory_lock(
+            reacquired_engine.transaction_mut(),
+            &crate::services::challenge_workloads::definition_lock_key(id, c_id),
+        )
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
         engine_control = Some(reacquired_engine);
-        workload_lock = workload::acquire_update_lock_for_model(st.pg(), id, c_id, &model).await?;
     }
 
     let update_base = if active_topology_flip {
-        let current = load_challenge(&st, id, c_id).await?;
+        let control = engine_control
+            .as_mut()
+            .expect("reacquired challenge update holds game control");
+        let current = load_challenge_locked(control.transaction_mut(), id, c_id).await?;
         if current.is_enabled {
             return Err(AppError::conflict(
                 "Challenge topology fence changed during cleanup; retry the update",
             ));
         }
-        let current_definition =
-            lifecycle::runtime_definition_snapshot(st.pg(), c_id, current.challenge_type).await?;
+        let current_definition = lifecycle::runtime_definition_snapshot_locked(
+            control.transaction_mut(),
+            c_id,
+            current.challenge_type,
+        )
+        .await?;
         if transition_definition.as_ref() != Some(&current_definition) {
             return Err(AppError::conflict(
                 "Challenge runtime definition changed during cleanup; review the repository update and retry. The challenge remains disabled",
@@ -730,19 +731,20 @@ pub async fn update_challenge(
         am.receipt_verifier_identity = Set((!value.is_empty()).then(|| value.to_owned()));
     }
 
-    let updated = am.update(&st.db).await?;
-    seed_division_configs(
-        engine_control
-            .as_mut()
-            .expect("challenge update holds the game control lock")
-            .transaction_mut(),
-        id,
-        c_id,
-    )
-    .await?;
-    workload::release_update_lock(workload_lock.take()).await?;
+    let projected = am.try_into_model()?;
+    let control = engine_control
+        .as_mut()
+        .expect("challenge update holds the game control lock");
+    let updated =
+        mutation_sql::update_challenge_locked(control.transaction_mut(), &projected).await?;
+    seed_division_configs(control.transaction_mut(), id, c_id).await?;
     if ch_type == ChallengeType::KingOfTheHill && !updated.is_enabled {
-        crate::services::ad_engine::clear_challenge_control(&st.db, id, c_id).await?;
+        crate::services::ad_engine::clear_challenge_control_locked(
+            &mut **control.transaction_mut(),
+            id,
+            c_id,
+        )
+        .await?;
     }
     if let Some(lock) = engine_control {
         lock.release()
@@ -888,8 +890,13 @@ pub(crate) async fn delete_challenge_core(
         crate::services::challenge_workloads::acquire_runtime_transition_lock(st.pg(), c_id)
             .await?;
     let mut engine_control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
-    let mut definition_lock = deletion::acquire_definition_lock(st.pg(), id, c_id).await?;
-    let challenge = load_challenge(&st, id, c_id).await?;
+    crate::utils::single_flight::acquire_transaction_advisory_lock(
+        engine_control.transaction_mut(),
+        &crate::services::challenge_workloads::definition_lock_key(id, c_id),
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let challenge = load_challenge_locked(engine_control.transaction_mut(), id, c_id).await?;
     if challenge.challenge_type.uses_ad_engine()
         && ad_epoch_scoring_started_locked(engine_control.transaction_mut(), id).await?
     {
@@ -902,22 +909,26 @@ pub(crate) async fn delete_challenge_core(
     // definition-lock transaction. This preserves Jeopardy history once play
     // could have started and closes an in-flight-submit TOCTOU. Committing the
     // short definition mutation before runtime I/O also keeps the pool bounded.
-    deletion::fence_challenge_deletion(definition_lock.transaction_mut(), id, c_id).await?;
-    definition_lock.release().await?;
+    deletion::fence_challenge_deletion(engine_control.transaction_mut(), id, c_id).await?;
 
     // Revoke A&D/KotH routes before any backing address can be freed.
     if challenge.challenge_type.uses_ad_engine() {
         if challenge.challenge_type == ChallengeType::KingOfTheHill {
-            crate::services::ad_engine::clear_challenge_control(&st.db, id, c_id).await?;
-        }
-        if reconcile_vpn {
-            crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+            crate::services::ad_engine::clear_challenge_control_locked(
+                &mut **engine_control.transaction_mut(),
+                id,
+                c_id,
+            )
+            .await?;
         }
     }
     engine_control
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    if challenge.challenge_type.uses_ad_engine() && reconcile_vpn {
+        crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+    }
 
     // Tear down every running per-team + shared container this challenge owns
     // BEFORE its rows vanish — otherwise they run orphaned until the idle reaper.
@@ -939,7 +950,7 @@ pub(crate) async fn delete_challenge_core(
     // that do not touch a participation row still serialize with the final
     // evidence predicate and physical delete, and the established game -> test
     // -> definition order avoids cross-replica lock inversion.
-    let final_locks =
+    let mut final_locks =
         super::deletion_locks::acquire_game_test_deletion_locks(&st.db, id, deletion_admission)
             .await?;
 
@@ -947,18 +958,22 @@ pub(crate) async fn delete_challenge_core(
     // the earlier sweep cannot publish behind challenge deletion.
     destroy_test_container_locked(&st, c_id).await?;
 
-    // Reacquire definition only after the slow provisioning sweeps. Test
+    // Reacquire definition on the game/test guard's existing connection. Test
     // creation uses test-lifecycle -> definition, so taking the same order here
     // avoids inversion while making the final attachment snapshot and physical
-    // delete indivisible with every flag/attachment/repository definition edit.
-    let mut final_definition_lock = deletion::acquire_definition_lock(st.pg(), id, c_id).await?;
-    deletion::fence_challenge_deletion(final_definition_lock.transaction_mut(), id, c_id).await?;
+    // delete indivisible without reserving a nested pool checkout.
+    crate::utils::single_flight::acquire_transaction_advisory_lock(
+        final_locks.game_transaction_mut(),
+        &crate::services::challenge_workloads::definition_lock_key(id, c_id),
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    deletion::fence_challenge_deletion(final_locks.game_transaction_mut(), id, c_id).await?;
     let deleted_artifacts = crate::services::blob_refs::delete_challenge_locked(
-        final_definition_lock.transaction_mut(),
+        final_locks.game_transaction_mut(),
         c_id,
     )
     .await?;
-    final_definition_lock.release().await?;
     final_locks.release().await?;
     runtime_transition.release().await?;
 

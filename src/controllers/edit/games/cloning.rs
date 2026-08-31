@@ -194,20 +194,27 @@ pub async fn clone_game(
         .execute(&mut **source_control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let (game_revision, source_configuration_revision): (String, i64) = sqlx::query_as(
-        r#"SELECT md5(row_to_json(source)::text), challenge_configuration_revision
+    let source =
+        super::update_support::load_game_locked(source_control.transaction_mut(), id, true).await?;
+    let game_revision: String = sqlx::query_scalar(
+        r#"SELECT md5(row_to_json(source)::text)
              FROM "Games" source WHERE source.id = $1"#,
     )
     .bind(id)
-    .fetch_optional(&mut **source_control.transaction_mut())
+    .fetch_one(&mut **source_control.transaction_mut())
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("Game not found"))?;
-    if model.expected_source_revision != source_configuration_revision {
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if model.expected_source_revision != source.challenge_configuration_revision {
         return Err(AppError::conflict(format!(
-            "Source game changed; current revision is {source_configuration_revision}"
+            "Source game changed; current revision is {}",
+            source.challenge_configuration_revision
         )));
     }
+    let mut clone_configuration = GameInfoModel::from_game(&source).configuration();
+    clone_configuration.start_time_utc = model.start_time_utc;
+    clone_configuration.end_time_utc = model.end_time_utc;
+    clone_configuration.freeze_time_utc = None;
+    clone_configuration.validate()?;
     let (challenge_count, flag_count, source_revision) = if model.include_challenges {
         // Admit by cheap counts before any row JSON/string aggregation. Legacy
         // oversized sources therefore fail without materializing their content.
@@ -560,8 +567,11 @@ pub async fn delete_writeups(
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<GameInfoModel>> {
     let game = load_game(&st, id).await?;
-    let deleted_hashes = crate::services::blob_refs::clear_game_writeups(st.pg(), id).await?;
-    for hash in deleted_hashes {
+    let cleared = crate::services::blob_refs::clear_game_writeups(st.pg(), id).await?;
+    for hash in &cleared.revoked_hashes {
+        crate::controllers::assets::invalidate_asset_gate(&st, hash).await;
+    }
+    for hash in cleared.deleted_hashes {
         if let Err(error) =
             crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
                 .await

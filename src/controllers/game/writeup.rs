@@ -1,5 +1,6 @@
 //! Writeup submission state + PDF upload, with ref-counted blob helpers.
 use super::*;
+use axum::http::HeaderMap;
 
 // ---------------------------------------------------------------------------
 // Writeup
@@ -40,9 +41,11 @@ pub async fn get_writeup(
 pub async fn submit_writeup(
     State(st): State<SharedState>,
     user: CurrentUser,
+    headers: HeaderMap,
     Path(id): Path<i32>,
     mut multipart: Multipart,
 ) -> AppResult<StatusCode> {
+    let operation_id = crate::utils::upload::required_operation_id(&headers)?;
     // Resolve participation and policy before accepting a large body. Multipart
     // construction is lazy, so this does not buffer the upload while the checks
     // run and prevents an arbitrary authenticated account from consuming the
@@ -63,11 +66,16 @@ pub async fn submit_writeup(
     let mut file_name: Option<String> = None;
     let mut content_type: Option<String> = None;
     let mut body: Option<axum::body::Bytes> = None;
+    let mut field_count = 0usize;
     while let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?
     {
+        field_count += 1;
+        if field_count > crate::utils::upload::SINGLE_FILE_FIELD_COUNT {
+            return Err(AppError::bad_request("Too many multipart fields"));
+        }
         if field.name() == Some("file") {
             file_name = field.file_name().map(|s| s.to_string());
             content_type = field.content_type().map(|s| s.to_string());
@@ -103,12 +111,10 @@ pub async fn submit_writeup(
     }
 
     let name = format!(
-        "Writeup-{}-{}-{}.pdf",
-        ctx.game.id,
-        ctx.participation.team_id,
-        now.format("%Y%m%d-%H.%M.%S")
+        "Writeup-{}-{}-{operation_id}.pdf",
+        ctx.game.id, ctx.participation.team_id
     );
-    let (_blob, deleted_hash) = crate::services::blob_refs::store_and_replace_writeup(
+    let (blob, revoked_hash, deleted_hash) = crate::services::blob_refs::store_and_replace_writeup(
         st.pg(),
         st.storage.as_ref(),
         crate::services::live_roster::LiveParticipationIdentity {
@@ -122,6 +128,10 @@ pub async fn submit_writeup(
         &bytes,
     )
     .await?;
+    crate::controllers::assets::invalidate_asset_gate(&st, &blob.hash).await;
+    if let Some(old_hash) = revoked_hash.as_deref() {
+        crate::controllers::assets::invalidate_asset_gate(&st, old_hash).await;
+    }
 
     let team_id = ctx.participation.team_id;
     let game_title = ctx.game.title.clone();

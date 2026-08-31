@@ -46,6 +46,7 @@ pub mod game {
         pub vpn_device_sharing_telemetry_enabled: bool,
         #[serde(skip)]
         pub vpn_policy_revision: i64,
+        pub configuration_revision: i64,
 
         // --- Attack-Defense / KotH engine tunables ---
         pub ad_warmup_seconds: Option<i32>,

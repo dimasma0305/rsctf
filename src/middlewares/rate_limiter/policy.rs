@@ -75,6 +75,18 @@ pub enum Policy {
     /// Deployment-wide Event-VPN mint work budget. Appended to preserve every
     /// previously shipped Redis policy discriminant.
     EventVpnMintGlobal,
+    /// Source budget for anonymous and authenticated asset routes, which live
+    /// outside the ordinary `/api` namespace. Appended after every shipped
+    /// policy so rolling replicas continue to share the same Redis keys.
+    AssetRequestSource,
+    /// Authenticated account budget for asset routes across changing sources.
+    AssetRequestIdentity,
+    /// Deployment-wide request work before asset cache or PostgreSQL access.
+    AssetRequestWork,
+    /// Deployment-wide byte credits for bodies served through the platform.
+    AssetResponseBytes,
+    /// Deployment-wide budget for distinct authorization cache misses.
+    AssetGateMiss,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -178,6 +190,28 @@ impl Policy {
             Policy::EventVpnMintGlobal => Kind::Bucket {
                 capacity: 512.0,
                 refill_per_sec: 64.0,
+            },
+            Policy::AssetRequestSource => Kind::Bucket {
+                capacity: 512.0,
+                refill_per_sec: 128.0,
+            },
+            Policy::AssetRequestIdentity => Kind::Bucket {
+                capacity: 512.0,
+                refill_per_sec: 64.0,
+            },
+            Policy::AssetRequestWork => Kind::Bucket {
+                capacity: 2_048.0,
+                refill_per_sec: 256.0,
+            },
+            // One unit is 64 KiB. Preserve a 512-MiB burst while bounding
+            // sustained platform-served bytes at 128 MiB/s.
+            Policy::AssetResponseBytes => Kind::Bucket {
+                capacity: 8_192.0,
+                refill_per_sec: 2_048.0,
+            },
+            Policy::AssetGateMiss => Kind::Bucket {
+                capacity: 256.0,
+                refill_per_sec: 128.0,
             },
             Policy::Login => Kind::Sliding {
                 permit: 50,

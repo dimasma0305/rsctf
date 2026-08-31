@@ -87,6 +87,27 @@ pub(super) async fn player_container_request_is_eligible(
     player_container_request_is_eligible_on(connection, caller, challenge_id, mode, false).await
 }
 
+/// Run the mutable player/runtime eligibility predicate on one short checkout.
+/// Runtime probes and mutations must happen only after this connection is
+/// returned to the pool, then repeat the predicate at publication.
+pub(super) async fn player_request_is_eligible_now(
+    st: &SharedState,
+    caller: LiveParticipationIdentity<'_>,
+    challenge_id: i32,
+    mode: ContainerRequestMode,
+) -> AppResult<bool> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let eligible =
+        player_container_request_is_eligible(&mut transaction, caller, challenge_id, mode).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(eligible)
+}
+
 /// Exact pre-build authorization for the one transition where an active,
 /// recoverable challenge is intentionally still Queued. Every post-build and
 /// response boundary continues to require Success.

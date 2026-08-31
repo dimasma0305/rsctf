@@ -31,6 +31,7 @@ mod avatar;
 mod invite;
 mod lifecycle;
 mod models;
+mod profile;
 mod revocation;
 mod roster_policy;
 mod scoreboard_invalidation;
@@ -40,10 +41,11 @@ pub use avatar::avatar;
 pub(crate) use invite::recover_pending_invite_rotations;
 pub use invite::{invite_code, update_invite_token};
 pub use models::*;
+pub(crate) use profile::process_profile_invalidations;
 pub(crate) use revocation::{
-    acquire_roster_mutation, invalidate_removed_membership_cache, mark_team_participations_revoked,
-    require_team_mutable, revoke_participation_capabilities, revoke_team_shared_capabilities,
-    TeamDeletionLease,
+    acquire_profile_mutation, acquire_roster_mutation, cleanup_deleted_team_avatar,
+    invalidate_removed_membership_cache, mark_team_participations_revoked, require_team_mutable,
+    revoke_participation_capabilities, revoke_team_shared_capabilities, TeamDeletionLease,
 };
 use revocation::{remove_membership, revoke_team_shared_capabilities_locked};
 pub(crate) use roster_policy::ensure_roster_change_allowed;
@@ -185,36 +187,16 @@ pub async fn update_team(
     Path(id): Path<i32>,
     Json(model): Json<TeamUpdateModel>,
 ) -> AppResult<RequestResponse<TeamInfoModel>> {
-    let mut roster = acquire_roster_mutation(st.pg(), id).await?;
+    let mut roster = acquire_profile_mutation(st.pg(), id).await?;
     require_team_mutable(roster.transaction_mut(), id).await?;
-    let team = load_team(&st, id).await?;
-    require_captain(&team, &user)?;
-
-    let old_name = team.name.clone();
-    let mut am: team::ActiveModel = team.into();
-    let normalized_name = model.name.as_deref().map(str::trim);
-    validate_team_profile(normalized_name, model.bio.as_deref())?;
-    if let Some(name) = model.name {
-        let name = name.trim().to_string();
-        // RSCTF `UpdateTeam` → `Team.UpdateInfo` does not enforce name uniqueness;
-        // the invite code embeds the id, so duplicate bounded names are harmless.
-        am.name = Set(name);
-    }
-    if let Some(bio) = model.bio {
-        am.bio = Set(Some(bio));
-    }
-    let team = am.update(&st.db).await?;
+    let info = profile::update_locked(roster.transaction_mut(), id, user.id, model).await?;
     roster.release().await?;
-
-    // RSCTF `FlushScoreboardCacheForTeam`: a rename must invalidate the scoreboard
-    // caches for every game the team is in, otherwise the board keeps the old name
-    // (the live board rides a 7-day sliding cache; A&D/KotH boards never auto-
-    // regenerate once a game is paused/ended). Only flush on an actual name change,
-    // matching the C# ordinal compare. Cache eviction is best-effort.
-    if team.name != old_name {
-        flush_scoreboard_for_team(&st, team.id).await?;
-    }
-    let info = to_info(&st, &team, true).await?;
+    let effects_state = st.clone();
+    tokio::spawn(async move {
+        if let Err(error) = profile::process_profile_invalidations(&effects_state).await {
+            tracing::warn!(%error, "team profile invalidation failed");
+        }
+    });
     Ok(RequestResponse::ok(info))
 }
 
@@ -261,7 +243,8 @@ pub async fn delete_team(
     // 7 days (RSCTF `DeleteTeam` → `FlushScoreboardsForGames`). Best-effort.
     flush_scoreboard_for_team(&st, team.id).await?;
 
-    deletion_lease.finalize(team.id).await?;
+    let avatar_hash = deletion_lease.finalize(team.id).await?;
+    cleanup_deleted_team_avatar(&st, avatar_hash).await;
     flush_scoreboards_for_games(&st, &affected_game_ids).await;
 
     // RSCTF `Team_Deleted` — "Delete team {name}" (TeamController, Success).
@@ -696,6 +679,7 @@ async fn to_info(
         bio: team.bio.clone(),
         avatar: team.avatar_url(),
         locked: team.locked,
+        profile_revision: team.profile_revision,
         members,
     })
 }

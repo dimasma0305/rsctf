@@ -8,8 +8,12 @@ const REAPER_BATCH_SIZE: i64 = 32;
 const ORPHAN_SCAN_BATCH_SIZE: usize = 512;
 const ORPHAN_DESTROY_BATCH_SIZE: usize = 32;
 const MAINTENANCE_PASS_BUDGET: StdDuration = StdDuration::from_secs(20);
-const ORPHAN_GRACE_SECS: u64 = 60;
+// Player/exercise owners have a 120-second absolute create deadline. Keep a
+// larger discovery grace so a backend accepted just before timeout can be
+// recorded or reconciled before generic orphan cleanup considers it.
+const ORPHAN_GRACE_SECS: u64 = 300;
 const ORPHAN_TRACKING_LIMIT: usize = 4_096;
+const REAP_MARKER_CLEANUP_BATCH: i64 = 64;
 
 static ORPHAN_FIRST_SEEN: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
@@ -70,6 +74,26 @@ impl ReapCandidate {
 /// per-owner destroy lock prevent duplicate external work; later rows remain an
 /// explicit backlog for the next tick instead of extending this pass forever.
 pub(super) async fn reap_expired_containers(state: &SharedState) -> AppResult<u64> {
+    sqlx::query(
+        r#"WITH stale AS (
+               SELECT reap.backend_id
+                 FROM "ManagedContainerReapOperations" reap
+                WHERE reap.lease_expires_at_utc <= clock_timestamp()
+                  AND NOT EXISTS (
+                      SELECT 1 FROM "Containers" container
+                       WHERE container.id = reap.container_id
+                         AND container.container_id = reap.backend_id
+                  )
+                ORDER BY reap.lease_expires_at_utc, reap.backend_id
+                LIMIT $1
+           )
+           DELETE FROM "ManagedContainerReapOperations" reap
+            USING stale WHERE reap.backend_id = stale.backend_id"#,
+    )
+    .bind(REAP_MARKER_CLEANUP_BATCH)
+    .execute(state.pg())
+    .await
+    .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))?;
     let mut transaction = state
         .pg()
         .begin()
@@ -148,42 +172,129 @@ impl KnownContainerIds {
     }
 }
 
-async fn load_known_container_ids(state: &SharedState) -> AppResult<KnownContainerIds> {
-    let (containers, services, targets, cycles) = tokio::try_join!(
-        sqlx::query_scalar::<_, String>(
-            r#"SELECT container_id FROM "Containers" WHERE NULLIF(BTRIM(container_id), '') IS NOT NULL"#,
-        )
-        .fetch_all(state.pg()),
-        sqlx::query_scalar::<_, String>(
-            r#"SELECT container_id FROM "AdTeamServices" WHERE NULLIF(BTRIM(container_id), '') IS NOT NULL"#,
-        )
-        .fetch_all(state.pg()),
-        sqlx::query_scalar::<_, String>(
-            r#"SELECT container_id FROM "KothTargets" WHERE NULLIF(BTRIM(container_id), '') IS NOT NULL"#,
-        )
-        .fetch_all(state.pg()),
-        sqlx::query_scalar::<_, String>(
-            r#"SELECT DISTINCT runtime_id
+async fn load_known_container_ids(
+    state: &SharedState,
+    candidates: &[String],
+) -> AppResult<KnownContainerIds> {
+    let docker_prefixes = candidates
+        .iter()
+        .filter(|id| docker_id_shape(id))
+        .map(|id| id[..12].to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let (containers, services, targets, cycles, player_operations, exercise_operations) =
+        tokio::try_join!(
+            sqlx::query_scalar::<_, String>(
+                r#"SELECT container_id FROM "Containers"
+                WHERE container_id = ANY($1)
+                   OR LOWER(LEFT(container_id, 12)) = ANY($2)"#,
+            )
+            .bind(candidates)
+            .bind(&docker_prefixes)
+            .fetch_all(state.pg()),
+            sqlx::query_scalar::<_, String>(
+                r#"SELECT container_id FROM "AdTeamServices"
+                WHERE container_id = ANY($1)
+                   OR LOWER(LEFT(container_id, 12)) = ANY($2)"#,
+            )
+            .bind(candidates)
+            .bind(&docker_prefixes)
+            .fetch_all(state.pg()),
+            sqlx::query_scalar::<_, String>(
+                r#"SELECT container_id FROM "KothTargets"
+                WHERE container_id = ANY($1)
+                   OR LOWER(LEFT(container_id, 12)) = ANY($2)"#,
+            )
+            .bind(candidates)
+            .bind(&docker_prefixes)
+            .fetch_all(state.pg()),
+            sqlx::query_scalar::<_, String>(
+                r#"SELECT DISTINCT runtime_id
                  FROM "KothCrownCycles" cycle
                  CROSS JOIN LATERAL unnest(ARRAY[
                    cycle.old_container_id, cycle.replacement_container_id
                  ]) runtime(runtime_id)
                 WHERE cycle.phase <> 'Ended'
-                  AND NULLIF(BTRIM(runtime_id), '') IS NOT NULL"#,
+                  AND (runtime_id = ANY($1)
+                       OR LOWER(LEFT(runtime_id, 12)) = ANY($2))"#,
+            )
+            .bind(candidates)
+            .bind(&docker_prefixes)
+            .fetch_all(state.pg()),
+            sqlx::query_scalar::<_, String>(
+                r#"SELECT backend_id FROM "PlayerContainerOperations"
+                WHERE backend_id IS NOT NULL AND state = 'Running'
+                  AND lease_expires_at_utc > clock_timestamp() - interval '5 minutes'
+                  AND (backend_id = ANY($1)
+                       OR LOWER(LEFT(backend_id, 12)) = ANY($2))"#,
+            )
+            .bind(candidates)
+            .bind(&docker_prefixes)
+            .fetch_all(state.pg()),
+            sqlx::query_scalar::<_, String>(
+                r#"SELECT backend_id FROM "ExerciseContainerOperations"
+                WHERE backend_id IS NOT NULL AND state = 'Running'
+                  AND lease_expires_at_utc > clock_timestamp() - interval '5 minutes'
+                  AND (backend_id = ANY($1)
+                       OR LOWER(LEFT(backend_id, 12)) = ANY($2))"#,
+            )
+            .bind(candidates)
+            .bind(&docker_prefixes)
+            .fetch_all(state.pg()),
         )
-        .fetch_all(state.pg()),
-    )
-    .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))?;
+        .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))?;
     let mut known = KnownContainerIds::default();
     for id in containers
         .into_iter()
         .chain(services)
         .chain(targets)
         .chain(cycles)
+        .chain(player_operations)
+        .chain(exercise_operations)
     {
         known.insert(id);
     }
     Ok(known)
+}
+
+async fn runtime_has_durable_owner(state: &SharedState, id: &str) -> AppResult<bool> {
+    let prefix = docker_id_shape(id).then(|| id[..12].to_ascii_lowercase());
+    sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM "Containers" WHERE container_id = $1
+                  OR ($2::text IS NOT NULL AND LOWER(LEFT(container_id, 12)) = $2)
+               UNION ALL
+               SELECT 1 FROM "AdTeamServices" WHERE container_id = $1
+                  OR ($2::text IS NOT NULL AND LOWER(LEFT(container_id, 12)) = $2)
+               UNION ALL
+               SELECT 1 FROM "KothTargets" WHERE container_id = $1
+                  OR ($2::text IS NOT NULL AND LOWER(LEFT(container_id, 12)) = $2)
+               UNION ALL
+               SELECT 1 FROM "KothCrownCycles" cycle
+                CROSS JOIN LATERAL unnest(ARRAY[
+                    cycle.old_container_id, cycle.replacement_container_id
+                ]) runtime(runtime_id)
+                WHERE cycle.phase <> 'Ended'
+                  AND (runtime_id = $1 OR ($2::text IS NOT NULL
+                       AND LOWER(LEFT(runtime_id, 12)) = $2))
+               UNION ALL
+               SELECT 1 FROM "PlayerContainerOperations"
+                WHERE backend_id IS NOT NULL AND state = 'Running'
+                  AND lease_expires_at_utc > clock_timestamp() - interval '5 minutes'
+                  AND (backend_id = $1 OR ($2::text IS NOT NULL
+                       AND LOWER(LEFT(backend_id, 12)) = $2))
+               UNION ALL
+               SELECT 1 FROM "ExerciseContainerOperations"
+                WHERE backend_id IS NOT NULL AND state = 'Running'
+                  AND lease_expires_at_utc > clock_timestamp() - interval '5 minutes'
+                  AND (backend_id = $1 OR ($2::text IS NOT NULL
+                       AND LOWER(LEFT(backend_id, 12)) = $2))
+           )"#,
+    )
+    .bind(id)
+    .bind(prefix)
+    .fetch_one(state.pg())
+    .await
+    .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))
 }
 
 fn rotating_batch(mut managed: Vec<String>) -> (Vec<String>, usize) {
@@ -209,7 +320,7 @@ pub(super) async fn sweep_orphan_containers(state: &SharedState) -> AppResult<u6
     if managed.is_empty() {
         return Ok(0);
     }
-    let known = load_known_container_ids(state).await?;
+    let known = load_known_container_ids(state, &managed).await?;
     let now = std::time::Instant::now();
     let mut ready = Vec::new();
     {
@@ -246,6 +357,13 @@ pub(super) async fn sweep_orphan_containers(state: &SharedState) -> AppResult<u6
     for id in ready {
         if started.elapsed() >= MAINTENANCE_PASS_BUDGET {
             break;
+        }
+        if runtime_has_durable_owner(state, &id).await? {
+            ORPHAN_FIRST_SEEN
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&id);
+            continue;
         }
         if let Err(error) =
             crate::services::ad_vpn::deactivate_backend_endpoint(&state.db, &id).await

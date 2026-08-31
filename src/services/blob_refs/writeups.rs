@@ -3,9 +3,24 @@
 use super::*;
 use crate::utils::enums::{ParticipationStatus, Role};
 
+#[derive(Debug, Default)]
+pub struct ClearedWriteups {
+    pub revoked_hashes: Vec<String>,
+    pub deleted_hashes: Vec<String>,
+}
+
+impl IntoIterator for ClearedWriteups {
+    type Item = String;
+    type IntoIter = std::vec::IntoIter<String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.deleted_hashes.into_iter()
+    }
+}
+
 /// Clear and release every writeup for one game exactly once, even when two
 /// admin replicas issue the cleanup concurrently.
-pub async fn clear_game_writeups(pool: &PgPool, game_id: i32) -> AppResult<Vec<String>> {
+pub async fn clear_game_writeups(pool: &PgPool, game_id: i32) -> AppResult<ClearedWriteups> {
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(database_error)?;
@@ -22,7 +37,7 @@ pub async fn clear_game_writeups(pool: &PgPool, game_id: i32) -> AppResult<Vec<S
     .map_err(database_error)?;
     if file_ids.is_empty() {
         transaction.commit().await.map_err(database_error)?;
-        return Ok(Vec::new());
+        return Ok(ClearedWriteups::default());
     }
 
     let mut files =
@@ -52,6 +67,12 @@ pub async fn clear_game_writeups(pool: &PgPool, game_id: i32) -> AppResult<Vec<S
     for file_id in file_ids {
         *releases.entry(file_id).or_default() += 1;
     }
+    let revoked_hashes = files
+        .iter()
+        .map(|(_, hash)| hash.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let mut deleted_hashes = Vec::new();
     for (file_id, count) in releases {
         for _ in 0..count {
@@ -65,7 +86,10 @@ pub async fn clear_game_writeups(pool: &PgPool, game_id: i32) -> AppResult<Vec<S
         }
     }
     transaction.commit().await.map_err(database_error)?;
-    Ok(deleted_hashes)
+    Ok(ClearedWriteups {
+        revoked_hashes,
+        deleted_hashes,
+    })
 }
 
 #[cfg(test)]
@@ -182,11 +206,8 @@ async fn replace_writeup_locked(
     transaction: &mut Transaction<'_, Postgres>,
     participation_id: i32,
     old: Option<(i32, String)>,
-    hash: &str,
-    name: &str,
-    size: i64,
+    new_id: i32,
 ) -> Result<Option<String>, sqlx::Error> {
-    let new_id = acquire_locked(transaction, hash, name, size).await?;
     sqlx::query(
         r#"UPDATE "Participations"
               SET writeup_id = $2
@@ -217,10 +238,12 @@ pub(super) async fn replace_writeup(
         .await
         .map_err(database_error)?;
     let old = lock_writeup_hashes(&mut transaction, participation_id, hash).await?;
-    let deleted_hash =
-        replace_writeup_locked(&mut transaction, participation_id, old, hash, name, size)
-            .await
-            .map_err(database_error)?;
+    let new_id = acquire_locked(&mut transaction, hash, name, size)
+        .await
+        .map_err(database_error)?;
+    let deleted_hash = replace_writeup_locked(&mut transaction, participation_id, old, new_id)
+        .await
+        .map_err(database_error)?;
     transaction.commit().await.map_err(database_error)?;
     Ok(deleted_hash)
 }
@@ -228,14 +251,39 @@ pub(super) async fn replace_writeup(
 /// Store and atomically replace a participation writeup under the distributed
 /// content-hash lock. The final eligibility snapshot and reference swap share
 /// the game-to-participation lock order used by hard deletion.
+fn writeup_operation_root(name: &str) -> Option<uuid::Uuid> {
+    let stem = name.strip_suffix(".pdf")?;
+    let suffix = stem.as_bytes().get(stem.len().checked_sub(36)?..)?;
+    std::str::from_utf8(suffix)
+        .ok()
+        .and_then(|value| uuid::Uuid::parse_str(value).ok())
+        .filter(|operation_id| !operation_id.is_nil())
+}
+
 pub(crate) async fn store_and_replace_writeup(
     pool: &PgPool,
     storage: &dyn BlobStorage,
     caller: crate::services::live_roster::LiveParticipationIdentity<'_>,
     name: &str,
     bytes: &[u8],
-) -> AppResult<(StoredBlob, Option<String>)> {
-    let expected_hash = sha256_hex(bytes);
+) -> AppResult<(StoredBlob, Option<String>, Option<String>)> {
+    // Player-facing storage names embed the required request UUID. Older
+    // internal callers without that suffix retain independent one-shot stages.
+    let operation_root = writeup_operation_root(name).unwrap_or_else(uuid::Uuid::new_v4);
+    let staged = stage_blob(
+        pool,
+        storage,
+        scoped_operation_id(
+            operation_root,
+            &format!("writeup:{}:{}", caller.game_id, caller.participation_id),
+            0,
+        ),
+        &format!("writeup:{}:{}", caller.game_id, caller.participation_id),
+        Some(caller.user_id),
+        name,
+        bytes,
+    )
+    .await?;
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(database_error)?;
@@ -265,25 +313,47 @@ pub(crate) async fn store_and_replace_writeup(
         caller.game_id,
         caller.participation_id,
         caller.user_id,
-        &expected_hash,
+        &staged.blob.hash,
     )
     .await?;
-    let blob = storage.store(name, bytes).await?;
-    if blob.hash != expected_hash {
-        return Err(AppError::internal(
-            "blob storage returned a hash that does not match its content",
-        ));
-    }
-    let deleted_hash = replace_writeup_locked(
-        &mut transaction,
-        caller.participation_id,
-        old,
-        &blob.hash,
-        name,
-        blob.size,
-    )
-    .await
-    .map_err(database_error)?;
+    let same_content = old
+        .as_ref()
+        .is_some_and(|(_, hash)| hash == &staged.blob.hash);
+    let revoked_hash = if same_content {
+        None
+    } else {
+        old.as_ref().map(|(_, hash)| hash.clone())
+    };
+    let deleted_hash = if same_content {
+        staged
+            .consume_with_existing_reference(&mut transaction)
+            .await?;
+        None
+    } else {
+        let new_id = publish_staged_blob(&mut transaction, &staged).await?;
+        replace_writeup_locked(&mut transaction, caller.participation_id, old, new_id)
+            .await
+            .map_err(database_error)?
+    };
     transaction.commit().await.map_err(database_error)?;
-    Ok((blob, deleted_hash))
+    Ok((staged.blob, revoked_hash, deleted_hash))
+}
+
+#[cfg(test)]
+mod operation_identity_tests {
+    use super::writeup_operation_root;
+
+    #[test]
+    fn server_writeup_name_recovers_the_exact_nonzero_operation() {
+        let expected = uuid::Uuid::new_v4();
+        assert_eq!(
+            writeup_operation_root(&format!("Writeup-1-2-{expected}.pdf")),
+            Some(expected)
+        );
+        assert_eq!(writeup_operation_root("writeup.pdf"), None);
+        assert_eq!(
+            writeup_operation_root("Writeup-1-2-00000000-0000-0000-0000-000000000000.pdf"),
+            None
+        );
+    }
 }

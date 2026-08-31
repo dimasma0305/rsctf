@@ -11,7 +11,6 @@ use archive::{extract_zip_with_limits, ArchiveLimits};
 use import_policy::validate_import_batch;
 use path::{resolve_subpath, validate_subpath};
 
-const MAX_PENDING_CHALLENGES_PER_USER_GAME: i64 = 10;
 const TEST_IMAGE_PREPARE_ATTEMPTS: usize = 3;
 pub use import_jobs::start_worker as start_import_job_worker;
 
@@ -469,11 +468,13 @@ pub(super) async fn import_from_dir(
             .fetch_one(&mut **configuration_lock.transaction_mut())
             .await;
         match pending_count {
-            Ok(count) if count < MAX_PENDING_CHALLENGES_PER_USER_GAME => {}
+            Ok(count)
+                if count < crate::services::git_sync::MAX_PENDING_CHALLENGES_PER_USER_GAME => {}
             Ok(_) => {
                 result.failed = manifests.len() as i32;
                 result.messages.push(format!(
-                    "At most {MAX_PENDING_CHALLENGES_PER_USER_GAME} pending challenges may be submitted per user and game."
+                    "At most {} pending challenges may be submitted per user and game.",
+                    crate::services::git_sync::MAX_PENDING_CHALLENGES_PER_USER_GAME
                 ));
                 let _ = configuration_lock.release().await;
                 return result;
@@ -485,6 +486,13 @@ pub(super) async fn import_from_dir(
                 return result;
             }
         }
+    }
+    if let Err(error) = configuration_lock.release().await {
+        result.failed = manifests.len() as i32;
+        result
+            .messages
+            .push(format!("challenge import unlock failed: {error}"));
+        return result;
     }
     let mut build_jobs = Vec::new();
     let mut generator_build_jobs = Vec::new();
@@ -558,11 +566,6 @@ pub(super) async fn import_from_dir(
                 result.messages.push(format!("{dir_name}: {e}"));
             }
         }
-    }
-    if let Err(error) = configuration_lock.release().await {
-        result
-            .messages
-            .push(format!("challenge import unlock failed: {error}"));
     }
     for (challenge_id, manifest) in archive_jobs {
         persist_challenge_archive(st, challenge_id, &manifest).await;

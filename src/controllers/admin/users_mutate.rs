@@ -355,14 +355,21 @@ pub async fn delete_user(
     // existing team/participation link before changing the account.
     fence_user_identity_for_deletion(st.pg(), st.cache.as_ref(), userid).await?;
 
-    // ApiToken.Creator is ON DELETE RESTRICT — clear the user's tokens first.
-    api_token::Entity::delete_many()
-        .filter(api_token::Column::CreatorId.eq(userid))
-        .exec(&st.db)
-        .await?;
-
-    user::Entity::delete_by_id(userid).exec(&st.db).await?;
+    // Delete the direct avatar owner and release its logical blob reference in
+    // the same short transaction. The object purge remains post-commit and
+    // retryable; an account crash can no longer leave a positive-reference
+    // orphan that maintenance deliberately preserves.
+    let avatar_hash = delete_user_rows_and_avatar(st.pg(), userid).await?;
     account_lifecycle.release().await?;
+    if let Some(hash) = avatar_hash {
+        crate::controllers::assets::invalidate_asset_gate(&st, &hash).await;
+        if let Err(error) =
+            crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
+                .await
+        {
+            tracing::warn!(%error, %hash, "deleted account avatar purge deferred");
+        }
+    }
     Ok(RequestResponse::ok(userid.to_string()))
 }
 
@@ -379,6 +386,51 @@ async fn affected_team_ids(pool: &sqlx::PgPool, user_id: Uuid) -> AppResult<Vec<
     .fetch_all(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))
+}
+
+async fn delete_user_rows_and_avatar(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+) -> AppResult<Option<String>> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let avatar_hash = sqlx::query_scalar::<_, Option<String>>(
+        r#"SELECT avatar_hash FROM "AspNetUsers" WHERE id = $1 FOR UPDATE"#,
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("User not found"))?;
+    if let Some(hash) = avatar_hash.as_deref() {
+        crate::services::blob_refs::lock_direct_hashes_locked(
+            &mut transaction,
+            std::iter::once(hash),
+        )
+        .await?;
+    }
+    sqlx::query(r#"DELETE FROM "ApiTokens" WHERE creator_id = $1"#)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let removed = sqlx::query(r#"DELETE FROM "AspNetUsers" WHERE id = $1"#)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if removed.rows_affected() != 1 {
+        return Err(AppError::conflict("Account deletion fence changed"));
+    }
+    if let Some(hash) = avatar_hash.as_deref() {
+        crate::services::blob_refs::release_direct_hash_locked(&mut transaction, hash).await?;
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(avatar_hash)
 }
 
 /// `DELETE /api/admin/users/{userid}/password` — reset the user's password to a
@@ -824,7 +876,17 @@ mod tests {
               id UUID PRIMARY KEY,
               role SMALLINT NOT NULL,
               security_stamp TEXT,
-              normalized_email TEXT
+              normalized_email TEXT,
+              avatar_hash TEXT
+            );
+            CREATE TABLE "Files" (
+              id SERIAL PRIMARY KEY,
+              hash TEXT NOT NULL UNIQUE,
+              reference_count BIGINT NOT NULL
+            );
+            CREATE TABLE "ApiTokens" (
+              id UUID PRIMARY KEY,
+              creator_id UUID
             );
             CREATE TABLE "Teams" (
               id INTEGER PRIMARY KEY,
@@ -870,6 +932,24 @@ mod tests {
             .await
             .unwrap();
         }
+        let avatar_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        sqlx::query(r#"UPDATE "AspNetUsers" SET avatar_hash = $2 WHERE id = $1"#)
+            .bind(ordinary)
+            .bind(avatar_hash)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"INSERT INTO "Files" (hash, reference_count) VALUES ($1, 1)"#)
+            .bind(avatar_hash)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"INSERT INTO "ApiTokens" (id, creator_id) VALUES ($1, $2)"#)
+            .bind(Uuid::new_v4())
+            .bind(ordinary)
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query(r#"INSERT INTO "Teams" (id, captain_id) VALUES (1, $1)"#)
             .bind(captain)
             .execute(&pool)
@@ -999,6 +1079,29 @@ mod tests {
                 .await
                 .unwrap(),
             Role::User as i16
+        );
+
+        assert_eq!(
+            delete_user_rows_and_avatar(&pool, ordinary)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(avatar_hash)
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(r#"SELECT reference_count FROM "Files""#)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0,
+            "account deletion leaked its avatar reference"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "ApiTokens""#)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
         );
 
         pool.close().await;

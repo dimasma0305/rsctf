@@ -23,11 +23,11 @@ import { Icon } from '@mdi/react'
 import { FC, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
+import { MAX_FLAG_IMPORT_ROWS, validateFlagRows } from '@Utils/FlagImport'
 import { showErrorMsg } from '@Utils/Shared'
 import { useEditChallenge } from '@Hooks/useEdit'
 import api, { FileType } from '@Api'
 import uploadClasses from '@Styles/Upload.module.css'
-import { MAX_FLAG_IMPORT_ROWS, validateFlagRows } from '@Utils/FlagImport'
 
 export const AttachmentUploadModal: FC<ModalProps> = (props) => {
   const { id, chalId } = useParams()
@@ -35,12 +35,13 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
   const uploadFileName = `DYN_ATTACHMENT_${numCId}`
   const [disabled, setDisabled] = useState(false)
   const submitting = useRef(false)
-  const operationId = useRef<string | null>(null)
+  const flagOperationId = useRef<string | null>(null)
 
   const { mutate } = useEditChallenge(numId, numCId)
 
   const [progress, setProgress] = useState(0)
   const [files, setFiles] = useState<File[]>([])
+  const uploadOperationId = useRef<string | null>(null)
 
   const theme = useMantineTheme()
   const { colorScheme } = useMantineColorScheme()
@@ -72,11 +73,13 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
     setDisabled(true)
 
     try {
+      uploadOperationId.current ??= crypto.randomUUID()
+      const operationId = uploadOperationId.current
       const data = await api.assets.assetsUpload(
         {
           files,
         },
-        { filename: uploadFileName },
+        { filename: uploadFileName, operationId },
         {
           onUploadProgress: (e) => {
             setProgress((e.loaded / (e.total ?? 1)) * 90)
@@ -86,19 +89,16 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
 
       setProgress(95)
       if (data.data) {
-        operationId.current ??= crypto.randomUUID()
-        await api.edit.editAddFlags(
-          numId,
-          numCId,
-          {
-            operationId: operationId.current,
-            flags: data.data.map((f, idx) => ({
-              flag: files[idx].name,
-              attachmentType: FileType.Local,
-              fileHash: f.hash,
-            })),
-          }
-        )
+        flagOperationId.current ??= crypto.randomUUID()
+        await api.edit.editAddFlags(numId, numCId, {
+          operationId: flagOperationId.current,
+          flags: data.data.map((f, idx) => ({
+            flag: files[idx].name,
+            attachmentType: FileType.Local,
+            fileHash: f.hash,
+            uploadId: f.uploadId,
+          })),
+        })
 
         setProgress(0)
         showNotification({
@@ -107,7 +107,8 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
           icon: <Icon path={mdiCheck} size={1} />,
         })
         setFiles([])
-        operationId.current = null
+        flagOperationId.current = null
+        uploadOperationId.current = null
         mutate()
         props.onClose()
       }
@@ -156,7 +157,8 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
                     <ActionIcon
                       aria-label={t('common.button.remove', 'Remove {{name}}', { name: file.name })}
                       onClick={() => {
-                        operationId.current = null
+                        flagOperationId.current = null
+                        uploadOperationId.current = null
                         setFiles(files.filter((f) => f !== file))
                       }}
                     >
@@ -172,7 +174,15 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
           <FileButton
             multiple
             onChange={(selected) => {
-              operationId.current = null
+              if (selected.length > 32) {
+                showNotification({
+                  color: 'orange',
+                  message: t('admin.notification.upload.too_many_files', 'Select at most 32 files per upload.'),
+                })
+                return
+              }
+              flagOperationId.current = null
+              uploadOperationId.current = null
               setFiles(selected)
             }}
           >

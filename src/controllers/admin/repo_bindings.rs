@@ -410,10 +410,11 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
     let dest = std::path::PathBuf::from(&st.config.storage_root)
         .join("repos")
         .join(id.to_string());
-    // Hold one checkout lock through sync, discovery, imports, and their
-    // path-based attachment/checker reads. Push-back uses the same lock.
-    let _checkout_lock =
-        crate::services::git_sync::lock_checkout_distributed(st.pg(), &dest).await?;
+    // Synchronize only the persistent checkout itself. Imports consume an
+    // immutable snapshot so push-back and later fetches can never change files
+    // between manifest validation, attachment packaging, and image staging.
+    let mut checkout_lock =
+        Some(crate::services::git_sync::lock_checkout_distributed(st.pg(), &dest).await?);
     // A concurrent scan may have completed while this task waited for the
     // checkout fence. Refresh the binding under that fence so same-SHA skip and
     // credentials/ref selection never use the waiter's stale snapshot.
@@ -444,17 +445,24 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
         Ok(()) => {
             commit_sha = crate::services::git_sync::head_sha(&dest).await.ok();
             if commit_already_applied(st, &binding, commit_sha.as_deref()).await? {
+                drop(checkout_lock.take());
                 messages.push(format!(
                     "Commit {} was already imported successfully; no repository changes applied.",
                     commit_sha.clone().unwrap_or_else(|| "?".into())
                 ));
             } else {
+                let snapshot = checkout_lock
+                    .take()
+                    .expect("repository checkout lock is retained until snapshot creation")
+                    .immutable_snapshot(&dest, id)
+                    .await?;
+                let import_root = snapshot.path().to_path_buf();
                 // RSCTF `RepoBindingDiscoveryService`: walk for every `.gzevent`, make
                 // ONE game (event) per manifest, and import the challenges UNDER that
                 // manifest's directory into it. No `.gzevent` → nothing imported (no
                 // challenge.yaml fallback), matching RSCTF exactly.
-                match crate::services::git_sync::discover_events(&dest).await {
-                    Ok(events) => match preflight_event_paths(st, id, &dest, events).await {
+                match crate::services::git_sync::discover_events(&import_root).await {
+                    Ok(events) => match preflight_event_paths(st, id, &import_root, events).await {
                         Err(error) => {
                             failures += 1;
                             messages.push(format!("repository event preflight failed: {error}"));
@@ -504,7 +512,7 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                                     games_updated += 1;
                                 }
                                 // Challenges scoped to THIS event's directory only.
-                                let ev_dir = ev_path.parent().unwrap_or(dest.as_path());
+                                let ev_dir = ev_path.parent().unwrap_or(import_root.as_path());
                                 let chal_manifests =
                                     match crate::services::git_sync::discover_challenges(ev_dir)
                                         .await
@@ -537,6 +545,13 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                                         .map_err(|error| AppError::internal(error.to_string()))?;
                                     continue;
                                 }
+                                // This is only a batch preflight. Each manifest
+                                // takes its own short two-phase game/definition
+                                // fence after staging immutable artifacts.
+                                configuration_lock
+                                    .release()
+                                    .await
+                                    .map_err(|error| AppError::internal(error.to_string()))?;
                                 let mut event_counts = ChallengeSyncCounts::default();
                                 let mut seen_challenge_ids =
                                     Vec::with_capacity(chal_manifests.len());
@@ -544,11 +559,27 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                                 let mut build_jobs = Vec::new();
                                 let mut generator_build_jobs = Vec::new();
                                 for m in &chal_manifests {
-                                    match crate::services::git_sync::import_manifest(
+                                    let source_path = match snapshot.manifest_identity(m).await {
+                                        Ok(source_path) => source_path,
+                                        Err(error) => {
+                                            unresolved_manifests += 1;
+                                            failures += 1;
+                                            messages.push(format!(
+                                                "skip {}: {error}",
+                                                m.file_name()
+                                                    .and_then(|name| name.to_str())
+                                                    .unwrap_or("manifest")
+                                            ));
+                                            continue;
+                                        }
+                                    };
+                                    match crate::services::git_sync::import_repository_snapshot_manifest(
                                         st,
                                         gid,
                                         m,
                                         crate::services::git_sync::ImportPolicy::Trusted,
+                                        id,
+                                        &source_path,
                                     )
                                     .await
                                     {
@@ -596,11 +627,6 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                                         }
                                     }
                                 }
-                                configuration_lock
-                                    .release()
-                                    .await
-                                    .map_err(|error| AppError::internal(error.to_string()))?;
-
                                 // Builds acquire the definition fence and may perform
                                 // slow external work. Run them only after releasing the
                                 // per-game lock to preserve the global lock order.
@@ -809,6 +835,12 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                         failures += 1;
                         messages.push(format!(".gzevent discovery failed: {e}"));
                     }
+                }
+                if let Err(error) = snapshot.cleanup().await {
+                    failures += 1;
+                    messages.push(format!(
+                        "immutable repository snapshot cleanup was deferred: {error}"
+                    ));
                 }
             }
         }

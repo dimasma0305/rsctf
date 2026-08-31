@@ -172,8 +172,19 @@ mod m0306_bulk_challenge_mutations;
 mod m0307_division_revision_operations;
 mod m0308_team_invite_rotation;
 mod m0309_flag_import_operations;
+mod m0310_player_container_operations;
+mod m0311_blob_deletion_operations;
+mod m0312_traffic_archive_admission;
+mod m0313_game_configuration_operations;
+mod m0314_team_profile_operations;
+mod m0315_exercise_api_bounds;
+mod m0316_exercise_container_operations;
+mod m0317_blob_stage_publication_owner;
+mod m0318_player_container_operation_recovery;
+mod m0319_exercise_container_operation_recovery;
 mod m0330_mail_preparation_slots;
 mod m0331_username_scoreboard_invalidation;
+mod m0332_repository_manifest_lookup;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -199,6 +210,16 @@ pub(crate) use m0242_participation_provision_jobs::UP_SQL as PARTICIPATION_PROVI
 pub(crate) use m0280_traffic_capture_inventory::UP_SQL as TRAFFIC_CAPTURE_INVENTORY_SQL;
 #[cfg(test)]
 pub(crate) use m0286_docker_image_cleanup_order::UP_SQL as IMAGE_CLEANUP_ORDER_INDEX_SQL;
+#[cfg(test)]
+pub(crate) use m0310_player_container_operations::UP_SQL as PLAYER_CONTAINER_OPERATIONS_SQL;
+#[cfg(test)]
+pub(crate) use m0316_exercise_container_operations::UP_SQL as EXERCISE_CONTAINER_OPERATIONS_SQL;
+#[cfg(test)]
+pub(crate) use m0318_player_container_operation_recovery::UP_SQL as PLAYER_OPERATION_RECOVERY_SQL;
+#[cfg(test)]
+pub(crate) use m0319_exercise_container_operation_recovery::UP_SQL as EXERCISE_OPERATION_RECOVERY_SQL;
+#[cfg(test)]
+pub(crate) use m0332_repository_manifest_lookup::UP_SQL as REPOSITORY_MANIFEST_LOOKUP_INDEX_SQL;
 
 pub struct Migrator;
 
@@ -360,8 +381,19 @@ impl MigratorTrait for Migrator {
             Box::new(m0307_division_revision_operations::Migration),
             Box::new(m0308_team_invite_rotation::Migration),
             Box::new(m0309_flag_import_operations::Migration),
+            Box::new(m0310_player_container_operations::Migration),
+            Box::new(m0311_blob_deletion_operations::Migration),
+            Box::new(m0312_traffic_archive_admission::Migration),
+            Box::new(m0313_game_configuration_operations::Migration),
+            Box::new(m0314_team_profile_operations::Migration),
+            Box::new(m0315_exercise_api_bounds::Migration),
+            Box::new(m0316_exercise_container_operations::Migration),
+            Box::new(m0317_blob_stage_publication_owner::Migration),
+            Box::new(m0318_player_container_operation_recovery::Migration),
+            Box::new(m0319_exercise_container_operation_recovery::Migration),
             Box::new(m0330_mail_preparation_slots::Migration),
             Box::new(m0331_username_scoreboard_invalidation::Migration),
+            Box::new(m0332_repository_manifest_lookup::Migration),
         ]
     }
 }
@@ -506,8 +538,9 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
+        assert_eq!(names.len(), 161);
         assert_eq!(
-            &names[names.len() - 48..],
+            &names[names.len() - 59..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -555,8 +588,19 @@ mod tests {
                 "m0307_division_revision_operations",
                 "m0308_team_invite_rotation",
                 "m0309_flag_import_operations",
+                "m0310_player_container_operations",
+                "m0311_blob_deletion_operations",
+                "m0312_traffic_archive_admission",
+                "m0313_game_configuration_operations",
+                "m0314_team_profile_operations",
+                "m0315_exercise_api_bounds",
+                "m0316_exercise_container_operations",
+                "m0317_blob_stage_publication_owner",
+                "m0318_player_container_operation_recovery",
+                "m0319_exercise_container_operation_recovery",
                 "m0330_mail_preparation_slots",
                 "m0331_username_scoreboard_invalidation",
+                "m0332_repository_manifest_lookup",
             ]
         );
     }

@@ -38,8 +38,8 @@ use uuid::Uuid;
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser, MonitorUser};
 use crate::models::data::{
-    attachment, challenge_review, container, division, division_challenge_config, flag_context,
-    game, game_challenge, game_instance, game_notice, local_file, participation, submission, team,
+    attachment, challenge_review, container, division, division_challenge_config, game,
+    game_challenge, game_instance, game_notice, local_file, participation, submission, team,
     team_member, user,
 };
 use crate::services::container::ContainerSpec;
@@ -52,6 +52,9 @@ use crate::utils::enums::{
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::flag_generator;
 use crate::utils::shared::{ArrayResponse, MessageResponse, PageParams, RequestResponse};
+
+/// Compatibility alias for the one canonical normal-flag byte policy.
+pub(crate) const MAX_FLAG_LENGTH: usize = crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES;
 
 // ---------------------------------------------------------------------------
 // DTOs (inline; camelCase on the wire to match RSCTF's JSON contract).
@@ -301,6 +304,9 @@ pub struct GameJoinCheckInfoModel {
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientFlagContext {
+    /// Current accepted participation, used only to scope durable lifecycle
+    /// operation identities across account/team changes in the same tab.
+    pub participation_id: Option<i32>,
     /// Immutable container UUID used to fence asynchronous lifecycle results.
     pub instance_id: Option<Uuid>,
     pub instance_entry: Option<String>,
@@ -360,7 +366,7 @@ pub struct ClientChallengeVariant {
 }
 
 /// RSCTF `ContainerInfoModel`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContainerInfoModel {
     pub id: String,
@@ -930,7 +936,9 @@ pub use cheat_compare::*;
 pub use cheat_evidence::*;
 pub use combined_scoreboard::*;
 pub use containers::*;
-pub(crate) use containers::{prepare_queued_image, repair_missing_legacy_image};
+pub(crate) use containers::{
+    prepare_queued_image, repair_missing_legacy_image, sweep_container_operations,
+};
 use lookups::*;
 pub use participation_review::*;
 pub use play::*;

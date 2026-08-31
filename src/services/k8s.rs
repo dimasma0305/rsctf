@@ -778,6 +778,18 @@ impl ContainerManager for KubernetesContainerManager {
         .await
     }
 
+    async fn find_operation_runtime(&self, operation_id: &str) -> AppResult<Option<String>> {
+        orphans::find_operation_workload(
+            self.pods(),
+            self.services(),
+            self.network_policies(),
+            &self.scope,
+            operation_id,
+        )
+        .await
+        .map(|identity| identity.map(|identity| identity.name))
+    }
+
     async fn query(&self, id: &str) -> AppResult<ContainerStatus> {
         let pod = self.pods().get(id).await.map_err(|e| {
             if is_not_found(&e) {

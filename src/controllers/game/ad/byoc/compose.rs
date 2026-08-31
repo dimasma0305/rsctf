@@ -1,5 +1,6 @@
 //! Hardened Docker Compose documents for BYOC onboarding.
 
+use super::setup_script::{compose_scalar, safe_title};
 use super::*;
 
 pub(super) fn build_setup_compose(

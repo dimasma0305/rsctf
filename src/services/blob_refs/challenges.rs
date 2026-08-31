@@ -11,10 +11,9 @@ use std::collections::BTreeSet;
 use sqlx::{Postgres, Transaction};
 
 use crate::storage::{BlobStorage, StoredBlob};
-use crate::utils::codec::sha256_hex;
 use crate::utils::error::{AppError, AppResult};
 
-use super::{acquire_locked, database_error, lock_hash, purge_if_unreferenced, release_locked};
+use super::{database_error, lock_hash, purge_if_unreferenced, release_locked};
 
 const SELECT_ONE_SQL: &str = r#"
     SELECT original_archive_blob_path, ad_checker_image
@@ -46,8 +45,8 @@ const DELETE_GAME_SQL: &str = r#"
 type ArtifactRow = (Option<String>, Option<String>);
 
 /// Store (or clear) one challenge source archive while atomically swapping the
-/// owning row and releasing its previous logical reference. The object write
-/// occurs under the same hash fences as deletion. A post-commit purge handles
+/// owning row and releasing its previous logical reference. Immutable bytes
+/// are staged before the short owner transaction; a post-commit purge handles
 /// the old zero-reference tombstone without reopening the owner/refcount race.
 pub async fn store_and_replace_challenge_archive(
     pool: &sqlx::PgPool,
@@ -55,7 +54,22 @@ pub async fn store_and_replace_challenge_archive(
     challenge_id: i32,
     archive: Option<(&str, &[u8])>,
 ) -> AppResult<Option<StoredBlob>> {
-    let expected_hash = archive.map(|(_, bytes)| sha256_hex(bytes));
+    let staged = match archive {
+        Some((name, bytes)) => Some(
+            super::stage_blob(
+                pool,
+                storage,
+                uuid::Uuid::new_v4(),
+                &format!("challenge-archive:{challenge_id}"),
+                None,
+                name,
+                bytes,
+            )
+            .await?,
+        ),
+        None => None,
+    };
+    let expected_hash = staged.as_ref().map(|stage| stage.blob.hash.clone());
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(database_error)?;
@@ -85,17 +99,9 @@ pub async fn store_and_replace_challenge_archive(
                 .map_err(database_error)?;
         }
 
-        let stored = if let Some((name, bytes)) = archive {
-            let blob = storage.store(name, bytes).await?;
-            if Some(blob.hash.as_str()) != expected_hash.as_deref() {
-                return Err(AppError::internal(
-                    "blob storage returned a hash that does not match its content",
-                ));
-            }
-            acquire_locked(&mut transaction, &blob.hash, name, blob.size)
-                .await
-                .map_err(database_error)?;
-            Some(blob)
+        let stored = if let Some(stage) = staged.as_ref() {
+            super::publish_staged_blob(&mut transaction, stage).await?;
+            Some(stage.blob.clone())
         } else {
             None
         };
@@ -138,18 +144,21 @@ pub async fn store_and_replace_challenge_archive(
         Ok(result) => result,
         Err(error) => {
             let _ = transaction.rollback().await;
-            if let Some(hash) = expected_hash.as_deref() {
-                if let Err(cleanup_error) = purge_if_unreferenced(pool, storage, hash).await {
-                    tracing::warn!(%cleanup_error, %hash, "failed challenge archive cleanup deferred");
+            if let Some(stage) = staged.as_ref() {
+                if let Err(cleanup_error) =
+                    super::discard_unpublished_stage(pool, storage, stage).await
+                {
+                    tracing::warn!(%cleanup_error, hash = %stage.blob.hash, "failed challenge archive cleanup deferred");
                 }
             }
             return Err(error);
         }
     };
     if let Err(error) = transaction.commit().await.map_err(database_error) {
-        if let Some(hash) = expected_hash.as_deref() {
-            if let Err(cleanup_error) = purge_if_unreferenced(pool, storage, hash).await {
-                tracing::warn!(%cleanup_error, %hash, "uncertain challenge archive cleanup deferred");
+        if let Some(stage) = staged.as_ref() {
+            if let Err(cleanup_error) = super::discard_unpublished_stage(pool, storage, stage).await
+            {
+                tracing::warn!(%cleanup_error, hash = %stage.blob.hash, "uncertain challenge archive cleanup deferred");
             }
         }
         return Err(error);
@@ -487,6 +496,7 @@ mod tests {
             .connect(&database_url)
             .await
             .unwrap();
+        crate::services::blob_refs::test_support::install_operation_tables(&pool).await;
         let storage = CountingStorage::default();
         let result = delete_game_challenges(&pool, &storage, 7).await.unwrap();
         assert_eq!(result.deleted, 2);

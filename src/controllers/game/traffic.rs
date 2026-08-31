@@ -1,41 +1,10 @@
 //! Traffic-capture serving: pcap listing/download/flows.
 use super::*;
 use base64::Engine as _;
-use std::io::Read;
 
-// ---------------------------------------------------------------------------
-// Traffic capture metadata and pcap serving for the singleton capture worker.
-// ---------------------------------------------------------------------------
-
-const MAX_CAPTURE_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
-const FLOW_FILTER_SLOTS: usize = 2;
-static CAPTURE_ARCHIVE_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
-static FLOW_FILTER_CAPACITY: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    std::sync::LazyLock::new(|| {
-        std::sync::Arc::new(tokio::sync::Semaphore::new(FLOW_FILTER_SLOTS))
-    });
-
-async fn spawn_blocking_with_permit<T, F>(
-    permit: tokio::sync::OwnedSemaphorePermit,
-    work: F,
-) -> Result<T, tokio::task::JoinError>
-where
-    T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
-{
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        work()
-    })
-    .await
-}
-
-/// `GET /api/game/games/{id}/captures`
-/// Root dir for per-(challenge, participation) pcaps:
-/// `{storage_root}/capture/{challengeId}/{participationId}/{name}.pcap`. This is
-/// where a live NIC capture (`services::traffic::capture_live`) writes; the
-/// endpoints below serve whatever is present, independent of how it got there.
+#[path = "traffic_archive.rs"]
+mod archive;
+pub use archive::get_all_traffic;
 fn capture_root(st: &SharedState) -> std::path::PathBuf {
     std::path::PathBuf::from(&st.config.storage_root).join("capture")
 }
@@ -327,88 +296,6 @@ pub async fn traffic_files_page(
 }
 
 /// `GET /api/game/captures/{challengeId}/{partId}/all` — zip of the pcaps.
-pub async fn get_all_traffic(
-    State(st): State<SharedState>,
-    _user: MonitorUser,
-    Path((cid, pid)): Path<(i32, i32)>,
-) -> AppResult<Response> {
-    let root = capture_root(&st);
-    let permit = CAPTURE_ARCHIVE_SLOTS
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| AppError::unavailable("Capture archive capacity is busy; retry shortly"))?;
-    let names =
-        crate::services::traffic::inventory::archive_file_names(st.pg(), &root, cid, pid).await?;
-    let dir = root.join(cid.to_string()).join(pid.to_string());
-    let buf = spawn_blocking_with_permit(permit, move || -> AppResult<Vec<u8>> {
-        if names.is_empty() {
-            return Err(AppError::not_found("No captures for this participation"));
-        }
-        let files = names
-            .into_iter()
-            .map(|name| {
-                let path = dir.join(&name);
-                let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
-                    AppError::internal(format!("capture metadata {}: {error}", path.display()))
-                })?;
-                if metadata.file_type().is_symlink() || !metadata.is_file() {
-                    return Err(AppError::internal(format!(
-                        "capture archive entry is not a regular file: {}",
-                        path.display()
-                    )));
-                }
-                Ok((name, path, metadata.len()))
-            })
-            .collect::<AppResult<Vec<_>>>()?;
-        let declared_total = files
-            .iter()
-            .try_fold(0u64, |total, (_, _, size)| total.checked_add(*size));
-        if declared_total.is_none_or(|total| total > MAX_CAPTURE_ARCHIVE_BYTES) {
-            return Err(AppError::bad_request(
-                "Captures are too large to archive; download them individually",
-            ));
-        }
-
-        let mut buf = Vec::new();
-        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-        let opts: zip::write::FileOptions<()> =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
-        let mut written = 0u64;
-        for (name, path, _) in files {
-            zip.start_file(name, opts)
-                .map_err(|err| AppError::internal(format!("zip: {err}")))?;
-            let file = std::fs::File::open(path)
-                .map_err(|error| AppError::internal(format!("capture open: {error}")))?;
-            let remaining = MAX_CAPTURE_ARCHIVE_BYTES.saturating_sub(written);
-            let copied = std::io::copy(&mut file.take(remaining + 1), &mut zip)
-                .map_err(|error| AppError::internal(format!("zip: {error}")))?;
-            if copied > remaining {
-                return Err(AppError::bad_request(
-                    "Captures grew beyond the archive size limit",
-                ));
-            }
-            written += copied;
-        }
-        zip.finish()
-            .map_err(|err| AppError::internal(format!("zip: {err}")))?;
-        Ok(buf)
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("capture archive task failed: {error}")))??;
-    Ok((
-        [
-            (header::CONTENT_TYPE, "application/zip".to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"captures_{cid}_{pid}.zip\""),
-            ),
-        ],
-        buf,
-    )
-        .into_response())
-}
-
-/// `DELETE /api/game/captures/{challengeId}/{partId}/all`
 pub async fn delete_all_traffic(
     State(st): State<SharedState>,
     _user: MonitorUser,
@@ -638,44 +525,6 @@ pub async fn traffic_flow_detail(
     Ok(RequestResponse::ok(detail))
 }
 
-#[cfg(test)]
-mod cancellation_tests {
-    use super::spawn_blocking_with_permit;
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    #[tokio::test]
-    async fn blocking_work_retains_admission_after_waiter_cancellation() {
-        let gate = Arc::new(tokio::sync::Semaphore::new(1));
-        let permit = gate.clone().acquire_owned().await.unwrap();
-        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
-        let waiter = tokio::spawn(spawn_blocking_with_permit(permit, move || {
-            let _ = started_tx.send(());
-            let _ = finish_rx.recv();
-        }));
-
-        started_rx.await.unwrap();
-        waiter.abort();
-        let _ = waiter.await;
-        assert!(gate.clone().try_acquire_owned().is_err());
-
-        finish_tx.send(()).unwrap();
-        let released = tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                if let Ok(permit) = gate.clone().try_acquire_owned() {
-                    break permit;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("blocking work retained the permit after it completed");
-        drop(released);
-    }
-}
-
-#[cfg(test)]
 mod flow_contract_tests {
     use super::*;
 

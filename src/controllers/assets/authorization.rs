@@ -1,4 +1,3 @@
-use std::net::Ipv4Addr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -8,14 +7,25 @@ use uuid::Uuid;
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::CurrentUser;
-use crate::utils::enums::{ChallengeReviewStatus, GamePermission, ParticipationStatus, Role};
+use crate::utils::enums::{ChallengeReviewStatus, GamePermission, ParticipationStatus};
 use crate::utils::error::{AppError, AppResult};
+
+mod finalization;
+
+pub(super) use finalization::finalize_asset_download;
+#[cfg(test)]
+use finalization::{finalize_asset_download_on, PUBLIC_ASSET_FINAL_SQL};
+#[cfg(test)]
+pub(super) use finalization::{finalize_monitor_grant_for_test, finalize_public_grant_for_test};
 
 /// The user-independent half of attachment authorization. The short-lived
 /// generation key bounds candidate-discovery staleness while collapsing
 /// range-download herds to one SQL query per blob and replica. Every allowed
 /// class is re-proved after storage, so this cache is never the final gate.
 const ASSET_GATE_TTL: Duration = Duration::from_secs(2);
+const ASSET_GATE_GENERATION_TTL: Duration = Duration::from_secs(300);
+const MAX_ASSET_GATE_FILL_KEYS: usize = 128;
+const MAX_ASSET_GATE_TARGETS: usize = 128;
 
 static ASSET_GATE_SINGLE_FLIGHT: std::sync::LazyLock<
     crate::utils::single_flight::SingleFlight<Option<Bytes>>,
@@ -36,6 +46,13 @@ pub(super) enum AssetGate {
     Protected {
         file_size: Option<u64>,
         targets: Vec<AssetTarget>,
+    },
+    /// The content hash has more owners than the bounded anonymous discovery
+    /// cache may retain. Authorization is resolved with one user-bound,
+    /// set-based query instead of denying a legitimate participant or walking
+    /// owner rows serially.
+    ProtectedMany {
+        file_size: Option<u64>,
     },
     Private {
         file_size: Option<u64>,
@@ -76,6 +93,15 @@ pub(super) struct AuthorizedAsset {
     /// The handler must revalidate it after any storage delay and immediately
     /// before constructing a response.
     final_grant: AssetFinalGrant,
+}
+
+impl AuthorizedAsset {
+    /// A public grant was established by the bounded, short-lived gate fill.
+    /// An immutable 304 transfers no bytes and may use that cached grant; live
+    /// participant and monitor grants still need their exact final recheck.
+    pub(super) fn requires_conditional_revalidation(&self) -> bool {
+        !matches!(self.final_grant, AssetFinalGrant::Public { .. })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,6 +168,15 @@ fn delivery_for_gate(gate: &AssetGate) -> AuthorizedAsset {
                 final_grant: AssetFinalGrant::None,
             }
         }
+        AssetGate::ProtectedMany { file_size } => AuthorizedAsset {
+            // An overflow can mix immutable challenge attachments with
+            // team-secret flags/writeups. Use the strictest delivery policy
+            // and never issue a bearer URL.
+            cache_policy: AssetCachePolicy::PrivateNoStore,
+            file_size: *file_size,
+            signed_delivery_allowed: false,
+            final_grant: AssetFinalGrant::None,
+        },
         AssetGate::Private { file_size } => AuthorizedAsset {
             cache_policy: AssetCachePolicy::PrivateNoStore,
             file_size: *file_size,
@@ -203,6 +238,7 @@ SELECT m.is_public, m.file_size, t.game_id, t.source_team, t.challenge_id
   FROM meta m
   LEFT JOIN targets t ON TRUE
  ORDER BY t.game_id, t.source_team, t.challenge_id
+ LIMIT $2
 "#;
 
 fn valid_content_hash(hash: &str) -> bool {
@@ -216,8 +252,58 @@ fn asset_gate_window() -> u64 {
         .as_secs()
 }
 
-fn asset_gate_cache_key(hash: &str, window: u64) -> String {
-    format!("assetgate:{hash}:{window:016x}")
+fn asset_gate_generation_key(hash: &str) -> String {
+    format!("assetgate-generation:{hash}")
+}
+
+fn decode_generation(value: Option<&[u8]>) -> String {
+    value
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .filter(|value| value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .unwrap_or("0")
+        .to_string()
+}
+
+async fn asset_gate_generation(st: &SharedState, hash: &str) -> String {
+    let value = st.cache.get(&asset_gate_generation_key(hash)).await;
+    decode_generation(value.as_deref())
+}
+
+fn asset_gate_cache_key(hash: &str, generation: &str, window: u64) -> String {
+    format!("assetgate:{hash}:{generation}:{window:016x}")
+}
+
+/// Evict the bounded grant windows touched by an owner publication/revocation.
+/// Redis removes the shared entry; the adjacent windows also cap stale L1
+/// copies on other replicas at the one-second generation boundary.
+pub(crate) async fn invalidate_asset_gate(st: &SharedState, hash: &str) {
+    if !valid_content_hash(hash) {
+        return;
+    }
+    let old_generation = asset_gate_generation(st, hash).await;
+    let new_generation = Uuid::new_v4().simple().to_string();
+    // Publish the new generation before evicting old entries. A cache fill on
+    // another replica compares this token both before and after its query/set,
+    // so an invalidate-then-late-set race cannot resurrect the stale grant.
+    st.cache
+        .set(
+            &asset_gate_generation_key(hash),
+            new_generation.as_bytes(),
+            Some(ASSET_GATE_GENERATION_TTL),
+        )
+        .await;
+    let current = asset_gate_window();
+    for generation in [&old_generation, &new_generation] {
+        for window in [
+            current.saturating_sub(1),
+            current,
+            current.saturating_add(1),
+        ] {
+            st.cache
+                .remove(&asset_gate_cache_key(hash, generation, window))
+                .await;
+        }
+    }
 }
 
 fn decode_asset_gate(bytes: &[u8]) -> Option<AssetGate> {
@@ -231,6 +317,7 @@ pub(super) async fn query_asset_gate(pool: &sqlx::PgPool, hash: &str) -> AppResu
 
     let rows = sqlx::query_as::<_, AssetGateRow>(ASSET_GATE_SQL)
         .bind(hash)
+        .bind((MAX_ASSET_GATE_TARGETS + 1) as i64)
         .fetch_all(pool)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -240,6 +327,11 @@ pub(super) async fn query_asset_gate(pool: &sqlx::PgPool, hash: &str) -> AppResu
     let file_size = first.file_size.and_then(|size| u64::try_from(size).ok());
     if first.is_public {
         return Ok(AssetGate::Public { file_size });
+    }
+    if rows.len() > MAX_ASSET_GATE_TARGETS {
+        // Do not retain a caller-amplified owner vector. The participant path
+        // resolves one eligible relationship with a set-based query instead.
+        return Ok(AssetGate::ProtectedMany { file_size });
     }
 
     let targets = rows
@@ -264,7 +356,8 @@ async fn cached_asset_gate(st: &SharedState, hash: &str) -> AppResult<AssetGate>
         return Ok(AssetGate::Private { file_size: None });
     }
 
-    let key = asset_gate_cache_key(hash, asset_gate_window());
+    let generation = asset_gate_generation(st, hash).await;
+    let key = asset_gate_cache_key(hash, &generation, asset_gate_window());
     if let Some(bytes) = st.cache.get(&key).await {
         if let Some(gate) = decode_asset_gate(&bytes) {
             return Ok(gate);
@@ -274,12 +367,30 @@ async fn cached_asset_gate(st: &SharedState, hash: &str) -> AppResult<AssetGate>
     let state = st.clone();
     let fill_key = key.clone();
     let fill_hash = hash.to_string();
+    let fill_generation = generation;
     let encoded = ASSET_GATE_SINGLE_FLIGHT
-        .run(&key, move || async move {
+        .run_with_limit(
+            &key,
+            Duration::from_secs(15),
+            MAX_ASSET_GATE_FILL_KEYS,
+            move || async move {
+            if asset_gate_generation(&state, &fill_hash).await != fill_generation {
+                return None;
+            }
             if let Some(bytes) = state.cache.get(&fill_key).await {
                 if decode_asset_gate(&bytes).is_some() {
                     return Some(bytes);
                 }
+            }
+
+            // Charge only the coalesced leader. `run_with_limit` bounds local
+            // distinct keys before this closure starts; this deployment-wide
+            // budget bounds the authorization queries that actually follow.
+            if crate::middlewares::rate_limiter::admit_asset_gate_miss()
+                .await
+                .is_err()
+            {
+                return None;
             }
 
             let gate = match query_asset_gate(state.pg(), &fill_hash).await {
@@ -296,14 +407,27 @@ async fn cached_asset_gate(st: &SharedState, hash: &str) -> AppResult<AssetGate>
                     return None;
                 }
             };
+            if asset_gate_generation(&state, &fill_hash).await != fill_generation {
+                return None;
+            }
             state
                 .cache
                 .set(&fill_key, &bytes, Some(ASSET_GATE_TTL))
                 .await;
+            if asset_gate_generation(&state, &fill_hash).await != fill_generation {
+                state.cache.remove(&fill_key).await;
+                return None;
+            }
             Some(Bytes::from(bytes))
-        })
+            },
+        )
         .await
-        .ok_or_else(|| AppError::internal("asset authorization cache fill failed"))?;
+        .ok_or_else(|| {
+            AppError::overloaded(
+                "Asset authorization capacity is busy; retry in a moment",
+                1,
+            )
+        })?;
 
     decode_asset_gate(&encoded)
         .ok_or_else(|| AppError::internal("invalid cached asset authorization"))
@@ -314,6 +438,90 @@ struct HistoricalParticipationTarget {
     team_id: i32,
     participation_id: i32,
 }
+
+#[derive(sqlx::FromRow)]
+struct ManyOwnerTarget {
+    game_id: i32,
+    source_team: Option<i32>,
+    challenge_id: Option<i32>,
+    team_id: i32,
+    participation_id: i32,
+}
+
+const MANY_OWNER_AUTHORIZATION_SQL: &str = r#"
+WITH file AS MATERIALIZED (
+    SELECT id FROM "Files"
+     WHERE hash = $1 AND reference_count > 0
+     LIMIT 1
+), targets AS (
+    SELECT challenge.game_id, NULL::integer AS source_team,
+           challenge.id AS challenge_id
+      FROM file
+      JOIN "Attachments" attachment ON attachment.local_file_id = file.id
+      JOIN "GameChallenges" challenge ON challenge.attachment_id = attachment.id
+    UNION
+    SELECT participation.game_id, participation.team_id AS source_team,
+           instance.challenge_id
+      FROM file
+      JOIN "Attachments" attachment ON attachment.local_file_id = file.id
+      JOIN "FlagContexts" flag_context
+        ON flag_context.attachment_id = attachment.id
+      JOIN "GameInstances" instance ON instance.flag_id = flag_context.id
+      JOIN "Participations" participation
+        ON participation.id = instance.participation_id
+    UNION
+    SELECT participation.game_id, participation.team_id AS source_team,
+           NULL::integer AS challenge_id
+      FROM file
+      JOIN "Participations" participation ON participation.writeup_id = file.id
+)
+SELECT target.game_id, target.source_team, target.challenge_id,
+       participation.team_id, participation.id AS participation_id
+  FROM targets target
+  JOIN "UserParticipations" historical
+    ON historical.user_id = $2
+   AND historical.game_id = target.game_id
+   AND (target.source_team IS NULL OR historical.team_id = target.source_team)
+  JOIN "Participations" participation
+    ON participation.id = historical.participation_id
+   AND participation.game_id = historical.game_id
+   AND participation.team_id = historical.team_id
+  JOIN "Games" game ON game.id = participation.game_id
+  LEFT JOIN "GameChallenges" challenge
+    ON challenge.id = target.challenge_id
+   AND challenge.game_id = target.game_id
+  LEFT JOIN "Divisions" division
+    ON division.id = participation.division_id
+   AND division.game_id = participation.game_id
+  LEFT JOIN "DivisionChallengeConfigs" permission
+    ON permission.division_id = division.id
+   AND permission.challenge_id = challenge.id
+ WHERE participation.status = $3
+   AND game.deletion_pending = FALSE
+   AND (
+        (target.challenge_id IS NULL AND target.source_team IS NOT NULL)
+        OR (
+            target.challenge_id IS NOT NULL
+            AND challenge.id IS NOT NULL
+            AND challenge.is_enabled
+            AND challenge.deletion_pending = FALSE
+            AND challenge.review_status = $4
+        )
+   )
+   AND (
+        participation.division_id IS NULL
+        OR (
+            CASE
+                WHEN target.challenge_id IS NULL
+                    THEN COALESCE(division.default_permissions, 0)
+                ELSE COALESCE(permission.permissions, division.default_permissions, 0)
+            END & $5
+        ) = $5
+   )
+ ORDER BY target.game_id, target.source_team, target.challenge_id,
+          participation.id
+ LIMIT 1
+"#;
 
 #[derive(sqlx::FromRow)]
 struct AuthorizedTargetRow {
@@ -544,6 +752,74 @@ async fn authorize_participant_target(
     }))
 }
 
+/// Resolve a hash with more cached owners than the anonymous gate may retain.
+/// PostgreSQL selects at most one currently eligible relationship for this
+/// user; the exact stamped roster fence and content-owner relation are then
+/// revalidated using the normal final-grant path.
+async fn authorize_many_owner_asset(
+    pool: &sqlx::PgPool,
+    user: &CurrentUser,
+    content_hash: &str,
+) -> AppResult<Option<ParticipantTargetAuthorization>> {
+    let selected = sqlx::query_as::<_, ManyOwnerTarget>(MANY_OWNER_AUTHORIZATION_SQL)
+        .bind(content_hash)
+        .bind(user.id)
+        .bind(ParticipationStatus::Accepted as i16)
+        .bind(ChallengeReviewStatus::Active as i16)
+        .bind(GamePermission::VIEW_CHALLENGE)
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    let target = AssetTarget {
+        game_id: selected.game_id,
+        source_team: selected.source_team,
+        challenge_id: selected.challenge_id,
+    };
+    let Some(mut roster) = crate::services::live_roster::try_acquire_participation_fence(
+        pool,
+        user.id,
+        &user.security_stamp,
+        selected.game_id,
+        selected.team_id,
+        selected.participation_id,
+        true,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let row = load_authorized_target_on(
+        roster.transaction_mut(),
+        user.id,
+        selected.game_id,
+        selected.participation_id,
+        selected.team_id,
+        &target,
+        Some(content_hash),
+    )
+    .await?;
+    roster
+        .release()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+
+    Ok(row.map(|row| ParticipantTargetAuthorization {
+        grant: ProtectedAssetGrant {
+            user_id: user.id,
+            expected_security_stamp: user.security_stamp.clone(),
+            game_id: selected.game_id,
+            team_id: selected.team_id,
+            participation_id: selected.participation_id,
+            target,
+            content_hash: content_hash.to_string(),
+        },
+        vpn_access_required: row.vpn_access_required,
+    }))
+}
+
 #[cfg(test)]
 pub(super) async fn participant_can_download_target(
     pool: &sqlx::PgPool,
@@ -569,6 +845,17 @@ pub(super) async fn participant_grant_for_test(
             .await?
             .map(|authorization| authorization.grant),
     )
+}
+
+#[cfg(test)]
+pub(super) async fn participant_grant_for_many_test(
+    pool: &sqlx::PgPool,
+    user: &CurrentUser,
+    content_hash: &str,
+) -> AppResult<Option<ProtectedAssetGrant>> {
+    Ok(authorize_many_owner_asset(pool, user, content_hash)
+        .await?
+        .map(|authorization| authorization.grant))
 }
 
 #[cfg(test)]
@@ -650,350 +937,30 @@ pub(super) async fn authorize_asset_download(
             }
             Err(AppError::Forbidden)
         }
-    }
-}
-
-fn download_event_lock_key(target: &DownloadEventTarget) -> String {
-    format!(
-        "asset-download-event:{}:{}:{}",
-        target.game_id, target.team_id, target.challenge_id
-    )
-}
-
-async fn insert_download_event_on(
-    connection: &mut sqlx::PgConnection,
-    target: &DownloadEventTarget,
-    token: Option<&str>,
-) -> AppResult<Option<i32>> {
-    let challenge_id = target.challenge_id.to_string();
-    let event_id = sqlx::query_scalar(
-        r#"INSERT INTO "GameEvents"
-               (game_id, "Type", "values", publish_time_utc, user_id, team_id)
-           SELECT $1, $2, jsonb_build_array($3::text, $4::text, $5::text),
-                  $6, $7, $8
-            WHERE NOT EXISTS (
-                  SELECT 1
-                    FROM "GameEvents" existing
-                   WHERE existing.game_id = $1
-                     AND existing.team_id = $8
-                     AND existing."Type" = $2
-                     AND existing."values" ->> 0 = $3
-            )
-           RETURNING id"#,
-    )
-    .bind(target.game_id)
-    .bind(crate::utils::enums::EventType::Download as i16)
-    .bind(challenge_id)
-    .bind(&target.challenge_title)
-    .bind(token.unwrap_or(""))
-    .bind(target.observed_at_utc)
-    .bind(target.user_id)
-    .bind(target.team_id)
-    .fetch_optional(connection)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(event_id)
-}
-
-const PUBLIC_ASSET_FINAL_SQL: &str = r#"
-WITH public_user AS MATERIALIZED (
-    SELECT id FROM "AspNetUsers" WHERE avatar_hash = $1 FOR SHARE
-), public_team AS MATERIALIZED (
-    SELECT id FROM "Teams" WHERE avatar_hash = $1 FOR SHARE
-), public_game AS MATERIALIZED (
-    SELECT id FROM "Games" WHERE poster_hash = $1 FOR SHARE
-), public_config AS MATERIALIZED (
-    SELECT config_key
-      FROM "Configs"
-     WHERE config_key IN ('GlobalConfig:LogoHash', 'GlobalConfig:FaviconHash')
-       AND value = $1
-     FOR SHARE
-)
-SELECT EXISTS (SELECT 1 FROM public_user)
-    OR EXISTS (SELECT 1 FROM public_team)
-    OR EXISTS (SELECT 1 FROM public_game)
-    OR EXISTS (SELECT 1 FROM public_config)
-"#;
-
-async fn finalize_public_asset(pool: &sqlx::PgPool, content_hash: &str) -> AppResult<()> {
-    let mut transaction = pool
-        .begin()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let still_public = sqlx::query_scalar::<_, bool>(PUBLIC_ASSET_FINAL_SQL)
-        .bind(content_hash)
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    if !still_public {
-        transaction
-            .rollback()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        return Err(AppError::Forbidden);
-    }
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))
-}
-
-async fn finalize_monitor_asset(
-    pool: &sqlx::PgPool,
-    user_id: Uuid,
-    expected_security_stamp: &str,
-) -> AppResult<()> {
-    let mut transaction = pool
-        .begin()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let still_monitor = sqlx::query_scalar::<_, bool>(
-        r#"SELECT EXISTS (
-               SELECT 1
-                 FROM "AspNetUsers" account
-                WHERE account.id = $1
-                  AND account.security_stamp = $2
-                  AND account.role IN ($3, $4)
-                FOR SHARE OF account
-           )"#,
-    )
-    .bind(user_id)
-    .bind(expected_security_stamp)
-    .bind(Role::Monitor as i16)
-    .bind(Role::Admin as i16)
-    .fetch_one(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if !still_monitor {
-        transaction
-            .rollback()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        return Err(AppError::Forbidden);
-    }
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))
-}
-
-#[cfg(test)]
-pub(super) async fn finalize_public_grant_for_test(
-    pool: &sqlx::PgPool,
-    content_hash: &str,
-) -> AppResult<()> {
-    finalize_public_asset(pool, content_hash).await
-}
-
-#[cfg(test)]
-pub(super) async fn finalize_monitor_grant_for_test(
-    pool: &sqlx::PgPool,
-    user: &CurrentUser,
-) -> AppResult<()> {
-    finalize_monitor_asset(pool, user.id, &user.security_stamp).await
-}
-
-/// Finalize a prepared protected response. Storage work deliberately happens
-/// before this call. It reacquires the exact stamped roster fence, rechecks the
-/// mutable challenge/division policy, and commits the precisely attributed
-/// Download event before releasing the fence. The response body is streamed
-/// only after this transaction has committed, so no database guard is retained
-/// for the network lifetime.
-#[derive(Default)]
-struct FinalizedAssetDownload {
-    vpn_gate_active: bool,
-    event_id: Option<i32>,
-}
-
-async fn finalize_asset_download_on(
-    pool: &sqlx::PgPool,
-    authorization: &AuthorizedAsset,
-    source: Option<Ipv4Addr>,
-    token: Option<&str>,
-    record_download: bool,
-) -> AppResult<FinalizedAssetDownload> {
-    let grant = match &authorization.final_grant {
-        AssetFinalGrant::None => return Ok(FinalizedAssetDownload::default()),
-        AssetFinalGrant::Public { content_hash } => {
-            finalize_public_asset(pool, content_hash).await?;
-            return Ok(FinalizedAssetDownload::default());
-        }
-        AssetFinalGrant::Monitor {
-            user_id,
-            expected_security_stamp,
-        } => {
-            finalize_monitor_asset(pool, *user_id, expected_security_stamp).await?;
-            return Ok(FinalizedAssetDownload::default());
-        }
-        AssetFinalGrant::Protected(grant) => grant,
-    };
-    let Some(mut roster) = crate::services::live_roster::try_acquire_participation_fence(
-        pool,
-        grant.user_id,
-        &grant.expected_security_stamp,
-        grant.game_id,
-        grant.team_id,
-        grant.participation_id,
-        true,
-    )
-    .await?
-    else {
-        return Err(AppError::Forbidden);
-    };
-
-    let vpn_gate_active = crate::services::event_security::require_event_vpn_source_on(
-        roster.transaction_mut().as_mut(),
-        grant.game_id,
-        grant.user_id,
-        grant.participation_id,
-        source,
-    )
-    .await?;
-
-    let row = load_authorized_target_on(
-        roster.transaction_mut(),
-        grant.user_id,
-        grant.game_id,
-        grant.participation_id,
-        grant.team_id,
-        &grant.target,
-        Some(&grant.content_hash),
-    )
-    .await?;
-    let Some(row) = row else {
-        roster
-            .release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        return Err(AppError::Forbidden);
-    };
-
-    let mut event_id = None;
-    if record_download {
-        if let Some((challenge_id, challenge_title)) =
-            grant.target.challenge_id.zip(row.challenge_title)
-        {
-            let event = DownloadEventTarget {
-                game_id: grant.game_id,
-                team_id: grant.team_id,
-                challenge_id,
-                challenge_title,
-                user_id: grant.user_id,
-                observed_at_utc: row.observed_at_utc,
+        AssetGate::ProtectedMany { .. } => {
+            let Some(user) = user else {
+                return Err(AppError::Forbidden);
             };
-            roster
-                .acquire_additional(&download_event_lock_key(&event))
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
-            event_id = insert_download_event_on(roster.transaction_mut(), &event, token).await?;
+            if user.is_monitor() {
+                authorization.final_grant = AssetFinalGrant::Monitor {
+                    user_id: user.id,
+                    expected_security_stamp: user.security_stamp.clone(),
+                };
+                return Ok(authorization);
+            }
+            let Some(target_authorization) =
+                authorize_many_owner_asset(st.pg(), user, hash).await?
+            else {
+                return Err(AppError::Forbidden);
+            };
+            if target_authorization.vpn_access_required {
+                authorization.signed_delivery_allowed = false;
+            }
+            authorization.final_grant = AssetFinalGrant::Protected(target_authorization.grant);
+            Ok(authorization)
         }
     }
-
-    roster
-        .release()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(FinalizedAssetDownload {
-        vpn_gate_active,
-        event_id,
-    })
-}
-
-pub(super) async fn finalize_asset_download(
-    st: &SharedState,
-    authorization: &AuthorizedAsset,
-    source: Option<Ipv4Addr>,
-    token: Option<&str>,
-    record_download: bool,
-) -> AppResult<bool> {
-    let outcome =
-        finalize_asset_download_on(st.pg(), authorization, source, token, record_download).await?;
-    if let Some(event_id) = outcome.event_id {
-        if let Err(error) =
-            crate::services::game_event_feed::publish_committed(st, &[event_id]).await
-        {
-            tracing::warn!(event_id, %error, "asset download event publish failed");
-        }
-    }
-    Ok(outcome.vpn_gate_active)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn static_attachments_are_privately_cacheable_but_team_files_are_not() {
-        let static_gate = AssetGate::Protected {
-            file_size: Some(42),
-            targets: vec![AssetTarget {
-                game_id: 1,
-                source_team: None,
-                challenge_id: Some(2),
-            }],
-        };
-        let sensitive_gate = AssetGate::Protected {
-            file_size: Some(42),
-            targets: vec![AssetTarget {
-                game_id: 1,
-                source_team: Some(3),
-                challenge_id: Some(2),
-            }],
-        };
-
-        let static_delivery = delivery_for_gate(&static_gate);
-        assert_eq!(
-            static_delivery.cache_policy,
-            AssetCachePolicy::PrivateImmutable
-        );
-        assert!(static_delivery.signed_delivery_allowed);
-
-        let sensitive_delivery = delivery_for_gate(&sensitive_gate);
-        assert_eq!(
-            sensitive_delivery.cache_policy,
-            AssetCachePolicy::PrivateNoStore
-        );
-        assert!(!sensitive_delivery.signed_delivery_allowed);
-
-        let private_delivery = delivery_for_gate(&AssetGate::Private {
-            file_size: Some(42),
-        });
-        assert_eq!(
-            private_delivery.cache_policy,
-            AssetCachePolicy::PrivateNoStore
-        );
-        assert!(!private_delivery.signed_delivery_allowed);
-
-        let public_delivery = delivery_for_gate(&AssetGate::Public {
-            file_size: Some(42),
-        });
-        assert!(
-            matches!(public_delivery.final_grant, AssetFinalGrant::None),
-            "public downloads must never become participant anti-cheat evidence"
-        );
-    }
-
-    #[test]
-    fn malformed_hashes_never_enter_the_shared_cache_namespace() {
-        assert!(valid_content_hash(&"a".repeat(64)));
-        assert!(!valid_content_hash("../secrets"));
-        assert!(!valid_content_hash(&"g".repeat(64)));
-    }
-
-    #[test]
-    fn public_finalization_reproves_every_public_hash_relation() {
-        for relation in [
-            r#""AspNetUsers" WHERE avatar_hash = $1"#,
-            r#""Teams" WHERE avatar_hash = $1"#,
-            r#""Games" WHERE poster_hash = $1"#,
-            "GlobalConfig:LogoHash",
-            "GlobalConfig:FaviconHash",
-        ] {
-            assert!(
-                PUBLIC_ASSET_FINAL_SQL.contains(relation),
-                "missing public relation: {relation}"
-            );
-        }
-        assert!(PUBLIC_ASSET_FINAL_SQL.matches("FOR SHARE").count() >= 4);
-    }
-}
+mod tests;

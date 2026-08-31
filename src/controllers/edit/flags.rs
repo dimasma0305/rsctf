@@ -282,16 +282,100 @@ async fn renew_flag_import(
     Ok(renewed == 1)
 }
 
-async fn cleanup_staged_flag_attachments(st: &SharedState, flags: &[(String, Option<i32>)]) {
-    for attachment_id in flags.iter().filter_map(|(_, attachment_id)| *attachment_id) {
-        if let Err(error) = delete_attachment(st, attachment_id).await {
-            tracing::warn!(
-                %error,
-                attachment_id,
-                "failed to clean an unpublished flag attachment"
-            );
+struct PreparedFlag {
+    flag: String,
+    file_type: FileType,
+    remote_url: Option<String>,
+    upload_stage: Option<crate::services::blob_refs::StagedBlob>,
+}
+
+pub(super) struct FlagRemoval {
+    pub(super) revoked_hash: Option<String>,
+    pub(super) deleted_hash: Option<String>,
+}
+
+async fn prepare_flag(
+    st: &SharedState,
+    user_id: Uuid,
+    model: FlagCreateModel,
+) -> AppResult<PreparedFlag> {
+    let file_type = model.attachment_type.unwrap_or(FileType::None);
+    let remote_url = match file_type {
+        FileType::Remote => Some(challenges::validate_remote_attachment_url(
+            model.remote_url.as_deref().unwrap_or_default(),
+        )?),
+        _ => None,
+    };
+    let upload_stage = match (file_type, model.upload_id) {
+        (FileType::Local, Some(upload_id)) => {
+            let hash = model
+                .file_hash
+                .as_deref()
+                .ok_or_else(|| AppError::bad_request("A local attachment requires fileHash"))?;
+            Some(
+                crate::services::blob_refs::load_ready_upload_stage(
+                    st.pg(),
+                    upload_id,
+                    user_id,
+                    hash,
+                )
+                .await?,
+            )
         }
+        (FileType::Local, None) => {
+            return Err(AppError::bad_request(
+                "A local flag attachment requires its uploadId",
+            ));
+        }
+        (_, Some(_)) => {
+            return Err(AppError::bad_request(
+                "An uploadId requires a local attachment",
+            ));
+        }
+        (_, None) => None,
+    };
+    Ok(PreparedFlag {
+        flag: model.flag,
+        file_type,
+        remote_url,
+        upload_stage,
+    })
+}
+
+async fn insert_flag_attachment_locked(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    prepared: &PreparedFlag,
+) -> AppResult<Option<i32>> {
+    if prepared.file_type == FileType::None {
+        return Ok(None);
     }
+    let id = sqlx::query_scalar::<_, i32>(
+        r#"INSERT INTO "Attachments" ("Type", remote_url, local_file_id)
+           VALUES ($1, $2, NULL) RETURNING id"#,
+    )
+    .bind(prepared.file_type as i16)
+    .bind(prepared.remote_url.as_deref())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if prepared.file_type == FileType::Local {
+        let stage = prepared.upload_stage.as_ref().ok_or_else(|| {
+            AppError::bad_request("A local flag attachment requires its uploadId")
+        })?;
+        let local_file_id = crate::services::blob_refs::publish_staged_blob_for_owner(
+            transaction,
+            stage,
+            &format!("attachment:{id}"),
+        )
+        .await?;
+        sqlx::query(r#"UPDATE "Attachments" SET local_file_id = $2 WHERE id = $1"#)
+            .bind(id)
+            .bind(local_file_id)
+            .execute(&mut **transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    Ok(Some(id))
 }
 
 fn validate_authored_flags(models: &[FlagCreateModel]) -> AppResult<()> {
@@ -471,74 +555,59 @@ pub async fn add_flags(
         return Err(error);
     }
 
-    // Attachment creation does not alter grading policy. Materialize it before
-    // taking the flag-policy lock so submissions are not held up by blob lookup.
+    // Storage already completed under durable upload stages. Resolve their
+    // immutable metadata before taking policy locks; the logical references,
+    // attachment rows, and flags publish together below.
     let mut flags = Vec::with_capacity(models.len());
     for m in models {
         match renew_flag_import(st.pg(), c_id, request.operation_id, lease_token).await {
             Ok(true) => {}
             Ok(false) => {
-                cleanup_staged_flag_attachments(&st, &flags).await;
                 return Err(AppError::conflict(
                     "This flag import was reclaimed by another request",
                 ));
             }
+            Err(error) => return Err(error),
+        }
+        match prepare_flag(&st, user.id, m).await {
+            Ok(prepared) => flags.push(prepared),
             Err(error) => {
-                cleanup_staged_flag_attachments(&st, &flags).await;
+                abandon_flag_import(st.pg(), c_id, request.operation_id, lease_token).await;
                 return Err(error);
             }
         }
-        // Each flag can carry its own hand-out attachment (RSCTF AddFlags).
-        let attachment_id =
-            match build_attachment(&st, m.attachment_type, m.file_hash, m.remote_url).await {
-                Ok(attachment_id) => attachment_id,
-                Err(error) => {
-                    cleanup_staged_flag_attachments(&st, &flags).await;
-                    abandon_flag_import(st.pg(), c_id, request.operation_id, lease_token).await;
-                    return Err(error);
-                }
-            };
-        flags.push((m.flag, attachment_id));
     }
 
     // Global order is game-control -> challenge definition -> JFLG. The game
     // lock prevents an A&D/KotH first round from crossing the policy check;
     // JFLG provides the corresponding first-Jeopardy-solve fence.
-    let game_control = match crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await {
+    let mut game_control = match crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await
+    {
         Ok(lock) => lock,
         Err(error) => {
-            cleanup_staged_flag_attachments(&st, &flags).await;
             abandon_flag_import(st.pg(), c_id, request.operation_id, lease_token).await;
             return Err(error);
         }
     };
-    let mut definition_lock = match crate::services::challenge_workloads::acquire_definition_lock(
-        st.pg(),
-        id,
-        c_id,
+    if let Err(error) = crate::utils::single_flight::acquire_transaction_advisory_lock(
+        game_control.transaction_mut(),
+        &crate::services::challenge_workloads::definition_lock_key(id, c_id),
     )
     .await
     {
-        Ok(lock) => lock,
-        Err(error) => {
-            drop(game_control);
-            cleanup_staged_flag_attachments(&st, &flags).await;
-            abandon_flag_import(st.pg(), c_id, request.operation_id, lease_token).await;
-            return Err(AppError::internal(error.to_string()));
-        }
-    };
+        drop(game_control);
+        abandon_flag_import(st.pg(), c_id, request.operation_id, lease_token).await;
+        return Err(AppError::internal(error.to_string()));
+    }
     let mutation: AppResult<FlagImportMutation> = async {
         // Deletion may have won after the intentionally lock-free attachment
         // staging. Recheck both durable fences in this retained transaction so
         // their key-share row locks survive until every flag insert commits.
-        challenges::reject_pending_mutation(&mut **definition_lock.transaction_mut(), id, c_id)
+        challenges::reject_pending_mutation(&mut **game_control.transaction_mut(), id, c_id)
             .await?;
-        ensure_flag_policy_mutable_locked(definition_lock.transaction_mut(), id, c_id).await?;
-        crate::utils::scoring::lock_jeopardy_flags_exclusive(
-            definition_lock.transaction_mut(),
-            c_id,
-        )
-        .await?;
+        ensure_flag_policy_mutable_locked(game_control.transaction_mut(), id, c_id).await?;
+        crate::utils::scoring::lock_jeopardy_flags_exclusive(game_control.transaction_mut(), c_id)
+            .await?;
 
         // Attachment staging can outlive the five-minute recovery lease. Two
         // reclaimers may therefore arrive at this lock with the same identity;
@@ -552,7 +621,7 @@ pub async fn add_flags(
         )
         .bind(c_id)
         .bind(request.operation_id)
-        .fetch_one(&mut **definition_lock.transaction_mut())
+        .fetch_one(&mut **game_control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         if operation.0 == 1 {
@@ -572,7 +641,7 @@ pub async fn add_flags(
                 WHERE challenge_id = $1 AND is_occupied = FALSE"#,
         )
         .bind(c_id)
-        .fetch_one(&mut **definition_lock.transaction_mut())
+        .fetch_one(&mut **game_control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         if current_count > MAX_FLAGS_PER_CHALLENGE {
@@ -582,46 +651,66 @@ pub async fn add_flags(
         }
         let values = flags
             .iter()
-            .map(|(flag, _)| flag.clone())
+            .map(|prepared| prepared.flag.clone())
             .collect::<Vec<_>>();
-        let attachment_ids = flags
-            .iter()
-            .map(|(_, attachment_id)| *attachment_id)
-            .collect::<Vec<_>>();
-        let inserted = sqlx::query_scalar::<_, String>(
-            r#"WITH desired AS MATERIALIZED (
-                   SELECT input.flag, input.attachment_id
-                     FROM UNNEST($2::text[], $3::integer[])
-                          AS input(flag, attachment_id)
-               ), inserted AS (
-                   INSERT INTO "FlagContexts"
+        let missing_count = sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(*)::bigint
+                 FROM UNNEST($2::text[]) AS desired(flag)
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM "FlagContexts" existing
+                     WHERE existing.challenge_id = $1
+                       AND existing.flag = desired.flag
+                )"#,
+        )
+        .bind(c_id)
+        .bind(&values)
+        .fetch_one(&mut **game_control.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if current_count.saturating_add(missing_count) > MAX_FLAGS_PER_CHALLENGE {
+            return Err(AppError::payload_too_large(format!(
+                "A challenge may contain at most {MAX_FLAGS_PER_CHALLENGE} flags"
+            )));
+        }
+
+        let mut inserted_set = std::collections::HashSet::with_capacity(flags.len());
+        for prepared in &flags {
+            // Reserve the canonical flag identity before publishing its staged
+            // attachment. A duplicate therefore cannot create an unreferenced
+            // attachment row or consume the caller's durable upload stage.
+            let flag_id = sqlx::query_scalar::<_, i32>(
+                r#"INSERT INTO "FlagContexts"
                        (flag, is_occupied, challenge_id, attachment_id)
-                   SELECT desired.flag, FALSE, $1, desired.attachment_id
-                     FROM desired
-                   WHERE NOT EXISTS (
+                   SELECT $1, FALSE, $2, NULL
+                    WHERE NOT EXISTS (
                         SELECT 1 FROM "FlagContexts" existing
-                         WHERE existing.challenge_id = $1
-                           AND existing.flag = desired.flag
+                         WHERE existing.challenge_id = $2
+                           AND existing.flag = $1
                     )
                    ON CONFLICT (challenge_id, flag)
                    WHERE challenge_id IS NOT NULL AND canonical_identity_enforced
                    DO NOTHING
-                   RETURNING flag
-               ) SELECT flag FROM inserted"#,
-        )
-        .bind(c_id)
-        .bind(&values)
-        .bind(&attachment_ids)
-        .fetch_all(&mut **definition_lock.transaction_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        let inserted_set = inserted
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        if current_count + inserted_set.len() as i64 > MAX_FLAGS_PER_CHALLENGE {
-            return Err(AppError::payload_too_large(format!(
-                "A challenge may contain at most {MAX_FLAGS_PER_CHALLENGE} flags"
-            )));
+                   RETURNING id"#,
+            )
+            .bind(&prepared.flag)
+            .bind(c_id)
+            .fetch_optional(&mut **game_control.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+            let Some(flag_id) = flag_id else {
+                continue;
+            };
+            let attachment_id =
+                insert_flag_attachment_locked(game_control.transaction_mut(), prepared).await?;
+            if let Some(attachment_id) = attachment_id {
+                sqlx::query(r#"UPDATE "FlagContexts" SET attachment_id = $2 WHERE id = $1"#)
+                    .bind(flag_id)
+                    .bind(attachment_id)
+                    .execute(&mut **game_control.transaction_mut())
+                    .await
+                    .map_err(|error| AppError::internal(error.to_string()))?;
+            }
+            inserted_set.insert(prepared.flag.clone());
         }
         let inserted_count = inserted_set.len() as i32;
         let duplicate_count = body_duplicates + flags.len() as i32 - inserted_count;
@@ -649,7 +738,7 @@ pub async fn add_flags(
         .bind(inserted_count)
         .bind(duplicate_count)
         .bind(lease_token)
-        .fetch_one(&mut **definition_lock.transaction_mut())
+        .fetch_one(&mut **game_control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         if completion != 1 {
@@ -671,7 +760,7 @@ pub async fn add_flags(
                 WHERE operation.challenge_id = expired.challenge_id
                   AND operation.operation_id = expired.operation_id"#,
         )
-        .execute(&mut **definition_lock.transaction_mut())
+        .execute(&mut **game_control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         Ok(FlagImportMutation::Applied {
@@ -684,26 +773,27 @@ pub async fn add_flags(
     let mutation = match mutation {
         Ok(result) => result,
         Err(error) => {
-            drop(definition_lock);
             drop(game_control);
-            cleanup_staged_flag_attachments(&st, &flags).await;
             abandon_flag_import(st.pg(), c_id, request.operation_id, lease_token).await;
             return Err(error);
         }
     };
-    if let Err(error) = definition_lock.release().await {
-        drop(game_control);
+    if let Err(error) = game_control.release().await {
         // Commit acknowledgement is ambiguous. Keep staged rows intact so a
         // committed flag never loses its hand-out; the durable operation and
         // ordinary orphan reconciler make a retry/recovery safe.
         return Err(AppError::internal(error.to_string()));
     }
-    if let Err(error) = game_control.release().await {
-        tracing::warn!(%error, id, c_id, "flag-policy game lock release failed after commit");
+    for hash in flags.iter().filter_map(|prepared| {
+        inserted_set_contains(&mutation, &prepared.flag)
+            .then_some(prepared.upload_stage.as_ref())
+            .flatten()
+            .map(|stage| stage.blob.hash.as_str())
+    }) {
+        crate::controllers::assets::invalidate_asset_gate(&st, hash).await;
     }
     let (duplicates, inserted_set) = match mutation {
         FlagImportMutation::Replayed(result) => {
-            cleanup_staged_flag_attachments(&st, &flags).await;
             return Ok(RequestResponse::ok(result));
         }
         FlagImportMutation::Applied {
@@ -711,16 +801,17 @@ pub async fn add_flags(
             inserted,
         } => (duplicates, inserted),
     };
-    let duplicate_attachments = flags
-        .iter()
-        .filter(|(flag, _)| !inserted_set.contains(flag))
-        .cloned()
-        .collect::<Vec<_>>();
-    cleanup_staged_flag_attachments(&st, &duplicate_attachments).await;
     Ok(RequestResponse::ok(FlagImportResult {
         inserted: inserted_set.len() as i32,
         duplicates,
     }))
+}
+
+fn inserted_set_contains(mutation: &FlagImportMutation, flag: &str) -> bool {
+    matches!(
+        mutation,
+        FlagImportMutation::Applied { inserted, .. } if inserted.contains(flag)
+    )
 }
 
 pub(crate) async fn load_flags(st: &SharedState, c_id: i32) -> AppResult<Vec<FlagInfoModel>> {
@@ -810,6 +901,7 @@ mod policy_tests {
             flag,
             attachment_type: None,
             file_hash: None,
+            upload_id: None,
             remote_url: None,
         }
     }
@@ -912,31 +1004,30 @@ pub async fn remove_flag(
     Path((id, c_id, f_id)): Path<(i32, i32, i32)>,
 ) -> AppResult<RequestResponse<String>> {
     manager_or_admin(&st, &user, id).await?;
-    let game_control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
-    let mut definition_lock =
-        crate::services::challenge_workloads::acquire_definition_lock(st.pg(), id, c_id).await?;
-    let removal = match remove_flag_locked(definition_lock.transaction_mut(), id, c_id, f_id).await
-    {
+    let mut game_control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    crate::utils::single_flight::acquire_transaction_advisory_lock(
+        game_control.transaction_mut(),
+        &crate::services::challenge_workloads::definition_lock_key(id, c_id),
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let removal = match remove_flag_locked(game_control.transaction_mut(), id, c_id, f_id).await {
         Ok(removal) => removal,
         Err(error) => {
-            if let Err(rollback_error) = definition_lock.rollback().await {
-                tracing::warn!(%rollback_error, f_id, "flag removal rollback failed");
-            }
             drop(game_control);
             return Err(error);
         }
     };
-    definition_lock
-        .release()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
     if let Err(error) = game_control.release().await {
-        tracing::warn!(%error, id, c_id, f_id, "flag-policy game lock release failed after commit");
+        return Err(AppError::internal(error.to_string()));
     }
-    let Some(deleted_hash) = removal else {
+    let Some(removal) = removal else {
         return Ok(RequestResponse::ok("NotFound".to_string()));
     };
-    if let Some(hash) = deleted_hash {
+    if let Some(hash) = removal.revoked_hash.as_deref() {
+        crate::controllers::assets::invalidate_asset_gate(&st, hash).await;
+    }
+    if let Some(hash) = removal.deleted_hash {
         if let Err(error) =
             crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
                 .await
@@ -955,7 +1046,7 @@ pub(super) async fn remove_flag_locked(
     game_id: i32,
     challenge_id: i32,
     flag_id: i32,
-) -> AppResult<Option<Option<String>>> {
+) -> AppResult<Option<FlagRemoval>> {
     challenges::reject_pending_mutation(&mut **transaction, game_id, challenge_id).await?;
     ensure_flag_policy_mutable_locked(transaction, game_id, challenge_id).await?;
     crate::utils::scoring::lock_jeopardy_flags_exclusive(transaction, challenge_id).await?;
@@ -976,13 +1067,29 @@ pub(super) async fn remove_flag_locked(
     let Some(attachment_id) = attachment_id else {
         return Ok(None);
     };
-    let deleted_hash = match attachment_id {
+    let (revoked_hash, deleted_hash) = match attachment_id {
         Some(attachment_id) => {
-            crate::services::blob_refs::delete_attachment_locked(transaction, attachment_id).await?
+            let revoked_hash = sqlx::query_scalar::<_, String>(
+                r#"SELECT file.hash
+                     FROM "Attachments" attachment
+                     JOIN "Files" file ON file.id = attachment.local_file_id
+                    WHERE attachment.id = $1"#,
+            )
+            .bind(attachment_id)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+            let deleted_hash =
+                crate::services::blob_refs::delete_attachment_locked(transaction, attachment_id)
+                    .await?;
+            (revoked_hash, deleted_hash)
         }
-        None => None,
+        None => (None, None),
     };
-    Ok(Some(deleted_hash))
+    Ok(Some(FlagRemoval {
+        revoked_hash,
+        deleted_hash,
+    }))
 }
 
 // ============================================================================

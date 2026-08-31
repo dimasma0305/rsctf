@@ -19,13 +19,14 @@ import { useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose, mdiDeleteForeverOutline, mdiDownloadMultiple } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { CSSProperties, FC, useState } from 'react'
+import { CSSProperties, FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams, useSearchParams } from 'react-router'
 import { ScrollSelect } from '@Components/ScrollSelect'
 import { ChallengeItem, FileItem, TeamItem } from '@Components/TrafficItems'
 import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { FlowInspector } from '@Components/traffic/FlowInspector'
+import { runDownloadSingleFlight } from '@Utils/DownloadSingleFlight'
 import { useLanguage } from '@Utils/I18n'
 import { showErrorMsg } from '@Utils/Shared'
 import { HunamizeSize } from '@Utils/Shared'
@@ -37,6 +38,25 @@ import api, { ChallengeTrafficModel, FileRecord, TeamTrafficModel } from '@Api'
 const challengeTrafficKey = (item: ChallengeTrafficModel) => String(item.id)
 const teamTrafficKey = (item: TeamTrafficModel) => String(item.id)
 const fileTrafficKey = (item: FileRecord) => item.fileName ?? ''
+
+const trafficArchiveFailure = async (response: Response): Promise<Error> => {
+  const fallback = `Traffic archive download failed (${response.status})`
+  const body = await response.text().catch(() => '')
+  if (!body.trim()) return new Error(fallback)
+
+  try {
+    const payload: unknown = JSON.parse(body)
+    if (payload && typeof payload === 'object') {
+      const title = 'title' in payload ? payload.title : undefined
+      const detail = 'detail' in payload ? payload.detail : undefined
+      if (typeof title === 'string' && title.trim()) return new Error(title)
+      if (typeof detail === 'string' && detail.trim()) return new Error(detail)
+    }
+  } catch {
+    // Plain-text responses are already safe to present through showErrorMsg.
+  }
+  return new Error(body.trim())
+}
 
 const Traffic: FC = () => {
   const { id } = useParams()
@@ -91,6 +111,11 @@ const Traffic: FC = () => {
   }
 
   const [disabled, setDisabled] = useState(false)
+  const [downloadAllBusy, setDownloadAllBusy] = useState(false)
+  const downloadAllOwner = useRef(false)
+  const downloadAllRequest = useRef<AbortController | null>(null)
+  const downloadAllObjectUrl = useRef<string | null>(null)
+  const downloadAllUrlRelease = useRef<number | null>(null)
   const theme = useMantineTheme()
 
   const { t } = useTranslation()
@@ -136,14 +161,16 @@ const Traffic: FC = () => {
   const onDownload = (item: FileRecord) => {
     if (!challengeId || !participationId || !item.fileName) return
 
-    window.open(
-      `/api/game/captures/${challengeId}/${participationId}/${item.fileName}`,
-      '_blank',
-      'noopener,noreferrer'
-    )
+    const link = document.createElement('a')
+    link.href = `/api/game/captures/${challengeId}/${participationId}/${encodeURIComponent(item.fileName)}`
+    link.download = item.fileName
+    link.rel = 'noopener noreferrer'
+    document.body.append(link)
+    link.click()
+    link.remove()
   }
 
-  const onDownloadAll = () => {
+  const onDownloadAll = async () => {
     if (!challengeId || !participationId) {
       showNotification({
         color: 'red',
@@ -153,9 +180,74 @@ const Traffic: FC = () => {
       })
       return
     }
+    if (downloadAllOwner.current) return
+    downloadAllOwner.current = true
+    setDownloadAllBusy(true)
 
-    window.open(`/api/game/captures/${challengeId}/${participationId}/all`, '_blank', 'noopener,noreferrer')
+    const controller = new AbortController()
+    downloadAllRequest.current = controller
+    const scopeKey = `traffic-archive:${challengeId}:${participationId}`
+    try {
+      await runDownloadSingleFlight(scopeKey, async () => {
+        const response = await fetch(`/api/game/captures/${challengeId}/${participationId}/all`, {
+          credentials: 'same-origin',
+          headers: { Accept: 'application/zip' },
+          signal: controller.signal,
+        })
+        if (!response.ok) throw await trafficArchiveFailure(response)
+
+        // blob() settles only after the response body reaches EOF and rejects
+        // on an interrupted streamed ZIP, so UI ownership matches the real
+        // server admission/response lifetime rather than a guessed timer.
+        const archive = await response.blob()
+        if (controller.signal.aborted) throw new DOMException('Download cancelled', 'AbortError')
+
+        if (downloadAllUrlRelease.current != null) {
+          window.clearTimeout(downloadAllUrlRelease.current)
+          downloadAllUrlRelease.current = null
+        }
+        if (downloadAllObjectUrl.current) window.URL.revokeObjectURL(downloadAllObjectUrl.current)
+        const objectUrl = window.URL.createObjectURL(archive)
+        downloadAllObjectUrl.current = objectUrl
+        const link = document.createElement('a')
+        link.hidden = true
+        link.href = objectUrl
+        link.download = `captures_${challengeId}_${participationId}.zip`
+        link.rel = 'noopener noreferrer'
+        document.body.append(link)
+        link.click()
+        link.remove()
+        downloadAllUrlRelease.current = window.setTimeout(() => {
+          if (downloadAllObjectUrl.current === objectUrl) downloadAllObjectUrl.current = null
+          window.URL.revokeObjectURL(objectUrl)
+          downloadAllUrlRelease.current = null
+        }, 1000)
+      })
+      showNotification({
+        color: 'teal',
+        message: t('common.download.success'),
+        icon: <Icon path={mdiCheck} size={1} />,
+      })
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) showErrorMsg(error, t)
+    } finally {
+      if (downloadAllRequest.current === controller) downloadAllRequest.current = null
+      controller.abort()
+      downloadAllOwner.current = false
+      setDownloadAllBusy(false)
+    }
   }
+
+  useEffect(
+    () => () => {
+      downloadAllRequest.current?.abort()
+      if (downloadAllUrlRelease.current != null) window.clearTimeout(downloadAllUrlRelease.current)
+      if (downloadAllObjectUrl.current) window.URL.revokeObjectURL(downloadAllObjectUrl.current)
+    },
+    []
+  )
+
+  useEffect(() => () => downloadAllRequest.current?.abort(), [challengeId, participationId])
 
   const onDelete = async (item: FileRecord) => {
     if (!challengeId || !participationId || !item.fileName) return
@@ -311,8 +403,11 @@ const Traffic: FC = () => {
                   <Tooltip label={t('game.button.download.all_traffic')} position="left">
                     <ActionIcon
                       size="md"
+                      loading={downloadAllBusy}
+                      disabled={disabled || downloadAllBusy}
+                      aria-busy={downloadAllBusy}
                       aria-label={t('game.button.download.all_traffic', 'Download all listed traffic')}
-                      onClick={onDownloadAll}
+                      onClick={() => void onDownloadAll()}
                     >
                       <Icon path={mdiDownloadMultiple} size={1} />
                     </ActionIcon>
