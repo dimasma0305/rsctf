@@ -21,6 +21,7 @@ import {
   managedKothHarnessConfig,
   managedKothLoadPlan,
   managedKothOperationCycleId,
+  managedKothSummaryMetric,
   validateManagedKothIntegrity,
   validateManagedKothRecovery,
   validateManagedReporterEnvironment,
@@ -186,12 +187,6 @@ function resourceSample(containers) {
   };
 }
 
-function summaryMetric(summary, name, field) {
-  const metric = summary?.metrics?.[name];
-  const values = metric?.values || metric;
-  return Number(values?.[field]);
-}
-
 function assertK6Summary(path, phase) {
   let summary;
   try {
@@ -199,18 +194,18 @@ function assertK6Summary(path, phase) {
   } catch {
     throw new Error(`managed KotH ${phase} summary is missing or malformed`);
   }
-  requireCondition(summaryMetric(summary, 'server_5xx', 'rate') === 0, `${phase} observed a 5xx`);
-  requireCondition(summaryMetric(summary, 'dropped_iterations', 'count') === 0, `${phase} dropped an arrival`);
+  requireCondition(managedKothSummaryMetric(summary, 'server_5xx', 'rate') === 0, `${phase} observed a 5xx`);
+  requireCondition(managedKothSummaryMetric(summary, 'dropped_iterations', 'count') === 0, `${phase} dropped an arrival`);
   if (phase === 'abuse') {
-    requireCondition(summaryMetric(summary, 'invalid_capabilities_rejected', 'count') > 0, 'abuse did not reach 401');
-    requireCondition(summaryMetric(summary, 'invalid_capabilities_rate_limited', 'count') > 0, 'abuse did not reach 429');
-    requireCondition(summaryMetric(summary, 'invalid_retry_after', 'rate') === 0, 'abuse returned an invalid Retry-After');
+    requireCondition(managedKothSummaryMetric(summary, 'invalid_capabilities_rejected', 'count') > 0, 'abuse did not reach 401');
+    requireCondition(managedKothSummaryMetric(summary, 'invalid_capabilities_rate_limited', 'count') > 0, 'abuse did not reach 429');
+    requireCondition(managedKothSummaryMetric(summary, 'invalid_retry_after', 'rate') === 0, 'abuse returned an invalid Retry-After');
   } else {
     requireCondition(
-      summaryMetric(summary, 'valid_capabilities_exercised', 'count') === ROSTER_SIZE,
+      managedKothSummaryMetric(summary, 'valid_capabilities_exercised', 'count') === ROSTER_SIZE,
       `${phase} did not authenticate the complete frozen roster`,
     );
-    requireCondition(summaryMetric(summary, 'valid_play_invalid', 'rate') === 0, `${phase} rejected a valid capability`);
+    requireCondition(managedKothSummaryMetric(summary, 'valid_play_invalid', 'rate') === 0, `${phase} rejected a valid capability`);
   }
 }
 

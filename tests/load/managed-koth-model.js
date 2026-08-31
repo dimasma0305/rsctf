@@ -11,6 +11,25 @@ function positiveInteger(value, name) {
   return parsed;
 }
 
+export function managedKothSummaryMetric(summary, name, field) {
+  const metric = summary?.metrics?.[name] || {};
+  const values = metric.values || metric;
+  const direct = Number(values[field]);
+  if (Number.isFinite(direct)) return direct;
+  if (field !== 'rate') return Number.NaN;
+
+  // k6 2.x calls the aggregate for a Rate metric `value`, while k6 1.x
+  // nested it under `values.rate`. Retained evidence must accept both shapes.
+  const value = Number(values.value);
+  if (Number.isFinite(value)) return value;
+  const passes = Number(values.passes);
+  const fails = Number(values.fails);
+  const samples = passes + fails;
+  return Number.isFinite(passes) && Number.isFinite(fails) && samples > 0
+    ? passes / samples
+    : Number.NaN;
+}
+
 export function managedKothLoadPlan({
   rosterSize = MAX_ROSTER,
   activeFleet = 64,
