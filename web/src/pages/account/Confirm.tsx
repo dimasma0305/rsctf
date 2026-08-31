@@ -2,11 +2,12 @@ import { Button, Text } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router'
 import { AccountView } from '@Components/AccountView'
 import { usePageTitle } from '@Hooks/usePageTitle'
+import { useAccountLinkSubmit } from '@Hooks/useAccountLinkSubmit'
 import api from '@Api'
 
 const Confirm: FC = () => {
@@ -15,7 +16,7 @@ const Confirm: FC = () => {
   const sp = new URLSearchParams(location.search)
   const token = sp.get('token')
   const email = sp.get('email')
-  const [disabled, setDisabled] = useState(false)
+  const { pending, run } = useAccountLinkSubmit(`${token ?? ''}\0${email ?? ''}`)
   const { t } = useTranslation()
   // A corrupted/truncated link can carry a non-base64 email param; window.atob then
   // throws synchronously during render and white-screens the page. Decode safely and
@@ -42,27 +43,25 @@ const Confirm: FC = () => {
       return
     }
 
-    setDisabled(true)
-
-    try {
-      await api.account.accountMailChangeConfirm({ token, email })
-      showNotification({
-        color: 'teal',
-        title: t('account.notification.confirm.success'),
-        message: decodeEmail,
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-      navigate('/')
-    } catch {
-      showNotification({
-        color: 'red',
-        title: t('account.notification.confirm.failed'),
-        message: t('common.error.param_error'),
-        icon: <Icon path={mdiClose} size={1} />,
-      })
-    } finally {
-      setDisabled(false)
-    }
+    await run(
+      (signal) => api.account.accountMailChangeConfirm({ token, email }, { signal }),
+      () => {
+        showNotification({
+          color: 'teal',
+          title: t('account.notification.confirm.success'),
+          message: decodeEmail,
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+        navigate('/')
+      },
+      () =>
+        showNotification({
+          color: 'red',
+          title: t('account.notification.confirm.failed'),
+          message: t('common.error.param_error'),
+          icon: <Icon path={mdiClose} size={1} />,
+        }),
+    )
   }
 
   return (
@@ -75,7 +74,13 @@ const Confirm: FC = () => {
           <Text size="md" fw={500}>
             {t('account.content.confirm.message')}
           </Text>
-          <Button mt="lg" type="submit" w={{ base: '100%', xs: '50%' }} disabled={disabled}>
+          <Button
+            mt="lg"
+            type="submit"
+            w={{ base: '100%', xs: '50%' }}
+            disabled={pending}
+            loading={pending}
+          >
             {t('account.button.confirm_email')}
           </Button>
         </>

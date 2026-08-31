@@ -14,7 +14,7 @@ const MAX_JS_REVISION: i64 = 9_007_199_254_740_991;
 
 type ConfigUpdates = BTreeMap<String, Option<String>>;
 
-#[derive(sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow)]
 struct ExistingOperation {
     actor_user_id: Option<Uuid>,
     request_digest: Vec<u8>,
@@ -212,28 +212,24 @@ pub async fn update_config(
     let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
         .await
         .map_err(database_error)?;
-    let current_revision = lock_settings_revision(&mut transaction).await?;
-    let existing = load_operation(&mut transaction, operation_id).await?;
-    if let Some(existing) = existing {
-        if existing.actor_user_id != Some(admin.id)
-            || existing.expected_revision != expected_revision
-            || existing.request_digest != request_digest
-        {
-            return Err(AppError::conflict(
-                "This settings operation ID was used for a different request",
-            ));
+    match admit_settings_operation(
+        &mut transaction,
+        operation_id,
+        admin.id,
+        expected_revision,
+        &request_digest,
+    )
+    .await?
+    {
+        SettingsOperationAdmission::Fresh => {}
+        SettingsOperationAdmission::Replay(existing) => {
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(RequestResponse::ok(SettingsMutationResult {
+                operation_id,
+                revision: existing.result_revision,
+                branding_hash: existing.branding_hash,
+            }));
         }
-        transaction.commit().await.map_err(database_error)?;
-        return Ok(RequestResponse::ok(SettingsMutationResult {
-            operation_id,
-            revision: existing.result_revision,
-            branding_hash: existing.branding_hash,
-        }));
-    }
-    if current_revision != expected_revision {
-        return Err(AppError::conflict(format!(
-            "Settings changed in another tab; current revision is {current_revision}"
-        )));
     }
     crate::services::anti_cheat::lock_policy_update(&mut transaction).await?;
     let security_updates = security_policy::prepare_security_updates(
@@ -849,6 +845,39 @@ async fn load_operation(
     .fetch_optional(&mut **transaction)
     .await
     .map_err(database_error)
+}
+
+#[derive(Debug)]
+enum SettingsOperationAdmission {
+    Fresh,
+    Replay(ExistingOperation),
+}
+
+async fn admit_settings_operation(
+    transaction: &mut Transaction<'_, Postgres>,
+    operation_id: Uuid,
+    actor_user_id: Uuid,
+    expected_revision: i64,
+    request_digest: &[u8],
+) -> AppResult<SettingsOperationAdmission> {
+    let current_revision = lock_settings_revision(transaction).await?;
+    if let Some(existing) = load_operation(transaction, operation_id).await? {
+        if existing.actor_user_id != Some(actor_user_id)
+            || existing.expected_revision != expected_revision
+            || existing.request_digest != request_digest
+        {
+            return Err(AppError::conflict(
+                "This settings operation ID was used for a different request",
+            ));
+        }
+        return Ok(SettingsOperationAdmission::Replay(existing));
+    }
+    if current_revision != expected_revision {
+        return Err(AppError::conflict(format!(
+            "Settings changed in another tab; current revision is {current_revision}"
+        )));
+    }
+    Ok(SettingsOperationAdmission::Fresh)
 }
 
 async fn resolve_branding_hash(

@@ -174,6 +174,8 @@ mod m0308_team_invite_rotation;
 mod m0309_flag_import_operations;
 mod m0330_mail_preparation_slots;
 mod m0331_username_scoreboard_invalidation;
+mod m0332_account_mail_consumption;
+mod m0333_flag_import_staging;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -362,6 +364,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0309_flag_import_operations::Migration),
             Box::new(m0330_mail_preparation_slots::Migration),
             Box::new(m0331_username_scoreboard_invalidation::Migration),
+            Box::new(m0332_account_mail_consumption::Migration),
+            Box::new(m0333_flag_import_staging::Migration),
         ]
     }
 }

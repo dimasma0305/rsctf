@@ -37,6 +37,7 @@ async fn terminal_replay_bypasses_full_global_admission_but_new_work_fails_fast(
              duplicate_count INTEGER NULL,
              lease_expires_at_utc TIMESTAMPTZ NOT NULL,
              completed_at_utc TIMESTAMPTZ NULL,
+             staged_attachment_ids INTEGER[] NOT NULL DEFAULT '{}',
              created_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
              PRIMARY KEY (challenge_id, operation_id)
            );
@@ -111,6 +112,40 @@ async fn terminal_replay_bypasses_full_global_admission_but_new_work_fails_fast(
         axum::http::StatusCode::TOO_MANY_REQUESTS
     );
     admission_blocker.rollback().await.unwrap();
+
+    let staged_operation = Uuid::new_v4();
+    let staged_lease = match reserve_flag_import(&pool, 1, actor, staged_operation, &digest)
+        .await
+        .unwrap()
+    {
+        FlagImportReservation::Acquired { lease_token, .. } => lease_token,
+        FlagImportReservation::Replayed(_) => panic!("new staging operation unexpectedly replayed"),
+    };
+    assert!(
+        record_staged_flag_attachment(&pool, 1, staged_operation, staged_lease, 42)
+            .await
+            .unwrap()
+    );
+    let staged: Vec<i32> = sqlx::query_scalar(
+        r#"SELECT staged_attachment_ids FROM "FlagImportOperations"
+            WHERE challenge_id = 1 AND operation_id = $1"#,
+    )
+    .bind(staged_operation)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(staged, vec![42]);
+    fail_staged_flag_import(&pool, 1, staged_operation, staged_lease, &[42]).await;
+    let failed: (i16, Vec<i32>, bool) = sqlx::query_as(
+        r#"SELECT state, staged_attachment_ids, completed_at_utc IS NOT NULL
+             FROM "FlagImportOperations"
+            WHERE challenge_id = 1 AND operation_id = $1"#,
+    )
+    .bind(staged_operation)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(failed, (2, vec![42], true));
 
     pool.close().await;
     sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

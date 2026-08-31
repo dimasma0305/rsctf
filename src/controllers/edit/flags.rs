@@ -2,9 +2,20 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+mod read;
+pub(crate) use read::load_flags;
+pub use read::{get_flags, FlagPageModel, FlagPolicyViolationModel};
+mod import_state;
+#[cfg(test)]
+use import_state::fail_staged_flag_import;
+use import_state::{
+    abandon_flag_import, cleanup_staged_flag_attachments, reconcile_staged_flag_attachments,
+    record_staged_flag_attachment, recover_reclaimed_flag_attachments, renew_flag_import,
+    reserve_flag_import, rollback_staged_flag_import, FlagImportReservation,
+};
+
 const MAX_FLAGS_PER_IMPORT: usize = 100;
 const MAX_FLAGS_PER_CHALLENGE: i64 = 512;
-const MAX_PENDING_FLAG_IMPORTS: i64 = 64;
 const MAX_FLAG_BYTES: usize = crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES;
 const MAX_FLAG_REMOTE_URL_BYTES: usize = 2_048;
 const MAX_FLAG_FILE_HASH_BYTES: usize = 256;
@@ -22,12 +33,6 @@ enum FlagImportMutation {
         duplicates: i32,
         inserted: std::collections::HashSet<String>,
     },
-    Replayed(FlagImportResult),
-}
-
-#[derive(Debug)]
-enum FlagImportReservation {
-    Acquired(Uuid),
     Replayed(FlagImportResult),
 }
 
@@ -58,240 +63,6 @@ fn validate_flag_import(flags: &[FlagCreateModel]) -> AppResult<()> {
         }
     }
     Ok(())
-}
-
-async fn abandon_flag_import(
-    pool: &sqlx::PgPool,
-    challenge_id: i32,
-    operation_id: Uuid,
-    lease_token: Uuid,
-) {
-    if let Err(error) = sqlx::query(
-        r#"WITH removed AS (
-               DELETE FROM "FlagImportOperations"
-                WHERE challenge_id = $1 AND operation_id = $2 AND state = 0
-                  AND lease_token = $3
-              RETURNING 1
-           )
-           UPDATE "FlagImportSlots"
-              SET lease_token = NULL, expires_at_utc = NULL
-            WHERE lease_token = $3 AND EXISTS (SELECT 1 FROM removed)"#,
-    )
-    .bind(challenge_id)
-    .bind(operation_id)
-    .bind(lease_token)
-    .execute(pool)
-    .await
-    {
-        tracing::warn!(%error, challenge_id, %operation_id, "failed to abandon flag import reservation");
-    }
-}
-
-async fn claim_flag_import_slot(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    lease_token: Uuid,
-) -> AppResult<bool> {
-    let claimed = sqlx::query_scalar::<_, i16>(
-        r#"WITH candidate AS (
-               SELECT slot_id FROM "FlagImportSlots"
-                WHERE lease_token IS NULL OR expires_at_utc <= clock_timestamp()
-                ORDER BY slot_id FOR UPDATE SKIP LOCKED LIMIT 1
-           )
-           UPDATE "FlagImportSlots" slot
-              SET lease_token = $1,
-                  expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
-             FROM candidate
-            WHERE slot.slot_id = candidate.slot_id
-           RETURNING slot.slot_id"#,
-    )
-    .bind(lease_token)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(claimed.is_some())
-}
-
-async fn reserve_flag_import(
-    pool: &sqlx::PgPool,
-    challenge_id: i32,
-    actor_user_id: Uuid,
-    operation_id: Uuid,
-    request_digest: &[u8],
-) -> AppResult<FlagImportReservation> {
-    let lease_token = Uuid::new_v4();
-    let mut transaction = pool
-        .begin()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let admission_owner: bool = sqlx::query_scalar(
-        "SELECT pg_try_advisory_xact_lock(hashtextextended('rsctf:flag-import-admission', 0))",
-    )
-    .fetch_one(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if !admission_owner {
-        return Err(AppError::too_many_requests(1));
-    }
-
-    // A client that disappears cannot retain one staging slot or one pending
-    // identity forever. Keep the expired identity as a bounded tombstone so a
-    // late exact replay is rejected instead of silently starting new work.
-    sqlx::query(
-        r#"WITH candidates AS (
-               SELECT challenge_id, operation_id
-                 FROM "FlagImportOperations"
-                WHERE state = 0
-                  AND lease_expires_at_utc <= clock_timestamp()
-                  AND created_at_utc < clock_timestamp() - INTERVAL '1 hour'
-                ORDER BY created_at_utc, challenge_id, operation_id
-                LIMIT 128 FOR UPDATE SKIP LOCKED
-           ), expired AS (
-               UPDATE "FlagImportOperations" operation
-                  SET state = 2, completed_at_utc = clock_timestamp()
-                 FROM candidates
-                WHERE operation.challenge_id = candidates.challenge_id
-                  AND operation.operation_id = candidates.operation_id
-              RETURNING operation.lease_token
-           )
-           UPDATE "FlagImportSlots"
-              SET lease_token = NULL, expires_at_utc = NULL
-            WHERE lease_token IN (SELECT lease_token FROM expired)"#,
-    )
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-
-    let stored = sqlx::query_as::<_, (Uuid, Vec<u8>, i16, Option<i32>, Option<i32>, bool)>(
-        r#"SELECT actor_user_id, request_digest, state, inserted_count,
-                  duplicate_count, lease_expires_at_utc <= clock_timestamp()
-             FROM "FlagImportOperations"
-            WHERE challenge_id = $1 AND operation_id = $2"#,
-    )
-    .bind(challenge_id)
-    .bind(operation_id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some(stored) = stored {
-        if stored.0 != actor_user_id || stored.1 != request_digest {
-            return Err(AppError::conflict(
-                "The operation ID is already bound to another flag import",
-            ));
-        }
-        if stored.2 == 1 {
-            transaction
-                .commit()
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
-            return Ok(FlagImportReservation::Replayed(FlagImportResult {
-                inserted: stored.3.unwrap_or_default(),
-                duplicates: stored.4.unwrap_or_default(),
-            }));
-        }
-        if stored.2 == 2 {
-            return Err(AppError::conflict(
-                "This expired flag import can no longer be resumed",
-            ));
-        }
-        if !stored.5 {
-            return Err(AppError::conflict(
-                "This flag import is still running; retry its operation ID later",
-            ));
-        }
-        if !claim_flag_import_slot(&mut transaction, lease_token).await? {
-            return Err(AppError::too_many_requests(1));
-        }
-        let reclaimed = sqlx::query(
-            r#"UPDATE "FlagImportOperations"
-                  SET lease_token = $3,
-                      lease_expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
-                WHERE challenge_id = $1 AND operation_id = $2 AND state = 0
-                  AND lease_expires_at_utc <= clock_timestamp()"#,
-        )
-        .bind(challenge_id)
-        .bind(operation_id)
-        .bind(lease_token)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        if reclaimed.rows_affected() != 1 {
-            return Err(AppError::conflict(
-                "This flag import was reclaimed by another request",
-            ));
-        }
-    } else {
-        let pending = sqlx::query_scalar::<_, i64>(
-            r#"SELECT COUNT(*)::bigint FROM "FlagImportOperations" WHERE state = 0"#,
-        )
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        if pending >= MAX_PENDING_FLAG_IMPORTS {
-            return Err(AppError::too_many_requests(1));
-        }
-        if !claim_flag_import_slot(&mut transaction, lease_token).await? {
-            return Err(AppError::too_many_requests(1));
-        }
-        sqlx::query(
-            r#"INSERT INTO "FlagImportOperations"
-                 (challenge_id, operation_id, actor_user_id, request_digest, lease_token)
-               VALUES ($1, $2, $3, $4, $5)"#,
-        )
-        .bind(challenge_id)
-        .bind(operation_id)
-        .bind(actor_user_id)
-        .bind(request_digest)
-        .bind(lease_token)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    }
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(FlagImportReservation::Acquired(lease_token))
-}
-
-async fn renew_flag_import(
-    pool: &sqlx::PgPool,
-    challenge_id: i32,
-    operation_id: Uuid,
-    lease_token: Uuid,
-) -> AppResult<bool> {
-    let renewed = sqlx::query_scalar::<_, i64>(
-        r#"WITH slot AS (
-               UPDATE "FlagImportSlots"
-                  SET expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
-                WHERE lease_token = $3
-              RETURNING 1
-           ), operation AS (
-               UPDATE "FlagImportOperations"
-                  SET lease_expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
-                WHERE challenge_id = $1 AND operation_id = $2 AND state = 0
-                  AND lease_token = $3 AND EXISTS (SELECT 1 FROM slot)
-              RETURNING 1
-           ) SELECT COUNT(*)::bigint FROM operation"#,
-    )
-    .bind(challenge_id)
-    .bind(operation_id)
-    .bind(lease_token)
-    .fetch_one(pool)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(renewed == 1)
-}
-
-async fn cleanup_staged_flag_attachments(st: &SharedState, flags: &[(String, Option<i32>)]) {
-    for attachment_id in flags.iter().filter_map(|(_, attachment_id)| *attachment_id) {
-        if let Err(error) = delete_attachment(st, attachment_id).await {
-            tracing::warn!(
-                %error,
-                attachment_id,
-                "failed to clean an unpublished flag attachment"
-            );
-        }
-    }
 }
 
 fn validate_authored_flags(models: &[FlagCreateModel]) -> AppResult<()> {
@@ -429,12 +200,16 @@ pub async fn add_flags(
     // durable operation. Invalid input must not leave a lease that blocks a
     // corrected retry using the same client-owned operation identity.
     validate_authored_flags(&request.flags)?;
+    // Recover at most four terminal staging batches per import request. This is
+    // deliberately bounded; it also makes crash cleanup progress without a
+    // request ever scanning the operation ledger or blob store.
+    reconcile_staged_flag_attachments(&st).await?;
     let request_digest = Sha256::digest(
         serde_json::to_vec(&request.flags)
             .map_err(|error| AppError::internal(error.to_string()))?,
     )
     .to_vec();
-    let lease_token = match reserve_flag_import(
+    let (lease_token, recovered_attachment_ids) = match reserve_flag_import(
         st.pg(),
         c_id,
         user.id,
@@ -443,9 +218,20 @@ pub async fn add_flags(
     )
     .await?
     {
-        FlagImportReservation::Acquired(lease_token) => lease_token,
+        FlagImportReservation::Acquired {
+            lease_token,
+            recovered_attachment_ids,
+        } => (lease_token, recovered_attachment_ids),
         FlagImportReservation::Replayed(result) => return Ok(RequestResponse::ok(result)),
     };
+    recover_reclaimed_flag_attachments(
+        &st,
+        c_id,
+        request.operation_id,
+        lease_token,
+        &recovered_attachment_ids,
+    )
+    .await?;
 
     let mut seen = std::collections::HashSet::with_capacity(request.flags.len());
     let mut body_duplicates = 0_i32;
@@ -478,13 +264,15 @@ pub async fn add_flags(
         match renew_flag_import(st.pg(), c_id, request.operation_id, lease_token).await {
             Ok(true) => {}
             Ok(false) => {
-                cleanup_staged_flag_attachments(&st, &flags).await;
+                rollback_staged_flag_import(&st, &flags, c_id, request.operation_id, lease_token)
+                    .await;
                 return Err(AppError::conflict(
                     "This flag import was reclaimed by another request",
                 ));
             }
             Err(error) => {
-                cleanup_staged_flag_attachments(&st, &flags).await;
+                rollback_staged_flag_import(&st, &flags, c_id, request.operation_id, lease_token)
+                    .await;
                 return Err(error);
             }
         }
@@ -493,11 +281,39 @@ pub async fn add_flags(
             match build_attachment(&st, m.attachment_type, m.file_hash, m.remote_url).await {
                 Ok(attachment_id) => attachment_id,
                 Err(error) => {
-                    cleanup_staged_flag_attachments(&st, &flags).await;
-                    abandon_flag_import(st.pg(), c_id, request.operation_id, lease_token).await;
+                    rollback_staged_flag_import(
+                        &st,
+                        &flags,
+                        c_id,
+                        request.operation_id,
+                        lease_token,
+                    )
+                    .await;
                     return Err(error);
                 }
             };
+        if let Some(attachment_id) = attachment_id {
+            let recorded = record_staged_flag_attachment(
+                st.pg(),
+                c_id,
+                request.operation_id,
+                lease_token,
+                attachment_id,
+            )
+            .await;
+            if !matches!(recorded, Ok(true)) {
+                let mut staged = flags;
+                staged.push((m.flag, Some(attachment_id)));
+                rollback_staged_flag_import(&st, &staged, c_id, request.operation_id, lease_token)
+                    .await;
+                if let Err(error) = recorded {
+                    return Err(error);
+                }
+                return Err(AppError::conflict(
+                    "This flag import was reclaimed while staging an attachment",
+                ));
+            }
+        }
         flags.push((m.flag, attachment_id));
     }
 
@@ -507,8 +323,7 @@ pub async fn add_flags(
     let game_control = match crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await {
         Ok(lock) => lock,
         Err(error) => {
-            cleanup_staged_flag_attachments(&st, &flags).await;
-            abandon_flag_import(st.pg(), c_id, request.operation_id, lease_token).await;
+            rollback_staged_flag_import(&st, &flags, c_id, request.operation_id, lease_token).await;
             return Err(error);
         }
     };
@@ -522,8 +337,7 @@ pub async fn add_flags(
         Ok(lock) => lock,
         Err(error) => {
             drop(game_control);
-            cleanup_staged_flag_attachments(&st, &flags).await;
-            abandon_flag_import(st.pg(), c_id, request.operation_id, lease_token).await;
+            rollback_staged_flag_import(&st, &flags, c_id, request.operation_id, lease_token).await;
             return Err(AppError::internal(error.to_string()));
         }
     };
@@ -625,11 +439,17 @@ pub async fn add_flags(
         }
         let inserted_count = inserted_set.len() as i32;
         let duplicate_count = body_duplicates + flags.len() as i32 - inserted_count;
+        let unpublished_attachment_ids = flags
+            .iter()
+            .filter(|(flag, _)| !inserted_set.contains(flag))
+            .filter_map(|(_, attachment_id)| *attachment_id)
+            .collect::<Vec<_>>();
         let completion = sqlx::query_scalar::<_, i64>(
             r#"WITH completed AS (
                    UPDATE "FlagImportOperations" operation
                       SET state = 1, inserted_count = $3, duplicate_count = $4,
-                          completed_at_utc = clock_timestamp()
+                          completed_at_utc = clock_timestamp(),
+                          staged_attachment_ids = $6
                     WHERE challenge_id = $1 AND operation_id = $2 AND state = 0
                       AND lease_token = $5
                       AND EXISTS (
@@ -649,6 +469,7 @@ pub async fn add_flags(
         .bind(inserted_count)
         .bind(duplicate_count)
         .bind(lease_token)
+        .bind(&unpublished_attachment_ids)
         .fetch_one(&mut **definition_lock.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -662,6 +483,7 @@ pub async fn add_flags(
                    SELECT challenge_id, operation_id
                      FROM "FlagImportOperations"
                     WHERE state IN (1, 2)
+                      AND cardinality(staged_attachment_ids) = 0
                       AND completed_at_utc < clock_timestamp() - INTERVAL '30 days'
                     ORDER BY completed_at_utc, challenge_id, operation_id
                     LIMIT 128
@@ -686,8 +508,7 @@ pub async fn add_flags(
         Err(error) => {
             drop(definition_lock);
             drop(game_control);
-            cleanup_staged_flag_attachments(&st, &flags).await;
-            abandon_flag_import(st.pg(), c_id, request.operation_id, lease_token).await;
+            rollback_staged_flag_import(&st, &flags, c_id, request.operation_id, lease_token).await;
             return Err(error);
         }
     };
@@ -703,7 +524,7 @@ pub async fn add_flags(
     }
     let (duplicates, inserted_set) = match mutation {
         FlagImportMutation::Replayed(result) => {
-            cleanup_staged_flag_attachments(&st, &flags).await;
+            let _ = cleanup_staged_flag_attachments(&st, &flags).await;
             return Ok(RequestResponse::ok(result));
         }
         FlagImportMutation::Applied {
@@ -716,87 +537,21 @@ pub async fn add_flags(
         .filter(|(flag, _)| !inserted_set.contains(flag))
         .cloned()
         .collect::<Vec<_>>();
-    cleanup_staged_flag_attachments(&st, &duplicate_attachments).await;
+    let remaining = cleanup_staged_flag_attachments(&st, &duplicate_attachments).await;
+    sqlx::query(
+        r#"UPDATE "FlagImportOperations" SET staged_attachment_ids = $3
+            WHERE challenge_id = $1 AND operation_id = $2 AND state = 1"#,
+    )
+    .bind(c_id)
+    .bind(request.operation_id)
+    .bind(&remaining)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(RequestResponse::ok(FlagImportResult {
         inserted: inserted_set.len() as i32,
         duplicates,
     }))
-}
-
-pub(crate) async fn load_flags(st: &SharedState, c_id: i32) -> AppResult<Vec<FlagInfoModel>> {
-    #[derive(sqlx::FromRow)]
-    struct FlagRow {
-        id: i32,
-        flag: String,
-        attachment_id: Option<i32>,
-        file_type: Option<i16>,
-        remote_url: Option<String>,
-        file_hash: Option<String>,
-        file_name: Option<String>,
-        file_size: Option<i64>,
-    }
-
-    let rows = sqlx::query_as::<_, FlagRow>(
-        r#"SELECT context.id, context.flag,
-                  attachment.id AS attachment_id,
-                  attachment."Type" AS file_type,
-                  attachment.remote_url,
-                  file.hash AS file_hash,
-                  file.name AS file_name,
-                  file.file_size
-             FROM "FlagContexts" context
-             LEFT JOIN "Attachments" attachment ON attachment.id = context.attachment_id
-             LEFT JOIN "Files" file ON file.id = attachment.local_file_id
-            WHERE context.challenge_id = $1 AND context.is_occupied = FALSE
-            ORDER BY context.id
-            LIMIT 513"#,
-    )
-    .bind(c_id)
-    .fetch_all(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if rows.len() > 512 {
-        return Err(AppError::payload_too_large(
-            "This challenge exceeds the editable flag limit; remove legacy flags first",
-        ));
-    }
-
-    rows.into_iter()
-        .map(|row| {
-            let attachment = match (row.attachment_id, row.file_type) {
-                (Some(id), Some(raw_type)) => {
-                    let file_type = match raw_type {
-                        value if value == FileType::None as i16 => FileType::None,
-                        value if value == FileType::Local as i16 => FileType::Local,
-                        value if value == FileType::Remote as i16 => FileType::Remote,
-                        _ => return Err(AppError::internal("Invalid attachment type")),
-                    };
-                    let (url, file_size) = match file_type {
-                        FileType::None => (None, None),
-                        FileType::Remote => (row.remote_url, None),
-                        FileType::Local => (
-                            row.file_hash
-                                .zip(row.file_name)
-                                .map(|(hash, name)| format!("/assets/{hash}/{name}")),
-                            row.file_size,
-                        ),
-                    };
-                    Some(AttachmentInfoModel {
-                        id,
-                        file_type,
-                        url,
-                        file_size,
-                    })
-                }
-                _ => None,
-            };
-            Ok(FlagInfoModel {
-                id: row.id,
-                flag: row.flag,
-                attachment,
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]

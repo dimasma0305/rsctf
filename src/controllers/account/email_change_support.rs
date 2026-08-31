@@ -216,17 +216,32 @@ pub(super) async fn confirm_email_change_ticket(
     if !verify_email_domain(supplied_email, &policy.email_domain_list) {
         return Err(AppError::bad_request("Email domain is not allowed"));
     }
-    let ticket = sqlx::query_as::<_, (Uuid, String, String, String, Uuid)>(
+    let ticket = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            String,
+            Uuid,
+            Option<chrono::DateTime<Utc>>,
+        ),
+    >(
         r#"SELECT ticket.account_id, ticket.security_stamp, ticket.new_email,
-                  ticket.normalized_email, ticket.operation_id
+                  ticket.normalized_email, ticket.operation_id, ticket.consumed_at_utc
              FROM "EmailChangeTickets" ticket
              JOIN "MailOutbox" outbox ON outbox.operation_id = ticket.operation_id
             WHERE ticket.token_hash = $1
-              AND ticket.expires_at_utc > clock_timestamp()
+              AND (ticket.consumed_at_utc IS NOT NULL
+                   OR ticket.expires_at_utc > clock_timestamp())
               AND ticket.superseded_at_utc IS NULL
-              AND ticket.consumed_at_utc IS NULL
-              AND outbox.superseded_at_utc IS NULL
               AND outbox.purpose = $2
+              AND (
+                    (ticket.consumed_at_utc IS NULL
+                     AND outbox.superseded_at_utc IS NULL)
+                    OR (ticket.consumed_at_utc IS NOT NULL
+                        AND outbox.consumed_at_utc IS NOT NULL)
+                  )
             FOR UPDATE OF ticket"#,
     )
     .bind(&token_hash)
@@ -234,7 +249,8 @@ pub(super) async fn confirm_email_change_ticket(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let Some((account_id, security_stamp, new_email, normalized_email, operation_id)) = ticket
+    let Some((account_id, security_stamp, new_email, normalized_email, operation_id, consumed_at)) =
+        ticket
     else {
         let durable_exists: bool = sqlx::query_scalar(
             r#"SELECT EXISTS(
@@ -258,6 +274,25 @@ pub(super) async fn confirm_email_change_ticket(
     };
     if supplied_email != new_email {
         return Err(AppError::bad_request("Invalid email"));
+    }
+    if consumed_at.is_some() {
+        let user_name = sqlx::query_scalar::<_, String>(
+            r#"SELECT COALESCE(user_name, '') FROM "AspNetUsers"
+                WHERE id = $1"#,
+        )
+        .bind(account_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .ok_or_else(|| AppError::bad_request("Invalid or expired email-change token"))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(Some(ConfirmedEmailChange {
+            user_id: account_id,
+            user_name,
+        }));
     }
     let collision: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(
@@ -318,6 +353,7 @@ pub(super) async fn confirm_email_change_ticket(
     sqlx::query(
         r#"UPDATE "MailOutbox"
               SET superseded_at_utc = COALESCE(superseded_at_utc, clock_timestamp()),
+                  consumed_at_utc = COALESCE(consumed_at_utc, clock_timestamp()),
                   dead_at_utc = CASE
                       WHEN delivered_at_utc IS NULL AND lease_token IS NULL
                       THEN clock_timestamp() ELSE dead_at_utc END,
@@ -421,4 +457,132 @@ pub(super) async fn update_email_serialized(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(EmailUpdateOutcome::Updated)
+}
+
+#[cfg(test)]
+mod terminal_replay_tests {
+    use std::str::FromStr;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn two_tabs_receive_the_same_terminal_email_change_result() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("email_change_replay_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(3)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"CREATE TABLE "Configs" (
+                 config_key TEXT PRIMARY KEY, value TEXT
+               );
+               CREATE TABLE "AspNetUsers" (
+                 id UUID PRIMARY KEY, user_name TEXT, email TEXT,
+                 normalized_email TEXT UNIQUE, email_confirmed BOOLEAN NOT NULL,
+                 role SMALLINT NOT NULL, security_stamp TEXT NOT NULL
+               );
+               CREATE TABLE "MailOutbox" (
+                 operation_id UUID PRIMARY KEY, account_id UUID NOT NULL,
+                 purpose SMALLINT NOT NULL, superseded_at_utc TIMESTAMPTZ,
+                 consumed_at_utc TIMESTAMPTZ, delivered_at_utc TIMESTAMPTZ,
+                 dead_at_utc TIMESTAMPTZ, lease_token UUID, last_error TEXT,
+                 html_body TEXT NOT NULL
+               );
+               CREATE TABLE "EmailChangeTickets" (
+                 operation_id UUID PRIMARY KEY, token_hash BYTEA UNIQUE NOT NULL,
+                 account_id UUID NOT NULL, security_stamp TEXT NOT NULL,
+                 new_email TEXT NOT NULL, normalized_email TEXT NOT NULL,
+                 expires_at_utc TIMESTAMPTZ NOT NULL,
+                 superseded_at_utc TIMESTAMPTZ, consumed_at_utc TIMESTAMPTZ
+               );"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let account_id = Uuid::new_v4();
+        let operation_id = Uuid::new_v4();
+        let token = "terminal-email-change-token";
+        sqlx::query(
+            r#"INSERT INTO "AspNetUsers"
+                 (id,user_name,email,normalized_email,email_confirmed,role,security_stamp)
+               VALUES ($1,'player','old@example.test','OLD@EXAMPLE.TEST',TRUE,$2,'stamp-a')"#,
+        )
+        .bind(account_id)
+        .bind(Role::User as i16)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "MailOutbox"
+                 (operation_id,account_id,purpose,html_body)
+               VALUES ($1,$2,$3,'mail')"#,
+        )
+        .bind(operation_id)
+        .bind(account_id)
+        .bind(crate::services::mail_outbox::MailPurpose::EmailChange as i16)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "EmailChangeTickets"
+                 (operation_id,token_hash,account_id,security_stamp,new_email,
+                  normalized_email,expires_at_utc)
+               VALUES ($1,$2,$3,'stamp-a','new@example.test','NEW@EXAMPLE.TEST',
+                       clock_timestamp() + INTERVAL '15 minutes')"#,
+        )
+        .bind(operation_id)
+        .bind(Sha256::digest(token.as_bytes()).to_vec())
+        .bind(account_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let config = crate::models::internal::configs::AppConfig::from_env();
+        let (first, second) = tokio::join!(
+            confirm_email_change_ticket(&pool, &config, token, "new@example.test"),
+            confirm_email_change_ticket(&pool, &config, token, "new@example.test")
+        );
+        for outcome in [first.unwrap(), second.unwrap()] {
+            let outcome = outcome.expect("durable link must not fall back to cache");
+            assert_eq!(outcome.user_id, account_id);
+            assert_eq!(outcome.user_name, "player");
+        }
+        let state: (String, bool, bool) = sqlx::query_as(
+            r#"SELECT account.normalized_email, ticket.consumed_at_utc IS NOT NULL,
+                      outbox.consumed_at_utc IS NOT NULL
+                 FROM "AspNetUsers" account
+                 JOIN "EmailChangeTickets" ticket ON ticket.account_id = account.id
+                 JOIN "MailOutbox" outbox ON outbox.operation_id = ticket.operation_id
+                WHERE account.id = $1"#,
+        )
+        .bind(account_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, ("NEW@EXAMPLE.TEST".to_string(), true, true));
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
+    }
 }

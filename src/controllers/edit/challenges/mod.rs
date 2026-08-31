@@ -14,7 +14,11 @@ mod review;
 mod scoring;
 #[cfg(test)]
 mod scoring_lock_tests;
+mod update_policy;
 mod workload;
+
+#[cfg(test)]
+use update_policy::scoring_fields_changed as challenge_scoring_fields_changed;
 
 pub use attachments::update_attachment;
 pub(crate) use attachments::{build_attachment, validate_remote_attachment_url};
@@ -177,54 +181,6 @@ pub async fn get_challenge(
     ))
 }
 
-/// Whether a challenge is in shared-container mode (RSCTF
-/// `GameChallenge.UsesSharedContainer`): a `StaticContainer` with the shared
-/// toggle on and a usable image + exposed port. Used to detect a shared↔per-team
-/// mode flip that would strand the containers created under the old mode.
-fn uses_shared_container(c: &game_challenge::Model) -> bool {
-    c.challenge_type == ChallengeType::StaticContainer
-        && c.enable_shared_container
-        && crate::services::challenge_workloads::has_runtime(c)
-}
-
-fn challenge_scoring_fields_changed(
-    model: &ChallengeUpdateModel,
-    challenge: &game_challenge::Model,
-) -> bool {
-    let deadline_changed = model.deadline_utc.is_some_and(|deadline| {
-        let requested = (deadline.timestamp() != 0).then_some(deadline);
-        requested != challenge.deadline_utc
-    });
-    let flag_template_changed = model.flag_template.as_ref().is_some_and(|template| {
-        let requested =
-            (!crate::utils::flag_policy::is_blank(template)).then_some(template.as_str());
-        requested != challenge.flag_template.as_deref()
-    });
-    deadline_changed
-        || flag_template_changed
-        || model
-            .submission_limit
-            .is_some_and(|value| value != challenge.submission_limit)
-        || model
-            .original_score
-            .is_some_and(|value| value != challenge.original_score)
-        || model
-            .min_score_rate
-            .is_some_and(|value| value != challenge.min_score_rate)
-        || model
-            .difficulty
-            .is_some_and(|value| value != challenge.difficulty)
-        || model
-            .score_curve
-            .is_some_and(|value| value != challenge.score_curve)
-        || model
-            .disable_blood_bonus
-            .is_some_and(|value| value != challenge.disable_blood_bonus)
-        || model
-            .ad_scoring_weight
-            .is_some_and(|value| (value - challenge.ad_scoring_weight).abs() > f64::EPSILON)
-}
-
 /// `PUT /api/edit/games/{id}/challenges/{cId}`
 pub async fn update_challenge(
     State(st): State<SharedState>,
@@ -276,7 +232,7 @@ pub async fn update_challenge(
     let competition_scoring_started =
         competition_scoring_started_locked(control.transaction_mut(), id).await?;
     crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id).await?;
-    if competition_scoring_started && challenge_scoring_fields_changed(&model, &challenge) {
+    if competition_scoring_started && update_policy::scoring_fields_changed(&model, &challenge) {
         return Err(AppError::bad_request(
             "Challenge scoring settings are locked after competition scoring has started.",
         ));
@@ -294,7 +250,7 @@ pub async fn update_challenge(
     // Capture the pre-update shared-container mode (full `UsesSharedContainer`
     // predicate) so a shared↔per-team flip can be detected after the write and the
     // now-orphaned containers torn down (RSCTF `wasSharedManaged`).
-    let was_shared_managed = uses_shared_container(&challenge);
+    let was_shared_managed = update_policy::uses_shared_container(&challenge);
     let final_enabled = model.is_enabled.unwrap_or(challenge.is_enabled);
     let requested_ad_self_hosted = model.ad_self_hosted.unwrap_or(was_ad_self_hosted);
     // Whether the client's hints array differs from the stored one (RSCTF
@@ -766,7 +722,7 @@ pub async fn update_challenge(
     //     reaps its running per-team/shared containers.
     // Both route through `DestroyAllContainers`; call it once for either trigger.
     // Best-effort: teardown failures never fail the edit.
-    let now_shared_managed = uses_shared_container(&updated);
+    let now_shared_managed = update_policy::uses_shared_container(&updated);
     if (!active_topology_flip
         && (was_shared_managed != now_shared_managed
             || was_ad_self_hosted != updated.ad_self_hosted))
