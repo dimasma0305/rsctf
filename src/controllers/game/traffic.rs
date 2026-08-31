@@ -5,6 +5,28 @@ use base64::Engine as _;
 #[path = "traffic_archive.rs"]
 mod archive;
 pub use archive::get_all_traffic;
+
+const FLOW_FILTER_SLOTS: usize = 2;
+static FLOW_FILTER_CAPACITY: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Arc::new(tokio::sync::Semaphore::new(FLOW_FILTER_SLOTS))
+    });
+
+async fn spawn_blocking_with_permit<T, F>(
+    permit: tokio::sync::OwnedSemaphorePermit,
+    work: F,
+) -> Result<T, tokio::task::JoinError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    })
+    .await
+}
+
 fn capture_root(st: &SharedState) -> std::path::PathBuf {
     std::path::PathBuf::from(&st.config.storage_root).join("capture")
 }
@@ -525,6 +547,7 @@ pub async fn traffic_flow_detail(
     Ok(RequestResponse::ok(detail))
 }
 
+#[cfg(test)]
 mod flow_contract_tests {
     use super::*;
 

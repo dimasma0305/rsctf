@@ -25,9 +25,7 @@ use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{
     clear_session_cookie, set_session_cookie, CurrentUser, MaybeUser,
 };
-use crate::models::data::{
-    config, first_solve, game, game_challenge, game_manager, submission, user,
-};
+use crate::models::data::{config, game_manager, user};
 use crate::models::request::account::{PasswordChangeModel, ProfileUpdateModel, RegisterModel};
 use crate::services::anti_cheat;
 use crate::services::captcha::CaptchaSettings;

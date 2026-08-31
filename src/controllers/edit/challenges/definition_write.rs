@@ -250,7 +250,7 @@ pub(super) async fn update(
         .push(" AND deletion_pending = FALSE");
     let result = query
         .build()
-        .execute(connection)
+        .execute(&mut *connection)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     if result.rows_affected() != 1 {

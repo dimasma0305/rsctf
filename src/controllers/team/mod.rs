@@ -12,7 +12,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use chrono::Utc;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, Set};
+use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
 use serde::Deserialize;
 use std::net::SocketAddr;
 use uuid::Uuid;
@@ -35,9 +35,9 @@ mod revocation;
 mod roster_policy;
 mod scoreboard_invalidation;
 mod signature;
-pub(crate) use account_lifecycle::{
-    create_team_rows, create_team_rows_in, transfer_captain_locked,
-};
+#[cfg(test)]
+use account_lifecycle::create_team_rows;
+pub(crate) use account_lifecycle::{create_team_rows_in, transfer_captain_locked};
 pub use avatar::avatar;
 pub(crate) use invite::recover_pending_invite_rotations;
 pub use invite::{invite_code, update_invite_token};

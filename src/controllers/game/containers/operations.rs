@@ -77,6 +77,7 @@ pub(crate) fn operation_request(headers: &HeaderMap) -> AppResult<OperationReque
     })
 }
 
+#[derive(Debug)]
 pub(crate) enum ClaimOutcome<T> {
     Owned(ClaimedOperation),
     Recovered(T),
@@ -114,7 +115,6 @@ struct OperationRow {
     result: Option<serde_json::Value>,
     lease_active: bool,
     runtime_started: bool,
-    definition_fence: Option<String>,
 }
 
 fn database_error(error: sqlx::Error) -> AppError {
@@ -300,7 +300,7 @@ async fn claim<T: DeserializeOwned>(
         r#"SELECT operation_id, scope_key, actor_user_id, game_id, participation_id, challenge_id,
                   intent, publication_id, state, result,
                   lease_expires_at_utc > clock_timestamp() AS lease_active,
-                  runtime_started, definition_fence
+                  runtime_started
              FROM "PlayerContainerOperations"
             WHERE operation_id = $1
             FOR UPDATE"#,
@@ -452,7 +452,7 @@ async fn claim<T: DeserializeOwned>(
         r#"SELECT operation_id, scope_key, actor_user_id, game_id, participation_id, challenge_id,
                   intent, publication_id, state, result,
                   lease_expires_at_utc > clock_timestamp() AS lease_active,
-                  runtime_started, definition_fence
+                  runtime_started
              FROM "PlayerContainerOperations"
             WHERE scope_key = $1 AND state = 'Running'
             FOR UPDATE"#,

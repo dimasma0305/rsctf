@@ -343,7 +343,8 @@ impl EventReceiver {
                     // `select_all` resolves the first ready future. Rotate past
                     // the shard that won so a continuously-ready target cannot
                     // starve another target served by the same connection.
-                    self.channels.rotate_left((index + 1) % self.channels.len());
+                    let channel_count = self.channels.len();
+                    self.channels.rotate_left((index + 1) % channel_count);
                     result
                 }
             };

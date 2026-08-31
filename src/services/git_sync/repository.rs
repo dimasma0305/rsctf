@@ -354,27 +354,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_identity_matches_only_the_same_binding_relative_suffix() {
-        assert!(legacy_repo_manifest_matches(
-            "/old/root/repos/7/event/web/challenge.yaml",
-            7,
-            "event/web/challenge.yaml"
-        ));
-        assert!(legacy_repo_manifest_matches(
-            r"C:\rsctf\repos\7\event\web\challenge.yaml",
-            7,
-            "event/web/challenge.yaml"
-        ));
-        assert!(!legacy_repo_manifest_matches(
-            "/old/root/repos/8/event/web/challenge.yaml",
-            7,
-            "event/web/challenge.yaml"
-        ));
-        assert!(!legacy_repo_manifest_matches(
-            "event/web/challenge.yaml",
-            7,
-            "event/web/challenge.yaml"
-        ));
+    fn legacy_lookup_parameters_are_scoped_to_the_bound_repository() {
+        let (relative, suffix_pattern) =
+            legacy_manifest_lookup_parameters(Some(7), "binding/7/event/web/challenge.yaml");
+        assert_eq!(relative.as_deref(), Some("event/web/challenge.yaml"));
+        assert!(suffix_pattern.is_some());
+
+        assert_eq!(
+            legacy_manifest_lookup_parameters(Some(8), "binding/7/event/web/challenge.yaml"),
+            (None, None)
+        );
+        assert_eq!(
+            legacy_manifest_lookup_parameters(Some(7), "event/web/challenge.yaml"),
+            (None, None)
+        );
     }
 
     #[test]

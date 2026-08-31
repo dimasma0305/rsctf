@@ -110,6 +110,24 @@ pub(super) async fn published_owner_still_matches(
         .bind(file_id)
         .fetch_one(&mut **transaction)
         .await
+    } else if let Some(operation_id) = publication_scope
+        .strip_prefix("settings-branding-stage:")
+        .and_then(|operation| Uuid::parse_str(operation).ok())
+    {
+        let Some(actor_user_id) = staged.owner_user_id else {
+            return Ok(false);
+        };
+        sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(
+                   SELECT 1 FROM "PlatformSettingsBrandingStaging"
+                    WHERE operation_id = $1 AND actor_user_id = $2 AND blob_hash = $3
+               )"#,
+        )
+        .bind(operation_id)
+        .bind(actor_user_id)
+        .bind(&staged.blob.hash)
+        .fetch_one(&mut **transaction)
+        .await
     } else if let Some(rest) = publication_scope.strip_prefix("writeup:") {
         let mut parts = rest.split(':');
         let parsed = parts
@@ -118,7 +136,7 @@ pub(super) async fn published_owner_still_matches(
             .zip(
                 parts
                     .next()
-                    .and_then(|participation| participation.parse().ok()),
+                    .and_then(|participation| participation.parse::<i32>().ok()),
             )
             .filter(|_| parts.next().is_none());
         let Some((game_id, participation_id)) = parsed else {

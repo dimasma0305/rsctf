@@ -879,7 +879,7 @@ fn build_snapshot(
 mod filter;
 pub(crate) use filter::{
     filter_flow_page, validate_flow_id, validate_flow_page_bounds, validate_snapshot_version,
-    FilteredFlowPage, ValidatedFlowFilter,
+    ValidatedFlowFilter,
 };
 
 #[cfg(test)]

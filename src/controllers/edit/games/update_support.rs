@@ -109,46 +109,54 @@ pub(super) fn requested_game(
     requested
 }
 
-fn editable_projection(game: &game::Model) -> serde_json::Value {
-    serde_json::json!({
-        "title": game.title,
-        "content": game.content,
-        "summary": game.summary,
-        "hidden": game.hidden,
-        "practiceMode": game.practice_mode,
-        "acceptWithoutReview": game.accept_without_review,
-        "allowUserSubmissions": game.allow_user_submissions,
-        "inviteCode": game.invite_code,
-        "start": game.start_time_utc,
-        "end": game.end_time_utc,
-        "teamMemberCountLimit": game.team_member_count_limit,
-        "containerCountLimit": game.container_count_limit,
-        "writeupNote": game.writeup_note,
-        "writeupRequired": game.writeup_required,
-        "writeupDeadline": game.writeup_deadline,
-        "freeze": game.freeze_time_utc,
-        "bloodBonus": game.blood_bonus_value,
-        "discordWebhook": game.discord_webhook,
-        "adWarmupSeconds": game.ad_warmup_seconds,
-        "adSnapshotRetentionDays": game.ad_snapshot_retention_days,
-        "adTickSeconds": game.ad_tick_seconds,
-        "adFlagLifetimeTicks": game.ad_flag_lifetime_ticks,
-        "adResetCooldownMinutes": game.ad_reset_cooldown_minutes,
-        "adAllowSnapshotDownload": game.ad_allow_snapshot_download,
-        "adGetflagWindowFraction": game.ad_getflag_window_fraction,
-        "adMinGracePeriodSeconds": game.ad_min_grace_period_seconds,
-        "adEpochTicks": game.ad_epoch_ticks,
-        "kothEpochTicks": game.koth_epoch_ticks,
-        "kothCycleTicks": game.koth_cycle_ticks,
-        "kothChampionCooldownTicks": game.koth_champion_cooldown_ticks,
-        "kothClaimConfirmationTicks": game.koth_claim_confirmation_ticks,
-        "vpnAccessRequired": game.vpn_access_required,
-        "vpnBehaviorTelemetryEnabled": game.vpn_behavior_telemetry_enabled,
-        "vpnFlagScanEnabled": game.vpn_flag_scan_enabled,
-        "vpnProviderDnsTelemetryEnabled": game.vpn_provider_dns_telemetry_enabled,
-        "vpnSourceAsnTelemetryEnabled": game.vpn_source_asn_telemetry_enabled,
-        "vpnDeviceSharingTelemetryEnabled": game.vpn_device_sharing_telemetry_enabled,
-    })
+fn editable_projection(game: &game::Model) -> [serde_json::Value; 3] {
+    // Keep each macro invocation small enough for serde_json's recursive object
+    // parser while retaining one exact equality projection for configuration CAS.
+    [
+        serde_json::json!({
+            "title": game.title,
+            "content": game.content,
+            "summary": game.summary,
+            "hidden": game.hidden,
+            "practiceMode": game.practice_mode,
+            "acceptWithoutReview": game.accept_without_review,
+            "allowUserSubmissions": game.allow_user_submissions,
+            "inviteCode": game.invite_code,
+            "start": game.start_time_utc,
+            "end": game.end_time_utc,
+            "teamMemberCountLimit": game.team_member_count_limit,
+            "containerCountLimit": game.container_count_limit,
+            "writeupNote": game.writeup_note,
+        }),
+        serde_json::json!({
+            "writeupRequired": game.writeup_required,
+            "writeupDeadline": game.writeup_deadline,
+            "freeze": game.freeze_time_utc,
+            "bloodBonus": game.blood_bonus_value,
+            "discordWebhook": game.discord_webhook,
+            "adWarmupSeconds": game.ad_warmup_seconds,
+            "adSnapshotRetentionDays": game.ad_snapshot_retention_days,
+            "adTickSeconds": game.ad_tick_seconds,
+            "adFlagLifetimeTicks": game.ad_flag_lifetime_ticks,
+            "adResetCooldownMinutes": game.ad_reset_cooldown_minutes,
+            "adAllowSnapshotDownload": game.ad_allow_snapshot_download,
+            "adGetflagWindowFraction": game.ad_getflag_window_fraction,
+            "adMinGracePeriodSeconds": game.ad_min_grace_period_seconds,
+        }),
+        serde_json::json!({
+            "adEpochTicks": game.ad_epoch_ticks,
+            "kothEpochTicks": game.koth_epoch_ticks,
+            "kothCycleTicks": game.koth_cycle_ticks,
+            "kothChampionCooldownTicks": game.koth_champion_cooldown_ticks,
+            "kothClaimConfirmationTicks": game.koth_claim_confirmation_ticks,
+            "vpnAccessRequired": game.vpn_access_required,
+            "vpnBehaviorTelemetryEnabled": game.vpn_behavior_telemetry_enabled,
+            "vpnFlagScanEnabled": game.vpn_flag_scan_enabled,
+            "vpnProviderDnsTelemetryEnabled": game.vpn_provider_dns_telemetry_enabled,
+            "vpnSourceAsnTelemetryEnabled": game.vpn_source_asn_telemetry_enabled,
+            "vpnDeviceSharingTelemetryEnabled": game.vpn_device_sharing_telemetry_enabled,
+        }),
+    ]
 }
 
 pub(super) fn configuration_changed(current: &game::Model, requested: &game::Model) -> bool {
@@ -345,29 +353,31 @@ mod tests {
 
     #[test]
     fn metadata_only_edits_do_not_flush_scoreboards() {
-        let mut current: game::Model = serde_json::from_value(serde_json::json!({
-            "id": 1, "title": "Event", "public_key": "public", "private_key": "private",
-            "hidden": false, "practice_mode": true, "poster_hash": null,
-            "summary": "old", "content": "old", "accept_without_review": false,
-            "allow_user_submissions": false, "writeup_required": false, "invite_code": null,
-            "team_member_count_limit": 0, "discord_webhook": null, "container_count_limit": 0,
-            "start_time_utc": "2026-01-01T00:00:00Z", "end_time_utc": "2026-01-02T00:00:00Z",
-            "writeup_deadline": "2026-01-03T00:00:00Z", "freeze_time_utc": null,
-            "writeup_note": "", "blood_bonus_value": 0, "repo_binding_id": null,
-            "event_manifest_path": null, "vpn_access_required": false,
-            "vpn_behavior_telemetry_enabled": false, "vpn_flag_scan_enabled": false,
-            "vpn_provider_dns_telemetry_enabled": false, "vpn_source_asn_telemetry_enabled": false,
-            "vpn_device_sharing_telemetry_enabled": false, "configuration_revision": 0,
-            "ad_warmup_seconds": null, "ad_tick_seconds": null, "ad_flag_lifetime_ticks": null,
-            "ad_reset_cooldown_minutes": null, "ad_getflag_window_fraction": null,
-            "ad_min_grace_period_seconds": null, "koth_refresh_ticks": null,
-            "koth_hold_points_per_tick": null, "ad_allow_snapshot_download": true,
-            "ad_snapshot_retention_days": null, "ad_scoring_paused": false,
-            "ad_scoring_paused_at": null, "ad_epoch_ticks": 8,
-            "ad_scoring_start_round": null, "koth_scoring_start_round": null,
-            "koth_epoch_ticks": 12, "koth_cycle_ticks": 3,
-            "koth_champion_cooldown_ticks": 1, "koth_claim_confirmation_ticks": 2
-        }))
+        let mut current: game::Model = serde_json::from_str(
+            r#"{
+                "id": 1, "title": "Event", "public_key": "public", "private_key": "private",
+                "hidden": false, "practice_mode": true, "poster_hash": null,
+                "summary": "old", "content": "old", "accept_without_review": false,
+                "allow_user_submissions": false, "writeup_required": false, "invite_code": null,
+                "team_member_count_limit": 0, "discord_webhook": null, "container_count_limit": 0,
+                "start_time_utc": "2026-01-01T00:00:00Z", "end_time_utc": "2026-01-02T00:00:00Z",
+                "writeup_deadline": "2026-01-03T00:00:00Z", "freeze_time_utc": null,
+                "writeup_note": "", "blood_bonus_value": 0, "repo_binding_id": null,
+                "event_manifest_path": null, "vpn_access_required": false,
+                "vpn_behavior_telemetry_enabled": false, "vpn_flag_scan_enabled": false,
+                "vpn_provider_dns_telemetry_enabled": false, "vpn_source_asn_telemetry_enabled": false,
+                "vpn_device_sharing_telemetry_enabled": false, "configuration_revision": 0,
+                "ad_warmup_seconds": null, "ad_tick_seconds": null, "ad_flag_lifetime_ticks": null,
+                "ad_reset_cooldown_minutes": null, "ad_getflag_window_fraction": null,
+                "ad_min_grace_period_seconds": null, "koth_refresh_ticks": null,
+                "koth_hold_points_per_tick": null, "ad_allow_snapshot_download": true,
+                "ad_snapshot_retention_days": null, "ad_scoring_paused": false,
+                "ad_scoring_paused_at": null, "ad_epoch_ticks": 8,
+                "ad_scoring_start_round": null, "koth_scoring_start_round": null,
+                "koth_epoch_ticks": 12, "koth_cycle_ticks": 3,
+                "koth_champion_cooldown_ticks": 1, "koth_claim_confirmation_ticks": 2
+            }"#,
+        )
         .unwrap();
         let original = current.clone();
         current.summary = "new".into();

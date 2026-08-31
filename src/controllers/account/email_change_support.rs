@@ -8,6 +8,7 @@ pub(super) const ACCOUNT_LINK_TTL: std::time::Duration = std::time::Duration::fr
 /// Cache publication paired with a durable mail intent. The database outbox
 /// serializes replacements; this snapshot lets a failed commit restore the
 /// prior usable link without overwriting a newer cache generation.
+#[cfg(test)]
 pub(super) struct TicketPublication {
     current_key: String,
     ticket_prefix: &'static str,
@@ -16,6 +17,7 @@ pub(super) struct TicketPublication {
     previous: Option<(Vec<u8>, Vec<u8>)>,
 }
 
+#[cfg(test)]
 pub(super) async fn publish_ticket(
     cache: &dyn crate::services::cache::Cache,
     current_key: String,
@@ -71,6 +73,7 @@ pub(super) async fn publish_ticket(
     }
 }
 
+#[cfg(test)]
 pub(super) async fn rollback_ticket_publication(
     cache: &dyn crate::services::cache::Cache,
     publication: TicketPublication,
@@ -148,48 +151,6 @@ pub(super) struct EmailUpdateRequest<'a> {
 pub(super) struct ConfirmedEmailChange {
     pub(super) user_id: Uuid,
     pub(super) user_name: String,
-}
-
-/// Bind the exact link rendered into one outbox message to durable single-use
-/// state. A newer operation supersedes the prior ticket in the same transaction
-/// that supersedes its outbox row, so cache loss or a replica restart cannot
-/// make the delivered current link unusable.
-pub(super) async fn insert_email_change_ticket(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    operation_id: Uuid,
-    account_id: Uuid,
-    security_stamp: &str,
-    new_email: &str,
-    token: &str,
-) -> AppResult<()> {
-    sqlx::query(
-        r#"UPDATE "EmailChangeTickets"
-              SET superseded_at_utc = clock_timestamp()
-            WHERE account_id = $1 AND operation_id <> $2
-              AND superseded_at_utc IS NULL AND consumed_at_utc IS NULL"#,
-    )
-    .bind(account_id)
-    .bind(operation_id)
-    .execute(&mut **transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    sqlx::query(
-        r#"INSERT INTO "EmailChangeTickets"
-             (operation_id, token_hash, account_id, security_stamp,
-              new_email, normalized_email, expires_at_utc)
-           VALUES ($1, $2, $3, $4, $5, $6,
-                   clock_timestamp() + INTERVAL '15 minutes')"#,
-    )
-    .bind(operation_id)
-    .bind(Sha256::digest(token.as_bytes()).to_vec())
-    .bind(account_id)
-    .bind(security_stamp)
-    .bind(new_email)
-    .bind(new_email.to_uppercase())
-    .execute(&mut **transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(())
 }
 
 /// Consume a durable email-change ticket and rotate the account identity in one

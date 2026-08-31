@@ -321,6 +321,7 @@ pub(super) async fn cleanup_staged_flag_attachments(
     cleanup_attachment_ids(st, &ids).await
 }
 
+#[cfg(test)]
 pub(super) async fn record_staged_flag_attachment(
     pool: &sqlx::PgPool,
     challenge_id: i32,

@@ -347,10 +347,7 @@ pub async fn update_challenge(
         && (was_shared_managed != requested_shared_managed
             || was_ad_self_hosted != requested_ad_self_hosted);
     let topology_transition = topology_transition::resolve(
-        engine_control
-            .as_mut()
-            .expect("challenge update holds the game control lock")
-            .transaction_mut(),
+        control.transaction_mut(),
         c_id,
         user.id,
         model.operation_id,
@@ -648,11 +645,11 @@ pub async fn update_challenge(
             ));
         }
     }
-    let control = engine_control
-        .as_mut()
-        .expect("challenge update holds the game control lock");
     let replay = crate::services::mutation_operations::claim(
-        control.transaction_mut(),
+        engine_control
+            .as_mut()
+            .expect("challenge update holds the game control lock")
+            .transaction_mut(),
         user.id,
         "challenge-update",
         &operation_scope,
@@ -687,7 +684,10 @@ pub async fn update_challenge(
         ));
     }
     let updated = definition_write::update(
-        control.transaction_mut(),
+        engine_control
+            .as_mut()
+            .expect("challenge update holds the game control lock")
+            .transaction_mut(),
         id,
         c_id,
         model.expected_revision,

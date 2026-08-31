@@ -633,7 +633,7 @@ pub(crate) async fn load_challenge(
 
 #[path = "helpers/challenge_rows.rs"]
 mod challenge_rows;
-pub(crate) use challenge_rows::{load_challenge_locked, load_game_challenges_locked};
+pub(crate) use challenge_rows::load_challenge_locked;
 
 /// Ensure every division of `game_id` has a per-challenge config row for
 /// `challenge_id`. Insert-if-missing seeded with the division's default

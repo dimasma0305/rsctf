@@ -538,6 +538,7 @@ pub(super) async fn incomplete_competitive_jobs(
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
+#[cfg(test)]
 async fn defer_final_for_incomplete_jobs(
     pool: &sqlx::PgPool,
     reconciliation: &mut sqlx::Transaction<'_, sqlx::Postgres>,

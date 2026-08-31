@@ -10,11 +10,12 @@ use reset_crypto::{decrypt_admin_reset, encrypt_admin_reset};
 
 #[path = "users_mutate_policy.rs"]
 mod policy;
+#[cfg(test)]
+use policy::affected_team_ids;
 use policy::{
-    account_lifecycle_key, affected_team_ids, email_change_requires_stamp_rotation,
-    revoke_user_shared_teams, role_change_requires_stamp_rotation,
-    role_request_requires_shared_revocation, unban_requires_prior_shared_revocation,
-    validate_admin_update,
+    account_lifecycle_key, email_change_requires_stamp_rotation, revoke_user_shared_teams,
+    role_change_requires_stamp_rotation, role_request_requires_shared_revocation,
+    unban_requires_prior_shared_revocation, validate_admin_update,
 };
 
 /// Make an account fail closed before any roster snapshot or capability

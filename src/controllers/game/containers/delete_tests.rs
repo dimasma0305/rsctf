@@ -300,11 +300,12 @@ async fn locked_extend(
     expected_container_id: uuid::Uuid,
 ) -> AppResult<super::ContainerInfoModel> {
     let key = format!("game-container:{participation_id}");
-    let lock = crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(state.pg(), &key)
-        .await
-        .map_err(AppError::from)?;
+    let mut lock =
+        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(state.pg(), &key)
+            .await
+            .map_err(AppError::from)?;
     let result = extend_expected_team_container_locked(
-        state,
+        lock.transaction_mut(),
         participation_id,
         challenge_id,
         expected_container_id,

@@ -658,22 +658,6 @@ async fn check_weighted_async(policy: Policy, key: String, cost: u32) -> Result<
     }
 }
 
-/// Enforce the team-scoped A&D work budget after authentication has resolved a
-/// canonical participation. Returning the normal 429 response preserves the
-/// public error envelope and `Retry-After` header.
-pub(crate) async fn admit_ad_submit(
-    game_id: i32,
-    participation_id: i32,
-    distinct_plausible_flags: usize,
-) -> Option<Response> {
-    let cost = u32::try_from(distinct_plausible_flags.max(1)).unwrap_or(u32::MAX);
-    let key = format!("game:{game_id}:participation:{participation_id}");
-    check_weighted_async(Policy::AdSubmit, key, cost)
-        .await
-        .err()
-        .map(too_many_requests)
-}
-
 /// Charge proxy-open churn before target resolution. Capability-authenticated
 /// WSRX requests pass their verified account subject here too.
 pub(crate) async fn admit_proxy_open(
@@ -771,9 +755,11 @@ async fn check_authenticated_async(identity: String, ip: String) -> Result<(), u
 // Middleware / decorator API
 // ---------------------------------------------------------------------------
 
-/// The always-on Global sliding window, layered once over the whole `/api`
-/// router in `server.rs`. Non-`/api` traffic (health checks, static SPA assets)
-/// is never limited, matching RSCTF scoping the global limiter to `/api`.
+/// The always-on Global sliding window, layered once over the whole router in
+/// `server.rs`. API calls and content-addressed blob downloads are admitted;
+/// health checks and static SPA assets are not. Asset hashes are caller chosen,
+/// so leaving `/assets` outside this cheap source budget would let anonymous
+/// rotating misses reach authorization SQL without consuming rate quota.
 ///
 /// Layer it **after** CORS so `OPTIONS` preflights don't consume quota:
 /// ```ignore
@@ -784,7 +770,7 @@ pub async fn global_middleware(
     mut req: Request,
     next: Next,
 ) -> Response {
-    if !req.uri().path().starts_with("/api") {
+    if !globally_limited_path(req.uri().path()) {
         return next.run(req).await;
     }
     let ip = client_ip(&req);
@@ -893,6 +879,10 @@ pub async fn global_middleware(
     next.run(req).await
 }
 
+fn globally_limited_path(path: &str) -> bool {
+    path.starts_with("/api") || path.starts_with("/assets/")
+}
+
 /// Decorate a single route handler with a named policy — the axum analogue of
 /// RSCTF's `[EnableRateLimiting(policy)]` attribute:
 /// ```ignore
@@ -920,7 +910,7 @@ async fn run_policy(policy: Policy, req: Request, next: Next) -> Response {
 /// Build the 429 response: RSCTF's `RequestResponse { title, status }` envelope
 /// (via [`crate::utils::shared::MessageResponse`]) plus a `Retry-After` header in
 /// whole seconds.
-fn too_many_requests(retry_after: u64) -> Response {
+pub(crate) fn too_many_requests(retry_after: u64) -> Response {
     let mut resp = crate::utils::shared::MessageResponse::new(
         format!("Too many requests. Please retry after {retry_after} seconds."),
         429,

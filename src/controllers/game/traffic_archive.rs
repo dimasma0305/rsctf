@@ -24,28 +24,8 @@ const CAPTURE_ARCHIVE_DATABASE_SECONDS: u64 = 2;
 const CAPTURE_ARCHIVE_STREAM_SECONDS: u64 = 300;
 const CAPTURE_ARCHIVE_RETRY_SECONDS: u64 = 2;
 const CAPTURE_ARCHIVE_ADVISORY_KEY: i64 = 1_195_722_091;
-const FLOW_FILTER_SLOTS: usize = 2;
 static CAPTURE_ARCHIVE_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
-static FLOW_FILTER_CAPACITY: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    std::sync::LazyLock::new(|| {
-        std::sync::Arc::new(tokio::sync::Semaphore::new(FLOW_FILTER_SLOTS))
-    });
-
-async fn spawn_blocking_with_permit<T, F>(
-    permit: tokio::sync::OwnedSemaphorePermit,
-    work: F,
-) -> Result<T, tokio::task::JoinError>
-where
-    T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
-{
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        work()
-    })
-    .await
-}
 
 type CaptureZipChunk = Result<bytes::Bytes, std::io::Error>;
 

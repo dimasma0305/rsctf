@@ -22,6 +22,7 @@ struct TeamProjectionRow {
     team_bio: Option<String>,
     team_avatar_hash: Option<String>,
     team_locked: bool,
+    profile_revision: i64,
     member_id: Option<Uuid>,
     user_name: Option<String>,
     member_avatar_hash: Option<String>,
@@ -46,7 +47,8 @@ WITH eligible_ids AS MATERIALIZED (
       JOIN "Teams" team ON team.id = member.team_id
      WHERE member.user_id = $1 AND team.deletion_pending = FALSE
 ), eligible_teams AS MATERIALIZED (
-    SELECT team.id, team.name, team.bio, team.avatar_hash, team.locked, team.captain_id
+    SELECT team.id, team.name, team.bio, team.avatar_hash, team.locked,
+           team.profile_revision, team.captain_id
       FROM eligible_ids
       JOIN "Teams" team ON team.id = eligible_ids.team_id
      ORDER BY team.id
@@ -69,6 +71,7 @@ WITH eligible_ids AS MATERIALIZED (
 )
 SELECT team.id AS team_id, team.name AS team_name, team.bio AS team_bio,
        team.avatar_hash AS team_avatar_hash, team.locked AS team_locked,
+       team.profile_revision,
        account.id AS member_id, account.user_name,
        account.avatar_hash AS member_avatar_hash, ranked.captain
   FROM eligible_teams team
@@ -119,6 +122,7 @@ pub(super) async fn load_user_team_infos(
             bio: row.team_bio,
             avatar: avatar_url(row.team_avatar_hash),
             locked: row.team_locked,
+            profile_revision: row.profile_revision,
             members: Some(Vec::new()),
         });
         let Some(member_id) = row.member_id else {
@@ -209,7 +213,8 @@ mod tests {
             CREATE TABLE "Teams" (
               id INTEGER PRIMARY KEY, name TEXT NOT NULL, bio TEXT,
               avatar_hash TEXT, locked BOOLEAN NOT NULL,
-              deletion_pending BOOLEAN NOT NULL, captain_id UUID NOT NULL
+              deletion_pending BOOLEAN NOT NULL, captain_id UUID NOT NULL,
+              profile_revision BIGINT NOT NULL DEFAULT 0
             );
             CREATE TABLE "TeamMembers" (
               id SERIAL PRIMARY KEY, team_id INTEGER NOT NULL, user_id UUID NOT NULL
@@ -244,8 +249,8 @@ mod tests {
         .unwrap();
         sqlx::query(
             r#"INSERT INTO "Teams" VALUES
-               (0, 'Member team', NULL, NULL, FALSE, FALSE, $1),
-               (999, 'Private team', NULL, NULL, FALSE, FALSE, $1)"#,
+               (0, 'Member team', NULL, NULL, FALSE, FALSE, $1, 0),
+               (999, 'Private team', NULL, NULL, FALSE, FALSE, $1, 0)"#,
         )
         .bind(other)
         .execute(&pool)

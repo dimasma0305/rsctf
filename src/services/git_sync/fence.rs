@@ -37,7 +37,7 @@ impl ImportMutationFence {
         let challenge_id = sqlx::query_scalar::<_, i64>(
             r#"SELECT nextval(pg_get_serial_sequence('"GameChallenges"', 'id'))"#,
         )
-        .fetch_one(self.game.transaction_mut())
+        .fetch_one(&mut **self.game.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         let challenge_id = i32::try_from(challenge_id)
@@ -403,6 +403,8 @@ pub(super) async fn reacquire_import(
 
 #[cfg(test)]
 mod tests {
+    use super::super::repository::REPOSITORY_MANIFEST_LOOKUP_SQL;
+
     #[test]
     fn revision_queries_use_database_owned_mvcc_fences() {
         let source = include_str!("fence.rs");

@@ -14,13 +14,6 @@ pub(crate) async fn load_challenge_locked(
         .ok_or_else(|| AppError::not_found("Challenge not found"))
 }
 
-pub(crate) async fn load_game_challenges_locked(
-    connection: &mut sqlx::PgConnection,
-    game_id: i32,
-) -> AppResult<Vec<game_challenge::Model>> {
-    load_challenge_rows_locked(connection, game_id, None).await
-}
-
 async fn load_challenge_rows_locked(
     connection: &mut sqlx::PgConnection,
     game_id: i32,

@@ -374,6 +374,7 @@ mod tests {
             deletion_pending: false,
             invite_token: "invite".to_owned(),
             captain_id: Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+            profile_revision: 0,
         };
         let result = teams_with_members(&pool, vec![team]).await.unwrap();
         assert_eq!(result.len(), 1);

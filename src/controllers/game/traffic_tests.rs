@@ -1,5 +1,5 @@
 use super::*;
-use std::io::{Cursor, Read as _, Write as _};
+use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Duration;
 

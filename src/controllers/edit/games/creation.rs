@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(test)]
 pub(crate) fn apply_ad_creation_settings(model: &GameInfoModel, active: &mut game::ActiveModel) {
     active.ad_warmup_seconds = Set(model.ad_warmup_seconds);
     active.ad_snapshot_retention_days = Set(model.ad_snapshot_retention_days);

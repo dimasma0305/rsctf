@@ -10,6 +10,7 @@ use crate::utils::error::{AppError, AppResult};
 /// Atomically revalidate the authenticated captain, enforce the captain limit,
 /// and create both ownership rows. The exact JWT stamp binds this durable
 /// mutation to the principal that passed authentication before any lock wait.
+#[cfg(test)]
 pub(crate) async fn create_team_rows(
     pool: &sqlx::PgPool,
     creator_id: Uuid,
@@ -52,7 +53,7 @@ pub(crate) async fn create_team_rows_in(
     let captained: i64 =
         sqlx::query_scalar(r#"SELECT COUNT(*)::bigint FROM "Teams" WHERE captain_id = $1"#)
             .bind(creator_id)
-            .fetch_one(&mut *transaction)
+            .fetch_one(&mut **transaction)
             .await
             .map_err(database_error)?;
     if captained >= MAX_TEAMS_ALLOWED as i64 {
@@ -69,13 +70,13 @@ pub(crate) async fn create_team_rows_in(
     .bind(bio)
     .bind(random_hex(16))
     .bind(creator_id)
-    .fetch_one(&mut *transaction)
+    .fetch_one(&mut **transaction)
     .await
     .map_err(database_error)?;
     sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES ($1, $2)"#)
         .bind(team_id)
         .bind(creator_id)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
     Ok(team_id)

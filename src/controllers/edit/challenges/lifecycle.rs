@@ -12,6 +12,7 @@ pub(super) struct RuntimeDefinitionSnapshot {
 /// projection automatically includes newly-added safety fields, so an older
 /// topology transition fails closed when a concurrent writer publishes a
 /// definition shape it does not understand.
+#[cfg(test)]
 pub(super) async fn runtime_definition_snapshot(
     pool: &sqlx::PgPool,
     challenge_id: i32,

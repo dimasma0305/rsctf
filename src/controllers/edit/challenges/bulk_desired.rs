@@ -707,7 +707,6 @@ async fn reconcile_desired_state(
                     "This bulk mutation is owned by another recovery request",
                 ));
             }
-            effect_progress |= EFFECT_NOTICE_PUBLISHED;
         }
     }
 

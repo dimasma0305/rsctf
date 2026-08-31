@@ -1,7 +1,6 @@
 //! Safe generation of the downloadable BYOC setup script.
 
 use super::*;
-use base64::Engine as _;
 
 pub(super) fn safe_title(title: &str) -> String {
     title

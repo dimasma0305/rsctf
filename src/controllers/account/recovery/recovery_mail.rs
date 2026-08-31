@@ -47,7 +47,7 @@ pub(super) async fn process_recovery_mail(
         return Ok(());
     };
 
-    let result = async {
+    let result: AppResult<()> = async {
         let mut lookup = st
             .pg()
             .begin()

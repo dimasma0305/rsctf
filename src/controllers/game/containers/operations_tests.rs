@@ -336,7 +336,6 @@ fn delete_and_extend_replays_are_bound_to_the_expected_runtime() {
         result: None,
         lease_active: true,
         runtime_started: false,
-        definition_fence: None,
     };
     assert!(validate_identity(
         &row,

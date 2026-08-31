@@ -72,6 +72,7 @@ struct PreparedFlag {
     upload_stage: Option<crate::services::blob_refs::StagedBlob>,
 }
 
+#[derive(Debug)]
 pub(super) struct FlagRemoval {
     pub(super) revoked_hash: Option<String>,
     pub(super) deleted_hash: Option<String>,
