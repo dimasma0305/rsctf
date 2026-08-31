@@ -85,7 +85,8 @@ SELECT
     (SELECT COUNT(*)::bigint
        FROM "FirstSolves" first_solve
        JOIN "Submissions" submission ON submission.id = first_solve.submission_id
-      WHERE submission.user_id = $1) AS total_first_bloods,
+      WHERE submission.user_id = $1
+        AND submission.status = $2) AS total_first_bloods,
     (SELECT COUNT(*)::bigint FROM game_summary) AS games_participated,
     COALESCE((SELECT ARRAY_AGG(category ORDER BY category) FROM category_summary), ARRAY[]::smallint[]) AS category_ids,
     COALESCE((SELECT ARRAY_AGG(solves ORDER BY category) FROM category_summary), ARRAY[]::bigint[]) AS category_solves,
@@ -178,6 +179,7 @@ mod tests {
     fn stats_projection_is_bounded_and_never_selects_flag_answers() {
         assert!(STATS_SQL.contains("LIMIT $3"));
         assert!(STATS_SQL.contains("submission.user_id = $1"));
+        assert_eq!(STATS_SQL.matches("submission.status = $2").count(), 2);
         assert!(!STATS_SQL.contains("submission.answer"));
         assert!(!STATS_SQL.contains("SELECT submission.*"));
         assert_eq!(MAX_RECENT_GAMES, 100);
@@ -245,18 +247,42 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        let other = uuid::Uuid::new_v4();
         sqlx::query(
             r#"INSERT INTO "Submissions" (id, user_id, status, game_id, challenge_id)
-               SELECT n, $1, 1, ((n - 1) % 150) + 1, ((n - 1) % 150) + 1
-                 FROM generate_series(1, 10000) n"#,
+               SELECT n, $1, 1, n, n FROM generate_series(1, 150) n
+               UNION ALL
+               SELECT n, $1, 2, ((n - 1) % 150) + 1, ((n - 1) % 150) + 1
+                 FROM generate_series(151, 10000) n
+               UNION ALL
+               SELECT n, $2, 1, ((n - 1) % 150) + 1, ((n - 1) % 150) + 1
+                 FROM generate_series(10001, 110000) n"#,
         )
         .bind(player)
+        .bind(other)
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
             r#"INSERT INTO "FirstSolves" (participation_id, challenge_id, submission_id)
-               SELECT n, n, n FROM generate_series(1, 10) n"#,
+               SELECT n, n, n FROM generate_series(1, 10) n
+               UNION ALL SELECT 151, 1, 151
+               UNION ALL
+               SELECT n, ((n - 1) % 150) + 1, n FROM generate_series(10001, 110000) n"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE INDEX ix_submissions_user_accepted_stats
+                ON "Submissions" (user_id, game_id, challenge_id)
+                WHERE user_id IS NOT NULL AND status = 1;
+            CREATE INDEX ix_firstsolves_submission_stats
+                ON "FirstSolves" (submission_id);
+            ANALYZE "Submissions";
+            ANALYZE "FirstSolves";
+            "#,
         )
         .execute(&pool)
         .await
@@ -268,6 +294,21 @@ mod tests {
         assert_eq!(stats.games_participated, 150);
         assert_eq!(stats.games.len(), MAX_RECENT_GAMES as usize);
         assert_eq!(stats.solves_by_category.values().sum::<i32>(), 150);
+
+        let explain_sql = format!("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {STATS_SQL}");
+        let plan: serde_json::Value = sqlx::query_scalar(&explain_sql)
+            .bind(player)
+            .bind(AnswerResult::Accepted as i16)
+            .bind(MAX_RECENT_GAMES)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let plan = plan.to_string();
+        assert!(
+            plan.contains("ix_submissions_user_accepted_stats"),
+            "{plan}"
+        );
+        assert!(plan.contains("ix_firstsolves_submission_stats"), "{plan}");
 
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

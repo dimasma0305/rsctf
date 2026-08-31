@@ -11,6 +11,9 @@ CREATE INDEX IF NOT EXISTS ix_submissions_user_accepted_stats
     ON "Submissions" (user_id, game_id, challenge_id)
     WHERE user_id IS NOT NULL AND status = 1;
 
+CREATE INDEX IF NOT EXISTS ix_firstsolves_submission_stats
+    ON "FirstSolves" (submission_id);
+
 CREATE INDEX IF NOT EXISTS ix_teams_captain_active
     ON "Teams" (captain_id, id)
     WHERE deletion_pending = FALSE;
@@ -23,6 +26,7 @@ CREATE INDEX IF NOT EXISTS ix_gamechallenges_player_catalog
 const DOWN_SQL: &str = r#"
 DROP INDEX IF EXISTS ix_gamechallenges_player_catalog;
 DROP INDEX IF EXISTS ix_teams_captain_active;
+DROP INDEX IF EXISTS ix_firstsolves_submission_stats;
 DROP INDEX IF EXISTS ix_submissions_user_accepted_stats;
 "#;
 
@@ -48,9 +52,11 @@ mod tests {
 
     #[test]
     fn player_read_indexes_are_idempotent_and_partial() {
-        assert_eq!(UP_SQL.matches("CREATE INDEX IF NOT EXISTS").count(), 3);
+        assert_eq!(UP_SQL.matches("CREATE INDEX IF NOT EXISTS").count(), 4);
         assert!(UP_SQL.contains("user_id, game_id, challenge_id"));
         assert!(UP_SQL.contains("WHERE user_id IS NOT NULL AND status = 1"));
+        assert!(UP_SQL.contains("ix_firstsolves_submission_stats"));
+        assert!(UP_SQL.contains("ON \"FirstSolves\" (submission_id)"));
         assert!(UP_SQL.contains("WHERE deletion_pending = FALSE"));
         assert!(UP_SQL.contains("WHERE is_enabled = TRUE AND review_status = 0"));
     }
