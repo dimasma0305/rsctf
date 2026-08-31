@@ -59,4 +59,20 @@ test("fixed-rate modal load keeps one two-request batch for every roster size", 
     /challenges\/\$\{CHALLENGE\}\/solvers`,/,
   );
   assert.match(scenario, /dropped_iterations: \["count==0"\]/);
+  assert.match(
+    scenario,
+    /"X-RSCTF-Request-Id": requestId\(resource\)/,
+  );
+  assert.match(
+    scenario,
+    /challenge-\$\{resource\}-00000000-0000-4000-8000-\$\{suffix\}/,
+  );
+  assert.match(
+    scenario,
+    /challenge_modal_request_identity_failure: \["rate==0"\]/,
+  );
+  assert.equal(
+    [...scenario.matchAll(/headers\["X-Rsctf-Request-Id"\]/g)].length,
+    2,
+  );
 });

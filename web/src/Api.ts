@@ -2674,6 +2674,13 @@ export interface AdTokenHintModel {
 }
 
 /** A&D — per-service row in the player's state view. */
+export enum AdServiceDeliveryState {
+  Managed = "Managed",
+  ByocConnecting = "ByocConnecting",
+  ByocHealthy = "ByocHealthy",
+  ByocStale = "ByocStale",
+}
+
 export interface AdTeamServiceStateModel {
   adTeamServiceId: number;
   challengeId: number;
@@ -2683,13 +2690,16 @@ export interface AdTeamServiceStateModel {
   /** The flag the team should currently be defending (their own). */
   currentFlag?: string | null;
   lastCheckStatus?: string | null;
-  lastResetAt?: string | null;
+  /** @format uint64 */
+  lastResetAt?: number | null;
   canReset: boolean;
   resetCooldownSecondsRemaining?: number | null;
   /** True once a post-game snapshot exists for this service — team can download their own box. */
   snapshotAvailable: boolean;
   /** True when the challenge is self-hosted (BYOC): show the setup bundle instead of a hosted container. */
   selfHosted?: boolean;
+  /** Authoritative cross-replica service publication/check state. */
+  deliveryState: AdServiceDeliveryState;
 }
 
 /** A&D — GET /api/Game/{id}/Ad/State response. */
@@ -2703,8 +2713,10 @@ export interface AdStateModel {
   flagsReady: boolean;
   /** Number of services that did not acknowledge the current round's flag. */
   flagDeliveryFailures: number;
-  roundStartedAt?: string | null;
-  roundEndsAt?: string | null;
+  /** @format uint64 */
+  roundStartedAt?: number | null;
+  /** @format uint64 */
+  roundEndsAt?: number | null;
   /** True while the operator has frozen A&D/KotH scoring and round progression. */
   scoringPaused: boolean;
   /** Unix-millisecond instant used to freeze the player countdown. */

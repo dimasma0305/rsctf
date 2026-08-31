@@ -9,7 +9,15 @@ import { useSWRConfig } from 'swr'
 import type { AdStateOwner } from '@Components/AdChallengePanel'
 import { ChallengeModal, SolverInfo } from '@Components/ChallengeModal'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
-import { assertJsonResponse, NonJsonResponseError } from '@Utils/ChallengePolling'
+import {
+  assertJsonResponse,
+  captureChallengeReadFailure,
+  challengeReadFailure,
+  challengeRequestHeaders,
+  createChallengeRecoveryOwner,
+  createChallengeRequestId,
+  NonJsonResponseError,
+} from '@Utils/ChallengePolling'
 import { encryptApiData } from '@Utils/Crypto'
 import { isEventVpnAccessError } from '@Utils/EventVpnProof'
 import { FlagSubmitAttemptOwner } from '@Utils/FlagSubmitAttempt'
@@ -25,6 +33,7 @@ import {
 } from '@Utils/InstanceLifecycle'
 import { ACCOUNT_STATS_PATH, CHALLENGE_CATALOG_PATH, invalidatePlayerReads } from '@Utils/PlayerReadCache'
 import { httpErrorStatus } from '@Utils/ProfileRetry'
+import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
 import { showErrorMsg } from '@Utils/Shared'
 import { ChallengeCategoryItemProps } from '@Utils/Shared'
 import { useChallengePolling } from '@Hooks/useChallengePolling'
@@ -62,7 +71,7 @@ interface PendingFlagVerdict extends FlagVerdictIdentity {
 }
 
 type ContainerOperationKind = 'create' | 'delete' | 'extend'
-type ContainerOperationOwner = { scope: string; id: string }
+type ContainerOperationOwner = { scope: string; id: string; key: RetryableOperationKey }
 
 export const operationStorageKey = (kind: ContainerOperationKind, scope: string) =>
   `rsctf:container-operation:${kind}:${encodeURIComponent(scope)}`
@@ -84,39 +93,24 @@ const retainContainerOperation = (
   ownerRef: MutableRefObject<ContainerOperationOwner | null>,
   scope: string
 ) => {
-  if (ownerRef.current?.scope === scope) return ownerRef.current.id
-  let owner: ContainerOperationOwner | null = null
-  try {
-    const stored = sessionStorage.getItem(operationStorageKey(kind, scope))
-    const candidate = stored ? (JSON.parse(stored) as Partial<ContainerOperationOwner>) : null
-    if (candidate?.scope === scope && typeof candidate.id === 'string') {
-      owner = { scope, id: candidate.id }
-    }
-  } catch {
-    // Storage can be unavailable in privacy-restricted browser contexts.
+  const current = ownerRef.current
+  if (current?.scope === scope) {
+    current.key.claim()
+    return current
   }
-  owner ??= { scope, id: crypto.randomUUID() }
+  current?.key.release()
+  const key = new RetryableOperationKey(undefined, operationStorageKey(kind, scope))
+  const owner = { scope, id: key.claim(), key }
   ownerRef.current = owner
-  try {
-    sessionStorage.setItem(operationStorageKey(kind, scope), JSON.stringify(owner))
-  } catch {
-    // The in-memory ref still preserves identity for this modal lifetime.
-  }
-  return owner.id
+  return owner
 }
 
 const clearContainerOperation = (
-  kind: ContainerOperationKind,
-  ownerRef: MutableRefObject<ContainerOperationOwner | null>
+  ownerRef: MutableRefObject<ContainerOperationOwner | null>,
+  owner: ContainerOperationOwner
 ) => {
-  const owner = ownerRef.current
-  ownerRef.current = null
-  if (!owner) return
-  try {
-    sessionStorage.removeItem(operationStorageKey(kind, owner.scope))
-  } catch {
-    // Nothing else is required after the authoritative operation completed.
-  }
+  if (ownerRef.current === owner) ownerRef.current = null
+  owner.key.complete(owner.id)
 }
 
 export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
@@ -139,10 +133,19 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   } = props
 
   const readEnabled = shouldReadChallenge(modalProps.opened, challengeOwned, gameId, challengeId)
+  const recoveryOwner = useMemo(createChallengeRecoveryOwner, [])
   const challengeRequest = useCallback(
     async (signal: AbortSignal) => {
-      const response = await api.game.gameGetChallenge(gameId, challengeId, { signal })
-      return assertJsonResponse(response)
+      const requestId = createChallengeRequestId('challenge')
+      try {
+        const response = await api.game.gameGetChallenge(gameId, challengeId, {
+          signal,
+          headers: challengeRequestHeaders(requestId),
+        })
+        return assertJsonResponse(response)
+      } catch (error) {
+        throw captureChallengeReadFailure(error, 'challenge', requestId)
+      }
     },
     [challengeId, gameId]
   )
@@ -160,28 +163,41 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     refreshInterval: 0,
     revalidateOnFocus: false,
     revalidateOnReconnect: false,
+    recoveryOwner,
+    recoveryKey: 'challenge-detail',
     request: challengeRequest,
   })
 
   const solverRequest = useCallback(
     async (signal: AbortSignal) => {
-      const response = await api.game.gameGetChallengeSolverPage(
-        gameId,
-        challengeId,
-        { count: 20, skip: 0 },
-        { signal }
-      )
-      return assertJsonResponse(response)
+      const requestId = createChallengeRequestId('solvers')
+      try {
+        const response = await api.game.gameGetChallengeSolverPage(
+          gameId,
+          challengeId,
+          { count: 20, skip: 0 },
+          { signal, headers: challengeRequestHeaders(requestId) }
+        )
+        return assertJsonResponse(response)
+      } catch (error) {
+        throw captureChallengeReadFailure(error, 'solvers', requestId)
+      }
     },
     [challengeId, gameId]
   )
-  const { data: solverPage, error: solverError } = useChallengePolling<ChallengeSolverPageModel>({
+  const {
+    data: solverPage,
+    error: solverError,
+    mutate: mutateSolvers,
+  } = useChallengePolling<ChallengeSolverPageModel>({
     key:
       gameId > 0 && challengeId > 0
         ? `/api/game/${gameId}/challenges/${challengeId}/solvers/page?count=20&skip=0`
         : null,
     active: readEnabled,
     refreshInterval: 30_000,
+    recoveryOwner,
+    recoveryKey: 'challenge-solvers',
     request: solverRequest,
   })
 
@@ -203,35 +219,104 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
   const pollErrorMessage = (error: unknown, resource: 'challenge' | 'solvers') => {
     if (!error) return undefined
+    const failure = challengeReadFailure(error)
+    const reference = failure
+      ? failure.serverTraceId === failure.requestId
+        ? ` ${t('challenge.error.request_trace_reference', 'Request/server trace')}: ${failure.requestId}.`
+        : ` ${t('challenge.error.request_reference', 'Request reference')}: ${failure.requestId}${
+            failure.serverTraceId
+              ? ` · ${t('challenge.error.server_trace', 'server trace')}: ${failure.serverTraceId}`
+              : ''
+          }.`
+      : ''
+    const message = (value: string) => `${value}${reference}`
     if (isEventVpnAccessError(error)) {
-      return error.kind === 'disconnected'
-        ? t('challenge.error.vpn_disconnected', 'Connect to the event VPN, then reopen the challenge.')
-        : t('challenge.error.vpn_unavailable', 'Event VPN verification is temporarily unavailable. Retry shortly.')
+      if (error.kind === 'disconnected') {
+        return message(t('challenge.error.vpn_disconnected', 'Connect to the event VPN, then retry the challenge.'))
+      }
+      if (error.kind === 'rate-limited') {
+        return message(
+          t(
+            'challenge.error.vpn_rate_limited',
+            'Event VPN verification is rate limited. Retry after the indicated delay.'
+          )
+        )
+      }
+      return message(
+        t('challenge.error.vpn_unavailable', 'Event VPN verification is temporarily unavailable. Retry shortly.')
+      )
     }
     if (error instanceof NonJsonResponseError) {
-      return t(
-        'challenge.error.invalid_response',
-        'The server returned an invalid response. Automatic retries stopped.'
+      return message(
+        t('challenge.error.invalid_response', 'The server returned an invalid response. Automatic retries stopped.')
       )
     }
     const status = httpErrorStatus(error)
-    if (status === 401) return t('challenge.error.unauthorized', 'Your session expired. Sign in again to continue.')
+    if (status === 401) {
+      return message(t('challenge.error.unauthorized', 'Your session expired. Sign in again to continue.'))
+    }
     if (status === 403) {
-      return t(
-        'challenge.error.forbidden',
-        'Challenge access was denied. Connect to the event VPN if it is required, then reopen the challenge.'
+      return message(
+        t(
+          'challenge.error.forbidden',
+          'Your challenge access was revoked or is no longer valid. Rejoin the event or ask an organizer to check your participation.'
+        )
       )
     }
     if (status === 404) {
-      return resource === 'challenge'
-        ? t('challenge.error.not_found', 'This challenge is no longer available.')
-        : t('challenge.error.solvers_not_found', 'Solver history is unavailable for this challenge.')
+      return message(
+        resource === 'challenge'
+          ? t('challenge.error.not_found', 'This challenge is no longer available.')
+          : t('challenge.error.solvers_not_found', 'Solver history is unavailable for this challenge.')
+      )
     }
     if (status === 429) {
-      return t('challenge.error.rate_limited', 'Too many requests. Reopen the challenge after the server retry window.')
+      const seconds = failure?.retryAfterMilliseconds
+        ? Math.max(1, Math.ceil(failure.retryAfterMilliseconds / 1_000))
+        : null
+      return message(
+        seconds
+          ? t('challenge.error.rate_limited_seconds', 'Too many requests. Retry in about {{seconds}} seconds.', {
+              seconds,
+            })
+          : t('challenge.error.rate_limited', 'Too many requests. Retry after the server retry window.')
+      )
     }
-    return t('challenge.error.temporary', 'Challenge data could not be loaded. Automatic retries are bounded.')
+    if (status !== null && status >= 500) {
+      return message(
+        resource === 'challenge'
+          ? t(
+              'challenge.error.server_temporary',
+              'The challenge service is temporarily unavailable (HTTP {{status}}). Automatic retries are bounded.',
+              { status }
+            )
+          : t(
+              'challenge.error.solver_temporary',
+              'Solver history is temporarily unavailable (HTTP {{status}}); the challenge remains usable.',
+              { status }
+            )
+      )
+    }
+    if (status !== null) {
+      return message(
+        resource === 'challenge'
+          ? t('challenge.error.request_rejected', 'The challenge request failed (HTTP {{status}}).', { status })
+          : t('challenge.error.solver_rejected', 'Solver history could not be loaded (HTTP {{status}}).', { status })
+      )
+    }
+    return message(
+      resource === 'challenge'
+        ? t('challenge.error.network', 'The challenge request failed on the network. Automatic retries are bounded.')
+        : t('challenge.error.solver_network', 'Solver history could not be refreshed; the challenge remains usable.')
+    )
   }
+
+  const retryFailedReads = useCallback(async () => {
+    const reads: Promise<unknown>[] = []
+    if (challenge === undefined || challengeError) reads.push(mutate())
+    if (solverError) reads.push(mutateSolvers())
+    await Promise.allSettled(reads)
+  }, [challenge, challengeError, mutate, mutateSolvers, solverError])
 
   const wrongFlagHints = t('challenge.content.wrong_flag_hints', {
     returnObjects: true,
@@ -311,24 +396,29 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   }, [gameId, challengeId, readEnabled])
 
   const isLimitReached = (challenge?.limit && (challenge.attempts ?? 0) >= challenge.limit) || false
-  const operationScope = containerOperationScope(
-    user?.userId,
-    challenge?.context?.participationId,
-    gameId,
-    challengeId
+  const operationScope = containerOperationScope(user?.userId, challenge?.context?.participationId, gameId, challengeId)
+
+  useEffect(
+    () => () => {
+      containerCreateOperationRef.current?.key.release()
+      containerDeleteOperationRef.current?.key.release()
+      containerExtendOperationRef.current?.key.release()
+    },
+    [operationScope, readEnabled]
   )
 
   const onCreate = async () => {
     if (!readEnabled || disabled) return
     setDisabled(true)
+    let operation: ContainerOperationOwner | undefined
 
     try {
-      const operationId = retainContainerOperation('create', containerCreateOperationRef, operationScope)
+      operation = retainContainerOperation('create', containerCreateOperationRef, operationScope)
       const res = await api.game.gameCreateContainer(gameId, challengeId, {
-        headers: { 'X-RSCTF-Operation-Id': operationId },
+        headers: { 'X-RSCTF-Operation-Id': operation.id },
       })
       if (!(await confirmCreatedInstance(res.data, mutate))) return
-      clearContainerOperation('create', containerCreateOperationRef)
+      clearContainerOperation(containerCreateOperationRef, operation)
       showNotification({
         color: 'teal',
         title: t('challenge.notification.instance.created.title'),
@@ -336,8 +426,8 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch (e) {
-      if (isTerminalContainerOperationError(e)) {
-        clearContainerOperation('create', containerCreateOperationRef)
+      if (operation && isTerminalContainerOperationError(e)) {
+        clearContainerOperation(containerCreateOperationRef, operation)
       }
       showErrorMsg(e, t)
     } finally {
@@ -346,6 +436,9 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   }
 
   const requestDestroy = async () => {
+    let operation = containerDeleteOperationRef.current?.scope.startsWith(`${operationScope}:`)
+      ? containerDeleteOperationRef.current
+      : undefined
     try {
       await destroyReconciledInstance<ChallengeDetailModel>({
         refresh: mutate,
@@ -355,19 +448,19 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
           if (!expectedContainerId)
             throw new Error('The refreshed challenge response is missing its instance identity.')
           const scope = `${operationScope}:${expectedContainerId}`
-          const operationId = retainContainerOperation('delete', containerDeleteOperationRef, scope)
+          operation = retainContainerOperation('delete', containerDeleteOperationRef, scope)
           await api.game.gameDeleteContainer(
             gameId,
             challengeId,
             { expectedContainerId },
-            { headers: { 'X-RSCTF-Operation-Id': operationId } }
+            { headers: { 'X-RSCTF-Operation-Id': operation.id } }
           )
         },
         publishAbsent: async (deleted) => {
           await mutate((current) => clearDestroyedInstanceContext(current, deleted), { revalidate: false })
         },
       })
-      clearContainerOperation('delete', containerDeleteOperationRef)
+      if (operation) clearContainerOperation(containerDeleteOperationRef, operation)
       showNotification({
         color: 'teal',
         title: t('challenge.notification.instance.destroyed.title'),
@@ -375,8 +468,8 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch (e) {
-      if (isTerminalContainerOperationError(e)) {
-        clearContainerOperation('delete', containerDeleteOperationRef)
+      if (operation && isTerminalContainerOperationError(e)) {
+        clearContainerOperation(containerDeleteOperationRef, operation)
       }
       showErrorMsg(e, t)
     }
@@ -395,35 +488,34 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   const onExtend = async () => {
     if (!readEnabled || disabled) return
     setDisabled(true)
+    let operation: ContainerOperationOwner | undefined
 
     try {
       await extendReconciledInstance({
         refresh: mutate,
-        extend: async (expectedContainerId) =>
-          (
+        extend: async (expectedContainerId) => {
+          operation = retainContainerOperation(
+            'extend',
+            containerExtendOperationRef,
+            `${operationScope}:${expectedContainerId}`
+          )
+          return (
             await api.game.gameExtendContainerLifetime(
               gameId,
               challengeId,
               { expectedContainerId },
-              {
-                headers: {
-                  'X-RSCTF-Operation-Id': retainContainerOperation(
-                    'extend',
-                    containerExtendOperationRef,
-                    `${operationScope}:${expectedContainerId}`
-                  ),
-                },
-              }
+              { headers: { 'X-RSCTF-Operation-Id': operation.id } }
             )
-          ).data,
+          ).data
+        },
         publish: async (extension) => {
           await mutate((latest) => mergeExtendedInstanceContext(latest, extension), { revalidate: false })
         },
       })
-      clearContainerOperation('extend', containerExtendOperationRef)
+      if (operation) clearContainerOperation(containerExtendOperationRef, operation)
     } catch (e) {
-      if (isTerminalContainerOperationError(e)) {
-        clearContainerOperation('extend', containerExtendOperationRef)
+      if (operation && isTerminalContainerOperationError(e)) {
+        clearContainerOperation(containerExtendOperationRef, operation)
       }
       showErrorMsg(e, t)
     } finally {
@@ -672,7 +764,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       gameTitle={gameTitle}
       eventHref={eventHref}
       loading={readEnabled && challenge === undefined && challengeError === undefined}
-      onRetryLoad={readEnabled ? () => void mutate() : undefined}
+      onRetryLoad={readEnabled ? () => void retryFailedReads() : undefined}
       challenge={{
         ...(challenge ?? {}),
         title: challenge?.title ?? title,
@@ -683,8 +775,9 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       justSolved={solvedChallengeId === challengeId}
       solvers={solvers}
       solverTotal={solverPage?.total}
-      loadError={pollErrorMessage(challengeError, 'challenge')}
-      solverError={pollErrorMessage(solverError, 'solvers')}
+      loadError={challenge === undefined ? pollErrorMessage(challengeError, 'challenge') : undefined}
+      refreshError={challenge !== undefined ? pollErrorMessage(challengeError, 'challenge') : undefined}
+      solverError={challenge !== undefined ? pollErrorMessage(solverError, 'solvers') : undefined}
       flag={flag}
       setFlag={setFlag}
       receiptProof={receiptProof}

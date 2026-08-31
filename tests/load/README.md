@@ -528,6 +528,9 @@ baseline run.
 reads as one fixed-rate cycle. It discovers the enabled challenge with the largest
 solver roster, caps the visible solver response at 20 rows/64 KiB, and fails on
 non-JSON, authorization, 5xx, dropped-iteration, or pagination-contract errors.
+Each resource carries a bounded support identifier and requires the server to echo
+it, proving a failing browser request can be correlated with its redacted request
+span without logging a credential or raw URL.
 It performs no mutations:
 
 ```sh

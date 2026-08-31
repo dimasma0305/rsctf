@@ -418,7 +418,9 @@ const FileDetail: FC<{ gameId: number; sid: number; path: string; onBack: () => 
       ) : loadError || !data ? (
         <Alert color="orange" title={t('admin.content.ad_ops.file.load_failed', 'File preview unavailable')}>
           <Stack gap="xs">
-            <Text size="sm">{loadError ?? t('admin.content.ad_ops.file.load_failed', 'Could not read this file.')}</Text>
+            <Text size="sm">
+              {loadError ?? t('admin.content.ad_ops.file.load_failed', 'Could not read this file.')}
+            </Text>
             <Button variant="light" size="xs" onClick={() => setRetryGeneration((value) => value + 1)}>
               {t('common.button.retry', 'Retry')}
             </Button>
@@ -952,6 +954,10 @@ const AdOps: FC = () => {
     }
   }
   useEffect(() => () => ensureAbortRef.current.abort(), [])
+  useEffect(() => {
+    const owner = ensureContainersKey.current?.owner
+    return () => owner?.release()
+  }, [numId])
   // Which side of the console is showing. A&D vs KotH challenges are disjoint
   // sets in a game; the switch only appears when both exist (see showViewSwitch).
   const [view, setView] = useState<'ad' | 'koth'>('ad')

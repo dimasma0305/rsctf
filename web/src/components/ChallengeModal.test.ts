@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { act, createElement, Profiler, type FC, useState } from 'react'
 import { I18nextProvider } from 'react-i18next'
-import { ChallengeCategory, ChallengeType, type ChallengeDetailModel } from '../Api'
+import { ChallengeCategory, ChallengeType, SolveReceiptMode, type ChallengeDetailModel } from '../Api'
 import { installTestDom } from '../test/installDom'
 import { LanguageProvider } from '../utils/I18n'
 import type { ChallengeCategoryItemProps } from '../utils/Shared'
@@ -127,7 +127,7 @@ test('challenge modal ticks only while an open deadline needs updates', async (c
   }
 })
 
-test('editing and submitting a flag preserves unchanged animated Markdown DOM', async (context) => {
+test('form edits and verdict polling preserve animated Markdown until challenge identity or source changes', async (context) => {
   const browser = new Window({ url: 'https://rsctf.test/' })
   const restoreDom = installTestDom(browser)
   const i18n = i18next.createInstance()
@@ -161,24 +161,32 @@ test('editing and submitting a flag preserves unchanged animated Markdown DOM', 
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   let submissions = 0
   let replaceContent: (() => void) | undefined
+  let switchChallenge: (() => void) | undefined
+  let setVerdictPolling: ((value: boolean) => void) | undefined
   let animationTimer: ReturnType<typeof setInterval> | undefined
 
   const Harness: FC = () => {
     const [flag, setFlag] = useState('')
+    const [receipt, setReceipt] = useState('')
+    const [challengeId, setChallengeId] = useState(557)
+    const [verdictPolling, setPolling] = useState(false)
     const [content, setContent] = useState('<span class="tower-animation" data-frame="initial">animated tower</span>')
     replaceContent = () => setContent('<span class="tower-animation">new animation</span>')
+    switchChallenge = () => setChallengeId(558)
+    setVerdictPolling = setPolling
     return createElement(ChallengeModal, {
       opened: true,
       onClose: () => undefined,
       transitionProps: { duration: 0 },
       challenge: {
-        id: 557,
+        id: challengeId,
         title: 'Tower of Babel',
         content,
         category: ChallengeCategory.Misc,
         type: ChallengeType.StaticAttachment,
         score: 100,
         attempts: 0,
+        solveReceiptMode: SolveReceiptMode.Required,
       },
       cateData: category,
       flag,
@@ -186,13 +194,18 @@ test('editing and submitting a flag preserves unchanged animated Markdown DOM', 
         if (typeof value === 'string') setFlag(value)
         else if (value?.currentTarget) setFlag(value.currentTarget.value)
       },
-      receiptProof: '',
-      setReceiptProof: () => undefined,
+      receiptProof: receipt,
+      setReceiptProof: (value) => {
+        if (typeof value === 'string') setReceipt(value)
+        else if (value?.currentTarget) setReceipt(value.currentTarget.value)
+      },
       onCreate: () => undefined,
       onDestroy: () => undefined,
       onSubmitFlag: () => {
         submissions += 1
       },
+      disabled: verdictPolling,
+      submitting: verdictPolling,
     })
   }
 
@@ -208,9 +221,11 @@ test('editing and submitting a flag preserves unchanged animated Markdown DOM', 
     })
     const form = browser.document.querySelector<HTMLFormElement>('form[data-guide="flag-submit"]')
     const input = form?.querySelector<HTMLInputElement>('input')
+    const receipt = form?.querySelector<HTMLTextAreaElement>('textarea')
     const initialAnimation = browser.document.querySelector<HTMLElement>('.tower-animation')
     assert.ok(form)
     assert.ok(input)
+    assert.ok(receipt)
     assert.ok(initialAnimation)
     let frame = 0
     context.mock.timers.enable({ apis: ['setInterval'] })
@@ -234,14 +249,36 @@ test('editing and submitting a flag preserves unchanged animated Markdown DOM', 
     assert.equal(afterTyping?.dataset.frame, 'running-5')
 
     await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(browser.HTMLTextAreaElement.prototype, 'value')?.set
+      assert.ok(setValue)
+      setValue.call(receipt, 'trusted-receipt-proof')
+      receipt.dispatchEvent(new browser.Event('input', { bubbles: true }))
+      receipt.dispatchEvent(new browser.Event('change', { bubbles: true }))
+    })
+    context.mock.timers.tick(200)
+    assert.equal(browser.document.querySelector('.tower-animation'), initialAnimation)
+    assert.equal(initialAnimation.dataset.frame, 'running-7')
+
+    await act(async () => setVerdictPolling?.(true))
+    context.mock.timers.tick(200)
+    assert.equal(browser.document.querySelector('.tower-animation'), initialAnimation)
+    assert.equal(initialAnimation.dataset.frame, 'running-9')
+    await act(async () => setVerdictPolling?.(false))
+
+    await act(async () => {
       form.dispatchEvent(new browser.Event('submit', { bubbles: true, cancelable: true }))
     })
     assert.equal(submissions, 1)
     assert.equal(browser.document.querySelector('.tower-animation'), initialAnimation)
 
+    await act(async () => switchChallenge?.())
+    const identityReplacement = browser.document.querySelector<HTMLElement>('.tower-animation')
+    assert.notEqual(identityReplacement, initialAnimation)
+    assert.equal(identityReplacement?.textContent, 'animated tower')
+
     await act(async () => replaceContent?.())
     const replacedAnimation = browser.document.querySelector<HTMLElement>('.tower-animation')
-    assert.notEqual(replacedAnimation, initialAnimation)
+    assert.notEqual(replacedAnimation, identityReplacement)
     assert.equal(replacedAnimation?.textContent, 'new animation')
   } finally {
     if (animationTimer !== undefined) clearInterval(animationTimer)
