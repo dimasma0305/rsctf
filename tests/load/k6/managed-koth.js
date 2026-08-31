@@ -67,6 +67,7 @@ const validPlayModelMismatch = new Counter('valid_play_model_mismatch');
 const rejectedCapabilities = new Counter('invalid_capabilities_rejected');
 const rateLimitedCapabilities = new Counter('invalid_capabilities_rate_limited');
 const invalidRetryAfter = new Rate('invalid_retry_after');
+const adminReadHttp400 = new Counter('admin_read_http_400');
 const adminReadHttp401 = new Counter('admin_read_http_401');
 const adminReadHttp403 = new Counter('admin_read_http_403');
 const adminReadHttp404 = new Counter('admin_read_http_404');
@@ -216,7 +217,7 @@ export function adminRead() {
   const headers = { Authorization: `Bearer ${ADMIN_TOKEN}` };
   const responses = http.batch([
     ['GET', `${PLATFORM}/api/game/${GAME}/ad/koth/scoreboard`, null, { headers }],
-    ['GET', `${PLATFORM}/api/game/${GAME}/ad/koth/${CHALLENGE}/state`, null, { headers }],
+    ['GET', `${PLATFORM}/api/edit/games/${GAME}/ad/koth/state`, null, { headers }],
   ]);
   let invalid = false;
   for (const response of responses) {
@@ -226,6 +227,8 @@ export function adminRead() {
     invalid ||= responseInvalid;
     if (!responseInvalid) {
       boardLatency.add(response.timings.duration);
+    } else if (response.status === 400) {
+      adminReadHttp400.add(1);
     } else if (response.status === 401) {
       adminReadHttp401.add(1);
     } else if (response.status === 403) {

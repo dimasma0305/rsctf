@@ -72,6 +72,8 @@ test('managed KotH traffic is fixed-arrival and gates auth abuse independently',
   assert.match(scenario, /valid_play_model_mismatch/);
   assert.match(scenario, /admin_read_http_429/);
   assert.match(scenario, /admin_read_model_mismatch/);
+  assert.match(scenario, /\/api\/edit\/games\/\$\{GAME\}\/ad\/koth\/state/);
+  assert.doesNotMatch(scenario, /\/api\/game\/\$\{GAME\}\/ad\/koth\/\$\{CHALLENGE\}\/state/);
 });
 
 test('managed KotH polling uses a fresh administrator rate-limit identity', () => {
