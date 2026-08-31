@@ -3,6 +3,7 @@ use super::*;
 
 mod attachments;
 mod audit;
+mod definition_write;
 mod deletion;
 #[cfg(test)]
 mod deletion_tests;
@@ -10,9 +11,13 @@ mod hints;
 mod lifecycle;
 mod repo_push;
 mod review;
+mod revision_effects;
+#[cfg(test)]
+mod revision_tests;
 mod scoring;
 #[cfg(test)]
 mod scoring_lock_tests;
+mod topology_transition;
 mod workload;
 
 pub use attachments::update_attachment;
@@ -26,7 +31,9 @@ pub(crate) use lifecycle::destroy_challenge_containers;
 use lifecycle::destroy_test_container_locked;
 #[cfg(test)]
 pub(crate) use repo_push::commit_latest_to_checkout_for_test;
+pub use repo_push::start as start_repo_push_worker;
 pub use review::{approve_challenge, list_pending_challenges, reject_challenge};
+pub use revision_effects::start as start_challenge_revision_effect_worker;
 pub(crate) use workload::execute_workload_rollout_job;
 pub use workload::rollout_workloads;
 
@@ -85,6 +92,10 @@ pub async fn add_challenge(
 ) -> AppResult<RequestResponse<ChallengeEditDetailModel>> {
     manager_or_admin(&st, &user, id).await?;
     load_game(&st, id).await?;
+    let fingerprint = crate::services::mutation_operations::fingerprint(
+        "challenge-create",
+        &(&model.title, model.category, model.challenge_type),
+    )?;
 
     // Every challenge kind shares the game deletion/control domain. A game
     // whose hard-delete fence committed must not gain a new child while its
@@ -107,41 +118,69 @@ pub async fn add_challenge(
         super::games::validate_koth_game_shape_locked(control.transaction_mut(), id).await?;
     }
 
-    let am = game_challenge::ActiveModel {
-        game_id: Set(id),
-        title: Set(model.title),
-        content: Set(String::new()),
-        category: Set(model.category),
-        challenge_type: Set(model.challenge_type),
-        is_enabled: Set(false),
-        submission_limit: Set(crate::utils::scoring::DEFAULT_CHALLENGE_SUBMISSION_LIMIT),
-        accepted_count: Set(0),
-        submission_count: Set(0),
-        review_status: Set(ChallengeReviewStatus::Active),
-        build_status: Set(ChallengeBuildStatus::None),
-        original_score: Set(crate::utils::scoring::DEFAULT_JEOPARDY_ORIGINAL_SCORE),
-        min_score_rate: Set(crate::utils::scoring::DEFAULT_JEOPARDY_MIN_SCORE_RATE),
-        difficulty: Set(crate::utils::scoring::DEFAULT_JEOPARDY_DIFFICULTY),
-        score_curve: Set(ScoreCurve::Standard),
-        // RSCTF `Challenge.NetworkMode` defaults to `Open`.
-        network_mode: Set(Some(NetworkMode::Open)),
-        enable_traffic_capture: Set(false),
-        enable_shared_container: Set(false),
-        disable_blood_bonus: Set(true),
-        ad_allow_egress: Set(false),
-        ad_allow_self_reset: Set(false),
-        ad_ssh_requires_flag: Set(false),
-        ad_self_hosted: Set(false),
-        ..Default::default()
+    let replay = crate::services::mutation_operations::claim(
+        control.transaction_mut(),
+        user.id,
+        "challenge-create",
+        &format!("game:{id}"),
+        model.operation_id,
+        fingerprint,
+    )
+    .await?;
+    let challenge_id = if let Some(replay) = replay {
+        replay
+            .result_id
+            .parse::<i32>()
+            .map_err(|_| AppError::internal("invalid retained challenge result identity"))?
+    } else {
+        let challenge_id: i32 = sqlx::query_scalar(
+            r#"INSERT INTO "GameChallenges"
+                 (game_id, title, content, category, "Type", is_enabled, revision,
+                  submission_limit, accepted_count, submission_count, review_status,
+                  build_status, original_score, min_score_rate, difficulty, score_curve,
+                  network_mode, enable_traffic_capture, enable_shared_container,
+                  disable_blood_bonus, ad_allow_egress, ad_allow_self_reset,
+                  ad_ssh_requires_flag, ad_self_hosted)
+               VALUES ($1, $2, '', $3, $4, FALSE, 1, $5, 0, 0, $6, $7,
+                       $8, $9, $10, $11, $12, FALSE, FALSE, TRUE, FALSE, FALSE,
+                       FALSE, FALSE)
+            RETURNING id"#,
+        )
+        .bind(id)
+        .bind(&model.title)
+        .bind(model.category as i16)
+        .bind(model.challenge_type as i16)
+        .bind(crate::utils::scoring::DEFAULT_CHALLENGE_SUBMISSION_LIMIT)
+        .bind(ChallengeReviewStatus::Active as i16)
+        .bind(ChallengeBuildStatus::None as i16)
+        .bind(crate::utils::scoring::DEFAULT_JEOPARDY_ORIGINAL_SCORE)
+        .bind(crate::utils::scoring::DEFAULT_JEOPARDY_MIN_SCORE_RATE)
+        .bind(crate::utils::scoring::DEFAULT_JEOPARDY_DIFFICULTY)
+        .bind(ScoreCurve::Standard as i16)
+        .bind(NetworkMode::Open as i16)
+        .fetch_one(&mut **control.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        seed_division_configs(control.transaction_mut(), id, challenge_id).await?;
+        crate::services::mutation_operations::complete(
+            control.transaction_mut(),
+            user.id,
+            "challenge-create",
+            &format!("game:{id}"),
+            model.operation_id,
+            &challenge_id.to_string(),
+            Some(1),
+        )
+        .await?;
+        challenge_id
     };
-    let created = am.insert(&st.db).await?;
-    seed_division_configs(control.transaction_mut(), id, created.id).await?;
     if let Some(control) = engine_control {
         control
             .release()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
     }
+    let created = load_challenge(&st, id, challenge_id).await?;
     flush_game_scoreboards(&st, id).await;
     Ok(RequestResponse::ok(
         ChallengeEditDetailModel::from_challenge(&st, &created, Vec::new()).await?,
@@ -222,6 +261,41 @@ pub async fn update_challenge(
 ) -> AppResult<RequestResponse<ChallengeEditDetailModel>> {
     manager_or_admin(&st, &user, id).await?;
     let game = load_game(&st, id).await?;
+    if !(1..=9_007_199_254_740_990).contains(&model.expected_revision) {
+        return Err(AppError::bad_request(
+            "expectedRevision must be a positive safe integer",
+        ));
+    }
+    let operation_scope = format!("game:{id}:challenge:{c_id}");
+    let mut fingerprint_model = model.clone();
+    fingerprint_model.operation_id = Uuid::nil();
+    let fingerprint =
+        crate::services::mutation_operations::fingerprint("challenge-update", &fingerprint_model)?;
+    if let Some(replay) = crate::services::mutation_operations::find_completed(
+        st.pg(),
+        user.id,
+        "challenge-update",
+        &operation_scope,
+        model.operation_id,
+        fingerprint,
+    )
+    .await?
+    {
+        if replay.result_id != c_id.to_string() {
+            return Err(AppError::conflict(
+                "operationId belongs to a different challenge",
+            ));
+        }
+        let challenge = load_challenge(&st, id, c_id).await?;
+        let flags = if challenge.challenge_type == ChallengeType::DynamicContainer {
+            Vec::new()
+        } else {
+            load_flags(&st, c_id).await?
+        };
+        return Ok(RequestResponse::ok(
+            ChallengeEditDetailModel::from_challenge(&st, &challenge, flags).await?,
+        ));
+    }
     // Every runtime eligibility/topology mutation and its possible cleanup
     // shares this outer challenge fence. Cleanup may take per-runtime
     // provisioning locks, so this gate deliberately sits outside that bounded
@@ -240,6 +314,14 @@ pub async fn update_challenge(
         workload::acquire_update_lock_for_model(st.pg(), id, c_id, &model).await?;
     let challenge = load_challenge(&st, id, c_id).await?;
     deletion::reject_pending_mutation(st.pg(), id, c_id).await?;
+    // Reject an already-stale editor before any topology drain or external
+    // runtime teardown. The final SQL CAS remains authoritative for writers
+    // that race after this early safety check.
+    if challenge.revision != model.expected_revision {
+        return Err(AppError::conflict(
+            "Challenge revision changed; reload and retry the edit",
+        ));
+    }
     let ch_type = challenge.challenge_type;
     crate::utils::scoring::validate_challenge_scoring(
         model.original_score.unwrap_or(challenge.original_score),
@@ -283,7 +365,7 @@ pub async fn update_challenge(
     // predicate) so a shared↔per-team flip can be detected after the write and the
     // now-orphaned containers torn down (RSCTF `wasSharedManaged`).
     let was_shared_managed = uses_shared_container(&challenge);
-    let final_enabled = model.is_enabled.unwrap_or(challenge.is_enabled);
+    let requested_final_enabled = model.is_enabled.unwrap_or(challenge.is_enabled);
     let requested_ad_self_hosted = model.ad_self_hosted.unwrap_or(was_ad_self_hosted);
     // Whether the client's hints array differs from the stored one (RSCTF
     // `hintUpdated`) — captured before `model.hints` is consumed below; drives the
@@ -308,10 +390,38 @@ pub async fn update_challenge(
     let requested_shared_managed = ch_type == ChallengeType::StaticContainer
         && model.enable_shared_container.unwrap_or(old_shared)
         && (projected_workload_present || projected_image_present);
-    let active_topology_flip = challenge.is_enabled
-        && final_enabled
+    let requested_topology_flip = challenge.is_enabled
+        && requested_final_enabled
         && (was_shared_managed != requested_shared_managed
             || was_ad_self_hosted != requested_ad_self_hosted);
+    let topology_transition = topology_transition::resolve(
+        engine_control
+            .as_mut()
+            .expect("challenge update holds the game control lock")
+            .transaction_mut(),
+        c_id,
+        user.id,
+        model.operation_id,
+        fingerprint,
+        model.expected_revision,
+        requested_topology_flip,
+        requested_final_enabled,
+    )
+    .await?;
+    let active_topology_flip = topology_transition.is_some();
+    let final_enabled = topology_transition
+        .as_ref()
+        .map_or(requested_final_enabled, |transition| {
+            transition.final_enabled
+        });
+    let resuming_topology_transition = topology_transition
+        .as_ref()
+        .is_some_and(|transition| transition.resuming);
+    let notice_was_enabled = if resuming_topology_transition {
+        final_enabled
+    } else {
+        was_enabled
+    };
     let transition_definition = if active_topology_flip {
         Some(lifecycle::runtime_definition_snapshot(st.pg(), c_id, challenge.challenge_type).await?)
     } else {
@@ -414,23 +524,22 @@ pub async fn update_challenge(
         // finish first or fail their final definition/eligibility CAS. A crash
         // or teardown failure leaves the challenge disabled, never half-old and
         // half-new while still playable.
-        let fenced = sqlx::query(
-            r#"UPDATE "GameChallenges"
-                  SET is_enabled = FALSE
-                WHERE id = $1 AND game_id = $2
-                  AND is_enabled = TRUE
-                  AND deletion_pending = FALSE"#,
+        topology_transition::begin(
+            engine_control
+                .as_mut()
+                .expect("challenge update holds the game control lock")
+                .transaction_mut(),
+            c_id,
+            id,
+            user.id,
+            model.operation_id,
+            fingerprint,
+            model.expected_revision,
+            topology_transition
+                .as_ref()
+                .expect("active topology flip has durable transition state"),
         )
-        .bind(c_id)
-        .bind(id)
-        .execute(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        if fenced.rows_affected() != 1 {
-            return Err(AppError::conflict(
-                "Challenge eligibility changed; retry the topology update",
-            ));
-        }
+        .await?;
         workload::release_update_lock(workload_lock.take()).await?;
         if let Some(lock) = engine_control.take() {
             lock.release()
@@ -539,114 +648,6 @@ pub async fn update_challenge(
             st.config.as_ref(),
         )?;
     }
-    let mut am: game_challenge::ActiveModel = update_base.into();
-    if let Some(v) = model.title {
-        am.title = Set(v);
-    }
-    if let Some(v) = model.content {
-        am.content = Set(v);
-    }
-    if let Some(v) = model.flag_template {
-        // RSCTF `GameChallenge.Update`: an empty/whitespace-only flag template is the
-        // client's "clear" sentinel — store null instead of persisting an empty string.
-        // Mirrors `FlagTemplate = string.IsNullOrWhiteSpace(template) ? null : template`.
-        am.flag_template = Set(if v.trim().is_empty() { None } else { Some(v) });
-    }
-    if let Some(v) = model.category {
-        am.category = Set(v);
-    }
-    if let Some(v) = model.hints {
-        am.hints = Set(Some(serde_json::to_value(v).unwrap_or(JsonValue::Null)));
-    }
-    if let Some(v) = model.is_enabled {
-        am.is_enabled = Set(v);
-    } else if active_topology_flip {
-        am.is_enabled = Set(final_enabled);
-    }
-    if let Some(v) = model.file_name {
-        am.file_name = Set(Some(v));
-    }
-    if let Some(v) = model.deadline_utc {
-        // RSCTF `GameChallenge.Update`: a deadline whose Unix timestamp is 0
-        // (the epoch) is the client's "clear the deadline" sentinel — store null
-        // instead of persisting 1970-01-01. Mirrors
-        // `DeadlineUtc = time.ToUnixTimeSeconds() == 0 ? null : time`.
-        am.deadline_utc = Set(if v.timestamp() == 0 { None } else { Some(v) });
-    }
-    if let Some(v) = model.submission_limit {
-        am.submission_limit = Set(v);
-    }
-    if let Some(v) = model.container_image {
-        // Trim: a pasted image ref with trailing whitespace would fail the pull.
-        am.container_image = Set(Some(v.trim().to_string()));
-    }
-    if let Some(status) = invalidated_build_status {
-        am.build_status = Set(status);
-        am.build_image_digest = Set(None);
-        am.last_build_log = Set(None);
-    }
-    if let Some(v) = model.memory_limit {
-        am.memory_limit = Set(Some(v));
-    }
-    if let Some(v) = model.cpu_count {
-        am.cpu_count = Set(Some(v));
-    }
-    if let Some(v) = model.storage_limit {
-        am.storage_limit = Set(Some(v));
-    }
-    if let Some(v) = model.expose_port {
-        am.expose_port = Set(Some(v));
-    }
-    if let Some(v) = workload_update {
-        am.workload_spec = Set(v);
-    }
-    if let Some(v) = model.original_score {
-        am.original_score = Set(v);
-    }
-    if let Some(v) = model.min_score_rate {
-        am.min_score_rate = Set(v);
-    }
-    if let Some(v) = model.difficulty {
-        am.difficulty = Set(v);
-    }
-    if let Some(v) = model.score_curve {
-        am.score_curve = Set(v);
-    }
-    if let Some(v) = model.enable_traffic_capture {
-        am.enable_traffic_capture = Set(v);
-    }
-    if let Some(v) = model.disable_blood_bonus {
-        am.disable_blood_bonus = Set(v);
-    }
-    // Container network mode — RSCTF `Update`: `NetworkMode = model.NetworkMode ??
-    // NetworkMode` (only overwrite when the client actually sent one).
-    if let Some(v) = model.network_mode {
-        am.network_mode = Set(Some(v));
-    }
-    // Shared instance is only meaningful for StaticContainer (single shared
-    // static flag); force it off for every other type so a stale toggle can't
-    // take effect after a retype. Mirror of RSCTF `GameChallenge.Update`.
-    am.enable_shared_container = Set(ch_type == ChallengeType::StaticContainer
-        && model.enable_shared_container.unwrap_or(old_shared));
-    // --- Attack & Defense per-challenge knobs ---
-    if let Some(v) = model.ad_checker_image {
-        am.ad_checker_image = Set(Some(v.trim().to_string()));
-    }
-    if let Some(v) = model.ad_allow_egress {
-        am.ad_allow_egress = Set(v);
-    }
-    if let Some(v) = model.ad_allow_self_reset {
-        am.ad_allow_self_reset = Set(v);
-    }
-    if let Some(v) = model.ad_ssh_requires_flag {
-        am.ad_ssh_requires_flag = Set(v);
-    }
-    if let Some(v) = model.ad_self_hosted {
-        am.ad_self_hosted = Set(v);
-    }
-    if let Some(v) = model.ad_scoring_weight {
-        am.ad_scoring_weight = Set(v);
-    }
     let variant_policy_changed = model
         .variant_mode
         .is_some_and(|value| value != current_variant_policy.0)
@@ -686,48 +687,61 @@ pub async fn update_challenge(
             ));
         }
     }
-    if let Some(v) = model.variant_mode {
-        am.variant_mode = Set(v);
-    }
-    if leaving_managed_generator {
-        am.variant_generator_build_context_subdir = Set(None);
-        am.variant_generator_build_status = Set(ChallengeBuildStatus::None);
-        am.variant_generator_last_build_log = Set(None);
-        if model.variant_generator_image.is_none() {
-            am.variant_generator_image = Set(None);
-        }
-        if model.variant_generator_digest.is_none() {
-            am.variant_generator_digest = Set(None);
-        }
-    }
-    if let Some(v) = model.variant_generator_image {
-        let value = v.trim();
-        am.variant_generator_image = Set((!value.is_empty()).then(|| value.to_owned()));
-    }
-    if let Some(v) = model.variant_generator_digest {
-        let value = v.trim();
-        if !value.is_empty()
-            && (!value.starts_with("sha256:")
-                || value.len() != 71
-                || !value[7..]
-                    .chars()
-                    .all(|character| character.is_ascii_hexdigit()))
-        {
-            return Err(AppError::bad_request(
-                "Variant generator digest must be sha256:<64 lowercase hex characters>.",
+    let control = engine_control
+        .as_mut()
+        .expect("challenge update holds the game control lock");
+    let replay = crate::services::mutation_operations::claim(
+        control.transaction_mut(),
+        user.id,
+        "challenge-update",
+        &operation_scope,
+        model.operation_id,
+        fingerprint,
+    )
+    .await?;
+    if let Some(replay) = replay {
+        if replay.result_id != c_id.to_string() {
+            return Err(AppError::conflict(
+                "operationId belongs to a different challenge",
             ));
         }
-        am.variant_generator_digest = Set((!value.is_empty()).then(|| value.to_ascii_lowercase()));
+        workload::release_update_lock(workload_lock.take()).await?;
+        if let Some(lock) = engine_control.take() {
+            lock.release()
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+        }
+        if let Some(lock) = runtime_transition {
+            lock.release()
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+        }
+        let challenge = load_challenge(&st, id, c_id).await?;
+        let flags = if challenge.challenge_type == ChallengeType::DynamicContainer {
+            Vec::new()
+        } else {
+            load_flags(&st, c_id).await?
+        };
+        return Ok(RequestResponse::ok(
+            ChallengeEditDetailModel::from_challenge(&st, &challenge, flags).await?,
+        ));
     }
-    if let Some(v) = model.solve_receipt_mode {
-        am.solve_receipt_mode = Set(v);
-    }
-    if let Some(v) = model.receipt_verifier_identity {
-        let value = v.trim();
-        am.receipt_verifier_identity = Set((!value.is_empty()).then(|| value.to_owned()));
-    }
-
-    let updated = am.update(&st.db).await?;
+    let updated = definition_write::update(
+        control.transaction_mut(),
+        id,
+        c_id,
+        model.expected_revision,
+        &update_base,
+        &model,
+        definition_write::DefinitionWriteOptions {
+            active_topology_flip,
+            final_enabled,
+            workload_update,
+            invalidated_build_status,
+            leaving_managed_generator,
+        },
+    )
+    .await?;
     seed_division_configs(
         engine_control
             .as_mut()
@@ -737,115 +751,71 @@ pub async fn update_challenge(
         c_id,
     )
     .await?;
-    workload::release_update_lock(workload_lock.take()).await?;
-    if ch_type == ChallengeType::KingOfTheHill && !updated.is_enabled {
-        crate::services::ad_engine::clear_challenge_control(&st.db, id, c_id).await?;
+    crate::services::mutation_operations::complete(
+        engine_control
+            .as_mut()
+            .expect("challenge update holds the game control lock")
+            .transaction_mut(),
+        user.id,
+        "challenge-update",
+        &operation_scope,
+        model.operation_id,
+        &c_id.to_string(),
+        Some(updated.revision),
+    )
+    .await?;
+    let effects = serde_json::json!({
+        "title": updated.title.clone(),
+        "scoreboard": true,
+        "vpn": true,
+        "repoPush": game.repo_binding_id.is_some(),
+        "runtime": active_topology_flip
+            || was_shared_managed != uses_shared_container(&updated)
+            || was_ad_self_hosted != updated.ad_self_hosted
+            || model.is_enabled == Some(false),
+        "newChallengeNotice": updated.is_enabled && !notice_was_enabled && game.is_active(Utc::now()),
+        "newHintNotice": game.is_active(Utc::now()) && updated.is_enabled && hints_changed,
+    });
+    sqlx::query(
+        r#"INSERT INTO "ChallengeRevisionEffects"
+             (game_id, challenge_id, revision, effects)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (challenge_id, revision) DO NOTHING"#,
+    )
+    .bind(id)
+    .bind(c_id)
+    .bind(updated.revision)
+    .bind(effects)
+    .execute(
+        &mut **engine_control
+            .as_mut()
+            .expect("challenge update holds the game control lock")
+            .transaction_mut(),
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if active_topology_flip {
+        topology_transition::complete(
+            engine_control
+                .as_mut()
+                .expect("challenge update holds the game control lock")
+                .transaction_mut(),
+            c_id,
+            user.id,
+            model.operation_id,
+        )
+        .await?;
     }
+    workload::release_update_lock(workload_lock.take()).await?;
     if let Some(lock) = engine_control {
         lock.release()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
     }
-    if (was_ad_self_hosted || updated.ad_self_hosted)
-        && (!updated.ad_self_hosted
-            || !updated.is_enabled
-            || updated.review_status != ChallengeReviewStatus::Active)
-    {
-        st.byoc.disconnect_challenge(&st.db, c_id).await?;
-    }
-    crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
-    flush_game_scoreboards(&st, id).await;
-
-    // Tear down containers stranded by this edit (RSCTF `UpdateGameChallenge`):
-    //   • a shared↔per-team mode flip in EITHER direction orphans the containers
-    //     created under the old mode (`wasSharedManaged != res.UsesSharedContainer`);
-    //   • disabling a container challenge (`case false when res.Type.IsContainer()`)
-    //     reaps its running per-team/shared containers.
-    // Both route through `DestroyAllContainers`; call it once for either trigger.
-    // Best-effort: teardown failures never fail the edit.
-    let now_shared_managed = uses_shared_container(&updated);
-    if (!active_topology_flip
-        && (was_shared_managed != now_shared_managed
-            || was_ad_self_hosted != updated.ad_self_hosted))
-        || (model.is_enabled == Some(false) && updated.challenge_type.is_container())
-    {
-        let _ = destroy_challenge_containers(&st, &updated, model.is_enabled == Some(false), false)
-            .await;
-    }
-
-    // A challenge going live mid-game (IsEnabled false->true) is announced as a
-    // NewChallenge game notice so connected players see it appear in real time.
-    // Mirrors RSCTF `EditController.UpdateGameChallenge` (the `case true` arm:
-    // `AddNotice(Type = NewChallenge, Values = [res.Title], broadcast: true)`),
-    // gated on `game.IsActive` exactly as RSCTF gates it.
-    if updated.is_enabled && !was_enabled && game.is_active(Utc::now()) {
-        let notice = game_notice::ActiveModel {
-            game_id: Set(id),
-            notice_type: Set(NoticeType::NewChallenge),
-            values: Set(serde_json::json!([updated.title])),
-            publish_time_utc: Set(Utc::now()),
-            ..Default::default()
-        };
-        let notice = notice.insert(&st.db).await?;
-
-        // Broadcast to the user hub's `ReceivedGameNotice` so clients refresh
-        // (same envelope as blood/normal notices: type/values/id/time).
-        st.publish_event(
-            "ReceivedGameNotice",
-            Some(id),
-            serde_json::json!({
-                "type": notice.notice_type,
-                "values": notice.values,
-                "id": notice.id,
-                "time": notice.publish_time_utc,
-            })
-            .to_string(),
-        );
-    }
-
-    // A new/changed hint on a live, enabled challenge is announced as a NewHint
-    // game notice so connected players see the fresh hint in real time. Mirrors
-    // RSCTF `EditController.UpdateGameChallenge`:
-    // `if (game.IsActive && res.IsEnabled && hintUpdated) AddNotice(NewHint, [res.Title], broadcast)`.
-    // Note the gate is the POST-update `res.IsEnabled` (not the false->true
-    // transition NewChallenge keys off), so re-hinting an already-live challenge
-    // still notifies.
-    if game.is_active(Utc::now()) && updated.is_enabled && hints_changed {
-        let notice = game_notice::ActiveModel {
-            game_id: Set(id),
-            notice_type: Set(NoticeType::NewHint),
-            values: Set(serde_json::json!([updated.title])),
-            publish_time_utc: Set(Utc::now()),
-            ..Default::default()
-        };
-        let notice = notice.insert(&st.db).await?;
-
-        st.publish_event(
-            "ReceivedGameNotice",
-            Some(id),
-            serde_json::json!({
-                "type": notice.notice_type,
-                "values": notice.values,
-                "id": notice.id,
-                "time": notice.publish_time_utc,
-            })
-            .to_string(),
-        );
-    }
-
     if let Some(lock) = runtime_transition {
-        lock.release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    }
-
-    // Repo push-back (RSCTF `EditController.TryPushBackAsync`): when this
-    // challenge's game is repo-bound and the binding opts into `push_on_edit`,
-    // regenerate `challenge.yml` from the updated row and git-push it upstream.
-    // Fire-and-forget + best-effort — a slow or failed push must never extend or
-    // fail the operator's edit-save round trip.
-    if game.repo_binding_id.is_some() {
-        repo_push::spawn(st.clone(), id, c_id);
+        if let Err(error) = lock.release().await {
+            tracing::warn!(%error, challenge = c_id, "post-commit runtime fence release failed");
+        }
     }
 
     let flags = if updated.challenge_type == ChallengeType::DynamicContainer {

@@ -154,6 +154,11 @@ pub mod repo_binding {
         pub next_scan_utc: Option<DateTime<Utc>>,
         pub created_at_utc: DateTime<Utc>,
         pub push_on_edit: bool,
+        pub scan_lease_owner: Option<uuid::Uuid>,
+        pub scan_lease_expires_at_utc: Option<DateTime<Utc>>,
+        pub scan_attempt: i64,
+        pub scan_failures: i32,
+        pub current_activity: Option<String>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

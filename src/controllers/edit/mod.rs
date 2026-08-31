@@ -10,7 +10,7 @@
 //! marked with `// TODO`.
 
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
-use axum::http::header;
+use axum::http::{header, HeaderMap};
 use axum::response::Response;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
@@ -82,7 +82,7 @@ fn default_blood_bonus() -> i64 {
 //  DTOs
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostEditModel {
     pub title: Option<String>,
@@ -129,7 +129,7 @@ impl PostDetailModel {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeInfoModel {
     #[serde(default)]
@@ -138,6 +138,8 @@ pub struct ChallengeInfoModel {
     pub category: ChallengeCategory,
     #[serde(default = "default_type", rename = "type")]
     pub challenge_type: ChallengeType,
+    #[serde(default)]
+    pub operation_id: Uuid,
 }
 fn default_category() -> ChallengeCategory {
     ChallengeCategory::Misc
@@ -149,9 +151,13 @@ fn default_score_curve() -> ScoreCurve {
     ScoreCurve::Standard
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeUpdateModel {
+    #[serde(default)]
+    pub operation_id: Uuid,
+    #[serde(default)]
+    pub expected_revision: i64,
     pub title: Option<String>,
     pub content: Option<String>,
     pub flag_template: Option<String>,
@@ -265,6 +271,7 @@ impl AttachmentInfoModel {
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeSummaryModel {
     pub id: i32,
+    pub revision: i64,
     pub title: String,
     pub category: ChallengeCategory,
     #[serde(rename = "type")]
@@ -284,6 +291,7 @@ impl ChallengeSummaryModel {
     fn from_challenge(c: &game_challenge::Model) -> Self {
         Self {
             id: c.id,
+            revision: c.revision,
             title: c.title.clone(),
             category: c.category,
             challenge_type: c.challenge_type,
@@ -304,6 +312,7 @@ impl ChallengeSummaryModel {
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeEditDetailModel {
     pub id: i32,
+    pub revision: i64,
     pub title: String,
     pub content: String,
     pub category: ChallengeCategory,
@@ -415,6 +424,7 @@ impl ChallengeEditDetailModel {
         let storage_quota_enforced = st.containers.storage_quota_enforced().await;
         Ok(Self {
             id: c.id,
+            revision: c.revision,
             title: c.title.clone(),
             content: c.content.clone(),
             category: c.category,

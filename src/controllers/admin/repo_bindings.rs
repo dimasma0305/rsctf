@@ -4,10 +4,12 @@ use super::*;
 use crate::utils::enums::ChallengeBuildStatus;
 
 mod mutations;
+mod queries;
 pub(crate) use mutations::{
-    commit_already_applied, delete_repo_binding_record, record_scan_completion,
-    update_bound_game_manifest_path, update_repo_binding_record,
+    commit_already_applied, delete_repo_binding_record, update_bound_game_manifest_path,
+    update_repo_binding_record,
 };
+pub use queries::{list_repo_bindings, repo_binding_scans};
 
 /// RSCTF `RepoBindingScanResultModel`.
 #[derive(Debug, Serialize)]
@@ -19,6 +21,13 @@ pub struct RepoBindingScanResultModel {
     pub challenges_updated: i32,
     pub failures: i32,
     pub messages: Vec<String>,
+}
+
+pub(crate) struct RepoBindingScanExecution {
+    pub result: RepoBindingScanResultModel,
+    pub ran_at: DateTime<Utc>,
+    pub commit_sha: Option<String>,
+    pub message: String,
 }
 
 /// RSCTF `RepoBindingInfoModel`.
@@ -42,6 +51,8 @@ pub struct RepoBindingInfoModel {
     pub token_status: String,
     pub current_activity: Option<String>,
     pub push_on_edit: bool,
+    pub push_backlog: i64,
+    pub push_last_error: Option<String>,
     pub games: Vec<Value>,
 }
 
@@ -106,6 +117,26 @@ impl ChallengeSyncCounts {
             self.updated += 1;
         }
     }
+}
+
+const MAX_SCAN_MESSAGES: usize = 256;
+const MAX_SCAN_MESSAGE_CHARS: usize = 2_000;
+const MAX_SCAN_HISTORY_CHARS: usize = 64 * 1024;
+
+fn bounded_chars(value: &str, limit: usize) -> String {
+    value.chars().take(limit).collect()
+}
+
+fn bound_scan_messages(mut messages: Vec<String>) -> Vec<String> {
+    let omitted = messages.len().saturating_sub(MAX_SCAN_MESSAGES);
+    messages.truncate(MAX_SCAN_MESSAGES);
+    for message in &mut messages {
+        *message = bounded_chars(message, MAX_SCAN_MESSAGE_CHARS);
+    }
+    if omitted > 0 {
+        messages.push(format!("{omitted} additional scan message(s) omitted"));
+    }
+    messages
 }
 
 fn missing_challenge_reconciliation_is_safe(unresolved_manifests: usize) -> bool {
@@ -211,68 +242,9 @@ async fn challenge_runtime_present(st: &SharedState, challenge_id: i32) -> AppRe
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
-/// Map a persisted binding row to the wire model (the token is never returned —
-/// only its presence via `hasGitHubToken`/`tokenStatus`).
 /// RSCTF blood-bonus default `(50<<20)+(30<<10)+10` — first/second/third-blood
 /// bonus percentages packed into one i64; used when a `.gzevent` omits `bloodBonus`.
 const DEFAULT_BLOOD_BONUS: i64 = (50 << 20) + (30 << 10) + 10;
-
-/// Build the list DTO for one binding, enumerating its games by
-/// `repo_binding_id` so a multi-event repository shows every event.
-async fn to_repo_info(st: &SharedState, m: repo_binding::Model) -> AppResult<RepoBindingInfoModel> {
-    let games: Vec<Value> = game::Entity::find()
-        .filter(game::Column::RepoBindingId.eq(m.id))
-        .order_by_asc(game::Column::Title)
-        .all(&st.db)
-        .await?
-        .into_iter()
-        .map(|g| {
-            serde_json::json!({
-                "id": g.id,
-                "title": g.title,
-                "eventManifestPath": g.event_manifest_path,
-            })
-        })
-        .collect();
-    let has_token = m.github_token.as_deref().is_some_and(|t| !t.is_empty());
-    Ok(RepoBindingInfoModel {
-        id: m.id,
-        repo_url: m.repo_url,
-        r#ref: m.git_ref,
-        created_at_utc: m.created_at_utc,
-        last_scan_utc: m.last_scan_utc,
-        next_scan_utc: m.next_scan_utc,
-        interval_seconds: m.interval_seconds,
-        status: match m.status {
-            RepoWatchStatus::Active => "Active",
-            RepoWatchStatus::Paused => "Paused",
-        }
-        .to_string(),
-        last_commit_sha: m.last_commit_sha,
-        last_scan_message: m.last_scan_message,
-        has_git_hub_token: has_token,
-        token_status: if has_token { "Ok" } else { "NotConfigured" }.to_string(),
-        current_activity: None,
-        push_on_edit: m.push_on_edit,
-        games,
-    })
-}
-
-/// `GET /api/admin/repobindings` — every configured binding, newest first.
-pub async fn list_repo_bindings(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-) -> AppResult<RequestResponse<Vec<RepoBindingInfoModel>>> {
-    let rows = repo_binding::Entity::find()
-        .order_by_desc(repo_binding::Column::Id)
-        .all(&st.db)
-        .await?;
-    let mut out = Vec::with_capacity(rows.len());
-    for r in rows {
-        out.push(to_repo_info(&st, r).await?);
-    }
-    Ok(RequestResponse::ok(out))
-}
 
 /// `POST /api/admin/repobindings` — register a repo, optionally scanning at once.
 pub async fn create_repo_binding(
@@ -282,8 +254,13 @@ pub async fn create_repo_binding(
 ) -> AppResult<RequestResponse<RepoBindingScanResultModel>> {
     let repo_url = crate::services::git_sync::validate_binding_repo_url(&m.repo_url)?;
     let git_ref = crate::services::git_sync::validate_git_ref(m.r#ref.as_deref())?;
-    let now = Utc::now();
-    let interval = m.interval_seconds.unwrap_or(3600).max(0);
+    let now = sqlx::query_scalar::<_, DateTime<Utc>>("SELECT clock_timestamp()")
+        .fetch_one(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let interval = crate::services::repo_binding_scheduler::validate_interval(
+        m.interval_seconds.unwrap_or(3600),
+    )?;
     let am = repo_binding::ActiveModel {
         repo_url: Set(repo_url),
         git_ref: Set(git_ref),
@@ -305,7 +282,7 @@ pub async fn create_repo_binding(
     // success toast can read (gamesCreated/... rather than NaN).
     let result = if m.run_immediately.unwrap_or(false) {
         // Best-effort: the binding exists whether or not the first scan succeeds.
-        run_repo_scan_cancellation_safe(st.clone(), id)
+        crate::services::repo_binding_scheduler::run_manual(st.clone(), id)
             .await
             .unwrap_or_else(|e| RepoBindingScanResultModel {
                 games_created: 0,
@@ -336,7 +313,9 @@ pub async fn update_repo_binding(
     Json(m): Json<RepoBindingUpdateModel>,
 ) -> AppResult<RequestResponse<RepoBindingInfoModel>> {
     let model = update_repo_binding_record(&st, id, m).await?;
-    Ok(RequestResponse::ok(to_repo_info(&st, model).await?))
+    Ok(RequestResponse::ok(
+        queries::repo_info_after_update(&st, model).await?,
+    ))
 }
 
 /// `DELETE /api/admin/repobindings/{id}` — detach retained games, then drop the
@@ -357,74 +336,38 @@ pub async fn scan_repo_binding(
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<RepoBindingScanResultModel>> {
     Ok(RequestResponse::ok(
-        run_repo_scan_cancellation_safe(st, id).await?,
+        crate::services::repo_binding_scheduler::run_manual(st, id).await?,
     ))
-}
-
-/// `GET /api/admin/repobindings/{id}/scans` — scan history, newest first.
-pub async fn repo_binding_scans(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-    Path(id): Path<i32>,
-) -> AppResult<RequestResponse<Vec<RepoBindingScanHistoryModel>>> {
-    let rows = repo_binding_scan::Entity::find()
-        .filter(repo_binding_scan::Column::BindingId.eq(id))
-        .order_by_desc(repo_binding_scan::Column::Id)
-        .all(&st.db)
-        .await?;
-    let data = rows
-        .into_iter()
-        .map(|s| RepoBindingScanHistoryModel {
-            id: s.id,
-            ran_at_utc: s.ran_at_utc,
-            commit_sha: s.commit_sha,
-            games_created: s.games_created,
-            games_updated: s.games_updated,
-            challenges_imported: s.challenges_imported,
-            challenges_updated: s.challenges_updated,
-            failures: s.failures,
-            messages: s.messages,
-        })
-        .collect();
-    Ok(RequestResponse::ok(data))
 }
 
 /// Run a real scan: clone/fetch the repo, read HEAD, discover challenge manifests,
 /// record a truthful scan row + update the binding. Reports the actual manifest
 /// count (never faked all-zeros); full per-game import is bounded by the manifests'
 /// own game targets.
-async fn run_repo_scan_cancellation_safe(
-    st: SharedState,
-    id: i32,
-) -> AppResult<RepoBindingScanResultModel> {
-    // Repository imports can build several images and outlive an HTTP client.
-    // Awaiting a spawned task preserves the synchronous response when the client
-    // stays connected, while dropping the JoinHandle on disconnect detaches the
-    // scan instead of cancelling it halfway through the event tree.
-    tokio::spawn(async move { run_repo_scan(&st, id).await })
-        .await
-        .map_err(|error| AppError::internal(format!("repository scan task failed: {error}")))?
-}
-
-async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanResultModel> {
+pub(crate) async fn execute_repo_binding_scan(
+    st: &SharedState,
+    claim: &crate::services::repo_binding_scheduler::RepoScanClaim,
+) -> AppResult<RepoBindingScanExecution> {
+    let id = claim.id;
     let dest = std::path::PathBuf::from(&st.config.storage_root)
         .join("repos")
         .join(id.to_string());
-    // Hold one checkout lock through sync, discovery, imports, and their
-    // path-based attachment/checker reads. Push-back uses the same lock.
-    let _checkout_lock =
-        crate::services::git_sync::lock_checkout_distributed(st.pg(), &dest).await?;
-    // A concurrent scan may have completed while this task waited for the
-    // checkout fence. Refresh the binding under that fence so same-SHA skip and
-    // credentials/ref selection never use the waiter's stale snapshot.
+    // The durable scheduler holds the checkout fence through this work and its
+    // lease-checked completion. Refresh under that fence so credentials, refs,
+    // and same-SHA checks never use a queued task's stale snapshot.
     let binding = repo_binding::Entity::find_by_id(id)
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("Repo binding not found"))?;
-    let now = Utc::now();
+    let now = claim.claimed_at;
     let repo_url = crate::services::git_sync::validate_binding_repo_url(&binding.repo_url)?;
     let git_ref = crate::services::git_sync::validate_git_ref(binding.git_ref.as_deref())?;
 
+    if !crate::services::repo_binding_scheduler::set_activity(st.pg(), claim, "Fetching repository")
+        .await?
+    {
+        return Err(AppError::conflict("Repository binding scan lease was lost"));
+    }
     let mut messages: Vec<String> = Vec::new();
     let mut failures = 0;
     let mut challenge_counts = ChallengeSyncCounts::default();
@@ -818,7 +761,9 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
         }
     }
 
-    // Persist the scan history row.
+    let messages = bound_scan_messages(messages);
+    let history_message = bounded_chars(&messages.join("\n"), MAX_SCAN_HISTORY_CHARS);
+    // Persist the bounded scan history row.
     let scan = repo_binding_scan::ActiveModel {
         binding_id: Set(id),
         ran_at_utc: Set(now),
@@ -828,29 +773,25 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
         challenges_imported: Set(challenge_counts.imported),
         challenges_updated: Set(challenge_counts.updated),
         failures: Set(failures),
-        messages: Set(Some(messages.join("\n"))),
+        messages: Set(Some(history_message)),
         ..Default::default()
     };
     scan.insert(&st.db).await?;
 
-    let interval = binding.interval_seconds;
-    record_scan_completion(
-        st,
-        id,
-        now,
+    crate::services::repo_binding_scheduler::retain_history(st.pg(), id).await?;
+    let message = bounded_chars(&messages.join("; "), MAX_SCAN_MESSAGE_CHARS);
+    Ok(RepoBindingScanExecution {
+        result: RepoBindingScanResultModel {
+            games_created,
+            games_updated,
+            challenges_imported: challenge_counts.imported,
+            challenges_updated: challenge_counts.updated,
+            failures,
+            messages,
+        },
+        ran_at: now,
         commit_sha,
-        messages.join("; "),
-        now + Duration::seconds(interval as i64),
-    )
-    .await?;
-
-    Ok(RepoBindingScanResultModel {
-        games_created,
-        games_updated,
-        challenges_imported: challenge_counts.imported,
-        challenges_updated: challenge_counts.updated,
-        failures,
-        messages,
+        message,
     })
 }
 

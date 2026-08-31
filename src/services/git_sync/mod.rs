@@ -982,8 +982,8 @@ mod attach;
 pub use attach::repair_missing_attachments;
 use attach::sync_attachment;
 mod push_back;
-pub(crate) use push_back::serialize_challenge_preserving_source;
-pub use push_back::{push_file, serialize_challenge};
+pub use push_back::{push_file, push_files, serialize_challenge};
+pub(crate) use push_back::{serialize_challenge_snapshot_preserving_source, ChallengePushSnapshot};
 
 #[cfg(test)]
 mod tests;

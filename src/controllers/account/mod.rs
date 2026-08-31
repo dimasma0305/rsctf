@@ -17,7 +17,7 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseTransaction, EntityTrait,
     PaginatorTrait, QueryFilter, Set,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::net::SocketAddr;
 use uuid::Uuid;
 
@@ -28,7 +28,7 @@ use crate::middlewares::privilege_authentication::{
 use crate::models::data::{
     config, first_solve, game, game_challenge, game_manager, submission, user,
 };
-use crate::models::request::account::*;
+use crate::models::request::account::{PasswordChangeModel, ProfileUpdateModel, RegisterModel};
 use crate::services::anti_cheat;
 use crate::services::captcha::CaptchaSettings;
 use crate::utils::crypto_utils::{hash_password_async, verify_password_async};
@@ -64,13 +64,16 @@ fn registration_disposition(
 mod avatar;
 mod bootstrap;
 mod email_confirmation;
+mod link_attempts;
 mod profile_bounds;
 mod recovery;
+mod request_models;
 pub use avatar::avatar;
 pub use email_confirmation::verify;
 use profile_bounds::load_user;
 pub(crate) use profile_bounds::validate_profile_fields;
 pub use recovery::*;
+pub use request_models::*;
 
 pub fn router() -> Router<SharedState> {
     Router::new()
@@ -108,82 +111,6 @@ pub fn router() -> Router<SharedState> {
         )
         .route("/api/account/update", put(update))
         .route("/api/account/verify", post(verify))
-}
-
-// ---------------------------------------------------------------------------
-// Local request DTOs not shared elsewhere (camelCase, tolerant).
-// ---------------------------------------------------------------------------
-
-/// `LoginModel` — credentials plus the optional browser fingerprint the SPA
-/// collects (see `Api.ts`). The shared request DTO omits `fingerprint`, so we
-/// deserialize into this tolerant local copy to capture it at login. Shadows
-/// the glob-imported `models::request::account::LoginModel` within this module.
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LoginModel {
-    #[serde(default)]
-    pub user_name: String,
-    #[serde(default)]
-    pub password: String,
-    #[serde(default)]
-    pub fingerprint: Option<String>,
-    #[serde(default)]
-    pub fingerprint_proof: Option<String>,
-    /// Captcha token (`ModelWithCaptcha.challenge`); verified only when the live
-    /// `AccountPolicy:UseCaptcha` is on. Absent/`null` on captcha-off deployments.
-    #[serde(default)]
-    pub challenge: Option<String>,
-}
-
-/// `MailChangeModel` — new email address.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MailChangeModel {
-    #[serde(default)]
-    pub new_mail: String,
-    /// Current password re-authentication. A session bearer alone is not enough
-    /// to redirect future recovery mail to a new address.
-    #[serde(default)]
-    pub password: String,
-}
-
-/// `AccountVerifyModel` — email-confirmation / mail-change token.
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountVerifyModel {
-    #[serde(default)]
-    pub token: String,
-    #[serde(default)]
-    pub email: String,
-}
-
-/// `PasswordResetModel` — reset password using an emailed token.
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PasswordResetModel {
-    #[serde(default)]
-    pub password: String,
-    #[serde(default)]
-    pub email: String,
-    #[serde(default)]
-    pub r_token: String,
-}
-
-/// `RecoveryModel` — request a password-recovery email.
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecoveryModel {
-    #[serde(default)]
-    pub email: String,
-    #[serde(default)]
-    pub challenge: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(super) struct EmailChangeTicket {
-    pub user_id: Uuid,
-    pub new_email: String,
-    pub security_stamp: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -529,13 +456,25 @@ pub async fn register(
             .fetch_one(&mut *txn)
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-        Some(email_confirmation::token_for_registration(
+        let token = email_confirmation::token_for_registration(
             st.config.as_ref(),
             id,
             &norm_email,
             &security_stamp,
             database_now,
-        ))
+        );
+        link_attempts::stage(
+            &mut txn,
+            &token,
+            link_attempts::Purpose::Registration,
+            id,
+            &security_stamp,
+            &norm_email,
+            database_now.timestamp() + 15 * 60,
+            true,
+        )
+        .await?;
+        Some(token)
     } else {
         None
     };

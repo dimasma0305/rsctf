@@ -65,6 +65,10 @@ const AD_AUTH_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
 const AD_AUTH_CONCURRENCY: usize = 32;
 static AD_AUTH_SLOTS: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(AD_AUTH_CONCURRENCY));
+const MANAGED_API_AUTH_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
+const MANAGED_API_AUTH_CONCURRENCY: usize = 8;
+static MANAGED_API_AUTH_SLOTS: LazyLock<tokio::sync::Semaphore> =
+    LazyLock::new(|| tokio::sync::Semaphore::new(MANAGED_API_AUTH_CONCURRENCY));
 
 /// Maximum distinct plausible flags one participation may enqueue immediately.
 /// Four maximum-size batches leave room for ordinary exploit retries without
@@ -186,6 +190,9 @@ pub enum Policy {
     /// Deployment-wide Event-VPN mint work budget. Appended to preserve every
     /// previously shipped Redis policy discriminant.
     EventVpnMintGlobal,
+    /// Cheap source admission before a managed-token digest lookup. Appended
+    /// to preserve every previously shipped Redis policy discriminant.
+    ManagedApiAuthSourceAdmission,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -308,6 +315,10 @@ impl Policy {
             Policy::EventVpnMintGlobal => Kind::Bucket {
                 capacity: 512.0,
                 refill_per_sec: 64.0,
+            },
+            Policy::ManagedApiAuthSourceAdmission => Kind::Bucket {
+                capacity: 600.0,
+                refill_per_sec: 10.0,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {
@@ -579,8 +590,15 @@ fn partition_key(policy: Policy, req: &Request) -> String {
             | Policy::PublicHubAdmission
             | Policy::PowIssuanceSource
             | Policy::TeamSignatureSource
+            | Policy::ManagedApiAuthSourceAdmission
     ) {
         return client_ip(req);
+    }
+    if let Some(credential) = req
+        .extensions()
+        .get::<crate::services::managed_api_token::VerifiedManagedApiToken>()
+    {
+        return credential.partition_key.clone();
     }
     if let Some(credential) = req
         .extensions()
@@ -1173,7 +1191,45 @@ pub async fn global_middleware(
         }
     }
 
-    let attempted_ad = supports_ad_bearer(req.method(), req.uri().path())
+    let attempted_managed = credential
+        .as_deref()
+        .is_some_and(crate::services::managed_api_token::looks_managed);
+    let verified_managed = if attempted_managed {
+        if let Err(retry_after) =
+            check_async(Policy::ManagedApiAuthSourceAdmission, ip.clone()).await
+        {
+            return too_many_requests(retry_after);
+        }
+        let token = credential
+            .as_deref()
+            .expect("attempted managed API token is present");
+        if !crate::services::managed_api_token::is_well_formed(token) {
+            None
+        } else {
+            let Ok(_slot) = MANAGED_API_AUTH_SLOTS.try_acquire() else {
+                return too_many_requests(1);
+            };
+            match tokio::time::timeout(
+                MANAGED_API_AUTH_QUERY_TIMEOUT,
+                crate::services::managed_api_token::authenticate(&st, token),
+            )
+            .await
+            {
+                Err(_) => return too_many_requests(1),
+                Ok(Ok(token)) => token,
+                Ok(Err(error)) => return error.into_response(),
+            }
+        }
+    } else {
+        None
+    };
+    if attempted_managed && verified_managed.is_none() {
+        req.extensions_mut()
+            .insert(crate::services::managed_api_token::RejectedManagedApiToken);
+    }
+
+    let attempted_ad = !attempted_managed
+        && supports_ad_bearer(req.method(), req.uri().path())
         && credential
             .as_deref()
             .is_some_and(crate::services::ad::api_token::is_well_formed);
@@ -1208,12 +1264,21 @@ pub async fn global_middleware(
     }
     // A syntactically valid A&D credential has already received its definitive
     // DB decision above. Do not reinterpret a rejected one as a session JWT.
-    let verified_session = if attempted_ad {
+    let verified_session = if attempted_ad || attempted_managed {
         None
     } else {
         credential.and_then(|token| st.token.verify(&token).ok())
     };
-    if let Some(verified) = verified_ad {
+    if let Some(verified) = verified_managed {
+        let key = verified.partition_key.clone();
+        if let Err(retry_after) = check_authenticated_async(key, ip).await {
+            return too_many_requests(retry_after);
+        }
+        if !verified.permits(req.method()) {
+            return crate::utils::error::AppError::Forbidden.into_response();
+        }
+        req.extensions_mut().insert(verified);
+    } else if let Some(verified) = verified_ad {
         let key = verified.partition_key.clone();
         req.extensions_mut().insert(verified);
         if let Err(retry_after) = check_authenticated_async(key, ip).await {

@@ -1,6 +1,10 @@
 //! edit: game CRUD/clone/writeups (see edit/mod.rs for the router + shared DTOs/helpers).
 use super::*;
 
+mod creation;
+pub use creation::add_game;
+pub(crate) use creation::apply_ad_creation_settings;
+
 /// RSCTF `Models/Request/Edit/GameInfoModel` — used for both create/update
 /// (inbound) and the get/delete responses (outbound). The `start`/`end`/
 /// `freeze`/`poster`/`bloodBonus` JSON names are load-bearing overrides of the
@@ -295,78 +299,6 @@ pub async fn get_games(
         .await?;
     let data = games.iter().map(GameInfoModel::from_game).collect();
     Ok(ArrayResponse::new(data, total))
-}
-
-fn apply_ad_creation_settings(model: &GameInfoModel, active: &mut game::ActiveModel) {
-    active.ad_warmup_seconds = Set(model.ad_warmup_seconds);
-    active.ad_snapshot_retention_days = Set(model.ad_snapshot_retention_days);
-    active.ad_tick_seconds = Set(model.ad_tick_seconds);
-    active.ad_flag_lifetime_ticks = Set(model.ad_flag_lifetime_ticks);
-    active.ad_reset_cooldown_minutes = Set(model.ad_reset_cooldown_minutes);
-    active.ad_allow_snapshot_download = Set(model.ad_allow_snapshot_download.unwrap_or(true));
-    active.ad_getflag_window_fraction = Set(model.ad_getflag_window_fraction);
-    active.ad_min_grace_period_seconds = Set(model.ad_min_grace_period_seconds);
-    active.ad_epoch_ticks = Set(model.ad_epoch_ticks.unwrap_or(8));
-}
-
-/// `POST /api/edit/games` — create with a fresh key pair + defaults.
-pub async fn add_game(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-    Json(model): Json<GameInfoModel>,
-) -> AppResult<RequestResponse<GameInfoModel>> {
-    let discord_webhook = model.validate()?;
-    model.validate_event_security(&st)?;
-    let koth_epoch_ticks = model.koth_epoch_ticks.unwrap_or(12);
-    let koth_cycle_ticks = model.koth_cycle_ticks.unwrap_or(3);
-    let koth_champion_cooldown_ticks = model.koth_champion_cooldown_ticks.unwrap_or(1);
-    let koth_claim_confirmation_ticks = model.koth_claim_confirmation_ticks.unwrap_or(2);
-
-    // NOTE: RSCTF generates an Ed25519 key pair here (Game.GenerateKeyPair).
-    // The Ed25519 crate is not in this port's dependency set, so this is a
-    // random placeholder — it is NOT a real signing key.
-    let (public_key, private_key) = crate::utils::crypto_utils::generate_game_keypair();
-
-    let mut am = game::ActiveModel {
-        title: Set(model.title.clone()),
-        public_key: Set(public_key),
-        private_key: Set(private_key),
-        hidden: Set(model.hidden),
-        practice_mode: Set(model.practice_mode),
-        summary: Set(model.summary.clone()),
-        content: Set(model.content.clone()),
-        accept_without_review: Set(model.accept_without_review),
-        allow_user_submissions: Set(model.allow_user_submissions),
-        writeup_required: Set(model.writeup_required),
-        invite_code: Set(model.invite_code.clone()),
-        team_member_count_limit: Set(model.team_member_count_limit),
-        discord_webhook: Set(discord_webhook),
-        container_count_limit: Set(model.container_count_limit),
-        start_time_utc: Set(model.start_time_utc),
-        end_time_utc: Set(model.end_time_utc),
-        writeup_deadline: Set(model.writeup_deadline),
-        freeze_time_utc: Set(model.freeze_time_utc),
-        writeup_note: Set(model.writeup_note.clone()),
-        blood_bonus_value: Set(super::blood_bonus_from_value(model.blood_bonus_value)),
-        koth_epoch_ticks: Set(koth_epoch_ticks),
-        koth_cycle_ticks: Set(koth_cycle_ticks),
-        koth_champion_cooldown_ticks: Set(koth_champion_cooldown_ticks),
-        koth_claim_confirmation_ticks: Set(koth_claim_confirmation_ticks),
-        // A newly-created game is still a template: challenge configuration remains
-        // mutable until the first round with a real A&D roster declares the boundary.
-        ad_scoring_start_round: Set(None),
-        ad_scoring_paused: Set(false),
-        vpn_access_required: Set(model.vpn_access_required),
-        vpn_behavior_telemetry_enabled: Set(model.vpn_behavior_telemetry_enabled),
-        vpn_flag_scan_enabled: Set(model.vpn_flag_scan_enabled),
-        vpn_provider_dns_telemetry_enabled: Set(model.vpn_provider_dns_telemetry_enabled),
-        vpn_source_asn_telemetry_enabled: Set(model.vpn_source_asn_telemetry_enabled),
-        vpn_device_sharing_telemetry_enabled: Set(model.vpn_device_sharing_telemetry_enabled),
-        ..Default::default()
-    };
-    apply_ad_creation_settings(&model, &mut am);
-    let created = am.insert(&st.db).await?;
-    Ok(RequestResponse::ok(GameInfoModel::from_game(&created)))
 }
 
 /// `GET /api/edit/games/{id}`

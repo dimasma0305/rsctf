@@ -153,6 +153,10 @@ mod m0273_receipt_variant_lifecycle;
 mod m0280_traffic_capture_inventory;
 mod m0281_anticheat_read_bounds;
 mod m0290_distributed_proxy_admission;
+mod m0320_revisioned_mutations;
+mod m0321_account_link_attempts;
+mod m0322_managed_api_tokens;
+mod m0323_repo_binding_scheduler;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -322,6 +326,10 @@ impl MigratorTrait for Migrator {
             Box::new(m0280_traffic_capture_inventory::Migration),
             Box::new(m0281_anticheat_read_bounds::Migration),
             Box::new(m0290_distributed_proxy_admission::Migration),
+            Box::new(m0320_revisioned_mutations::Migration),
+            Box::new(m0321_account_link_attempts::Migration),
+            Box::new(m0322_managed_api_tokens::Migration),
+            Box::new(m0323_repo_binding_scheduler::Migration),
         ]
     }
 }
@@ -467,7 +475,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 30..],
+            &names[names.len() - 34..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -500,6 +508,10 @@ mod tests {
                 "m0280_traffic_capture_inventory",
                 "m0281_anticheat_read_bounds",
                 "m0290_distributed_proxy_admission",
+                "m0320_revisioned_mutations",
+                "m0321_account_link_attempts",
+                "m0322_managed_api_tokens",
+                "m0323_repo_binding_scheduler",
             ]
         );
     }

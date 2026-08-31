@@ -23,18 +23,6 @@ fn email_domain_validation_requires_one_complete_address() {
     assert!(!verify_email_domain("user@", ""));
 }
 
-#[test]
-fn email_change_ticket_is_bound_to_the_security_stamp() {
-    let ticket = EmailChangeTicket {
-        user_id: Uuid::nil(),
-        new_email: "new@example.test".to_string(),
-        security_stamp: "stamp-1".to_string(),
-    };
-    let encoded = serde_json::to_vec(&ticket).unwrap();
-    let decoded: EmailChangeTicket = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(decoded.security_stamp, "stamp-1");
-}
-
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn email_change_rechecks_identity_after_a_registration_lock_wait() {

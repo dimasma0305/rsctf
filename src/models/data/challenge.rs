@@ -27,6 +27,9 @@ pub mod game_challenge {
         pub challenge_type: ChallengeType,
         pub hints: Option<Json>,
         pub is_enabled: bool,
+        /// Optimistic concurrency and durable post-commit effect identity for
+        /// ordinary challenge-definition edits.
+        pub revision: i64,
         /// Optimistic-concurrency fence for A&D/KotH enabled-state commands.
         pub ad_control_revision: i64,
         pub deadline_utc: Option<DateTime<Utc>>,

@@ -110,16 +110,18 @@ const RepoBindings: FC = () => {
   const [bindingPage, setBindingPage] = useState(1)
   const [bindingKnownPageCount, setBindingKnownPageCount] = useState<number>()
   const bindingQuery = { count: BINDING_PAGE_SIZE, skip: (bindingPage - 1) * BINDING_PAGE_SIZE }
-  // 3s refresh keeps the CurrentActivity field live during a running
-  // scan without hammering the backend. Idle pages get a stable
-  // response from the DB query and SWR dedupes; cost is negligible.
+  // Idle pages never poll. A claimed scan is the sole signal that enables the
+  // short activity refresh; completion clears it durably on every replica.
   const {
     data: bindingPayload,
     error: bindingRequestError,
     mutate,
   } = useSWR<unknown>(['/api/admin/repobindings', bindingQuery], {
     keepPreviousData: false,
-    refreshInterval: 3000,
+    refreshInterval: (latest) => {
+      const collection = decodeApiCollection<RepoBindingInfoModel>(latest)
+      return collection.status === 'ready' && collection.items.some((binding) => binding.currentActivity) ? 3000 : 0
+    },
   })
   const bindingCollection = decodeApiCollection<RepoBindingInfoModel>(bindingPayload)
   const bindings = bindingCollection.status === 'ready' ? bindingCollection.items : undefined
@@ -658,6 +660,22 @@ const RepoBindings: FC = () => {
                         <Text size="xs" c="blue" ff="monospace" lineClamp={1} title={b.currentActivity}>
                           {b.currentActivity}
                         </Text>
+                      </Group>
+                    )}
+
+                    {(b.pushBacklog ?? 0) > 0 && (
+                      <Group gap="xs" wrap="wrap" role="status">
+                        <Badge size="xs" color={b.pushLastError ? 'orange' : 'blue'} variant="light">
+                          {t('admin.content.repo_binding.push_backlog', {
+                            defaultValue: '{{count}} upstream edit(s) queued',
+                            count: b.pushBacklog ?? 0,
+                          })}
+                        </Badge>
+                        {b.pushLastError && (
+                          <Text size="xs" c="orange" lineClamp={2} title={b.pushLastError}>
+                            {b.pushLastError}
+                          </Text>
+                        )}
                       </Group>
                     )}
 

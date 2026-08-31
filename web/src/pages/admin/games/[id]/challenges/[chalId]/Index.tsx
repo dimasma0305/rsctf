@@ -46,6 +46,8 @@ import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { WithChallengeEdit } from '@Components/admin/WithChallengeEdit'
 import { ScoreFunc } from '@Components/charts/ScoreFunc'
 import { challengeRevision, ChallengeMutationOperation, prepareChallengeMutation } from '@Utils/ChallengeMutation'
+import { controlJobResultCount, createOperationId, startControlJob, waitForControlJob } from '@Utils/ControlJobs'
+import { RetryableMutationOwner } from '@Utils/RetryableMutationOwner'
 import { getInputNumber, NetworkModeItem, NetworkModeList, showErrorMsg, useNetworkModeMap } from '@Utils/Shared'
 import {
   ChallengeCategoryItem,
@@ -55,9 +57,8 @@ import {
   ChallengeCategoryList,
 } from '@Utils/Shared'
 import { createDefaultJeopardyWorkloadSpec, formatWorkloadSpec, parseJeopardyWorkloadSpec } from '@Utils/WorkloadSpec'
-import { controlJobResultCount, createOperationId, startControlJob, waitForControlJob } from '@Utils/ControlJobs'
-import { useEditChallenge, useEditChallenges } from '@Hooks/useEdit'
 import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
+import { useEditChallenge, useEditChallenges } from '@Hooks/useEdit'
 import { useAdminGame, useGameStatus } from '@Hooks/useGame'
 import api, {
   ChallengeBuildStatus,
@@ -169,6 +170,7 @@ const GameChallengeEdit: FC = () => {
   const workloadToggleRef = useRef<HTMLInputElement>(null)
   const workloadInputRef = useRef<HTMLTextAreaElement>(null)
   const updateOperation = useRef<ChallengeMutationOperation | null>(null)
+  const updateRequestOwner = useRef(new RetryableMutationOwner())
   const [currentAcceptCount, setCurrentAcceptCount] = useState(0)
   const [previewOpened, setPreviewOpened] = useState(false)
   const [execOpened, setExecOpened] = useState(false)
@@ -179,6 +181,13 @@ const GameChallengeEdit: FC = () => {
   const networkModeLabelMap = useNetworkModeMap()
 
   const { t } = useTranslation()
+
+  useEffect(() => {
+    updateRequestOwner.current.cancel()
+    updateOperation.current = null
+    setDisabled(false)
+    return () => updateRequestOwner.current.cancel()
+  }, [id, chalId])
 
   // Unsaved-changes guard. A stable serialization of the editable state is captured as
   // the "saved" baseline whenever the challenge (re)loads — including right after a save,
@@ -309,20 +318,27 @@ const GameChallengeEdit: FC = () => {
       }
     }
 
+    const expectedRevision = challengeRevision(challenge)
+    if (expectedRevision === undefined) return null
+    const prepared = prepareChallengeMutation(
+      {
+        ...update,
+        deadlineUtc: deadline ? deadline.valueOf() : 0,
+        isEnabled: undefined,
+      },
+      expectedRevision,
+      updateOperation.current
+    )
+    const lease = updateRequestOwner.current.claim(prepared.operation.digest, prepared.operation.id)
+    if (!lease) return null
+    updateOperation.current = prepared.operation
     setDisabled(true)
 
     try {
-      const prepared = prepareChallengeMutation(
-        {
-          ...update,
-          deadlineUtc: deadline ? deadline.valueOf() : 0,
-          isEnabled: undefined,
-        },
-        challengeRevision(challenge),
-        updateOperation.current
-      )
-      updateOperation.current = prepared.operation
-      const res = await api.edit.editUpdateGameChallenge(numId, numCId, prepared.payload)
+      const res = await api.edit.editUpdateGameChallenge(numId, numCId, prepared.payload, {
+        signal: lease.signal,
+      })
+      if (!updateRequestOwner.current.settle(lease, true)) return null
       updateOperation.current = null
       if (!noFeedback) {
         showNotification({
@@ -331,17 +347,14 @@ const GameChallengeEdit: FC = () => {
           icon: <Icon path={mdiCheck} size={1} />,
         })
       }
-      mutate(res.data)
-      mutateChals()
+      await Promise.all([mutate(res.data), mutateChals()])
+      if (!noFeedback) setDisabled(false)
       return res.data
     } catch (e) {
+      if (!updateRequestOwner.current.settle(lease, false)) return null
       showErrorMsg(e, t)
-      if (noFeedback) setDisabled(false)
+      setDisabled(false)
       return null
-    } finally {
-      if (!noFeedback) {
-        setDisabled(false)
-      }
     }
   }
 
@@ -378,9 +391,7 @@ const GameChallengeEdit: FC = () => {
     if (!status) return
     void mutate(
       (current) =>
-        current
-          ? { ...current, buildStatus: status.buildStatus, lastBuildLog: status.lastBuildLog ?? null }
-          : current,
+        current ? { ...current, buildStatus: status.buildStatus, lastBuildLog: status.lastBuildLog ?? null } : current,
       { revalidate: false }
     )
     void mutateChals(

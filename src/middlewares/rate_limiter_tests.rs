@@ -70,6 +70,32 @@ fn event_vpn_mint_budgets_are_appended_and_partitioned() {
 }
 
 #[test]
+fn managed_api_lookup_admission_is_appended_and_source_partitioned() {
+    assert_eq!(MANAGED_API_AUTH_CONCURRENCY, 8);
+    assert!(MANAGED_API_AUTH_QUERY_TIMEOUT <= Duration::from_secs(2));
+    assert_eq!(
+        Policy::ManagedApiAuthSourceAdmission as u8,
+        Policy::EventVpnMintGlobal as u8 + 1,
+        "managed token admission must not renumber shipped Redis namespaces"
+    );
+    assert!(matches!(
+        Policy::ManagedApiAuthSourceAdmission.kind(),
+        Kind::Bucket {
+            capacity: 600.0,
+            refill_per_sec: 10.0,
+        }
+    ));
+    let request = Request::builder()
+        .header("x-real-ip", "192.0.2.61")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    assert_eq!(
+        partition_key(Policy::ManagedApiAuthSourceAdmission, &request),
+        "192.0.2.61"
+    );
+}
+
+#[test]
 fn ad_submit_burst_configuration_requires_a_bounded_integer() {
     assert_eq!(parse_ad_submit_burst_flags(None), Ok(400));
     assert_eq!(parse_ad_submit_burst_flags(Some("100")), Ok(100));

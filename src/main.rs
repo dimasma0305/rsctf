@@ -648,6 +648,25 @@ fn start_background_services(
                 "challenge import worker",
                 rsctf::controllers::edit::start_import_job_worker(state.clone(), shutdown.clone()),
             ));
+            required.push(RequiredTask::Unit(
+                "challenge revision effect worker",
+                rsctf::controllers::edit::start_challenge_revision_effect_worker(
+                    state.clone(),
+                    shutdown.clone(),
+                ),
+            ));
+            required.push(RequiredTask::Unit(
+                "mutation retention worker",
+                rsctf::services::mutation_retention::start(state.clone(), shutdown.clone()),
+            ));
+            required.push(RequiredTask::Unit(
+                "repository push worker",
+                rsctf::controllers::edit::start_repo_push_worker(state.clone(), shutdown.clone()),
+            ));
+            required.push(RequiredTask::Unit(
+                "repository binding scheduler",
+                rsctf::services::repo_binding_scheduler::start(state.clone(), shutdown.clone()),
+            ));
             if rsctf::services::ad_vpn::enabled() {
                 required.push(RequiredTask::Unit(
                     "A&D network reconcile",
@@ -723,6 +742,25 @@ fn start_background_services(
             required.push(RequiredTask::Unit(
                 "challenge import worker",
                 rsctf::controllers::edit::start_import_job_worker(state.clone(), shutdown.clone()),
+            ));
+            required.push(RequiredTask::Unit(
+                "challenge revision effect worker",
+                rsctf::controllers::edit::start_challenge_revision_effect_worker(
+                    state.clone(),
+                    shutdown.clone(),
+                ),
+            ));
+            required.push(RequiredTask::Unit(
+                "mutation retention worker",
+                rsctf::services::mutation_retention::start(state.clone(), shutdown.clone()),
+            ));
+            required.push(RequiredTask::Unit(
+                "repository push worker",
+                rsctf::controllers::edit::start_repo_push_worker(state.clone(), shutdown.clone()),
+            ));
+            required.push(RequiredTask::Unit(
+                "repository binding scheduler",
+                rsctf::services::repo_binding_scheduler::start(state.clone(), shutdown.clone()),
             ));
         }
         RuntimeRole::Web | RuntimeRole::Migrate => {}
@@ -936,5 +974,17 @@ mod startup_tests {
         assert!(should_run_migrations(RuntimeRole::Migrate, true));
         assert!(should_run_migrations(RuntimeRole::Development, true));
         assert!(!should_run_migrations(RuntimeRole::Web, false));
+    }
+
+    #[test]
+    fn repository_workers_are_required_in_control_and_development_topologies() {
+        let source = include_str!("main.rs");
+        assert_eq!(
+            source.matches("\"repository binding scheduler\"").count(),
+            2
+        );
+        assert_eq!(source.matches("\"repository push worker\"").count(), 2);
+        assert!(source.contains("services::repo_binding_scheduler::start"));
+        assert!(source.contains("start_repo_push_worker"));
     }
 }

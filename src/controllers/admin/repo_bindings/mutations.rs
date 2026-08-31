@@ -93,27 +93,86 @@ pub(crate) async fn update_repo_binding_record(
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("Repo binding not found"))?;
+    let interval = m
+        .interval_seconds
+        .map(crate::services::repo_binding_scheduler::validate_interval)
+        .transpose()?;
+    let status = m
+        .status
+        .as_deref()
+        .map(|value| match value {
+            "Active" => Ok(RepoWatchStatus::Active),
+            "Paused" => Ok(RepoWatchStatus::Paused),
+            _ => Err(AppError::bad_request("status must be Active or Paused")),
+        })
+        .transpose()?;
+    let token = m
+        .github_token
+        .as_ref()
+        .map(|value| (!value.trim().is_empty()).then(|| value.trim().to_string()));
+    let effective_has_token = token
+        .as_ref()
+        .map(|value| value.is_some())
+        .unwrap_or_else(|| {
+            existing
+                .github_token
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+        });
+    let effective_push = m.push_on_edit.unwrap_or(existing.push_on_edit);
+    if effective_push && !effective_has_token {
+        return Err(AppError::bad_request(
+            "pushOnEdit requires a repository access token",
+        ));
+    }
+    let resumed =
+        existing.status == RepoWatchStatus::Paused && status == Some(RepoWatchStatus::Active);
     let mut model: repo_binding::ActiveModel = existing.into();
     if let Some(value) = m.r#ref {
         model.git_ref = Set(crate::services::git_sync::validate_git_ref(Some(&value))?);
     }
-    if let Some(value) = m.interval_seconds {
-        model.interval_seconds = Set(value.max(0));
+    if let Some(value) = interval {
+        model.interval_seconds = Set(value);
     }
-    if let Some(value) = m.status {
-        model.status = Set(if value == "Active" {
-            RepoWatchStatus::Active
-        } else {
-            RepoWatchStatus::Paused
-        });
+    if let Some(value) = status {
+        model.status = Set(value);
+        if value == RepoWatchStatus::Paused {
+            // The checkout fence means an executing scan has already completed.
+            // A merely claimed scan loses this durable token before it can enter
+            // the checkout, so Pause never leaves hidden work running.
+            model.scan_lease_owner = Set(None);
+            model.scan_lease_expires_at_utc = Set(None);
+            model.current_activity = Set(None);
+        }
     }
-    if let Some(value) = m.github_token {
-        model.github_token = Set(Some(value).filter(|token| !token.trim().is_empty()));
+    if let Some(value) = token {
+        model.github_token = Set(value);
     }
     if let Some(value) = m.push_on_edit {
         model.push_on_edit = Set(value);
     }
-    Ok(model.update(&st.db).await?)
+    let updated = model.update(&st.db).await?;
+    if resumed {
+        sqlx::query(r#"UPDATE "RepoBindings" SET next_scan_utc = clock_timestamp() WHERE id = $1"#)
+            .bind(id)
+            .execute(st.pg())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    if !effective_push {
+        sqlx::query(r#"DELETE FROM "RepoPushQueue" WHERE binding_id = $1"#)
+            .bind(id)
+            .execute(st.pg())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    if resumed {
+        return repo_binding::Entity::find_by_id(id)
+            .one(&st.db)
+            .await?
+            .ok_or_else(|| AppError::not_found("Repo binding not found"));
+    }
+    Ok(updated)
 }
 
 /// Stop any active scan, then atomically detach retained games and remove the
@@ -167,38 +226,6 @@ pub(crate) async fn delete_repo_binding_record(st: &SharedState, id: i32) -> App
     drop(checkout);
     cleanup?;
     Ok(exists)
-}
-
-/// Persist only scan-owned columns; operator-owned binding configuration is
-/// never written from the model snapshot captured at scan start.
-pub(crate) async fn record_scan_completion(
-    st: &SharedState,
-    id: i32,
-    ran_at: DateTime<Utc>,
-    commit_sha: Option<String>,
-    message: String,
-    next_scan: DateTime<Utc>,
-) -> AppResult<()> {
-    let updated = sqlx::query(
-        r#"UPDATE "RepoBindings"
-              SET last_scan_utc = $2,
-                  last_commit_sha = COALESCE($3, last_commit_sha),
-                  last_scan_message = $4,
-                  next_scan_utc = $5
-            WHERE id = $1"#,
-    )
-    .bind(id)
-    .bind(ran_at)
-    .bind(commit_sha)
-    .bind(message)
-    .bind(next_scan)
-    .execute(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if updated.rows_affected() == 0 {
-        return Err(AppError::not_found("Repo binding not found"));
-    }
-    Ok(())
 }
 
 /// Refresh repository identity without allowing a scan to mutate a game whose

@@ -34,7 +34,9 @@ mod models;
 mod revocation;
 mod roster_policy;
 mod signature;
-pub(crate) use account_lifecycle::{create_team_rows, transfer_captain_locked};
+pub(crate) use account_lifecycle::{
+    create_team_rows, create_team_rows_in, transfer_captain_locked,
+};
 pub use avatar::avatar;
 pub use models::*;
 pub(crate) use revocation::{
@@ -146,29 +148,72 @@ pub async fn get_teams_info(
 pub async fn create_team(
     State(st): State<SharedState>,
     user: CurrentUser,
+    headers: HeaderMap,
     Json(model): Json<TeamUpdateModel>,
 ) -> AppResult<RequestResponse<TeamInfoModel>> {
     let name = model.name.unwrap_or_default().trim().to_string();
     validate_team_profile(Some(&name), model.bio.as_deref())?;
-    let team_id = create_team_rows(
-        st.pg(),
+    let operation_id = crate::controllers::edit::control_jobs::operation_id(&headers)?;
+    let fingerprint = crate::services::mutation_operations::fingerprint(
+        "team-create",
+        &(&name, model.bio.as_deref()),
+    )?;
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let replay = crate::services::mutation_operations::claim(
+        &mut transaction,
         user.id,
-        &user.security_stamp,
-        &name,
-        model.bio.as_deref(),
+        "team-create",
+        "account",
+        operation_id,
+        fingerprint,
     )
     .await?;
+    let (team_id, created) = if let Some(replay) = replay {
+        let id = replay
+            .result_id
+            .parse::<i32>()
+            .map_err(|_| AppError::internal("invalid retained team result identity"))?;
+        (id, false)
+    } else {
+        let id = create_team_rows_in(
+            &mut transaction,
+            user.id,
+            &user.security_stamp,
+            &name,
+            model.bio.as_deref(),
+        )
+        .await?;
+        crate::services::mutation_operations::complete(
+            &mut transaction,
+            user.id,
+            "team-create",
+            "account",
+            operation_id,
+            &id.to_string(),
+            None,
+        )
+        .await?;
+        (id, true)
+    };
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     let team = load_team(&st, team_id).await?;
 
     // RSCTF `Team_Created` — "Create team {name}" (TeamController, Success).
-    crate::services::audit::info(
-        &st,
-        "TeamController",
-        Some(user.name.clone()),
-        None,
-        format!("Create team {}", team.name),
-    )
-    .await;
+    if created {
+        crate::services::audit::info(
+            &st,
+            "TeamController",
+            Some(user.name.clone()),
+            None,
+            format!("Create team {}", team.name),
+        )
+        .await;
+    }
 
     let info = to_info(&st, &team, true).await?;
     Ok(RequestResponse::ok(info))

@@ -3,7 +3,7 @@
 use uuid::Uuid;
 
 /// Body for create/update — `TeamUpdateModel`.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamUpdateModel {
     pub name: Option<String>,
