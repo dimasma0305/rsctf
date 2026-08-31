@@ -46,8 +46,15 @@ pnpm_bin="$(command -v pnpm)"
   echo "bounded-frontend: pnpm is not available as an executable absolute path" >&2
   exit 2
 }
+node_bin="$(command -v node)"
+[[ "$node_bin" = /* && -x "$node_bin" ]] || {
+  echo "bounded-frontend: node is not available as an executable absolute path" >&2
+  exit 2
+}
+runtime_path="$(dirname "$node_bin"):$(dirname "$pnpm_bin"):/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 command=(
   env
+  "PATH=${runtime_path}"
   "GOMAXPROCS=${workers}"
   "UV_THREADPOOL_SIZE=${workers}"
   "NODE_OPTIONS=--max-old-space-size=4096"
@@ -84,6 +91,7 @@ if command -v systemd-run >/dev/null 2>&1 \
     --wait \
     --collect \
     --pipe \
+    --working-directory "$repo_root/web" \
     --unit "$unit" \
     --property Type=exec \
     --property "CPUQuota=${cpu_quota}" \
