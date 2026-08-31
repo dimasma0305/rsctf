@@ -159,7 +159,10 @@ function responseJson(response) {
 
 export function play() {
   const iteration = exec.scenario.iterationInTest;
-  const token = TOKENS[iteration % TOKENS.length];
+  // A constant-arrival-rate executor can schedule once at the inclusive duration
+  // boundary. Keep the measured wave exact instead of replaying capability zero.
+  if (iteration >= TOKENS.length) return;
+  const token = TOKENS[iteration];
   const expectedTeamId = crypto.sha256(token, 'hex');
   const expectedScoreable = iteration < ACTIVE_FLEET;
   const response = http.post(
