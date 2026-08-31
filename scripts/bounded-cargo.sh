@@ -97,6 +97,7 @@ if command -v systemd-run >/dev/null 2>&1 \
     --wait \
     --collect \
     --pipe \
+    --working-directory "$repo_root" \
     --unit "$unit" \
     --property Type=exec \
     --property "CPUQuota=${cpu_quota}" \

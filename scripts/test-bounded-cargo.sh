@@ -13,6 +13,7 @@ grep -Fq 'memory_max=12G' <<<"$output"
 grep -Fq 'jobs=2' <<<"$output"
 grep -Fq '/rsctf-target' <<<"$output"
 grep -Eq '/cargo check --all-targets' <<<"$output"
+grep -Fq -- '--working-directory "$repo_root"' scripts/bounded-cargo.sh
 
 if RSCTF_BOUNDED_CARGO_DRY_RUN=1 RSCTF_CARGO_JOBS=8 \
   scripts/bounded-cargo.sh check >/dev/null 2>&1; then
