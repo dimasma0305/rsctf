@@ -226,10 +226,16 @@ export function validateManagedReporterStatus(model, expected) {
   ];
   if (
     model.reporterConfigured !== true ||
-    model.reporterHealthy !== true ||
+    typeof model.reporterHealthy !== 'boolean' ||
     integerFields.some((field) => !Number.isSafeInteger(model[field]) || model[field] < 0) ||
     (model.lastContext !== null && !/^[0-9a-f]{64}$/.test(model.lastContext)) ||
-    (model.lastError !== null && typeof model.lastError !== 'string')
+    (model.lastError !== null && (
+      typeof model.lastError !== 'string' ||
+      model.lastError.length < 1 ||
+      model.lastError.length > 300 ||
+      /[\r\n]/.test(model.lastError)
+    )) ||
+    model.reporterHealthy !== (model.lastError === null)
   ) {
     throw new Error('managed KotH reporter status is malformed');
   }
@@ -240,6 +246,9 @@ export function validateManagedReporterStatus(model, expected) {
       'managed KotH minimum reporter reports',
     );
     const requireAbuse = expected.requireAbuse ?? false;
+    if (!model.reporterHealthy) {
+      throw new Error(`managed KotH reporter is unhealthy: ${model.lastError}`);
+    }
     if (model.successfulReports < minimumReports || model.submittedWaves < minimumReports) {
       throw new Error(`managed KotH reporter submitted only ${model.submittedWaves} waves`);
     }

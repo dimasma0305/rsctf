@@ -719,7 +719,60 @@ function currentSnapshotIdentity() {
     fields.length === 4 && Number(fields[0]) > 0 && /^[a-f0-9]{64}$/.test(fields[1]),
     'managed current snapshot identity is incomplete',
   );
-  return { roundId: Number(fields[0]), hash: fields[1], waves: Number(fields[2]), rows: Number(fields[3]) };
+  const evidence = sql(
+    `SELECT coalesce(jsonb_agg(jsonb_build_array(` +
+      `wave.wave_id,(extract(epoch FROM wave.ended_at)*1000)::bigint,` +
+      `score.participation_id,score.activity_earned,score.activity_possible,` +
+      `score.objective_earned,score.objective_possible,score.objective_count,score.is_crown` +
+    `) ORDER BY wave.ended_at,wave.wave_id,score.participation_id),'[]'::jsonb)::text ` +
+    `FROM "KothApiSnapshots" snapshot ` +
+    `JOIN "KothApiSnapshotWaves" wave ON wave.target_id=snapshot.target_id ` +
+    `JOIN "KothApiSnapshotScores" score ON score.target_id=wave.target_id AND score.wave_id=wave.wave_id ` +
+    `WHERE snapshot.game_id=${current.gameId} AND snapshot.challenge_id=${current.challengeId}`,
+  );
+  requireCondition(evidence.startsWith('[['), 'managed current snapshot evidence is incomplete');
+  return {
+    roundId: Number(fields[0]),
+    snapshotHash: fields[1],
+    evidenceHash: createHash('sha256').update(evidence).digest('hex'),
+    waves: Number(fields[2]),
+    rows: Number(fields[3]),
+  };
+}
+
+function activeRoundId() {
+  return Number(sql(
+    `SELECT id FROM "AdRounds" WHERE game_id=${current.gameId} AND finalized=FALSE ` +
+      `AND clock_timestamp()>=start_time_utc AND clock_timestamp()<end_time_utc ` +
+      `ORDER BY number DESC,id DESC LIMIT 1`,
+  ));
+}
+
+async function synchronizeCurrentReporterPrefix() {
+  return waitUntil(
+    'current active reporter prefix',
+    async () => ({ activeRoundId: activeRoundId(), snapshot: currentSnapshotIdentity() }),
+    ({ activeRoundId: roundId, snapshot }) => roundId > 0 &&
+      snapshot.roundId === roundId && snapshot.waves === 1 && snapshot.rows === ROSTER_SIZE,
+    120,
+  );
+}
+
+async function reservePrefixReconstructionWindow() {
+  await A.setAdScoringPaused(current.gameId, true);
+  const frozenRemainingMs = Number(sql(
+    `SELECT floor(extract(epoch FROM (round.end_time_utc-game.ad_scoring_paused_at))*1000)::bigint ` +
+      `FROM "Games" game JOIN LATERAL (` +
+        `SELECT end_time_utc FROM "AdRounds" WHERE game_id=game.id ` +
+        `ORDER BY number DESC,id DESC LIMIT 1` +
+      `) round ON TRUE WHERE game.id=${current.gameId} ` +
+      `AND game.ad_scoring_paused AND game.ad_scoring_paused_at IS NOT NULL`,
+  ));
+  requireCondition(Number.isSafeInteger(frozenRemainingMs), 'paused reconstruction round is unavailable');
+  const requiredHeadroomMs = (loadPlan.durationSeconds * 1_000) + 15_000;
+  const holdMs = Math.max(0, requiredHeadroomMs - frozenRemainingMs) + 2_000;
+  requireCondition(holdMs <= 120_000, 'paused reconstruction round is too stale to extend safely');
+  await sleep(holdMs);
 }
 
 async function restartManagedReporterProcess(target, reporterBaseUrl) {
@@ -740,13 +793,6 @@ async function restartManagedReporterProcess(target, reporterBaseUrl) {
     (candidate) => candidate.containerId === target.containerId &&
       candidate.resetAttempt === target.resetAttempt &&
       candidate.credentialRevision === target.credentialRevision,
-    120,
-  );
-  await waitUntil(
-    'restarted reporter context',
-    () => reporterStatus(sameTarget),
-    (status) => status.reporterConfigured && status.reporterHealthy &&
-      status.contextRefreshes > 0 && status.eligibleRoster === ROSTER_SIZE,
     120,
   );
   return { target: sameTarget, before };
@@ -934,12 +980,8 @@ async function main() {
     'two separately finalized managed waves',
     () => reporterStatus(target),
     (status) => {
-      try {
-        validateManagedReporterStatus(status, { ...loadPlan, minimumReports: 2 });
-        return true;
-      } catch {
-        return false;
-      }
+      validateManagedReporterStatus(status, { ...loadPlan, minimumReports: 2 });
+      return true;
     },
     180,
   );
@@ -962,9 +1004,18 @@ async function main() {
   capabilities = sortedCapabilities();
   writeCapabilities(capabilities);
 
-  await A.setAdScoringPaused(current.gameId, true);
+  await synchronizeCurrentReporterPrefix();
+  await reservePrefixReconstructionWindow();
   const restart = await restartManagedReporterProcess(target, reporterBaseUrl);
   target = restart.target;
+  await A.setAdScoringPaused(current.gameId, false);
+  await waitUntil(
+    'restarted reporter active context',
+    () => reporterStatus(target),
+    (status) => status.reporterConfigured && status.reporterHealthy &&
+      status.contextRefreshes > 0 && status.eligibleRoster === ROSTER_SIZE,
+    120,
+  );
   await runK6Phase({
     phase: 'valid',
     arenaUrl: target.arenaUrl,
@@ -976,21 +1027,20 @@ async function main() {
     'append-only reporter prefix reconstruction',
     () => reporterStatus(target),
     (status) => {
-      try {
-        validateManagedReporterStatus(status, { ...loadPlan, minimumReports: 1 });
-        return true;
-      } catch {
-        return false;
-      }
+      validateManagedReporterStatus(status, { ...loadPlan, minimumReports: 1 });
+      return true;
     },
     120,
   );
   const reconstructed = currentSnapshotIdentity();
   requireCondition(
     reconstructed.roundId === restart.before.roundId &&
-      reconstructed.hash === restart.before.hash &&
+      reconstructed.evidenceHash === restart.before.evidenceHash &&
       reconstructed.waves === 1 && reconstructed.rows === ROSTER_SIZE,
-    'restarted reporter did not reconstruct the exact append-only dense prefix',
+    `restarted reporter did not reconstruct the exact append-only dense prefix: ${JSON.stringify({
+      before: restart.before,
+      reconstructed,
+    })}`,
   );
 
   const revoked = capabilities[Math.floor(capabilities.length / 2)];
@@ -1021,12 +1071,8 @@ async function main() {
     'recovered reporter waves',
     () => reporterStatus(target),
     (status) => {
-      try {
-        validateManagedReporterStatus(status, { ...loadPlan, minimumReports: 2 });
-        return true;
-      } catch {
-        return false;
-      }
+      validateManagedReporterStatus(status, { ...loadPlan, minimumReports: 2 });
+      return true;
     },
     180,
   );
@@ -1042,16 +1088,12 @@ async function main() {
     'reporter isolation after capability abuse',
     () => reporterStatus(target),
     (status) => {
-      try {
-        validateManagedReporterStatus(status, {
-          ...loadPlan,
-          minimumReports: recoveredStatus.successfulReports + 1,
-          requireAbuse: true,
-        });
-        return true;
-      } catch {
-        return false;
-      }
+      validateManagedReporterStatus(status, {
+        ...loadPlan,
+        minimumReports: recoveredStatus.successfulReports + 1,
+        requireAbuse: true,
+      });
+      return true;
     },
     180,
   );

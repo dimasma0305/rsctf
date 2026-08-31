@@ -103,6 +103,7 @@ jobs:
                 ':(exclude).github/workflows/managed-koth-load.yml' \
                 ':(exclude)tests/load/managed-koth.compose.yml' \
                 ':(exclude)tests/load/managed-koth.md' \
+                ':(exclude)tests/load/fixtures.mjs' \
                 ':(exclude)tests/load/managed-koth-model.js' \
                 ':(exclude)tests/load/managed-koth.mjs' \
                 ':(exclude)tests/load/k6/managed-koth.js' \

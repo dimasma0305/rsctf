@@ -56,7 +56,20 @@ test('managed KotH recovery reconstructs a dense prefix then resolves a new runt
     runner.indexOf('function integritySnapshot()'),
   );
   assert.match(runner, /append-only reporter prefix reconstruction/);
-  assert.match(runner, /reconstructed\.hash === restart\.before\.hash/);
+  const reconstruction = runner.slice(
+    runner.indexOf("'pre-recovery dense score rows'"),
+    runner.indexOf('const revoked = capabilities'),
+  );
+  const synchronize = reconstruction.indexOf('synchronizeCurrentReporterPrefix()');
+  const pause = reconstruction.indexOf('reservePrefixReconstructionWindow()');
+  const restartCall = reconstruction.indexOf('restartManagedReporterProcess(');
+  const resume = reconstruction.indexOf('A.setAdScoringPaused(current.gameId, false)');
+  const activeContext = reconstruction.indexOf("'restarted reporter active context'");
+  const traffic = reconstruction.indexOf('runK6Phase({');
+  assert.ok(synchronize > 0 && synchronize < pause && pause < restartCall);
+  assert.ok(restartCall < resume && resume < activeContext && activeContext < traffic);
+  assert.match(runner, /reconstructed\.evidenceHash === restart\.before\.evidenceHash/);
+  assert.match(runner, /jsonb_agg\(jsonb_build_array\(/);
   assert.match(runner, /A\.adScoringPaused\(current\.gameId\)/);
   assert.match(runner, /candidate\.containerId !== target\.containerId/);
   assert.match(runner, /arenaUrl: `http:\/\//);
@@ -67,6 +80,7 @@ test('managed KotH recovery reconstructs a dense prefix then resolves a new runt
     restart,
     /waitUntil\([\s\S]*async \(\) => \{[\s\S]*inspectManagedTarget[\s\S]*await exactHealth\(candidate\.arenaUrl/,
   );
+  assert.doesNotMatch(restart, /reporterStatus\(/);
   assert.doesNotMatch(restart, /\);\n  await exactHealth\(sameTarget\.arenaUrl/);
 });
 
@@ -100,6 +114,7 @@ test('managed KotH workflow publishes missing candidates and reaps the derived D
   assert.match(workflow, /actions: write/);
   assert.match(workflow, /gh workflow run image\.yml --ref main/);
   assert.match(workflow, /The exact current-main candidate image was not published within 40 minutes/);
+  assert.match(workflow, /:\(exclude\)tests\/load\/fixtures\.mjs/);
   assert.match(workflow, /:\(exclude\)tests\/load\/managed-koth-model\.js/);
   assert.match(workflow, /:\(exclude\)tests\/load\/test\/managed-koth-model\.test\.mjs/);
   assert.match(workflow, /printf 'explicit\\0%s'/);
