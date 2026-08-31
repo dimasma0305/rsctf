@@ -118,7 +118,7 @@ async fn redis_resync_marker_forces_remote_authoritative_recovery() {
         received_game_event(7, -1, -1),
     )
     .await;
-    let subscriber_gaps = second_replica.operational_metrics().subscriber_gaps;
+    let before_resync = second_replica.operational_metrics();
     first_replica.publish(HubEvent {
         target: RESYNC_TARGET,
         game_id: None,
@@ -131,11 +131,12 @@ async fn redis_resync_marker_forces_remote_authoritative_recovery() {
             .unwrap(),
         Err(broadcast::error::RecvError::Lagged(0))
     ));
-    assert_eq!(second_replica.operational_metrics().lagged_receivers, 1);
+    let after_resync = second_replica.operational_metrics();
     assert_eq!(
-        second_replica.operational_metrics().subscriber_gaps,
-        subscriber_gaps
+        after_resync.lagged_receivers,
+        before_resync.lagged_receivers.saturating_add(1)
     );
+    assert_eq!(after_resync.subscriber_gaps, before_resync.subscriber_gaps);
 }
 
 /// Run explicitly with `RSCTF_TEST_REDIS_URL=redis://... cargo test
