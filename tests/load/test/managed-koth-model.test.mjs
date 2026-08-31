@@ -6,11 +6,32 @@ import {
   managedKothHarnessConfig,
   managedKothLoadPlan,
   managedKothOperationCycleId,
+  managedKothSummaryMetric,
   validateManagedKothRecovery,
   validateManagedKothIntegrity,
   validateManagedReporterEnvironment,
   validateManagedReporterStatus,
 } from '../managed-koth-model.js';
+
+test('managed KotH retained metrics accept k6 1.x and 2.x summary shapes', () => {
+  const k6v1 = {
+    metrics: {
+      server_5xx: { values: { rate: 0 } },
+      valid_capabilities_exercised: { values: { count: 2_000 } },
+    },
+  };
+  const k6v2 = {
+    metrics: {
+      server_5xx: { value: 0, passes: 0, fails: 2_000 },
+      valid_capabilities_exercised: { count: 2_000 },
+    },
+  };
+  assert.equal(managedKothSummaryMetric(k6v1, 'server_5xx', 'rate'), 0);
+  assert.equal(managedKothSummaryMetric(k6v2, 'server_5xx', 'rate'), 0);
+  assert.equal(managedKothSummaryMetric(k6v1, 'valid_capabilities_exercised', 'count'), 2_000);
+  assert.equal(managedKothSummaryMetric(k6v2, 'valid_capabilities_exercised', 'count'), 2_000);
+  assert.ok(Number.isNaN(managedKothSummaryMetric({}, 'server_5xx', 'rate')));
+});
 
 test('managed KotH load plan covers every 2k capability at a fixed rate with bounded concurrency', () => {
   const plan = managedKothLoadPlan();
