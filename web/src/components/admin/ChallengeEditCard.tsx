@@ -31,9 +31,11 @@ import {
   mdiSwordCross,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { Dispatch, FC, SetStateAction, useEffect, useState } from 'react'
+import { Dispatch, FC, SetStateAction, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useParams } from 'react-router'
+import { isRetryableHttpError } from '@Utils/HttpError'
+import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
 import { useChallengeCategoryLabelMap, showErrorMsg } from '@Utils/Shared'
 import api, { ChallengeInfoModel, ChallengeCategory } from '@Api'
 import classes from '@Styles/ChallengeEditCard.module.css'
@@ -79,6 +81,11 @@ export const ChallengeEditCard: FC<ChallengeEditCardProps> = ({
   const [building, setBuilding] = useState(false)
   const { t } = useTranslation()
   const numId = parseInt(id ?? '-1')
+  const buildOperationOwner = useMemo(
+    () => new RetryableOperationKey(undefined, `rsctf:challenge-rebuild:card:${numId}:${challenge.id ?? 'unknown'}`),
+    [numId, challenge.id]
+  )
+  useEffect(() => () => buildOperationOwner.release(), [buildOperationOwner])
 
   const inFlightBuild = challenge.buildStatus === 'Queued' || challenge.buildStatus === 'Building'
 
@@ -95,9 +102,11 @@ export const ChallengeEditCard: FC<ChallengeEditCardProps> = ({
 
   const onBuildNow = async () => {
     if (challenge.id == null) return
+    const operationId = buildOperationOwner.claim()
     setBuilding(true)
     try {
-      await api.edit.editRebuildChallengeImage(numId, challenge.id)
+      await api.edit.editRebuildChallengeImage(numId, challenge.id, operationId)
+      buildOperationOwner.complete(operationId)
       showNotification({
         color: 'teal',
         message: t('admin.notification.builds.enqueued'),
@@ -107,6 +116,7 @@ export const ChallengeEditCard: FC<ChallengeEditCardProps> = ({
       // reflect the new Queued status without a manual reload.
       onMutate?.()
     } catch (e) {
+      if (!isRetryableHttpError(e)) buildOperationOwner.complete(operationId)
       showErrorMsg(e, t)
     } finally {
       setBuilding(false)

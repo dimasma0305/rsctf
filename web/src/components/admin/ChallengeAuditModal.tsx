@@ -17,8 +17,10 @@ import {
 } from '@mantine/core'
 import { mdiDownload, mdiFileDocumentOutline, mdiFolderZipOutline, mdiHammerWrench } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { isRetryableHttpError } from '@Utils/HttpError'
+import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
 import { HunamizeSize, showErrorMsg } from '@Utils/Shared'
 import api, { ChallengeAuditModel } from '@Api'
 
@@ -82,11 +84,18 @@ export const ChallengeAuditModal: FC<ChallengeAuditModalProps> = (props) => {
   }
 
   const [rebuilding, setRebuilding] = useState(false)
+  const rebuildOperationOwner = useMemo(
+    () => new RetryableOperationKey(undefined, `rsctf:challenge-rebuild:audit:${gameId}:${challengeId ?? 'closed'}`),
+    [gameId, challengeId]
+  )
+  useEffect(() => () => rebuildOperationOwner.release(), [rebuildOperationOwner])
   const onRebuild = async () => {
     if (challengeId == null) return
+    const operationId = rebuildOperationOwner.claim()
     setRebuilding(true)
     try {
-      const resp = await api.edit.editRebuildChallengeImage(gameId, challengeId)
+      const resp = await api.edit.editRebuildChallengeImage(gameId, challengeId, operationId)
+      rebuildOperationOwner.complete(operationId)
       // The endpoint now returns 202 with buildStatus=Queued. Patch the
       // local state to Queued immediately so the operator sees the
       // transition; the next AuditMeta tick (kicked by reloadKey
@@ -102,6 +111,7 @@ export const ChallengeAuditModal: FC<ChallengeAuditModalProps> = (props) => {
       )
       setReloadKey((k) => k + 1)
     } catch (e) {
+      if (!isRetryableHttpError(e)) rebuildOperationOwner.complete(operationId)
       showErrorMsg(e, t)
     } finally {
       setRebuilding(false)

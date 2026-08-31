@@ -7971,6 +7971,7 @@ export class Api<
     editRebuildChallengeImage: (
       id: number,
       cId: number,
+      operationId: string,
       params: RequestParams = {},
     ) =>
       this.request<ChallengeAuditModel, RequestResponse>({
@@ -7978,6 +7979,10 @@ export class Api<
         method: "POST",
         format: "json",
         ...params,
+        headers: {
+          ...params.headers,
+          "Idempotency-Key": operationId,
+        },
       }),
 
     /**

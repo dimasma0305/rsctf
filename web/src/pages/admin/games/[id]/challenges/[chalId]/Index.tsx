@@ -35,7 +35,7 @@ import {
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useEffect, useRef, useState } from 'react'
+import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, useParams } from 'react-router'
 import { HintList } from '@Components/HintList'
@@ -46,6 +46,8 @@ import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { WithChallengeEdit } from '@Components/admin/WithChallengeEdit'
 import { ScoreFunc } from '@Components/charts/ScoreFunc'
 import { challengeRevision, ChallengeMutationOperation, prepareChallengeMutation } from '@Utils/ChallengeMutation'
+import { isRetryableHttpError } from '@Utils/HttpError'
+import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
 import { getInputNumber, NetworkModeItem, NetworkModeList, showErrorMsg, useNetworkModeMap } from '@Utils/Shared'
 import {
   ChallengeCategoryItem,
@@ -342,6 +344,11 @@ const GameChallengeEdit: FC = () => {
   }
 
   const [building, setBuilding] = useState(false)
+  const buildOperationOwner = useMemo(
+    () => new RetryableOperationKey(undefined, `rsctf:challenge-rebuild:detail:${numId}:${numCId}`),
+    [numId, numCId]
+  )
+  useEffect(() => () => buildOperationOwner.release(), [buildOperationOwner])
   const inFlightBuild = challenge?.buildStatus === 'Queued' || challenge?.buildStatus === 'Building'
   const isBuildable =
     (challenge?.type === 'StaticContainer' ||
@@ -363,9 +370,11 @@ const GameChallengeEdit: FC = () => {
   }, [inFlightBuild])
 
   const onBuildNow = async () => {
+    const operationId = buildOperationOwner.claim()
     setBuilding(true)
     try {
-      await api.edit.editRebuildChallengeImage(numId, numCId)
+      await api.edit.editRebuildChallengeImage(numId, numCId, operationId)
+      buildOperationOwner.complete(operationId)
       showNotification({
         color: 'teal',
         message: t('admin.notification.builds.enqueued'),
@@ -373,6 +382,7 @@ const GameChallengeEdit: FC = () => {
       })
       mutate()
     } catch (e) {
+      if (!isRetryableHttpError(e)) buildOperationOwner.complete(operationId)
       showErrorMsg(e, t)
     } finally {
       setBuilding(false)
