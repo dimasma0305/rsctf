@@ -810,6 +810,16 @@ impl PgSessionAdvisoryLock {
         }))
     }
 
+    /// Serialize Git network work per upstream host across replicas. A small
+    /// independent gate bounds retained pool connections; the durable repo
+    /// scheduler owns the broader work queue and lease recovery.
+    pub(crate) async fn acquire_repo_host(pool: &sqlx::PgPool, host: &str) -> anyhow::Result<Self> {
+        static GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+            std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)));
+        let permit = GATE.clone().acquire_owned().await?;
+        Self::acquire_with_permit(pool, &format!("repo-host:{host}"), Some(permit)).await
+    }
+
     /// Serialize one synchronous admin bulk-build request per game across all
     /// replicas. The session lease spans slow Docker work without an open
     /// transaction; close-on-drop releases it if the HTTP request is cancelled.

@@ -2,10 +2,11 @@ import { Button, Text } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router'
 import { AccountView } from '@Components/AccountView'
+import { RetryableMutationOwner } from '@Utils/RetryableMutationOwner'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import api from '@Api'
 
@@ -16,6 +17,7 @@ const Confirm: FC = () => {
   const token = sp.get('token')
   const email = sp.get('email')
   const [disabled, setDisabled] = useState(false)
+  const owner = useRef(new RetryableMutationOwner())
   const { t } = useTranslation()
   // A corrupted/truncated link can carry a non-base64 email param; window.atob then
   // throws synchronously during render and white-screens the page. Decode safely and
@@ -28,6 +30,12 @@ const Confirm: FC = () => {
   }
 
   usePageTitle(t('account.title.confirm'))
+
+  useEffect(() => {
+    owner.current.cancel()
+    setDisabled(false)
+    return () => owner.current.cancel()
+  }, [token, email])
 
   const verify = async (event: React.SyntheticEvent) => {
     event.preventDefault()
@@ -42,10 +50,13 @@ const Confirm: FC = () => {
       return
     }
 
+    const lease = owner.current.claim(JSON.stringify({ token, email }))
+    if (!lease) return
     setDisabled(true)
 
     try {
-      await api.account.accountMailChangeConfirm({ token, email })
+      await api.account.accountMailChangeConfirm({ token, email }, { signal: lease.signal })
+      if (!owner.current.settle(lease, true)) return
       showNotification({
         color: 'teal',
         title: t('account.notification.confirm.success'),
@@ -54,13 +65,13 @@ const Confirm: FC = () => {
       })
       navigate('/')
     } catch {
+      if (!owner.current.settle(lease, false)) return
       showNotification({
         color: 'red',
         title: t('account.notification.confirm.failed'),
         message: t('common.error.param_error'),
         icon: <Icon path={mdiClose} size={1} />,
       })
-    } finally {
       setDisabled(false)
     }
   }

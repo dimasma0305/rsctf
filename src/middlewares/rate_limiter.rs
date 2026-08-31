@@ -33,7 +33,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State as AxumState};
-use axum::http::{header, HeaderValue, Method};
+use axum::http::{header, HeaderValue};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::MethodRouter;
@@ -113,10 +113,12 @@ fn ad_submit_burst_flags() -> u32 {
         .unwrap_or_else(|message| panic!("{message}"))
 }
 
+mod ad_auth;
+mod managed_api;
 mod partition;
 mod policy;
 
-use partition::{partition_key, session_partition_key, VerifiedSessionPartitionKey};
+use partition::{client_ip, partition_key, session_partition_key, VerifiedSessionPartitionKey};
 use policy::Kind;
 pub use policy::Policy;
 
@@ -787,37 +789,6 @@ async fn check_authenticated_async(identity: String, ip: String) -> Result<(), u
     }
 }
 
-fn supports_ad_bearer(method: &Method, path: &str) -> bool {
-    let normalized = path.to_ascii_lowercase();
-    let segments: Vec<&str> = normalized
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .collect();
-    let valid_game = segments
-        .get(2)
-        .and_then(|value| value.parse::<i32>().ok())
-        .is_some_and(|game_id| game_id > 0);
-    if !valid_game || segments.get(0..2) != Some(&["api", "game"]) {
-        return false;
-    }
-    matches!(
-        (method, segments.as_slice()),
-        (&Method::POST, ["api", "game", _, "ad", "submit"])
-            | (&Method::GET, ["api", "game", _, "ad", "targets"])
-            | (&Method::GET, ["api", "game", _, "ad", "koth", "token"])
-            | (&Method::GET, ["api", "game", _, "ad", "koth", "hills"])
-    )
-}
-
-async fn admit_ad_authentication(token: &str, ip: &str) -> Result<(), u64> {
-    let token_key = format!("ad-auth:{}", crate::services::ad::api_token::hash(token));
-    let (token_result, source_result) = tokio::join!(
-        check_async(Policy::AdAuthTokenAdmission, token_key),
-        check_async(Policy::AdAuthSourceAdmission, ip.to_owned()),
-    );
-    token_result.and(source_result)
-}
-
 // ---------------------------------------------------------------------------
 // Middleware / decorator API
 // ---------------------------------------------------------------------------
@@ -849,7 +820,18 @@ pub async fn global_middleware(
         }
     }
 
-    let attempted_ad = supports_ad_bearer(req.method(), req.uri().path())
+    let (attempted_managed, verified_managed) =
+        match managed_api::authenticate(&st, credential.as_deref(), ip.clone()).await {
+            Ok(authentication) => authentication,
+            Err(response) => return response,
+        };
+    if attempted_managed && verified_managed.is_none() {
+        req.extensions_mut()
+            .insert(crate::services::managed_api_token::RejectedManagedApiToken);
+    }
+
+    let attempted_ad = !attempted_managed
+        && ad_auth::supports_bearer(req.method(), req.uri().path())
         && credential
             .as_deref()
             .is_some_and(crate::services::ad::api_token::is_well_formed);
@@ -857,7 +839,7 @@ pub async fn global_middleware(
         let token = credential
             .as_deref()
             .expect("attempted A&D token is present");
-        if let Err(retry_after) = admit_ad_authentication(token, &ip).await {
+        if let Err(retry_after) = ad_auth::admit(token, &ip).await {
             return too_many_requests(retry_after);
         }
         let Ok(_slot) = AD_AUTH_SLOTS.try_acquire() else {
@@ -884,12 +866,21 @@ pub async fn global_middleware(
     }
     // A syntactically valid A&D credential has already received its definitive
     // DB decision above. Do not reinterpret a rejected one as a session JWT.
-    let verified_session = if attempted_ad {
+    let verified_session = if attempted_ad || attempted_managed {
         None
     } else {
         credential.and_then(|token| st.token.verify(&token).ok())
     };
-    if let Some(verified) = verified_ad {
+    if let Some(verified) = verified_managed {
+        let key = verified.partition_key.clone();
+        if let Err(retry_after) = check_authenticated_async(key, ip).await {
+            return too_many_requests(retry_after);
+        }
+        if !verified.permits(req.method()) {
+            return crate::utils::error::AppError::Forbidden.into_response();
+        }
+        req.extensions_mut().insert(verified);
+    } else if let Some(verified) = verified_ad {
         let key = verified.partition_key.clone();
         req.extensions_mut().insert(verified);
         if let Err(retry_after) = check_authenticated_async(key, ip).await {
@@ -913,39 +904,6 @@ pub async fn global_middleware(
         }
     }
     next.run(req).await
-}
-
-#[cfg(test)]
-mod ad_auth_admission_tests {
-    use super::supports_ad_bearer;
-    use axum::http::Method;
-
-    #[test]
-    fn authenticates_ad_bearers_only_on_dual_auth_routes() {
-        for path in [
-            "/api/Game/7/Ad/Submit",
-            "/api/Game/7/Ad/Targets",
-            "/api/game/7/ad/targets",
-            "/api/Game/7/Ad/Koth/Token",
-            "/api/Game/7/Ad/Koth/Hills",
-        ] {
-            let method = if path.ends_with("Submit") {
-                Method::POST
-            } else {
-                Method::GET
-            };
-            assert!(supports_ad_bearer(&method, path), "{path}");
-        }
-        for (method, path) in [
-            (Method::GET, "/api/Game/7/Ad/Submit"),
-            (Method::GET, "/api/game/7/details"),
-            (Method::GET, "/api/admin/users"),
-            (Method::GET, "/api/Game/nope/Ad/Targets"),
-            (Method::POST, "/api/Game/7/Ad/Token"),
-        ] {
-            assert!(!supports_ad_bearer(&method, path), "{path}");
-        }
-    }
 }
 
 /// Decorate a single route handler with a named policy — the axum analogue of

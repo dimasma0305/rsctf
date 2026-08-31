@@ -2,9 +2,10 @@ import { Button, Center, Stack, Text, Textarea, TextInput, Title, useMantineThem
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiCloseCircle } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { AccessibleModal, AccessibleModalProps } from '@Components/AccessibleModal'
+import { RetryableMutationOwner } from '@Utils/RetryableMutationOwner'
 import { showErrorMsg } from '@Utils/Shared'
 import api, { TeamUpdateModel } from '@Api'
 
@@ -15,18 +16,33 @@ interface TeamCreateModalProps extends AccessibleModalProps {
 }
 
 export const TeamCreateModal: FC<TeamCreateModalProps> = (props) => {
-  const { disallowCreate, mutate, onTeamReady, ...modalProps } = props
+  const { disallowCreate, mutate, onTeamReady, onClose, ...modalProps } = props
   const [createTeam, setCreateTeam] = useState<TeamUpdateModel>({ name: '', bio: '' })
   const [disabled, setDisabled] = useState(false)
+  const owner = useRef(new RetryableMutationOwner())
   const theme = useMantineTheme()
 
   const { t } = useTranslation()
 
+  useEffect(
+    () => () => {
+      owner.current.cancel()
+    },
+    []
+  )
+
   const onCreateTeam = async () => {
+    const digest = JSON.stringify({
+      name: createTeam.name?.trim() ?? '',
+      bio: createTeam.bio ?? '',
+    })
+    const lease = owner.current.claim(digest)
+    if (!lease) return
     setDisabled(true)
 
     try {
-      const res = await api.team.teamCreateTeam(createTeam)
+      const res = await api.team.teamCreateTeam(createTeam, lease.operationId, { signal: lease.signal })
+      if (!owner.current.settle(lease, true)) return
       showNotification({
         color: 'teal',
         title: t('team.notification.create.success.title'),
@@ -36,16 +52,28 @@ export const TeamCreateModal: FC<TeamCreateModalProps> = (props) => {
       setCreateTeam({ name: '', bio: '' })
       onTeamReady?.()
       mutate()
-      modalProps.onClose()
+      onClose()
     } catch (e) {
+      if (!owner.current.settle(lease, false)) return
       showErrorMsg(e, t)
-    } finally {
       setDisabled(false)
     }
   }
 
+  const handleClose = () => {
+    if (owner.current.isActive()) return
+    owner.current.cancel()
+    onClose()
+  }
+
   return (
-    <AccessibleModal {...modalProps}>
+    <AccessibleModal
+      {...modalProps}
+      onClose={handleClose}
+      closeOnClickOutside={!disabled}
+      closeOnEscape={!disabled}
+      withCloseButton={!disabled}
+    >
       {disallowCreate ? (
         <Stack gap="lg" p={40} ta="center">
           <Center>

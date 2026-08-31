@@ -172,7 +172,7 @@ pub(super) async fn enqueue_confirmation(
     email: &str,
     token: &str,
     source: Option<&str>,
-) -> AppResult<()> {
+) -> AppResult<crate::services::mail_outbox::EnqueueOutcome> {
     let base = require_delivery_origin(st.config.as_ref())?.trim_end_matches('/');
     let link = format!(
         "{base}/account/verify?token={token}&email={}",
@@ -193,8 +193,7 @@ pub(super) async fn enqueue_confirmation(
             html_body: &body,
         },
     )
-    .await?;
-    Ok(())
+    .await
 }
 
 /// Authenticate a repeated registration for the same pending identity and
@@ -260,7 +259,7 @@ pub(super) async fn resend_pending_confirmation(
         database_now,
         operation_id,
     );
-    enqueue_confirmation(
+    let outcome = enqueue_confirmation(
         st,
         &mut transaction,
         operation_id,
@@ -271,6 +270,19 @@ pub(super) async fn resend_pending_confirmation(
         source,
     )
     .await?;
+    if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {
+        super::link_attempts::stage(
+            &mut transaction,
+            &token,
+            super::link_attempts::Purpose::Registration,
+            pending.user_id,
+            pending.security_stamp,
+            pending.normalized_email,
+            database_now.timestamp() + EMAIL_CONFIRMATION_TTL_SECS,
+            true,
+        )
+        .await?;
+    }
     transaction
         .commit()
         .await
@@ -304,7 +316,7 @@ async fn confirm_token(
     pool: &sqlx::PgPool,
     config: &crate::models::internal::configs::AppConfig,
     model: &AccountVerifyModel,
-) -> AppResult<String> {
+) -> AppResult<(String, bool)> {
     if model.token.is_empty()
         || model.token.len() > MAX_ACCOUNT_TOKEN_BYTES
         || model.email.is_empty()
@@ -324,6 +336,44 @@ async fn confirm_token(
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    // Version-one links predate durable attempt rows and remain usable during
+    // rolling upgrades. Every newly issued version-two link must claim its
+    // digest-only attempt before it can mutate the account.
+    let attempt = if claims.operation_id.is_some() {
+        let attempt = match super::link_attempts::claim(
+            &mut transaction,
+            &model.token,
+            super::link_attempts::Purpose::Registration,
+        )
+        .await?
+        {
+            super::link_attempts::Claim::Completed(result) => {
+                let name = result
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                transaction
+                    .commit()
+                    .await
+                    .map_err(|error| AppError::internal(error.to_string()))?;
+                return Ok((name, false));
+            }
+            super::link_attempts::Claim::Pending(attempt) => attempt,
+        };
+        if attempt.account_id != claims.user_id
+            || attempt.destination_digest
+                != super::link_attempts::digest(normalized_email.as_bytes())
+            || attempt.security_generation_digest != claims.security_stamp_hash
+        {
+            return Err(AppError::bad_request(
+                "Invalid or expired email-confirmation token",
+            ));
+        }
+        Some(attempt)
+    } else {
+        None
+    };
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
         .bind(REGISTRATION_LOCK_ID)
         .execute(&mut *transaction)
@@ -415,11 +465,20 @@ async fn confirm_token(
             "Invalid or expired email-confirmation token",
         ));
     }
+    let name = name.unwrap_or_default();
+    if let Some(attempt) = attempt.as_ref() {
+        super::link_attempts::complete(
+            &mut transaction,
+            attempt,
+            &serde_json::json!({ "status": "verified", "name": name.clone() }),
+        )
+        .await?;
+    }
     transaction
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(name.unwrap_or_default())
+    Ok((name, true))
 }
 
 /// `POST /api/account/verify` -> `void`.
@@ -427,15 +486,17 @@ pub async fn verify(
     State(st): State<SharedState>,
     Json(model): Json<AccountVerifyModel>,
 ) -> AppResult<MessageResponse> {
-    let name = confirm_token(st.pg(), st.config.as_ref(), &model).await?;
-    crate::services::audit::info(
-        &st,
-        "AccountController",
-        Some(name.clone()),
-        None,
-        format!("User {name} verified email"),
-    )
-    .await;
+    let (name, committed) = confirm_token(st.pg(), st.config.as_ref(), &model).await?;
+    if committed {
+        crate::services::audit::info(
+            &st,
+            "AccountController",
+            Some(name.clone()),
+            None,
+            format!("User {name} verified email"),
+        )
+        .await;
+    }
     Ok(MessageResponse::ok(""))
 }
 
@@ -476,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn deliberate_reissue_has_a_distinct_outbox_generation() {
+    fn signed_payload_can_be_reissued_while_durable_attempts_own_consumption() {
         let secret = b"0123456789abcdef0123456789abcdef";
         let user_id = Uuid::new_v4();
         let first = issue_token(
@@ -576,6 +637,21 @@ mod tests {
                  account_id UUID NOT NULL,
                  purpose SMALLINT NOT NULL,
                  superseded_at_utc TIMESTAMPTZ
+               );
+               CREATE TABLE "AccountLinkAttempts" (
+                 token_digest BYTEA PRIMARY KEY,
+                 purpose SMALLINT NOT NULL,
+                 account_id UUID NOT NULL REFERENCES "AspNetUsers"(id) ON DELETE CASCADE,
+                 generation BIGINT NOT NULL,
+                 security_generation_digest BYTEA NOT NULL,
+                 destination_digest BYTEA NOT NULL,
+                 expires_at_utc TIMESTAMPTZ NOT NULL,
+                 is_current BOOLEAN NOT NULL DEFAULT FALSE,
+                 delivered_at_utc TIMESTAMPTZ,
+                 consumed_at_utc TIMESTAMPTZ,
+                 result JSONB,
+                 created_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                 UNIQUE (account_id, purpose, generation)
                );"#,
         )
         .execute(&pool)
@@ -637,6 +713,20 @@ mod tests {
             token,
             email: crate::utils::codec::base64_encode(b"pending@example.test"),
         };
+        let mut link_transaction = pool.begin().await.unwrap();
+        super::super::link_attempts::stage(
+            &mut link_transaction,
+            &model.token,
+            super::super::link_attempts::Purpose::Registration,
+            user_id,
+            "stamp-a",
+            "PENDING@EXAMPLE.TEST",
+            Utc::now().timestamp() + 3600,
+            true,
+        )
+        .await
+        .unwrap();
+        link_transaction.commit().await.unwrap();
         assert!(confirm_token(&pool, &config, &model).await.is_err());
         let after_failure: (bool, String) = sqlx::query_as(
             r#"SELECT email_confirmed,security_stamp
@@ -657,9 +747,12 @@ mod tests {
         .unwrap();
         assert_eq!(
             confirm_token(&pool, &config, &model).await.unwrap(),
-            "pending"
+            ("pending".to_string(), true)
         );
-        assert!(confirm_token(&pool, &config, &model).await.is_err());
+        assert_eq!(
+            confirm_token(&pool, &config, &model).await.unwrap(),
+            ("pending".to_string(), false)
+        );
 
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

@@ -2602,7 +2602,7 @@ async function repositoryLifecycle() {
     "/api/admin/repobindings",
   );
   requireCondition(
-    bindings.json?.some((binding) => binding.id === repoBindingId),
+    bindings.json?.data?.some((binding) => binding.id === repoBindingId),
     "binding list omitted fixture",
   );
   const paused = await call(
@@ -2690,7 +2690,7 @@ async function repositoryLifecycle() {
     `/api/admin/repobindings/${repoBindingId}/scans`,
   );
   requireCondition(
-    history.json?.length >= 2,
+    history.json?.data?.length >= 2,
     "repository scan retry history is incomplete",
   );
   // Retain the scanned binding through the all-origin read matrix. Cleanup

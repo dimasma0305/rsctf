@@ -1223,7 +1223,7 @@ export interface ApiTokenResponse {
 /** Represents an API token for programmatic access. */
 export interface ApiToken {
   /**
-   * The unique identifier for the token, also used as the JWT ID (jti).
+   * The unique identifier for the managed token metadata.
    * @format guid
    */
   id?: string;
@@ -1238,7 +1238,7 @@ export interface ApiToken {
    * @format guid
    * @minLength 1
    */
-  creatorId: string;
+  creatorId?: string | null;
   /**
    * The timestamp when the token was created.
    * @format uint64
@@ -1258,6 +1258,10 @@ export interface ApiToken {
   isRevoked: boolean;
   /** The name of the user who created the token. */
   creator?: string | null;
+  /** Fixed authority audience for this managed credential. */
+  audience: string;
+  /** Explicit least-privilege authorities granted to this credential. */
+  scopes: ("api:read" | "api:write")[];
 }
 
 /** API token creation model. */
@@ -1270,6 +1274,8 @@ export interface ApiTokenCreateModel {
   name: string;
   /** The duration for which the token will be valid, in days. */
   expiresIn?: number | null;
+  /** Explicit authorities. Omitted credentials are read-only. */
+  scopes?: ("api:read" | "api:write")[] | null;
 }
 
 export interface ProblemDetails {
@@ -1953,6 +1959,8 @@ export interface ChallengeEditDetailModel {
    * @format int32
    */
   id?: number;
+  /** Monotonic ordinary-definition revision. */
+  revision: number;
   /**
    * Challenge title
    * @minLength 1
@@ -2140,6 +2148,10 @@ export interface ChallengeInfoModel {
    * @format int32
    */
   id?: number;
+  /** Monotonic ordinary-definition revision on list responses. */
+  revision?: number;
+  /** Stable opaque identity retained across retry of this exact create. */
+  operationId?: string;
   /**
    * Challenge title
    * @minLength 1
@@ -2331,6 +2343,10 @@ export interface ImageCleanupReport {
 
 /** Challenge update information (Edit) */
 export interface ChallengeUpdateModel {
+  /** Stable opaque identity retained across retry of this exact edit. */
+  operationId?: string;
+  /** Revision observed by the editor; stale values are rejected. */
+  expectedRevision?: number;
   /**
    * Challenge title
    * @minLength 1
@@ -3867,7 +3883,17 @@ export interface RepoBindingInfoModel {
    * Requires a PAT with Contents:write scope.
    */
   pushOnEdit?: boolean
+  /** Number of coalesced challenge edits waiting for upstream publication. */
+  pushBacklog?: number
+  /** Latest bounded push failure, when queued work is retrying. */
+  pushLastError?: string | null
   games: RepoBindingGameSummary[]
+}
+
+export interface ArrayResponseOfRepoBindingInfoModel {
+  data: RepoBindingInfoModel[]
+  length: number
+  total?: number
 }
 
 /** Body for POST /api/Admin/RepoBindings */
@@ -3911,6 +3937,12 @@ export interface RepoBindingScanHistoryModel {
   challengesUpdated: number
   failures: number
   messages?: string | null
+}
+
+export interface ArrayResponseOfRepoBindingScanHistoryModel {
+  data: RepoBindingScanHistoryModel[]
+  length: number
+  total?: number
 }
 
 /** One file inside the audit archive */
@@ -6239,24 +6271,38 @@ export class Api<
      * @name AdminListRepoBindings
      * @request GET:/api/admin/repobindings
      */
-    adminListRepoBindings: (params: RequestParams = {}) =>
-      this.request<RepoBindingInfoModel[], RequestResponse>({
+    adminListRepoBindings: (
+      query?: { count?: number; skip?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfRepoBindingInfoModel, RequestResponse>({
         path: `/api/admin/repobindings`,
         method: "GET",
+        query,
         format: "json",
         ...params,
       }),
 
-    useAdminListRepoBindings: (options?: SWRConfiguration, doFetch: boolean = true) =>
-      useSWR<RepoBindingInfoModel[], RequestResponse>(
-        doFetch ? `/api/admin/repobindings` : null,
+    useAdminListRepoBindings: (
+      query?: { count?: number; skip?: number },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfRepoBindingInfoModel, RequestResponse>(
+        doFetch ? [`/api/admin/repobindings`, query] : null,
         options,
       ),
 
     mutateAdminListRepoBindings: (
-      data?: RepoBindingInfoModel[] | Promise<RepoBindingInfoModel[]>,
+      query?: { count?: number; skip?: number },
+      data?: ArrayResponseOfRepoBindingInfoModel | Promise<ArrayResponseOfRepoBindingInfoModel>,
       options?: MutatorOptions,
-    ) => mutate<RepoBindingInfoModel[]>(`/api/admin/repobindings`, data, options),
+    ) =>
+      mutate<ArrayResponseOfRepoBindingInfoModel>(
+        [`/api/admin/repobindings`, query],
+        data,
+        options,
+      ),
 
     /**
      * @description Register a new repo binding (immediately scans for .gzevent manifests)
@@ -6297,10 +6343,15 @@ export class Api<
      * @name AdminGetRepoBindingScans
      * @request GET:/api/admin/repobindings/{id}/scans
      */
-    adminGetRepoBindingScans: (id: number, params: RequestParams = {}) =>
-      this.request<RepoBindingScanHistoryModel[], RequestResponse>({
+    adminGetRepoBindingScans: (
+      id: number,
+      query?: { count?: number; skip?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfRepoBindingScanHistoryModel, RequestResponse>({
         path: `/api/admin/repobindings/${id}/scans`,
         method: "GET",
+        query,
         format: "json",
         ...params,
       }),
@@ -6637,6 +6688,24 @@ export class Api<
       this.request<ApiToken[], RequestResponse>({
         path: `/api/tokens`,
         method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /** Retrieve one bounded page without changing the legacy first-page call. */
+    apiTokenListTokensPage: (
+      query?: {
+        /** @format uint32 */
+        page?: number;
+        /** @format uint16 */
+        pageSize?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ApiToken[], RequestResponse>({
+        path: `/api/tokens`,
+        method: "GET",
+        query: query,
         format: "json",
         ...params,
       }),
@@ -6985,11 +7054,12 @@ export class Api<
      * @summary Add Game
      * @request POST:/api/edit/games
      */
-    editAddGame: (data: GameInfoModel, params: RequestParams = {}) =>
+    editAddGame: (data: GameInfoModel, operationId: string, params: RequestParams = {}) =>
       this.request<GameInfoModel, RequestResponse>({
         path: `/api/edit/games`,
         method: "POST",
         body: data,
+        headers: { "Idempotency-Key": operationId },
         type: ContentType.Json,
         format: "json",
         ...params,
@@ -7066,11 +7136,12 @@ export class Api<
      * @summary Add Post
      * @request POST:/api/edit/posts
      */
-    editAddPost: (data: PostEditModel, params: RequestParams = {}) =>
+    editAddPost: (data: PostEditModel, operationId: string, params: RequestParams = {}) =>
       this.request<string, RequestResponse>({
         path: `/api/edit/posts`,
         method: "POST",
         body: data,
+        headers: { "Idempotency-Key": operationId },
         type: ContentType.Json,
         format: "json",
         ...params,
@@ -11227,11 +11298,12 @@ export class Api<
      * @summary Create team
      * @request POST:/api/team
      */
-    teamCreateTeam: (data: TeamUpdateModel, params: RequestParams = {}) =>
+    teamCreateTeam: (data: TeamUpdateModel, operationId: string, params: RequestParams = {}) =>
       this.request<TeamInfoModel, RequestResponse>({
         path: `/api/team`,
         method: "POST",
         body: data,
+        headers: { "Idempotency-Key": operationId },
         type: ContentType.Json,
         format: "json",
         ...params,

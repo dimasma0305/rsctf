@@ -87,6 +87,9 @@ pub enum Policy {
     AssetResponseBytes,
     /// Deployment-wide budget for distinct authorization cache misses.
     AssetGateMiss,
+    /// Cheap source admission before a managed-token digest lookup. Appended
+    /// to preserve every previously shipped Redis policy discriminant.
+    ManagedApiAuthSourceAdmission,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -212,6 +215,10 @@ impl Policy {
             Policy::AssetGateMiss => Kind::Bucket {
                 capacity: 256.0,
                 refill_per_sec: 128.0,
+            },
+            Policy::ManagedApiAuthSourceAdmission => Kind::Bucket {
+                capacity: 600.0,
+                refill_per_sec: 10.0,
             },
             Policy::Login => Kind::Sliding {
                 permit: 50,

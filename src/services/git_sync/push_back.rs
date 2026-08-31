@@ -127,6 +127,81 @@ struct AdOut {
     self_hosted: Option<bool>,
 }
 
+/// Minimal durable challenge snapshot needed to regenerate repository YAML.
+/// Repository push-back reads this shape with bound raw SQL on the transaction
+/// that owns the game + definition fences, avoiding nested pool acquisition.
+pub(crate) struct ChallengePushSnapshot {
+    pub(crate) game_id: i32,
+    pub(crate) title: String,
+    pub(crate) content: String,
+    pub(crate) category: crate::utils::enums::ChallengeCategory,
+    pub(crate) challenge_type: crate::utils::enums::ChallengeType,
+    pub(crate) hints: Option<serde_json::Value>,
+    pub(crate) submission_limit: i32,
+    pub(crate) container_image: Option<String>,
+    pub(crate) memory_limit: Option<i32>,
+    pub(crate) storage_limit: Option<i32>,
+    pub(crate) cpu_count: Option<i32>,
+    pub(crate) expose_port: Option<i32>,
+    pub(crate) flag_template: Option<String>,
+    pub(crate) enable_traffic_capture: bool,
+    pub(crate) enable_shared_container: bool,
+    pub(crate) disable_blood_bonus: bool,
+    pub(crate) min_score_rate: f64,
+    pub(crate) difficulty: f64,
+    pub(crate) network_mode: Option<NetworkMode>,
+    pub(crate) variant_mode: ChallengeVariantMode,
+    pub(crate) variant_generator_image: Option<String>,
+    pub(crate) variant_generator_digest: Option<String>,
+    pub(crate) variant_generator_build_context_subdir: Option<String>,
+    pub(crate) solve_receipt_mode: SolveReceiptMode,
+    pub(crate) receipt_verifier_identity: Option<String>,
+    pub(crate) ad_checker_image: Option<String>,
+    pub(crate) ad_allow_egress: bool,
+    pub(crate) ad_allow_self_reset: bool,
+    pub(crate) ad_ssh_requires_flag: bool,
+    pub(crate) ad_self_hosted: bool,
+}
+
+impl From<&game_challenge::Model> for ChallengePushSnapshot {
+    fn from(challenge: &game_challenge::Model) -> Self {
+        Self {
+            game_id: challenge.game_id,
+            title: challenge.title.clone(),
+            content: challenge.content.clone(),
+            category: challenge.category,
+            challenge_type: challenge.challenge_type,
+            hints: challenge.hints.clone(),
+            submission_limit: challenge.submission_limit,
+            container_image: challenge.container_image.clone(),
+            memory_limit: challenge.memory_limit,
+            storage_limit: challenge.storage_limit,
+            cpu_count: challenge.cpu_count,
+            expose_port: challenge.expose_port,
+            flag_template: challenge.flag_template.clone(),
+            enable_traffic_capture: challenge.enable_traffic_capture,
+            enable_shared_container: challenge.enable_shared_container,
+            disable_blood_bonus: challenge.disable_blood_bonus,
+            min_score_rate: challenge.min_score_rate,
+            difficulty: challenge.difficulty,
+            network_mode: challenge.network_mode,
+            variant_mode: challenge.variant_mode,
+            variant_generator_image: challenge.variant_generator_image.clone(),
+            variant_generator_digest: challenge.variant_generator_digest.clone(),
+            variant_generator_build_context_subdir: challenge
+                .variant_generator_build_context_subdir
+                .clone(),
+            solve_receipt_mode: challenge.solve_receipt_mode,
+            receipt_verifier_identity: challenge.receipt_verifier_identity.clone(),
+            ad_checker_image: challenge.ad_checker_image.clone(),
+            ad_allow_egress: challenge.ad_allow_egress,
+            ad_allow_self_reset: challenge.ad_allow_self_reset,
+            ad_ssh_requires_flag: challenge.ad_ssh_requires_flag,
+            ad_self_hosted: challenge.ad_self_hosted,
+        }
+    }
+}
+
 /// Regenerate a `challenge.yml` string from a persisted [`game_challenge::Model`]
 /// plus its flag literals — the inverse of
 /// [`import_manifest`](super::import_manifest)'s field mapping, mirroring RSCTF
@@ -145,15 +220,15 @@ struct AdOut {
 /// The importer's `Author: **X**\n\n` content prefix is reversed back into a
 /// dedicated `author:` field.
 pub fn serialize_challenge(ch: &game_challenge::Model, flag_texts: &[String]) -> AppResult<String> {
-    serialize_challenge_inner(ch, flag_texts, None)
+    serialize_challenge_inner(&ChallengePushSnapshot::from(ch), flag_texts, None)
 }
 
 /// Regenerate a manifest while retaining supported fields that are owned only
 /// by repository source. The existing manifest is parsed before any overwrite;
 /// malformed yaml therefore fails closed instead of silently dropping its
 /// attachment `provide:` path.
-pub(crate) fn serialize_challenge_preserving_source(
-    ch: &game_challenge::Model,
+pub(crate) fn serialize_challenge_snapshot_preserving_source(
+    ch: &ChallengePushSnapshot,
     flag_texts: &[String],
     source_yaml: &str,
 ) -> AppResult<String> {
@@ -166,7 +241,7 @@ pub(crate) fn serialize_challenge_preserving_source(
 }
 
 fn serialize_challenge_inner(
-    ch: &game_challenge::Model,
+    ch: &ChallengePushSnapshot,
     flag_texts: &[String],
     provide: Option<String>,
 ) -> AppResult<String> {
@@ -350,7 +425,24 @@ pub async fn push_file(
     token: &str,
     message: &str,
 ) -> AppResult<()> {
+    push_files(dest, &[rel_path.to_string()], repo_url, token, message).await
+}
+
+/// Stage a bounded compatible batch and publish it as one upstream commit.
+/// Queue ownership and checkout serialization belong to the caller.
+pub async fn push_files(
+    dest: &Path,
+    rel_paths: &[String],
+    repo_url: &str,
+    token: &str,
+    message: &str,
+) -> AppResult<()> {
     let repo_url = super::validate_binding_repo_url(repo_url)?;
+    if rel_paths.is_empty() || rel_paths.len() > 16 {
+        return Err(AppError::internal(
+            "git_sync: push batch must contain between 1 and 16 paths",
+        ));
+    }
     if token.is_empty() {
         return Err(AppError::internal("git_sync: push requires an auth token"));
     }
@@ -368,15 +460,17 @@ pub async fn push_file(
     // Pass it directly instead of persisting the PAT in `.git/config`.
     let auth_url = GitCredentials::new(token.to_string()).apply(&repo_url);
 
-    // Stage ONLY the explicit path — never a wholesale add that could sweep up
-    // build artifacts a prior import wrote. "--" so a '-'-leading path isn't an opt.
-    super::run_git(dest, &["add", "--", rel_path]).await?;
+    // Stage ONLY the explicit paths — never a wholesale add that could sweep up
+    // build artifacts a prior import wrote. "--" protects option-like paths.
+    let mut add = vec!["add", "--"];
+    add.extend(rel_paths.iter().map(String::as_str));
+    super::run_git(dest, &add).await?;
 
     // No-op detection: an "edit" that wrote back identical yaml stages nothing —
     // skip the commit+push so history doesn't accrue empty commits.
     let staged = super::run_git(dest, &["diff", "--cached", "--name-only"]).await?;
     if staged.trim().is_empty() {
-        tracing::info!(dir = %dest.display(), "git_sync: push_file — no changes staged; skip push");
+        tracing::info!(dir = %dest.display(), "git_sync: push batch has no changes; skip push");
         return Ok(());
     }
 
@@ -394,7 +488,7 @@ pub async fn push_file(
     }
     let refspec = format!("HEAD:refs/heads/{dest_ref}");
     super::git::run_git_network(dest, &auth_url, &["push", "--", &auth_url, &refspec]).await?;
-    tracing::info!(dir = %dest.display(), rel = %rel_path, branch = %dest_ref, "git_sync: pushed file");
+    tracing::info!(dir = %dest.display(), files = rel_paths.len(), branch = %dest_ref, "git_sync: pushed file batch");
     Ok(())
 }
 
@@ -402,7 +496,8 @@ pub async fn push_file(
 mod tests {
     use super::{
         is_auto_built_tag, is_managed_checker_revision, serialize_challenge,
-        serialize_challenge_preserving_source, DEFAULT_JEOPARDY_MIN_SCORE_RATE,
+        serialize_challenge_snapshot_preserving_source, ChallengePushSnapshot,
+        DEFAULT_JEOPARDY_MIN_SCORE_RATE,
     };
     use crate::models::data::game_challenge;
     use crate::services::git_sync::ChallengeYaml;
@@ -421,6 +516,7 @@ mod tests {
             challenge_type,
             hints: None,
             is_enabled: false,
+            revision: 1,
             ad_control_revision: 1,
             deadline_utc: None,
             submission_limit: 0,
@@ -506,8 +602,8 @@ mod tests {
         challenge.ad_allow_egress = true;
         challenge.network_mode = Some(NetworkMode::Isolated);
 
-        let yaml = serialize_challenge_preserving_source(
-            &challenge,
+        let yaml = serialize_challenge_snapshot_preserving_source(
+            &ChallengePushSnapshot::from(&challenge),
             &[],
             "name: old\nprovide: dist/handout.zip\n",
         )
@@ -552,12 +648,14 @@ mod tests {
     #[test]
     fn malformed_source_fails_closed_before_provide_can_be_lost() {
         let challenge = challenge(ChallengeType::StaticAttachment);
-        assert!(
-            serialize_challenge_preserving_source(&challenge, &[], "provide: [")
-                .unwrap_err()
-                .to_string()
-                .contains("current challenge manifest is invalid")
-        );
+        assert!(serialize_challenge_snapshot_preserving_source(
+            &ChallengePushSnapshot::from(&challenge),
+            &[],
+            "provide: [",
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("current challenge manifest is invalid"));
     }
 
     #[test]

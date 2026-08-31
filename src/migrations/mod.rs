@@ -182,6 +182,10 @@ mod m0316_exercise_container_operations;
 mod m0317_blob_stage_publication_owner;
 mod m0318_player_container_operation_recovery;
 mod m0319_exercise_container_operation_recovery;
+mod m0320_revisioned_mutations;
+mod m0321_account_link_attempts;
+mod m0322_managed_api_tokens;
+mod m0323_repo_binding_scheduler;
 mod m0330_mail_preparation_slots;
 mod m0331_username_scoreboard_invalidation;
 mod m0332_repository_manifest_lookup;
@@ -391,6 +395,10 @@ impl MigratorTrait for Migrator {
             Box::new(m0317_blob_stage_publication_owner::Migration),
             Box::new(m0318_player_container_operation_recovery::Migration),
             Box::new(m0319_exercise_container_operation_recovery::Migration),
+            Box::new(m0320_revisioned_mutations::Migration),
+            Box::new(m0321_account_link_attempts::Migration),
+            Box::new(m0322_managed_api_tokens::Migration),
+            Box::new(m0323_repo_binding_scheduler::Migration),
             Box::new(m0330_mail_preparation_slots::Migration),
             Box::new(m0331_username_scoreboard_invalidation::Migration),
             Box::new(m0332_repository_manifest_lookup::Migration),
@@ -538,9 +546,9 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 161);
+        assert_eq!(names.len(), 165);
         assert_eq!(
-            &names[names.len() - 59..],
+            &names[names.len() - 63..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -598,6 +606,10 @@ mod tests {
                 "m0317_blob_stage_publication_owner",
                 "m0318_player_container_operation_recovery",
                 "m0319_exercise_container_operation_recovery",
+                "m0320_revisioned_mutations",
+                "m0321_account_link_attempts",
+                "m0322_managed_api_tokens",
+                "m0323_repo_binding_scheduler",
                 "m0330_mail_preparation_slots",
                 "m0331_username_scoreboard_invalidation",
                 "m0332_repository_manifest_lookup",

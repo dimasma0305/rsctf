@@ -21,11 +21,33 @@ pub(crate) async fn create_team_rows(
         .begin()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    let team_id = create_team_rows_in(
+        &mut transaction,
+        creator_id,
+        expected_security_stamp,
+        name,
+        bio,
+    )
+    .await?;
+    transaction.commit().await.map_err(database_error)?;
+    Ok(team_id)
+}
+
+/// Transaction-sharing form used by the idempotent HTTP create ledger. Keeping
+/// the captain fence, quota check, team row, membership row, and operation
+/// result in one commit prevents a lost response from consuming another slot.
+pub(crate) async fn create_team_rows_in(
+    transaction: &mut Transaction<'_, Postgres>,
+    creator_id: Uuid,
+    expected_security_stamp: &str,
+    name: &str,
+    bio: Option<&str>,
+) -> AppResult<i32> {
     // Creating a team links its already-authenticated captain without an
     // invite admission. Mark this trusted roster insert explicitly so the
     // rolling-upgrade TeamMembers fence rejects only legacy public joins.
-    anti_cheat::mark_identity_neutral_insert(&mut transaction).await?;
-    lock_acting_account(&mut transaction, creator_id, expected_security_stamp).await?;
+    anti_cheat::mark_identity_neutral_insert(transaction).await?;
+    lock_acting_account(transaction, creator_id, expected_security_stamp).await?;
 
     let captained: i64 =
         sqlx::query_scalar(r#"SELECT COUNT(*)::bigint FROM "Teams" WHERE captain_id = $1"#)
@@ -56,7 +78,6 @@ pub(crate) async fn create_team_rows(
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
-    transaction.commit().await.map_err(database_error)?;
     Ok(team_id)
 }
 

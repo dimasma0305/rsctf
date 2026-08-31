@@ -15,6 +15,7 @@ fn challenge() -> game_challenge::Model {
         challenge_type: ChallengeType::DynamicContainer,
         hints: None,
         is_enabled: true,
+        revision: 1,
         ad_control_revision: 1,
         deadline_utc: None,
         submission_limit: 0,

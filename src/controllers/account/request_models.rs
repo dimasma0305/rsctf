@@ -27,7 +27,8 @@ pub struct MailChangeModel {
     pub new_mail: String,
     #[serde(default)]
     pub password: String,
-    /// Stable identity retained when the client did not receive a response.
+    /// A session bearer alone cannot redirect future recovery mail. The stable
+    /// operation identity also makes an ambiguous outbox commit replay-safe.
     pub operation_id: Uuid,
 }
 

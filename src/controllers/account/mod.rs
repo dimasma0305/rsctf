@@ -28,7 +28,7 @@ use crate::middlewares::privilege_authentication::{
 use crate::models::data::{
     config, first_solve, game, game_challenge, game_manager, submission, user,
 };
-use crate::models::request::account::*;
+use crate::models::request::account::{PasswordChangeModel, ProfileUpdateModel, RegisterModel};
 use crate::services::anti_cheat;
 use crate::services::captcha::CaptchaSettings;
 use crate::utils::crypto_utils::{hash_password_async, verify_password_async};
@@ -50,6 +50,7 @@ mod bootstrap;
 mod email_change_support;
 mod email_confirmation;
 mod email_policy;
+mod link_attempts;
 mod password_policy;
 mod profile_bounds;
 mod recovery;
@@ -449,34 +450,43 @@ pub async fn register(
             },
         );
     }
-    let confirmation_token = if status == RegisterStatus::EmailConfirmationRequired {
+    if status == RegisterStatus::EmailConfirmationRequired {
         let database_now: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
             .fetch_one(&mut *txn)
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-        Some(email_confirmation::token_for_registration(
+        let token = email_confirmation::token_for_registration(
             st.config.as_ref(),
             id,
             &norm_email,
             &security_stamp,
             database_now,
             mail_operation_id,
-        ))
-    } else {
-        None
-    };
-    if let Some(token) = confirmation_token.as_deref() {
-        email_confirmation::enqueue_confirmation(
+        );
+        let outcome = email_confirmation::enqueue_confirmation(
             &st,
             &mut txn,
             mail_operation_id,
             id,
             &security_stamp,
             &email,
-            token,
+            &token,
             current_ip.as_deref(),
         )
         .await?;
+        if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {
+            link_attempts::stage(
+                &mut txn,
+                &token,
+                link_attempts::Purpose::Registration,
+                id,
+                &security_stamp,
+                &norm_email,
+                database_now.timestamp() + 15 * 60,
+                true,
+            )
+            .await?;
+        }
     }
     txn.commit()
         .await

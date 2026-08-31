@@ -60,6 +60,19 @@ fn scans_release_the_mutable_checkout_before_importing_snapshot_files() {
 }
 
 #[test]
+fn scan_messages_are_bounded_before_history_and_wire_serialization() {
+    let messages = (0..300)
+        .map(|index| format!("{index}: {}", "x".repeat(4_000)))
+        .collect();
+    let bounded = bound_scan_messages(messages);
+    assert_eq!(bounded.len(), MAX_SCAN_MESSAGES + 1);
+    assert!(bounded[..MAX_SCAN_MESSAGES]
+        .iter()
+        .all(|message| message.chars().count() <= MAX_SCAN_MESSAGE_CHARS));
+    assert!(bounded.last().unwrap().contains("omitted"));
+}
+
+#[test]
 fn event_preflight_rejects_missing_and_nested_event_roots() {
     assert!(validate_event_preflight(
         &["one/.gzevent".into(), "two/.gzevent".into()],

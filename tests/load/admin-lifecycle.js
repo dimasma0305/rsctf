@@ -437,7 +437,7 @@ export const ADMIN_OPERATIONS = Object.freeze([
   ),
   operation("admin_repo_bindings_get", "GET", "/api/admin/repobindings", {
     poll: true,
-    responseKind: "array",
+    responseKind: "page",
   }),
   operation("admin_repo_binding_create", "POST", "/api/admin/repobindings", {
     mutation: true,
@@ -479,7 +479,7 @@ export const ADMIN_OPERATIONS = Object.freeze([
     "/api/admin/repobindings/{id}/scans",
     {
       poll: true,
-      responseKind: "array",
+      responseKind: "page",
       params: { id: "bindingId" },
     },
   ),

@@ -8,7 +8,7 @@ use super::Policy;
 /// The client IP for partitioning, from sources a client cannot forge past a
 /// trusted reverse proxy: `X-Real-IP`, else the rightmost `X-Forwarded-For`
 /// hop, else the raw transport peer address.
-fn client_ip(req: &Request) -> String {
+pub(super) fn client_ip(req: &Request) -> String {
     let peer = req
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
@@ -47,8 +47,15 @@ pub(super) fn partition_key(policy: Policy, req: &Request) -> String {
             | Policy::PublicHubAdmission
             | Policy::PowIssuanceSource
             | Policy::TeamSignatureSource
+            | Policy::ManagedApiAuthSourceAdmission
     ) {
         return client_ip(req);
+    }
+    if let Some(credential) = req
+        .extensions()
+        .get::<crate::services::managed_api_token::VerifiedManagedApiToken>()
+    {
+        return credential.partition_key.clone();
     }
     if let Some(credential) = req
         .extensions()

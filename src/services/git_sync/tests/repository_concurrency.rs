@@ -513,7 +513,7 @@ pub(super) async fn assert_binding_update_and_delete_fences(
             binding_id,
             crate::controllers::admin::RepoBindingUpdateModel {
                 r#ref: Some("release/latest".to_string()),
-                interval_seconds: Some(17),
+                interval_seconds: Some(60),
                 status: Some("Paused".to_string()),
                 github_token: Some("new-token".to_string()),
                 push_on_edit: Some(true),
@@ -527,14 +527,16 @@ pub(super) async fn assert_binding_update_and_delete_fences(
             .is_err()
     );
     let scan_time = Utc::now();
-    crate::controllers::admin::record_scan_completion(
-        state,
-        binding_id,
-        scan_time,
-        Some("scan-commit".to_string()),
-        "scan complete".to_string(),
-        scan_time + chrono::Duration::seconds(60),
+    sqlx::query(
+        r#"UPDATE "RepoBindings"
+              SET last_scan_utc = $2, last_commit_sha = 'scan-commit',
+                  last_scan_message = 'scan complete', next_scan_utc = $3
+            WHERE id = $1"#,
     )
+    .bind(binding_id)
+    .bind(scan_time)
+    .bind(scan_time + chrono::Duration::seconds(60))
+    .execute(state.pg())
     .await
     .unwrap();
     drop(scan_fence);
