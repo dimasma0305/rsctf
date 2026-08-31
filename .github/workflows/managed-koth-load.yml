@@ -17,6 +17,10 @@ on:
     paths:
       - .github/workflows/managed-koth-load.yml
       - tests/load/managed-koth.compose.yml
+      - tests/load/managed-koth.md
+      - tests/load/managed-koth.mjs
+      - tests/load/k6/managed-koth.js
+      - tests/load/test/managed-koth-harness.test.mjs
 
 permissions:
   attestations: read
@@ -99,6 +103,7 @@ jobs:
                 ':(exclude)tests/load/managed-koth.compose.yml' \
                 ':(exclude)tests/load/managed-koth.md' \
                 ':(exclude)tests/load/managed-koth.mjs' \
+                ':(exclude)tests/load/k6/managed-koth.js' \
                 ':(exclude)tests/load/test/managed-koth-harness.test.mjs'
             )"
             if [[ -n "$unexpected" ]]; then
