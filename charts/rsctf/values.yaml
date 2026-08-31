@@ -274,12 +274,13 @@ config:
   useCaptcha: false
   migrate: true
   logLevel: info
-  # Pool floor: 2 for migrate; 5R+2P+3 for engine; 5R+2P+13 for web;
+  # Base pool floor: 2 for migrate; 5R+2P+3 for engine; 5R+2P+13 for web;
   # 5R+2P+6 / +9 for non-VPN/VPN control; 5R+2P+4 / +7 for network;
-  # or 5R+2P+18 / +21 for the corresponding all-in-one role.
+  # or 5R+2P+18 / +21 for the corresponding all-in-one role. API roles add at
+  # least one callback slot; up to 16 further slots become KotH auth capacity.
   provisioningConcurrency: 4
   repoScanConcurrency: 1
-  dbMaxConnections: 34
+  dbMaxConnections: 50
   # Reserve this otherwise-unused numeric UID range for simultaneous process
   # checkers. The budget is also the per-rsctf-process custom-checker cap.
   checkerUidBase: 60000

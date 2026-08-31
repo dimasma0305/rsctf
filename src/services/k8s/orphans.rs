@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
+use std::future::Future;
 use std::time::Duration;
 
 use k8s_openapi::api::core::v1::{Pod, Service};
@@ -10,6 +11,13 @@ use kube::Resource;
 use serde::de::DeserializeOwned;
 
 use crate::utils::error::{AppError, AppResult};
+
+// Kubernetes gives Pods 30 seconds to terminate by default. Graceful deletion
+// retains a second 30-second window for kubelet/API convergence. Rollbacks
+// explicitly request zero grace and retain the prior 30-second ceiling.
+const GRACEFUL_DELETE_CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(60);
+const FORCE_DELETE_CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(30);
+const DELETE_CONVERGENCE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 pub(super) const APP_LABEL: &str = "app";
 const MANAGED_LABEL: &str = "rsctf.managed";
@@ -366,8 +374,9 @@ async fn delete_pod_before_policy_with_grace(
     scope: &str,
     grace_period_seconds: Option<u32>,
 ) -> Result<(), String> {
+    let wait_budget = deletion_wait_budget(grace_period_seconds);
     delete_owned_with_grace(pods, name, scope, "pod", grace_period_seconds).await?;
-    wait_until_absent(pods, name, "pod").await?;
+    wait_until_absent(pods, name, "pod", wait_budget).await?;
     delete_owned(policies, name, scope, "network policy").await
 }
 
@@ -385,20 +394,66 @@ pub(super) async fn rollback_created_pod(
     }
 }
 
-async fn wait_until_absent<K>(api: &Api<K>, name: &str, kind: &str) -> Result<(), String>
+fn deletion_wait_budget(grace_period_seconds: Option<u32>) -> Duration {
+    if grace_period_seconds == Some(0) {
+        FORCE_DELETE_CONVERGENCE_TIMEOUT
+    } else {
+        GRACEFUL_DELETE_CONVERGENCE_TIMEOUT
+    }
+}
+
+async fn poll_until_absent<F, Fut>(
+    mut observe_absence: F,
+    wait_budget: Duration,
+    poll_interval: Duration,
+    timeout_error: String,
+) -> Result<(), String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<bool, String>>,
+{
+    match tokio::time::timeout(wait_budget, async {
+        loop {
+            if observe_absence().await? {
+                return Ok(());
+            }
+            tokio::time::sleep(poll_interval).await;
+        }
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(timeout_error),
+    }
+}
+
+async fn wait_until_absent<K>(
+    api: &Api<K>,
+    name: &str,
+    kind: &str,
+    wait_budget: Duration,
+) -> Result<(), String>
 where
     K: Clone + Debug + DeserializeOwned + Resource,
 {
-    for _ in 0..300 {
-        match api.get(name).await {
-            Err(error) if super::is_not_found(&error) => return Ok(()),
-            Ok(_) => tokio::time::sleep(Duration::from_millis(100)).await,
-            Err(error) => return Err(format!("{kind} deletion check: {error}")),
-        }
-    }
-    Err(format!(
-        "{kind} deletion did not complete; retaining its NetworkPolicy"
-    ))
+    poll_until_absent(
+        || {
+            let api = api.clone();
+            let name = name.to_string();
+            let kind = kind.to_string();
+            async move {
+                match api.get(&name).await {
+                    Err(error) if super::is_not_found(&error) => Ok(true),
+                    Ok(_) => Ok(false),
+                    Err(error) => Err(format!("{kind} deletion check: {error}")),
+                }
+            }
+        },
+        wait_budget,
+        DELETE_CONVERGENCE_POLL_INTERVAL,
+        format!("{kind} deletion did not complete; retaining its NetworkPolicy"),
+    )
+    .await
 }
 
 async fn delete_owned<K>(api: &Api<K>, name: &str, scope: &str, kind: &str) -> Result<(), String>
@@ -510,6 +565,54 @@ mod tests {
             "launch-spec-a",
         );
         assert!(!owned_identity(&metadata(name, foreign), name, &scope));
+    }
+
+    #[test]
+    fn deletion_wait_budget_distinguishes_graceful_and_force_delete() {
+        assert_eq!(
+            deletion_wait_budget(None),
+            GRACEFUL_DELETE_CONVERGENCE_TIMEOUT
+        );
+        assert_eq!(
+            deletion_wait_budget(Some(0)),
+            FORCE_DELETE_CONVERGENCE_TIMEOUT
+        );
+    }
+
+    #[tokio::test]
+    async fn deletion_poll_observes_absence_after_its_last_sleep() {
+        let observations = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let captured = std::sync::Arc::clone(&observations);
+        poll_until_absent(
+            move || {
+                let observation = captured.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move { Ok(observation > 0) }
+            },
+            Duration::from_millis(500),
+            Duration::from_millis(5),
+            "timed out".to_string(),
+        )
+        .await
+        .expect("the second observation sees deletion after the polling sleep");
+        assert_eq!(observations.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn deletion_poll_bounds_a_slow_observation_by_wall_clock() {
+        let started = tokio::time::Instant::now();
+        let error = poll_until_absent(
+            || async {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                Ok(false)
+            },
+            Duration::from_millis(20),
+            Duration::from_millis(5),
+            "bounded timeout".to_string(),
+        )
+        .await
+        .expect_err("a slow API observation must not extend the deletion budget");
+        assert_eq!(error, "bounded timeout");
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

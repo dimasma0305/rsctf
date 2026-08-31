@@ -7,8 +7,8 @@
 # docs/deploy/scaling.md. Existing installations must use the stop-the-world
 # maintenance-cutover script so no old role writes during incompatible schema
 # changes. Then:
-# The bundled PostgreSQL default safely budgets two 26-connection web pools
-# plus the 22-connection control pool. Read docs/deploy/scaling.md and provide
+# The bundled PostgreSQL default safely budgets two 27-connection web pools
+# plus the 38-connection control pool. Read docs/deploy/scaling.md and provide
 # PgBouncer or a larger reviewed database budget before adding a third web.
 #   docker compose up -d --scale rsctf=2
 services:
@@ -36,7 +36,7 @@ services:
       RSCTF_MIGRATE: "0"
       RSCTF_SHARED_STORAGE: "true"
       RSCTF_DISTRIBUTED_RATELIMIT: "true"
-      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_WEB_DB_MAX_CONNECTIONS:-26}
+      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_WEB_DB_MAX_CONNECTIONS:-27}
     networks:
       default:
         # The base service owns this alias in single-role mode. Remove it from
@@ -125,7 +125,7 @@ services:
       RSCTF_S3_SECRET_KEY: ${RSCTF_S3_SECRET_KEY:-}
       RSCTF_ASSET_SIGNED_URL_TTL_SECS: ${RSCTF_ASSET_SIGNED_URL_TTL_SECS:-0}
       RSCTF_MIGRATE: "0"
-      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_CONTROL_DB_MAX_CONNECTIONS:-22}
+      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_CONTROL_DB_MAX_CONNECTIONS:-38}
       RSCTF_SUSPICION_RECONCILE_SECONDS: ${RSCTF_SUSPICION_RECONCILE_SECONDS:-30}
       RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS: ${RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS:-360}
       RSCTF_PROVISIONING_CONCURRENCY: ${RSCTF_PROVISIONING_CONCURRENCY:-4}

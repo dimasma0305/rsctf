@@ -228,6 +228,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if and (ne $role "migrate") (has $role (list "all" "web")) -}}
   {{- $minimumConnections = add $minimumConnections 12 -}}
 {{- end -}}
+{{- if has $role (list "all" "web" "control" "network") -}}
+  {{- $minimumConnections = add $minimumConnections 1 -}}
+{{- end -}}
 {{- if lt (int .Values.config.dbMaxConnections) (int $minimumConnections) -}}
 {{- fail (printf "runtimeRole=%s with vpn.enabled=%v, config.repoScanConcurrency=%v, and config.provisioningConcurrency=%v requires config.dbMaxConnections >= %v" $role .Values.vpn.enabled .Values.config.repoScanConcurrency .Values.config.provisioningConcurrency $minimumConnections) -}}
 {{- end -}}

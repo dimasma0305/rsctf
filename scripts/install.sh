@@ -607,7 +607,7 @@ write_new_environment() {
     printf 'RSCTF_HTTP_PORT=%s\n' "$HTTP_PORT"
     printf 'RSCTF_TRUSTED_PROXY_CIDRS=%s\n' "$TRUSTED_PROXY_CIDRS"
     printf '\nRUST_LOG=info\nREDIS_MAXMEMORY=256mb\n'
-    printf 'RSCTF_DB_MAX_CONNECTIONS=34\nRSCTF_PROVISIONING_CONCURRENCY=4\n'
+    printf 'RSCTF_DB_MAX_CONNECTIONS=50\nRSCTF_PROVISIONING_CONCURRENCY=4\n'
     printf 'RSCTF_CONTAINER_MAX_MEMORY_MB=4096\nRSCTF_CONTAINER_MAX_CPU_COUNT=8\n'
     printf '\nRSCTF_DOCKER_PUBLIC_ENTRY=%s\n' "${PUBLIC_ENTRY:-localhost}"
     printf 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24\n'
@@ -648,7 +648,7 @@ migrate_legacy_env_default() {
   fi
   chmod 600 "$temporary"
   mv -- "$temporary" "$ENV_FILE"
-  info "Raised legacy default $key from $old_value to $new_value for the current safety floor"
+  info "Raised legacy default $key from $old_value to $new_value for the maintained pool budget"
 }
 
 complete_existing_environment() {
@@ -656,7 +656,10 @@ complete_existing_environment() {
   warn "Keeping existing secrets and custom values in $ENV_FILE; recognized legacy safety defaults may be raised"
   umask 077
   migrate_legacy_env_default RSCTF_DB_MAX_CONNECTIONS 33 34
+  migrate_legacy_env_default RSCTF_DB_MAX_CONNECTIONS 34 50
   migrate_legacy_env_default RSCTF_CONTROL_DB_MAX_CONNECTIONS 21 22
+  migrate_legacy_env_default RSCTF_CONTROL_DB_MAX_CONNECTIONS 22 38
+  migrate_legacy_env_default RSCTF_WEB_DB_MAX_CONNECTIONS 26 27
   append_env_if_missing COMPOSE_PROJECT_NAME rsctf
   compose_project_name="$(env_get COMPOSE_PROJECT_NAME)"
   compose_project_name="${compose_project_name:-rsctf}"
@@ -680,7 +683,7 @@ complete_existing_environment() {
   append_env_if_missing RSCTF_TRUSTED_PROXY_CIDRS "$TRUSTED_PROXY_CIDRS"
   append_env_if_missing RUST_LOG info
   append_env_if_missing REDIS_MAXMEMORY 256mb
-  append_env_if_missing RSCTF_DB_MAX_CONNECTIONS 34
+  append_env_if_missing RSCTF_DB_MAX_CONNECTIONS 50
   append_env_if_missing RSCTF_PROVISIONING_CONCURRENCY 4
   append_env_if_missing RSCTF_CONTAINER_MAX_MEMORY_MB 4096
   append_env_if_missing RSCTF_CONTAINER_MAX_CPU_COUNT 8

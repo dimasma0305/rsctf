@@ -212,12 +212,11 @@ migrates, removes every stopped old runtime, and force-recreates only the new
 digest. Migration failure leaves the stopped containers and state file in place
 for a safe retry of the same command; it never runs `up` on failure.
 
-That two-web default budgets `2×26 + 22 = 74` application connections against
-the bundled PostgreSQL limit of 100, preserving migration and administration
-headroom during stop-the-world maintenance. It does not leave room for a surge
-web replica: `3×26 + 22 = 100` exceeds PostgreSQL's ordinary non-reserved
-capacity. Put PgBouncer in front of PostgreSQL or provide a separately reviewed
-connection budget first.
+That two-web default budgets `2×27 + 38 = 92` application connections against
+the bundled PostgreSQL limit of 100. It preserves a small stop-the-world
+migration and administration reserve, but it does not leave room for a surge
+web replica: `3×27 + 38 = 119`. Put PgBouncer in front of PostgreSQL or provide
+a separately reviewed connection budget first.
 
 For a shared Docker challenge backend, include both overrides so web API replicas
 and the control owner reach the same daemon:
@@ -379,7 +378,7 @@ redis:
   enabled: false
 
 config:
-  dbMaxConnections: 26
+  dbMaxConnections: 27
 
 persistence:
   enabled: true
@@ -415,9 +414,11 @@ Install one `control` release for the simple topology, or install `engine` and
 Secret, PVC, challenge namespace, image tag, and backend configuration. Set
 `kubernetes.createChallengeNamespace: false` on every role; no role release owns
 the namespace resource. At the default concurrency settings, use
-`config.dbMaxConnections: 26` for each web replica and `16` for each engine;
-the control example uses `22`, its exact VPN floor; a network-only owner needs
-17 without VPN or 20 with it.
+`config.dbMaxConnections: 27` for each web replica and `16` for each engine.
+Use `38` for VPN control so the managed KotH callback has 16 authentication
+slots above its 22-connection base floor. A network-only owner has base floors
+of 17 without VPN and 20 with it; add at least one connection, or add 16 when
+that network Service is the managed KotH callback target (`33`/`36`).
 
 When advanced Kubernetes roles enable managed KotH reporting, point both
 `engine` and `web` at the private `network` Service. The `network` release
@@ -564,9 +565,9 @@ helm upgrade rsctf-engine ./charts/rsctf --reuse-values --set replicaCount=4
 total application ceiling = sum(role replicas x role pool limit)
 ```
 
-For example, four web replicas at 26 connections, two engines at 16, and one
-network owner at 20 can open 156 connections. Leave capacity for migration,
-administration, PostgreSQL workers, and failure overlap during rolling updates.
+For example, four web replicas at 27 connections, two engines at 16, and one
+VPN network callback owner at 36 can open 176 connections. Leave capacity for
+migration, administration, PostgreSQL workers, and failure overlap during rolling updates.
 Include every temporary `maxSurge` web/engine Pod in that rollout ceiling, not
 only the steady-state replica count.
 Use PgBouncer or smaller role-specific pools before increasing PostgreSQL's
@@ -583,9 +584,11 @@ retained fence plus nested detector work. A non-VPN `control` therefore needs
 `5R+2P+6`, or `+9` with VPN; `network`, which does not reconcile suspicion,
 needs `5R+2P+4` / `+7`. The monolithic `all` role needs `5R+2P+18` without
 VPN or `5R+2P+21` with it. The one-shot migration role needs two connections.
-At the defaults (`R=1`, `P=4`), those floors are 16 for engine, 26 for web,
-19/22 for control, 17/20 for network, and 31/34 for `all`; the Compose control
-example uses 22.
+At the defaults (`R=1`, `P=4`), those base floors are 16 for engine, 26 for web,
+19/22 for control, 17/20 for network, and 31/34 for `all`. API roles add at
+least one connection. Capability authentication is then bounded to the
+available headroom above that base, with a ceiling of 16. The Compose defaults
+use 27 for web and 38 for VPN control; the monolithic default is 50.
 
 ## Graceful scale-down
 
