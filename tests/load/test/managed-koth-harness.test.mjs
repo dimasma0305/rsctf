@@ -26,6 +26,19 @@ test('managed KotH runner provisions hidden and paused before any live reporter 
   assert.match(runner, /ADMIN_LIFECYCLE_STACK_MARKER/);
 });
 
+test('managed KotH bootstrap waits for the committed target process to listen', () => {
+  const bootstrap = runner.slice(
+    runner.indexOf('async function assertReporterFreeBootstrapTarget()'),
+    runner.indexOf('async function reporterStatus('),
+  );
+  assert.match(
+    bootstrap,
+    /waitUntil\([\s\S]*exactHealth\(arenaUrl, 'pre-cycle managed target'\)[\s\S]*\/reporter-status[\s\S]*60/,
+  );
+  assert.match(bootstrap, /reporterConfigured === false/);
+  assert.match(bootstrap, /reporterHealthy === true/);
+});
+
 test('managed KotH runner uses only the injected reporter and keeps credentials ephemeral', () => {
   assert.match(runner, /validateManagedReporterEnvironment/);
   assert.match(runner, /signedOldReporterProbe\(target\.secret\)/);

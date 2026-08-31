@@ -360,15 +360,19 @@ async function assertReporterFreeBootstrapTarget() {
     'pre-cycle target received a lifecycle reporter credential',
   );
   const arenaUrl = `http://${host.includes(':') ? `[${host}]` : host}:${Number(port)}`;
-  await exactHealth(arenaUrl, 'pre-cycle managed target');
-  const status = await A.api('GET', '/reporter-status', { baseUrl: arenaUrl, timeoutMs: 5_000 });
-  requireCondition(
-    status.status === 200 &&
+  await waitUntil(
+    'pre-cycle target health without reporter configuration',
+    async () => {
+      await exactHealth(arenaUrl, 'pre-cycle managed target');
+      return A.api('GET', '/reporter-status', { baseUrl: arenaUrl, timeoutMs: 5_000 });
+    },
+    (status) =>
+      status.status === 200 &&
       status.json?.reporterConfigured === false &&
       status.json?.reporterHealthy === true &&
       status.json?.contextRefreshes === 0 &&
       status.json?.eligibleRoster === 0,
-    'pre-cycle target did not remain healthy without reporter configuration',
+    60,
   );
 }
 
