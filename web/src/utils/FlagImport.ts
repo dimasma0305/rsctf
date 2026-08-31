@@ -17,10 +17,7 @@ export const isFlagWhitespace = (value: string) => FLAG_WHITESPACE_CHARACTER.tes
 export const isBlankFlagValue = (value: string) => Array.from(value).every(isFlagWhitespace)
 export const hasFlagBoundaryWhitespace = (value: string) => {
   const characters = Array.from(value)
-  return (
-    characters.length > 0 &&
-    (isFlagWhitespace(characters[0]) || isFlagWhitespace(characters.at(-1) ?? ''))
-  )
+  return characters.length > 0 && (isFlagWhitespace(characters[0]) || isFlagWhitespace(characters.at(-1) ?? ''))
 }
 
 export const validateFlagRows = (rows: FlagCreateModel[]): string | null => {

@@ -16,10 +16,6 @@
  */
 import { FC, useEffect, useRef } from 'react'
 import { useParams, useSearchParams } from 'react-router'
-import { epochProgress } from '@Utils/epochProgress'
-import { eventVpnFetch } from '@Utils/EventVpnProof'
-import type { AdScoreboardModel } from '@Api'
-import { createJeopardy, type JeopCategory } from './arenaJeopardy'
 import {
   ArenaHttpError,
   arenaLiveRoutes,
@@ -28,6 +24,10 @@ import {
   mergeArenaRoster,
   parseArenaRetryAfter,
 } from '@Utils/ArenaLive'
+import { eventVpnFetch } from '@Utils/EventVpnProof'
+import { epochProgress } from '@Utils/epochProgress'
+import type { AdScoreboardModel } from '@Api'
+import { createJeopardy, type JeopCategory } from './arenaJeopardy'
 import { createSoundEngine } from './audio'
 import { createFbRenderer } from './fbRenderer'
 import { createFxRenderer } from './fxRenderer'
@@ -2214,11 +2214,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   async function fetchJSON<T = any>(url: string, signal?: AbortSignal): Promise<T> {
     const r = await eventVpnFetch(url, { headers: { Accept: 'application/json' }, signal })
     if (!r.ok) {
-      throw new ArenaHttpError(
-        url + ' -> ' + r.status,
-        r.status,
-        parseArenaRetryAfter(r.headers.get('Retry-After'))
-      )
+      throw new ArenaHttpError(url + ' -> ' + r.status, r.status, parseArenaRetryAfter(r.headers.get('Retry-After')))
     }
     return r.json()
   }
@@ -2526,10 +2522,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     } catch (error) {
       if (!controller.signal.aborted && !killed) {
         livePollFailures += 1
-        nextDelay = arenaPollDelay(
-          livePollFailures,
-          error instanceof ArenaHttpError ? error.retryAfterMs : null
-        )
+        nextDelay = arenaPollDelay(livePollFailures, error instanceof ArenaHttpError ? error.retryAfterMs : null)
       }
     } finally {
       clearTimeout(timeout)
