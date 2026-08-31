@@ -55,6 +55,7 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
       const res = await api.edit.editAddGame(
         {
           title,
+          sourceRevision: 0,
           start: start.valueOf(),
           end: end.valueOf(),
         },

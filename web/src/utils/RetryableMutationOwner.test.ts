@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import test from 'node:test'
 import { RetryableMutationOwner } from './RetryableMutationOwner'
 
 test('retryable create intent never survives an account or browser-session boundary', () => {
-  const source = readFileSync(new URL('./RetryableMutationOwner.ts', import.meta.url), 'utf8')
+  const source = readFileSync(resolve('src/utils/RetryableMutationOwner.ts'), 'utf8')
   assert.doesNotMatch(source, /sessionStorage|localStorage|indexedDB/)
 })
 
@@ -15,7 +16,7 @@ test('lifecycle create owners cannot restore an operation from another authentic
     '../components/admin/GameCreateModal.tsx',
     '../pages/posts/[postId]/Edit.tsx',
   ]) {
-    const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8')
+    const source = readFileSync(resolve('src/utils', relativePath), 'utf8')
     assert.match(source, /RetryableMutationOwner/)
     assert.doesNotMatch(source, /RetryableOperationKey|sessionStorage|localStorage|indexedDB/)
   }

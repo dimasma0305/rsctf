@@ -85,7 +85,7 @@ export const containerOperationScope = (
 
 const isTerminalContainerOperationError = (error: unknown) => {
   const status = httpErrorStatus(error)
-  return status !== undefined && status >= 400 && status < 500 && status !== 409 && status !== 429
+  return status !== null && status >= 400 && status < 500 && status !== 409 && status !== 429
 }
 
 const retainContainerOperation = (

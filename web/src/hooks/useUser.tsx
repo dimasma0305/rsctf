@@ -4,12 +4,12 @@ import { Icon } from '@mdi/react'
 import { useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
-import { useSWRConfig } from 'swr'
+import { type KeyedMutator, type MutatorCallback, type MutatorOptions, useSWRConfig } from 'swr'
 import { setAuthSession } from '@Utils/AuthState'
 import { clearLegacySensitiveBrowserStorage } from '@Utils/Cache'
 import { invalidatePlayerReads, TEAM_SELECTOR_PATH } from '@Utils/PlayerReadCache'
 import { createProfileRetryTimers, profileErrorDisposition, profileRetryScheduleDelay } from '@Utils/ProfileRetry'
-import api from '@Api'
+import api, { type TeamInfoModel } from '@Api'
 
 const handledBannedProfileErrors = new WeakSet<object>()
 
@@ -115,9 +115,12 @@ export const useTeams = () => {
     revalidateOnReconnect: false,
   })
 
-  const mutate: typeof mutateTeams = useCallback(
-    async (...args: Parameters<typeof mutateTeams>) => {
-      const result = await mutateTeams(...args)
+  const mutate: KeyedMutator<TeamInfoModel[]> = useCallback(
+    async <MutationData = TeamInfoModel[],>(
+      data?: TeamInfoModel[] | Promise<TeamInfoModel[] | undefined> | MutatorCallback<TeamInfoModel[]>,
+      options?: boolean | MutatorOptions<TeamInfoModel[], MutationData>
+    ) => {
+      const result = await mutateTeams<MutationData>(data, options)
       await invalidatePlayerReads(mutateCache, [TEAM_SELECTOR_PATH])
       return result
     },

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import test from 'node:test'
-import { fileURLToPath } from 'node:url'
 
-const source = readFileSync(fileURLToPath(new URL('./useAccountLinkSubmit.ts', import.meta.url)), 'utf8')
+const source = readFileSync(resolve('src/hooks/useAccountLinkSubmit.ts'), 'utf8')
 
 test('account links acquire a synchronous owner and fence stale route responses', () => {
   assert.match(source, /if \(owner\.current\) return/)

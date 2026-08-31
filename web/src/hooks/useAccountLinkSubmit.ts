@@ -33,7 +33,7 @@ export const useAccountLinkSubmit = (linkIdentity: string) => {
     try {
       await work(requestController.signal)
       if (generation.current === requestGeneration && !requestController.signal.aborted) onSuccess()
-    } catch (error) {
+    } catch {
       if (generation.current === requestGeneration && !requestController.signal.aborted) onFailure()
     } finally {
       if (generation.current === requestGeneration) {

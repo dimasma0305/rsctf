@@ -73,6 +73,17 @@ test('solver-only failure remains secondary and typed failures do not collapse i
   assert.match(modal, /Request reference/)
 })
 
+test('ambiguous container failures retain their retry identity while terminal client failures clear it', () => {
+  const terminalPolicy = modal.slice(
+    modal.indexOf('const isTerminalContainerOperationError'),
+    modal.indexOf('const retainContainerOperation')
+  )
+  assert.match(terminalPolicy, /status !== null/)
+  assert.match(terminalPolicy, /status >= 400 && status < 500/)
+  assert.match(terminalPolicy, /status !== 409 && status !== 429/)
+  assert.doesNotMatch(terminalPolicy, /status !== undefined/)
+})
+
 test('the challenge-detail BYOC ownership contract reaches the A&D panel before a service row exists', () => {
   const challengeDetailContract = apiContract.slice(
     apiContract.indexOf('export interface ChallengeDetailModel'),

@@ -65,12 +65,17 @@ test('every admin post mutation passes its SWRConfig-bound mutator to page inval
   const postIndex = readFileSync('src/pages/posts/Index.tsx', 'utf8')
   const postEdit = readFileSync('src/pages/posts/[postId]/Edit.tsx', 'utf8')
   const home = readFileSync('src/pages/Index.tsx', 'utf8')
+  const mutationCalls = (source: string) => source.match(/api\.edit\.edit(?:Add|Delete|Update)Post\(/g)?.length ?? 0
 
   assert.doesNotMatch(feed, /import\s*\{\s*mutate\s*\}\s*from\s*['"]swr['"]/)
   for (const source of [postIndex, postEdit, home]) {
     assert.match(source, /useSWRConfig\(\)/)
   }
+  assert.equal(mutationCalls(postIndex), 1)
+  assert.equal(mutationCalls(postEdit), 3)
+  assert.equal(mutationCalls(home), 1)
   assert.equal(postIndex.match(/invalidatePostPageCaches\(mutateCache\)/g)?.length, 1)
-  assert.equal(postEdit.match(/invalidatePostPageCaches\(mutateCache\)/g)?.length, 3)
+  assert.equal(postEdit.match(/await publishPostCaches\(\)/g)?.length, 2)
+  assert.equal(postEdit.match(/invalidatePostPageCaches\(mutateCache\)/g)?.length, 2)
   assert.equal(home.match(/invalidatePostPageCaches\(mutateCache\)/g)?.length, 1)
 })

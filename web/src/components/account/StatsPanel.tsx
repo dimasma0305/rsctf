@@ -38,7 +38,7 @@ import { Link, useNavigate } from 'react-router'
 import { EchartsContainer } from '@Components/charts/EchartsContainer'
 import { useLanguage } from '@Utils/I18n'
 import { OnceSWRConfig } from '@Hooks/useConfig'
-import api, { UserStatsModel } from '@Api'
+import api from '@Api'
 import classes from '@Pages/account/Stats.module.css'
 
 dayjs.extend(relativeTime)
