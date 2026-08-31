@@ -91,6 +91,8 @@ test('managed KotH workflow publishes missing candidates and reaps the derived D
   assert.match(workflow, /actions: write/);
   assert.match(workflow, /gh workflow run image\.yml --ref main/);
   assert.match(workflow, /The exact current-main candidate image was not published within 40 minutes/);
+  assert.match(workflow, /:\(exclude\)tests\/load\/managed-koth-model\.js/);
+  assert.match(workflow, /:\(exclude\)tests\/load\/test\/managed-koth-model\.test\.mjs/);
   assert.match(workflow, /printf 'explicit\\0%s'/);
   assert.match(workflow, /label=rsctf\.managed=\$managed_scope/);
   assert.match(workflow, /Seed fallback-cleanup probes/);
