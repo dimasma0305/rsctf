@@ -508,6 +508,7 @@ pub struct AttachmentCreateModel {
 pub struct GameCloneModel {
     pub operation_id: Uuid,
     pub expected_source_revision: i64,
+    pub expected_challenge_revision: i64,
     #[serde(default)]
     pub title: String,
     #[serde(default = "epoch", with = "crate::utils::datetime::millis")]

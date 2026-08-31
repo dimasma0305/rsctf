@@ -88,6 +88,7 @@ fn clone_request_digest(source_id: i32, model: &GameCloneModel, title: &str) -> 
     let mut digest = Sha256::new();
     digest.update(source_id.to_be_bytes());
     digest.update(model.expected_source_revision.to_be_bytes());
+    digest.update(model.expected_challenge_revision.to_be_bytes());
     digest.update(title.as_bytes());
     digest.update(model.start_time_utc.timestamp_millis().to_be_bytes());
     digest.update(model.end_time_utc.timestamp_millis().to_be_bytes());
@@ -95,8 +96,26 @@ fn clone_request_digest(source_id: i32, model: &GameCloneModel, title: &str) -> 
     hex::encode(digest.finalize())
 }
 
+fn validate_source_revisions(
+    model: &GameCloneModel,
+    source_revision: i64,
+    challenge_revision: i64,
+) -> AppResult<()> {
+    if model.expected_source_revision != source_revision
+        || model.expected_challenge_revision != challenge_revision
+    {
+        return Err(AppError::conflict(format!(
+            "Source game changed before cloning (current revisions: {source_revision}/{challenge_revision})"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_clone_request(model: &GameCloneModel) -> AppResult<String> {
-    if model.operation_id.is_nil() || model.expected_source_revision < 1 {
+    if model.operation_id.is_nil()
+        || model.expected_source_revision < 1
+        || model.expected_challenge_revision < 1
+    {
         return Err(AppError::bad_request(
             "A valid clone operation ID and observed source revision are required",
         ));
@@ -204,12 +223,11 @@ pub async fn clone_game(
     .fetch_one(&mut **source_control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    if model.expected_source_revision != source.challenge_configuration_revision {
-        return Err(AppError::conflict(format!(
-            "Source game changed; current revision is {}",
-            source.challenge_configuration_revision
-        )));
-    }
+    validate_source_revisions(
+        &model,
+        source.configuration_revision,
+        source.challenge_configuration_revision,
+    )?;
     let mut clone_configuration = GameInfoModel::from_game(&source).configuration();
     clone_configuration.start_time_utc = model.start_time_utc;
     clone_configuration.end_time_utc = model.end_time_utc;
@@ -475,6 +493,7 @@ mod clone_contract_tests {
         GameCloneModel {
             operation_id: Uuid::new_v4(),
             expected_source_revision: 1,
+            expected_challenge_revision: 1,
             title: "Clone target".to_string(),
             start_time_utc: Utc::now(),
             end_time_utc: Utc::now() + chrono::Duration::days(1),
@@ -534,6 +553,27 @@ mod clone_contract_tests {
             super::super::super::GAME_CLONE_CANONICAL_ROUTE,
             "/api/edit/games/{id}/clone"
         );
+    }
+
+    #[test]
+    fn clone_intent_is_fenced_by_both_observed_source_revisions() {
+        let mut model = clone_model();
+        model.expected_source_revision = 7;
+        model.expected_challenge_revision = 11;
+        assert!(validate_source_revisions(&model, 7, 11).is_ok());
+        assert!(validate_source_revisions(&model, 8, 11).is_err());
+        assert!(validate_source_revisions(&model, 7, 12).is_err());
+    }
+
+    #[test]
+    fn both_source_revisions_are_part_of_exact_replay_identity() {
+        let mut model = clone_model();
+        let first = clone_request_digest(1, &model, "Clone target");
+        model.expected_challenge_revision += 1;
+        assert_ne!(first, clone_request_digest(1, &model, "Clone target"));
+        model.expected_challenge_revision -= 1;
+        model.expected_source_revision += 1;
+        assert_ne!(first, clone_request_digest(1, &model, "Clone target"));
     }
 
     #[test]

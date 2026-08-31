@@ -163,6 +163,18 @@ pub struct HashPowChallenge {
     pub expires_at: i64,
 }
 
+fn hashpow_challenge_response(challenge: HashPowChallenge) -> Response {
+    let mut response = RequestResponse::ok(challenge).into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    response
+}
+
 pub fn router() -> Router<SharedState> {
     Router::new()
         .route("/api/config", get(get_client_config))
@@ -396,9 +408,7 @@ pub async fn get_captcha(
 /// (notably `None`) RSCTF has no PoW to issue and returns `404 NotFound`,
 /// so we do the same.
 ///
-pub async fn get_pow_challenge(
-    State(st): State<SharedState>,
-) -> AppResult<RequestResponse<HashPowChallenge>> {
+pub async fn get_pow_challenge(State(st): State<SharedState>) -> AppResult<Response> {
     // Anonymous requests share one short-lived, invalidatable settings read.
     // Verification reloads the authoritative policy, so a changed revision
     // invalidates every outstanding challenge even across replicas.
@@ -412,7 +422,7 @@ pub async fn get_pow_challenge(
         Utc::now().timestamp(),
     )?;
 
-    Ok(RequestResponse::ok(HashPowChallenge {
+    Ok(hashpow_challenge_response(HashPowChallenge {
         id: issued.id,
         challenge: issued.challenge,
         difficulty: issued.difficulty as i32,
@@ -539,8 +549,9 @@ mod tests {
     use axum::response::IntoResponse;
 
     use super::{
-        conditional_post_feed_response, effective_port_mapping, etag_list_matches, PostInfoModel,
-        PostPageParams, MAX_POST_PAGE_SIZE, POST_FEED_CACHE_CONTROL,
+        conditional_post_feed_response, effective_port_mapping, etag_list_matches,
+        hashpow_challenge_response, HashPowChallenge, PostInfoModel, PostPageParams,
+        MAX_POST_PAGE_SIZE, POST_FEED_CACHE_CONTROL,
     };
     use crate::utils::shared::{ArrayResponse, RequestResponse};
 
@@ -601,6 +612,27 @@ mod tests {
         assert_eq!(value["data"], serde_json::json!([]));
         assert_eq!(value["length"], 0);
         assert_eq!(value["total"], 123);
+    }
+
+    #[tokio::test]
+    async fn hashpow_issuance_is_never_browser_or_shared_cacheable() {
+        let response = hashpow_challenge_response(HashPowChallenge {
+            id: "signed-id".to_string(),
+            challenge: "0011223344556677".to_string(),
+            difficulty: 18,
+            expires_at: 1_700_000_000_000,
+        });
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, no-store"
+        );
+        assert_eq!(response.headers()[header::PRAGMA], "no-cache");
+
+        let body = to_bytes(response.into_body(), 1_024).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["id"], "signed-id");
+        assert_eq!(value["expiresAt"], 1_700_000_000_000_i64);
     }
 
     #[test]

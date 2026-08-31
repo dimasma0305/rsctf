@@ -106,6 +106,8 @@ pub struct GameInfoModel {
     pub vpn_device_sharing_telemetry_enabled: bool,
     #[serde(default)]
     pub configuration_revision: i64,
+    #[serde(default)]
+    pub challenge_configuration_revision: i64,
     #[serde(default, skip_serializing)]
     pub operation_id: Option<Uuid>,
     #[serde(skip_deserializing, with = "crate::utils::datetime::millis_opt")]
@@ -161,6 +163,7 @@ impl GameInfoModel {
             vpn_source_asn_telemetry_enabled: g.vpn_source_asn_telemetry_enabled,
             vpn_device_sharing_telemetry_enabled: g.vpn_device_sharing_telemetry_enabled,
             configuration_revision: g.configuration_revision,
+            challenge_configuration_revision: g.challenge_configuration_revision,
             operation_id: None,
             server_time: Some(Utc::now()),
             vpn_policy_change_reason: None,
