@@ -9,9 +9,9 @@ ALTER TABLE "PlayerContainerOperations"
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint constraint
-         WHERE constraint.conname = 'ck_player_container_operation_definition_fence'
-           AND constraint.conrelid = '"PlayerContainerOperations"'::regclass
+        SELECT 1 FROM pg_constraint catalog_constraint
+         WHERE catalog_constraint.conname = 'ck_player_container_operation_definition_fence'
+           AND catalog_constraint.conrelid = '"PlayerContainerOperations"'::regclass
     ) THEN
         ALTER TABLE "PlayerContainerOperations"
             ADD CONSTRAINT ck_player_container_operation_definition_fence
@@ -23,9 +23,9 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint constraint
-         WHERE constraint.conname = 'ck_player_container_operation_backend_id'
-           AND constraint.conrelid = '"PlayerContainerOperations"'::regclass
+        SELECT 1 FROM pg_constraint catalog_constraint
+         WHERE catalog_constraint.conname = 'ck_player_container_operation_backend_id'
+           AND catalog_constraint.conrelid = '"PlayerContainerOperations"'::regclass
     ) THEN
         ALTER TABLE "PlayerContainerOperations"
             ADD CONSTRAINT ck_player_container_operation_backend_id
@@ -74,7 +74,7 @@ mod tests {
         assert!(UP_SQL.contains("definition_fence TEXT NULL"));
         assert!(UP_SQL.contains("backend_id TEXT NULL"));
         assert!(UP_SQL.contains("octet_length(definition_fence) BETWEEN 1 AND 256"));
-        assert!(UP_SQL.contains("constraint.conrelid"));
+        assert!(UP_SQL.contains("catalog_constraint.conrelid"));
         assert!(UP_SQL.contains("ManagedContainerReapOperations"));
         assert!(UP_SQL.contains("backend_id TEXT PRIMARY KEY"));
         assert!(UP_SQL.contains("container_id UUID NOT NULL UNIQUE"));

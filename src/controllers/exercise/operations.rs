@@ -963,6 +963,12 @@ mod tests {
             ClaimOutcome::Owned(ref reclaimed_operation)
                 if reclaimed_operation.publication_id == operation.publication_id
         ));
+        let ClaimOutcome::Owned(ref reclaimed_operation) = reclaimed else {
+            unreachable!("the reclaimed operation was asserted to be owned")
+        };
+        mark_runtime_started(&pool, reclaimed_operation)
+            .await
+            .unwrap();
         sqlx::query(
             r#"UPDATE "ExerciseContainerOperations"
                   SET lease_expires_at_utc = clock_timestamp() - interval '1 second'

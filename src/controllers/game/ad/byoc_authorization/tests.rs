@@ -232,7 +232,10 @@ async fn pending_game_or_challenge_cannot_issue_a_byoc_grant() {
 async fn agent_authorization_distinguishes_prestart_retry_from_terminal_revocation() {
     let (admin, pool, schema) = test_pool().await;
     let bearer = agent_token("team-secret");
-    let start = Utc::now() + Duration::minutes(10);
+    let start = chrono::DateTime::from_timestamp_micros(
+        (Utc::now() + Duration::minutes(10)).timestamp_micros(),
+    )
+    .expect("the test start timestamp is representable");
     let end = start + Duration::hours(1);
     sqlx::query(r#"UPDATE "Games" SET start_time_utc = $1, end_time_utc = $2 WHERE id = 3"#)
         .bind(start)
