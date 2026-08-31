@@ -70,6 +70,9 @@ test('managed KotH traffic is fixed-arrival and gates auth abuse independently',
     'valid and abuse traffic must preallocate their bounded VU budget',
   );
   assert.doesNotMatch(scenario, /preAllocatedVUs: Math\./);
+  assert.match(scenario, /if \(iteration >= TOKENS\.length\) return;/);
+  assert.match(scenario, /const token = TOKENS\[iteration\];/);
+  assert.doesNotMatch(scenario, /TOKENS\[iteration % TOKENS\.length\]/);
   assert.match(scenario, /valid_capabilities_exercised: \['count==2000'\]/);
   assert.match(scenario, /invalid_capabilities_rate_limited: \['count>0'\]/);
   assert.match(scenario, /invalid_retry_after: \['rate==0'\]/);
