@@ -303,8 +303,10 @@ async fn load_challenge_catalog(
                     ON first_solve.participation_id = eligible.id
                    AND first_solve.challenge_id = challenge.id
                  WHERE game.hidden = FALSE
+                   AND game.deletion_pending = FALSE
                    AND game.start_time_utc <= clock_timestamp()
                    AND challenge.is_enabled = TRUE
+                   AND challenge.deletion_pending = FALSE
                    AND challenge.review_status = $3
                    AND (
                        eligible.division_id IS NULL

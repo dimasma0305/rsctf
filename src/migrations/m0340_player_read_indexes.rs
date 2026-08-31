@@ -20,7 +20,7 @@ CREATE INDEX IF NOT EXISTS ix_teams_captain_active
 
 CREATE INDEX IF NOT EXISTS ix_gamechallenges_player_catalog
     ON "GameChallenges" (game_id, id)
-    WHERE is_enabled = TRUE AND review_status = 0;
+    WHERE is_enabled = TRUE AND deletion_pending = FALSE AND review_status = 0;
 "#;
 
 const DOWN_SQL: &str = r#"
@@ -58,6 +58,8 @@ mod tests {
         assert!(UP_SQL.contains("ix_firstsolves_submission_stats"));
         assert!(UP_SQL.contains("ON \"FirstSolves\" (submission_id)"));
         assert!(UP_SQL.contains("WHERE deletion_pending = FALSE"));
-        assert!(UP_SQL.contains("WHERE is_enabled = TRUE AND review_status = 0"));
+        assert!(UP_SQL.contains(
+            "WHERE is_enabled = TRUE AND deletion_pending = FALSE AND review_status = 0"
+        ));
     }
 }
