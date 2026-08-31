@@ -8,6 +8,19 @@ test('retryable create intent never survives an account or browser-session bound
   assert.doesNotMatch(source, /sessionStorage|localStorage|indexedDB/)
 })
 
+test('lifecycle create owners cannot restore an operation from another authenticated account', () => {
+  for (const relativePath of [
+    '../components/TeamCreateModal.tsx',
+    '../components/admin/ChallengeCreateModal.tsx',
+    '../components/admin/GameCreateModal.tsx',
+    '../pages/posts/[postId]/Edit.tsx',
+  ]) {
+    const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8')
+    assert.match(source, /RetryableMutationOwner/)
+    assert.doesNotMatch(source, /RetryableOperationKey|sessionStorage|localStorage|indexedDB/)
+  }
+})
+
 test('a mutation owner synchronously excludes duplicate activation and retains an ambiguous identity', () => {
   let sequence = 0
   const owner = new RetryableMutationOwner(() => `operation-${++sequence}`)

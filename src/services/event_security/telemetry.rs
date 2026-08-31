@@ -358,6 +358,15 @@ async fn insert_dns(
                    "queryCount" integer, "firstSeenAtUtc" timestamptz,
                    "lastSeenAtUtc" timestamptz
                )
+           ), deduped_input AS MATERIALIZED (
+               SELECT DISTINCT ON (
+                          "userId", "participationId", "peerId",
+                          "providerCategory", "bucketStartUtc"
+                      ) *
+                 FROM input
+                ORDER BY "userId", "participationId", "peerId",
+                         "providerCategory", "bucketStartUtc",
+                         "lastSeenAtUtc" DESC, "firstSeenAtUtc", "queryCount" DESC
            ), inserted AS (
                INSERT INTO "VpnDnsProviderBuckets"
                  (game_id, user_id, participation_id, peer_id, provider_category,
@@ -365,7 +374,7 @@ async fn insert_dns(
                SELECT $1, input."userId", input."participationId", input."peerId",
                       input."providerCategory", input."bucketStartUtc", input."queryCount",
                       input."firstSeenAtUtc", input."lastSeenAtUtc"
-                 FROM input
+                 FROM deduped_input input
                  JOIN "EventVpnUserPeers" peer
                    ON peer.id = input."peerId" AND peer.game_id = $1
                   AND peer.user_id = input."userId"
@@ -375,6 +384,18 @@ async fn insert_dns(
                 WHERE game.vpn_provider_dns_telemetry_enabled = TRUE
                   AND input."firstSeenAtUtc" >= game.start_time_utc
                   AND input."lastSeenAtUtc" < game.end_time_utc
+                  -- Reconciliation uses a BEFORE INSERT stamp. Reject an
+                  -- exact replay before the trigger; ON CONFLICT still fences
+                  -- concurrent races after the input batch is deduplicated.
+                  AND NOT EXISTS (
+                      SELECT 1 FROM "VpnDnsProviderBuckets" existing
+                       WHERE existing.game_id = $1
+                         AND existing.user_id = input."userId"
+                         AND existing.participation_id = input."participationId"
+                         AND existing.peer_id = input."peerId"
+                         AND existing.provider_category = input."providerCategory"
+                         AND existing.bucket_start_utc = input."bucketStartUtc"
+                  )
                ON CONFLICT DO NOTHING RETURNING 1
            ) SELECT COUNT(*)::bigint FROM inserted"#,
     )
@@ -435,6 +456,11 @@ async fn insert_networks(
                    "firstSeenAtUtc" timestamptz, "lastSeenAtUtc" timestamptz,
                    "handshakeCount" integer
                )
+           ), deduped_input AS MATERIALIZED (
+               SELECT DISTINCT ON ("peerId", "endpointHash", "firstSeenAtUtc") *
+                 FROM input
+                ORDER BY "peerId", "endpointHash", "firstSeenAtUtc",
+                         "lastSeenAtUtc" DESC, "handshakeCount" DESC
            ), inserted AS (
                INSERT INTO "VpnPeerNetworkObservations"
                  (game_id, user_id, participation_id, peer_id, endpoint_hash,
@@ -444,7 +470,7 @@ async fn insert_networks(
                       decode(input."endpointHash", 'hex'), input."sourceAsn",
                       input."networkClass", input."firstSeenAtUtc",
                       input."lastSeenAtUtc", input."handshakeCount"
-                 FROM input
+                 FROM deduped_input input
                  JOIN "EventVpnUserPeers" peer
                    ON peer.id = input."peerId" AND peer.game_id = $1
                   AND peer.user_id = input."userId"
@@ -454,6 +480,16 @@ async fn insert_networks(
                 WHERE game.vpn_source_asn_telemetry_enabled = TRUE
                   AND input."firstSeenAtUtc" >= game.start_time_utc
                   AND input."lastSeenAtUtc" < game.end_time_utc
+                  -- Reconciliation uses a BEFORE INSERT stamp. Reject an
+                  -- exact replay before the trigger; ON CONFLICT still fences
+                  -- concurrent races after the input batch is deduplicated.
+                  AND NOT EXISTS (
+                      SELECT 1 FROM "VpnPeerNetworkObservations" existing
+                       WHERE existing.game_id = $1
+                         AND existing.peer_id = input."peerId"
+                         AND existing.endpoint_hash = decode(input."endpointHash", 'hex')
+                         AND existing.first_seen_at_utc = input."firstSeenAtUtc"
+                  )
                ON CONFLICT DO NOTHING RETURNING 1
            ) SELECT COUNT(*)::bigint FROM inserted"#,
     )
@@ -497,6 +533,16 @@ async fn insert_flags(
                    "peerId" uuid, "flagValueHash" text, "transport" smallint,
                    "direction" smallint, "observedAtUtc" timestamptz
                )
+           ), deduped_input AS MATERIALIZED (
+               SELECT DISTINCT ON (
+                          "challengeId", "receivingParticipationId",
+                          "owningParticipationId", "flagValueHash",
+                          "transport", "direction"
+                      ) *
+                 FROM input
+                ORDER BY "challengeId", "receivingParticipationId",
+                         "owningParticipationId", "flagValueHash",
+                         "transport", "direction", "observedAtUtc", "peerId"
            ), inserted AS (
                INSERT INTO "VpnFlagTransportEvents"
                  (game_id, challenge_id, receiving_user_id,
@@ -506,7 +552,7 @@ async fn insert_flags(
                       input."receivingParticipationId", input."owningParticipationId",
                       input."peerId", decode(input."flagValueHash", 'hex'),
                       input."transport", input."direction", input."observedAtUtc"
-                 FROM input
+                 FROM deduped_input input
                  JOIN "EventVpnUserPeers" peer
                    ON peer.id = input."peerId" AND peer.game_id = $1
                   AND peer.user_id = input."receivingUserId"
@@ -531,6 +577,22 @@ async fn insert_flags(
                   )
                   AND input."observedAtUtc" >= game.start_time_utc
                   AND input."observedAtUtc" < game.end_time_utc
+                  -- Reconciliation uses a BEFORE INSERT stamp. Reject an
+                  -- exact replay before the trigger; ON CONFLICT still fences
+                  -- concurrent races after the input batch is deduplicated.
+                  AND NOT EXISTS (
+                      SELECT 1 FROM "VpnFlagTransportEvents" existing
+                       WHERE existing.game_id = $1
+                         AND existing.challenge_id = input."challengeId"
+                         AND existing.receiving_participation_id
+                               = input."receivingParticipationId"
+                         AND existing.owning_participation_id
+                               = input."owningParticipationId"
+                         AND existing.flag_value_hash
+                               = decode(input."flagValueHash", 'hex')
+                         AND existing.transport = input."transport"
+                         AND existing.direction = input."direction"
+                  )
                ON CONFLICT DO NOTHING RETURNING 1
            ) SELECT COUNT(*)::bigint FROM inserted"#,
     )
@@ -540,6 +602,51 @@ async fn insert_flags(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(usize::try_from(count).unwrap_or(usize::MAX))
+}
+
+type TelemetryPolicy = (bool, bool, bool, bool, bool, bool);
+
+/// Take the same outer game-row fence as finalization, then observe the
+/// reconciliation state in a second READ COMMITTED statement. If this reader
+/// waited behind the finalizer, that second snapshot must see the committed
+/// closure; if it acquired the shared lock first, finalization waits until the
+/// entire telemetry transaction commits.
+async fn load_ingest_policy(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+) -> AppResult<Option<TelemetryPolicy>> {
+    let flags: Option<(bool, bool, bool, bool, bool)> = sqlx::query_as(
+        r#"SELECT vpn_behavior_telemetry_enabled, vpn_flag_scan_enabled,
+                  vpn_provider_dns_telemetry_enabled,
+                  vpn_source_asn_telemetry_enabled,
+                  vpn_device_sharing_telemetry_enabled
+             FROM "Games" WHERE id = $1 AND deletion_pending = FALSE
+             FOR SHARE"#,
+    )
+    .bind(game_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some(flags) = flags else {
+        return Ok(None);
+    };
+    let evidence_open = sqlx::query_scalar::<_, bool>(
+        r#"SELECT evidence_closed_at_utc IS NULL
+             FROM "SuspicionReconciliationState" WHERE game_id = $1"#,
+    )
+    .bind(game_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .unwrap_or(false);
+    Ok(Some((
+        flags.0,
+        flags.1,
+        flags.2,
+        flags.3,
+        flags.4,
+        evidence_open,
+    )))
 }
 
 pub async fn ingest_batch(
@@ -606,20 +713,24 @@ async fn ingest_batch_with_pool(
             .map_err(|error| AppError::internal(error.to_string()))?;
         return Ok(result);
     }
-    let policy: Option<(bool, bool, bool, bool, bool)> = sqlx::query_as(
-        r#"SELECT vpn_behavior_telemetry_enabled, vpn_flag_scan_enabled,
-                  vpn_provider_dns_telemetry_enabled,
-                  vpn_source_asn_telemetry_enabled,
-                  vpn_device_sharing_telemetry_enabled
-             FROM "Games" WHERE id = $1 AND deletion_pending = FALSE FOR SHARE"#,
-    )
-    .bind(batch.game_id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    let policy = load_ingest_policy(&mut transaction, batch.game_id).await?;
     let Some(policy) = policy else {
         return Err(AppError::not_found("Game not found"));
     };
+    if !policy.5 {
+        let result = TelemetryIngestResult {
+            accepted_rows: 0,
+            duplicate_or_invalid_rows: batch.row_count(),
+            dropped_for_quota: false,
+            logical_bytes: 0,
+        };
+        complete_batch(&mut transaction, batch.batch_id, &result).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(result);
+    }
     if !(policy.0 || policy.1 || policy.2 || policy.3 || policy.4) {
         let result = TelemetryIngestResult {
             accepted_rows: 0,
@@ -872,92 +983,9 @@ pub async fn purge_game_telemetry(
 }
 
 #[cfg(test)]
-#[path = "telemetry_pg_tests.rs"]
-mod pg_tests;
+#[path = "telemetry_tests.rs"]
+mod tests;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bounds_are_deliberately_small_and_gameplay_independent() {
-        assert_eq!(EVENT_LOGICAL_QUOTA_BYTES, 256 * 1024 * 1024);
-        assert_eq!(GLOBAL_LOGICAL_QUOTA_BYTES, 5 * 1024 * 1024 * 1024);
-        assert_eq!(MAX_PATTERNS, 50_000);
-        assert_eq!(MAX_PATTERN_BYTES, 4 * 1024 * 1024);
-        assert_eq!(MAX_TRACKED_FLOWS, 65_536);
-        assert_eq!(MAX_INGEST_ROWS, 4_096);
-        assert_eq!(INGEST_INTERVAL_SECONDS, 30);
-    }
-
-    #[test]
-    fn invalid_bucket_and_raw_values_are_rejected_before_database_work() {
-        let batch = TelemetryBatch {
-            batch_id: Uuid::new_v4(),
-            game_id: 1,
-            flows: vec![FlowBucketInput {
-                user_id: Uuid::nil(),
-                participation_id: 1,
-                peer_id: Uuid::nil(),
-                challenge_id: None,
-                container_generation: None,
-                bucket_start_utc: Utc::now(),
-                packets_up: 0,
-                packets_down: 0,
-                bytes_up: 0,
-                bytes_down: 0,
-                distinct_destinations: 0,
-                connection_count: 0,
-                active_seconds: 0,
-            }],
-            dns_providers: Vec::new(),
-            peer_networks: Vec::new(),
-            flag_transports: Vec::new(),
-            sensor_dropped_rows: 0,
-            sensor_dropped_bytes: 0,
-        };
-        assert!(batch.validate().is_err());
-        assert!(decode_hash("not-an-address-or-hash").is_err());
-    }
-
-    #[test]
-    fn internal_bulk_timestamps_are_rfc3339_not_wire_milliseconds() {
-        let timestamp = DateTime::parse_from_rfc3339("2026-08-20T13:40:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        let flow = FlowBucketInput {
-            user_id: Uuid::nil(),
-            participation_id: 1,
-            peer_id: Uuid::nil(),
-            challenge_id: None,
-            container_generation: None,
-            bucket_start_utc: timestamp,
-            packets_up: 1,
-            packets_down: 1,
-            bytes_up: 1,
-            bytes_down: 1,
-            distinct_destinations: 1,
-            connection_count: 1,
-            active_seconds: 1,
-        };
-        let dns = DnsProviderBucketInput {
-            user_id: Uuid::nil(),
-            participation_id: 1,
-            peer_id: Uuid::nil(),
-            provider_category: 1,
-            bucket_start_utc: timestamp,
-            query_count: 1,
-            first_seen_at_utc: timestamp,
-            last_seen_at_utc: timestamp,
-        };
-
-        assert_eq!(
-            flow_database_rows(&[flow])[0]["bucketStartUtc"],
-            "2026-08-20T13:40:00Z"
-        );
-        assert_eq!(
-            dns_database_rows(&[dns])[0]["firstSeenAtUtc"],
-            "2026-08-20T13:40:00Z"
-        );
-    }
-}
+#[path = "telemetry_pg_tests.rs"]
+mod pg_tests;

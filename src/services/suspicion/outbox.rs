@@ -22,35 +22,8 @@ const OUTBOX_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 const DEFAULT_RECONCILE_SECONDS: u64 = 30;
 const DEFAULT_FINALIZE_GRACE_SECONDS: u64 = 360;
 const MAX_RECONCILE_SECONDS: u64 = 3600;
-const GAME_RECONCILE_LOCK_NAMESPACE: i32 = -1_489_361_104;
-const RECONCILE_GAMES_SQL: &str = r#"
-    WITH observed_clock AS MATERIALIZED (
-      SELECT clock_timestamp() AS db_now
-    )
-    SELECT game.id,
-           game.end_time_utc
-             + ($1::bigint * INTERVAL '1 second') <= observed_clock.db_now
-               AS barrier_backed_final
-      FROM "Games" game
-      CROSS JOIN observed_clock
-      LEFT JOIN "SuspicionReconciliationState" reconciliation
-        ON reconciliation.game_id = game.id
-     WHERE game.deletion_pending = FALSE
-       AND game.start_time_utc <= observed_clock.db_now
-       AND (
-             (
-               game.end_time_utc > observed_clock.db_now
-               AND reconciliation.evidence_closed_at_utc IS NULL
-             )
-             OR (
-                  game.end_time_utc
-                    + ($1::bigint * INTERVAL '1 second')
-                      <= observed_clock.db_now
-                  AND reconciliation.sealed_at_utc IS NULL
-                )
-           )
-     ORDER BY game.id
-"#;
+#[cfg(test)]
+const RECONCILE_GAMES_SQL: &str = super::reconciliation::ELIGIBLE_GAMES_SQL;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(i16)]
@@ -113,7 +86,7 @@ fn reconciliation_interval() -> std::time::Duration {
     std::time::Duration::from_secs(seconds)
 }
 
-fn finalization_grace_seconds() -> u64 {
+pub(crate) fn finalization_grace_seconds() -> u64 {
     parse_finalize_grace_seconds(
         std::env::var("RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS")
             .ok()
@@ -450,7 +423,7 @@ pub async fn reconcile_evaluation_outbox(db: &DatabaseConnection, limit: i64) ->
     Ok(claimed)
 }
 
-async fn record_game_reconciliation(
+pub(super) async fn record_game_reconciliation(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     game_id: i32,
     seal: bool,
@@ -501,7 +474,7 @@ async fn record_game_reconciliation(
 /// lock, then durably close competitive intake before releasing the barrier.
 /// Every producer rechecks this marker after obtaining Games FOR SHARE, so a
 /// later database-clock rollback cannot admit apparently pre-end evidence.
-async fn close_competitive_evidence_window(
+pub(super) async fn close_competitive_evidence_window(
     pool: &sqlx::PgPool,
     game_id: i32,
     finalize_grace_seconds: u64,
@@ -546,7 +519,10 @@ async fn close_competitive_evidence_window(
     Ok(final_snapshot_is_due)
 }
 
-async fn incomplete_competitive_jobs(pool: &sqlx::PgPool, game_id: i32) -> AppResult<i64> {
+pub(super) async fn incomplete_competitive_jobs(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+) -> AppResult<i64> {
     sqlx::query_scalar(
         r#"SELECT COUNT(*)::bigint
              FROM "SuspicionEvaluationOutbox" job
@@ -611,97 +587,13 @@ pub(crate) async fn seal_reconciled_game_for_test(
     Ok(true)
 }
 
-async fn reconcile_one_game(
-    state: &SharedState,
-    game_id: i32,
-    seal: bool,
-    finalize_grace_seconds: u64,
-) -> AppResult<bool> {
-    if seal
-        && !close_competitive_evidence_window(state.pg(), game_id, finalize_grace_seconds).await?
-    {
-        return Ok(false);
-    }
-    let context_result = async {
-        let job = crate::services::control_jobs::request_security_derivation(
-            state,
-            game_id,
-            uuid::Uuid::new_v4(),
-        )
-        .await?;
-        let job = crate::services::control_jobs::wait_for_terminal(
-            state.pg(),
-            job.id,
-            std::time::Duration::from_secs(90),
-        )
-        .await?;
-        crate::services::control_jobs::result_count(&job, "inserted")
-    }
-    .await;
-
-    let mut fence = state
-        .pg()
-        .begin()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1, $2)")
-        .bind(GAME_RECONCILE_LOCK_NAMESPACE)
-        .bind(game_id)
-        .fetch_one(&mut *fence)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    if !acquired {
-        return Ok(false);
-    }
-    if seal && defer_final_for_incomplete_jobs(state.pg(), &mut fence, game_id).await? {
-        fence
-            .commit()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        return Ok(true);
-    }
-
-    let snapshot = if seal {
-        super::detectors::ReconciliationSnapshot::BarrierBackedFinal
-    } else {
-        super::detectors::ReconciliationSnapshot::Live
-    };
-    let mut errors = Vec::new();
-    if let Err(error) = context_result {
-        errors.push(format!("event-security context: {error}"));
-    }
-    if let Err(error) =
-        super::cheat_checks::run_abnormal_solve_checks_for_snapshot(state, game_id, snapshot).await
-    {
-        errors.push(format!("abnormal solve: {error}"));
-    }
-    if let Err(error) =
-        super::cheat_stat::run_statistical_checks_for_snapshot(state, game_id, snapshot).await
-    {
-        errors.push(format!("statistical: {error}"));
-    }
-    if let Err(error) =
-        super::correlation::run_correlation_checks_for_snapshot(&state.db, game_id, snapshot).await
-    {
-        errors.push(format!("correlation: {error}"));
-    }
-    if let Err(error) =
-        super::container_access::run_container_access_checks_for_snapshot(state, game_id, snapshot)
-            .await
-    {
-        errors.push(format!("container access: {error}"));
-    }
-    if let Err(error) = super::run_honeypot_chain_checks(state, game_id).await {
-        errors.push(format!("honeypot chain: {error}"));
-    }
-    for error in &errors {
-        tracing::warn!(game = game_id, %error, "suspicion game reconciliation detector failed");
-    }
-    record_game_reconciliation(&mut fence, game_id, seal, &errors).await?;
-    fence
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+async fn schedule_one_game(state: &SharedState, game_id: i32) -> AppResult<bool> {
+    crate::services::control_jobs::request_security_derivation(
+        state,
+        game_id,
+        uuid::Uuid::new_v4(),
+    )
+    .await?;
     Ok(true)
 }
 
@@ -710,15 +602,11 @@ async fn reconcile_one_game(
 /// across control restarts. Practice never extends the competitive window.
 pub async fn reconcile_games(state: &SharedState) -> AppResult<usize> {
     let finalize_grace_seconds = finalization_grace_seconds();
-    let games: Vec<(i32, bool)> = sqlx::query_as(RECONCILE_GAMES_SQL)
-        .bind(i64::try_from(finalize_grace_seconds).expect("validated grace fits i64"))
-        .fetch_all(state.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let games = super::reconciliation::eligible_games(state.pg(), finalize_grace_seconds).await?;
 
     let mut reconciled = 0;
-    for (game_id, seal) in games {
-        match reconcile_one_game(state, game_id, seal, finalize_grace_seconds).await {
+    for (game_id, _final_snapshot_due) in games {
+        match schedule_one_game(state, game_id).await {
             Ok(true) => reconciled += 1,
             Ok(false) => {}
             Err(error) => {

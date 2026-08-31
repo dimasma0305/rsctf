@@ -20,12 +20,16 @@ fn immutable_jobs_never_coalesce_different_revisions() {
         ControlJobKind::ChallengeBuild,
         ControlJobKind::BuildBatch,
         ControlJobKind::VariantGeneration,
-        ControlJobKind::SecurityDerivation,
         ControlJobKind::WorkloadRollout,
     ] {
         assert!(can_coalesce_active(kind, "same", "same"));
         assert!(!can_coalesce_active(kind, "old", "new"));
     }
+    assert!(can_coalesce_active(
+        ControlJobKind::SecurityDerivation,
+        "generation-1",
+        "generation-2"
+    ));
     assert!(can_coalesce_active(
         ControlJobKind::AdReconcile,
         "weaker",

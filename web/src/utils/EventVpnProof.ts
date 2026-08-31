@@ -112,11 +112,7 @@ const rememberFailure = (gameId: number, kind: EventVpnFailureKind, cause: unkno
 const accessFailure = (gameId: number, cause: unknown, proofStage: boolean) => {
   const status = errorStatus(cause)
   const kind: EventVpnFailureKind =
-    proofStage && status === 403
-      ? 'disconnected'
-      : status === 429
-        ? 'rate-limited'
-        : 'unavailable'
+    proofStage && status === 403 ? 'disconnected' : status === 429 ? 'rate-limited' : 'unavailable'
   return rememberFailure(gameId, kind, cause)
 }
 

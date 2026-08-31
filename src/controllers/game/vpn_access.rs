@@ -12,9 +12,7 @@ use super::*;
 
 const EVENT_VPN_MINT_CONCURRENCY: usize = 8;
 static EVENT_VPN_MINT_SLOTS: LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    LazyLock::new(|| {
-        std::sync::Arc::new(tokio::sync::Semaphore::new(EVENT_VPN_MINT_CONCURRENCY))
-    });
+    LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(EVENT_VPN_MINT_CONCURRENCY)));
 static CHALLENGE_MINTS: LazyLock<
     crate::utils::single_flight::SingleFlight<Option<Result<EventVpnChallengeModel, MintFailure>>>,
 > = LazyLock::new(crate::utils::single_flight::SingleFlight::new);
@@ -89,7 +87,10 @@ fn mint_permit() -> AppResult<tokio::sync::OwnedSemaphorePermit> {
         .map_err(|_| AppError::overloaded("Event VPN verification is busy", 1))
 }
 
-async fn mint_lock(st: &SharedState, key: &str) -> AppResult<crate::utils::single_flight::PgAdvisoryLock> {
+async fn mint_lock(
+    st: &SharedState,
+    key: &str,
+) -> AppResult<crate::utils::single_flight::PgAdvisoryLock> {
     crate::utils::single_flight::PgAdvisoryLock::try_acquire(st.pg(), key)
         .await
         .map_err(AppError::from)?
@@ -338,7 +339,7 @@ mod tests {
     fn mint_keys_bind_session_without_exposing_the_security_stamp() {
         let user = CurrentUser {
             id: uuid::Uuid::nil(),
-            role: Role::User,
+            role: crate::utils::enums::Role::User,
             name: "player".to_string(),
             security_stamp: "do-not-expose-this-stamp".to_string(),
         };
@@ -355,7 +356,10 @@ mod tests {
         let permits = (0..EVENT_VPN_MINT_CONCURRENCY)
             .map(|_| mint_permit().expect("configured mint permit"))
             .collect::<Vec<_>>();
-        assert!(matches!(mint_permit(), Err(AppError::RetryableUnavailable { .. })));
+        assert!(matches!(
+            mint_permit(),
+            Err(AppError::RetryableUnavailable { .. })
+        ));
         drop(permits);
         assert!(mint_permit().is_ok());
     }

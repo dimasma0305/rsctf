@@ -12,6 +12,15 @@ const CONTEXT = parseImageStorageContext(__ENV.IMAGE_STORAGE_CONTEXT || '');
 const START_TIMEOUT_SECONDS = positiveInteger(__ENV.START_TIMEOUT_SECONDS || 900, 'START_TIMEOUT_SECONDS', 1800);
 const HEALTH_DURATION = __ENV.HEALTH_DURATION || '60s';
 const HEALTH_RATE = positiveInteger(__ENV.HEALTH_RATE || 2, 'HEALTH_RATE', 20);
+const PHASE = __ENV.IMAGE_STORAGE_PHASE || 'build';
+const CLOSEOUT_GAME = __ENV.IMAGE_STORAGE_CLOSEOUT_GAME
+  ? positiveInteger(__ENV.IMAGE_STORAGE_CLOSEOUT_GAME, 'IMAGE_STORAGE_CLOSEOUT_GAME')
+  : null;
+const CLOSEOUT_TOKEN = String(__ENV.IMAGE_STORAGE_CLOSEOUT_TOKEN || '');
+if (!['build', 'cleanup'].includes(PHASE)) throw new Error('IMAGE_STORAGE_PHASE must be build or cleanup');
+if (CLOSEOUT_GAME && CLOSEOUT_TOKEN.split('.').length !== 3) {
+  throw new Error('IMAGE_STORAGE_CLOSEOUT_TOKEN must be a JWT when IMAGE_STORAGE_CLOSEOUT_GAME is set');
+}
 
 http.setResponseCallback(http.expectedStatuses(200));
 
@@ -19,27 +28,51 @@ const startAttempts = new Counter('image_start_attempts');
 const startFailure = new Rate('image_start_failure');
 const server5xx = new Rate('server_5xx');
 const healthFailure = new Rate('health_failure');
+const closeoutFailure = new Rate('event_closeout_failure');
 const imageStartMs = new Trend('image_start_ms', true);
 const healthMs = new Trend('health_ms', true);
+const closeoutMs = new Trend('event_closeout_ms', true);
 
-export const options = {
-  setupTimeout: '30s',
-  scenarios: {
-    first_start_burst: {
+const buildScenarios = {
+  first_start_burst: {
+    executor: 'constant-arrival-rate',
+    exec: 'firstStart',
+    rate: CONTEXT.tokens.length,
+    timeUnit: '1s',
+    duration: '1s',
+    // One spare VU absorbs k6's inclusive one-second boundary iteration;
+    // firstStart caps actual HTTP work to the exact audited token count.
+    preAllocatedVUs: CONTEXT.tokens.length + 1,
+    maxVUs: CONTEXT.tokens.length + 1,
+    gracefulStop: `${START_TIMEOUT_SECONDS}s`,
+  },
+  health_during_build: {
+    executor: 'constant-arrival-rate',
+    exec: 'health',
+    rate: HEALTH_RATE,
+    timeUnit: '1s',
+    duration: HEALTH_DURATION,
+    preAllocatedVUs: Math.max(2, HEALTH_RATE),
+    maxVUs: Math.max(4, HEALTH_RATE * 2),
+    gracefulStop: '5s',
+  },
+};
+
+const probeScenarios = {
+  health_during_cleanup: {
+    executor: 'constant-arrival-rate',
+    exec: 'health',
+    rate: HEALTH_RATE,
+    timeUnit: '1s',
+    duration: HEALTH_DURATION,
+    preAllocatedVUs: Math.max(2, HEALTH_RATE),
+    maxVUs: Math.max(4, HEALTH_RATE * 2),
+    gracefulStop: '5s',
+  },
+  ...(CLOSEOUT_GAME ? {
+    event_closeout_during_cleanup: {
       executor: 'constant-arrival-rate',
-      exec: 'firstStart',
-      rate: CONTEXT.tokens.length,
-      timeUnit: '1s',
-      duration: '1s',
-      // One spare VU absorbs k6's inclusive one-second boundary iteration;
-      // firstStart caps actual HTTP work to the exact audited token count.
-      preAllocatedVUs: CONTEXT.tokens.length + 1,
-      maxVUs: CONTEXT.tokens.length + 1,
-      gracefulStop: `${START_TIMEOUT_SECONDS}s`,
-    },
-    health_during_build: {
-      executor: 'constant-arrival-rate',
-      exec: 'health',
+      exec: 'eventCloseout',
       rate: HEALTH_RATE,
       timeUnit: '1s',
       duration: HEALTH_DURATION,
@@ -47,16 +80,30 @@ export const options = {
       maxVUs: Math.max(4, HEALTH_RATE * 2),
       gracefulStop: '5s',
     },
+  } : {}),
+};
+
+export const options = {
+  setupTimeout: '30s',
+  scenarios: {
+    ...(PHASE === 'build' ? buildScenarios : {}),
+    ...(PHASE === 'cleanup' ? probeScenarios : {}),
   },
   summaryTrendStats: ['avg', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
   thresholds: {
     checks: ['rate==1'],
-    image_start_attempts: [`count==${CONTEXT.tokens.length}`],
-    image_start_failure: ['rate==0'],
     server_5xx: ['rate==0'],
     health_failure: ['rate==0'],
     dropped_iterations: ['count==0'],
     health_ms: ['p(95)<1000'],
+    ...(PHASE === 'build' ? {
+      image_start_attempts: [`count==${CONTEXT.tokens.length}`],
+      image_start_failure: ['rate==0'],
+    } : {}),
+    ...(CLOSEOUT_GAME ? {
+      event_closeout_failure: ['rate==0'],
+      event_closeout_ms: ['p(95)<1000'],
+    } : {}),
   },
 };
 
@@ -96,4 +143,18 @@ export function health() {
   server5xx.add(response.status >= 500);
   healthMs.add(response.timings.duration);
   check(response, { 'health remains exact during image build': () => !failed });
+}
+
+export function eventCloseout() {
+  if (!CLOSEOUT_GAME) return;
+  const response = http.get(`${TARGET}/api/Game/${CLOSEOUT_GAME}/Ad/Scoreboard`, {
+    headers: { Authorization: `Bearer ${CLOSEOUT_TOKEN}` },
+    timeout: '3s',
+    tags: { operation: 'event_closeout_during_image_cleanup' },
+  });
+  const failed = response.status !== 200;
+  closeoutFailure.add(failed);
+  server5xx.add(response.status >= 500);
+  closeoutMs.add(response.timings.duration);
+  check(response, { 'ended-event scoreboard remains responsive during cleanup': () => !failed });
 }

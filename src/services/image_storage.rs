@@ -1,52 +1,45 @@
 //! Bounded lifecycle for locally-built, reproducible challenge images.
 
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::path::Path;
 use std::time::Duration;
 
-use bollard::container::ListContainersOptions;
-use bollard::errors::Error as DockerError;
-use bollard::image::{PruneImagesOptions, RemoveImageOptions};
-use bollard::models::BuildPruneResponse;
 use bollard::Docker;
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::app_state::SharedState;
 use crate::models::data::game_challenge;
 use crate::services::container_policy::ContainerPolicy;
-use crate::utils::enums::{ChallengeBuildStatus, ChallengeType};
+use crate::utils::enums::ChallengeType;
 use crate::utils::error::{AppError, AppResult};
 
-const CLEANUP_INTERVAL_SECONDS: i64 = 15 * 60;
-const DOCKER_API_VERSION: &str = "v1.45";
 const GIB: u64 = 1024 * 1024 * 1024;
-static NEXT_SCHEDULED_CLEANUP: AtomicI64 = AtomicI64::new(0);
 
-const OWNERSHIPS_SQL: &str = r#"SELECT canonical_ref, image_id, updated_at_utc,
-       last_used_at_utc
-  FROM "BuildImageOwnerships"
- WHERE installation_scope = $1
- ORDER BY COALESCE(last_used_at_utc, updated_at_utc), canonical_ref"#;
+const RESERVE_RUNTIME_IMAGE_SQL: &str = r#"WITH reserved AS (
+    UPDATE "BuildImageOwnerships"
+       SET last_used_at_utc = clock_timestamp(),
+           cleanup_claim_token = NULL,
+           cleanup_claim_until = NULL,
+           cleanup_removal_started = FALSE
+     WHERE installation_scope = $1
+       AND canonical_ref = $2
+       AND image_id = $3
+       AND (cleanup_removal_started = FALSE
+            OR cleanup_claim_until <= clock_timestamp())
+     RETURNING 1
+)
+SELECT EXISTS (SELECT 1 FROM reserved),
+       EXISTS (
+           SELECT 1 FROM "BuildImageOwnerships"
+            WHERE installation_scope = $1
+              AND canonical_ref = $2
+              AND image_id = $3
+       )"#;
 
-const OWNERSHIP_SQL: &str = r#"SELECT canonical_ref, image_id, updated_at_utc,
-       last_used_at_utc
-  FROM "BuildImageOwnerships"
- WHERE installation_scope = $1 AND canonical_ref = $2"#;
-
-const CHALLENGE_REFERENCES_SQL: &str = r#"SELECT id, title, "Type" AS challenge_type,
-       container_image, ad_checker_image, original_archive_blob_path,
-       build_context_subdir, build_status, build_image_digest, workload_spec,
-       variant_generator_image, variant_generator_digest,
-       variant_generator_build_context_subdir, variant_generator_build_status
-  FROM "GameChallenges"
- WHERE (container_image IS NOT NULL AND BTRIM(container_image) <> '')
-    OR (ad_checker_image IS NOT NULL AND BTRIM(ad_checker_image) <> '')
-    OR (variant_generator_build_context_subdir = 'generator'
-        AND variant_generator_build_status = 1
-        AND variant_generator_image IS NOT NULL
-        AND variant_generator_image = variant_generator_digest)"#;
+#[path = "image_storage/cleanup.rs"]
+mod cleanup;
+pub use cleanup::cleanup;
+pub(crate) use cleanup::{cleanup_with_deadline, ImageCleanupPass};
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub(crate) struct ImageOwnership {
@@ -60,24 +53,6 @@ impl ImageOwnership {
     pub fn retention_anchor(&self) -> DateTime<Utc> {
         self.last_used_at_utc.unwrap_or(self.updated_at_utc)
     }
-}
-
-#[derive(Clone, Debug, sqlx::FromRow)]
-struct ChallengeReference {
-    id: i32,
-    title: String,
-    challenge_type: i16,
-    container_image: Option<String>,
-    ad_checker_image: Option<String>,
-    original_archive_blob_path: Option<String>,
-    build_context_subdir: Option<String>,
-    build_status: i16,
-    build_image_digest: Option<String>,
-    workload_spec: Option<serde_json::Value>,
-    variant_generator_image: Option<String>,
-    variant_generator_digest: Option<String>,
-    variant_generator_build_context_subdir: Option<String>,
-    variant_generator_build_status: i16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,9 +113,16 @@ pub(crate) fn lazy_build_eligible(
 }
 
 pub(crate) async fn connect_local_docker() -> Result<Docker, String> {
+    connect_local_docker_until(tokio::time::Instant::now() + Duration::from_secs(2)).await
+}
+
+pub(super) async fn connect_local_docker_until(
+    deadline: tokio::time::Instant,
+) -> Result<Docker, String> {
     let docker = Docker::connect_with_local_defaults()
         .map_err(|error| format!("Docker connection failed: {error}"))?;
-    match tokio::time::timeout(Duration::from_secs(2), docker.ping()).await {
+    let ping_deadline = deadline.min(tokio::time::Instant::now() + Duration::from_secs(2));
+    match tokio::time::timeout_at(ping_deadline, docker.ping()).await {
         Ok(Ok(_)) => Ok(docker),
         Ok(Err(error)) => Err(format!("Docker daemon is unavailable: {error}")),
         Err(_) => Err("Docker daemon ping timed out".to_string()),
@@ -163,14 +145,15 @@ fn minimum_free_bytes(policy: &ContainerPolicy) -> u64 {
         .saturating_mul(GIB)
 }
 
-async fn storage_status_with(
+pub(super) async fn storage_status_with(
     docker: &Docker,
     policy: &ContainerPolicy,
+    deadline: tokio::time::Instant,
 ) -> AppResult<ImageStorageStatus> {
     let (filesystem_total_bytes, filesystem_available_bytes) = filesystem_space(Path::new("/"))?;
-    let usage = docker
-        .df()
+    let usage = tokio::time::timeout_at(deadline, docker.df())
         .await
+        .map_err(|_| AppError::unavailable("Docker disk usage timed out"))?
         .map_err(|error| AppError::unavailable(format!("Docker disk usage failed: {error}")))?;
     let caches = usage.build_cache.unwrap_or_default();
     let (build_cache_bytes, reclaimable_build_cache_bytes) = build_cache_space(
@@ -218,7 +201,12 @@ pub async fn storage_status(st: &SharedState) -> AppResult<ImageStorageStatus> {
     let docker = connect_local_docker()
         .await
         .map_err(AppError::unavailable)?;
-    storage_status_with(&docker, &policy).await
+    storage_status_with(
+        &docker,
+        &policy,
+        tokio::time::Instant::now() + Duration::from_secs(30),
+    )
+    .await
 }
 
 pub(crate) async fn reserve_runtime_image(
@@ -241,454 +229,43 @@ pub(crate) async fn reserve_runtime_image(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     let scope = crate::services::container::docker_installation_scope();
-    let owned = sqlx::query_scalar::<_, bool>(
-        r#"SELECT EXISTS (
-             SELECT 1 FROM "BuildImageOwnerships"
-              WHERE installation_scope = $1
-                AND canonical_ref = $2
-                AND image_id = $3
-           )"#,
-    )
-    .bind(&scope)
-    .bind(&canonical_ref)
-    .bind(immutable_image)
-    .fetch_one(lock.connection_mut())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if !owned {
-        let present = st.containers.image_exists(immutable_image).await;
+    // A cheap preclaim can be superseded while this image lock is held. Once
+    // cleanup marks daemon removal started, runtime startup must retry; an
+    // expired finalizing fence is safe to recover.
+    let (reserved, owned) = sqlx::query_as::<_, (bool, bool)>(RESERVE_RUNTIME_IMAGE_SQL)
+        .bind(&scope)
+        .bind(&canonical_ref)
+        .bind(immutable_image)
+        .fetch_one(lock.connection_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if !reserved {
         lock.release().await?;
+        if owned {
+            return Err(AppError::overloaded(
+                "Image cleanup is finalizing this runtime image; retry shortly",
+                1,
+            ));
+        }
+        let present = st.containers.image_exists(immutable_image).await;
         return Ok(if present {
             RuntimeImageReservation::Unmanaged
         } else {
             RuntimeImageReservation::Missing
         });
     }
-    if !st.containers.image_exists(immutable_image).await {
-        lock.release().await?;
-        return Ok(RuntimeImageReservation::Missing);
-    }
-    sqlx::query(
-        r#"UPDATE "BuildImageOwnerships"
-              SET last_used_at_utc = clock_timestamp()
-            WHERE installation_scope = $1
-              AND canonical_ref = $2
-              AND image_id = $3"#,
-    )
-    .bind(&scope)
-    .bind(&canonical_ref)
-    .bind(immutable_image)
-    .execute(lock.connection_mut())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
     lock.release().await?;
-    Ok(RuntimeImageReservation::Ready)
-}
-
-fn reference_matches(reference: Option<&str>, canonical_ref: &str) -> bool {
-    reference.is_some_and(|reference| {
-        crate::controllers::edit::canonical_image_reference(Some(reference)) == canonical_ref
+    Ok(if st.containers.image_exists(immutable_image).await {
+        RuntimeImageReservation::Ready
+    } else {
+        RuntimeImageReservation::Missing
     })
-}
-
-fn reference_is_rebuildable(reference: &ChallengeReference, ownership: &ImageOwnership) -> bool {
-    if managed_generator_matches(reference, ownership) {
-        return false;
-    }
-    reference_matches(
-        reference.container_image.as_deref(),
-        &ownership.canonical_ref,
-    ) && !reference_matches(
-        reference.ad_checker_image.as_deref(),
-        &ownership.canonical_ref,
-    ) && matches!(reference.challenge_type, 1 | 3)
-        && reference.workload_spec.is_none()
-        && reference
-            .original_archive_blob_path
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty())
-        && reference
-            .build_context_subdir
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty())
-        && reference.build_status == ChallengeBuildStatus::Success as i16
-        && reference
-            .build_image_digest
-            .as_deref()
-            .is_some_and(|digest| digest.eq_ignore_ascii_case(&ownership.image_id))
-}
-
-fn managed_generator_matches(reference: &ChallengeReference, ownership: &ImageOwnership) -> bool {
-    reference.variant_generator_build_context_subdir.as_deref()
-        == Some(crate::services::git_sync::GENERATOR_CONTEXT_SUBDIR)
-        && reference.variant_generator_build_status == ChallengeBuildStatus::Success as i16
-        && reference.variant_generator_image == reference.variant_generator_digest
-        && reference
-            .variant_generator_image
-            .as_deref()
-            .is_some_and(|image| image.eq_ignore_ascii_case(&ownership.image_id))
-}
-
-fn references_for<'a>(
-    references: &'a [ChallengeReference],
-    ownership: &ImageOwnership,
-) -> Vec<&'a ChallengeReference> {
-    references
-        .iter()
-        .filter(|reference| {
-            reference_matches(
-                reference.container_image.as_deref(),
-                &ownership.canonical_ref,
-            ) || reference_matches(
-                reference.ad_checker_image.as_deref(),
-                &ownership.canonical_ref,
-            ) || managed_generator_matches(reference, ownership)
-        })
-        .collect()
-}
-
-fn docker_socket_path_from(host: Option<&str>) -> Option<PathBuf> {
-    match host {
-        Some(host) => host.strip_prefix("unix://").map(PathBuf::from),
-        None => Some(PathBuf::from("/var/run/docker.sock")),
-    }
-}
-
-fn docker_socket_path() -> Option<PathBuf> {
-    let host = std::env::var("DOCKER_HOST").ok();
-    docker_socket_path_from(host.as_deref())
-}
-
-async fn prune_build_cache(retention_hours: i32, pressure: bool) -> AppResult<u64> {
-    let socket = docker_socket_path().ok_or_else(|| {
-        AppError::unavailable("Docker build-cache cleanup requires a local Unix socket")
-    })?;
-    let filters = if pressure {
-        HashMap::<String, Vec<String>>::new()
-    } else {
-        HashMap::from([("until".to_string(), vec![format!("{retention_hours}h")])])
-    };
-    let filters =
-        serde_json::to_string(&filters).map_err(|error| AppError::internal(error.to_string()))?;
-    let client = reqwest::Client::builder()
-        .unix_socket(socket)
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let response = client
-        .post(format!("http://localhost/{DOCKER_API_VERSION}/build/prune"))
-        .query(&[("filters", filters)])
-        .send()
-        .await
-        .map_err(|error| {
-            AppError::unavailable(format!("Docker build-cache prune failed: {error}"))
-        })?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(AppError::unavailable(format!(
-            "Docker build-cache prune returned {status}: {body}"
-        )));
-    }
-    let result = response
-        .json::<BuildPruneResponse>()
-        .await
-        .map_err(|error| AppError::internal(format!("invalid Docker prune response: {error}")))?;
-    Ok(result
-        .space_reclaimed
-        .and_then(|bytes| u64::try_from(bytes).ok())
-        .unwrap_or_default())
-}
-
-fn docker_not_found(error: &DockerError) -> bool {
-    matches!(
-        error,
-        DockerError::DockerResponseServerError {
-            status_code: 404,
-            ..
-        }
-    )
-}
-
-async fn evict_one(
-    st: &SharedState,
-    docker: &Docker,
-    candidate: &ImageOwnership,
-    cutoff: DateTime<Utc>,
-    pressure: bool,
-) -> AppResult<Option<(u64, String)>> {
-    let lock_key = crate::controllers::edit::image_build_lock_key(Some(&candidate.canonical_ref));
-    let mut lock = crate::utils::single_flight::PgAdvisoryLock::acquire_build(st.pg(), &lock_key)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let scope = crate::services::container::docker_installation_scope();
-    let Some(current) = sqlx::query_as::<_, ImageOwnership>(OWNERSHIP_SQL)
-        .bind(&scope)
-        .bind(&candidate.canonical_ref)
-        .fetch_optional(lock.connection_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?
-    else {
-        lock.release().await?;
-        return Ok(None);
-    };
-    if current.image_id != candidate.image_id {
-        lock.release().await?;
-        return Ok(None);
-    }
-
-    let references = sqlx::query_as::<_, ChallengeReference>(CHALLENGE_REFERENCES_SQL)
-        .fetch_all(lock.connection_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let matching = references_for(&references, &current);
-    let orphan = matching.is_empty();
-    let expired = current.retention_anchor() <= cutoff;
-    if !(expired || (pressure && orphan))
-        || (!orphan
-            && !matching
-                .iter()
-                .all(|reference| reference_is_rebuildable(reference, &current)))
-    {
-        lock.release().await?;
-        return Ok(None);
-    }
-
-    let containers = docker
-        .list_containers(Some(ListContainersOptions::<String> {
-            all: true,
-            ..Default::default()
-        }))
-        .await
-        .map_err(|error| {
-            AppError::unavailable(format!("Docker container inventory failed: {error}"))
-        })?;
-    if containers.iter().any(|container| {
-        container
-            .image_id
-            .as_deref()
-            .is_some_and(|image_id| image_id.eq_ignore_ascii_case(&current.image_id))
-    }) {
-        lock.release().await?;
-        return Ok(None);
-    }
-
-    let inspected = match docker.inspect_image(&current.canonical_ref).await {
-        Ok(inspected) => inspected,
-        Err(error) if docker_not_found(&error) => {
-            sqlx::query(
-                r#"DELETE FROM "BuildImageOwnerships"
-                    WHERE installation_scope = $1 AND canonical_ref = $2 AND image_id = $3"#,
-            )
-            .bind(&scope)
-            .bind(&current.canonical_ref)
-            .bind(&current.image_id)
-            .execute(lock.connection_mut())
-            .await
-            .map_err(|db_error| AppError::internal(db_error.to_string()))?;
-            lock.release().await?;
-            return Ok(None);
-        }
-        Err(error) => {
-            lock.release().await?;
-            return Err(AppError::unavailable(format!(
-                "Docker image inspection failed for {}: {error}",
-                current.canonical_ref
-            )));
-        }
-    };
-    let current_id = crate::services::challenge_images::inspected_local_image_id(&inspected)
-        .ok_or_else(|| AppError::conflict("Docker returned an invalid image identity"))?;
-    if !current_id.eq_ignore_ascii_case(&current.image_id) {
-        lock.release().await?;
-        return Err(AppError::conflict(format!(
-            "image ownership changed for {}",
-            current.canonical_ref
-        )));
-    }
-    crate::services::challenge_images::validate_image_ownership_labels(
-        &inspected,
-        &scope,
-        &current.canonical_ref,
-        false,
-    )
-    .map_err(AppError::conflict)?;
-    let size = inspected
-        .size
-        .and_then(|size| u64::try_from(size).ok())
-        .unwrap_or_default();
-    docker
-        .remove_image(
-            &current.canonical_ref,
-            Some(RemoveImageOptions {
-                force: false,
-                noprune: false,
-            }),
-            None,
-        )
-        .await
-        .map_err(|error| {
-            AppError::conflict(format!(
-                "Docker refused to evict {}: {error}",
-                current.canonical_ref
-            ))
-        })?;
-    if docker.inspect_image(&current.canonical_ref).await.is_ok() {
-        lock.release().await?;
-        return Err(AppError::conflict(format!(
-            "Docker still resolves {} after eviction",
-            current.canonical_ref
-        )));
-    }
-    sqlx::query(
-        r#"DELETE FROM "BuildImageOwnerships"
-            WHERE installation_scope = $1 AND canonical_ref = $2 AND image_id = $3"#,
-    )
-    .bind(&scope)
-    .bind(&current.canonical_ref)
-    .bind(&current.image_id)
-    .execute(lock.connection_mut())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    lock.release().await?;
-    let titles = matching
-        .iter()
-        .map(|reference| format!("#{} {}", reference.id, reference.title))
-        .collect::<Vec<_>>();
-    let detail = if titles.is_empty() {
-        "orphaned image".to_string()
-    } else {
-        format!("rebuildable for {}", titles.join(", "))
-    };
-    Ok(Some((
-        size,
-        format!("evicted {} ({detail})", current.canonical_ref),
-    )))
-}
-
-pub async fn cleanup(st: &SharedState, policy: &ContainerPolicy) -> AppResult<ImageCleanupReport> {
-    policy.validate()?;
-    let docker = connect_local_docker()
-        .await
-        .map_err(AppError::unavailable)?;
-    let before = storage_status_with(&docker, policy).await?;
-    let mut report = ImageCleanupReport {
-        available_bytes_before: before.filesystem_available_bytes,
-        available_bytes_after: before.filesystem_available_bytes,
-        minimum_free_bytes: before.minimum_free_bytes,
-        pressure_mode: before.low_storage,
-        ..Default::default()
-    };
-
-    match prune_build_cache(policy.build_cache_retention_hours, before.low_storage).await {
-        Ok(bytes) => report.cache_bytes_reclaimed = bytes,
-        Err(error) => report
-            .messages
-            .push(format!("build-cache cleanup skipped: {error}")),
-    }
-    if before.low_storage {
-        let mut filters = HashMap::new();
-        filters.insert("dangling".to_string(), vec!["true".to_string()]);
-        match docker
-            .prune_images(Some(PruneImagesOptions { filters }))
-            .await
-        {
-            Ok(result) => {
-                report.dangling_bytes_reclaimed = result
-                    .space_reclaimed
-                    .and_then(|bytes| u64::try_from(bytes).ok())
-                    .unwrap_or_default();
-            }
-            Err(error) => report
-                .messages
-                .push(format!("dangling-image cleanup skipped: {error}")),
-        }
-    }
-
-    let cutoff = Utc::now() - ChronoDuration::hours(i64::from(policy.image_idle_retention_hours));
-    let scope = crate::services::container::docker_installation_scope();
-    let candidates = sqlx::query_as::<_, ImageOwnership>(OWNERSHIPS_SQL)
-        .bind(&scope)
-        .fetch_all(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let mut seen = HashSet::new();
-    for candidate in candidates {
-        if !seen.insert(candidate.canonical_ref.clone()) {
-            continue;
-        }
-        match evict_one(st, &docker, &candidate, cutoff, before.low_storage).await {
-            Ok(Some((bytes, message))) => {
-                report.images_removed += 1;
-                report.image_bytes_evicted = report.image_bytes_evicted.saturating_add(bytes);
-                report.messages.push(message);
-            }
-            Ok(None) => {}
-            Err(error) => report
-                .messages
-                .push(format!("{} was retained: {error}", candidate.canonical_ref)),
-        }
-    }
-
-    let (_, available_after) = filesystem_space(Path::new("/"))?;
-    report.available_bytes_after = available_after;
-    if report.minimum_free_bytes > 0 && available_after < report.minimum_free_bytes {
-        report.messages.push(format!(
-            "free storage remains below the configured floor ({} < {} bytes); recent, active, or non-rebuildable images were retained",
-            available_after, report.minimum_free_bytes
-        ));
-    }
-    Ok(report)
-}
-
-fn claim_scheduled_cleanup(now: i64) -> bool {
-    let next = NEXT_SCHEDULED_CLEANUP.load(Ordering::Relaxed);
-    if now < next {
-        return false;
-    }
-    NEXT_SCHEDULED_CLEANUP
-        .compare_exchange(
-            next,
-            now.saturating_add(CLEANUP_INTERVAL_SECONDS),
-            Ordering::AcqRel,
-            Ordering::Relaxed,
-        )
-        .is_ok()
-}
-
-pub async fn scheduled_cleanup(st: &SharedState) -> AppResult<Option<ImageCleanupReport>> {
-    let policy = ContainerPolicy::load(st.pg()).await?;
-    if !policy.image_cleanup_enabled
-        || st.containers.backend_kind() != crate::services::container::ContainerBackendKind::Docker
-        || !claim_scheduled_cleanup(Utc::now().timestamp())
-    {
-        return Ok(None);
-    }
-    cleanup(st, &policy).await.map(Some)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn reference() -> ChallengeReference {
-        ChallengeReference {
-            id: 7,
-            title: "recoverable".to_string(),
-            challenge_type: ChallengeType::DynamicContainer as i16,
-            container_image: Some("docker.io/rsctf/game/app:latest".to_string()),
-            ad_checker_image: None,
-            original_archive_blob_path: Some("build/source.zip".to_string()),
-            build_context_subdir: Some("src".to_string()),
-            build_status: ChallengeBuildStatus::Success as i16,
-            build_image_digest: Some(format!("sha256:{}", "a".repeat(64))),
-            workload_spec: None,
-            variant_generator_image: None,
-            variant_generator_digest: None,
-            variant_generator_build_context_subdir: None,
-            variant_generator_build_status: ChallengeBuildStatus::None as i16,
-        }
-    }
+    use chrono::Duration as ChronoDuration;
 
     fn ownership() -> ImageOwnership {
         ImageOwnership {
@@ -697,38 +274,6 @@ mod tests {
             updated_at_utc: Utc::now(),
             last_used_at_utc: None,
         }
-    }
-
-    #[test]
-    fn only_exact_recoverable_jeopardy_sources_are_evictable() {
-        let owned = ownership();
-        let mut candidate = reference();
-        assert!(reference_is_rebuildable(&candidate, &owned));
-        candidate.challenge_type = ChallengeType::AttackDefense as i16;
-        assert!(!reference_is_rebuildable(&candidate, &owned));
-        candidate = reference();
-        candidate.original_archive_blob_path = None;
-        assert!(!reference_is_rebuildable(&candidate, &owned));
-        candidate = reference();
-        candidate.ad_checker_image = candidate.container_image.clone();
-        assert!(!reference_is_rebuildable(&candidate, &owned));
-        candidate = reference();
-        candidate.build_image_digest = Some(format!("sha256:{}", "b".repeat(64)));
-        assert!(!reference_is_rebuildable(&candidate, &owned));
-    }
-
-    #[test]
-    fn managed_generators_keep_their_immutable_image_owned() {
-        let owned = ownership();
-        let digest = owned.image_id.clone();
-        let mut candidate = reference();
-        candidate.variant_generator_image = Some(digest.clone());
-        candidate.variant_generator_digest = Some(digest);
-        candidate.variant_generator_build_context_subdir = Some("generator".to_string());
-        candidate.variant_generator_build_status = ChallengeBuildStatus::Success as i16;
-
-        assert_eq!(references_for(&[candidate.clone()], &owned).len(), 1);
-        assert!(!reference_is_rebuildable(&candidate, &owned));
     }
 
     #[test]
@@ -744,15 +289,6 @@ mod tests {
     }
 
     #[test]
-    fn local_socket_resolution_fails_closed_for_remote_docker() {
-        assert!(docker_socket_path_from(Some("tcp://docker.example:2376")).is_none());
-        assert_eq!(
-            docker_socket_path_from(Some("unix:///run/docker.sock")),
-            Some(PathBuf::from("/run/docker.sock"))
-        );
-    }
-
-    #[test]
     fn storage_status_excludes_cache_bytes_shared_with_images() {
         assert_eq!(
             build_cache_space([
@@ -762,5 +298,162 @@ mod tests {
             ]),
             (75, 50),
         );
+    }
+
+    #[test]
+    fn runtime_reservation_supersedes_only_a_preclaim_or_expired_fence() {
+        assert!(RESERVE_RUNTIME_IMAGE_SQL.contains("WITH reserved AS"));
+        assert!(RESERVE_RUNTIME_IMAGE_SQL.contains("cleanup_removal_started = FALSE"));
+        assert!(RESERVE_RUNTIME_IMAGE_SQL.contains("cleanup_claim_until <= clock_timestamp()"));
+        assert!(RESERVE_RUNTIME_IMAGE_SQL.contains("cleanup_claim_until = NULL"));
+        assert!(RESERVE_RUNTIME_IMAGE_SQL.contains("RETURNING 1"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn runtime_reservation_preempts_preclaim_but_not_live_finalization() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(crate::migrations::test_pg_connect_options(&database_url))
+            .await
+            .unwrap();
+        let schema = format!("runtime_image_claim_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(
+                crate::migrations::test_pg_connect_options(&database_url)
+                    .options([("search_path", schema.as_str())]),
+            )
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"CREATE TABLE "BuildImageOwnerships" (
+                 installation_scope TEXT NOT NULL,
+                 canonical_ref TEXT NOT NULL,
+                 image_id TEXT NOT NULL,
+                 last_used_at_utc TIMESTAMPTZ NULL,
+                 cleanup_claim_token UUID NULL,
+                 cleanup_claim_until TIMESTAMPTZ NULL,
+                 cleanup_removal_started BOOLEAN NOT NULL DEFAULT FALSE,
+                 PRIMARY KEY (installation_scope, canonical_ref)
+               )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let scope = "0123456789abcdef0123456789abcdef";
+        let canonical = "docker.io/rsctf/game/runtime:latest";
+        let image_id = format!("sha256:{}", "a".repeat(64));
+        let preclaim = uuid::Uuid::new_v4();
+        sqlx::query(
+            r#"INSERT INTO "BuildImageOwnerships"
+                 (installation_scope, canonical_ref, image_id,
+                  cleanup_claim_token, cleanup_claim_until)
+               VALUES ($1, $2, $3, $4, clock_timestamp() + interval '2 minutes')"#,
+        )
+        .bind(scope)
+        .bind(canonical)
+        .bind(&image_id)
+        .bind(preclaim)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let preempted: (bool, bool) = sqlx::query_as(RESERVE_RUNTIME_IMAGE_SQL)
+            .bind(scope)
+            .bind(canonical)
+            .bind(&image_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(preempted, (true, true));
+        let cleared: (Option<uuid::Uuid>, Option<chrono::DateTime<Utc>>, bool) = sqlx::query_as(
+            r#"SELECT cleanup_claim_token, cleanup_claim_until, cleanup_removal_started
+                 FROM "BuildImageOwnerships"
+                WHERE installation_scope = $1 AND canonical_ref = $2"#,
+        )
+        .bind(scope)
+        .bind(canonical)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(cleared, (None, None, false));
+
+        let finalizing = uuid::Uuid::new_v4();
+        sqlx::query(
+            r#"UPDATE "BuildImageOwnerships"
+                  SET cleanup_claim_token = $3,
+                      cleanup_claim_until = clock_timestamp() + interval '2 minutes',
+                      cleanup_removal_started = TRUE
+                WHERE installation_scope = $1 AND canonical_ref = $2"#,
+        )
+        .bind(scope)
+        .bind(canonical)
+        .bind(finalizing)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let blocked: (bool, bool) = sqlx::query_as(RESERVE_RUNTIME_IMAGE_SQL)
+            .bind(scope)
+            .bind(canonical)
+            .bind(&image_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(blocked, (false, true));
+        let retained: (Option<uuid::Uuid>, bool) = sqlx::query_as(
+            r#"SELECT cleanup_claim_token, cleanup_removal_started
+                 FROM "BuildImageOwnerships"
+                WHERE installation_scope = $1 AND canonical_ref = $2"#,
+        )
+        .bind(scope)
+        .bind(canonical)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(retained, (Some(finalizing), true));
+
+        sqlx::query(
+            r#"UPDATE "BuildImageOwnerships"
+                  SET cleanup_claim_until = clock_timestamp() - interval '1 second'
+                WHERE installation_scope = $1 AND canonical_ref = $2"#,
+        )
+        .bind(scope)
+        .bind(canonical)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let recovered: (bool, bool) = sqlx::query_as(RESERVE_RUNTIME_IMAGE_SQL)
+            .bind(scope)
+            .bind(canonical)
+            .bind(&image_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(recovered, (true, true));
+        let recovered_claim: (Option<uuid::Uuid>, bool) = sqlx::query_as(
+            r#"SELECT cleanup_claim_token, cleanup_removal_started
+                 FROM "BuildImageOwnerships"
+                WHERE installation_scope = $1 AND canonical_ref = $2"#,
+        )
+        .bind(scope)
+        .bind(canonical)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(recovered_claim, (None, false));
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
     }
 }

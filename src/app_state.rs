@@ -61,6 +61,9 @@ pub struct AppState {
     /// Bounded post-commit handoff for submission and game-event live feeds.
     /// Cursor backfill remains authoritative if this best-effort queue is full.
     pub(crate) feed_publication: crate::services::feed_publication::PublicationQueue,
+    /// Silent public honeypot admission plus a bounded aggregate-writer handoff.
+    /// Request and TCP tasks never await PostgreSQL for best-effort telemetry.
+    pub(crate) honeypot_telemetry: crate::services::honeypot_telemetry::HoneypotTelemetry,
     /// Short-lived, single-owner Event-VPN sensor contract snapshot.
     pub(crate) event_sensor_snapshot: crate::services::event_security::SensorSnapshotCache,
     /// Non-blocking bounded aggregation handoff for proxy flag-egress evidence.
@@ -179,6 +182,7 @@ impl AppState {
             events,
             user_activity: crate::middlewares::user_activity::ActivityQueue::new(),
             feed_publication: crate::services::feed_publication::PublicationQueue::new(),
+            honeypot_telemetry: crate::services::honeypot_telemetry::HoneypotTelemetry::new(),
             event_sensor_snapshot: crate::services::event_security::SensorSnapshotCache::new(),
             flag_egress_observations: Default::default(),
         })
