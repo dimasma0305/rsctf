@@ -1,0 +1,38 @@
+# Disposable Docker-backend overlay for the fixed-rate managed KotH gate.
+# The harness verifies every marker and refuses non-loopback/non-isolated stacks.
+services:
+  db:
+    restart: "no"
+    environment:
+      RSCTF_ADMIN_LIFECYCLE_MARKER: ${ADMIN_LIFECYCLE_STACK_MARKER:?Set ADMIN_LIFECYCLE_STACK_MARKER}
+
+  redis:
+    restart: "no"
+    environment:
+      RSCTF_ADMIN_LIFECYCLE_MARKER: ${ADMIN_LIFECYCLE_STACK_MARKER:?Set ADMIN_LIFECYCLE_STACK_MARKER}
+
+  rsctf-proxy-firewall:
+    restart: "no"
+    environment:
+      RSCTF_ADMIN_LIFECYCLE_MARKER: ${ADMIN_LIFECYCLE_STACK_MARKER:?Set ADMIN_LIFECYCLE_STACK_MARKER}
+
+  rsctf:
+    restart: "no"
+    environment:
+      RSCTF_ADMIN_LIFECYCLE_MARKER: ${ADMIN_LIFECYCLE_STACK_MARKER:?Set ADMIN_LIFECYCLE_STACK_MARKER}
+      RSCTF_AD_VPN_SERVICES_NETWORK: ${RSCTF_AD_VPN_SERVICES_NETWORK:?Set RSCTF_AD_VPN_SERVICES_NETWORK}
+      RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE: "3000"
+      RSCTF_KOTH_REPORTER_BASE_URL: http://rsctf-koth-reporter:8080
+      RSCTF_USE_CAPTCHA: "false"
+    networks:
+      rsctf-ad:
+        aliases:
+          - rsctf-koth-reporter
+
+networks:
+  rsctf-ad:
+    name: ${RSCTF_AD_VPN_SERVICES_NETWORK:?Set RSCTF_AD_VPN_SERVICES_NETWORK}
+    internal: true
+    ipam:
+      config:
+        - subnet: ${RSCTF_AD_VPN_SERVICES_CIDR:?Set RSCTF_AD_VPN_SERVICES_CIDR}

@@ -65,3 +65,16 @@ platform, lifecycle owner, PostgreSQL, and current target during every phase.
 This repository batch defines and unit-tests the contract only. A reportable
 capacity claim still requires running the command on the isolated stack and
 retaining all four summaries and the matching resource series.
+
+The manual **Managed KotH load gate** workflow provides that isolated stack on
+a disposable GitHub-hosted runner. Supply the exact current `main` commit and
+its immutable `ghcr.io/dimasma0305/rsctf@sha256:…` image. The workflow rejects
+a stale source, a mutable or foreign image, an untrusted attestation, the wrong
+image revision/version/platform set, and a non-private stack. It bootstraps only
+one temporary administrator, keeps the event hidden and paused while preparing
+the exact 2,000-team roster, uploads the four k6 summaries plus the resource
+series, then removes every run-scoped managed container and Compose volume.
+
+The same workflow runs once when its workflow, Compose overlay, or this runbook
+changes in a same-repository pull request. That bootstrap run deliberately tests
+the pull request's exact `main` base image rather than building unreviewed code.
