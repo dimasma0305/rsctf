@@ -20,6 +20,10 @@ fn game_epoch_key(game_id: i32) -> String {
     format!("koth-capability:v1:epoch:{game_id}")
 }
 
+fn participant_epoch_key(game_id: i32, participation_id: i32) -> String {
+    format!("koth-capability:v1:participant-epoch:{game_id}:{participation_id}")
+}
+
 fn decode_epoch(bytes: &[u8]) -> Option<String> {
     let value = std::str::from_utf8(bytes).ok()?;
     (value.len() == CAPABILITY_EPOCH_ENCODED_LEN
@@ -45,26 +49,87 @@ pub(crate) struct GameEpochMutation {
     marker: String,
 }
 
-/// Return the shared version pointer for one game. A missing or unavailable
-/// authoritative tier disables the response cache for this request; callers
-/// then read PostgreSQL instead of trusting a replica-local stale pointer.
-pub(crate) async fn current_game_epoch(cache: &dyn Cache, game_id: i32) -> Option<String> {
-    let key = game_epoch_key(game_id);
-    if let Some(value) = cache.get_authoritative(&key).await {
-        return decode_epoch(&value);
+/// Both pointers that select one participant's local bearer models. Global
+/// lifecycle/security changes rotate `game`; self-service token replacement
+/// rotates only `participant`, so one team cannot flush every poller.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CapabilityEpochs {
+    game: String,
+    participant: String,
+}
+
+impl CapabilityEpochs {
+    pub(crate) fn game(&self) -> &str {
+        &self.game
     }
 
-    let candidate = fresh_epoch();
-    if cache
-        .set_if_absent_authoritative(&key, candidate.as_bytes(), Some(CAPABILITY_EPOCH_TTL))
-        .await
-    {
-        return Some(candidate);
+    pub(crate) fn participant(&self) -> &str {
+        &self.participant
     }
-    cache
-        .get_authoritative(&key)
+}
+
+async fn read_epoch(cache: &dyn Cache, key: &str) -> Result<Option<String>, ()> {
+    match cache.get_authoritative(key).await {
+        Some(value) => decode_epoch(&value).map(Some).ok_or(()),
+        None => Ok(None),
+    }
+}
+
+async fn read_or_seed_epoch(cache: &dyn Cache, key: &str) -> Option<String> {
+    match read_epoch(cache, key).await {
+        Ok(Some(epoch)) => Some(epoch),
+        Err(()) => None,
+        Ok(None) => {
+            let candidate = fresh_epoch();
+            if cache
+                .set_if_absent_authoritative(key, candidate.as_bytes(), Some(CAPABILITY_EPOCH_TTL))
+                .await
+            {
+                Some(candidate)
+            } else {
+                read_epoch(cache, key).await.ok().flatten()
+            }
+        }
+    }
+}
+
+/// Return the shared pointers selecting one participant's bearer models.
+///
+/// Missing keys may be ordinary TTL expiry or Redis eviction. Reseeding is
+/// allowed only while a shared game-control lock proves no database writer is
+/// between its cache fence and commit. An invalid mutation marker or an
+/// unavailable lock/cache disables the response cache for this request.
+pub(crate) async fn current_capability_epochs(
+    cache: &dyn Cache,
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    participation_id: i32,
+) -> Option<CapabilityEpochs> {
+    let game_key = game_epoch_key(game_id);
+    let participant_key = participant_epoch_key(game_id, participation_id);
+    let game = read_epoch(cache, &game_key).await.ok()?;
+    let participant = read_epoch(cache, &participant_key).await.ok()?;
+    if let (Some(game), Some(participant)) = (game, participant) {
+        return Some(CapabilityEpochs { game, participant });
+    }
+
+    let lock_key = crate::services::ad::engine::game_lock_key(game_id);
+    let guard = crate::utils::single_flight::PgAdvisoryLock::try_acquire_shared(pool, &lock_key)
         .await
-        .and_then(|value| decode_epoch(&value))
+        .ok()??;
+    // Re-read under the lock. A writer may have installed a marker after the
+    // optimistic read but before this shared transaction acquired the lock.
+    let epochs = match (
+        read_or_seed_epoch(cache, &game_key).await,
+        read_or_seed_epoch(cache, &participant_key).await,
+    ) {
+        (Some(game), Some(participant)) => Some(CapabilityEpochs { game, participant }),
+        _ => None,
+    };
+    if guard.release().await.is_err() {
+        return None;
+    }
+    epochs
 }
 
 /// Make the current namespace uncacheable before a capability transaction is
@@ -93,6 +158,28 @@ pub(crate) async fn begin_game_epoch_mutation(
     }
 }
 
+pub(crate) async fn begin_participant_epoch_mutation(
+    cache: &dyn Cache,
+    game_id: i32,
+    participation_id: i32,
+) -> AppResult<GameEpochMutation> {
+    let marker = mutation_marker();
+    if cache
+        .set_authoritative_checked(
+            &participant_epoch_key(game_id, participation_id),
+            marker.as_bytes(),
+            CAPABILITY_MUTATION_MARKER_TTL,
+        )
+        .await
+    {
+        Ok(GameEpochMutation { marker })
+    } else {
+        Err(AppError::unavailable(
+            "KotH capability cache fence is unavailable; retry this mutation",
+        ))
+    }
+}
+
 /// Publish the final cacheable namespace after a capability transaction, but
 /// only if this mutation still owns the authoritative marker. A newer writer's
 /// marker always wins. If the compare-and-set fails or Redis is unavailable,
@@ -107,6 +194,23 @@ pub(crate) async fn finish_game_epoch_mutation(
     cache
         .compare_and_set_authoritative(
             &game_epoch_key(game_id),
+            mutation.marker.as_bytes(),
+            epoch.as_bytes(),
+            Some(CAPABILITY_EPOCH_TTL),
+        )
+        .await
+}
+
+pub(crate) async fn finish_participant_epoch_mutation(
+    cache: &dyn Cache,
+    game_id: i32,
+    participation_id: i32,
+    mutation: GameEpochMutation,
+) -> bool {
+    let epoch = fresh_epoch();
+    cache
+        .compare_and_set_authoritative(
+            &participant_epoch_key(game_id, participation_id),
             mutation.marker.as_bytes(),
             epoch.as_bytes(),
             Some(CAPABILITY_EPOCH_TTL),
@@ -159,18 +263,24 @@ pub(crate) fn hill_token_key(
     challenge_id: i32,
     participation_id: i32,
     round: i32,
-    epoch: &str,
+    game_epoch: &str,
+    participant_epoch: &str,
 ) -> String {
-    format!("koth-capability:v1:hill:{game_id}:{challenge_id}:{participation_id}:{round}:{epoch}")
+    format!(
+        "koth-capability:v1:hill:{game_id}:{challenge_id}:{participation_id}:{round}:{game_epoch}:{participant_epoch}"
+    )
 }
 
 pub(crate) fn all_tokens_key(
     game_id: i32,
     participation_id: i32,
     round: i32,
-    epoch: &str,
+    game_epoch: &str,
+    participant_epoch: &str,
 ) -> String {
-    format!("koth-capability:v1:all:{game_id}:{participation_id}:{round}:{epoch}")
+    format!(
+        "koth-capability:v1:all:{game_id}:{participation_id}:{round}:{game_epoch}:{participant_epoch}"
+    )
 }
 
 #[cfg(test)]
@@ -255,20 +365,44 @@ mod tests {
         }
     }
 
+    async fn seed_game_epoch(cache: &dyn Cache, game_id: i32) -> String {
+        read_or_seed_epoch(cache, &game_epoch_key(game_id))
+            .await
+            .unwrap()
+    }
+
+    async fn seed_participant_epoch(
+        cache: &dyn Cache,
+        game_id: i32,
+        participation_id: i32,
+    ) -> String {
+        read_or_seed_epoch(cache, &participant_epoch_key(game_id, participation_id))
+            .await
+            .unwrap()
+    }
+
+    async fn readable_game_epoch(cache: &dyn Cache, game_id: i32) -> Option<String> {
+        read_epoch(cache, &game_epoch_key(game_id))
+            .await
+            .ok()
+            .flatten()
+    }
+
     #[tokio::test]
     async fn rotation_makes_a_filled_response_namespace_unreachable() {
         let cache = InMemoryCache::new();
-        let first = current_game_epoch(&cache, 7).await.unwrap();
-        let old_key = hill_token_key(7, 9, 11, 3, &first);
+        let first = seed_game_epoch(&cache, 7).await;
+        let participant = seed_participant_epoch(&cache, 7, 11).await;
+        let old_key = hill_token_key(7, 9, 11, 3, &first, &participant);
         cache
             .set_local(&old_key, b"old bearer", Some(TOKEN_MODEL_CACHE_TTL))
             .await;
 
         let mutation = begin_game_epoch_mutation(&cache, 7).await.unwrap();
         assert!(finish_game_epoch_mutation(&cache, 7, mutation).await);
-        let second = current_game_epoch(&cache, 7).await.unwrap();
+        let second = readable_game_epoch(&cache, 7).await.unwrap();
         assert_ne!(second, first);
-        assert_ne!(hill_token_key(7, 9, 11, 3, &second), old_key);
+        assert_ne!(hill_token_key(7, 9, 11, 3, &second, &participant), old_key);
         assert!(cache.get_local(&old_key).await.is_some());
     }
 
@@ -278,19 +412,20 @@ mod tests {
         let reader = TieredCache::new(Arc::clone(&shared), Duration::from_secs(60));
         let writer = TieredCache::new(Arc::clone(&shared), Duration::from_secs(60));
 
-        let before = current_game_epoch(&reader, 7).await.unwrap();
+        let before = seed_game_epoch(&reader, 7).await;
+        let participant = seed_participant_epoch(&reader, 7, 11).await;
         let mutation = begin_game_epoch_mutation(&writer, 7).await.unwrap();
-        assert!(current_game_epoch(&reader, 7).await.is_none());
+        assert!(readable_game_epoch(&reader, 7).await.is_none());
 
         assert!(finish_game_epoch_mutation(&writer, 7, mutation).await);
-        let after = current_game_epoch(&reader, 7).await.unwrap();
+        let after = readable_game_epoch(&reader, 7).await.unwrap();
         assert_ne!(after, before);
         assert!(reader
-            .get_local(&hill_token_key(7, 9, 11, 3, &after))
+            .get_local(&hill_token_key(7, 9, 11, 3, &after, &participant))
             .await
             .is_none());
         assert!(shared
-            .get(&hill_token_key(7, 9, 11, 3, &after))
+            .get(&hill_token_key(7, 9, 11, 3, &after, &participant))
             .await
             .is_none());
     }
@@ -307,7 +442,7 @@ mod tests {
             .set(&game_epoch_key(7), old_epoch.as_bytes(), None)
             .await;
         assert!(begin_game_epoch_mutation(&unavailable, 7).await.is_err());
-        assert_eq!(current_game_epoch(&unavailable, 7).await, Some(old_epoch));
+        assert_eq!(readable_game_epoch(&unavailable, 7).await, Some(old_epoch));
 
         let post_commit_failure = LimitedAuthoritativeWrites {
             inner: InMemoryCache::new(),
@@ -317,7 +452,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!finish_game_epoch_mutation(&post_commit_failure, 8, mutation).await);
-        assert!(current_game_epoch(&post_commit_failure, 8).await.is_none());
+        assert!(readable_game_epoch(&post_commit_failure, 8).await.is_none());
     }
 
     #[tokio::test]
@@ -333,8 +468,8 @@ mod tests {
         let second_mutation = begin_game_epoch_mutation(&second, 9).await.unwrap();
         assert!(!finish_game_epoch_mutation(&first, 9, first_mutation).await);
         assert!(!finish_game_epoch_mutation(&second, 9, second_mutation).await);
-        assert!(current_game_epoch(&first, 9).await.is_none());
-        assert!(current_game_epoch(&second, 9).await.is_none());
+        assert!(readable_game_epoch(&first, 9).await.is_none());
+        assert!(readable_game_epoch(&second, 9).await.is_none());
     }
 
     #[tokio::test]
@@ -343,14 +478,107 @@ mod tests {
         let first = TieredCache::new(Arc::clone(&shared), Duration::from_secs(60));
         let second = TieredCache::new(shared, Duration::from_secs(60));
 
-        let before = current_game_epoch(&first, 10).await.unwrap();
+        let before = seed_game_epoch(&first, 10).await;
         let first_mutation = begin_game_epoch_mutation(&first, 10).await.unwrap();
         let second_mutation = begin_game_epoch_mutation(&second, 10).await.unwrap();
         assert!(!finish_game_epoch_mutation(&first, 10, first_mutation).await);
-        assert!(current_game_epoch(&first, 10).await.is_none());
+        assert!(readable_game_epoch(&first, 10).await.is_none());
         assert!(finish_game_epoch_mutation(&second, 10, second_mutation).await);
-        let after = current_game_epoch(&first, 10).await.unwrap();
+        let after = readable_game_epoch(&first, 10).await.unwrap();
         assert_ne!(after, before);
+    }
+
+    #[tokio::test]
+    async fn player_rotation_changes_only_that_participants_namespace() {
+        let cache = InMemoryCache::new();
+        let game = seed_game_epoch(&cache, 12).await;
+        let first_before = seed_participant_epoch(&cache, 12, 101).await;
+        let second_before = seed_participant_epoch(&cache, 12, 202).await;
+        let second_key = all_tokens_key(12, 202, 3, &game, &second_before);
+
+        let mutation = begin_participant_epoch_mutation(&cache, 12, 101)
+            .await
+            .unwrap();
+        assert!(finish_participant_epoch_mutation(&cache, 12, 101, mutation).await);
+        let first_after = seed_participant_epoch(&cache, 12, 101).await;
+        let second_after = seed_participant_epoch(&cache, 12, 202).await;
+
+        assert_ne!(first_after, first_before);
+        assert_eq!(second_after, second_before);
+        assert_eq!(all_tokens_key(12, 202, 3, &game, &second_after), second_key);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn evicted_mutation_markers_cannot_reseed_until_the_writer_commits() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(3)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let cache = InMemoryCache::new();
+        let game_id = 1_900_000_000;
+        let participation_id = 1_900_000_001;
+        let before = current_capability_epochs(&cache, &pool, game_id, participation_id)
+            .await
+            .unwrap();
+
+        let writer = crate::utils::single_flight::PgAdvisoryLock::acquire(
+            &pool,
+            &crate::services::ad::engine::game_lock_key(game_id),
+        )
+        .await
+        .unwrap();
+        let mutation = begin_participant_epoch_mutation(&cache, game_id, participation_id)
+            .await
+            .unwrap();
+        cache
+            .remove(&participant_epoch_key(game_id, participation_id))
+            .await;
+        assert!(
+            current_capability_epochs(&cache, &pool, game_id, participation_id)
+                .await
+                .is_none()
+        );
+
+        writer.release().await.unwrap();
+        let recovered = current_capability_epochs(&cache, &pool, game_id, participation_id)
+            .await
+            .unwrap();
+        assert_eq!(recovered.game(), before.game());
+        assert_ne!(recovered.participant(), before.participant());
+        assert!(
+            !finish_participant_epoch_mutation(&cache, game_id, participation_id, mutation).await
+        );
+
+        let game_id = game_id + 2;
+        let participation_id = participation_id + 2;
+        let before = current_capability_epochs(&cache, &pool, game_id, participation_id)
+            .await
+            .unwrap();
+        let writer = crate::utils::single_flight::PgAdvisoryLock::acquire(
+            &pool,
+            &crate::services::ad::engine::game_lock_key(game_id),
+        )
+        .await
+        .unwrap();
+        let mutation = begin_game_epoch_mutation(&cache, game_id).await.unwrap();
+        cache.remove(&game_epoch_key(game_id)).await;
+        assert!(
+            current_capability_epochs(&cache, &pool, game_id, participation_id)
+                .await
+                .is_none()
+        );
+
+        writer.release().await.unwrap();
+        let recovered = current_capability_epochs(&cache, &pool, game_id, participation_id)
+            .await
+            .unwrap();
+        assert_ne!(recovered.game(), before.game());
+        assert_eq!(recovered.participant(), before.participant());
+        assert!(!finish_game_epoch_mutation(&cache, game_id, mutation).await);
     }
 
     #[test]
@@ -358,10 +586,17 @@ mod tests {
         assert_eq!(TOKEN_MODEL_CACHE_TTL, Duration::from_secs(10));
         assert!(CAPABILITY_EPOCH_TTL > TOKEN_MODEL_CACHE_TTL);
         assert!(CAPABILITY_MUTATION_MARKER_TTL.is_none());
-        let first = hill_token_key(7, 9, 11, 3, "epoch");
-        assert_ne!(first, hill_token_key(7, 9, 12, 3, "epoch"));
-        assert_ne!(first, hill_token_key(7, 10, 11, 3, "epoch"));
-        assert_ne!(first, hill_token_key(7, 9, 11, 4, "epoch"));
-        assert_ne!(first, hill_token_key(7, 9, 11, 3, "new-epoch"));
+        let first = hill_token_key(7, 9, 11, 3, "game", "participant");
+        assert_ne!(first, hill_token_key(7, 9, 12, 3, "game", "participant"));
+        assert_ne!(first, hill_token_key(7, 10, 11, 3, "game", "participant"));
+        assert_ne!(first, hill_token_key(7, 9, 11, 4, "game", "participant"));
+        assert_ne!(
+            first,
+            hill_token_key(7, 9, 11, 3, "new-game", "participant")
+        );
+        assert_ne!(
+            first,
+            hill_token_key(7, 9, 11, 3, "game", "new-participant")
+        );
     }
 }

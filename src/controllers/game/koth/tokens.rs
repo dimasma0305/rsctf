@@ -201,18 +201,24 @@ pub async fn koth_hill_token(
     require_live_hill(&st, id, challenge_id).await?;
 
     let cached_round = load_latest_round_cached(&st, id).await?;
-    let cached_epoch =
-        crate::services::ad::koth_capability_cache::current_game_epoch(st.cache.as_ref(), id).await;
+    let cached_epochs = crate::services::ad::koth_capability_cache::current_capability_epochs(
+        st.cache.as_ref(),
+        st.pg(),
+        id,
+        part.id,
+    )
+    .await;
     // Cache I/O and JSON decoding happen before retaining a PostgreSQL
     // connection. The model remains untrusted until both the live-caller fence
     // and the authoritative epoch comparison below succeed.
-    let cached_model = if let Some(epoch) = cached_epoch.as_deref() {
+    let cached_model = if let Some(epochs) = cached_epochs.as_ref() {
         let key = crate::services::ad::koth_capability_cache::hill_token_key(
             id,
             challenge_id,
             part.id,
             cached_round,
-            epoch,
+            epochs.game(),
+            epochs.participant(),
         );
         st.cache
             .get_local(&key)
@@ -230,10 +236,15 @@ pub async fn koth_hill_token(
         roster.release().await?;
         return Err(AppError::Forbidden);
     }
-    let live_epoch =
-        crate::services::ad::koth_capability_cache::current_game_epoch(st.cache.as_ref(), id).await;
-    if cached_epoch.as_deref() == live_epoch.as_deref() {
-        if let (Some(_), Some(model)) = (live_epoch.as_deref(), cached_model) {
+    let live_epochs = crate::services::ad::koth_capability_cache::current_capability_epochs(
+        st.cache.as_ref(),
+        st.pg(),
+        id,
+        part.id,
+    )
+    .await;
+    if cached_epochs.as_ref() == live_epochs.as_ref() {
+        if let (Some(_), Some(model)) = (live_epochs.as_ref(), cached_model) {
             roster.release().await?;
             return Ok(no_store_token_response(model));
         }
@@ -316,13 +327,14 @@ pub async fn koth_hill_token(
         token,
         status,
     };
-    if let (Some(epoch), Ok(json)) = (live_epoch.as_deref(), serde_json::to_vec(&model)) {
+    if let (Some(epochs), Ok(json)) = (live_epochs.as_ref(), serde_json::to_vec(&model)) {
         let key = crate::services::ad::koth_capability_cache::hill_token_key(
             id,
             challenge_id,
             part.id,
             latest_round,
-            epoch,
+            epochs.game(),
+            epochs.participant(),
         );
         // Warmup and reset-gap models are cached too. Capability publication
         // disables this namespace before commit, so a negative fill cannot hide
@@ -384,14 +396,20 @@ pub async fn koth_token_all(
         }
     };
     let cached_round = load_latest_round_cached(&st, id).await?;
-    let cached_epoch =
-        crate::services::ad::koth_capability_cache::current_game_epoch(st.cache.as_ref(), id).await;
-    let cached_model = if let Some(epoch) = cached_epoch.as_deref() {
+    let cached_epochs = crate::services::ad::koth_capability_cache::current_capability_epochs(
+        st.cache.as_ref(),
+        st.pg(),
+        id,
+        part.id,
+    )
+    .await;
+    let cached_model = if let Some(epochs) = cached_epochs.as_ref() {
         let key = crate::services::ad::koth_capability_cache::all_tokens_key(
             id,
             part.id,
             cached_round,
-            epoch,
+            epochs.game(),
+            epochs.participant(),
         );
         st.cache
             .get_local(&key)
@@ -405,10 +423,15 @@ pub async fn koth_token_all(
         roster.release().await?;
         return Err(AppError::Unauthorized);
     }
-    let live_epoch =
-        crate::services::ad::koth_capability_cache::current_game_epoch(st.cache.as_ref(), id).await;
-    if cached_epoch.as_deref() == live_epoch.as_deref() {
-        if let (Some(_), Some(model)) = (live_epoch.as_deref(), cached_model) {
+    let live_epochs = crate::services::ad::koth_capability_cache::current_capability_epochs(
+        st.cache.as_ref(),
+        st.pg(),
+        id,
+        part.id,
+    )
+    .await;
+    if cached_epochs.as_ref() == live_epochs.as_ref() {
+        if let (Some(_), Some(model)) = (live_epochs.as_ref(), cached_model) {
             roster.release().await?;
             return Ok(no_store_token_response(model));
         }
@@ -469,12 +492,13 @@ pub async fn koth_token_all(
         .collect()
     };
 
-    if let (Some(epoch), Ok(json)) = (live_epoch.as_deref(), serde_json::to_vec(&out)) {
+    if let (Some(epochs), Ok(json)) = (live_epochs.as_ref(), serde_json::to_vec(&out)) {
         let key = crate::services::ad::koth_capability_cache::all_tokens_key(
             id,
             part.id,
             latest_round,
-            epoch,
+            epochs.game(),
+            epochs.participant(),
         );
         st.cache
             .set_local(
@@ -576,15 +600,18 @@ pub async fn rotate_koth_api_token(
     )
     .await?;
     let latest_round = load_latest_round_on(roster.transaction_mut(), id).await?;
-    let cache_mutation = crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
-        st.cache.as_ref(),
-        id,
-    )
-    .await?;
+    let cache_mutation =
+        crate::services::ad::koth_capability_cache::begin_participant_epoch_mutation(
+            st.cache.as_ref(),
+            id,
+            part.id,
+        )
+        .await?;
     roster.release().await?;
-    crate::services::ad::koth_capability_cache::finish_game_epoch_mutation(
+    crate::services::ad::koth_capability_cache::finish_participant_epoch_mutation(
         st.cache.as_ref(),
         id,
+        part.id,
         cache_mutation,
     )
     .await;
