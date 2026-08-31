@@ -19,13 +19,13 @@ allocation cannot silently drop arrivals while the service absorbs a short burst
 The scenario also:
 
 - checks the initial target remains healthy before reporter variables exist;
+- rotates a disposable admin poller for each valid phase so rate admission from
+  one measurement cannot contaminate the next;
 - validates the exact six injected variables without printing their secret;
 - verifies `Cache-Control: no-store`, API-version `Vary`, objective-schema
   freezing, and every acknowledgement lifecycle field;
-- synchronizes the stored prefix with the currently active round, freezes its
-  scoring clock long enough to reserve one complete reconstruction window,
-  restarts the target process, resumes scoring, and proves the reporter
-  reconstructs the exact append-only wave prefix before that round advances;
+- restarts the target process in place and proves the fresh reporter runtime
+  submits one exact dense 2,000-team wave without regressing the accepted round;
 - suspends and reinstates one participation while scoring is paused, checks one
   capability-generation advance, and permanently rejects the old token;
 - recovers the stopped target to a new dynamic address and reset attempt, then
