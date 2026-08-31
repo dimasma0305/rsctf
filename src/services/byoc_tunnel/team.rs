@@ -124,5 +124,6 @@ mod tests {
         assert!(DISCONNECT_TEAM_SERVICES_SQL.contains("participation.team_id = $1"));
         assert!(DISCONNECT_TEAM_SERVICES_SQL.contains("service.status <> 2"));
         assert!(!DISCONNECT_TEAM_SERVICES_SQL.contains("ANY("));
+        assert!(include_str!("control.rs").contains("\"InternalByocRevokeTeam\","));
     }
 }

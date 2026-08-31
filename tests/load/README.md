@@ -16,9 +16,11 @@ cd tests/load
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
+      npm run read-only-websocket-flood # read-only feed inbound-abuse gate
       npm run proxy-traffic-admission # acknowledged line-rate proxy byte-work gate
       npm run monitor-history # fixed-rate bounded monitor history + durable backfills
       npm run monitor-evidence-inventory # fixed-rate traffic + anti-cheat bounded reads
+      npm run anticheat-reconciliation # large-history idle + manual/scheduled coalescing
       npm run participation-review # fixed-rate bounded 12k-team organizer review
       npm run details-read  # fixed-rate authenticated challenge-details poll
       npm run challenge-modal-read # bounded detail + solver modal reads
@@ -27,6 +29,7 @@ N=60  npm run byoc          # BYOC scale + request flood
       npm run asset-download # fixed-rate authenticated 1 MiB attachment ranges
       npm run monitor-exports # fixed-rate bounded monitor XLSX exports + health
       npm run event-security # destructive fixed-rate bounded telemetry/resource comparison
+      npm run honeypot-bounds # sampled HTTP flood + optional TCP slow-loris/resource gate
       npm run scoreboard-evidence # isolated fixed-rate canonical FirstSolve query benchmark
       npm run scoreboard-conditional # read-only fixed-rate scoreboard encoding/304 benchmark
       npm run player        # A&D + KotH player poll/submit load
@@ -42,6 +45,25 @@ Requires `k6`, `node`, and `docker exec <PG>` / `docker` access; the stack up wi
 running game (default `GAME=10`, BYOC challenge `CID=68`). BYOC runs require at least
 `N` distinct Accepted participations; the harness fails before spawning when fewer are
 available rather than fabricating participation IDs that production authorization rejects.
+
+### Read-only WebSocket admission
+
+The WebSocket gate drives raw and SignalR attack feeds at a fixed connection
+arrival rate. It distinguishes the exact 64-KiB application boundary from a
+one-byte-oversized transport rejection, covers burst and sustained frame quotas,
+and checks exact `healthz` on an independent lane. Preflight probes also cover an
+invalid handshake, the 128-connection client ceiling and permit reuse, and the
+90-second idle close. A tagged notice is created, observed over SignalR during the
+flood, and deleted before the gate exits.
+
+```sh
+READONLY_WS_FLOOD_ACK=1 WEBSOCKET_GAME=92001 RATE=20 DURATION=30s \
+  SUMMARY_JSON=/tmp/read-only-websocket-flood.json npm run read-only-websocket-flood
+```
+
+It refuses a non-live or hidden event and any non-loopback target. Run it against
+an isolated local stack: the runner samples the exact `RSCTF_CONTAINER` and fails
+when its CPU or memory exceeds the configured bounds.
 
 ### Proxy traffic admission
 
@@ -131,7 +153,10 @@ sustained work per monitor identity.
 
 `monitor-evidence-inventory` holds one arrival schedule across traffic challenge,
 team, and file cursor pages plus the anti-cheat incident page/delta, cached report,
-event evidence, and pair comparison. It requires a prepared real-filesystem/PostgreSQL
+event evidence, pair comparison, and one real PCAP's bounded flow summary/filter/detail
+contract. The runner tries at most eight of the smallest indexed PCAPs within the
+256 MiB inspector limit and seeds one TCP summary before load; empty, stale, or malformed
+captures do not become synthetic fixtures. It requires a prepared real-filesystem/PostgreSQL
 fixture (by default 20 capture challenges, 500 capture buckets, 5,000 indexed PCAPs,
 1,000 flag-sharing incidents, and 5,000 suspicion events) and at least four disposable
 Monitor/Admin identities:
@@ -142,10 +167,13 @@ MONITOR_EVIDENCE_GAME=92001 RATE=4 VUS=32 DURATION=30s \
 ```
 
 The gate rotates identities and source IPs to measure bounded work instead of one
-limiter bucket. It rejects pages over 100 rows, duplicate or unstable incident IDs,
-oversized bodies, malformed drill-downs, 5xx/429 responses, dropped arrivals, and a
-busy response without `Retry-After`. A separate fixed-rate probe requires the exact
-`healthz` body `ok` with p95 below 500 ms. The runner also samples the configured
+limiter bucket. It also issues rapid concurrent valid flow filters, requires the last
+(newest) peer filter to win semantically, sends one invalid regex, and binds detail to
+the seeded `snapshotVersion`, `flowId`, and `connectionPort`. It rejects pages over 100
+rows, duplicate or unstable incident IDs, oversized bodies, malformed drill-downs,
+unexpected 5xx/429 responses, dropped arrivals, and any admitted-busy `503` without a
+numeric `Retry-After`. A separate fixed-rate probe requires the exact `healthz` body
+`ok` with p95 below 500 ms. The runner also samples the configured
 Docker application/PostgreSQL containers and PostgreSQL I/O counters once per second,
 then fails on excessive task/thread, memory, block-I/O, block-read, or temporary-I/O
 growth. Override `MONITOR_EVIDENCE_RESOURCE_CONTAINERS`, `MAX_MEMORY_DELTA_MIB`,
@@ -155,6 +183,41 @@ growth. Override `MONITOR_EVIDENCE_RESOURCE_CONTAINERS`, `MAX_MEMORY_DELTA_MIB`,
 PCAP files. It also counts regular PCAPs below `/data/files/capture` inside the
 application container; set `MONITOR_EVIDENCE_CAPTURE_ROOT` when the prepared stack
 mounts the capture root elsewhere.
+
+### Incremental anti-cheat reconciliation
+
+`anticheat-reconciliation` requires an active disposable game with at least 5,000
+completed/outstanding evidence-history rows and two Admin accounts. It first waits for
+the durable reconciliation queue to become clean, advances one explicitly acknowledged
+generation, and races 16 unique manual operation IDs from the two operators against the
+scheduled reconciler. Every operation must alias one control job and the reconciliation
+state must record exactly one effective pass.
+
+It then holds public scoreboard reads and exact `healthz` checks at fixed arrival rates
+for at least 35 seconds. No evidence is added in this phase. The queue generation,
+source cursors, job/operation counts, attempts, and last-started timestamp must remain
+unchanged, proving that a large but idle history causes no scheduled detector pass.
+The runner samples application/PostgreSQL CPU and memory, runtime tasks, PostgreSQL
+client-pool occupancy, active/idle-in-transaction/waiting backends, longest transaction,
+and block/temp-I/O counters once per second. Defaults reject a container above 400% CPU,
+more than 40 database clients or active clients, any idle-in-transaction client, more
+than 16 waiting clients, a transaction over 30 seconds, 100,000 block reads, or 64 MiB
+of temporary I/O. Document fixture-specific overrides with `MAX_CPU_PERCENT`,
+`MAX_PG_CONNECTIONS`, `MAX_PG_ACTIVE_CONNECTIONS`,
+`MAX_PG_IDLE_IN_TRANSACTION`, `MAX_PG_WAITING_CONNECTIONS`,
+`MAX_PG_LONGEST_TRANSACTION_SECONDS`, `MAX_PG_BLOCK_READ_DELTA`, and
+`MAX_PG_TEMP_DELTA_MIB`. The gate mutates one disposable queue generation and therefore
+fails closed without an exact acknowledgement:
+
+```bash
+cd tests/load
+GAME=10 ANTICHEAT_RECONCILIATION_STRESS_ACK=game:10 \
+  DURATION=65s RATE=20 SUMMARY_JSON=/tmp/anticheat-reconciliation.json \
+  npm run anticheat-reconciliation
+```
+
+For a remote origin, also set
+`ALLOW_REMOTE_ANTICHEAT_RECONCILIATION_STRESS` to the exact `TARGET` origin.
 
 ### Bounded participation review
 
@@ -194,6 +257,31 @@ logical quota breach. It measures the bounded aggregate API/SQL path; it does
 not retain packet payloads, DNS names, public IP addresses, or flag plaintext.
 The current fixed-rate acceptance numbers and artifact hashes are retained in
 [REPORT.md](./REPORT.md#bounded-event-security-telemetry-fixed-rate-acceptance--20-august-2026).
+
+### Bounded honeypot telemetry
+
+`honeypot-bounds` holds an unauthenticated decoy flood at a fixed arrival rate
+while independently probing the exact `healthz` body. It requires an explicit
+acknowledgement because sampled observations are persisted. The runner rejects
+any response distinguishable from the ordinary decoy 404, dropped arrivals,
+unbounded aggregate rows or stored fields, excessive memory/task growth, or a
+health latency regression. It also samples configured-container CPU and PostgreSQL
+client-pool/activity/block/temp-I/O once per second and applies the same default CPU
+and database ceilings documented for incremental anti-cheat reconciliation above.
+`HONEYPOT_RESOURCE_CONTAINERS` must retain the configured application and PostgreSQL
+container names so an override cannot silently omit either required resource sample.
+Set `HONEYPOT_TCP_PORT` to one configured protocol decoy to add 256 silent sockets
+and require all of them to close within the absolute connection deadline.
+
+```sh
+HONEYPOT_STRESS_ACK=1 RATE=512 VUS=64 DURATION=20s \
+  HONEYPOT_TCP_PORT=2222 SUMMARY_JSON=/tmp/honeypot-bounds.json \
+  npm run honeypot-bounds
+```
+
+Remote runs additionally require `ALLOW_REMOTE_HONEYPOT_STRESS` to equal the
+exact target origin. Keep rate, duration, source count, replica set, and Docker
+resource-container list identical for before/after comparisons.
 
 ### Donation feed
 
@@ -265,8 +353,13 @@ starts at a fixed arrival rate over one second, and probes `/healthz` throughout
 the build. The run fails unless rsctf publishes exactly one `RuntimeStart` build,
 all player starts succeed, each participation receives a running container, the
 ownership lease is stamped, and there are no dropped arrivals or 5xx responses.
-It then invokes one bounded cleanup pass while resource sampling remains active;
-set `IMAGE_STORAGE_SKIP_CLEANUP=1` only when testing the build half in isolation.
+It then makes the installation's durable image-cleanup schedule due and starts a
+second fixed-arrival probe while the independently supervised pass runs. The
+runner requires one new durable start/finish, a cleared lease, an advanced
+15-minute cadence, at most 32 claimed candidates, coherent scanned/removed/backlog
+counts, no schedule error, and an unchanged cadence across later 30-second
+scheduler ticks. `/healthz` and resource sampling stay active throughout; set
+`IMAGE_STORAGE_SKIP_CLEANUP=1` only when testing the build half in isolation.
 
 ```sh
 IMAGE_STORAGE_STRESS_ACK=1 GAME=92001 CID=92002 N=8 \
@@ -274,6 +367,26 @@ IMAGE_STORAGE_STRESS_ACK=1 GAME=92001 CID=92002 N=8 \
   RESOURCE_JSON=/tmp/image-storage-resources.json \
   npm run image-storage
 ```
+
+To cover event-closeout responsiveness, provide an already-ended disposable A&D
+fixture with at least one round. The cleanup-phase k6 run then reads its final A&D
+scoreboard at the same fixed rate and fails on any non-200 response, 5xx, dropped
+arrival, or p95 above one second:
+
+```sh
+IMAGE_STORAGE_STRESS_ACK=1 GAME=92001 CID=92002 \
+  IMAGE_STORAGE_CLOSEOUT_GAME=92003 IMAGE_STORAGE_CLOSEOUT_ACK=92003 \
+  EXPECTED_CLEANUP_BACKLOG_MIN=1000 npm run image-storage
+```
+
+A genuinely stuck Docker daemon is not induced by this harness: pausing or killing
+the host daemon would make exact cleanup unsafe. For an externally configured,
+disposable Docker fault proxy that delays `df`, prune, list, or inspect calls, opt
+in with `IMAGE_STORAGE_HUNG_DOCKER_ACK=external-fault-proxy` and set
+`EXPECTED_CLEANUP_MIN_MS` to the injected lower bound. The probe runs for 125
+seconds, accepts only a timeout/deadline/budget failure (or a bounded successful
+pass), and still enforces health and optional closeout thresholds. The harness
+never installs, starts, or removes the proxy itself.
 
 The runner does not create or rewrite the challenge and refuses an ambient
 remote target. A remote disposable target additionally requires
@@ -289,11 +402,11 @@ tests/load/
   byoc-agents.mjs   BYOC tunnel fleet: seed rows, start/stop N relay agents, list listeners
   fixtures.mjs      materializes the exact checker + shared flag service used by lifecycle
   admin-fixtures.mjs focused SQL, HTTP, Docker-image, CSR, and recovery helpers for admin acceptance
-  admin-lifecycle.js pure 62-operation admin catalog, response contracts, and target-safety rules
+  admin-lifecycle.js pure 75-operation admin catalog, response contracts, and target-safety rules
   admin-lifecycle.mjs destructive disposable admin lifecycle (npm run admin-lifecycle)
   admin-dashboard.js bounded dashboard/trend/activity response contracts
   admin-dashboard.mjs tagged large-history fixture and cleanup (npm run admin-dashboard)
-  edit-lifecycle.js exact 67-operation `/api/edit` catalog + wire validators
+  edit-lifecycle.js exact 79-operation `/api/edit` catalog + wire validators
   edit-lifecycle.mjs future/A&D/KotH organizer lifecycle (npm run edit-lifecycle)
   multi-domain-acceptance.js pure two-service/two-hill isolation contracts
   multi-domain-acceptance.mjs focused multi-domain acceptance (npm run multi-domain)

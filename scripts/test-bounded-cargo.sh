@@ -8,6 +8,7 @@ bash -n scripts/bounded-cargo.sh
 output="$(RSCTF_BOUNDED_CARGO_DRY_RUN=1 scripts/bounded-cargo.sh check --all-targets)"
 
 grep -Fq 'cpu_quota=200%' <<<"$output"
+grep -Fq 'rsctf-build.lock' <<<"$output"
 grep -Fq 'memory_max=12G' <<<"$output"
 grep -Fq 'jobs=2' <<<"$output"
 grep -Fq '/rsctf-target' <<<"$output"

@@ -36,6 +36,7 @@ use chrono::Utc;
 
 mod backend_reaper;
 mod delivery_health;
+mod image_cleanup;
 mod maintenance;
 mod round_finish;
 mod scheduler;
@@ -91,35 +92,55 @@ pub fn start_network_reconcile(
     crate::services::ad_vpn::coordination::start_owner_listener(state, shutdown)
 }
 
-/// Launch singleton deployment maintenance. Multiple engine replicas may call
-/// this; the Redis lease elects at most one active maintenance pass.
+/// Launch independently supervised deployment maintenance and Docker cleanup.
+/// Multiple engine replicas may call this. Event-critical maintenance retains
+/// its Redis lease; image cleanup uses its own durable PostgreSQL cadence/lease
+/// and can neither delay nor monopolize the maintenance chain.
 pub fn start_maintenance(
     state: SharedState,
-    mut shutdown: tokio::sync::watch::Receiver<bool>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
-    let maintenance = state.clone();
     tokio::spawn(async move {
-        let mut lock = LeaderLock::connect(CRON_JOB_LOCK, "maintenance").await;
-        let mut ticker = tokio::time::interval(StdDuration::from_secs(MAINTENANCE_TICK_SECONDS));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        tracing::info!("cron: maintenance supervisor started (tick {MAINTENANCE_TICK_SECONDS}s)");
+        let maintenance = tokio::spawn(maintenance_supervisor(state.clone(), shutdown.clone()));
+        let image_cleanup = tokio::spawn(image_cleanup::supervise(state, shutdown));
+        tokio::join!(
+            await_supervisor("maintenance", maintenance),
+            await_supervisor("Docker image cleanup", image_cleanup),
+        );
+    })
+}
 
-        loop {
-            tokio::select! {
-                changed = shutdown.changed() => {
-                    if changed.is_err() || *shutdown.borrow() {
-                        break;
-                    }
-                    continue;
+async fn await_supervisor(label: &'static str, task: tokio::task::JoinHandle<()>) {
+    match task.await {
+        Ok(()) => tracing::info!(supervisor = label, "cron: supervisor stopped"),
+        Err(error) => tracing::error!(supervisor = label, %error, "cron: supervisor task failed"),
+    }
+}
+
+async fn maintenance_supervisor(
+    state: SharedState,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut lock = LeaderLock::connect(CRON_JOB_LOCK, "maintenance").await;
+    let mut ticker = tokio::time::interval(StdDuration::from_secs(MAINTENANCE_TICK_SECONDS));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tracing::info!("cron: maintenance supervisor started (tick {MAINTENANCE_TICK_SECONDS}s)");
+
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
                 }
-                _ = ticker.tick() => {}
-            }
-            if !lock.try_acquire().await {
                 continue;
             }
-            run_with_lease(&mut lock, run_jobs(&maintenance), "maintenance").await;
+            _ = ticker.tick() => {}
         }
-    })
+        if !lock.try_acquire().await {
+            continue;
+        }
+        run_with_lease(&mut lock, run_jobs(&state), "maintenance").await;
+    }
 }
 
 /// Launch the latency-sensitive round driver.
@@ -295,31 +316,6 @@ async fn run_jobs(state: &SharedState) {
         Ok(n) if n > 0 => tracing::info!(n, "cron: collected stale checker revision(s)"),
         Ok(_) => {}
         Err(e) => tracing::warn!("cron: checker revision GC failed: {e}"),
-    }
-
-    match crate::services::image_storage::scheduled_cleanup(state).await {
-        Ok(Some(report)) if report.images_removed > 0 || report.cache_bytes_reclaimed > 0 => {
-            tracing::info!(
-                images = report.images_removed,
-                image_bytes = report.image_bytes_evicted,
-                cache_bytes = report.cache_bytes_reclaimed,
-                dangling_bytes = report.dangling_bytes_reclaimed,
-                free_before = report.available_bytes_before,
-                free_after = report.available_bytes_after,
-                pressure = report.pressure_mode,
-                "cron: completed bounded Docker storage cleanup"
-            );
-            for message in report.messages {
-                tracing::warn!(%message, "cron: Docker storage cleanup note");
-            }
-        }
-        Ok(Some(report)) => {
-            for message in report.messages {
-                tracing::warn!(%message, "cron: Docker storage cleanup note");
-            }
-        }
-        Ok(None) => {}
-        Err(error) => tracing::warn!(%error, "cron: Docker storage cleanup failed"),
     }
 
     match maintenance::reap_expired_containers(state).await {
@@ -804,4 +800,16 @@ async fn complete_ended_ad_checks(state: &SharedState) -> AppResult<u64> {
 /// invalidation for exceptional corrections.
 async fn refresh_recent_games_cache(state: &SharedState) {
     state.cache.remove("_RecentGames").await;
+}
+
+#[cfg(test)]
+mod supervision_tests {
+    #[test]
+    fn image_cleanup_cannot_cancel_event_critical_maintenance() {
+        let source = include_str!("mod.rs");
+        assert!(source.contains("tokio::spawn(maintenance_supervisor("));
+        assert!(source.contains("tokio::spawn(image_cleanup::supervise("));
+        assert!(source.contains("tokio::join!("));
+        assert!(!source.contains("scheduled_cleanup(state)"));
+    }
 }

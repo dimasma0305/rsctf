@@ -400,6 +400,16 @@ const INSERT_SUSPICION_EVENT_SQL: &str = r#"
              score_delta, created_at)
         SELECT $1, participant.id, $3, $4, $5, $6, $7
           FROM participant
+         -- The reconciliation stamp is a BEFORE INSERT trigger. Filter a
+         -- steady replay by the exact unique key before that trigger runs;
+         -- ON CONFLICT remains the final guard for concurrent races.
+         WHERE NOT EXISTS (
+               SELECT 1 FROM "SuspicionEvents" existing
+                WHERE existing.game_id = $1
+                  AND existing.participation_id = participant.id
+                  AND existing.kind = $4
+                  AND existing.evidence_key = $5
+         )
         ON CONFLICT (game_id, participation_id, kind, evidence_key) DO NOTHING
         RETURNING id
     )

@@ -44,10 +44,11 @@ A request to explain, diagnose, or review is read-only unless it also asks for c
 
 ## Build and completion gate
 
-Run every local Cargo compile or test through `scripts/bounded-cargo.sh`; never start
-raw Cargo builds concurrently from separate worktrees. The wrapper serializes builds,
-shares dependency artifacts, and hard-caps CPU/memory on systemd hosts. Focused checks
-still come first, but the final build/test gate also uses the wrapper. CI may use an
+Run every local Cargo compile or test through `scripts/bounded-cargo.sh`, and every
+frontend typecheck/test/build through `scripts/bounded-frontend.sh`. Never start raw
+builds concurrently from separate worktrees. Both wrappers share one compile slot and
+hard-cap CPU/memory on systemd hosts; Cargo also shares dependency artifacts. Focused
+checks still come first, but the final gates use the wrappers too. CI may use an
 equivalent stricter isolated runner.
 
 `cargo build` must have zero errors and zero warnings; `cargo test` must pass. Run the

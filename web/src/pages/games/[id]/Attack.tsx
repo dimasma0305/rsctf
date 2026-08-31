@@ -17,6 +17,7 @@
 import { FC, useEffect, useRef } from 'react'
 import { useParams, useSearchParams } from 'react-router'
 import { epochProgress } from '@Utils/epochProgress'
+import { eventVpnFetch } from '@Utils/EventVpnProof'
 import type { AdScoreboardModel } from '@Api'
 import { createJeopardy, type JeopCategory } from './arenaJeopardy'
 import {
@@ -2211,7 +2212,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
 
   /* -------- live data -------- */
   async function fetchJSON<T = any>(url: string, signal?: AbortSignal): Promise<T> {
-    const r = await fetch(url, { headers: { Accept: 'application/json' }, signal })
+    const r = await eventVpnFetch(url, { headers: { Accept: 'application/json' }, signal })
     if (!r.ok) {
       throw new ArenaHttpError(
         url + ' -> ' + r.status,

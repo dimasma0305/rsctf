@@ -11,7 +11,9 @@ mod identity;
 mod jobs;
 #[cfg(test)]
 use identity::immutable_image_reference;
-use identity::{build_lock_key, inspect_immutable_image, ImageOperation};
+use identity::{
+    build_lock_key, ensure_cleanup_not_finalizing, inspect_immutable_image, ImageOperation,
+};
 pub(crate) use identity::{
     canonical_image_reference, canonical_managed_image_tag, image_build_lock_key,
 };
@@ -187,6 +189,19 @@ async fn run_challenge_build_with_intent(
             return (outcome, record, false);
         }
     };
+
+    if let Err(error) = ensure_cleanup_not_finalizing(
+        build_lock.connection_mut(),
+        challenge.container_image.as_deref(),
+    )
+    .await
+    {
+        tracing::warn!(challenge = challenge.id, %error, "image cleanup blocks image build");
+        drop(build_lock);
+        let outcome = superseded_build_outcome(&error.to_string());
+        let record = record_build(st, challenge, trigger, attempt, started, &outcome).await;
+        return (outcome, record, false);
+    }
 
     let requested_fingerprint = BuildFingerprint::from_challenge(challenge);
     let current_fingerprint =

@@ -231,20 +231,8 @@ pub async fn derive_event_security_findings(
     RequestResponse<crate::services::control_jobs::ControlJobModel>,
 )> {
     let operation = crate::controllers::edit::control_jobs::operation_id(&headers)?;
-    let input = serde_json::json!({ "gameId": game_id });
-    let fingerprint = crate::controllers::edit::control_jobs::fingerprint(&input)?;
-    let job = crate::services::control_jobs::enqueue(
-        st.pg(),
-        crate::services::control_jobs::ControlJobKind::SecurityDerivation,
-        &format!("game:{game_id}"),
-        game_id,
-        None,
-        operation,
-        &fingerprint,
-        input,
-    )
-    .await?;
-    crate::services::control_jobs::kick(st);
+    let job =
+        crate::services::control_jobs::request_security_derivation(&st, game_id, operation).await?;
     Ok((StatusCode::ACCEPTED, RequestResponse::ok(job)))
 }
 

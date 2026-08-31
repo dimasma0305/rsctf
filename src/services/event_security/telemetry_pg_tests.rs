@@ -43,6 +43,10 @@ async fn duplicate_rows_replay_at_quota_but_novel_rows_are_rolled_back() {
                user_id UUID NOT NULL, participation_id INTEGER NOT NULL,
                revoked_at_utc TIMESTAMPTZ NULL
            );
+           CREATE TABLE "SuspicionReconciliationState" (
+               game_id INTEGER PRIMARY KEY,
+               evidence_closed_at_utc TIMESTAMPTZ NULL
+           );
            CREATE TABLE "EventTelemetryBatches" (
                batch_id UUID PRIMARY KEY, game_id INTEGER NOT NULL,
                request_fingerprint BYTEA NOT NULL, result JSONB NULL,
@@ -108,6 +112,10 @@ async fn duplicate_rows_replay_at_quota_but_novel_rows_are_rolled_back() {
     .execute(&pool)
     .await
     .unwrap();
+    sqlx::query(r#"INSERT INTO "SuspicionReconciliationState" (game_id) VALUES (7)"#)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query(
         r#"INSERT INTO "EventVpnUserPeers"
              (id, game_id, user_id, participation_id)

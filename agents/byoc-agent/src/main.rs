@@ -3,8 +3,6 @@
 //! The agent opens one outbound WebSocket to RSCTF and carries service traffic,
 //! rotating flags, and optional interactive container shells over yamux streams.
 
-use std::time::Duration;
-
 mod agent;
 
 pub(crate) const STREAM_SERVICE: u8 = b'S';
@@ -51,5 +49,3 @@ async fn main() {
 
     agent::run_agent().await;
 }
-
-pub(crate) const RECONNECT_DELAY: Duration = Duration::from_secs(3);

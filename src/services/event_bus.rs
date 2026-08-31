@@ -8,41 +8,120 @@
 //! outage may be dropped.
 
 use std::collections::{HashSet, VecDeque};
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, Notify};
 use uuid::Uuid;
 
 use crate::app_state::HubEvent;
 
-const LOCAL_QUEUE_CAPACITY: usize = 512;
+#[path = "event_bus/distributed.rs"]
+mod distributed;
+#[path = "event_bus/local.rs"]
+mod local;
+
+use distributed::{resp3_client, run_publisher, run_subscriber};
+pub use local::EventReceiver;
+#[cfg(test)]
+use local::LOCAL_QUEUE_CAPACITY;
+use local::{LocalFanout, ResyncScope};
+
 const OUTBOUND_QUEUE_CAPACITY: usize = 512;
+const OUTBOUND_PARTITION_CAPACITY: usize = 128;
+const OUTBOUND_PARTITION_LIMIT: usize = OUTBOUND_QUEUE_CAPACITY;
+const OUTBOUND_BYTE_CAPACITY: usize = 8 * 1024 * 1024;
+const OUTBOUND_PARTITION_BYTE_CAPACITY: usize = 512 * 1024;
 const DEDUP_CAPACITY: usize = 4_096;
 const MAX_WIRE_BYTES: usize = 256 * 1024;
+// A valid JSON value can expand again when embedded as the wire event's JSON
+// string. Reject before parsing so even one malformed publication has a firm
+// allocation bound on the synchronous path.
+const MAX_HUB_PAYLOAD_BYTES: usize = MAX_WIRE_BYTES;
+const INBOUND_PUSH_CAPACITY: usize = 512;
 const REDIS_IO_TIMEOUT: Duration = Duration::from_millis(750);
 const REDIS_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const REDIS_RETRY_MIN: Duration = Duration::from_secs(1);
 const REDIS_RETRY_MAX: Duration = Duration::from_secs(10);
+const REDIS_SUBSCRIBER_HEARTBEAT: Duration = Duration::from_secs(15);
+const RESYNC_TARGET: &str = "InternalFeedResyncRequired";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetScope {
+    Game,
+    Global,
+    Resync,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TargetSpec {
+    name: &'static str,
+    scope: TargetScope,
+}
+
+macro_rules! target_catalog {
+    ($($name:literal => $scope:ident),+ $(,)?) => {
+        const KNOWN_TARGETS: &[&str] = &[$($name),+];
+
+        fn known_target(target: &str) -> Option<TargetSpec> {
+            match target {
+                $($name => Some(TargetSpec {
+                    name: $name,
+                    scope: TargetScope::$scope,
+                }),)+
+                _ => None,
+            }
+        }
+    };
+}
+
+target_catalog! {
+    "ReceivedAttack" => Game,
+    "ReceivedGameEvent" => Game,
+    "ReceivedGameNotice" => Game,
+    "ReceivedGameNoticeChanged" => Game,
+    "ReceivedFlagEgress" => Game,
+    "ReceivedLog" => Global,
+    "ReceivedSubmissions" => Game,
+    "InternalByocRevokeParticipation" => Global,
+    "InternalByocRevokeTeam" => Global,
+    "InternalByocRevokeChallenge" => Global,
+    "InternalTrafficCaptureReconcile" => Global,
+    "InternalFeedResyncRequired" => Resync,
+}
 
 /// Default channel for installations that use Redis only for one RSCTF cluster.
 pub const DEFAULT_REDIS_CHANNEL: &str = "rsctf:hub-events:v1";
+
+/// Fixed-cardinality process-local visibility for fanout loss and retained
+/// target/game shards. No label or map key is exposed, so untrusted game IDs
+/// cannot grow the metrics response.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EventBusOperationalMetrics {
+    pub active_target_queues: usize,
+    pub lagged_receivers: u64,
+    pub rejected_events: u64,
+    pub distributed_drops: u64,
+    pub distributed_loss_generation: u64,
+    pub subscriber_gaps: u64,
+}
 
 /// Cloneable hub-event handle. Publishing is synchronous and non-blocking: the
 /// event reaches this process immediately and is offered to a bounded Redis
 /// publisher queue when distributed fanout is enabled.
 #[derive(Clone)]
 pub struct EventBus {
-    local: broadcast::Sender<HubEvent>,
+    local: Arc<LocalFanout>,
     distributed: Option<DistributedPublisher>,
 }
 
 #[derive(Clone)]
 struct DistributedPublisher {
     origin: Uuid,
-    outbound: mpsc::Sender<WireEvent>,
+    outbound: Arc<DistributedOutbox>,
     // Abort the detached publisher/subscriber tasks when the final EventBus
     // handle is dropped (not when an intermediate clone is dropped).
     _tasks: Arc<TaskSet>,
@@ -71,7 +150,16 @@ struct WireEvent {
     payload: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResyncMarkerPayload {
+    generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+}
+
 impl WireEvent {
+    #[cfg(test)]
     fn from_hub(origin: Uuid, event: &HubEvent) -> Self {
         Self {
             version: 1,
@@ -83,35 +171,499 @@ impl WireEvent {
         }
     }
 
-    fn into_hub(self) -> Option<HubEvent> {
+    fn validated_target(&self) -> Option<&'static str> {
         if self.version != 1 {
             return None;
         }
-        let target = known_target(&self.target)?;
+        validate_hub_event(&self.target, self.game_id, &self.payload)
+    }
+
+    #[cfg(test)]
+    fn into_hub(self) -> Option<HubEvent> {
+        let target = self.validated_target()?;
         Some(HubEvent {
             target,
             game_id: self.game_id,
             payload: self.payload,
         })
     }
+
+    fn resync(origin: Uuid, barrier: ScopedBarrier) -> Self {
+        let (game_id, target) = barrier
+            .key
+            .map(|key| (key.game_id, Some(key.target)))
+            .unwrap_or((None, None));
+        Self {
+            version: 1,
+            id: Uuid::now_v7(),
+            origin,
+            target: RESYNC_TARGET.to_owned(),
+            game_id,
+            payload: serde_json::json!({
+                "generation": barrier.generation,
+                "target": target,
+            })
+            .to_string(),
+        }
+    }
+
+    fn resync_scope(&self) -> Option<ResyncScope> {
+        if self.target != RESYNC_TARGET {
+            return None;
+        }
+        let marker = serde_json::from_str::<ResyncMarkerPayload>(&self.payload).ok()?;
+        let _generation = marker.generation;
+        let Some(target) = marker.target else {
+            return self.game_id.is_none().then_some(ResyncScope::Global);
+        };
+        let target = known_target(&target)?;
+        if target.scope == TargetScope::Resync {
+            return None;
+        }
+        match (target.scope, self.game_id) {
+            (TargetScope::Game, Some(_)) | (TargetScope::Global, None) => {
+                Some(ResyncScope::Partition {
+                    target: target.name,
+                    game_id: self.game_id,
+                })
+            }
+            _ => None,
+        }
+    }
 }
 
-/// Redis is not an authorization boundary. Still, accept only methods the
-/// server itself can publish, both to reject malformed messages and to retain
-/// the allocation-free `&'static str` target used by every WebSocket hot path.
-fn known_target(target: &str) -> Option<&'static str> {
-    match target {
-        "ReceivedAttack" => Some("ReceivedAttack"),
-        "ReceivedGameEvent" => Some("ReceivedGameEvent"),
-        "ReceivedGameNotice" => Some("ReceivedGameNotice"),
-        "ReceivedFlagEgress" => Some("ReceivedFlagEgress"),
-        "ReceivedLog" => Some("ReceivedLog"),
-        "ReceivedSubmissions" => Some("ReceivedSubmissions"),
-        "InternalByocRevokeParticipation" => Some("InternalByocRevokeParticipation"),
-        "InternalByocRevokeTeam" => Some("InternalByocRevokeTeam"),
-        "InternalByocRevokeChallenge" => Some("InternalByocRevokeChallenge"),
-        "InternalTrafficCaptureReconcile" => Some("InternalTrafficCaptureReconcile"),
-        _ => None,
+/// Redis is not an authorization boundary. Still, only exact server-owned
+/// target/scope pairs carrying one complete JSON value may enter local fanout.
+/// Besides rejecting malformed frames, this prevents a game event with a null
+/// scope from becoming an accidental cross-game broadcast.
+fn validate_hub_event(target: &str, game_id: Option<i32>, payload: &str) -> Option<&'static str> {
+    if payload.len() > MAX_HUB_PAYLOAD_BYTES {
+        return None;
+    }
+    let target = known_target(target)?;
+    match (target.scope, game_id) {
+        (TargetScope::Game, Some(_)) | (TargetScope::Global, None) | (TargetScope::Resync, _) => {}
+        _ => return None,
+    }
+    let mut value = serde_json::Deserializer::from_str(payload);
+    serde::de::IgnoredAny::deserialize(&mut value).ok()?;
+    value.end().ok()?;
+    if target.scope == TargetScope::Resync {
+        let probe = WireEvent {
+            version: 1,
+            id: Uuid::nil(),
+            origin: Uuid::nil(),
+            target: RESYNC_TARGET.to_owned(),
+            game_id,
+            payload: payload.to_owned(),
+        };
+        probe.resync_scope()?;
+    }
+    Some(target.name)
+}
+
+fn decode_inbound_wire(payload: &[u8], local: &LocalFanout) -> Option<(WireEvent, &'static str)> {
+    if payload.len() > MAX_WIRE_BYTES {
+        local.record_rejected_event();
+        return None;
+    }
+    let event = match serde_json::from_slice::<WireEvent>(payload) {
+        Ok(event) => event,
+        Err(_) => {
+            local.record_rejected_event();
+            return None;
+        }
+    };
+    let Some(target) = event.validated_target() else {
+        local.record_rejected_event();
+        return None;
+    };
+    Some((event, target))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BorrowedWireEvent<'a> {
+    version: u8,
+    id: Uuid,
+    origin: Uuid,
+    target: &'static str,
+    game_id: Option<i32>,
+    payload: &'a str,
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct OutboundKey {
+    target: &'static str,
+    game_id: Option<i32>,
+}
+
+#[derive(Debug)]
+struct PreparedWireEvent {
+    key: OutboundKey,
+    bytes: Vec<u8>,
+}
+
+impl PreparedWireEvent {
+    fn from_hub(
+        origin: Uuid,
+        target: &'static str,
+        event: &HubEvent,
+    ) -> Result<Self, &'static str> {
+        let bytes = serde_json::to_vec(&BorrowedWireEvent {
+            version: 1,
+            id: Uuid::now_v7(),
+            origin,
+            target,
+            game_id: event.game_id,
+            payload: &event.payload,
+        })
+        .map_err(|_| "encode_failed")?;
+        if bytes.len() > MAX_WIRE_BYTES {
+            return Err("wire_size_exceeded");
+        }
+        Ok(Self {
+            key: OutboundKey {
+                target,
+                game_id: event.game_id,
+            },
+            bytes,
+        })
+    }
+
+    fn resync(origin: Uuid, barrier: ScopedBarrier) -> Result<Self, &'static str> {
+        let wire = WireEvent::resync(origin, barrier);
+        let bytes = serde_json::to_vec(&wire).map_err(|_| "encode_failed")?;
+        if bytes.len() > MAX_WIRE_BYTES {
+            return Err("wire_size_exceeded");
+        }
+        Ok(Self {
+            key: barrier.key.unwrap_or(OutboundKey {
+                target: RESYNC_TARGET,
+                game_id: None,
+            }),
+            bytes,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct OutboundLimits {
+    total_events: usize,
+    partition_events: usize,
+    partitions: usize,
+    total_bytes: usize,
+    partition_bytes: usize,
+}
+
+impl Default for OutboundLimits {
+    fn default() -> Self {
+        Self {
+            total_events: OUTBOUND_QUEUE_CAPACITY,
+            partition_events: OUTBOUND_PARTITION_CAPACITY,
+            partitions: OUTBOUND_PARTITION_LIMIT,
+            total_bytes: OUTBOUND_BYTE_CAPACITY,
+            partition_bytes: OUTBOUND_PARTITION_BYTE_CAPACITY,
+        }
+    }
+}
+
+struct QueuedWireEvent {
+    key: OutboundKey,
+    generation: u64,
+    bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScopedBarrier {
+    key: Option<OutboundKey>,
+    generation: u64,
+}
+
+struct OutboundPartition {
+    key: OutboundKey,
+    events: VecDeque<QueuedWireEvent>,
+    bytes: usize,
+}
+
+struct OutboundState {
+    limits: OutboundLimits,
+    partitions: VecDeque<OutboundPartition>,
+    pending_barriers: VecDeque<ScopedBarrier>,
+    prefer_scoped_barrier: bool,
+    events: usize,
+    bytes: usize,
+}
+
+impl OutboundState {
+    fn new(limits: OutboundLimits) -> Self {
+        Self {
+            limits,
+            partitions: VecDeque::with_capacity(limits.partitions),
+            pending_barriers: VecDeque::with_capacity(limits.partitions),
+            prefer_scoped_barrier: true,
+            events: 0,
+            bytes: 0,
+        }
+    }
+
+    fn push(&mut self, prepared: PreparedWireEvent, generation: u64) -> Result<(), &'static str> {
+        let event_bytes = prepared.bytes.len();
+        if self.events >= self.limits.total_events
+            || self.bytes.saturating_add(event_bytes) > self.limits.total_bytes
+        {
+            return Err("outbound_total_full");
+        }
+
+        if let Some(partition) = self
+            .partitions
+            .iter_mut()
+            .find(|partition| partition.key == prepared.key)
+        {
+            if partition.events.len() >= self.limits.partition_events
+                || partition.bytes.saturating_add(event_bytes) > self.limits.partition_bytes
+            {
+                return Err("outbound_partition_full");
+            }
+            partition.events.push_back(QueuedWireEvent {
+                key: prepared.key,
+                generation,
+                bytes: prepared.bytes,
+            });
+            partition.bytes += event_bytes;
+        } else {
+            if self.partitions.len() >= self.limits.partitions
+                || event_bytes > self.limits.partition_bytes
+            {
+                return Err("outbound_partition_full");
+            }
+            self.partitions.push_back(OutboundPartition {
+                key: prepared.key,
+                events: VecDeque::from([QueuedWireEvent {
+                    key: prepared.key,
+                    generation,
+                    bytes: prepared.bytes,
+                }]),
+                bytes: event_bytes,
+            });
+        }
+        self.events += 1;
+        self.bytes += event_bytes;
+        Ok(())
+    }
+
+    fn pop_fair(&mut self) -> Option<QueuedWireEvent> {
+        let mut partition = self.partitions.pop_front()?;
+        let event = partition
+            .events
+            .pop_front()
+            .expect("outbound partitions are retained only while non-empty");
+        let event_bytes = event.bytes.len();
+        partition.bytes -= event_bytes;
+        self.events -= 1;
+        self.bytes -= event_bytes;
+        if !partition.events.is_empty() {
+            self.partitions.push_back(partition);
+        }
+        Some(event)
+    }
+
+    fn pop_fair_unblocked(&mut self) -> Option<QueuedWireEvent> {
+        let partition_count = self.partitions.len();
+        for _ in 0..partition_count {
+            let partition = self.partitions.front()?;
+            let blocked = self
+                .pending_barriers
+                .iter()
+                .any(|barrier| barrier.key.is_none() || barrier.key == Some(partition.key));
+            if !blocked {
+                return self.pop_fair();
+            }
+            self.partitions.rotate_left(1);
+        }
+        None
+    }
+
+    fn discard_before(&mut self, key: Option<OutboundKey>, generation: u64) {
+        for partition in &mut self.partitions {
+            if key.is_some_and(|key| key != partition.key) {
+                continue;
+            }
+            partition
+                .events
+                .retain(|event| event.generation >= generation);
+            partition.bytes = partition.events.iter().map(|event| event.bytes.len()).sum();
+        }
+        self.partitions
+            .retain(|partition| !partition.events.is_empty());
+        self.events = self
+            .partitions
+            .iter()
+            .map(|partition| partition.events.len())
+            .sum();
+        self.bytes = self
+            .partitions
+            .iter()
+            .map(|partition| partition.bytes)
+            .sum();
+    }
+
+    fn record_loss(&mut self, key: OutboundKey, generation: u64) {
+        self.discard_before(Some(key), generation);
+        if let Some(index) = self
+            .pending_barriers
+            .iter()
+            .position(|barrier| barrier.key.is_none())
+        {
+            self.pending_barriers[index].generation =
+                self.pending_barriers[index].generation.max(generation);
+            self.discard_before(None, generation);
+            return;
+        }
+        if let Some(barrier) = self
+            .pending_barriers
+            .iter_mut()
+            .find(|barrier| barrier.key == Some(key))
+        {
+            barrier.generation = barrier.generation.max(generation);
+        } else if self.pending_barriers.len() < self.limits.partitions {
+            self.pending_barriers.push_back(ScopedBarrier {
+                key: Some(key),
+                generation,
+            });
+        } else {
+            // Loss keys themselves are attacker-influenced game ids. Collapse
+            // a saturated scoped set to one conservative global barrier rather
+            // than letting recovery metadata grow without bound.
+            let generation = self
+                .pending_barriers
+                .iter()
+                .map(|barrier| barrier.generation)
+                .fold(generation, u64::max);
+            self.pending_barriers.clear();
+            self.pending_barriers.push_back(ScopedBarrier {
+                key: None,
+                generation,
+            });
+            self.discard_before(None, generation);
+        }
+    }
+
+    fn record_global_loss(&mut self, generation: u64) {
+        self.discard_before(None, generation);
+        self.pending_barriers.clear();
+        self.pending_barriers.push_back(ScopedBarrier {
+            key: None,
+            generation,
+        });
+    }
+
+    fn pop_work(&mut self) -> Option<OutboundWork> {
+        if self
+            .pending_barriers
+            .front()
+            .is_some_and(|barrier| barrier.key.is_none())
+        {
+            return self.pending_barriers.pop_front().map(OutboundWork::Barrier);
+        }
+        if self.prefer_scoped_barrier {
+            if let Some(barrier) = self.pending_barriers.pop_front() {
+                self.prefer_scoped_barrier = false;
+                return Some(OutboundWork::Barrier(barrier));
+            }
+        }
+        if let Some(event) = self.pop_fair_unblocked() {
+            self.prefer_scoped_barrier = true;
+            return Some(OutboundWork::Event(event));
+        }
+        self.pending_barriers.pop_front().map(|barrier| {
+            self.prefer_scoped_barrier = false;
+            OutboundWork::Barrier(barrier)
+        })
+    }
+
+    fn event_is_stale(&self, event: &QueuedWireEvent) -> bool {
+        self.pending_barriers.iter().any(|barrier| {
+            (barrier.key.is_none() || barrier.key == Some(event.key))
+                && barrier.generation > event.generation
+        })
+    }
+}
+
+enum OutboundWork {
+    Barrier(ScopedBarrier),
+    Event(QueuedWireEvent),
+}
+
+struct DistributedOutbox {
+    state: Mutex<OutboundState>,
+    ready: Notify,
+}
+
+impl DistributedOutbox {
+    fn new(limits: OutboundLimits) -> Self {
+        Self {
+            state: Mutex::new(OutboundState::new(limits)),
+            ready: Notify::new(),
+        }
+    }
+
+    fn try_push(
+        &self,
+        prepared: PreparedWireEvent,
+        local: &LocalFanout,
+    ) -> Result<(), &'static str> {
+        // The critical section is count/byte accounting plus at most 512
+        // bounded partition probes. It never performs allocation or I/O after
+        // the event has been prepared, and admission is not falsely rejected
+        // merely because the publisher is popping another partition.
+        let mut state = self.lock_state();
+        let generation = local.distributed_loss_generation.load(Ordering::Acquire);
+        state.push(prepared, generation)?;
+        drop(state);
+        self.ready.notify_one();
+        Ok(())
+    }
+
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, OutboundState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn record_loss(&self, key: OutboundKey, local: &LocalFanout, reason: &'static str) {
+        let mut state = self.lock_state();
+        let generation = local.record_distributed_drop(reason);
+        state.record_loss(key, generation);
+        drop(state);
+        self.ready.notify_one();
+    }
+
+    fn record_global_loss(&self, local: &LocalFanout, reason: &'static str) {
+        let mut state = self.lock_state();
+        let generation = local.record_distributed_drop(reason);
+        state.record_global_loss(generation);
+        drop(state);
+        self.ready.notify_one();
+    }
+
+    fn event_is_stale(&self, event: &QueuedWireEvent) -> bool {
+        self.lock_state().event_is_stale(event)
+    }
+
+    async fn next_work(&self) -> OutboundWork {
+        loop {
+            // Register before inspecting state so a producer cannot notify in
+            // the gap between the empty check and this task going to sleep.
+            let notified = self.ready.notified();
+            {
+                let mut state = self.lock_state();
+                if let Some(work) = state.pop_work() {
+                    return work;
+                }
+            }
+            notified.await;
+        }
     }
 }
 
@@ -150,9 +702,8 @@ impl InboundDedup {
 impl EventBus {
     /// Process-local event delivery, matching the historical single-node behavior.
     pub fn local() -> Self {
-        let (local, _) = broadcast::channel(LOCAL_QUEUE_CAPACITY);
         Self {
-            local,
+            local: Arc::new(LocalFanout::new()),
             distributed: None,
         }
     }
@@ -170,13 +721,25 @@ impl EventBus {
         tokio::runtime::Handle::try_current()
             .map_err(|_| anyhow::anyhow!("distributed event bus requires a Tokio runtime"))?;
         let client = redis::Client::open(redis_url)?;
-        let (local, _) = broadcast::channel(LOCAL_QUEUE_CAPACITY);
-        let (outbound, outbound_rx) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
+        let subscriber_client = resp3_client(&client)?;
+        let local = Arc::new(LocalFanout::new());
+        let outbound = Arc::new(DistributedOutbox::new(OutboundLimits::default()));
         let origin = Uuid::new_v4();
         let channel = channel.to_string();
 
-        let publisher = tokio::spawn(run_publisher(client.clone(), channel.clone(), outbound_rx));
-        let subscriber = tokio::spawn(run_subscriber(client, channel, origin, local.clone()));
+        let publisher = tokio::spawn(run_publisher(
+            client.clone(),
+            channel.clone(),
+            origin,
+            Arc::clone(&outbound),
+            local.clone(),
+        ));
+        let subscriber = tokio::spawn(run_subscriber(
+            subscriber_client,
+            channel,
+            origin,
+            local.clone(),
+        ));
         let tasks = Arc::new(TaskSet {
             handles: vec![publisher.abort_handle(), subscriber.abort_handle()],
         });
@@ -192,27 +755,85 @@ impl EventBus {
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<HubEvent> {
-        self.local.subscribe()
+        self.local.all.subscribe()
     }
 
-    /// Publish locally, then offer the same event to other replicas. A full or
-    /// unavailable distributed queue drops only remote fanout; local clients are
-    /// never delayed by Redis.
+    /// Compatibility subscription for internal consumers that intentionally
+    /// need every known target for one game. Public hubs should use the exact
+    /// target-scoped form below.
+    pub fn subscribe_game(&self, game_id: i32) -> EventReceiver {
+        self.subscribe_game_targets(game_id, KNOWN_TARGETS)
+    }
+
+    pub fn subscribe_game_targets(
+        &self,
+        game_id: i32,
+        targets: &'static [&'static str],
+    ) -> EventReceiver {
+        self.local.subscribe(Some(game_id), targets)
+    }
+
+    pub fn subscribe_global(&self) -> EventReceiver {
+        self.subscribe_global_targets(KNOWN_TARGETS)
+    }
+
+    pub fn subscribe_global_targets(&self, targets: &'static [&'static str]) -> EventReceiver {
+        self.local.subscribe(None, targets)
+    }
+
+    /// Validate and publish locally, then offer the same event to other replicas.
+    /// Redis serialization and queue admission are synchronous and bounded; no
+    /// caller waits for remote I/O.
     pub fn publish(&self, event: HubEvent) {
-        let wire = self
-            .distributed
-            .as_ref()
-            .map(|distributed| WireEvent::from_hub(distributed.origin, &event));
-        let _ = self.local.send(event);
-        if let (Some(distributed), Some(wire)) = (&self.distributed, wire) {
-            if distributed.outbound.try_send(wire).is_err() {
-                tracing::debug!("dropping remote hub event: publisher queue unavailable");
+        let Some(target) = validate_hub_event(event.target, event.game_id, &event.payload) else {
+            self.local.record_rejected_event();
+            return;
+        };
+        let event = HubEvent { target, ..event };
+        let Some(distributed) = &self.distributed else {
+            self.local.publish(event);
+            return;
+        };
+
+        // Preserve immediate local delivery even though exact wire-size
+        // accounting serializes the remote copy on the caller's thread.
+        self.local.publish(event.clone());
+        let prepared = match PreparedWireEvent::from_hub(distributed.origin, target, &event) {
+            Ok(prepared) => prepared,
+            Err(reason) => {
+                distributed.outbound.record_loss(
+                    OutboundKey {
+                        target,
+                        game_id: event.game_id,
+                    },
+                    &self.local,
+                    reason,
+                );
+                return;
             }
+        };
+        let key = prepared.key;
+        if let Err(reason) = distributed.outbound.try_push(prepared, &self.local) {
+            distributed.outbound.record_loss(key, &self.local, reason);
         }
     }
 
     pub fn is_distributed(&self) -> bool {
         self.distributed.is_some()
+    }
+
+    pub(crate) fn operational_metrics(&self) -> EventBusOperationalMetrics {
+        EventBusOperationalMetrics {
+            active_target_queues: self.local.active_queue_count(),
+            lagged_receivers: self.local.lagged_receivers.load(Ordering::Relaxed),
+            rejected_events: self.local.rejected_events.load(Ordering::Relaxed),
+            distributed_drops: self.local.distributed_drops.load(Ordering::Relaxed),
+            distributed_loss_generation: self
+                .local
+                .distributed_loss_generation
+                .load(Ordering::Relaxed),
+            subscriber_gaps: self.local.subscriber_gaps.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -222,442 +843,6 @@ impl Default for EventBus {
     }
 }
 
-async fn run_publisher(
-    client: redis::Client,
-    channel: String,
-    mut outbound: mpsc::Receiver<WireEvent>,
-) {
-    let mut connection: Option<redis::aio::ConnectionManager> = None;
-    while let Some(event) = outbound.recv().await {
-        let Ok(payload) = serde_json::to_vec(&event) else {
-            continue;
-        };
-        if payload.len() > MAX_WIRE_BYTES {
-            tracing::debug!(bytes = payload.len(), "dropping oversized remote hub event");
-            continue;
-        }
-
-        if connection.is_none() {
-            connection = match tokio::time::timeout(
-                REDIS_CONNECT_TIMEOUT,
-                crate::utils::redis::connection_manager(&client),
-            )
-            .await
-            {
-                Ok(Ok(connection)) => Some(connection),
-                Ok(Err(error)) => {
-                    tracing::debug!(%error, "hub event publisher could not connect to Redis");
-                    None
-                }
-                Err(_) => {
-                    tracing::debug!("hub event publisher Redis connection timed out");
-                    None
-                }
-            };
-        }
-        let Some(mut active) = connection.take() else {
-            continue;
-        };
-        let result = tokio::time::timeout(
-            REDIS_IO_TIMEOUT,
-            redis::cmd("PUBLISH")
-                .arg(&channel)
-                .arg(payload)
-                .query_async::<i64>(&mut active),
-        )
-        .await;
-        match result {
-            Ok(Ok(_)) => connection = Some(active),
-            Ok(Err(error)) => {
-                tracing::debug!(%error, "hub event publish failed; reconnecting on next event");
-            }
-            Err(_) => {
-                tracing::debug!("hub event publish timed out; reconnecting on next event");
-            }
-        }
-    }
-}
-
-async fn run_subscriber(
-    client: redis::Client,
-    channel: String,
-    origin: Uuid,
-    local: broadcast::Sender<HubEvent>,
-) {
-    let mut dedup = InboundDedup::new(origin);
-    let mut retry = REDIS_RETRY_MIN;
-    loop {
-        let connected =
-            tokio::time::timeout(REDIS_CONNECT_TIMEOUT, client.get_async_pubsub()).await;
-        let mut pubsub = match connected {
-            Ok(Ok(pubsub)) => pubsub,
-            Ok(Err(error)) => {
-                tracing::debug!(%error, "hub event subscriber could not connect to Redis");
-                tokio::time::sleep(retry).await;
-                retry = retry.saturating_mul(2).min(REDIS_RETRY_MAX);
-                continue;
-            }
-            Err(_) => {
-                tracing::debug!("hub event subscriber Redis connection timed out");
-                tokio::time::sleep(retry).await;
-                retry = retry.saturating_mul(2).min(REDIS_RETRY_MAX);
-                continue;
-            }
-        };
-        let subscribed = tokio::time::timeout(REDIS_IO_TIMEOUT, pubsub.subscribe(&channel)).await;
-        if !matches!(subscribed, Ok(Ok(()))) {
-            tracing::debug!("hub event Redis subscription failed");
-            tokio::time::sleep(retry).await;
-            retry = retry.saturating_mul(2).min(REDIS_RETRY_MAX);
-            continue;
-        }
-
-        retry = REDIS_RETRY_MIN;
-        let mut messages = pubsub.on_message();
-        while let Some(message) = messages.next().await {
-            let Ok(payload) = message.get_payload::<Vec<u8>>() else {
-                continue;
-            };
-            if payload.len() > MAX_WIRE_BYTES {
-                continue;
-            }
-            let Ok(event) = serde_json::from_slice::<WireEvent>(&payload) else {
-                continue;
-            };
-            if !dedup.should_deliver(&event) {
-                continue;
-            }
-            if let Some(event) = event.into_hub() {
-                let _ = local.send(event);
-            }
-        }
-
-        tracing::debug!("hub event Redis subscription ended; reconnecting");
-        tokio::time::sleep(retry).await;
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn hub_event(payload: &str) -> HubEvent {
-        HubEvent {
-            target: "ReceivedAttack",
-            game_id: Some(7),
-            payload: payload.to_string(),
-        }
-    }
-
-    fn received_log_event() -> HubEvent {
-        HubEvent {
-            target: "ReceivedLog",
-            game_id: None,
-            payload: r#"{"time":1784536800123,"level":"Information","msg":"audit"}"#.to_string(),
-        }
-    }
-
-    fn received_game_event(game_id: i32, id: i32, cursor: i64) -> HubEvent {
-        HubEvent {
-            target: "ReceivedGameEvent",
-            game_id: Some(game_id),
-            payload: serde_json::json!({
-                "id": id,
-                "cursor": cursor,
-                "type": "ChallengeOpened",
-                "values": ["7", "fixture"],
-                "time": 1_787_818_400_123_i64,
-                "user": "player",
-                "team": "team",
-            })
-            .to_string(),
-        }
-    }
-
-    async fn wait_for_remote_subscription(
-        sender: &EventBus,
-        receiver: &mut broadcast::Receiver<HubEvent>,
-        probe: HubEvent,
-    ) {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                sender.publish(probe.clone());
-                if let Ok(Ok(received)) =
-                    tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await
-                {
-                    if received.target == probe.target && received.payload == probe.payload {
-                        return;
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("Redis replica subscription did not become ready");
-
-        // A quiet-period drain can pass while an old probe is still in Redis or
-        // the local broadcast queue. One ordered barrier from the same publisher
-        // proves every readiness probe is already consumed before assertions.
-        let mut barrier = probe;
-        barrier.payload = format!("rsctf-ready-barrier:{}", Uuid::new_v4());
-        sender.publish(barrier.clone());
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                let received = receiver
-                    .recv()
-                    .await
-                    .expect("Redis readiness stream closed");
-                if received.target == barrier.target && received.payload == barrier.payload {
-                    return;
-                }
-            }
-        })
-        .await
-        .expect("Redis readiness barrier was not delivered");
-    }
-
-    #[test]
-    fn wire_event_round_trips_and_rejects_unknown_targets_or_versions() {
-        let origin = Uuid::new_v4();
-        let event = WireEvent::from_hub(origin, &hub_event(r#"{"kind":"attack"}"#));
-        let bytes = serde_json::to_vec(&event).unwrap();
-        let decoded: WireEvent = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(decoded, event);
-
-        let hub = decoded.into_hub().unwrap();
-        assert_eq!(hub.target, "ReceivedAttack");
-        assert_eq!(hub.game_id, Some(7));
-
-        let mut unknown = event.clone();
-        unknown.target = "ArbitraryClientMethod".to_string();
-        assert!(unknown.into_hub().is_none());
-        let mut future = event;
-        future.version = 2;
-        assert!(future.into_hub().is_none());
-    }
-
-    #[test]
-    fn flag_egress_is_a_game_scoped_distributed_target() {
-        let wire = WireEvent {
-            version: 1,
-            id: Uuid::now_v7(),
-            origin: Uuid::new_v4(),
-            target: "ReceivedFlagEgress".to_owned(),
-            game_id: Some(7),
-            payload: r#"{"id":11,"cursor":19,"gameId":7}"#.to_owned(),
-        };
-        let delivered = wire.into_hub().unwrap();
-        assert_eq!(delivered.target, "ReceivedFlagEgress");
-        assert_eq!(delivered.game_id, Some(7));
-    }
-
-    #[test]
-    fn internal_control_targets_are_valid_distributed_events() {
-        for target in [
-            "InternalByocRevokeParticipation",
-            "InternalByocRevokeTeam",
-            "InternalByocRevokeChallenge",
-            "InternalTrafficCaptureReconcile",
-        ] {
-            let wire = WireEvent {
-                version: 1,
-                id: Uuid::now_v7(),
-                origin: Uuid::new_v4(),
-                target: target.to_string(),
-                game_id: None,
-                payload: "42".to_string(),
-            };
-            assert_eq!(wire.into_hub().unwrap().target, target);
-        }
-    }
-
-    #[test]
-    fn received_log_round_trips_through_the_distributed_wire_allowlist() {
-        let event = received_log_event();
-        let wire = WireEvent::from_hub(Uuid::new_v4(), &event);
-        let delivered = wire
-            .into_hub()
-            .expect("ReceivedLog must fan out to replicas");
-
-        assert_eq!(delivered.target, "ReceivedLog");
-        assert_eq!(delivered.game_id, None);
-        assert_eq!(delivered.payload, event.payload);
-    }
-
-    #[test]
-    fn received_game_event_round_trips_through_the_distributed_wire_allowlist() {
-        let event = received_game_event(7, 11, 19);
-        let delivered = WireEvent::from_hub(Uuid::new_v4(), &event)
-            .into_hub()
-            .expect("ReceivedGameEvent must fan out to replicas");
-        assert_eq!(delivered.target, "ReceivedGameEvent");
-        assert_eq!(delivered.game_id, Some(7));
-        assert_eq!(delivered.payload, event.payload);
-    }
-
-    #[test]
-    fn inbound_dedup_drops_self_echoes_and_duplicate_remote_ids() {
-        let local_origin = Uuid::new_v4();
-        let mut dedup = InboundDedup::new(local_origin);
-
-        let own = WireEvent::from_hub(local_origin, &hub_event("{}"));
-        assert!(!dedup.should_deliver(&own));
-
-        let remote = WireEvent::from_hub(Uuid::new_v4(), &hub_event("{}"));
-        assert!(dedup.should_deliver(&remote));
-        assert!(!dedup.should_deliver(&remote));
-
-        let another = WireEvent::from_hub(Uuid::new_v4(), &hub_event("{}"));
-        assert!(dedup.should_deliver(&another));
-    }
-
-    #[tokio::test]
-    async fn local_bus_delivers_synchronously_without_redis() {
-        let bus = EventBus::local();
-        assert!(!bus.is_distributed());
-        let mut receiver = bus.subscribe();
-        bus.publish(hub_event(r#"{"kind":"koth"}"#));
-
-        let received = receiver.recv().await.unwrap();
-        assert_eq!(received.target, "ReceivedAttack");
-        assert_eq!(received.game_id, Some(7));
-        assert_eq!(received.payload, r#"{"kind":"koth"}"#);
-    }
-
-    #[tokio::test]
-    async fn local_bus_delivers_received_log_without_redis() {
-        let bus = EventBus::local();
-        let mut receiver = bus.subscribe();
-        let event = received_log_event();
-        bus.publish(event.clone());
-
-        let received = receiver.recv().await.unwrap();
-        assert_eq!(received.target, "ReceivedLog");
-        assert_eq!(received.game_id, None);
-        assert_eq!(received.payload, event.payload);
-    }
-
-    #[tokio::test]
-    async fn local_bus_delivers_received_game_event_once() {
-        let bus = EventBus::local();
-        let mut receiver = bus.subscribe();
-        let event = received_game_event(7, 11, 19);
-        bus.publish(event.clone());
-
-        let received = receiver.recv().await.unwrap();
-        assert_eq!(received.target, "ReceivedGameEvent");
-        assert_eq!(received.game_id, Some(7));
-        assert_eq!(received.payload, event.payload);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), receiver.recv())
-                .await
-                .is_err()
-        );
-    }
-
-    /// Run explicitly with `RSCTF_TEST_REDIS_URL=redis://... cargo test
-    /// redis_bus_fans_out_once_between_processes -- --ignored --nocapture`.
-    #[tokio::test]
-    #[ignore = "requires RSCTF_TEST_REDIS_URL and a reachable Redis server"]
-    async fn redis_bus_fans_out_once_between_processes() {
-        let url = std::env::var("RSCTF_TEST_REDIS_URL").expect("RSCTF_TEST_REDIS_URL");
-        let channel = format!("rsctf:test:hub-events:{}", Uuid::new_v4());
-        let sender = EventBus::distributed_on(&url, &channel).unwrap();
-        let receiver_bus = EventBus::distributed_on(&url, &channel).unwrap();
-        let mut receiver_remote = receiver_bus.subscribe();
-
-        wait_for_remote_subscription(&sender, &mut receiver_remote, hub_event("redis-ready")).await;
-        let mut sender_local = sender.subscribe();
-        sender.publish(received_log_event());
-
-        let local = tokio::time::timeout(Duration::from_secs(2), sender_local.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        let remote = tokio::time::timeout(Duration::from_secs(2), receiver_remote.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(local.target, "ReceivedLog");
-        assert_eq!(remote.target, "ReceivedLog");
-        assert_eq!(local.payload, remote.payload);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), sender_local.recv())
-                .await
-                .is_err()
-        );
-    }
-
-    /// Run explicitly with `RSCTF_TEST_REDIS_URL=redis://... cargo test
-    /// redis_monitor_feed_preserves_order_dedup_and_scope -- --ignored --nocapture`.
-    #[tokio::test]
-    #[ignore = "requires RSCTF_TEST_REDIS_URL and a reachable Redis server"]
-    async fn redis_monitor_feed_preserves_order_dedup_and_scope() {
-        let url = std::env::var("RSCTF_TEST_REDIS_URL").expect("RSCTF_TEST_REDIS_URL");
-        let channel = format!("rsctf:test:monitor-events:{}", Uuid::new_v4());
-        let first_replica = EventBus::distributed_on(&url, &channel).unwrap();
-        let second_replica = EventBus::distributed_on(&url, &channel).unwrap();
-        let mut remote = second_replica.subscribe();
-
-        wait_for_remote_subscription(&first_replica, &mut remote, received_game_event(7, -1, -1))
-            .await;
-        for (id, cursor) in [(31, 101), (32, 102), (33, 103)] {
-            first_replica.publish(received_game_event(7, id, cursor));
-        }
-        for expected_cursor in [101, 102, 103] {
-            let received = tokio::time::timeout(Duration::from_secs(2), remote.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            let payload: serde_json::Value = serde_json::from_str(&received.payload).unwrap();
-            assert_eq!(payload["cursor"], expected_cursor);
-            assert!(crate::hubs::signalr::event_matches(
-                &["ReceivedGameEvent"],
-                Some(7),
-                &received,
-            ));
-            assert!(!crate::hubs::signalr::event_matches(
-                &["ReceivedGameEvent"],
-                Some(8),
-                &received,
-            ));
-        }
-
-        // A duplicate Redis wire id must be injected only once on the remote
-        // replica, even if Redis delivers the same payload twice.
-        let duplicate = WireEvent {
-            version: 1,
-            id: Uuid::now_v7(),
-            origin: Uuid::new_v4(),
-            target: "ReceivedGameEvent".to_owned(),
-            game_id: Some(7),
-            payload: received_game_event(7, 34, 104).payload,
-        };
-        let bytes = serde_json::to_vec(&duplicate).unwrap();
-        let client = redis::Client::open(url).unwrap();
-        let mut publisher = crate::utils::redis::connection_manager(&client)
-            .await
-            .unwrap();
-        for _ in 0..2 {
-            redis::cmd("PUBLISH")
-                .arg(&channel)
-                .arg(&bytes)
-                .query_async::<i64>(&mut publisher)
-                .await
-                .unwrap();
-        }
-        let once = tokio::time::timeout(Duration::from_secs(2), remote.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&once.payload).unwrap()["cursor"],
-            104
-        );
-        assert!(
-            tokio::time::timeout(Duration::from_millis(150), remote.recv())
-                .await
-                .is_err()
-        );
-    }
-}
+#[path = "event_bus/tests.rs"]
+mod tests;

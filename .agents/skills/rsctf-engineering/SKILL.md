@@ -39,10 +39,11 @@ review does not authorize source changes or deployment.
    work needs negative cases; concurrency work needs race/integrity checks; UI work
    needs keyboard, responsive, and accessibility coverage.
 6. Run focused checks early, then the full checks required by the selected references.
-   Every local Cargo compile/test must use `scripts/bounded-cargo.sh`; it owns the one
-   cross-worktree build slot and the host CPU/memory ceiling. Do not launch raw Cargo
-   jobs in parallel. Fix warnings rather than suppressing them without a documented
-   reason.
+   Every local Cargo compile/test must use `scripts/bounded-cargo.sh`; frontend
+   typechecks/tests/builds use `scripts/bounded-frontend.sh`. They own the same
+   cross-worktree build slot and enforce host CPU/memory ceilings. Do not launch raw
+   build jobs in parallel. Fix warnings rather than suppressing them without a
+   documented reason.
 7. If a released artifact changed, publish and deploy one immutable release digest to
    every applicable `tcp.1pc.tf` replica, then perform live health, smoke, digest, and
    log checks. A commit, tag, or green workflow alone is not completion.

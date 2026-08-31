@@ -202,6 +202,9 @@ test('BYOC drivers check destructive commands, exact reconnects, and reportable 
   assert.doesNotMatch(worstCase, /rsctf-rsctf-1/);
   assert.match(worstCase, /checkedDocker\(\['restart', RSCTF\]/);
   assert.match(worstCase, /verifyAgentReconnects\(t0, N\)/);
+  assert.match(worstCase, /--timestamps/);
+  assert.match(worstCase, /MIN_RECONNECT_SPREAD_MS/);
+  assert.match(worstCase, /spreadMs < minimumSpreadMs/);
   assert.match(worstCase, /countContainerFatalLogs\(RSCTF, runStartedAt\)/);
   assert.match(agents, /dockerByocRunFilterArgs\(BYOC_RUN_ID\)/);
   assert.doesNotMatch(agents, /--filter', 'name=load_agent_/);
