@@ -179,6 +179,23 @@ test('capability shape and source abuse are bounded before database authenticati
     authentication,
     /configured_koth_capability_lookup_concurrency\(\)/,
   );
+  const authenticateQuery = capabilityService.slice(
+    capabilityService.indexOf('pub(crate) async fn authenticate('),
+    capabilityService.indexOf('#[cfg(test)]'),
+  );
+  assert.match(
+    authenticateQuery,
+    /roster_snapshot @> jsonb_build_array\(participation\.id\)/,
+  );
+  assert.match(
+    authenticateQuery,
+    /jsonb_build_object\('participationId', participation\.id\)/,
+  );
+  assert.doesNotMatch(
+    authenticateQuery,
+    /jsonb_array_elements\(config\.roster_snapshot\)/,
+    'one token lookup must not expand the complete 2,000-team roster',
+  );
   assert.match(database, /saturating_sub\(required_without_capability_lookup\)/);
   assert.match(database, /\.min\(MAX_KOTH_CAPABILITY_LOOKUP_CONCURRENCY\)/);
   assert.match(database, /role\.capabilities\(\)\.api/);

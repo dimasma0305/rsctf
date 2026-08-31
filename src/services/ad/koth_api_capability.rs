@@ -495,16 +495,17 @@ pub(crate) async fn authenticate(
                 AND NOT team.deletion_pending
                JOIN "KothOfficialConfigs" config
                  ON config.game_id = credential.game_id
+                -- Preserve both snapshot formats without materializing all
+                -- 2,000 roster entries for every individual token lookup.
+                AND (
+                    config.roster_snapshot @> jsonb_build_array(participation.id)
+                    OR config.roster_snapshot @> jsonb_build_array(
+                        jsonb_build_object('participationId', participation.id)
+                    )
+                )
                JOIN LATERAL jsonb_array_elements(config.hills_snapshot) hill
                  ON (hill->>'challengeId')::integer = credential.challenge_id
                 AND COALESCE(NULLIF(hill->>'claimSource', ''), 'Marker') = 'Api'
-               JOIN LATERAL jsonb_array_elements(config.roster_snapshot) roster(item)
-                 ON participation.id = CASE jsonb_typeof(roster.item)
-                      WHEN 'number' THEN (roster.item #>> '{}')::integer
-                      WHEN 'object' THEN
-                        NULLIF(roster.item->>'participationId', '')::integer
-                      ELSE NULL
-                    END
               WHERE credential.token = $1
                 AND credential.game_id = $2
                 AND credential.challenge_id = $3
@@ -709,6 +710,39 @@ mod tests {
         assert_eq!(identity.challenge_id, 9);
         assert_eq!(identity.participation_id, 11);
         assert_eq!(identity.team_name, "Tempo Crew");
+
+        sqlx::query(
+            r#"UPDATE "KothOfficialConfigs"
+                  SET roster_snapshot = '[{"participationId":11,"divisionId":3}]'::jsonb
+                WHERE game_id = 7"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        assert!(authenticate(&mut connection, &preserved, 7, 9)
+            .await
+            .unwrap()
+            .is_some());
+        sqlx::query(
+            r#"UPDATE "KothOfficialConfigs"
+                  SET roster_snapshot = '[{"participationId":12}]'::jsonb
+                WHERE game_id = 7"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        assert!(authenticate(&mut connection, &preserved, 7, 9)
+            .await
+            .unwrap()
+            .is_none());
+        sqlx::query(
+            r#"UPDATE "KothOfficialConfigs"
+                  SET roster_snapshot = '[11]'::jsonb
+                WHERE game_id = 7"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
 
         let mut rotation = connection.begin().await.unwrap();
         sqlx::query(
