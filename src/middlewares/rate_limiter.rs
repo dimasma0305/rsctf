@@ -114,7 +114,7 @@ mod managed_api;
 mod partition;
 mod policy;
 
-use partition::{partition_key, session_partition_key, VerifiedSessionPartitionKey};
+use partition::{client_ip, partition_key, session_partition_key, VerifiedSessionPartitionKey};
 use policy::Kind;
 pub use policy::Policy;
 

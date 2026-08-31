@@ -8,7 +8,7 @@ use super::Policy;
 /// The client IP for partitioning, from sources a client cannot forge past a
 /// trusted reverse proxy: `X-Real-IP`, else the rightmost `X-Forwarded-For`
 /// hop, else the raw transport peer address.
-fn client_ip(req: &Request) -> String {
+pub(super) fn client_ip(req: &Request) -> String {
     let peer = req
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
