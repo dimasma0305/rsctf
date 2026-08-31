@@ -9,6 +9,8 @@ pub struct Migration;
 pub(crate) const UP_SQL: &str = r#"
 ALTER TABLE "Teams"
     ADD COLUMN IF NOT EXISTS profile_revision BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE "Teams"
+    ALTER COLUMN profile_revision SET DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS "TeamProfileOperations" (
     operation_id UUID PRIMARY KEY,
@@ -69,6 +71,7 @@ mod tests {
     #[test]
     fn team_profile_schema_has_revision_replay_and_one_pending_generation() {
         assert!(UP_SQL.contains("profile_revision BIGINT NOT NULL DEFAULT 0"));
+        assert!(UP_SQL.contains("ALTER COLUMN profile_revision SET DEFAULT 0"));
         assert!(UP_SQL.contains("operation_id UUID PRIMARY KEY"));
         assert!(UP_SQL.contains("result JSONB NOT NULL"));
         assert!(UP_SQL.contains("team_id INTEGER PRIMARY KEY"));

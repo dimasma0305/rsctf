@@ -40,7 +40,7 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
             review_status SMALLINT NOT NULL DEFAULT 1,
             "Type" SMALLINT NOT NULL DEFAULT 0,
             ad_self_hosted BOOLEAN NOT NULL DEFAULT FALSE,
-            hints JSONB NULL,
+            hints JSON NULL,
             deadline_utc TIMESTAMPTZ NULL,
             submission_limit INTEGER NULL,
             container_image TEXT NULL,
@@ -587,6 +587,16 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
         revision_after_runtime, revision_before_runtime,
         "ephemeral runtime flags must not invalidate organizer intents"
     );
+    sqlx::query(r#"UPDATE "GameChallenges" SET title = title WHERE id = 10"#)
+        .execute(&pool)
+        .await
+        .expect("JSON-bearing challenge rows support no-op revision checks");
+    let revision_after_noop: i64 =
+        sqlx::query_scalar(r#"SELECT challenge_configuration_revision FROM "Games" WHERE id = 1"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(revision_after_noop, revision_before_runtime);
     sqlx::query(r#"UPDATE "GameChallenges" SET title = 'changed' WHERE id = 10"#)
         .execute(&pool)
         .await

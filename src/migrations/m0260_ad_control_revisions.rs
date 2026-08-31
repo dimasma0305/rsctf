@@ -6,9 +6,13 @@ use sea_orm_migration::prelude::*;
 pub(crate) const UP_SQL: &str = r#"
 ALTER TABLE "Games"
     ADD COLUMN IF NOT EXISTS ad_control_revision BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE "Games"
+    ALTER COLUMN ad_control_revision SET DEFAULT 1;
 
 ALTER TABLE "GameChallenges"
     ADD COLUMN IF NOT EXISTS ad_control_revision BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE "GameChallenges"
+    ALTER COLUMN ad_control_revision SET DEFAULT 1;
 
 DO $$
 BEGIN
@@ -61,6 +65,12 @@ mod tests {
         assert!(UP_SQL.contains("Games\"\n    ADD COLUMN IF NOT EXISTS ad_control_revision"));
         assert!(
             UP_SQL.contains("GameChallenges\"\n    ADD COLUMN IF NOT EXISTS ad_control_revision")
+        );
+        assert_eq!(
+            UP_SQL
+                .matches("ALTER COLUMN ad_control_revision SET DEFAULT 1")
+                .count(),
+            2
         );
         assert!(UP_SQL.contains("BETWEEN 1 AND 9007199254740991"));
     }

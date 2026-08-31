@@ -100,6 +100,19 @@ CREATE INDEX IF NOT EXISTS ix_flag_import_operations_abandoned
     ON "FlagImportOperations" (created_at_utc, lease_expires_at_utc,
                                challenge_id, operation_id)
     WHERE state = 0;
+-- A recovery rerun can encounter the NOT VALID guards installed by an earlier
+-- completed pass. PostgreSQL still enforces those guards for every updated
+-- row, including quarantining an unchanged legacy value, so remove them before
+-- touching legacy rows and recreate them after the audit is complete.
+ALTER TABLE "FlagContexts"
+    DROP CONSTRAINT IF EXISTS ck_flagcontexts_canonical_normal_flag;
+ALTER TABLE "AdFlags"
+    DROP CONSTRAINT IF EXISTS ck_adflags_canonical_flag;
+ALTER TABLE "ChallengeVariants"
+    DROP CONSTRAINT IF EXISTS ck_challengevariants_canonical_flag;
+ALTER TABLE "GameChallenges"
+    DROP CONSTRAINT IF EXISTS ck_gamechallenges_dynamic_flag_template;
+
 ALTER TABLE "FlagContexts"
     ADD COLUMN IF NOT EXISTS canonical_identity_enforced BOOLEAN NOT NULL DEFAULT TRUE;
 UPDATE "FlagContexts"
@@ -237,15 +250,6 @@ UPDATE "GameChallenges" challenge
        SELECT 1 FROM "FlagPolicyViolations" violation
         WHERE violation.challenge_id = challenge.id
    );
-
-ALTER TABLE "FlagContexts"
-    DROP CONSTRAINT IF EXISTS ck_flagcontexts_canonical_normal_flag;
-ALTER TABLE "AdFlags"
-    DROP CONSTRAINT IF EXISTS ck_adflags_canonical_flag;
-ALTER TABLE "ChallengeVariants"
-    DROP CONSTRAINT IF EXISTS ck_challengevariants_canonical_flag;
-ALTER TABLE "GameChallenges"
-    DROP CONSTRAINT IF EXISTS ck_gamechallenges_dynamic_flag_template;
 
 DO $$
 BEGIN

@@ -9,6 +9,8 @@ pub struct Migration;
 pub(crate) const UP_SQL: &str = r#"
 ALTER TABLE "Games"
     ADD COLUMN IF NOT EXISTS configuration_revision BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE "Games"
+    ALTER COLUMN configuration_revision SET DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS "GameConfigurationOperations" (
     operation_id UUID PRIMARY KEY,
@@ -69,6 +71,7 @@ mod tests {
     #[test]
     fn game_configuration_schema_has_revision_replay_and_coalesced_effects() {
         assert!(UP_SQL.contains("configuration_revision BIGINT NOT NULL DEFAULT 0"));
+        assert!(UP_SQL.contains("ALTER COLUMN configuration_revision SET DEFAULT 0"));
         assert!(UP_SQL.contains("operation_id UUID PRIMARY KEY"));
         assert!(UP_SQL.contains("request_digest TEXT NOT NULL"));
         assert!(UP_SQL.contains("result JSONB NOT NULL"));

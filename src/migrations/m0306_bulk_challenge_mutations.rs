@@ -8,6 +8,8 @@ pub struct Migration;
 pub(crate) const UP_SQL: &str = r#"
 ALTER TABLE "Games"
     ADD COLUMN IF NOT EXISTS challenge_configuration_revision BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE "Games"
+    ALTER COLUMN challenge_configuration_revision SET DEFAULT 1;
 
 DO $$ BEGIN
     IF NOT EXISTS (
@@ -23,7 +25,7 @@ END $$;
 CREATE OR REPLACE FUNCTION bump_challenge_configuration_revision()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    IF TG_OP = 'UPDATE' AND OLD IS NOT DISTINCT FROM NEW THEN
+    IF TG_OP = 'UPDATE' AND to_jsonb(OLD) = to_jsonb(NEW) THEN
         RETURN NEW;
     END IF;
     IF TG_OP = 'INSERT' THEN
@@ -62,7 +64,7 @@ EXECUTE FUNCTION bump_challenge_configuration_revision();
 CREATE OR REPLACE FUNCTION bump_flag_challenge_configuration_revision()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    IF TG_OP = 'UPDATE' AND OLD IS NOT DISTINCT FROM NEW THEN
+    IF TG_OP = 'UPDATE' AND to_jsonb(OLD) = to_jsonb(NEW) THEN
         RETURN NEW;
     END IF;
     IF TG_OP = 'INSERT' THEN
@@ -244,6 +246,7 @@ mod tests {
     #[test]
     fn batch_identity_and_work_are_strictly_bounded() {
         assert!(UP_SQL.contains("PRIMARY KEY (game_id, operation_id)"));
+        assert!(UP_SQL.contains("ALTER COLUMN challenge_configuration_revision SET DEFAULT 1"));
         assert!(UP_SQL.contains("CARDINALITY(challenge_ids) BETWEEN 1 AND 100"));
         assert!(UP_SQL.contains("jsonb_array_length(result) <= 100"));
         assert!(UP_SQL.contains("ix_bulk_challenge_mutations_abandoned"));
@@ -251,5 +254,7 @@ mod tests {
         assert!(UP_SQL.contains("BulkChallengeDesiredStateSlots"));
         assert!(UP_SQL.contains("OCTET_LENGTH(effects::text) <= 65536"));
         assert!(UP_SQL.contains("CARDINALITY(cleanup_completed_ids) <= 100"));
+        assert_eq!(UP_SQL.matches("to_jsonb(OLD) = to_jsonb(NEW)").count(), 2);
+        assert!(!UP_SQL.contains("OLD IS NOT DISTINCT FROM NEW"));
     }
 }

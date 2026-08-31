@@ -35,7 +35,7 @@ DO $$ BEGIN
             AND cardinality(scopes) BETWEEN 1 AND 2
             AND array_lower(scopes, 1) = 1
             AND array_position(scopes, NULL) IS NULL
-            AND scopes <@ ARRAY['api:read', 'api:write']::TEXT[]
+            AND scopes::TEXT[] <@ ARRAY['api:read', 'api:write']::TEXT[]
             AND (cardinality(scopes) = 1 OR scopes[1] <> scopes[2])
         ));
 EXCEPTION WHEN duplicate_object THEN NULL;
@@ -95,5 +95,6 @@ mod tests {
         assert!(UP_SQL.contains("ix_api_tokens_creator_active"));
         assert!(UP_SQL.contains("api:read"));
         assert!(UP_SQL.contains("api:write"));
+        assert!(UP_SQL.contains("scopes::TEXT[] <@"));
     }
 }

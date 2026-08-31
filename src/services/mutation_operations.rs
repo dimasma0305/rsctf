@@ -412,6 +412,7 @@ mod tests {
         .await
         .expect_err("same operation id accepted different content");
         assert_eq!(error.status(), axum::http::StatusCode::CONFLICT);
+        conflicting.rollback().await.unwrap();
 
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

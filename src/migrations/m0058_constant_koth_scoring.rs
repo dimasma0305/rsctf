@@ -384,13 +384,15 @@ mod tests {
                  vpn_access_required, vpn_behavior_telemetry_enabled,
                  vpn_flag_scan_enabled, vpn_provider_dns_telemetry_enabled,
                  vpn_source_asn_telemetry_enabled,
-                 vpn_device_sharing_telemetry_enabled, vpn_policy_revision
+                 vpn_device_sharing_telemetry_enabled, vpn_policy_revision,
+                 challenge_configuration_revision, configuration_revision,
+                 ad_control_revision
                ) VALUES (
                  900001, 'constant KotH migration', 'public', 'private', FALSE, FALSE,
                  '', '', FALSE, FALSE, FALSE, 1, 1,
                  now() - interval '1 hour', now() + interval '1 hour',
                  now() + interval '2 hours', '', 0, FALSE, FALSE, 12, 3, 1, 2,
-                 FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, 1
+                 FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, 1, 1, 1, 1
                )"#,
         )
         .execute(&pool)

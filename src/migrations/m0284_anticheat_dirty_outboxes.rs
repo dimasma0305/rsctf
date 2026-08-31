@@ -263,50 +263,50 @@ ALTER TABLE "Participations"
     ALTER COLUMN reconciliation_version SET NOT NULL;
 
 -- Close the m0283/m0284 window from the stored versions, not allocation IDs.
-SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 0, source.max_version)
+SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 0::smallint, source.max_version)
   FROM "Games" game
   JOIN LATERAL (
       SELECT MAX(reconciliation_version)::bigint AS max_version
         FROM "SuspicionEvaluationOutbox"
        WHERE game_id = game.id AND completed_at_utc IS NOT NULL
   ) source ON source.max_version IS NOT NULL;
-SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 1, source.max_version)
+SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 1::smallint, source.max_version)
   FROM "Games" game
   JOIN LATERAL (
       SELECT MAX(reconciliation_version)::bigint AS max_version
         FROM "IdentityObservations" WHERE game_id = game.id
   ) source ON source.max_version IS NOT NULL;
-SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 3, source.max_version)
+SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 3::smallint, source.max_version)
   FROM "Games" game JOIN LATERAL (
       SELECT MAX(reconciliation_version)::bigint AS max_version
         FROM "VpnDnsProviderBuckets" WHERE game_id = game.id
   ) source ON source.max_version IS NOT NULL;
-SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 4, source.max_version)
+SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 4::smallint, source.max_version)
   FROM "Games" game JOIN LATERAL (
       SELECT MAX(reconciliation_version)::bigint AS max_version
         FROM "VpnPeerNetworkObservations" WHERE game_id = game.id
   ) source ON source.max_version IS NOT NULL;
-SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 5, source.max_version)
+SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 5::smallint, source.max_version)
   FROM "Games" game JOIN LATERAL (
       SELECT MAX(reconciliation_version)::bigint AS max_version
         FROM "VpnFlagTransportEvents" WHERE game_id = game.id
   ) source ON source.max_version IS NOT NULL;
-SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 6, source.max_version)
+SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 6::smallint, source.max_version)
   FROM "Games" game JOIN LATERAL (
       SELECT MAX(reconciliation_version)::bigint AS max_version
         FROM "ContainerAccessEvents" WHERE game_id = game.id
   ) source ON source.max_version IS NOT NULL;
-SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 7, source.max_version)
+SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 7::smallint, source.max_version)
   FROM "Games" game JOIN LATERAL (
       SELECT MAX(reconciliation_version)::bigint AS max_version
         FROM "SuspicionEvents" WHERE game_id = game.id
   ) source ON source.max_version IS NOT NULL;
-SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 8, source.max_version)
+SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 8::smallint, source.max_version)
   FROM "Games" game JOIN LATERAL (
       SELECT MAX(reconciliation_version)::bigint AS max_version
         FROM "CheatInfo" WHERE game_id = game.id
   ) source ON source.max_version IS NOT NULL;
-SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 9, source.max_version)
+SELECT rsctf_mark_anticheat_reconciliation_dirty(game.id, 9::smallint, source.max_version)
   FROM "Games" game JOIN LATERAL (
       SELECT MAX(reconciliation_version)::bigint AS max_version
         FROM "Participations" WHERE game_id = game.id
@@ -420,7 +420,7 @@ BEGIN
         END IF;
         IF NEW.completed_at_utc IS NOT NULL THEN
             NEW.reconciliation_version := rsctf_next_anticheat_reconciliation_version(
-                NEW.game_id, 0
+                NEW.game_id, 0::smallint
             );
         END IF;
         RETURN NEW;
@@ -430,7 +430,7 @@ BEGIN
             RAISE EXCEPTION 'outbox completion version is database-owned';
         END IF;
         NEW.reconciliation_version := rsctf_next_anticheat_reconciliation_version(
-            NEW.game_id, 0
+            NEW.game_id, 0::smallint
         );
     ELSIF NEW.reconciliation_version IS DISTINCT FROM OLD.reconciliation_version THEN
         RAISE EXCEPTION 'outbox completion version is immutable';
@@ -459,7 +459,7 @@ BEGIN
         RETURN NEW;
     END IF;
     NEW.reconciliation_version := rsctf_next_anticheat_reconciliation_version(
-        NEW.game_id, 9
+        NEW.game_id, 9::smallint
     );
     RETURN NEW;
 END
@@ -598,6 +598,11 @@ impl MigrationTrait for Migration {
 mod tests {
     use super::UP_SQL;
 
+    const NEXT_SOURCE_ONE_SQL: &str =
+        "SELECT rsctf_next_anticheat_reconciliation_version($1, 1::smallint)";
+    const NEXT_SOURCE_THREE_SQL: &str =
+        "SELECT rsctf_next_anticheat_reconciliation_version($1, 3::smallint)";
+
     #[test]
     fn every_live_source_is_commit_ordered_and_indexed() {
         for table in [
@@ -632,7 +637,7 @@ mod tests {
         for source in [0, 1, 3, 4, 5, 6, 7, 8, 9] {
             assert!(
                 UP_SQL.contains(&format!(
-                    "rsctf_mark_anticheat_reconciliation_dirty(game.id, {source},"
+                    "rsctf_mark_anticheat_reconciliation_dirty(game.id, {source}::smallint,"
                 )),
                 "missing stored-version catch-up for source {source}"
             );
@@ -721,7 +726,7 @@ mod tests {
         .unwrap();
         let (higher_id, higher_id_version): (i64, i64) = sqlx::query_as(&format!(
             r#"INSERT INTO "{probe}" (reconciliation_version)
-               VALUES (rsctf_next_anticheat_reconciliation_version($1, 0))
+               VALUES (rsctf_next_anticheat_reconciliation_version($1, 0::smallint))
                RETURNING evidence_id, reconciliation_version"#
         ))
         .bind(game_id)
@@ -756,7 +761,7 @@ mod tests {
         let lower_id_version: i64 = sqlx::query_scalar(&format!(
             r#"UPDATE "{probe}"
                   SET reconciliation_version =
-                        rsctf_next_anticheat_reconciliation_version($1, 0)
+                        rsctf_next_anticheat_reconciliation_version($1, 0::smallint)
                 WHERE evidence_id = $2
             RETURNING reconciliation_version"#
         ))
@@ -879,7 +884,7 @@ mod tests {
             .execute(&mut *first)
             .await
             .unwrap();
-        sqlx::query_scalar::<_, i64>("SELECT rsctf_next_anticheat_reconciliation_version($1, 1)")
+        sqlx::query_scalar::<_, i64>(NEXT_SOURCE_ONE_SQL)
             .bind(game_id)
             .fetch_one(&mut *first)
             .await
@@ -901,20 +906,16 @@ mod tests {
                 .await
                 .unwrap();
             started_tx.send(second_pid).unwrap();
-            sqlx::query_scalar::<_, i64>(
-                "SELECT rsctf_next_anticheat_reconciliation_version($1, 3)",
-            )
-            .bind(game_id)
-            .fetch_one(&mut *transaction)
-            .await
-            .unwrap();
-            sqlx::query_scalar::<_, i64>(
-                "SELECT rsctf_next_anticheat_reconciliation_version($1, 1)",
-            )
-            .bind(game_id)
-            .fetch_one(&mut *transaction)
-            .await
-            .unwrap();
+            sqlx::query_scalar::<_, i64>(NEXT_SOURCE_THREE_SQL)
+                .bind(game_id)
+                .fetch_one(&mut *transaction)
+                .await
+                .unwrap();
+            sqlx::query_scalar::<_, i64>(NEXT_SOURCE_ONE_SQL)
+                .bind(game_id)
+                .fetch_one(&mut *transaction)
+                .await
+                .unwrap();
             transaction.commit().await.unwrap();
         });
         let second_pid = started_rx.await.unwrap();
@@ -935,7 +936,7 @@ mod tests {
         })
         .await
         .expect("second source transaction never waited on the common queue row");
-        sqlx::query_scalar::<_, i64>("SELECT rsctf_next_anticheat_reconciliation_version($1, 3)")
+        sqlx::query_scalar::<_, i64>(NEXT_SOURCE_THREE_SQL)
             .bind(game_id)
             .fetch_one(&mut *first)
             .await
@@ -994,7 +995,6 @@ mod tests {
         pool.close().await;
     }
 }
-
 #[cfg(test)]
 #[path = "m0284_anticheat_dirty_outboxes_terminal_tests.rs"]
 mod terminal_tests;

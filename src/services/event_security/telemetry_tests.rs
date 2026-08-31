@@ -223,15 +223,187 @@ async fn postgres_final_barrier_rejects_a_delayed_telemetry_reader() {
 }
 
 #[tokio::test]
-#[ignore = "requires migrated disposable PostgreSQL with VPN telemetry fixtures"]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn postgres_exact_batch_replay_leaves_reconciliation_clean() {
+    use std::str::FromStr;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
     let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
         .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(2)
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
         .connect(&database_url)
         .await
         .unwrap();
+    let schema = format!("telemetry_exact_replay_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let options = PgConnectOptions::from_str(&database_url)
+        .unwrap()
+        .options([("search_path", schema.as_str())]);
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        r#"CREATE TABLE "Games" (
+               id INTEGER PRIMARY KEY,
+               vpn_flag_scan_enabled BOOLEAN NOT NULL,
+               vpn_provider_dns_telemetry_enabled BOOLEAN NOT NULL,
+               vpn_source_asn_telemetry_enabled BOOLEAN NOT NULL,
+               start_time_utc TIMESTAMPTZ NOT NULL,
+               end_time_utc TIMESTAMPTZ NOT NULL
+           );
+           CREATE TABLE "EventVpnUserPeers" (
+               id UUID PRIMARY KEY, game_id INTEGER NOT NULL,
+               user_id UUID NOT NULL, participation_id INTEGER NOT NULL,
+               revoked_at_utc TIMESTAMPTZ NULL
+           );
+           CREATE TABLE "Participations" (
+               id INTEGER NOT NULL, game_id INTEGER NOT NULL,
+               PRIMARY KEY (game_id, id)
+           );
+           CREATE TABLE "GameChallenges" (
+               id INTEGER NOT NULL, game_id INTEGER NOT NULL,
+               "Type" SMALLINT NOT NULL, flag_template TEXT NULL,
+               PRIMARY KEY (game_id, id)
+           );
+           CREATE TABLE "ChallengeVariants" (
+               game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
+               participation_id INTEGER NOT NULL, frozen_at_utc TIMESTAMPTZ NULL
+           );
+           CREATE TABLE "AntiCheatReconciliationSources" (
+               game_id INTEGER NOT NULL, source_kind SMALLINT NOT NULL,
+               applied_version BIGINT NOT NULL, dirty_version BIGINT NOT NULL,
+               PRIMARY KEY (game_id, source_kind)
+           );
+           CREATE TABLE "AntiCheatReconciliationQueue" (
+               game_id INTEGER PRIMARY KEY,
+               applied_generation BIGINT NOT NULL,
+               desired_generation BIGINT NOT NULL
+           );
+           CREATE TABLE "VpnDnsProviderBuckets" (
+               id BIGSERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
+               user_id UUID NOT NULL, participation_id INTEGER NOT NULL,
+               peer_id UUID NOT NULL, provider_category SMALLINT NOT NULL,
+               bucket_start_utc TIMESTAMPTZ NOT NULL, query_count INTEGER NOT NULL,
+               first_seen_at_utc TIMESTAMPTZ NOT NULL,
+               last_seen_at_utc TIMESTAMPTZ NOT NULL,
+               reconciliation_version BIGINT NOT NULL
+           );
+           CREATE UNIQUE INDEX ux_test_dns_replay ON "VpnDnsProviderBuckets" (
+               game_id, user_id, participation_id, peer_id,
+               provider_category, bucket_start_utc
+           );
+           CREATE TABLE "VpnPeerNetworkObservations" (
+               id BIGSERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
+               user_id UUID NOT NULL, participation_id INTEGER NOT NULL,
+               peer_id UUID NOT NULL, endpoint_hash BYTEA NOT NULL,
+               source_asn BIGINT NULL, network_class SMALLINT NOT NULL,
+               first_seen_at_utc TIMESTAMPTZ NOT NULL,
+               last_seen_at_utc TIMESTAMPTZ NOT NULL,
+               handshake_count INTEGER NOT NULL,
+               reconciliation_version BIGINT NOT NULL
+           );
+           CREATE UNIQUE INDEX ux_test_network_replay ON "VpnPeerNetworkObservations" (
+               game_id, peer_id, endpoint_hash, first_seen_at_utc
+           );
+           CREATE TABLE "VpnFlagTransportEvents" (
+               id BIGSERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
+               challenge_id INTEGER NOT NULL, receiving_user_id UUID NOT NULL,
+               receiving_participation_id INTEGER NOT NULL,
+               owning_participation_id INTEGER NOT NULL, peer_id UUID NOT NULL,
+               flag_value_hash BYTEA NOT NULL, transport SMALLINT NOT NULL,
+               direction SMALLINT NOT NULL, observed_at_utc TIMESTAMPTZ NOT NULL,
+               reconciliation_version BIGINT NOT NULL
+           );
+           CREATE UNIQUE INDEX ux_test_flag_replay ON "VpnFlagTransportEvents" (
+               game_id, challenge_id, receiving_participation_id,
+               owning_participation_id, flag_value_hash, transport, direction
+           );
+           INSERT INTO "Games" VALUES (
+               7, TRUE, TRUE, TRUE,
+               '2026-08-20T00:00:00Z', '2026-08-21T00:00:00Z'
+           );
+           INSERT INTO "Participations" VALUES (9, 7), (10, 7);
+           INSERT INTO "GameChallenges" VALUES (11, 7, 0, 'flag-{team}');
+           INSERT INTO "EventVpnUserPeers" VALUES (
+               '10000000-0000-0000-0000-000000000001', 7,
+               '20000000-0000-0000-0000-000000000002', 9, NULL
+           );
+           INSERT INTO "VpnDnsProviderBuckets" (
+               game_id, user_id, participation_id, peer_id, provider_category,
+               bucket_start_utc, query_count, first_seen_at_utc, last_seen_at_utc,
+               reconciliation_version
+           ) VALUES (
+               7, '20000000-0000-0000-0000-000000000002', 9,
+               '10000000-0000-0000-0000-000000000001', 2,
+               '2026-08-20T13:45:00Z', 4,
+               '2026-08-20T13:46:00Z', '2026-08-20T13:47:00Z', 1
+           );
+           INSERT INTO "VpnPeerNetworkObservations" (
+               game_id, user_id, participation_id, peer_id, endpoint_hash,
+               source_asn, network_class, first_seen_at_utc, last_seen_at_utc,
+               handshake_count, reconciliation_version
+           ) VALUES (
+               7, '20000000-0000-0000-0000-000000000002', 9,
+               '10000000-0000-0000-0000-000000000001',
+               decode(repeat('11', 32), 'hex'), 64512, 2,
+               '2026-08-20T13:48:00Z', '2026-08-20T13:49:00Z', 3, 1
+           );
+           INSERT INTO "VpnFlagTransportEvents" (
+               game_id, challenge_id, receiving_user_id,
+               receiving_participation_id, owning_participation_id, peer_id,
+               flag_value_hash, transport, direction, observed_at_utc,
+               reconciliation_version
+           ) VALUES (
+               7, 11, '20000000-0000-0000-0000-000000000002', 9, 10,
+               '10000000-0000-0000-0000-000000000001',
+               decode(repeat('22', 32), 'hex'), 1, 0,
+               '2026-08-20T13:50:00Z', 1
+           );
+           INSERT INTO "AntiCheatReconciliationSources"
+               (game_id, source_kind, applied_version, dirty_version)
+               VALUES (7, 3, 1, 1), (7, 4, 1, 1), (7, 5, 1, 1);
+           INSERT INTO "AntiCheatReconciliationQueue"
+               (game_id, applied_generation, desired_generation)
+               VALUES (7, 4, 4);
+           CREATE FUNCTION test_stamp_anticheat_insert()
+           RETURNS trigger LANGUAGE plpgsql AS $$
+           DECLARE stamped_version BIGINT;
+           BEGIN
+               IF NEW.reconciliation_version IS NOT NULL THEN
+                   RAISE EXCEPTION 'reconciliation version is database-owned';
+               END IF;
+               UPDATE "AntiCheatReconciliationSources"
+                  SET dirty_version = dirty_version + 1
+                WHERE game_id = NEW.game_id
+                  AND source_kind = TG_ARGV[0]::SMALLINT
+               RETURNING dirty_version INTO stamped_version;
+               UPDATE "AntiCheatReconciliationQueue"
+                  SET desired_generation = desired_generation + 1
+                WHERE game_id = NEW.game_id;
+               NEW.reconciliation_version := stamped_version;
+               RETURN NEW;
+           END
+           $$;
+           CREATE TRIGGER zz_test_dns_anticheat_stamp
+             BEFORE INSERT ON "VpnDnsProviderBuckets"
+             FOR EACH ROW EXECUTE FUNCTION test_stamp_anticheat_insert('3');
+           CREATE TRIGGER zz_test_network_anticheat_stamp
+             BEFORE INSERT ON "VpnPeerNetworkObservations"
+             FOR EACH ROW EXECUTE FUNCTION test_stamp_anticheat_insert('4');
+           CREATE TRIGGER zz_test_flag_anticheat_stamp
+             BEFORE INSERT ON "VpnFlagTransportEvents"
+             FOR EACH ROW EXECUTE FUNCTION test_stamp_anticheat_insert('5');"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let game_id: i32 = sqlx::query_scalar(
         r#"SELECT game.id
               FROM "Games" game
@@ -447,4 +619,9 @@ async fn postgres_exact_batch_replay_leaves_reconciliation_clean() {
     assert_eq!(after_queue, before_queue);
     transaction.rollback().await.unwrap();
     pool.close().await;
+    sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
 }
