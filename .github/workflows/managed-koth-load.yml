@@ -97,7 +97,9 @@ jobs:
               git diff --name-only "$SOURCE_SHA...$checked_out" -- \
                 ':(exclude).github/workflows/managed-koth-load.yml' \
                 ':(exclude)tests/load/managed-koth.compose.yml' \
-                ':(exclude)tests/load/managed-koth.md'
+                ':(exclude)tests/load/managed-koth.md' \
+                ':(exclude)tests/load/managed-koth.mjs' \
+                ':(exclude)tests/load/test/managed-koth-harness.test.mjs'
             )"
             if [[ -n "$unexpected" ]]; then
               echo "::error::The bootstrap pull request may change only the managed KotH gate files."
