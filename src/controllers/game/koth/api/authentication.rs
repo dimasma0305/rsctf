@@ -3,6 +3,7 @@
 use axum::extract::{Json, State};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 use tokio::sync::{Semaphore, SemaphorePermit};
 
 use crate::app_state::SharedState;
@@ -10,13 +11,13 @@ use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
 
 /// Keep invalid capability floods from occupying the shared PostgreSQL pool.
-/// Sixteen concurrent lookups absorb the measured short tail of the maintained
-/// 100-authentication/second arena profile while still leaving eighteen
-/// connections for scoring, reporter, and operator work in the default
-/// 34-connection pool. A lower ceiling rejected valid roster capabilities when
-/// eight slow lookups overlapped even though sustained source admission passed.
-const DATABASE_LOOKUP_CONCURRENCY: usize = 16;
-static DATABASE_LOOKUP_SLOTS: Semaphore = Semaphore::const_new(DATABASE_LOOKUP_CONCURRENCY);
+/// The serving role derives up to sixteen slots strictly from connections above
+/// its deadlock-safe floor. This absorbs the measured short tail of the
+/// maintained 100-authentication/second arena profile without stealing the
+/// control, scoring, reporter, or operator budget.
+static DATABASE_LOOKUP_SLOTS: LazyLock<Semaphore> = LazyLock::new(|| {
+    Semaphore::new(crate::extensions::database::configured_koth_capability_lookup_concurrency())
+});
 
 fn try_database_lookup_slot() -> Option<SemaphorePermit<'static>> {
     DATABASE_LOOKUP_SLOTS.try_acquire().ok()
@@ -121,7 +122,9 @@ mod tests {
 
     #[test]
     fn database_lookup_admission_is_bounded_and_retryable() {
-        let permits = (0..super::DATABASE_LOOKUP_CONCURRENCY)
+        let concurrency =
+            crate::extensions::database::configured_koth_capability_lookup_concurrency();
+        let permits = (0..concurrency)
             .map(|_| super::try_database_lookup_slot().expect("configured lookup slot"))
             .collect::<Vec<_>>();
         assert!(super::try_database_lookup_slot().is_none());

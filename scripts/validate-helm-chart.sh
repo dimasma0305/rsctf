@@ -76,8 +76,8 @@ assert_contains "$default_config" 'RSCTF_AD_SUBMIT_BURST_FLAGS: "400"' \
   "default A&D submit burst was not rendered"
 assert_contains "$default_config" 'RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE: "6000"' \
   "default managed KotH capability admission was not rendered"
-assert_contains "$default_config" 'RSCTF_DB_MAX_CONNECTIONS: "34"' \
-  "default pool does not cover the all+VPN reconciler floor"
+assert_contains "$default_config" 'RSCTF_DB_MAX_CONNECTIONS: "50"' \
+  "default pool does not cover the all+VPN floor and KotH authentication headroom"
 benchmark_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
   --set config.adSubmitBurstFlags=3200 \
   --show-only templates/configmap.yaml)"
@@ -165,11 +165,11 @@ web=(
   --set containerBackend=worker
   --set workerBackend.localBackend=none
   --set trafficCapture.enabled=false
-  --set config.dbMaxConnections=26
+  --set config.dbMaxConnections=27
 )
 web_rendered="$(helm template rsctf-web charts/rsctf "${web[@]}")"
 if helm template rsctf-web charts/rsctf "${web[@]}" \
-  --set config.dbMaxConnections=25 >/dev/null 2>&1; then
+  --set config.dbMaxConnections=26 >/dev/null 2>&1; then
   fail "web role accepted a database pool below its replica-safe floor"
 fi
 
@@ -187,9 +187,9 @@ split_pool=(
   --set trafficCapture.enabled=false
 )
 assert_pool_floor engine engine 16 "${split_pool[@]}"
-assert_pool_floor control control 19 "${split_pool[@]}"
-assert_pool_floor network network 17 "${split_pool[@]}"
-assert_pool_floor all all 31 "${jwt[@]}" --set vpn.enabled=false
+assert_pool_floor control control 20 "${split_pool[@]}"
+assert_pool_floor network network 18 "${split_pool[@]}"
+assert_pool_floor all all 32 "${jwt[@]}" --set vpn.enabled=false
 
 vpn_pool=(
   "${split_pool[@]}"
@@ -198,9 +198,9 @@ vpn_pool=(
   --set vpn.enabled=true
   --set vpn.serverEndpoint=vpn.ctf.example:51820
 )
-assert_pool_floor control-vpn control 22 "${vpn_pool[@]}"
-assert_pool_floor network-vpn network 20 "${vpn_pool[@]}"
-assert_pool_floor all-vpn all 34 "${jwt[@]}" \
+assert_pool_floor control-vpn control 23 "${vpn_pool[@]}"
+assert_pool_floor network-vpn network 21 "${vpn_pool[@]}"
+assert_pool_floor all-vpn all 35 "${jwt[@]}" \
   --set containerBackend=docker \
   --set docker.socket.enabled=true \
   --set vpn.enabled=true \
@@ -311,14 +311,14 @@ split=(
   --set kubernetes.createChallengeNamespace=false
   --set kubernetes.adServiceCidr=10.96.0.0/12
   --set kubernetes.networkPolicyEnforced=true
-  --set config.dbMaxConnections=26
+  --set config.dbMaxConnections=27
 )
 helm template rsctf-web charts/rsctf "${split[@]}" >/dev/null
 reporter_selector='app.kubernetes.io/name=rsctf,app.kubernetes.io/instance=rsctf-network,app.kubernetes.io/component=network'
 network_reporter="$(helm template rsctf-network charts/rsctf "${split[@]}" \
   --set runtimeRole=network \
   --set replicaCount=1 \
-  --set config.dbMaxConnections=17 \
+  --set config.dbMaxConnections=33 \
   --set config.kothReporterBaseUrl=http://rsctf-network.rsctf-system.svc:8080 \
   --show-only templates/configmap.yaml \
   --show-only templates/service.yaml)"
@@ -364,7 +364,7 @@ for invalid_reporter_origin in \
   if helm template rsctf-network charts/rsctf "${split[@]}" \
     --set runtimeRole=network \
     --set replicaCount=1 \
-    --set config.dbMaxConnections=17 \
+    --set config.dbMaxConnections=33 \
     --set config.kothReporterBaseUrl="$invalid_reporter_origin" >/dev/null 2>&1; then
     fail "Kubernetes managed reporting accepted an origin outside the rsctf release namespace: $invalid_reporter_origin"
   fi
