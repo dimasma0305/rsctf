@@ -2,6 +2,7 @@
 //! composition root (`AppState`), runs migrations, and serves the API.
 
 mod cli;
+mod startup_policy;
 
 // argon2 (password hashing) is memory-hard — ~19 MiB per hash. glibc malloc keeps those
 // large freed chunks in its arenas instead of returning them to the OS, so a register/
@@ -23,6 +24,10 @@ use rsctf::server;
 use rsctf::services::cache::{Cache, InMemoryCache, RedisCache, TieredCache};
 use rsctf::services::event_bus::EventBus;
 use rsctf::services::token::TokenService;
+use startup_policy::{
+    owns_feed_reconciliation, owns_mail_reconciliation, owns_suspicion_reconciliation,
+    should_run_migrations,
+};
 
 const HTTP_DEREGISTRATION_DELAY: Duration = Duration::from_secs(5);
 const HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(25);
@@ -813,33 +818,6 @@ fn start_background_services(
     }
 
     supervise_background_tasks(required, optional, shutdown)
-}
-
-fn owns_suspicion_reconciliation(role: RuntimeRole) -> bool {
-    matches!(
-        role,
-        RuntimeRole::All | RuntimeRole::Development | RuntimeRole::Control | RuntimeRole::Engine
-    )
-}
-
-fn owns_feed_reconciliation(role: RuntimeRole) -> bool {
-    matches!(
-        role,
-        RuntimeRole::All | RuntimeRole::Development | RuntimeRole::Control | RuntimeRole::Engine
-    )
-}
-
-fn owns_mail_reconciliation(role: RuntimeRole) -> bool {
-    matches!(
-        role,
-        RuntimeRole::All | RuntimeRole::Development | RuntimeRole::Control
-    )
-}
-
-fn should_run_migrations(role: RuntimeRole, combined_migrations_disabled: bool) -> bool {
-    role == RuntimeRole::Migrate
-        || role == RuntimeRole::Development
-        || (role == RuntimeRole::All && !combined_migrations_disabled)
 }
 
 fn supervise_background_tasks(

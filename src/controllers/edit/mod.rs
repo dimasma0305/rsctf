@@ -49,34 +49,10 @@ use crate::utils::shared::{ArrayResponse, MessageResponse, PageParams, RequestRe
 
 pub(crate) mod control_jobs;
 use control_jobs::{cancel_control_job, get_control_job, get_control_job_by_operation};
-
-const BLOOD_BONUS_DEFAULT: i64 = (50 << 20) + (30 << 10) + 10;
-
-/// Port of RSCTF `BloodBonus.FromValue`: a packed value whose any of the three
-/// 10-bit fields ((v>>0)&0x3ff, (v>>10)&0x3ff, (v>>20)&0x3ff) exceeds 1000 is
-/// rejected, falling back to the default packed value.
-fn blood_bonus_from_value(value: i64) -> i64 {
-    const MASK: i64 = 0x3ff;
-    const BASE: i64 = 1000;
-    if (value & MASK) > BASE || ((value >> 10) & MASK) > BASE || ((value >> 20) & MASK) > BASE {
-        BLOOD_BONUS_DEFAULT
-    } else {
-        value
-    }
-}
-
-fn epoch() -> DateTime<Utc> {
-    DateTime::<Utc>::from_timestamp(0, 0).expect("unix epoch is a valid timestamp")
-}
-fn default_true() -> bool {
-    true
-}
-fn default_container_limit() -> i32 {
-    3
-}
-fn default_blood_bonus() -> i64 {
-    BLOOD_BONUS_DEFAULT
-}
+mod defaults;
+use defaults::{
+    blood_bonus_from_value, default_blood_bonus, default_container_limit, default_true, epoch,
+};
 
 // ============================================================================
 //  DTOs
