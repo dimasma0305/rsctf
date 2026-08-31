@@ -109,15 +109,16 @@ grep -Fxq 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24' "$local_checkout/deploy
 grep -Fxq 'RSCTF_DOCKER_PROXY_BIND=172.31.253.1' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_CHALLENGE_PROXY_BRIDGE=rsctf-proxy0' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_USE_CAPTCHA=false' "$local_checkout/deploy/.env"
-grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=34' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=50' "$local_checkout/deploy/.env"
 grep -Fq 'The first-administrator setup token is stored only in' \
   "$TEMP_DIRECTORY/local.out"
 
 sed -i \
-  -e 's/^RSCTF_DB_MAX_CONNECTIONS=34$/RSCTF_DB_MAX_CONNECTIONS=33/' \
+  -e 's/^RSCTF_DB_MAX_CONNECTIONS=50$/RSCTF_DB_MAX_CONNECTIONS=33/' \
   -e 's/^RSCTF_PROVISIONING_CONCURRENCY=4$/RSCTF_PROVISIONING_CONCURRENCY=7/' \
   "$local_checkout/deploy/.env"
 printf 'RSCTF_CONTROL_DB_MAX_CONNECTIONS=21\n' >>"$local_checkout/deploy/.env"
+printf 'RSCTF_WEB_DB_MAX_CONNECTIONS=26\n' >>"$local_checkout/deploy/.env"
 env \
   PATH="$TEST_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
   RSCTF_INSTALLER_FIXTURE="$VALID_FIXTURE" \
@@ -130,13 +131,15 @@ env \
     --non-interactive \
     --configure-only \
     >"$TEMP_DIRECTORY/local-upgrade.out" 2>&1
-grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=34' "$local_checkout/deploy/.env"
-grep -Fxq 'RSCTF_CONTROL_DB_MAX_CONNECTIONS=22' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=50' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_CONTROL_DB_MAX_CONNECTIONS=38' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_WEB_DB_MAX_CONNECTIONS=27' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_PROVISIONING_CONCURRENCY=7' "$local_checkout/deploy/.env"
 
 sed -i \
-  -e 's/^RSCTF_DB_MAX_CONNECTIONS=34$/RSCTF_DB_MAX_CONNECTIONS=35/' \
-  -e 's/^RSCTF_CONTROL_DB_MAX_CONNECTIONS=22$/RSCTF_CONTROL_DB_MAX_CONNECTIONS=23/' \
+  -e 's/^RSCTF_DB_MAX_CONNECTIONS=50$/RSCTF_DB_MAX_CONNECTIONS=51/' \
+  -e 's/^RSCTF_CONTROL_DB_MAX_CONNECTIONS=38$/RSCTF_CONTROL_DB_MAX_CONNECTIONS=39/' \
+  -e 's/^RSCTF_WEB_DB_MAX_CONNECTIONS=27$/RSCTF_WEB_DB_MAX_CONNECTIONS=28/' \
   "$local_checkout/deploy/.env"
 env \
   PATH="$TEST_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
@@ -150,8 +153,9 @@ env \
     --non-interactive \
     --configure-only \
     >"$TEMP_DIRECTORY/local-custom.out" 2>&1
-grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=35' "$local_checkout/deploy/.env"
-grep -Fxq 'RSCTF_CONTROL_DB_MAX_CONNECTIONS=23' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=51' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_CONTROL_DB_MAX_CONNECTIONS=39' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_WEB_DB_MAX_CONNECTIONS=28' "$local_checkout/deploy/.env"
 
 cp "$local_checkout/deploy/.env" "$TEMP_DIRECTORY/local-before-duplicate.env"
 printf 'RSCTF_DB_MAX_CONNECTIONS=33\n' >>"$local_checkout/deploy/.env"
@@ -197,7 +201,7 @@ grep -Fxq 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24' "$target/deploy/.env"
 grep -Fxq 'RSCTF_DOCKER_PROXY_BIND=172.31.253.1' "$target/deploy/.env"
 grep -Fxq 'RSCTF_CHALLENGE_PROXY_BRIDGE=rsctf-proxy0' "$target/deploy/.env"
 grep -Fxq 'RSCTF_USE_CAPTCHA=false' "$target/deploy/.env"
-grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=34' "$target/deploy/.env"
+grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=50' "$target/deploy/.env"
 for helper in \
   compose-maintenance-cutover.sh \
   kubernetes-maintenance-cutover.sh \

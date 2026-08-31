@@ -208,7 +208,7 @@ export function developmentBackendEnvironment({
     RSCTF_BIND: `127.0.0.1:${ports.backend}`,
     RSCTF_DATABASE_URL: `postgres://rsctf_dev:rsctf_dev@127.0.0.1:${ports.postgres}/rsctf_dev`,
     RSCTF_REDIS_URL: `redis://127.0.0.1:${ports.redis}`,
-    RSCTF_DB_MAX_CONNECTIONS: "28",
+    RSCTF_DB_MAX_CONNECTIONS: "29",
     RSCTF_PROVISIONING_CONCURRENCY: "4",
     RSCTF_REPO_SCAN_CONCURRENCY: "1",
     RSCTF_MIGRATE: "1",

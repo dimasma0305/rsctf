@@ -116,7 +116,7 @@ services:
       # Bound the per-replica gameplay pool while keeping the documented Compose
       # override effective. Provisioning reserves additional connections through
       # its own semaphore instead of letting runtime operations drain the pool.
-      RSCTF_DB_MAX_CONNECTIONS: "${RSCTF_DB_MAX_CONNECTIONS:-34}"
+      RSCTF_DB_MAX_CONNECTIONS: "${RSCTF_DB_MAX_CONNECTIONS:-50}"
       RSCTF_PROVISIONING_CONCURRENCY: "${RSCTF_PROVISIONING_CONCURRENCY:-4}"
       RSCTF_REPO_SCAN_CONCURRENCY: "${RSCTF_REPO_SCAN_CONCURRENCY:-1}"
       # Fail closed: trust no forwarded client-IP headers unless an exact proxy
