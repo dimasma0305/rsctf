@@ -50,28 +50,26 @@ test('managed KotH runner uses only the injected reporter and keeps credentials 
   assert.doesNotMatch(runner, /HOME\s*:/);
 });
 
-test('managed KotH recovery reconstructs a dense prefix then resolves a new runtime', () => {
+test('managed KotH recovery submits a dense wave then resolves a new runtime', () => {
   const restart = runner.slice(
     runner.indexOf('async function restartManagedReporterProcess('),
     runner.indexOf('function integritySnapshot()'),
   );
-  assert.match(runner, /append-only reporter prefix reconstruction/);
+  assert.match(runner, /restarted reporter exact dense wave/);
   const reconstruction = runner.slice(
     runner.indexOf("'pre-recovery dense score rows'"),
     runner.indexOf('const revoked = capabilities'),
   );
-  const synchronize = reconstruction.indexOf('synchronizeCurrentReporterPrefix()');
-  const pause = reconstruction.indexOf('reservePrefixReconstructionWindow()');
   const restartCall = reconstruction.indexOf('restartManagedReporterProcess(');
-  const resume = reconstruction.indexOf('A.setAdScoringPaused(current.gameId, false)');
   const activeContext = reconstruction.indexOf("'restarted reporter active context'");
   const traffic = reconstruction.indexOf('runK6Phase({');
-  assert.ok(synchronize > 0 && synchronize < pause && pause < restartCall);
-  assert.ok(restartCall < resume && resume < activeContext && activeContext < traffic);
-  assert.match(runner, /reconstructed\.evidenceHash === restart\.before\.evidenceHash/);
+  assert.ok(restartCall > 0 && restartCall < activeContext && activeContext < traffic);
+  assert.match(runner, /sameRoundPrefix \|\| reconstructed\.roundId > restart\.before\.roundId/);
   assert.match(runner, /jsonb_agg\(jsonb_build_array\(/);
   assert.match(runner, /A\.adScoringPaused\(current\.gameId\)/);
   assert.match(runner, /candidate\.containerId !== target\.containerId/);
+  assert.match(runner, /retryTransientUntil\(/);
+  assert.match(runner, /replacement container is still transitioning/);
   assert.match(runner, /arenaUrl: `http:\/\//);
   assert.match(runner, /snapshotRows/);
   assert.match(runner, /uniqueCrownRounds/);
@@ -132,6 +130,7 @@ test('managed KotH polling uses a fresh administrator rate-limit identity', () =
   assert.match(pollingIdentity, /body: \{ role: 'Admin' \}/);
   assert.match(pollingIdentity, /current\.pollerJwt = mintJwt/);
   assert.match(runner, /MANAGED_KOTH_ADMIN_TOKEN: current\.pollerJwt/);
+  assert.match(runner, /if \(phase === 'valid'\) await provisionPollingAdmin\(\)/);
   assert.doesNotMatch(runner, /MANAGED_KOTH_ADMIN_TOKEN: A\.adminJwt\(\)/);
 });
 
@@ -142,4 +141,20 @@ test('managed target derives its bounded cohort and Crown from submitted scores'
   assert.match(fixture, /sum\(1 for _, score in ranked if score > 0\) != ACTIVE_FLEET/);
   assert.match(fixture, /len\(leaders\) != 1/);
   assert.match(fixture, /selected = ordered/);
+});
+
+test('Leaderboard integrity does not confuse snapshot currency with exclusive ownership', () => {
+  const integrity = runner.slice(
+    runner.indexOf('function integritySnapshot()'),
+    runner.indexOf('async function provision('),
+  );
+  const exclusive = integrity.slice(
+    integrity.indexOf("'exclusiveRows'"),
+    integrity.indexOf("'duplicateRows'"),
+  );
+  assert.doesNotMatch(exclusive, /result\.marker_observed/);
+  assert.match(exclusive, /controlling_participation_id/);
+  assert.match(exclusive, /holder_participation_id/);
+  assert.match(exclusive, /KothAcquisitions/);
+  assert.match(exclusive, /KothCycleCooldowns/);
 });

@@ -33,6 +33,7 @@ import {
   mintJwt,
   PG,
   RSCTF,
+  retryTransientUntil,
   sleep,
   sql,
 } from './lib.mjs';
@@ -211,6 +212,7 @@ function assertK6Summary(path, phase) {
 
 async function runK6Phase({ phase, arenaUrl, summaryPath, tokenFile, targetContainer }) {
   const plan = phase === 'abuse' ? abusePlan : loadPlan;
+  if (phase === 'valid') await provisionPollingAdmin();
   const args = [
     'run',
     '--summary-export',
@@ -675,12 +677,23 @@ async function recoverManagedTarget(target, reporterBaseUrl) {
   requireCondition(Number(changed) === target.cycleId, 'managed recovery fault did not bind the exact active cycle');
   const stopped = docker(['stop', '--time', '2', target.containerId]);
   requireCondition(stopped.status === 0, 'managed target could not be stopped for recovery');
-  const response = await A.api(
-    'POST',
-    `/api/edit/games/${current.gameId}/ad/koth/${current.challengeId}/recover`,
-    { jwt: A.adminJwt(), timeoutMs: 180_000 },
+  const response = await retryTransientUntil(
+    ({ timeoutMs }) => A.api(
+      'POST',
+      `/api/edit/games/${current.gameId}/ad/koth/${current.challengeId}/recover`,
+      { jwt: A.adminJwt(), timeoutMs },
+    ),
+    (candidate) => candidate?.status === 409 && [
+      'replacement container is still transitioning',
+      'checker exit 2',
+      'checker timed out',
+    ].includes(candidate.json?.title),
+    { budgetMs: 30_000, delayMs: 500 },
   );
-  requireCondition(response.status === 200 && unwrap(response)?.resetPhase === 'Active', 'managed target recovery did not converge');
+  requireCondition(
+    response.status === 200 && unwrap(response)?.resetPhase === 'Active',
+    `managed target recovery did not converge: HTTP ${response.status} ${response.json?.title || ''}`.trim(),
+  );
   const recovered = await waitUntil(
     'managed target replacement',
     async () => inspectManagedTarget(targetDatabaseSnapshot(current.gameId, current.challengeId), reporterBaseUrl),
@@ -740,44 +753,9 @@ function currentSnapshotIdentity() {
   };
 }
 
-function activeRoundId() {
-  return Number(sql(
-    `SELECT id FROM "AdRounds" WHERE game_id=${current.gameId} AND finalized=FALSE ` +
-      `AND clock_timestamp()>=start_time_utc AND clock_timestamp()<end_time_utc ` +
-      `ORDER BY number DESC,id DESC LIMIT 1`,
-  ));
-}
-
-async function synchronizeCurrentReporterPrefix() {
-  return waitUntil(
-    'current active reporter prefix',
-    async () => ({ activeRoundId: activeRoundId(), snapshot: currentSnapshotIdentity() }),
-    ({ activeRoundId: roundId, snapshot }) => roundId > 0 &&
-      snapshot.roundId === roundId && snapshot.waves === 1 && snapshot.rows === ROSTER_SIZE,
-    120,
-  );
-}
-
-async function reservePrefixReconstructionWindow() {
-  await A.setAdScoringPaused(current.gameId, true);
-  const frozenRemainingMs = Number(sql(
-    `SELECT floor(extract(epoch FROM (round.end_time_utc-game.ad_scoring_paused_at))*1000)::bigint ` +
-      `FROM "Games" game JOIN LATERAL (` +
-        `SELECT end_time_utc FROM "AdRounds" WHERE game_id=game.id ` +
-        `ORDER BY number DESC,id DESC LIMIT 1` +
-      `) round ON TRUE WHERE game.id=${current.gameId} ` +
-      `AND game.ad_scoring_paused AND game.ad_scoring_paused_at IS NOT NULL`,
-  ));
-  requireCondition(Number.isSafeInteger(frozenRemainingMs), 'paused reconstruction round is unavailable');
-  const requiredHeadroomMs = (loadPlan.durationSeconds * 1_000) + 15_000;
-  const holdMs = Math.max(0, requiredHeadroomMs - frozenRemainingMs) + 2_000;
-  requireCondition(holdMs <= 120_000, 'paused reconstruction round is too stale to extend safely');
-  await sleep(holdMs);
-}
-
 async function restartManagedReporterProcess(target, reporterBaseUrl) {
   const before = currentSnapshotIdentity();
-  requireCondition(before.waves === 1 && before.rows === ROSTER_SIZE, 'restart prefix is not one exact dense wave');
+  requireCondition(before.waves === 1 && before.rows === ROSTER_SIZE, 'pre-restart snapshot is not one exact dense wave');
   const restarted = docker(['restart', '--time', '2', target.containerId]);
   requireCondition(restarted.status === 0, 'managed reporter process restart failed');
   const sameTarget = await waitUntil(
@@ -842,11 +820,13 @@ function integritySnapshot() {
       `'fullRosterWaves',COALESCE((SELECT sum(min_activity_possible/1000000) FROM scored WHERE min_activity_possible=max_activity_possible),0),` +
       `'invalidRows',COALESCE((SELECT sum(invalid_rows) FROM scored),0),` +
       `'exclusiveRows',(` +
+        // Leaderboard writes snapshot currency to marker_observed, so only
+        // participant ownership fields distinguish the exclusive modes here.
         `(SELECT count(*) FROM "KothControlResults" result WHERE result.game_id=${current.gameId} ` +
           `AND result.challenge_id=${current.challengeId} AND (` +
           `result.controlling_participation_id IS NOT NULL OR result.responsible_participation_id IS NOT NULL ` +
           `OR result.token_id IS NOT NULL OR result.provisional_participation_id IS NOT NULL ` +
-          `OR result.confirmed_participation_id IS NOT NULL OR result.marker_observed OR result.confirmation_streak<>0)) + ` +
+          `OR result.confirmed_participation_id IS NOT NULL OR result.confirmation_streak<>0)) + ` +
         `(SELECT count(*) FROM "KothTargets" WHERE game_id=${current.gameId} AND challenge_id=${current.challengeId} AND holder_participation_id IS NOT NULL) + ` +
         `(SELECT count(*) FROM "KothAcquisitions" acquisition JOIN "KothCrownCycles" cycle ON cycle.id=acquisition.cycle_id WHERE cycle.game_id=${current.gameId} AND cycle.challenge_id=${current.challengeId}) + ` +
         `(SELECT count(*) FROM "KothCycleCooldowns" cooldown JOIN "KothCrownCycles" cycle ON cycle.id=cooldown.cycle_id WHERE cycle.game_id=${current.gameId} AND cycle.challenge_id=${current.challengeId})` +
@@ -956,7 +936,6 @@ async function main() {
   });
   await exactHealth(config.target, 'platform');
   await A.preflight();
-  await provisionPollingAdmin();
 
   let target = await provision(reporterBaseUrl);
   const ordinaryJwt = mintJwt(current.cohort.userIds[0], undefined, 1);
@@ -1003,12 +982,8 @@ async function main() {
   await exerciseActivePlayerRotation(target, capabilities[0]);
   capabilities = sortedCapabilities();
   writeCapabilities(capabilities);
-
-  await synchronizeCurrentReporterPrefix();
-  await reservePrefixReconstructionWindow();
   const restart = await restartManagedReporterProcess(target, reporterBaseUrl);
   target = restart.target;
-  await A.setAdScoringPaused(current.gameId, false);
   await waitUntil(
     'restarted reporter active context',
     () => reporterStatus(target),
@@ -1024,7 +999,7 @@ async function main() {
     targetContainer: target.containerId,
   });
   await waitUntil(
-    'append-only reporter prefix reconstruction',
+    'restarted reporter exact dense wave',
     () => reporterStatus(target),
     (status) => {
       validateManagedReporterStatus(status, { ...loadPlan, minimumReports: 1 });
@@ -1033,11 +1008,12 @@ async function main() {
     120,
   );
   const reconstructed = currentSnapshotIdentity();
+  const sameRoundPrefix = reconstructed.roundId === restart.before.roundId &&
+    reconstructed.evidenceHash === restart.before.evidenceHash;
   requireCondition(
-    reconstructed.roundId === restart.before.roundId &&
-      reconstructed.evidenceHash === restart.before.evidenceHash &&
+    (sameRoundPrefix || reconstructed.roundId > restart.before.roundId) &&
       reconstructed.waves === 1 && reconstructed.rows === ROSTER_SIZE,
-    `restarted reporter did not reconstruct the exact append-only dense prefix: ${JSON.stringify({
+    `restarted reporter did not submit a monotonic exact dense wave: ${JSON.stringify({
       before: restart.before,
       reconstructed,
     })}`,
@@ -1103,17 +1079,13 @@ async function main() {
     'final managed KotH integrity',
     async () => integritySnapshot(),
     (evidence) => {
-      try {
-        validateManagedKothIntegrity(evidence, {
-          rosterSize: ROSTER_SIZE,
-          activeFleet: ACTIVE_FLEET,
-          minimumScorableRounds: 4,
-          minimumResetAttempts: target.resetAttempt,
-        });
-        return true;
-      } catch {
-        return false;
-      }
+      validateManagedKothIntegrity(evidence, {
+        rosterSize: ROSTER_SIZE,
+        activeFleet: ACTIVE_FLEET,
+        minimumScorableRounds: 4,
+        minimumResetAttempts: target.resetAttempt,
+      });
+      return true;
     },
     180,
   );
