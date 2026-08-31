@@ -32,6 +32,9 @@ const sourceLimit = Number(
     .match(/DEFAULT_SOURCE_ADMISSION_PER_MINUTE:\s*u32\s*=\s*([\d_]+)/)?.[1]
     .replaceAll('_', ''),
 );
+const databaseLookupConcurrency = Number(
+  authentication.match(/DATABASE_LOOKUP_CONCURRENCY:\s*usize\s*=\s*(\d+)/)?.[1],
+);
 
 test('managed KotH admits the complete 2,000-team same-source login wave', () => {
   assert.equal(rosterLimit, 2_000);
@@ -152,7 +155,11 @@ test('capability shape and source abuse are bounded before database authenticati
   assert.ok(shapeCheck >= 0 && shapeCheck < poolAcquire);
   assert.ok(concurrencyCheck > shapeCheck && concurrencyCheck < poolAcquire);
   assert.match(authentication, /is_well_formed\(token\)/);
-  assert.match(authentication, /DATABASE_LOOKUP_CONCURRENCY:\s*usize\s*=\s*8/);
+  assert.equal(databaseLookupConcurrency, 16);
+  assert.ok(
+    databaseLookupConcurrency < 34,
+    'capability lookups leave no default-pool headroom for scoring and reporter work',
+  );
   assert.match(authentication, /too_many_requests\(1\)/);
   assert.match(
     kothRoutes,

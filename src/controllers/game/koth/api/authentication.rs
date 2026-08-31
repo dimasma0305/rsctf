@@ -10,9 +10,12 @@ use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
 
 /// Keep invalid capability floods from occupying the shared PostgreSQL pool.
-/// Eight concurrent lookups still leave ample headroom for the maintained
-/// 100-authentication/second arena profile on the default 34-connection pool.
-const DATABASE_LOOKUP_CONCURRENCY: usize = 8;
+/// Sixteen concurrent lookups absorb the measured short tail of the maintained
+/// 100-authentication/second arena profile while still leaving eighteen
+/// connections for scoring, reporter, and operator work in the default
+/// 34-connection pool. A lower ceiling rejected valid roster capabilities when
+/// eight slow lookups overlapped even though sustained source admission passed.
+const DATABASE_LOOKUP_CONCURRENCY: usize = 16;
 static DATABASE_LOOKUP_SLOTS: Semaphore = Semaphore::const_new(DATABASE_LOOKUP_CONCURRENCY);
 
 fn try_database_lookup_slot() -> Option<SemaphorePermit<'static>> {
