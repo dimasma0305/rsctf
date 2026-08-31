@@ -4,6 +4,7 @@ use axum::extract::{Json, State};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
+use std::time::Duration;
 use tokio::sync::{Semaphore, SemaphorePermit};
 
 use crate::app_state::SharedState;
@@ -11,16 +12,40 @@ use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
 
 /// Keep invalid capability floods from occupying the shared PostgreSQL pool.
-/// The serving role derives up to sixteen slots strictly from connections above
-/// its deadlock-safe floor. This absorbs the measured short tail of the
-/// maintained 100-authentication/second arena profile without stealing the
-/// control, scoring, reporter, or operator budget.
+/// The serving role derives up to sixteen lookup slots strictly from
+/// connections above its deadlock-safe floor. A bounded request queue absorbs
+/// short scheduler and query-latency bursts in the maintained
+/// 100-authentication/second arena profile without allowing an attacker to
+/// accumulate unbounded waiting tasks.
+const MAX_DATABASE_LOOKUP_REQUESTS: usize = 128;
+const DATABASE_LOOKUP_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 static DATABASE_LOOKUP_SLOTS: LazyLock<Semaphore> = LazyLock::new(|| {
     Semaphore::new(crate::extensions::database::configured_koth_capability_lookup_concurrency())
 });
+static DATABASE_LOOKUP_REQUEST_SLOTS: LazyLock<Semaphore> =
+    LazyLock::new(|| Semaphore::new(MAX_DATABASE_LOOKUP_REQUESTS));
 
-fn try_database_lookup_slot() -> Option<SemaphorePermit<'static>> {
-    DATABASE_LOOKUP_SLOTS.try_acquire().ok()
+async fn acquire_bounded_database_lookup<'a>(
+    request_slots: &'a Semaphore,
+    lookup_slots: &'a Semaphore,
+    wait_timeout: Duration,
+) -> Option<(SemaphorePermit<'a>, SemaphorePermit<'a>)> {
+    let request_slot = request_slots.try_acquire().ok()?;
+    let lookup_slot = tokio::time::timeout(wait_timeout, lookup_slots.acquire())
+        .await
+        .ok()?
+        .ok()?;
+    Some((request_slot, lookup_slot))
+}
+
+async fn acquire_database_lookup_slot(
+) -> Option<(SemaphorePermit<'static>, SemaphorePermit<'static>)> {
+    acquire_bounded_database_lookup(
+        &DATABASE_LOOKUP_REQUEST_SLOTS,
+        &DATABASE_LOOKUP_SLOTS,
+        DATABASE_LOOKUP_WAIT_TIMEOUT,
+    )
+    .await
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,7 +77,7 @@ pub async fn authenticate_capability(
     // Reject ambiguous and attacker-sized values before acquiring PostgreSQL.
     // The service repeats this check as defense in depth for non-HTTP callers.
     let token = validated_token(&request.token).ok_or(AppError::Unauthorized)?;
-    let Some(database_slot) = try_database_lookup_slot() else {
+    let Some((database_request_slot, database_slot)) = acquire_database_lookup_slot().await else {
         return Ok(crate::middlewares::rate_limiter::too_many_requests(1));
     };
     let mut connection = st
@@ -70,6 +95,7 @@ pub async fn authenticate_capability(
     .ok_or(AppError::Unauthorized)?;
     drop(connection);
     drop(database_slot);
+    drop(database_request_slot);
 
     if let Some(response) = crate::middlewares::rate_limiter::admit_koth_capability_auth(
         identity.game_id,
@@ -91,6 +117,8 @@ pub async fn authenticate_capability(
 #[cfg(test)]
 mod tests {
     use axum::http::{header, StatusCode};
+    use std::time::Duration;
+    use tokio::sync::Semaphore;
 
     use super::{validated_token, KothCapabilityAuthenticationRequest};
 
@@ -121,19 +149,82 @@ mod tests {
     }
 
     #[test]
-    fn database_lookup_admission_is_bounded_and_retryable() {
-        let concurrency =
-            crate::extensions::database::configured_koth_capability_lookup_concurrency();
-        let permits = (0..concurrency)
-            .map(|_| super::try_database_lookup_slot().expect("configured lookup slot"))
-            .collect::<Vec<_>>();
-        assert!(super::try_database_lookup_slot().is_none());
-
+    fn database_lookup_rejection_is_retryable() {
         let response = crate::middlewares::rate_limiter::too_many_requests(1);
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "1");
+    }
 
+    #[tokio::test]
+    async fn database_lookup_admission_waits_for_a_short_burst() {
+        let request_slots = Semaphore::new(2);
+        let lookup_slots = Semaphore::new(1);
+        let held_lookup = lookup_slots.acquire().await.unwrap();
+        let waiting = super::acquire_bounded_database_lookup(
+            &request_slots,
+            &lookup_slots,
+            Duration::from_secs(1),
+        );
+        tokio::pin!(waiting);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut waiting)
+                .await
+                .is_err()
+        );
+        assert_eq!(request_slots.available_permits(), 1);
+
+        drop(held_lookup);
+        let permits = waiting.await.expect("short burst should acquire lookup");
         drop(permits);
-        assert!(super::try_database_lookup_slot().is_some());
+        assert_eq!(request_slots.available_permits(), 2);
+        assert_eq!(lookup_slots.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn database_lookup_waiters_are_bounded_before_the_lookup_queue() {
+        let request_slots = Semaphore::new(1);
+        let lookup_slots = Semaphore::new(0);
+        let waiting = super::acquire_bounded_database_lookup(
+            &request_slots,
+            &lookup_slots,
+            Duration::from_secs(1),
+        );
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut waiting)
+                .await
+                .is_err()
+        );
+
+        assert!(super::acquire_bounded_database_lookup(
+            &request_slots,
+            &lookup_slots,
+            Duration::from_secs(1),
+        )
+        .await
+        .is_none());
+
+        lookup_slots.add_permits(1);
+        drop(
+            waiting
+                .await
+                .expect("admitted waiter should acquire lookup"),
+        );
+    }
+
+    #[tokio::test]
+    async fn database_lookup_timeout_releases_request_admission() {
+        let request_slots = Semaphore::new(1);
+        let lookup_slots = Semaphore::new(0);
+        assert!(super::acquire_bounded_database_lookup(
+            &request_slots,
+            &lookup_slots,
+            Duration::from_millis(1),
+        )
+        .await
+        .is_none());
+
+        assert_eq!(request_slots.available_permits(), 1);
     }
 }
