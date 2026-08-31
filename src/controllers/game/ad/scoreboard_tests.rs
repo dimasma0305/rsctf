@@ -91,6 +91,74 @@ fn ad_state_serializes_snapshotted_epoch_config_in_camel_case() {
 }
 
 #[test]
+fn ad_state_wire_distinguishes_managed_and_connected_byoc_services() {
+    let reset_at = chrono::DateTime::from_timestamp_millis(1_777_000_000_123).unwrap();
+    let service = |id, self_hosted, host: &str, port, status: Option<&str>| {
+        let delivery_state = service_delivery_state(self_hosted, host, port, status);
+        AdTeamServiceStateModel {
+            ad_team_service_id: id,
+            challenge_id: id + 10,
+            challenge_title: format!("service-{id}"),
+            container_ip: Some(host.to_string()),
+            container_port: Some(port),
+            current_flag: None,
+            last_check_status: status.map(str::to_owned),
+            last_reset_at: Some(reset_at),
+            can_reset: !self_hosted,
+            reset_cooldown_seconds_remaining: None,
+            snapshot_available: !self_hosted,
+            self_hosted: Some(self_hosted),
+            delivery_state,
+        }
+    };
+    let value = serde_json::to_value(AdStateModel {
+        current_round: 13,
+        epoch_ticks: 8,
+        start_round: Some(1),
+        flags_ready: true,
+        flag_delivery_failures: 0,
+        round_started_at: None,
+        round_ends_at: None,
+        scoring_paused: false,
+        scoring_paused_at: None,
+        services: vec![
+            service(1, false, "10.13.0.6", 8080, Some("Ok")),
+            service(2, true, "10.13.0.7", 31337, Some("Ok")),
+            service(3, true, "10.13.0.8", 31338, None),
+            service(4, true, "10.13.0.9", 31339, Some("Offline")),
+        ],
+    })
+    .unwrap();
+
+    let managed = &value["services"][0];
+    assert_eq!(managed["selfHosted"], false);
+    assert_eq!(managed["deliveryState"], "Managed");
+    assert_eq!(managed["canReset"], true);
+    assert_eq!(managed["snapshotAvailable"], true);
+    let byoc = &value["services"][1];
+    assert_eq!(byoc["selfHosted"], true);
+    assert_eq!(byoc["deliveryState"], "ByocHealthy");
+    assert_eq!(byoc["containerIp"], "10.13.0.7");
+    assert_eq!(byoc["containerPort"], 31337);
+    assert_eq!(byoc["lastCheckStatus"], "Ok");
+    assert_eq!(byoc["lastResetAt"], 1_777_000_000_123_i64);
+    assert_eq!(byoc["canReset"], false);
+    assert_eq!(byoc["snapshotAvailable"], false);
+    let connecting = &value["services"][2];
+    assert_eq!(connecting["selfHosted"], true);
+    assert_eq!(connecting["deliveryState"], "ByocConnecting");
+    assert_eq!(connecting["containerIp"], "10.13.0.8");
+    assert_eq!(connecting["containerPort"], 31338);
+    assert!(connecting["lastCheckStatus"].is_null());
+    let stale = &value["services"][3];
+    assert_eq!(stale["selfHosted"], true);
+    assert_eq!(stale["deliveryState"], "ByocStale");
+    assert_eq!(stale["containerIp"], "10.13.0.9");
+    assert_eq!(stale["containerPort"], 31339);
+    assert_eq!(stale["lastCheckStatus"], "Offline");
+}
+
+#[test]
 fn revision_fence_distinguishes_current_changed_and_missing_rows() {
     let expected = crate::services::ad::scoring::AdScoreboardRevision {
         revision: "101".to_string(),

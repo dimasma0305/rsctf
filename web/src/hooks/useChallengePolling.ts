@@ -3,9 +3,11 @@ import useSWR from 'swr'
 import {
   challengePollRetryDelay,
   createChallengePollOwner,
+  createChallengeRecoveryOwner,
   isAbortError,
   isChallengePollRetryable,
   MAX_CHALLENGE_POLL_RETRIES,
+  type ChallengeRecoveryOwner,
 } from '@Utils/ChallengePolling'
 
 interface ChallengePollingOptions<T> {
@@ -15,6 +17,9 @@ interface ChallengePollingOptions<T> {
   request: (signal: AbortSignal) => Promise<T>
   revalidateOnFocus?: boolean
   revalidateOnReconnect?: boolean
+  /** Share this owner across related detail/solver reads to retain one timer. */
+  recoveryOwner?: ChallengeRecoveryOwner
+  recoveryKey?: string
 }
 
 /**
@@ -28,22 +33,30 @@ export const useChallengePolling = <T>({
   request,
   revalidateOnFocus = true,
   revalidateOnReconnect = true,
+  recoveryOwner: sharedRecoveryOwner,
+  recoveryKey,
 }: ChallengePollingOptions<T>) => {
-  const owner = useMemo(createChallengePollOwner, [])
+  const requestOwner = useMemo(createChallengePollOwner, [])
+  const localRecoveryOwner = useMemo(createChallengeRecoveryOwner, [])
+  const recoveryOwner = sharedRecoveryOwner ?? localRecoveryOwner
+  const ownedRecoveryKey = recoveryKey ?? key ?? 'inactive-challenge-read'
   const activeRef = useRef(active)
   const failureCount = useRef(0)
   const [pausedKey, setPausedKey] = useState<string | null>(null)
   activeRef.current = active
 
-  const cancel = useCallback(() => owner.cancel(), [owner])
+  const cancel = useCallback(() => {
+    requestOwner.cancel()
+    recoveryOwner.cancel(ownedRecoveryKey)
+  }, [ownedRecoveryKey, recoveryOwner, requestOwner])
   const fetcher = useCallback(async () => {
-    const controller = owner.begin()
+    const controller = requestOwner.begin()
     try {
       return await request(controller.signal)
     } finally {
-      owner.finish(controller)
+      requestOwner.finish(controller)
     }
-  }, [owner, request])
+  }, [requestOwner, request])
 
   useEffect(() => {
     // Retry state belongs to one active key. Closing the surface or moving to
@@ -75,13 +88,13 @@ export const useChallengePolling = <T>({
       setPausedKey((paused) => (paused === key ? null : paused))
       // A focus/reconnect revalidation can recover before the owned backoff
       // expires. Do not let that stale timer create one extra request later.
-      owner.cancel()
+      recoveryOwner.cancel(ownedRecoveryKey)
     },
     onError: (error) => {
       if (!activeRef.current || isAbortError(error)) return
       failureCount.current += 1
       if (!isChallengePollRetryable(error) || failureCount.current >= MAX_CHALLENGE_POLL_RETRIES) {
-        owner.cancel()
+        recoveryOwner.cancel(ownedRecoveryKey)
         setPausedKey(key)
       }
     },
@@ -89,11 +102,11 @@ export const useChallengePolling = <T>({
       if (!activeRef.current || pausedKey === key || failureCount.current >= MAX_CHALLENGE_POLL_RETRIES) return
       const delay = challengePollRetryDelay(error, options.retryCount)
       if (delay === null) {
-        owner.cancel()
+        recoveryOwner.cancel(ownedRecoveryKey)
         setPausedKey(key)
         return
       }
-      owner.schedule(delay, () => {
+      recoveryOwner.schedule(ownedRecoveryKey, delay, () => {
         if (
           activeRef.current &&
           (config.refreshWhenHidden || config.isVisible()) &&

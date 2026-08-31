@@ -72,6 +72,8 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
   challenge?: ChallengeDetailModel
   loading?: boolean
   loadError?: string
+  /** A failed refresh after usable challenge material was already loaded. */
+  refreshError?: string
   onRetryLoad?: () => void
   cateData: ChallengeCategoryItemProps
   solved?: boolean
@@ -115,6 +117,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     challenge,
     loading,
     loadError,
+    refreshError,
     onRetryLoad,
     cateData,
     solved,
@@ -326,7 +329,25 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
               )}
             </Alert>
           )}
-          <Markdown source={challenge.content ?? ''} />
+          {refreshError && (
+            <Alert
+              mb="md"
+              color="orange"
+              variant="light"
+              icon={<Icon path={mdiAlertCircleOutline} size={0.8} aria-hidden="true" />}
+              role="status"
+            >
+              <Stack gap="xs">
+                <Text size="sm">{refreshError}</Text>
+                {onRetryLoad && (
+                  <Button size="compact-xs" variant="outline" onClick={onRetryLoad}>
+                    {t('common.button.retry', 'Retry')}
+                  </Button>
+                )}
+              </Stack>
+            </Alert>
+          )}
+          <Markdown key={challenge.id ?? 'challenge-material'} source={challenge.content ?? ''} />
           {challenge.hints && challenge.hints.length > 0 && (
             <Stack gap={2} pt="sm">
               {challenge.hints.map((hint) => (
@@ -400,7 +421,14 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           )}
           {solverError && (
             <Alert mt="md" color="yellow" variant="light" icon={<Icon path={mdiAlertCircleOutline} size={0.8} />}>
-              {solverError}
+              <Stack gap="xs">
+                <Text size="sm">{solverError}</Text>
+                {onRetryLoad && (
+                  <Button size="compact-xs" variant="subtle" onClick={onRetryLoad}>
+                    {t('common.button.retry', 'Retry')}
+                  </Button>
+                )}
+              </Stack>
             </Alert>
           )}
         </>

@@ -52,6 +52,30 @@ enum RevisionDisposition {
 }
 
 /// `AdTeamServiceStateModel` — one service row in the player's state view.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub enum AdServiceDeliveryState {
+    Managed,
+    ByocConnecting,
+    ByocHealthy,
+    ByocStale,
+}
+
+fn service_delivery_state(
+    self_hosted: bool,
+    host: &str,
+    port: i32,
+    last_check_status: Option<&str>,
+) -> AdServiceDeliveryState {
+    if !self_hosted {
+        return AdServiceDeliveryState::Managed;
+    }
+    match last_check_status {
+        Some("Ok") if !host.is_empty() && port > 0 => AdServiceDeliveryState::ByocHealthy,
+        Some(_) => AdServiceDeliveryState::ByocStale,
+        None => AdServiceDeliveryState::ByocConnecting,
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdTeamServiceStateModel {
@@ -68,6 +92,7 @@ pub struct AdTeamServiceStateModel {
     pub reset_cooldown_seconds_remaining: Option<i64>,
     pub snapshot_available: bool,
     pub self_hosted: Option<bool>,
+    pub delivery_state: AdServiceDeliveryState,
 }
 
 /// `AdStateModel` — GET `Ad/State` response.
@@ -627,6 +652,8 @@ pub async fn state(
                 .unwrap_or_default();
             // Downloadable exactly when the route would serve it (see above).
             let snapshot_available = snapshots_downloadable && s.snapshot_available && !self_hosted;
+            let delivery_state =
+                service_delivery_state(self_hosted, &s.host, s.port, last_check_status.as_deref());
             // Remaining cooldown from the last self-reset (0 if never reset or the
             // window has elapsed); the button only lights when it's fully elapsed.
             let cooldown_remaining = s
@@ -649,6 +676,7 @@ pub async fn state(
                     .then_some(cooldown_remaining),
                 snapshot_available,
                 self_hosted: Some(self_hosted),
+                delivery_state,
             }
         })
         .collect();
