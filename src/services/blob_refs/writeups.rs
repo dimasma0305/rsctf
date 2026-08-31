@@ -260,6 +260,31 @@ fn writeup_operation_root(name: &str) -> Option<uuid::Uuid> {
         .filter(|operation_id| !operation_id.is_nil())
 }
 
+async fn ensure_live_writeup_caller_on<'e, E>(
+    executor: E,
+    caller: crate::services::live_roster::LiveParticipationIdentity<'_>,
+) -> AppResult<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    if !crate::services::live_roster::participation_caller_is_live_on(
+        executor,
+        caller.user_id,
+        caller.expected_security_stamp,
+        caller.game_id,
+        caller.team_id,
+        caller.participation_id,
+        true,
+    )
+    .await?
+    {
+        return Err(AppError::conflict(
+            "Writeup participation is no longer eligible",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn store_and_replace_writeup(
     pool: &PgPool,
     storage: &dyn BlobStorage,
@@ -267,6 +292,11 @@ pub(crate) async fn store_and_replace_writeup(
     name: &str,
     bytes: &[u8],
 ) -> AppResult<(StoredBlob, Option<String>, Option<String>)> {
+    // Reject an already-ineligible caller before immutable storage work. This
+    // point-in-time preflight intentionally retains no transaction over object
+    // storage; the roster-fenced transaction below remains authoritative for
+    // races that begin after this check.
+    ensure_live_writeup_caller_on(pool, caller).await?;
     // Player-facing storage names embed the required request UUID. Older
     // internal callers without that suffix retain independent one-shot stages.
     let operation_root = writeup_operation_root(name).unwrap_or_else(uuid::Uuid::new_v4);
@@ -293,21 +323,7 @@ pub(crate) async fn store_and_replace_writeup(
     )
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    if !crate::services::live_roster::participation_caller_is_live_on(
-        &mut *transaction,
-        caller.user_id,
-        caller.expected_security_stamp,
-        caller.game_id,
-        caller.team_id,
-        caller.participation_id,
-        true,
-    )
-    .await?
-    {
-        return Err(AppError::conflict(
-            "Writeup participation is no longer eligible",
-        ));
-    }
+    ensure_live_writeup_caller_on(&mut *transaction, caller).await?;
     let old = lock_eligible_writeup_hashes(
         &mut transaction,
         caller.game_id,
