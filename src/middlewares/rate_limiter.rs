@@ -9,7 +9,7 @@
 //!   whole `/api` router in `server.rs`.
 //! * Each named policy is a per-route **decorator** — [`limited`] wraps a single
 //!   handler, the direct analogue of `[EnableRateLimiting(policy)]`:
-//!   ```ignore
+//!   ```text
 //!   use crate::middlewares::rate_limiter::{limited, Policy};
 //!   .route("/api/account/login", limited(Policy::Login, post(login)))
 //!   ```
@@ -762,7 +762,7 @@ async fn check_authenticated_async(identity: String, ip: String) -> Result<(), u
 /// rotating misses reach authorization SQL without consuming rate quota.
 ///
 /// Layer it **after** CORS so `OPTIONS` preflights don't consume quota:
-/// ```ignore
+/// ```text
 /// .layer(axum::middleware::from_fn(rate_limiter::global_middleware))
 /// ```
 pub async fn global_middleware(
@@ -885,7 +885,7 @@ fn globally_limited_path(path: &str) -> bool {
 
 /// Decorate a single route handler with a named policy — the axum analogue of
 /// RSCTF's `[EnableRateLimiting(policy)]` attribute:
-/// ```ignore
+/// ```text
 /// use crate::middlewares::rate_limiter::{limited, Policy};
 /// .route("/api/account/login", limited(Policy::Login, post(login)))
 /// ```
