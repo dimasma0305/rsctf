@@ -13,6 +13,8 @@ the bounded score-bearing cohort. Each reporter request contains one finalized
 2,000-row wave: 64 positive rows, 1,936 explicit zero rows, and one Crown chosen
 from the unique highest submitted score. A later round carries the next wave in
 a separate request, so no body exceeds the 2,000 team-wave or 512 KiB limit.
+The fixed-arrival phases preallocate their bounded 128-VU budget so runner-side
+allocation cannot silently drop arrivals while the service absorbs a short burst.
 
 The scenario also:
 

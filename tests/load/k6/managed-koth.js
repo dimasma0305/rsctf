@@ -86,7 +86,7 @@ const primaryScenario = PHASE === 'valid'
       rate: RATE,
       timeUnit: '1s',
       duration,
-      preAllocatedVUs: Math.min(VUS, Math.max(16, Math.ceil(RATE / 2))),
+      preAllocatedVUs: VUS,
       maxVUs: VUS,
       gracefulStop: '10s',
     }
@@ -96,7 +96,7 @@ const primaryScenario = PHASE === 'valid'
       rate: RATE,
       timeUnit: '1s',
       duration,
-      preAllocatedVUs: Math.min(VUS, Math.max(32, Math.ceil(RATE / 2))),
+      preAllocatedVUs: VUS,
       maxVUs: VUS,
       gracefulStop: '10s',
     };

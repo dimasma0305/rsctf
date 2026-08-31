@@ -64,6 +64,12 @@ test('managed KotH recovery reconstructs a dense prefix then resolves a new runt
 test('managed KotH traffic is fixed-arrival and gates auth abuse independently', () => {
   assert.match(scenario, /executor: 'constant-arrival-rate'/);
   assert.doesNotMatch(scenario, /constant-vus/);
+  assert.equal(
+    [...scenario.matchAll(/preAllocatedVUs: VUS/g)].length,
+    2,
+    'valid and abuse traffic must preallocate their bounded VU budget',
+  );
+  assert.doesNotMatch(scenario, /preAllocatedVUs: Math\./);
   assert.match(scenario, /valid_capabilities_exercised: \['count==2000'\]/);
   assert.match(scenario, /invalid_capabilities_rate_limited: \['count>0'\]/);
   assert.match(scenario, /invalid_retry_after: \['rate==0'\]/);
