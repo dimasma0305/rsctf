@@ -582,6 +582,13 @@ fn start_background_services(
     use rsctf::services::cron::{self, RoundSchedulerScope};
 
     let mut required = Vec::new();
+    // Every HTTP-serving process owns a process-local observation queue. Its
+    // supervised writer must therefore run with the same state on every role;
+    // idle roles consume no database work.
+    required.push(RequiredTask::Unit(
+        "flag-egress observation writer",
+        rsctf::services::flag_egress_observations::start_writer(state, shutdown.clone()),
+    ));
     if owns_feed_reconciliation(role) {
         required.push(RequiredTask::Unit(
             "game-event feed cursor reconciler",
@@ -594,6 +601,17 @@ fn start_background_services(
         required.push(RequiredTask::Unit(
             "flag-egress feed cursor reconciler",
             rsctf::services::flag_egress_feed::start_reconciler(state.clone(), shutdown.clone()),
+        ));
+        required.push(RequiredTask::Unit(
+            "normal-notice delivery reconciler",
+            rsctf::services::notice_delivery::start_reconciler(state.clone(), shutdown.clone()),
+        ));
+        required.push(RequiredTask::Unit(
+            "solve-receipt lifecycle reconciler",
+            rsctf::services::event_security::start_receipt_maintenance(
+                state.clone(),
+                shutdown.clone(),
+            ),
         ));
     }
     if owns_suspicion_reconciliation(role) {
@@ -626,6 +644,10 @@ fn start_background_services(
     }
     match role {
         RuntimeRole::All | RuntimeRole::Control => {
+            required.push(RequiredTask::Unit(
+                "challenge import worker",
+                rsctf::controllers::edit::start_import_job_worker(state.clone(), shutdown.clone()),
+            ));
             if rsctf::services::ad_vpn::enabled() {
                 required.push(RequiredTask::Unit(
                     "A&D network reconcile",
@@ -697,7 +719,13 @@ fn start_background_services(
                 ),
             ));
         }
-        RuntimeRole::Development | RuntimeRole::Web | RuntimeRole::Migrate => {}
+        RuntimeRole::Development => {
+            required.push(RequiredTask::Unit(
+                "challenge import worker",
+                rsctf::controllers::edit::start_import_job_worker(state.clone(), shutdown.clone()),
+            ));
+        }
+        RuntimeRole::Web | RuntimeRole::Migrate => {}
     }
 
     if let Some(topology) = rsctf::services::runtime_topology::spawn(
@@ -713,6 +741,12 @@ fn start_background_services(
     }
 
     let mut optional = Vec::new();
+    if role.capabilities().api || role.capabilities().network {
+        optional.push(rsctf::services::honeypot_telemetry::start_writer(
+            state,
+            shutdown.clone(),
+        ));
+    }
     if role.capabilities().api {
         optional.push(rsctf::services::feed_publication::start_publisher(
             state,

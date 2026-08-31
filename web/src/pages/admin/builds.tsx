@@ -41,7 +41,7 @@ import { Icon } from '@mdi/react'
 import cx from 'clsx'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
-import { FC, useMemo, useState } from 'react'
+import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { useSWRConfig } from 'swr'
@@ -55,6 +55,8 @@ import {
 } from '@Components/admin/builds/buildPresentation'
 import { refreshAdminBuildImageViews } from '@Utils/AdminBuildImages'
 import { showErrorMsg } from '@Utils/Shared'
+import { createOperationId, startControlJob, waitForControlJob } from '@Utils/ControlJobs'
+import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import api, { ChallengeBuildAuditModel, ChallengeBuildStatus } from '@Api'
 import classes from '@Styles/AdminBuilds.module.css'
@@ -104,18 +106,46 @@ const Builds: FC = () => {
   // checkbox doesn't need to walk a list. Cleared when the history
   // refreshes (rows can vanish) or after a successful bulk delete.
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const reenqueueFlight = useRef<Promise<void> | null>(null)
+  const reenqueueAbort = useRef(new AbortController())
 
-  // Refresh in-progress every 2s; history every 5s (cheap enough and
-  // catches new audit rows produced by background scans).
-  const { data: inProgress } = api.admin.useAdminListBuildsInProgress({ refreshInterval: 2000 })
+  useEffect(() => () => reenqueueAbort.current.abort(), [])
+
+  // One completion-scheduled owner polls only the compact live set while work
+  // exists. Slow responses cannot overlap, and a terminal transition triggers
+  // exactly one history refresh below.
+  const inProgressQuery = api.admin.useAdminListBuildsInProgress(CompletionPollSWRConfig)
+  const { data: inProgress, mutate: mutateInProgress } = inProgressQuery
   // Load the history UNFILTERED and filter client-side (below). The status filter
   // is applied in-memory so the summary chips always reflect true totals — if we
   // pushed `status` to the server, selecting a chip would refetch only that one
   // status and every chip's count (computed from the loaded set) would collapse to 0.
   const { data: history, mutate: mutateHistory } = api.admin.useAdminListBuilds(
     { count: 200 },
-    { refreshInterval: 5000 }
+    CompletionPollSWRConfig
   )
+  const livePolling = (inProgress?.length ?? 0) > 0
+  useCompletionPolling({
+    key: livePolling ? '/api/admin/builds/inprogress' : '',
+    phase: 'admin-builds',
+    enabled: livePolling,
+    data: inProgress,
+    error: inProgressQuery.error,
+    isValidating: inProgressQuery.isValidating,
+    mutate: mutateInProgress,
+    successDelay: () => 2_000,
+  })
+
+  const previousLiveIds = useRef<Set<number> | null>(null)
+  useEffect(() => {
+    if (!inProgress) return
+    const next = new Set(inProgress.map((build) => build.auditId))
+    const previous = previousLiveIds.current
+    previousLiveIds.current = next
+    if (previous && [...previous].some((auditId) => !next.has(auditId))) {
+      void mutateHistory()
+    }
+  }, [inProgress, mutateHistory])
 
   const statusOptions = useMemo(
     () => [
@@ -239,21 +269,36 @@ const Builds: FC = () => {
     })
   }
 
-  const onReenqueue = async (row: ChallengeBuildAuditModel) => {
-    setBusy(true)
-    try {
-      await api.admin.adminReenqueueBuild(row.id)
-      showNotification({
-        color: 'teal',
-        message: t('admin.notification.builds.enqueued'),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-      mutateHistory()
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setBusy(false)
-    }
+  const onReenqueue = (row: ChallengeBuildAuditModel) => {
+    if (reenqueueFlight.current) return reenqueueFlight.current
+    const operationId = createOperationId()
+    const task = (async () => {
+      setBusy(true)
+      try {
+        const job = await startControlJob(
+          operationId,
+          () =>
+            api.admin.adminReenqueueBuild(row.id, operationId, {
+              signal: reenqueueAbort.current.signal,
+            }),
+          reenqueueAbort.current.signal
+        )
+        showNotification({
+          color: 'teal',
+          message: t('admin.notification.builds.enqueued'),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+        await waitForControlJob(job, reenqueueAbort.current.signal)
+        await Promise.all([mutateHistory(), mutateInProgress()])
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+      } finally {
+        setBusy(false)
+        reenqueueFlight.current = null
+      }
+    })()
+    reenqueueFlight.current = task
+    return task
   }
 
   const onPruneFailed = () => {
@@ -324,7 +369,7 @@ const Builds: FC = () => {
             <Text c="dimmed">{t('admin.content.builds.subtitle')}</Text>
           </Stack>
 
-          <Tabs defaultValue="log" className={classes.tabs}>
+          <Tabs defaultValue="log" keepMounted={false} className={classes.tabs}>
             <Tabs.List>
               <Tabs.Tab value="log" leftSection={<Icon path={mdiTextBoxOutline} size={0.7} />}>
                 {t('admin.content.builds.tab.log', 'Build log')}

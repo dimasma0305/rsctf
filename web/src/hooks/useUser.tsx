@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
 import { useSWRConfig } from 'swr'
 import { setAuthSession } from '@Utils/AuthState'
+import { clearLegacySensitiveBrowserStorage } from '@Utils/Cache'
 import { createProfileRetryTimers, profileErrorDisposition, profileRetryScheduleDelay } from '@Utils/ProfileRetry'
 import api from '@Api'
 
@@ -104,9 +105,12 @@ export const useTeams = () => {
     error,
     mutate,
   } = api.team.useTeamGetTeamsInfo({
-    refreshInterval: 120000,
+    refreshInterval: 0,
+    refreshWhenHidden: false,
+    refreshWhenOffline: false,
     shouldRetryOnError: false,
     revalidateOnFocus: false,
+    revalidateOnReconnect: false,
   })
 
   return { teams, error, mutate }
@@ -121,6 +125,7 @@ export const useLogOut = () => {
   return async () => {
     try {
       await api.account.accountLogOut()
+      clearLegacySensitiveBrowserStorage()
       navigate('/')
       mutate((key) => typeof key === 'string' && key.includes('game/'), undefined, {
         revalidate: false,
@@ -132,6 +137,7 @@ export const useLogOut = () => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch {
+      clearLegacySensitiveBrowserStorage()
       navigate('/')
       mutateProfile(undefined, { revalidate: false })
     }

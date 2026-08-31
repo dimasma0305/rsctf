@@ -92,16 +92,33 @@ fn ad_state_serializes_snapshotted_epoch_config_in_camel_case() {
 
 #[test]
 fn revision_fence_distinguishes_current_changed_and_missing_rows() {
+    let expected = crate::services::ad::scoring::AdScoreboardRevision {
+        revision: "101".to_string(),
+        immutable_final: false,
+    };
+    let current = expected.clone();
+    let changed = crate::services::ad::scoring::AdScoreboardRevision {
+        revision: "102".to_string(),
+        immutable_final: false,
+    };
+    let finalized = crate::services::ad::scoring::AdScoreboardRevision {
+        revision: "101".to_string(),
+        immutable_final: true,
+    };
     assert_eq!(
-        revision_disposition("101", Some("101")),
+        revision_disposition(&expected, Some(&current)),
         RevisionDisposition::Current
     );
     assert_eq!(
-        revision_disposition("101", Some("102")),
+        revision_disposition(&expected, Some(&changed)),
         RevisionDisposition::Changed
     );
     assert_eq!(
-        revision_disposition("101", None),
+        revision_disposition(&expected, Some(&finalized)),
+        RevisionDisposition::Changed
+    );
+    assert_eq!(
+        revision_disposition(&expected, None),
         RevisionDisposition::Missing
     );
 }
@@ -112,6 +129,20 @@ fn stale_keys_are_isolated_by_view() {
     let frozen = "_AdScoreBoardFrozen_987654321";
     assert_eq!(stale_scoreboard_key(live), format!("{live}:stale"));
     assert_ne!(stale_scoreboard_key(live), stale_scoreboard_key(frozen));
+}
+
+#[test]
+fn archived_state_strips_operational_endpoints_and_flags() {
+    assert_eq!(live_operational_value(false, "10.0.0.7"), Some("10.0.0.7"));
+    assert_eq!(live_operational_value(false, 31337), Some(31337));
+    assert_eq!(
+        live_operational_value(false, Some("flag")),
+        Some(Some("flag"))
+    );
+
+    assert_eq!(live_operational_value(true, "10.0.0.7"), None);
+    assert_eq!(live_operational_value(true, 31337), None);
+    assert_eq!(live_operational_value(true, Some("flag")), None);
 }
 
 #[test]

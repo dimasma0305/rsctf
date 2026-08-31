@@ -117,13 +117,18 @@ fn context_v2_requires_explicit_bounded_negotiation() {
     headers.insert(CONTEXT_API_VERSION_HEADER, HeaderValue::from_static("v3"));
     assert!(context_v2_requested(&headers).is_err());
 
-    let response = versioned_context_response(serde_json::json!({"apiVersion":"v2"}));
+    let response = context_response(
+        fresh_observer_context(bytes::Bytes::from_static(br#"{"apiVersion":"v2"}"#)),
+        &headers,
+    )
+    .unwrap();
     assert_eq!(
         response.headers().get(header::VARY).unwrap(),
         CONTEXT_API_VERSION_HEADER
     );
     assert_eq!(
         response.headers().get(header::CACHE_CONTROL).unwrap(),
-        "no-store"
+        "public, max-age=0, must-revalidate"
     );
+    assert!(response.headers().contains_key(header::ETAG));
 }

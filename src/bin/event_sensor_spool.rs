@@ -1,0 +1,506 @@
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use rsctf::services::event_security::TelemetryBatch;
+use tokio::io::AsyncWriteExt;
+
+const MAX_SPOOL_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_SPOOL_BATCHES: usize = 2_048;
+const MAX_SPOOL_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+// These are the inclusive bounds enforced by TelemetryBatch::validate.
+const MAX_SENSOR_DROPPED_ROWS: i64 = 100_000_000;
+const MAX_SENSOR_DROPPED_BYTES: i64 = u32::MAX as i64;
+
+#[cfg(test)]
+static FAIL_AFTER_SHED_REPORT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub struct DurableSpool {
+    directory: PathBuf,
+    entries: VecDeque<(PathBuf, u64)>,
+    bytes: u64,
+}
+
+impl DurableSpool {
+    pub async fn open(directory: PathBuf) -> anyhow::Result<Self> {
+        tokio::fs::create_dir_all(&directory).await?;
+        let directory_metadata = tokio::fs::symlink_metadata(&directory).await?;
+        if !directory_metadata.file_type().is_dir() {
+            anyhow::bail!("event sensor spool path is not a directory");
+        }
+        let mut discovered = Vec::new();
+        let mut removed_pending = false;
+        let mut reader = tokio::fs::read_dir(&directory).await?;
+        while let Some(entry) = reader.next_entry().await? {
+            let path = entry.path();
+            let metadata = tokio::fs::symlink_metadata(&path).await?;
+            if path.extension().and_then(|value| value.to_str()) == Some("pending") {
+                if metadata.file_type().is_file() {
+                    tokio::fs::remove_file(path).await?;
+                    removed_pending = true;
+                }
+                continue;
+            }
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            if metadata.file_type().is_file() {
+                discovered.push((path, metadata.len()));
+            }
+        }
+        if removed_pending {
+            sync_directory(&directory).await?;
+        }
+        discovered.sort_by(|left, right| left.0.cmp(&right.0));
+        let bytes = discovered.iter().map(|entry| entry.1).sum();
+        Ok(Self {
+            directory,
+            entries: discovered.into(),
+            bytes,
+        })
+    }
+
+    pub async fn enqueue(&mut self, batch: &TelemetryBatch) -> anyhow::Result<()> {
+        let mut durable = batch.clone();
+        clamp_loss_counters(&mut durable);
+        let mut encoded = serde_json::to_vec(&durable)?;
+        if encoded.len() as u64 > MAX_SPOOL_BYTES {
+            merge_own_payload_shed(&mut durable, encoded.len());
+            encoded = serde_json::to_vec(&durable)?;
+        }
+        let final_path = self.directory.join(format!(
+            "{:020}-{}.json",
+            chrono::Utc::now().timestamp_millis(),
+            batch.batch_id
+        ));
+        let temporary = final_path.with_extension("pending");
+        write_synced_new(&temporary, &encoded).await?;
+        tokio::fs::rename(&temporary, &final_path).await?;
+        sync_directory(&self.directory).await?;
+        let size = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
+        self.entries.push_back((final_path.clone(), size));
+        self.bytes = self.bytes.saturating_add(size);
+
+        let mut retained_entries = self.entries.clone();
+        let mut retained_bytes = self.bytes;
+        let mut target_size = size;
+        let mut removed_paths = Vec::new();
+        loop {
+            let front_expired = match retained_entries.front() {
+                Some((path, _)) => entry_expired(path).await?,
+                None => false,
+            };
+            if retained_entries.len() <= MAX_SPOOL_BATCHES
+                && retained_bytes <= MAX_SPOOL_BYTES
+                && !front_expired
+            {
+                break;
+            }
+            let Some((path, dropped_size)) = retained_entries.pop_front() else {
+                break;
+            };
+            if path == final_path {
+                anyhow::bail!("bounded telemetry loss report exceeds its spool budget");
+            }
+            let dropped = read_batch(&path).await?;
+            merge_dropped_batch(&mut durable, &dropped, dropped_size);
+            encoded = serde_json::to_vec(&durable)?;
+            let replacement_size = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
+            let Some((target_path, retained_target_size)) = retained_entries.back_mut() else {
+                anyhow::bail!("telemetry loss report lost its spool owner");
+            };
+            if *target_path != final_path {
+                anyhow::bail!("telemetry loss report is not the newest spool entry");
+            }
+            retained_bytes = retained_bytes
+                .saturating_sub(dropped_size)
+                .saturating_sub(target_size)
+                .saturating_add(replacement_size);
+            *retained_target_size = replacement_size;
+            target_size = replacement_size;
+            removed_paths.push(path);
+        }
+        if removed_paths.is_empty() {
+            return Ok(());
+        }
+
+        // Persist and fsync the loss report before unlinking any source batch.
+        // A crash can therefore replay an old batch and over-report loss, but it
+        // can never erase both the telemetry and the evidence that it was shed.
+        replace_synced(&self.directory, &final_path, &encoded).await?;
+        #[cfg(test)]
+        if FAIL_AFTER_SHED_REPORT.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("injected crash after durable shed report");
+        }
+        for path in &removed_paths {
+            tokio::fs::remove_file(path).await?;
+        }
+        sync_directory(&self.directory).await?;
+        self.entries = retained_entries;
+        self.bytes = retained_bytes;
+        Ok(())
+    }
+
+    pub async fn front(&self) -> anyhow::Result<Option<TelemetryBatch>> {
+        let Some((path, _)) = self.entries.front() else {
+            return Ok(None);
+        };
+        let mut batch = read_batch(path).await?;
+        // Older spool files may have accumulated unbounded counters. Normalize the
+        // upload view so they can be accepted and acknowledged after an upgrade.
+        clamp_loss_counters(&mut batch);
+        Ok(Some(batch))
+    }
+
+    pub async fn acknowledge_front(&mut self, batch_id: uuid::Uuid) -> anyhow::Result<()> {
+        let Some((path, size)) = self.entries.front() else {
+            anyhow::bail!("telemetry spool acknowledgement has no owner");
+        };
+        let size = *size;
+        let stored = read_batch(path).await?;
+        if stored.batch_id != batch_id {
+            anyhow::bail!("telemetry spool acknowledgement is out of order");
+        }
+        tokio::fs::remove_file(path).await?;
+        self.entries.pop_front();
+        self.bytes = self.bytes.saturating_sub(size);
+        sync_directory(&self.directory).await?;
+        Ok(())
+    }
+}
+
+async fn entry_expired(path: &Path) -> anyhow::Result<bool> {
+    let modified = tokio::fs::metadata(path).await?.modified()?;
+    Ok(std::time::SystemTime::now()
+        .duration_since(modified)
+        .unwrap_or_default()
+        > MAX_SPOOL_AGE)
+}
+
+#[cfg(unix)]
+async fn sync_directory(path: &Path) -> std::io::Result<()> {
+    tokio::fs::File::open(path).await?.sync_all().await
+}
+
+#[cfg(not(unix))]
+async fn sync_directory(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+async fn read_batch(path: &Path) -> anyhow::Result<TelemetryBatch> {
+    let bytes = tokio::fs::read(path).await?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+async fn write_synced_new(path: &Path, encoded: &[u8]) -> anyhow::Result<()> {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).await?;
+    file.write_all(encoded).await?;
+    file.flush().await?;
+    file.sync_all().await?;
+    Ok(())
+}
+
+async fn replace_synced(directory: &Path, path: &Path, encoded: &[u8]) -> anyhow::Result<u64> {
+    let temporary = directory.join(format!(".rewrite-{}.pending", uuid::Uuid::new_v4()));
+    write_synced_new(&temporary, encoded).await?;
+    tokio::fs::rename(&temporary, path).await?;
+    sync_directory(directory).await?;
+    Ok(u64::try_from(encoded.len()).unwrap_or(u64::MAX))
+}
+
+fn merge_own_payload_shed(batch: &mut TelemetryBatch, encoded_bytes: usize) {
+    let rows = batch.flows.len()
+        + batch.dns_providers.len()
+        + batch.peer_networks.len()
+        + batch.flag_transports.len();
+    batch.flows.clear();
+    batch.dns_providers.clear();
+    batch.peer_networks.clear();
+    batch.flag_transports.clear();
+    merge_loss_counters(
+        batch,
+        u64::try_from(rows).unwrap_or(u64::MAX),
+        u64::try_from(encoded_bytes).unwrap_or(u64::MAX),
+    );
+}
+
+fn merge_dropped_batch(report: &mut TelemetryBatch, dropped: &TelemetryBatch, encoded_bytes: u64) {
+    let rows = row_count(dropped);
+    let bytes = encoded_bytes
+        .saturating_add(u64::try_from(dropped.sensor_dropped_bytes.max(0)).unwrap_or(u64::MAX));
+    merge_loss_counters(report, rows, bytes);
+}
+
+fn merge_loss_counters(batch: &mut TelemetryBatch, rows: u64, bytes: u64) {
+    batch.sensor_dropped_rows =
+        bounded_loss_counter(batch.sensor_dropped_rows, rows, MAX_SENSOR_DROPPED_ROWS);
+    batch.sensor_dropped_bytes =
+        bounded_loss_counter(batch.sensor_dropped_bytes, bytes, MAX_SENSOR_DROPPED_BYTES);
+}
+
+fn clamp_loss_counters(batch: &mut TelemetryBatch) {
+    batch.sensor_dropped_rows = batch.sensor_dropped_rows.clamp(0, MAX_SENSOR_DROPPED_ROWS);
+    batch.sensor_dropped_bytes = batch
+        .sensor_dropped_bytes
+        .clamp(0, MAX_SENSOR_DROPPED_BYTES);
+}
+
+fn bounded_loss_counter(current: i64, additional: u64, maximum: i64) -> i64 {
+    current
+        .clamp(0, maximum)
+        .saturating_add(i64::try_from(additional).unwrap_or(i64::MAX))
+        .min(maximum)
+}
+
+fn row_count(batch: &TelemetryBatch) -> u64 {
+    u64::try_from(
+        batch.flows.len()
+            + batch.dns_providers.len()
+            + batch.peer_networks.len()
+            + batch.flag_transports.len(),
+    )
+    .unwrap_or(u64::MAX)
+    .saturating_add(u64::try_from(batch.sensor_dropped_rows).unwrap_or(u64::MAX))
+}
+
+#[derive(Debug, thiserror::Error)]
+enum UploadError {
+    #[error("{0}")]
+    Permanent(String),
+    #[error("{0}")]
+    Transient(String, Option<Duration>),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DrainError {
+    #[error("permanent sensor upload rejection; spool quarantined: {0}")]
+    Permanent(String),
+    #[error(transparent)]
+    Transient(#[from] anyhow::Error),
+}
+
+async fn upload_batch(
+    client: &reqwest::Client,
+    api: &str,
+    token: &str,
+    batch: &TelemetryBatch,
+) -> Result<(), UploadError> {
+    let response = client
+        .post(format!("{api}/api/internal/event-security/telemetry"))
+        .bearer_auth(token)
+        .json(batch)
+        .send()
+        .await
+        .map_err(|error| UploadError::Transient(error.to_string(), None))?;
+    if response.status().is_success() {
+        return Ok(());
+    }
+    let status = response.status();
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .map(|delay| delay.min(Duration::from_secs(30)));
+    let message = format!("event sensor upload returned {status}");
+    if status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+    {
+        Err(UploadError::Transient(message, retry_after))
+    } else {
+        Err(UploadError::Permanent(message))
+    }
+}
+
+async fn upload_with_retry(
+    client: &reqwest::Client,
+    api: &str,
+    token: &str,
+    batch: &TelemetryBatch,
+) -> Result<(), UploadError> {
+    let mut cap = Duration::from_millis(250);
+    for attempt in 0..6_u32 {
+        match upload_batch(client, api, token, batch).await {
+            Ok(()) => return Ok(()),
+            Err(error @ UploadError::Permanent(_)) => return Err(error),
+            Err(UploadError::Transient(message, retry_after)) if attempt == 5 => {
+                return Err(UploadError::Transient(message, retry_after));
+            }
+            Err(UploadError::Transient(_, retry_after)) => {
+                let fraction = u64::from(batch.batch_id.as_bytes()[attempt as usize]) + 1;
+                let jitter = Duration::from_millis(
+                    u64::try_from(cap.as_millis())
+                        .unwrap_or(u64::MAX)
+                        .saturating_mul(fraction)
+                        / 256,
+                );
+                tokio::time::sleep(retry_after.unwrap_or(jitter)).await;
+                cap = cap.saturating_mul(2).min(Duration::from_secs(10));
+            }
+        }
+    }
+    unreachable!("bounded upload attempts return from every terminal branch")
+}
+
+pub async fn enqueue_batch(spool: &mut DurableSpool, batch: TelemetryBatch) -> anyhow::Result<()> {
+    spool.enqueue(&batch).await
+}
+
+pub async fn drain_spool(
+    client: &reqwest::Client,
+    api: &str,
+    token: &str,
+    spool: &mut DurableSpool,
+) -> Result<(), DrainError> {
+    for _ in 0..16 {
+        let Some(batch) = spool.front().await? else {
+            return Ok(());
+        };
+        match upload_with_retry(client, api, token, &batch).await {
+            Ok(()) => spool.acknowledge_front(batch.batch_id).await?,
+            Err(UploadError::Permanent(error)) => {
+                return Err(DrainError::Permanent(error));
+            }
+            Err(error) => return Err(DrainError::Transient(error.into())),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_batch() -> TelemetryBatch {
+        TelemetryBatch {
+            batch_id: uuid::Uuid::new_v4(),
+            game_id: 1,
+            flows: Vec::new(),
+            dns_providers: Vec::new(),
+            peer_networks: Vec::new(),
+            flag_transports: Vec::new(),
+            sensor_dropped_rows: 0,
+            sensor_dropped_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn spool_limits_are_explicit_and_small() {
+        assert_eq!(MAX_SPOOL_BYTES, 64 * 1024 * 1024);
+        assert_eq!(MAX_SPOOL_BATCHES, 2_048);
+        assert_eq!(MAX_SPOOL_AGE, Duration::from_secs(24 * 60 * 60));
+    }
+
+    #[test]
+    fn runtime_image_prepares_the_persistent_spool_for_the_sensor_uid() {
+        let dockerfile = include_str!("../../Dockerfile");
+        assert!(dockerfile
+            .contains("install -d -o 65532 -g 65532 -m 0700 /var/lib/rsctf-event-sensor/spool"));
+        for compose in [
+            include_str!("../../deploy/compose.ad-vpn.yml"),
+            include_str!("../../deploy/compose.roles.ad-vpn.yml"),
+        ] {
+            assert!(compose.contains("rsctf-event-sensor-spool:/var/lib/rsctf-event-sensor/spool"));
+        }
+    }
+
+    #[test]
+    fn shed_counters_move_into_the_newest_durable_batch() {
+        let mut report = empty_batch();
+        let mut dropped = empty_batch();
+        dropped.sensor_dropped_rows = 7;
+        dropped.sensor_dropped_bytes = 11;
+        merge_dropped_batch(&mut report, &dropped, 13);
+        assert_eq!(report.sensor_dropped_rows, 7);
+        assert_eq!(report.sensor_dropped_bytes, 24);
+    }
+
+    #[test]
+    fn repeated_spool_churn_keeps_loss_report_within_ingest_limits() {
+        let mut report = empty_batch();
+        let mut dropped = empty_batch();
+        dropped.sensor_dropped_rows = 25_000;
+
+        for _ in 0..5_000 {
+            merge_dropped_batch(&mut report, &dropped, 1024 * 1024);
+        }
+
+        assert_eq!(report.sensor_dropped_rows, MAX_SENSOR_DROPPED_ROWS);
+        assert_eq!(report.sensor_dropped_bytes, MAX_SENSOR_DROPPED_BYTES);
+    }
+
+    #[test]
+    fn preexisting_spool_counters_are_normalized_for_upload() {
+        let mut report = empty_batch();
+        report.sensor_dropped_rows = i64::MAX;
+        report.sensor_dropped_bytes = i64::MAX;
+
+        clamp_loss_counters(&mut report);
+
+        assert_eq!(report.sensor_dropped_rows, MAX_SENSOR_DROPPED_ROWS);
+        assert_eq!(report.sensor_dropped_bytes, MAX_SENSOR_DROPPED_BYTES);
+    }
+
+    #[tokio::test]
+    async fn restart_removes_only_incomplete_managed_spool_writes() {
+        let directory = std::env::temp_dir().join(format!(
+            "rsctf-event-sensor-spool-open-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::create_dir(&directory).await.unwrap();
+        let pending = directory.join("orphan.pending");
+        let unrelated = directory.join("operator-note.txt");
+        tokio::fs::write(&pending, b"partial").await.unwrap();
+        tokio::fs::write(&unrelated, b"keep").await.unwrap();
+
+        let spool = DurableSpool::open(directory.clone()).await.unwrap();
+        assert!(spool.entries.is_empty());
+        assert!(!tokio::fs::try_exists(pending).await.unwrap());
+        assert!(tokio::fs::try_exists(unrelated).await.unwrap());
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn shed_report_is_durable_before_source_unlink() {
+        let directory = std::env::temp_dir().join(format!(
+            "rsctf-event-sensor-spool-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let mut spool = DurableSpool::open(directory.clone()).await.unwrap();
+        let mut dropped = empty_batch();
+        dropped.sensor_dropped_rows = 7;
+        spool.enqueue(&dropped).await.unwrap();
+        let source = spool.entries.front().unwrap().clone();
+        spool.entries = std::iter::repeat_n(source.clone(), MAX_SPOOL_BATCHES).collect();
+        spool.bytes = source
+            .1
+            .saturating_mul(u64::try_from(MAX_SPOOL_BATCHES).unwrap());
+
+        FAIL_AFTER_SHED_REPORT.store(true, std::sync::atomic::Ordering::SeqCst);
+        let next = empty_batch();
+        let error = spool
+            .enqueue(&next)
+            .await
+            .expect_err("the crash failpoint must stop before source unlink");
+        assert!(error.to_string().contains("injected crash"));
+
+        let target = spool.entries.back().unwrap().0.clone();
+        assert!(tokio::fs::try_exists(&source.0).await.unwrap());
+        assert!(tokio::fs::try_exists(&target).await.unwrap());
+        let durable = read_batch(&target).await.unwrap();
+        assert_eq!(durable.batch_id, next.batch_id);
+        assert_eq!(durable.sensor_dropped_rows, 7);
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+}

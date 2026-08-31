@@ -32,12 +32,13 @@ import { Icon } from '@mdi/react'
 import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR from 'swr'
-import { useAdToken, AdTokenSection, AdVpnSection, AdTokenRevealModal } from '@Components/AdToolkitSections'
+import { AdTokenOwner, AdTokenSection, AdVpnSection, AdTokenRevealModal } from '@Components/AdToolkitSections'
 import type { KothScoreboardModel } from '@Hooks/useGame'
 import misc from '@Styles/Misc.module.css'
 
 interface KothToolkitModalProps extends ModalProps {
   gameId: number
+  tokenOwner: AdTokenOwner
 }
 
 const TOKEN_RESPONSE_EXAMPLE = `[
@@ -101,26 +102,37 @@ const CopyCurlButton: FC<{ value: string }> = ({ value }) => {
  * the same endpoints as AdGuideModal for those sections rather than
  * duplicating state.
  */
-export const KothGuideModal: FC<KothToolkitModalProps> = ({ gameId, ...modalProps }) => {
+export const KothGuideModal: FC<KothToolkitModalProps> = ({ gameId, tokenOwner, ...modalProps }) => {
   const { t } = useTranslation()
   const { data: scoreboard } = useSWR<KothScoreboardModel>(
     modalProps.opened ? `/api/game/${gameId}/ad/koth/scoreboard` : null
   )
   const hasApiArena = scoreboard?.hills.some((hill) => hill.claimSource === 'Api') ?? false
   const hasMarkerHill = !scoreboard || scoreboard.hills.some((hill) => hill.claimSource !== 'Api')
-  const { adTokenHint, rotating, freshToken, storedToken, forgetToken, tokenModalOpen, closeTokenModal, onRotate } =
-    useAdToken(gameId, () =>
-      showNotification({
-        color: 'teal',
-        message: t('game.notification.koth.token.rotated', 'KotH token rotated'),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-    )
+  const {
+    adTokenHint,
+    rotating,
+    freshToken,
+    storedToken,
+    forgetToken,
+    tokenModalOpen,
+    closeTokenModal,
+    onRotate,
+    revealSource,
+  } = tokenOwner
+
+  const rotateSharedToken = async () => {
+    if (!(await onRotate('koth'))) return
+    showNotification({
+      color: 'teal',
+      message: t('game.notification.koth.token.rotated', 'KotH token rotated'),
+      icon: <Icon path={mdiCheck} size={1} />,
+    })
+  }
 
   const apiUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/api/Game/${gameId}/Ad`
-  // Prefer this session's freshly-rotated token, else the one saved in this
-  // browser (localStorage) so the curl examples are copy-paste-ready on reload,
-  // else the placeholder.
+  // Prefer this session's freshly rotated token for copy-ready examples; it is
+  // intentionally not retained across a reload or account change.
   const exampleBearer = freshToken ?? storedToken ?? '<your-token>'
 
   const { tokenCurlExample, hillsCurlExample, hillIpCurlExample, plantPseudocode } = useMemo(() => {
@@ -202,7 +214,7 @@ write_to_hill "/koth/king" "$TOKEN"`,
               <AdTokenSection
                 hint={adTokenHint}
                 rotating={rotating}
-                onRotate={onRotate}
+                onRotate={() => void rotateSharedToken()}
                 storedToken={storedToken}
                 onForget={forgetToken}
                 title={t('game.content.koth.guide.token.title', 'Your API token')}
@@ -642,13 +654,13 @@ write_to_hill "/koth/king" "$TOKEN"`,
 
       {/* Fresh-token reveal — shared with A&D (see AdToolkitSections). */}
       <AdTokenRevealModal
-        opened={tokenModalOpen}
+        opened={tokenModalOpen && revealSource === 'koth'}
         onClose={closeTokenModal}
         freshToken={freshToken}
         title={t('game.content.koth.token_modal.title', 'Your new API token (KotH + A&D)')}
         warning={t(
           'game.content.koth.token_modal.warning',
-          'This token is now saved in this browser (see “Saved token” in the API-token section) so your scripts can reuse it. Copy it here too if you want it elsewhere — the platform keeps only a hash and can’t show it again. The previous token (if any) has been invalidated. The same token authenticates both /Koth/Token and /Submit.'
+          'Copy this token now. It is kept only in this page session for the command examples; the platform stores only a hash and cannot show it after the page closes. The previous token (if any) has been invalidated. The same token authenticates both /Koth/Token and /Submit.'
         )}
       />
     </>

@@ -69,7 +69,10 @@ async fn admin_hub(
                 Ok(scope) => scope,
                 Err(status) => return status.into_response(),
             };
-            let rx = st.events.subscribe();
+            let rx = game_id.map_or_else(
+                || st.events.subscribe_global_targets(targets),
+                |id| st.events.subscribe_game_targets(id, targets),
+            );
             let Some(connection_permit) =
                 admission::try_connection_permit(admission::client_key(&headers, peer.ip()), scope)
             else {

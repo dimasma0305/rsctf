@@ -5,6 +5,9 @@
 //! observations, and hashes of exact platform-issued dynamic flags. It never
 //! writes a pcap, DNS name, raw endpoint, or packet payload.
 
+mod event_sensor_flag_dedup;
+mod event_sensor_spool;
+
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
@@ -25,6 +28,12 @@ use tokio::sync::{mpsc, watch};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
+use event_sensor_flag_dedup::{
+    flag_dedup_key, release_acknowledged_flags, release_flag_dedup, track_flag, FlagDedupKey,
+    TrackFlagResult,
+};
+use event_sensor_spool::{drain_spool, enqueue_batch, DrainError, DurableSpool};
+
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
@@ -42,6 +51,7 @@ struct Config {
     token: String,
     interface: String,
     asn_file: Option<String>,
+    spool_dir: std::path::PathBuf,
 }
 
 impl Config {
@@ -62,6 +72,9 @@ impl Config {
             asn_file: std::env::var("RSCTF_EVENT_SENSOR_ASN_FILE")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
+            spool_dir: std::env::var_os("RSCTF_EVENT_SENSOR_SPOOL_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| "/var/lib/rsctf-event-sensor/spool".into()),
         })
     }
 }
@@ -209,13 +222,18 @@ struct DnsState {
     last: DateTime<Utc>,
 }
 
+struct CapturedBatch {
+    telemetry: TelemetryBatch,
+    flag_dedup_keys: Vec<FlagDedupKey>,
+}
+
 #[derive(Default)]
 struct CaptureState {
     flows: HashMap<FlowKey, FlowState>,
     destinations: HashMap<(i32, Uuid, i64), HashSet<IpAddr>>,
     dns: HashMap<DnsKey, DnsState>,
     flags: Vec<(i32, FlagTransportInput)>,
-    seen_flags: HashSet<(i32, Uuid, String, i16, i16)>,
+    seen_flags: HashSet<FlagDedupKey>,
     pending_drops: HashMap<i32, (u64, u64)>,
 }
 
@@ -476,33 +494,20 @@ fn inspect_packet(
         }
         let transport = if packet.protocol == 6 { 0 } else { 1 };
         let direction = if outbound { 0 } else { 1 };
-        let dedup = (
-            peer.game_id,
-            peer.peer.peer_id,
-            pattern.pattern.value_hash.clone(),
+        let flag = FlagTransportInput {
+            challenge_id: pattern.pattern.challenge_id,
+            receiving_user_id: peer.peer.user_id,
+            receiving_participation_id: peer.peer.participation_id,
+            owning_participation_id: pattern.pattern.owning_participation_id,
+            peer_id: peer.peer.peer_id,
+            flag_value_hash: pattern.pattern.value_hash.clone(),
             transport,
             direction,
-        );
-        if state.seen_flags.contains(&dedup) {
-            continue;
-        }
-        if state.seen_flags.len() < MAX_TRACKED_FLOWS {
-            state.seen_flags.insert(dedup);
-            state.flags.push((
-                peer.game_id,
-                FlagTransportInput {
-                    challenge_id: pattern.pattern.challenge_id,
-                    receiving_user_id: peer.peer.user_id,
-                    receiving_participation_id: peer.peer.participation_id,
-                    owning_participation_id: pattern.pattern.owning_participation_id,
-                    peer_id: peer.peer.peer_id,
-                    flag_value_hash: pattern.pattern.value_hash.clone(),
-                    transport,
-                    direction,
-                    observed_at_utc: now,
-                },
-            ));
-        } else {
+            observed_at_utc: now,
+        };
+        if track_flag(&mut state.flags, &mut state.seen_flags, peer.game_id, flag)
+            == TrackFlagResult::Capacity
+        {
             dropped_flag_matches = dropped_flag_matches.saturating_add(1);
         }
     }
@@ -626,6 +631,7 @@ fn completed_batches(state: &mut CaptureState, now: DateTime<Utc>) -> Vec<Teleme
 
 fn empty_batch(game_id: i32) -> TelemetryBatch {
     TelemetryBatch {
+        batch_id: Uuid::new_v4(),
         game_id,
         flows: Vec::new(),
         dns_providers: Vec::new(),
@@ -661,7 +667,8 @@ fn trim_batch(batch: &mut TelemetryBatch) -> u64 {
 fn capture_loop(
     interface: String,
     mut snapshots: watch::Receiver<Arc<CompiledSnapshot>>,
-    batches: mpsc::Sender<TelemetryBatch>,
+    batches: mpsc::Sender<CapturedBatch>,
+    flag_acknowledgements: std::sync::mpsc::Receiver<Vec<FlagDedupKey>>,
 ) -> anyhow::Result<()> {
     let mut snapshot = snapshots.borrow_and_update().clone();
     let mut state = CaptureState::default();
@@ -693,6 +700,7 @@ fn capture_loop(
         };
         tracing::info!(%interface, "event sensor capture active");
         loop {
+            release_acknowledged_flags(&mut state.seen_flags, &flag_acknowledgements);
             if snapshots.has_changed().unwrap_or(false) {
                 snapshot = snapshots.borrow_and_update().clone();
             }
@@ -710,12 +718,25 @@ fn capture_loop(
             }
             if last_flush.elapsed() >= Duration::from_secs(30) {
                 for mut batch in completed_batches(&mut state, Utc::now()) {
+                    let mut flag_dedup_keys = batch
+                        .flag_transports
+                        .iter()
+                        .map(|flag| flag_dedup_key(batch.game_id, flag))
+                        .collect::<Vec<_>>();
                     let trimmed = trim_batch(&mut batch);
+                    let dropped_flag_keys = flag_dedup_keys.split_off(batch.flag_transports.len());
+                    release_flag_dedup(&mut state.seen_flags, &dropped_flag_keys);
                     batch.sensor_dropped_rows = batch
                         .sensor_dropped_rows
                         .saturating_add(i64::try_from(trimmed).unwrap_or(i64::MAX));
-                    if let Err(error) = batches.try_send(batch) {
+                    let captured = CapturedBatch {
+                        telemetry: batch,
+                        flag_dedup_keys,
+                    };
+                    if let Err(error) = batches.try_send(captured) {
                         let lost = error.into_inner();
+                        release_flag_dedup(&mut state.seen_flags, &lost.flag_dedup_keys);
+                        let lost = lost.telemetry;
                         let lost_rows = lost
                             .flows
                             .len()
@@ -858,22 +879,26 @@ async fn fetch_snapshot(
         .await?)
 }
 
-async fn upload_batch(
-    client: &reqwest::Client,
-    config: &Config,
-    batch: &TelemetryBatch,
-) -> anyhow::Result<()> {
-    client
-        .post(format!(
-            "{}/api/internal/event-security/telemetry",
-            config.api
-        ))
-        .bearer_auth(&config.token)
-        .json(batch)
-        .send()
-        .await?
-        .error_for_status()?;
-    Ok(())
+fn terminal_snapshot_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<reqwest::Error>()
+        .and_then(reqwest::Error::status)
+        .is_some_and(|status| {
+            status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN
+                || status == reqwest::StatusCode::NOT_FOUND
+        })
+}
+
+fn snapshot_retry_delay(attempt: u32, entropy: u64) -> Duration {
+    let cap_ms = 1_000_u64
+        .saturating_mul(1_u64 << attempt.min(5))
+        .min(30_000);
+    let floor_ms = cap_ms / 2;
+    let mixed = entropy
+        .rotate_left(attempt % 64)
+        .wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    Duration::from_millis(floor_ms + mixed % (cap_ms - floor_ms + 1))
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -887,23 +912,34 @@ async fn main() -> anyhow::Result<()> {
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(10))
         .build()?;
+    let mut spool = DurableSpool::open(config.spool_dir.clone()).await?;
+    let startup_entropy = u64::from_be_bytes(
+        Uuid::new_v4().as_bytes()[..8]
+            .try_into()
+            .expect("UUID prefix is eight bytes"),
+    );
+    let mut snapshot_failures = 0_u32;
     let initial = loop {
         match fetch_snapshot(&client, &config)
             .await
             .and_then(CompiledSnapshot::build)
         {
             Ok(snapshot) => break Arc::new(snapshot),
+            Err(error) if terminal_snapshot_error(&error) => return Err(error),
             Err(error) => {
-                tracing::warn!(%error, "event sensor initial snapshot unavailable; retrying");
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                let delay = snapshot_retry_delay(snapshot_failures, startup_entropy);
+                snapshot_failures = snapshot_failures.saturating_add(1);
+                tracing::warn!(%error, ?delay, "event sensor initial snapshot unavailable; retrying");
+                tokio::time::sleep(delay).await;
             }
         }
     };
     let (snapshot_tx, snapshot_rx) = watch::channel(initial.clone());
     let (batch_tx, mut batch_rx) = mpsc::channel(BATCH_QUEUE);
+    let (flag_ack_tx, flag_ack_rx) = std::sync::mpsc::channel();
     let interface = config.interface.clone();
     tokio::task::spawn_blocking(move || {
-        if let Err(error) = capture_loop(interface, snapshot_rx, batch_tx) {
+        if let Err(error) = capture_loop(interface, snapshot_rx, batch_tx, flag_ack_rx) {
             tracing::error!(%error, "event sensor capture stopped");
         }
     });
@@ -919,17 +955,27 @@ async fn main() -> anyhow::Result<()> {
                         snapshot = Arc::new(next);
                         let _ = snapshot_tx.send(snapshot.clone());
                     }
+                    Err(error) if terminal_snapshot_error(&error) => return Err(error),
                     Err(error) => tracing::warn!(%error, "event sensor snapshot refresh failed"),
                 }
                 for batch in network_observations(&config, &snapshot, &prefixes).await {
-                    if let Err(error) = upload_batch(&client, &config, &batch).await {
-                        tracing::warn!(%error, game_id = batch.game_id, "event sensor endpoint telemetry upload failed");
+                    enqueue_batch(&mut spool, batch).await?;
+                }
+                if let Err(error) = drain_spool(&client, &config.api, &config.token, &mut spool).await {
+                    if matches!(&error, DrainError::Permanent(_)) {
+                        return Err(error.into());
                     }
+                    tracing::warn!(%error, "event sensor telemetry spool remains pending");
                 }
             }
-            Some(batch) = batch_rx.recv() => {
-                if let Err(error) = upload_batch(&client, &config, &batch).await {
-                    tracing::warn!(%error, game_id = batch.game_id, "event sensor aggregate upload failed");
+            Some(captured) = batch_rx.recv() => {
+                enqueue_batch(&mut spool, captured.telemetry).await?;
+                let _ = flag_ack_tx.send(captured.flag_dedup_keys);
+                if let Err(error) = drain_spool(&client, &config.api, &config.token, &mut spool).await {
+                    if matches!(&error, DrainError::Permanent(_)) {
+                        return Err(error.into());
+                    }
+                    tracing::warn!(%error, "event sensor aggregate spool remains pending");
                 }
             }
         }
@@ -937,59 +983,5 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn ipv4_udp(payload: &[u8], source: [u8; 4], destination: [u8; 4]) -> Vec<u8> {
-        let mut packet = vec![0u8; 20 + 8];
-        packet[0] = 0x45;
-        packet[9] = 17;
-        packet[12..16].copy_from_slice(&source);
-        packet[16..20].copy_from_slice(&destination);
-        packet[20..22].copy_from_slice(&12345u16.to_be_bytes());
-        packet[22..24].copy_from_slice(&53u16.to_be_bytes());
-        packet.extend_from_slice(payload);
-        packet
-    }
-
-    #[test]
-    fn parser_never_retains_or_emits_raw_packet_data() {
-        let packet = ipv4_udp(b"secret-payload", [10, 13, 0, 2], [1, 1, 1, 1]);
-        let parsed = parse_packet(&packet).unwrap();
-        assert_eq!(parsed.payload, b"secret-payload");
-        let mut tail = Vec::new();
-        append_tail(&mut tail, &vec![b'x'; 512]);
-        assert_eq!(tail.len(), MAX_FLOW_TAIL);
-        assert!(std::mem::size_of::<FlowBucketInput>() < 256);
-    }
-
-    #[test]
-    fn dns_parser_is_bounded_and_suffix_classifier_is_safe() {
-        let mut dns = vec![0u8; 12];
-        dns[5] = 1;
-        dns.extend_from_slice(&[3, b'a', b'p', b'i', 6]);
-        dns.extend_from_slice(b"openai");
-        dns.extend_from_slice(&[3]);
-        dns.extend_from_slice(b"com");
-        dns.extend_from_slice(&[0, 0, 1, 0, 1]);
-        assert_eq!(
-            parse_dns_question(&dns, false).as_deref(),
-            Some("api.openai.com")
-        );
-        assert!(provider_category("api.openai.com").is_some());
-    }
-
-    #[test]
-    fn sensor_api_url_requires_exact_loopback_http_or_https() {
-        assert_eq!(
-            validate_api_url("http://127.0.0.1:8080/").unwrap(),
-            "http://127.0.0.1:8080"
-        );
-        assert!(validate_api_url("http://[::1]:8080").is_ok());
-        assert!(validate_api_url("https://sensor.example.test/internal").is_ok());
-        assert!(validate_api_url("http://127.0.0.1.attacker.test").is_err());
-        assert!(validate_api_url("http://10.13.0.1:8080").is_err());
-        assert!(validate_api_url("https://user:secret@sensor.example.test").is_err());
-        assert!(validate_api_url("https://sensor.example.test?token=leak").is_err());
-    }
-}
+#[path = "rsctf_event_sensor_tests.rs"]
+mod tests;

@@ -25,6 +25,13 @@ pub struct FileChange {
 }
 
 #[derive(Debug, Clone)]
+pub struct ContainerFile {
+    pub bytes: Vec<u8>,
+    pub size: u64,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct ContainerStatus {
     pub id: String,
     pub status: String,
@@ -157,6 +164,15 @@ pub trait ContainerManager: Send + Sync {
 
     async fn snapshot_changes(&self, _id: &str) -> AppResult<Vec<FileChange>> {
         Ok(Vec::new())
+    }
+
+    /// Read one regular file without launching a process inside an untrusted
+    /// workload. Implementations must stop after `limit` bytes and report the
+    /// original size and whether the preview was truncated.
+    async fn read_file(&self, _id: &str, _path: &str, _limit: usize) -> AppResult<ContainerFile> {
+        Err(AppError::bad_request(
+            "bounded file inspection is not supported by this backend",
+        ))
     }
 
     async fn exec(&self, _id: &str, _cmd: Vec<String>) -> AppResult<String> {

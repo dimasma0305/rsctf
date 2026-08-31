@@ -220,19 +220,19 @@ pub async fn delete_anti_cheat_block(
 
 // ─── Bounded event-network telemetry and evidence fusion ──────────────────
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DerivedFindingResult {
-    pub inserted: usize,
-}
-
 pub async fn derive_event_security_findings(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Path(game_id): Path<i32>,
-) -> AppResult<RequestResponse<DerivedFindingResult>> {
-    let inserted = crate::services::event_security::derive_context_findings(&st, game_id).await?;
-    Ok(RequestResponse::ok(DerivedFindingResult { inserted }))
+    headers: HeaderMap,
+) -> AppResult<(
+    StatusCode,
+    RequestResponse<crate::services::control_jobs::ControlJobModel>,
+)> {
+    let operation = crate::controllers::edit::control_jobs::operation_id(&headers)?;
+    let job =
+        crate::services::control_jobs::request_security_derivation(&st, game_id, operation).await?;
+    Ok((StatusCode::ACCEPTED, RequestResponse::ok(job)))
 }
 
 pub async fn fused_event_security_breakdown(

@@ -68,8 +68,14 @@ async fn live_tunnel_authorized_on(
     challenge_id: i32,
     token: &str,
 ) -> bool {
-    let Ok(Some(secrets)) =
-        load_authorization_snapshot(pool, game_id, participation_id, challenge_id).await
+    let Some(_permit) = crate::services::authorization_lease::try_query_permit() else {
+        return false;
+    };
+    let Ok(Ok(Some(secrets))) = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        load_authorization_snapshot(pool, game_id, participation_id, challenge_id),
+    )
+    .await
     else {
         return false;
     };

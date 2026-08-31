@@ -27,6 +27,8 @@ pub mod game_challenge {
         pub challenge_type: ChallengeType,
         pub hints: Option<Json>,
         pub is_enabled: bool,
+        /// Optimistic-concurrency fence for A&D/KotH enabled-state commands.
+        pub ad_control_revision: i64,
         pub deadline_utc: Option<DateTime<Utc>>,
         pub submission_limit: i32,
         pub accepted_count: i32,

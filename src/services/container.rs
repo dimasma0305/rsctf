@@ -8,11 +8,7 @@
 //! configured) and a real [`DockerContainerManager`] backed by the `bollard`
 //! crate.
 //!
-//! ## Docker flow (mirrors RSCTF `DockerManager.CreateContainerAsync`)
-//!
-//! 1. **Connect** — [`DockerContainerManager::connect`] talks to the local
-//!    Docker daemon through `bollard::Docker::connect_with_local_defaults`
-//!    (honours `DOCKER_HOST` / falls back to the unix socket).
+//! Docker uses `bollard` through the local daemon and preserves managed ownership.
 //! 2. **Create** — for each per-instance challenge we:
 //!    - best-effort pull the immutable repository digest (`create_image`
 //!      streaming pull; a daemon-local image ID must already be present),
@@ -58,6 +54,7 @@ use crate::utils::enums::{ChallengeType, NetworkMode};
 use crate::utils::error::{AppError, AppResult};
 mod backend;
 mod docker;
+mod docker_change_api;
 mod logging;
 mod naming;
 mod policy;
@@ -76,7 +73,8 @@ use self::docker::{
 };
 pub use backend::{
     should_use_platform_proxy, ContainerBackendKind, ContainerExecAdmission, ContainerExecError,
-    ContainerLiveness, ContainerManager, ContainerStatus, FileChange, NoopContainerManager,
+    ContainerFile, ContainerLiveness, ContainerManager, ContainerStatus, FileChange,
+    NoopContainerManager,
 };
 pub use docker::{from_env, from_env_required};
 use logging::bounded_log_config;
@@ -147,7 +145,7 @@ fn scoped_operation_id(scope: &str, operation_id: Option<&str>) -> Option<String
     operation_id.map(|operation_id| format!("{scope}\0{operation_id}"))
 }
 
-fn managed_container_filters(scope: &str) -> HashMap<String, Vec<String>> {
+pub(crate) fn managed_container_filters(scope: &str) -> HashMap<String, Vec<String>> {
     HashMap::from([(
         "label".to_string(),
         vec![
@@ -904,15 +902,13 @@ impl ContainerManager for DockerContainerManager {
             .id
             .as_deref()
             .ok_or_else(|| AppError::internal("inspected container has no backend identity"))?;
-        let changes = docker.container_changes(canonical_id).await.map_err(|e| {
-            if is_not_found(&e) {
-                AppError::not_found(format!("container not found: {id}"))
-            } else {
-                AppError::internal(format!("failed to read container changes: {e}"))
-            }
-        })?;
+        // Bollard's convenience API materializes the complete attacker-sized
+        // JSON response. This narrow client cancels the daemon body at a fixed
+        // byte cap before deserializing; the forensics layer then applies its
+        // separate entry/path/serialized-response ceilings.
+        let changes =
+            docker_change_api::container_changes(self.endpoint.as_deref(), canonical_id).await?;
         Ok(changes
-            .unwrap_or_default()
             .into_iter()
             .map(|c| FileChange {
                 path: c.path,
@@ -926,6 +922,10 @@ impl ContainerManager for DockerContainerManager {
                 .to_string(),
             })
             .collect())
+    }
+
+    async fn read_file(&self, id: &str, path: &str, limit: usize) -> AppResult<ContainerFile> {
+        self.read_bounded_file(id, path, limit).await
     }
 
     /// Exec a command in the container (KotH token plant/read-back), returning

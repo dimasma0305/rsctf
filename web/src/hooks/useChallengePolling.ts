@@ -11,15 +11,24 @@ import {
 interface ChallengePollingOptions<T> {
   key: string | null
   active: boolean
-  refreshInterval: number
+  refreshInterval: number | ((data: T | undefined) => number)
   request: (signal: AbortSignal) => Promise<T>
+  revalidateOnFocus?: boolean
+  revalidateOnReconnect?: boolean
 }
 
 /**
  * Own a modal-scoped request, retry timer, and refresh schedule. Closing the
  * modal removes the SWR key and aborts both current work and deferred recovery.
  */
-export const useChallengePolling = <T>({ key, active, refreshInterval, request }: ChallengePollingOptions<T>) => {
+export const useChallengePolling = <T>({
+  key,
+  active,
+  refreshInterval,
+  request,
+  revalidateOnFocus = true,
+  revalidateOnReconnect = true,
+}: ChallengePollingOptions<T>) => {
   const owner = useMemo(createChallengePollOwner, [])
   const activeRef = useRef(active)
   const failureCount = useRef(0)
@@ -52,11 +61,14 @@ export const useChallengePolling = <T>({ key, active, refreshInterval, request }
   return useSWR<T>(liveKey, fetcher, {
     // An error owns the sole recovery timer below. Suppressing the ordinary
     // cadence meanwhile is what makes Retry-After a real lower bound.
-    refreshInterval: () => (active && failureCount.current === 0 ? refreshInterval : 0),
+    refreshInterval: (data) => {
+      if (!active || failureCount.current !== 0) return 0
+      return typeof refreshInterval === 'function' ? refreshInterval(data) : refreshInterval
+    },
     refreshWhenHidden: false,
     refreshWhenOffline: false,
-    revalidateOnFocus: pausedKey !== key,
-    revalidateOnReconnect: pausedKey !== key,
+    revalidateOnFocus: revalidateOnFocus && pausedKey !== key,
+    revalidateOnReconnect: revalidateOnReconnect && pausedKey !== key,
     shouldRetryOnError: isChallengePollRetryable,
     onSuccess: () => {
       failureCount.current = 0

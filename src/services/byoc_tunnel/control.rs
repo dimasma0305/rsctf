@@ -11,7 +11,11 @@ pub fn start_control_listener(
     st: SharedState,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
-    let mut events = st.events.subscribe();
+    const CONTROL_TARGETS: &[&str] = &[
+        "InternalByocRevokeParticipation",
+        "InternalByocRevokeChallenge",
+    ];
+    let mut events = st.events.subscribe_global_targets(CONTROL_TARGETS);
     tokio::spawn(async move {
         loop {
             tokio::select! {

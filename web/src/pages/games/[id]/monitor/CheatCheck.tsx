@@ -22,11 +22,12 @@ import { useParams, useSearchParams } from 'react-router'
 import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { CheatInfo } from '@Components/monitor/CheatInfo'
 import { CheatSubmissionLog } from '@Components/monitor/CheatSubmissionLog'
-import { CHEAT_REPORT_REFRESH_INTERVAL_MS, isCheatReportStale, normalizeCheatViewTab } from '@Utils/AntiCheat'
+import { isCheatReportStale, normalizeCheatViewTab } from '@Utils/AntiCheat'
 import { tryGetErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
+import { useAntiCheatReport } from '@Hooks/useAntiCheatReport'
 import { useUser } from '@Hooks/useUser'
-import api, { DetectorCapability, Role } from '@Api'
+import { DetectorCapability, Role } from '@Api'
 
 const DETECTOR_STATUS_COLORS: Record<DetectorCapability['status'], string> = {
   active: 'green',
@@ -64,19 +65,7 @@ const CheatCheck: FC = () => {
     setSearchParams(next)
   }
 
-  const {
-    data: report,
-    isLoading,
-    isValidating,
-    error,
-    mutate,
-  } = api.cheatReport.useCheatReportGet(numId, {
-    refreshInterval: CHEAT_REPORT_REFRESH_INTERVAL_MS,
-    refreshWhenHidden: false,
-    revalidateOnFocus: true,
-    revalidateOnReconnect: true,
-    keepPreviousData: false,
-  })
+  const { data: report, isLoading, isValidating, error, mutate } = useAntiCheatReport(numId, activeTab === 'analysis')
   const refresh = () => void mutate()
   const lastReconciledAt = report?.lastReconciledAt
   const reportIsStale = isCheatReportStale(lastReconciledAt)
@@ -87,8 +76,7 @@ const CheatCheck: FC = () => {
           timeStyle: 'medium',
         }).format(new Date(value))
       : null
-  const lastEvaluated =
-    formatReportTime(lastReconciledAt) ?? t('game.content.cheat.not_evaluated', 'Not evaluated yet')
+  const lastEvaluated = formatReportTime(lastReconciledAt) ?? t('game.content.cheat.not_evaluated', 'Not evaluated yet')
   const oldestPending = formatReportTime(report?.oldestPendingAt)
   const pendingJobs = report?.pendingJobs ?? 0
   const finalizing = report?.evidenceClosedAt != null && report?.sealedAt == null
@@ -348,7 +336,7 @@ const CheatCheck: FC = () => {
         )}
 
         {/* ── Top-level tabs ────────────────────── */}
-        <Tabs value={activeTab} onChange={handleTabChange} variant="pills" radius="md">
+        <Tabs value={activeTab} onChange={handleTabChange} variant="pills" radius="md" keepMounted={false}>
           <Tabs.List
             grow
             style={{
@@ -375,7 +363,7 @@ const CheatCheck: FC = () => {
           </Tabs.Panel>
 
           <Tabs.Panel value="submissions" pt="xs">
-            <CheatSubmissionLog gameId={numId} />
+            <CheatSubmissionLog gameId={numId} active={activeTab === 'submissions'} />
           </Tabs.Panel>
         </Tabs>
       </Stack>

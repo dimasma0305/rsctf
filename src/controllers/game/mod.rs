@@ -9,6 +9,7 @@
 pub mod ad;
 mod cheat_capabilities;
 mod cheat_identity;
+pub(crate) mod credential_operations;
 pub mod koth;
 mod monitor_history;
 #[cfg(test)]
@@ -19,7 +20,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::middlewares::rate_limiter::{limited, Policy};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -176,7 +177,7 @@ pub type GameEventModel = crate::services::game_event_feed::GameEventMessage;
 pub type MonitorSubmissionModel = crate::services::submission_feed::SubmissionMessage;
 
 /// RSCTF `ChallengeItem` (a solved cell on the scoreboard).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeItem {
     pub id: i32,
@@ -189,7 +190,7 @@ pub struct ChallengeItem {
 }
 
 /// RSCTF `ScoreboardItem`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardItem {
     pub id: i32,
@@ -345,6 +346,9 @@ pub struct ChallengeDetailModel {
     pub user_comment: Option<String>,
     pub solve_receipt_mode: SolveReceiptMode,
     pub receipt_verifier_identity: Option<String>,
+    /// Player-visible A&D runtime ownership. BYOC challenges need this even
+    /// before their first agent connection creates a team-service row.
+    pub ad_self_hosted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variant: Option<ClientChallengeVariant>,
 }
@@ -470,22 +474,6 @@ pub struct CheatInfoModel {
     pub submit_team: ParticipationModel,
     /// The offending submission.
     pub submission: SubmissionModel,
-}
-
-/// RSCTF `TrafficFlowDetail` (extends `TrafficFlowSummary`).
-#[derive(Debug, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct TrafficFlowDetail {
-    pub connection_port: i32,
-    pub first_seen_utc: String,
-    pub last_seen_utc: String,
-    pub peer_ip: String,
-    pub packets_in: i64,
-    pub packets_out: i64,
-    pub bytes_in: i64,
-    pub bytes_out: i64,
-    pub flag_hits: i64,
-    pub chunks: Vec<Json>,
 }
 
 /// RSCTF `GameJoinModel`.
@@ -940,7 +928,9 @@ fn participation_token(g: &game::Model, team_id: i32) -> AppResult<String> {
 
 mod catalog;
 pub(crate) mod cheat;
+mod cheat_compare;
 mod cheat_evidence;
+mod cheat_report_cache;
 mod combined_scoreboard;
 mod containers;
 mod lookups;
@@ -958,6 +948,7 @@ mod writeup;
 
 pub use catalog::*;
 pub use cheat::*;
+pub use cheat_compare::*;
 pub use cheat_evidence::*;
 pub use combined_scoreboard::*;
 pub use containers::*;

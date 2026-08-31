@@ -3,7 +3,7 @@ import { useDisclosure, useInputState } from '@mantine/hooks'
 import { showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import { AccountView } from '@Components/AccountView'
@@ -12,6 +12,7 @@ import { OAuthButtons } from '@Components/OAuthButtons'
 import { StrengthPasswordInput } from '@Components/StrengthPasswordInput'
 import { TermsOfService } from '@Components/TermsOfService'
 import { encryptApiData } from '@Utils/Crypto'
+import { collectEncryptedFingerprintIdentity } from '@Utils/FingerprintIdentity'
 import { tryGetClientError } from '@Utils/Shared'
 import { useConfig } from '@Hooks/useConfig'
 import { usePageTitle } from '@Hooks/usePageTitle'
@@ -27,6 +28,7 @@ const Register: FC = () => {
   const [disabled, setDisabled] = useState(false)
   const [accepted, setAccepted] = useState(false)
   const [tosOpened, { open: openTos, close: closeTos }] = useDisclosure(false)
+  const registerOperationRef = useRef<{ controller: AbortController; running: boolean } | null>(null)
   const { config } = useConfig()
 
   const navigate = useNavigate()
@@ -62,10 +64,15 @@ const Register: FC = () => {
 
   usePageTitle(t('account.title.register'))
 
-  const executeRegister = async () => {
-    if (config.enableBrowserFingerprint && !accepted) {
-      openTos()
-      return
+  useEffect(() => () => registerOperationRef.current?.controller.abort(), [])
+
+  const executeRegister = async (consentGranted = false) => {
+    let operation = registerOperationRef.current
+    if (operation?.running) return
+    if (operation && !consentGranted) return
+    if (!operation) {
+      operation = { controller: new AbortController(), running: false }
+      registerOperationRef.current = operation
     }
 
     if (pwd !== retypedPwd) {
@@ -75,52 +82,39 @@ const Register: FC = () => {
         message: t('account.password.not_match'),
         icon: <Icon path={mdiClose} size={1} />,
       })
+      registerOperationRef.current = null
       return
     }
 
-    const { valid, token } = await getToken()
-
-    if (!valid) {
-      showNotification({
-        color: 'orange',
-        title: t('account.notification.captcha.not_valid'),
-        message: t('common.error.try_later'),
-        loading: true,
-      })
+    if (config.enableBrowserFingerprint && !accepted && !consentGranted) {
+      openTos()
       return
     }
-
+    operation.running = true
     setDisabled(true)
 
-    showNotification({
-      color: 'orange',
-      id: 'register-status',
-      title: t('account.notification.captcha.request_sent.title'),
-      message: t('account.notification.captcha.request_sent.message'),
-      loading: true,
-      autoClose: false,
-    })
-
     try {
-      const fingerprintPayload = config.enableBrowserFingerprint
-        ? await (async () => {
-            // Avoid loading/running fingerprinting code unless the feature is enabled.
-            const challengeResponse = await api.account.accountFingerprintChallenge()
-            const challenge = challengeResponse.data.data
-            if (!challenge?.nonce || !challenge.requiredSignals) {
-              throw new Error('Invalid fingerprint challenge')
-            }
+      const { valid, token } = await getToken()
+      if (!valid) {
+        showNotification({
+          color: 'orange',
+          title: t('account.notification.captcha.not_valid'),
+          message: t('common.error.try_later'),
+        })
+        return
+      }
 
-            const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
-            const payload = await getFingerprintPayload({
-              nonce: challenge.nonce,
-              requiredSignals: challenge.requiredSignals,
-            })
-            return {
-              fingerprint: await encryptApiData(t, payload.fingerprint, config.apiPublicKey),
-              fingerprintProof: await encryptApiData(t, payload.proof, config.apiPublicKey),
-            }
-          })()
+      showNotification({
+        color: 'orange',
+        id: 'register-status',
+        title: t('account.notification.captcha.request_sent.title'),
+        message: t('account.notification.captcha.request_sent.message'),
+        loading: true,
+        autoClose: false,
+      })
+
+      const fingerprintPayload = config.enableBrowserFingerprint
+        ? await collectEncryptedFingerprintIdentity(t, config.apiPublicKey, operation.controller.signal)
         : undefined
 
       const res = await api.account.accountRegister({
@@ -151,6 +145,7 @@ const Register: FC = () => {
         else navigate('/account/login')
       }
     } catch (err: any) {
+      if (operation.controller.signal.aborted) return
       const { title, message } = tryGetClientError(err, t)
 
       updateNotification({
@@ -164,6 +159,7 @@ const Register: FC = () => {
       })
       cleanUp(false)
     } finally {
+      if (registerOperationRef.current === operation) registerOperationRef.current = null
       setDisabled(false)
     }
   }
@@ -246,17 +242,21 @@ const Register: FC = () => {
       <TermsOfService
         confirmMode
         opened={tosOpened}
-        onClose={closeTos}
+        onClose={() => {
+          registerOperationRef.current?.controller.abort()
+          registerOperationRef.current = null
+          closeTos()
+        }}
         onAccept={() => {
           setAccepted(true)
           closeTos()
-          void executeRegister()
+          void executeRegister(true)
         }}
       />
       <Anchor fz="xs" className={misc.alignSelfEnd} component={Link} to="/account/login">
         {t('account.anchor.login')}
       </Anchor>
-      <Button type="submit" fullWidth onClick={onRegister} disabled={disabled}>
+      <Button type="submit" fullWidth disabled={disabled}>
         {t('account.button.register')}
       </Button>
       <OAuthButtons />

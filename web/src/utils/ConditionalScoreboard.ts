@@ -15,7 +15,7 @@ type ValidatorEntry = {
 }
 
 export const isConditionalScoreboardPath = (path: string) =>
-  /^\/api\/game\/\d+\/(?:scoreboard|ad\/koth\/scoreboard)$/.test(path)
+  /^\/api\/game\/\d+\/(?:scoreboard|ad\/koth\/scoreboard|details\/participant)$/.test(path)
 
 /**
  * Keep only weak references to parsed boards. SWR owns the live value; this

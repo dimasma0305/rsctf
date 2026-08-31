@@ -25,6 +25,8 @@ pub(super) struct AdStateService {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct AdStateTail {
+    pub(super) event_started: bool,
+    pub(super) event_ended: bool,
     pub(super) current_round: i32,
     pub(super) round_started_at: Option<DateTime<Utc>>,
     pub(super) round_ends_at: Option<DateTime<Utc>>,
@@ -40,6 +42,8 @@ pub(super) struct AdStateTail {
 /// fallback query; required service columns are checked during reduction.
 #[derive(Debug, sqlx::FromRow)]
 struct AdStateTailRow {
+    event_started: Option<bool>,
+    event_ended: Option<bool>,
     round_number: Option<i32>,
     round_started_at: Option<DateTime<Utc>>,
     round_ends_at: Option<DateTime<Utc>>,
@@ -68,7 +72,9 @@ WITH current_round AS (
      ORDER BY number DESC, id DESC
      LIMIT 1
 ), game_state AS (
-    SELECT ad_scoring_paused, ad_scoring_paused_at
+    SELECT start_time_utc <= clock_timestamp() AS event_started,
+           end_time_utc <= clock_timestamp() AS event_ended,
+           ad_scoring_paused, ad_scoring_paused_at
       FROM "Games"
      WHERE id = $1
 ), team_services AS (
@@ -88,7 +94,8 @@ WITH current_round AS (
        AND challenge.review_status = $4
        AND challenge."Type" = $5
 )
-SELECT round.number AS round_number,
+SELECT game.event_started, game.event_ended,
+       round.number AS round_number,
        round.start_time_utc AS round_started_at,
        round.end_time_utc AS round_ends_at,
        round.flags_ready, round.flag_delivery_failures,
@@ -151,6 +158,8 @@ fn reduce(rows: Vec<AdStateTailRow>) -> AppResult<AdStateTail> {
         .first()
         .ok_or_else(|| AppError::internal("A&D State tail query returned no sentinel row"))?;
     let mut tail = AdStateTail {
+        event_started: first.event_started.unwrap_or(false),
+        event_ended: first.event_ended.unwrap_or(true),
         current_round: first.round_number.unwrap_or(0),
         round_started_at: first.round_started_at,
         round_ends_at: first.round_ends_at,
@@ -187,6 +196,8 @@ mod tests {
 
     fn sentinel(round: Option<i32>) -> AdStateTailRow {
         AdStateTailRow {
+            event_started: Some(true),
+            event_ended: Some(false),
             round_number: round,
             round_started_at: None,
             round_ends_at: None,
@@ -209,6 +220,8 @@ mod tests {
     #[test]
     fn sentinel_preserves_round_and_empty_state_defaults() {
         let empty = reduce(vec![sentinel(None)]).unwrap();
+        assert!(empty.event_started);
+        assert!(!empty.event_ended);
         assert_eq!(empty.current_round, 0);
         assert!(!empty.flags_ready);
         assert_eq!(empty.flag_delivery_failures, 0);
@@ -245,7 +258,9 @@ mod tests {
             );
             CREATE TEMP TABLE "Games" (
               id INTEGER PRIMARY KEY, ad_scoring_paused BOOLEAN NOT NULL,
-              ad_scoring_paused_at TIMESTAMPTZ
+              ad_scoring_paused_at TIMESTAMPTZ,
+              start_time_utc TIMESTAMPTZ NOT NULL,
+              end_time_utc TIMESTAMPTZ NOT NULL
             );
             CREATE TEMP TABLE "Participations" (
               id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, status SMALLINT NOT NULL
@@ -276,7 +291,9 @@ mod tests {
               id BIGINT PRIMARY KEY, team_service_id INTEGER NOT NULL,
               local_file_id INTEGER NOT NULL, expires_at_utc TIMESTAMPTZ
             );
-            INSERT INTO "Games" VALUES (1, TRUE, now()), (2, FALSE, NULL);
+            INSERT INTO "Games" VALUES
+              (1, TRUE, now(), now() - interval '1 hour', now() + interval '1 hour'),
+              (2, FALSE, NULL, now() - interval '1 hour', now() + interval '1 hour');
             "#,
         )
         .execute(&mut connection)
@@ -284,6 +301,8 @@ mod tests {
         .unwrap();
 
         let empty = load(&mut connection, 1, 7).await.unwrap();
+        assert!(empty.event_started);
+        assert!(!empty.event_ended);
         assert_eq!(empty.current_round, 0);
         assert!(empty.services.is_empty());
 

@@ -73,6 +73,7 @@ import { ScrollingText } from '@Components/ScrollingText'
 import { evidenceContribution } from '@Utils/AntiCheat'
 import { useLanguage } from '@Utils/I18n'
 import { showErrorMsg, tryGetErrorMsg, useParticipationStatusMap } from '@Utils/Shared'
+import { useChallengePolling } from '@Hooks/useChallengePolling'
 import type {
   AbnormalSolveResult,
   CheatReport,
@@ -1374,15 +1375,29 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
     setSuspPage(1)
   }, [debouncedSuspSearch, suspSort])
 
+  const compareRequest = useCallback(
+    async (signal: AbortSignal) => {
+      if (teamAId === null || teamBId === null) throw new Error('Select two teams before comparing evidence')
+      return (await api.cheatReport.cheatReportCompare(gameId, teamAId, teamBId, { signal })).data
+    },
+    [gameId, teamAId, teamBId]
+  )
   const {
     data: drilledSolves,
     error: drillError,
     isLoading: isDrilling,
     isValidating: isDrillRefreshing,
     mutate: retryDrill,
-  } = api.cheatReport.useCheatReportCompare(gameId, teamAId, teamBId, {
-    keepPreviousData: false,
-    shouldRetryOnError: false,
+  } = useChallengePolling<CollusionCompareResult>({
+    key:
+      opened && teamAId !== null && teamBId !== null
+        ? `/api/game/${gameId}/cheatreport/compare?participationA=${teamAId}&participationB=${teamBId}#one-shot`
+        : null,
+    active: opened && teamAId !== null && teamBId !== null,
+    refreshInterval: 0,
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+    request: compareRequest,
   })
 
   const defaultTeamAId = selectedGroup?.teams?.[0]?.participationId

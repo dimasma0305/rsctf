@@ -36,6 +36,7 @@ const panel = readFileSync(
   'utf8',
 );
 const playerLoad = readFileSync(new URL('../k6/player.js', import.meta.url), 'utf8');
+const managedKothLoad = readFileSync(new URL('../managed-koth.mjs', import.meta.url), 'utf8');
 
 function section(source, start, end) {
   const from = source.indexOf(start);
@@ -107,8 +108,26 @@ test('epoch eviction recovery is writer-fenced and player rotation stays partici
   );
   assert.match(rotation, /begin_participant_epoch_mutation/);
   assert.match(rotation, /finish_participant_epoch_mutation/);
-  assert.doesNotMatch(rotation, /begin_game_epoch_mutation/);
+  assert.match(rotation, /game_cache_mutation = if reconciled\.is_empty\(\)/);
+  assert.match(rotation, /clear_unsettled_scores_for_capability_change[\s\S]*&\[part\.id\]/);
   assert.match(capabilityCache, /player_rotation_changes_only_that_participants_namespace/);
+});
+
+test('active-scoring emergency rotation is revisioned, retryable, and team-local', () => {
+  const rotation = section(tokens, 'pub async fn rotate_koth_api_token', '#[cfg(test)]');
+  assert.doesNotMatch(rotation, /scoring_started|ad_scoring_paused|load_manual_api_rotation_gate/);
+  assert.match(rotation, /CredentialMutationInput\(request\)/);
+  assert.match(rotation, /credential_operations::reserve/);
+  assert.match(rotation, /CredentialReservation::Recovered/);
+  assert.match(rotation, /credential_operations::complete/);
+  assert.match(rotation, /rotate_player_api_capability/);
+  assert.match(rotation, /token_rotation_cooldown_response/);
+  assert.match(rotation, /clear_unsettled_scores_for_capability_change[\s\S]*&\[part\.id\]/);
+  assert.doesNotMatch(rotation, /clear_unsettled_scores_for_capability_change[\s\S]*roster_snapshot/);
+  assert.match(managedKothLoad, /exerciseActivePlayerRotation/);
+  assert.match(managedKothLoad, /NOT ad_scoring_paused/);
+  assert.match(managedKothLoad, /recovered\?\.token === rotated\.token/);
+  assert.match(managedKothLoad, /JSON\.stringify\(otherAfter\) === JSON\.stringify\(otherBefore\)/);
 });
 
 test('capability mutations disable before commit and ticket-finalize after it', () => {

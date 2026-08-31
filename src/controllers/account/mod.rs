@@ -287,7 +287,11 @@ pub async fn register(
     // `AccountPolicy:UseCaptcha` is on, so captcha-off registration is unaffected.
     let captcha = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
     let captcha_admission = captcha
-        .verify_local(model.challenge.as_deref().unwrap_or(""), st.cache.as_ref())
+        .verify_local(
+            model.challenge.as_deref().unwrap_or(""),
+            st.cache.as_ref(),
+            st.config.jwt_secret.as_bytes(),
+        )
         .await?;
 
     let user_name = model.user_name.trim().to_string();
@@ -610,7 +614,11 @@ pub async fn login(
     // the live `AccountPolicy:UseCaptcha` is on, so captcha-off login is unaffected.
     let captcha = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
     let captcha_admission = captcha
-        .verify_local(model.challenge.as_deref().unwrap_or(""), st.cache.as_ref())
+        .verify_local(
+            model.challenge.as_deref().unwrap_or(""),
+            st.cache.as_ref(),
+            st.config.jwt_secret.as_bytes(),
+        )
         .await?;
 
     let credentials_within_bounds =

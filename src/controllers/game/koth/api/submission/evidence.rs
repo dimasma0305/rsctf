@@ -108,7 +108,7 @@ pub(super) async fn load_stored_waves(
     .bind(container_id)
     .fetch_all(&mut *connection)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    .map_err(super::retryable_database_error)?;
     if rows.is_empty() {
         return Ok(None);
     }

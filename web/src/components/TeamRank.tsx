@@ -25,11 +25,15 @@ import { isReadOnlyGameArchive } from '@Utils/gameArchive'
 import { useGameStatus, useGameTeamInfo } from '@Hooks/useGame'
 import misc from '@Styles/Misc.module.css'
 
-export const TeamRank: FC<CardProps> = (props) => {
+type TeamRankProps = CardProps & {
+  teamState: ReturnType<typeof useGameTeamInfo>
+}
+
+export const TeamRank: FC<TeamRankProps> = ({ teamState, ...props }) => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const navigate = useNavigate()
-  const { teamInfo, game, error } = useGameTeamInfo(numId)
+  const { teamInfo, game, error } = teamState
   const { now: serverNow } = useGameStatus(game)
   const archived = isReadOnlyGameArchive(game, serverNow.valueOf())
 

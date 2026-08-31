@@ -287,7 +287,7 @@ pub fn list_flows_bounded(
                 bytes: 0,
             });
         entry.packet_count += 1;
-        entry.bytes += parsed.payload_len as u64;
+        entry.bytes += parsed.payload.len() as u64;
     }
 
     if reader.into_reader().limit() == 0 {
@@ -307,6 +307,7 @@ const LIVE_READ_TIMEOUT_MS: i32 = 200;
 const PCAP_GLOBAL_HEADER_BYTES: u64 = 24;
 const PCAP_PACKET_HEADER_BYTES: u64 = 16;
 const FREE_SPACE_CHECK_INTERVAL_BYTES: u64 = 1024 * 1024;
+pub mod inventory;
 mod live_limits;
 use live_limits::{
     enforce_capture_directory_budget, refresh_capture_space_if_needed, rotated_capture_path,
@@ -350,6 +351,7 @@ pub fn capture_live(
         stop,
         LiveCaptureLimits::default(),
         None,
+        None,
     )
 }
 
@@ -364,8 +366,17 @@ fn capture_live_with_startup(
     stop: Arc<AtomicBool>,
     limits: LiveCaptureLimits,
     startup: tokio::sync::oneshot::Sender<Result<(), String>>,
+    reporter: inventory::CaptureInventoryReporter,
 ) -> AppResult<u64> {
-    capture_live_inner(device, bpf_filter, out_path, stop, limits, Some(startup))
+    capture_live_inner(
+        device,
+        bpf_filter,
+        out_path,
+        stop,
+        limits,
+        Some(startup),
+        Some(reporter),
+    )
 }
 
 fn capture_live_inner(
@@ -375,6 +386,7 @@ fn capture_live_inner(
     stop: Arc<AtomicBool>,
     limits: LiveCaptureLimits,
     startup: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    reporter: Option<inventory::CaptureInventoryReporter>,
 ) -> AppResult<u64> {
     // Build an inactive handle, configure it, then activate. `from_device`
     // accepts an `&str` device name via `From<&str> for pcap::Device`.
@@ -397,10 +409,11 @@ fn capture_live_inner(
         let directory = out_path
             .parent()
             .ok_or_else(|| AppError::internal("capture output has no parent directory"))?;
-        enforce_capture_directory_budget(
+        let removed = enforce_capture_directory_budget(
             directory,
             limits.max_directory_bytes,
             limits.max_file_bytes,
+            limits.max_directory_files,
         )?;
         let disk_reservation =
             CaptureDiskReservation::acquire(directory, limits.free_space_floor_bytes)?;
@@ -410,10 +423,14 @@ fn capture_live_inner(
         let savefile = capture
             .savefile(out_path)
             .map_err(|e| pcap_err("create capture savefile", e))?;
-        Ok((capture, savefile, disk_reservation))
+        Ok((capture, savefile, disk_reservation, removed))
     })();
-    let (mut capture, mut savefile, _disk_reservation) = match initialized {
+    let (mut capture, mut savefile, _disk_reservation, _removed) = match initialized {
         Ok(handles) => {
+            if let Some(reporter) = &reporter {
+                reporter.delete_paths(&handles.3);
+                reporter.upsert_path(out_path);
+            }
             if let Some(startup) = startup {
                 let _ = startup.send(Ok(()));
             }
@@ -449,21 +466,31 @@ fn capture_live_inner(
                         .flush()
                         .map_err(|e| pcap_err("flush capture rotation", e))?;
                     drop(savefile);
+                    if let Some(reporter) = &reporter {
+                        reporter.upsert_path(&current_path);
+                    }
                     let directory = current_path
                         .parent()
                         .ok_or_else(|| {
                             AppError::internal("capture output has no parent directory")
                         })?
                         .to_path_buf();
-                    enforce_capture_directory_budget(
+                    let removed = enforce_capture_directory_budget(
                         &directory,
                         limits.max_directory_bytes,
                         limits.max_file_bytes,
+                        limits.max_directory_files,
                     )?;
+                    if let Some(reporter) = &reporter {
+                        reporter.delete_paths(&removed);
+                    }
                     current_path = rotated_capture_path(out_path)?;
                     savefile = capture
                         .savefile(&current_path)
                         .map_err(|e| pcap_err("create rotated capture savefile", e))?;
+                    if let Some(reporter) = &reporter {
+                        reporter.upsert_path(&current_path);
+                    }
                     current_bytes = PCAP_GLOBAL_HEADER_BYTES;
                     next_space_check = FREE_SPACE_CHECK_INTERVAL_BYTES;
                     file_started = std::time::Instant::now();
@@ -498,7 +525,15 @@ fn capture_live_inner(
             // Bounded source (e.g. a savefile) drained — done.
             Err(pcap::Error::NoMorePackets) => break,
             // Any other libpcap error aborts the capture.
-            Err(e) => return Err(pcap_err("read packet", e)),
+            Err(e) => {
+                savefile.flush().map_err(|flush_error| {
+                    pcap_err("flush failed capture savefile", flush_error)
+                })?;
+                if let Some(reporter) = &reporter {
+                    reporter.upsert_path(&current_path);
+                }
+                return Err(pcap_err("read packet", e));
+            }
         }
     }
 
@@ -506,6 +541,9 @@ fn capture_live_inner(
     savefile
         .flush()
         .map_err(|e| pcap_err("flush capture savefile", e))?;
+    if let Some(reporter) = &reporter {
+        reporter.upsert_path(&current_path);
+    }
 
     Ok(packet_count)
 }
@@ -530,10 +568,10 @@ fn pcap_err(context: &str, err: pcap::Error) -> AppError {
 }
 
 /// Result of parsing one raw Ethernet frame down to its TCP four-tuple.
-struct ParsedFrame {
+struct ParsedFrame<'a> {
     source: SocketAddr,
     dest: SocketAddr,
-    payload_len: usize,
+    payload: &'a [u8],
 }
 
 /// Parse an Ethernet / IPv4|IPv6 / TCP frame out of raw bytes.
@@ -542,7 +580,7 @@ struct ParsedFrame {
 /// `None` on anything it does not understand (non-IP ethertype, non-TCP
 /// protocol, IPv6 extension headers, truncation). Mirrors the guarded parse in
 /// RSCTF `PcapFlowExtractor.ReadFlows`.
-fn parse_frame(data: &[u8]) -> Option<ParsedFrame> {
+fn parse_frame(data: &[u8]) -> Option<ParsedFrame<'_>> {
     if data.len() < ETH_HDR_LEN {
         return None;
     }
@@ -557,7 +595,7 @@ fn parse_frame(data: &[u8]) -> Option<ParsedFrame> {
 }
 
 /// Parse an IPv4 packet (`l3` starts at the IP header) into its TCP tuple.
-fn parse_ipv4(l3: &[u8]) -> Option<ParsedFrame> {
+fn parse_ipv4(l3: &[u8]) -> Option<ParsedFrame<'_>> {
     if l3.len() < IPV4_HDR_LEN {
         return None;
     }
@@ -582,7 +620,7 @@ fn parse_ipv4(l3: &[u8]) -> Option<ParsedFrame> {
 /// Only a bare IPv6 header with `next_header == TCP` is handled; extension
 /// headers make the frame `None` (defensive — the synthesiser never emits
 /// them).
-fn parse_ipv6(l3: &[u8]) -> Option<ParsedFrame> {
+fn parse_ipv6(l3: &[u8]) -> Option<ParsedFrame<'_>> {
     if l3.len() < IPV6_HDR_LEN {
         return None;
     }
@@ -602,7 +640,7 @@ fn parse_ipv6(l3: &[u8]) -> Option<ParsedFrame> {
 }
 
 /// Parse a TCP segment (`l4` starts at the TCP header) into a [`ParsedFrame`].
-fn parse_tcp(l4: &[u8], src_ip: IpAddr, dst_ip: IpAddr) -> Option<ParsedFrame> {
+fn parse_tcp(l4: &[u8], src_ip: IpAddr, dst_ip: IpAddr) -> Option<ParsedFrame<'_>> {
     if l4.len() < TCP_HDR_LEN {
         return None;
     }
@@ -613,11 +651,10 @@ fn parse_tcp(l4: &[u8], src_ip: IpAddr, dst_ip: IpAddr) -> Option<ParsedFrame> {
     if data_offset < TCP_HDR_LEN || l4.len() < data_offset {
         return None;
     }
-    let payload_len = l4.len() - data_offset;
     Some(ParsedFrame {
         source: SocketAddr::new(src_ip, src_port),
         dest: SocketAddr::new(dst_ip, dst_port),
-        payload_len,
+        payload: &l4[data_offset..],
     })
 }
 
@@ -751,11 +788,17 @@ fn ones_complement_checksum(bytes: &[u8]) -> u16 {
 // this format/parser module stays focused and below the repository file-size cap.
 
 mod capture;
+mod inspector;
 
 pub(crate) use capture::{destroy_container_after_capture_fence, purge_expired_captures};
 pub use capture::{
     fence_unowned_capture_owner, start_capture_reconciler, start_container_capture,
     stop_container_capture,
+};
+pub(crate) use inspector::{
+    filter_flow_page, invalidate_inspection_directory, invalidate_inspection_path,
+    load_flow_snapshot, validate_flow_id, validate_flow_page_bounds, validate_snapshot_version,
+    FlowDirection, IndexedFlow, InspectionError, ValidatedFlowFilter, DEFAULT_FLOW_PAGE_SIZE,
 };
 
 #[cfg(test)]

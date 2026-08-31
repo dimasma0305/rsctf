@@ -8,7 +8,11 @@ export const RSCTF_DOCUMENTATION = `${RSCTF_REPOSITORY}/tree/main/docs`
 
 export const OnceSWRConfig: SWRConfiguration = {
   refreshInterval: 0,
+  refreshWhenHidden: false,
+  refreshWhenOffline: false,
   revalidateOnFocus: false,
+  revalidateOnReconnect: false,
+  shouldRetryOnError: false,
 }
 
 const fallbackConfig: ClientConfig = {

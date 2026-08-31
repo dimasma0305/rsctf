@@ -4,18 +4,24 @@ use super::{BuildImageModel, DeleteImageQuery, PruneResultModel};
 use axum::extract::{Query, State};
 use bollard::container::ListContainersOptions;
 use bollard::errors::Error as DockerError;
-use bollard::image::{ListImagesOptions, RemoveImageOptions};
+use bollard::image::RemoveImageOptions;
 use bollard::Docker;
 use chrono::{DateTime, Utc};
-use std::collections::{BTreeMap, HashMap};
+use futures::StreamExt;
+use std::collections::BTreeMap;
+use std::future::Future;
+use std::sync::{Arc, LazyLock, RwLock};
+use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
+use uuid::Uuid;
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::AdminUser;
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
 
-const OWNERSHIPS_SQL: &str = r#"SELECT canonical_ref, image_id, updated_at_utc, last_used_at_utc
- FROM "BuildImageOwnerships" WHERE installation_scope=$1 ORDER BY canonical_ref"#;
+const INVENTORY_OWNERSHIPS_SQL: &str = r#"SELECT canonical_ref, image_id, updated_at_utc, last_used_at_utc
+ FROM "BuildImageOwnerships" WHERE installation_scope=$1 ORDER BY canonical_ref LIMIT $2"#;
 const OWNERSHIP_SQL: &str = r#"SELECT canonical_ref, image_id, updated_at_utc, last_used_at_utc
  FROM "BuildImageOwnerships" WHERE installation_scope=$1 AND canonical_ref=$2"#;
 const REFERENCES_SQL: &str = r#"
@@ -31,6 +37,83 @@ const REFERENCES_SQL: &str = r#"
    AND variant_generator_build_status = 1
    AND variant_generator_image IS NOT NULL
    AND variant_generator_image = variant_generator_digest"#;
+const INVENTORY_REFERENCES_SQL: &str = r#"SELECT title, image_ref FROM (
+ SELECT title, container_image AS image_ref FROM "GameChallenges"
+ WHERE container_image IS NOT NULL AND BTRIM(container_image)<>''
+ UNION ALL
+ SELECT title, ad_checker_image AS image_ref FROM "GameChallenges"
+ WHERE ad_checker_image IS NOT NULL AND BTRIM(ad_checker_image)<>''
+ UNION ALL
+ SELECT title, variant_generator_image AS image_ref FROM "GameChallenges"
+ WHERE variant_generator_build_context_subdir = 'generator'
+   AND variant_generator_build_status = 1
+   AND variant_generator_image IS NOT NULL
+   AND variant_generator_image = variant_generator_digest
+) refs ORDER BY image_ref, title LIMIT $1"#;
+const CLAIM_MANUAL_REMOVAL_SQL: &str = r#"UPDATE "BuildImageOwnerships"
+   SET cleanup_claim_token=$4,
+       cleanup_claim_until=clock_timestamp() + make_interval(secs => $5),
+       cleanup_removal_started=TRUE
+ WHERE installation_scope=$1 AND canonical_ref=$2 AND image_id=$3
+   AND (cleanup_claim_until IS NULL OR cleanup_claim_until <= clock_timestamp())
+   AND NOT EXISTS (
+       SELECT 1 FROM "ControlPlaneResourceLeases"
+        WHERE resource_key=$6
+          AND lease_expires_at_utc > clock_timestamp()
+   )"#;
+const FINALIZE_MANUAL_CLAIM_SQL: &str = r#"UPDATE "BuildImageOwnerships"
+   SET cleanup_claim_until = clock_timestamp() + make_interval(secs => $5),
+       cleanup_removal_started = TRUE
+ WHERE installation_scope=$1 AND canonical_ref=$2 AND image_id=$3
+   AND cleanup_claim_token=$4
+   AND cleanup_claim_until > clock_timestamp()
+   AND NOT EXISTS (
+       SELECT 1 FROM "ControlPlaneResourceLeases"
+        WHERE resource_key=$6
+          AND lease_expires_at_utc > clock_timestamp()
+   )"#;
+const INVENTORY_OWNERSHIP_LIMIT: i64 = 512;
+const INVENTORY_REFERENCE_LIMIT: i64 = 10_000;
+const INVENTORY_INSPECT_CONCURRENCY: usize = 4;
+const MANUAL_PRUNE_LIMIT: i64 = 64;
+const ADMIN_DAEMON_BUDGET: Duration = Duration::from_secs(60);
+const DAEMON_OPERATION_BUDGET: Duration = Duration::from_secs(20);
+const MANUAL_CLAIM_SECONDS: i32 = 2 * 60;
+const INVENTORY_CACHE_TTL: Duration = Duration::from_secs(5);
+static INVENTORY_GATE: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
+static INVENTORY_FLIGHTS: LazyLock<crate::utils::single_flight::SingleFlight<ImageInventoryFill>> =
+    LazyLock::new(crate::utils::single_flight::SingleFlight::new);
+static INVENTORY_CACHE: LazyLock<RwLock<Option<(Instant, Vec<BuildImageModel>)>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+#[derive(Clone, Default)]
+enum ImageInventoryFill {
+    Ready(Vec<BuildImageModel>),
+    Busy,
+    #[default]
+    Failed,
+}
+
+fn cached_inventory() -> Option<Vec<BuildImageModel>> {
+    INVENTORY_CACHE
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .filter(|(created, _)| created.elapsed() < INVENTORY_CACHE_TTL)
+        .map(|(_, images)| images.clone())
+}
+
+fn store_inventory(images: Vec<BuildImageModel>) {
+    *INVENTORY_CACHE
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((Instant::now(), images));
+}
+
+fn invalidate_inventory() {
+    *INVENTORY_CACHE
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
 struct OwnershipRow {
@@ -46,10 +129,27 @@ struct ReferenceRow {
     image_ref: String,
 }
 
-async fn reachable_docker() -> Result<Docker, String> {
+async fn daemon_call<T, E, F>(
+    deadline: tokio::time::Instant,
+    label: &'static str,
+    future: F,
+) -> Result<T, String>
+where
+    E: std::fmt::Display,
+    F: Future<Output = Result<T, E>>,
+{
+    let operation_deadline = deadline.min(tokio::time::Instant::now() + DAEMON_OPERATION_BUDGET);
+    tokio::time::timeout_at(operation_deadline, future)
+        .await
+        .map_err(|_| format!("Docker {label} timed out"))?
+        .map_err(|error| format!("Docker {label} failed: {error}"))
+}
+
+async fn reachable_docker(deadline: tokio::time::Instant) -> Result<Docker, String> {
     let docker = Docker::connect_with_local_defaults()
         .map_err(|error| format!("Docker connection failed: {error}"))?;
-    match tokio::time::timeout(std::time::Duration::from_secs(2), docker.ping()).await {
+    let ping_deadline = deadline.min(tokio::time::Instant::now() + Duration::from_secs(2));
+    match tokio::time::timeout_at(ping_deadline, docker.ping()).await {
         Ok(Ok(_)) => Ok(docker),
         Ok(Err(error)) => Err(format!("Docker daemon is unavailable: {error}")),
         Err(_) => Err("Docker daemon ping timed out".to_string()),
@@ -118,44 +218,58 @@ fn validate_inspect(
         .ok_or_else(|| "Docker inspect omitted the owned canonical tag".to_string())
 }
 
-async fn inventory(st: &SharedState, docker: &Docker) -> AppResult<Vec<BuildImageModel>> {
+async fn inventory(
+    st: &SharedState,
+    docker: &Docker,
+    deadline: tokio::time::Instant,
+) -> AppResult<Vec<BuildImageModel>> {
     let policy = crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
     let scope = crate::services::container::docker_installation_scope();
-    let ownerships = sqlx::query_as::<_, OwnershipRow>(OWNERSHIPS_SQL)
+    let ownerships = sqlx::query_as::<_, OwnershipRow>(INVENTORY_OWNERSHIPS_SQL)
         .bind(&scope)
+        .bind(INVENTORY_OWNERSHIP_LIMIT)
         .fetch_all(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let references = sqlx::query_as::<_, ReferenceRow>(REFERENCES_SQL)
+    let mut references = sqlx::query_as::<_, ReferenceRow>(INVENTORY_REFERENCES_SQL)
+        .bind(INVENTORY_REFERENCE_LIMIT + 1)
         .fetch_all(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let summaries = docker
-        .list_images(Some(ListImagesOptions::<String> {
-            all: false,
-            ..Default::default()
-        }))
-        .await
-        .map_err(|error| AppError::unavailable(format!("Docker image inventory failed: {error}")))?
-        .into_iter()
-        .map(|summary| (summary.id.clone(), summary))
-        .collect::<HashMap<_, _>>();
-    let container_image_ids = docker
-        .list_containers(Some(ListContainersOptions::<String> {
+    let references_truncated = references.len() > INVENTORY_REFERENCE_LIMIT as usize;
+    references.truncate(INVENTORY_REFERENCE_LIMIT as usize);
+    let container_image_ids = daemon_call(
+        deadline,
+        "container inventory",
+        docker.list_containers(Some(ListContainersOptions::<String> {
             all: true,
+            filters: crate::services::container::managed_container_filters(&scope),
             ..Default::default()
+        })),
+    )
+    .await
+    .map_err(AppError::unavailable)?
+    .into_iter()
+    .filter_map(|container| container.image_id)
+    .collect::<std::collections::HashSet<_>>();
+
+    let inspected_ownerships =
+        futures::stream::iter(ownerships.into_iter().map(|ownership| async move {
+            let inspected = daemon_call(
+                deadline,
+                "image inspection",
+                docker.inspect_image(&ownership.canonical_ref),
+            )
+            .await;
+            (ownership, inspected)
         }))
-        .await
-        .map_err(|error| {
-            AppError::unavailable(format!("Docker container inventory failed: {error}"))
-        })?
-        .into_iter()
-        .filter_map(|container| container.image_id)
-        .collect::<std::collections::HashSet<_>>();
+        .buffer_unordered(INVENTORY_INSPECT_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
 
     let mut grouped = BTreeMap::<String, BuildImageModel>::new();
-    for ownership in ownerships {
-        let inspected = match docker.inspect_image(&ownership.canonical_ref).await {
+    for (ownership, inspected) in inspected_ownerships {
+        let inspected = match inspected {
             Ok(inspected) => inspected,
             Err(error) => {
                 tracing::warn!(tag=%ownership.canonical_ref, expected_image_id=%ownership.image_id,
@@ -171,11 +285,6 @@ async fn inventory(st: &SharedState, docker: &Docker) -> AppResult<Vec<BuildImag
                 continue;
             }
         };
-        let Some(summary) = summaries.get(&ownership.image_id) else {
-            tracing::warn!(tag=%ownership.canonical_ref, expected_image_id=%ownership.image_id,
-                "owned build image is missing from Docker list output");
-            continue;
-        };
         let referenced_by =
             reference_titles(&references, &ownership.canonical_ref, &ownership.image_id);
         let entry = grouped
@@ -183,8 +292,8 @@ async fn inventory(st: &SharedState, docker: &Docker) -> AppResult<Vec<BuildImag
             .or_insert_with(|| BuildImageModel {
                 id: ownership.image_id.clone(),
                 tags: Vec::new(),
-                size_bytes: summary.size,
-                created_utc: DateTime::<Utc>::from_timestamp(summary.created, 0),
+                size_bytes: inspected.size.unwrap_or_default(),
+                created_utc: inspected.created,
                 referenced: false,
                 referenced_by: Vec::new(),
                 is_checker: false,
@@ -198,6 +307,11 @@ async fn inventory(st: &SharedState, docker: &Docker) -> AppResult<Vec<BuildImag
         entry.tags.push(tag.clone());
         entry.referenced_by.extend(referenced_by);
         entry.referenced = !entry.referenced_by.is_empty();
+        if references_truncated {
+            // A truncated global reference snapshot must fail safe. The exact
+            // delete path re-reads every reference under its image lock.
+            entry.referenced = true;
+        }
         entry.is_checker |= tag.contains("checker");
         entry.last_used_utc = entry.last_used_utc.max(ownership.last_used_at_utc);
         let expires = ownership
@@ -221,8 +335,52 @@ pub async fn build_images(
     State(st): State<SharedState>,
     _admin: AdminUser,
 ) -> AppResult<RequestResponse<Vec<BuildImageModel>>> {
-    let docker = reachable_docker().await.map_err(AppError::unavailable)?;
-    Ok(RequestResponse::ok(inventory(&st, &docker).await?))
+    if let Some(images) = cached_inventory() {
+        return Ok(RequestResponse::ok(images));
+    }
+    let state = st.clone();
+    let fill = INVENTORY_FLIGHTS
+        .run_with_timeout(
+            "build-image-inventory",
+            Duration::from_secs(60),
+            move || async move {
+                if let Some(images) = cached_inventory() {
+                    return ImageInventoryFill::Ready(images);
+                }
+                let _permit = match INVENTORY_GATE.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => return ImageInventoryFill::Busy,
+                };
+                let deadline = tokio::time::Instant::now() + ADMIN_DAEMON_BUDGET;
+                let docker = match reachable_docker(deadline).await {
+                    Ok(docker) => docker,
+                    Err(error) => {
+                        tracing::warn!(%error, "build image inventory daemon unavailable");
+                        return ImageInventoryFill::Failed;
+                    }
+                };
+                match inventory(&state, &docker, deadline).await {
+                    Ok(images) => {
+                        store_inventory(images.clone());
+                        ImageInventoryFill::Ready(images)
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "build image inventory failed");
+                        ImageInventoryFill::Failed
+                    }
+                }
+            },
+        )
+        .await;
+    match fill {
+        ImageInventoryFill::Ready(images) => Ok(RequestResponse::ok(images)),
+        ImageInventoryFill::Busy => Err(AppError::unavailable(
+            "Build image inventory is already in progress",
+        )),
+        ImageInventoryFill::Failed => Err(AppError::unavailable(
+            "Build image inventory is temporarily unavailable",
+        )),
+    }
 }
 
 pub async fn build_storage_status(
@@ -239,9 +397,9 @@ pub async fn cleanup_build_storage(
     _admin: AdminUser,
 ) -> AppResult<RequestResponse<crate::services::image_storage::ImageCleanupReport>> {
     let policy = crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
-    Ok(RequestResponse::ok(
-        crate::services::image_storage::cleanup(&st, &policy).await?,
-    ))
+    let report = crate::services::image_storage::cleanup(&st, &policy).await?;
+    invalidate_inventory();
+    Ok(RequestResponse::ok(report))
 }
 
 struct Removal {
@@ -263,6 +421,7 @@ async fn remove_one(
     docker: &Docker,
     requested_tag: &str,
     force_requested: bool,
+    deadline: tokio::time::Instant,
 ) -> Removal {
     let Some(canonical_ref) = crate::controllers::edit::canonical_managed_image_tag(requested_tag)
     else {
@@ -305,73 +464,140 @@ async fn remove_one(
             ));
         }
     };
-    let inspected = match docker.inspect_image(&canonical_ref).await {
-        Ok(inspected) => inspected,
-        Err(error) => {
-            let _ = lock.release().await;
+    let claim_token = Uuid::new_v4();
+    // Install the durable finalizing fence while holding only the per-image
+    // coordination lock. The global challenge-reference snapshot is loaded
+    // after releasing this connection; cooperating builds observe
+    // `cleanup_removal_started` and cannot create a late reference meanwhile.
+    let claimed = sqlx::query(CLAIM_MANUAL_REMOVAL_SQL)
+        .bind(&scope)
+        .bind(&canonical_ref)
+        .bind(&ownership.image_id)
+        .bind(claim_token)
+        .bind(MANUAL_CLAIM_SECONDS)
+        .bind(&lock_key)
+        .execute(lock.connection_mut())
+        .await;
+    let released = lock.release().await;
+    match (claimed, released) {
+        (Ok(result), Ok(())) if result.rows_affected() == 1 => {}
+        (Ok(_), Ok(())) => {
             return Removal::blocked(format!(
-                "{requested_tag}: database/Docker conflict; expected {}, inspect failed: {error}",
-                ownership.image_id
+                "{requested_tag}: ownership changed before removal was claimed"
             ));
         }
-    };
-    let tag = match validate_inspect(&inspected, &ownership, &scope) {
-        Ok(tag) => tag,
-        Err(error) => {
-            let _ = lock.release().await;
-            return Removal::blocked(format!("{requested_tag}: {error}"));
+        (Err(error), _) => {
+            return Removal::blocked(format!("{requested_tag}: cleanup claim failed: {error}"));
         }
-    };
-    let references = match sqlx::query_as::<_, ReferenceRow>(REFERENCES_SQL)
-        .fetch_all(lock.connection_mut())
-        .await
+        (_, Err(error)) => {
+            return Removal::blocked(format!(
+                "{requested_tag}: image coordination release failed: {error}"
+            ));
+        }
+    }
+
+    let references = match tokio::time::timeout_at(
+        deadline,
+        sqlx::query_as::<_, ReferenceRow>(REFERENCES_SQL).fetch_all(st.pg()),
+    )
+    .await
     {
-        Ok(rows) => rows,
-        Err(error) => {
-            let _ = lock.release().await;
+        Ok(Ok(rows)) => rows,
+        Ok(Err(error)) => {
+            release_manual_claim(st, &scope, &ownership, claim_token).await;
             return Removal::blocked(format!(
                 "{requested_tag}: challenge reference re-read failed: {error}"
+            ));
+        }
+        Err(_) => {
+            release_manual_claim(st, &scope, &ownership, claim_token).await;
+            return Removal::blocked(format!(
+                "{requested_tag}: challenge reference re-read timed out"
             ));
         }
     };
     let referenced_by = reference_titles(&references, &canonical_ref, &ownership.image_id);
     if !referenced_by.is_empty() {
-        let _ = lock.release().await;
+        release_manual_claim(st, &scope, &ownership, claim_token).await;
         return Removal::blocked(format!(
             "{requested_tag} is still referenced by {}",
             referenced_by.join(", ")
         ));
     }
 
+    let inspected = match daemon_call(
+        deadline,
+        "image inspection",
+        docker.inspect_image(&canonical_ref),
+    )
+    .await
+    {
+        Ok(inspected) => inspected,
+        Err(error) => {
+            release_manual_claim(st, &scope, &ownership, claim_token).await;
+            return Removal::blocked(format!(
+                "{requested_tag}: database/Docker conflict; expected {}, {error}",
+                ownership.image_id
+            ));
+        }
+    };
+    if let Err(error) = validate_inspect(&inspected, &ownership, &scope) {
+        release_manual_claim(st, &scope, &ownership, claim_token).await;
+        return Removal::blocked(format!("{requested_tag}: {error}"));
+    }
+    match renew_manual_claim(st, &scope, &ownership, claim_token).await {
+        Ok(true) => {}
+        Ok(false) => {
+            release_manual_claim(st, &scope, &ownership, claim_token).await;
+            return Removal::blocked(format!(
+                "{requested_tag}: cleanup ownership expired or changed before removal"
+            ));
+        }
+        Err(error) => {
+            release_manual_claim(st, &scope, &ownership, claim_token).await;
+            return Removal::blocked(format!(
+                "{requested_tag}: removal identity revalidation failed: {error}"
+            ));
+        }
+    }
+
     let options = RemoveImageOptions {
         force: false,
         ..Default::default()
     };
-    if let Err(error) = docker.remove_image(&tag, Some(options), None).await {
-        let _ = lock.release().await;
+    if let Err(error) = daemon_call(
+        deadline,
+        "image removal",
+        docker.remove_image(&ownership.image_id, Some(options), None),
+    )
+    .await
+    {
         let force_note = if force_requested {
             "; force cannot bypass rsctf ownership/reference checks"
         } else {
             ""
         };
         return Removal::blocked(format!(
-            "{requested_tag}: Docker removal failed: {error}{force_note}"
+            "{requested_tag}: {error}{force_note}; cleanup claim retained until expiry"
         ));
     }
-    match docker.inspect_image(&canonical_ref).await {
-        Err(error) if docker_not_found(&error) => {}
-        Err(error) => {
-            let _ = lock.release().await;
+    let verify_deadline = deadline.min(tokio::time::Instant::now() + DAEMON_OPERATION_BUDGET);
+    match tokio::time::timeout_at(verify_deadline, docker.inspect_image(&ownership.image_id)).await
+    {
+        Ok(Err(error)) if docker_not_found(&error) => {}
+        Ok(Err(error)) => {
             return Removal::blocked(format!(
-                "{requested_tag}: removal could not be verified: {error}"
+                "{requested_tag}: removal could not be verified: {error}; cleanup claim retained until expiry"
             ));
         }
-        Ok(current) => {
-            let current_id = crate::services::challenge_images::inspected_local_image_id(&current)
-                .unwrap_or("<invalid>");
-            let _ = lock.release().await;
+        Ok(Ok(_)) => {
             return Removal::blocked(format!(
-                "{requested_tag}: Docker still resolves the tag to {current_id}; removal was not counted"
+                "{requested_tag}: Docker still resolves the immutable image; removal was not counted and the cleanup claim is retained until expiry"
+            ));
+        }
+        Err(_) => {
+            return Removal::blocked(format!(
+                "{requested_tag}: removal verification timed out; cleanup claim retained until expiry"
             ));
         }
     }
@@ -382,28 +608,14 @@ async fn remove_one(
             "force=true was ignored; ownership and reference checks cannot be bypassed".to_string(),
         );
     }
-    let deletion = sqlx::query(
-        r#"DELETE FROM "BuildImageOwnerships"
-        WHERE installation_scope=$1 AND canonical_ref=$2 AND image_id=$3"#,
-    )
-    .bind(&scope)
-    .bind(&canonical_ref)
-    .bind(&ownership.image_id)
-    .execute(lock.connection_mut())
-    .await;
-    match deletion {
-        Ok(result) if result.rows_affected() == 1 => {}
-        Ok(_) => messages.push(format!(
-            "{requested_tag}: image was removed, but its ownership row changed"
+    match commit_manual_removal(st, &scope, &ownership, claim_token).await {
+        Ok(true) => {}
+        Ok(false) => messages.push(format!(
+            "{requested_tag}: image was removed, but its exact ownership changed and was preserved"
         )),
         Err(error) => messages.push(format!(
             "{requested_tag}: image was removed, but ledger cleanup failed: {error}"
         )),
-    }
-    if let Err(error) = lock.release().await {
-        messages.push(format!(
-            "{requested_tag}: image coordination release failed: {error}"
-        ));
     }
     Removal {
         removed: 1,
@@ -411,12 +623,97 @@ async fn remove_one(
     }
 }
 
+async fn release_manual_claim(
+    st: &SharedState,
+    scope: &str,
+    ownership: &OwnershipRow,
+    token: Uuid,
+) {
+    if let Err(error) = sqlx::query(
+        r#"UPDATE "BuildImageOwnerships"
+              SET cleanup_claim_token=NULL, cleanup_claim_until=NULL,
+                  cleanup_removal_started=FALSE
+            WHERE installation_scope=$1 AND canonical_ref=$2
+              AND image_id=$3 AND cleanup_claim_token=$4"#,
+    )
+    .bind(scope)
+    .bind(&ownership.canonical_ref)
+    .bind(&ownership.image_id)
+    .bind(token)
+    .execute(st.pg())
+    .await
+    {
+        tracing::warn!(tag=%ownership.canonical_ref, %error, "manual image claim release failed");
+    }
+}
+
+async fn renew_manual_claim(
+    st: &SharedState,
+    scope: &str,
+    ownership: &OwnershipRow,
+    token: Uuid,
+) -> Result<bool, String> {
+    let lock_key = crate::controllers::edit::image_build_lock_key(Some(&ownership.canonical_ref));
+    let mut lock = crate::utils::single_flight::PgAdvisoryLock::acquire_build(st.pg(), &lock_key)
+        .await
+        .map_err(|error| error.to_string())?;
+    let current = sqlx::query(FINALIZE_MANUAL_CLAIM_SQL)
+        .bind(scope)
+        .bind(&ownership.canonical_ref)
+        .bind(&ownership.image_id)
+        .bind(token)
+        .bind(MANUAL_CLAIM_SECONDS)
+        .bind(&lock_key)
+        .execute(lock.connection_mut())
+        .await
+        .map(|result| result.rows_affected() == 1)
+        .map_err(|error| error.to_string());
+    let released = lock.release().await.map_err(|error| error.to_string());
+    let current = current?;
+    released?;
+    Ok(current)
+}
+
+#[cfg(test)]
+#[path = "images_claim_tests.rs"]
+mod claim_tests;
+
+async fn commit_manual_removal(
+    st: &SharedState,
+    scope: &str,
+    ownership: &OwnershipRow,
+    token: Uuid,
+) -> Result<bool, String> {
+    let lock_key = crate::controllers::edit::image_build_lock_key(Some(&ownership.canonical_ref));
+    let mut lock = crate::utils::single_flight::PgAdvisoryLock::acquire_build(st.pg(), &lock_key)
+        .await
+        .map_err(|error| error.to_string())?;
+    let deleted = sqlx::query(
+        r#"DELETE FROM "BuildImageOwnerships"
+            WHERE installation_scope=$1 AND canonical_ref=$2 AND image_id=$3
+              AND cleanup_claim_token=$4"#,
+    )
+    .bind(scope)
+    .bind(&ownership.canonical_ref)
+    .bind(&ownership.image_id)
+    .bind(token)
+    .execute(lock.connection_mut())
+    .await
+    .map(|result| result.rows_affected() == 1)
+    .map_err(|error| error.to_string());
+    let released = lock.release().await.map_err(|error| error.to_string());
+    let deleted = deleted?;
+    released?;
+    Ok(deleted)
+}
+
 pub async fn delete_build_image(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Query(query): Query<DeleteImageQuery>,
 ) -> RequestResponse<PruneResultModel> {
-    let docker = match reachable_docker().await {
+    let deadline = tokio::time::Instant::now() + ADMIN_DAEMON_BUDGET;
+    let docker = match reachable_docker(deadline).await {
         Ok(docker) => docker,
         Err(error) => {
             return RequestResponse::ok(PruneResultModel {
@@ -425,7 +722,10 @@ pub async fn delete_build_image(
             });
         }
     };
-    let result = remove_one(&st, &docker, &query.tag, query.force).await;
+    let result = remove_one(&st, &docker, &query.tag, query.force, deadline).await;
+    if result.removed > 0 {
+        invalidate_inventory();
+    }
     RequestResponse::ok(PruneResultModel {
         removed: result.removed,
         messages: result.messages,
@@ -436,7 +736,8 @@ pub async fn prune_images(
     State(st): State<SharedState>,
     _admin: AdminUser,
 ) -> RequestResponse<PruneResultModel> {
-    let docker = match reachable_docker().await {
+    let deadline = tokio::time::Instant::now() + ADMIN_DAEMON_BUDGET;
+    let docker = match reachable_docker(deadline).await {
         Ok(docker) => docker,
         Err(error) => {
             return RequestResponse::ok(PruneResultModel {
@@ -446,8 +747,9 @@ pub async fn prune_images(
         }
     };
     let scope = crate::services::container::docker_installation_scope();
-    let ownerships = match sqlx::query_as::<_, OwnershipRow>(OWNERSHIPS_SQL)
-        .bind(scope)
+    let ownerships = match sqlx::query_as::<_, OwnershipRow>(INVENTORY_OWNERSHIPS_SQL)
+        .bind(&scope)
+        .bind(MANUAL_PRUNE_LIMIT + 1)
         .fetch_all(st.pg())
         .await
     {
@@ -459,12 +761,25 @@ pub async fn prune_images(
             });
         }
     };
+    let truncated = ownerships.len() > MANUAL_PRUNE_LIMIT as usize;
     let mut removed = 0;
     let mut messages = Vec::new();
-    for ownership in ownerships {
-        let result = remove_one(&st, &docker, &ownership.canonical_ref, false).await;
+    for ownership in ownerships.into_iter().take(MANUAL_PRUNE_LIMIT as usize) {
+        if tokio::time::Instant::now() >= deadline {
+            messages.push("manual prune reached its absolute daemon deadline".to_string());
+            break;
+        }
+        let result = remove_one(&st, &docker, &ownership.canonical_ref, false, deadline).await;
         removed += result.removed;
         messages.extend(result.messages);
+    }
+    if truncated {
+        messages.push(format!(
+            "manual prune is bounded to {MANUAL_PRUNE_LIMIT} images; more ownership rows remain"
+        ));
+    }
+    if removed > 0 {
+        invalidate_inventory();
     }
     RequestResponse::ok(PruneResultModel { removed, messages })
 }
@@ -472,6 +787,7 @@ pub async fn prune_images(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     const ID: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const OTHER_ID: &str =
@@ -546,9 +862,28 @@ mod tests {
         assert_eq!(reference_titles(&rows, CANONICAL, ID), vec!["active"]);
     }
 
+    #[test]
+    fn inventory_daemon_and_database_work_have_explicit_bounds() {
+        assert!(INVENTORY_OWNERSHIP_LIMIT > 0);
+        assert!(INVENTORY_REFERENCE_LIMIT > INVENTORY_OWNERSHIP_LIMIT);
+        assert!((1..=8).contains(&INVENTORY_INSPECT_CONCURRENCY));
+        let filters = crate::services::container::managed_container_filters(SCOPE);
+        let labels = filters.get("label").unwrap();
+        assert_eq!(labels.len(), 2);
+        assert!(labels.iter().all(|label| label.ends_with(SCOPE)));
+        let source = include_str!("images.rs");
+        assert!(!source.contains("list_images("));
+        assert!(source.contains("buffer_unordered(INVENTORY_INSPECT_CONCURRENCY)"));
+        assert!(source.contains("run_with_timeout"));
+        assert!(source.contains("OR cleanup_claim_until <= clock_timestamp()"));
+        assert!(source.contains("SET cleanup_claim_until = clock_timestamp()"));
+        assert!(source.contains("cleanup_removal_started = TRUE"));
+        assert!(source.contains("ControlPlaneResourceLeases"));
+    }
+
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn delete_alias_waits_for_build_lock_then_rereads_references() {
+    async fn delete_alias_waits_for_build_lock_before_out_of_lock_reference_snapshot() {
         use std::str::FromStr;
 
         use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -633,13 +968,14 @@ mod tests {
         .unwrap();
         first.release().await.unwrap();
 
-        let mut second = tokio::time::timeout(std::time::Duration::from_secs(2), &mut waiter)
+        let second = tokio::time::timeout(std::time::Duration::from_secs(2), &mut waiter)
             .await
             .expect("delete waiter must acquire after the build releases")
             .unwrap()
             .unwrap();
+        second.release().await.unwrap();
         let rows = sqlx::query_as::<_, ReferenceRow>(REFERENCES_SQL)
-            .fetch_all(second.connection_mut())
+            .fetch_all(&pool)
             .await
             .unwrap();
         assert_eq!(
@@ -650,8 +986,6 @@ mod tests {
             reference_titles(&rows, "docker.io/rsctf/unrelated:latest", ID),
             vec!["managed generator"]
         );
-        second.release().await.unwrap();
-
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
             .execute(&admin)

@@ -1,6 +1,5 @@
-import { BoxProps, Group, InputBase, Text, InputBaseProps } from '@mantine/core'
-import { useLocalStorage } from '@mantine/hooks'
-import { forwardRef, useState, useEffect, useImperativeHandle } from 'react'
+import { BoxProps, Button, Group, InputBase, Text, InputBaseProps } from '@mantine/core'
+import { forwardRef, useState, useEffect, useImperativeHandle, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { CaptchaInstance } from '@Components/Captcha'
 import { PowWorker } from '@Components/icon/PowWorker'
@@ -20,70 +19,103 @@ export interface PowResult {
   rate: number
 }
 
-interface PowState {
-  chall?: HashPowChallenge
-  time: number
-}
-
 export const usePowChallenge = () => {
-  const [data, setData] = useLocalStorage<PowState>({
-    key: 'pow-chall',
-    defaultValue: { time: 0 },
-  })
-
   const { t } = useTranslation()
+  const [chall, setChall] = useState<HashPowChallenge | undefined>()
+  const [result, setResult] = useState<PowResult | null>(null)
+  const [error, setError] = useState(false)
+  const [pending, setPending] = useState(false)
+  const workerRef = useRef<Worker | null>(null)
+  const fetchRef = useRef<AbortController | null>(null)
+  const generationRef = useRef(0)
+
+  const stopCurrentWork = () => {
+    generationRef.current += 1
+    fetchRef.current?.abort()
+    fetchRef.current = null
+    workerRef.current?.terminate()
+    workerRef.current = null
+    setPending(false)
+  }
+
+  const solve = (challenge: HashPowChallenge, generation: number) => {
+    if (!challenge.challenge || !challenge.difficulty) {
+      setError(true)
+      return
+    }
+    const worker = new Worker(workerScript)
+    workerRef.current = worker
+    setPending(true)
+    worker.onmessage = (event: MessageEvent<PowResult>) => {
+      if (generationRef.current !== generation || workerRef.current !== worker) return
+      worker.terminate()
+      workerRef.current = null
+      setPending(false)
+      if (event.data.nonce) {
+        setResult(event.data)
+        setError(false)
+      } else {
+        setError(true)
+      }
+    }
+    worker.onerror = () => {
+      if (generationRef.current !== generation || workerRef.current !== worker) return
+      worker.terminate()
+      workerRef.current = null
+      setPending(false)
+      setError(true)
+    }
+    worker.postMessage({ chall: challenge.challenge, diff: challenge.difficulty } as PowRequest)
+  }
 
   const fetchPowChallenge = async () => {
+    stopCurrentWork()
+    const generation = generationRef.current
+    const controller = new AbortController()
+    fetchRef.current = controller
+    setChall(undefined)
+    setResult(null)
+    setError(false)
+    setPending(true)
     try {
-      const data = await api.info.infoPowChallenge()
-      if (data.data) {
-        setData({
-          chall: data.data,
-          time: Date.now(),
-        })
-      }
+      const response = await api.info.infoPowChallenge({ signal: controller.signal })
+      if (generationRef.current !== generation || controller.signal.aborted) return null
+      const challenge = response.data
+      if (
+        !challenge?.id ||
+        !challenge.challenge ||
+        !challenge.difficulty ||
+        !challenge.expiresAt ||
+        challenge.expiresAt <= Date.now() + 1_000
+      ) throw new Error('Invalid or expired proof-of-work challenge')
+      fetchRef.current = null
+      setChall(challenge)
+      setPending(false)
+      solve(challenge, generation)
+      return challenge
     } catch (e) {
+      if (controller.signal.aborted || generationRef.current !== generation) return null
+      fetchRef.current = null
+      setPending(false)
+      setError(true)
       showErrorMsg(e, t)
       return null
     }
   }
 
-  const [result, setNonce] = useState<PowResult | null>(null)
-  const [error, setError] = useState<boolean>(false)
-  const [worker, setWorker] = useState<Worker | null>(null)
-  const [pending, setPending] = useState(false)
-
   useEffect(() => {
-    const worker = new Worker(workerScript)
-    worker.onmessage = (event: MessageEvent<PowResult>) => {
-      setPending(false)
-      if (event.data.nonce) {
-        setNonce(event.data)
-      } else {
-        setError(true)
-      }
-    }
-    setWorker(worker)
-    return () => {
-      worker.terminate()
-    }
+    void fetchPowChallenge()
+    return stopCurrentWork
   }, [])
 
   useEffect(() => {
-    if (!worker) return
+    if (!chall?.expiresAt) return
+    const refreshIn = Math.max(0, chall.expiresAt - Date.now() - 5_000)
+    const timer = setTimeout(() => void fetchPowChallenge(), refreshIn)
+    return () => clearTimeout(timer)
+  }, [chall?.id, chall?.expiresAt])
 
-    if (data.chall && Date.now() - data.time < 4 * 60 * 1000) {
-      worker.postMessage({
-        chall: data.chall.challenge,
-        diff: data.chall.difficulty,
-      } as PowRequest)
-      setPending(true)
-    } else {
-      fetchPowChallenge()
-    }
-  }, [worker, data])
-
-  return { chall: data.chall, error, mutate: fetchPowChallenge, result: pending ? null : result }
+  return { chall, error, mutate: fetchPowChallenge, pending, result: pending ? null : result }
 }
 
 interface PowBoxProps extends BoxProps {
@@ -127,13 +159,13 @@ const PowBox = forwardRef<HTMLDivElement, PowBoxProps>((props, ref) => {
 
 export const HashPow = forwardRef<CaptchaInstance, InputBaseProps>((props, ref) => {
   const { t } = useTranslation()
-  const { chall, result, error, mutate } = usePowChallenge()
+  const { chall, result, error, mutate, pending } = usePowChallenge()
 
   useImperativeHandle(
     ref,
     () => ({
       getToken: async () => {
-        if (chall && result) {
+        if (chall?.id && chall.expiresAt && chall.expiresAt > Date.now() && result?.nonce) {
           return { valid: true, token: `${chall?.id}:${result.nonce}` }
         } else {
           return { valid: false }
@@ -165,6 +197,11 @@ export const HashPow = forwardRef<CaptchaInstance, InputBaseProps>((props, ref) 
         component={PowBox}
         nonce={result?.nonce}
       />
+      {error && !pending && (
+        <Button mt="xs" size="xs" variant="light" onClick={() => void mutate()}>
+          {t('account.button.retry_captcha', 'Retry challenge')}
+        </Button>
+      )}
     </>
   )
 })

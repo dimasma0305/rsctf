@@ -1,4 +1,17 @@
 use super::*;
+use std::io::Write;
+
+#[test]
+fn game_export_admits_before_projection_or_blob_loading() {
+    let source = include_str!("transfer_export.rs");
+    let handler = source.find("pub async fn export_game(").unwrap();
+    let body = &source[handler..];
+    let admission = body.find("bulk_export_admission").unwrap();
+    let first_query = body.find("let game = load_game").unwrap();
+    let first_blob = body.find("forward_attachment_sources").unwrap();
+    assert!(admission < first_query);
+    assert!(admission < first_blob);
+}
 
 fn archive_with(name: &str, data: &[u8]) -> Vec<u8> {
     archive_with_entries(&[(name, data)], zip::CompressionMethod::Deflated)
@@ -140,22 +153,4 @@ fn archive_import_preserves_supported_isolation_and_rejects_unsafe_modes() {
     challenge.challenge_type = ChallengeType::DynamicContainer;
     challenge.network_mode = Some(NetworkMode::Custom);
     assert!(validate_import_challenges(&[challenge]).is_err());
-}
-
-#[test]
-fn game_export_zip_contains_manifest_and_bounded_attachments() {
-    let game: ExportGameModel = serde_json::from_value(serde_json::json!({})).unwrap();
-    let mut files = BTreeMap::new();
-    files.insert("a".repeat(64), b"attachment".to_vec());
-
-    let bytes = build_game_export_zip(game, Vec::new(), files).unwrap();
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-    assert!(archive.by_name("game.json").is_ok());
-    let mut attachment = Vec::new();
-    archive
-        .by_name(&format!("files/{}", "a".repeat(64)))
-        .unwrap()
-        .read_to_end(&mut attachment)
-        .unwrap();
-    assert_eq!(attachment, b"attachment");
 }

@@ -593,7 +593,11 @@ async fn build_combined_scoreboard_bundle(
             let model = build_combined_scoreboard(&st2, &game2, is_monitor)
                 .await
                 .ok()?;
-            let ttl = combined_cache_ttl(model.generated_at, Utc::now());
+            let now = Utc::now();
+            let ttl = super::scoreboard_encoding::final_or_live_cache_ttl(
+                !game2.practice_mode && now >= game2.end_time_utc,
+                combined_cache_ttl(model.generated_at, now),
+            );
             let built = encode_combined_scoreboard(&model).await.ok()?;
             if built.cacheable {
                 st2.cache.set(&key2, &built.bytes, Some(ttl)).await;

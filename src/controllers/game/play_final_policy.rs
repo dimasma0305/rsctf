@@ -112,6 +112,7 @@ struct PreparedChallenge {
     container_image: Option<String>,
     expose_port: Option<i32>,
     shared_container_id: Option<Uuid>,
+    ad_self_hosted: bool,
 }
 
 #[derive(Debug)]
@@ -139,6 +140,7 @@ impl PreparedChallengeGrant {
                 container_image: challenge.container_image.clone(),
                 expose_port: challenge.expose_port,
                 shared_container_id: challenge.shared_container_id,
+                ad_self_hosted: challenge.ad_self_hosted,
             },
             attachment: PreparedAttachment::NotEmitted,
             runtime: PreparedRuntime::None,
@@ -248,7 +250,9 @@ impl PreparedChallengeGrant {
                     && model.context.close_time == Some(container.expect_stop_at)
             }
         };
-        attachment_matches && runtime_matches
+        attachment_matches
+            && runtime_matches
+            && model.ad_self_hosted == self.challenge.ad_self_hosted
     }
 }
 
@@ -388,6 +392,7 @@ struct ChallengePayloadRow {
     container_image: Option<String>,
     expose_port: Option<i32>,
     shared_container_id: Option<Uuid>,
+    ad_self_hosted: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -445,6 +450,7 @@ fn challenge_payload_matches(current: &ChallengePayloadRow, expected: &PreparedC
         && current.container_image == expected.container_image
         && current.expose_port == expected.expose_port
         && current.shared_container_id == expected.shared_container_id
+        && current.ad_self_hosted == expected.ad_self_hosted
 }
 
 fn container_matches(current: &ContainerRow, expected: &container::Model) -> bool {
@@ -605,7 +611,7 @@ async fn lock_challenge_payload_on(
         r#"SELECT title, content, category, "Type" AS challenge_type, hints,
                   attachment_id, submission_limit, deadline_utc,
                   enable_shared_container, workload_spec, container_image,
-                  expose_port, shared_container_id
+                  expose_port, shared_container_id, ad_self_hosted
              FROM "GameChallenges"
             WHERE id = $1 AND game_id = $2
               AND is_enabled = TRUE
@@ -668,6 +674,27 @@ pub(super) async fn finish_details_response(
     challenge_ids: Vec<i32>,
     model: GameDetailModel,
 ) -> AppResult<Response> {
+    finish_scoped_model_response(
+        pool,
+        user,
+        game_id,
+        team_id,
+        participation_id,
+        challenge_ids,
+        model,
+    )
+    .await
+}
+
+async fn finish_scoped_model_response<T: Serialize>(
+    pool: &sqlx::PgPool,
+    user: &CurrentUser,
+    game_id: i32,
+    team_id: i32,
+    participation_id: i32,
+    challenge_ids: Vec<i32>,
+    model: T,
+) -> AppResult<Response> {
     let Some(mut roster) = crate::services::live_roster::try_acquire_participation_fence(
         pool,
         user.id,
@@ -693,6 +720,46 @@ pub(super) async fn finish_details_response(
         .await?;
         scope.phase_at_db_clock(roster.transaction_mut()).await?;
         Ok(RequestResponse::ok(model).into_response())
+    }
+    .await;
+    release_with_result(roster, result).await
+}
+
+pub(super) async fn finish_participant_response(
+    pool: &sqlx::PgPool,
+    user: &CurrentUser,
+    game_id: i32,
+    team_id: i32,
+    participation_id: i32,
+    challenge_ids: Vec<i32>,
+    bundle: bytes::Bytes,
+    headers: &HeaderMap,
+) -> AppResult<Response> {
+    let Some(mut roster) = crate::services::live_roster::try_acquire_participation_fence(
+        pool,
+        user.id,
+        &user.security_stamp,
+        game_id,
+        team_id,
+        participation_id,
+        true,
+    )
+    .await?
+    else {
+        return Err(AppError::Forbidden);
+    };
+
+    let result = async {
+        let scope = lock_play_scope_on(
+            roster.transaction_mut(),
+            game_id,
+            team_id,
+            participation_id,
+            &challenge_ids,
+        )
+        .await?;
+        scope.phase_at_db_clock(roster.transaction_mut()).await?;
+        super::scoreboard_encoding::scoped_response(bundle, headers, "participant-private")
     }
     .await;
     release_with_result(roster, result).await

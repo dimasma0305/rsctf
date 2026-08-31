@@ -1,5 +1,5 @@
 // Disposable fixture mechanics for edit-lifecycle.mjs. Keep destructive scope
-// checks and archive materialization separate from the 67-operation narrative.
+// checks and archive materialization separate from the 79-operation narrative.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
