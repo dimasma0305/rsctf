@@ -28,6 +28,7 @@ import { Icon } from '@mdi/react'
 import { CSSProperties, FC, useEffect, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { Link, useNavigate, useParams } from 'react-router'
+import { useSWRConfig } from 'swr'
 import { GameColorMap, getGameStatusLabel } from '@Components/GameCard'
 import { GameJoinModal } from '@Components/GameJoinModal'
 import { GameProgress } from '@Components/GameProgress'
@@ -36,12 +37,13 @@ import { WithNavBar } from '@Components/WithNavbar'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
 import { collectEncryptedFingerprintIdentity } from '@Utils/FingerprintIdentity'
 import { useLanguage } from '@Utils/I18n'
+import { CHALLENGE_CATALOG_PATH, invalidatePlayerReads } from '@Utils/PlayerReadCache'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useConfig } from '@Hooks/useConfig'
 import { shouldRedirectGameLandingError, useGame, useGameStatus } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
-import { useTeams, useUser } from '@Hooks/useUser'
+import { useTeamSelector, useUser } from '@Hooks/useUser'
 import api, { GameJoinModel, ParticipationStatus } from '@Api'
 import classes from '@Styles/GameDetail.module.css'
 
@@ -95,6 +97,7 @@ const GameDetail: FC = () => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const navigate = useNavigate()
+  const { mutate: mutateCache } = useSWRConfig()
 
   const { game, error, mutate, status } = useGame(numId)
 
@@ -106,7 +109,7 @@ const GameDetail: FC = () => {
   const { config } = useConfig()
 
   const { user } = useUser()
-  const { teams } = useTeams()
+  const { teams } = useTeamSelector(Boolean(user))
 
   const modals = useModals()
   const isMobile = useIsMobile()
@@ -147,6 +150,7 @@ const GameDetail: FC = () => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
       await mutate()
+      await invalidatePlayerReads(mutateCache, [CHALLENGE_CATALOG_PATH])
       return true
     } catch (err) {
       if (signal.aborted) return false
@@ -166,6 +170,7 @@ const GameDetail: FC = () => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
       mutate()
+      await invalidatePlayerReads(mutateCache, [CHALLENGE_CATALOG_PATH])
     } catch (err) {
       return showErrorMsg(err, t)
     }
@@ -464,6 +469,7 @@ const GameDetail: FC = () => {
           withCloseButton
           onClose={() => setJoinModalOpen(false)}
           onSubmitJoin={onSubmitJoin}
+          teams={teams}
         />
       </Container>
     </WithNavBar>

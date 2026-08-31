@@ -59,7 +59,11 @@ const Challenges: FC = () => {
     return { hasAdChallenges: a, hasKothChallenges: k, hasAdEngine: a || k }
   }, [teamInfo])
 
-  const { adState } = useAdState(numId, hasAdEngine && !archived)
+  const { adState, error: adStateError, mutate: mutateAdState } = useAdState(numId, hasAdEngine && !archived)
+  const adStateOwner = useMemo(
+    () => ({ data: adState, error: adStateError, mutate: mutateAdState }),
+    [adState, adStateError, mutateAdState]
+  )
   const [adGuideOpened, adGuideHandlers] = useDisclosure(false)
   const [kothGuideOpened, kothGuideHandlers] = useDisclosure(false)
   const tokenOwner = useAdToken(numId, hasAdEngine && !archived)
@@ -92,7 +96,7 @@ const Challenges: FC = () => {
             </Alert>
           )}
           <Flex direction={isCompact ? 'column' : 'row'} gap="sm" justify="space-between" align="flex-start" w="100%">
-            <ChallengePanel teamState={teamState} />
+            <ChallengePanel teamState={teamState} adStateOwner={hasAdEngine && !archived ? adStateOwner : undefined} />
             <Stack gap="sm" w={isCompact ? '100%' : '22rem'} miw={isCompact ? 0 : '22rem'}>
               {!archived && adState?.scoringPaused && (
                 <Alert

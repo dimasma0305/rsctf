@@ -43,6 +43,7 @@ import relativeTime from 'dayjs/plugin/relativeTime'
 import { FC, MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AdChallengePanel } from '@Components/AdChallengePanel'
+import type { AdStateOwner } from '@Components/AdChallengePanel'
 import { ChallengeDeadlineNotice } from '@Components/ChallengeDeadlineNotice'
 import { FlagVerdictOverlay } from '@Components/FlagVerdictOverlay'
 import { InstanceEntry } from '@Components/InstanceEntry'
@@ -108,6 +109,7 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
   gameId?: number
   flagVerdict?: FlagVerdictState | null
   onDismissFlagVerdict?: () => void
+  adStateOwner?: AdStateOwner
 }
 
 export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
@@ -142,6 +144,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     gameId,
     flagVerdict,
     onDismissFlagVerdict,
+    adStateOwner,
     withOverlay = true,
     overlayProps,
     withCloseButton = true,
@@ -697,6 +700,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
             challengeId={challenge?.id ?? 0}
             active={Boolean(modalProps.opened)}
             selfHosted={challenge?.adSelfHosted === true}
+            stateOwner={adStateOwner}
           />
         )}
         {eventAction}
@@ -718,6 +722,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
             gameId={gameId}
             challengeId={challenge?.id ?? 0}
             active={Boolean(modalProps.opened)}
+            stateOwner={adStateOwner}
             selfHosted={challenge?.adSelfHosted === true}
             snapshotOnly
           />

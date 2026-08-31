@@ -37,6 +37,7 @@ import { ScrollingText } from '@Components/ScrollingText'
 import { ChallengeReviewsRefresh } from '@Components/admin/ChallengeReviewsRefresh'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
 import { useIsMobile } from '@Utils/ThemeOverride'
+import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { ReviewRating } from '@Api'
 import misc from '@Styles/Misc.module.css'
 
@@ -75,12 +76,10 @@ const ChallengeReviews: FC = () => {
       search: debouncedSearch,
       rating: getRatingFilterValue(),
     },
-    { refreshInterval: 0 }
+    OnceSWRConfig
   )
 
-  const { data: analytics, mutate: mutateAnalytics } = api.edit.useEditGetReviewAnalytics(numId, {
-    refreshInterval: 0,
-  })
+  const { data: analytics, mutate: mutateAnalytics } = api.edit.useEditGetReviewAnalytics(numId, OnceSWRConfig)
 
   const reviews = reviewResponse?.data
   const totalCount = reviewResponse?.total ?? 0

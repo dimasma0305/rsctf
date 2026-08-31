@@ -189,6 +189,7 @@ mod m0323_repo_binding_scheduler;
 mod m0330_mail_preparation_slots;
 mod m0331_username_scoreboard_invalidation;
 mod m0332_repository_manifest_lookup;
+mod m0340_player_read_indexes;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -402,6 +403,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0330_mail_preparation_slots::Migration),
             Box::new(m0331_username_scoreboard_invalidation::Migration),
             Box::new(m0332_repository_manifest_lookup::Migration),
+            Box::new(m0340_player_read_indexes::Migration),
         ]
     }
 }
@@ -532,7 +534,7 @@ fn migration_ledger_diff(expected: &[String], applied: &[String]) -> (Vec<String
 
 #[cfg(test)]
 mod tests {
-    use std::{str::FromStr, time::Duration};
+    use std::{collections::HashSet, str::FromStr, time::Duration};
 
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
     use sqlx::{ConnectOptions as _, Connection as _};
@@ -546,9 +548,10 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 165);
+        assert_eq!(names.len(), 166);
+        assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
-            &names[names.len() - 63..],
+            &names[names.len() - 64..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -613,6 +616,7 @@ mod tests {
                 "m0330_mail_preparation_slots",
                 "m0331_username_scoreboard_invalidation",
                 "m0332_repository_manifest_lookup",
+                "m0340_player_read_indexes",
             ]
         );
     }

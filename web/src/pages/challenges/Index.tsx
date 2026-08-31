@@ -14,7 +14,7 @@ import {
   VisuallyHidden,
 } from '@mantine/core'
 import { useDebouncedValue } from '@mantine/hooks'
-import { mdiClose, mdiMagnify } from '@mdi/js'
+import { mdiClose, mdiMagnify, mdiRefresh } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -102,7 +102,13 @@ const ChallengeCatalog: FC = () => {
   const [selectedChallenge, setSelectedChallenge] = useState<ChallengeCatalogItem | null>(null)
   const { iconMap, colorMap } = SubmissionTypeIconMap(0.8)
 
-  const { data: catalog, isLoading } = api.game.useGameChallengeCatalog(
+  const {
+    data: catalog,
+    error: catalogError,
+    isLoading,
+    isValidating,
+    mutate,
+  } = api.game.useGameChallengeCatalog(
     {
       count: ITEMS_PER_PAGE,
       skip: (page - 1) * ITEMS_PER_PAGE,
@@ -150,11 +156,22 @@ const ChallengeCatalog: FC = () => {
           'Search challenges across events you have joined. Upcoming, hidden, and unauthorized event content stays private.'
         )}
         actions={
-          catalog && (
-            <Badge size="lg" variant="light">
-              {t('challenge.catalog.total', '{{count}} challenges', { count: catalog.total })}
-            </Badge>
-          )
+          <Group gap="xs">
+            {catalog && (
+              <Badge size="lg" variant="light">
+                {t('challenge.catalog.total', '{{count}} challenges', { count: catalog.total })}
+              </Badge>
+            )}
+            <Button
+              size="compact-sm"
+              variant="light"
+              loading={isValidating}
+              leftSection={<Icon path={mdiRefresh} size={0.72} aria-hidden="true" />}
+              onClick={() => void mutate()}
+            >
+              {t('common.button.refresh', 'Refresh')}
+            </Button>
+          </Group>
         }
       />
 
@@ -265,8 +282,27 @@ const ChallengeCatalog: FC = () => {
           </VisuallyHidden>
         </form>
 
-        <div id="challenge-catalog-results" aria-busy={!catalog || isLoading ? true : undefined}>
-          {!catalog ? (
+        <div id="challenge-catalog-results" aria-busy={!catalog || isLoading || isValidating ? true : undefined}>
+          {catalogError && !catalog ? (
+            <div role="alert">
+              <Empty
+                bordered
+                description={t(
+                  'challenge.catalog.load_failed',
+                  'Your joined-event challenges could not be loaded. Check your session, then try again.'
+                )}
+                action={
+                  <Button
+                    variant="light"
+                    leftSection={<Icon path={mdiRefresh} size={0.8} aria-hidden="true" />}
+                    onClick={() => void mutate()}
+                  >
+                    {t('common.button.retry', 'Retry')}
+                  </Button>
+                }
+              />
+            </div>
+          ) : !catalog ? (
             <SimpleGrid cols={{ base: 1, sm: 2, lg: 3, xl: 4 }} spacing="lg">
               {Array.from({ length: 8 }).map((_, index) => (
                 <Skeleton key={index} h="11.5rem" radius="lg" />

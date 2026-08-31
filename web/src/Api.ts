@@ -906,6 +906,37 @@ export interface TeamInviteModel {
   revision: number;
 }
 
+/** Compact current-user team choice for event enrollment. */
+export interface TeamSelectorInfoModel {
+  /** @format int32 */
+  id: number;
+  name: string;
+  captain: boolean;
+}
+
+/** One recent event represented in the current user's statistics. */
+export interface GameStatItem {
+  /** @format int32 */
+  gameId: number;
+  gameTitle: string;
+  /** @format int64 */
+  endTimeUtc: number;
+  /** @format int32 */
+  solves: number;
+}
+
+/** Compact current-user solve statistics. */
+export interface UserStatsModel {
+  /** @format int32 */
+  totalSolves: number;
+  /** @format int32 */
+  totalFirstBloods: number;
+  /** @format int32 */
+  gamesParticipated: number;
+  solvesByCategory: Record<string, number>;
+  games: GameStatItem[];
+}
+
 /** Team member information */
 export interface TeamUserInfoModel {
   /**
@@ -4761,6 +4792,35 @@ export class Api<
   SecurityDataType extends unknown,
 > extends HttpClient<SecurityDataType> {
   account = {
+    /**
+     * @description Get compact solve statistics for the current user
+     *
+     * @tags Account
+     * @name AccountStats
+     * @request GET:/api/account/stats
+     */
+    accountStats: (params: RequestParams = {}) =>
+      this.request<UserStatsModel, RequestResponse>({
+        path: `/api/account/stats`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useAccountStats: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<UserStatsModel, RequestResponse>(
+        doFetch ? `/api/account/stats` : null,
+        options,
+      ),
+
+    mutateAccountStats: (
+      data?: UserStatsModel | Promise<UserStatsModel>,
+      options?: MutatorOptions,
+    ) => mutate<UserStatsModel>(`/api/account/stats`, data, options),
+
     /**
      * @description Use this API to update user's avatar. User permissions required.
      *
@@ -11231,6 +11291,35 @@ export class Api<
       }),
   };
   team = {
+    /**
+     * @description Get compact current-user team choices for event enrollment
+     *
+     * @tags Team
+     * @name TeamGetSelector
+     * @request GET:/api/team/selector
+     */
+    teamGetSelector: (params: RequestParams = {}) =>
+      this.request<TeamSelectorInfoModel[], RequestResponse>({
+        path: `/api/team/selector`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useTeamGetSelector: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<TeamSelectorInfoModel[], RequestResponse>(
+        doFetch ? `/api/team/selector` : null,
+        options,
+      ),
+
+    mutateTeamGetSelector: (
+      data?: TeamSelectorInfoModel[] | Promise<TeamSelectorInfoModel[]>,
+      options?: MutatorOptions,
+    ) => mutate<TeamSelectorInfoModel[]>(`/api/team/selector`, data, options),
+
     /**
      * @description Interface to accept invitation, requires User permission and not being in team
      *

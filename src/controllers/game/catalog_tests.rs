@@ -91,7 +91,7 @@ fn catalog_search_is_trimmed_bounded_and_optional() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_boundaries() {
+async fn challenge_catalog_cannot_escape_join_start_visibility_deletion_or_division_boundaries() {
     let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
         .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
     let admin = PgPoolOptions::new()
@@ -117,7 +117,8 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
         r#"
         CREATE TABLE "Games" (
           id INTEGER PRIMARY KEY, title TEXT NOT NULL, hidden BOOLEAN NOT NULL,
-          start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL
+          start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL,
+          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
         );
         CREATE TABLE "GameChallenges" (
           id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, title TEXT NOT NULL,
@@ -125,7 +126,8 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
           original_score INTEGER NOT NULL, min_score_rate DOUBLE PRECISION NOT NULL,
           difficulty DOUBLE PRECISION NOT NULL, accepted_count INTEGER NOT NULL,
           score_curve SMALLINT NOT NULL, is_enabled BOOLEAN NOT NULL,
-          review_status SMALLINT NOT NULL
+          review_status SMALLINT NOT NULL,
+          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
         );
         CREATE TABLE "Participations" (
           id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, team_id INTEGER NOT NULL,
@@ -142,9 +144,10 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
           division_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
           permissions INTEGER NOT NULL, PRIMARY KEY (division_id, challenge_id)
         );
-        CREATE TABLE "Submissions" (
+        CREATE TABLE "FirstSolves" (
           participation_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
-          status SMALLINT NOT NULL
+          submission_id INTEGER NOT NULL,
+          PRIMARY KEY (participation_id, challenge_id)
         );
         "#,
     )
@@ -155,31 +158,41 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
     let player = Uuid::new_v4();
     let other = Uuid::new_v4();
     sqlx::query(
-        r#"INSERT INTO "Games" VALUES
+        r#"INSERT INTO "Games"
+          (id, title, hidden, start_time_utc, end_time_utc) VALUES
           (1, 'Joined event', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
           (2, 'Other event', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
           (3, 'Pending event', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
           (4, 'Future event', FALSE, clock_timestamp() + interval '1 hour', clock_timestamp() + interval '1 day'),
           (5, 'Hidden event', TRUE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
           (6, 'Denied division', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
-          (7, 'Allowed division', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day')"#,
+          (7, 'Allowed division', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
+          (8, 'Suspended event', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
+          (9, 'Rejected event', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day'),
+          (10, 'Deleting event', FALSE, clock_timestamp() - interval '1 hour', clock_timestamp() + interval '1 day')"#,
     )
     .execute(&pool)
     .await
     .unwrap();
     sqlx::query(
-        r#"INSERT INTO "GameChallenges" VALUES
+        r#"INSERT INTO "GameChallenges"
+          (id, game_id, title, category, "Type", original_score, min_score_rate,
+           difficulty, accepted_count, score_curve, is_enabled, review_status) VALUES
           (101, 1, 'Visible Web', 3, 0, 1000, 0.01, 5, 2, 0, TRUE, 0),
           (102, 1, 'Live A&D', 3, 4, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (103, 1, 'Live KOTH', 3, 5, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (104, 1, 'Shared container', 3, 1, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (105, 1, 'Dynamic attachment', 3, 2, 1000, 0.01, 5, 0, 0, TRUE, 0),
+          (106, 1, 'Deleting challenge', 3, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (201, 2, 'Other Crypto', 1, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (301, 3, 'Pending Pwn', 2, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (401, 4, 'Future Reverse', 4, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (501, 5, 'Hidden Forensics', 6, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (601, 6, 'Denied Mobile', 8, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
-          (701, 7, 'Allowed Blockchain', 5, 3, 1000, 0.01, 5, 0, 0, TRUE, 0)"#,
+          (701, 7, 'Allowed Blockchain', 5, 3, 1000, 0.01, 5, 0, 0, TRUE, 0),
+          (801, 8, 'Suspended Misc', 0, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
+          (901, 9, 'Rejected Misc', 0, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
+          (1001, 10, 'Deleting Event Challenge', 0, 0, 1000, 0.01, 5, 0, 0, TRUE, 0)"#,
     )
     .execute(&pool)
     .await
@@ -188,7 +201,9 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
         r#"INSERT INTO "Participations" VALUES
           (11, 1, 11, 1, NULL), (22, 2, 22, 1, NULL), (33, 3, 33, 0, NULL),
           (44, 4, 44, 1, NULL), (55, 5, 55, 1, NULL),
-          (66, 6, 66, 1, 60), (77, 7, 77, 1, 70)"#,
+          (66, 6, 66, 1, 60), (77, 7, 77, 1, 70),
+          (88, 8, 88, 3, NULL), (99, 9, 99, 2, NULL),
+          (100, 10, 100, 1, NULL)"#,
     )
     .execute(&pool)
     .await
@@ -196,7 +211,8 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
     sqlx::query(
         r#"INSERT INTO "UserParticipations" VALUES
           ($1, 1, 11, 11), ($2, 2, 22, 22), ($1, 3, 33, 33),
-          ($1, 4, 44, 44), ($1, 5, 55, 55), ($1, 6, 66, 66), ($1, 7, 77, 77)"#,
+          ($1, 4, 44, 44), ($1, 5, 55, 55), ($1, 6, 66, 66), ($1, 7, 77, 77),
+          ($1, 8, 88, 88), ($1, 9, 99, 99), ($1, 10, 100, 100)"#,
     )
     .bind(player)
     .bind(other)
@@ -207,10 +223,17 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query(r#"INSERT INTO "Submissions" VALUES (11, 101, 1)"#)
+    sqlx::query(r#"INSERT INTO "FirstSolves" VALUES (11, 101, 1001)"#)
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::raw_sql(
+        r#"UPDATE "Games" SET deletion_pending = TRUE WHERE id = 10;
+           UPDATE "GameChallenges" SET deletion_pending = TRUE WHERE id = 106;"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let query = ChallengeCatalogQuery {
         count: 50,
@@ -226,6 +249,7 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
     assert_eq!(items.iter().find(|item| item.id == 101).unwrap().score, 820);
     assert_eq!(items.iter().find(|item| item.id == 102).unwrap().score, 0);
     assert_eq!(items.iter().find(|item| item.id == 103).unwrap().score, 0);
+    assert!(!items.iter().any(|item| item.id == 106 || item.id == 1001));
 
     let jeopardy = ChallengeCatalogQuery {
         count: 50,

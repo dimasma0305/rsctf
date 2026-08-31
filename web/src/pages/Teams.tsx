@@ -190,6 +190,8 @@ const Teams: FC = () => {
           onClose={() => setEditOpened(false)}
           team={editTeam}
           isCaptain={editTeam?.members?.some((m) => m?.captain && m.id === user?.userId) ?? false}
+          teams={teams}
+          mutateTeams={mutateTeams}
         />
       </WithRole>
     </WithNavBar>

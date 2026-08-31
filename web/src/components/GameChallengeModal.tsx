@@ -5,6 +5,8 @@ import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, MutableRefObject, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useSWRConfig } from 'swr'
+import type { AdStateOwner } from '@Components/AdChallengePanel'
 import { ChallengeModal, SolverInfo } from '@Components/ChallengeModal'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
 import { assertJsonResponse, NonJsonResponseError } from '@Utils/ChallengePolling'
@@ -21,6 +23,7 @@ import {
   extendReconciledInstance,
   mergeExtendedInstanceContext,
 } from '@Utils/InstanceLifecycle'
+import { ACCOUNT_STATS_PATH, CHALLENGE_CATALOG_PATH, invalidatePlayerReads } from '@Utils/PlayerReadCache'
 import { httpErrorStatus } from '@Utils/ProfileRetry'
 import { showErrorMsg } from '@Utils/Shared'
 import { ChallengeCategoryItemProps } from '@Utils/Shared'
@@ -51,6 +54,7 @@ interface GameChallengeModalProps extends ModalProps {
   status?: SubmissionType
   /** Proven by the current catalog/team response, not by a retained selection. */
   challengeOwned?: boolean
+  adStateOwner?: AdStateOwner
 }
 
 interface PendingFlagVerdict extends FlagVerdictIdentity {
@@ -116,6 +120,7 @@ const clearContainerOperation = (
 }
 
 export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
+  const { mutate: mutateCache } = useSWRConfig()
   const {
     gameId,
     gameTitle,
@@ -129,6 +134,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     title,
     score,
     challengeOwned = true,
+    adStateOwner,
     ...modalProps
   } = props
 
@@ -595,6 +601,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
     if (data === AnswerResult.Accepted) {
       setSolvedChallengeId(identity.challengeId)
+      void invalidatePlayerReads(mutateCache, [ACCOUNT_STATS_PATH, CHALLENGE_CATALOG_PATH])
       updateNotification({
         id: 'flag-submitted',
         color: 'teal',
@@ -697,6 +704,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       onDismissFlagVerdict={() => {
         if (flagVerdict) dispatchFlagVerdict({ type: 'dismiss', sequence: flagVerdict.sequence })
       }}
+      adStateOwner={adStateOwner}
     />
   )
 }

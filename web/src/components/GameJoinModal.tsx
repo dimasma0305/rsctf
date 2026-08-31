@@ -8,19 +8,17 @@ import { useParams } from 'react-router'
 import { AccessibleModal, AccessibleModalProps } from '@Components/AccessibleModal'
 import { OnceSWRConfig } from '@Hooks/useConfig'
 import { useGame } from '@Hooks/useGame'
-import { useTeams } from '@Hooks/useUser'
-import api, { GameJoinModel } from '@Api'
+import api, { GameJoinModel, TeamSelectorInfoModel } from '@Api'
 
 interface GameJoinModalProps extends AccessibleModalProps {
   onSubmitJoin: (info: GameJoinModel, signal: AbortSignal) => Promise<boolean>
+  teams?: TeamSelectorInfoModel[]
 }
 
 export const GameJoinModal: FC<GameJoinModalProps> = (props) => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
-  const { onSubmitJoin, ...modalProps } = props
-
-  const { teams } = useTeams()
+  const { onSubmitJoin, teams, ...modalProps } = props
   const { game } = useGame(numId)
 
   const { data: checkInfo } = api.game.useGameGetGameJoinCheckInfo(numId, OnceSWRConfig, props.opened && numId > 0)
@@ -53,7 +51,7 @@ export const GameJoinModal: FC<GameJoinModalProps> = (props) => {
   useEffect(() => () => submitController.current?.abort(), [])
 
   useEffect(() => {
-    const available = new Set((teams ?? []).flatMap((candidate) => candidate.id ? [candidate.id.toString()] : []))
+    const available = new Set((teams ?? []).flatMap((candidate) => (candidate.id ? [candidate.id.toString()] : [])))
     if (team && available.has(team)) return
     setTeam(available.values().next().value ?? null)
   }, [team, teams])
@@ -102,7 +100,9 @@ export const GameJoinModal: FC<GameJoinModalProps> = (props) => {
   const canSelectDivision = !joinedTeam
   const selectedTeamAvailable = Boolean(team && teamsData.some((candidate) => candidate.value === team))
   const selectedDivisionAvailable =
-    !canSelectDivision || !hasDivision || Boolean(divisionId && divisionOptions.some((option) => option.value === divisionId))
+    !canSelectDivision ||
+    !hasDivision ||
+    Boolean(divisionId && divisionOptions.some((option) => option.value === divisionId))
 
   const shouldRequireInviteCode = hasDivision
     ? Boolean(selectedDivision?.inviteCodeRequired)

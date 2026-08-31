@@ -55,6 +55,7 @@ mod password_policy;
 mod profile_bounds;
 mod recovery;
 mod request_models;
+mod stats;
 pub use avatar::avatar;
 use bootstrap::registration_disposition;
 pub use email_confirmation::verify;
@@ -67,6 +68,7 @@ use request_models::EmailChangeTicket;
 pub use request_models::{
     AccountVerifyModel, LoginModel, MailChangeModel, PasswordResetModel, RecoveryModel,
 };
+pub use stats::stats;
 
 pub fn router() -> Router<SharedState> {
     Router::new()
@@ -689,127 +691,6 @@ pub async fn profile(
         &model,
         has_managed_games,
     )))
-}
-
-/// RSCTF `GameStatItem` — one game the user has solves in.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GameStatItem {
-    pub game_id: i32,
-    pub game_title: String,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub end_time_utc: chrono::DateTime<Utc>,
-    pub solves: i32,
-}
-
-/// RSCTF `UserStatsModel` — the "My Stats" tab payload.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserStatsModel {
-    pub total_solves: i32,
-    pub total_first_bloods: i32,
-    pub games_participated: i32,
-    pub solves_by_category: std::collections::BTreeMap<String, i32>,
-    pub games: Vec<GameStatItem>,
-}
-
-/// `GET /api/account/stats` -> `UserStatsModel` (RSCTF `Account.Stats`): the
-/// signed-in user's solve totals, first bloods, per-category and per-game solves.
-pub async fn stats(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-) -> AppResult<RequestResponse<UserStatsModel>> {
-    use crate::utils::enums::AnswerResult;
-    use sea_orm::ColumnTrait;
-    use std::collections::{BTreeMap, HashMap, HashSet};
-
-    let subs = submission::Entity::find()
-        .filter(submission::Column::UserId.eq(user.id))
-        .filter(submission::Column::Status.eq(AnswerResult::Accepted))
-        .all(&st.db)
-        .await?;
-
-    let challenge_ids: Vec<i32> = subs
-        .iter()
-        .map(|s| s.challenge_id)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    let game_ids: Vec<i32> = subs
-        .iter()
-        .map(|s| s.game_id)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-
-    // Challenge categories + game titles/ends for the solved set.
-    let cat_by_challenge: HashMap<i32, String> = game_challenge::Entity::find()
-        .filter(game_challenge::Column::Id.is_in(challenge_ids.clone()))
-        .all(&st.db)
-        .await?
-        .into_iter()
-        .map(|c| {
-            let label = serde_json::to_value(c.category)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default();
-            (c.id, label)
-        })
-        .collect();
-    let games_map: HashMap<i32, game::Model> = game::Entity::find()
-        .filter(game::Column::Id.is_in(game_ids.clone()))
-        .all(&st.db)
-        .await?
-        .into_iter()
-        .map(|g| (g.id, g))
-        .collect();
-
-    // First bloods: first-solve rows whose submission is one of this user's.
-    let sub_ids: HashSet<i32> = subs.iter().map(|s| s.id).collect();
-    // Count in SQL (WHERE submission_id IN …) instead of loading the entire
-    // first_solve table and counting in Rust. `is_in` on an empty set yields a
-    // 0 count, matching the old behaviour.
-    let total_first_bloods = first_solve::Entity::find()
-        .filter(first_solve::Column::SubmissionId.is_in(sub_ids.iter().copied()))
-        .count(&st.db)
-        .await? as i32;
-
-    // Distinct-challenge tallies per category and per game.
-    let mut by_category: BTreeMap<String, HashSet<i32>> = BTreeMap::new();
-    let mut by_game: HashMap<i32, HashSet<i32>> = HashMap::new();
-    for s in &subs {
-        if let Some(cat) = cat_by_challenge.get(&s.challenge_id) {
-            by_category
-                .entry(cat.clone())
-                .or_default()
-                .insert(s.challenge_id);
-        }
-        by_game.entry(s.game_id).or_default().insert(s.challenge_id);
-    }
-
-    let mut games: Vec<GameStatItem> = by_game
-        .iter()
-        .filter_map(|(gid, chals)| {
-            games_map.get(gid).map(|g| GameStatItem {
-                game_id: *gid,
-                game_title: g.title.clone(),
-                end_time_utc: g.end_time_utc,
-                solves: chals.len() as i32,
-            })
-        })
-        .collect();
-    games.sort_by_key(|game| std::cmp::Reverse(game.end_time_utc));
-
-    Ok(RequestResponse::ok(UserStatsModel {
-        total_solves: challenge_ids.len() as i32,
-        total_first_bloods,
-        games_participated: games.len() as i32,
-        solves_by_category: by_category
-            .into_iter()
-            .map(|(k, v)| (k, v.len() as i32))
-            .collect(),
-        games,
-    }))
 }
 
 /// `PUT /api/account/update` -> `void`.
