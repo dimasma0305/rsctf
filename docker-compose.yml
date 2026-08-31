@@ -116,7 +116,7 @@ services:
       # Bound the per-replica gameplay pool while keeping the documented Compose
       # override effective. Provisioning reserves additional connections through
       # its own semaphore instead of letting runtime operations drain the pool.
-      RSCTF_DB_MAX_CONNECTIONS: "${RSCTF_DB_MAX_CONNECTIONS:-33}"
+      RSCTF_DB_MAX_CONNECTIONS: "${RSCTF_DB_MAX_CONNECTIONS:-34}"
       RSCTF_PROVISIONING_CONCURRENCY: "${RSCTF_PROVISIONING_CONCURRENCY:-4}"
       RSCTF_REPO_SCAN_CONCURRENCY: "${RSCTF_REPO_SCAN_CONCURRENCY:-1}"
       # Fail closed: trust no forwarded client-IP headers unless an exact proxy
@@ -175,6 +175,7 @@ services:
       RSCTF_AD_FLAG_PUSH_TIMEOUT_SECONDS: "${RSCTF_AD_FLAG_PUSH_TIMEOUT_SECONDS:-2}"
       RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE: "${RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE:-120000}"
       RSCTF_CREDENTIAL_IP_ADMISSION_PER_MINUTE: "${RSCTF_CREDENTIAL_IP_ADMISSION_PER_MINUTE:-30000}"
+      RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE: "${RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE:-6000}"
     healthcheck:
       test: ["CMD", "python3", "-c", "import sys,urllib.request; sys.exit(urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).read()!=b'ok')"]
       interval: 10s

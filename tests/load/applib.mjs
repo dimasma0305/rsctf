@@ -39,6 +39,7 @@ import {
   ownsFleetResource,
 } from './fleet-ownership.js';
 import { kothObservationHeaders } from './koth-api-observer.js';
+import { managedKothOperationCycleId } from './managed-koth-model.js';
 
 const STATE_DIRECTORY = new URL('.', import.meta.url).pathname;
 const STATE_TAG = String(process.env.LIFECYCLE_STATE_TAG || '').trim();
@@ -652,7 +653,7 @@ function kothOperationContainerIds(cycleIds) {
     .filter(
       ([, operation, runtimeScope]) =>
         runtimeScope === scope &&
-        cycleIds.has(operation?.match(/^koth-cycle:(\d+):attempt:\d+$/)?.[1]),
+        cycleIds.has(String(managedKothOperationCycleId(operation))),
     )
     .map(([id]) => id)
     .filter((id) => /^[a-f0-9]{12,64}$/.test(id));
@@ -977,6 +978,14 @@ export function buildCompetitiveKothImage() {
     'rsctf-load-koth:competitive-v1',
     (fixtures) => fixtures.kothDockerfile,
     'competitive KotH fixture',
+  );
+}
+
+export function buildManagedKothImage() {
+  return buildManagedFixtureImage(
+    'rsctf-load-koth:managed-v1',
+    (fixtures) => fixtures.managedKothDockerfile,
+    'managed Leaderboard KotH fixture',
   );
 }
 
@@ -1597,7 +1606,7 @@ export function validateKothApiContext(contextModel) {
   const objectiveIds = contextModel?.objectiveIds;
   const objectiveSchemaHash = contextModel?.objectiveSchemaHash;
   if (
-    contextModel?.apiVersion !== 'v1' ||
+    contextModel?.apiVersion !== 'v2' ||
     typeof contextModel?.context !== 'string' ||
     !/^[0-9a-f]{64}$/.test(contextModel.context) ||
     !Number.isSafeInteger(contextModel?.cycleNumber) ||
@@ -1606,11 +1615,17 @@ export function validateKothApiContext(contextModel) {
     contextModel.resetAttempt < 0 ||
     !Number.isSafeInteger(contextModel?.roundNumber) ||
     contextModel.roundNumber < 1 ||
+    !Number.isSafeInteger(contextModel?.cycleStartsAt) ||
     !Number.isSafeInteger(contextModel?.waveWindowStartsAt) ||
+    contextModel.cycleStartsAt > contextModel.waveWindowStartsAt ||
     !Number.isSafeInteger(contextModel?.waveWindowEndsAt) ||
     contextModel.waveWindowEndsAt <= contextModel.waveWindowStartsAt ||
     !Number.isSafeInteger(contextModel?.cycleEndsAt) ||
-    contextModel.cycleEndsAt < contextModel.waveWindowEndsAt ||
+    contextModel.cycleEndsAt <= contextModel.cycleStartsAt ||
+    !Number.isSafeInteger(contextModel?.scoringEndsAt) ||
+    contextModel.scoringEndsAt <= contextModel.cycleStartsAt ||
+    contextModel.scoringEndsAt > contextModel.cycleEndsAt ||
+    contextModel.scoringEndsAt + 1 < contextModel.waveWindowEndsAt ||
     !Number.isSafeInteger(contextModel?.generatedAt) ||
     !Array.isArray(eligible) ||
     eligible.some((hash) => typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash)) ||
@@ -1655,7 +1670,10 @@ export async function kothApiObservation(
     {
       ip: '10.9.9.10',
       timeoutMs: requestTimeout(),
-      headers: cachedContext?.etag ? { 'If-None-Match': cachedContext.etag } : undefined,
+      headers: {
+        'x-rsctf-api-version': 'v2',
+        ...(cachedContext?.etag ? { 'If-None-Match': cachedContext.etag } : {}),
+      },
     },
   );
   let contextModel;

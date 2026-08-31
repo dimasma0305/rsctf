@@ -567,6 +567,42 @@ pub(crate) async fn complete<T: Serialize>(
     Ok(())
 }
 
+/// Remove a fresh reservation when a domain-specific admission check rejects
+/// the mutation before any credential changes. The surrounding transaction
+/// may still contain an independently required security reconciliation, so a
+/// full rollback is not always correct.
+pub(crate) async fn cancel(
+    connection: &mut sqlx::PgConnection,
+    scope: CredentialScope,
+    operation: FreshCredentialOperation,
+) -> AppResult<()> {
+    let deleted = sqlx::query(
+        r#"DELETE FROM "PlayerCredentialOperations"
+            WHERE operation_id = $1 AND participation_id = $2
+              AND game_id = $3 AND actor_user_id = $4
+              AND credential_kind = $5 AND challenge_id = $6
+              AND expected_revision = $7 AND request_hash = $8
+              AND completed_at IS NULL"#,
+    )
+    .bind(operation.operation_id)
+    .bind(scope.participation_id)
+    .bind(scope.game_id)
+    .bind(scope.actor_user_id)
+    .bind(scope.kind.as_str())
+    .bind(scope.challenge_id)
+    .bind(operation.expected_revision)
+    .bind(operation.request_hash.as_slice())
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if deleted.rows_affected() != 1 {
+        return Err(AppError::conflict(
+            "credential operation changed before cancellation",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::Body;

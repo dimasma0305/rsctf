@@ -760,6 +760,7 @@ async fn complete_ended_ad_checks(state: &SharedState) -> AppResult<u64> {
     for game_id in game_ids {
         if !crate::services::ad_engine::finalize_ended_round_checks(
             &state.db,
+            state.cache.as_ref(),
             game_id,
             ADVANCE_BUDGET_SECS as i64,
         )

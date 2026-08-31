@@ -100,9 +100,13 @@ async fn maximum_body_and_roster_remain_bounded_before_snapshot_work() {
             .unwrap();
     assert_eq!(accounts_with_wrong_role, 0);
 
-    let eligible_tokens = super::super::super::load_eligible_tokens(&pool, 7, 9)
+    let eligible_capabilities = super::super::super::load_eligible_capabilities(&pool, 7, 9)
         .await
         .unwrap();
+    let eligible_tokens: Vec<_> = eligible_capabilities
+        .into_iter()
+        .map(|capability| capability.token)
+        .collect();
     assert_eq!(eligible_tokens.len(), MAX_TEAM_ENTRIES);
     assert_eq!(eligible_tokens.first().unwrap(), "koth_max_1");
     assert_eq!(eligible_tokens.last().unwrap(), "koth_max_2000");
@@ -117,8 +121,9 @@ async fn maximum_body_and_roster_remain_bounded_before_snapshot_work() {
         container_id: "runtime-max".into(),
         round_id: 17,
         round_number: 17,
-        game_starts_at: now - Duration::hours(1),
+        scoring_starts_at: now - Duration::hours(1),
         cycle_ends_at: now + Duration::hours(1),
+        scoring_ends_at: now + Duration::minutes(59),
         round_starts_at: now - Duration::minutes(1),
         round_ends_at: now + Duration::minutes(1),
         objective_ids: None,

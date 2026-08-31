@@ -87,8 +87,6 @@ pub(crate) use scoring::{
 };
 use scoring::{load_koth_scoring, KothScoringSnapshot};
 pub use timeline::{timeline, KothScoreTimelineModel, KothTeamTimeline, KothTimelinePoint};
-#[cfg(test)]
-use tokens::koth_token_cache_key;
 pub(crate) use tokens::load_latest_round_cached;
 pub use tokens::{
     koth_hill_token, koth_token_all, rotate_koth_api_token, KothHillTokenModel, KothTokenModel,
@@ -656,16 +654,8 @@ fn recovery_router() -> Router<SharedState> {
 mod token_cache_tests {
     use super::{
         control_evidence_is_current, endpoint_identity_is_current, holder_identity_is_current,
-        koth_token_cache_key, KothHillBase,
+        KothHillBase,
     };
-
-    #[test]
-    fn bearer_capabilities_are_cached_per_hill() {
-        assert_ne!(
-            koth_token_cache_key(1, 10, 7, 3),
-            koth_token_cache_key(1, 11, 7, 3)
-        );
-    }
 
     #[test]
     fn lifecycle_round_is_not_part_of_cached_hill_state() {

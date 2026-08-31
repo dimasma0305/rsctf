@@ -196,8 +196,8 @@ pub(crate) use flag_delivery::{
 };
 pub(crate) use koth_auth::{
     acquire_game_lock as acquire_ad_game_lock, clear_challenge_control_locked, game_lock_key,
-    revoke_koth_capabilities, revoke_koth_capabilities_locked, GameControlLock,
-    KothCapabilityCacheInvalidation,
+    reconcile_koth_capability_revocations, revoke_koth_capabilities,
+    revoke_koth_capabilities_locked, GameControlLock, KothCapabilityCacheInvalidation,
 };
 pub(crate) use persistence::{complete_missing_koth_results, finalize_ended_round_checks};
 pub use reducers::*;
@@ -208,6 +208,26 @@ pub(crate) use round_completion::{
 };
 pub use rounds::*;
 pub(crate) use service_reset::{prepare_service_reset, publish_service_reset};
+
+/// Clear one hill's published holder through the canonical game-control
+/// transaction used by revision effects and checker mutations.
+pub(crate) async fn clear_challenge_control(
+    db: &DatabaseConnection,
+    game_id: i32,
+    challenge_id: i32,
+) -> AppResult<()> {
+    let mut control = koth_auth::acquire_game_lock(db, game_id).await?;
+    koth_auth::clear_challenge_control_locked(
+        &mut **control.transaction_mut(),
+        game_id,
+        challenge_id,
+    )
+    .await?;
+    control
+        .release()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Unit tests for operational checker credit and round preparation.

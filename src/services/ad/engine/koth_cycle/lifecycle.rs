@@ -3,6 +3,7 @@ use serde_json::json;
 use std::future::Future;
 
 use crate::app_state::SharedState;
+use crate::services::ad::koth_capability_cache::release_game_control;
 use crate::services::container::{ContainerInfo, ContainerSpec};
 use crate::utils::enums::ChallengeType;
 use crate::utils::error::{AppError, AppResult};
@@ -170,10 +171,9 @@ async fn finalize_previous_cycle(
         })
         .unwrap_or(0);
 
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some(previous_id) = previous_id {
+    let mut control =
+        crate::services::ad::engine::koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
+    let retired_previous = if let Some(previous_id) = previous_id {
         sqlx::query(
             r#"UPDATE "KothCrownCycles"
                   SET phase = 'Completed',
@@ -187,10 +187,14 @@ async fn finalize_previous_cycle(
         )
         .bind(previous_id)
         .bind(round_number.saturating_sub(1))
-        .execute(&mut *transaction)
+        .execute(&mut **control.transaction_mut())
         .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    }
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .rows_affected()
+            == 1
+    } else {
+        false
+    };
     if config.champion_cooldown_ticks > 0 && !champions.is_empty() {
         sqlx::query(
             r#"INSERT INTO "KothCycleCooldowns"
@@ -205,7 +209,7 @@ async fn finalize_previous_cycle(
         .bind(lead)
         .bind(round_number)
         .bind(round_number + config.champion_cooldown_ticks - 1)
-        .execute(&mut *transaction)
+        .execute(&mut **control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     }
@@ -217,11 +221,11 @@ async fn finalize_previous_cycle(
     )
     .bind(cycle.id)
     .bind(champions.first().copied())
-    .execute(&mut *transaction)
+    .execute(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     record_receipt(
-        &mut transaction,
+        control.transaction_mut(),
         cycle,
         CrownPhase::FinalizePending,
         json!({
@@ -233,10 +237,8 @@ async fn finalize_previous_cycle(
         None,
     )
     .await?;
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))
+    release_game_control(control, st.cache.as_ref(), cycle.game_id, retired_previous).await?;
+    Ok(())
 }
 
 async fn snapshot_cycle(st: &SharedState, cycle: &CycleRow) -> AppResult<()> {
@@ -575,9 +577,8 @@ async fn activate_cycle(st: &SharedState, cycle: &CycleRow, round_number: i32) -
     .map_err(|error| AppError::internal(error.to_string()))?;
     let enforced_cooldowns =
         crate::services::ad_vpn::enforce_cycle_cooldown(&st.db, cycle.id).await?;
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut control =
+        crate::services::ad::engine::koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
     sqlx::query(
         r#"UPDATE "KothCycleCooldowns"
               SET network_enforced = TRUE,
@@ -585,7 +586,7 @@ async fn activate_cycle(st: &SharedState, cycle: &CycleRow, round_number: i32) -
             WHERE cycle_id = $1 AND network_released_at IS NULL"#,
     )
     .bind(cycle.id)
-    .execute(&mut *transaction)
+    .execute(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     let durable_enforced: i64 = sqlx::query_scalar(
@@ -594,7 +595,7 @@ async fn activate_cycle(st: &SharedState, cycle: &CycleRow, round_number: i32) -
               AND network_released_at IS NULL"#,
     )
     .bind(cycle.id)
-    .fetch_one(&mut *transaction)
+    .fetch_one(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     if durable_enforced != i64::try_from(enforced_cooldowns).unwrap_or(i64::MAX) {
@@ -602,7 +603,7 @@ async fn activate_cycle(st: &SharedState, cycle: &CycleRow, round_number: i32) -
             "KotH cooldown enforcement receipt does not cover every selected champion",
         ));
     }
-    sqlx::query(
+    let activated = sqlx::query(
         r#"UPDATE "KothCrownCycles"
               SET phase = 'Active', actual_start_round = $2,
                   activated_at = clock_timestamp(), updated_at = clock_timestamp(),
@@ -611,11 +612,13 @@ async fn activate_cycle(st: &SharedState, cycle: &CycleRow, round_number: i32) -
     )
     .bind(cycle.id)
     .bind(round_number)
-    .execute(&mut *transaction)
+    .execute(&mut **control.transaction_mut())
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected()
+        == 1;
     record_receipt(
-        &mut transaction,
+        control.transaction_mut(),
         cycle,
         CrownPhase::FirewallPending,
         json!({
@@ -626,10 +629,7 @@ async fn activate_cycle(st: &SharedState, cycle: &CycleRow, round_number: i32) -
         None,
     )
     .await?;
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    release_game_control(control, st.cache.as_ref(), cycle.game_id, activated).await?;
     // Active is the first phase allowed to publish the replacement endpoint.
     crate::controllers::game::ad::invalidate_live_hill_snapshot(st, cycle.game_id).await;
     Ok(())

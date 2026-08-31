@@ -1,4 +1,5 @@
 use super::*;
+use crate::services::ad::koth_capability_cache::finish_game_epoch_mutation_if_any;
 
 /// `GET /api/edit/games/{id}/pendingchallenges` — Pending + Rejected rows.
 pub async fn list_pending_challenges(
@@ -230,6 +231,17 @@ pub async fn approve_challenge(
         ChallengeBuildStatus::Success
     };
 
+    let cache_mutation = if challenge.challenge_type == ChallengeType::KingOfTheHill {
+        Some(
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
+                st.cache.as_ref(),
+                id,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let updated = if let Some(control) = engine_control.as_mut() {
         sqlx::query(
             r#"UPDATE "GameChallenges"
@@ -258,8 +270,8 @@ pub async fn approve_challenge(
         .bind(challenge.build_context_subdir.as_deref())
         .execute(&mut **control.transaction_mut())
         .await
-        .map_err(|error| AppError::internal(error.to_string()))?
-        .rows_affected()
+        .map(|result| result.rows_affected())
+        .map_err(|error| AppError::internal(error.to_string()))
     } else {
         sqlx::query(
             r#"UPDATE "GameChallenges"
@@ -286,10 +298,21 @@ pub async fn approve_challenge(
         .bind(challenge.build_context_subdir.as_deref())
         .execute(st.pg())
         .await
-        .map_err(|error| AppError::internal(error.to_string()))?
-        .rows_affected()
+        .map(|result| result.rows_affected())
+        .map_err(|error| AppError::internal(error.to_string()))
+    };
+    let updated = match updated {
+        Ok(updated) => updated,
+        Err(error) => {
+            // A marked approval uses the still-uncommitted game transaction.
+            finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
+            return Err(error);
+        }
     };
     if updated != 1 {
+        // The guarded UPDATE made no write, so this marker does not need to
+        // remain fail-closed after the transaction rolls back on return.
+        finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
         return Err(AppError::bad_request(
             "Challenge review state changed; reload and retry.",
         ));
@@ -299,6 +322,7 @@ pub async fn approve_challenge(
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
     }
+    finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
     if let Some(guard) = checker_artifact_guard.take() {
         guard
             .release()
@@ -340,6 +364,17 @@ pub async fn reject_challenge(
     crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id).await?;
     let challenge = load_challenge_locked(control.transaction_mut(), id, c_id).await?;
     deletion::reject_pending_mutation(&mut **control.transaction_mut(), id, c_id).await?;
+    let cache_mutation = if challenge.challenge_type == ChallengeType::KingOfTheHill {
+        Some(
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
+                st.cache.as_ref(),
+                id,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let rejected = sqlx::query(
         r#"UPDATE "GameChallenges"
               SET review_status = $3,
@@ -357,6 +392,7 @@ pub async fn reject_challenge(
     .map_err(|error| AppError::internal(error.to_string()))?
     .rows_affected();
     if rejected != 1 {
+        finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
         return Err(AppError::conflict("Challenge is being deleted"));
     }
     if challenge.challenge_type == ChallengeType::KingOfTheHill {
@@ -372,6 +408,9 @@ pub async fn reject_challenge(
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
     }
+    // The review state and cleared holder committed together. The token query
+    // now excludes this challenge even if later runtime cleanup fails.
+    finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
     flush_game_scoreboards(&st, id).await;
     st.byoc.disconnect_challenge(&st.db, c_id).await?;
     crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;

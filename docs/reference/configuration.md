@@ -11,7 +11,7 @@ Restart rsctf after changing a startup value. Settings changed in **Admin → Se
 | `RSCTF_ROLE` | `all` | `all`, `web`, `control`, `engine`, `network`, one-shot `migrate`, or loopback-only `development`; see the [scaling guide](../deploy/scaling) and [source-development guide](./source-development) |
 | `RSCTF_BIND` | `0.0.0.0:8080` | HTTP listen address inside the process/container |
 | `RSCTF_DATABASE_URL` | Local development URL | PostgreSQL connection URL; required in deployment |
-| `RSCTF_DB_MAX_CONNECTIONS` | `33` | Per-process database connection cap; computed minimum described below |
+| `RSCTF_DB_MAX_CONNECTIONS` | `34` | Per-process database connection cap; computed minimum described below |
 | `RSCTF_REDIS_URL` | Unset | Redis cache URL; when configured, Redis is required for readiness and reconnects after an outage |
 | `RSCTF_DISTRIBUTED_RATELIMIT` | `false` | Share rate limits through Redis for multiple replicas |
 | `RSCTF_AD_SUBMIT_BURST_FLAGS` | `400` | Immediate per-participation A&D flag-work budget before the fixed 10 flags/s refill (`100..3200`) |
@@ -19,6 +19,7 @@ Restart rsctf after changing a startup value. Settings changed in **Admin → Se
 | `RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS` | `360` | Pause after configured game end before the barrier-backed final anti-cheat pass (`1..3600` seconds) |
 | `RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE` | `120000` | High shared-source ceiling after credential validation (`12000..1000000`) |
 | `RSCTF_CREDENTIAL_IP_ADMISSION_PER_MINUTE` | `30000` | Cheap shared-source ceiling before bearer verification/token lookup (`3000..1000000`) |
+| `RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE` | `6000` | Dedicated shared-arena ceiling before managed Leaderboard KotH capability lookup (`3000..1000000`) |
 | `RSCTF_JWT_SECRET` | Insecure development placeholder | Session signing secret; deployment validation requires at least 32 bytes and rejects known defaults |
 | `RSCTF_IDENTITY_HASH_KEY` | Required | Dedicated 32+ byte HMAC key for pseudonymous identity evidence; keep stable across replicas, restarts, and JWT rotations |
 | `RSCTF_JWT_TTL_SECS` | `604800` | Session lifetime in seconds; must be positive |
@@ -263,24 +264,25 @@ challenge-definition guards while its model write needs a fifth connection. Let 
 | One-shot `migrate` | `2` |
 | `engine` | `5R + 2P + 3` |
 | `web` | `5R + 2P + 13` |
-| Non-VPN `control` | `5R + 2P + 5` |
-| Active VPN-owning `control` | `5R + 2P + 8` |
-| Non-VPN `network` | `5R + 2P + 3` |
-| Active VPN-owning `network` | `5R + 2P + 6` |
-| Non-VPN `all` | `5R + 2P + 17` |
-| Active VPN-owning `all` | `5R + 2P + 20` |
+| Non-VPN `control` | `5R + 2P + 6` |
+| Active VPN-owning `control` | `5R + 2P + 9` |
+| Non-VPN `network` | `5R + 2P + 4` |
+| Active VPN-owning `network` | `5R + 2P + 7` |
+| Non-VPN `all` | `5R + 2P + 18` |
+| Active VPN-owning `all` | `5R + 2P + 21` |
 
 The migration role uses only the pool's two baseline connections. A network
-owner retains both the network/BYOC lease and the traffic-capture lease even
-without VPN, plus one progress connection. The VPN allowance additionally
-covers its `LISTEN` connection and nested kernel/allocation reconciliation.
+owner retains the network/BYOC lease, the traffic-capture lease, and an isolated
+capture-heartbeat connection even without VPN, plus one progress connection.
+The VPN allowance additionally covers its `LISTEN` connection and nested
+kernel/allocation reconciliation.
 Monolithic and web roles reserve eight connections for bounded roster and
 account lifecycle operations, plus four for the independently bounded runtime
 transition path; each can retain a lock while issuing nested work. The
 all/development/control/engine suspicion reconciler reserves one fence plus one nested
 checkout. At the defaults (`R=1`, `P=4`), engine needs 16 connections, web
-needs 26, control needs 18 without VPN or 21 with it, network needs 16 or 19,
-`development` needs 28, and `all` needs 30 or 33. Keep additional headroom for
+needs 26, control needs 19 without VPN or 22 with it, network needs 17 or 20,
+`development` needs 28, and `all` needs 31 or 34. Keep additional headroom for
 ordinary request bursts where practical.
 
 Checker and flag work is bounded by the persisted round deadline. Evidence that
@@ -312,6 +314,17 @@ shared-source backstop is configured with
 `30000`, valid `3000..1000000`) bounds work from rotating invalid credentials
 before signature or database verification. Login, recovery, registration, mail,
 and OAuth-start limits remain strictly IP-scoped.
+
+Managed Leaderboard KotH capability exchange has a separate source bucket,
+`RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE` (default `6000`, valid
+`3000..1000000`). The default bucket refills at the maintained 2,000-team
+fixed-rate profile of 100 authentications/second and holds three complete waves.
+At most eight capability lookups per web process may occupy PostgreSQL at once;
+excess work receives `429` with `Retry-After`. After a capability is verified,
+the ordinary 150 requests/minute allowance is applied to its canonical game,
+challenge, and participation. Reporter context and observation traffic therefore
+keeps a separate rate-limit budget during a shared-source login wave.
+The Helm equivalent is `config.kothCapabilityIpAdmissionPerMinute`.
 
 A&D submission is charged by distinct plausible flags, not HTTP requests. The
 default permits four immediate maximum-size batches for one participation, then

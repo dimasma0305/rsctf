@@ -341,7 +341,7 @@ on 2026-08-25.
     `src/controllers/game/koth/admin.rs`, and
     `src/controllers/game/koth/board.rs`.
 
-- [ ] Make trusted KotH referee reads and submissions retry-safe before they become a
+- [x] Make trusted KotH referee reads and submissions retry-safe before they become a
   positive-feedback load incident.
   - The example referee fetches the complete public context every five seconds. Each
     context request reloads and hashes as many as 2,000 eligible team capabilities and
@@ -410,7 +410,7 @@ on 2026-08-25.
     `src/controllers/game/koth/api/admin.rs`, `src/controllers/game/koth/mod.rs`, and a
     new registered idempotent forward migration for observer operations/revisions.
 
-- [ ] Make one-time player credential generation safe to retry and order.
+- [x] Make one-time player credential generation safe to retry and order.
   - A&D API-token rotation and server-generated SSH keys use only component-local
     busy state and have no request identity or expected credential revision. The A&D
     and KotH toolkits also mount separate `useAdToken` owners for the same team token.

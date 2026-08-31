@@ -650,8 +650,8 @@ impl PgAdvisoryLock {
     /// Advisory lock for a sequence that calls an external container runtime.
     /// Bound the number of held DB connections per replica so a provisioning burst
     /// cannot consume the connection pool while image pulls are in flight. The
-    /// default still leaves most of the 33-connection pool available; one slot
-    /// is reserved for the suspicion reconciler's long-held fence.
+    /// default still leaves most of the 34-connection pool available; dedicated
+    /// slots cover the suspicion fence and capture-owner heartbeat.
     pub async fn acquire_provisioning(pool: &sqlx::PgPool, key: &str) -> anyhow::Result<Self> {
         let permit = PROVISIONING_GATE.clone().acquire_owned().await?;
         Self::acquire_with_permit(pool, key, Some(permit)).await

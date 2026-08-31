@@ -39,6 +39,19 @@ pub enum CacheBackendHealth {
 #[async_trait]
 pub trait Cache: Send + Sync {
     async fn get(&self, key: &str) -> Option<Bytes>;
+    /// Read only the bounded process-local tier. Secrets cached through this
+    /// path must never be copied to Redis or another shared backend.
+    async fn get_local(&self, _key: &str) -> Option<Bytes> {
+        None
+    }
+    /// Read the authoritative cache tier, bypassing any replica-local L1.
+    ///
+    /// Security-sensitive version pointers use this path so a mutation on one
+    /// API replica cannot leave another replica selecting an obsolete cached
+    /// value for the L1 TTL. Local-only caches are already authoritative.
+    async fn get_authoritative(&self, key: &str) -> Option<Bytes> {
+        self.get(key).await
+    }
     /// Atomically return and remove a value. One-time credentials must use this
     /// instead of a racy `get` followed by `remove`.
     async fn get_and_remove(&self, key: &str) -> Option<Bytes>;
@@ -48,7 +61,52 @@ pub trait Cache: Send + Sync {
     /// when a failed one-time operation restores its reservation without
     /// overwriting a newer value created concurrently.
     async fn set_if_absent(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> bool;
+    /// Authoritative counterpart to [`Cache::set_if_absent`]. See
+    /// [`Cache::get_authoritative`] for the distributed-cache contract.
+    async fn set_if_absent_authoritative(
+        &self,
+        key: &str,
+        value: &[u8],
+        ttl: Option<Duration>,
+    ) -> bool {
+        self.set_if_absent(key, value, ttl).await
+    }
     async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>);
+    /// Store only in the bounded process-local tier. Backends without a local
+    /// tier intentionally ignore the write.
+    async fn set_local(&self, _key: &str, _value: &[u8], _ttl: Option<Duration>) {}
+    /// Replace a value in the authoritative tier. Versioned callers leave old
+    /// response entries to their short TTL and make them unreachable by
+    /// publishing a fresh pointer through this method.
+    async fn set_authoritative(&self, key: &str, value: &[u8], ttl: Option<Duration>) {
+        self.set(key, value, ttl).await;
+    }
+    /// Publish and verify an authoritative fence. Mutation transactions use
+    /// the checked form before commit; an unavailable shared backend must abort
+    /// the mutation instead of leaving an old cache namespace selectable.
+    async fn set_authoritative_checked(
+        &self,
+        key: &str,
+        value: &[u8],
+        ttl: Option<Duration>,
+    ) -> bool {
+        self.set_authoritative(key, value, ttl).await;
+        self.get_authoritative(key)
+            .await
+            .is_some_and(|stored| stored.as_ref() == value)
+    }
+    /// Atomically replace an authoritative value only while it still matches
+    /// `expected`. Backends that cannot provide an atomic compare-and-set fail
+    /// closed so security-sensitive finalizers cannot overwrite a newer fence.
+    async fn compare_and_set_authoritative(
+        &self,
+        _key: &str,
+        _expected: &[u8],
+        _value: &[u8],
+        _ttl: Option<Duration>,
+    ) -> bool {
+        false
+    }
     async fn remove(&self, key: &str);
 
     /// Probe the authoritative shared cache backend. Local-only caches return
@@ -203,6 +261,10 @@ impl Cache for InMemoryCache {
         None
     }
 
+    async fn get_local(&self, key: &str) -> Option<Bytes> {
+        self.get(key).await
+    }
+
     async fn get_and_remove(&self, key: &str) -> Option<Bytes> {
         let entry = self
             .state
@@ -309,6 +371,66 @@ impl Cache for InMemoryCache {
         state.order.push_back((generation, key.to_string()));
         state.order_key_bytes = state.order_key_bytes.saturating_add(key.len());
         state.evict_to_limits(self.max_entries, self.max_bytes);
+    }
+
+    async fn set_local(&self, key: &str, value: &[u8], ttl: Option<Duration>) {
+        self.set(key, value, ttl).await;
+    }
+
+    async fn compare_and_set_authoritative(
+        &self,
+        key: &str,
+        expected: &[u8],
+        value: &[u8],
+        ttl: Option<Duration>,
+    ) -> bool {
+        let now = Instant::now();
+        let entry_bytes = key.len().saturating_add(value.len());
+        if entry_bytes > self.max_bytes {
+            return false;
+        }
+
+        let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
+        let matches = state.map.get(key).is_some_and(|entry| {
+            entry.expires_at.is_none_or(|expires_at| expires_at > now)
+                && entry.value.as_ref() == expected
+        });
+        if !matches {
+            if state
+                .map
+                .get(key)
+                .is_some_and(|entry| entry.expires_at.is_some_and(|expires_at| expires_at <= now))
+            {
+                state.remove(key);
+            }
+            return false;
+        }
+
+        state.remove(key);
+        if now.duration_since(state.last_expired_sweep) >= EXPIRED_SWEEP_INTERVAL
+            || state.map.len() >= self.max_entries
+            || state.payload_bytes.saturating_add(entry_bytes) > self.max_bytes
+        {
+            state.sweep_expired(now);
+        }
+        let generation = state.next_generation;
+        state.next_generation = state.next_generation.wrapping_add(1);
+        state.map.insert(
+            key.to_string(),
+            Entry {
+                value: Bytes::copy_from_slice(value),
+                expires_at: ttl.map(|duration| now + duration),
+                generation,
+            },
+        );
+        state.payload_bytes = state.payload_bytes.saturating_add(entry_bytes);
+        state.order.push_back((generation, key.to_string()));
+        state.order_key_bytes = state.order_key_bytes.saturating_add(key.len());
+        state.evict_to_limits(self.max_entries, self.max_bytes);
+        state
+            .map
+            .get(key)
+            .is_some_and(|entry| entry.generation == generation)
     }
 
     async fn remove(&self, key: &str) {
@@ -489,6 +611,42 @@ impl Cache for RedisCache {
         let _ = tokio::time::timeout(REDIS_IO_TIMEOUT, cmd.query_async::<()>(&mut conn)).await;
     }
 
+    async fn compare_and_set_authoritative(
+        &self,
+        key: &str,
+        expected: &[u8],
+        value: &[u8],
+        ttl: Option<Duration>,
+    ) -> bool {
+        const SCRIPT: &str = r#"
+            if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+                return 0
+            end
+            local ttl = tonumber(ARGV[3])
+            if ttl > 0 then
+                redis.call('SET', KEYS[1], ARGV[2], 'EX', ttl)
+            else
+                redis.call('SET', KEYS[1], ARGV[2])
+            end
+            return 1
+        "#;
+        let Some(mut conn) = self.connection().await else {
+            return false;
+        };
+        let ttl_seconds = ttl.map_or(0, |duration| duration.as_secs().max(1));
+        tokio::time::timeout(
+            REDIS_IO_TIMEOUT,
+            redis::Script::new(SCRIPT)
+                .key(key)
+                .arg(expected)
+                .arg(value)
+                .arg(ttl_seconds)
+                .invoke_async::<i64>(&mut conn),
+        )
+        .await
+        .is_ok_and(|result| result.is_ok_and(|replaced| replaced == 1))
+    }
+
     async fn remove(&self, key: &str) {
         let Some(mut conn) = self.connection().await else {
             return;
@@ -558,6 +716,14 @@ impl Cache for TieredCache {
         Some(v)
     }
 
+    async fn get_local(&self, key: &str) -> Option<Bytes> {
+        self.l1.get(key).await
+    }
+
+    async fn get_authoritative(&self, key: &str) -> Option<Bytes> {
+        self.l2.get(key).await
+    }
+
     async fn get_and_remove(&self, key: &str) -> Option<Bytes> {
         // L2 is authoritative for a distributed one-time consume. Clear L1 even
         // when L2 misses so a stale local copy can never resurrect the value.
@@ -585,9 +751,48 @@ impl Cache for TieredCache {
         inserted
     }
 
+    async fn set_if_absent_authoritative(
+        &self,
+        key: &str,
+        value: &[u8],
+        ttl: Option<Duration>,
+    ) -> bool {
+        let inserted = self.l2.set_if_absent_authoritative(key, value, ttl).await;
+        // Version-pointer readers bypass L1, while clearing this replica's copy
+        // also prevents an accidental ordinary read from observing an old one.
+        self.l1.remove(key).await;
+        inserted
+    }
+
     async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>) {
         self.l1.set(key, value, self.l1_ttl(ttl)).await;
         self.l2.set(key, value, ttl).await;
+    }
+
+    async fn set_local(&self, key: &str, value: &[u8], ttl: Option<Duration>) {
+        self.l1.set(key, value, self.l1_ttl(ttl)).await;
+    }
+
+    async fn set_authoritative(&self, key: &str, value: &[u8], ttl: Option<Duration>) {
+        self.l2.set_authoritative(key, value, ttl).await;
+        self.l1.remove(key).await;
+    }
+
+    async fn compare_and_set_authoritative(
+        &self,
+        key: &str,
+        expected: &[u8],
+        value: &[u8],
+        ttl: Option<Duration>,
+    ) -> bool {
+        let replaced = self
+            .l2
+            .compare_and_set_authoritative(key, expected, value, ttl)
+            .await;
+        // Pointer reads bypass L1, but clear any ordinary local copy on both a
+        // match and mismatch so this replica cannot retain obsolete metadata.
+        self.l1.remove(key).await;
+        replaced
     }
 
     async fn remove(&self, key: &str) {
@@ -690,5 +895,45 @@ mod tests {
         let first = cache.get("shared").await.unwrap();
         let second = cache.get("shared").await.unwrap();
         assert_eq!(first.as_ptr(), second.as_ptr());
+    }
+
+    #[tokio::test]
+    async fn authoritative_read_bypasses_another_replicas_stale_l1() {
+        let shared: Arc<dyn Cache> = Arc::new(InMemoryCache::new());
+        let first = TieredCache::new(Arc::clone(&shared), Duration::from_secs(60));
+        let second = TieredCache::new(shared, Duration::from_secs(60));
+
+        first.set("version", b"old", None).await;
+        assert_eq!(
+            first.get("version").await.as_deref(),
+            Some(b"old".as_slice())
+        );
+
+        second.set_authoritative("version", b"new", None).await;
+        assert_eq!(
+            first.get("version").await.as_deref(),
+            Some(b"old".as_slice())
+        );
+        assert_eq!(
+            first.get_authoritative("version").await.as_deref(),
+            Some(b"new".as_slice())
+        );
+    }
+
+    #[tokio::test]
+    async fn local_only_values_never_reach_the_shared_tier_or_another_replica() {
+        let shared: Arc<dyn Cache> = Arc::new(InMemoryCache::new());
+        let first = TieredCache::new(Arc::clone(&shared), Duration::from_secs(60));
+        let second = TieredCache::new(Arc::clone(&shared), Duration::from_secs(60));
+
+        first
+            .set_local("bearer", b"plaintext-secret", Some(Duration::from_secs(10)))
+            .await;
+        assert_eq!(
+            first.get_local("bearer").await.as_deref(),
+            Some(b"plaintext-secret".as_slice())
+        );
+        assert!(shared.get("bearer").await.is_none());
+        assert!(second.get_local("bearer").await.is_none());
     }
 }

@@ -43,6 +43,7 @@ pub(super) fn partition_key(policy: Policy, req: &Request) -> String {
             | Policy::Register
             | Policy::GlobalIpBackstop
             | Policy::CredentialIpAdmission
+            | Policy::KothCapabilityAdmission
             | Policy::PrivilegedHubAdmission
             | Policy::PublicHubAdmission
             | Policy::PowIssuanceSource

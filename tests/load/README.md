@@ -13,6 +13,7 @@ cd tests/load
       npm run admin-dashboard # disposable 100k-submission fixed-rate dashboard read gate
       npm run edit-lifecycle  # destructive, disposable-stack organizer acceptance
       npm run multi-domain    # destructive 2×A&D + 2×KotH isolation/recovery acceptance
+      npm run managed-koth    # destructive managed TargetReporter 2k-roster acceptance
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
@@ -40,6 +41,11 @@ N=120 npm run worst-case    # mass BYOC reconnect storm (restarts rsctf)
 FLEET=10 npm run worker      # trusted worker create/proxy/destroy + lease gate
 FLEET=5  npm run worker-local # isolated current-tree rsctf + native Linux agent
 ```
+
+The managed TargetReporter gate is documented in
+[managed-koth.md](./managed-koth.md). It is the isolated acceptance path for a
+real Leaderboard KotH challenge; the generic lifecycle remains the compatibility
+gate for the legacy external observer contract.
 
 Requires `k6`, `node`, and `docker exec <PG>` / `docker` access; the stack up with a
 running game (default `GAME=10`, BYOC challenge `CID=68`). BYOC runs require at least

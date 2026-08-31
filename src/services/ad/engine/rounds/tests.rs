@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use super::{
     authoritative_round_window, classify_round_target, complete_engine_scoring_roster,
-    koth_scoring_lifecycle_ready, network_scope_matches, playable_round_window,
-    prepared_checker_exists, valid_service_endpoint, RoundTargetDisposition,
+    koth_scoring_lifecycle_ready, minimum_round_duration_seconds, network_scope_matches,
+    playable_round_window, prepared_checker_exists, valid_service_endpoint, RoundTargetDisposition,
 };
 use chrono::{Duration, Utc};
 
@@ -232,4 +232,63 @@ fn terminal_round_is_capped_only_when_minimum_runway_remains() {
     assert_eq!(end, playable_end);
 
     assert!(playable_round_window(nominal, now + Duration::seconds(14), 30, now, 15,).is_none());
+}
+
+#[test]
+fn leaderboard_terminal_round_requires_a_nonempty_settlement_window() {
+    let now = Utc::now();
+    let nominal = (now, now + Duration::seconds(30));
+    let minimum = super::super::koth_api::API_WAVE_SETTLEMENT_LAG_SECONDS.saturating_add(1);
+    assert_eq!(minimum, 21);
+    assert!(
+        playable_round_window(nominal, now + Duration::seconds(15), 30, now, minimum).is_none()
+    );
+    assert!(
+        playable_round_window(nominal, now + Duration::seconds(20), 30, now, minimum).is_none()
+    );
+    let (start, end, reanchored) =
+        playable_round_window(nominal, now + Duration::seconds(21), 30, now, minimum).unwrap();
+    assert_eq!(start, now);
+    assert_eq!(end, now + Duration::seconds(21));
+    assert!(!reanchored);
+    assert_eq!(end - Duration::seconds(20), now + Duration::seconds(1));
+}
+
+#[test]
+fn api_hill_wiring_raises_the_production_minimum_to_twenty_one_seconds() {
+    assert_eq!(minimum_round_duration_seconds(3, false), 15);
+    assert_eq!(minimum_round_duration_seconds(3, true), 21);
+}
+
+#[test]
+fn leaderboard_round_absorbs_every_too_short_terminal_tail() {
+    let start = Utc::now();
+    let nominal_end = start + Duration::seconds(30);
+    let minimum = minimum_round_duration_seconds(3, true);
+
+    for tail_seconds in 1..minimum {
+        let event_end = nominal_end + Duration::seconds(tail_seconds);
+        let (_, end, reanchored) =
+            playable_round_window((start, nominal_end), event_end, 30, start, minimum).unwrap();
+        assert!(!reanchored);
+        assert_eq!(end, event_end, "tail={tail_seconds}s");
+        assert!(
+            end - Duration::seconds(super::super::koth_api::API_WAVE_SETTLEMENT_LAG_SECONDS)
+                > nominal_end
+                    - Duration::seconds(super::super::koth_api::API_WAVE_SETTLEMENT_LAG_SECONDS),
+            "absorbing tail={tail_seconds}s must make the later advertised cutoff reachable"
+        );
+    }
+}
+
+#[test]
+fn leaderboard_round_leaves_a_playable_terminal_tail_for_its_own_round() {
+    let start = Utc::now();
+    let nominal_end = start + Duration::seconds(30);
+    let minimum = minimum_round_duration_seconds(3, true);
+    let event_end = nominal_end + Duration::seconds(minimum);
+
+    let (_, end, _) =
+        playable_round_window((start, nominal_end), event_end, 30, start, minimum).unwrap();
+    assert_eq!(end, nominal_end);
 }

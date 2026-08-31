@@ -277,9 +277,42 @@ fn playable_round_window(
     } else {
         nominal.1.min(event_end)
     };
+    let end = absorb_short_terminal_tail(end, event_end, minimum_duration_seconds);
     (end > start
         && end.signed_duration_since(start) >= Duration::seconds(minimum_duration_seconds.max(1)))
     .then_some((start, end, reanchored))
+}
+
+fn absorb_short_terminal_tail(
+    round_end: chrono::DateTime<Utc>,
+    event_end: chrono::DateTime<Utc>,
+    minimum_duration_seconds: i64,
+) -> chrono::DateTime<Utc> {
+    let tail = event_end.signed_duration_since(round_end);
+    if tail > Duration::zero() && tail < Duration::seconds(minimum_duration_seconds.max(1)) {
+        event_end
+    } else {
+        round_end
+    }
+}
+
+fn minimum_round_duration_seconds(grace_seconds: i64, has_api_hill: bool) -> i64 {
+    let checker_minimum = grace_seconds.saturating_add(
+        i64::try_from(
+            super::FLAG_DELIVERY_PUBLICATION_RESERVE_SECONDS
+                + super::CHECKER_MINIMUM_RUNWAY_SECONDS
+                + super::CHECKER_SCHEDULER_OUTER_MARGIN_SECONDS,
+        )
+        .unwrap_or(i64::MAX),
+    );
+    if has_api_hill {
+        checker_minimum.max(
+            crate::services::ad::engine::koth_api::API_WAVE_SETTLEMENT_LAG_SECONDS
+                .saturating_add(1),
+        )
+    } else {
+        checker_minimum
+    }
 }
 
 /// Atomically finalize the expected current round and prepare its successor.
@@ -412,6 +445,9 @@ async fn prepare_round_transaction(
     let has_marker_hill = engine_challenges
         .iter()
         .any(|challenge| challenge.1 == ChallengeType::KingOfTheHill as i16 && !challenge.4);
+    let has_api_hill = engine_challenges
+        .iter()
+        .any(|challenge| challenge.1 == ChallengeType::KingOfTheHill as i16 && challenge.4);
     let koth_challenge_ids: Vec<i32> = engine_challenges
         .iter()
         .filter(|challenge| challenge.1 == ChallengeType::KingOfTheHill as i16)
@@ -556,14 +592,7 @@ async fn prepare_round_transaction(
             .unwrap_or(super::DEFAULT_CHECKER_GRACE_SECONDS)
             .clamp(1, 60),
     );
-    let minimum_duration_seconds = grace_seconds.saturating_add(
-        i64::try_from(
-            super::FLAG_DELIVERY_PUBLICATION_RESERVE_SECONDS
-                + super::CHECKER_MINIMUM_RUNWAY_SECONDS
-                + super::CHECKER_SCHEDULER_OUTER_MARGIN_SECONDS,
-        )
-        .unwrap_or(i64::MAX),
-    );
+    let minimum_duration_seconds = minimum_round_duration_seconds(grace_seconds, has_api_hill);
     let (scheduled_start, requested_ends_at, reanchored) = playable_round_window(
         (nominal_start, nominal_end),
         game_settings.end_time_utc,

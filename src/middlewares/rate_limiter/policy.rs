@@ -1,8 +1,6 @@
 use std::time::Duration;
 
-use super::{
-    ad_submit_burst_flags, AUTHENTICATED_IP_BACKSTOP_PER_MINUTE, CREDENTIAL_IP_ADMISSION_PER_MINUTE,
-};
+use super::{ad, koth, AUTHENTICATED_IP_BACKSTOP_PER_MINUTE, CREDENTIAL_IP_ADMISSION_PER_MINUTE};
 
 /// The rate-limit policies, mirroring RSCTF's `RateLimiter.LimitPolicy` plus the
 /// always-on `Global` sliding window that every `/api` request passes through.
@@ -90,6 +88,9 @@ pub enum Policy {
     /// Cheap source admission before a managed-token digest lookup. Appended
     /// to preserve every previously shipped Redis policy discriminant.
     ManagedApiAuthSourceAdmission,
+    /// Dedicated source-IP admission for managed KotH capability exchange.
+    /// Appended after all integration policies to preserve their Redis keys.
+    KothCapabilityAdmission,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -125,7 +126,7 @@ impl Policy {
                 }
             }
             Policy::AdSubmit => Kind::Bucket {
-                capacity: ad_submit_burst_flags() as f64,
+                capacity: ad::submit_burst_flags() as f64,
                 refill_per_sec: 10.0,
             },
             Policy::PrivilegedHubAdmission => Kind::Bucket {
@@ -220,6 +221,7 @@ impl Policy {
                 capacity: 600.0,
                 refill_per_sec: 10.0,
             },
+            Policy::KothCapabilityAdmission => koth::source_admission_kind(),
             Policy::Login => Kind::Sliding {
                 permit: 50,
                 window: Duration::from_secs(60),

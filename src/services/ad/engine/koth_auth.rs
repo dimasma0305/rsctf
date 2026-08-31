@@ -101,9 +101,43 @@ pub(crate) async fn revoke_game_capabilities(
     connection: &mut sqlx::PgConnection,
     game_id: i32,
     participation_ids: &[i32],
+    request_api_revocation: bool,
 ) -> AppResult<()> {
     if participation_ids.is_empty() {
         return Ok(());
+    }
+    // Reporter admission reads target, then capability, then snapshot. Lock
+    // targets in that same order before deleting capabilities so a stale API
+    // holder cannot create a target↔token deadlock with an in-flight report.
+    sqlx::query_scalar::<_, i32>(
+        r#"SELECT id FROM "KothTargets"
+            WHERE game_id = $1
+            ORDER BY id
+            FOR UPDATE"#,
+    )
+    .bind(game_id)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if request_api_revocation {
+        crate::services::ad::koth_api_capability::force_rotate_event_capabilities(
+            connection,
+            game_id,
+            participation_ids,
+        )
+        .await?;
+    } else {
+        // Participation review records the pending fence in the same
+        // transaction as Accepted -> non-Accepted. Teardown may be retried
+        // after the checker already reconciled it, so it must apply only that
+        // durable request rather than create another bearer generation.
+        crate::services::ad::koth_api_capability::reconcile_pending_event_capabilities(
+            connection,
+            game_id,
+            None,
+            Some(participation_ids),
+        )
+        .await?;
     }
     sqlx::query(
         r#"WITH projection_clearance AS MATERIALIZED (
@@ -123,18 +157,6 @@ pub(crate) async fn revoke_game_capabilities(
                   AND participation.game_id = $2
                   AND token.participation_id = ANY($1)
                RETURNING token.id
-           ), revoked_api_tokens AS (
-               DELETE FROM "KothApiTeamTokens" token
-                WHERE token.game_id = $2
-                  AND token.participation_id = ANY($1)
-               RETURNING token.participation_id
-           ), cleared_api_snapshot_scores AS (
-               DELETE FROM "KothApiSnapshotScores" score
-                USING "KothApiSnapshots" snapshot
-                WHERE snapshot.target_id = score.target_id
-                  AND snapshot.game_id = $2
-                  AND score.participation_id = ANY($1)
-               RETURNING score.participation_id
            ), cleared_claims AS (
                UPDATE "KothClaimStates" claim
                   SET token_id = CASE
@@ -204,14 +226,10 @@ pub(crate) async fn revoke_game_capabilities(
 #[derive(Debug)]
 struct KothGameCacheInvalidation {
     game_id: i32,
-    participation_ids: Vec<i32>,
-    latest_round: Option<i32>,
-    challenge_ids: Vec<i32>,
+    mutation: crate::services::ad::koth_capability_cache::GameEpochMutation,
 }
 
-/// Cache keys captured while the caller's game locks are held. Applying this
-/// only after the surrounding transaction commits prevents a concurrent read
-/// from repopulating a capability response from pre-revocation rows.
+/// Projection cache keys captured while the caller's game locks are held.
 #[derive(Debug, Default)]
 pub(crate) struct KothCapabilityCacheInvalidation {
     games: Vec<KothGameCacheInvalidation>,
@@ -220,34 +238,43 @@ pub(crate) struct KothCapabilityCacheInvalidation {
 impl KothCapabilityCacheInvalidation {
     pub(crate) async fn apply(self, cache: &dyn crate::services::cache::Cache) {
         for game in self.games {
-            invalidate_capability_cache(cache, &game).await;
+            invalidate_capability_cache(cache, game).await;
         }
     }
 }
 
 async fn invalidate_capability_cache(
     cache: &dyn crate::services::cache::Cache,
-    game: &KothGameCacheInvalidation,
+    game: KothGameCacheInvalidation,
 ) {
     cache.remove(&format!("latestround:{}", game.game_id)).await;
-    if let Some(round) = game.latest_round {
-        for participation_id in &game.participation_ids {
-            for challenge_id in &game.challenge_ids {
-                cache
-                    .remove(&format!(
-                        "kothtoken:{}:{}:{}:{}",
-                        game.game_id, challenge_id, participation_id, round
-                    ))
-                    .await;
-            }
-            cache
-                .remove(&format!(
-                    "kothtokensall:{}:{}:{}",
-                    game.game_id, participation_id, round
-                ))
-                .await;
-        }
+    crate::services::ad::koth_capability_cache::finish_game_epoch_mutation(
+        cache,
+        game.game_id,
+        game.mutation,
+    )
+    .await;
+}
+
+async fn load_games_for_participations(
+    db: &DatabaseConnection,
+    participation_ids: &[i32],
+) -> AppResult<BTreeMap<i32, Vec<i32>>> {
+    let rows = sqlx::query_as::<_, (i32, i32)>(
+        r#"SELECT id, game_id
+             FROM "Participations"
+            WHERE id = ANY($1)
+            ORDER BY game_id, id"#,
+    )
+    .bind(participation_ids)
+    .fetch_all(db.get_postgres_connection_pool())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut by_game = BTreeMap::<i32, Vec<i32>>::new();
+    for (participation_id, game_id) in rows {
+        by_game.entry(game_id).or_default().push(participation_id);
     }
+    Ok(by_game)
 }
 
 /// Revoke KotH state through a transaction that already owns the ordered game
@@ -256,6 +283,7 @@ async fn invalidate_capability_cache(
 /// caller and must run after commit.
 pub(crate) async fn revoke_koth_capabilities_locked(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    cache: &dyn crate::services::cache::Cache,
     participation_ids: &[i32],
 ) -> AppResult<KothCapabilityCacheInvalidation> {
     if participation_ids.is_empty() {
@@ -278,25 +306,16 @@ pub(crate) async fn revoke_koth_capabilities_locked(
 
     let mut invalidation = KothCapabilityCacheInvalidation::default();
     for (game_id, ids) in by_game {
-        let latest_round: Option<i32> =
-            sqlx::query_scalar(r#"SELECT MAX(number) FROM "AdRounds" WHERE game_id = $1"#)
-                .bind(game_id)
-                .fetch_one(&mut **transaction)
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
-        let challenge_ids: Vec<i32> =
-            sqlx::query_scalar(r#"SELECT challenge_id FROM "KothTargets" WHERE game_id = $1"#)
-                .bind(game_id)
-                .fetch_all(&mut **transaction)
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
-        revoke_game_capabilities(transaction, game_id, &ids).await?;
-        invalidation.games.push(KothGameCacheInvalidation {
-            game_id,
-            participation_ids: ids,
-            latest_round,
-            challenge_ids,
-        });
+        revoke_game_capabilities(transaction, game_id, &ids, true).await?;
+        // Disable cache selection before the caller's roster/game mutation
+        // commits. `apply` publishes the final enabled namespace after commit;
+        // if that publication fails, readers remain on live PostgreSQL.
+        let mutation =
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(cache, game_id)
+                .await?;
+        invalidation
+            .games
+            .push(KothGameCacheInvalidation { game_id, mutation });
     }
     Ok(invalidation)
 }
@@ -313,52 +332,43 @@ pub(crate) async fn revoke_koth_capabilities(
     if participation_ids.is_empty() {
         return Ok(());
     }
-    let rows = sqlx::query_as::<_, (i32, i32)>(
-        r#"SELECT id, game_id
-             FROM "Participations"
-            WHERE id = ANY($1)
-            ORDER BY game_id, id"#,
-    )
-    .bind(participation_ids)
-    .fetch_all(db.get_postgres_connection_pool())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let mut by_game = BTreeMap::<i32, Vec<i32>>::new();
-    for (participation_id, game_id) in rows {
-        by_game.entry(game_id).or_default().push(participation_id);
-    }
-
+    let by_game = load_games_for_participations(db, participation_ids).await?;
     for (game_id, ids) in by_game {
         let mut lock = acquire_game_lock(db, game_id).await?;
-        let latest_round: Option<i32> =
-            sqlx::query_scalar(r#"SELECT MAX(number) FROM "AdRounds" WHERE game_id = $1"#)
-                .bind(game_id)
-                .fetch_one(&mut **lock.transaction_mut())
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
-        let challenge_ids: Vec<i32> =
-            sqlx::query_scalar(r#"SELECT challenge_id FROM "KothTargets" WHERE game_id = $1"#)
-                .bind(game_id)
-                .fetch_all(&mut **lock.transaction_mut())
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
-        revoke_game_capabilities(&mut *lock.transaction_mut(), game_id, &ids).await?;
+        revoke_game_capabilities(&mut *lock.transaction_mut(), game_id, &ids, true).await?;
+        let mutation =
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(cache, game_id)
+                .await?;
         lock.release()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
 
         // Token responses contain bearer capabilities, so revocation must evict
         // both response shapes as well as any stale shared round pointer.
-        invalidate_capability_cache(
-            cache,
-            &KothGameCacheInvalidation {
-                game_id,
-                participation_ids: ids,
-                latest_round,
-                challenge_ids,
-            },
-        )
-        .await;
+        invalidate_capability_cache(cache, KothGameCacheInvalidation { game_id, mutation }).await;
+    }
+    Ok(())
+}
+
+/// Finish an Accepted -> non-Accepted participation review fence without
+/// manufacturing a second request when external teardown or its retry runs
+/// after checker reconciliation.
+pub(crate) async fn reconcile_koth_capability_revocations(
+    db: &DatabaseConnection,
+    cache: &dyn crate::services::cache::Cache,
+    participation_ids: &[i32],
+) -> AppResult<()> {
+    let by_game = load_games_for_participations(db, participation_ids).await?;
+    for (game_id, ids) in by_game {
+        let mut lock = acquire_game_lock(db, game_id).await?;
+        revoke_game_capabilities(&mut *lock.transaction_mut(), game_id, &ids, false).await?;
+        let mutation =
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(cache, game_id)
+                .await?;
+        lock.release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        invalidate_capability_cache(cache, KothGameCacheInvalidation { game_id, mutation }).await;
     }
     Ok(())
 }
@@ -421,6 +431,8 @@ mod tests {
         }
     }
 
+    type CapabilityRetryState = (Vec<(i32, i32, String)>, Vec<(i32, Vec<u8>)>);
+
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
     async fn revocation_clears_live_projection_without_rewriting_history() {
@@ -441,14 +453,31 @@ mod tests {
             );
             CREATE TEMP TABLE "KothApiTeamTokens" (
               game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
-              participation_id INTEGER NOT NULL, token TEXT NOT NULL
+              participation_id INTEGER NOT NULL, token TEXT NOT NULL UNIQUE,
+              generation INTEGER NOT NULL DEFAULT 1,
+              rotated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+              last_used_at TIMESTAMPTZ,
+              revocation_pending BOOLEAN NOT NULL DEFAULT FALSE,
+              PRIMARY KEY (game_id, challenge_id, participation_id)
             );
             CREATE TEMP TABLE "KothApiSnapshots" (
-              target_id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL
+              target_id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
+              challenge_id INTEGER NOT NULL, snapshot_hash BYTEA NOT NULL
             );
             CREATE TEMP TABLE "KothApiSnapshotScores" (
-              target_id INTEGER NOT NULL, participation_id INTEGER NOT NULL
+              target_id INTEGER NOT NULL, wave_id TEXT NOT NULL,
+              participation_id INTEGER NOT NULL,
+              activity_earned BIGINT NOT NULL,
+              activity_possible BIGINT NOT NULL,
+              objective_earned BIGINT NOT NULL,
+              objective_possible BIGINT NOT NULL,
+              objective_count SMALLINT NOT NULL,
+              is_crown BOOLEAN NOT NULL,
+              PRIMARY KEY (target_id, wave_id, participation_id)
             );
+            CREATE UNIQUE INDEX uq_test_koth_api_crown
+              ON "KothApiSnapshotScores" (target_id, wave_id)
+              WHERE is_crown;
             CREATE TEMP TABLE "KothTargets" (
               id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
               challenge_id INTEGER NOT NULL,
@@ -482,12 +511,20 @@ mod tests {
             INSERT INTO "Games" VALUES (7, clock_timestamp() + interval '1 hour');
             INSERT INTO "Participations" VALUES (11, 7), (12, 7);
             INSERT INTO "KothTokens" VALUES (101, 11, NULL), (102, 12, NULL);
-            INSERT INTO "KothApiTeamTokens" VALUES
-              (7, 70, 11, 'koth_team_11'), (7, 70, 12, 'koth_team_12');
-            INSERT INTO "KothApiSnapshots" VALUES (3, 7);
-            INSERT INTO "KothApiSnapshotScores" VALUES (3, 11), (3, 12);
+            INSERT INTO "KothApiTeamTokens"
+              (game_id, challenge_id, participation_id, token) VALUES
+              (7, 70, 11, 'koth_team_11'), (7, 70, 12, 'koth_team_12'),
+              (7, 71, 11, 'koth_team_11_no_score');
+            INSERT INTO "KothApiSnapshots" VALUES
+              (3, 7, 70, decode(repeat('11', 32), 'hex')),
+              (4, 7, 71, decode(repeat('22', 32), 'hex'));
+            INSERT INTO "KothApiSnapshotScores" VALUES
+              (3, 'wave-1', 11, 1, 1, 2, 3, 1, TRUE),
+              (3, 'wave-1', 12, 1, 1, 1, 2, 1, FALSE),
+              (4, 'wave-1', 12, 1, 1, 1, 1, 1, TRUE);
             INSERT INTO "KothTargets"
-              VALUES (3, 7, 70, 11, clock_timestamp());
+              VALUES (3, 7, 70, 11, clock_timestamp()),
+                     (4, 7, 71, NULL, NULL);
             INSERT INTO "AdRounds" VALUES (7, 5, FALSE);
             INSERT INTO "KothClaimStates"
               VALUES (3, 102, 5, 12, 2, 11, clock_timestamp());
@@ -502,9 +539,26 @@ mod tests {
         .await
         .unwrap();
 
-        revoke_game_capabilities(&mut connection, 7, &[11])
+        let mut revocation = connection.begin().await.unwrap();
+        crate::services::ad::koth_api_capability::request_event_capability_revocation(
+            &mut revocation,
+            7,
+            &[11],
+        )
+        .await
+        .unwrap();
+        crate::services::ad::koth_api_capability::reconcile_pending_event_capabilities(
+            &mut revocation,
+            7,
+            None,
+            Some(&[11]),
+        )
+        .await
+        .unwrap();
+        revoke_game_capabilities(&mut revocation, 7, &[11], false)
             .await
             .unwrap();
+        revocation.commit().await.unwrap();
 
         let revoked: Vec<(i32, bool)> =
             sqlx::query_as(r#"SELECT id, revoked_at IS NOT NULL FROM "KothTokens" ORDER BY id"#)
@@ -512,14 +566,70 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(revoked, vec![(101, true), (102, false)]);
-        let api_state: (i64, i64) = sqlx::query_as(
+        let api_state: (i64, i64, bool, bool, bool, bool, bool) = sqlx::query_as(
             r#"SELECT (SELECT COUNT(*) FROM "KothApiTeamTokens"),
-                      (SELECT COUNT(*) FROM "KothApiSnapshotScores")"#,
+                      (SELECT COUNT(*) FROM "KothApiSnapshotScores"),
+                      (SELECT is_crown FROM "KothApiSnapshotScores"
+                        WHERE target_id = 3 AND participation_id = 12),
+                      (SELECT snapshot_hash <> decode(repeat('11', 32), 'hex')
+                         FROM "KothApiSnapshots" WHERE target_id = 3),
+                      (SELECT snapshot_hash <> decode(repeat('22', 32), 'hex')
+                         FROM "KothApiSnapshots" WHERE target_id = 4),
+                      (SELECT COUNT(*) = 2 FROM "KothApiTeamTokens"
+                        WHERE participation_id = 11 AND generation = 2
+                          AND token NOT IN ('koth_team_11', 'koth_team_11_no_score')),
+                      NOT EXISTS (SELECT 1 FROM "KothApiTeamTokens"
+                        WHERE token IN ('koth_team_11', 'koth_team_11_no_score'))"#,
         )
         .fetch_one(&mut connection)
         .await
         .unwrap();
-        assert_eq!(api_state, (1, 1));
+        assert_eq!(api_state, (3, 2, true, true, true, true, true));
+        let before_retry: CapabilityRetryState = (
+            sqlx::query_as(
+                r#"SELECT challenge_id, generation, token
+                     FROM "KothApiTeamTokens"
+                    WHERE participation_id = 11
+                    ORDER BY challenge_id"#,
+            )
+            .fetch_all(&mut connection)
+            .await
+            .unwrap(),
+            sqlx::query_as(
+                r#"SELECT target_id, snapshot_hash
+                     FROM "KothApiSnapshots" ORDER BY target_id"#,
+            )
+            .fetch_all(&mut connection)
+            .await
+            .unwrap(),
+        );
+        let mut teardown_retry = connection.begin().await.unwrap();
+        revoke_game_capabilities(&mut teardown_retry, 7, &[11], false)
+            .await
+            .unwrap();
+        revoke_game_capabilities(&mut teardown_retry, 7, &[11], false)
+            .await
+            .unwrap();
+        teardown_retry.commit().await.unwrap();
+        let after_retry: CapabilityRetryState = (
+            sqlx::query_as(
+                r#"SELECT challenge_id, generation, token
+                     FROM "KothApiTeamTokens"
+                    WHERE participation_id = 11
+                    ORDER BY challenge_id"#,
+            )
+            .fetch_all(&mut connection)
+            .await
+            .unwrap(),
+            sqlx::query_as(
+                r#"SELECT target_id, snapshot_hash
+                     FROM "KothApiSnapshots" ORDER BY target_id"#,
+            )
+            .fetch_all(&mut connection)
+            .await
+            .unwrap(),
+        );
+        assert_eq!(after_retry, before_retry);
         let claim: (Option<i32>, Option<i32>, i32, Option<i32>) = sqlx::query_as(
             r#"SELECT token_id, provisional_participation_id,
                       confirmation_streak, confirmed_participation_id
@@ -568,7 +678,8 @@ mod tests {
         )
         .await
         .unwrap();
-        let invalidation = revoke_koth_capabilities_locked(&mut transaction, &[12])
+        let cache = crate::services::cache::InMemoryCache::new();
+        let invalidation = revoke_koth_capabilities_locked(&mut transaction, &cache, &[12])
             .await
             .expect("locked revocation tried to reacquire its game lock");
         let second_revoked: bool =
@@ -577,9 +688,18 @@ mod tests {
                 .await
                 .unwrap();
         assert!(second_revoked);
+        let second_api_rotation: (i32, bool) = sqlx::query_as(
+            r#"SELECT generation, token <> 'koth_team_12'
+                 FROM "KothApiTeamTokens"
+                WHERE game_id = 7 AND challenge_id = 70
+                  AND participation_id = 12"#,
+        )
+        .fetch_one(&mut *transaction)
+        .await
+        .unwrap();
+        assert_eq!(second_api_rotation, (2, true));
         assert_eq!(invalidation.games.len(), 1);
-        assert_eq!(invalidation.games[0].latest_round, Some(5));
-        assert_eq!(invalidation.games[0].challenge_ids, vec![70]);
+        assert_eq!(invalidation.games[0].game_id, 7);
         transaction.commit().await.unwrap();
 
         sqlx::raw_sql(
@@ -607,7 +727,7 @@ mod tests {
         .await
         .unwrap();
 
-        revoke_game_capabilities(&mut connection, 7, &[11])
+        revoke_game_capabilities(&mut connection, 7, &[11], true)
             .await
             .unwrap();
         let pending: (bool, Option<i32>, Option<i32>, Option<i32>, i32) = sqlx::query_as(
@@ -631,7 +751,7 @@ mod tests {
             .execute(&mut connection)
             .await
             .unwrap();
-        revoke_game_capabilities(&mut connection, 7, &[11])
+        revoke_game_capabilities(&mut connection, 7, &[11], true)
             .await
             .unwrap();
         let settled: (Option<i32>, Option<i32>, Option<i32>, i32) = sqlx::query_as(

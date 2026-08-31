@@ -29,4 +29,3 @@ test('challenge and scoreboard children reuse their route-owned team snapshot', 
   assert.equal((scoreboardRoute.match(/useGameTeamInfo\(numId, false\)/g) ?? []).length, 1)
   assert.match(scoreboardRoute, /<TeamRank teamState=\{teamState\}/)
 })
-

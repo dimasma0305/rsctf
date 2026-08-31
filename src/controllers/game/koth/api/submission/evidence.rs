@@ -4,7 +4,6 @@ use chrono::{DateTime, Utc};
 
 use crate::controllers::game::koth::api_contract::NormalizedWave;
 use crate::services::ad::engine::koth_api::leaderboard_crown_is_valid;
-use crate::utils::enums::{ParticipationStatus, Role};
 use crate::utils::error::{AppError, AppResult};
 
 #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
@@ -36,12 +35,6 @@ struct StoredSnapshotRow {
     objective_possible: Option<i64>,
     objective_count: Option<i16>,
     is_crown: Option<bool>,
-}
-
-#[derive(sqlx::FromRow)]
-struct CurrentCapabilityRow {
-    participation_id: i32,
-    token: String,
 }
 
 pub(super) fn validate_resolved_crowns(waves: &[ResolvedWave]) -> AppResult<()> {
@@ -153,59 +146,15 @@ pub(super) async fn load_stored_waves(
     Ok(Some(waves))
 }
 
-pub(super) async fn resolve_current_capabilities(
-    connection: &mut sqlx::PgConnection,
-    game_id: i32,
-    challenge_id: i32,
+pub(super) fn resolve_current_capabilities(
     waves: Vec<NormalizedWave>,
+    capabilities: &[super::super::EligibleApiCapability],
 ) -> AppResult<Vec<ResolvedWave>> {
     if waves.is_empty() {
         return Ok(Vec::new());
     }
-    let capabilities = sqlx::query_as::<_, CurrentCapabilityRow>(
-        r#"SELECT capability.participation_id, capability.token
-             FROM "KothApiTeamTokens" capability
-             JOIN "Participations" participation
-               ON participation.id = capability.participation_id
-              AND participation.game_id = $1
-              AND participation.status = $3
-             JOIN "Teams" team ON team.id = participation.team_id
-             JOIN "KothOfficialConfigs" config ON config.game_id = $1
-             JOIN LATERAL jsonb_array_elements(config.roster_snapshot) roster(item)
-               ON participation.id = CASE jsonb_typeof(roster.item)
-                    WHEN 'number' THEN (roster.item #>> '{}')::integer
-                    WHEN 'object' THEN
-                      NULLIF(roster.item->>'participationId', '')::integer
-                    ELSE NULL
-                  END
-            WHERE capability.game_id = $1
-              AND capability.challenge_id = $2
-              AND NOT team.deletion_pending
-              AND NOT EXISTS (
-                    SELECT 1
-                      FROM (
-                          SELECT team.captain_id AS user_id
-                          UNION
-                          SELECT member.user_id
-                            FROM "TeamMembers" member
-                           WHERE member.team_id = team.id
-                      ) roster_member
-                      LEFT JOIN "AspNetUsers" account
-                        ON account.id = roster_member.user_id
-                     WHERE account.id IS NULL OR account.role = $4
-              )
-            ORDER BY capability.participation_id
-            FOR SHARE OF capability"#,
-    )
-    .bind(game_id)
-    .bind(challenge_id)
-    .bind(ParticipationStatus::Accepted as i16)
-    .bind(Role::Banned as i16)
-    .fetch_all(&mut *connection)
-    .await
-    .map_err(super::retryable_database_error)?;
     let capabilities: HashMap<_, _> = capabilities
-        .into_iter()
+        .iter()
         .map(|capability| {
             (
                 crate::services::ad::koth_api_capability::token_hash(&capability.token),

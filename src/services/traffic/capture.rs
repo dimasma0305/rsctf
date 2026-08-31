@@ -873,6 +873,14 @@ async fn run_capture_reconciler(
                     tracing::info!(
                         "traffic capture singleton ownership acquired; restoring desired captures"
                     );
+                    let reserved_heartbeat = match OwnerHeartbeat::reserve(state.pg()).await {
+                        Ok(heartbeat) => heartbeat,
+                        Err(error) => {
+                            tracing::warn!(%error, "traffic capture heartbeat reservation failed");
+                            let _ = release_owner(connection).await;
+                            continue;
+                        }
+                    };
                     let token = match health::claim(connection.connection_mut()).await {
                         Ok(token) => token,
                         Err(error) => {
@@ -880,7 +888,7 @@ async fn run_capture_reconciler(
                             continue;
                         }
                     };
-                    let pulse = OwnerHeartbeat::start(state.pg().clone(), token);
+                    let pulse = reserved_heartbeat.start(token);
                     if let Err(error) =
                         crate::services::ad_vpn::ensure_hub_and_sync(&state.db).await
                     {

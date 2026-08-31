@@ -98,14 +98,21 @@ async fn load_cleanup_runtime_state(
 }
 
 async fn prepare_deadline_network_shutdown(st: &SharedState, cycle: &CycleRow) -> AppResult<()> {
-    let mut access = crate::utils::database::begin_sqlx_transaction(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    persist_deadline_access_revocation(&mut access, cycle.game_id, cycle.challenge_id).await?;
-    access
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut access =
+        crate::services::ad::engine::koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
+    let revoked = persist_deadline_access_revocation(
+        access.transaction_mut(),
+        cycle.game_id,
+        cycle.challenge_id,
+    )
+    .await?;
+    crate::services::ad::koth_capability_cache::release_game_control(
+        access,
+        st.cache.as_ref(),
+        cycle.game_id,
+        revoked,
+    )
+    .await?;
 
     // Commit access revocation first. In particular, a FirewallPending retry
     // must never expose an empty target to cooldown validation while its row is
@@ -425,7 +432,7 @@ pub(super) const fn action(phase: CrownPhase, replacement_persisted: bool) -> Ac
 /// Finalized cycle fields and immutable scoring evidence are preserved.
 pub(super) async fn cleanup_completed_cycle(
     st: &SharedState,
-    config: &OfficialConfig,
+    _config: &OfficialConfig,
     cycle: &CycleRow,
     round_number: i32,
 ) -> AppResult<()> {
@@ -467,20 +474,6 @@ pub(super) async fn cleanup_completed_cycle(
         st.cache.remove(&key).await;
     }
     crate::controllers::game::invalidate_combined_scoreboard(st, cycle.game_id).await;
-    for participation_id in &config.roster {
-        st.cache
-            .remove(&format!(
-                "kothtoken:{}:{}:{}:{}",
-                cycle.game_id, cycle.challenge_id, participation_id, round_number
-            ))
-            .await;
-        st.cache
-            .remove(&format!(
-                "kothtokensall:{}:{}:{}",
-                cycle.game_id, participation_id, round_number
-            ))
-            .await;
-    }
     Ok(())
 }
 
@@ -489,7 +482,9 @@ pub(super) async fn complete_active_cycle(
     cycle: &CycleRow,
     round_number: i32,
 ) -> AppResult<()> {
-    sqlx::query(
+    let mut control =
+        crate::services::ad::engine::koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
+    let completed: bool = sqlx::query_scalar(
         r#"WITH completed AS (
              UPDATE "KothCrownCycles"
               SET phase = 'Completed',
@@ -501,25 +496,35 @@ pub(super) async fn complete_active_cycle(
                   updated_at = clock_timestamp(), last_error = NULL
             WHERE id = $1 AND phase IN ('Active','CooldownReleasePending')
           RETURNING id, reset_attempt
-           )
+           ), receipt AS (
            INSERT INTO "KothCycleAuditReceipts"
              (cycle_id, phase, attempt, receipt, filesystem_diff)
            SELECT id, 'Completed', reset_attempt,
                   jsonb_build_object('reason', 'eventDeadline', 'endedRound', $2), NULL
              FROM completed
-           ON CONFLICT (cycle_id, phase, attempt) DO NOTHING"#,
+           ON CONFLICT (cycle_id, phase, attempt) DO NOTHING
+         RETURNING id
+           )
+           SELECT EXISTS(SELECT 1 FROM completed)"#,
     )
     .bind(cycle.id)
     .bind(round_number)
-    .execute(st.pg())
+    .fetch_one(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    crate::services::ad::koth_capability_cache::release_game_control(
+        control,
+        st.cache.as_ref(),
+        cycle.game_id,
+        completed,
+    )
+    .await?;
     Ok(())
 }
 
 pub(super) async fn terminate_interrupted_cycle(
     st: &SharedState,
-    config: &OfficialConfig,
+    _config: &OfficialConfig,
     cycle: &CycleRow,
     round_number: i32,
 ) -> AppResult<()> {
@@ -612,21 +617,6 @@ pub(super) async fn terminate_interrupted_cycle(
         st.cache.remove(&key).await;
     }
     crate::controllers::game::invalidate_combined_scoreboard(st, cycle.game_id).await;
-    for participation_id in &config.roster {
-        st.cache
-            .remove(&format!(
-                "kothtoken:{}:{}:{}:{}",
-                cycle.game_id, cycle.challenge_id, participation_id, round_number
-            ))
-            .await;
-        st.cache
-            .remove(&format!(
-                "kothtokensall:{}:{}:{}",
-                cycle.game_id, participation_id, round_number
-            ))
-            .await;
-    }
-
     Ok(())
 }
 

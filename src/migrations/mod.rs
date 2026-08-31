@@ -141,6 +141,8 @@ mod m0114_submission_feed_cursor;
 mod m0115_flag_egress_feed_cursor;
 mod m0116_game_event_feed_pending;
 mod m0242_participation_provision_jobs;
+mod m0243_koth_api_revocation_fence;
+mod m0244_koth_api_player_rotation_cooldown;
 mod m0250_team_signature_key_index;
 mod m0251_koth_referee_retry;
 mod m0252_player_credential_operations;
@@ -357,6 +359,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0115_flag_egress_feed_cursor::Migration),
             Box::new(m0116_game_event_feed_pending::Migration),
             Box::new(m0242_participation_provision_jobs::Migration),
+            Box::new(m0243_koth_api_revocation_fence::Migration),
+            Box::new(m0244_koth_api_player_rotation_cooldown::Migration),
             Box::new(m0250_team_signature_key_index::Migration),
             Box::new(m0251_koth_referee_retry::Migration),
             Box::new(m0252_player_credential_operations::Migration),
@@ -552,10 +556,10 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 168);
+        assert_eq!(names.len(), 170);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
-            &names[names.len() - 66..],
+            &names[names.len() - 68..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -572,6 +576,8 @@ mod tests {
                 "m0115_flag_egress_feed_cursor",
                 "m0116_game_event_feed_pending",
                 "m0242_participation_provision_jobs",
+                "m0243_koth_api_revocation_fence",
+                "m0244_koth_api_player_rotation_cooldown",
                 "m0250_team_signature_key_index",
                 "m0251_koth_referee_retry",
                 "m0252_player_credential_operations",

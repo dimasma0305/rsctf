@@ -56,13 +56,14 @@ fn pool_options(max_connections: u32) -> PgPoolOptions {
 
 pub async fn connect(url: &str) -> anyhow::Result<DatabaseConnection> {
     // 32 active query connections is the sweet spot when app + Postgres share a
-    // host. The 33rd default slot is reserved for the singleton reconciler's
-    // long-held fence, preserving that measured active-work ceiling. Raising the
-    // active budget to 64 regressed throughput ~16% on the load-test host.
+    // host. The remaining default slots reserve the singleton reconciler's
+    // long-held fence and the capture owner's isolated heartbeat, preserving
+    // that measured active-work ceiling. Raising the active budget to 64
+    // regressed throughput ~16% on the load-test host.
     let max_conns = std::env::var("RSCTF_DB_MAX_CONNECTIONS")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(33);
+        .unwrap_or(34);
     let repo_scan_concurrency = std::env::var("RSCTF_REPO_SCAN_CONCURRENCY")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -118,11 +119,11 @@ pub async fn connect(url: &str) -> anyhow::Result<DatabaseConnection> {
 /// checker-publication, and challenge-definition locks while its model write
 /// leases another connection (5R).
 /// Provisioning can hold one advisory lock while issuing a query (2P). A
-/// network owner always retains the singleton BYOC ownership lease. When VPN
-/// is enabled it also retains a PgListener and needs room for nested kernel
-/// reconciliation. All/Development/Control/Engine run one suspicion reconciler
-/// that retains its advisory transaction while one nested closure/detector
-/// checkout progresses.
+/// network owner always retains the singleton BYOC lease, the traffic-capture
+/// lease, and a dedicated capture-heartbeat session. When VPN is enabled it
+/// also retains a PgListener and needs room for nested kernel reconciliation.
+/// All/Development/Control/Engine run one suspicion reconciler that retains its
+/// advisory transaction while one nested closure/detector checkout progresses.
 /// The one-shot migration role opens none of these paths and needs only the
 /// pool's two baseline connections.
 fn required_pool_connections(
@@ -137,10 +138,11 @@ fn required_pool_connections(
     let scans = repo_scan_concurrency.saturating_mul(5);
     let provisioning = provisioning_concurrency.saturating_mul(2);
     let owner_connections = match (role.capabilities().network, vpn_enabled) {
-        (true, true) => 6,
-        // Network/BYOC ownership and traffic-capture ownership each retain a
-        // session; keep one more checkout available for forward progress.
-        (true, false) => 3,
+        (true, true) => 7,
+        // Network/BYOC ownership, traffic-capture ownership, and the dedicated
+        // capture heartbeat each retain a session; keep room for forward
+        // progress around those safety leases.
+        (true, false) => 4,
         (false, _) => 1,
     };
     // Credential issuance or fail-closed roster teardown retains one roster
@@ -207,22 +209,22 @@ mod tests {
         );
         assert_eq!(
             required_pool_connections(1, 4, false, RuntimeRole::Control),
-            18
+            19
         );
         assert_eq!(required_pool_connections(1, 4, true, RuntimeRole::Web), 26);
         assert_eq!(
             required_pool_connections(1, 4, true, RuntimeRole::Control),
-            21
+            22
         );
-        assert_eq!(required_pool_connections(1, 4, false, RuntimeRole::All), 30);
-        assert_eq!(required_pool_connections(1, 4, true, RuntimeRole::All), 33);
+        assert_eq!(required_pool_connections(1, 4, false, RuntimeRole::All), 31);
+        assert_eq!(required_pool_connections(1, 4, true, RuntimeRole::All), 34);
         assert_eq!(
             required_pool_connections(1, 4, false, RuntimeRole::Network),
-            16
+            17
         );
         assert_eq!(
             required_pool_connections(1, 4, true, RuntimeRole::Network),
-            19
+            20
         );
         assert_eq!(
             required_pool_connections(4, 16, true, RuntimeRole::Migrate),

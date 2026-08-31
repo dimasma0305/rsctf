@@ -40,11 +40,27 @@ use axum::routing::MethodRouter;
 
 use crate::app_state::SharedState;
 
+mod ad;
+mod koth;
 mod receipt_admission;
+pub(crate) use ad::admit_submit as admit_ad_submit;
+pub(crate) use koth::admit_authenticated as admit_koth_capability_auth;
 pub(crate) use receipt_admission::admit_solve_receipt_issuance;
 mod work_admission;
 pub(crate) use work_admission::{
     admit_asset_gate_miss, admit_asset_request, admit_asset_response_bytes,
+};
+
+#[cfg(test)]
+use ad::{
+    parse_submit_burst_flags as parse_ad_submit_burst_flags,
+    DEFAULT_SUBMIT_BURST_FLAGS as DEFAULT_AD_SUBMIT_BURST_FLAGS,
+};
+#[cfg(test)]
+use koth::{
+    is_auth_request as is_koth_capability_auth_request,
+    parse_source_admission as parse_koth_capability_ip_admission,
+    partition_key as koth_capability_partition_key,
 };
 
 static AUTHENTICATED_IP_BACKSTOP_PER_MINUTE: LazyLock<u32> = LazyLock::new(|| {
@@ -68,49 +84,11 @@ const AD_AUTH_CONCURRENCY: usize = 32;
 static AD_AUTH_SLOTS: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(AD_AUTH_CONCURRENCY));
 
-/// Maximum distinct plausible flags one participation may enqueue immediately.
-/// Four maximum-size batches leave room for ordinary exploit retries without
-/// turning the fixed-rate test allowance into a five-minute production burst.
-const MIN_AD_SUBMIT_BURST_FLAGS: u32 = 100;
-const DEFAULT_AD_SUBMIT_BURST_FLAGS: u32 = 400;
-const MAX_AD_SUBMIT_BURST_FLAGS: u32 = 3_200;
-
-fn parse_ad_submit_burst_flags(value: Option<&str>) -> Result<u32, String> {
-    let Some(value) = value else {
-        return Ok(DEFAULT_AD_SUBMIT_BURST_FLAGS);
-    };
-    let parsed = value.parse::<u32>().map_err(|_| {
-        format!(
-            "RSCTF_AD_SUBMIT_BURST_FLAGS must be an integer from \
-             {MIN_AD_SUBMIT_BURST_FLAGS} through {MAX_AD_SUBMIT_BURST_FLAGS}"
-        )
-    })?;
-    if !(MIN_AD_SUBMIT_BURST_FLAGS..=MAX_AD_SUBMIT_BURST_FLAGS).contains(&parsed) {
-        return Err(format!(
-            "RSCTF_AD_SUBMIT_BURST_FLAGS must be an integer from \
-             {MIN_AD_SUBMIT_BURST_FLAGS} through {MAX_AD_SUBMIT_BURST_FLAGS}"
-        ));
-    }
-    Ok(parsed)
-}
-
-static AD_SUBMIT_BURST_FLAGS: LazyLock<Result<u32, String>> = LazyLock::new(|| {
-    parse_ad_submit_burst_flags(std::env::var("RSCTF_AD_SUBMIT_BURST_FLAGS").ok().as_deref())
-});
-
-/// Reject an invalid explicit A&D work budget before the server accepts traffic.
+/// Reject invalid explicit work/admission budgets before accepting traffic.
 pub fn validate_configuration() -> anyhow::Result<()> {
-    AD_SUBMIT_BURST_FLAGS
-        .as_ref()
-        .map(|_| ())
-        .map_err(|message| anyhow::anyhow!(message.clone()))
-}
-
-fn ad_submit_burst_flags() -> u32 {
-    AD_SUBMIT_BURST_FLAGS
-        .as_ref()
-        .copied()
-        .unwrap_or_else(|message| panic!("{message}"))
+    ad::validate_configuration().map_err(anyhow::Error::msg)?;
+    koth::validate_configuration().map_err(anyhow::Error::msg)?;
+    Ok(())
 }
 
 mod ad_auth;
@@ -810,6 +788,15 @@ pub async fn global_middleware(
         return next.run(req).await;
     }
     let ip = client_ip(&req);
+    if koth::is_auth_request(req.method(), req.uri().path()) {
+        // Managed arenas authenticate a full roster behind one source. Apply
+        // a dedicated source budget before body parsing or PostgreSQL, then
+        // canonical participation fairness after successful authentication.
+        if let Some(response) = koth::admit_source(ip).await {
+            return response;
+        }
+        return next.run(req).await;
+    }
     let credential = crate::middlewares::privilege_authentication::session_token(req.headers());
     if credential.is_some() {
         // This high source ceiling is deliberately separate from per-account

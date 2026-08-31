@@ -294,6 +294,17 @@ pub(crate) async fn tombstone_missing_challenges(
             .map_err(|error| AppError::internal(error.to_string()))?;
         return Err(AppError::conflict(message));
     }
+    let has_koth = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM "GameChallenges"
+                WHERE id = ANY($1) AND "Type" = $2
+           )"#,
+    )
+    .bind(&stale)
+    .bind(ChallengeType::KingOfTheHill as i16)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     sqlx::query(r#"UPDATE "GameChallenges" SET is_enabled = FALSE WHERE id = ANY($1)"#)
         .bind(&stale)
         .execute(&mut *transaction)
@@ -312,10 +323,29 @@ pub(crate) async fn tombstone_missing_challenges(
     .execute(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    let cache_mutation = if has_koth {
+        Some(
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
+                st.cache.as_ref(),
+                game_id,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     transaction
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some(mutation) = cache_mutation {
+        crate::services::ad::koth_capability_cache::finish_game_epoch_mutation(
+            st.cache.as_ref(),
+            game_id,
+            mutation,
+        )
+        .await;
+    }
     Ok(stale)
 }
 

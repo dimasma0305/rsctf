@@ -1,5 +1,8 @@
 //! edit: challenge CRUD/attachments (see edit/mod.rs for the router + shared DTOs/helpers).
 use super::*;
+use crate::services::ad::koth_capability_cache::{
+    begin_game_epoch_mutation_if, finish_game_epoch_mutation_if_any,
+};
 
 mod attachments;
 mod audit;
@@ -484,9 +487,13 @@ pub async fn update_challenge(
         )
         .await?;
         if let Some(lock) = engine_control.take() {
-            lock.release()
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
+            crate::services::ad::koth_capability_cache::release_game_control(
+                lock,
+                st.cache.as_ref(),
+                id,
+                ch_type == ChallengeType::KingOfTheHill,
+            )
+            .await?;
         }
         if was_ad_self_hosted {
             st.byoc.disconnect_challenge(&st.db, c_id).await?;
@@ -771,9 +778,13 @@ pub async fn update_challenge(
         .await?;
     }
     if let Some(lock) = engine_control {
-        lock.release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+        crate::services::ad::koth_capability_cache::release_game_control(
+            lock,
+            st.cache.as_ref(),
+            id,
+            ch_type == ChallengeType::KingOfTheHill,
+        )
+        .await?;
     }
     if let Some(lock) = runtime_transition {
         if let Err(error) = lock.release().await {
@@ -832,12 +843,24 @@ pub(crate) async fn delete_challenge_core(
             "A&D/KotH challenges cannot be deleted after epoch scoring has started.",
         ));
     }
+    let cache_mutation = begin_game_epoch_mutation_if(
+        st.cache.as_ref(),
+        id,
+        challenge.challenge_type == ChallengeType::KingOfTheHill,
+    )
+    .await?;
 
     // The JFLG-exclusive predicate and the durable disabled marker share the
     // definition-lock transaction. This preserves Jeopardy history once play
     // could have started and closes an in-flight-submit TOCTOU. Committing the
     // short definition mutation before runtime I/O also keeps the pool bounded.
-    deletion::fence_challenge_deletion(engine_control.transaction_mut(), id, c_id).await?;
+    if let Err(error) =
+        deletion::fence_challenge_deletion(engine_control.transaction_mut(), id, c_id).await
+    {
+        // This transaction has not attempted commit, so every error rolls back.
+        finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
+        return Err(error);
+    }
 
     // Revoke A&D/KotH routes before any backing address can be freed.
     if challenge.challenge_type.uses_ad_engine() {
@@ -854,6 +877,9 @@ pub(crate) async fn delete_challenge_core(
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    // The durable disabled tombstone is now visible. Later projection/runtime
+    // cleanup cannot make this challenge eligible to a token reader again.
+    finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
     if challenge.challenge_type.uses_ad_engine() && reconcile_vpn {
         crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
     }

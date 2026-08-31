@@ -425,6 +425,14 @@ fn snapshot_hash(
     digest.finalize().into()
 }
 
+fn wave_ends_inside_window(
+    ended_at: DateTime<Utc>,
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+) -> bool {
+    ended_at >= window_start && ended_at < window_end
+}
+
 async fn replace_snapshot_rows(
     connection: &mut sqlx::PgConnection,
     target_id: i32,
@@ -759,8 +767,12 @@ async fn process_observation(
             }
         }
     }
-    let eligible_tokens =
-        super::load_eligible_tokens(&mut *transaction, game_id, challenge_id).await?;
+    let eligible_capabilities =
+        super::load_eligible_capabilities(&mut *transaction, game_id, challenge_id).await?;
+    let eligible_tokens: Vec<_> = eligible_capabilities
+        .iter()
+        .map(|capability| capability.token.clone())
+        .collect();
     if input.context != context.opaque_context(game_id, challenge_id, &eligible_tokens) {
         return Err(AppError::conflict(STALE_CONTEXT_MESSAGE));
     }
@@ -822,7 +834,7 @@ async fn process_observation(
                 "Leaderboard wave timestamp is out of range",
             ));
         };
-        if ended_at < wave_window_start || ended_at >= wave_window_end {
+        if !wave_ends_inside_window(ended_at, wave_window_start, wave_window_end) {
             return Err(AppError::conflict(
                 "Leaderboard waves must end inside the active settlement window",
             ));
@@ -833,10 +845,20 @@ async fn process_observation(
             ));
         }
     }
-    let waves =
-        resolve_current_capabilities(&mut transaction, game_id, challenge_id, normalized_waves)
-            .await?;
+    let waves = resolve_current_capabilities(normalized_waves, &eligible_capabilities)?;
     validate_resolved_crowns(&waves)?;
+    let eligible_participation_ids: Vec<_> = eligible_capabilities
+        .iter()
+        .map(|capability| capability.participation_id)
+        .collect();
+    crate::services::ad::koth_api_capability::retain_eligible_unsettled_scores(
+        &mut transaction,
+        game_id,
+        challenge_id,
+        context.target_id,
+        &eligible_participation_ids,
+    )
+    .await?;
     if let Some(stored) = load_stored_waves(
         &mut transaction,
         context.target_id,

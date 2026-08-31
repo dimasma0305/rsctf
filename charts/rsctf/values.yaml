@@ -275,11 +275,11 @@ config:
   migrate: true
   logLevel: info
   # Pool floor: 2 for migrate; 5R+2P+3 for engine; 5R+2P+13 for web;
-  # 5R+2P+5 / +8 for non-VPN/VPN control; 5R+2P+3 / +6 for network;
-  # or 5R+2P+17 / +20 for the corresponding all-in-one role.
+  # 5R+2P+6 / +9 for non-VPN/VPN control; 5R+2P+4 / +7 for network;
+  # or 5R+2P+18 / +21 for the corresponding all-in-one role.
   provisioningConcurrency: 4
   repoScanConcurrency: 1
-  dbMaxConnections: 33
+  dbMaxConnections: 34
   # Reserve this otherwise-unused numeric UID range for simultaneous process
   # checkers. The budget is also the per-rsctf-process custom-checker cap.
   checkerUidBase: 60000
@@ -287,6 +287,9 @@ config:
   # Four maximum-size A&D submit batches per participation, then 10 flags/s.
   # Increase only for a controlled, isolated load campaign.
   adSubmitBurstFlags: 400
+  # Shared-source admission for managed Leaderboard KotH capability exchange.
+  # Refills at the maintained 100/s rate; the initial burst holds three 2,000-team waves.
+  kothCapabilityIpAdmissionPerMinute: 6000
   # All/control/engine full-history anti-cheat sweep interval (1..3600 seconds).
   suspicionReconcileSeconds: 30
   # Pause ended-game sweeps before the barrier-backed final pass.

@@ -218,9 +218,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if eq $role "migrate" -}}
   {{- $minimumConnections = 2 -}}
 {{- else if and .Values.vpn.enabled (has $role (list "all" "control" "network")) -}}
-  {{- $minimumConnections = add $scanConnections (mul 2 .Values.config.provisioningConcurrency) 6 -}}
+  {{- $minimumConnections = add $scanConnections (mul 2 .Values.config.provisioningConcurrency) 7 -}}
 {{- else if has $role (list "all" "control" "network") -}}
-  {{- $minimumConnections = add $scanConnections (mul 2 .Values.config.provisioningConcurrency) 3 -}}
+  {{- $minimumConnections = add $scanConnections (mul 2 .Values.config.provisioningConcurrency) 4 -}}
 {{- end -}}
 {{- if and (ne $role "migrate") (has $role (list "all" "control" "engine")) -}}
   {{- $minimumConnections = add $minimumConnections 2 -}}

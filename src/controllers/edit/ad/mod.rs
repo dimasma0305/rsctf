@@ -1,4 +1,5 @@
 //! Edit-facing A&D operator console.
+use crate::services::ad::koth_capability_cache::finish_game_epoch_mutation_if_any;
 use axum::extract::Query;
 use axum::response::IntoResponse;
 use base64::Engine as _;
@@ -292,7 +293,18 @@ pub async fn ad_toggle_challenge(
     let DesiredStateDecision::Transition { next_revision } = decision else {
         unreachable!("already-current challenge command returned above")
     };
-    let toggled = sqlx::query(
+    let cache_mutation = if challenge_type == ChallengeType::KingOfTheHill as i16 {
+        Some(
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
+                st.cache.as_ref(),
+                game_id,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let toggled = match sqlx::query(
         r#"UPDATE "GameChallenges"
               SET is_enabled = $3, ad_control_revision = $4
             WHERE id = $1 AND game_id = $2
@@ -305,13 +317,19 @@ pub async fn ad_toggle_challenge(
     .bind(revision)
     .execute(&mut **tx)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .rows_affected();
+    {
+        Ok(result) => result.rows_affected(),
+        Err(error) => {
+            finish_game_epoch_mutation_if_any(st.cache.as_ref(), game_id, cache_mutation).await;
+            return Err(AppError::internal(error.to_string()));
+        }
+    };
     if toggled != 1 {
+        finish_game_epoch_mutation_if_any(st.cache.as_ref(), game_id, cache_mutation).await;
         return Err(AppError::conflict("Challenge is being deleted"));
     }
     if !command.enabled && challenge_type == ChallengeType::KingOfTheHill as i16 {
-        sqlx::query(
+        if let Err(error) = sqlx::query(
             r#"UPDATE "KothTargets"
                   SET holder_participation_id = NULL, held_since = NULL
                 WHERE game_id = $1 AND challenge_id = $2"#,
@@ -320,13 +338,20 @@ pub async fn ad_toggle_challenge(
         .bind(challenge_id)
         .execute(&mut **tx)
         .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+        {
+            finish_game_epoch_mutation_if_any(st.cache.as_ref(), game_id, cache_mutation).await;
+            return Err(AppError::internal(error.to_string()));
+        }
     }
     if let Some(lock) = engine_control {
         lock.release()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
     }
+    // Commit acknowledgement is the publication point. An uncertain commit
+    // deliberately leaves the marker fail-closed; known rollback paths above
+    // restore the epoch immediately.
+    finish_game_epoch_mutation_if_any(st.cache.as_ref(), game_id, cache_mutation).await;
     // Both A&D and KotH challenge membership feeds the shared epoch surfaces.
     // Flush after either engine-backed toggle so KotH eligibility and board
     // caches do not wait for their TTL on the writer replica.

@@ -10,6 +10,9 @@ fn anonymous_content_addressed_assets_are_globally_admitted() {
     assert!(!globally_limited_path("/assets-app.js"));
 }
 
+#[path = "rate_limiter_tests/koth.rs"]
+mod koth;
+
 fn ad_submit_capacity() -> u32 {
     match Policy::AdSubmit.kind() {
         Kind::Bucket { capacity, .. } => capacity as u32,
@@ -40,7 +43,7 @@ fn credential_mutations_use_a_tight_appended_identity_bucket() {
 fn managed_api_lookup_admission_is_appended_and_source_partitioned() {
     assert_eq!(
         Policy::ManagedApiAuthSourceAdmission as u8,
-        Policy::EventVpnMintGlobal as u8 + 1,
+        Policy::AssetGateMiss as u8 + 1,
         "managed token admission must not renumber shipped Redis namespaces"
     );
     assert!(matches!(

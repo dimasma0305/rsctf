@@ -384,6 +384,7 @@ async fn recovery_mints_one_immutable_window_per_reset_attempt() {
         CREATE TEMP TABLE "KothApiTeamTokens" (
           game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
           participation_id INTEGER NOT NULL, token TEXT NOT NULL,
+          revocation_pending BOOLEAN NOT NULL DEFAULT FALSE,
           PRIMARY KEY (game_id, challenge_id, participation_id),
           UNIQUE (token)
         );
