@@ -19,6 +19,8 @@ Read only the references relevant to the work, but read each selected file compl
   [frontend-quality.md](references/frontend-quality.md)
 - Polled reads, resource usage, stress tests, or optimization claims:
   [performance-load.md](references/performance-load.md)
+- Local iteration, batch integration, multi-worktree coordination, or a
+  `dev.1pc.tf` preview: [fast-development.md](references/fast-development.md)
 - Tests, release artifacts, GitHub workflows, or production deployment:
   [verification-release.md](references/verification-release.md)
 
@@ -38,8 +40,10 @@ review does not authorize source changes or deployment.
 5. Add a regression test for the failure or boundary being changed. Authorization
    work needs negative cases; concurrency work needs race/integrity checks; UI work
    needs keyboard, responsive, and accessibility coverage.
-6. Run focused checks early, then the full checks required by the selected references.
-   Every local Cargo compile/test must use `scripts/bounded-cargo.sh`; frontend
+6. Follow the local-first feedback loop: repair and verify a cohesive batch locally,
+   preview it on `dev.1pc.tf` when deployed behavior matters, and use GitHub only as
+   the final clean-room gate. Every local Cargo compile/test must use
+   `scripts/bounded-cargo.sh`; frontend
    typechecks/tests/builds use `scripts/bounded-frontend.sh`. They own the same
    cross-worktree build slot and enforce host CPU/memory ceilings. Do not launch raw
    build jobs in parallel. Fix warnings rather than suppressing them without a

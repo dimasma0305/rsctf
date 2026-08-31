@@ -28,6 +28,10 @@ scripts/bounded-frontend.sh build
 `cargo build` must finish with zero errors and zero warnings. Keep focused test output
 in the handoff, including expected environment-only skips or ignored tests.
 
+Complete the local-first batch and, when deployed behavior matters, the scoped
+`dev.1pc.tf` preview from `fast-development.md` before starting a GitHub workflow.
+Do not use repeated pushes as the edit-test loop.
+
 The bounded wrappers are mandatory for local focused and full Rust and frontend checks.
 They serialize every worktree on one Git-common-dir lock. Cargo reuses one target
 directory, defaults to two Cargo/Rayon workers, and is capped at 200% CPU and 12 GiB

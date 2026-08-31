@@ -270,6 +270,19 @@ function runChecked(command, args, options = {}) {
   }
 }
 
+function sharedCargoTargetDirectory() {
+  const result = spawnSync(
+    "git",
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { cwd: repositoryRoot, encoding: "utf8" },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0 || !result.stdout.trim()) {
+    fail("git could not resolve the shared build directory");
+  }
+  return join(result.stdout.trim(), "rsctf-target");
+}
+
 function checkTool(command, args) {
   const result = spawnSync(command, args, { stdio: "ignore" });
   if (result.error || result.status !== 0) {
@@ -333,9 +346,31 @@ async function stopChild(child, label) {
   }
 }
 
-function spawnBackend(environment) {
-  log("starting Rust backend (automatic restart is enabled)");
-  return spawn("cargo", ["run", "--locked", "--bin", "rsctf"], {
+function buildBackend(environment, targetDirectory) {
+  log("building Rust backend through the shared bounded compiler");
+  runChecked(
+    join(repositoryRoot, "scripts", "bounded-cargo.sh"),
+    ["build", "--locked", "--bin", "rsctf"],
+    {
+      env: {
+        ...environment,
+        RSCTF_CARGO_TARGET_DIR: targetDirectory,
+      },
+    },
+  );
+}
+
+function spawnBackend(environment, targetDirectory) {
+  log("starting Rust backend (automatic bounded rebuild is enabled)");
+  const executable = join(
+    targetDirectory,
+    "debug",
+    process.platform === "win32" ? "rsctf.exe" : "rsctf",
+  );
+  if (!existsSync(executable)) {
+    fail(`bounded backend build did not produce ${executable}`);
+  }
+  return spawn(executable, [], {
     cwd: repositoryRoot,
     env: environment,
     stdio: "inherit",
@@ -505,7 +540,9 @@ async function runDevelopment() {
   }
 
   const backendEnvironment = developmentBackendEnvironment({ ports, secrets });
-  let backend = spawnBackend(backendEnvironment);
+  const cargoTargetDirectory = sharedCargoTargetDirectory();
+  buildBackend(backendEnvironment, cargoTargetDirectory);
+  let backend = spawnBackend(backendEnvironment, cargoTargetDirectory);
   let frontend = spawnFrontend(backendEnvironment, ports, frontendHost);
   let shuttingDown = false;
   let restartTimer;
@@ -515,11 +552,21 @@ async function runDevelopment() {
     clearTimeout(restartTimer);
     restartTimer = setTimeout(() => {
       restartQueue = restartQueue.then(async () => {
-        log(`backend source changed (${path}); rebuilding`);
-        await stopChild(backend, "Rust backend");
-        if (!shuttingDown) backend = spawnBackend(backendEnvironment);
+        log(`backend source changed (${path}); rebuilding one local batch`);
+        if (!shuttingDown) {
+          try {
+            buildBackend(backendEnvironment, cargoTargetDirectory);
+          } catch (error) {
+            log(
+              `backend rebuild failed; the previous process remains live (${error?.message || error})`,
+            );
+            return;
+          }
+          await stopChild(backend, "Rust backend");
+          backend = spawnBackend(backendEnvironment, cargoTargetDirectory);
+        }
       });
-    }, 300);
+    }, 1_000);
   });
 
   const shutdown = async (signal, exitCode = 0) => {
