@@ -16,7 +16,18 @@ grep -Fq "PATH=${node_dir}" <<<"$output"
 grep -Fq 'GOMAXPROCS=2' <<<"$output"
 grep -Fq 'UV_THREADPOOL_SIZE=2' <<<"$output"
 grep -Eq '/pnpm check' <<<"$output"
-grep -Fq -- '--working-directory "$repo_root/web"' scripts/bounded-frontend.sh
+grep -Fq -- '--scope' scripts/bounded-frontend.sh
+grep -Fq 'cd "$repo_root/web"' scripts/bounded-frontend.sh
+
+probe="$(
+  RSCTF_BOUNDED_FRONTEND_PROBE=retained \
+    scripts/bounded-frontend.sh exec node -e \
+    "process.stdout.write('__rsctf_probe_' + (process.env.RSCTF_BOUNDED_FRONTEND_PROBE || 'missing') + '__')"
+)"
+[[ "$probe" = *'__rsctf_probe_retained__'* ]] || {
+  echo 'bounded-frontend dropped caller environment inside its resource scope' >&2
+  exit 1
+}
 
 if RSCTF_BOUNDED_FRONTEND_DRY_RUN=1 RSCTF_FRONTEND_WORKERS=8 \
   scripts/bounded-frontend.sh check >/dev/null 2>&1; then

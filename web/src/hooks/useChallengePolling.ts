@@ -63,7 +63,9 @@ export const useChallengePolling = <T>({
     // another challenge starts with a clean budget and no obsolete work.
     failureCount.current = 0
     setPausedKey(null)
-    cancel()
+    // Do not cancel in the new effect body: SWR may already have started this
+    // key's first request. The previous effect cleanup owns cancellation for
+    // the old key/closed modal, and unmount uses the same cleanup.
     return cancel
   }, [active, cancel, key])
 

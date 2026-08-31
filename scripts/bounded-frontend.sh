@@ -86,22 +86,21 @@ if command -v systemd-run >/dev/null 2>&1 \
   && [[ -d /run/systemd/system ]] \
   && systemctl show-environment >/dev/null 2>&1; then
   unit="rsctf-frontend-$BASHPID-$(date +%s)"
+  # A scope keeps caller-provided test context (for example visual route IDs
+  # and *_FILE credential paths) without copying secret values into the
+  # systemd-run command line. The caller still owns the shared compile lock.
   systemd-run \
     --quiet \
-    --wait \
+    --scope \
     --collect \
-    --pipe \
-    --working-directory "$repo_root/web" \
     --unit "$unit" \
-    --property Type=exec \
     --property "CPUQuota=${cpu_quota}" \
     --property CPUWeight=20 \
     --property "MemoryMax=${memory_max}" \
     --property IOWeight=20 \
-    --property Nice=10 \
     --property TasksMax=256 \
     --property OOMPolicy=stop \
-    "${command[@]}"
+    nice -n 10 ionice -c 2 -n 7 "${command[@]}"
 else
   echo "bounded-frontend: systemd unavailable; using soft nice/ionice limits" >&2
   nice -n 10 ionice -c 2 -n 7 "${command[@]}"

@@ -101,6 +101,7 @@ test('challenge polling starts only while open, suspends in the background, and 
       root.render(createElement(Scope, { active: true, requestKey: '/detail/slow', pending: true }))
     )
     assert.equal(calls.get('/detail/slow'), 1)
+    assert.equal(aborted, 0, 'opening a challenge must not abort its initial request')
     await act(async () =>
       root.render(createElement(Scope, { active: false, requestKey: '/detail/slow', pending: true }))
     )

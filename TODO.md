@@ -7,6 +7,46 @@ on 2026-08-25.
 
 ### P0 — Fix before the next live event
 
+- [ ] Diagnose and remove repeated transient challenge-detail load failures.
+  - This is the first implementation priority because it frequently blocks normal
+    challenge access with "Challenge could not be loaded" and "Challenge data could
+    not be loaded. Automatic retries are bounded."
+  - Capture the actual failing challenge and solver requests, HTTP status/error code,
+    request identity, and server trace without exposing secrets; do not collapse a
+    VPN disconnect, session expiry, overload, or invalid response into the same generic
+    message.
+  - Preserve last-known-good challenge data during a refresh failure, coalesce the
+    challenge and solver recovery owners, and ensure one failed secondary solver read
+    cannot replace an otherwise valid challenge with the full load-error surface.
+  - Add browser and fixed-rate regressions for cold open, cached refresh, Event-VPN
+    reconnect, session expiry, 429/Retry-After, transient 5xx, and a solver-only failure.
+  - Relevant code: `web/src/components/GameChallengeModal.tsx`,
+    `web/src/components/ChallengeModal.tsx`, `web/src/hooks/useChallengePolling.ts`,
+    `web/src/utils/ChallengePolling.ts`, and the challenge-detail/solver controllers.
+  - Dev acceptance on 2026-08-31 found and fixed an initial-open abort race: the
+    polling effect cancelled the first request before Axios dispatched it. The real
+    challenge 50 hash-open flow now loads detail and solvers with HTTP 200 and no
+    load-error surface. Immutable production release remains pending.
+
+- [ ] Verify and release the BYOC-specific empty/recovery state.
+  - This is the second implementation priority. In particular, game 13 challenge 50
+    must explain how to enroll or reconnect the team's own BYOC agent instead of
+    showing the managed-service "No service for your team yet" / "Ensure containers"
+    instructions.
+  - Derive the empty state from the authoritative challenge delivery mode, including
+    before the first agent heartbeat, and keep managed A&D services on the existing
+    provisioning path.
+  - Keep player-component and API-contract regressions for absent, connecting, healthy,
+    stale, and revoked BYOC agents plus an ordinary managed A&D service.
+  - Do not mark this complete merely because the local regression passes: verify it on
+    `dev.1pc.tf`, release the immutable build, and smoke-test the player flow.
+  - Relevant code: `web/src/components/AdChallengePanel.tsx`, the A&D state wire model,
+    and the BYOC enrollment/agent controllers.
+  - Dev acceptance on 2026-08-31 verified game 13 challenge 50 before its first
+    service row: the modal shows self-hosted setup and `setup.sh` guidance and does
+    not show "No service for your team yet" or "Ensure containers". Immutable
+    production release remains pending.
+
 - [x] Make event start and end transitions reactive across the event detail, challenge,
   scoreboard, catalog, and home pages.
   - Drive `getGameStatus` consumers from a shared clock instead of relying on unrelated
@@ -3472,32 +3512,6 @@ on 2026-08-25.
   - Relevant code: `src/controllers/game/play.rs`,
     `src/controllers/game/scoreboard_board.rs`, and
     `web/src/components/TeamRank.tsx`.
-
-- [ ] Show BYOC-specific recovery when a team's self-hosted A&D service is absent.
-  - A BYOC challenge without a registered service must explain how to enroll or
-    reconnect the team's own agent. It must not tell players to ask an operator to
-    provision a platform-managed container with "Ensure containers".
-  - Derive the empty state from the authoritative challenge delivery mode, including
-    before the first agent heartbeat, and keep managed A&D services on the existing
-    provisioning path.
-  - Add player-component and API-contract regressions for absent, connecting, healthy,
-    stale, and revoked BYOC agents plus an ordinary managed A&D service.
-  - Relevant code: `web/src/components/AdChallengePanel.tsx`, the A&D state wire model,
-    and the BYOC enrollment/agent controllers.
-
-- [ ] Diagnose and remove repeated transient challenge-detail load failures.
-  - Capture the actual failing challenge and solver requests, HTTP status/error code,
-    request identity, and server trace without exposing secrets; do not collapse a
-    VPN disconnect, session expiry, overload, or invalid response into the same generic
-    message.
-  - Preserve last-known-good challenge data during a refresh failure, coalesce the
-    challenge and solver recovery owners, and ensure one failed secondary solver read
-    cannot replace an otherwise valid challenge with the full load-error surface.
-  - Add browser and fixed-rate regressions for cold open, cached refresh, Event-VPN
-    reconnect, session expiry, 429/Retry-After, transient 5xx, and a solver-only failure.
-  - Relevant code: `web/src/components/GameChallengeModal.tsx`,
-    `web/src/components/ChallengeModal.tsx`, `web/src/hooks/useChallengePolling.ts`,
-    `web/src/utils/ChallengePolling.ts`, and the challenge-detail/solver controllers.
 
 - [ ] Keep custom challenge Markdown animations alive while the player edits the flag form.
   - Typing, receipt-proof input, verdict polling, and unrelated modal state must not

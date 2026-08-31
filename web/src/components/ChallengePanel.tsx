@@ -26,7 +26,7 @@ import {
   mdiSwordCross,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useState, useMemo } from 'react'
+import { FC, useEffect, useState, useMemo, type FocusEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useParams } from 'react-router'
 import type { AdStateOwner } from '@Components/AdChallengePanel'
@@ -57,6 +57,28 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
 
   const categories = Object.keys(challenges ?? {}).sort()
   const [activeTab, setActiveTab] = useState<ChallengeCategory | 'All'>('All')
+
+  const revealFocusedCategory = (event: FocusEvent<HTMLDivElement>) => {
+    if (!isCompact) return
+    const list = event.currentTarget
+    requestAnimationFrame(() => {
+      const focused = document.activeElement
+      if (focused instanceof HTMLElement && list.contains(focused) && focused.matches('[role="tab"]')) {
+        focused.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' })
+        const focusedStyle = getComputedStyle(focused)
+        const focusGutter =
+          (Number.parseFloat(focusedStyle.outlineWidth) || 0) +
+          Math.max(0, Number.parseFloat(focusedStyle.outlineOffset) || 0)
+        const listRectangle = list.getBoundingClientRect()
+        const focusedRectangle = focused.getBoundingClientRect()
+        if (focusedRectangle.right + focusGutter > listRectangle.right) {
+          list.scrollLeft += Math.ceil(focusedRectangle.right + focusGutter - listRectangle.right)
+        } else if (focusedRectangle.left - focusGutter < listRectangle.left) {
+          list.scrollLeft -= Math.ceil(listRectangle.left - focusedRectangle.left + focusGutter)
+        }
+      }
+    })
+  }
 
   // Sync state if activeTab becomes invalid (e.g. after data load updates categories)
   useEffect(() => {
@@ -441,6 +463,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
           >
             <Tabs.List
               data-challenge-category-tabs
+              onFocus={revealFocusedCategory}
               aria-label={t('game.label.challenge_category', { defaultValue: 'Filter by category' })}
             >
               <Tabs.Tab value={'All'} leftSection={<Icon path={mdiPuzzle} size={1} />}>
