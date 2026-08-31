@@ -14,6 +14,7 @@ grep -Fq 'jobs=2' <<<"$output"
 grep -Fq '/rsctf-target' <<<"$output"
 grep -Eq '/cargo check --all-targets' <<<"$output"
 grep -Fq -- '--scope' scripts/bounded-cargo.sh
+grep -Fq 'flock -E 75 -w "$lock_wait" "$lock_path"' scripts/bounded-cargo.sh
 if grep -Fq -- '--pipe' scripts/bounded-cargo.sh; then
   echo 'bounded-cargo service mode can discard caller environment variables' >&2
   exit 1

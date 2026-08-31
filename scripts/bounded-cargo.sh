@@ -81,12 +81,6 @@ fi
 
 mkdir -p -- "$target_dir"
 lock_path="${git_common_dir}/rsctf-build.lock"
-exec 9>"$lock_path"
-if ! flock -w "$lock_wait" 9; then
-  echo "bounded-cargo: another RSCTF build still owns the shared compile slot" >&2
-  exit 75
-fi
-
 cd "$repo_root"
 if command -v systemd-run >/dev/null 2>&1 \
   && [[ -d /run/systemd/system ]] \
@@ -105,8 +99,10 @@ if command -v systemd-run >/dev/null 2>&1 \
     --property IOWeight=20 \
     --property TasksMax=512 \
     --property OOMPolicy=stop \
-    nice -n 10 ionice -c 2 -n 7 "${command[@]}"
+    flock -E 75 -w "$lock_wait" "$lock_path" \
+      nice -n 10 ionice -c 2 -n 7 "${command[@]}"
 else
   echo "bounded-cargo: systemd unavailable; using soft nice/ionice limits" >&2
-  nice -n 10 ionice -c 2 -n 7 "${command[@]}"
+  flock -E 75 -w "$lock_wait" "$lock_path" \
+    nice -n 10 ionice -c 2 -n 7 "${command[@]}"
 fi
