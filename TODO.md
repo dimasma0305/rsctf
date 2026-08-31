@@ -1882,7 +1882,7 @@ on 2026-08-25.
     `src/services/suspicion/honeypot.rs`, `src/middlewares/rate_limiter.rs`,
     `src/server.rs`, and `src/migrations/m0018_honeypot_hit.rs`.
 
-- [x] Repair the game-clone route contract and make cloning bounded and replayable.
+- [ ] Repair the game-clone route contract and make cloning bounded and replayable.
   - `CloneGameModal` posts to lowercase `/api/edit/games/{id}/clone`, while Axum
     registers only case-sensitive `/api/edit/games/{id}/Clone`. The organizer action
     therefore never reaches `clone_game`; depending on fallback routing it receives
@@ -1914,7 +1914,7 @@ on 2026-08-25.
     `src/controllers/edit/mod.rs`, `src/controllers/edit/games/cloning.rs`,
     `src/server.rs`, and a new registered idempotent forward migration for clone jobs.
 
-- [x] Bound and idempotently recover admin user imports and password issuance.
+- [ ] Bound and idempotently recover admin user imports and password issuance.
   - `UserImportModal` parses every CSV row into React state and sends the complete list;
     neither it nor `ImportRequest` enforces a row count. The default JSON byte limit is
     not a work limit: many minimal rows still cause one serial Argon2 hash, provisioning
@@ -1950,7 +1950,7 @@ on 2026-08-25.
     `src/utils/crypto_utils.rs`, and a new registered idempotent forward migration for
     credential jobs/results.
 
-- [x] Fail fast on duplicate credential mutations before they queue Argon2 work.
+- [ ] Fail fast on duplicate credential mutations before they queue Argon2 work.
   - `PasswordChangeModal` has no pending state or synchronous in-flight guard, so rapid
     click/Enter activation can dispatch several `PUT /api/account/changepassword`
     requests. Every concurrent request can load the same security stamp and password
@@ -2019,7 +2019,7 @@ on 2026-08-25.
     `src/middlewares/rate_limiter.rs`, plus a new registered idempotent forward
     migration for durable recovery attempts.
 
-- [x] Coalesce account-mail intent and deliver it through a bounded durable outbox.
+- [ ] Coalesce account-mail intent and deliver it through a bounded durable outbox.
   - Password recovery mints a new token, invalidates the prior link, and starts one
     detached `tokio::spawn` per matching request. Each task constructs a new
     environment-backed `MailSender`, may occupy SMTP for 15 seconds, and then writes an
@@ -2075,7 +2075,7 @@ on 2026-08-25.
     `src/controllers/account/email_confirmation.rs`, `src/services/mail.rs`, and a new
     registered idempotent forward migration for mail intents/outbox delivery.
 
-- [x] Make the platform-settings save one bounded, revisioned operation.
+- [ ] Make the platform-settings save one bounded, revisioned operation.
   - The settings page sends every configuration section even when one field changed.
     `update_config` commits the account/captcha/OAuth group first, then applies global,
     container, email, registry, build-registry, and provider keys through many
@@ -2123,7 +2123,7 @@ on 2026-08-25.
     `src/services/blob_refs.rs`, and a new registered idempotent forward migration for
     settings revisions/operations and staged branding.
 
-- [x] Make temporary Event-VPN bypass grants exactly-once and bounded.
+- [ ] Make temporary Event-VPN bypass grants exactly-once and bounded.
   - Creating an override always inserts a fresh UUID and has no client operation ID or
     expected policy revision. A second tab/operator or a retry after a committed but
     lost response creates another independently active bypass and invalidates policy
