@@ -58,9 +58,21 @@ const invalidCapabilityAccepted = new Rate('invalid_capability_accepted');
 const adminReadInvalid = new Rate('admin_read_invalid');
 const healthInvalid = new Rate('health_invalid');
 const validCapabilities = new Counter('valid_capabilities_exercised');
+const validPlayHttp401 = new Counter('valid_play_http_401');
+const validPlayHttp409 = new Counter('valid_play_http_409');
+const validPlayHttp429 = new Counter('valid_play_http_429');
+const validPlayHttp503 = new Counter('valid_play_http_503');
+const validPlayHttpOther = new Counter('valid_play_http_other');
+const validPlayModelMismatch = new Counter('valid_play_model_mismatch');
 const rejectedCapabilities = new Counter('invalid_capabilities_rejected');
 const rateLimitedCapabilities = new Counter('invalid_capabilities_rate_limited');
 const invalidRetryAfter = new Rate('invalid_retry_after');
+const adminReadHttp401 = new Counter('admin_read_http_401');
+const adminReadHttp403 = new Counter('admin_read_http_403');
+const adminReadHttp404 = new Counter('admin_read_http_404');
+const adminReadHttp429 = new Counter('admin_read_http_429');
+const adminReadHttpOther = new Counter('admin_read_http_other');
+const adminReadModelMismatch = new Counter('admin_read_model_mismatch');
 const playLatency = new Trend('managed_koth_play_ms', true);
 const boardLatency = new Trend('managed_koth_admin_read_ms', true);
 const healthLatency = new Trend('managed_koth_health_ms', true);
@@ -164,6 +176,18 @@ export function play() {
   if (!invalid) {
     validCapabilities.add(1);
     playLatency.add(response.timings.duration);
+  } else if (response.status === 401) {
+    validPlayHttp401.add(1);
+  } else if (response.status === 409) {
+    validPlayHttp409.add(1);
+  } else if (response.status === 429) {
+    validPlayHttp429.add(1);
+  } else if (response.status === 503) {
+    validPlayHttp503.add(1);
+  } else if (response.status !== 200) {
+    validPlayHttpOther.add(1);
+  } else {
+    validPlayModelMismatch.add(1);
   }
   check(response, { 'valid capability authenticated by arena': () => !invalid });
 }
@@ -197,8 +221,24 @@ export function adminRead() {
   let invalid = false;
   for (const response of responses) {
     record5xx(response);
-    invalid ||= response.status !== 200 || responseJson(response) === null;
-    if (response.status === 200) boardLatency.add(response.timings.duration);
+    const model = responseJson(response);
+    const responseInvalid = response.status !== 200 || model === null;
+    invalid ||= responseInvalid;
+    if (!responseInvalid) {
+      boardLatency.add(response.timings.duration);
+    } else if (response.status === 401) {
+      adminReadHttp401.add(1);
+    } else if (response.status === 403) {
+      adminReadHttp403.add(1);
+    } else if (response.status === 404) {
+      adminReadHttp404.add(1);
+    } else if (response.status === 429) {
+      adminReadHttp429.add(1);
+    } else if (response.status !== 200) {
+      adminReadHttpOther.add(1);
+    } else {
+      adminReadModelMismatch.add(1);
+    }
   }
   adminReadInvalid.add(invalid);
   check(responses, { 'hidden event remains operable by admin': () => !invalid });

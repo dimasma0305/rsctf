@@ -68,6 +68,22 @@ test('managed KotH traffic is fixed-arrival and gates auth abuse independently',
   assert.match(scenario, /invalid_retry_after: \['rate==0'\]/);
   assert.match(scenario, /dropped_iterations: \['count==0'\]/);
   assert.match(scenario, /server_5xx: \['rate==0'\]/);
+  assert.match(scenario, /valid_play_http_429/);
+  assert.match(scenario, /valid_play_model_mismatch/);
+  assert.match(scenario, /admin_read_http_429/);
+  assert.match(scenario, /admin_read_model_mismatch/);
+});
+
+test('managed KotH polling uses a fresh administrator rate-limit identity', () => {
+  const pollingIdentity = runner.slice(
+    runner.indexOf('async function provisionPollingAdmin()'),
+    runner.indexOf('function targetDatabaseSnapshot('),
+  );
+  assert.match(pollingIdentity, /\/api\/admin\/users/);
+  assert.match(pollingIdentity, /body: \{ role: 'Admin' \}/);
+  assert.match(pollingIdentity, /current\.pollerJwt = mintJwt/);
+  assert.match(runner, /MANAGED_KOTH_ADMIN_TOKEN: current\.pollerJwt/);
+  assert.doesNotMatch(runner, /MANAGED_KOTH_ADMIN_TOKEN: A\.adminJwt\(\)/);
 });
 
 test('managed target derives its bounded cohort and Crown from submitted scores', () => {

@@ -230,7 +230,7 @@ async function runK6Phase({ phase, arenaUrl, summaryPath, tokenFile, targetConta
     MANAGED_KOTH_ARENA: arenaUrl,
     MANAGED_KOTH_GAME: current.gameId,
     MANAGED_KOTH_CHALLENGE: current.challengeId,
-    MANAGED_KOTH_ADMIN_TOKEN: A.adminJwt(),
+    MANAGED_KOTH_ADMIN_TOKEN: current.pollerJwt,
     MANAGED_KOTH_TOKENS_FILE: tokenFile,
     MANAGED_KOTH_ACTIVE_FLEET: ACTIVE_FLEET,
     MANAGED_KOTH_PHASE: phase,
@@ -278,7 +278,45 @@ const current = {
   gameId: null,
   challengeId: null,
   cohort: null,
+  pollerJwt: null,
 };
+
+async function provisionPollingAdmin() {
+  const tag = randomUUID().replaceAll('-', '');
+  const email = `managed-koth-poller-${tag}@load.test`;
+  const created = await A.api('POST', '/api/admin/users', {
+    jwt: A.adminJwt(),
+    body: [{
+      userName: `mkothpoller${tag.slice(0, 16)}`,
+      password: `Mkoth-${randomUUID()}!9`,
+      email,
+      realName: 'Managed KotH load poller',
+    }],
+  });
+  requireCondition(created.status === 200, `polling identity creation returned ${created.status}`);
+
+  const readIdentity = () => sql(
+    `SELECT id::text||E'\\t'||security_stamp||E'\\t'||role::text ` +
+      `FROM "AspNetUsers" WHERE normalized_email=upper('${email}')`,
+  ).split('\t');
+  const identity = readIdentity();
+  requireCondition(
+    identity.length === 3 && /^[0-9a-f-]{36}$/.test(identity[0]),
+    'polling identity is incomplete',
+  );
+  const promoted = await A.api('PUT', `/api/admin/users/${identity[0]}`, {
+    jwt: A.adminJwt(),
+    body: { role: 'Admin' },
+  });
+  requireCondition(promoted.status === 200, `polling identity promotion returned ${promoted.status}`);
+  const liveIdentity = readIdentity();
+  requireCondition(
+    liveIdentity.length === 3 && liveIdentity[0] === identity[0] && Number(liveIdentity[2]) === 3,
+    'polling identity was not promoted to Admin',
+  );
+  current.pollerJwt = mintJwt(liveIdentity[0], liveIdentity[1], 3);
+  requireCondition(current.pollerJwt !== A.adminJwt(), 'polling identity reused the bootstrap administrator');
+}
 
 function targetDatabaseSnapshot(gameId, challengeId) {
   const raw = sql(
@@ -770,6 +808,7 @@ async function main() {
   });
   await exactHealth(config.target, 'platform');
   await A.preflight();
+  await provisionPollingAdmin();
 
   let target = await provision(reporterBaseUrl);
   const ordinaryJwt = mintJwt(current.cohort.userIds[0], undefined, 1);
