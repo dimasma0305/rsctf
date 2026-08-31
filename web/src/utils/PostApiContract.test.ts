@@ -35,11 +35,9 @@ test('A&D container reconcile supplies a retained idempotency key', () => {
   assert.match(ensure, /\.\.\.requestParams\.headers/)
   assert.match(ensure, /"Idempotency-Key": operationId/)
   assert.match(adOps, /new RetryableOperationKey\(undefined, `rsctf:ad-ensure-containers:\$\{numId\}`\)/)
+  assert.match(adOps, /const owner = ensureContainersKey\.current\?\.owner[\s\S]*return \(\) => owner\?\.release\(\)/)
   assert.match(adOps, /const operationId = operationOwner\.claim\(\)/)
   assert.match(adOps, /editAdEnsureContainers\(numId, operationId\)/)
-  assert.match(
-    adOps,
-    /await api\.edit\.editAdEnsureContainers[\s\S]*operationOwner\.complete\(operationId\)/
-  )
+  assert.match(adOps, /await api\.edit\.editAdEnsureContainers[\s\S]*operationOwner\.complete\(operationId\)/)
   assert.match(adOps, /httpErrorStatus\(e\) === 409\) operationOwner\.complete\(operationId\)/)
 })

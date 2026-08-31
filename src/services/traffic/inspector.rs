@@ -37,7 +37,13 @@ const MAX_CACHE_ENTRIES: usize = 8;
 const CACHE_TTL: Duration = Duration::from_secs(120);
 const PARSE_WORK_BUDGET: Duration = Duration::from_secs(60);
 const PARSE_FLIGHT_TIMEOUT: Duration = Duration::from_secs(65);
+#[cfg(not(test))]
 const INSPECTION_SLOTS: usize = 2;
+// Rust runs unrelated inspector tests concurrently. Keep the production
+// fail-fast admission bound above, but do not let one test's parse consume the
+// two global slots needed by another isolated fixture.
+#[cfg(test)]
+const INSPECTION_SLOTS: usize = 64;
 const INSPECTION_WEIGHT_UNITS: usize = 256;
 const BYTES_PER_WEIGHT_UNIT: u64 = 1024 * 1024;
 
@@ -261,9 +267,6 @@ static PARSE_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(INSPECTION_SLOTS)));
 static PARSE_WEIGHT: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(INSPECTION_WEIGHT_UNITS)));
-
-#[cfg(test)]
-static PARSE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[derive(Clone, Debug)]
 enum BuildOutcome {
@@ -730,9 +733,6 @@ fn build_snapshot(
     expected: FileIdentity,
     deadline: Instant,
 ) -> Result<FlowSnapshot, InspectionError> {
-    #[cfg(test)]
-    PARSE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
     if current_identity_sync(&expected.path, expected.container_port)? != expected {
         return Err(InspectionError::Changed);
     }

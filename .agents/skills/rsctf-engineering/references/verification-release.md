@@ -16,29 +16,37 @@ Before release, require:
 
 ```sh
 cargo fmt --all -- --check
-scripts/bounded-cargo.sh build --all-targets
-scripts/bounded-cargo.sh test
+cargo build --all-targets
+cargo test
 find src -name '*.rs' -print0 | xargs -0 wc -l | awk '$1>1000 && $2!="total"'
-scripts/bounded-frontend.sh check
-scripts/bounded-frontend.sh lint:check
-scripts/bounded-frontend.sh test
-scripts/bounded-frontend.sh build
+cd web && pnpm check && pnpm lint:check && pnpm test && pnpm build
 ```
 
 `cargo build` must finish with zero errors and zero warnings. Keep focused test output
 in the handoff, including expected environment-only skips or ignored tests.
 
-Complete the local-first batch and, when deployed behavior matters, the scoped
-`dev.1pc.tf` preview from `fast-development.md` before starting a GitHub workflow.
-Do not use repeated pushes as the edit-test loop.
+## Local-first feedback loop
 
-The bounded wrappers are mandatory for local focused and full Rust and frontend checks.
-They serialize every worktree on one Git-common-dir lock. Cargo reuses one target
-directory, defaults to two Cargo/Rayon workers, and is capped at 200% CPU and 12 GiB
-RAM. Frontend work defaults to two Go/libuv workers and is capped at 150% CPU and 8 GiB
-RAM. Override those bounds only for an explicitly isolated build host. When `sccache`
-is installed, Cargo uses a bounded shared cache automatically. CI may use an equivalent
-stricter container/cgroup instead.
+Use GitHub Actions as the final clean-room gate, not as the primary debugger.
+
+1. Reproduce the failure with the smallest focused local test or the exact failing
+   harness phase. Add diagnostics locally and keep the evidence that identifies the
+   failed invariant.
+2. Run the affected workflow in a disposable local environment. For container and
+   lifecycle work, use the exact candidate image or digest and preserve the same
+   topology, configuration, and release thresholds where the host permits it.
+3. When the behavior depends on the deployed proxy, browser, worker, or multi-host
+   topology, test it on `https://dev.1pc.tf` in a hidden event that only administrators
+   can discover. Keep this test scoped and clean up its disposable resources.
+4. Run focused regressions, then the applicable broader local checks. Local diagnostic
+   overrides for a contended development host must remain uncommitted; restore and
+   verify the release values before staging.
+5. Inspect `git diff --cached` and the committed files before pushing. Start the full
+   GitHub gate only after the local and, when applicable, dev checks pass.
+
+If a GitHub gate fails, reproduce that failure locally before another code push. A
+remote rerun without a code change is appropriate only for a documented external or
+runner failure.
 
 ## Immutable production release
 

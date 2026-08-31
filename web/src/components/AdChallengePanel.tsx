@@ -395,7 +395,15 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
   }
 
   if (!adState) {
-    if (stateFailure) return stateFailure
+    if (stateFailure) {
+      if (!isSelfHosted) return stateFailure
+      return (
+        <Stack gap="xs">
+          {stateFailure}
+          <ByocEnrollment gameId={gameId} challengeId={challengeId} state="byoc-absent" />
+        </Stack>
+      )
+    }
     return (
       <Group justify="center" py="md">
         <Loader size="sm" />

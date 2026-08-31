@@ -1,8 +1,6 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::sync::atomic::Ordering;
-
 use super::*;
 use crate::services::traffic::{write_capture, TrafficPacket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 fn scratch(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -104,14 +102,16 @@ async fn concurrent_filters_parse_one_file_version_once() {
     let team = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 50_001);
     let container = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9000);
     write_capture(&path, &[packet(team, container, b"needle", 20)]).unwrap();
-    let before = PARSE_COUNT.load(Ordering::SeqCst);
-
     let requests = (0..12)
         .map(|_| load_flow_snapshot(&path, container.port(), None))
         .collect::<Vec<_>>();
     let snapshots = futures::future::join_all(requests).await;
     assert!(snapshots.iter().all(Result::is_ok));
-    assert_eq!(PARSE_COUNT.load(Ordering::SeqCst) - before, 1);
+    let first = snapshots[0].as_ref().unwrap();
+    assert!(snapshots
+        .iter()
+        .skip(1)
+        .all(|snapshot| Arc::ptr_eq(first, snapshot.as_ref().unwrap())));
 
     let filter =
         ValidatedFlowFilter::new(Some("needle"), Some("127.0"), None, None, None, false).unwrap();
