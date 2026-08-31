@@ -759,13 +759,38 @@ mod tests {
               hash TEXT NOT NULL UNIQUE,
               reference_count BIGINT NOT NULL
             );
+            CREATE TABLE "Attachments" (
+              id INTEGER PRIMARY KEY,
+              local_file_id INTEGER
+            );
+            CREATE TABLE "Participations" (
+              id INTEGER PRIMARY KEY,
+              writeup_id INTEGER
+            );
+            CREATE TABLE "AdServiceSnapshots" (
+              id BIGSERIAL PRIMARY KEY,
+              local_file_id INTEGER NOT NULL
+            );
             CREATE TABLE "ApiTokens" (
               id UUID PRIMARY KEY,
               creator_id UUID
             );
             CREATE TABLE "Teams" (
               id INTEGER PRIMARY KEY,
-              captain_id UUID NOT NULL
+              captain_id UUID NOT NULL,
+              avatar_hash TEXT
+            );
+            CREATE TABLE "Games" (
+              id INTEGER PRIMARY KEY,
+              poster_hash TEXT
+            );
+            CREATE TABLE "Configs" (
+              config_key TEXT PRIMARY KEY,
+              value TEXT
+            );
+            CREATE TABLE "GameChallenges" (
+              id INTEGER PRIMARY KEY,
+              original_archive_blob_path TEXT
             );
             CREATE TABLE "TeamMembers" (
               team_id INTEGER NOT NULL,
