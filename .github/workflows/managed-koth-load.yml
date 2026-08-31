@@ -23,6 +23,7 @@ on:
       - tests/load/test/managed-koth-harness.test.mjs
 
 permissions:
+  actions: write
   attestations: read
   contents: read
   packages: read
@@ -124,11 +125,35 @@ jobs:
           repository="ghcr.io/${GITHUB_REPOSITORY,,}"
           server_image="$REQUESTED_SERVER_IMAGE"
           if [[ -z "$server_image" ]]; then
-            digest="$(
+            resolve_digest() {
               docker buildx imagetools inspect "${repository}:sha-${SOURCE_SHA}" \
-                --format '{{ json .Manifest.Digest }}' \
-                | jq -er 'select(type == "string")'
-            )"
+                --format '{{ json .Manifest.Digest }}' 2>/dev/null \
+                | jq -er 'select(type == "string" and test("^sha256:[0-9a-f]{64}$"))'
+            }
+            if ! digest="$(resolve_digest)"; then
+              active_publication="$(
+                gh run list \
+                  --workflow image.yml \
+                  --commit "$SOURCE_SHA" \
+                  --limit 20 \
+                  --json status \
+                  --jq 'any(.[]; .status == "queued" or .status == "in_progress" or .status == "waiting")'
+              )"
+              if [[ "$active_publication" != "true" ]]; then
+                gh workflow run image.yml --ref main
+              fi
+              digest=""
+              for _ in $(seq 1 80); do
+                if digest="$(resolve_digest)"; then
+                  break
+                fi
+                sleep 30
+              done
+            fi
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::The exact current-main candidate image was not published within 40 minutes."
+              exit 1
+            fi
             server_image="${repository}@${digest}"
           fi
           if [[ "${server_image%@sha256:*}" != "$repository" ]] \
@@ -137,15 +162,26 @@ jobs:
             exit 1
           fi
 
-          gh attestation verify "oci://${server_image}" \
-            --bundle-from-oci \
-            --hostname github.com \
-            --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/image.yml" \
-            --source-ref refs/heads/main \
-            --source-digest "$SOURCE_SHA" \
-            --deny-self-hosted-runners \
-            >/dev/null
+          attested=false
+          for _ in $(seq 1 60); do
+            if gh attestation verify "oci://${server_image}" \
+              --bundle-from-oci \
+              --hostname github.com \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/image.yml" \
+              --source-ref refs/heads/main \
+              --source-digest "$SOURCE_SHA" \
+              --deny-self-hosted-runners \
+              >/dev/null 2>&1; then
+              attested=true
+              break
+            fi
+            sleep 10
+          done
+          if [[ "$attested" != "true" ]]; then
+            echo "::error::The exact candidate did not receive its expected GitHub attestation."
+            exit 1
+          fi
 
           manifest="$(docker buildx imagetools inspect --raw "$server_image")"
           if ! jq -e '
@@ -253,6 +289,28 @@ jobs:
           fi
           rm -f "$response"
 
+      - name: Seed fallback-cleanup probes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RSCTF_DOCKER_SCOPE" =~ ^managed-koth-[0-9]+-[0-9]+$ ]]; then
+            echo "::error::The disposable Docker scope is malformed."
+            exit 1
+          fi
+          managed_scope="$(printf 'explicit\0%s' "$RSCTF_DOCKER_SCOPE" | sha256sum | cut -c1-32)"
+          docker create \
+            --name "${COMPOSE_PROJECT_NAME}-cleanup-probe" \
+            --label "rsctf.managed=$managed_scope" \
+            --label "rsctf.scope=$managed_scope" \
+            --network none \
+            "$POSTGRES_IMAGE" true \
+            >/dev/null
+          docker network create \
+            --label "rsctf.managed=$managed_scope" \
+            --label "rsctf.scope=$managed_scope" \
+            "${COMPOSE_PROJECT_NAME}-cleanup-probe" \
+            >/dev/null
+
       - name: Run fixed-rate managed KotH acceptance
         shell: bash
         env:
@@ -318,18 +376,19 @@ jobs:
           )
           "${compose[@]}" stop --timeout 30 rsctf
           if [[ "$RSCTF_DOCKER_SCOPE" =~ ^managed-koth-[0-9]+-[0-9]+$ ]]; then
+            managed_scope="$(printf 'explicit\0%s' "$RSCTF_DOCKER_SCOPE" | sha256sum | cut -c1-32)"
             mapfile -t managed_containers < <(
               docker ps --all --quiet \
-                --filter "label=rsctf.managed=$RSCTF_DOCKER_SCOPE" \
-                --filter "label=rsctf.scope=$RSCTF_DOCKER_SCOPE"
+                --filter "label=rsctf.managed=$managed_scope" \
+                --filter "label=rsctf.scope=$managed_scope"
             )
             if ((${#managed_containers[@]} > 0)); then
               docker rm --force "${managed_containers[@]}"
             fi
             mapfile -t managed_networks < <(
               docker network ls --quiet \
-                --filter "label=rsctf.managed=$RSCTF_DOCKER_SCOPE" \
-                --filter "label=rsctf.scope=$RSCTF_DOCKER_SCOPE"
+                --filter "label=rsctf.managed=$managed_scope" \
+                --filter "label=rsctf.scope=$managed_scope"
             )
             if ((${#managed_networks[@]} > 0)); then
               docker network rm "${managed_networks[@]}"
@@ -337,11 +396,13 @@ jobs:
           fi
           "${compose[@]}" down --volumes --remove-orphans --timeout 30
           remaining_project="$(docker ps --all --quiet --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")"
-          remaining_scope="$(docker ps --all --quiet --filter "label=rsctf.managed=$RSCTF_DOCKER_SCOPE")"
+          remaining_scope="$(docker ps --all --quiet --filter "label=rsctf.managed=${managed_scope:-invalid}")"
           remaining_volumes="$(docker volume ls --quiet --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")"
           remaining_networks="$(docker network ls --quiet --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")"
+          remaining_scope_networks="$(docker network ls --quiet --filter "label=rsctf.managed=${managed_scope:-invalid}")"
           if [[ -n "$remaining_project" || -n "$remaining_scope" \
-            || -n "$remaining_volumes" || -n "$remaining_networks" ]]; then
+            || -n "$remaining_volumes" || -n "$remaining_networks" \
+            || -n "$remaining_scope_networks" ]]; then
             echo "::error::Disposable Docker resources remain after cleanup."
             exit 1
           fi

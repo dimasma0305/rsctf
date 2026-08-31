@@ -6,6 +6,7 @@ const runner = readFileSync(new URL('../managed-koth.mjs', import.meta.url), 'ut
 const scenario = readFileSync(new URL('../k6/managed-koth.js', import.meta.url), 'utf8');
 const fixture = readFileSync(new URL('../fixtures.mjs', import.meta.url), 'utf8');
 const model = readFileSync(new URL('../managed-koth-model.js', import.meta.url), 'utf8');
+const workflow = readFileSync(new URL('../../../.github/workflows/managed-koth-load.yml', import.meta.url), 'utf8');
 
 test('managed KotH runner provisions hidden and paused before any live reporter cycle', () => {
   const provision = runner.slice(
@@ -68,12 +69,23 @@ test('managed KotH traffic is fixed-arrival and gates auth abuse independently',
   assert.match(scenario, /invalid_retry_after: \['rate==0'\]/);
   assert.match(scenario, /dropped_iterations: \['count==0'\]/);
   assert.match(scenario, /server_5xx: \['rate==0'\]/);
+  assert.match(scenario, /summaryTrendStats: \['avg', 'med', 'p\(90\)', 'p\(95\)', 'p\(99\)', 'max'\]/);
   assert.match(scenario, /valid_play_http_429/);
   assert.match(scenario, /valid_play_model_mismatch/);
   assert.match(scenario, /admin_read_http_429/);
   assert.match(scenario, /admin_read_model_mismatch/);
   assert.match(scenario, /\/api\/edit\/games\/\$\{GAME\}\/ad\/koth\/state/);
   assert.doesNotMatch(scenario, /\/api\/game\/\$\{GAME\}\/ad\/koth\/\$\{CHALLENGE\}\/state/);
+});
+
+test('managed KotH workflow publishes missing candidates and reaps the derived Docker scope', () => {
+  assert.match(workflow, /actions: write/);
+  assert.match(workflow, /gh workflow run image\.yml --ref main/);
+  assert.match(workflow, /The exact current-main candidate image was not published within 40 minutes/);
+  assert.match(workflow, /printf 'explicit\\0%s'/);
+  assert.match(workflow, /label=rsctf\.managed=\$managed_scope/);
+  assert.match(workflow, /Seed fallback-cleanup probes/);
+  assert.match(workflow, /remaining_scope_networks/);
 });
 
 test('managed KotH polling uses a fresh administrator rate-limit identity', () => {

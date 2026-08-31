@@ -101,6 +101,7 @@ const primaryScenario = PHASE === 'valid'
       gracefulStop: '10s',
     };
 export const options = {
+  summaryTrendStats: ['avg', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
   scenarios: {
     primary: primaryScenario,
     ...(PHASE === 'valid' ? { admin: {

@@ -59,8 +59,9 @@ Capability files live only in a mode-0600 temporary directory and are removed
 during cleanup. Reporter secrets stay in process memory, are never written to an
 artifact, and are never included in errors or console output. The retained k6
 summaries are the requested path plus `-prefix`, `-restart`, and `-abuse`
-siblings; the resource file records one-second Docker CPU/RSS samples for the
-platform, lifecycle owner, PostgreSQL, and current target during every phase.
+siblings. Every trend retains avg, median, p90, p95, p99, and max; the resource
+file records one-second Docker CPU/RSS samples for the platform, lifecycle
+owner, PostgreSQL, and current target during every phase.
 
 This repository batch defines and unit-tests the contract only. A reportable
 capacity claim still requires running the command on the isolated stack and
@@ -71,10 +72,14 @@ a disposable GitHub-hosted runner. Supply the exact current `main` commit and
 its immutable `ghcr.io/dimasma0305/rsctf@sha256:…` image. The workflow rejects
 a stale source, a mutable or foreign image, an untrusted attestation, the wrong
 image revision/version/platform set, and a non-private stack. It bootstraps only
-one temporary administrator, keeps the event hidden and paused while preparing
-the exact 2,000-team roster, uploads the four k6 summaries plus the resource
-series, then removes every run-scoped managed container and Compose volume.
+the temporary administrator identities needed for setup and isolated polling,
+keeps the event hidden and paused while preparing the exact 2,000-team roster,
+uploads the four k6 summaries plus the resource series, then removes every
+run-scoped managed container, network, and Compose volume.
 
 The same workflow runs once when its workflow, Compose overlay, or this runbook
 changes in a same-repository pull request. That bootstrap run deliberately tests
 the pull request's exact `main` base image rather than building unreviewed code.
+If that commit has no published image yet, the gate dispatches the repository's
+normal image workflow and waits for the exact digest and attestation before it
+starts the disposable stack.
