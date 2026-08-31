@@ -329,11 +329,14 @@ Managed Leaderboard KotH capability exchange has a separate source bucket,
 `RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE` (default `6000`, valid
 `3000..1000000`). The default bucket refills at the maintained 2,000-team
 fixed-rate profile of 100 authentications/second and holds three complete waves.
-At most eight capability lookups per web process may occupy PostgreSQL at once;
-excess work receives `429` with `Retry-After`. After a capability is verified,
-the ordinary 150 requests/minute allowance is applied to its canonical game,
-challenge, and participation. Reporter context and observation traffic therefore
-keeps a separate rate-limit budget during a shared-source login wave.
+Each API process derives up to 16 concurrent capability lookups from PostgreSQL
+pool headroom above its role's deadlock-safe floor. At most 128 total lookup
+requests may wait or run, and waiting for a database slot is limited to two
+seconds. Work beyond either bound receives `429` with `Retry-After`. After a
+capability is verified, the ordinary 150 requests/minute allowance is applied to
+its canonical game, challenge, and participation. Reporter context and
+observation traffic therefore keeps a separate rate-limit budget during a
+shared-source login wave.
 The Helm equivalent is `config.kothCapabilityIpAdmissionPerMinute`.
 
 A&D submission is charged by distinct plausible flags, not HTTP requests. The

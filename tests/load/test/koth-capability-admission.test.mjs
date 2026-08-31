@@ -39,6 +39,11 @@ const databaseLookupConcurrency = Number(
     /MAX_KOTH_CAPABILITY_LOOKUP_CONCURRENCY:\s*usize\s*=\s*(\d+)/,
   )?.[1],
 );
+const databaseLookupRequests = Number(
+  authentication.match(
+    /MAX_DATABASE_LOOKUP_REQUESTS:\s*usize\s*=\s*(\d+)/,
+  )?.[1],
+);
 
 test('managed KotH admits the complete 2,000-team same-source login wave', () => {
   assert.equal(rosterLimit, 2_000);
@@ -152,7 +157,7 @@ test('Helm forwards and bounds managed KotH capability admission', () => {
 test('capability shape and source abuse are bounded before database authentication', () => {
   const shapeCheck = authentication.indexOf('validated_token(&request.token)');
   const concurrencyCheck = authentication.indexOf(
-    'try_database_lookup_slot()',
+    'acquire_database_lookup_slot().await',
     shapeCheck,
   );
   const poolAcquire = authentication.indexOf('.pg()');
@@ -160,6 +165,15 @@ test('capability shape and source abuse are bounded before database authenticati
   assert.ok(concurrencyCheck > shapeCheck && concurrencyCheck < poolAcquire);
   assert.match(authentication, /is_well_formed\(token\)/);
   assert.equal(databaseLookupConcurrency, 16);
+  assert.equal(databaseLookupRequests, 128);
+  assert.match(
+    authentication,
+    /DATABASE_LOOKUP_WAIT_TIMEOUT:\s*Duration\s*=\s*Duration::from_secs\(2\)/,
+  );
+  assert.match(
+    authentication,
+    /request_slots\.try_acquire\(\)[\s\S]*?timeout\(wait_timeout, lookup_slots\.acquire\(\)\)/,
+  );
   assert.match(
     authentication,
     /configured_koth_capability_lookup_concurrency\(\)/,
