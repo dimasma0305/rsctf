@@ -10,6 +10,8 @@ use crate::models::internal::configs::RuntimeRole;
 
 const IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(60);
 const POSTGRES_APPLICATION_NAME_MAX_BYTES: usize = 63;
+const DEFAULT_DB_MAX_CONNECTIONS: u32 = 50;
+pub(crate) const MAX_KOTH_CAPABILITY_LOOKUP_CONCURRENCY: usize = 16;
 // The singleton suspicion reconciler retains one advisory-lock transaction
 // while its closure barrier or detector uses one nested checkout.
 const SUSPICION_RECONCILER_CONNECTIONS: usize = 2;
@@ -54,62 +56,127 @@ fn pool_options(max_connections: u32) -> PgPoolOptions {
         })
 }
 
+#[derive(Clone, Copy)]
+struct PoolBudget {
+    max_connections: u32,
+    repo_scan_concurrency: usize,
+    provisioning_concurrency: usize,
+    vpn_enabled: bool,
+    role: RuntimeRole,
+}
+
+fn pool_budget_from_env() -> PoolBudget {
+    PoolBudget {
+        max_connections: std::env::var("RSCTF_DB_MAX_CONNECTIONS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(DEFAULT_DB_MAX_CONNECTIONS),
+        repo_scan_concurrency: std::env::var("RSCTF_REPO_SCAN_CONCURRENCY")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| (1..=4).contains(value))
+            .unwrap_or(1),
+        provisioning_concurrency: std::env::var("RSCTF_PROVISIONING_CONCURRENCY")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(4),
+        vpn_enabled: std::env::var("RSCTF_AD_VPN_ENABLED")
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false),
+        role: std::env::var("RSCTF_ROLE")
+            .ok()
+            .and_then(|value| value.parse::<RuntimeRole>().ok())
+            .unwrap_or_default(),
+    }
+}
+
 pub async fn connect(url: &str) -> anyhow::Result<DatabaseConnection> {
-    // 32 active query connections is the sweet spot when app + Postgres share a
-    // host. The remaining default slots reserve the singleton reconciler's
-    // long-held fence and the capture owner's isolated heartbeat, preserving
-    // that measured active-work ceiling. Raising the active budget to 64
-    // regressed throughput ~16% on the load-test host.
-    let max_conns = std::env::var("RSCTF_DB_MAX_CONNECTIONS")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(34);
-    let repo_scan_concurrency = std::env::var("RSCTF_REPO_SCAN_CONCURRENCY")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| (1..=4).contains(value))
-        .unwrap_or(1);
-    let vpn_enabled = std::env::var("RSCTF_AD_VPN_ENABLED")
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false);
-    let provisioning_concurrency = std::env::var("RSCTF_PROVISIONING_CONCURRENCY")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(4);
-    let role = std::env::var("RSCTF_ROLE")
-        .ok()
-        .and_then(|value| value.parse::<RuntimeRole>().ok())
-        .unwrap_or_default();
-    let required = required_pool_connections(
-        repo_scan_concurrency,
-        provisioning_concurrency,
-        vpn_enabled,
-        role,
+    // The default 50-connection monolith budget is the active VPN all-role
+    // safety floor (34) plus the measured capability-authentication ceiling
+    // (16). The dedicated semaphore prevents that burst path from consuming
+    // connections reserved for nested control and scoring work.
+    let budget = pool_budget_from_env();
+    let required = minimum_pool_connections(
+        budget.repo_scan_concurrency,
+        budget.provisioning_concurrency,
+        budget.vpn_enabled,
+        budget.role,
     );
-    if (max_conns as usize) < required {
+    if (budget.max_connections as usize) < required {
         anyhow::bail!(
-            "RSCTF_DB_MAX_CONNECTIONS must be at least {required} for RSCTF_ROLE={role} with RSCTF_REPO_SCAN_CONCURRENCY={repo_scan_concurrency}, RSCTF_PROVISIONING_CONCURRENCY={provisioning_concurrency}, and RSCTF_AD_VPN_ENABLED={vpn_enabled}"
+            "RSCTF_DB_MAX_CONNECTIONS must be at least {required} for RSCTF_ROLE={} with RSCTF_REPO_SCAN_CONCURRENCY={}, RSCTF_PROVISIONING_CONCURRENCY={}, and RSCTF_AD_VPN_ENABLED={}",
+            budget.role,
+            budget.repo_scan_concurrency,
+            budget.provisioning_concurrency,
+            budget.vpn_enabled,
         );
     }
     // PostgreSQL truncates application_name at 63 bytes. Keep a compact,
     // process-unique identity on every SQLx/SeaORM pool connection so the
     // stop-the-world migration preflight can distinguish this pool's own two
     // baseline sessions from every old replica, PgBouncer, and monitor.
-    let application_name = process_application_name(role);
+    let application_name = process_application_name(budget.role);
     let connect_options = url
         .parse::<PgConnectOptions>()?
         .application_name(&application_name)
         .disable_statement_logging();
-    let pool = pool_options(max_conns)
+    let pool = pool_options(budget.max_connections)
         .connect_with(connect_options)
         .await?;
     Ok(SqlxPostgresConnector::from_sqlx_postgres_pool(pool))
+}
+
+fn serves_koth_reporting(role: RuntimeRole) -> bool {
+    role.capabilities().api
+}
+
+fn minimum_pool_connections(
+    repo_scan_concurrency: usize,
+    provisioning_concurrency: usize,
+    vpn_enabled: bool,
+    role: RuntimeRole,
+) -> usize {
+    required_pool_connections(
+        repo_scan_concurrency,
+        provisioning_concurrency,
+        vpn_enabled,
+        role,
+    )
+    .saturating_add(usize::from(serves_koth_reporting(role)))
+}
+
+fn koth_capability_lookup_concurrency(
+    max_connections: usize,
+    required_without_capability_lookup: usize,
+    role: RuntimeRole,
+) -> usize {
+    if !serves_koth_reporting(role) {
+        return 0;
+    }
+    max_connections
+        .saturating_sub(required_without_capability_lookup)
+        .min(MAX_KOTH_CAPABILITY_LOOKUP_CONCURRENCY)
+}
+
+pub(crate) fn configured_koth_capability_lookup_concurrency() -> usize {
+    let budget = pool_budget_from_env();
+    let required_without_capability_lookup = required_pool_connections(
+        budget.repo_scan_concurrency,
+        budget.provisioning_concurrency,
+        budget.vpn_enabled,
+        budget.role,
+    );
+    koth_capability_lookup_concurrency(
+        budget.max_connections as usize,
+        required_without_capability_lookup,
+        budget.role,
+    )
 }
 
 /// Conservative no-deadlock floor for operations that retain pool connections
@@ -189,7 +256,10 @@ fn required_pool_connections(
 mod tests {
     use std::time::Duration;
 
-    use super::{pool_options, process_application_name, required_pool_connections};
+    use super::{
+        koth_capability_lookup_concurrency, minimum_pool_connections, pool_options,
+        process_application_name, required_pool_connections,
+    };
     use crate::models::internal::configs::RuntimeRole;
 
     #[test]
@@ -229,6 +299,65 @@ mod tests {
         assert_eq!(
             required_pool_connections(4, 16, true, RuntimeRole::Migrate),
             2
+        );
+    }
+
+    #[test]
+    fn callback_roles_reserve_at_least_one_lookup_above_the_safety_floor() {
+        assert_eq!(minimum_pool_connections(1, 4, false, RuntimeRole::All), 32);
+        assert_eq!(minimum_pool_connections(1, 4, true, RuntimeRole::All), 35);
+        assert_eq!(
+            minimum_pool_connections(1, 4, false, RuntimeRole::Development),
+            29
+        );
+        assert_eq!(minimum_pool_connections(1, 4, false, RuntimeRole::Web), 27);
+        assert_eq!(
+            minimum_pool_connections(1, 4, false, RuntimeRole::Control),
+            20
+        );
+        assert_eq!(
+            minimum_pool_connections(1, 4, true, RuntimeRole::Control),
+            23
+        );
+        assert_eq!(
+            minimum_pool_connections(1, 4, false, RuntimeRole::Network),
+            18
+        );
+        assert_eq!(
+            minimum_pool_connections(1, 4, true, RuntimeRole::Network),
+            21
+        );
+        assert_eq!(
+            minimum_pool_connections(1, 4, false, RuntimeRole::Engine),
+            16
+        );
+        assert_eq!(
+            minimum_pool_connections(1, 4, false, RuntimeRole::Migrate),
+            2
+        );
+    }
+
+    #[test]
+    fn capability_lookup_concurrency_uses_only_pool_headroom() {
+        assert_eq!(
+            koth_capability_lookup_concurrency(50, 34, RuntimeRole::All),
+            16
+        );
+        assert_eq!(
+            koth_capability_lookup_concurrency(38, 22, RuntimeRole::Control),
+            16
+        );
+        assert_eq!(
+            koth_capability_lookup_concurrency(27, 26, RuntimeRole::Web),
+            1
+        );
+        assert_eq!(
+            koth_capability_lookup_concurrency(40, 34, RuntimeRole::All),
+            6
+        );
+        assert_eq!(
+            koth_capability_lookup_concurrency(50, 16, RuntimeRole::Engine),
+            0
         );
     }
 

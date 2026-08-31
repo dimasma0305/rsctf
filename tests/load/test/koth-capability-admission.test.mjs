@@ -9,11 +9,13 @@ const rateLimiter = `${rateLimiterCore}\n${kothAdmission}`;
 const authentication = read(
   '../../../src/controllers/game/koth/api/authentication.rs',
 );
+const database = read('../../../src/extensions/database.rs');
 const kothRoutes = read('../../../src/controllers/game/koth/mod.rs');
 const capabilityService = read('../../../src/services/ad/koth_api_capability.rs');
 const kothApiEngine = read('../../../src/services/ad/engine/koth_api.rs');
 const localCompose = read('../../../docker-compose.yml');
 const deployCompose = read('../../../deploy/compose.yml');
+const deployRolesCompose = read('../../../deploy/compose.roles.yml');
 const localEnvironment = read('../../../.env.example');
 const deployEnvironment = read('../../../deploy/.env.example');
 const configurationReference = read('../../../docs/reference/configuration.md');
@@ -31,6 +33,11 @@ const sourceLimit = Number(
   rateLimiter
     .match(/DEFAULT_SOURCE_ADMISSION_PER_MINUTE:\s*u32\s*=\s*([\d_]+)/)?.[1]
     .replaceAll('_', ''),
+);
+const databaseLookupConcurrency = Number(
+  database.match(
+    /MAX_KOTH_CAPABILITY_LOOKUP_CONCURRENCY:\s*usize\s*=\s*(\d+)/,
+  )?.[1],
 );
 
 test('managed KotH admits the complete 2,000-team same-source login wave', () => {
@@ -152,7 +159,21 @@ test('capability shape and source abuse are bounded before database authenticati
   assert.ok(shapeCheck >= 0 && shapeCheck < poolAcquire);
   assert.ok(concurrencyCheck > shapeCheck && concurrencyCheck < poolAcquire);
   assert.match(authentication, /is_well_formed\(token\)/);
-  assert.match(authentication, /DATABASE_LOOKUP_CONCURRENCY:\s*usize\s*=\s*8/);
+  assert.equal(databaseLookupConcurrency, 16);
+  assert.match(
+    authentication,
+    /configured_koth_capability_lookup_concurrency\(\)/,
+  );
+  assert.match(database, /saturating_sub\(required_without_capability_lookup\)/);
+  assert.match(database, /\.min\(MAX_KOTH_CAPABILITY_LOOKUP_CONCURRENCY\)/);
+  assert.match(database, /role\.capabilities\(\)\.api/);
+  assert.match(localCompose, /RSCTF_DB_MAX_CONNECTIONS:[^\n]*:-50/);
+  assert.match(deployCompose, /RSCTF_DB_MAX_CONNECTIONS:[^\n]*:-50/);
+  assert.match(deployRolesCompose, /RSCTF_WEB_DB_MAX_CONNECTIONS:-27/);
+  assert.match(deployRolesCompose, /RSCTF_CONTROL_DB_MAX_CONNECTIONS:-38/);
+  assert.match(localEnvironment, /RSCTF_DB_MAX_CONNECTIONS=50/);
+  assert.match(deployEnvironment, /RSCTF_DB_MAX_CONNECTIONS=50/);
+  assert.match(chartValues, /dbMaxConnections:\s*50/);
   assert.match(authentication, /too_many_requests\(1\)/);
   assert.match(
     kothRoutes,

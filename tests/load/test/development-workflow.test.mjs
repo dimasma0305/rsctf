@@ -98,7 +98,7 @@ test("development environment cannot inherit production RSCTF or Vite settings",
     assert.equal(environment.RSCTF_JWT_SECRET, secrets.jwtSecret);
     assert.equal(environment.RSCTF_CONTAINER_BACKEND, "none");
     assert.equal(environment.RSCTF_ROLE, "development");
-    assert.equal(environment.RSCTF_DB_MAX_CONNECTIONS, "28");
+    assert.equal(environment.RSCTF_DB_MAX_CONNECTIONS, "29");
     assert.equal(environment.RSCTF_BIND, "127.0.0.1:18080");
     assert.equal(environment.RSCTF_PUBLIC_URL, "http://localhost:16300");
     assert.equal(environment.RSCTF_TRAFFIC_CAPTURE_ENABLED, "false");

@@ -11,7 +11,7 @@ Restart rsctf after changing a startup value. Settings changed in **Admin → Se
 | `RSCTF_ROLE` | `all` | `all`, `web`, `control`, `engine`, `network`, one-shot `migrate`, or loopback-only `development`; see the [scaling guide](../deploy/scaling) and [source-development guide](./source-development) |
 | `RSCTF_BIND` | `0.0.0.0:8080` | HTTP listen address inside the process/container |
 | `RSCTF_DATABASE_URL` | Local development URL | PostgreSQL connection URL; required in deployment |
-| `RSCTF_DB_MAX_CONNECTIONS` | `34` | Per-process database connection cap; computed minimum described below |
+| `RSCTF_DB_MAX_CONNECTIONS` | `50` | Per-process database connection cap; computed minimum and KotH authentication headroom described below |
 | `RSCTF_REDIS_URL` | Unset | Redis cache URL; when configured, Redis is required for readiness and reconnects after an outage |
 | `RSCTF_DISTRIBUTED_RATELIMIT` | `false` | Share rate limits through Redis for multiple replicas |
 | `RSCTF_AD_SUBMIT_BURST_FLAGS` | `400` | Immediate per-participation A&D flag-work budget before the fixed 10 flags/s refill (`100..3200`) |
@@ -257,9 +257,9 @@ lock connections while it issues nested queries. A checker-bearing repository
 scan can briefly retain checkout, game-control, checker-publication, and
 challenge-definition guards while its model write needs a fifth connection. Let `R` be
 `RSCTF_REPO_SCAN_CONCURRENCY` and `P` be
-`RSCTF_PROVISIONING_CONCURRENCY`. The per-process pool floor is:
+`RSCTF_PROVISIONING_CONCURRENCY`. The per-process deadlock-safe base pool floor is:
 
-| Process mode | Minimum `RSCTF_DB_MAX_CONNECTIONS` |
+| Process mode | Base connections before API headroom |
 | --- | ---: |
 | One-shot `migrate` | `2` |
 | `engine` | `5R + 2P + 3` |
@@ -280,10 +280,20 @@ Monolithic and web roles reserve eight connections for bounded roster and
 account lifecycle operations, plus four for the independently bounded runtime
 transition path; each can retain a lock while issuing nested work. The
 all/development/control/engine suspicion reconciler reserves one fence plus one nested
-checkout. At the defaults (`R=1`, `P=4`), engine needs 16 connections, web
-needs 26, control needs 19 without VPN or 22 with it, network needs 17 or 20,
-`development` needs 28, and `all` needs 31 or 34. Keep additional headroom for
-ordinary request bursts where practical.
+checkout. At the defaults (`R=1`, `P=4`), these base floors are 16 connections
+for engine, 26 for web, 19/22 for non-VPN/VPN control, 17/20 for network, 28
+for development, and 31/34 for `all`.
+
+Every API role that serves the managed KotH capability callback (`all`,
+`development`, `web`, `control`, or `network`) must add at least one connection
+above its base floor. rsctf admits capability lookups only against that extra
+headroom, capped at 16 concurrent lookups, so an invalid-capability flood cannot
+consume connections reserved for control and scoring work. The maintained
+defaults provide all 16 slots where callbacks normally terminate: 50 for the
+VPN `all` role and 38 for VPN `control`. A split web replica uses at least 27;
+when a network role is the callback target, use 36 with VPN or 33 without VPN
+to provide the full 16-slot admission budget. Keep further database capacity
+for ordinary request bursts and deployment overlap.
 
 Checker and flag work is bounded by the persisted round deadline. Evidence that
 finishes at or after that deadline is excluded, and unresolved samples become
