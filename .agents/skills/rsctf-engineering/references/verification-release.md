@@ -25,6 +25,29 @@ cd web && pnpm check && pnpm lint:check && pnpm test && pnpm build
 `cargo build` must finish with zero errors and zero warnings. Keep focused test output
 in the handoff, including expected environment-only skips or ignored tests.
 
+## Local-first feedback loop
+
+Use GitHub Actions as the final clean-room gate, not as the primary debugger.
+
+1. Reproduce the failure with the smallest focused local test or the exact failing
+   harness phase. Add diagnostics locally and keep the evidence that identifies the
+   failed invariant.
+2. Run the affected workflow in a disposable local environment. For container and
+   lifecycle work, use the exact candidate image or digest and preserve the same
+   topology, configuration, and release thresholds where the host permits it.
+3. When the behavior depends on the deployed proxy, browser, worker, or multi-host
+   topology, test it on `https://dev.1pc.tf` in a hidden event that only administrators
+   can discover. Keep this test scoped and clean up its disposable resources.
+4. Run focused regressions, then the applicable broader local checks. Local diagnostic
+   overrides for a contended development host must remain uncommitted; restore and
+   verify the release values before staging.
+5. Inspect `git diff --cached` and the committed files before pushing. Start the full
+   GitHub gate only after the local and, when applicable, dev checks pass.
+
+If a GitHub gate fails, reproduce that failure locally before another code push. A
+remote rerun without a code change is appropriate only for a documented external or
+runner failure.
+
 ## Immutable production release
 
 Any completed change that can affect a built/deployed artifact—Rust, React, agents,
