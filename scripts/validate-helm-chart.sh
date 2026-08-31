@@ -74,6 +74,8 @@ default_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
   --show-only templates/configmap.yaml)"
 assert_contains "$default_config" 'RSCTF_AD_SUBMIT_BURST_FLAGS: "400"' \
   "default A&D submit burst was not rendered"
+assert_contains "$default_config" 'RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE: "6000"' \
+  "default managed KotH capability admission was not rendered"
 assert_contains "$default_config" 'RSCTF_DB_MAX_CONNECTIONS: "34"' \
   "default pool does not cover the all+VPN reconciler floor"
 benchmark_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
@@ -81,6 +83,11 @@ benchmark_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
   --show-only templates/configmap.yaml)"
 assert_contains "$benchmark_config" 'RSCTF_AD_SUBMIT_BURST_FLAGS: "3200"' \
   "explicit A&D submit burst was not rendered"
+abuse_probe_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
+  --set config.kothCapabilityIpAdmissionPerMinute=3000 \
+  --show-only templates/configmap.yaml)"
+assert_contains "$abuse_probe_config" 'RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE: "3000"' \
+  "explicit managed KotH capability admission was not rendered"
 managed_koth_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
   --namespace rsctf-system \
   --set containerBackend=kubernetes \
@@ -99,6 +106,12 @@ for invalid_burst in 99 3201; do
   if helm template rsctf charts/rsctf "${jwt[@]}" \
     --set config.adSubmitBurstFlags="$invalid_burst" >/dev/null 2>&1; then
     fail "chart accepted out-of-range A&D submit burst $invalid_burst"
+  fi
+done
+for invalid_admission in 2999 1000001; do
+  if helm template rsctf charts/rsctf "${jwt[@]}" \
+    --set config.kothCapabilityIpAdmissionPerMinute="$invalid_admission" >/dev/null 2>&1; then
+    fail "chart accepted out-of-range managed KotH capability admission $invalid_admission"
   fi
 done
 

@@ -287,6 +287,9 @@ config:
   # Four maximum-size A&D submit batches per participation, then 10 flags/s.
   # Increase only for a controlled, isolated load campaign.
   adSubmitBurstFlags: 400
+  # Shared-source admission for managed Leaderboard KotH capability exchange.
+  # Refills at the maintained 100/s rate; the initial burst holds three 2,000-team waves.
+  kothCapabilityIpAdmissionPerMinute: 6000
   # All/control/engine full-history anti-cheat sweep interval (1..3600 seconds).
   suspicionReconcileSeconds: 30
   # Pause ended-game sweeps before the barrier-backed final pass.

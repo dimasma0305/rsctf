@@ -388,6 +388,444 @@ port = int(os.environ.get("PORT", "8080"))
 CaptureServer(("0.0.0.0", port), Handler).serve_forever()
 `;
 
+const MANAGED_KOTH_SERVICE = String.raw`"""Managed Leaderboard KotH fixture with an in-target RSCTF reporter."""
+
+import hashlib
+import hmac
+import json
+import os
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+
+MAX_REQUEST_BYTES = 2_048
+MAX_SCORE = 1_000
+OBJECTIVE_IDS = ["official-score"]
+ACTIVE_FLEET = int(os.environ.get("RSCTF_LOAD_ACTIVE_FLEET", "64"))
+if not 2 <= ACTIVE_FLEET <= 128:
+    raise RuntimeError("RSCTF_LOAD_ACTIVE_FLEET must be between 2 and 128")
+
+REPORTER_ENV_NAMES = (
+    "RSCTF_KOTH_GAME_ID",
+    "RSCTF_KOTH_CHALLENGE_ID",
+    "RSCTF_KOTH_PLATFORM_URL",
+    "RSCTF_KOTH_CONTEXT_URL",
+    "RSCTF_KOTH_OBSERVATION_URL",
+    "RSCTF_KOTH_REPORTER_SECRET",
+)
+reporter_values = [os.environ.get(name, "").strip() for name in REPORTER_ENV_NAMES]
+if any(reporter_values) and not all(reporter_values):
+    raise RuntimeError("managed reporter environment is incomplete")
+REPORTER_CONFIGURED = all(reporter_values)
+if REPORTER_CONFIGURED:
+    GAME_ID = int(reporter_values[0])
+    CHALLENGE_ID = int(reporter_values[1])
+    PLATFORM_URL = reporter_values[2].rstrip("/")
+    CONTEXT_URL = reporter_values[3]
+    OBSERVATION_URL = reporter_values[4]
+    REPORTER_SECRET = reporter_values[5]
+    AUTH_URL = f"{PLATFORM_URL}/api/v1/koth/capability/authenticate"
+else:
+    GAME_ID = 0
+    CHALLENGE_ID = 0
+    PLATFORM_URL = ""
+    CONTEXT_URL = ""
+    OBSERVATION_URL = ""
+    REPORTER_SECRET = ""
+    AUTH_URL = ""
+
+state_lock = threading.Lock()
+authenticated_scores = {}
+active_hashes = set()
+invalid_authentications = 0
+successful_reports = 0
+submitted_waves = 0
+context_refreshes = 0
+eligible_roster = 0
+last_round = 0
+last_error = None
+reported_context = None
+
+
+def compact_json(value):
+    return json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+
+
+def request_json(url, *, body=None, headers=None, timeout=5):
+    payload = None if body is None else compact_json(body)
+    request = Request(
+        url,
+        data=payload,
+        method="GET" if payload is None else "POST",
+        headers={"Content-Type": "application/json", **(headers or {})},
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read(524_289)
+            if len(raw) > 524_288:
+                raise RuntimeError("RSCTF response exceeded the fixture bound")
+            response_headers = {name.lower(): value for name, value in response.headers.items()}
+            return response.status, json.loads(raw), response_headers
+    except HTTPError as error:
+        error.read(65_537)
+        error.close()
+        raise
+
+
+def vary_has_api_version(headers):
+    return "x-rsctf-api-version" in {
+        item.strip().lower()
+        for item in headers.get("vary", "").split(",")
+    }
+
+
+def unwrap_model(value):
+    if not isinstance(value, dict):
+        raise RuntimeError("RSCTF returned a non-object response")
+    model = value.get("data", value)
+    if not isinstance(model, dict):
+        raise RuntimeError("RSCTF returned a non-object data envelope")
+    return model
+
+
+def authenticate_capability(token):
+    expected_hash = hashlib.sha256(token.encode()).hexdigest()
+    status, model, _ = request_json(
+        AUTH_URL,
+        body={"token": token, "gameId": GAME_ID, "challengeId": CHALLENGE_ID},
+    )
+    model = unwrap_model(model)
+    if status != 200 or model.get("teamId") != expected_hash or not model.get("teamName"):
+        raise RuntimeError("RSCTF returned an invalid capability identity")
+    return expected_hash
+
+
+def evidence_rows(eligible_hashes, scores):
+    # Every finalized wave is dense at the platform's 2,000-team body limit.
+    # Authentication exercises every frozen capability, while only the bounded
+    # arena fleet contributes a positive challenge-native score.
+    ranked = [(token_hash, int(scores[token_hash])) for token_hash in eligible_hashes]
+    if sum(1 for _, score in ranked if score > 0) != ACTIVE_FLEET:
+        raise RuntimeError("managed reporter requires the exact bounded positive cohort")
+    highest = max((score for _, score in ranked), default=0)
+    leaders = {token_hash for token_hash, score in ranked if score == highest and score > 0}
+    if len(leaders) != 1:
+        raise RuntimeError("managed reporter scores must choose one unique Crown")
+    unique_leader = next(iter(leaders))
+    rows = []
+    for token_hash, score in ranked:
+        rows.append({
+            "tokenHash": token_hash,
+            "activity": {"earned": 1, "possible": 1},
+            "objectives": [{"earned": score, "possible": MAX_SCORE}],
+            "isCrown": token_hash == unique_leader,
+        })
+    return rows
+
+
+def wave_times(context, count):
+    window_start = int(context["waveWindowStartsAt"])
+    window_end = int(context["waveWindowEndsAt"])
+    available_end = min(int(time.time_ns() // 1_000_000), window_end - 1)
+    # This fixture defines one-second challenge-native waves. Each scoring
+    # context carries one complete finalized wave; later rounds carry later
+    # waves without exceeding the 2,000 team-wave snapshot ceiling.
+    ends = [window_start + 1_000 * (index + 1) for index in range(count)]
+    if not ends or available_end < ends[-1] or ends[-1] >= window_end:
+        return None
+    return ends
+
+
+def reporter_once():
+    global active_hashes, last_error, last_round, reported_context
+    global context_refreshes, eligible_roster, successful_reports, submitted_waves
+    _, context, context_headers = request_json(
+        CONTEXT_URL,
+        headers={"X-RSCTF-API-Version": "v2"},
+    )
+    context = unwrap_model(context)
+    eligible = context.get("eligibleTokenHashes")
+    if (
+        context.get("apiVersion") != "v2"
+        or not isinstance(eligible, list)
+        or not 1 <= len(eligible) <= 2_000
+        or len(set(eligible)) != len(eligible)
+        or any(not isinstance(item, str) or len(item) != 64 for item in eligible)
+        or context.get("objectiveIds") not in ([], OBJECTIVE_IDS)
+        or context_headers.get("cache-control") != "no-store"
+        or not vary_has_api_version(context_headers)
+    ):
+        raise RuntimeError("managed reporter received an invalid 2,000-team context")
+    ordered = sorted(eligible)
+    with state_lock:
+        context_refreshes += 1
+        eligible_roster = len(ordered)
+        for stale_hash in set(authenticated_scores).difference(eligible):
+            del authenticated_scores[stale_hash]
+        active_hashes.intersection_update(eligible)
+        selected = ordered
+        ready = (
+            all(token_hash in authenticated_scores for token_hash in selected)
+            and len(active_hashes) == ACTIVE_FLEET
+        )
+        already_reported = (
+            reported_context == context.get("context")
+            or int(context.get("roundNumber", 0)) <= last_round
+        )
+        scores = {token_hash: authenticated_scores[token_hash] for token_hash in selected if token_hash in authenticated_scores}
+        # A successful context read proves callback health even while the arena
+        # waits for its bounded active cohort or a wave boundary.
+        last_error = None
+    if not ready or already_reported:
+        return
+    ended = wave_times(context, 1)
+    if ended is None:
+        return
+    rows = evidence_rows(selected, scores)
+    waves = [{
+        "waveId": f"load-{context['resetAttempt']}-{context['roundNumber']}-dense",
+        "endedAtUnixMs": ended[0],
+        "teams": rows,
+    }]
+    raw_body = compact_json({
+        "context": context["context"],
+        "objectiveIds": OBJECTIVE_IDS,
+        "waves": waves,
+    })
+    if len(raw_body) > 512 * 1_024:
+        raise RuntimeError("managed reporter snapshot exceeded 512 KiB")
+    timestamp = str(time.time_ns() // 1_000_000)
+    message = f"{timestamp}.{GAME_ID}.{CHALLENGE_ID}.".encode() + raw_body
+    signature = hmac.new(REPORTER_SECRET.encode(), message, hashlib.sha256).hexdigest()
+    request = Request(
+        OBSERVATION_URL,
+        data=raw_body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-RSCTF-Timestamp": timestamp,
+            "X-RSCTF-Signature": f"sha256={signature}",
+        },
+    )
+    with urlopen(request, timeout=5) as response:
+        accepted = unwrap_model(json.loads(response.read(65_537)))
+        accepted_at = accepted.get("acceptedAt")
+        if (
+            response.status != 200
+            or set(accepted) != {
+                "accepted", "cycleNumber", "resetAttempt", "roundNumber",
+                "submittedWaves", "submittedTeams", "recognizedTeams", "acceptedAt",
+            }
+            or accepted.get("accepted") is not True
+            or accepted.get("cycleNumber") != context["cycleNumber"]
+            or accepted.get("resetAttempt") != context["resetAttempt"]
+            or accepted.get("roundNumber") != context["roundNumber"]
+            or accepted.get("submittedWaves") != len(waves)
+            or accepted.get("submittedTeams") != len(selected)
+            or accepted.get("recognizedTeams") != len(selected)
+            or type(accepted_at) is not int
+            or abs((time.time_ns() // 1_000_000) - accepted_at) > 120_000
+        ):
+            raise RuntimeError("managed reporter acknowledgement was inconsistent")
+    _, frozen_context, frozen_headers = request_json(
+        CONTEXT_URL,
+        headers={"X-RSCTF-API-Version": "v2"},
+    )
+    frozen_context = unwrap_model(frozen_context)
+    if (
+        frozen_context.get("objectiveIds") != OBJECTIVE_IDS
+        or not isinstance(frozen_context.get("objectiveSchemaHash"), str)
+        or len(frozen_context["objectiveSchemaHash"]) != 64
+        or (
+            context.get("objectiveIds") == []
+            and frozen_context.get("context") == context.get("context")
+        )
+        or (
+            context.get("objectiveIds") == OBJECTIVE_IDS
+            and frozen_context.get("context") != context.get("context")
+        )
+        or frozen_context.get("cycleNumber") != context.get("cycleNumber")
+        or frozen_context.get("resetAttempt") != context.get("resetAttempt")
+        or frozen_context.get("roundNumber") != context.get("roundNumber")
+        or frozen_context.get("eligibleTokenHashes") != eligible
+        or frozen_headers.get("cache-control") != "no-store"
+        or not vary_has_api_version(frozen_headers)
+    ):
+        raise RuntimeError("managed reporter objective schema did not freeze")
+    with state_lock:
+        reported_context = frozen_context["context"]
+        successful_reports += 1
+        submitted_waves += len(waves)
+        last_round = int(context["roundNumber"])
+        last_error = None
+
+
+def reporter_loop():
+    global last_error
+    while True:
+        try:
+            reporter_once()
+        except HTTPError as error:
+            # Context changes and rate admission are expected bounded retries;
+            # every other response remains visible in the secret-free status.
+            with state_lock:
+                last_error = f"HTTP {error.code}"
+        except (URLError, TimeoutError, ConnectionError, OSError, ValueError, RuntimeError) as error:
+            with state_lock:
+                last_error = type(error).__name__
+        time.sleep(1.0)
+
+
+class Handler(BaseHTTPRequestHandler):
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(5)
+
+    def send_json(self, status, model, headers=None):
+        body = compact_json(model)
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/":
+            body = b"RSCTF competitive hill\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == "/healthz":
+            body = b"ok"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == "/reporter-status":
+            with state_lock:
+                model = {
+                    "reporterConfigured": REPORTER_CONFIGURED,
+                    "reporterHealthy": last_error is None,
+                    "successfulReports": successful_reports,
+                    "submittedWaves": submitted_waves,
+                    "contextRefreshes": context_refreshes,
+                    "eligibleRoster": eligible_roster,
+                    "uniqueAuthenticated": len(authenticated_scores),
+                    "uniqueActivePlayed": len(active_hashes.intersection(authenticated_scores)),
+                    "invalidAuthentications": invalid_authentications,
+                    "lastRound": last_round,
+                    "lastContext": None,
+                    "lastError": last_error,
+                }
+            self.send_json(200, model)
+            return
+        self.send_error(404)
+
+    def do_POST(self):
+        global invalid_authentications
+        if self.path != "/play":
+            self.send_error(404)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if not 1 <= length <= MAX_REQUEST_BYTES:
+            self.send_json(400, {"accepted": False})
+            return
+        try:
+            model = json.loads(self.rfile.read(length))
+            if not isinstance(model, dict):
+                raise ValueError("invalid play")
+            token = model.get("token", "")
+            score = model.get("score", -1)
+            if (
+                not isinstance(token, str)
+                or not token.startswith("koth_")
+                or type(score) is not int
+                or not 0 <= score <= MAX_SCORE
+            ):
+                raise ValueError("invalid play")
+            if not REPORTER_CONFIGURED:
+                self.send_json(503, {"accepted": False})
+                return
+            team_id = authenticate_capability(token)
+            token = None
+        except HTTPError as error:
+            if error.code in (401, 429):
+                with state_lock:
+                    invalid_authentications += 1
+                response_headers = {}
+                if error.code == 429:
+                    retry_after = error.headers.get("Retry-After", "1")
+                    response_headers["Retry-After"] = retry_after
+                self.send_json(error.code, {"accepted": False}, response_headers)
+                return
+            self.send_json(503, {"accepted": False})
+            return
+        except (URLError, TimeoutError, ConnectionError, OSError):
+            self.send_json(503, {"accepted": False})
+            return
+        except RuntimeError:
+            self.send_json(503, {"accepted": False})
+            return
+        except (TypeError, ValueError, json.JSONDecodeError):
+            self.send_json(400, {"accepted": False})
+            return
+        with state_lock:
+            if score > 0 and team_id not in active_hashes and len(active_hashes) >= ACTIVE_FLEET:
+                self.send_json(409, {"accepted": False})
+                return
+            authenticated_scores[team_id] = score
+            if score > 0:
+                active_hashes.add(team_id)
+            else:
+                active_hashes.discard(team_id)
+            scoreable = score > 0
+        self.send_json(200, {"accepted": True, "teamId": team_id, "scoreable": scoreable})
+
+    def log_message(self, _format, *_args):
+        pass
+
+
+class ManagedServer(ThreadingHTTPServer):
+    request_queue_size = 256
+    daemon_threads = True
+    worker_slots = threading.BoundedSemaphore(128)
+
+    def process_request(self, request, client_address):
+        if not self.worker_slots.acquire(timeout=1):
+            request.close()
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.worker_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.worker_slots.release()
+
+
+if REPORTER_CONFIGURED:
+    threading.Thread(target=reporter_loop, name="managed-reporter", daemon=True).start()
+port = int(os.environ.get("PORT", "8080"))
+ManagedServer(("0.0.0.0", port), Handler).serve_forever()
+`;
+
 const KOTH_DOCKERFILE = [
   'ARG BASE_IMAGE',
   'FROM ${BASE_IMAGE}',
@@ -395,6 +833,18 @@ const KOTH_DOCKERFILE = [
   'EXPOSE 8080',
   'HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=6 CMD python3 -c "import urllib.request; urllib.request.urlopen(\'http://127.0.0.1:8080/\', timeout=3).read()"',
   'ENTRYPOINT ["python3", "/opt/rsctf-load/koth-service.py"]',
+  '',
+].join('\n');
+
+const MANAGED_KOTH_DOCKERFILE = [
+  'ARG BASE_IMAGE',
+  'FROM ${BASE_IMAGE}',
+  'LABEL rsctf.load.fixture="managed-koth-v1"',
+  'COPY managed-koth-service.py /opt/rsctf-load/managed-koth-service.py',
+  'ENV RSCTF_LOAD_ACTIVE_FLEET=64',
+  'EXPOSE 8080',
+  'HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=6 CMD python3 -c "import urllib.request; urllib.request.urlopen(\'http://127.0.0.1:8080/healthz\', timeout=2).read()"',
+  'ENTRYPOINT ["python3", "/opt/rsctf-load/managed-koth-service.py"]',
   '',
 ].join('\n');
 
@@ -421,21 +871,27 @@ export function materializeFixtures() {
   const kothChecker = `${ROOT}/koth-checker.py`;
   const service = `${ROOT}/ad-service.py`;
   const kothService = `${ROOT}/koth-service.py`;
+  const managedKothService = `${ROOT}/managed-koth-service.py`;
   const adDockerfile = `${ROOT}/Dockerfile.ad`;
   const kothDockerfile = `${ROOT}/Dockerfile.koth`;
+  const managedKothDockerfile = `${ROOT}/Dockerfile.managed-koth`;
   writeFixture(checker, CHECKER);
   writeFixture(kothChecker, KOTH_CHECKER);
   writeFixture(service, SERVICE);
   writeFixture(kothService, KOTH_SERVICE);
+  writeFixture(managedKothService, MANAGED_KOTH_SERVICE);
   writeFixture(adDockerfile, AD_DOCKERFILE);
   writeFixture(kothDockerfile, KOTH_DOCKERFILE);
+  writeFixture(managedKothDockerfile, MANAGED_KOTH_DOCKERFILE);
   return {
     checker,
     kothChecker,
     service,
     kothService,
+    managedKothService,
     adDockerfile,
     kothDockerfile,
+    managedKothDockerfile,
     root: ROOT,
   };
 }

@@ -34,6 +34,7 @@ export RSCTF_DISCORD_AUTH_URL=https://discord.example/authorize
 export RSCTF_DISCORD_TOKEN_URL=https://discord.example/token
 export RSCTF_DISCORD_USERINFO_URL=https://discord.example/userinfo
 unset RSCTF_AD_SUBMIT_BURST_FLAGS
+unset RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE
 
 compose=(docker compose --env-file /dev/null -p rsctf-compose-security)
 
@@ -85,6 +86,25 @@ actual = document["services"][service].get("environment", {}).get(
 if actual != expected:
     raise SystemExit(
         f"{service} A&D submit burst mismatch: expected {expected}, got {actual}"
+    )
+' "$service" "$expected"
+}
+
+assert_service_koth_capability_admission() {
+  local service="$1"
+  local expected="$2"
+  python3 -c '
+import json
+import sys
+
+document = json.load(sys.stdin)
+service, expected = sys.argv[1:]
+actual = document["services"][service].get("environment", {}).get(
+    "RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE"
+)
+if actual != expected:
+    raise SystemExit(
+        f"{service} KotH capability admission mismatch: expected {expected}, got {actual}"
     )
 ' "$service" "$expected"
 }
@@ -255,10 +275,15 @@ if condition != "service_healthy":
 "${compose[@]}" -f deploy/compose.yml config --format json \
   | assert_service_ad_submit_burst rsctf 400
 "${compose[@]}" -f deploy/compose.yml config --format json \
+  | assert_service_koth_capability_admission rsctf 6000
+"${compose[@]}" -f deploy/compose.yml config --format json \
   | assert_service_registration_oauth rsctf
 RSCTF_AD_SUBMIT_BURST_FLAGS=3200 \
   "${compose[@]}" -f deploy/compose.yml config --format json \
   | assert_service_ad_submit_burst rsctf 3200
+RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE=3000 \
+  "${compose[@]}" -f deploy/compose.yml config --format json \
+  | assert_service_koth_capability_admission rsctf 3000
 
 "${compose[@]}" -f deploy/compose.yml -f deploy/compose.ad-vpn.yml \
   config --format json | assert_service_security rsctf yes yes yes
@@ -283,9 +308,14 @@ split=(
   | assert_service_registration_oauth rsctf
 "${compose[@]}" "${split[@]}" config --format json \
   | assert_service_ad_submit_burst rsctf 400
+"${compose[@]}" "${split[@]}" config --format json \
+  | assert_service_koth_capability_admission rsctf 6000
 RSCTF_AD_SUBMIT_BURST_FLAGS=3200 \
   "${compose[@]}" "${split[@]}" config --format json \
   | assert_service_ad_submit_burst rsctf 3200
+RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE=3000 \
+  "${compose[@]}" "${split[@]}" config --format json \
+  | assert_service_koth_capability_admission rsctf 3000
 "${compose[@]}" "${split[@]}" config --format json \
   | assert_service_security rsctf-control yes yes yes
 "${compose[@]}" "${split[@]}" config --format json \

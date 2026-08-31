@@ -12,11 +12,70 @@ import { materializeFixtures } from "../fixtures.mjs";
 test("managed images replace the base server healthcheck with their real probes", () => {
   const fixtures = materializeFixtures();
   const kothDockerfile = readFileSync(fixtures.kothDockerfile, "utf8");
+  const managedKothDockerfile = readFileSync(fixtures.managedKothDockerfile, "utf8");
   const adDockerfile = readFileSync(fixtures.adDockerfile, "utf8");
   assert.match(kothDockerfile, /HEALTHCHECK .*http:\/\/127\.0\.0\.1:8080\//);
+  assert.match(managedKothDockerfile, /HEALTHCHECK .*http:\/\/127\.0\.0\.1:8080\/healthz/);
   assert.match(adDockerfile, /HEALTHCHECK .*http:\/\/127\.0\.0\.1:8080\/health/);
   assert.doesNotMatch(kothDockerfile, /healthz/);
   assert.doesNotMatch(adDockerfile, /healthz/);
+});
+
+test("managed Leaderboard fixture consumes only the injected reporter contract", () => {
+  const fixture = materializeFixtures().managedKothService;
+  const source = readFileSync(fixture, "utf8");
+  const compiled = spawnSync("python3", ["-m", "py_compile", fixture], { encoding: "utf8" });
+  assert.equal(compiled.status, 0, compiled.stderr);
+  for (const name of [
+    "RSCTF_KOTH_GAME_ID",
+    "RSCTF_KOTH_CHALLENGE_ID",
+    "RSCTF_KOTH_PLATFORM_URL",
+    "RSCTF_KOTH_CONTEXT_URL",
+    "RSCTF_KOTH_OBSERVATION_URL",
+    "RSCTF_KOTH_REPORTER_SECRET",
+  ]) {
+    assert.match(source, new RegExp(`"${name}"`));
+  }
+  assert.match(source, /if any\(reporter_values\) and not all\(reporter_values\)/);
+  assert.match(source, /if REPORTER_CONFIGURED:/);
+  assert.match(source, /"X-RSCTF-API-Version": "v2"/);
+  assert.match(source, /hmac\.new\(REPORTER_SECRET\.encode\(\), message, hashlib\.sha256\)/);
+  assert.match(source, /accepted\.get\("submittedWaves"\) != len\(waves\)/);
+  assert.match(source, /accepted\.get\("submittedTeams"\) != len\(selected\)/);
+  assert.match(source, /set\(accepted\) != \{/);
+  assert.match(source, /accepted_at = accepted\.get\("acceptedAt"\)/);
+  assert.match(source, /selected = ordered/);
+  assert.match(source, /sum\(1 for _, score in ranked if score > 0\) != ACTIVE_FLEET/);
+  assert.match(source, /len\(leaders\) != 1/);
+  assert.match(source, /scoreable = score > 0/);
+  assert.match(source, /context\.get\("objectiveIds"\) == \[\]/);
+  assert.match(source, /context\.get\("objectiveIds"\) == OBJECTIVE_IDS/);
+  assert.match(source, /worker_slots = threading\.BoundedSemaphore\(128\)/);
+  assert.match(source, /self\.connection\.settimeout\(5\)/);
+  assert.match(source, /len\(eligible\) <= 2_000/);
+  assert.match(source, /if error\.code in \(401, 429\)/);
+  assert.match(source, /response_headers\["Retry-After"\] = retry_after/);
+  assert.match(source, /self\.send_json\(error\.code, \{"accepted": False\}, response_headers\)/);
+  assert.doesNotMatch(source, /"reporterSecret"|"credential"|"token"\s*:\s*REPORTER_SECRET/);
+});
+
+test("managed Leaderboard dense boundary fits one bounded observation body", () => {
+  const hashes = Array.from({ length: 2_000 }, (_, index) =>
+    index.toString(16).padStart(64, "0"));
+  const teams = hashes.map((tokenHash, index) => ({
+    tokenHash,
+    activity: { earned: 1, possible: 1 },
+    objectives: [{ earned: index < 64 ? 1_000 - index : 0, possible: 1_000 }],
+    isCrown: index === 0,
+  }));
+  const body = JSON.stringify({
+    context: "a".repeat(64),
+    objectiveIds: ["official-score"],
+    waves: [{ waveId: "load-1-1-dense", endedAtUnixMs: 1_800_000_000_000, teams }],
+  });
+  assert.equal(teams.length, 2_000);
+  assert.equal(teams.filter(({ objectives }) => objectives[0].earned === 0).length, 1_936);
+  assert.ok(Buffer.byteLength(body) <= 512 * 1_024, `dense body is ${Buffer.byteLength(body)} bytes`);
 });
 
 test("managed image builds use a pinned compact Python base", () => {

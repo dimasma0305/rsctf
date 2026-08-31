@@ -1,5 +1,8 @@
 //! edit: challenge CRUD/attachments (see edit/mod.rs for the router + shared DTOs/helpers).
 use super::*;
+use crate::services::ad::koth_capability_cache::{
+    begin_game_epoch_mutation_if, finish_game_epoch_mutation_if_any,
+};
 
 mod attachments;
 mod audit;
@@ -407,6 +410,12 @@ pub async fn update_challenge(
         // finish first or fail their final definition/eligibility CAS. A crash
         // or teardown failure leaves the challenge disabled, never half-old and
         // half-new while still playable.
+        let disable_cache_mutation = begin_game_epoch_mutation_if(
+            st.cache.as_ref(),
+            id,
+            ch_type == ChallengeType::KingOfTheHill,
+        )
+        .await?;
         let fenced = sqlx::query(
             r#"UPDATE "GameChallenges"
                   SET is_enabled = FALSE
@@ -420,10 +429,12 @@ pub async fn update_challenge(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
         if fenced.rows_affected() != 1 {
+            finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, disable_cache_mutation).await;
             return Err(AppError::conflict(
                 "Challenge eligibility changed; retry the topology update",
             ));
         }
+        finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, disable_cache_mutation).await;
         workload::release_update_lock(workload_lock.take()).await?;
         if let Some(lock) = engine_control.take() {
             lock.release()
@@ -720,7 +731,16 @@ pub async fn update_challenge(
         am.receipt_verifier_identity = Set((!value.is_empty()).then(|| value.to_owned()));
     }
 
+    let cache_mutation = begin_game_epoch_mutation_if(
+        st.cache.as_ref(),
+        id,
+        ch_type == ChallengeType::KingOfTheHill,
+    )
+    .await?;
     let updated = am.update(&st.db).await?;
+    // The token-visible challenge row is an independently committed write.
+    // Later definition/projection failures must not strand its cache marker.
+    finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
     seed_division_configs(
         engine_control
             .as_mut()
@@ -877,13 +897,28 @@ pub async fn delete_challenge(
             "A&D/KotH challenges cannot be deleted after epoch scoring has started.",
         ));
     }
+    let cache_mutation = begin_game_epoch_mutation_if(
+        st.cache.as_ref(),
+        id,
+        challenge.challenge_type == ChallengeType::KingOfTheHill,
+    )
+    .await?;
 
     // The JFLG-exclusive predicate and the durable disabled marker share the
     // definition-lock transaction. This preserves Jeopardy history once play
     // could have started and closes an in-flight-submit TOCTOU. Committing the
     // short definition mutation before runtime I/O also keeps the pool bounded.
-    deletion::fence_challenge_deletion(definition_lock.transaction_mut(), id, c_id).await?;
+    if let Err(error) =
+        deletion::fence_challenge_deletion(definition_lock.transaction_mut(), id, c_id).await
+    {
+        // This transaction has not attempted commit, so every error rolls back.
+        finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
+        return Err(error);
+    }
     definition_lock.release().await?;
+    // The durable disabled tombstone is now visible. Later projection/runtime
+    // cleanup cannot make this challenge eligible to a token reader again.
+    finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
 
     // Revoke A&D/KotH routes before any backing address can be freed.
     if challenge.challenge_type.uses_ad_engine() {

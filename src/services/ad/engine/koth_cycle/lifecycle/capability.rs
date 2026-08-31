@@ -270,26 +270,23 @@ pub(super) async fn mint_capabilities(
         None,
     )
     .await?;
+    let cache_mutation = crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
+        st.cache.as_ref(),
+        cycle.game_id,
+    )
+    .await?;
     control
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    crate::services::ad::koth_capability_cache::finish_game_epoch_mutation(
+        st.cache.as_ref(),
+        cycle.game_id,
+        cache_mutation,
+    )
+    .await;
     st.cache
         .remove(&format!("latestround:{}", cycle.game_id))
         .await;
-    for participation_id in &config.roster {
-        st.cache
-            .remove(&format!(
-                "kothtoken:{}:{}:{}:{}",
-                cycle.game_id, cycle.challenge_id, participation_id, round_number
-            ))
-            .await;
-        st.cache
-            .remove(&format!(
-                "kothtokensall:{}:{}:{}",
-                cycle.game_id, participation_id, round_number
-            ))
-            .await;
-    }
     Ok(())
 }

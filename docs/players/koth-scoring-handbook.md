@@ -202,10 +202,18 @@ Within one scoring context, every accepted finalized wave is append-only. A
 later snapshot may add a new wave but cannot alter or remove an earlier one.
 
 The capability survives health recovery and runtime replacement. A player may
-explicitly rotate it after suspected exposure. Rotation immediately removes
-the old digest from the eligible set and clears only that team's current
-unsettled rows; every other team's evidence and already settled epoch evidence
-remain immutable. The player must reconnect with the replacement token.
+explicitly rotate it after suspected exposure before official KotH scoring, or
+while organizers have paused scoring. Active unpaused scoring rejects manual
+rotation without changing the token or evidence. The first allowed emergency
+rotation is immediate; further allowed rotations have a 60-second cooldown and
+return `429` with `Retry-After`. Security and eligibility revocation are never
+delayed by that cooldown and do not consume or reset the player-only timer. A
+successful rotation immediately removes the old
+digest from the eligible set and clears only that team's current unsettled rows;
+every other team's
+evidence and already settled epoch evidence remain immutable. An ineligible
+team's fresh row stays dormant, so restoration exposes a replacement without
+reviving the old token. The player must reconnect with the replacement token.
 
 The first accepted snapshot freezes the exact objective IDs and order. The
 schema survives credential rotation. A later reorder, rename, insertion, or
@@ -503,10 +511,15 @@ capability for the exact game, hill, and official participation. The signed
 context independently binds the round, target, lifecycle record, runtime
 attempt, container, reporting-configuration revision, and frozen
 objective-schema hash. A reporting credential change therefore invalidates
-the previous deduplication fence. Compatibility fields remain named
-`cycleNumber`, `resetAttempt`, and `cycleEndsAt`; for Leaderboard, they fence
-runtime recovery and the event scoring cutoff rather than a scheduled Crown
-reset. Raw bearer tokens enter only the narrowly scoped authentication
+the previous deduplication fence. The exact legacy `v1` context remains the
+default; reporters request the additive bounds with
+`X-RSCTF-API-Version: v2`. Compatibility fields remain named `cycleNumber` and
+`resetAttempt`; `cycleStartsAt` is the frozen first official
+scoring-round start after warmup/readiness, `cycleEndsAt` is the event deadline,
+and `scoringEndsAt` is the platform's latest admissible evidence end after its
+settlement reserve. An arena cadence may finish earlier but never later. None is
+a scheduled Crown reset. Raw bearer tokens
+enter only the narrowly scoped authentication
 exchange and never enter the signed reporter request. Unknown and rotated
 hashes cannot become arbitrary team identities.
 
