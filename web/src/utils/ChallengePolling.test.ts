@@ -88,7 +88,7 @@ test('challenge read diagnostics preserve the typed error and expose only safe r
   const requestId = createChallengeRequestId('solvers')
   assert.match(requestId, /^challenge-solvers-[A-Za-z0-9-]+$/)
   assert.equal(captureChallengeReadFailure(error, 'solvers', requestId), error)
-  assert.deepEqual(challengeReadFailure(error), {
+  assert.deepEqual(challengeReadFailure(error, 'solvers'), {
     resource: 'solvers',
     requestId,
     serverTraceId: 'server-trace-018f47d2',
@@ -97,8 +97,17 @@ test('challenge read diagnostics preserve the typed error and expose only safe r
 
   const unsafe = { response: { status: 503, headers: { 'x-request-id': 'secret/bearer?query' } } }
   captureChallengeReadFailure(unsafe, 'challenge', 'challenge-detail-safe-id')
-  assert.equal(challengeReadFailure(unsafe)?.serverTraceId, undefined)
-  assert.doesNotMatch(JSON.stringify(challengeReadFailure(error)), /Bearer|authorization|must-never/)
+  assert.equal(challengeReadFailure(unsafe, 'challenge')?.serverTraceId, undefined)
+  assert.doesNotMatch(JSON.stringify(challengeReadFailure(error, 'solvers')), /Bearer|authorization|must-never/)
+})
+
+test('shared transport errors retain independent detail and solver diagnostics', () => {
+  const shared = { retryAt: 12_000 }
+  captureChallengeReadFailure(shared, 'challenge', 'challenge-detail-reference')
+  captureChallengeReadFailure(shared, 'solvers', 'challenge-solvers-reference')
+
+  assert.equal(challengeReadFailure(shared, 'challenge')?.requestId, 'challenge-detail-reference')
+  assert.equal(challengeReadFailure(shared, 'solvers')?.requestId, 'challenge-solvers-reference')
 })
 
 test('related challenge reads retain independent deadlines behind one recovery timer', (context) => {

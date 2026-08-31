@@ -112,7 +112,7 @@ const rememberFailure = (gameId: number, kind: EventVpnFailureKind, cause: unkno
 const accessFailure = (gameId: number, cause: unknown, proofStage: boolean) => {
   const status = errorStatus(cause)
   const kind: EventVpnFailureKind =
-    proofStage && status === 403 ? 'disconnected' : status === 429 ? 'rate-limited' : 'unavailable'
+    proofStage && (status === 401 || status === 403) ? 'disconnected' : status === 429 ? 'rate-limited' : 'unavailable'
   return rememberFailure(gameId, kind, cause)
 }
 
@@ -154,9 +154,9 @@ const mintProof = (instance: AxiosInstance, gameId: number): Promise<VpnProof> =
         { withCredentials: true, headers: { 'Content-Type': 'application/json' } }
       )
     } catch (error) {
-      // The VPN proof controller reserves 401 for an invalid/expired account
-      // session or freshly issued challenge. Tunnel/source rejection is 403.
-      if (errorStatus(error) === 401) throw error
+      // The ordinary challenge endpoint has already authenticated this session.
+      // The proof controller returns 401 when the request did not arrive through
+      // this player's verified tunnel, so do not reinterpret it as login expiry.
       throw accessFailure(gameId, error, true)
     }
     const proof = responseData<VpnProof>(proofResponse)

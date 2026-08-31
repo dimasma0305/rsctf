@@ -167,7 +167,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
   const pollErrorMessage = (error: unknown, resource: 'challenge' | 'solvers') => {
     if (!error) return undefined
-    const failure = challengeReadFailure(error)
+    const failure = challengeReadFailure(error, resource)
     const reference = failure
       ? failure.serverTraceId === failure.requestId
         ? ` ${t('challenge.error.request_trace_reference', 'Request/server trace')}: ${failure.requestId}.`

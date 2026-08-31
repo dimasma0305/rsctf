@@ -22,7 +22,7 @@ export interface ChallengeReadFailure {
   retryAfterMilliseconds?: number
 }
 
-const READ_FAILURES = new WeakMap<object, ChallengeReadFailure>()
+const READ_FAILURES = new WeakMap<object, Map<ChallengeReadResource, ChallengeReadFailure>>()
 const SAFE_DIAGNOSTIC_ID = /^[A-Za-z0-9._:-]{8,128}$/
 
 type ErrorWithResponseHeaders = {
@@ -83,18 +83,20 @@ export const captureChallengeReadFailure = (error: unknown, resource: ChallengeR
   const normalized =
     error && typeof error === 'object' ? error : new Error('Challenge request failed', { cause: error })
   const retryAfter = challengeRetryAfterMilliseconds(normalized, getServerNowMilliseconds())
-  READ_FAILURES.set(normalized, {
+  const failures = READ_FAILURES.get(normalized) ?? new Map<ChallengeReadResource, ChallengeReadFailure>()
+  failures.set(resource, {
     resource,
     requestId,
     serverTraceId: responseTraceId(normalized),
     retryAfterMilliseconds:
       retryAfter !== null && retryAfter >= 0 && retryAfter <= MAX_CHALLENGE_RETRY_AFTER_MS ? retryAfter : undefined,
   })
+  READ_FAILURES.set(normalized, failures)
   return normalized
 }
 
-export const challengeReadFailure = (error: unknown) =>
-  error && typeof error === 'object' ? READ_FAILURES.get(error) : undefined
+export const challengeReadFailure = (error: unknown, resource: ChallengeReadResource) =>
+  error && typeof error === 'object' ? READ_FAILURES.get(error)?.get(resource) : undefined
 
 export class NonJsonResponseError extends Error {
   readonly status: number
