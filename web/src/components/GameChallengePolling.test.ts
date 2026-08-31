@@ -6,9 +6,14 @@ const modal = readFileSync('src/components/GameChallengeModal.tsx', 'utf8')
 const panel = readFileSync('src/components/ChallengePanel.tsx', 'utf8')
 const shell = readFileSync('src/components/ChallengeModal.tsx', 'utf8')
 const hook = readFileSync('src/hooks/useChallengePolling.ts', 'utf8')
+const apiContract = readFileSync('src/Api.ts', 'utf8')
 
 test('closed challenge modals own no detail, solver, A&D, or KotH polling key', () => {
-  assert.match(modal, /active: readEnabled,[\s\S]*refreshInterval: 120 \* 1000/)
+  assert.match(
+    modal,
+    /active: readEnabled,[\s\S]*refreshInterval: 0,[\s\S]*revalidateOnFocus: false,[\s\S]*revalidateOnReconnect: false/
+  )
+  assert.doesNotMatch(modal, /refreshInterval: 120 \* 1000/)
   assert.match(modal, /solvers\/page\?count=20&skip=0`[\s\S]*active: readEnabled/)
   assert.match(
     modal,
@@ -17,8 +22,8 @@ test('closed challenge modals own no detail, solver, A&D, or KotH polling key', 
   assert.match(shell, /KothChallengePanel[\s\S]*active=\{Boolean\(modalProps\.opened\)\}/)
   assert.match(shell, /AdChallengePanel[\s\S]*active=\{Boolean\(modalProps\.opened\)\}/)
   assert.match(hook, /const liveKey = active && key \? key : null/)
-  assert.match(hook, /revalidateOnFocus: pausedKey !== key/)
-  assert.match(hook, /revalidateOnReconnect: pausedKey !== key/)
+  assert.match(hook, /revalidateOnFocus: revalidateOnFocus && pausedKey !== key/)
+  assert.match(hook, /revalidateOnReconnect: revalidateOnReconnect && pausedKey !== key/)
   assert.match(hook, /failureCount\.current = 0[\s\S]*setPausedKey\(null\)[\s\S]*return cancel/)
   assert.doesNotMatch(
     hook,
