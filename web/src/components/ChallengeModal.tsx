@@ -692,7 +692,12 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
         {isKoth ? (
           <KothChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} active={Boolean(modalProps.opened)} />
         ) : (
-          <AdChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} active={Boolean(modalProps.opened)} />
+          <AdChallengePanel
+            gameId={gameId}
+            challengeId={challenge?.id ?? 0}
+            active={Boolean(modalProps.opened)}
+            selfHosted={challenge?.adSelfHosted === true}
+          />
         )}
         {eventAction}
       </Stack>
@@ -713,6 +718,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
             gameId={gameId}
             challengeId={challenge?.id ?? 0}
             active={Boolean(modalProps.opened)}
+            selfHosted={challenge?.adSelfHosted === true}
             snapshotOnly
           />
         )}

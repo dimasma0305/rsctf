@@ -18,6 +18,25 @@ fn ad_submit_capacity() -> u32 {
 }
 
 #[test]
+fn credential_mutations_use_a_tight_appended_identity_bucket() {
+    assert_eq!(
+        Policy::CredentialMutation as u8,
+        Policy::PowIssuanceGlobal as u8 + 1,
+        "new policies must not renumber shipped Redis namespaces"
+    );
+    match Policy::CredentialMutation.kind() {
+        Kind::Bucket {
+            capacity,
+            refill_per_sec,
+        } => {
+            assert_eq!(capacity, 6.0);
+            assert_eq!(refill_per_sec, 0.1);
+        }
+        Kind::Sliding { .. } => panic!("credential mutations require a bounded token bucket"),
+    }
+}
+
+#[test]
 fn ad_submit_burst_configuration_requires_a_bounded_integer() {
     assert_eq!(parse_ad_submit_burst_flags(None), Ok(400));
     assert_eq!(parse_ad_submit_burst_flags(Some("100")), Ok(100));
@@ -532,47 +551,42 @@ fn verdict_recovery_has_a_distinct_bounded_identity_budget() {
 }
 
 #[test]
-fn asset_routes_have_distinct_source_work_gate_and_byte_budgets() {
+fn proxy_policies_are_append_only_bounded_buckets() {
+    assert_eq!(Policy::ProxyOpen as u8, Policy::SolveReceipt as u8 + 1);
+    assert!(redis_key(Policy::ProxyOpen, "partition").starts_with("rl:tb:21:"));
+    assert!(redis_key(Policy::ProxySourceOpen, "partition").starts_with("rl:tb:22:"));
+    assert!(redis_key(Policy::ProxyTraffic, "partition").starts_with("rl:tb:23:"));
     assert!(matches!(
-        Policy::AssetRequestSource.kind(),
+        Policy::ProxyOpen.kind(),
+        Kind::Bucket {
+            capacity: 32.0,
+            refill_per_sec: 4.0,
+        }
+    ));
+    assert!(matches!(
+        Policy::ProxySourceOpen.kind(),
         Kind::Bucket {
             capacity: 512.0,
-            refill_per_sec: 128.0,
+            refill_per_sec: 32.0,
         }
     ));
     assert!(matches!(
-        Policy::AssetRequestIdentity.kind(),
+        Policy::ProxyTraffic.kind(),
         Kind::Bucket {
-            capacity: 512.0,
-            refill_per_sec: 64.0,
+            capacity: 16_384.0,
+            refill_per_sec: 1_024.0,
         }
     ));
-    assert!(matches!(
-        Policy::AssetRequestWork.kind(),
-        Kind::Bucket {
-            capacity: 2_048.0,
-            refill_per_sec: 256.0,
-        }
-    ));
-    assert!(matches!(
-        Policy::AssetGateMiss.kind(),
-        Kind::Bucket {
-            capacity: 256.0,
-            refill_per_sec: 128.0,
-        }
-    ));
-    assert!(matches!(
-        Policy::AssetResponseBytes.kind(),
-        Kind::Bucket {
-            capacity: 8_192.0,
-            refill_per_sec: 2_048.0,
-        }
-    ));
-    assert!(redis_key(Policy::AssetRequestSource, "source").starts_with("rl:tb:30:"));
-    assert!(redis_key(Policy::AssetRequestIdentity, "account").starts_with("rl:tb:31:"));
-    assert!(redis_key(Policy::AssetRequestWork, "deployment").starts_with("rl:tb:32:"));
-    assert!(redis_key(Policy::AssetResponseBytes, "deployment").starts_with("rl:tb:33:"));
-    assert!(redis_key(Policy::AssetGateMiss, "deployment").starts_with("rl:tb:34:"));
+
+    let key = format!("proxy-open-{}", uuid::Uuid::new_v4());
+    for _ in 0..32 {
+        assert_eq!(check(Policy::ProxyOpen, key.clone()), Ok(()));
+    }
+    assert_eq!(check(Policy::ProxyOpen, key.clone()), Err(1));
+    shard_for(Policy::ProxyOpen, &key)
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(&(Policy::ProxyOpen, key));
 }
 
 /// Two `DistributedLimiter` instances = two replicas sharing one Redis. Proves
@@ -632,6 +646,86 @@ async fn distributed_limiter_shares_one_counter_across_replicas() {
         .query_async(&mut admin)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn distributed_proxy_traffic_charge_is_atomic_across_every_dimension() {
+    let Ok(url) = std::env::var("RSCTF_TEST_REDIS_URL") else {
+        return;
+    };
+    let mut admin = redis::Client::open(url.as_str())
+        .unwrap()
+        .get_connection_manager()
+        .await
+        .unwrap();
+    let limiter = DistributedLimiter {
+        conn: admin.clone(),
+    };
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let partitions = [
+        format!("proxy-global-{nonce}"),
+        format!("proxy-subject-{nonce}"),
+        format!("proxy-scope-{nonce}"),
+        format!("proxy-source-{nonce}"),
+        format!("proxy-workload-{nonce}"),
+    ];
+    let partition_refs = partitions.each_ref().map(String::as_str);
+    let keys = partitions
+        .each_ref()
+        .map(|partition| redis_key(Policy::ProxyTraffic, partition));
+    for key in &keys {
+        redis::cmd("DEL")
+            .arg(key)
+            .query_async::<()>(&mut admin)
+            .await
+            .unwrap();
+    }
+
+    limiter
+        // Use a four-second deficit so every key remains inspectable even on a
+        // heavily contended CI host. The production source dimension is
+        // intentionally cheaper, but a 32-unit deficit expires after 32 ms and
+        // made this integration assertion depend on scheduler latency.
+        .check_proxy_traffic(partition_refs, [4_096; 5])
+        .await
+        .unwrap();
+    let Kind::Bucket { capacity, .. } = Policy::ProxyTraffic.kind() else {
+        panic!("proxy traffic must remain a token bucket")
+    };
+    for key in &keys {
+        let expected = capacity - 4_096.0;
+        let tokens = redis_bucket_tokens(&mut admin, key).await;
+        assert!(
+            (expected..=capacity).contains(&tokens),
+            "fresh proxy credit charge was outside its refill range"
+        );
+    }
+
+    // Freeze every bucket's clock in the future, exhaust one dimension, and
+    // prove the denied transaction did not partially charge the others.
+    let now_ms = redis_time_ms(&mut admin).await;
+    for key in &keys {
+        set_redis_bucket(&mut admin, key, 1_000.0, now_ms + 10_000, 20_000).await;
+    }
+    set_redis_bucket(&mut admin, &keys[2], 0.0, now_ms + 10_000, 20_000).await;
+    assert_eq!(
+        limiter
+            .check_proxy_traffic(partition_refs, [256, 256, 256, 32, 256])
+            .await,
+        Err(1)
+    );
+    for (index, key) in keys.iter().enumerate() {
+        let expected = if index == 2 { 0.0 } else { 1_000.0 };
+        assert_eq!(redis_bucket_tokens(&mut admin, key).await, expected);
+        redis::cmd("DEL")
+            .arg(key)
+            .query_async::<()>(&mut admin)
+            .await
+            .unwrap();
+    }
 }
 
 /// The batched script must be observationally identical to the old ordered

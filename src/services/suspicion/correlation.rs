@@ -20,6 +20,10 @@ const SESSION_WINDOW_MINUTES: i64 = 10;
 const SESSION_CONCURRENCY_MIN_OCCURRENCES: usize = 3;
 const SHARED_IDENTITY_MAX_TEAMS: usize = 4;
 
+#[path = "correlation/incremental.rs"]
+mod incremental;
+pub(crate) use incremental::run_correlation_checks_incremental;
+
 const LOAD_OBSERVATIONS_SQL: &str = r#"
     SELECT observation.id, observation.user_id,
            roster.team_id, roster.participation_id,

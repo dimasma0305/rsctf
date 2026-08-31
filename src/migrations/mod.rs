@@ -138,17 +138,26 @@ mod m0115_flag_egress_feed_cursor;
 mod m0116_game_event_feed_pending;
 mod m0242_participation_provision_jobs;
 mod m0250_team_signature_key_index;
+mod m0251_koth_referee_retry;
+mod m0252_player_credential_operations;
 mod m0260_ad_control_revisions;
 mod m0261_control_plane_jobs;
 mod m0262_challenge_import_jobs;
 mod m0263_control_job_cancellation;
 mod m0264_blob_staging_operations;
+mod m0265_game_notice_delivery;
 mod m0270_worker_workload_quarantine;
 mod m0271_worker_enrollment_operations;
 mod m0272_event_sensor_batches;
 mod m0273_receipt_variant_lifecycle;
 mod m0280_traffic_capture_inventory;
 mod m0281_anticheat_read_bounds;
+mod m0282_docker_image_cleanup_jobs;
+mod m0283_incremental_anticheat_reconciliation;
+mod m0284_anticheat_dirty_outboxes;
+mod m0285_honeypot_telemetry_buckets;
+mod m0286_docker_image_cleanup_order;
+mod m0290_distributed_proxy_admission;
 mod m0310_player_container_operations;
 mod m0311_blob_deletion_operations;
 mod m0312_traffic_archive_admission;
@@ -182,6 +191,8 @@ pub(crate) use m0116_game_event_feed_pending::UP_SQL as GAME_EVENT_FEED_PENDING_
 pub(crate) use m0242_participation_provision_jobs::UP_SQL as PARTICIPATION_PROVISION_JOBS_SQL;
 #[cfg(test)]
 pub(crate) use m0280_traffic_capture_inventory::UP_SQL as TRAFFIC_CAPTURE_INVENTORY_SQL;
+#[cfg(test)]
+pub(crate) use m0286_docker_image_cleanup_order::UP_SQL as IMAGE_CLEANUP_ORDER_INDEX_SQL;
 #[cfg(test)]
 pub(crate) use m0310_player_container_operations::UP_SQL as PLAYER_CONTAINER_OPERATIONS_SQL;
 #[cfg(test)]
@@ -321,17 +332,26 @@ impl MigratorTrait for Migrator {
             Box::new(m0116_game_event_feed_pending::Migration),
             Box::new(m0242_participation_provision_jobs::Migration),
             Box::new(m0250_team_signature_key_index::Migration),
+            Box::new(m0251_koth_referee_retry::Migration),
+            Box::new(m0252_player_credential_operations::Migration),
             Box::new(m0260_ad_control_revisions::Migration),
             Box::new(m0261_control_plane_jobs::Migration),
             Box::new(m0262_challenge_import_jobs::Migration),
             Box::new(m0263_control_job_cancellation::Migration),
             Box::new(m0264_blob_staging_operations::Migration),
+            Box::new(m0265_game_notice_delivery::Migration),
             Box::new(m0270_worker_workload_quarantine::Migration),
             Box::new(m0271_worker_enrollment_operations::Migration),
             Box::new(m0272_event_sensor_batches::Migration),
             Box::new(m0273_receipt_variant_lifecycle::Migration),
             Box::new(m0280_traffic_capture_inventory::Migration),
             Box::new(m0281_anticheat_read_bounds::Migration),
+            Box::new(m0282_docker_image_cleanup_jobs::Migration),
+            Box::new(m0283_incremental_anticheat_reconciliation::Migration),
+            Box::new(m0284_anticheat_dirty_outboxes::Migration),
+            Box::new(m0285_honeypot_telemetry_buckets::Migration),
+            Box::new(m0286_docker_image_cleanup_order::Migration),
+            Box::new(m0290_distributed_proxy_admission::Migration),
             Box::new(m0310_player_container_operations::Migration),
             Box::new(m0311_blob_deletion_operations::Migration),
             Box::new(m0312_traffic_archive_admission::Migration),
@@ -487,7 +507,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 37..],
+            &names[names.len() - 46..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -505,17 +525,26 @@ mod tests {
                 "m0116_game_event_feed_pending",
                 "m0242_participation_provision_jobs",
                 "m0250_team_signature_key_index",
+                "m0251_koth_referee_retry",
+                "m0252_player_credential_operations",
                 "m0260_ad_control_revisions",
                 "m0261_control_plane_jobs",
                 "m0262_challenge_import_jobs",
                 "m0263_control_job_cancellation",
                 "m0264_blob_staging_operations",
+                "m0265_game_notice_delivery",
                 "m0270_worker_workload_quarantine",
                 "m0271_worker_enrollment_operations",
                 "m0272_event_sensor_batches",
                 "m0273_receipt_variant_lifecycle",
                 "m0280_traffic_capture_inventory",
                 "m0281_anticheat_read_bounds",
+                "m0282_docker_image_cleanup_jobs",
+                "m0283_incremental_anticheat_reconciliation",
+                "m0284_anticheat_dirty_outboxes",
+                "m0285_honeypot_telemetry_buckets",
+                "m0286_docker_image_cleanup_order",
+                "m0290_distributed_proxy_admission",
                 "m0310_player_container_operations",
                 "m0311_blob_deletion_operations",
                 "m0312_traffic_archive_admission",

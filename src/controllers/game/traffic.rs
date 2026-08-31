@@ -1,463 +1,10 @@
 //! Traffic-capture serving: pcap listing/download/flows.
 use super::*;
-use std::io::{Read, Write};
+use base64::Engine as _;
 
-// ---------------------------------------------------------------------------
-// Traffic capture metadata and pcap serving for the singleton capture worker.
-// ---------------------------------------------------------------------------
-
-const MAX_CAPTURE_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
-// Stored ZIP records still need local/central headers and filenames. Reserve a
-// conservative fixed envelope so the streamed response itself never exceeds
-// the advertised/deployment-reserved 128 MiB ceiling.
-const CAPTURE_ARCHIVE_METADATA_BYTES: u64 = 512 * 1024;
-const MAX_CAPTURE_ARCHIVE_SOURCE_BYTES: u64 =
-    MAX_CAPTURE_ARCHIVE_BYTES - CAPTURE_ARCHIVE_METADATA_BYTES;
-const MAX_CAPTURE_ARCHIVE_FILES: usize = 256;
-const MAX_CAPTURE_ARCHIVE_DEPLOYMENT_BYTES: i64 = 2 * MAX_CAPTURE_ARCHIVE_BYTES as i64;
-const MAX_CAPTURE_ARCHIVE_DEPLOYMENT_JOBS: i64 = 2;
-const CAPTURE_ARCHIVE_CHUNK_BYTES: usize = 64 * 1024;
-const CAPTURE_ARCHIVE_LEASE_SECONDS: i64 = 30;
-const CAPTURE_ARCHIVE_HEARTBEAT_SECONDS: u64 = 10;
-const CAPTURE_ARCHIVE_DATABASE_SECONDS: u64 = 2;
-const CAPTURE_ARCHIVE_STREAM_SECONDS: u64 = 300;
-const CAPTURE_ARCHIVE_RETRY_SECONDS: u64 = 2;
-const CAPTURE_ARCHIVE_ADVISORY_KEY: i64 = 1_195_722_091;
-const MAX_INSPECT_CAPTURE_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_CAPTURE_FLOWS: usize = 20_000;
-static CAPTURE_ARCHIVE_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
-static CAPTURE_FLOW_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
-
-async fn spawn_blocking_with_permit<T, F>(
-    permit: tokio::sync::OwnedSemaphorePermit,
-    work: F,
-) -> Result<T, tokio::task::JoinError>
-where
-    T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
-{
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        work()
-    })
-    .await
-}
-
-type CaptureZipChunk = Result<bytes::Bytes, std::io::Error>;
-
-struct CaptureArchiveStream {
-    inner: tokio_stream::wrappers::ReceiverStream<CaptureZipChunk>,
-    _permit: tokio::sync::OwnedSemaphorePermit,
-    completed: Option<tokio::sync::oneshot::Sender<()>>,
-    lease_failed: std::pin::Pin<Box<tokio::sync::oneshot::Receiver<()>>>,
-    deadline: std::pin::Pin<Box<tokio::time::Sleep>>,
-    terminal: bool,
-}
-
-/// Owns the durable deployment-wide archive reservation while the request is
-/// still preparing its inventory and filesystem snapshot. Dropping the owner
-/// cancels the heartbeat and releases (or, after a database outage, lets expire)
-/// the reservation, so every pre-response error has the same cleanup path.
-struct CaptureArchiveLeaseOwner {
-    completed: Option<tokio::sync::oneshot::Sender<()>>,
-    lease_failed: Option<tokio::sync::oneshot::Receiver<()>>,
-}
-
-impl CaptureArchiveLeaseOwner {
-    fn start(pool: sqlx::PgPool, operation_id: uuid::Uuid) -> Self {
-        let (completed_sender, completed_receiver) = tokio::sync::oneshot::channel();
-        let (lease_failed_sender, lease_failed_receiver) = tokio::sync::oneshot::channel();
-        tokio::spawn(maintain_archive_lease(
-            pool,
-            operation_id,
-            completed_receiver,
-            lease_failed_sender,
-        ));
-        Self {
-            completed: Some(completed_sender),
-            lease_failed: Some(lease_failed_receiver),
-        }
-    }
-
-    fn ensure_alive(&mut self) -> AppResult<()> {
-        let lease_failed = self
-            .lease_failed
-            .as_mut()
-            .expect("archive lease failure receiver is present");
-        match lease_failed.try_recv() {
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => Ok(()),
-            Ok(()) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                Err(AppError::retryable_unavailable(
-                    "Capture archive admission was lost; retry shortly",
-                    CAPTURE_ARCHIVE_RETRY_SECONDS,
-                ))
-            }
-        }
-    }
-
-    fn into_stream_parts(
-        mut self,
-    ) -> (
-        tokio::sync::oneshot::Sender<()>,
-        tokio::sync::oneshot::Receiver<()>,
-    ) {
-        (
-            self.completed
-                .take()
-                .expect("archive lease completion owner is present"),
-            self.lease_failed
-                .take()
-                .expect("archive lease failure receiver is present"),
-        )
-    }
-}
-
-impl Drop for CaptureArchiveLeaseOwner {
-    fn drop(&mut self) {
-        if let Some(completed) = self.completed.take() {
-            let _ = completed.send(());
-        }
-    }
-}
-
-impl CaptureArchiveStream {
-    fn finish(&mut self) {
-        if let Some(completed) = self.completed.take() {
-            let _ = completed.send(());
-        }
-    }
-}
-
-impl futures::Stream for CaptureArchiveStream {
-    type Item = CaptureZipChunk;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        if self.terminal {
-            return std::task::Poll::Ready(None);
-        }
-        if std::future::Future::poll(self.deadline.as_mut(), context).is_ready() {
-            self.terminal = true;
-            self.finish();
-            return std::task::Poll::Ready(Some(Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "capture archive stream exceeded its delivery deadline",
-            ))));
-        }
-        if std::future::Future::poll(self.lease_failed.as_mut(), context).is_ready() {
-            self.terminal = true;
-            self.finish();
-            return std::task::Poll::Ready(Some(Err(std::io::Error::other(
-                "capture archive admission lease was lost",
-            ))));
-        }
-        match futures::Stream::poll_next(std::pin::Pin::new(&mut self.inner), context) {
-            std::task::Poll::Ready(None) => {
-                self.terminal = true;
-                self.finish();
-                std::task::Poll::Ready(None)
-            }
-            result => result,
-        }
-    }
-}
-
-impl Drop for CaptureArchiveStream {
-    fn drop(&mut self) {
-        self.finish();
-    }
-}
-
-struct CaptureArchiveSource {
-    path: std::path::PathBuf,
-    entry: String,
-}
-
-struct CaptureZipStreamWriter {
-    output: tokio::sync::mpsc::Sender<CaptureZipChunk>,
-    buffered: Vec<u8>,
-    sent: u64,
-}
-
-impl CaptureZipStreamWriter {
-    fn new(output: tokio::sync::mpsc::Sender<CaptureZipChunk>) -> Self {
-        Self {
-            output,
-            buffered: Vec::with_capacity(CAPTURE_ARCHIVE_CHUNK_BYTES),
-            sent: 0,
-        }
-    }
-
-    fn send_buffer(&mut self) -> std::io::Result<()> {
-        if self.buffered.is_empty() {
-            return Ok(());
-        }
-        let chunk = std::mem::replace(
-            &mut self.buffered,
-            Vec::with_capacity(CAPTURE_ARCHIVE_CHUNK_BYTES),
-        );
-        let next = self
-            .sent
-            .checked_add(chunk.len() as u64)
-            .filter(|next| *next <= MAX_CAPTURE_ARCHIVE_BYTES)
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::FileTooLarge,
-                    "capture archive exceeded its response size limit",
-                )
-            })?;
-        self.output
-            .blocking_send(Ok(bytes::Bytes::from(chunk)))
-            .map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "client disconnected")
-            })?;
-        self.sent = next;
-        Ok(())
-    }
-
-    fn finish(mut self) -> std::io::Result<()> {
-        self.send_buffer()
-    }
-}
-
-impl Write for CaptureZipStreamWriter {
-    fn write(&mut self, mut input: &[u8]) -> std::io::Result<usize> {
-        let input_len = input.len();
-        while !input.is_empty() {
-            let available = CAPTURE_ARCHIVE_CHUNK_BYTES - self.buffered.len();
-            let take = available.min(input.len());
-            self.buffered.extend_from_slice(&input[..take]);
-            input = &input[take..];
-            if self.buffered.len() == CAPTURE_ARCHIVE_CHUNK_BYTES {
-                self.send_buffer()?;
-            }
-        }
-        Ok(input_len)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.send_buffer()
-    }
-}
-
-fn scan_capture_archive(
-    dir: &std::path::Path,
-    names: Vec<String>,
-) -> AppResult<Vec<CaptureArchiveSource>> {
-    if names.is_empty() {
-        return Err(AppError::not_found("No captures for this participation"));
-    }
-    if names.len() > MAX_CAPTURE_ARCHIVE_FILES {
-        return Err(AppError::bad_request(
-            "Too many captures to archive; download them individually",
-        ));
-    }
-    let files = names
-        .into_iter()
-        .map(|entry| {
-            safe_capture_name(&entry)?;
-            let path = dir.join(&entry);
-            let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
-                AppError::internal(format!("capture metadata {}: {error}", path.display()))
-            })?;
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                return Err(AppError::not_found("Capture not found"));
-            }
-            Ok((CaptureArchiveSource { path, entry }, metadata.len()))
-        })
-        .collect::<AppResult<Vec<_>>>()?;
-    let declared_total = files
-        .iter()
-        .try_fold(0u64, |total, (_, size)| total.checked_add(*size));
-    if declared_total.is_none_or(|total| total > MAX_CAPTURE_ARCHIVE_SOURCE_BYTES) {
-        return Err(AppError::bad_request(
-            "Captures are too large to archive; download them individually",
-        ));
-    }
-    Ok(files.into_iter().map(|(source, _)| source).collect())
-}
-
-async fn acquire_archive_lease(
-    pool: &sqlx::PgPool,
-    challenge_id: i32,
-    participation_id: i32,
-) -> AppResult<uuid::Uuid> {
-    let mut transaction = match tokio::time::timeout(
-        std::time::Duration::from_millis(250),
-        crate::utils::database::begin_sqlx_transaction(pool),
-    )
-    .await
-    {
-        Ok(result) => result.map_err(|error| AppError::internal(error.to_string()))?,
-        Err(_) => {
-            return Err(AppError::retryable_unavailable(
-                "Capture archive admission is busy; retry shortly",
-                CAPTURE_ARCHIVE_RETRY_SECONDS,
-            ));
-        }
-    };
-    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
-        .bind(CAPTURE_ARCHIVE_ADVISORY_KEY)
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    if !locked {
-        transaction
-            .rollback()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        return Err(AppError::retryable_unavailable(
-            "Capture archive admission is busy; retry shortly",
-            CAPTURE_ARCHIVE_RETRY_SECONDS,
-        ));
-    }
-    sqlx::query(r#"DELETE FROM "TrafficArchiveLeases" WHERE expires_at_utc <= CURRENT_TIMESTAMP"#)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let (active, reserved): (i64, i64) = sqlx::query_as(
-        r#"SELECT COUNT(*)::BIGINT, COALESCE(SUM(reserved_bytes), 0)::BIGINT
-             FROM "TrafficArchiveLeases"
-            WHERE expires_at_utc > CURRENT_TIMESTAMP"#,
-    )
-    .fetch_one(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let duplicate: bool = sqlx::query_scalar(
-        r#"SELECT EXISTS(
-               SELECT 1 FROM "TrafficArchiveLeases"
-                WHERE challenge_id = $1 AND participation_id = $2
-                  AND expires_at_utc > CURRENT_TIMESTAMP
-           )"#,
-    )
-    .bind(challenge_id)
-    .bind(participation_id)
-    .fetch_one(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if duplicate
-        || active >= MAX_CAPTURE_ARCHIVE_DEPLOYMENT_JOBS
-        || reserved.saturating_add(MAX_CAPTURE_ARCHIVE_BYTES as i64)
-            > MAX_CAPTURE_ARCHIVE_DEPLOYMENT_BYTES
-    {
-        transaction
-            .rollback()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        return Err(AppError::retryable_unavailable(
-            "Capture archive capacity is busy; retry shortly",
-            CAPTURE_ARCHIVE_RETRY_SECONDS,
-        ));
-    }
-
-    let operation_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        r#"INSERT INTO "TrafficArchiveLeases"
-               (operation_id, challenge_id, participation_id, reserved_bytes, expires_at_utc)
-           VALUES ($1, $2, $3, $4,
-                   CURRENT_TIMESTAMP + make_interval(secs => $5))"#,
-    )
-    .bind(operation_id)
-    .bind(challenge_id)
-    .bind(participation_id)
-    .bind(MAX_CAPTURE_ARCHIVE_BYTES as i64)
-    .bind(CAPTURE_ARCHIVE_LEASE_SECONDS as f64)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(operation_id)
-}
-
-async fn maintain_archive_lease(
-    pool: sqlx::PgPool,
-    operation_id: uuid::Uuid,
-    mut completed: tokio::sync::oneshot::Receiver<()>,
-    lease_failed: tokio::sync::oneshot::Sender<()>,
-) {
-    let mut lease_failed = Some(lease_failed);
-    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(
-        CAPTURE_ARCHIVE_HEARTBEAT_SECONDS,
-    ));
-    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    'heartbeat: loop {
-        tokio::select! {
-            biased;
-            _ = &mut completed => break,
-            _ = heartbeat.tick() => {
-                let renewal = tokio::time::timeout(
-                    std::time::Duration::from_secs(CAPTURE_ARCHIVE_DATABASE_SECONDS),
-                    sqlx::query(
-                        r#"UPDATE "TrafficArchiveLeases"
-                              SET expires_at_utc = CURRENT_TIMESTAMP + make_interval(secs => $2)
-                            WHERE operation_id = $1"#,
-                    )
-                    .bind(operation_id)
-                    .bind(CAPTURE_ARCHIVE_LEASE_SECONDS as f64)
-                    .execute(&pool),
-                );
-                let renewed = tokio::select! {
-                    biased;
-                    _ = &mut completed => break 'heartbeat,
-                    renewed = renewal => renewed,
-                };
-                match renewed {
-                    Ok(Ok(result)) if result.rows_affected() == 1 => {}
-                    Ok(Ok(_)) => {
-                        tracing::warn!(%operation_id, "capture archive lease disappeared");
-                        if let Some(sender) = lease_failed.take() {
-                            let _ = sender.send(());
-                        }
-                        break;
-                    }
-                    Ok(Err(error)) => {
-                        tracing::warn!(%operation_id, %error, "capture archive lease heartbeat failed");
-                        if let Some(sender) = lease_failed.take() {
-                            let _ = sender.send(());
-                        }
-                        break;
-                    }
-                    Err(_) => {
-                        tracing::warn!(%operation_id, "capture archive lease heartbeat timed out");
-                        if let Some(sender) = lease_failed.take() {
-                            let _ = sender.send(());
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(CAPTURE_ARCHIVE_DATABASE_SECONDS),
-        sqlx::query(r#"DELETE FROM "TrafficArchiveLeases" WHERE operation_id = $1"#)
-            .bind(operation_id)
-            .execute(&pool),
-    )
-    .await
-    {
-        Ok(Ok(_)) => {}
-        Ok(Err(error)) => {
-            tracing::warn!(%operation_id, %error, "capture archive lease release failed");
-        }
-        Err(_) => {
-            tracing::warn!(%operation_id, "capture archive lease release timed out");
-        }
-    }
-}
-
-/// `GET /api/game/games/{id}/captures`
-/// Root dir for per-(challenge, participation) pcaps:
-/// `{storage_root}/capture/{challengeId}/{participationId}/{name}.pcap`. This is
-/// where a live NIC capture (`services::traffic::capture_live`) writes; the
-/// endpoints below serve whatever is present, independent of how it got there.
+#[path = "traffic_archive.rs"]
+mod archive;
+pub use archive::get_all_traffic;
 fn capture_root(st: &SharedState) -> std::path::PathBuf {
     std::path::PathBuf::from(&st.config.storage_root).join("capture")
 }
@@ -479,6 +26,165 @@ fn safe_capture_name(name: &str) -> AppResult<&str> {
         return Err(AppError::bad_request("Invalid capture file name"));
     }
     Ok(name)
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub enum TrafficFlowDirection {
+    ContainerToTeam,
+    TeamToContainer,
+}
+
+impl From<TrafficFlowDirection> for crate::services::traffic::FlowDirection {
+    fn from(direction: TrafficFlowDirection) -> Self {
+        match direction {
+            TrafficFlowDirection::ContainerToTeam => Self::ContainerToTeam,
+            TrafficFlowDirection::TeamToContainer => Self::TeamToContainer,
+        }
+    }
+}
+
+impl From<crate::services::traffic::FlowDirection> for TrafficFlowDirection {
+    fn from(direction: crate::services::traffic::FlowDirection) -> Self {
+        match direction {
+            crate::services::traffic::FlowDirection::ContainerToTeam => Self::ContainerToTeam,
+            crate::services::traffic::FlowDirection::TeamToContainer => Self::TeamToContainer,
+        }
+    }
+}
+
+fn default_flow_page() -> u32 {
+    1
+}
+
+fn default_flow_page_size() -> u16 {
+    crate::services::traffic::DEFAULT_FLOW_PAGE_SIZE
+}
+
+/// Bounded filters and pagination for one immutable capture snapshot.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TrafficFlowQuery {
+    #[serde(default)]
+    regex_pattern: Option<String>,
+    #[serde(default)]
+    peer_ip_contains: Option<String>,
+    #[serde(default)]
+    start_utc: Option<i64>,
+    #[serde(default)]
+    end_utc: Option<i64>,
+    #[serde(default)]
+    direction: Option<TrafficFlowDirection>,
+    #[serde(default)]
+    flags_only: bool,
+    #[serde(default = "default_flow_page")]
+    page: u32,
+    #[serde(default = "default_flow_page_size")]
+    page_size: u16,
+}
+
+impl TrafficFlowQuery {
+    fn validated_filter(&self) -> Result<crate::services::traffic::ValidatedFlowFilter, AppError> {
+        crate::services::traffic::ValidatedFlowFilter::new(
+            self.regex_pattern.as_deref(),
+            self.peer_ip_contains.as_deref(),
+            self.start_utc,
+            self.end_utc,
+            self.direction.map(Into::into),
+            self.flags_only,
+        )
+        .map_err(Into::into)
+    }
+}
+
+async fn configured_capture_port(st: &SharedState, challenge_id: i32) -> AppResult<u16> {
+    let port = sqlx::query_scalar::<_, Option<i32>>(
+        r#"SELECT expose_port FROM "GameChallenges"
+            WHERE id = $1 AND enable_traffic_capture = TRUE"#,
+    )
+    .bind(challenge_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .flatten()
+    .ok_or_else(|| AppError::not_found("Capture challenge service port not found"))?;
+    u16::try_from(port)
+        .ok()
+        .filter(|port| *port > 0)
+        .ok_or_else(|| AppError::bad_request("Capture challenge has an invalid service port"))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TrafficFlowDetailQuery {
+    #[serde(default)]
+    snapshot_version: Option<String>,
+    #[serde(default)]
+    flow_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficFlowSummaryModel {
+    pub flow_id: String,
+    pub connection_port: u16,
+    pub first_seen_utc: i64,
+    pub last_seen_utc: i64,
+    pub peer_ip: String,
+    pub packets_in: u64,
+    pub packets_out: u64,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub flag_hits: u32,
+    pub payload_truncated: bool,
+}
+
+impl From<&crate::services::traffic::IndexedFlow> for TrafficFlowSummaryModel {
+    fn from(flow: &crate::services::traffic::IndexedFlow) -> Self {
+        Self {
+            flow_id: flow.flow_id.clone(),
+            connection_port: flow.connection_port,
+            first_seen_utc: flow.first_seen_utc,
+            last_seen_utc: flow.last_seen_utc,
+            peer_ip: flow.peer_ip.clone(),
+            packets_in: flow.packets_in,
+            packets_out: flow.packets_out,
+            bytes_in: flow.bytes_in,
+            bytes_out: flow.bytes_out,
+            flag_hits: flow.flag_hits,
+            payload_truncated: flow.payload_truncated,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficFlowPageModel {
+    pub items: Vec<TrafficFlowSummaryModel>,
+    pub page: u32,
+    pub page_size: u16,
+    pub total_items: usize,
+    pub total_pages: usize,
+    pub snapshot_version: String,
+    pub indexed_payload_bytes: usize,
+    pub payload_truncated: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficFlowChunkModel {
+    pub direction: TrafficFlowDirection,
+    pub timestamp_utc: i64,
+    pub payload_base64: String,
+    pub flag_offsets: Vec<u32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficFlowDetailModel {
+    #[serde(flatten)]
+    pub summary: TrafficFlowSummaryModel,
+    pub snapshot_version: String,
+    pub chunks: Vec<TrafficFlowChunkModel>,
 }
 
 /// `GET /api/game/games/{id}/captures` — each challenge + its total pcap count.
@@ -590,99 +296,6 @@ pub async fn traffic_files_page(
 }
 
 /// `GET /api/game/captures/{challengeId}/{partId}/all` — zip of the pcaps.
-pub async fn get_all_traffic(
-    State(st): State<SharedState>,
-    _user: MonitorUser,
-    Path((cid, pid)): Path<(i32, i32)>,
-) -> AppResult<Response> {
-    let root = capture_root(&st);
-    let dir = root.join(cid.to_string()).join(pid.to_string());
-    let permit = CAPTURE_ARCHIVE_SLOTS
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| {
-            AppError::retryable_unavailable(
-                "Capture archive capacity is busy; retry shortly",
-                CAPTURE_ARCHIVE_RETRY_SECONDS,
-            )
-        })?;
-    let operation_id = acquire_archive_lease(st.pg(), cid, pid).await?;
-    // Start the durable heartbeat before either the inventory query or the
-    // filesystem snapshot. A slow disk scan must not let another replica
-    // reclaim this export's deployment-wide byte reservation.
-    let mut lease_owner = CaptureArchiveLeaseOwner::start(st.pg().clone(), operation_id);
-    let names =
-        crate::services::traffic::inventory::archive_file_names(st.pg(), &root, cid, pid).await?;
-    lease_owner.ensure_alive()?;
-    let sources = tokio::task::spawn_blocking(move || scan_capture_archive(&dir, names))
-        .await
-        .map_err(|error| {
-            AppError::internal(format!("capture archive scan task failed: {error}"))
-        })??;
-    lease_owner.ensure_alive()?;
-    let (output_sender, output_receiver) = tokio::sync::mpsc::channel::<CaptureZipChunk>(8);
-    let error_sender = output_sender.clone();
-    let (completed_sender, lease_failed_receiver) = lease_owner.into_stream_parts();
-    tokio::task::spawn_blocking(move || {
-        let outcome = (|| -> AppResult<()> {
-            let writer = CaptureZipStreamWriter::new(output_sender);
-            let mut zip = zip::ZipWriter::new_stream(writer);
-            let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored);
-            let mut written = 0u64;
-            for source in sources {
-                zip.start_file(source.entry, opts)
-                    .map_err(|err| AppError::internal(format!("zip: {err}")))?;
-                let file = std::fs::File::open(source.path)
-                    .map_err(|error| AppError::internal(format!("capture open: {error}")))?;
-                let remaining = MAX_CAPTURE_ARCHIVE_SOURCE_BYTES.saturating_sub(written);
-                let copied = std::io::copy(&mut file.take(remaining + 1), &mut zip)
-                    .map_err(|error| AppError::internal(format!("zip: {error}")))?;
-                if copied > remaining {
-                    return Err(AppError::bad_request(
-                        "Captures grew beyond the archive size limit",
-                    ));
-                }
-                written += copied;
-            }
-            let writer = zip
-                .finish()
-                .map_err(|err| AppError::internal(format!("zip: {err}")))?;
-            writer
-                .into_inner()
-                .finish()
-                .map_err(|error| AppError::internal(format!("zip stream: {error}")))?;
-            Ok(())
-        })();
-        if let Err(error) = outcome {
-            let _ = error_sender.blocking_send(Err(std::io::Error::other(error.to_string())));
-        }
-    });
-    Ok((
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, "application/zip".to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"captures_{cid}_{pid}.zip\""),
-            ),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-        ],
-        Body::from_stream(CaptureArchiveStream {
-            inner: tokio_stream::wrappers::ReceiverStream::new(output_receiver),
-            _permit: permit,
-            completed: Some(completed_sender),
-            lease_failed: Box::pin(lease_failed_receiver),
-            deadline: Box::pin(tokio::time::sleep(std::time::Duration::from_secs(
-                CAPTURE_ARCHIVE_STREAM_SECONDS,
-            ))),
-            terminal: false,
-        }),
-    )
-        .into_response())
-}
-
-/// `DELETE /api/game/captures/{challengeId}/{partId}/all`
 pub async fn delete_all_traffic(
     State(st): State<SharedState>,
     _user: MonitorUser,
@@ -691,6 +304,7 @@ pub async fn delete_all_traffic(
     let dir = capture_root(&st)
         .join(cid.to_string())
         .join(pid.to_string());
+    crate::services::traffic::invalidate_inspection_directory(&dir);
     crate::services::traffic::inventory::mark_reconcile_required(st.pg()).await?;
     if let Err(error) = tokio::fs::remove_dir_all(&dir).await {
         if error.kind() != std::io::ErrorKind::NotFound {
@@ -769,6 +383,7 @@ pub async fn delete_traffic_file(
         .join(cid.to_string())
         .join(pid.to_string())
         .join(name);
+    crate::services::traffic::invalidate_inspection_path(&path);
     crate::services::traffic::inventory::mark_reconcile_required(st.pg()).await?;
     if let Err(error) = tokio::fs::remove_file(&path).await {
         if error.kind() != std::io::ErrorKind::NotFound {
@@ -788,41 +403,60 @@ pub async fn delete_traffic_file(
     Ok(StatusCode::OK)
 }
 
-/// `GET /api/game/captures/{challengeId}/{partId}/{filename}/flows` — the TCP/UDP
-/// flows parsed out of the pcap (`services::traffic::list_flows`).
+/// `GET /api/game/captures/{challengeId}/{partId}/{filename}/flows` — a bounded,
+/// filterable page from the immutable PCAP flow snapshot.
 pub async fn traffic_flows(
     State(st): State<SharedState>,
     _user: MonitorUser,
     Path((cid, pid, filename)): Path<(i32, i32, String)>,
-) -> AppResult<RequestResponse<Vec<Json>>> {
+    Query(query): Query<TrafficFlowQuery>,
+) -> AppResult<RequestResponse<TrafficFlowPageModel>> {
     let name = safe_capture_name(&filename)?;
     let path = capture_root(&st)
         .join(cid.to_string())
         .join(pid.to_string())
         .join(name);
-    let permit = CAPTURE_FLOW_SLOTS
+    let filter = query.validated_filter()?;
+    crate::services::traffic::validate_flow_page_bounds(query.page, query.page_size)
+        .map_err(AppError::from)?;
+    let container_port = configured_capture_port(&st, cid).await?;
+    let snapshot = crate::services::traffic::load_flow_snapshot(&path, container_port, None)
+        .await
+        .map_err(AppError::from)?;
+    let filter_permit = FLOW_FILTER_CAPACITY
         .clone()
         .try_acquire_owned()
-        .map_err(|_| AppError::unavailable("Capture inspection capacity is busy; retry shortly"))?;
-    let flows = spawn_blocking_with_permit(permit, move || {
-        crate::services::traffic::list_flows_bounded(
-            &path,
-            MAX_INSPECT_CAPTURE_BYTES,
-            MAX_CAPTURE_FLOWS,
+        .map_err(|_| {
+            AppError::overloaded("Traffic flow filter capacity is busy; retry shortly", 1)
+        })?;
+    let filter_snapshot = std::sync::Arc::clone(&snapshot);
+    let page = spawn_blocking_with_permit(filter_permit, move || {
+        crate::services::traffic::filter_flow_page(
+            &filter_snapshot,
+            &filter,
+            query.page,
+            query.page_size,
         )
     })
     .await
-    .map_err(|error| AppError::internal(format!("capture inspection task failed: {error}")))??;
-    let out = flows
+    .map_err(|error| AppError::internal(format!("traffic flow filter task failed: {error}")))?
+    .map_err(AppError::from)?;
+    let items = page
+        .indices
         .into_iter()
-        .map(|f| {
-            serde_json::json!({
-                "src": f.src, "dst": f.dst,
-                "packetCount": f.packet_count, "bytes": f.bytes,
-            })
-        })
+        .map(|index| TrafficFlowSummaryModel::from(&snapshot.flows()[index]))
         .collect();
-    Ok(RequestResponse::ok(out))
+    let page_size = usize::from(query.page_size);
+    Ok(RequestResponse::ok(TrafficFlowPageModel {
+        items,
+        page: query.page,
+        page_size: query.page_size,
+        total_items: page.total_items,
+        total_pages: page.total_items.div_ceil(page_size),
+        snapshot_version: snapshot.version().to_owned(),
+        indexed_payload_bytes: snapshot.indexed_payload_bytes(),
+        payload_truncated: snapshot.payload_truncated(),
+    }))
 }
 
 /// `GET /api/game/captures/{challengeId}/{partId}/{filename}/flow/{connectionPort}`
@@ -831,46 +465,175 @@ pub async fn traffic_flow_detail(
     State(st): State<SharedState>,
     _user: MonitorUser,
     Path((cid, pid, filename, connection_port)): Path<(i32, i32, String, i32)>,
-) -> AppResult<RequestResponse<TrafficFlowDetail>> {
+    Query(query): Query<TrafficFlowDetailQuery>,
+) -> AppResult<RequestResponse<TrafficFlowDetailModel>> {
     let name = safe_capture_name(&filename)?;
     let path = capture_root(&st)
         .join(cid.to_string())
         .join(pid.to_string())
         .join(name);
-    let port = connection_port.to_string();
-    let permit = CAPTURE_FLOW_SLOTS
+    let container_port = configured_capture_port(&st, cid).await?;
+    let connection_port = u16::try_from(connection_port)
+        .ok()
+        .filter(|port| *port > 0)
+        .ok_or_else(|| AppError::bad_request("connectionPort must be between 1 and 65535"))?;
+    if let Some(version) = query.snapshot_version.as_deref() {
+        crate::services::traffic::validate_snapshot_version(version).map_err(AppError::from)?;
+    }
+    if let Some(flow_id) = query.flow_id.as_deref() {
+        crate::services::traffic::validate_flow_id(flow_id).map_err(AppError::from)?;
+    }
+    let snapshot = crate::services::traffic::load_flow_snapshot(
+        &path,
+        container_port,
+        query.snapshot_version.as_deref(),
+    )
+    .await
+    .map_err(AppError::from)?;
+    let detail_permit = FLOW_FILTER_CAPACITY
         .clone()
         .try_acquire_owned()
-        .map_err(|_| AppError::unavailable("Capture inspection capacity is busy; retry shortly"))?;
-    let flows = spawn_blocking_with_permit(permit, move || {
-        crate::services::traffic::list_flows_bounded(
-            &path,
-            MAX_INSPECT_CAPTURE_BYTES,
-            MAX_CAPTURE_FLOWS,
-        )
+        .map_err(|_| {
+            AppError::overloaded("Traffic flow detail capacity is busy; retry shortly", 1)
+        })?;
+    let detail_snapshot = std::sync::Arc::clone(&snapshot);
+    let flow_id = query.flow_id;
+    let detail = spawn_blocking_with_permit(detail_permit, move || {
+        let Some(flow) = detail_snapshot.flow(connection_port, flow_id.as_deref())? else {
+            return Ok(None);
+        };
+        let chunks = flow
+            .chunks
+            .iter()
+            .map(|chunk| TrafficFlowChunkModel {
+                direction: chunk.direction.into(),
+                timestamp_utc: chunk.timestamp_utc,
+                payload_base64: base64::engine::general_purpose::STANDARD.encode(&chunk.payload),
+                flag_offsets: chunk.flag_offsets.clone(),
+            })
+            .collect();
+        Ok::<_, crate::services::traffic::InspectionError>(Some(TrafficFlowDetailModel {
+            summary: TrafficFlowSummaryModel::from(flow),
+            snapshot_version: detail_snapshot.version().to_owned(),
+            chunks,
+        }))
     })
     .await
-    .map_err(|error| AppError::internal(format!("capture inspection task failed: {error}")))??;
-    let flow = flows
-        .into_iter()
-        .find(|f| f.src.ends_with(&format!(":{port}")) || f.dst.ends_with(&format!(":{port}")));
-    Ok(RequestResponse::ok(TrafficFlowDetail {
-        connection_port,
-        peer_ip: flow
-            .as_ref()
-            .map(|f| {
-                f.dst
-                    .rsplit_once(':')
-                    .map(|(ip, _)| ip.to_string())
-                    .unwrap_or_else(|| f.dst.clone())
-            })
-            .unwrap_or_default(),
-        packets_in: flow.as_ref().map(|f| f.packet_count as i64).unwrap_or(0),
-        bytes_in: flow.as_ref().map(|f| f.bytes as i64).unwrap_or(0),
-        ..Default::default()
-    }))
+    .map_err(|error| AppError::internal(format!("traffic flow detail task failed: {error}")))?
+    .map_err(AppError::from)?
+    .ok_or_else(|| AppError::not_found("Flow not found in this capture snapshot"))?;
+    Ok(RequestResponse::ok(detail))
 }
 
-#[cfg(test)]
-#[path = "traffic_tests.rs"]
-mod traffic_admission_tests;
+mod flow_contract_tests {
+    use super::*;
+
+    #[test]
+    fn flow_query_is_camel_case_typed_and_rejects_unknown_or_invalid_filters() {
+        let query: TrafficFlowQuery = serde_json::from_value(serde_json::json!({
+            "regexPattern": "flag\\{",
+            "peerIpContains": "10.8:",
+            "direction": "TeamToContainer",
+            "flagsOnly": true,
+            "page": 2,
+            "pageSize": 25
+        }))
+        .unwrap();
+        assert_eq!(query.page, 2);
+        assert_eq!(query.page_size, 25);
+        assert!(query.validated_filter().is_ok());
+
+        assert!(
+            serde_json::from_value::<TrafficFlowQuery>(serde_json::json!({
+                "payloadRegex": "ignored-contract-field"
+            }))
+            .is_err()
+        );
+        let invalid: TrafficFlowQuery = serde_json::from_value(serde_json::json!({
+            "regexPattern": "(",
+            "page": 1,
+            "pageSize": 50
+        }))
+        .unwrap();
+        assert_eq!(
+            invalid.validated_filter().unwrap_err().status(),
+            StatusCode::BAD_REQUEST
+        );
+
+        let detail: TrafficFlowDetailQuery = serde_json::from_value(serde_json::json!({
+            "snapshotVersion": "a".repeat(32),
+            "flowId": "04ac1400041f90040a080007b043"
+        }))
+        .unwrap();
+        assert!(
+            crate::services::traffic::validate_flow_id(detail.flow_id.as_deref().unwrap()).is_ok()
+        );
+        assert!(
+            serde_json::from_value::<TrafficFlowDetailQuery>(serde_json::json!({
+                "src": "unsupported"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn summary_page_and_detail_share_one_numeric_timestamp_contract() {
+        let summary = TrafficFlowSummaryModel {
+            flow_id: "04ac1400041f90040a080007b043".into(),
+            connection_port: 45_123,
+            first_seen_utc: 1_001,
+            last_seen_utc: 1_030,
+            peer_ip: "10.8.0.7".into(),
+            packets_in: 1,
+            packets_out: 2,
+            bytes_in: 17,
+            bytes_out: 20,
+            flag_hits: 1,
+            payload_truncated: false,
+        };
+        let detail = TrafficFlowDetailModel {
+            summary: summary.clone(),
+            snapshot_version: "a".repeat(32),
+            chunks: vec![TrafficFlowChunkModel {
+                direction: TrafficFlowDirection::TeamToContainer,
+                timestamp_utc: 1_001,
+                payload_base64: "ZmxhZ3thbHBoYX0=".into(),
+                flag_offsets: vec![0],
+            }],
+        };
+        let detail = serde_json::to_value(detail).unwrap();
+        assert_eq!(detail["flowId"], "04ac1400041f90040a080007b043");
+        assert_eq!(detail["connectionPort"], 45_123);
+        assert_eq!(detail["firstSeenUtc"], 1_001);
+        assert_eq!(detail["chunks"][0]["timestampUtc"], 1_001);
+        assert_eq!(detail["chunks"][0]["direction"], "TeamToContainer");
+        assert!(detail.get("src").is_none());
+        assert!(detail.get("dst").is_none());
+
+        let page = serde_json::to_value(TrafficFlowPageModel {
+            items: vec![summary],
+            page: 1,
+            page_size: 50,
+            total_items: 1,
+            total_pages: 1,
+            snapshot_version: "a".repeat(32),
+            indexed_payload_bytes: 17,
+            payload_truncated: false,
+        })
+        .unwrap();
+        assert_eq!(page["items"][0]["connectionPort"], 45_123);
+        assert_eq!(page["snapshotVersion"], "a".repeat(32));
+    }
+
+    #[test]
+    fn cached_inspector_work_is_bounded_and_never_runs_on_tokio_workers() {
+        assert!(FLOW_FILTER_SLOTS > 0 && FLOW_FILTER_SLOTS <= 4);
+        let source = include_str!("traffic.rs");
+        assert!(source.contains("FLOW_FILTER_CAPACITY"));
+        assert!(source.contains("try_acquire_owned()"));
+        assert!(source.contains("spawn_blocking_with_permit(filter_permit"));
+        assert!(source.contains("spawn_blocking_with_permit(detail_permit"));
+        assert!(source.contains("Traffic flow filter capacity is busy; retry shortly"));
+        assert!(source.contains("Traffic flow detail capacity is busy; retry shortly"));
+    }
+}

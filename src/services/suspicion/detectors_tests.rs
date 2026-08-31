@@ -40,8 +40,136 @@ fn suspicion_write_is_conflict_gated_before_canonical_projection() {
         .contains("ON CONFLICT (game_id, participation_id, kind, evidence_key) DO NOTHING"));
     assert!(INSERT_SUSPICION_EVENT_SQL.contains("WITH participant AS MATERIALIZED"));
     assert!(INSERT_SUSPICION_EVENT_SQL.contains("FOR UPDATE"));
+    assert!(INSERT_SUSPICION_EVENT_SQL.contains("SELECT 1 FROM \"SuspicionEvents\" existing"));
+    assert!(INSERT_SUSPICION_EVENT_SQL.contains("existing.evidence_key = $5"));
     assert!(INSERT_SUSPICION_EVENT_SQL.contains("EXISTS (SELECT 1 FROM inserted)"));
     assert!(!INSERT_SUSPICION_EVENT_SQL.contains("suspicion_score +"));
+}
+
+#[tokio::test]
+#[ignore = "requires migrated disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn postgres_detector_replay_does_not_redirty_reconciliation() {
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let (game_id, participation_id): (i32, i32) = sqlx::query_as(
+        r#"SELECT game_id, id FROM "Participations"
+            WHERE competitive_admitted_at_utc IS NOT NULL
+            ORDER BY game_id, id LIMIT 1"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the disposable database needs one competitively admitted participant");
+    let evidence_key = format!("reconciliation-replay:{}", uuid::Uuid::new_v4().simple());
+    let mut transaction = pool.begin().await.unwrap();
+    sqlx::query(
+        r#"SELECT 1 FROM "SuspicionReconciliationState"
+            WHERE game_id = $1 FOR UPDATE"#,
+    )
+    .bind(game_id)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"SELECT 1 FROM "AntiCheatReconciliationQueue"
+            WHERE game_id = $1 FOR UPDATE"#,
+    )
+    .bind(game_id)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"UPDATE "AntiCheatReconciliationSources"
+              SET applied_version = dirty_version WHERE game_id = $1"#,
+    )
+    .bind(game_id)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"UPDATE "AntiCheatReconciliationQueue"
+              SET applied_generation = desired_generation WHERE game_id = $1"#,
+    )
+    .bind(game_id)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+
+    let first: (bool, bool) = sqlx::query_as(INSERT_SUSPICION_EVENT_SQL)
+        .bind(game_id)
+        .bind(participation_id)
+        .bind(None::<i32>)
+        .bind(SuspicionType::SharedFingerprint.kind())
+        .bind(&evidence_key)
+        .bind(1_i32)
+        .bind(chrono::Utc::now())
+        .fetch_one(&mut *transaction)
+        .await
+        .unwrap();
+    assert_eq!(first, (true, true));
+    sqlx::query(
+        r#"UPDATE "AntiCheatReconciliationSources"
+              SET applied_version = dirty_version
+            WHERE game_id = $1 AND source_kind = 7"#,
+    )
+    .bind(game_id)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"UPDATE "AntiCheatReconciliationQueue"
+              SET applied_generation = desired_generation WHERE game_id = $1"#,
+    )
+    .bind(game_id)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    let clean_after_first: (i64, i64, i64, i64) = sqlx::query_as(
+        r#"SELECT source.applied_version, source.dirty_version,
+                  queue.applied_generation, queue.desired_generation
+             FROM "AntiCheatReconciliationSources" source
+             JOIN "AntiCheatReconciliationQueue" queue
+               ON queue.game_id = source.game_id
+            WHERE source.game_id = $1 AND source.source_kind = 7"#,
+    )
+    .bind(game_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .unwrap();
+    assert_eq!(clean_after_first.0, clean_after_first.1);
+    assert_eq!(clean_after_first.2, clean_after_first.3);
+
+    let second: (bool, bool) = sqlx::query_as(INSERT_SUSPICION_EVENT_SQL)
+        .bind(game_id)
+        .bind(participation_id)
+        .bind(None::<i32>)
+        .bind(SuspicionType::SharedFingerprint.kind())
+        .bind(&evidence_key)
+        .bind(1_i32)
+        .bind(chrono::Utc::now())
+        .fetch_one(&mut *transaction)
+        .await
+        .unwrap();
+    assert_eq!(second, (true, false));
+    let clean_after_replay: (i64, i64, i64, i64) = sqlx::query_as(
+        r#"SELECT source.applied_version, source.dirty_version,
+                  queue.applied_generation, queue.desired_generation
+             FROM "AntiCheatReconciliationSources" source
+             JOIN "AntiCheatReconciliationQueue" queue
+               ON queue.game_id = source.game_id
+            WHERE source.game_id = $1 AND source.source_kind = 7"#,
+    )
+    .bind(game_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .unwrap();
+    assert_eq!(clean_after_replay, clean_after_first);
+    transaction.rollback().await.unwrap();
+    pool.close().await;
 }
 
 #[test]

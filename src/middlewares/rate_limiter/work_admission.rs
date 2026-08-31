@@ -43,3 +43,7 @@ pub(crate) async fn admit_asset_response_bytes(bytes: u64) -> Result<(), u64> {
     )
     .await
 }
+
+#[cfg(test)]
+#[path = "work_admission_tests.rs"]
+mod tests;

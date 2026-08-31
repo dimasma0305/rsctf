@@ -148,7 +148,59 @@ fn generated_tunnel_agents_drop_linux_privilege_by_default() {
         assert!(agent.contains("    cap_drop:\n      - ALL"));
         assert!(agent.contains("    security_opt:\n      - no-new-privileges:true"));
         assert!(agent.contains("    pids_limit: 128"));
+        assert!(agent.contains("    restart: \"on-failure:5\""));
+        assert!(!agent.contains("    restart: unless-stopped"));
     }
+}
+
+#[test]
+fn agent_handshake_admission_bounds_global_and_duplicate_work() {
+    let admission = AgentHandshakeAdmission::new(2);
+    let first = admission.try_admit(11, 13).expect("first capability");
+    assert!(
+        admission.try_admit(11, 13).is_none(),
+        "duplicate capability crossed its single-flight gate"
+    );
+    let second = admission
+        .try_admit(11, 14)
+        .expect("a distinct capability within the participation limit");
+    assert!(
+        admission.try_admit(12, 13).is_none(),
+        "global admission limit was exceeded"
+    );
+    drop(first);
+    assert!(admission.try_admit(11, 13).is_some());
+    drop(second);
+}
+
+#[test]
+fn agent_handshake_states_are_machine_readable_and_retry_aware() {
+    let transient = byoc_agent_state_response(
+        StatusCode::TOO_EARLY,
+        "not started",
+        "retry-at-event-start",
+        false,
+        Some(45),
+    );
+    assert_eq!(transient.status(), StatusCode::TOO_EARLY);
+    assert_eq!(
+        transient.headers().get(BYOC_AGENT_STATE_HEADER).unwrap(),
+        "retry-at-event-start"
+    );
+    assert_eq!(transient.headers().get(header::RETRY_AFTER).unwrap(), "45");
+
+    let terminal = byoc_agent_state_response(
+        StatusCode::FORBIDDEN,
+        "revoked",
+        "terminal-revoked-or-closed",
+        true,
+        None,
+    );
+    assert_eq!(
+        terminal.headers().get(BYOC_AGENT_STATE_HEADER).unwrap(),
+        "terminal-revoked-or-closed"
+    );
+    assert!(terminal.headers().get(header::RETRY_AFTER).is_none());
 }
 
 #[test]

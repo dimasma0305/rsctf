@@ -45,28 +45,13 @@ pub(super) const MAX_ENCODED_EMAIL_BYTES: usize = 1_024;
 const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$YBSHJA9ANNWFII7EsOe1rw$O5h6h9EwR/6Pyoe9wCcjK91HivbrgJZwb44fhsiqonw";
 pub(crate) const REGISTRATION_LOCK_ID: i64 = 0x5253_4354_4652_4547; // "RSCTFREG"
 
-fn registration_disposition(
-    is_first: bool,
-    active_on_register: bool,
-    email_confirmation_required: bool,
-) -> (bool, RegisterStatus) {
-    let session_eligible = is_first || (active_on_register && !email_confirmation_required);
-    let status = if session_eligible {
-        RegisterStatus::LoggedIn
-    } else if email_confirmation_required {
-        RegisterStatus::EmailConfirmationRequired
-    } else {
-        RegisterStatus::AdminConfirmationRequired
-    };
-    (session_eligible, status)
-}
-
 mod avatar;
 mod bootstrap;
 mod email_confirmation;
 mod profile_bounds;
 mod recovery;
 pub use avatar::avatar;
+use bootstrap::registration_disposition;
 pub use email_confirmation::verify;
 use profile_bounds::load_user;
 pub(crate) use profile_bounds::validate_profile_fields;

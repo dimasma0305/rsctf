@@ -1,5 +1,4 @@
 //! Durable admission and lease primitives for slow operator mutations.
-//!
 //! Routes enqueue before scanning data or touching a runtime. A partial unique
 //! index coalesces concurrent intent for one scope across replicas, while an
 //! opaque operation id makes lost-response recovery deterministic.
@@ -23,6 +22,9 @@ pub(crate) use cancellation::{finish as finish_cancellation, requested as cancel
 mod admission;
 #[path = "control_jobs/execution.rs"]
 mod execution;
+#[path = "control_jobs/security_derivation.rs"]
+mod security_derivation;
+pub use security_derivation::request as request_security_derivation;
 
 const MAX_ACTIVE_JOBS: i64 = 256;
 const MAX_ACTIVE_RESETS_PER_GAME: i64 = 32;
@@ -32,9 +34,11 @@ const MAX_SCOPE_BYTES: usize = 256;
 const MAX_INPUT_BYTES: usize = 16 * 1024;
 const MAX_RESULT_BYTES: usize = 64 * 1024;
 const MAX_ERROR_BYTES: usize = 4 * 1024;
+pub(crate) const CONTROL_JOB_EXECUTION_BUDGET_SECONDS: u64 = 14 * 60;
 const TERMINAL_RETENTION_DAYS: i32 = 7;
 const MAX_PURGE_BATCH: i64 = 256;
 const ADMISSION_LOCK_KEY: i64 = 0x5253_4354_464A_4F42;
+const ADMISSION_BUSY_MESSAGE: &str = "Control-plane admission is busy; retry the same operation";
 
 const PURGE_TERMINAL_SQL: &str = r#"WITH expired AS (
     SELECT id FROM "ControlPlaneJobs"
@@ -222,7 +226,12 @@ fn can_coalesce_active(
     requested_fingerprint: &str,
 ) -> bool {
     active_fingerprint == requested_fingerprint
-        || matches!(kind, ControlJobKind::AdReconcile | ControlJobKind::AdReset)
+        || matches!(
+            kind,
+            ControlJobKind::SecurityDerivation
+                | ControlJobKind::AdReconcile
+                | ControlJobKind::AdReset
+        )
 }
 
 /// Atomically return an exact retry, coalesce with the active scope, or admit a
@@ -238,7 +247,7 @@ pub async fn enqueue(
     challenge_id: Option<i32>,
     operation_id: Uuid,
     fingerprint: &str,
-    input: Value,
+    mut input: Value,
 ) -> AppResult<ControlJobModel> {
     validate_enqueue(scope_key, fingerprint, &input)?;
     let mut transaction = pool.begin().await.map_err(database_error)?;
@@ -255,10 +264,7 @@ pub async fn enqueue(
         {
             return Ok(job);
         }
-        return Err(AppError::overloaded(
-            "Control-plane admission is busy; retry the same operation",
-            1,
-        ));
+        return Err(AppError::overloaded(ADMISSION_BUSY_MESSAGE, 1));
     }
 
     let exact_sql = format!(
@@ -272,8 +278,10 @@ pub async fn enqueue(
         .await
         .map_err(database_error)?
     {
-        if row.kind != kind.as_str() || row.scope_key != scope_key || row.fingerprint != fingerprint
-        {
+        let same_request = row.kind == kind.as_str()
+            && row.scope_key == scope_key
+            && (row.fingerprint == fingerprint || kind == ControlJobKind::SecurityDerivation);
+        if !same_request {
             transaction.rollback().await.map_err(database_error)?;
             return Err(AppError::conflict(
                 "Idempotency-Key was already used for a different operation",
@@ -283,49 +291,64 @@ pub async fn enqueue(
         return row.try_into();
     }
 
+    let mut effective_fingerprint = fingerprint.to_owned();
+    let security_generation = if kind == ControlJobKind::SecurityDerivation {
+        let generation =
+            security_derivation::bind_current_generation(&mut transaction, game_id, &mut input)
+                .await?;
+        effective_fingerprint = security_derivation::fingerprint(&input)?;
+        Some(generation)
+    } else {
+        None
+    };
+
     let active_sql = format!(
         r#"SELECT {JOB_COLUMNS} FROM "ControlPlaneJobs"
             WHERE kind = $1 AND scope_key = $2 AND status IN (0, 1)
-            ORDER BY created_at_utc, id LIMIT 1"#
+            ORDER BY created_at_utc, id LIMIT 1
+            FOR UPDATE"#
     );
-    if let Some(row) = sqlx::query_as::<_, JobRow>(&active_sql)
+    if let Some(mut row) = sqlx::query_as::<_, JobRow>(&active_sql)
         .bind(kind.as_str())
         .bind(scope_key)
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?
     {
-        if !can_coalesce_active(kind, &row.fingerprint, fingerprint) {
+        if !can_coalesce_active(kind, &row.fingerprint, &effective_fingerprint) {
             transaction.rollback().await.map_err(database_error)?;
             return Err(AppError::conflict(
                 "A different revision is already active for this control-plane resource",
             ));
         }
-        let aliases: i64 = sqlx::query_scalar(
-            r#"SELECT COUNT(*) FROM "ControlPlaneJobOperations" WHERE job_id = $1"#,
-        )
-        .bind(row.id)
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-        if aliases >= MAX_OPERATION_ALIASES_PER_JOB {
-            transaction.rollback().await.map_err(database_error)?;
-            return Err(AppError::overloaded(
-                "This control-plane job has reached its retry-alias bound",
-                2,
-            ));
+        if let Some(generation) = security_generation {
+            row = security_derivation::merge_active_generation(
+                &mut transaction,
+                row,
+                generation.desired,
+                &input,
+                &effective_fingerprint,
+            )
+            .await?;
         }
-        sqlx::query(
-            r#"INSERT INTO "ControlPlaneJobOperations" (operation_id, job_id)
-                VALUES ($1, $2)"#,
-        )
-        .bind(operation_id)
-        .bind(row.id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
+        admission::attach_operation_alias(&mut transaction, row.id, operation_id).await?;
         transaction.commit().await.map_err(database_error)?;
         return row.try_into();
+    }
+
+    if let Some(generation) = security_generation.filter(|generation| generation.clean) {
+        if let Some(row) = security_derivation::reusable_completed_generation(
+            &mut transaction,
+            game_id,
+            scope_key,
+            generation.desired,
+        )
+        .await?
+        {
+            admission::attach_operation_alias(&mut transaction, row.id, operation_id).await?;
+            transaction.commit().await.map_err(database_error)?;
+            return row.try_into();
+        }
     }
 
     let active: i64 =
@@ -397,7 +420,7 @@ pub async fn enqueue(
         .bind(game_id)
         .bind(challenge_id)
         .bind(operation_id)
-        .bind(fingerprint)
+        .bind(&effective_fingerprint)
         .bind(input)
         .fetch_one(&mut *transaction)
         .await
@@ -484,34 +507,55 @@ pub async fn get_ad_reset_for_participation(
         .transpose()
 }
 
+const ACQUIRE_RESOURCE_SQL: &str = r#"INSERT INTO "ControlPlaneResourceLeases"
+      (resource_key, owner_job_id, lease_expires_at_utc)
+    VALUES ($1, $2, clock_timestamp() + make_interval(secs => $3))
+    ON CONFLICT (resource_key) DO UPDATE
+      SET owner_job_id = EXCLUDED.owner_job_id,
+          lease_expires_at_utc = EXCLUDED.lease_expires_at_utc
+    WHERE "ControlPlaneResourceLeases".owner_job_id = EXCLUDED.owner_job_id
+       OR "ControlPlaneResourceLeases".lease_expires_at_utc <= clock_timestamp()
+    RETURNING owner_job_id"#;
+
+async fn try_acquire_resource_with<'e, E>(
+    executor: E,
+    resource_key: &str,
+    owner_job_id: Uuid,
+    lease: Duration,
+) -> AppResult<bool>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    if resource_key.is_empty() || resource_key.len() > MAX_SCOPE_BYTES {
+        return Err(AppError::bad_request("control resource key is invalid"));
+    }
+    let seconds = lease.as_secs().clamp(1, 15 * 60) as i64;
+    let owner = sqlx::query_scalar::<_, Uuid>(ACQUIRE_RESOURCE_SQL)
+        .bind(resource_key)
+        .bind(owner_job_id)
+        .bind(seconds)
+        .fetch_optional(executor)
+        .await
+        .map_err(database_error)?;
+    Ok(owner == Some(owner_job_id))
+}
+
 pub async fn try_acquire_resource(
     pool: &sqlx::PgPool,
     resource_key: &str,
     owner_job_id: Uuid,
     lease: Duration,
 ) -> AppResult<bool> {
-    if resource_key.is_empty() || resource_key.len() > MAX_SCOPE_BYTES {
-        return Err(AppError::bad_request("control resource key is invalid"));
-    }
-    let seconds = lease.as_secs().clamp(1, 15 * 60) as i64;
-    let owner = sqlx::query_scalar::<_, Uuid>(
-        r#"INSERT INTO "ControlPlaneResourceLeases"
-              (resource_key, owner_job_id, lease_expires_at_utc)
-            VALUES ($1, $2, clock_timestamp() + make_interval(secs => $3))
-            ON CONFLICT (resource_key) DO UPDATE
-              SET owner_job_id = EXCLUDED.owner_job_id,
-                  lease_expires_at_utc = EXCLUDED.lease_expires_at_utc
-            WHERE "ControlPlaneResourceLeases".owner_job_id = EXCLUDED.owner_job_id
-               OR "ControlPlaneResourceLeases".lease_expires_at_utc <= clock_timestamp()
-            RETURNING owner_job_id"#,
-    )
-    .bind(resource_key)
-    .bind(owner_job_id)
-    .bind(seconds)
-    .fetch_optional(pool)
-    .await
-    .map_err(database_error)?;
-    Ok(owner == Some(owner_job_id))
+    try_acquire_resource_with(pool, resource_key, owner_job_id, lease).await
+}
+
+pub(crate) async fn try_acquire_resource_on(
+    connection: &mut sqlx::PgConnection,
+    resource_key: &str,
+    owner_job_id: Uuid,
+    lease: Duration,
+) -> AppResult<bool> {
+    try_acquire_resource_with(connection, resource_key, owner_job_id, lease).await
 }
 
 pub async fn release_resource(
@@ -657,30 +701,6 @@ pub fn result_count(job: &ControlJobModel, key: &str) -> AppResult<usize> {
         .and_then(Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
         .ok_or_else(|| AppError::internal("control-job result is missing a bounded count"))
-}
-
-pub async fn request_security_derivation(
-    state: &SharedState,
-    game_id: i32,
-    operation_id: Uuid,
-) -> AppResult<ControlJobModel> {
-    let input = serde_json::json!({ "gameId": game_id });
-    let fingerprint = crate::utils::codec::sha256_str(
-        &serde_json::to_string(&input).map_err(|error| AppError::internal(error.to_string()))?,
-    );
-    let job = enqueue(
-        state.pg(),
-        ControlJobKind::SecurityDerivation,
-        &format!("game:{game_id}"),
-        game_id,
-        None,
-        operation_id,
-        &fingerprint,
-        input,
-    )
-    .await?;
-    kick(state.clone());
-    Ok(job)
 }
 
 async fn get_active(
@@ -937,7 +957,7 @@ pub async fn drain_bounded(state: &StateHandle, limit: usize) -> AppResult<usize
             continue;
         }
         let execution = tokio::time::timeout(
-            Duration::from_secs(14 * 60),
+            Duration::from_secs(CONTROL_JOB_EXECUTION_BUDGET_SECONDS),
             execution::execute_claimed(state, &job),
         )
         .await;

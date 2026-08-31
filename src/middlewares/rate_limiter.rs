@@ -28,17 +28,15 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::hash::{Hash, Hasher};
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::extract::{ConnectInfo, Request, State as AxumState};
+use axum::extract::{Request, State as AxumState};
 use axum::http::{header, HeaderValue, Method};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::MethodRouter;
-use sha2::{Digest, Sha256};
 
 use crate::app_state::SharedState;
 
@@ -115,239 +113,12 @@ fn ad_submit_burst_flags() -> u32 {
         .unwrap_or_else(|message| panic!("{message}"))
 }
 
-// ---------------------------------------------------------------------------
-// Policies
-// ---------------------------------------------------------------------------
+mod partition;
+mod policy;
 
-/// The rate-limit policies, mirroring RSCTF's `RateLimiter.LimitPolicy` plus the
-/// always-on `Global` sliding window that every `/api` request passes through.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Policy {
-    /// 150 requests / 60s sliding window — all `/api` requests.
-    Global,
-    /// 50 / 60s on `POST /api/account/login` (per-IP brute-force ceiling).
-    Login,
-    /// 20 / 300s on the mail-triggering endpoints + oauth start.
-    Register,
-    /// Token bucket, ~1 token / 5s, small burst — flag submission.
-    Submit,
-    /// Token bucket, ~1 / 10s — container create/delete/extend.
-    Container,
-    /// Token bucket, ~1 / 10s with a ~30 burst — heavy DB query routes.
-    Query,
-    /// One-at-a-time heavy admin routes; modelled as a tight ~1 / 10s bucket.
-    Concurrency,
-    /// High per-IP abuse backstop for authenticated traffic.
-    GlobalIpBackstop,
-    /// Cheap source-IP admission before JWT verification or A&D token lookup.
-    /// Appended to preserve every shipped Redis policy discriminant.
-    CredentialIpAdmission,
-    /// Team-scoped A&D batch work budget. The cost is the number of distinct,
-    /// plausible flags in the request rather than one token per HTTP request.
-    /// Appended to preserve every shipped Redis policy discriminant.
-    AdSubmit,
-    /// Source-IP admission for privileged hub negotiation and WebSocket upgrade.
-    /// Frames inside an established connection are intentionally not charged.
-    /// Appended to preserve every shipped Redis policy discriminant.
-    PrivilegedHubAdmission,
-    /// Source-IP admission for anonymous/public hub negotiation and upgrade.
-    /// Long-lived socket counts are bounded separately by `hubs::admission`.
-    /// Appended to preserve every shipped Redis policy discriminant.
-    PublicHubAdmission,
-    /// Per-identity ceiling for player submission-verdict recovery. Appended to
-    /// preserve every shipped Redis policy discriminant.
-    Verdict,
-    /// Fixed-shape A&D bearer digest admission before PostgreSQL.
-    AdAuthTokenAdmission,
-    /// Source-IP backstop for rotating A&D bearer strings.
-    AdAuthSourceAdmission,
-    /// Tight anonymous per-source HashPoW issuance budget.
-    PowIssuanceSource,
-    /// Deployment-wide HashPoW issuance budget; all callers share one key.
-    PowIssuanceGlobal,
-    /// Anonymous source budget for bounded Ed25519 team-token verification.
-    TeamSignatureSource,
-    /// Deployment-wide CPU/query budget for team-token verification.
-    TeamSignatureGlobal,
-    /// Trusted solve-verifier issuance work. Appended to preserve every
-    /// previously shipped Redis policy discriminant.
-    SolveReceipt,
-    /// Source budget for anonymous and authenticated asset routes, which live
-    /// outside the ordinary `/api` namespace. Values 20 through 29 remain
-    /// available to the other independently developed admission policies.
-    AssetRequestSource = 30,
-    /// Authenticated account budget for asset routes across changing source IPs.
-    AssetRequestIdentity = 31,
-    /// Deployment-wide request-work budget before asset cache or PostgreSQL work.
-    AssetRequestWork = 32,
-    /// Deployment-wide byte budget for bodies served through the platform.
-    AssetResponseBytes = 33,
-    /// Deployment-wide budget for distinct authorization cache misses.
-    AssetGateMiss = 34,
-}
-
-/// The shape of a policy: either a sliding window (log of hit instants) or a
-/// token bucket (fractional tokens refilled continuously).
-#[derive(Clone, Copy)]
-enum Kind {
-    /// Allow at most `permit` hits within any `window`.
-    Sliding { permit: u32, window: Duration },
-    /// A bucket of at most `capacity` tokens refilled at `refill_per_sec`; each
-    /// request costs one token.
-    Bucket { capacity: f64, refill_per_sec: f64 },
-}
-
-impl Policy {
-    fn kind(self) -> Kind {
-        match self {
-            // GlobalPermitLimit = 150, GlobalWindow = 1 min.
-            Policy::Global => Kind::Sliding {
-                permit: 150,
-                window: Duration::from_secs(60),
-            },
-            // These ceilings are intentionally large. A sliding window would
-            // retain tens of thousands of `Instant`s per busy source; an O(1)
-            // token bucket enforces the same sustained per-minute rate with one
-            // timestamp and one float.
-            Policy::GlobalIpBackstop => {
-                let capacity = *AUTHENTICATED_IP_BACKSTOP_PER_MINUTE as f64;
-                Kind::Bucket {
-                    capacity,
-                    refill_per_sec: capacity / 60.0,
-                }
-            }
-            Policy::CredentialIpAdmission => {
-                let capacity = *CREDENTIAL_IP_ADMISSION_PER_MINUTE as f64;
-                Kind::Bucket {
-                    capacity,
-                    refill_per_sec: capacity / 60.0,
-                }
-            }
-            // A maximum-size batch may contain 100 distinct flags. Bound the
-            // default immediate queue to four such batches while limiting
-            // sustained lookup work to ten flags/s per participation. The
-            // larger opt-in ceiling exists only for an isolated fixed-rate
-            // campaign that deliberately needs a longer pre-funded window.
-            Policy::AdSubmit => Kind::Bucket {
-                capacity: ad_submit_burst_flags() as f64,
-                refill_per_sec: 10.0,
-            },
-            Policy::PrivilegedHubAdmission => Kind::Bucket {
-                capacity: 120.0,
-                refill_per_sec: 10.0,
-            },
-            Policy::PublicHubAdmission => Kind::Bucket {
-                capacity: 512.0,
-                refill_per_sec: 10.0,
-            },
-            // A committed submission normally needs one read. Thirty immediate
-            // recoveries support a burst of legitimate submissions while the
-            // sustained 30/min ceiling prevents this cheap status route from
-            // consuming the platform-wide 150/min identity allowance alone.
-            Policy::Verdict => Kind::Bucket {
-                capacity: 30.0,
-                refill_per_sec: 0.5,
-            },
-            Policy::AdAuthTokenAdmission => Kind::Bucket {
-                capacity: 120.0,
-                refill_per_sec: 2.0,
-            },
-            Policy::AdAuthSourceAdmission => Kind::Bucket {
-                capacity: 1_200.0,
-                refill_per_sec: 20.0,
-            },
-            Policy::PowIssuanceSource => Kind::Bucket {
-                capacity: 8.0,
-                refill_per_sec: 0.2,
-            },
-            Policy::PowIssuanceGlobal => Kind::Bucket {
-                capacity: 256.0,
-                refill_per_sec: 20.0,
-            },
-            Policy::TeamSignatureSource => Kind::Bucket {
-                capacity: 20.0,
-                refill_per_sec: 1.0,
-            },
-            Policy::TeamSignatureGlobal => Kind::Bucket {
-                capacity: 256.0,
-                refill_per_sec: 32.0,
-            },
-            Policy::SolveReceipt => Kind::Bucket {
-                capacity: 128.0,
-                refill_per_sec: 16.0,
-            },
-            Policy::AssetRequestSource => Kind::Bucket {
-                capacity: 512.0,
-                refill_per_sec: 128.0,
-            },
-            Policy::AssetRequestIdentity => Kind::Bucket {
-                capacity: 512.0,
-                refill_per_sec: 64.0,
-            },
-            Policy::AssetRequestWork => Kind::Bucket {
-                capacity: 2_048.0,
-                refill_per_sec: 256.0,
-            },
-            // One unit is 64 KiB. Preserve a 512-MiB burst while bounding
-            // sustained platform-served bytes at 128 MiB/s.
-            Policy::AssetResponseBytes => Kind::Bucket {
-                capacity: 8_192.0,
-                refill_per_sec: 2_048.0,
-            },
-            Policy::AssetGateMiss => Kind::Bucket {
-                capacity: 256.0,
-                refill_per_sec: 128.0,
-            },
-            // LoginPermitLimit = 50, LoginWindow = 1 min.
-            Policy::Login => Kind::Sliding {
-                permit: 50,
-                window: Duration::from_secs(60),
-            },
-            // RegisterPermitLimit = 20, RegisterWindow = 5 min.
-            Policy::Register => Kind::Sliding {
-                permit: 20,
-                window: Duration::from_secs(300),
-            },
-            // ~1 token / 5s, small burst.
-            Policy::Submit => Kind::Bucket {
-                capacity: 12.0,
-                refill_per_sec: 1.0 / 5.0,
-            },
-            // ~1 token / 10s.
-            Policy::Container => Kind::Bucket {
-                capacity: 6.0,
-                refill_per_sec: 1.0 / 10.0,
-            },
-            // ~1 token / 10s, burst ~30.
-            Policy::Query => Kind::Bucket {
-                capacity: 30.0,
-                refill_per_sec: 1.0 / 10.0,
-            },
-            // "1 concurrent" heavy admin route, modelled as a tight ~1 / 10s cap.
-            Policy::Concurrency => Kind::Bucket {
-                capacity: 1.0,
-                refill_per_sec: 1.0 / 10.0,
-            },
-        }
-    }
-
-    /// A fixed-window `(limit, window-in-ms)` representation. Redis uses this for
-    /// sliding policies; bucket policies use their native capacity/refill values.
-    /// Keeping the bucket-derived representation is useful for diagnostics and
-    /// tests that compare the sustained rate of both backends.
-    fn fixed_window(self) -> (u32, u64) {
-        match self.kind() {
-            Kind::Sliding { permit, window } => (permit, window.as_millis() as u64),
-            Kind::Bucket {
-                capacity,
-                refill_per_sec,
-            } => (
-                capacity as u32,
-                ((capacity / refill_per_sec) * 1000.0) as u64,
-            ),
-        }
-    }
-}
+use partition::{partition_key, session_partition_key, VerifiedSessionPartitionKey};
+use policy::Kind;
+pub use policy::Policy;
 
 // ---------------------------------------------------------------------------
 // Shared in-memory store
@@ -516,89 +287,6 @@ fn ceil_secs(secs: f64) -> u64 {
         1
     }
 }
-
-// ---------------------------------------------------------------------------
-// Client IP / partition-key extraction
-// ---------------------------------------------------------------------------
-
-/// The client IP for partitioning, from sources a client cannot forge past a
-/// trusted reverse proxy: `X-Real-IP` (proxy-set), else the **rightmost**
-/// `X-Forwarded-For` hop (the entry the trusted proxy appended — leftmost
-/// entries are attacker-supplied), else the `ConnectInfo` peer address.
-fn client_ip(req: &Request) -> String {
-    let peer = req
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ConnectInfo(addr)| addr.ip());
-    crate::services::anti_cheat::client_ip(req.headers(), peer)
-        // No address (e.g. in-process test transport): one shared fail-closed bucket.
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// The partition key derived from a verified signed session by
-/// [`global_middleware`]. Named route limiters run inside that middleware, so
-/// carrying the fixed-size key in request extensions avoids hashing and hex
-/// encoding the same claims again for every decorated route.
-#[derive(Clone)]
-struct VerifiedSessionPartitionKey(String);
-
-fn partition_key(policy: Policy, req: &Request) -> String {
-    if matches!(
-        policy,
-        Policy::PowIssuanceGlobal | Policy::TeamSignatureGlobal
-    ) {
-        return match policy {
-            Policy::PowIssuanceGlobal => "hashpow-issuance-global",
-            Policy::TeamSignatureGlobal => "team-signature-global",
-            _ => unreachable!(),
-        }
-        .to_string();
-    }
-    // Credential, registration, recovery, mail, and OAuth-start abuse remains
-    // strictly source-IP scoped. A valid-but-revoked JWT must never create a
-    // fresh brute-force/mail bucket for these anonymous-facing routes.
-    if matches!(
-        policy,
-        Policy::Login
-            | Policy::Register
-            | Policy::GlobalIpBackstop
-            | Policy::CredentialIpAdmission
-            | Policy::PrivilegedHubAdmission
-            | Policy::PublicHubAdmission
-            | Policy::PowIssuanceSource
-            | Policy::TeamSignatureSource
-    ) {
-        return client_ip(req);
-    }
-    if let Some(credential) = req
-        .extensions()
-        .get::<crate::services::ad::api_token::VerifiedTeamToken>()
-    {
-        return credential.partition_key.clone();
-    }
-    if let Some(key) = req.extensions().get::<VerifiedSessionPartitionKey>() {
-        return key.0.clone();
-    }
-    req.extensions()
-        .get::<crate::middlewares::privilege_authentication::VerifiedSessionClaims>()
-        .map(|claims| session_partition_key(&claims.0))
-        .unwrap_or_else(|| client_ip(req))
-}
-
-/// Fixed-size identity for a signed session. Including the live-revocation stamp
-/// keeps sessions issued across credential rotations in separate generations;
-/// hashing avoids putting account identifiers or attacker-sized claim strings in
-/// memory and Redis keys.
-fn session_partition_key(claims: &crate::services::token::Claims) -> String {
-    let mut digest = Sha256::new();
-    digest.update(b"rsctf-rate-session-v1\0");
-    digest.update((claims.sub.len() as u64).to_be_bytes());
-    digest.update(claims.sub.as_bytes());
-    digest.update((claims.stamp.len() as u64).to_be_bytes());
-    digest.update(claims.stamp.as_bytes());
-    format!("jwt:{}", hex::encode(digest.finalize()))
-}
-
 // ---------------------------------------------------------------------------
 // Optional Redis-backed distributed limiter (multi-node)
 // ---------------------------------------------------------------------------
@@ -733,6 +421,75 @@ impl DistributedLimiter {
             }
         };
         redis_or_local(result, || check_weighted(policy, ip.to_owned(), cost))
+    }
+
+    /// Lease one coarse byte-credit chunk from every hierarchy dimension in a
+    /// single Redis transaction. A denial does not partially charge any key.
+    async fn check_proxy_traffic(&self, partitions: [&str; 5], costs: [u32; 5]) -> Result<(), u64> {
+        const SCRIPT: &str = r#"
+            local capacity = tonumber(ARGV[1])
+            local refill_per_sec = tonumber(ARGV[2])
+            local clock = redis.call('TIME')
+            local now_ms = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+            local next_tokens = {}
+            local next_last_ms = {}
+            local retry_ms = 0
+
+            for index, key in ipairs(KEYS) do
+                local cost = tonumber(ARGV[index + 2])
+                local tokens = tonumber(redis.call('HGET', key, 'tokens'))
+                local last_ms = tonumber(redis.call('HGET', key, 'last_ms'))
+                if not tokens or not last_ms then
+                    tokens = capacity
+                    last_ms = now_ms
+                else
+                    tokens = math.max(0, math.min(capacity, tokens))
+                    if now_ms > last_ms then
+                        tokens = math.min(capacity, tokens + ((now_ms - last_ms) * refill_per_sec / 1000))
+                        last_ms = now_ms
+                    end
+                end
+                next_tokens[index] = tokens
+                next_last_ms[index] = last_ms
+                if cost > capacity then
+                    retry_ms = math.max(retry_ms, math.ceil(capacity * 1000 / refill_per_sec))
+                elseif tokens < cost then
+                    retry_ms = math.max(retry_ms, math.ceil((cost - tokens) * 1000 / refill_per_sec))
+                end
+            end
+
+            if retry_ms > 0 then return math.max(1, retry_ms) end
+            for index, key in ipairs(KEYS) do
+                local tokens = next_tokens[index] - tonumber(ARGV[index + 2])
+                redis.call('HSET', key, 'tokens', tokens, 'last_ms', next_last_ms[index])
+                local full_in_ms = math.ceil((capacity - tokens) * 1000 / refill_per_sec)
+                redis.call('PEXPIRE', key, math.max(1, full_in_ms))
+            end
+            return 0
+        "#;
+        let Kind::Bucket {
+            capacity,
+            refill_per_sec,
+        } = Policy::ProxyTraffic.kind()
+        else {
+            return Err(1);
+        };
+        let keys = partitions.map(|partition| redis_key(Policy::ProxyTraffic, partition));
+        let mut conn = self.conn.clone();
+        let result = redis_with_timeout(async {
+            let script = redis::Script::new(SCRIPT);
+            let mut invocation = script.prepare_invoke();
+            for key in &keys {
+                invocation.key(key);
+            }
+            invocation.arg(capacity).arg(refill_per_sec);
+            for cost in costs {
+                invocation.arg(cost.max(1));
+            }
+            invocation.invoke_async(&mut conn).await
+        })
+        .await;
+        redis_or_local(result, || Ok(()))
     }
 
     /// Check the authenticated identity ceiling and source-IP backstop in one
@@ -937,6 +694,84 @@ pub(crate) async fn admit_ad_submit(
         .map(too_many_requests)
 }
 
+/// Charge proxy-open churn before target resolution. Capability-authenticated
+/// WSRX requests pass their verified account subject here too.
+pub(crate) async fn admit_proxy_open(
+    subject: uuid::Uuid,
+    source: &str,
+    workload: uuid::Uuid,
+    participation_id: Option<i32>,
+) -> Option<Response> {
+    let subject_check = check_async(Policy::ProxyOpen, format!("subject:{subject}"));
+    let workload_check = check_async(Policy::ProxyOpen, format!("workload:{workload}"));
+    let source_check = check_async(Policy::ProxySourceOpen, format!("source:{source}"));
+    let participation_check = async {
+        match participation_id {
+            Some(participation_id) => {
+                check_async(
+                    Policy::ProxyOpen,
+                    format!("participation:{participation_id}"),
+                )
+                .await
+            }
+            None => Ok(()),
+        }
+    };
+    let (subject, workload, source, participation) = tokio::join!(
+        subject_check,
+        workload_check,
+        source_check,
+        participation_check
+    );
+    [subject, workload, source, participation]
+        .into_iter()
+        .filter_map(Result::err)
+        .max()
+        .map(too_many_requests)
+}
+
+/// Charge the canonical participation once target resolution has identified it.
+pub(crate) async fn admit_proxy_participation(participation_id: i32) -> Option<Response> {
+    check_async(
+        Policy::ProxyOpen,
+        format!("participation:{participation_id}"),
+    )
+    .await
+    .err()
+    .map(too_many_requests)
+}
+
+/// Lease a multi-dimensional byte-credit chunk. Redis is consulted only once
+/// per coarse chunk; frames within that chunk stay entirely process-local.
+pub(crate) async fn admit_proxy_traffic_credit(
+    subject: uuid::Uuid,
+    scope: &str,
+    source: std::net::IpAddr,
+    workload: uuid::Uuid,
+    bytes: usize,
+) -> Result<(), u64> {
+    const CREDIT_UNIT_BYTES: usize = 64 * 1024;
+    let Some(distributed) = DISTRIBUTED.get() else {
+        return Ok(());
+    };
+    let units = bytes
+        .div_ceil(CREDIT_UNIT_BYTES)
+        .try_into()
+        .unwrap_or(u32::MAX)
+        .max(1);
+    let source_units = units.div_ceil(8).max(1);
+    let subject = format!("subject:{subject}");
+    let scope = format!("scope:{scope}");
+    let source = format!("source:{source}");
+    let workload = format!("workload:{workload}");
+    distributed
+        .check_proxy_traffic(
+            ["global", &subject, &scope, &source, &workload],
+            [units, units, units, source_units, units],
+        )
+        .await
+}
+
 fn check_authenticated_local(identity: String, ip: String) -> Result<(), u64> {
     check(Policy::Global, identity)?;
     check(Policy::GlobalIpBackstop, ip)
@@ -987,11 +822,9 @@ async fn admit_ad_authentication(token: &str, ip: &str) -> Result<(), u64> {
 // Middleware / decorator API
 // ---------------------------------------------------------------------------
 
-/// The always-on Global sliding window, layered once over the whole router in
-/// `server.rs`. API calls and content-addressed blob downloads are admitted;
-/// health checks and static SPA assets are not. Asset hashes are caller chosen,
-/// so leaving `/assets` outside this cheap source budget would let anonymous
-/// rotating misses reach authorization SQL without consuming rate quota.
+/// The always-on Global sliding window, layered once over the whole `/api`
+/// router in `server.rs`. Non-`/api` traffic (health checks, static SPA assets)
+/// is never limited, matching RSCTF scoping the global limiter to `/api`.
 ///
 /// Layer it **after** CORS so `OPTIONS` preflights don't consume quota:
 /// ```ignore
@@ -1002,8 +835,7 @@ pub async fn global_middleware(
     mut req: Request,
     next: Next,
 ) -> Response {
-    let path = req.uri().path();
-    if !globally_limited_path(path) {
+    if !req.uri().path().starts_with("/api") {
         return next.run(req).await;
     }
     let ip = client_ip(&req);
@@ -1116,10 +948,6 @@ mod ad_auth_admission_tests {
     }
 }
 
-fn globally_limited_path(path: &str) -> bool {
-    path.starts_with("/api") || path.starts_with("/assets/")
-}
-
 /// Decorate a single route handler with a named policy — the axum analogue of
 /// RSCTF's `[EnableRateLimiting(policy)]` attribute:
 /// ```ignore
@@ -1158,6 +986,10 @@ fn too_many_requests(retry_after: u64) -> Response {
     }
     resp
 }
+
+#[cfg(test)]
+#[path = "rate_limiter/event_vpn_tests.rs"]
+mod event_vpn_tests;
 
 #[cfg(test)]
 #[path = "rate_limiter_tests.rs"]

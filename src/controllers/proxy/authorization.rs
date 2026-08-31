@@ -1,13 +1,22 @@
 //! Live authorization snapshot shared by proxy opens and established leases.
 
 use std::net::Ipv4Addr;
+use std::sync::LazyLock;
+use std::time::Duration;
 
 use uuid::Uuid;
 
 use crate::services::live_roster::LiveParticipationIdentity;
 use crate::utils::enums::{ChallengeReviewStatus, GamePermission, ParticipationStatus, Role};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+mod exercise;
+pub(super) mod lease_cache;
+pub(super) use exercise::exercise_lease_is_valid;
+#[cfg(test)]
+pub(super) use exercise::EXERCISE_LEASE_FRESHNESS;
+use lease_cache::LeaseCache;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) struct GameProxyTargetIdentity {
     pub(super) container_id: Uuid,
     pub(super) runtime_id: String,
@@ -108,11 +117,13 @@ impl GameProxyOpenFence {
     }
 
     pub(super) async fn release(self) -> bool {
-        self.roster.release().await.is_ok()
+        tokio::time::timeout(Duration::from_secs(3), self.roster.release())
+            .await
+            .is_ok_and(|result| result.is_ok())
     }
 
     pub(super) async fn rollback(self) {
-        let _ = self.roster.rollback().await;
+        let _ = tokio::time::timeout(Duration::from_secs(3), self.roster.rollback()).await;
     }
 }
 
@@ -186,6 +197,30 @@ async fn try_acquire_game_proxy_scope_guard(
 /// the access-evidence insert and backend stream open. A small shared permit
 /// prevents slow or unreachable backends from consuming the PostgreSQL pool.
 pub(super) async fn try_acquire_game_proxy_open_fence(
+    pool: &sqlx::PgPool,
+    caller: LiveParticipationIdentity<'_>,
+    challenge_id: i32,
+    target: &GameProxyTargetIdentity,
+    source: Option<Ipv4Addr>,
+    bypass_event_vpn: bool,
+) -> Option<GameProxyOpenFence> {
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        try_acquire_game_proxy_open_fence_within_deadline(
+            pool,
+            caller,
+            challenge_id,
+            target,
+            source,
+            bypass_event_vpn,
+        ),
+    )
+    .await
+    .ok()
+    .flatten()
+}
+
+async fn try_acquire_game_proxy_open_fence_within_deadline(
     pool: &sqlx::PgPool,
     caller: LiveParticipationIdentity<'_>,
     challenge_id: i32,
@@ -270,6 +305,55 @@ pub(super) async fn game_proxy_session_is_valid(
     source: Option<Ipv4Addr>,
     bypass_event_vpn: bool,
 ) -> bool {
+    let key = GameLeaseKey {
+        user_id: caller.user_id,
+        security_stamp: caller.expected_security_stamp.to_owned(),
+        game_id: caller.game_id,
+        team_id: caller.team_id,
+        participation_id: caller.participation_id,
+        challenge_id,
+        target: target.clone(),
+        source,
+        bypass_event_vpn,
+    };
+    GAME_LEASES
+        .validate(key, || {
+            game_proxy_session_is_valid_authoritative(
+                pool,
+                caller,
+                challenge_id,
+                target,
+                source,
+                bypass_event_vpn,
+            )
+        })
+        .await
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct GameLeaseKey {
+    user_id: Uuid,
+    security_stamp: String,
+    game_id: i32,
+    team_id: i32,
+    participation_id: i32,
+    challenge_id: i32,
+    target: GameProxyTargetIdentity,
+    source: Option<Ipv4Addr>,
+    bypass_event_vpn: bool,
+}
+
+static GAME_LEASES: LazyLock<LeaseCache<GameLeaseKey>> =
+    LazyLock::new(|| LeaseCache::new(8_192, Duration::from_millis(250)));
+
+async fn game_proxy_session_is_valid_authoritative(
+    pool: &sqlx::PgPool,
+    caller: LiveParticipationIdentity<'_>,
+    challenge_id: i32,
+    target: &GameProxyTargetIdentity,
+    source: Option<Ipv4Addr>,
+    bypass_event_vpn: bool,
+) -> bool {
     let Ok(Some(mut roster)) =
         try_acquire_game_proxy_scope_guard(pool, caller, challenge_id, target).await
     else {
@@ -301,12 +385,16 @@ pub(super) async fn game_proxy_scope_is_valid(
     challenge_id: i32,
     target: &GameProxyTargetIdentity,
 ) -> bool {
-    let Ok(Some(roster)) =
-        try_acquire_game_proxy_scope_guard(pool, caller, challenge_id, target).await
-    else {
-        return false;
-    };
-    roster.release().await.is_ok()
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let Ok(Some(roster)) =
+            try_acquire_game_proxy_scope_guard(pool, caller, challenge_id, target).await
+        else {
+            return false;
+        };
+        roster.release().await.is_ok()
+    })
+    .await
+    .unwrap_or(false)
 }
 
 #[cfg(test)]

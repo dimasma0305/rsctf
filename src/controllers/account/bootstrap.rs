@@ -9,6 +9,24 @@ const TOKEN_ENV: &str = "RSCTF_BOOTSTRAP_TOKEN";
 const DENIED: &str = "Bootstrap registration is unavailable";
 const MIN_TOKEN_BYTES: usize = 32;
 
+pub(super) fn registration_disposition(
+    is_first: bool,
+    active_on_register: bool,
+    email_confirmation_required: bool,
+) -> (bool, crate::utils::enums::RegisterStatus) {
+    use crate::utils::enums::RegisterStatus;
+
+    let session_eligible = is_first || (active_on_register && !email_confirmation_required);
+    let status = if session_eligible {
+        RegisterStatus::LoggedIn
+    } else if email_confirmation_required {
+        RegisterStatus::EmailConfirmationRequired
+    } else {
+        RegisterStatus::AdminConfirmationRequired
+    };
+    (session_eligible, status)
+}
+
 /// Cheap fail-fast check before captcha, validation, and password hashing. The
 /// lock-protected check in `register` remains authoritative.
 pub(super) async fn preflight(st: &SharedState, supplied: Option<&str>) -> AppResult<bool> {

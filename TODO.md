@@ -184,6 +184,10 @@ on 2026-08-25.
     failures into empty success values, and honor `Retry-After` where retry is valid.
   - Cancel modal requests on close/unmount and pause nonessential polling while the
     page is hidden or offline.
+  - Treat challenge detail as mutation-driven after its initial open. Do not replace
+    usable cached material with a red modal-wide error because a redundant two-minute
+    refresh, focus event, or reconnect briefly failed; explicit workload/submission
+    mutations reconcile the detail through the existing cache owner.
   - Page and cap the solver read. The closed modal requests it every 30 seconds without
     `count`; the backend rebuilds/reads the whole scoreboard, scans every team, clones
     every matching solver, and sorts the complete result before returning it.
@@ -1281,7 +1285,7 @@ on 2026-08-25.
   - Relevant code: `web/src/pages/games/[id]/Attack.tsx`,
     `src/controllers/game/routes.rs`, and `src/hubs/attack.rs`.
 
-- [ ] Stop stale BYOC agents from forming a permanent synchronized reconnect flood.
+- [x] Stop stale BYOC agents from forming a permanent synchronized reconnect flood.
   - Generated Compose bundles set the tunnel agent to `restart: unless-stopped`. The
     agent makes 20 attempts per minute after every failure at a fixed three-second
     interval forever, including
@@ -1314,6 +1318,19 @@ on 2026-08-25.
     `src/controllers/game/ad/byoc_authorization.rs`, and
     `src/services/byoc_tunnel/`.
 
+- [x] Keep first-time BYOC enrollment distinct from managed-service provisioning.
+  - The player challenge contract now exposes `adSelfHosted` independently of a
+    team-service row, so a BYOC challenge with no connected agent renders the
+    setup/Compose downloads and explains outbound agent enrollment.
+  - Never tell BYOC players to ask an operator to run "Ensure containers"; that
+    action provisions platform-managed services and is not their enrollment path.
+  - Regression coverage models game 13 challenge 50's missing service row and
+    asserts both BYOC downloads remain available without the managed-service prompt.
+  - Relevant code: `src/controllers/game/play.rs`,
+    `src/controllers/game/play_final_policy.rs`, `web/src/Api.ts`,
+    `web/src/components/ChallengeModal.tsx`, and
+    `web/src/components/AdChallengePanel.tsx`.
+
 - [x] Close the Event-VPN route-casing bypass.
   - The middleware recognizes only exact lowercase `api/game` segments, while the
     registered A&D aliases and arena client use mixed-case `/api/Game/{id}/Ad/...`
@@ -1339,7 +1356,7 @@ on 2026-08-25.
   - Relevant code: `web/src/pages/games/[id]/Attack.tsx` and
     `src/controllers/game/routes.rs`.
 
-- [ ] Make scheduled and mutated notices reach already-open player pages.
+- [x] Make scheduled and mutated notices reach already-open player pages.
   - Bound normal-notice content by UTF-8 bytes on the backend and keep the maximum
     safely below the 64-KiB SignalR frame envelope after JSON framing. The editor has no
     `maxLength`, `GameNoticeModel` has no validation, and the route otherwise accepts the
@@ -1383,7 +1400,7 @@ on 2026-08-25.
     `web/src/components/admin/GameNoticeEditModal.tsx`, plus a new registered idempotent
     forward migration for notice operations/outbox delivery.
 
-- [ ] Isolate realtime fan-out so one noisy event cannot starve every connected hub.
+- [x] Isolate realtime fan-out so one noisy event cannot starve every connected hub.
   - Replace or shard the single global 512-entry broadcast queue; filter by target and
     game before unrelated sockets compete for the same bounded history.
   - Treat `RecvError::Lagged` and a full distributed outbound queue as data loss, not a
@@ -1395,7 +1412,7 @@ on 2026-08-25.
   - Relevant code: `src/services/event_bus.rs`, `src/hubs/signalr.rs`,
     `src/hubs/attack.rs`, and `src/controllers/game/ad/submit.rs`.
 
-- [ ] Reject and meter inbound application traffic on read-only WebSocket feeds.
+- [x] Reject and meter inbound application traffic on read-only WebSocket feeds.
   - The raw attack socket silently consumes arbitrary Text and Binary frames. SignalR
     accepts any first Text frame as a valid handshake and then silently consumes every
     client Text/Binary application frame even though these hubs expose no client
@@ -3455,6 +3472,45 @@ on 2026-08-25.
   - Relevant code: `src/controllers/game/play.rs`,
     `src/controllers/game/scoreboard_board.rs`, and
     `web/src/components/TeamRank.tsx`.
+
+- [ ] Show BYOC-specific recovery when a team's self-hosted A&D service is absent.
+  - A BYOC challenge without a registered service must explain how to enroll or
+    reconnect the team's own agent. It must not tell players to ask an operator to
+    provision a platform-managed container with "Ensure containers".
+  - Derive the empty state from the authoritative challenge delivery mode, including
+    before the first agent heartbeat, and keep managed A&D services on the existing
+    provisioning path.
+  - Add player-component and API-contract regressions for absent, connecting, healthy,
+    stale, and revoked BYOC agents plus an ordinary managed A&D service.
+  - Relevant code: `web/src/components/AdChallengePanel.tsx`, the A&D state wire model,
+    and the BYOC enrollment/agent controllers.
+
+- [ ] Diagnose and remove repeated transient challenge-detail load failures.
+  - Capture the actual failing challenge and solver requests, HTTP status/error code,
+    request identity, and server trace without exposing secrets; do not collapse a
+    VPN disconnect, session expiry, overload, or invalid response into the same generic
+    message.
+  - Preserve last-known-good challenge data during a refresh failure, coalesce the
+    challenge and solver recovery owners, and ensure one failed secondary solver read
+    cannot replace an otherwise valid challenge with the full load-error surface.
+  - Add browser and fixed-rate regressions for cold open, cached refresh, Event-VPN
+    reconnect, session expiry, 429/Retry-After, transient 5xx, and a solver-only failure.
+  - Relevant code: `web/src/components/GameChallengeModal.tsx`,
+    `web/src/components/ChallengeModal.tsx`, `web/src/hooks/useChallengePolling.ts`,
+    `web/src/utils/ChallengePolling.ts`, and the challenge-detail/solver controllers.
+
+- [ ] Keep custom challenge Markdown animations alive while the player edits the flag form.
+  - Typing, receipt-proof input, verdict polling, and unrelated modal state must not
+    replace the sanitized Markdown DOM or restart embedded SVG/CSS animations when the
+    challenge content itself is unchanged.
+  - Preserve sanitization and React ownership; memoize the rendered content boundary
+    rather than permitting arbitrary scripts or moving form state outside its owner.
+  - Add a mounted modal regression with an animated Markdown fixture that types and
+    submits a flag, advances timers, and proves the content node and animation state are
+    not recreated until the challenge ID/content changes.
+  - Relevant code: `web/src/components/MarkdownRenderer.tsx`,
+    `web/src/components/ChallengeModal.tsx`, and
+    `web/src/components/GameChallengeModal.tsx`.
 
 ### Completion gate
 

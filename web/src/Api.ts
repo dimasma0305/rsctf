@@ -1688,6 +1688,10 @@ export interface GameNoticeModel {
    * @minLength 1
    */
   content: string;
+  /** Stable client identity used to recover an exactly-once mutation result. */
+  operationId: string;
+  /** Unix milliseconds; null publishes immediately and omission preserves an update schedule. */
+  publishAt?: number | null;
 }
 
 export interface Division {
@@ -2348,11 +2352,30 @@ export interface AdBatchSubmitResultModel {
 export interface AdTokenGenerateResultModel {
   token: string;
   hint: string;
-  rotatedAt: string;
+  operationId: string;
+  revision: number;
+  participationId: number;
+  teamId: number;
+  /** Unix milliseconds. */
+  recoveryExpiresAt: number;
+  /** Unix milliseconds. */
+  rotatedAt: number;
+}
+
+export interface PlayerCredentialMutationModel {
+  operationId: string;
+  expectedRevision: number;
+}
+
+export interface PlayerCredentialMutationResultModel {
+  operationId: string;
+  revision: number;
+  /** Unix milliseconds. */
+  recoveryExpiresAt: number;
 }
 
 /** A&D SSH key — body for POST /api/Game/{id}/Ad/Ssh/Key. */
-export interface AdSshKeyUploadModel {
+export interface AdSshKeyUploadModel extends PlayerCredentialMutationModel {
   publicKey: string;
 }
 
@@ -2362,11 +2385,17 @@ export interface AdSshKeyInfoModel {
   algorithm: string;
   fingerprint: string;
   platformGenerated: boolean;
-  createdAt?: string | null;
-  lastUsedAt?: string | null;
+  /** Unix milliseconds. */
+  createdAt?: number | null;
+  /** Unix milliseconds. */
+  lastUsedAt?: number | null;
   /** Hostname:port the player ssh's to (Ad:Ssh:PublicHost/Port). */
   jumpHost?: string | null;
+  revision: number;
 }
+
+/** A&D SSH key — successful upload response with mutation ownership. */
+export interface AdSshKeyMutationResultModel extends AdSshKeyInfoModel, PlayerCredentialMutationResultModel {}
 
 /** A&D SSH key — server-generated keypair (private key shown once). */
 export interface AdSshKeyGeneratedModel {
@@ -2374,7 +2403,12 @@ export interface AdSshKeyGeneratedModel {
   publicKey: string;
   privateKey: string;
   fingerprint: string;
-  createdAt: string;
+  operationId: string;
+  revision: number;
+  /** Unix milliseconds. */
+  recoveryExpiresAt: number;
+  /** Unix milliseconds. */
+  createdAt: number;
 }
 
 export interface AdEpochScoreModel {
@@ -2458,11 +2492,17 @@ export interface AdScoreboardModel {
 export interface AdTokenHintModel {
   exists: boolean;
   hint: string;
-  createdAt?: string | null;
-  lastRotatedAt?: string | null;
-  lastUsedAt?: string | null;
+  /** Unix milliseconds. */
+  createdAt?: number | null;
+  /** Unix milliseconds. */
+  lastRotatedAt?: number | null;
+  /** Unix milliseconds. */
+  lastUsedAt?: number | null;
   /** True iff caller is captain of the participating team. */
   canManage: boolean;
+  revision: number;
+  participationId: number;
+  teamId: number;
 }
 
 /** A&D — per-service row in the player's state view. */
@@ -3558,42 +3598,66 @@ export interface TrafficInventoryPage<T> {
 /** Direction of a captured payload chunk relative to the proxied container */
 export type TrafficFlowDirection = "ContainerToTeam" | "TeamToContainer"
 
-/** Compact summary of a single proxied TCP session in a pcap */
+/** Compact summary of one bounded TCP-session index entry. Times are Unix milliseconds. */
 export interface TrafficFlowSummary {
+  /** Stable canonical identity for disambiguating reused connection ports. */
+  flowId: string
   connectionPort: number
-  firstSeenUtc: string
-  lastSeenUtc: string
+  firstSeenUtc: number
+  lastSeenUtc: number
   peerIp: string
   packetsIn: number
   packetsOut: number
   bytesIn: number
   bytesOut: number
   flagHits: number
+  payloadTruncated: boolean
 }
 
-/** One contiguous payload chunk in a flow */
+/** One retained packet-payload chunk in a flow. Payload retention is explicitly bounded. */
 export interface TrafficFlowChunk {
   direction: TrafficFlowDirection
-  timestampUtc: string
+  timestampUtc: number
   /** Base64-encoded raw bytes */
   payloadBase64: string
   /** Byte offsets within the decoded payload where a known flag begins */
   flagOffsets: number[]
 }
 
-/** Full payload detail of a single flow */
+/** Bounded functional payload detail from the exact snapshot that produced the summary. */
 export interface TrafficFlowDetail extends TrafficFlowSummary {
+  snapshotVersion: string
   chunks: TrafficFlowChunk[]
 }
 
-/** Filter parameters for the flow-list endpoint */
-export interface FlowFilter {
+/** Validated filter and page parameters for the flow-list endpoint. */
+export interface TrafficFlowQuery {
   regexPattern?: string
   peerIpContains?: string
-  startUtc?: string
-  endUtc?: string
+  startUtc?: number
+  endUtc?: number
   direction?: TrafficFlowDirection
   flagsOnly?: boolean
+  page?: number
+  pageSize?: number
+}
+
+/** One page bound to an immutable file identity, size, and modification time. */
+export interface TrafficFlowPage {
+  items: TrafficFlowSummary[]
+  page: number
+  pageSize: number
+  totalItems: number
+  totalPages: number
+  snapshotVersion: string
+  indexedPayloadBytes: number
+  payloadTruncated: boolean
+}
+
+/** Snapshot selection for a detail read. */
+export interface TrafficFlowDetailQuery {
+  snapshotVersion?: string
+  flowId?: string
 }
 
 /** Result of a challenge import (tarball or github) */
@@ -3960,6 +4024,8 @@ export interface ChallengeDetailModel {
   userComment?: string | null;
   solveReceiptMode?: SolveReceiptMode;
   receiptVerifierIdentity?: string | null;
+  /** True when this A&D service runs on the team's host through the BYOC agent. */
+  adSelfHosted?: boolean;
   /** Public identity of this team's deterministic variant; never includes its answer. */
   variant?: ClientChallengeVariant | null;
 }
@@ -9260,13 +9326,13 @@ export class Api<
       challengeId: number,
       partId: number,
       filename: string,
-      filter: FlowFilter = {},
+      query: TrafficFlowQuery = {},
       params: RequestParams = {},
     ) =>
-      this.request<TrafficFlowSummary[], RequestResponse>({
+      this.request<TrafficFlowPage, RequestResponse>({
         path: `/api/game/captures/${challengeId}/${partId}/${filename}/flows`,
         method: "GET",
-        query: filter,
+        query,
         format: "json",
         ...params,
       }),
@@ -9284,11 +9350,13 @@ export class Api<
       partId: number,
       filename: string,
       connectionPort: number,
+      query: TrafficFlowDetailQuery = {},
       params: RequestParams = {},
     ) =>
       this.request<TrafficFlowDetail, RequestResponse>({
         path: `/api/game/captures/${challengeId}/${partId}/${filename}/flow/${connectionPort}`,
         method: "GET",
+        query,
         format: "json",
         ...params,
       }),
@@ -9881,10 +9949,16 @@ export class Api<
      * @name GameAdRotateToken
      * @request POST:/api/Game/{id}/Ad/Token
      */
-    gameAdRotateToken: (id: number, params: RequestParams = {}) =>
+    gameAdRotateToken: (
+      id: number,
+      data: PlayerCredentialMutationModel,
+      params: RequestParams = {},
+    ) =>
       this.request<AdTokenGenerateResultModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Token`,
         method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -9936,10 +10010,17 @@ export class Api<
      * @name GameAdRevokeToken
      * @request DELETE:/api/Game/{id}/Ad/Token
      */
-    gameAdRevokeToken: (id: number, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+    gameAdRevokeToken: (
+      id: number,
+      data: PlayerCredentialMutationModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<PlayerCredentialMutationResultModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Token`,
         method: "DELETE",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
         ...params,
       }),
 
@@ -9950,7 +10031,7 @@ export class Api<
      * @request POST:/api/Game/{id}/Ad/Ssh/Key
      */
     adGameUploadSshKey: (id: number, data: AdSshKeyUploadModel, params: RequestParams = {}) =>
-      this.request<AdSshKeyInfoModel, RequestResponse>({
+      this.request<AdSshKeyMutationResultModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Ssh/Key`,
         method: "POST",
         body: data,
@@ -9965,10 +10046,16 @@ export class Api<
      * @name AdGameGenerateSshKey
      * @request POST:/api/Game/{id}/Ad/Ssh/Key/Generate
      */
-    adGameGenerateSshKey: (id: number, params: RequestParams = {}) =>
+    adGameGenerateSshKey: (
+      id: number,
+      data: PlayerCredentialMutationModel,
+      params: RequestParams = {},
+    ) =>
       this.request<AdSshKeyGeneratedModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Ssh/Key/Generate`,
         method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -10009,10 +10096,17 @@ export class Api<
      * @name AdGameRevokeSshKey
      * @request DELETE:/api/Game/{id}/Ad/Ssh/Key
      */
-    adGameRevokeSshKey: (id: number, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+    adGameRevokeSshKey: (
+      id: number,
+      data: PlayerCredentialMutationModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<PlayerCredentialMutationResultModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Ssh/Key`,
         method: "DELETE",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
         ...params,
       }),
 
