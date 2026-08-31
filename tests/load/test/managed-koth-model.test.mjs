@@ -6,11 +6,32 @@ import {
   managedKothHarnessConfig,
   managedKothLoadPlan,
   managedKothOperationCycleId,
+  managedKothSummaryMetric,
   validateManagedKothRecovery,
   validateManagedKothIntegrity,
   validateManagedReporterEnvironment,
   validateManagedReporterStatus,
 } from '../managed-koth-model.js';
+
+test('managed KotH retained metrics accept k6 1.x and 2.x summary shapes', () => {
+  const k6v1 = {
+    metrics: {
+      server_5xx: { values: { rate: 0 } },
+      valid_capabilities_exercised: { values: { count: 2_000 } },
+    },
+  };
+  const k6v2 = {
+    metrics: {
+      server_5xx: { value: 0, passes: 0, fails: 2_000 },
+      valid_capabilities_exercised: { count: 2_000 },
+    },
+  };
+  assert.equal(managedKothSummaryMetric(k6v1, 'server_5xx', 'rate'), 0);
+  assert.equal(managedKothSummaryMetric(k6v2, 'server_5xx', 'rate'), 0);
+  assert.equal(managedKothSummaryMetric(k6v1, 'valid_capabilities_exercised', 'count'), 2_000);
+  assert.equal(managedKothSummaryMetric(k6v2, 'valid_capabilities_exercised', 'count'), 2_000);
+  assert.ok(Number.isNaN(managedKothSummaryMetric({}, 'server_5xx', 'rate')));
+});
 
 test('managed KotH load plan covers every 2k capability at a fixed rate with bounded concurrency', () => {
   const plan = managedKothLoadPlan();
@@ -133,6 +154,40 @@ test('reporter status is bounded, secret-free, and proves all capability identit
   assert.throws(
     () => validateManagedReporterStatus({ ...status, uniqueAuthenticated: 1_999 }, {}),
     /1999\/2000/,
+  );
+});
+
+test('reporter status retains a bounded secret-free unhealthy reason', () => {
+  const status = {
+    reporterConfigured: true,
+    reporterHealthy: false,
+    successfulReports: 0,
+    submittedWaves: 0,
+    contextRefreshes: 1,
+    eligibleRoster: 2_000,
+    uniqueAuthenticated: 2_000,
+    uniqueActivePlayed: 64,
+    invalidAuthentications: 0,
+    lastRound: 9,
+    lastContext: 'a'.repeat(64),
+    lastError: 'HTTP 409',
+  };
+  assert.equal(validateManagedReporterStatus(status), status);
+  assert.throws(
+    () => validateManagedReporterStatus(status, {}),
+    /reporter is unhealthy: HTTP 409/,
+  );
+  assert.throws(
+    () => validateManagedReporterStatus({ ...status, lastError: null }),
+    /status is malformed/,
+  );
+  assert.throws(
+    () => validateManagedReporterStatus({ ...status, lastError: 'x'.repeat(301) }),
+    /status is malformed/,
+  );
+  assert.throws(
+    () => validateManagedReporterStatus({ ...status, lastError: 'HTTP 409\nforged' }),
+    /status is malformed/,
   );
 });
 

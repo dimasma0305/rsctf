@@ -470,9 +470,32 @@ def request_json(url, *, body=None, headers=None, timeout=5):
             response_headers = {name.lower(): value for name, value in response.headers.items()}
             return response.status, json.loads(raw), response_headers
     except HTTPError as error:
-        error.read(65_537)
+        raw = error.read(65_537)
+        try:
+            model = json.loads(raw)
+            title = model.get("title") if isinstance(model, dict) else None
+            if isinstance(title, str) and 0 < len(title) <= 256:
+                error.rsctf_title = title
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
         error.close()
         raise
+
+
+def bounded_http_error(error):
+    title = getattr(error, "rsctf_title", None)
+    if title is None:
+        try:
+            raw = error.read(65_537)
+            model = json.loads(raw)
+            candidate = model.get("title") if isinstance(model, dict) else None
+            if isinstance(candidate, str) and 0 < len(candidate) <= 256:
+                title = candidate
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
+        finally:
+            error.close()
+    return f"HTTP {error.code}: {title}" if title else f"HTTP {error.code}"
 
 
 def vary_has_api_version(headers):
@@ -671,8 +694,9 @@ def reporter_loop():
         except HTTPError as error:
             # Context changes and rate admission are expected bounded retries;
             # every other response remains visible in the secret-free status.
+            reason = bounded_http_error(error)
             with state_lock:
-                last_error = f"HTTP {error.code}"
+                last_error = reason
         except (URLError, TimeoutError, ConnectionError, OSError, ValueError, RuntimeError) as error:
             with state_lock:
                 last_error = type(error).__name__

@@ -1,0 +1,411 @@
+name: Managed KotH load gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "Exact current main commit represented by the candidate image"
+        required: true
+        type: string
+      server_image:
+        description: "Immutable ghcr.io server image including its sha256 digest"
+        required: true
+        type: string
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/managed-koth-load.yml
+      - tests/load/managed-koth.compose.yml
+      - tests/load/managed-koth.md
+      - tests/load/managed-koth.mjs
+      - tests/load/k6/managed-koth.js
+      - tests/load/test/managed-koth-harness.test.mjs
+
+permissions:
+  actions: write
+  attestations: read
+  contents: read
+  packages: read
+
+concurrency:
+  group: managed-koth-load-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  load:
+    name: Fixed-rate managed KotH acceptance
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ADMIN_LIFECYCLE_STACK_MARKER: managed-koth-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_PROJECT_NAME: mkoth-${{ github.run_id }}-${{ github.run_attempt }}
+      POSTGRES_DB: rsctf
+      POSTGRES_IMAGE: postgres:18.4-alpine3.24@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+      POSTGRES_USER: rsctf
+      REDIS_IMAGE: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+      RSCTF_AD_VPN_SERVICES_CIDR: 172.30.104.0/24
+      RSCTF_AD_VPN_SERVICES_NETWORK: mkoth-${{ github.run_id }}-${{ github.run_attempt }}-ad
+      RSCTF_CHALLENGE_PROXY_BRIDGE: mkoth-proxy0
+      RSCTF_CHALLENGE_PROXY_SUBNET: 172.30.103.0/24
+      RSCTF_DOCKER_PROXY_BIND: 172.30.103.1
+      RSCTF_DOCKER_PUBLIC_ENTRY: 127.0.0.1
+      RSCTF_DOCKER_SCOPE: managed-koth-${{ github.run_id }}-${{ github.run_attempt }}
+      RSCTF_HTTP_BIND_IP: 127.0.0.1
+      RSCTF_HTTP_PORT: "18083"
+      RSCTF_COOKIE_SECURE: "false"
+      RSCTF_PUBLIC_URL: http://127.0.0.1:18083
+      TARGET: http://127.0.0.1:18083
+    steps:
+      - name: Check out gate definition
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.source_sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify source and candidate provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_SERVER_IMAGE: ${{ inputs.server_image }}
+          SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be one full lowercase Git commit id."
+            exit 1
+          fi
+          checked_out="$(git rev-parse HEAD)"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            if [[ "$checked_out" != "${{ github.event.pull_request.head.sha }}" ]]; then
+              echo "::error::The pull-request gate definition was not checked out exactly."
+              exit 1
+            fi
+            unexpected="$(
+              git diff --name-only "$SOURCE_SHA...$checked_out" -- \
+                ':(exclude).github/workflows/managed-koth-load.yml' \
+                ':(exclude)tests/load/managed-koth.compose.yml' \
+                ':(exclude)tests/load/managed-koth.md' \
+                ':(exclude)tests/load/fixtures.mjs' \
+                ':(exclude)tests/load/managed-koth-model.js' \
+                ':(exclude)tests/load/managed-koth.mjs' \
+                ':(exclude)tests/load/k6/managed-koth.js' \
+                ':(exclude)tests/load/test/managed-koth-harness.test.mjs' \
+                ':(exclude)tests/load/test/managed-koth-model.test.mjs'
+            )"
+            if [[ -n "$unexpected" ]]; then
+              echo "::error::The bootstrap pull request may change only the managed KotH gate files."
+              printf '%s\n' "$unexpected"
+              exit 1
+            fi
+          elif [[ "$checked_out" != "$SOURCE_SHA" ]]; then
+            echo "::error::The checked-out source does not match source_sha."
+            exit 1
+          fi
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if [[ "$(git rev-parse origin/main)" != "$SOURCE_SHA" ]]; then
+            echo "::error::The load candidate must be the exact current main commit."
+            exit 1
+          fi
+
+          repository="ghcr.io/${GITHUB_REPOSITORY,,}"
+          server_image="$REQUESTED_SERVER_IMAGE"
+          if [[ -z "$server_image" ]]; then
+            resolve_digest() {
+              docker buildx imagetools inspect "${repository}:sha-${SOURCE_SHA}" \
+                --format '{{ json .Manifest.Digest }}' 2>/dev/null \
+                | jq -er 'select(type == "string" and test("^sha256:[0-9a-f]{64}$"))'
+            }
+            if ! digest="$(resolve_digest)"; then
+              active_publication="$(
+                gh run list \
+                  --workflow image.yml \
+                  --commit "$SOURCE_SHA" \
+                  --limit 20 \
+                  --json status \
+                  --jq 'any(.[]; .status == "queued" or .status == "in_progress" or .status == "waiting")'
+              )"
+              if [[ "$active_publication" != "true" ]]; then
+                gh workflow run image.yml --ref main
+              fi
+              digest=""
+              for _ in $(seq 1 80); do
+                if digest="$(resolve_digest)"; then
+                  break
+                fi
+                sleep 30
+              done
+            fi
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::The exact current-main candidate image was not published within 40 minutes."
+              exit 1
+            fi
+            server_image="${repository}@${digest}"
+          fi
+          if [[ "${server_image%@sha256:*}" != "$repository" ]] \
+            || [[ ! "$server_image" =~ @sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::server_image must be this repository's immutable GHCR digest."
+            exit 1
+          fi
+
+          attested=false
+          for _ in $(seq 1 60); do
+            if gh attestation verify "oci://${server_image}" \
+              --bundle-from-oci \
+              --hostname github.com \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/image.yml" \
+              --source-ref refs/heads/main \
+              --source-digest "$SOURCE_SHA" \
+              --deny-self-hosted-runners \
+              >/dev/null 2>&1; then
+              attested=true
+              break
+            fi
+            sleep 10
+          done
+          if [[ "$attested" != "true" ]]; then
+            echo "::error::The exact candidate did not receive its expected GitHub attestation."
+            exit 1
+          fi
+
+          manifest="$(docker buildx imagetools inspect --raw "$server_image")"
+          if ! jq -e '
+            [.manifests[]?.platform
+             | select(.os == "linux")
+             | .architecture
+             | select(. == "amd64" or . == "arm64")]
+            | sort == ["amd64", "arm64"]
+          ' <<< "$manifest" >/dev/null; then
+            echo "::error::The candidate does not contain exactly linux/amd64 and linux/arm64."
+            exit 1
+          fi
+
+          expected_version="$(awk -F '"' '$1 == "version = " { print $2; exit }' Cargo.toml)"
+          while IFS= read -r platform_digest; do
+            labels="$(
+              docker buildx imagetools inspect "${repository}@${platform_digest}" \
+                --format '{{ json .Image.Config.Labels }}'
+            )"
+            test "$(jq -er '."org.opencontainers.image.revision"' <<< "$labels")" = "$SOURCE_SHA"
+            test "$(jq -er '."org.opencontainers.image.version"' <<< "$labels")" = "$expected_version"
+            jq -er '."org.opencontainers.image.rsctf.byoc-agent"
+              | select(test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$"))' \
+              <<< "$labels" >/dev/null
+          done < <(jq -r '.manifests[] | select(.platform.os == "linux") | .digest' <<< "$manifest")
+
+          printf 'RSCTF_IMAGE=%s\n' "$server_image" >> "$GITHUB_ENV"
+
+      - name: Install pinned k6
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/k6-v2.0.0-linux-amd64.tar.gz"
+          curl --fail --silent --show-error --location \
+            https://github.com/grafana/k6/releases/download/v2.0.0/k6-v2.0.0-linux-amd64.tar.gz \
+            --output "$archive"
+          printf '%s  %s\n' \
+            2ae87d976f6cdba17185bdd980d8819a3a98e9092c6f0638cd58272ecefc8b90 \
+            "$archive" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          sudo install -m 0755 "$RUNNER_TEMP/k6-v2.0.0-linux-amd64/k6" /usr/local/bin/k6
+          test "$(k6 version | awk '{print $2}')" = "v2.0.0"
+
+      - name: Generate disposable stack secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          for name in POSTGRES_PASSWORD RSCTF_JWT_SECRET RSCTF_IDENTITY_HASH_KEY RSCTF_BOOTSTRAP_TOKEN; do
+            value="$(openssl rand -hex 32)"
+            echo "::add-mask::$value"
+            printf '%s=%s\n' "$name" "$value" >> "$GITHUB_ENV"
+          done
+
+      - name: Start isolated candidate stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose \
+            -f deploy/compose.yml \
+            -f deploy/compose.docker.yml \
+            -f tests/load/managed-koth.compose.yml \
+            config --quiet
+          compose=(
+            docker compose
+            -f deploy/compose.yml
+            -f deploy/compose.docker.yml
+            -f tests/load/managed-koth.compose.yml
+          )
+          if ! "${compose[@]}" up --detach --wait --wait-timeout 300; then
+            "${compose[@]}" ps --all
+            "${compose[@]}" logs --no-color --tail 200 rsctf
+            exit 1
+          fi
+          body="$(curl --fail --silent --show-error "$TARGET/healthz")"
+          test "$body" = "ok"
+
+      - name: Bootstrap isolated administrator
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          password="Aa1$(openssl rand -hex 24)"
+          echo "::add-mask::$password"
+          payload="$RUNNER_TEMP/bootstrap.json"
+          response="$RUNNER_TEMP/bootstrap-response.json"
+          jq -n \
+            --arg userName "managed-koth-admin-${GITHUB_RUN_ID}" \
+            --arg password "$password" \
+            --arg email "managed-koth-${GITHUB_RUN_ID}@load.test" \
+            --arg bootstrapToken "$RSCTF_BOOTSTRAP_TOKEN" \
+            '{userName: $userName, password: $password, email: $email, bootstrapToken: $bootstrapToken}' \
+            > "$payload"
+          status="$(curl --silent --show-error \
+            --output "$response" \
+            --write-out '%{http_code}' \
+            --header 'content-type: application/json' \
+            --data-binary "@$payload" \
+            "$TARGET/api/account/register")"
+          rm -f "$payload"
+          if [[ "$status" != "200" ]]; then
+            echo "::error::Administrator bootstrap returned HTTP ${status}."
+            jq -c 'del(.token, .data.token)' "$response" || true
+            exit 1
+          fi
+          rm -f "$response"
+
+      - name: Seed fallback-cleanup probes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RSCTF_DOCKER_SCOPE" =~ ^managed-koth-[0-9]+-[0-9]+$ ]]; then
+            echo "::error::The disposable Docker scope is malformed."
+            exit 1
+          fi
+          managed_scope="$(printf 'explicit\0%s' "$RSCTF_DOCKER_SCOPE" | sha256sum | cut -c1-32)"
+          docker create \
+            --name "${COMPOSE_PROJECT_NAME}-cleanup-probe" \
+            --label "rsctf.managed=$managed_scope" \
+            --label "rsctf.scope=$managed_scope" \
+            --network none \
+            "$POSTGRES_IMAGE" true \
+            >/dev/null
+          docker network create \
+            --label "rsctf.managed=$managed_scope" \
+            --label "rsctf.scope=$managed_scope" \
+            "${COMPOSE_PROJECT_NAME}-cleanup-probe" \
+            >/dev/null
+
+      - name: Run fixed-rate managed KotH acceptance
+        shell: bash
+        env:
+          AD_NET: ${{ env.RSCTF_AD_VPN_SERVICES_NETWORK }}
+          MANAGED_KOTH_DISPOSABLE: "1"
+          MANAGED_KOTH_STRESS_ACK: "1"
+          NET: mkoth-${{ github.run_id }}-${{ github.run_attempt }}_default
+          PG_CONTAINER: mkoth-${{ github.run_id }}-${{ github.run_attempt }}-db-1
+          PG_DATABASE: rsctf
+          PG_USER: rsctf
+          REDIS_CONTAINER: mkoth-${{ github.run_id }}-${{ github.run_attempt }}-redis-1
+          RSCTF_CONTAINER: mkoth-${{ github.run_id }}-${{ github.run_attempt }}-rsctf-1
+        run: |
+          set -euo pipefail
+          umask 077
+          install -d -m 0700 evidence
+          SUMMARY_JSON="$GITHUB_WORKSPACE/evidence/managed-koth.json" \
+          RESOURCE_JSON="$GITHUB_WORKSPACE/evidence/managed-koth-resources.json" \
+            node tests/load/managed-koth.mjs
+
+      - name: Validate retained evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            evidence/managed-koth.json
+            evidence/managed-koth-prefix.json
+            evidence/managed-koth-restart.json
+            evidence/managed-koth-abuse.json
+            evidence/managed-koth-resources.json
+          )
+          test "${#files[@]}" -eq 5
+          for file in "${files[@]}"; do
+            test -s "$file"
+            test "$(stat -c '%a' "$file")" = "600"
+            jq -e . "$file" >/dev/null
+          done
+
+      - name: Upload retained evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: managed-koth-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            evidence/managed-koth.json
+            evidence/managed-koth-prefix.json
+            evidence/managed-koth-restart.json
+            evidence/managed-koth-abuse.json
+            evidence/managed-koth-resources.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Clean up disposable namespace
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          compose=(
+            docker compose
+            -f deploy/compose.yml
+            -f deploy/compose.docker.yml
+            -f tests/load/managed-koth.compose.yml
+          )
+          "${compose[@]}" stop --timeout 30 rsctf
+          if [[ "$RSCTF_DOCKER_SCOPE" =~ ^managed-koth-[0-9]+-[0-9]+$ ]]; then
+            managed_scope="$(printf 'explicit\0%s' "$RSCTF_DOCKER_SCOPE" | sha256sum | cut -c1-32)"
+            mapfile -t managed_containers < <(
+              docker ps --all --quiet \
+                --filter "label=rsctf.managed=$managed_scope" \
+                --filter "label=rsctf.scope=$managed_scope"
+            )
+            if ((${#managed_containers[@]} > 0)); then
+              docker rm --force "${managed_containers[@]}"
+            fi
+            mapfile -t managed_networks < <(
+              docker network ls --quiet \
+                --filter "label=rsctf.managed=$managed_scope" \
+                --filter "label=rsctf.scope=$managed_scope"
+            )
+            if ((${#managed_networks[@]} > 0)); then
+              docker network rm "${managed_networks[@]}"
+            fi
+          fi
+          "${compose[@]}" down --volumes --remove-orphans --timeout 30
+          remaining_project="$(docker ps --all --quiet --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")"
+          remaining_scope="$(docker ps --all --quiet --filter "label=rsctf.managed=${managed_scope:-invalid}")"
+          remaining_volumes="$(docker volume ls --quiet --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")"
+          remaining_networks="$(docker network ls --quiet --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")"
+          remaining_scope_networks="$(docker network ls --quiet --filter "label=rsctf.managed=${managed_scope:-invalid}")"
+          if [[ -n "$remaining_project" || -n "$remaining_scope" \
+            || -n "$remaining_volumes" || -n "$remaining_networks" \
+            || -n "$remaining_scope_networks" ]]; then
+            echo "::error::Disposable Docker resources remain after cleanup."
+            exit 1
+          fi

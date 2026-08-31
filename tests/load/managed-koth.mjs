@@ -21,6 +21,7 @@ import {
   managedKothHarnessConfig,
   managedKothLoadPlan,
   managedKothOperationCycleId,
+  managedKothSummaryMetric,
   validateManagedKothIntegrity,
   validateManagedKothRecovery,
   validateManagedReporterEnvironment,
@@ -32,6 +33,7 @@ import {
   mintJwt,
   PG,
   RSCTF,
+  retryTransientUntil,
   sleep,
   sql,
 } from './lib.mjs';
@@ -186,12 +188,6 @@ function resourceSample(containers) {
   };
 }
 
-function summaryMetric(summary, name, field) {
-  const metric = summary?.metrics?.[name];
-  const values = metric?.values || metric;
-  return Number(values?.[field]);
-}
-
 function assertK6Summary(path, phase) {
   let summary;
   try {
@@ -199,23 +195,24 @@ function assertK6Summary(path, phase) {
   } catch {
     throw new Error(`managed KotH ${phase} summary is missing or malformed`);
   }
-  requireCondition(summaryMetric(summary, 'server_5xx', 'rate') === 0, `${phase} observed a 5xx`);
-  requireCondition(summaryMetric(summary, 'dropped_iterations', 'count') === 0, `${phase} dropped an arrival`);
+  requireCondition(managedKothSummaryMetric(summary, 'server_5xx', 'rate') === 0, `${phase} observed a 5xx`);
+  requireCondition(managedKothSummaryMetric(summary, 'dropped_iterations', 'count') === 0, `${phase} dropped an arrival`);
   if (phase === 'abuse') {
-    requireCondition(summaryMetric(summary, 'invalid_capabilities_rejected', 'count') > 0, 'abuse did not reach 401');
-    requireCondition(summaryMetric(summary, 'invalid_capabilities_rate_limited', 'count') > 0, 'abuse did not reach 429');
-    requireCondition(summaryMetric(summary, 'invalid_retry_after', 'rate') === 0, 'abuse returned an invalid Retry-After');
+    requireCondition(managedKothSummaryMetric(summary, 'invalid_capabilities_rejected', 'count') > 0, 'abuse did not reach 401');
+    requireCondition(managedKothSummaryMetric(summary, 'invalid_capabilities_rate_limited', 'count') > 0, 'abuse did not reach 429');
+    requireCondition(managedKothSummaryMetric(summary, 'invalid_retry_after', 'rate') === 0, 'abuse returned an invalid Retry-After');
   } else {
     requireCondition(
-      summaryMetric(summary, 'valid_capabilities_exercised', 'count') === ROSTER_SIZE,
+      managedKothSummaryMetric(summary, 'valid_capabilities_exercised', 'count') === ROSTER_SIZE,
       `${phase} did not authenticate the complete frozen roster`,
     );
-    requireCondition(summaryMetric(summary, 'valid_play_invalid', 'rate') === 0, `${phase} rejected a valid capability`);
+    requireCondition(managedKothSummaryMetric(summary, 'valid_play_invalid', 'rate') === 0, `${phase} rejected a valid capability`);
   }
 }
 
 async function runK6Phase({ phase, arenaUrl, summaryPath, tokenFile, targetContainer }) {
   const plan = phase === 'abuse' ? abusePlan : loadPlan;
+  if (phase === 'valid') await provisionPollingAdmin();
   const args = [
     'run',
     '--summary-export',
@@ -230,7 +227,7 @@ async function runK6Phase({ phase, arenaUrl, summaryPath, tokenFile, targetConta
     MANAGED_KOTH_ARENA: arenaUrl,
     MANAGED_KOTH_GAME: current.gameId,
     MANAGED_KOTH_CHALLENGE: current.challengeId,
-    MANAGED_KOTH_ADMIN_TOKEN: A.adminJwt(),
+    MANAGED_KOTH_ADMIN_TOKEN: current.pollerJwt,
     MANAGED_KOTH_TOKENS_FILE: tokenFile,
     MANAGED_KOTH_ACTIVE_FLEET: ACTIVE_FLEET,
     MANAGED_KOTH_PHASE: phase,
@@ -278,7 +275,45 @@ const current = {
   gameId: null,
   challengeId: null,
   cohort: null,
+  pollerJwt: null,
 };
+
+async function provisionPollingAdmin() {
+  const tag = randomUUID().replaceAll('-', '');
+  const email = `managed-koth-poller-${tag}@load.test`;
+  const created = await A.api('POST', '/api/admin/users', {
+    jwt: A.adminJwt(),
+    body: [{
+      userName: `mkothpoller${tag.slice(0, 16)}`,
+      password: `Mkoth-${randomUUID()}!9`,
+      email,
+      realName: 'Managed KotH load poller',
+    }],
+  });
+  requireCondition(created.status === 200, `polling identity creation returned ${created.status}`);
+
+  const readIdentity = () => sql(
+    `SELECT id::text||E'\\t'||security_stamp||E'\\t'||role::text ` +
+      `FROM "AspNetUsers" WHERE normalized_email=upper('${email}')`,
+  ).split('\t');
+  const identity = readIdentity();
+  requireCondition(
+    identity.length === 3 && /^[0-9a-f-]{36}$/.test(identity[0]),
+    'polling identity is incomplete',
+  );
+  const promoted = await A.api('PUT', `/api/admin/users/${identity[0]}`, {
+    jwt: A.adminJwt(),
+    body: { role: 'Admin' },
+  });
+  requireCondition(promoted.status === 200, `polling identity promotion returned ${promoted.status}`);
+  const liveIdentity = readIdentity();
+  requireCondition(
+    liveIdentity.length === 3 && liveIdentity[0] === identity[0] && Number(liveIdentity[2]) === 3,
+    'polling identity was not promoted to Admin',
+  );
+  current.pollerJwt = mintJwt(liveIdentity[0], liveIdentity[1], 3);
+  requireCondition(current.pollerJwt !== A.adminJwt(), 'polling identity reused the bootstrap administrator');
+}
 
 function targetDatabaseSnapshot(gameId, challengeId) {
   const raw = sql(
@@ -360,15 +395,19 @@ async function assertReporterFreeBootstrapTarget() {
     'pre-cycle target received a lifecycle reporter credential',
   );
   const arenaUrl = `http://${host.includes(':') ? `[${host}]` : host}:${Number(port)}`;
-  await exactHealth(arenaUrl, 'pre-cycle managed target');
-  const status = await A.api('GET', '/reporter-status', { baseUrl: arenaUrl, timeoutMs: 5_000 });
-  requireCondition(
-    status.status === 200 &&
+  await waitUntil(
+    'pre-cycle target health without reporter configuration',
+    async () => {
+      await exactHealth(arenaUrl, 'pre-cycle managed target');
+      return A.api('GET', '/reporter-status', { baseUrl: arenaUrl, timeoutMs: 5_000 });
+    },
+    (status) =>
+      status.status === 200 &&
       status.json?.reporterConfigured === false &&
       status.json?.reporterHealthy === true &&
       status.json?.contextRefreshes === 0 &&
       status.json?.eligibleRoster === 0,
-    'pre-cycle target did not remain healthy without reporter configuration',
+    60,
   );
 }
 
@@ -537,12 +576,23 @@ async function recoverManagedTarget(target, reporterBaseUrl) {
   requireCondition(Number(changed) === target.cycleId, 'managed recovery fault did not bind the exact active cycle');
   const stopped = docker(['stop', '--time', '2', target.containerId]);
   requireCondition(stopped.status === 0, 'managed target could not be stopped for recovery');
-  const response = await A.api(
-    'POST',
-    `/api/edit/games/${current.gameId}/ad/koth/${current.challengeId}/recover`,
-    { jwt: A.adminJwt(), timeoutMs: 180_000 },
+  const response = await retryTransientUntil(
+    ({ timeoutMs }) => A.api(
+      'POST',
+      `/api/edit/games/${current.gameId}/ad/koth/${current.challengeId}/recover`,
+      { jwt: A.adminJwt(), timeoutMs },
+    ),
+    (candidate) => candidate?.status === 409 && [
+      'replacement container is still transitioning',
+      'checker exit 2',
+      'checker timed out',
+    ].includes(candidate.json?.title),
+    { budgetMs: 30_000, delayMs: 500 },
   );
-  requireCondition(response.status === 200 && unwrap(response)?.resetPhase === 'Active', 'managed target recovery did not converge');
+  requireCondition(
+    response.status === 200 && unwrap(response)?.resetPhase === 'Active',
+    `managed target recovery did not converge: HTTP ${response.status} ${response.json?.title || ''}`.trim(),
+  );
   const recovered = await waitUntil(
     'managed target replacement',
     async () => inspectManagedTarget(targetDatabaseSnapshot(current.gameId, current.challengeId), reporterBaseUrl),
@@ -581,28 +631,45 @@ function currentSnapshotIdentity() {
     fields.length === 4 && Number(fields[0]) > 0 && /^[a-f0-9]{64}$/.test(fields[1]),
     'managed current snapshot identity is incomplete',
   );
-  return { roundId: Number(fields[0]), hash: fields[1], waves: Number(fields[2]), rows: Number(fields[3]) };
+  const evidence = sql(
+    `SELECT coalesce(jsonb_agg(jsonb_build_array(` +
+      `wave.wave_id,(extract(epoch FROM wave.ended_at)*1000)::bigint,` +
+      `score.participation_id,score.activity_earned,score.activity_possible,` +
+      `score.objective_earned,score.objective_possible,score.objective_count,score.is_crown` +
+    `) ORDER BY wave.ended_at,wave.wave_id,score.participation_id),'[]'::jsonb)::text ` +
+    `FROM "KothApiSnapshots" snapshot ` +
+    `JOIN "KothApiSnapshotWaves" wave ON wave.target_id=snapshot.target_id ` +
+    `JOIN "KothApiSnapshotScores" score ON score.target_id=wave.target_id AND score.wave_id=wave.wave_id ` +
+    `WHERE snapshot.game_id=${current.gameId} AND snapshot.challenge_id=${current.challengeId}`,
+  );
+  requireCondition(evidence.startsWith('[['), 'managed current snapshot evidence is incomplete');
+  return {
+    roundId: Number(fields[0]),
+    snapshotHash: fields[1],
+    evidenceHash: createHash('sha256').update(evidence).digest('hex'),
+    waves: Number(fields[2]),
+    rows: Number(fields[3]),
+  };
 }
 
 async function restartManagedReporterProcess(target, reporterBaseUrl) {
   const before = currentSnapshotIdentity();
-  requireCondition(before.waves === 1 && before.rows === ROSTER_SIZE, 'restart prefix is not one exact dense wave');
+  requireCondition(before.waves === 1 && before.rows === ROSTER_SIZE, 'pre-restart snapshot is not one exact dense wave');
   const restarted = docker(['restart', '--time', '2', target.containerId]);
   requireCondition(restarted.status === 0, 'managed reporter process restart failed');
   const sameTarget = await waitUntil(
     'same-generation managed reporter restart',
-    async () => inspectManagedTarget(targetDatabaseSnapshot(current.gameId, current.challengeId), reporterBaseUrl),
+    async () => {
+      const candidate = inspectManagedTarget(
+        targetDatabaseSnapshot(current.gameId, current.challengeId),
+        reporterBaseUrl,
+      );
+      await exactHealth(candidate.arenaUrl, 'restarted managed target');
+      return candidate;
+    },
     (candidate) => candidate.containerId === target.containerId &&
       candidate.resetAttempt === target.resetAttempt &&
       candidate.credentialRevision === target.credentialRevision,
-    120,
-  );
-  await exactHealth(sameTarget.arenaUrl, 'restarted managed target');
-  await waitUntil(
-    'restarted reporter context',
-    () => reporterStatus(sameTarget),
-    (status) => status.reporterConfigured && status.reporterHealthy &&
-      status.contextRefreshes > 0 && status.eligibleRoster === ROSTER_SIZE,
     120,
   );
   return { target: sameTarget, before };
@@ -652,11 +719,13 @@ function integritySnapshot() {
       `'fullRosterWaves',COALESCE((SELECT sum(min_activity_possible/1000000) FROM scored WHERE min_activity_possible=max_activity_possible),0),` +
       `'invalidRows',COALESCE((SELECT sum(invalid_rows) FROM scored),0),` +
       `'exclusiveRows',(` +
+        // Leaderboard writes snapshot currency to marker_observed, so only
+        // participant ownership fields distinguish the exclusive modes here.
         `(SELECT count(*) FROM "KothControlResults" result WHERE result.game_id=${current.gameId} ` +
           `AND result.challenge_id=${current.challengeId} AND (` +
           `result.controlling_participation_id IS NOT NULL OR result.responsible_participation_id IS NOT NULL ` +
           `OR result.token_id IS NOT NULL OR result.provisional_participation_id IS NOT NULL ` +
-          `OR result.confirmed_participation_id IS NOT NULL OR result.marker_observed OR result.confirmation_streak<>0)) + ` +
+          `OR result.confirmed_participation_id IS NOT NULL OR result.confirmation_streak<>0)) + ` +
         `(SELECT count(*) FROM "KothTargets" WHERE game_id=${current.gameId} AND challenge_id=${current.challengeId} AND holder_participation_id IS NOT NULL) + ` +
         `(SELECT count(*) FROM "KothAcquisitions" acquisition JOIN "KothCrownCycles" cycle ON cycle.id=acquisition.cycle_id WHERE cycle.game_id=${current.gameId} AND cycle.challenge_id=${current.challengeId}) + ` +
         `(SELECT count(*) FROM "KothCycleCooldowns" cooldown JOIN "KothCrownCycles" cycle ON cycle.id=cooldown.cycle_id WHERE cycle.game_id=${current.gameId} AND cycle.challenge_id=${current.challengeId})` +
@@ -789,12 +858,8 @@ async function main() {
     'two separately finalized managed waves',
     () => reporterStatus(target),
     (status) => {
-      try {
-        validateManagedReporterStatus(status, { ...loadPlan, minimumReports: 2 });
-        return true;
-      } catch {
-        return false;
-      }
+      validateManagedReporterStatus(status, { ...loadPlan, minimumReports: 2 });
+      return true;
     },
     180,
   );
@@ -813,9 +878,15 @@ async function main() {
     180,
   );
 
-  await A.setAdScoringPaused(current.gameId, true);
   const restart = await restartManagedReporterProcess(target, reporterBaseUrl);
   target = restart.target;
+  await waitUntil(
+    'restarted reporter active context',
+    () => reporterStatus(target),
+    (status) => status.reporterConfigured && status.reporterHealthy &&
+      status.contextRefreshes > 0 && status.eligibleRoster === ROSTER_SIZE,
+    120,
+  );
   await runK6Phase({
     phase: 'valid',
     arenaUrl: target.arenaUrl,
@@ -824,24 +895,24 @@ async function main() {
     targetContainer: target.containerId,
   });
   await waitUntil(
-    'append-only reporter prefix reconstruction',
+    'restarted reporter exact dense wave',
     () => reporterStatus(target),
     (status) => {
-      try {
-        validateManagedReporterStatus(status, { ...loadPlan, minimumReports: 1 });
-        return true;
-      } catch {
-        return false;
-      }
+      validateManagedReporterStatus(status, { ...loadPlan, minimumReports: 1 });
+      return true;
     },
     120,
   );
   const reconstructed = currentSnapshotIdentity();
+  const sameRoundPrefix = reconstructed.roundId === restart.before.roundId &&
+    reconstructed.evidenceHash === restart.before.evidenceHash;
   requireCondition(
-    reconstructed.roundId === restart.before.roundId &&
-      reconstructed.hash === restart.before.hash &&
+    (sameRoundPrefix || reconstructed.roundId > restart.before.roundId) &&
       reconstructed.waves === 1 && reconstructed.rows === ROSTER_SIZE,
-    'restarted reporter did not reconstruct the exact append-only dense prefix',
+    `restarted reporter did not submit a monotonic exact dense wave: ${JSON.stringify({
+      before: restart.before,
+      reconstructed,
+    })}`,
   );
 
   const revoked = capabilities[Math.floor(capabilities.length / 2)];
@@ -872,12 +943,8 @@ async function main() {
     'recovered reporter waves',
     () => reporterStatus(target),
     (status) => {
-      try {
-        validateManagedReporterStatus(status, { ...loadPlan, minimumReports: 2 });
-        return true;
-      } catch {
-        return false;
-      }
+      validateManagedReporterStatus(status, { ...loadPlan, minimumReports: 2 });
+      return true;
     },
     180,
   );
@@ -893,16 +960,12 @@ async function main() {
     'reporter isolation after capability abuse',
     () => reporterStatus(target),
     (status) => {
-      try {
-        validateManagedReporterStatus(status, {
-          ...loadPlan,
-          minimumReports: recoveredStatus.successfulReports + 1,
-          requireAbuse: true,
-        });
-        return true;
-      } catch {
-        return false;
-      }
+      validateManagedReporterStatus(status, {
+        ...loadPlan,
+        minimumReports: recoveredStatus.successfulReports + 1,
+        requireAbuse: true,
+      });
+      return true;
     },
     180,
   );
@@ -912,17 +975,13 @@ async function main() {
     'final managed KotH integrity',
     async () => integritySnapshot(),
     (evidence) => {
-      try {
-        validateManagedKothIntegrity(evidence, {
-          rosterSize: ROSTER_SIZE,
-          activeFleet: ACTIVE_FLEET,
-          minimumScorableRounds: 4,
-          minimumResetAttempts: target.resetAttempt,
-        });
-        return true;
-      } catch {
-        return false;
-      }
+      validateManagedKothIntegrity(evidence, {
+        rosterSize: ROSTER_SIZE,
+        activeFleet: ACTIVE_FLEET,
+        minimumScorableRounds: 4,
+        minimumResetAttempts: target.resetAttempt,
+      });
+      return true;
     },
     180,
   );

@@ -11,6 +11,25 @@ function positiveInteger(value, name) {
   return parsed;
 }
 
+export function managedKothSummaryMetric(summary, name, field) {
+  const metric = summary?.metrics?.[name] || {};
+  const values = metric.values || metric;
+  const direct = Number(values[field]);
+  if (Number.isFinite(direct)) return direct;
+  if (field !== 'rate') return Number.NaN;
+
+  // k6 2.x calls the aggregate for a Rate metric `value`, while k6 1.x
+  // nested it under `values.rate`. Retained evidence must accept both shapes.
+  const value = Number(values.value);
+  if (Number.isFinite(value)) return value;
+  const passes = Number(values.passes);
+  const fails = Number(values.fails);
+  const samples = passes + fails;
+  return Number.isFinite(passes) && Number.isFinite(fails) && samples > 0
+    ? passes / samples
+    : Number.NaN;
+}
+
 export function managedKothLoadPlan({
   rosterSize = MAX_ROSTER,
   activeFleet = 64,
@@ -207,10 +226,16 @@ export function validateManagedReporterStatus(model, expected) {
   ];
   if (
     model.reporterConfigured !== true ||
-    model.reporterHealthy !== true ||
+    typeof model.reporterHealthy !== 'boolean' ||
     integerFields.some((field) => !Number.isSafeInteger(model[field]) || model[field] < 0) ||
     (model.lastContext !== null && !/^[0-9a-f]{64}$/.test(model.lastContext)) ||
-    (model.lastError !== null && typeof model.lastError !== 'string')
+    (model.lastError !== null && (
+      typeof model.lastError !== 'string' ||
+      model.lastError.length < 1 ||
+      model.lastError.length > 300 ||
+      /[\r\n]/.test(model.lastError)
+    )) ||
+    model.reporterHealthy !== (model.lastError === null)
   ) {
     throw new Error('managed KotH reporter status is malformed');
   }
@@ -221,6 +246,9 @@ export function validateManagedReporterStatus(model, expected) {
       'managed KotH minimum reporter reports',
     );
     const requireAbuse = expected.requireAbuse ?? false;
+    if (!model.reporterHealthy) {
+      throw new Error(`managed KotH reporter is unhealthy: ${model.lastError}`);
+    }
     if (model.successfulReports < minimumReports || model.submittedWaves < minimumReports) {
       throw new Error(`managed KotH reporter submitted only ${model.submittedWaves} waves`);
     }

@@ -13,15 +13,19 @@ the bounded score-bearing cohort. Each reporter request contains one finalized
 2,000-row wave: 64 positive rows, 1,936 explicit zero rows, and one Crown chosen
 from the unique highest submitted score. A later round carries the next wave in
 a separate request, so no body exceeds the 2,000 team-wave or 512 KiB limit.
+The fixed-arrival phases preallocate their bounded 128-VU budget so runner-side
+allocation cannot silently drop arrivals while the service absorbs a short burst.
 
 The scenario also:
 
 - checks the initial target remains healthy before reporter variables exist;
+- rotates a disposable admin poller for each valid phase so rate admission from
+  one measurement cannot contaminate the next;
 - validates the exact six injected variables without printing their secret;
 - verifies `Cache-Control: no-store`, API-version `Vary`, objective-schema
   freezing, and every acknowledgement lifecycle field;
-- restarts the target process while scoring is paused and proves it reconstructs
-  the exact append-only wave prefix;
+- restarts the target process in place and proves the fresh reporter runtime
+  submits one exact dense 2,000-team wave without regressing the accepted round;
 - suspends and reinstates one participation while scoring is paused, checks one
   capability-generation advance, and permanently rejects the old token;
 - recovers the stopped target to a new dynamic address and reset attempt, then
@@ -59,9 +63,27 @@ Capability files live only in a mode-0600 temporary directory and are removed
 during cleanup. Reporter secrets stay in process memory, are never written to an
 artifact, and are never included in errors or console output. The retained k6
 summaries are the requested path plus `-prefix`, `-restart`, and `-abuse`
-siblings; the resource file records one-second Docker CPU/RSS samples for the
-platform, lifecycle owner, PostgreSQL, and current target during every phase.
+siblings. Every trend retains avg, median, p90, p95, p99, and max; the resource
+file records one-second Docker CPU/RSS samples for the platform, lifecycle
+owner, PostgreSQL, and current target during every phase.
 
 This repository batch defines and unit-tests the contract only. A reportable
 capacity claim still requires running the command on the isolated stack and
 retaining all four summaries and the matching resource series.
+
+The manual **Managed KotH load gate** workflow provides that isolated stack on
+a disposable GitHub-hosted runner. Supply the exact current `main` commit and
+its immutable `ghcr.io/dimasma0305/rsctf@sha256:…` image. The workflow rejects
+a stale source, a mutable or foreign image, an untrusted attestation, the wrong
+image revision/version/platform set, and a non-private stack. It bootstraps only
+the temporary administrator identities needed for setup and isolated polling,
+keeps the event hidden and paused while preparing the exact 2,000-team roster,
+uploads the four k6 summaries plus the resource series, then removes every
+run-scoped managed container, network, and Compose volume.
+
+The same workflow runs once when its workflow, Compose overlay, or this runbook
+changes in a same-repository pull request. That bootstrap run deliberately tests
+the pull request's exact `main` base image rather than building unreviewed code.
+If that commit has no published image yet, the gate dispatches the repository's
+normal image workflow and waits for the exact digest and attestation before it
+starts the disposable stack.
