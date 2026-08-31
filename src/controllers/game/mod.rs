@@ -53,10 +53,6 @@ use crate::utils::error::{AppError, AppResult};
 use crate::utils::flag_generator;
 use crate::utils::shared::{ArrayResponse, MessageResponse, PageParams, RequestResponse};
 
-/// Compatibility alias for the one canonical normal-flag byte policy.
-#[cfg(test)]
-pub(crate) const MAX_FLAG_LENGTH: usize = crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES;
-
 // ---------------------------------------------------------------------------
 // DTOs (inline; camelCase on the wire to match RSCTF's JSON contract).
 // ---------------------------------------------------------------------------

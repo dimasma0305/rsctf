@@ -142,7 +142,7 @@ pub struct FlagSubmit {
 fn validated_exercise_answer(value: &str) -> AppResult<&str> {
     // Preserve the legacy exercise endpoint's public error contract while
     // enforcing the same UTF-8 byte ceiling as normal game submissions.
-    if value.len() > crate::controllers::game::MAX_FLAG_LENGTH {
+    if value.len() > crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES {
         return Err(AppError::bad_request("Flag is too long"));
     }
     let answer = value.trim();

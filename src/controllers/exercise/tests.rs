@@ -29,7 +29,7 @@ fn eligible_flags_are_scoped_to_current_dynamic_or_static_rows() {
 
 #[test]
 fn exercise_answer_uses_the_normal_flag_byte_limit() {
-    let maximum = crate::controllers::game::MAX_FLAG_LENGTH;
+    let maximum = crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES;
     assert!(validated_exercise_answer(&"a".repeat(maximum)).is_ok());
     assert!(matches!(
         validated_exercise_answer(&"a".repeat(maximum + 1)),
