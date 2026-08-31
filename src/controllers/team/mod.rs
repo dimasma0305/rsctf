@@ -23,19 +23,22 @@ use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::CurrentUser;
 use crate::models::data::{container, game_instance, participation, team, team_member, user};
 use crate::services::anti_cheat;
-use crate::utils::codec::random_hex;
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
 
 mod account_lifecycle;
 mod avatar;
+mod invite;
 mod lifecycle;
 mod models;
 mod revocation;
 mod roster_policy;
+mod scoreboard_invalidation;
 mod signature;
 pub(crate) use account_lifecycle::{create_team_rows, transfer_captain_locked};
 pub use avatar::avatar;
+pub(crate) use invite::recover_pending_invite_rotations;
+pub use invite::{invite_code, update_invite_token};
 pub use models::*;
 pub(crate) use revocation::{
     acquire_roster_mutation, invalidate_removed_membership_cache, mark_team_participations_revoked,
@@ -44,6 +47,7 @@ pub(crate) use revocation::{
 };
 use revocation::{remove_membership, revoke_team_shared_capabilities_locked};
 pub(crate) use roster_policy::ensure_roster_change_allowed;
+pub(crate) use scoreboard_invalidation::{flush_scoreboard_for_user, flush_scoreboards_for_users};
 pub use signature::verify_signature;
 
 /// Each user may captain at most this many teams. Mirrors RSCTF `MaxTeamsAllowed`.
@@ -271,42 +275,6 @@ pub async fn delete_team(
     .await;
 
     Ok(RequestResponse::ok(info))
-}
-
-/// `GET /api/team/{id}/invite` — current invite code (captain only).
-pub async fn invite_code(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-    Path(id): Path<i32>,
-) -> AppResult<RequestResponse<String>> {
-    let team = load_team(&st, id).await?;
-    require_captain(&team, &user)?;
-    Ok(RequestResponse::ok(team.invite_code()))
-}
-
-/// `PUT /api/team/{id}/invite` — regenerate the invite token (captain only).
-pub async fn update_invite_token(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-    Path(id): Path<i32>,
-) -> AppResult<RequestResponse<String>> {
-    let mut roster = acquire_roster_mutation(st.pg(), id).await?;
-    require_team_mutable(roster.transaction_mut(), id).await?;
-    let team = load_team(&st, id).await?;
-    require_captain(&team, &user)?;
-
-    let mut am: team::ActiveModel = team.into();
-    am.invite_token = Set(random_hex(16));
-    let team = am.update(&st.db).await?;
-    roster.release().await?;
-    for part in participation::Entity::find()
-        .filter(participation::Column::TeamId.eq(team.id))
-        .all(&st.db)
-        .await?
-    {
-        st.byoc.disconnect_participation(&st.db, part.id).await?;
-    }
-    Ok(RequestResponse::ok(team.invite_code()))
 }
 
 /// `POST /api/team/accept` — join a team via its invite code (`name:id:token`).

@@ -945,32 +945,3 @@ pub(crate) async fn destroy_game_test_containers_locked(
 #[cfg(test)]
 #[path = "helpers_teardown_tests.rs"]
 mod teardown_tests;
-
-pub(crate) async fn load_flags(st: &SharedState, c_id: i32) -> AppResult<Vec<FlagInfoModel>> {
-    let flags = flag_context::Entity::find()
-        .filter(flag_context::Column::ChallengeId.eq(c_id))
-        .all(&st.db)
-        .await?;
-    let mut out = Vec::with_capacity(flags.len());
-    for f in flags {
-        let attachment = match f.attachment_id {
-            Some(aid) => match attachment::Entity::find_by_id(aid).one(&st.db).await? {
-                Some(a) => {
-                    let file = match a.local_file_id {
-                        Some(fid) => local_file::Entity::find_by_id(fid).one(&st.db).await?,
-                        None => None,
-                    };
-                    Some(AttachmentInfoModel::from_attachment(&a, file.as_ref()))
-                }
-                None => None,
-            },
-            None => None,
-        };
-        out.push(FlagInfoModel {
-            id: f.id,
-            flag: f.flag,
-            attachment,
-        });
-    }
-    Ok(out)
-}

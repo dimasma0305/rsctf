@@ -165,9 +165,7 @@ test('editing and submitting a flag preserves unchanged animated Markdown DOM', 
 
   const Harness: FC = () => {
     const [flag, setFlag] = useState('')
-    const [content, setContent] = useState(
-      '<span class="tower-animation" data-frame="initial">animated tower</span>'
-    )
+    const [content, setContent] = useState('<span class="tower-animation" data-frame="initial">animated tower</span>')
     replaceContent = () => setContent('<span class="tower-animation">new animation</span>')
     return createElement(ChallengeModal, {
       opened: true,
@@ -204,11 +202,7 @@ test('editing and submitting a flag preserves unchanged animated Markdown DOM', 
         createElement(
           HeadlessMantineProvider,
           null,
-          createElement(
-            I18nextProvider,
-            { i18n },
-            createElement(LanguageProvider, null, createElement(Harness))
-          )
+          createElement(I18nextProvider, { i18n }, createElement(LanguageProvider, null, createElement(Harness)))
         )
       )
     })

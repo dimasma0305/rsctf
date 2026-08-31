@@ -50,17 +50,13 @@ export const ContentPlaceholder: FC = () => (
 )
 
 const MarkdownRenderer: FC<Pick<MarkdownProps, 'source'>> = memo(function MarkdownRenderer({ source }) {
-
   const marked = useMemo(() => {
     const instance = new Marked()
     instance.use(KatexExtension()).use(ShikiExtension()).setOptions({ silent: true })
     return instance
   }, [])
 
-  const html = useMemo(
-    () => sanitizeMarkdownHtml((marked.parse(source) as string) ?? ''),
-    [marked, source]
-  )
+  const html = useMemo(() => sanitizeMarkdownHtml((marked.parse(source) as string) ?? ''), [marked, source])
 
   return <div className={classes.root} dangerouslySetInnerHTML={{ __html: html }} />
 })

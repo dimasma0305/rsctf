@@ -13,6 +13,7 @@ import { StrengthPasswordInput } from '@Components/StrengthPasswordInput'
 import { TermsOfService } from '@Components/TermsOfService'
 import { encryptApiData } from '@Utils/Crypto'
 import { collectEncryptedFingerprintIdentity } from '@Utils/FingerprintIdentity'
+import { beginMailOperation, finishMailOperation, type MailOperationOwner } from '@Utils/MailOperation'
 import { tryGetClientError } from '@Utils/Shared'
 import { useConfig } from '@Hooks/useConfig'
 import { usePageTitle } from '@Hooks/usePageTitle'
@@ -28,7 +29,7 @@ const Register: FC = () => {
   const [disabled, setDisabled] = useState(false)
   const [accepted, setAccepted] = useState(false)
   const [tosOpened, { open: openTos, close: closeTos }] = useDisclosure(false)
-  const registerOperationRef = useRef<{ controller: AbortController; running: boolean } | null>(null)
+  const registerOperationRef = useRef<MailOperationOwner | null>(null)
   const { config } = useConfig()
 
   const navigate = useNavigate()
@@ -67,13 +68,17 @@ const Register: FC = () => {
   useEffect(() => () => registerOperationRef.current?.controller.abort(), [])
 
   const executeRegister = async (consentGranted = false) => {
-    let operation = registerOperationRef.current
-    if (operation?.running) return
-    if (operation && !consentGranted) return
-    if (!operation) {
-      operation = { controller: new AbortController(), running: false }
-      registerOperationRef.current = operation
-    }
+    const signature = JSON.stringify([
+      uname.trim(),
+      email.trim().toLowerCase(),
+      pwd,
+      retypedPwd,
+      bootstrapMode ? bootstrapToken : '',
+    ])
+    const acquired = beginMailOperation(registerOperationRef.current, signature)
+    if (!acquired.started) return
+    const operation = acquired.owner
+    registerOperationRef.current = operation
 
     if (pwd !== retypedPwd) {
       showNotification({
@@ -82,16 +87,17 @@ const Register: FC = () => {
         message: t('account.password.not_match'),
         icon: <Icon path={mdiClose} size={1} />,
       })
-      registerOperationRef.current = null
+      registerOperationRef.current = finishMailOperation(operation, true)
       return
     }
 
     if (config.enableBrowserFingerprint && !accepted && !consentGranted) {
+      operation.running = false
       openTos()
       return
     }
-    operation.running = true
     setDisabled(true)
+    let completed = false
 
     try {
       const { valid, token } = await getToken()
@@ -117,15 +123,20 @@ const Register: FC = () => {
         ? await collectEncryptedFingerprintIdentity(t, config.apiPublicKey, operation.controller.signal)
         : undefined
 
-      const res = await api.account.accountRegister({
-        userName: uname,
-        password: await encryptApiData(t, pwd, config.apiPublicKey),
-        email: email,
-        challenge: token,
-        fingerprint: fingerprintPayload?.fingerprint,
-        fingerprintProof: fingerprintPayload?.fingerprintProof,
-        bootstrapToken: bootstrapMode ? bootstrapToken : undefined,
-      })
+      const res = await api.account.accountRegister(
+        {
+          userName: uname,
+          password: await encryptApiData(t, pwd, config.apiPublicKey),
+          email: email,
+          challenge: token,
+          fingerprint: fingerprintPayload?.fingerprint,
+          fingerprintProof: fingerprintPayload?.fingerprintProof,
+          bootstrapToken: bootstrapMode ? bootstrapToken : undefined,
+          operationId: operation.operationId,
+        },
+        { signal: operation.controller.signal }
+      )
+      completed = true
       const data = RegisterStatusMap.get(res.data.data)
       if (data) {
         updateNotification({
@@ -159,7 +170,8 @@ const Register: FC = () => {
       })
       cleanUp(false)
     } finally {
-      if (registerOperationRef.current === operation) registerOperationRef.current = null
+      if (registerOperationRef.current === operation)
+        registerOperationRef.current = finishMailOperation(operation, completed)
       setDisabled(false)
     }
   }

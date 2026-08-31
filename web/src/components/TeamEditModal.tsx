@@ -25,7 +25,7 @@ import { useModals } from '@mantine/modals'
 import { notifications, showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose, mdiContentCopy, mdiLinkVariant, mdiLockOutline, mdiRefresh, mdiStar } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useState } from 'react'
+import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ScrollingText } from '@Components/ScrollingText'
 import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
@@ -111,6 +111,12 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
   const [dropzoneOpened, setDropzoneOpened] = useState(false)
   const [avatarFile, setAvatarFile] = useState<File | null>(null)
   const [inviteCode, setInviteCode] = useState('')
+  const [inviteRevision, setInviteRevision] = useState<number | null>(null)
+  const [inviteLoading, setInviteLoading] = useState(false)
+  const [inviteLoadError, setInviteLoadError] = useState(false)
+  const inviteRequestGeneration = useRef(0)
+  const inviteMutationOwner = useRef(false)
+  const inviteOperationId = useRef<string | null>(null)
   const [disabled, setDisabled] = useState(false)
   const { data: teams, mutate: mutateTeams } = api.team.useTeamGetTeamsInfo()
 
@@ -139,16 +145,37 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
     setTeamInfo(team)
   }, [team])
 
-  useEffect(() => {
-    const fetchCode = async () => {
-      if (!isCaptain || !teamId || inviteCode) return
-
-      const code = await api.team.teamInviteCode(teamId!)
-      setInviteCode(code.data)
+  const loadInviteCode = useCallback(async () => {
+    if (!isCaptain || !teamId || !props.opened) return
+    const generation = ++inviteRequestGeneration.current
+    setInviteLoading(true)
+    setInviteLoadError(false)
+    try {
+      const response = await api.team.teamInviteCode(teamId)
+      if (generation !== inviteRequestGeneration.current) return
+      setInviteCode(response.data.code)
+      setInviteRevision(response.data.revision)
+      // An authoritative read reconciles an ambiguous rotation. The next
+      // Refresh is a new intent and must not reuse the recovered operation ID.
+      inviteOperationId.current = null
+    } catch {
+      if (generation === inviteRequestGeneration.current) setInviteLoadError(true)
+    } finally {
+      if (generation === inviteRequestGeneration.current) setInviteLoading(false)
     }
+  }, [isCaptain, props.opened, teamId])
 
-    fetchCode()
-  }, [inviteCode, isCaptain, teamId])
+  useEffect(() => {
+    inviteRequestGeneration.current += 1
+    setInviteCode('')
+    setInviteRevision(null)
+    setInviteLoadError(false)
+    inviteOperationId.current = null
+    if (props.opened) void loadInviteCode()
+    return () => {
+      inviteRequestGeneration.current += 1
+    }
+  }, [loadInviteCode, props.opened])
 
   const onConfirmLeaveTeam = async () => {
     if (!teamInfo || isCaptain) return
@@ -253,18 +280,48 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
   }
 
   const onRefreshInviteCode = async () => {
-    if (!inviteCode || !team?.id) return
+    if (!team?.id || inviteRevision == null || inviteMutationOwner.current) return
 
+    inviteMutationOwner.current = true
+    setInviteLoading(true)
+    const generation = ++inviteRequestGeneration.current
+    const targetTeamId = team.id
+    const observedRevision = inviteRevision
+    const operationId = inviteOperationId.current ?? crypto.randomUUID()
+    inviteOperationId.current = operationId
     try {
-      const code = await api.team.teamUpdateInviteToken(team.id)
-      setInviteCode(code.data)
-      showNotification({
-        color: 'teal',
-        message: t('team.notification.invite_code.updated'),
-        icon: <Icon path={mdiCheck} size={1} />,
+      const response = await api.team.teamUpdateInviteToken(targetTeamId, {
+        operationId,
+        expectedRevision: observedRevision,
       })
+      if (
+        generation === inviteRequestGeneration.current &&
+        props.opened &&
+        teamId === targetTeamId &&
+        response.data.revision >= observedRevision
+      ) {
+        setInviteCode(response.data.code)
+        setInviteRevision(response.data.revision)
+        inviteOperationId.current = null
+        setInviteLoadError(false)
+        showNotification({
+          color: 'teal',
+          message: t('team.notification.invite_code.updated'),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+      }
     } catch (e) {
       showErrorMsg(e, t)
+      if (generation === inviteRequestGeneration.current) {
+        setInviteLoadError(true)
+        // A lost mutation response may still have committed, while another tab
+        // may already own a newer revision. Reconcile through the safe captain
+        // read before allowing an old code to remain copyable.
+        await loadInviteCode()
+      }
+    } finally {
+      inviteMutationOwner.current = false
+      if (generation === inviteRequestGeneration.current) setInviteLoading(false)
     }
   }
 
@@ -420,7 +477,8 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
                     <ActionIcon
                       size="sm"
                       aria-label={t('team.label.refresh_code', 'Refresh invitation code')}
-                      disabled={locked}
+                      loading={inviteLoading}
+                      disabled={locked || inviteRevision == null || inviteMutationOwner.current}
                       onClick={onRefreshInviteCode}
                     >
                       <Icon path={mdiRefresh} size={1} />
@@ -451,6 +509,21 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
               }}
               readOnly
             />
+            {inviteLoadError && (
+              <Group justify="space-between" gap="xs" role="alert">
+                <Text size="xs" c="red">
+                  {t('team.error.invite_code_load', 'Invitation code could not be loaded. Retry safely.')}
+                </Text>
+                <Button
+                  size="compact-xs"
+                  variant="subtle"
+                  loading={inviteLoading}
+                  onClick={() => void loadInviteCode()}
+                >
+                  {t('common.button.retry', 'Retry')}
+                </Button>
+              </Group>
+            )}
             <Button
               size="xs"
               variant="light"

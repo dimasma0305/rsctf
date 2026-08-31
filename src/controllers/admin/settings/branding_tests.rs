@@ -92,6 +92,11 @@ async fn branding_delete_atomically_tombstones_once_and_retry_purges() {
         CREATE TABLE "Configs" (
           config_key TEXT PRIMARY KEY, value TEXT, cache_keys TEXT
         );
+        CREATE TABLE "PlatformSettingsState" (
+          singleton SMALLINT PRIMARY KEY, revision BIGINT NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        INSERT INTO "PlatformSettingsState" VALUES (1, 0, clock_timestamp());
         CREATE TABLE "GameChallenges" (
           id INTEGER PRIMARY KEY, original_archive_blob_path TEXT
         );

@@ -20,7 +20,7 @@ use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, Set, TransactionTrait,
+    QuerySelect, Set,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -278,10 +278,11 @@ pub struct ChallengeSummaryModel {
     pub review_status: ChallengeReviewStatus,
     pub build_status: ChallengeBuildStatus,
     pub has_original_archive: bool,
+    pub configuration_revision: i64,
 }
 
 impl ChallengeSummaryModel {
-    fn from_challenge(c: &game_challenge::Model) -> Self {
+    fn from_challenge(c: &game_challenge::Model, configuration_revision: i64) -> Self {
         Self {
             id: c.id,
             title: c.title.clone(),
@@ -295,6 +296,7 @@ impl ChallengeSummaryModel {
             review_status: c.review_status,
             build_status: c.build_status,
             has_original_archive: c.original_archive_blob_path.is_some(),
+            configuration_revision,
         }
     }
 }
@@ -477,7 +479,7 @@ impl ChallengeEditDetailModel {
 
 /// RSCTF `Models/Request/Edit/FlagCreateModel` — a flag plus optional attachment
 /// metadata (the attachment the flag hands out on solve).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlagCreateModel {
     pub flag: String,
@@ -487,6 +489,13 @@ pub struct FlagCreateModel {
     pub file_hash: Option<String>,
     #[serde(default)]
     pub remote_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlagImportRequest {
+    pub operation_id: Uuid,
+    pub flags: Vec<FlagCreateModel>,
 }
 
 /// RSCTF `Models/Request/Edit/AttachmentCreateModel` — new attachment for a
@@ -507,6 +516,8 @@ pub struct AttachmentCreateModel {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameCloneModel {
+    pub operation_id: Uuid,
+    pub expected_source_revision: i64,
     #[serde(default)]
     pub title: String,
     #[serde(default = "epoch", with = "crate::utils::datetime::millis")]
@@ -541,20 +552,38 @@ pub struct DivisionCreateModel {
     pub challenge_configs: Option<Vec<DivisionChallengeConfigInput>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionEditModel {
+    pub operation_id: Uuid,
+    pub expected_revision: i64,
     pub name: Option<String>,
-    pub invite_code: Option<String>,
+    /// Outer `None` means the field was omitted; `Some(None)` is an explicit
+    /// JSON `null` that clears the code; `Some(Some(value))` replaces it.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_nullable_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub invite_code: Option<Option<String>>,
     pub default_permissions: Option<i32>,
     #[serde(default)]
     pub challenge_configs: Option<Vec<DivisionChallengeConfigInput>>,
 }
 
+fn deserialize_present_nullable_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
 /// Inbound half of RSCTF `DivisionChallengeConfigModel` — a per-challenge
 /// permission override for a division. `permissions` is a numeric
 /// `GamePermission` bit-set; defaults to `All` when omitted (matching the C#).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionChallengeConfigInput {
     pub challenge_id: i32,
@@ -651,6 +680,9 @@ impl PendingChallengeModel {
 //  Router
 // ============================================================================
 
+const GAME_CLONE_COMPAT_ROUTE: &str = "/api/edit/games/{id}/Clone";
+const GAME_CLONE_CANONICAL_ROUTE: &str = "/api/edit/games/{id}/clone";
+
 pub fn router() -> Router<SharedState> {
     Router::new()
         .route(
@@ -677,7 +709,8 @@ pub fn router() -> Router<SharedState> {
             get(get_game).put(update_game).delete(delete_game),
         )
         .route("/api/edit/games/{id}/HashSalt", get(get_hash_salt))
-        .route("/api/edit/games/{id}/Clone", post(clone_game))
+        .route(GAME_CLONE_COMPAT_ROUTE, post(clone_game))
+        .route(GAME_CLONE_CANONICAL_ROUTE, post(clone_game))
         .route(
             "/api/edit/games/{id}/variants",
             get(event_security::list_variants),
@@ -718,6 +751,10 @@ pub fn router() -> Router<SharedState> {
         .route(
             "/api/edit/games/{id}/challenges",
             get(get_challenges).post(add_challenge),
+        )
+        .route(
+            "/api/edit/games/{id}/challenges/bulk",
+            post(mutate_challenges_bulk).layer(DefaultBodyLimit::max(16 * 1024)),
         )
         .route(
             "/api/edit/games/{id}/challenges/submit",
@@ -787,7 +824,7 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/flags",
-            post(add_flags),
+            post(add_flags).layer(DefaultBodyLimit::max(256 * 1024)),
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/flags/{fId}",
@@ -944,6 +981,7 @@ impl ManagerInfoModel {
 mod ad;
 mod builds;
 mod challenges;
+pub(crate) use challenges::recover_bulk_delete_jobs;
 mod deletion_locks;
 mod divisions;
 mod event_security;

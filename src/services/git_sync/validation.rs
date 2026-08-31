@@ -583,12 +583,25 @@ async fn validate_challenge(
         report.error(root, manifest, error.to_string());
     }
 
+    let flag_template = model
+        .container
+        .as_ref()
+        .and_then(|container| container.flag_template.as_deref())
+        .or(model.flag_template.as_deref())
+        .filter(|template| !crate::utils::flag_policy::is_blank(template));
+    if challenge_type == ChallengeType::DynamicContainer {
+        if let Some(template) = flag_template {
+            if let Err(error) = crate::utils::flag_policy::validate_dynamic_template(template) {
+                report.error(root, manifest, error.to_string());
+            }
+        }
+    }
+
     let mut flags = BTreeSet::new();
     for flag in model.flags.as_deref().unwrap_or_default() {
-        let flag = flag.trim();
-        if flag.is_empty() {
+        if crate::utils::flag_policy::is_blank(flag) {
             report.error(root, manifest, "flags must not contain an empty value");
-        } else if !flags.insert(flag) {
+        } else if !flags.insert(flag.as_str()) {
             report.error(root, manifest, format!("duplicate static flag {flag:?}"));
         }
     }

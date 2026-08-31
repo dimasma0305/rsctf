@@ -275,6 +275,8 @@ export type RegisterModel = ModelWithCaptcha & {
   fingerprintProof?: string | null;
   /** Deployment bootstrap secret, required only for the first administrator. */
   bootstrapToken?: string | null;
+  /** Stable identity retained through an ambiguous account/mail commit. */
+  operationId: string;
 };
 
 export interface ModelWithCaptcha {
@@ -290,10 +292,14 @@ export type RecoveryModel = ModelWithCaptcha & {
    * @minLength 1
    */
   email: string;
+  /** Stable identity retained through an ambiguous account/mail commit. */
+  operationId: string;
 };
 
 /** Account password reset */
 export interface PasswordResetModel {
+  /** Stable across retries of this reset attempt. */
+  operationId: string;
   /**
    * Password
    * @minLength 1
@@ -410,6 +416,8 @@ export interface MailChangeModel {
   newMail: string;
   /** Current password used to re-authenticate this security-sensitive change. */
   password: string;
+  /** Stable identity retained through an ambiguous account/mail commit. */
+  operationId: string;
 }
 
 /** Basic account information */
@@ -441,6 +449,14 @@ export interface ProfileUserInfoModel {
 
 /** Global configuration update */
 export interface ConfigEditModel {
+  /** Monotonic authoritative revision returned by GET. */
+  revision?: number;
+  /** Stable mutation intent, required on PUT. */
+  operationId?: string | null;
+  /** Revision observed before editing, required on PUT. */
+  expectedRevision?: number | null;
+  /** Optional branding change consumed by the same settings operation. */
+  brandingAction?: BrandingAction;
   /** User policy */
   accountPolicy?: AccountPolicy | null;
   /** Global configuration */
@@ -465,6 +481,23 @@ export interface ConfigEditModel {
   /** Active container backend summary. The backend type is read-only; the
    *  Jeopardy port-mapping preference is editable. */
   containerProvider?: ContainerProviderInfoModel | null;
+}
+
+export enum BrandingAction {
+  Keep = "Keep",
+  Set = "Set",
+  Clear = "Clear",
+}
+
+export interface SettingsMutationResult {
+  operationId: string;
+  revision: number;
+  brandingHash?: string | null;
+}
+
+export interface SettingsBrandingStageResult {
+  operationId: string;
+  brandingHash: string;
 }
 
 export interface DonationConfig {
@@ -864,6 +897,11 @@ export interface TeamInfoModel {
   locked?: boolean;
   /** Team members */
   members?: TeamUserInfoModel[] | null;
+}
+
+export interface TeamInviteModel {
+  code: string;
+  revision: number;
 }
 
 /** Team member information */
@@ -1304,6 +1342,12 @@ export interface EventVpnOverrideModel {
   active: boolean;
 }
 
+export interface EventVpnOverrideList {
+  policyRevision: number;
+  activeLimit: number;
+  overrides: EventVpnOverrideModel[];
+}
+
 export interface SuspicionRecordResult {
   /** @format int32 */
   teamId?: number;
@@ -1535,6 +1579,9 @@ export interface GameInfoModel {
   poster?: string | null;
   /** Game public key */
   publicKey?: string;
+  /** Monotonic source fence used by the bounded clone contract. */
+  /** @format int64 */
+  sourceRevision: number;
   /** Is the game in practice mode (accessible even after the game ends) */
   practiceMode?: boolean;
   /**
@@ -1649,6 +1696,47 @@ export interface ArrayResponseOfGameInfoModel {
   total?: number;
 }
 
+/** Idempotent request to clone a game and its challenge definitions. */
+export interface GameCloneModel {
+  /** Stable across retries of the same organizer action. */
+  operationId: string;
+  /** Source revision observed before submitting the clone intent. */
+  /** @format int64 */
+  expectedSourceRevision: number;
+  title: string;
+  /** @format int64 */
+  startTimeUtc: number;
+  /** @format int64 */
+  endTimeUtc: number;
+  includeChallenges: boolean;
+}
+
+export interface AdminUserImportRowResult {
+  email: string;
+  realName: string;
+  userName: string;
+  password: string;
+  teamName?: string;
+  status: "created" | "updated" | "skipped";
+  error?: string;
+}
+
+export interface AdminUserImportResult {
+  total: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  users: AdminUserImportRowResult[];
+}
+
+export interface AdminUserImportJobStatus {
+  operationId: string;
+  status: string;
+  total: number;
+  completed: number;
+  result?: AdminUserImportResult | null;
+}
+
 /**
  * Game notice, which will be sent to the client.
  * Information includes first, second, and third blood notifications, hint release notifications, challenging opening notifications, etc.
@@ -1690,16 +1778,18 @@ export interface Division {
   /**
    * The name of the division.
    * @minLength 1
-   * @maxLength 31
+   * @maxLength 128
    */
   name: string;
   /**
    * Invitation code for joining the division.
-   * @maxLength 32
+   * @maxLength 256
    */
   inviteCode?: string | null;
   /** Permissions associated with the division. */
   defaultPermissions?: GamePermission;
+  revision: number;
+  policyRevision: number;
   /** Challenge configs for this division. */
   challengeConfigs?: DivisionChallengeConfig[];
 }
@@ -1715,12 +1805,12 @@ export interface DivisionCreateModel {
   /**
    * The name of the division.
    * @minLength 1
-   * @maxLength 31
+   * @maxLength 128
    */
   name: string;
   /**
    * Invitation code for joining the division.
-   * @maxLength 32
+   * @maxLength 256
    */
   inviteCode?: string | null;
   /** Permissions associated with the division. */
@@ -1740,14 +1830,16 @@ export interface DivisionChallengeConfigModel {
 }
 
 export interface DivisionEditModel {
+  operationId: string;
+  expectedRevision: number;
   /**
    * The name of the division.
-   * @maxLength 31
+   * @maxLength 128
    */
   name?: string | null;
   /**
    * Invitation code for joining the division.
-   * @maxLength 32
+   * @maxLength 256
    */
   inviteCode?: string | null;
   /** Permissions associated with the division. */
@@ -2075,6 +2167,30 @@ export interface ChallengeInfoModel {
   buildStatus?: ChallengeBuildStatus;
   /** True iff an OriginalArchiveBlobPath is on file (i.e. Rebuild has something to rebuild from) */
   hasOriginalArchive?: boolean;
+  /** Event-wide challenge configuration revision used by bounded bulk edits. */
+  configurationRevision?: number;
+}
+
+export type BulkChallengeAction = "Enable" | "Disable" | "Delete"
+
+export interface BulkChallengeMutationRequest {
+  operationId: string
+  expectedRevision: number
+  action: BulkChallengeAction
+  challengeIds: number[]
+}
+
+export interface BulkChallengeOutcome {
+  challengeId: number
+  status: "Changed" | "Unchanged" | "Rejected" | "Deleted"
+  message?: string | null
+}
+
+export interface BulkChallengeMutationResult {
+  operationId: string
+  state: "Pending" | "Complete"
+  configurationRevision: number
+  outcomes: BulkChallengeOutcome[]
 }
 
 /** Review state of a challenge */
@@ -2126,6 +2242,11 @@ export interface ChallengeBuildAuditModel {
   logTail?: string | null
   errorMessage?: string | null
   durationMs: number
+}
+
+export interface ChallengeBuildStatusModel {
+  buildStatus: ChallengeBuildStatus
+  lastBuildLog?: string | null
 }
 
 /** One row of the live in-progress strip */
@@ -2834,6 +2955,16 @@ export interface FlagCreateModel {
   fileHash?: string | null;
   /** File URL (remote file) */
   remoteUrl?: string | null;
+}
+
+export interface FlagImportRequest {
+  operationId: string;
+  flags: FlagCreateModel[];
+}
+
+export interface FlagImportResult {
+  inserted: number;
+  duplicates: number;
 }
 
 /** List response */
@@ -5564,10 +5695,19 @@ export class Api<
      * @summary Reset user password
      * @request DELETE:/api/admin/users/{userid}/password
      */
-    adminResetPassword: (userid: string, params: RequestParams = {}) =>
+    adminResetPassword: (userid: string, operationId: string, params: RequestParams = {}) =>
       this.request<string, RequestResponse>({
         path: `/api/admin/users/${userid}/password`,
         method: "DELETE",
+        query: { operationId },
+        format: "json",
+        ...params,
+      }),
+
+    adminRecoverUserImport: (operationId: string, params: RequestParams = {}) =>
+      this.request<AdminUserImportJobStatus, RequestResponse>({
+        path: `/api/admin/users/import/${operationId}`,
+        method: "GET",
         format: "json",
         ...params,
       }),
@@ -5722,11 +5862,40 @@ export class Api<
      * @request PUT:/api/admin/config
      */
     adminUpdateConfigs: (data: ConfigEditModel, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+      this.request<SettingsMutationResult, RequestResponse>({
         path: `/api/admin/config`,
         method: "PUT",
         body: data,
         type: ContentType.Json,
+        ...params,
+      }),
+
+    /** Reconcile a committed settings intent after an ambiguous response. */
+    adminGetSettingsOperation: (
+      operationId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<SettingsMutationResult, RequestResponse>({
+        path: `/api/admin/config/operations/${operationId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /** Stage an optional logo for one settings intent without publishing it. */
+    adminStageSettingsBranding: (
+      operationId: string,
+      data: {
+        /** @format binary */
+        file?: File | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<SettingsBrandingStageResult, RequestResponse>({
+        path: `/api/admin/config/logo/stage/${operationId}`,
+        method: "POST",
+        body: data,
+        type: ContentType.FormData,
         ...params,
       }),
 
@@ -6775,10 +6944,10 @@ export class Api<
     editAddFlags: (
       id: number,
       cId: number,
-      data: FlagCreateModel[],
+      data: FlagImportRequest,
       params: RequestParams = {},
     ) =>
-      this.request<void, RequestResponse>({
+      this.request<FlagImportResult, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${cId}/flags`,
         method: "POST",
         body: data,
@@ -6797,6 +6966,25 @@ export class Api<
     editAddGame: (data: GameInfoModel, params: RequestParams = {}) =>
       this.request<GameInfoModel, RequestResponse>({
         path: `/api/edit/games`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Reusing an operation ID with identical input returns the
+     * original hidden destination game.
+     *
+     * @tags Edit
+     * @name EditCloneGame
+     * @summary Clone Game
+     * @request POST:/api/edit/games/{id}/clone
+     */
+    editCloneGame: (id: number, data: GameCloneModel, params: RequestParams = {}) =>
+      this.request<number, RequestResponse>({
+        path: `/api/edit/games/${id}/clone`,
         method: "POST",
         body: data,
         type: ContentType.Json,
@@ -7228,6 +7416,20 @@ export class Api<
       this.request<ChallengeInfoModel[], RequestResponse>({
         path: `/api/edit/games/${id}/challenges`,
         method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    editMutateGameChallengesBulk: (
+      id: number,
+      data: BulkChallengeMutationRequest,
+      params: RequestParams = {},
+    ) =>
+      this.request<BulkChallengeMutationResult, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/bulk`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -11122,7 +11324,7 @@ export class Api<
      * @request GET:/api/team/{id}/invite
      */
     teamInviteCode: (id: number, params: RequestParams = {}) =>
-      this.request<string, RequestResponse>({
+      this.request<TeamInviteModel, RequestResponse>({
         path: `/api/team/${id}/invite`,
         method: "GET",
         format: "json",
@@ -11141,7 +11343,7 @@ export class Api<
       options?: SWRConfiguration,
       doFetch: boolean = true,
     ) =>
-      useSWR<string, RequestResponse>(
+      useSWR<TeamInviteModel, RequestResponse>(
         doFetch ? `/api/team/${id}/invite` : null,
         options,
       ),
@@ -11156,9 +11358,9 @@ export class Api<
      */
     mutateTeamInviteCode: (
       id: number,
-      data?: string | Promise<string>,
+      data?: TeamInviteModel | Promise<TeamInviteModel>,
       options?: MutatorOptions,
-    ) => mutate<string>(`/api/team/${id}/invite`, data, options),
+    ) => mutate<TeamInviteModel>(`/api/team/${id}/invite`, data, options),
 
     /**
      * @description User kick API, kick user with corresponding ID, requires team creator permission
@@ -11221,10 +11423,16 @@ export class Api<
      * @summary Update invitation token
      * @request PUT:/api/team/{id}/invite
      */
-    teamUpdateInviteToken: (id: number, params: RequestParams = {}) =>
-      this.request<string, RequestResponse>({
+    teamUpdateInviteToken: (
+      id: number,
+      data: { operationId: string; expectedRevision: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<TeamInviteModel, RequestResponse>({
         path: `/api/team/${id}/invite`,
         method: "PUT",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -11395,10 +11603,10 @@ export class Api<
 
     createVpnOverride: (
       gameId: number,
-      data: { reason: string; durationMinutes: number },
+      data: { reason: string; durationMinutes: number; operationId: string; expectedPolicyRevision: number },
       params: RequestParams = {},
     ) =>
-      this.request<{ id: string; expiresAtUtc: number }, RequestResponse>({
+      this.request<{ id: string; expiresAtUtc: number; policyRevision: number }, RequestResponse>({
         path: `/api/admin/games/${gameId}/vpn-override`,
         method: "POST",
         body: data,
@@ -11408,7 +11616,7 @@ export class Api<
       }),
 
     listVpnOverrides: (gameId: number, params: RequestParams = {}) =>
-      this.request<EventVpnOverrideModel[], RequestResponse>({
+      this.request<EventVpnOverrideList, RequestResponse>({
         path: `/api/admin/games/${gameId}/vpn-overrides`,
         method: "GET",
         format: "json",
@@ -11418,11 +11626,14 @@ export class Api<
     revokeVpnOverride: (
       gameId: number,
       overrideId: string,
+      data: { operationId: string; expectedPolicyRevision: number },
       params: RequestParams = {},
     ) =>
-      this.request<void, RequestResponse>({
+      this.request<{ id: string; expiresAtUtc: number; policyRevision: number }, RequestResponse>({
         path: `/api/admin/games/${gameId}/vpn-override/${overrideId}/revoke`,
         method: "POST",
+        body: data,
+        type: ContentType.Json,
         ...params,
       }),
   };

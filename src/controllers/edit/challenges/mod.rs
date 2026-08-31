@@ -3,6 +3,7 @@ use super::*;
 
 mod attachments;
 mod audit;
+mod bulk;
 mod deletion;
 #[cfg(test)]
 mod deletion_tests;
@@ -21,6 +22,8 @@ pub use audit::{
     download_challenge_audit_archive, get_challenge_audit_meta, get_challenge_build_status,
     list_challenge_build_statuses, rebuild_challenge,
 };
+pub use bulk::mutate_challenges_bulk;
+pub(crate) use bulk::recover_delete_jobs as recover_bulk_delete_jobs;
 pub(crate) use deletion::reject_pending_mutation;
 pub(crate) use lifecycle::destroy_challenge_containers;
 use lifecycle::destroy_test_container_locked;
@@ -45,6 +48,14 @@ pub async fn get_challenges(
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<Vec<ChallengeSummaryModel>>> {
     manager_or_admin(&st, &user, id).await?;
+    let configuration_revision = sqlx::query_scalar::<_, i64>(
+        r#"SELECT challenge_configuration_revision FROM "Games" WHERE id = $1"#,
+    )
+    .bind(id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Game not found"))?;
     let challenges = game_challenge::Entity::find()
         .filter(game_challenge::Column::GameId.eq(id))
         .filter(game_challenge::Column::ReviewStatus.eq(ChallengeReviewStatus::Active))
@@ -58,7 +69,7 @@ pub async fn get_challenges(
     let data = challenges
         .iter()
         .map(|c| {
-            let mut m = ChallengeSummaryModel::from_challenge(c);
+            let mut m = ChallengeSummaryModel::from_challenge(c, configuration_revision);
             // Mirror the scoreboard cell exactly (RSCTF `GenScoreboard`): A&D /
             // KotH are live-scored (0), every other challenge shows the current
             // dynamic-decayed score at its distinct-solve count.
@@ -185,7 +196,8 @@ fn challenge_scoring_fields_changed(
         requested != challenge.deadline_utc
     });
     let flag_template_changed = model.flag_template.as_ref().is_some_and(|template| {
-        let requested = (!template.trim().is_empty()).then_some(template.as_str());
+        let requested =
+            (!crate::utils::flag_policy::is_blank(template)).then_some(template.as_str());
         requested != challenge.flag_template.as_deref()
     });
     deadline_changed
@@ -320,12 +332,7 @@ pub async fn update_challenge(
 
     // Guard: enabling a non-dynamic challenge with no flags is rejected.
     if model.is_enabled == Some(true) && !challenge.is_enabled && !ch_type.is_dynamic() {
-        let flags = load_flags(&st, c_id).await?;
-        if flags.is_empty() {
-            return Err(AppError::bad_request(
-                "Cannot enable a challenge that has no flag",
-            ));
-        }
+        super::flags::ensure_static_flag_can_enable_locked(control.transaction_mut(), c_id).await?;
     }
     if model.enable_traffic_capture == Some(true) && !ch_type.is_container() {
         return Err(AppError::bad_request(
@@ -388,21 +395,13 @@ pub async fn update_challenge(
             ));
         }
     }
-    // RSCTF `UpdateGameChallenge`: a non-blank flag template on a DynamicContainer
-    // must carry enough randomness or every team receives the SAME flag. RSCTF's
-    // `DynamicFlagGenerator.IsValid` treats a template as sufficiently random only
-    // when it contains a `[GUID]` or `[TEAM_HASH]` placeholder — reject otherwise
-    // with 400 `Challenge_FlagTooTrivial`. (rsctf's `flag_generator::generate_flag`
-    // also expands `[UUID]`, but RSCTF's validator recognizes only the two tokens
-    // above, so we match RSCTF here.)
+    // A dynamic template must remain submittable after every production
+    // placeholder occurrence expands. Blank input clears the template and uses
+    // the bounded default generator.
     if let Some(t) = model.flag_template.as_deref() {
-        if !t.trim().is_empty()
-            && ch_type == ChallengeType::DynamicContainer
-            && !(t.contains("[GUID]") || t.contains("[TEAM_HASH]"))
-        {
-            return Err(AppError::bad_request(
-                "Flag template is too trivial: it must contain a [GUID] or [TEAM_HASH] placeholder",
-            ));
+        if !crate::utils::flag_policy::is_blank(t) && ch_type == ChallengeType::DynamicContainer {
+            crate::utils::flag_policy::validate_dynamic_template(t)
+                .map_err(|error| AppError::bad_request(error.to_string()))?;
         }
     }
 
@@ -550,7 +549,11 @@ pub async fn update_challenge(
         // RSCTF `GameChallenge.Update`: an empty/whitespace-only flag template is the
         // client's "clear" sentinel — store null instead of persisting an empty string.
         // Mirrors `FlagTemplate = string.IsNullOrWhiteSpace(template) ? null : template`.
-        am.flag_template = Set(if v.trim().is_empty() { None } else { Some(v) });
+        am.flag_template = Set(if crate::utils::flag_policy::is_blank(&v) {
+            None
+        } else {
+            Some(v)
+        });
     }
     if let Some(v) = model.category {
         am.category = Set(v);
@@ -865,6 +868,16 @@ pub async fn delete_challenge(
     Path((id, c_id)): Path<(i32, i32)>,
 ) -> AppResult<MessageResponse> {
     manager_or_admin(&st, &user, id).await?;
+    delete_challenge_core(st, id, c_id, true, true).await
+}
+
+pub(crate) async fn delete_challenge_core(
+    st: SharedState,
+    id: i32,
+    c_id: i32,
+    reconcile_scoreboards: bool,
+    reconcile_vpn: bool,
+) -> AppResult<MessageResponse> {
     // Share the hard-deletion admission domain with whole-game deletion before
     // retaining the outer runtime-transition transaction.
     let deletion_admission = super::deletion_locks::acquire_hard_deletion_admission().await?;
@@ -897,7 +910,9 @@ pub async fn delete_challenge(
         if challenge.challenge_type == ChallengeType::KingOfTheHill {
             crate::services::ad_engine::clear_challenge_control(&st.db, id, c_id).await?;
         }
-        crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+        if reconcile_vpn {
+            crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+        }
     }
     engine_control
         .release()
@@ -911,7 +926,13 @@ pub async fn delete_challenge(
         destroy_challenge_containers(&st, &challenge, false, true).await?;
     }
     if challenge.ad_self_hosted {
-        st.byoc.disconnect_challenge(&st.db, c_id).await?;
+        if reconcile_vpn {
+            st.byoc.disconnect_challenge(&st.db, c_id).await?;
+        } else {
+            st.byoc
+                .disconnect_challenge_deferred_vpn(&st.db, c_id)
+                .await?;
+        }
     }
 
     // Reacquire game control before the test/definition gates. Engine writers
@@ -955,7 +976,9 @@ pub async fn delete_challenge(
             tracing::warn!(%error, attachment_id = aid, "deleted challenge attachment cleanup deferred");
         }
     }
-    flush_game_scoreboards(&st, id).await;
+    if reconcile_scoreboards {
+        flush_game_scoreboards(&st, id).await;
+    }
     Ok(MessageResponse::ok(""))
 }
 

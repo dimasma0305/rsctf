@@ -38,6 +38,7 @@ mod endpoint;
 mod flag;
 mod framing;
 mod lifecycle;
+mod team;
 use authorization::live_tunnel_authorized;
 pub use control::start_control_listener;
 use endpoint::RelayEndpoint;
@@ -435,14 +436,26 @@ impl Registry {
     /// Terminate every live tunnel for a challenge when it is disabled or loses
     /// approval.
     pub async fn disconnect_challenge(&self, db: &DatabaseConnection, cid: i32) -> AppResult<()> {
-        self.disconnect_challenge_inner(db, cid, true).await
+        self.disconnect_challenge_inner(db, cid, true, true).await
     }
 
-    async fn disconnect_challenge_inner(
+    /// Revoke one challenge while deferring the event-wide VPN rebuild to a
+    /// surrounding bounded batch. Cross-replica endpoint invalidation is still
+    /// published; only the redundant per-child hub reconciliation is skipped.
+    pub async fn disconnect_challenge_deferred_vpn(
+        &self,
+        db: &DatabaseConnection,
+        cid: i32,
+    ) -> AppResult<()> {
+        self.disconnect_challenge_inner(db, cid, true, false).await
+    }
+
+    pub(super) async fn disconnect_challenge_inner(
         &self,
         db: &DatabaseConnection,
         cid: i32,
         propagate: bool,
+        reconcile_vpn: bool,
     ) -> AppResult<()> {
         let mut generations = self.authorization_generations.write().await;
         let generation = generations.challenges.entry(cid).or_default();
@@ -475,7 +488,10 @@ impl Registry {
             .execute(db.get_postgres_connection_pool())
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-            crate::services::ad_vpn::ensure_hub_and_sync(db).await
+            if reconcile_vpn {
+                crate::services::ad_vpn::ensure_hub_and_sync(db).await?;
+            }
+            Ok::<(), AppError>(())
         }
         .await;
         wait_for_tunnel_shutdown(&mut handles).await;

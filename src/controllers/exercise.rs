@@ -467,10 +467,10 @@ pub async fn create_container(
         }
     }
 
-    let flag = flag_generator::generate_flag(
+    let flag = flag_generator::generate_flag_checked(
         e.flag_template.as_deref(),
         &flag_generator::exercise_user_hash(st.config.identity_hash_key.as_bytes(), id, user.id),
-    );
+    )?;
     let game_kind = crate::services::container::game_kind_for_challenge(e.challenge_type);
     let platform_proxy =
         crate::controllers::admin::container_port_mapping(&st).await == "PlatformProxy";

@@ -51,7 +51,7 @@ pub use reconcile::{
 pub(crate) use endpoints::stage_backend_endpoint_deactivation_retaining_identity;
 pub use endpoints::{
     clear_stale_local_relays, deactivate_backend_endpoint, deactivate_backend_endpoints,
-    deactivate_participation_services, deactivate_team_service,
+    deactivate_participation_services, deactivate_team_service, deactivate_team_service_deferred,
 };
 
 /// Revoke capture-gated routes without consulting PostgreSQL. Used only while

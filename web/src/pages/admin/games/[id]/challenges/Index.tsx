@@ -51,7 +51,9 @@ import {
 import { ChallengeCategoryItem, ChallengeCategoryList, useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { useEditChallenges } from '@Hooks/useEdit'
 import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
-import api, { ChallengeInfoModel, ChallengeCategory, ChallengeType } from '@Api'
+import api, { BulkChallengeAction, ChallengeInfoModel, ChallengeCategory, ChallengeType } from '@Api'
+
+const MAX_BULK_SELECTION = 100
 
 // Engine = the scoring family, a separate filter axis from category (Web/Pwn/…).
 // Mirrors the public scoreboard's 3-way split. 'jeopardy' = every non-AD-engine type.
@@ -78,6 +80,13 @@ const GameChallengeEdit: FC = () => {
   const updateOperations = useRef(new Map<number, ChallengeMutationOperation>())
   const bulkBuildFlight = useRef<Promise<void> | null>(null)
   const bulkBuildAbort = useRef(new AbortController())
+  const bulkMutationOwner = useRef(false)
+  const bulkOperation = useRef<{
+    operationId: string
+    expectedRevision: number
+    action: BulkChallengeAction
+    challengeIds: number[]
+  } | null>(null)
 
   const { t } = useTranslation()
 
@@ -152,15 +161,16 @@ const GameChallengeEdit: FC = () => {
     () => (filteredChallenges ?? []).map((c) => c.id).filter((x): x is number => x != null),
     [filteredChallenges]
   )
+  const selectableIds = filteredIds.slice(0, MAX_BULK_SELECTION)
   // Only count selections that are still in the current (filtered) view.
   const visibleSelected = filteredIds.filter((id) => selectedIds.has(id))
-  const allSelected = filteredIds.length > 0 && visibleSelected.length === filteredIds.length
+  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id))
   const someSelected = visibleSelected.length > 0 && !allSelected
 
   const toggleSelect = (cid: number, checked: boolean) =>
     setSelectedIds((prev) => {
       const next = new Set(prev)
-      if (checked) next.add(cid)
+      if (checked && (next.has(cid) || next.size < MAX_BULK_SELECTION)) next.add(cid)
       else next.delete(cid)
       return next
     })
@@ -168,8 +178,8 @@ const GameChallengeEdit: FC = () => {
   const toggleSelectAll = () =>
     setSelectedIds((prev) => {
       const next = new Set(prev)
-      if (allSelected) filteredIds.forEach((id) => next.delete(id))
-      else filteredIds.forEach((id) => next.add(id))
+      if (allSelected) selectableIds.forEach((id) => next.delete(id))
+      else selectableIds.forEach((id) => next.add(id))
       return next
     })
 
@@ -189,34 +199,76 @@ const GameChallengeEdit: FC = () => {
 
   const performBatchDelete = async () => {
     const ids = filteredIds.filter((id) => selectedIds.has(id))
-    if (ids.length === 0 || !canConfirmDelete) return
+    if (ids.length === 0 || !canConfirmDelete || bulkMutationOwner.current) return
     setDeleteModalOpen(false)
+    await performBulkMutation('Delete', ids)
+  }
+
+  const performBulkMutation = async (action: BulkChallengeAction, ids: number[]) => {
+    if (ids.length === 0 || ids.length > MAX_BULK_SELECTION || bulkMutationOwner.current) return
+    const expectedRevision = challenges?.find((challenge) => challenge.configurationRevision != null)
+      ?.configurationRevision
+    if (expectedRevision == null) return
+    const canonicalIds = [...ids].sort((left, right) => left - right)
+    const previous = bulkOperation.current
+    const sameIntent =
+      previous?.expectedRevision === expectedRevision &&
+      previous.action === action &&
+      previous.challengeIds.join(',') === canonicalIds.join(',')
+    if (!sameIntent) {
+      bulkOperation.current = {
+        operationId: crypto.randomUUID(),
+        expectedRevision,
+        action,
+        challengeIds: canonicalIds,
+      }
+    }
+    bulkMutationOwner.current = true
     setDisabled(true)
     try {
-      const results = await Promise.allSettled(ids.map((cid) => api.edit.editRemoveGameChallenge(numId, cid)))
-      const failed = results.filter((r) => r.status === 'rejected').length
-      const ok = ids.length - failed
+      let response = await api.edit.editMutateGameChallengesBulk(numId, bulkOperation.current!)
+      let pollCount = 0
+      while (response.data.state === 'Pending' && pollCount < 150) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000))
+        response = await api.edit.editMutateGameChallengesBulk(numId, bulkOperation.current!)
+        pollCount += 1
+      }
+      if (response.data.state === 'Pending') {
+        throw new Error('Deletion is still running. Retry to recover the same operation.')
+      }
+      const failed = response.data.outcomes.filter((outcome) => outcome.status === 'Rejected').length
+      const ok = response.data.outcomes.length - failed
+      const message =
+        action === 'Delete'
+          ? failed > 0
+            ? t('admin.notification.games.challenges.batch_deleted_partial', { ok, failed })
+            : t('admin.notification.games.challenges.batch_deleted', { count: ok })
+          : action === 'Enable'
+            ? failed > 0
+              ? t('admin.notification.games.challenges.batch_enabled_partial', { ok, failed })
+              : t('admin.notification.games.challenges.batch_enabled', { count: ok })
+            : failed > 0
+              ? t('admin.notification.games.challenges.batch_disabled_partial', { ok, failed })
+              : t('admin.notification.games.challenges.batch_disabled', { count: ok })
       showNotification({
         color: failed > 0 ? 'orange' : 'teal',
-        message:
-          failed > 0
-            ? t('admin.notification.games.challenges.batch_deleted_partial', { ok, failed })
-            : t('admin.notification.games.challenges.batch_deleted', { count: ok }),
+        message,
         icon: <Icon path={mdiCheck} size={1} />,
       })
+      bulkOperation.current = null
       clearSelection()
-      mutate()
+      await mutate()
     } catch (e) {
       showErrorMsg(e, t)
     } finally {
+      bulkMutationOwner.current = false
       setDisabled(false)
     }
   }
 
   // Batch enable/disable of the selected challenges. Reversible, so a single
-  // click-to-confirm (not the type-"delete" guard) is enough. allSettled so a
-  // challenge that can't flip (e.g. enabling one with no flag) doesn't abort
-  // the rest — it's reported as a skip.
+  // click-to-confirm (not the type-"delete" guard) is enough. The backend
+  // returns one durable per-challenge outcome for the complete intent.
   const onBatchSetEnabled = (enable: boolean) => {
     if (visibleSelected.length === 0) return
     modals.openConfirmModal({
@@ -235,44 +287,7 @@ const GameChallengeEdit: FC = () => {
 
   const performBatchSetEnabled = async (enable: boolean) => {
     const ids = filteredIds.filter((id) => selectedIds.has(id))
-    if (ids.length === 0) return
-    setDisabled(true)
-    try {
-      const results = await Promise.allSettled(
-        ids.map((cid) => {
-          const challenge = challenges?.find((candidate) => candidate.id === cid)
-          const prepared = prepareChallengeMutation(
-            { isEnabled: enable },
-            challengeRevision(challenge),
-            updateOperations.current.get(cid)
-          )
-          updateOperations.current.set(cid, prepared.operation)
-          return api.edit.editUpdateGameChallenge(numId, cid, prepared.payload)
-        })
-      )
-      results.forEach((result, index) => {
-        if (result.status === 'fulfilled') updateOperations.current.delete(ids[index])
-      })
-      const failed = results.filter((r) => r.status === 'rejected').length
-      const ok = ids.length - failed
-      showNotification({
-        color: failed > 0 ? 'orange' : 'teal',
-        message: enable
-          ? failed > 0
-            ? t('admin.notification.games.challenges.batch_enabled_partial', { ok, failed })
-            : t('admin.notification.games.challenges.batch_enabled', { count: ok })
-          : failed > 0
-            ? t('admin.notification.games.challenges.batch_disabled_partial', { ok, failed })
-            : t('admin.notification.games.challenges.batch_disabled', { count: ok }),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-      clearSelection()
-      await mutate()
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setDisabled(false)
-    }
+    await performBulkMutation(enable ? 'Enable' : 'Disable', ids)
   }
 
   const onToggle = (challenge: ChallengeInfoModel, setDisabled: Dispatch<SetStateAction<boolean>>) => {

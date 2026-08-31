@@ -3,11 +3,12 @@ import { useInputState } from '@mantine/hooks'
 import { showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { AccountView } from '@Components/AccountView'
 import { Captcha, useCaptchaRef } from '@Components/Captcha'
+import { beginMailOperation, finishMailOperation, type MailOperationOwner } from '@Utils/MailOperation'
 import { tryGetErrorMsg } from '@Utils/Shared'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import api from '@Api'
@@ -16,43 +17,54 @@ import misc from '@Styles/Misc.module.css'
 const Recovery: FC = () => {
   const [email, setEmail] = useInputState('')
   const [disabled, setDisabled] = useState(false)
+  const recoveryOperationRef = useRef<MailOperationOwner | null>(null)
   const { captchaRef, getToken, cleanUp } = useCaptchaRef()
 
   const { t } = useTranslation()
 
   usePageTitle(t('account.title.recovery'))
+  useEffect(() => () => recoveryOperationRef.current?.controller.abort(), [])
 
   const onRecovery = async (event: React.SyntheticEvent) => {
     event.preventDefault()
-
-    const { valid, token } = await getToken()
-
-    if (!valid) {
-      showNotification({
-        color: 'orange',
-        title: t('account.notification.captcha.not_valid'),
-        message: t('common.error.try_later'),
-        loading: true,
-      })
-      return
-    }
-
+    const acquired = beginMailOperation(recoveryOperationRef.current, email.trim().toLowerCase())
+    if (!acquired.started) return
+    const operation = acquired.owner
+    recoveryOperationRef.current = operation
     setDisabled(true)
-
-    showNotification({
-      color: 'orange',
-      id: 'recovery-status',
-      title: t('account.notification.captcha.request_sent.title'),
-      message: t('account.notification.captcha.request_sent.message'),
-      loading: true,
-      autoClose: false,
-    })
+    let completed = false
 
     try {
-      await api.account.accountRecovery({
-        email,
-        challenge: token,
+      const { valid, token } = await getToken()
+
+      if (!valid) {
+        showNotification({
+          color: 'orange',
+          title: t('account.notification.captcha.not_valid'),
+          message: t('common.error.try_later'),
+          loading: true,
+        })
+        return
+      }
+
+      showNotification({
+        color: 'orange',
+        id: 'recovery-status',
+        title: t('account.notification.captcha.request_sent.title'),
+        message: t('account.notification.captcha.request_sent.message'),
+        loading: true,
+        autoClose: false,
       })
+
+      await api.account.accountRecovery(
+        {
+          email,
+          challenge: token,
+          operationId: operation.operationId,
+        },
+        { signal: operation.controller.signal }
+      )
+      completed = true
 
       updateNotification({
         id: 'recovery-status',
@@ -65,6 +77,7 @@ const Recovery: FC = () => {
       })
       cleanUp(true)
     } catch (err: any) {
+      if (operation.controller.signal.aborted) return
       updateNotification({
         id: 'recovery-status',
         color: 'red',
@@ -76,6 +89,8 @@ const Recovery: FC = () => {
       })
       cleanUp(false)
     } finally {
+      if (recoveryOperationRef.current === operation)
+        recoveryOperationRef.current = finishMailOperation(operation, completed)
       setDisabled(false)
     }
   }
@@ -100,7 +115,7 @@ const Recovery: FC = () => {
       <Anchor fz="xs" className={misc.alignSelfEnd} component={Link} to="/account/login">
         {t('account.anchor.login')}
       </Anchor>
-      <Button disabled={disabled} fullWidth onClick={onRecovery}>
+      <Button type="submit" disabled={disabled} fullWidth>
         {t('account.button.recovery')}
       </Button>
     </AccountView>

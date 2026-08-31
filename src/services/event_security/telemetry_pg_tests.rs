@@ -112,12 +112,10 @@ async fn duplicate_rows_replay_at_quota_but_novel_rows_are_rolled_back() {
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query(
-        r#"INSERT INTO "SuspicionReconciliationState" (game_id) VALUES (7)"#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query(r#"INSERT INTO "SuspicionReconciliationState" (game_id) VALUES (7)"#)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query(
         r#"INSERT INTO "EventVpnUserPeers"
              (id, game_id, user_id, participation_id)

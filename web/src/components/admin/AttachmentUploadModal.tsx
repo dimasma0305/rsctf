@@ -20,19 +20,22 @@ import {
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { showErrorMsg } from '@Utils/Shared'
 import { useEditChallenge } from '@Hooks/useEdit'
 import api, { FileType } from '@Api'
 import uploadClasses from '@Styles/Upload.module.css'
+import { MAX_FLAG_IMPORT_ROWS, validateFlagRows } from '@Utils/FlagImport'
 
 export const AttachmentUploadModal: FC<ModalProps> = (props) => {
   const { id, chalId } = useParams()
   const [numId, numCId] = [parseInt(id ?? '-1'), parseInt(chalId ?? '-1')]
   const uploadFileName = `DYN_ATTACHMENT_${numCId}`
   const [disabled, setDisabled] = useState(false)
+  const submitting = useRef(false)
+  const operationId = useRef<string | null>(null)
 
   const { mutate } = useEditChallenge(numId, numCId)
 
@@ -45,6 +48,7 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
   const { t } = useTranslation()
 
   const onUpload = async () => {
+    if (submitting.current) return
     if (files.length <= 0) {
       showNotification({
         color: 'red',
@@ -53,7 +57,17 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
       })
       return
     }
+    if (files.length > MAX_FLAG_IMPORT_ROWS) {
+      showNotification({ color: 'red', message: `Only ${MAX_FLAG_IMPORT_ROWS} files can be added at once.` })
+      return
+    }
+    const validationError = validateFlagRows(files.map((file) => ({ flag: file.name })))
+    if (validationError) {
+      showNotification({ color: 'red', message: validationError })
+      return
+    }
 
+    submitting.current = true
     setProgress(0)
     setDisabled(true)
 
@@ -72,14 +86,18 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
 
       setProgress(95)
       if (data.data) {
+        operationId.current ??= crypto.randomUUID()
         await api.edit.editAddFlags(
           numId,
           numCId,
-          data.data.map((f, idx) => ({
-            flag: files[idx].name,
-            attachmentType: FileType.Local,
-            fileHash: f.hash,
-          }))
+          {
+            operationId: operationId.current,
+            flags: data.data.map((f, idx) => ({
+              flag: files[idx].name,
+              attachmentType: FileType.Local,
+              fileHash: f.hash,
+            })),
+          }
         )
 
         setProgress(0)
@@ -89,18 +107,20 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
           icon: <Icon path={mdiCheck} size={1} />,
         })
         setFiles([])
+        operationId.current = null
         mutate()
         props.onClose()
       }
     } catch (err) {
       showErrorMsg(err, t)
     } finally {
+      submitting.current = false
       setDisabled(false)
     }
   }
 
   return (
-    <Modal {...props}>
+    <Modal {...props} closeOnClickOutside={!disabled} closeOnEscape={!disabled}>
       <Stack>
         <Text size="sm">
           {t('admin.content.games.challenges.attachment.instruction.dynamic.content')}
@@ -135,7 +155,10 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
                     </Text>
                     <ActionIcon
                       aria-label={t('common.button.remove', 'Remove {{name}}', { name: file.name })}
-                      onClick={() => setFiles(files.filter((f) => f !== file))}
+                      onClick={() => {
+                        operationId.current = null
+                        setFiles(files.filter((f) => f !== file))
+                      }}
                     >
                       <Icon path={mdiClose} size={1} />
                     </ActionIcon>
@@ -146,7 +169,13 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
           )}
         </ScrollArea>
         <Group grow>
-          <FileButton multiple onChange={setFiles}>
+          <FileButton
+            multiple
+            onChange={(selected) => {
+              operationId.current = null
+              setFiles(selected)
+            }}
+          >
             {(props) => (
               <Button {...props} disabled={disabled}>
                 {t('common.button.select_file')}

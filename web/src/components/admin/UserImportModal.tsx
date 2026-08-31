@@ -40,9 +40,18 @@ import {
   mdiUpload,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useCallback, useMemo, useState } from 'react'
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import {
+  AdminImportOperation,
+  adminImportRequestSignature,
+  clearAdminImportOperation,
+  readAdminImportOperation,
+  retainAdminImportOperation,
+} from '@Utils/AdminImportOperations'
 import { quoteSpreadsheetCsvCell } from '@Utils/Csv'
+import { httpErrorStatus, isRetryableHttpError } from '@Utils/HttpError'
+import api from '@Api'
 
 // ─── Backend response types ───────────────────────────────────────────────────
 
@@ -82,6 +91,8 @@ interface EmailSendResult {
 
 const NONE = '(none)'
 const PAGE_SIZE = 50
+const MAX_IMPORT_ROWS = 200
+const MAX_IMPORT_BYTES = 1024 * 1024
 
 interface EditableRow {
   id: string
@@ -203,9 +214,7 @@ function buildCredentialsCsv(users: CsvImportUserResult[]): Blob {
     ...users
       .filter((u) => u.status !== 'skipped')
       .map((u) =>
-        [u.userName, u.password, u.email, u.realName, u.teamName ?? '', u.status]
-          .map(quoteSpreadsheetCsvCell)
-          .join(','),
+        [u.userName, u.password, u.email, u.realName, u.teamName ?? '', u.status].map(quoteSpreadsheetCsvCell).join(',')
       ),
   ]
   return new Blob([lines.join('\n')], { type: 'text/csv' })
@@ -235,14 +244,76 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   const [loading, setLoading] = useState(false)
   const [importResult, setImportResult] = useState<CsvImportResult | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
+  const [importProgress, setImportProgress] = useState<{ completed: number; total: number } | null>(null)
   const [sendingEmail, setSendingEmail] = useState(false)
   const [emailSendResult, setEmailSendResult] = useState<EmailSendResult | null>(null)
+  const importInFlight = useRef(false)
+  const importOperation = useRef<AdminImportOperation | null>(null)
+  const importRecoveryAttempt = useRef<string | null>(null)
+  const onImportCompleteRef = useRef(onImportComplete)
+
+  useEffect(() => {
+    onImportCompleteRef.current = onImportComplete
+  }, [onImportComplete])
+
+  useEffect(() => {
+    if (!props.opened || importResult || importInFlight.current) return
+    const retained = readAdminImportOperation(sessionStorage)
+    if (!retained || importRecoveryAttempt.current === retained.operationId) return
+    importRecoveryAttempt.current = retained.operationId
+    importOperation.current = retained
+    let cancelled = false
+    api.admin
+      .adminRecoverUserImport(retained.operationId)
+      .then((response) => {
+        if (cancelled) return
+        if (response.data.status === 'Completed' && response.data.result) {
+          setImportResult(response.data.result)
+          setImportError(null)
+          setStep(4)
+          clearAdminImportOperation(sessionStorage, retained.operationId)
+          importOperation.current = null
+          onImportCompleteRef.current?.()
+          return
+        }
+        setImportProgress({ completed: response.data.completed, total: response.data.total })
+        showNotification({
+          color: 'orange',
+          title: 'Previous import can be resumed',
+          message: `${response.data.completed} of ${response.data.total} rows completed. Re-select the same CSV and options to continue without issuing new passwords.`,
+        })
+      })
+      .catch((error) => {
+        if (cancelled) return
+        if (isRetryableHttpError(error) || httpErrorStatus(error) === 404) {
+          showNotification({
+            color: 'orange',
+            title: 'Previous import may still be starting',
+            message: 'Re-select the same CSV and options to safely resume it without issuing new passwords.',
+          })
+          return
+        }
+        clearAdminImportOperation(sessionStorage, retained.operationId)
+        importOperation.current = null
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [importResult, props.opened])
 
   // Step 0 → parse headers only
   const process = useCallback((text: string) => {
+    if (new Blob([text]).size > MAX_IMPORT_BYTES) {
+      showNotification({ message: 'CSV must be 1 MB or smaller', color: 'red' })
+      return
+    }
     const { headers: hdrs, rowCount } = parseCSVInfo(text)
     if (hdrs.length < 2 || rowCount < 1) {
       showNotification({ message: 'CSV must have at least a header row and one data row', color: 'red' })
+      return
+    }
+    if (rowCount > MAX_IMPORT_ROWS) {
+      showNotification({ message: `CSV may contain at most ${MAX_IMPORT_ROWS} users`, color: 'red' })
       return
     }
     setHeaders(hdrs)
@@ -342,42 +413,70 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
 
   // Step 3 → run import
   const runImport = async () => {
+    if (importInFlight.current) return
+    importInFlight.current = true
     setLoading(true)
     setImportError(null)
     setStep(4)
 
     const rows = editableRows.filter((r) => !r.deleted)
+    setImportProgress({ completed: 0, total: rows.length })
+
+    const request = {
+      rows: rows.map((r) => ({
+        email: r.email,
+        realName: r.realName,
+        userNameOverride: r.userNameOverride || undefined,
+        teamName: r.teamName || undefined,
+        stdNumber: r.stdNumber || undefined,
+        phone: r.phone || undefined,
+      })),
+      teamMode: opts.teamMode,
+      singleTeamName: opts.teamMode === 'single' ? opts.singleTeamName : undefined,
+      emailConfirmed: opts.emailConfirmed,
+    }
+    let progressTimer: number | undefined
+    let progressStopped = false
 
     try {
-      const resp = await fetch('/api/admin/users/import', {
+      const signature = await adminImportRequestSignature(request)
+      const operation = retainAdminImportOperation(sessionStorage, signature, importOperation.current)
+      importOperation.current = operation
+      const responsePromise = fetch('/api/admin/users/import', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          rows: rows.map((r) => ({
-            email: r.email,
-            realName: r.realName,
-            userNameOverride: r.userNameOverride || undefined,
-            teamName: r.teamName || undefined,
-            stdNumber: r.stdNumber || undefined,
-            phone: r.phone || undefined,
-          })),
-          teamMode: opts.teamMode,
-          singleTeamName: opts.teamMode === 'single' ? opts.singleTeamName : undefined,
-          emailConfirmed: opts.emailConfirmed,
+          operationId: operation.operationId,
+          ...request,
         }),
       })
+      const pollProgress = async () => {
+        if (progressStopped) return
+        try {
+          const progress = await api.admin.adminRecoverUserImport(operation.operationId)
+          setImportProgress({ completed: progress.data.completed, total: progress.data.total })
+        } catch {
+          // The mutation response remains authoritative; polling is best effort.
+        }
+        if (!progressStopped) progressTimer = window.setTimeout(pollProgress, 1_000)
+      }
+      progressTimer = window.setTimeout(pollProgress, 500)
+      const resp = await responsePromise
 
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ title: 'Import failed' }))
-        throw new Error(err.title ?? err.message ?? 'Import failed')
+        throw Object.assign(new Error(err.title ?? err.message ?? 'Import failed'), { status: resp.status })
       }
 
       const result: CsvImportResult = await resp.json()
+      setImportProgress({ completed: result.total, total: result.total })
       setImportResult(result)
+      clearAdminImportOperation(sessionStorage, operation.operationId)
+      importOperation.current = null
 
       if (result.created > 0 || result.updated > 0) {
-        onImportComplete?.()
+        onImportCompleteRef.current?.()
         showNotification({
           message: `${result.created} users created, ${result.updated} updated`,
           color: 'teal',
@@ -385,9 +484,17 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
         })
       }
     } catch (e: any) {
+      const status = httpErrorStatus(e)
+      if (!isRetryableHttpError(e) && status !== 409 && importOperation.current) {
+        clearAdminImportOperation(sessionStorage, importOperation.current.operationId)
+        importOperation.current = null
+      }
       setImportError(e?.message ?? 'Import failed')
       showNotification({ message: e?.message ?? 'Import failed', color: 'red' })
     } finally {
+      progressStopped = true
+      if (progressTimer !== undefined) window.clearTimeout(progressTimer)
+      importInFlight.current = false
       setLoading(false)
     }
   }
@@ -404,8 +511,12 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
     setLoading(false)
     setImportResult(null)
     setImportError(null)
+    setImportProgress(null)
     setSendingEmail(false)
     setEmailSendResult(null)
+    importInFlight.current = false
+    importOperation.current = readAdminImportOperation(sessionStorage)
+    importRecoveryAttempt.current = null
   }
 
   const goFixFailedRows = () => {
@@ -498,8 +609,12 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
         </Group>
       }
       size="90%"
+      closeOnClickOutside={!loading}
+      closeOnEscape={!loading}
+      withCloseButton={!loading}
       styles={{ body: { paddingTop: 0 } }}
       onClose={() => {
+        if (importInFlight.current) return
         reset()
         props.onClose()
       }}
@@ -519,7 +634,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
             <Dropzone
               onDrop={(files) => onFile(files[0])}
               accept={{ 'text/csv': ['.csv'], 'text/plain': ['.txt', '.csv'] }}
-              maxSize={10 * 1024 * 1024}
+              maxSize={MAX_IMPORT_BYTES}
             >
               <Group justify="center" gap="xl" mih={120} style={{ pointerEvents: 'none' }}>
                 <Dropzone.Accept>
@@ -536,7 +651,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                     Drag a CSV file here
                   </Text>
                   <Text size="sm" c="dimmed">
-                    Supports .csv and .txt — max 10 MB
+                    Supports .csv and .txt — max 1 MB / 200 users
                   </Text>
                 </Stack>
               </Group>
@@ -975,8 +1090,8 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                   (respecting any overrides) and secure passwords in a single atomic transaction.
                 </Text>
                 <Text size="xs" c="dimmed">
-                  Download the credentials CSV after import. The server keeps a temporary delivery copy for at most
-                  one hour so it can send email; the response itself is never browser/proxy cached.
+                  Download the credentials CSV after import. The server keeps a temporary delivery copy for at most one
+                  hour so it can send email; the response itself is never browser/proxy cached.
                 </Text>
               </Stack>
             </Alert>
@@ -1046,6 +1161,12 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                 <Loader size="lg" />
                 <Text c="dimmed" size="sm">
                   Importing {activeRows.length} users — the server is generating credentials and creating accounts…
+                  {importProgress && (
+                    <Text component="span" inherit aria-live="polite">
+                      {' '}
+                      {importProgress.completed} of {importProgress.total} rows committed.
+                    </Text>
+                  )}
                 </Text>
               </Stack>
             )}
@@ -1119,8 +1240,8 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                 {importResult.created + importResult.updated > 0 && (
                   <Alert icon={<Icon path={mdiCheckCircleOutline} size={1} />} color="teal">
                     <Text size="sm">
-                      Import complete. Download the credentials CSV now — passwords are not stored and cannot be
-                      retrieved later.
+                      Import complete. Download the credentials CSV now. This tab can recover the encrypted result for
+                      one hour if the response is interrupted.
                     </Text>
                   </Alert>
                 )}

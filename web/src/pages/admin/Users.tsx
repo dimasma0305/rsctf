@@ -41,6 +41,11 @@ import { ScrollingText } from '@Components/ScrollingText'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { UserEditModal, RoleColorMap } from '@Components/admin/UserEditModal'
 import { UserImportModal } from '@Components/admin/UserImportModal'
+import {
+  clearAdminPasswordResetOperation,
+  retainAdminPasswordResetOperation,
+} from '@Utils/AdminPasswordResetOperations'
+import { isRetryableHttpError } from '@Utils/HttpError'
 import { showErrorMsg } from '@Utils/Shared'
 import { useArrayResponse } from '@Hooks/useArrayResponse'
 import { useUser } from '@Hooks/useUser'
@@ -67,6 +72,8 @@ const Users: FC = () => {
   const clipboard = useClipboard()
   const { t } = useTranslation()
   const viewport = useRef<HTMLDivElement>(null)
+  const resetOperations = useRef(new Map<string, string>())
+  const resetInFlight = useRef(new Set<string>())
 
   useEffect(() => {
     viewport.current?.scrollTo({ top: 0, behavior: 'smooth' })
@@ -137,9 +144,20 @@ const Users: FC = () => {
   }
 
   const onResetPassword = async (user: UserInfoModel) => {
+    if (!user.id || !currentUser?.userId || resetInFlight.current.has(user.id)) return
+    resetInFlight.current.add(user.id)
+    const operationId = retainAdminPasswordResetOperation(
+      sessionStorage,
+      currentUser.userId,
+      user.id,
+      resetOperations.current.get(user.id) ?? null
+    )
+    resetOperations.current.set(user.id, operationId)
     setDisabled(true)
     try {
-      const res = await api.admin.adminResetPassword(user.id!)
+      const res = await api.admin.adminResetPassword(user.id, operationId)
+      resetOperations.current.delete(user.id)
+      clearAdminPasswordResetOperation(sessionStorage, currentUser.userId, user.id, operationId)
 
       modals.openModal({
         title: t('admin.content.users.reset.title', {
@@ -168,8 +186,13 @@ const Users: FC = () => {
         ),
       })
     } catch (err: any) {
+      if (!isRetryableHttpError(err)) {
+        resetOperations.current.delete(user.id)
+        clearAdminPasswordResetOperation(sessionStorage, currentUser.userId, user.id, operationId)
+      }
       showErrorMsg(err, t)
     } finally {
+      resetInFlight.current.delete(user.id)
       setDisabled(false)
     }
   }

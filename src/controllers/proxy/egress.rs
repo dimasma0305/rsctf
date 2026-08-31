@@ -16,7 +16,7 @@ const EGRESS_METADATA_CACHE_ENTRIES: usize = 1_024;
 const EGRESS_METADATA_CACHE_TTL: Duration = Duration::from_secs(60);
 const EGRESS_METADATA_QUERY_DEADLINE: Duration = Duration::from_secs(2);
 const EGRESS_METADATA_QUERY_CONCURRENCY: usize = 16;
-const MAX_SCANNED_FLAG_BYTES: usize = 127;
+const MAX_SCANNED_FLAG_BYTES: usize = crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct EgressMetadataRevision {
@@ -170,10 +170,7 @@ pub(super) struct RollingFlagMatcher {
 impl RollingFlagMatcher {
     pub(super) fn new(flag: &[u8]) -> Option<Self> {
         let flag = std::str::from_utf8(flag).ok()?;
-        if flag.is_empty() || flag.len() > MAX_SCANNED_FLAG_BYTES || flag.trim().len() != flag.len()
-        {
-            return None;
-        }
+        crate::utils::flag_policy::validate_normal(flag).ok()?;
         let max_overlap = flag.len().saturating_sub(1);
         Some(Self {
             overlap: Vec::with_capacity(max_overlap),
@@ -284,7 +281,7 @@ pub(super) async fn build_egress_scan(
                                   AND participation.game_id = $4
                                   AND flag.id = $5
                                   AND OCTET_LENGTH(flag.flag) BETWEEN 1 AND $6
-                                  AND flag.flag !~ '(^[[:space:]])|([[:space:]]$)'"#,
+                                  AND NOT rsctf_flag_has_boundary_whitespace(flag.flag)"#,
                         )
                         .bind(key.participation_id)
                         .bind(key.challenge_id)
@@ -295,12 +292,7 @@ pub(super) async fn build_egress_scan(
                         .fetch_optional(&pool)
                         .await
                         .ok()??;
-                        if flag.is_empty()
-                            || flag.len() > MAX_SCANNED_FLAG_BYTES
-                            || flag.trim().len() != flag.len()
-                        {
-                            return None;
-                        }
+                        crate::utils::flag_policy::validate_normal(&flag).ok()?;
                         let flag = Arc::<[u8]>::from(flag.into_bytes());
                         EGRESS_METADATA_CACHE.store(key, Arc::clone(&flag));
                         Some(flag)

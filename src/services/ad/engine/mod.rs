@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use chrono::{Duration, Utc};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 
-use crate::models::data::{ad_flag, ad_round, ad_team_service, game_challenge};
+use crate::models::data::{ad_round, ad_team_service, game_challenge};
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationStatus};
 use crate::utils::error::{AppError, AppResult};
 

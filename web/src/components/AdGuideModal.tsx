@@ -76,6 +76,8 @@ interface AdToolkitModalProps extends ModalProps {
 export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, ...modalProps }) => {
   const { t } = useTranslation()
   const { scope } = useViewerIdentity()
+  const activeSshViewerScope = useRef(scope)
+  activeSshViewerScope.current = scope
   const {
     adTokenHint,
     rotating,
@@ -128,11 +130,15 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, tokenOwner, ...m
     request: (operation: { operationId: string; expectedRevision: number }) => Promise<T>
   ) => {
     const storage = playerCredentialStorage()
-    const key = playerCredentialOperationStorageKey(scope, gameId, 'ad-ssh')
+    const viewerScopeAtStart = scope
+    const key = playerCredentialOperationStorageKey(viewerScopeAtStart, gameId, 'ad-ssh')
     return withPlayerCredentialLock(key, async () => {
       const operation = claimPlayerCredentialOperation(storage, key, sshKey?.revision ?? 0, intent)
       try {
         const result = await request(operation)
+        if (activeSshViewerScope.current !== viewerScopeAtStart) {
+          throw new Error('An SSH credential response for an older account was ignored')
+        }
         if (!ownsPlayerCredentialResult(storage, key, operation, result)) {
           throw new Error('A stale SSH credential response was ignored')
         }

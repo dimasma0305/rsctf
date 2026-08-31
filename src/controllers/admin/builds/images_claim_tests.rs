@@ -5,7 +5,9 @@ fn manual_reference_scan_runs_after_the_short_image_lock_is_released() {
     let source = include_str!("images.rs");
     let removal = source.find("async fn remove_one(").unwrap();
     let removal = &source[removal..];
-    let claim = removal.find("sqlx::query(CLAIM_MANUAL_REMOVAL_SQL)").unwrap();
+    let claim = removal
+        .find("sqlx::query(CLAIM_MANUAL_REMOVAL_SQL)")
+        .unwrap();
     let release = removal[claim..]
         .find("let released = lock.release().await")
         .map(|offset| claim + offset)

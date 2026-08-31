@@ -35,6 +35,7 @@ pub mod game {
         pub blood_bonus_value: i64,
         pub repo_binding_id: Option<i32>,
         pub event_manifest_path: Option<String>,
+        pub challenge_configuration_revision: i64,
 
         // --- Event VPN access and bounded anti-cheat telemetry ---
         pub vpn_access_required: bool,

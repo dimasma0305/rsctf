@@ -57,6 +57,20 @@ async fn persist_game_import_locked(
     let mut challenge_id_map = BTreeMap::new();
 
     for src in export_challenges {
+        if src.challenge_type == ChallengeType::DynamicContainer {
+            if let Some(template) = src
+                .flag_template
+                .as_deref()
+                .filter(|template| !crate::utils::flag_policy::is_blank(template))
+            {
+                crate::utils::flag_policy::validate_dynamic_template(template)
+                    .map_err(|error| AppError::bad_request(error.to_string()))?;
+            }
+        }
+        for flag in &src.flags {
+            crate::utils::flag_policy::validate_normal(&flag.flag)
+                .map_err(|error| AppError::bad_request(error.to_string()))?;
+        }
         if let Some(storage_limit) = src.storage_limit {
             crate::services::container::validate_storage_limit_value(storage_limit)?;
         }
@@ -215,7 +229,10 @@ fn imported_challenge_model(
         category: Set(source.category),
         challenge_type: Set(source.challenge_type),
         hints: Set(source.hints.clone()),
-        flag_template: Set(source.flag_template.clone()),
+        flag_template: Set(source
+            .flag_template
+            .clone()
+            .filter(|template| !crate::utils::flag_policy::is_blank(template))),
         file_name: Set(source.file_name.clone()),
         container_image: Set(source.container_image.clone()),
         network_mode: Set(Some(source.network_mode.unwrap_or(NetworkMode::Open))),

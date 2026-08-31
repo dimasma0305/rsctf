@@ -17,7 +17,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::app_state::SharedState;
 use crate::services::cache::Cache;
@@ -264,39 +264,24 @@ pub async fn validate_config(pool: &PgPool, input: &DonationConfig) -> AppResult
 /// Persist an admin update atomically. A blank API key preserves the configured
 /// value, while enabling without any effective key fails before the write.
 pub async fn save_config(pool: &PgPool, cache: &dyn Cache, input: DonationConfig) -> AppResult<()> {
-    let donate_url = normalize_donate_url(input.provider, input.donate_url.as_deref())?;
     let mut transaction = pool
         .begin()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let existing = sqlx::query_scalar::<_, Option<String>>(
-        r#"SELECT value FROM "Configs" WHERE config_key = $1 FOR UPDATE"#,
-    )
-    .bind(API_KEY)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .flatten()
-    .map(|value| value.trim().to_owned())
-    .filter(|value| !value.is_empty());
-
-    let supplied = supplied_api_key(&input)?;
-    let effective_key = supplied.map(str::to_owned).or(existing);
-    if input.enabled && effective_key.is_none() {
-        return Err(AppError::bad_request(
-            "Configure a donation API key before enabling donations",
-        ));
-    }
-
-    let keys = vec![ENABLED_KEY, PROVIDER_KEY, DONATE_URL_KEY];
-    let values = vec![
-        Some(input.enabled.to_string()),
-        Some(input.provider.as_str().to_owned()),
-        donate_url,
-    ];
+    let enabled = input.enabled;
+    let updates = prepare_config_updates(&input)?;
+    let keys = updates
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    let values = updates
+        .iter()
+        .map(|(_, value)| value.clone())
+        .collect::<Vec<_>>();
     sqlx::query(
         r#"INSERT INTO "Configs" (config_key, value, cache_keys)
-           SELECT * FROM UNNEST($1::text[], $2::text[], ARRAY_FILL(NULL::jsonb, ARRAY[3]))
+           SELECT key, value, NULL::jsonb
+             FROM UNNEST($1::text[], $2::text[]) AS incoming(key, value)
            ON CONFLICT (config_key) DO UPDATE SET value = EXCLUDED.value"#,
     )
     .bind(keys)
@@ -304,23 +289,59 @@ pub async fn save_config(pool: &PgPool, cache: &dyn Cache, input: DonationConfig
     .execute(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some(api_key) = supplied {
-        sqlx::query(
-            r#"INSERT INTO "Configs" (config_key, value, cache_keys)
-               VALUES ($1, $2, NULL)
-               ON CONFLICT (config_key) DO UPDATE SET value = EXCLUDED.value"#,
-        )
-        .bind(API_KEY)
-        .bind(api_key)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    }
+    validate_effective_config(&mut transaction, enabled).await?;
     transaction
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     invalidate(cache).await;
+    Ok(())
+}
+
+/// Canonical relational updates for the caller-owned platform-settings transaction.
+pub(crate) fn prepare_config_updates(
+    input: &DonationConfig,
+) -> AppResult<Vec<(String, Option<String>)>> {
+    let mut updates = vec![
+        (ENABLED_KEY.to_string(), Some(input.enabled.to_string())),
+        (
+            PROVIDER_KEY.to_string(),
+            Some(input.provider.as_str().to_owned()),
+        ),
+        (
+            DONATE_URL_KEY.to_string(),
+            normalize_donate_url(input.provider, input.donate_url.as_deref())?,
+        ),
+    ];
+    if let Some(api_key) = supplied_api_key(input)? {
+        updates.push((API_KEY.to_string(), Some(api_key.to_owned())));
+    }
+    Ok(updates)
+}
+
+pub(crate) async fn validate_effective_config(
+    transaction: &mut Transaction<'_, Postgres>,
+    enabled: bool,
+) -> AppResult<()> {
+    if !enabled {
+        return Ok(());
+    }
+    let configured = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS (
+               SELECT 1 FROM "Configs"
+                WHERE config_key = $1
+                  AND NULLIF(BTRIM(value), '') IS NOT NULL
+           )"#,
+    )
+    .bind(API_KEY)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !configured {
+        return Err(AppError::bad_request(
+            "Configure a donation API key before enabling donations",
+        ));
+    }
     Ok(())
 }
 

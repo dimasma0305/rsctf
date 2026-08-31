@@ -51,7 +51,7 @@ test('every ordinary challenge create and update call sends a prepared operation
   const source = files.map((file) => readFileSync(file, 'utf8')).join('\n')
 
   assert.equal((source.match(/editAddGameChallenge\(/g) ?? []).length, 1)
-  assert.equal((source.match(/editUpdateGameChallenge\(/g) ?? []).length, 4)
+  assert.equal((source.match(/editUpdateGameChallenge\(/g) ?? []).length, 3)
   assert.equal((source.match(/editAddGameChallenge\([^\n]*prepared\.payload\)/g) ?? []).length, 1)
-  assert.equal((source.match(/editUpdateGameChallenge\([^\n]*prepared\.payload\)/g) ?? []).length, 4)
+  assert.equal((source.match(/editUpdateGameChallenge\([^\n]*prepared\.payload\)/g) ?? []).length, 3)
 })

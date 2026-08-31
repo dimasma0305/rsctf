@@ -470,14 +470,14 @@ async fn remove_one(
     // after releasing this connection; cooperating builds observe
     // `cleanup_removal_started` and cannot create a late reference meanwhile.
     let claimed = sqlx::query(CLAIM_MANUAL_REMOVAL_SQL)
-    .bind(&scope)
-    .bind(&canonical_ref)
-    .bind(&ownership.image_id)
-    .bind(claim_token)
-    .bind(MANUAL_CLAIM_SECONDS)
-    .bind(&lock_key)
-    .execute(lock.connection_mut())
-    .await;
+        .bind(&scope)
+        .bind(&canonical_ref)
+        .bind(&ownership.image_id)
+        .bind(claim_token)
+        .bind(MANUAL_CLAIM_SECONDS)
+        .bind(&lock_key)
+        .execute(lock.connection_mut())
+        .await;
     let released = lock.release().await;
     match (claimed, released) {
         (Ok(result), Ok(())) if result.rows_affected() == 1 => {}

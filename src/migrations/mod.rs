@@ -20,6 +20,10 @@ pub(crate) fn test_pg_connect_options(database_url: &str) -> sqlx::postgres::PgC
         .application_name(test_process_application_name())
 }
 
+#[cfg(test)]
+mod admin_mutation_migration_tests;
+#[cfg(test)]
+mod credential_workflow_tests;
 mod m0001_init;
 mod m0002_extra;
 mod m0003_managers;
@@ -158,6 +162,18 @@ mod m0284_anticheat_dirty_outboxes;
 mod m0285_honeypot_telemetry_buckets;
 mod m0286_docker_image_cleanup_order;
 mod m0290_distributed_proxy_admission;
+mod m0300_game_clone_operations;
+mod m0301_admin_credential_jobs;
+mod m0302_credential_mutation_recovery;
+mod m0303_mail_outbox;
+mod m0304_platform_settings_operations;
+mod m0305_event_vpn_override_operations;
+mod m0306_bulk_challenge_mutations;
+mod m0307_division_revision_operations;
+mod m0308_team_invite_rotation;
+mod m0309_flag_import_operations;
+mod m0330_mail_preparation_slots;
+mod m0331_username_scoreboard_invalidation;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -334,6 +350,18 @@ impl MigratorTrait for Migrator {
             Box::new(m0285_honeypot_telemetry_buckets::Migration),
             Box::new(m0286_docker_image_cleanup_order::Migration),
             Box::new(m0290_distributed_proxy_admission::Migration),
+            Box::new(m0300_game_clone_operations::Migration),
+            Box::new(m0301_admin_credential_jobs::Migration),
+            Box::new(m0302_credential_mutation_recovery::Migration),
+            Box::new(m0303_mail_outbox::Migration),
+            Box::new(m0304_platform_settings_operations::Migration),
+            Box::new(m0305_event_vpn_override_operations::Migration),
+            Box::new(m0306_bulk_challenge_mutations::Migration),
+            Box::new(m0307_division_revision_operations::Migration),
+            Box::new(m0308_team_invite_rotation::Migration),
+            Box::new(m0309_flag_import_operations::Migration),
+            Box::new(m0330_mail_preparation_slots::Migration),
+            Box::new(m0331_username_scoreboard_invalidation::Migration),
         ]
     }
 }
@@ -479,7 +507,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 36..],
+            &names[names.len() - 48..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -517,6 +545,18 @@ mod tests {
                 "m0285_honeypot_telemetry_buckets",
                 "m0286_docker_image_cleanup_order",
                 "m0290_distributed_proxy_admission",
+                "m0300_game_clone_operations",
+                "m0301_admin_credential_jobs",
+                "m0302_credential_mutation_recovery",
+                "m0303_mail_outbox",
+                "m0304_platform_settings_operations",
+                "m0305_event_vpn_override_operations",
+                "m0306_bulk_challenge_mutations",
+                "m0307_division_revision_operations",
+                "m0308_team_invite_rotation",
+                "m0309_flag_import_operations",
+                "m0330_mail_preparation_slots",
+                "m0331_username_scoreboard_invalidation",
             ]
         );
     }

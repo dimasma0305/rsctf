@@ -324,11 +324,7 @@ pub(super) fn client_key(headers: &HeaderMap, peer: IpAddr) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn record_inbound_attempt_with(
-    counters: &OperationalCounters,
-    bytes: usize,
-    admitted: bool,
-) {
+fn record_inbound_attempt_with(counters: &OperationalCounters, bytes: usize, admitted: bool) {
     saturating_increment(&counters.inbound_frames, 1);
     saturating_increment(
         &counters.inbound_bytes,
