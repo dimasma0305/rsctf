@@ -44,6 +44,10 @@ use crate::{
     STREAM_SERVICE,
 };
 
+#[path = "agent_handshake.rs"]
+mod handshake;
+use handshake::handshake_failure;
+
 // ---------------------------------------------------------------------------
 // WebSocket <-> byte-stream adapter
 // ---------------------------------------------------------------------------
@@ -277,48 +281,6 @@ fn seed_reconnect_entropy(agent_scope: &str) {
             Ordering::Relaxed,
             Ordering::Relaxed,
         );
-    }
-}
-
-fn retry_after(
-    response: &tokio_tungstenite::tungstenite::http::Response<Option<Vec<u8>>>,
-) -> Option<Duration> {
-    let seconds = response
-        .headers()
-        .get(tokio_tungstenite::tungstenite::http::header::RETRY_AFTER)?
-        .to_str()
-        .ok()?
-        .parse::<u64>()
-        .ok()?;
-    Some(Duration::from_secs(seconds).min(MAXIMUM_SERVER_RETRY_AFTER))
-}
-
-fn handshake_failure(
-    response: tokio_tungstenite::tungstenite::http::Response<Option<Vec<u8>>>,
-) -> ConnectFailure {
-    let status = response.status();
-    let state = response
-        .headers()
-        .get(AGENT_STATE_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .map(ToOwned::to_owned);
-    let terminal = state
-        .as_deref()
-        .is_some_and(|state| state.starts_with("terminal-"))
-        || status == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED
-        || status == tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN
-        || status == tokio_tungstenite::tungstenite::http::StatusCode::NOT_FOUND
-        || status == tokio_tungstenite::tungstenite::http::StatusCode::GONE
-        || status == tokio_tungstenite::tungstenite::http::StatusCode::UPGRADE_REQUIRED
-        || status.is_client_error()
-            && status != tokio_tungstenite::tungstenite::http::StatusCode::TOO_MANY_REQUESTS
-            && status != tokio_tungstenite::tungstenite::http::StatusCode::TOO_EARLY;
-    ConnectFailure {
-        message: format!("WebSocket handshake returned {status}"),
-        state,
-        terminal,
-        retry_after: retry_after(&response),
-        connected_for: None,
     }
 }
 
@@ -795,7 +757,7 @@ mod websocket_stream_tests {
     #[test]
     fn transient_handshakes_honor_retry_after_and_cap_it() {
         let failure = handshake_failure(rejection(
-            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::REQUEST_TIMEOUT,
             "transient-overload",
             Some(60),
         ));
