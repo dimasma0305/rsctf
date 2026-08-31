@@ -6,9 +6,9 @@ import test from 'node:test'
 import { act, createElement } from 'react'
 import { I18nextProvider } from 'react-i18next'
 import { SWRConfig } from 'swr'
-import api, { type AdStateModel } from '../Api'
+import api, { AdServiceDeliveryState, type AdStateModel } from '../Api'
 import { installTestDom } from '../test/installDom'
-import { AdChallengePanel } from './AdChallengePanel'
+import { AdChallengePanel, adServicePresentationState } from './AdChallengePanel'
 
 const state: AdStateModel = {
   currentRound: 7,
@@ -24,6 +24,7 @@ const state: AdStateModel = {
       challengeTitle: 'Service',
       canReset: true,
       snapshotAvailable: true,
+      deliveryState: AdServiceDeliveryState.Managed,
     },
   ],
 }
@@ -32,7 +33,56 @@ const flush = async () => {
   for (let index = 0; index < 8; index += 1) await Promise.resolve()
 }
 
-test('terminal A&D state failures expose an accessible Retry in live and snapshot-only panels', async () => {
+test('A&D presentation states keep managed and BYOC lifecycle guidance distinct', () => {
+  const base = state.services[0]
+  assert.equal(adServicePresentationState(undefined, false), 'managed-absent')
+  assert.equal(adServicePresentationState(base, false), 'managed')
+  assert.equal(adServicePresentationState(undefined, true), 'byoc-absent')
+  assert.equal(
+    adServicePresentationState(
+      {
+        ...base,
+        selfHosted: true,
+        deliveryState: AdServiceDeliveryState.ByocConnecting,
+        containerIp: '10.13.0.7',
+        containerPort: 31337,
+        lastCheckStatus: null,
+      },
+      true
+    ),
+    'byoc-connecting'
+  )
+  assert.equal(
+    adServicePresentationState(
+      {
+        ...base,
+        selfHosted: true,
+        deliveryState: AdServiceDeliveryState.ByocHealthy,
+        containerIp: '10.13.0.7',
+        containerPort: 31337,
+        lastCheckStatus: 'Ok',
+      },
+      true
+    ),
+    'byoc-healthy'
+  )
+  assert.equal(
+    adServicePresentationState(
+      {
+        ...base,
+        selfHosted: true,
+        deliveryState: AdServiceDeliveryState.ByocStale,
+        containerIp: '10.13.0.9',
+        containerPort: 31339,
+        lastCheckStatus: 'Offline',
+      },
+      true
+    ),
+    'byoc-stale'
+  )
+})
+
+test('A&D failures stay retryable and a missing BYOC row never requests managed provisioning', async () => {
   const browser = new Window({ url: 'https://rsctf.test/games/41/challenges' })
   const restoreDom = installTestDom(browser)
   const i18n = i18next.createInstance()
@@ -47,7 +97,7 @@ test('terminal A&D state failures expose an accessible Retry in live and snapsho
   let stateReads = 0
   gameApi.gameAdState = (async () => {
     stateReads += 1
-    if (stateReads !== 3) throw permanentError
+    if (stateReads !== 4) throw permanentError
     return {
       status: 200,
       data: state,
@@ -62,7 +112,13 @@ test('terminal A&D state failures expose an accessible Retry in live and snapsho
 
   const { createRoot } = await import('react-dom/client')
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
-  const mount = async (snapshotOnly: boolean, fallbackState?: AdStateModel) => {
+  const mount = async (
+    snapshotOnly: boolean,
+    fallbackState?: AdStateModel,
+    selfHosted = false,
+    gameId = 41,
+    challengeId = 7
+  ) => {
     const container = browser.document.createElement('div')
     browser.document.body.append(container)
     const root = createRoot(container)
@@ -80,10 +136,16 @@ test('terminal A&D state failures expose an accessible Retry in live and snapsho
                 value: {
                   provider: () => new Map(),
                   dedupingInterval: 0,
-                  fallback: fallbackState ? { '/api/Game/41/Ad/State': fallbackState } : {},
+                  fallback: fallbackState ? { [`/api/Game/${gameId}/Ad/State`]: fallbackState } : {},
                 },
               },
-              createElement(AdChallengePanel, { gameId: 41, challengeId: 7, active: true, snapshotOnly })
+              createElement(AdChallengePanel, {
+                gameId,
+                challengeId,
+                active: true,
+                selfHosted,
+                snapshotOnly,
+              })
             )
           )
         )
@@ -96,8 +158,17 @@ test('terminal A&D state failures expose an accessible Retry in live and snapsho
   let mounted = await mount(false)
   try {
     assert.ok(mounted.container.querySelector('[role="alert"]'))
-    assert.match(mounted.container.textContent ?? '', /could not be loaded/i)
+    assert.match(mounted.container.textContent ?? '', /access was revoked/i)
     assert.ok(mounted.container.querySelector('button[aria-label="Retry A&D state"]'))
+
+    await act(async () => mounted.root.unmount())
+    mounted = await mount(false, undefined, true, 13, 50)
+    const failedByocText = mounted.container.textContent ?? ''
+    assert.match(failedByocText, /access was revoked/i)
+    assert.match(failedByocText, /self-hosted BYOC challenge/i)
+    assert.doesNotMatch(failedByocText, /No service for your team yet|Ensure containers/i)
+    assert.ok(mounted.container.querySelector('a[href="/api/Game/13/Ad/Byoc/Setup/50"][download]'))
+    assert.ok(mounted.container.querySelector('a[href="/api/Game/13/Ad/Byoc/Compose/50"][download]'))
 
     await act(async () => mounted.root.unmount())
     mounted = await mount(true)
@@ -109,7 +180,7 @@ test('terminal A&D state failures expose an accessible Retry in live and snapsho
       retry.click()
       await flush()
     })
-    assert.equal(stateReads, 3, 'explicit Retry performs one fresh state read')
+    assert.equal(stateReads, 4, 'explicit Retry performs one fresh state read')
     assert.equal(mounted.container.querySelector('[role="alert"]'), null)
     assert.match(mounted.container.querySelector('a[download]')?.textContent ?? '', /Download \.tar\.gz/)
 
@@ -118,6 +189,84 @@ test('terminal A&D state failures expose an accessible Retry in live and snapsho
     assert.match(mounted.container.textContent ?? '', /could not be refreshed/i)
     assert.match(mounted.container.textContent ?? '', /No service for your team yet/i)
     assert.ok(mounted.container.querySelector('button[aria-label="Retry A&D state"]'))
+
+    await act(async () => mounted.root.unmount())
+    // Exact reported dev regression: game 13, challenge 50 is BYOC and has no
+    // service row before its first agent enrollment.
+    mounted = await mount(false, { ...state, services: [] }, true, 13, 50)
+    const byocText = mounted.container.textContent ?? ''
+    assert.match(byocText, /self-hosted BYOC challenge/i)
+    assert.doesNotMatch(byocText, /No service for your team yet|Ensure containers/i)
+    assert.ok(mounted.container.querySelector('a[href="/api/Game/13/Ad/Byoc/Setup/50"][download]'))
+    assert.ok(mounted.container.querySelector('a[href="/api/Game/13/Ad/Byoc/Compose/50"][download]'))
+
+    await act(async () => mounted.root.unmount())
+    mounted = await mount(
+      false,
+      {
+        ...state,
+        services: [
+          {
+            ...state.services[0],
+            selfHosted: true,
+            deliveryState: AdServiceDeliveryState.ByocHealthy,
+            containerIp: '10.13.0.7',
+            containerPort: 31337,
+            lastCheckStatus: 'Ok',
+          },
+        ],
+      },
+      true
+    )
+    assert.match(mounted.container.textContent ?? '', /BYOC service is online/i)
+
+    await act(async () => mounted.root.unmount())
+    mounted = await mount(
+      false,
+      {
+        ...state,
+        services: [
+          {
+            ...state.services[0],
+            selfHosted: true,
+            deliveryState: AdServiceDeliveryState.ByocConnecting,
+            containerIp: '10.13.0.7',
+            containerPort: 31337,
+            lastCheckStatus: null,
+          },
+        ],
+      },
+      true
+    )
+    assert.match(mounted.container.textContent ?? '', /BYOC agent is connecting/i)
+
+    await act(async () => mounted.root.unmount())
+    mounted = await mount(
+      false,
+      {
+        ...state,
+        services: [
+          {
+            ...state.services[0],
+            selfHosted: true,
+            deliveryState: AdServiceDeliveryState.ByocStale,
+            containerIp: '10.13.0.9',
+            containerPort: 31339,
+            lastCheckStatus: 'Offline',
+          },
+        ],
+      },
+      true
+    )
+    assert.match(mounted.container.textContent ?? '', /BYOC service needs attention/i)
+    assert.doesNotMatch(mounted.container.textContent ?? '', /Ensure containers/i)
+
+    await act(async () => mounted.root.unmount())
+    mounted = await mount(false, { ...state, services: [] }, false)
+    assert.doesNotMatch(mounted.container.textContent ?? '', /BYOC (?:agent|service)/i)
+    assert.equal(mounted.container.querySelector('a[href*="/Ad/Byoc/"]'), null)
+    assert.match(mounted.container.textContent ?? '', /No service for your team yet/i)
+    assert.match(mounted.container.textContent ?? '', /Ensure containers/i)
   } finally {
     await act(async () => mounted.root.unmount())
     gameApi.gameAdState = originalState

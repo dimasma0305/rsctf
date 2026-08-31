@@ -97,6 +97,8 @@ test('compact challenge categories are exercised with touch and keyboard in Chro
   const audit = readFileSync(join(repositoryRoot, 'tests/visual/audit.mjs'), 'utf8')
 
   assert.match(panel, /data-challenge-category-tabs/)
+  assert.match(panel, /onFocus=\{revealFocusedCategory\}/)
+  assert.match(panel, /scrollIntoView\(\{ block: 'nearest', inline: 'nearest', behavior: 'auto' \}\)/)
   assert.match(audit, /Input\.dispatchTouchEvent/)
   assert.match(audit, /key: 'ArrowRight'/)
   assert.match(audit, /scrollIntoView\(\{ block: 'center'/)

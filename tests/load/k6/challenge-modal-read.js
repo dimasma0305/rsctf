@@ -25,6 +25,9 @@ if (
 const detailFailures = new Rate("challenge_modal_detail_failure");
 const solverFailures = new Rate("challenge_modal_solver_failure");
 const server5xx = new Rate("challenge_modal_server_5xx");
+const requestIdentityFailures = new Rate(
+  "challenge_modal_request_identity_failure",
+);
 const detailDuration = new Trend("challenge_modal_detail_ms", true);
 const solverDuration = new Trend("challenge_modal_solver_ms", true);
 
@@ -44,6 +47,7 @@ export const options = {
     challenge_modal_detail_failure: ["rate==0"],
     challenge_modal_solver_failure: ["rate==0"],
     challenge_modal_server_5xx: ["rate==0"],
+    challenge_modal_request_identity_failure: ["rate==0"],
     challenge_modal_detail_ms: ["p(95)<800"],
     challenge_modal_solver_ms: ["p(95)<800"],
     dropped_iterations: ["count==0"],
@@ -54,33 +58,51 @@ function sourceIp(index) {
   return `31.${1 + (index % 240)}.${1 + (Math.floor(index / 240) % 250)}.${1 + (index % 250)}`;
 }
 
+function requestId(resource) {
+  const suffix = ((__VU * 1_000_003 + __ITER) % 0xffffffffffff)
+    .toString(16)
+    .padStart(12, "0");
+  return `challenge-${resource}-00000000-0000-4000-8000-${suffix}`;
+}
+
 export default function () {
   const tokenIndex = ((__VU - 1) * 997 + __ITER) % TOKENS.length;
-  const params = {
+  const params = (resource) => ({
     headers: {
       Authorization: `Bearer ${TOKENS[tokenIndex]}`,
       "X-Real-IP": sourceIp(tokenIndex),
+      "X-RSCTF-Request-Id": requestId(resource),
       Accept: "application/json",
     },
-  };
+  });
   const responses = http.batch([
     [
       "GET",
       `${TARGET}/api/game/${GAME}/challenges/${CHALLENGE}`,
       null,
-      { ...params, tags: { endpoint: "challenge_modal_detail" } },
+      {
+        ...params("challenge"),
+        tags: { endpoint: "challenge_modal_detail" },
+      },
     ],
     [
       "GET",
       `${TARGET}/api/game/${GAME}/challenges/${CHALLENGE}/solvers/page?count=20&skip=0`,
       null,
-      { ...params, tags: { endpoint: "challenge_modal_solvers" } },
+      {
+        ...params("solvers"),
+        tags: { endpoint: "challenge_modal_solvers" },
+      },
     ],
   ]);
   const [detail, solvers] = responses;
   detailDuration.add(detail.timings.duration);
   solverDuration.add(solvers.timings.duration);
   server5xx.add(detail.status >= 500 || solvers.status >= 500);
+  requestIdentityFailures.add(
+    detail.headers["X-Rsctf-Request-Id"] !== requestId("challenge") ||
+      solvers.headers["X-Rsctf-Request-Id"] !== requestId("solvers"),
+  );
 
   let detailModel = null;
   let solverModel = null;

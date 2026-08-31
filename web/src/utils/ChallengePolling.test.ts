@@ -2,8 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   assertJsonResponse,
+  captureChallengeReadFailure,
   challengePollRetryDelay,
+  challengeReadFailure,
   createChallengePollOwner,
+  createChallengeRecoveryOwner,
+  createChallengeRequestId,
   isAbortError,
   isChallengePollRetryable,
   NonJsonResponseError,
@@ -35,6 +39,15 @@ test('challenge polling bounds transient retries and honors Retry-After', () => 
     null
   )
   assert.equal(isChallengePollRetryable({ response: { status: 503 } }), true)
+  assert.equal(
+    challengePollRetryDelay({ retryAt: 12_000 }, 0, () => 0, 0),
+    12_000,
+    'typed VPN proof failures must retain their circuit retry deadline'
+  )
+  assert.equal(
+    challengePollRetryDelay({ retryAt: 360_001 }, 0, () => 0, 0),
+    null
+  )
 })
 
 test('challenge poll owner keeps one request and one retry timer', () => {
@@ -59,4 +72,61 @@ test('valid JSON response content types remain accepted', () => {
     assertJsonResponse({ status: 200, data, headers: { 'content-type': 'application/problem+json; charset=utf-8' } }),
     data
   )
+})
+
+test('challenge read diagnostics preserve the typed error and expose only safe references', () => {
+  const error = {
+    response: {
+      status: 429,
+      headers: {
+        'retry-after': '12',
+        'x-request-id': 'server-trace-018f47d2',
+        authorization: 'Bearer must-never-appear',
+      },
+    },
+  }
+  const requestId = createChallengeRequestId('solvers')
+  assert.match(requestId, /^challenge-solvers-[A-Za-z0-9-]+$/)
+  assert.equal(captureChallengeReadFailure(error, 'solvers', requestId), error)
+  assert.deepEqual(challengeReadFailure(error, 'solvers'), {
+    resource: 'solvers',
+    requestId,
+    serverTraceId: 'server-trace-018f47d2',
+    retryAfterMilliseconds: 12_000,
+  })
+
+  const unsafe = { response: { status: 503, headers: { 'x-request-id': 'secret/bearer?query' } } }
+  captureChallengeReadFailure(unsafe, 'challenge', 'challenge-detail-safe-id')
+  assert.equal(challengeReadFailure(unsafe, 'challenge')?.serverTraceId, undefined)
+  assert.doesNotMatch(JSON.stringify(challengeReadFailure(error, 'solvers')), /Bearer|authorization|must-never/)
+})
+
+test('shared transport errors retain independent detail and solver diagnostics', () => {
+  const shared = { retryAt: 12_000 }
+  captureChallengeReadFailure(shared, 'challenge', 'challenge-detail-reference')
+  captureChallengeReadFailure(shared, 'solvers', 'challenge-solvers-reference')
+
+  assert.equal(challengeReadFailure(shared, 'challenge')?.requestId, 'challenge-detail-reference')
+  assert.equal(challengeReadFailure(shared, 'solvers')?.requestId, 'challenge-solvers-reference')
+})
+
+test('related challenge reads retain independent deadlines behind one recovery timer', (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+  const owner = createChallengeRecoveryOwner()
+  const recovered: string[] = []
+  try {
+    owner.schedule('detail', 1_000, () => recovered.push('detail'))
+    owner.schedule('solvers', 1_000, () => recovered.push('solvers'))
+    assert.equal(owner.pendingEntryCount(), 2)
+    assert.equal(owner.pendingTimerCount(), 1)
+    context.mock.timers.tick(999)
+    assert.deepEqual(recovered, [])
+    context.mock.timers.tick(1)
+    assert.deepEqual(recovered.sort(), ['detail', 'solvers'])
+    assert.equal(owner.pendingEntryCount(), 0)
+    assert.equal(owner.pendingTimerCount(), 0)
+  } finally {
+    owner.cancelAll()
+    context.mock.timers.reset()
+  }
 })

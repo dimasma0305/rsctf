@@ -56,7 +56,7 @@ import {
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useEffect, useMemo, useRef, useState } from 'react'
+import { FC, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
@@ -868,13 +868,11 @@ const AdOps: FC = () => {
   const modals = useModals()
   const [busy, setBusy] = useState(false)
   const [busyHill, setBusyHill] = useState<number | null>(null)
-  const ensureContainersKey = useRef<{ gameId: number; owner: RetryableOperationKey } | null>(null)
-  if (ensureContainersKey.current?.gameId !== numId) {
-    ensureContainersKey.current = {
-      gameId: numId,
-      owner: new RetryableOperationKey(undefined, `rsctf:ad-ensure-containers:${numId}`),
-    }
-  }
+  const ensureContainersOwner = useMemo(
+    () => new RetryableOperationKey(undefined, `rsctf:ad-ensure-containers:${numId}`),
+    [numId]
+  )
+  useEffect(() => () => ensureContainersOwner.release(), [ensureContainersOwner])
   // Which side of the console is showing. A&D vs KotH challenges are disjoint
   // sets in a game; the switch only appears when both exist (see showViewSwitch).
   const [view, setView] = useState<'ad' | 'koth'>('ad')
@@ -956,7 +954,7 @@ const AdOps: FC = () => {
   }
 
   const ensureContainers = async () => {
-    const operationOwner = ensureContainersKey.current!.owner
+    const operationOwner = ensureContainersOwner
     const operationId = operationOwner.claim()
     setBusy(true)
     try {

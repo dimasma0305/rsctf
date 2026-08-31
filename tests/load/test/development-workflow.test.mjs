@@ -74,6 +74,12 @@ test("development gateway exposes the backend health contract", () => {
   assert.match(viteConfig, /'\/healthz': TARGET/);
 });
 
+test("development hub proxy preserves the browser origin for CSRF validation", () => {
+  assert.match(viteConfig, /'\/hub':\s*\{[\s\S]*?changeOrigin: true,[\s\S]*?ws: true/);
+  assert.doesNotMatch(viteConfig, /headers:\s*\{\s*origin:/);
+  assert.doesNotMatch(viteConfig, /rewriteWsOrigin:\s*true/);
+});
+
 test("development environment cannot inherit production RSCTF or Vite settings", () => {
   const directory = mkdtempSync(join(tmpdir(), "rsctf-source-dev-env-"));
   try {

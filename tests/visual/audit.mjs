@@ -741,6 +741,8 @@ async function auditChallengeCategoryScroller(cdp, route, viewport) {
         : -1
       return {
         scrollLeft: list.scrollLeft,
+        activeIndex: [...list.querySelectorAll('[role="tab"]')].indexOf(document.activeElement),
+        activeLabel: document.activeElement?.textContent?.trim() ?? '',
         reachedLast:
           document.activeElement === last &&
           Boolean(lastRectangle) &&
@@ -786,6 +788,8 @@ async function auditChallengeCategoryScroller(cdp, route, viewport) {
     touchScrollLeft: touch.scrollLeft,
     touchReachedLast: touch.reachedLast,
     keyboardScrollLeft: keyboard.scrollLeft,
+    keyboardActiveIndex: keyboard.activeIndex,
+    keyboardActiveLabel: keyboard.activeLabel,
     keyboardReachedLast: keyboard.reachedLast,
     keyboardFocusIndicatorContained: keyboard.focusIndicatorContained,
     initialRestored,
@@ -1110,9 +1114,13 @@ async function main() {
   }
 
   let server5xx = []
+  let client4xx = []
   let runtimeExceptions = []
   let consoleErrors = []
   cdp.on('Network.responseReceived', ({ response }) => {
+    if (response.status >= 400 && response.status < 500) {
+      client4xx.push({ status: response.status, url: response.url })
+    }
     if (response.status >= 500) server5xx.push({ status: response.status, url: response.url })
   })
   cdp.on('Runtime.exceptionThrown', ({ exceptionDetails }) => {
@@ -1144,6 +1152,7 @@ async function main() {
 
       for (const [index, route] of routes.entries()) {
         server5xx = []
+        client4xx = []
         runtimeExceptions = []
         consoleErrors = []
         await cdp.send('Network.clearBrowserCookies')
@@ -1203,6 +1212,7 @@ async function main() {
           }
         }
         result.server5xx = [...server5xx]
+        result.client4xx = [...new Map(client4xx.map((response) => [`${response.status}:${response.url}`, response])).values()]
         result.runtimeExceptions = [...new Set(runtimeExceptions)]
         result.consoleErrors = filterConsoleErrors(consoleErrors, route)
         result.failures = result.auditError

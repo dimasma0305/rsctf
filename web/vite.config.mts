@@ -46,8 +46,6 @@ export default defineConfig(({ mode }) => {
         '/hub': {
           target: TARGET,
           changeOrigin: true,
-          headers: { origin: new URL(TARGET).origin },
-          rewriteWsOrigin: true,
           ws: true,
         },
         '/install': TARGET,
