@@ -57,7 +57,7 @@ test('the five-second managed KotH token poll has a bounded cache hit path', () 
 
   const hill = section(tokens, 'pub async fn koth_hill_token', 'pub struct KothHillTokenModel');
   assert.match(hill, /load_latest_round_cached/);
-  assert.ok((hill.match(/current_game_epoch/g) || []).length >= 2);
+  assert.ok((hill.match(/current_capability_epochs/g) || []).length >= 2);
   assert.match(hill, /get_local\(&key\)/);
   assert.match(hill, /set_local\([\s\S]*TOKEN_MODEL_CACHE_TTL/);
   assert.doesNotMatch(hill, /if model\.token\.is_some\(\)/);
@@ -75,7 +75,7 @@ test('the five-second managed KotH token poll has a bounded cache hit path', () 
   assert.match(cache, /const L1_MAX_ENTRIES:\s*usize = 4_096/);
 });
 
-test('plaintext bearers stay local while the cross-replica epoch is authoritative', () => {
+test('plaintext bearers stay local while cross-replica epochs are authoritative', () => {
   const tiered = section(cache, 'impl Cache for TieredCache', '#[cfg(test)]');
   assert.match(tiered, /get_local[\s\S]*self\.l1\.get/);
   assert.match(tiered, /set_local[\s\S]*self\.l1\.set/);
@@ -85,6 +85,30 @@ test('plaintext bearers stay local while the cross-replica epoch is authoritativ
   assert.match(capabilityCache, /set_if_absent_authoritative/);
   assert.match(capabilityCache, /finish_game_epoch_mutation/);
   assert.match(cache, /compare_and_set_authoritative[\s\S]*redis::Script/);
+});
+
+test('epoch eviction recovery is writer-fenced and player rotation stays participant-scoped', () => {
+  const current = section(
+    capabilityCache,
+    'pub(crate) async fn current_capability_epochs',
+    'pub(crate) async fn begin_game_epoch_mutation',
+  );
+  assert.match(current, /PgAdvisoryLock::try_acquire_shared/);
+  assert.ok(current.indexOf('try_acquire_shared') < current.indexOf('read_or_seed_epoch'));
+  assert.match(
+    capabilityCache,
+    /evicted_mutation_markers_cannot_reseed_until_the_writer_commits/,
+  );
+
+  const rotation = section(
+    tokens,
+    'clear_unsettled_scores_for_capability_change',
+    'Ok(no_store_token_response',
+  );
+  assert.match(rotation, /begin_participant_epoch_mutation/);
+  assert.match(rotation, /finish_participant_epoch_mutation/);
+  assert.doesNotMatch(rotation, /begin_game_epoch_mutation/);
+  assert.match(capabilityCache, /player_rotation_changes_only_that_participants_namespace/);
 });
 
 test('capability mutations disable before commit and ticket-finalize after it', () => {
