@@ -55,11 +55,14 @@ struct StatsProjection {
 }
 
 const STATS_SQL: &str = r#"
-WITH accepted AS MATERIALIZED (
-    SELECT DISTINCT submission.game_id, submission.challenge_id
+WITH accepted_submissions AS MATERIALIZED (
+    SELECT submission.id, submission.game_id, submission.challenge_id
       FROM "Submissions" submission
      WHERE submission.user_id = $1
        AND submission.status = $2
+), accepted AS MATERIALIZED (
+    SELECT DISTINCT submission.game_id, submission.challenge_id
+      FROM accepted_submissions submission
 ), solved AS MATERIALIZED (
     SELECT accepted.game_id, accepted.challenge_id, challenge.category,
            game.title AS game_title, game.end_time_utc
@@ -83,10 +86,13 @@ WITH accepted AS MATERIALIZED (
 SELECT
     (SELECT COUNT(*)::bigint FROM solved) AS total_solves,
     (SELECT COUNT(*)::bigint
-       FROM "FirstSolves" first_solve
-       JOIN "Submissions" submission ON submission.id = first_solve.submission_id
-      WHERE submission.user_id = $1
-        AND submission.status = $2) AS total_first_bloods,
+       FROM accepted_submissions submission
+       JOIN LATERAL (
+           SELECT 1
+             FROM "FirstSolves" first_solve
+            WHERE first_solve.submission_id = submission.id
+            LIMIT 1
+       ) first_solve ON TRUE) AS total_first_bloods,
     (SELECT COUNT(*)::bigint FROM game_summary) AS games_participated,
     COALESCE((SELECT ARRAY_AGG(category ORDER BY category) FROM category_summary), ARRAY[]::smallint[]) AS category_ids,
     COALESCE((SELECT ARRAY_AGG(solves ORDER BY category) FROM category_summary), ARRAY[]::bigint[]) AS category_solves,
@@ -179,7 +185,7 @@ mod tests {
     fn stats_projection_is_bounded_and_never_selects_flag_answers() {
         assert!(STATS_SQL.contains("LIMIT $3"));
         assert!(STATS_SQL.contains("submission.user_id = $1"));
-        assert_eq!(STATS_SQL.matches("submission.status = $2").count(), 2);
+        assert_eq!(STATS_SQL.matches("submission.status = $2").count(), 1);
         assert!(!STATS_SQL.contains("submission.answer"));
         assert!(!STATS_SQL.contains("SELECT submission.*"));
         assert_eq!(MAX_RECENT_GAMES, 100);
