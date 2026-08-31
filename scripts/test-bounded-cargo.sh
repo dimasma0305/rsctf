@@ -13,7 +13,11 @@ grep -Fq 'memory_max=12G' <<<"$output"
 grep -Fq 'jobs=2' <<<"$output"
 grep -Fq '/rsctf-target' <<<"$output"
 grep -Eq '/cargo check --all-targets' <<<"$output"
-grep -Fq -- '--working-directory "$repo_root"' scripts/bounded-cargo.sh
+grep -Fq -- '--scope' scripts/bounded-cargo.sh
+if grep -Fq -- '--pipe' scripts/bounded-cargo.sh; then
+  echo 'bounded-cargo service mode can discard caller environment variables' >&2
+  exit 1
+fi
 
 if RSCTF_BOUNDED_CARGO_DRY_RUN=1 RSCTF_CARGO_JOBS=8 \
   scripts/bounded-cargo.sh check >/dev/null 2>&1; then

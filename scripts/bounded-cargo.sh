@@ -92,22 +92,20 @@ if command -v systemd-run >/dev/null 2>&1 \
   && [[ -d /run/systemd/system ]] \
   && systemctl show-environment >/dev/null 2>&1; then
   unit="rsctf-cargo-$BASHPID-$(date +%s)"
+  # A scope keeps the caller environment (including disposable test service
+  # URLs) without copying credentials into systemd-run command arguments.
   systemd-run \
     --quiet \
-    --wait \
+    --scope \
     --collect \
-    --pipe \
-    --working-directory "$repo_root" \
     --unit "$unit" \
-    --property Type=exec \
     --property "CPUQuota=${cpu_quota}" \
     --property CPUWeight=20 \
     --property "MemoryMax=${memory_max}" \
     --property IOWeight=20 \
-    --property Nice=10 \
     --property TasksMax=512 \
     --property OOMPolicy=stop \
-    "${command[@]}"
+    nice -n 10 ionice -c 2 -n 7 "${command[@]}"
 else
   echo "bounded-cargo: systemd unavailable; using soft nice/ionice limits" >&2
   nice -n 10 ionice -c 2 -n 7 "${command[@]}"
