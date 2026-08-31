@@ -7,7 +7,7 @@ on 2026-08-25.
 
 ### P0 — Fix before the next live event
 
-- [ ] Diagnose and remove repeated transient challenge-detail load failures.
+- [x] Diagnose and remove repeated transient challenge-detail load failures.
   - This is the first implementation priority because it frequently blocks normal
     challenge access with "Challenge could not be loaded" and "Challenge data could
     not be loaded. Automatic retries are bounded."
@@ -26,9 +26,13 @@ on 2026-08-25.
   - Dev acceptance on 2026-08-31 found and fixed an initial-open abort race: the
     polling effect cancelled the first request before Axios dispatched it. The real
     challenge 50 hash-open flow now loads detail and solvers with HTTP 200 and no
-    load-error surface. Immutable production release remains pending.
+    load-error surface.
+  - Released as v0.1.104 on 2026-08-31. Production challenge 557 detail/solver reads
+    returned HTTP 200, the real player modal had no load-error surface, and 61
+    fixed-rate modal cycles completed with zero failures, 5xx responses, or dropped
+    arrivals (detail p95 71.51 ms; solver p95 28 ms).
 
-- [ ] Verify and release the BYOC-specific empty/recovery state.
+- [x] Verify and release the BYOC-specific empty/recovery state.
   - This is the second implementation priority. In particular, game 13 challenge 50
     must explain how to enroll or reconnect the team's own BYOC agent instead of
     showing the managed-service "No service for your team yet" / "Ensure containers"
@@ -44,8 +48,8 @@ on 2026-08-25.
     and the BYOC enrollment/agent controllers.
   - Dev acceptance on 2026-08-31 verified game 13 challenge 50 before its first
     service row: the modal shows self-hosted setup and `setup.sh` guidance and does
-    not show "No service for your team yet" or "Ensure containers". Immutable
-    production release remains pending.
+    not show "No service for your team yet" or "Ensure containers". The same player
+    flow passed again from the merged-main dev frontend after the v0.1.104 release.
 
 - [x] Make event start and end transitions reactive across the event detail, challenge,
   scoreboard, catalog, and home pages.
@@ -3496,7 +3500,7 @@ on 2026-08-25.
     `src/controllers/game/scoreboard_board.rs`, and
     `web/src/components/TeamRank.tsx`.
 
-- [ ] Keep custom challenge Markdown animations alive while the player edits the flag form.
+- [x] Keep custom challenge Markdown animations alive while the player edits the flag form.
   - Typing, receipt-proof input, verdict polling, and unrelated modal state must not
     replace the sanitized Markdown DOM or restart embedded SVG/CSS animations when the
     challenge content itself is unchanged.
@@ -3508,15 +3512,23 @@ on 2026-08-25.
   - Relevant code: `web/src/components/MarkdownRenderer.tsx`,
     `web/src/components/ChallengeModal.tsx`, and
     `web/src/components/GameChallengeModal.tsx`.
+  - Production acceptance on 2026-08-31 opened game 1 challenge 557 as an accepted,
+    unsolved player and typed without submitting. The Markdown and animated nodes
+    retained identity, the same animation advanced, and the input value remained
+    intact with no failed network response or runtime exception.
 
 ### Completion gate
 
-- [ ] Run `cargo build` with zero warnings and `cargo test` with the required
+- [x] Run `cargo build` with zero warnings and `cargo test` with the required
   PostgreSQL/container environment available.
-- [ ] Run the strict frontend typecheck, lint, tests, production build, and relevant
+- [x] Run the strict frontend typecheck, lint, tests, production build, and relevant
   browser/Axe checks.
-- [ ] Run the fixed-rate event load workflow for polling, realtime-feed, submission, or
+- [x] Run the fixed-rate event load workflow for polling, realtime-feed, submission, or
   resource-usage changes and compare latency, errors, throughput, and resource growth.
-- [ ] Release and deploy one immutable digest to every applicable `tcp.1pc.tf` replica,
+- [x] Release and deploy one immutable digest to every applicable `tcp.1pc.tf` replica,
   then verify exact health, version/digest, changed behavior, recent logs, and installer
   endpoints where applicable.
+  - v0.1.104 is deployed as
+    `ghcr.io/dimasma0305/rsctf@sha256:76c26d7b7c2ee9561befe01c2bd5753873798d0c22aaf171cc82be52e92ecabd`
+    on both web replicas and the control replica. Health returned exact `ok`, recent
+    logs were clean, and both public worker bootstrap endpoints matched the release.
