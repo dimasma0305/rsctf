@@ -28,7 +28,7 @@ async fn repository_identity_lookup_is_indexed_and_result_bounded() {
         .connect_with(crate::migrations::test_pg_connect_options(&database_url))
         .await
         .unwrap();
-    let schema = format!("rsctf_m0320_{}", uuid::Uuid::new_v4().simple());
+    let schema = format!("rsctf_m0332_{}", uuid::Uuid::new_v4().simple());
     sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
         .execute(&admin)
         .await

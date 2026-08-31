@@ -1,4 +1,4 @@
-//! Bounded access path for repository manifest identity reconciliation.
+//! Reserved runtime access path for repository manifest identity reconciliation.
 
 use sea_orm_migration::prelude::*;
 
