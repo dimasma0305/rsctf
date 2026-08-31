@@ -15,8 +15,10 @@ use crate::services::mail::MailSender;
 use crate::utils::error::{AppError, AppResult};
 
 mod delivery;
+mod link_activation;
 mod preparation;
 use delivery::reconcile_with_sender;
+pub(crate) use link_activation::lock_generation as lock_link_generation;
 pub use preparation::{try_prepare, MailPreparationPermit};
 
 const MAIL_ADMISSION_LOCK_ID: i64 = 0x5253_4354_464d_4149; // "RSCTFMAI"
@@ -140,12 +142,9 @@ fn replay_existing_intent(
     }
 }
 
-/// Persist one canonical intent inside the caller's account transaction.
-///
-/// The operation identity is exact-replay safe. A different operation for the
-/// same account and purpose supersedes older links before the new row becomes
-/// visible. Admission is serialized only for this low-volume mutation so the
-/// deployment-wide count and byte ceilings cannot be raced by replicas.
+/// Persist one exact-replay-safe intent inside the account transaction. A new
+/// operation supersedes its older outbox job, while account-link validity is
+/// switched separately only after successful SMTP delivery.
 pub async fn enqueue_in_transaction(
     transaction: &mut Transaction<'_, Postgres>,
     intent: MailIntent<'_>,
@@ -312,6 +311,13 @@ async fn finish_job(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     let retry = !delivered && retryable && job.attempts < MAX_ATTEMPTS;
+    let link_activation_fenced = if delivered {
+        // Fence the identity before touching the outbox row. Resend staging
+        // takes the same locks in this order, avoiding a delivery/resend cycle.
+        link_activation::fence_success(&mut transaction, job.operation_id).await?
+    } else {
+        false
+    };
     let affected = sqlx::query(
         r#"UPDATE "MailOutbox"
               SET delivered_at_utc = CASE WHEN $3 THEN clock_timestamp()
@@ -352,6 +358,12 @@ async fn finish_job(
     .map_err(|error| AppError::internal(error.to_string()))?;
     if affected.rows_affected() != 1 {
         return Err(AppError::internal("Mail delivery lease was lost"));
+    }
+    if link_activation_fenced {
+        // The SMTP success marker and account-link generation switch commit
+        // together. A database error leaves the job retryable and the prior
+        // delivered link current.
+        link_activation::acknowledge_fenced_success(&mut transaction, job.operation_id).await?;
     }
     transaction
         .commit()
@@ -498,6 +510,11 @@ pub fn start_reconciler(
             if now >= next_cleanup {
                 if let Err(error) = purge_terminal(state.pg(), MAINTENANCE_LIMIT).await {
                     tracing::error!(%error, "mail outbox retention cleanup failed");
+                }
+                if let Err(error) =
+                    link_activation::recover_committed(state.pg(), MAINTENANCE_LIMIT).await
+                {
+                    tracing::error!(%error, "mail account-link activation recovery failed");
                 }
                 next_cleanup = now + CLEANUP_INTERVAL;
             }

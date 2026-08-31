@@ -43,16 +43,8 @@ async fn lock_generation(
     account_id: Uuid,
     purpose: Purpose,
 ) -> AppResult<()> {
-    sqlx::query(
-        r#"SELECT pg_advisory_xact_lock(
-               hashtextextended($1::text || ':' || $2::text, 194207)
-           )"#,
-    )
-    .bind(account_id)
-    .bind(purpose as i16)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
+    crate::services::mail_outbox::lock_link_generation(transaction, account_id, purpose as i16)
+        .await?;
     sqlx::query(
         r#"DELETE FROM "AccountLinkAttempts" WHERE token_digest IN (
                SELECT token_digest FROM "AccountLinkAttempts"
@@ -74,13 +66,13 @@ async fn lock_generation(
 /// yet, so failed SMTP delivery cannot invalidate the last delivered link.
 pub(super) async fn stage(
     transaction: &mut Transaction<'_, Postgres>,
+    mail_operation_id: Uuid,
     token: &str,
     purpose: Purpose,
     account_id: Uuid,
     security_generation: &str,
     destination: &str,
     expires_at_unix: i64,
-    activate_immediately: bool,
 ) -> AppResult<()> {
     lock_generation(transaction, account_id, purpose).await?;
     sqlx::query(
@@ -98,17 +90,6 @@ pub(super) async fn stage(
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
-    if activate_immediately {
-        sqlx::query(
-            r#"UPDATE "AccountLinkAttempts" SET is_current = FALSE
-                WHERE account_id = $1 AND purpose = $2 AND is_current"#,
-        )
-        .bind(account_id)
-        .bind(purpose as i16)
-        .execute(&mut **transaction)
-        .await
-        .map_err(database_error)?;
-    }
     let generation: i64 = sqlx::query_scalar(
         r#"SELECT COALESCE(MAX(generation), 0) + 1
              FROM "AccountLinkAttempts"
@@ -121,78 +102,22 @@ pub(super) async fn stage(
     .map_err(database_error)?;
     sqlx::query(
         r#"INSERT INTO "AccountLinkAttempts"
-             (token_digest, purpose, account_id, generation,
+             (token_digest, mail_operation_id, purpose, account_id, generation,
               security_generation_digest, destination_digest, expires_at_utc,
               is_current, delivered_at_utc)
-           VALUES ($1,$2,$3,$4,$5,$6,to_timestamp($7),$8,
-                   CASE WHEN $8 THEN clock_timestamp() ELSE NULL END)"#,
+           VALUES ($1,$2,$3,$4,$5,$6,$7,to_timestamp($8),FALSE,NULL)"#,
     )
     .bind(digest(token.as_bytes()).to_vec())
+    .bind(mail_operation_id)
     .bind(purpose as i16)
     .bind(account_id)
     .bind(generation)
     .bind(digest(security_generation.as_bytes()).to_vec())
     .bind(digest(destination.as_bytes()).to_vec())
     .bind(expires_at_unix)
-    .bind(activate_immediately)
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
-    Ok(())
-}
-
-/// Publish a successfully delivered staged link and supersede the previous
-/// generation atomically. An exact retry is a no-op.
-pub(super) async fn activate(
-    pool: &sqlx::PgPool,
-    token: &str,
-    purpose: Purpose,
-    account_id: Uuid,
-) -> AppResult<()> {
-    let token_digest = digest(token.as_bytes());
-    let mut transaction = pool.begin().await.map_err(database_error)?;
-    lock_generation(&mut transaction, account_id, purpose).await?;
-    let exists: bool = sqlx::query_scalar(
-        r#"SELECT EXISTS(
-               SELECT 1 FROM "AccountLinkAttempts"
-                WHERE token_digest = $1 AND account_id = $2 AND purpose = $3
-                  AND consumed_at_utc IS NULL
-           )"#,
-    )
-    .bind(token_digest.to_vec())
-    .bind(account_id)
-    .bind(purpose as i16)
-    .fetch_one(&mut *transaction)
-    .await
-    .map_err(database_error)?;
-    if !exists {
-        return Err(AppError::bad_request("Invalid or expired account link"));
-    }
-    sqlx::query(
-        r#"UPDATE "AccountLinkAttempts" SET is_current = FALSE
-            WHERE account_id = $1 AND purpose = $2 AND is_current
-              AND token_digest <> $3"#,
-    )
-    .bind(account_id)
-    .bind(purpose as i16)
-    .bind(token_digest.to_vec())
-    .execute(&mut *transaction)
-    .await
-    .map_err(database_error)?;
-    sqlx::query(
-        r#"UPDATE "AccountLinkAttempts"
-              SET is_current = TRUE,
-                  delivered_at_utc = COALESCE(delivered_at_utc, clock_timestamp())
-            WHERE token_digest = $1 AND account_id = $2 AND purpose = $3
-              AND consumed_at_utc IS NULL"#,
-    )
-    .bind(token_digest.to_vec())
-    .bind(account_id)
-    .bind(purpose as i16)
-    .execute(&mut *transaction)
-    .await
-    .map_err(database_error)?;
-    transaction.commit().await.map_err(database_error)?;
     Ok(())
 }
 
@@ -204,6 +129,20 @@ pub(super) async fn claim(
     purpose: Purpose,
 ) -> AppResult<Claim> {
     let token_digest = digest(token.as_bytes());
+    let account_id: Option<Uuid> = sqlx::query_scalar(
+        r#"SELECT account_id FROM "AccountLinkAttempts"
+            WHERE token_digest = $1 AND purpose = $2"#,
+    )
+    .bind(token_digest.to_vec())
+    .bind(purpose as i16)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let Some(account_id) = account_id else {
+        return Err(AppError::bad_request("Invalid or expired account link"));
+    };
+    crate::services::mail_outbox::lock_link_generation(transaction, account_id, purpose as i16)
+        .await?;
     let row: Option<(Uuid, Vec<u8>, Vec<u8>, bool, bool, Option<JsonValue>)> = sqlx::query_as(
         r#"SELECT account_id, security_generation_digest, destination_digest,
                   is_current, expires_at_utc > clock_timestamp(), result
@@ -277,6 +216,9 @@ mod tests {
     fn plaintext_tokens_are_never_part_of_the_sql_contract() {
         let source = include_str!("link_attempts.rs");
         assert!(source.contains("token_digest"));
+        assert!(source.contains("token_digest, mail_operation_id"));
+        assert!(source.contains("to_timestamp($8),FALSE,NULL"));
+        assert!(!source.contains(&["activate_", "immediately"].concat()));
         assert!(!source.contains("INSERT INTO \"AccountLinkAttempts\" (token,"));
     }
 
@@ -313,6 +255,12 @@ mod tests {
             .unwrap();
         sqlx::raw_sql(
             r#"CREATE TABLE "AspNetUsers" (id UUID PRIMARY KEY);
+               CREATE TABLE "MailOutbox" (
+                 operation_id UUID PRIMARY KEY,
+                 account_id UUID NOT NULL REFERENCES "AspNetUsers"(id),
+                 purpose SMALLINT NOT NULL,
+                 delivered_at_utc TIMESTAMPTZ
+               );
                CREATE TABLE "AccountLinkAttempts" (
                  token_digest BYTEA PRIMARY KEY,
                  purpose SMALLINT NOT NULL,
@@ -326,6 +274,7 @@ mod tests {
                  consumed_at_utc TIMESTAMPTZ,
                  result JSONB,
                  created_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                 mail_operation_id UUID UNIQUE REFERENCES "MailOutbox"(operation_id),
                  UNIQUE (account_id, purpose, generation)
                );"#,
         )
@@ -339,32 +288,62 @@ mod tests {
             .await
             .unwrap();
         let expiry = chrono::Utc::now().timestamp() + 3600;
+        let first_operation = Uuid::new_v4();
+        let undelivered_operation = Uuid::new_v4();
+        for operation_id in [first_operation, undelivered_operation] {
+            sqlx::query(
+                r#"INSERT INTO "MailOutbox" (operation_id,account_id,purpose)
+                   VALUES ($1,$2,2)"#,
+            )
+            .bind(operation_id)
+            .bind(account_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
 
         let mut first = pool.begin().await.unwrap();
         stage(
             &mut first,
+            first_operation,
             "first",
             Purpose::EmailChange,
             account_id,
             "stamp",
             "FIRST@EXAMPLE.TEST",
             expiry,
-            true,
         )
         .await
         .unwrap();
         first.commit().await.unwrap();
+        sqlx::query(
+            r#"UPDATE "MailOutbox" SET delivered_at_utc=clock_timestamp()
+                WHERE operation_id=$1"#,
+        )
+        .bind(first_operation)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"UPDATE "AccountLinkAttempts"
+                  SET is_current=TRUE,delivered_at_utc=clock_timestamp()
+                WHERE mail_operation_id=$1"#,
+        )
+        .bind(first_operation)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let mut undelivered = pool.begin().await.unwrap();
         stage(
             &mut undelivered,
+            undelivered_operation,
             "undelivered",
             Purpose::EmailChange,
             account_id,
             "stamp",
             "SECOND@EXAMPLE.TEST",
             expiry,
-            false,
         )
         .await
         .unwrap();
@@ -376,10 +355,39 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(current, vec![digest(b"first").to_vec()]);
-
-        activate(&pool, "undelivered", Purpose::EmailChange, account_id)
+        let mut premature_claim = pool.begin().await.unwrap();
+        let hidden = claim(&mut premature_claim, "undelivered", Purpose::EmailChange)
             .await
-            .unwrap();
+            .expect_err("an undelivered candidate must look like any invalid link");
+        assert_eq!(hidden.status(), axum::http::StatusCode::BAD_REQUEST);
+        premature_claim.rollback().await.unwrap();
+
+        sqlx::query(
+            r#"UPDATE "AccountLinkAttempts" SET is_current=FALSE
+                WHERE account_id=$1 AND purpose=$2"#,
+        )
+        .bind(account_id)
+        .bind(Purpose::EmailChange as i16)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"UPDATE "MailOutbox" SET delivered_at_utc=clock_timestamp()
+                WHERE operation_id=$1"#,
+        )
+        .bind(undelivered_operation)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"UPDATE "AccountLinkAttempts"
+                  SET is_current=TRUE,delivered_at_utc=clock_timestamp()
+                WHERE mail_operation_id=$1"#,
+        )
+        .bind(undelivered_operation)
+        .execute(&pool)
+        .await
+        .unwrap();
         let mut consume = pool.begin().await.unwrap();
         let attempt = match claim(&mut consume, "undelivered", Purpose::EmailChange)
             .await

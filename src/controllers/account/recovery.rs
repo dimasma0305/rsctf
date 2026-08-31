@@ -611,6 +611,11 @@ pub async fn change_email(
             .begin()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(REGISTRATION_LOCK_ID)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         let identity_is_current = sqlx::query_scalar::<_, bool>(
             r#"SELECT TRUE FROM "AspNetUsers"
                 WHERE id = $1 AND security_stamp = $2
@@ -645,13 +650,13 @@ pub async fn change_email(
         if inserted {
             super::link_attempts::stage(
                 &mut transaction,
+                operation_id,
                 &token,
                 super::link_attempts::Purpose::EmailChange,
                 user.id,
                 &expected_stamp,
                 &norm,
                 expires_at_unix,
-                true,
             )
             .await?;
         }
