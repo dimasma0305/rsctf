@@ -273,13 +273,13 @@ pub(super) async fn resend_pending_confirmation(
     if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {
         super::link_attempts::stage(
             &mut transaction,
+            operation_id,
             &token,
             super::link_attempts::Purpose::Registration,
             pending.user_id,
             pending.security_stamp,
             pending.normalized_email,
             database_now.timestamp() + EMAIL_CONFIRMATION_TTL_SECS,
-            true,
         )
         .await?;
     }
@@ -390,7 +390,7 @@ async fn confirm_token(
             .map_err(|error| AppError::internal(error.to_string()))?;
     if let Some(operation_id) = claims.operation_id {
         let outbox = sqlx::query_as::<_, (Option<chrono::DateTime<Utc>>, bool)>(
-            r#"SELECT consumed_at_utc, superseded_at_utc IS NULL
+            r#"SELECT consumed_at_utc, delivered_at_utc IS NOT NULL
                  FROM "MailOutbox"
                 WHERE operation_id = $1
                   AND account_id = $2
@@ -402,7 +402,7 @@ async fn confirm_token(
         .fetch_optional(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-        let Some((consumed_at, is_current)) = outbox else {
+        let Some((consumed_at, was_delivered)) = outbox else {
             return Err(AppError::bad_request(
                 "Invalid or expired email-confirmation token",
             ));
@@ -430,7 +430,7 @@ async fn confirm_token(
                 .map_err(|error| AppError::internal(error.to_string()))?;
             return Ok((name, false));
         }
-        if !is_current {
+        if !was_delivered {
             return Err(AppError::bad_request(
                 "Invalid or expired email-confirmation token",
             ));
@@ -504,7 +504,7 @@ async fn confirm_token(
             r#"UPDATE "MailOutbox"
                   SET consumed_at_utc = COALESCE(consumed_at_utc, clock_timestamp())
                 WHERE operation_id = $1 AND account_id = $2 AND purpose = $3
-                  AND superseded_at_utc IS NULL"#,
+                  AND delivered_at_utc IS NOT NULL"#,
         )
         .bind(operation_id)
         .bind(claims.user_id)
@@ -681,6 +681,7 @@ mod tests {
                  account_id UUID NOT NULL,
                  purpose SMALLINT NOT NULL,
                  superseded_at_utc TIMESTAMPTZ,
+                 delivered_at_utc TIMESTAMPTZ,
                  consumed_at_utc TIMESTAMPTZ
                );
                CREATE TABLE "AccountLinkAttempts" (
@@ -696,6 +697,7 @@ mod tests {
                  consumed_at_utc TIMESTAMPTZ,
                  result JSONB,
                  created_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                 mail_operation_id UUID UNIQUE REFERENCES "MailOutbox"(operation_id),
                  UNIQUE (account_id, purpose, generation)
                );"#,
         )
@@ -761,17 +763,83 @@ mod tests {
         let mut link_transaction = pool.begin().await.unwrap();
         super::super::link_attempts::stage(
             &mut link_transaction,
+            operation_id,
             &model.token,
             super::super::link_attempts::Purpose::Registration,
             user_id,
             "stamp-a",
             "PENDING@EXAMPLE.TEST",
             Utc::now().timestamp() + 3600,
-            true,
         )
         .await
         .unwrap();
         link_transaction.commit().await.unwrap();
+        sqlx::query(
+            r#"UPDATE "MailOutbox" SET delivered_at_utc=clock_timestamp()
+                WHERE operation_id=$1"#,
+        )
+        .bind(operation_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"UPDATE "AccountLinkAttempts"
+                  SET delivered_at_utc=clock_timestamp(),is_current=TRUE
+                WHERE mail_operation_id=$1"#,
+        )
+        .bind(operation_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let failed_resend_operation = Uuid::new_v4();
+        sqlx::query(
+            r#"UPDATE "MailOutbox" SET superseded_at_utc=clock_timestamp()
+                WHERE operation_id=$1"#,
+        )
+        .bind(operation_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "MailOutbox"
+                 (operation_id,account_id,purpose,superseded_at_utc)
+               VALUES ($1,$2,$3,NULL)"#,
+        )
+        .bind(failed_resend_operation)
+        .bind(user_id)
+        .bind(crate::services::mail_outbox::MailPurpose::RegistrationConfirmation as i16)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let failed_resend_token = issue_token(
+            config.jwt_secret.as_bytes(),
+            user_id,
+            "PENDING@EXAMPLE.TEST",
+            "stamp-a",
+            Utc::now().timestamp() + 3600,
+            failed_resend_operation,
+        );
+        let mut failed_resend = pool.begin().await.unwrap();
+        super::super::link_attempts::stage(
+            &mut failed_resend,
+            failed_resend_operation,
+            &failed_resend_token,
+            super::super::link_attempts::Purpose::Registration,
+            user_id,
+            "stamp-a",
+            "PENDING@EXAMPLE.TEST",
+            Utc::now().timestamp() + 3600,
+        )
+        .await
+        .unwrap();
+        failed_resend.commit().await.unwrap();
+        let failed_resend_model = AccountVerifyModel {
+            token: failed_resend_token,
+            email: crate::utils::codec::base64_encode(b"pending@example.test"),
+        };
+        assert!(confirm_token(&pool, &config, &failed_resend_model)
+            .await
+            .is_err());
         assert!(confirm_token(&pool, &config, &model).await.is_err());
         let after_failure: (bool, String) = sqlx::query_as(
             r#"SELECT email_confirmed,security_stamp
@@ -802,7 +870,8 @@ mod tests {
         let terminal: (bool, bool) = sqlx::query_as(
             r#"SELECT outbox.consumed_at_utc IS NOT NULL, attempt.result IS NOT NULL
                  FROM "MailOutbox" outbox
-                 JOIN "AccountLinkAttempts" attempt ON attempt.account_id = outbox.account_id
+                 JOIN "AccountLinkAttempts" attempt
+                   ON attempt.mail_operation_id = outbox.operation_id
                 WHERE outbox.operation_id = $1"#,
         )
         .bind(operation_id)

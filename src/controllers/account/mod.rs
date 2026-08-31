@@ -479,13 +479,13 @@ pub async fn register(
         if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {
             link_attempts::stage(
                 &mut txn,
+                mail_operation_id,
                 &token,
                 link_attempts::Purpose::Registration,
                 id,
                 &security_stamp,
                 &norm_email,
                 database_now.timestamp() + 15 * 60,
-                true,
             )
             .await?;
         }
