@@ -18,6 +18,11 @@ services:
 
   rsctf:
     restart: "no"
+    # docker cp may retain the hosted runner's uid. FOWNER is confined to this
+    # disposable, Docker-socket-privileged fixture owner so it can normalize the
+    # injected checker tree before the normal dropped-uid sandbox executes it.
+    cap_add:
+      - FOWNER
     environment:
       RSCTF_ADMIN_LIFECYCLE_MARKER: ${ADMIN_LIFECYCLE_STACK_MARKER:?Set ADMIN_LIFECYCLE_STACK_MARKER}
       RSCTF_AD_VPN_SERVICES_CIDR: ${RSCTF_AD_VPN_SERVICES_CIDR:?Set RSCTF_AD_VPN_SERVICES_CIDR}
