@@ -13,7 +13,6 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use bytes::Bytes;
 use futures::StreamExt;
 use std::net::SocketAddr;
 use std::ops::Range;
@@ -26,6 +25,7 @@ use crate::utils::shared::MessageResponse;
 
 mod authorization;
 
+pub(crate) use authorization::invalidate_asset_gate;
 use authorization::{authorize_asset_download, finalize_asset_download, AssetCachePolicy};
 
 /// Response row for an uploaded blob (mirrors RSCTF `LocalFile`).
@@ -130,14 +130,14 @@ pub async fn upload(
 
     // Validate the complete request before acquiring any blob references. A
     // later oversized part must not leave the earlier parts persisted.
-    let mut results = Vec::with_capacity(uploads.len());
+    let mut staged_uploads = Vec::with_capacity(uploads.len());
     for (ordinal, (name, bytes)) in uploads.into_iter().enumerate() {
         let upload_id = crate::services::blob_refs::scoped_operation_id(
             operation_root,
             "asset-upload",
             ordinal as u64,
         );
-        let staged = crate::services::blob_refs::stage_blob(
+        let staged = match crate::services::blob_refs::stage_blob(
             st.pg(),
             st.storage.as_ref(),
             upload_id,
@@ -146,12 +146,39 @@ pub async fn upload(
             &name,
             &bytes,
         )
-        .await?;
-        let blob = staged.blob;
+        .await
+        {
+            Ok(staged) => staged,
+            Err(error) => {
+                for prior in &staged_uploads {
+                    if let Err(cleanup_error) =
+                        crate::services::blob_refs::discard_unpublished_stage(
+                            st.pg(),
+                            st.storage.as_ref(),
+                            prior,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            %cleanup_error,
+                            operation_id = %prior.operation_id,
+                            "failed multipart upload cleanup deferred to staging reaper"
+                        );
+                    }
+                }
+                return Err(error);
+            }
+        };
+        staged_uploads.push(staged);
+    }
 
+    let mut results = Vec::with_capacity(staged_uploads.len());
+    for staged in staged_uploads {
+        let upload_id = staged.operation_id;
+        let blob = staged.blob;
         results.push(LocalFileResult {
             hash: blob.hash,
-            name,
+            name: blob.name,
             size: blob.size,
             upload_id: Some(upload_id),
         });
@@ -160,26 +187,11 @@ pub async fn upload(
     Ok(Json(results))
 }
 
-fn asset_bytes_key(hash: &str) -> String {
-    format!("assetblob:{hash}")
-}
-/// Blob bytes are content-hash immutable. Only small blobs are cached. The
-/// user-specific authorization check remains live; the relationship half has
-/// the short bounded cache documented in `authorization`.
-const ASSET_BYTES_TTL: Duration = Duration::from_secs(600);
-const ASSET_CACHE_MAX_BYTES: usize = 512 * 1024;
-
-/// Load a small blob, serving cached `Bytes` zero-copy on a hit. Callers check
-/// the stored size first, so this never allocates for a large attachment.
-async fn load_small_asset_bytes(st: &SharedState, hash: &str) -> AppResult<Bytes> {
-    let key = asset_bytes_key(hash);
-    if let Some(b) = st.cache.get(&key).await {
-        return Ok(b);
-    }
-    let bytes = st.storage.load_bounded(hash, ASSET_CACHE_MAX_BYTES).await?;
-    st.cache.set(&key, &bytes, Some(ASSET_BYTES_TTL)).await;
-    Ok(Bytes::from(bytes))
-}
+/// Signed delivery is useful only once proxying the body is materially more
+/// expensive than issuing a short-lived redirect. Blob bodies themselves are
+/// never stored in Redis: request admission cannot bound the cardinality of a
+/// ten-minute caller-chosen cache namespace across replicas.
+const SIGNED_DELIVERY_MIN_BYTES: u64 = 512 * 1024;
 
 /// Parse one RFC 9110 byte range and return an exclusive range. Multi-range
 /// responses are deliberately rejected: resumable downloads need only a
@@ -431,14 +443,11 @@ async fn serve_asset(
             .into_response());
     }
 
-    // Preserve the small-asset zero-copy cache. On a miss, fetch metadata only;
-    // large attachments are opened as a stream rather than collected in RAM.
-    let cached = st.cache.get(&asset_bytes_key(hash)).await;
-    let size = match &cached {
-        Some(bytes) => bytes.len() as u64,
-        None if authorization.file_size.is_some_and(|size| size > 0) => {
-            authorization.file_size.expect("positive stored file size")
-        }
+    // Prefer bounded metadata established by the authorization query. Unknown
+    // legacy rows pay one storage metadata lookup, but no body is collected or
+    // inserted into a caller-controlled Redis namespace.
+    let size = match authorization.file_size {
+        Some(size) => size,
         None => match st.storage.size(hash).await {
             Ok(size) => size,
             Err(_) => {
@@ -487,12 +496,19 @@ async fn serve_asset(
         }
     };
 
+    let response_bytes = requested_range
+        .as_ref()
+        .map_or(size, |range| range.end - range.start);
+    crate::middlewares::rate_limiter::admit_asset_response_bytes(response_bytes)
+        .await
+        .map_err(AppError::too_many_requests)?;
+
     // When an operator explicitly enables signed object-store delivery, RSCTF
     // remains the authorization/audit control plane while the storage endpoint
     // carries the large byte stream. If-Range stays on the proxy path because
     // the object store may use a different ETag; forwarding that validator
     // could unexpectedly restart a resumed download from byte zero.
-    if size > ASSET_CACHE_MAX_BYTES as u64
+    if size > SIGNED_DELIVERY_MIN_BYTES
         && authorization.signed_delivery_allowed
         && headers.get(header::IF_RANGE).is_none()
     {
@@ -538,39 +554,19 @@ async fn serve_asset(
         }
     }
 
-    let response_bytes = requested_range
-        .as_ref()
-        .map_or(size, |range| range.end - range.start);
-    crate::middlewares::rate_limiter::admit_asset_response_bytes(response_bytes)
-        .await
-        .map_err(AppError::too_many_requests)?;
-
-    let body = match (&cached, &requested_range) {
-        (Some(bytes), Some(range)) => {
-            let start = usize::try_from(range.start).expect("cached asset fits usize");
-            let end = usize::try_from(range.end).expect("cached asset fits usize");
-            Body::from(bytes.slice(start..end))
-        }
-        (Some(bytes), None) => Body::from(bytes.clone()),
-        (None, None) if size == 0 => Body::empty(),
-        (None, None) if size <= ASSET_CACHE_MAX_BYTES as u64 => {
-            match load_small_asset_bytes(st, hash).await {
-                Ok(bytes) => Body::from(bytes),
-                Err(_) => return Err(AppError::not_found("File not found")),
-            }
-        }
-        (None, range) => {
-            let range = range.clone().unwrap_or(0..size);
-            let permit = st
-                .asset_download_admission
-                .try_acquire(user.as_ref().map(|user| user.id), hash)
-                .ok_or_else(|| {
-                    AppError::unavailable("Attachment download capacity is busy; retry in a moment")
-                })?;
-            match st.storage.stream_range(hash, range).await {
-                Ok(stream) => permitted_stream_body(stream, permit),
-                Err(_) => return Err(AppError::not_found("File not found")),
-            }
+    let body = if size == 0 {
+        Body::empty()
+    } else {
+        let range = requested_range.clone().unwrap_or(0..size);
+        let permit = st
+            .asset_download_admission
+            .try_acquire(user.as_ref().map(|user| user.id), hash)
+            .ok_or_else(|| {
+                AppError::overloaded("Attachment download capacity is busy; retry in a moment", 1)
+            })?;
+        match st.storage.stream_range(hash, range).await {
+            Ok(stream) => permitted_stream_body(stream, permit),
+            Err(_) => return Err(AppError::not_found("File not found")),
         }
     };
 
@@ -639,6 +635,7 @@ pub async fn delete_asset(
     if !outcome.found {
         return Err(AppError::not_found("File not found"));
     }
+    invalidate_asset_gate(&st, &hash).await;
 
     // Metadata commits before shared storage is touched. Recheck by unique
     // content hash so a concurrent replica that reacquired it keeps the blob.
@@ -649,8 +646,6 @@ pub async fn delete_asset(
             &deleted_hash,
         )
         .await;
-        // Drop immutable bytes so a stale hit cannot serve deleted content.
-        st.cache.remove(&asset_bytes_key(&deleted_hash)).await;
         purge?;
     }
 

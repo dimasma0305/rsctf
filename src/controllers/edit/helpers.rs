@@ -631,28 +631,9 @@ pub(crate) async fn load_challenge(
         .ok_or_else(|| AppError::not_found("Challenge not found"))
 }
 
-/// Load one challenge through the caller's retained domain transaction.
-/// `to_jsonb` keeps the mapping aligned with the SeaORM entity while avoiding
-/// a nested pool checkout under the per-game advisory lock.
-pub(crate) async fn load_challenge_locked(
-    connection: &mut sqlx::PgConnection,
-    game_id: i32,
-    challenge_id: i32,
-) -> AppResult<game_challenge::Model> {
-    let row = sqlx::query_scalar::<_, serde_json::Value>(
-        r#"SELECT to_jsonb(challenge)
-             FROM "GameChallenges" challenge
-            WHERE challenge.id = $1 AND challenge.game_id = $2"#,
-    )
-    .bind(challenge_id)
-    .bind(game_id)
-    .fetch_optional(connection)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("Challenge not found"))?;
-    serde_json::from_value(row)
-        .map_err(|error| AppError::internal(format!("could not decode challenge row: {error}")))
-}
+#[path = "helpers/challenge_rows.rs"]
+mod challenge_rows;
+pub(crate) use challenge_rows::{load_challenge_locked, load_game_challenges_locked};
 
 /// Ensure every division of `game_id` has a per-challenge config row for
 /// `challenge_id`. Insert-if-missing seeded with the division's default
@@ -734,8 +715,21 @@ pub(crate) async fn load_user_names(
 /// Mirrors RSCTF `BlobRepository.DeleteAttachment`. Idempotent when the row is
 /// already gone.
 pub(crate) async fn delete_attachment(st: &SharedState, attachment_id: i32) -> AppResult<()> {
+    let affected_hash = sqlx::query_scalar::<_, String>(
+        r#"SELECT file.hash
+             FROM "Attachments" attachment
+             JOIN "Files" file ON file.id = attachment.local_file_id
+            WHERE attachment.id = $1"#,
+    )
+    .bind(attachment_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     let deleted_hash =
         crate::services::blob_refs::delete_attachment(st.pg(), attachment_id).await?;
+    if let Some(hash) = affected_hash.as_deref() {
+        crate::controllers::assets::invalidate_asset_gate(st, hash).await;
+    }
     if let Some(hash) = deleted_hash {
         if let Err(error) =
             crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)

@@ -1,9 +1,11 @@
 use super::*;
 
-/// Port of RSCTF `GameInstanceRepository.GetOrCreateSharedContainer`. The caller must
-/// hold `shared-container:{challenge_id}` until the returned endpoint is published or
-/// handed to the player. Unlike RSCTF (`Flag = null`, static flag baked into the image),
-/// rsctf injects the challenge's static flag as env.
+/// Port of RSCTF `GameInstanceRepository.GetOrCreateSharedContainer`. Engine
+/// callers (`caller = None`) already own `shared-container:{challenge_id}`.
+/// Player callers take that fence only for the short reuse/publication
+/// transaction, never while probing or creating the external runtime. Unlike
+/// RSCTF (`Flag = null`, static flag baked into the image), rsctf injects the
+/// challenge's static flag as env.
 pub(crate) async fn get_or_create_shared_container_locked(
     st: &SharedState,
     challenge: &game_challenge::Model,
@@ -16,11 +18,26 @@ pub(crate) async fn get_or_create_shared_container_locked(
     let container_policy =
         crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
     let game_id = challenge.game_id;
-    let (challenge, workload, identity, _publication_fence, legacy_image) =
+    let (challenge, workload, identity, publication_fence, legacy_image) =
         load_shared_definition_snapshot(st, game_id, challenge.id).await?;
+    let player_operation = caller.map(|_| operations::ClaimedOperation {
+        operation_id: lifecycle_operation_id,
+        publication_id,
+    });
+    if let Some(operation) = player_operation.as_ref() {
+        operations::bind_definition(st.pg(), operation, &publication_fence).await?;
+    }
 
     if let Some(sid) = challenge.shared_container_id {
         if let Some(existing) = container::Entity::find_by_id(sid).one(&st.db).await? {
+            if super::reaping::managed_reap_active(st.pg(), existing.id, &existing.container_id)
+                .await?
+            {
+                return Err(AppError::overloaded(
+                    "Shared container teardown is being reconciled",
+                    2,
+                ));
+            }
             if crate::services::challenge_workloads::existing_runtime_is_reusable(
                 st.containers.as_ref(),
                 &existing.container_id,
@@ -30,6 +47,80 @@ pub(crate) async fn get_or_create_shared_container_locked(
             )
             .await?
             {
+                if let Some(caller) = caller {
+                    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
+                        .await
+                        .map_err(|error| AppError::internal(error.to_string()))?;
+                    // Match the established roster -> shared-runtime order.
+                    // The reaper owns the latter key while deactivating and
+                    // destroying a backend, so this exact recheck cannot renew
+                    // a container that is already being reaped.
+                    crate::utils::single_flight::acquire_transaction_advisory_lock_shared(
+                        &mut transaction,
+                        &crate::services::live_roster::lock_key(caller.team_id),
+                    )
+                    .await
+                    .map_err(|error| AppError::internal(error.to_string()))?;
+                    crate::utils::single_flight::acquire_transaction_advisory_lock(
+                        &mut transaction,
+                        &format!("shared-container:{}", challenge.id),
+                    )
+                    .await
+                    .map_err(|error| AppError::internal(error.to_string()))?;
+                    if !player_container_request_is_eligible(
+                        &mut transaction,
+                        caller,
+                        challenge.id,
+                        ContainerRequestMode::Shared,
+                    )
+                    .await?
+                    {
+                        transaction
+                            .rollback()
+                            .await
+                            .map_err(|error| AppError::internal(error.to_string()))?;
+                        return Err(AppError::Forbidden);
+                    }
+                    let stop_at = Utc::now()
+                        + chrono::Duration::minutes(i64::from(container_policy.default_lifetime));
+                    let refreshed = sqlx::query_scalar::<_, DateTime<Utc>>(
+                        r#"UPDATE "Containers" container
+                              SET expect_stop_at = $4
+                             FROM "GameChallenges" challenge
+                            WHERE container.id = $1
+                              AND container.container_id = $2
+                              AND container.image = $3
+                              AND container.status = $5
+                              AND challenge.id = $6
+                              AND challenge.shared_container_id = container.id
+                        RETURNING container.expect_stop_at"#,
+                    )
+                    .bind(sid)
+                    .bind(&existing.container_id)
+                    .bind(&identity)
+                    .bind(stop_at)
+                    .bind(ContainerStatus::Running as i16)
+                    .bind(challenge.id)
+                    .fetch_optional(&mut *transaction)
+                    .await
+                    .map_err(|error| AppError::internal(error.to_string()))?;
+                    let Some(stop_at) = refreshed else {
+                        transaction
+                            .rollback()
+                            .await
+                            .map_err(|error| AppError::internal(error.to_string()))?;
+                        return Err(AppError::conflict(
+                            "Shared container ownership changed during provisioning",
+                        ));
+                    };
+                    transaction
+                        .commit()
+                        .await
+                        .map_err(|error| AppError::internal(error.to_string()))?;
+                    let mut existing = existing;
+                    existing.expect_stop_at = stop_at;
+                    return Ok(existing);
+                }
                 let current = load_eligible_shared_challenge(st, challenge.id).await?;
                 if current.shared_container_id != Some(sid) {
                     return Err(AppError::bad_request(
@@ -73,6 +164,9 @@ pub(crate) async fn get_or_create_shared_container_locked(
     let container_uuid = publication_id;
     let operation_id =
         runtime_operation_id.or_else(|| Some(format!("player-container:{lifecycle_operation_id}")));
+    if let Some(operation) = player_operation.as_ref() {
+        operations::mark_runtime_started(st.pg(), operation).await?;
+    }
     let info = match workload {
         Some(spec) => {
             st.containers
@@ -105,6 +199,9 @@ pub(crate) async fn get_or_create_shared_container_locked(
                 .await?
         }
     };
+    if let Some(operation) = player_operation.as_ref() {
+        operations::record_backend(st.pg(), operation, &info.id).await?;
+    }
 
     let backend_id = info.id.clone();
     let now = Utc::now();
@@ -117,6 +214,12 @@ pub(crate) async fn get_or_create_shared_container_locked(
             crate::utils::single_flight::acquire_transaction_advisory_lock_shared(
                 &mut transaction,
                 &crate::services::live_roster::lock_key(caller.team_id),
+            )
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+            crate::utils::single_flight::acquire_transaction_advisory_lock(
+                &mut transaction,
+                &format!("shared-container:{}", challenge.id),
             )
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;

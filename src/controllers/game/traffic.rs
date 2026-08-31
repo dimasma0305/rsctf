@@ -7,11 +7,19 @@ use std::io::{Read, Write};
 // ---------------------------------------------------------------------------
 
 const MAX_CAPTURE_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
+// Stored ZIP records still need local/central headers and filenames. Reserve a
+// conservative fixed envelope so the streamed response itself never exceeds
+// the advertised/deployment-reserved 128 MiB ceiling.
+const CAPTURE_ARCHIVE_METADATA_BYTES: u64 = 512 * 1024;
+const MAX_CAPTURE_ARCHIVE_SOURCE_BYTES: u64 =
+    MAX_CAPTURE_ARCHIVE_BYTES - CAPTURE_ARCHIVE_METADATA_BYTES;
 const MAX_CAPTURE_ARCHIVE_FILES: usize = 256;
 const MAX_CAPTURE_ARCHIVE_DEPLOYMENT_BYTES: i64 = 2 * MAX_CAPTURE_ARCHIVE_BYTES as i64;
 const MAX_CAPTURE_ARCHIVE_DEPLOYMENT_JOBS: i64 = 2;
 const CAPTURE_ARCHIVE_CHUNK_BYTES: usize = 64 * 1024;
 const CAPTURE_ARCHIVE_LEASE_SECONDS: i64 = 30;
+const CAPTURE_ARCHIVE_HEARTBEAT_SECONDS: u64 = 10;
+const CAPTURE_ARCHIVE_DATABASE_SECONDS: u64 = 2;
 const CAPTURE_ARCHIVE_STREAM_SECONDS: u64 = 300;
 const CAPTURE_ARCHIVE_RETRY_SECONDS: u64 = 2;
 const CAPTURE_ARCHIVE_ADVISORY_KEY: i64 = 1_195_722_091;
@@ -46,6 +54,72 @@ struct CaptureArchiveStream {
     lease_failed: std::pin::Pin<Box<tokio::sync::oneshot::Receiver<()>>>,
     deadline: std::pin::Pin<Box<tokio::time::Sleep>>,
     terminal: bool,
+}
+
+/// Owns the durable deployment-wide archive reservation while the request is
+/// still preparing its inventory and filesystem snapshot. Dropping the owner
+/// cancels the heartbeat and releases (or, after a database outage, lets expire)
+/// the reservation, so every pre-response error has the same cleanup path.
+struct CaptureArchiveLeaseOwner {
+    completed: Option<tokio::sync::oneshot::Sender<()>>,
+    lease_failed: Option<tokio::sync::oneshot::Receiver<()>>,
+}
+
+impl CaptureArchiveLeaseOwner {
+    fn start(pool: sqlx::PgPool, operation_id: uuid::Uuid) -> Self {
+        let (completed_sender, completed_receiver) = tokio::sync::oneshot::channel();
+        let (lease_failed_sender, lease_failed_receiver) = tokio::sync::oneshot::channel();
+        tokio::spawn(maintain_archive_lease(
+            pool,
+            operation_id,
+            completed_receiver,
+            lease_failed_sender,
+        ));
+        Self {
+            completed: Some(completed_sender),
+            lease_failed: Some(lease_failed_receiver),
+        }
+    }
+
+    fn ensure_alive(&mut self) -> AppResult<()> {
+        let lease_failed = self
+            .lease_failed
+            .as_mut()
+            .expect("archive lease failure receiver is present");
+        match lease_failed.try_recv() {
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => Ok(()),
+            Ok(()) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                Err(AppError::retryable_unavailable(
+                    "Capture archive admission was lost; retry shortly",
+                    CAPTURE_ARCHIVE_RETRY_SECONDS,
+                ))
+            }
+        }
+    }
+
+    fn into_stream_parts(
+        mut self,
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    ) {
+        (
+            self.completed
+                .take()
+                .expect("archive lease completion owner is present"),
+            self.lease_failed
+                .take()
+                .expect("archive lease failure receiver is present"),
+        )
+    }
+}
+
+impl Drop for CaptureArchiveLeaseOwner {
+    fn drop(&mut self) {
+        if let Some(completed) = self.completed.take() {
+            let _ = completed.send(());
+        }
+    }
 }
 
 impl CaptureArchiveStream {
@@ -106,6 +180,7 @@ struct CaptureArchiveSource {
 struct CaptureZipStreamWriter {
     output: tokio::sync::mpsc::Sender<CaptureZipChunk>,
     buffered: Vec<u8>,
+    sent: u64,
 }
 
 impl CaptureZipStreamWriter {
@@ -113,6 +188,7 @@ impl CaptureZipStreamWriter {
         Self {
             output,
             buffered: Vec::with_capacity(CAPTURE_ARCHIVE_CHUNK_BYTES),
+            sent: 0,
         }
     }
 
@@ -124,9 +200,23 @@ impl CaptureZipStreamWriter {
             &mut self.buffered,
             Vec::with_capacity(CAPTURE_ARCHIVE_CHUNK_BYTES),
         );
+        let next = self
+            .sent
+            .checked_add(chunk.len() as u64)
+            .filter(|next| *next <= MAX_CAPTURE_ARCHIVE_BYTES)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::FileTooLarge,
+                    "capture archive exceeded its response size limit",
+                )
+            })?;
         self.output
             .blocking_send(Ok(bytes::Bytes::from(chunk)))
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "client disconnected"))
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "client disconnected")
+            })?;
+        self.sent = next;
+        Ok(())
     }
 
     fn finish(mut self) -> std::io::Result<()> {
@@ -183,7 +273,7 @@ fn scan_capture_archive(
     let declared_total = files
         .iter()
         .try_fold(0u64, |total, (_, size)| total.checked_add(*size));
-    if declared_total.is_none_or(|total| total > MAX_CAPTURE_ARCHIVE_BYTES) {
+    if declared_total.is_none_or(|total| total > MAX_CAPTURE_ARCHIVE_SOURCE_BYTES) {
         return Err(AppError::bad_request(
             "Captures are too large to archive; download them individually",
         ));
@@ -196,15 +286,30 @@ async fn acquire_archive_lease(
     challenge_id: i32,
     participation_id: i32,
 ) -> AppResult<uuid::Uuid> {
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut transaction = match tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        crate::utils::database::begin_sqlx_transaction(pool),
+    )
+    .await
+    {
+        Ok(result) => result.map_err(|error| AppError::internal(error.to_string()))?,
+        Err(_) => {
+            return Err(AppError::retryable_unavailable(
+                "Capture archive admission is busy; retry shortly",
+                CAPTURE_ARCHIVE_RETRY_SECONDS,
+            ));
+        }
+    };
     let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
         .bind(CAPTURE_ARCHIVE_ADVISORY_KEY)
         .fetch_one(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     if !locked {
+        transaction
+            .rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         return Err(AppError::retryable_unavailable(
             "Capture archive admission is busy; retry shortly",
             CAPTURE_ARCHIVE_RETRY_SECONDS,
@@ -239,6 +344,10 @@ async fn acquire_archive_lease(
         || reserved.saturating_add(MAX_CAPTURE_ARCHIVE_BYTES as i64)
             > MAX_CAPTURE_ARCHIVE_DEPLOYMENT_BYTES
     {
+        transaction
+            .rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         return Err(AppError::retryable_unavailable(
             "Capture archive capacity is busy; retry shortly",
             CAPTURE_ARCHIVE_RETRY_SECONDS,
@@ -274,32 +383,49 @@ async fn maintain_archive_lease(
     lease_failed: tokio::sync::oneshot::Sender<()>,
 ) {
     let mut lease_failed = Some(lease_failed);
-    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(10));
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(
+        CAPTURE_ARCHIVE_HEARTBEAT_SECONDS,
+    ));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
+    'heartbeat: loop {
         tokio::select! {
+            biased;
             _ = &mut completed => break,
             _ = heartbeat.tick() => {
-                let renewed = sqlx::query(
-                    r#"UPDATE "TrafficArchiveLeases"
-                          SET expires_at_utc = CURRENT_TIMESTAMP + make_interval(secs => $2)
-                        WHERE operation_id = $1"#,
-                )
-                .bind(operation_id)
-                .bind(CAPTURE_ARCHIVE_LEASE_SECONDS as f64)
-                .execute(&pool)
-                .await;
+                let renewal = tokio::time::timeout(
+                    std::time::Duration::from_secs(CAPTURE_ARCHIVE_DATABASE_SECONDS),
+                    sqlx::query(
+                        r#"UPDATE "TrafficArchiveLeases"
+                              SET expires_at_utc = CURRENT_TIMESTAMP + make_interval(secs => $2)
+                            WHERE operation_id = $1"#,
+                    )
+                    .bind(operation_id)
+                    .bind(CAPTURE_ARCHIVE_LEASE_SECONDS as f64)
+                    .execute(&pool),
+                );
+                let renewed = tokio::select! {
+                    biased;
+                    _ = &mut completed => break 'heartbeat,
+                    renewed = renewal => renewed,
+                };
                 match renewed {
-                    Ok(result) if result.rows_affected() == 1 => {}
-                    Ok(_) => {
+                    Ok(Ok(result)) if result.rows_affected() == 1 => {}
+                    Ok(Ok(_)) => {
                         tracing::warn!(%operation_id, "capture archive lease disappeared");
                         if let Some(sender) = lease_failed.take() {
                             let _ = sender.send(());
                         }
                         break;
                     }
-                    Err(error) => {
+                    Ok(Err(error)) => {
                         tracing::warn!(%operation_id, %error, "capture archive lease heartbeat failed");
+                        if let Some(sender) = lease_failed.take() {
+                            let _ = sender.send(());
+                        }
+                        break;
+                    }
+                    Err(_) => {
+                        tracing::warn!(%operation_id, "capture archive lease heartbeat timed out");
                         if let Some(sender) = lease_failed.take() {
                             let _ = sender.send(());
                         }
@@ -309,12 +435,21 @@ async fn maintain_archive_lease(
             }
         }
     }
-    if let Err(error) = sqlx::query(r#"DELETE FROM "TrafficArchiveLeases" WHERE operation_id = $1"#)
-        .bind(operation_id)
-        .execute(&pool)
-        .await
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(CAPTURE_ARCHIVE_DATABASE_SECONDS),
+        sqlx::query(r#"DELETE FROM "TrafficArchiveLeases" WHERE operation_id = $1"#)
+            .bind(operation_id)
+            .execute(&pool),
+    )
+    .await
     {
-        tracing::warn!(%operation_id, %error, "capture archive lease release failed");
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%operation_id, %error, "capture archive lease release failed");
+        }
+        Err(_) => {
+            tracing::warn!(%operation_id, "capture archive lease release timed out");
+        }
     }
 }
 
@@ -472,50 +607,22 @@ pub async fn get_all_traffic(
             )
         })?;
     let operation_id = acquire_archive_lease(st.pg(), cid, pid).await?;
+    // Start the durable heartbeat before either the inventory query or the
+    // filesystem snapshot. A slow disk scan must not let another replica
+    // reclaim this export's deployment-wide byte reservation.
+    let mut lease_owner = CaptureArchiveLeaseOwner::start(st.pg().clone(), operation_id);
     let names =
-        match crate::services::traffic::inventory::archive_file_names(st.pg(), &root, cid, pid)
-            .await
-        {
-            Ok(names) => names,
-            Err(error) => {
-                let _ =
-                    sqlx::query(r#"DELETE FROM "TrafficArchiveLeases" WHERE operation_id = $1"#)
-                        .bind(operation_id)
-                        .execute(st.pg())
-                        .await;
-                return Err(error);
-            }
-        };
-    let sources = match tokio::task::spawn_blocking(move || scan_capture_archive(&dir, names)).await
-    {
-        Ok(Ok(sources)) => sources,
-        Ok(Err(error)) => {
-            let _ = sqlx::query(r#"DELETE FROM "TrafficArchiveLeases" WHERE operation_id = $1"#)
-                .bind(operation_id)
-                .execute(st.pg())
-                .await;
-            return Err(error);
-        }
-        Err(error) => {
-            let _ = sqlx::query(r#"DELETE FROM "TrafficArchiveLeases" WHERE operation_id = $1"#)
-                .bind(operation_id)
-                .execute(st.pg())
-                .await;
-            return Err(AppError::internal(format!(
-                "capture archive scan task failed: {error}"
-            )));
-        }
-    };
+        crate::services::traffic::inventory::archive_file_names(st.pg(), &root, cid, pid).await?;
+    lease_owner.ensure_alive()?;
+    let sources = tokio::task::spawn_blocking(move || scan_capture_archive(&dir, names))
+        .await
+        .map_err(|error| {
+            AppError::internal(format!("capture archive scan task failed: {error}"))
+        })??;
+    lease_owner.ensure_alive()?;
     let (output_sender, output_receiver) = tokio::sync::mpsc::channel::<CaptureZipChunk>(8);
     let error_sender = output_sender.clone();
-    let (completed_sender, completed_receiver) = tokio::sync::oneshot::channel();
-    let (lease_failed_sender, lease_failed_receiver) = tokio::sync::oneshot::channel();
-    tokio::spawn(maintain_archive_lease(
-        st.pg().clone(),
-        operation_id,
-        completed_receiver,
-        lease_failed_sender,
-    ));
+    let (completed_sender, lease_failed_receiver) = lease_owner.into_stream_parts();
     tokio::task::spawn_blocking(move || {
         let outcome = (|| -> AppResult<()> {
             let writer = CaptureZipStreamWriter::new(output_sender);
@@ -528,7 +635,7 @@ pub async fn get_all_traffic(
                     .map_err(|err| AppError::internal(format!("zip: {err}")))?;
                 let file = std::fs::File::open(source.path)
                     .map_err(|error| AppError::internal(format!("capture open: {error}")))?;
-                let remaining = MAX_CAPTURE_ARCHIVE_BYTES.saturating_sub(written);
+                let remaining = MAX_CAPTURE_ARCHIVE_SOURCE_BYTES.saturating_sub(written);
                 let copied = std::io::copy(&mut file.take(remaining + 1), &mut zip)
                     .map_err(|error| AppError::internal(format!("zip: {error}")))?;
                 if copied > remaining {
@@ -765,150 +872,5 @@ pub async fn traffic_flow_detail(
 }
 
 #[cfg(test)]
-mod traffic_admission_tests {
-    use super::spawn_blocking_with_permit;
-    use super::*;
-    use std::io::Cursor;
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    #[tokio::test]
-    async fn blocking_work_retains_admission_after_waiter_cancellation() {
-        let gate = Arc::new(tokio::sync::Semaphore::new(1));
-        let permit = gate.clone().acquire_owned().await.unwrap();
-        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
-        let waiter = tokio::spawn(spawn_blocking_with_permit(permit, move || {
-            let _ = started_tx.send(());
-            let _ = finish_rx.recv();
-        }));
-
-        started_rx.await.unwrap();
-        waiter.abort();
-        let _ = waiter.await;
-        assert!(gate.clone().try_acquire_owned().is_err());
-
-        finish_tx.send(()).unwrap();
-        let released = tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                if let Ok(permit) = gate.clone().try_acquire_owned() {
-                    break permit;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("blocking work retained the permit after it completed");
-        drop(released);
-    }
-
-    #[test]
-    fn traffic_zip_writer_streams_a_valid_archive() {
-        let (sender, mut receiver) = tokio::sync::mpsc::channel::<CaptureZipChunk>(1);
-        let worker = std::thread::spawn(move || {
-            let writer = CaptureZipStreamWriter::new(sender);
-            let mut zip = zip::ZipWriter::new_stream(writer);
-            zip.start_file("capture.pcap", zip::write::SimpleFileOptions::default())
-                .unwrap();
-            zip.write_all(b"pcap-data").unwrap();
-            zip.finish().unwrap().into_inner().finish().unwrap();
-        });
-
-        let mut bytes = Vec::new();
-        while let Some(chunk) = receiver.blocking_recv() {
-            bytes.extend_from_slice(&chunk.unwrap());
-        }
-        worker.join().unwrap();
-
-        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-        let mut contents = Vec::new();
-        archive
-            .by_name("capture.pcap")
-            .unwrap()
-            .read_to_end(&mut contents)
-            .unwrap();
-        assert_eq!(contents, b"pcap-data");
-    }
-
-    #[test]
-    fn deployment_budget_reserves_the_full_per_export_ceiling() {
-        assert_eq!(
-            MAX_CAPTURE_ARCHIVE_DEPLOYMENT_BYTES,
-            MAX_CAPTURE_ARCHIVE_DEPLOYMENT_JOBS * MAX_CAPTURE_ARCHIVE_BYTES as i64
-        );
-        assert!(CAPTURE_ARCHIVE_LEASE_SECONDS > 2 * 10);
-    }
-
-    #[test]
-    fn archive_overload_is_retryable() {
-        use axum::response::IntoResponse as _;
-
-        let response =
-            AppError::retryable_unavailable("capture archive busy", CAPTURE_ARCHIVE_RETRY_SECONDS)
-                .into_response();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(
-            response.headers()[header::RETRY_AFTER].to_str().unwrap(),
-            CAPTURE_ARCHIVE_RETRY_SECONDS.to_string().as_str()
-        );
-    }
-
-    #[tokio::test]
-    async fn response_stream_retains_admission_until_disconnect() {
-        let admission = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
-        let permit = admission.clone().try_acquire_owned().unwrap();
-        let (_sender, receiver) = tokio::sync::mpsc::channel(1);
-        let (completed, released) = tokio::sync::oneshot::channel();
-        let (_lease_failed, lease_failure) = tokio::sync::oneshot::channel();
-        let stream = CaptureArchiveStream {
-            inner: tokio_stream::wrappers::ReceiverStream::new(receiver),
-            _permit: permit,
-            completed: Some(completed),
-            lease_failed: Box::pin(lease_failure),
-            deadline: Box::pin(tokio::time::sleep(std::time::Duration::from_secs(30))),
-            terminal: false,
-        };
-
-        assert!(admission.clone().try_acquire_owned().is_err());
-        drop(stream);
-        released.await.unwrap();
-        assert!(admission.try_acquire_owned().is_ok());
-    }
-
-    #[tokio::test]
-    async fn final_buffered_archive_chunk_retains_admission_until_eof() {
-        use futures::StreamExt as _;
-
-        let admission = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
-        let permit = admission.clone().try_acquire_owned().unwrap();
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        sender
-            .send(Ok(bytes::Bytes::from_static(b"last-archive-byte")))
-            .await
-            .unwrap();
-        drop(sender);
-        let (completed, released) = tokio::sync::oneshot::channel();
-        let (_lease_failed, lease_failure) = tokio::sync::oneshot::channel();
-        let mut stream = CaptureArchiveStream {
-            inner: tokio_stream::wrappers::ReceiverStream::new(receiver),
-            _permit: permit,
-            completed: Some(completed),
-            lease_failed: Box::pin(lease_failure),
-            deadline: Box::pin(tokio::time::sleep(std::time::Duration::from_secs(30))),
-            terminal: false,
-        };
-
-        assert_eq!(
-            stream.next().await.unwrap().unwrap(),
-            bytes::Bytes::from_static(b"last-archive-byte")
-        );
-        assert!(admission.clone().try_acquire_owned().is_err());
-        assert!(stream.next().await.is_none());
-        released.await.unwrap();
-        // The stream object still owns admission after the sender reaches EOF;
-        // it is released only after Axum drops the completed response body.
-        assert!(admission.clone().try_acquire_owned().is_err());
-        drop(stream);
-        assert!(admission.try_acquire_owned().is_ok());
-    }
-}
+#[path = "traffic_tests.rs"]
+mod traffic_admission_tests;

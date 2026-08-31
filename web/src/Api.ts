@@ -3990,6 +3990,8 @@ export interface ClientChallengeVariant {
 }
 
 export interface ClientFlagContext {
+  /** Current accepted participation used to scope durable container operation recovery. */
+  participationId?: number | null;
   /** Immutable container UUID used to fence asynchronous lifecycle results. */
   instanceId?: string | null;
   /**
@@ -10915,6 +10917,10 @@ export class Api<
         type: ContentType.FormData,
         format: "json",
         ...params,
+        headers: {
+          ...params.headers,
+          ...(data.operationId ? { "x-rsctf-operation-id": data.operationId } : {}),
+        },
       }),
 
     /**

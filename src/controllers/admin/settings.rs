@@ -17,8 +17,6 @@ pub(crate) fn normalized_container_port_mapping(value: Option<&str>) -> &'static
     }
 }
 
-// ─── Config ──────────────────────────────────────────────────────────────────
-
 /// RSCTF `GlobalConfig`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -754,11 +752,16 @@ pub async fn logo_upload(
     let _upload_reservation =
         crate::utils::upload::reserve_buffered(crate::utils::upload::IMAGE_BODY_BYTES)?;
     let mut data: Option<(String, Vec<u8>)> = None;
+    let mut field_count = 0usize;
     while let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?
     {
+        field_count += 1;
+        if field_count > crate::utils::upload::SINGLE_FILE_FIELD_COUNT {
+            return Err(AppError::bad_request("Too many multipart fields"));
+        }
         if field.name() == Some("file") {
             let name = field.file_name().unwrap_or("logo").to_string();
             let bytes = field
@@ -859,10 +862,13 @@ pub async fn logo_upload(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
+    crate::controllers::assets::invalidate_asset_gate(&st, &new_hash).await;
+
     for old_hash in old_hashes {
         if old_hash == new_hash {
             continue;
         }
+        crate::controllers::assets::invalidate_asset_gate(&st, &old_hash).await;
         if let Err(error) = crate::services::blob_refs::purge_if_unreferenced(
             st.pg(),
             st.storage.as_ref(),
@@ -884,6 +890,7 @@ pub async fn logo_delete(
 ) -> AppResult<MessageResponse> {
     let old_hashes = clear_branding_hashes(st.pg()).await?;
     for old_hash in old_hashes {
+        crate::controllers::assets::invalidate_asset_gate(&st, &old_hash).await;
         if let Err(error) = crate::services::blob_refs::purge_if_unreferenced(
             st.pg(),
             st.storage.as_ref(),

@@ -3,9 +3,24 @@
 use super::*;
 use crate::utils::enums::{ParticipationStatus, Role};
 
+#[derive(Debug, Default)]
+pub struct ClearedWriteups {
+    pub revoked_hashes: Vec<String>,
+    pub deleted_hashes: Vec<String>,
+}
+
+impl IntoIterator for ClearedWriteups {
+    type Item = String;
+    type IntoIter = std::vec::IntoIter<String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.deleted_hashes.into_iter()
+    }
+}
+
 /// Clear and release every writeup for one game exactly once, even when two
 /// admin replicas issue the cleanup concurrently.
-pub async fn clear_game_writeups(pool: &PgPool, game_id: i32) -> AppResult<Vec<String>> {
+pub async fn clear_game_writeups(pool: &PgPool, game_id: i32) -> AppResult<ClearedWriteups> {
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(database_error)?;
@@ -22,7 +37,7 @@ pub async fn clear_game_writeups(pool: &PgPool, game_id: i32) -> AppResult<Vec<S
     .map_err(database_error)?;
     if file_ids.is_empty() {
         transaction.commit().await.map_err(database_error)?;
-        return Ok(Vec::new());
+        return Ok(ClearedWriteups::default());
     }
 
     let mut files =
@@ -52,6 +67,12 @@ pub async fn clear_game_writeups(pool: &PgPool, game_id: i32) -> AppResult<Vec<S
     for file_id in file_ids {
         *releases.entry(file_id).or_default() += 1;
     }
+    let revoked_hashes = files
+        .iter()
+        .map(|(_, hash)| hash.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let mut deleted_hashes = Vec::new();
     for (file_id, count) in releases {
         for _ in 0..count {
@@ -65,7 +86,10 @@ pub async fn clear_game_writeups(pool: &PgPool, game_id: i32) -> AppResult<Vec<S
         }
     }
     transaction.commit().await.map_err(database_error)?;
-    Ok(deleted_hashes)
+    Ok(ClearedWriteups {
+        revoked_hashes,
+        deleted_hashes,
+    })
 }
 
 #[cfg(test)]
@@ -242,7 +266,7 @@ pub(crate) async fn store_and_replace_writeup(
     caller: crate::services::live_roster::LiveParticipationIdentity<'_>,
     name: &str,
     bytes: &[u8],
-) -> AppResult<(StoredBlob, Option<String>)> {
+) -> AppResult<(StoredBlob, Option<String>, Option<String>)> {
     // Player-facing storage names embed the required request UUID. Older
     // internal callers without that suffix retain independent one-shot stages.
     let operation_root = writeup_operation_root(name).unwrap_or_else(uuid::Uuid::new_v4);
@@ -295,6 +319,11 @@ pub(crate) async fn store_and_replace_writeup(
     let same_content = old
         .as_ref()
         .is_some_and(|(_, hash)| hash == &staged.blob.hash);
+    let revoked_hash = if same_content {
+        None
+    } else {
+        old.as_ref().map(|(_, hash)| hash.clone())
+    };
     let deleted_hash = if same_content {
         staged
             .consume_with_existing_reference(&mut transaction)
@@ -307,7 +336,7 @@ pub(crate) async fn store_and_replace_writeup(
             .map_err(database_error)?
     };
     transaction.commit().await.map_err(database_error)?;
-    Ok((staged.blob, deleted_hash))
+    Ok((staged.blob, revoked_hash, deleted_hash))
 }
 
 #[cfg(test)]

@@ -157,6 +157,8 @@ mod m0314_team_profile_operations;
 mod m0315_exercise_api_bounds;
 mod m0316_exercise_container_operations;
 mod m0317_blob_stage_publication_owner;
+mod m0318_player_container_operation_recovery;
+mod m0319_exercise_container_operation_recovery;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -180,6 +182,14 @@ pub(crate) use m0116_game_event_feed_pending::UP_SQL as GAME_EVENT_FEED_PENDING_
 pub(crate) use m0242_participation_provision_jobs::UP_SQL as PARTICIPATION_PROVISION_JOBS_SQL;
 #[cfg(test)]
 pub(crate) use m0280_traffic_capture_inventory::UP_SQL as TRAFFIC_CAPTURE_INVENTORY_SQL;
+#[cfg(test)]
+pub(crate) use m0310_player_container_operations::UP_SQL as PLAYER_CONTAINER_OPERATIONS_SQL;
+#[cfg(test)]
+pub(crate) use m0316_exercise_container_operations::UP_SQL as EXERCISE_CONTAINER_OPERATIONS_SQL;
+#[cfg(test)]
+pub(crate) use m0318_player_container_operation_recovery::UP_SQL as PLAYER_OPERATION_RECOVERY_SQL;
+#[cfg(test)]
+pub(crate) use m0319_exercise_container_operation_recovery::UP_SQL as EXERCISE_OPERATION_RECOVERY_SQL;
 
 pub struct Migrator;
 
@@ -330,6 +340,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0315_exercise_api_bounds::Migration),
             Box::new(m0316_exercise_container_operations::Migration),
             Box::new(m0317_blob_stage_publication_owner::Migration),
+            Box::new(m0318_player_container_operation_recovery::Migration),
+            Box::new(m0319_exercise_container_operation_recovery::Migration),
         ]
     }
 }
@@ -475,7 +487,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 35..],
+            &names[names.len() - 37..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -512,6 +524,8 @@ mod tests {
                 "m0315_exercise_api_bounds",
                 "m0316_exercise_container_operations",
                 "m0317_blob_stage_publication_owner",
+                "m0318_player_container_operation_recovery",
+                "m0319_exercise_container_operation_recovery",
             ]
         );
     }

@@ -13,6 +13,7 @@ struct PreparedAttachment {
 #[derive(Debug, PartialEq, Eq)]
 struct AttachmentSwap {
     attachment_id: Option<i32>,
+    revoked_hash: Option<String>,
     deleted_hash: Option<String>,
 }
 
@@ -71,9 +72,19 @@ pub async fn update_attachment(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
+    if let Some(hash) = prepared
+        .as_ref()
+        .and_then(|attachment| attachment.file_hash.as_deref())
+    {
+        crate::controllers::assets::invalidate_asset_gate(&st, hash).await;
+    }
+
     // Object deletion is retryable through the durable zero-reference Files
     // tombstone. A storage outage after commit must not turn a successful,
     // visible swap into an error response that an operator retries.
+    if let Some(hash) = swap.revoked_hash.as_deref() {
+        crate::controllers::assets::invalidate_asset_gate(&st, hash).await;
+    }
     if let Some(hash) = swap.deleted_hash.as_deref() {
         purge_replaced_attachment(st.pg(), st.storage.as_ref(), c_id, hash).await;
     }
@@ -180,6 +191,7 @@ async fn replace_attachment_locked(
                 .await?;
             return Ok(AttachmentSwap {
                 attachment_id: Some(old_attachment_id),
+                revoked_hash: None,
                 deleted_hash: None,
             });
         }
@@ -241,6 +253,9 @@ async fn replace_attachment_locked(
     };
     Ok(AttachmentSwap {
         attachment_id: new_attachment_id,
+        revoked_hash: old_hash.filter(|hash| {
+            prepared.and_then(|attachment| attachment.file_hash.as_deref()) != Some(hash.as_str())
+        }),
         deleted_hash,
     })
 }

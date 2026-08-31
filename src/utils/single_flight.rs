@@ -52,6 +52,14 @@ pub(crate) async fn roster_access_permit(
     ROSTER_ACCESS_GATE.clone().acquire_owned().await
 }
 
+/// Admit a latency-sensitive roster/profile mutation without forming a queue.
+/// Long credential teardown paths use [`roster_access_permit`] because their
+/// callers deliberately serialize; small player-facing profile writes should
+/// instead return a retryable overload response while that headroom is busy.
+pub(crate) fn try_roster_access_permit() -> Option<tokio::sync::OwnedSemaphorePermit> {
+    ROSTER_ACCESS_GATE.clone().try_acquire_owned().ok()
+}
+
 pub struct SingleFlight<T> {
     inflight: Mutex<HashMap<String, broadcast::Sender<T>>>,
 }
@@ -203,8 +211,8 @@ impl<T: Clone + Default + Send + 'static> Default for SingleFlight<T> {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
-        advisory_lock_key, coalesce, try_acquire_exercise_grading_slot, PgAdvisoryLock,
-        SingleFlight, COALESCE_FLIGHTS, EXERCISE_GRADING_DEPLOYMENT_SLOTS,
+        advisory_lock_key, coalesce, try_acquire_exercise_grading_slot, try_coalesce,
+        PgAdvisoryLock, SingleFlight, COALESCE_FLIGHTS, EXERCISE_GRADING_DEPLOYMENT_SLOTS,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -304,6 +312,15 @@ mod tests {
             .is_some_and(|lock| lock.upgrade().is_none()));
     }
 
+    #[test]
+    fn try_coalesce_never_queues_same_key_waiters() {
+        let key = "single-flight-test-fail-fast-key";
+        let owner = try_coalesce(key).expect("first caller owns the key");
+        assert!(try_coalesce(key).is_none());
+        drop(owner);
+        assert!(try_coalesce(key).is_some());
+    }
+
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
     async fn shared_advisory_readers_exclude_a_roster_writer() {
@@ -386,26 +403,38 @@ pub struct CoalesceGuard {
 /// A per-`key` coalescing lock. The first caller on a key proceeds while later callers
 /// await here, then re-check their cache — suppressing a thundering herd of identical
 /// recomputes when a cache TTL expires (used by the A&D scoreboard + timelines).
+fn coalesce_lock(key: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    let mut map = COALESCE_FLIGHTS.lock().unwrap_or_else(|e| e.into_inner());
+    // Dead weak keys cost only their bounded key metadata. Sweep before
+    // reaching the cap; active entries are never evicted.
+    if map.len() >= MAX_COALESCE_KEYS {
+        map.retain(|_, lock| lock.strong_count() > 0);
+    }
+    match map.get(key).and_then(std::sync::Weak::upgrade) {
+        Some(lock) => lock,
+        None => {
+            let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+            map.insert(key.to_string(), std::sync::Arc::downgrade(&lock));
+            lock
+        }
+    }
+}
+
 pub async fn coalesce(key: &str) -> CoalesceGuard {
-    let lock = {
-        let mut map = COALESCE_FLIGHTS.lock().unwrap_or_else(|e| e.into_inner());
-        // Dead weak keys cost only their bounded key metadata. Sweep before
-        // reaching the cap; active entries are never evicted.
-        if map.len() >= MAX_COALESCE_KEYS {
-            map.retain(|_, lock| lock.strong_count() > 0);
-        }
-        match map.get(key).and_then(std::sync::Weak::upgrade) {
-            Some(lock) => lock,
-            None => {
-                let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
-                map.insert(key.to_string(), std::sync::Arc::downgrade(&lock));
-                lock
-            }
-        }
-    };
+    let lock = coalesce_lock(key);
     CoalesceGuard {
         _guard: lock.lock_owned().await,
     }
+}
+
+/// Try to own a process-local key without adding a waiter. Mutation admission
+/// uses this fail-fast form so repeated same-resource requests cannot build an
+/// unbounded handler queue ahead of the cross-replica database fence.
+pub fn try_coalesce(key: &str) -> Option<CoalesceGuard> {
+    let lock = coalesce_lock(key);
+    lock.try_lock_owned()
+        .ok()
+        .map(|guard| CoalesceGuard { _guard: guard })
 }
 
 /// Cross-replica mutex backed by a PostgreSQL transaction-scoped advisory lock.
@@ -501,6 +530,36 @@ async fn try_acquire_exercise_grading_slot(
 impl PgAdvisoryLock {
     pub async fn acquire(pool: &sqlx::PgPool, key: &str) -> anyhow::Result<Self> {
         Self::acquire_with_permit(pool, key, None).await
+    }
+
+    /// Fail-fast game-control ownership. Distinct operator mutations are
+    /// already bounded before this call; a saturated pool or another replica
+    /// holding the same game fence must not retain a waiter connection.
+    pub(crate) async fn try_acquire_game_control(
+        pool: &sqlx::PgPool,
+        key: &str,
+    ) -> anyhow::Result<Option<Self>> {
+        let mut transaction = match tokio::time::timeout(
+            Duration::from_millis(250),
+            super::database::begin_sqlx_transaction(pool),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => return Ok(None),
+        };
+        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+            .bind(advisory_lock_key(key))
+            .fetch_one(&mut *transaction)
+            .await?;
+        if !acquired {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            transaction: Some(transaction),
+            _concurrency_permit: None,
+        }))
     }
 
     /// Fail-fast practice grading admission. The returned transaction owns the

@@ -65,8 +65,6 @@ async fn roster_removal_stays_invisible_until_teardown_lock_commits() {
         .execute(&pool)
         .await
         .unwrap();
-    // Deliberately dangling: ordinary roster cleanup must still remove legacy
-    // links that have no participation identity to preserve.
     sqlx::query(
         r#"INSERT INTO "UserParticipations" (team_id, user_id, participation_id)
            VALUES (9, $1, 99)"#,
@@ -76,7 +74,6 @@ async fn roster_removal_stays_invisible_until_teardown_lock_commits() {
     .await
     .unwrap();
 
-    // A failed teardown leaves roster rows untouched and retryable.
     let failed_attempt = acquire_roster_mutation(&pool, 9).await.unwrap();
     drop(failed_attempt);
     let visible_after_failure: i64 =
@@ -184,8 +181,11 @@ async fn multi_game_revocation_is_atomic_and_deletion_has_one_owner() {
         CREATE TABLE "Teams" (
           id INTEGER PRIMARY KEY,
           deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
-          invite_token TEXT NOT NULL
+          invite_token TEXT NOT NULL,
+          avatar_hash TEXT
         );
+        CREATE TABLE "Files" (
+          id SERIAL PRIMARY KEY, hash TEXT NOT NULL UNIQUE, reference_count BIGINT NOT NULL);
         CREATE TABLE "Participations" (
           id INTEGER PRIMARY KEY,
           game_id INTEGER NOT NULL,
@@ -217,7 +217,10 @@ async fn multi_game_revocation_is_atomic_and_deletion_has_one_owner() {
         INSERT INTO "Games" VALUES
           (11, clock_timestamp() + interval '1 hour', FALSE, FALSE, NULL, NULL),
           (22, clock_timestamp() + interval '1 hour', FALSE, FALSE, NULL, NULL);
-        INSERT INTO "Teams" VALUES (9, FALSE, 'original-secret');
+        INSERT INTO "Teams" (id, deletion_pending, invite_token, avatar_hash) VALUES
+          (9, FALSE, 'original-secret', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+        INSERT INTO "Files" (hash, reference_count) VALUES
+          ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 1);
         INSERT INTO "Participations"
           (id, game_id, team_id, status, token, writeup_id, division_id, suspicion_score)
         VALUES
@@ -539,10 +542,22 @@ async fn multi_game_revocation_is_atomic_and_deletion_has_one_owner() {
             .is_err(),
         "duplicate deletion entered external teardown concurrently"
     );
-    deletion_lease
+    let deleted_avatar = deletion_lease
         .finalize(9)
         .await
         .expect("fenced final cascade failed");
+    assert_eq!(
+        deleted_avatar.as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    let remaining_avatar_refs: i64 = sqlx::query_scalar(r#"SELECT reference_count FROM "Files""#)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        remaining_avatar_refs, 0,
+        "team deletion leaked its avatar reference"
+    );
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(2), duplicate)
             .await
@@ -627,8 +642,6 @@ async fn inflight_submit_commits_before_team_deletion_checks_evidence() {
         .await
         .expect("create competition-evidence fixtures");
 
-    // Advisory locks are database-global rather than schema-scoped. A random
-    // game id prevents independently isolated tests from sharing this key.
     let game_id = (Uuid::new_v4().as_u128() % 1_000_000_000) as i32 + 1;
     sqlx::query(
         r#"INSERT INTO "Games"
@@ -653,8 +666,6 @@ async fn inflight_submit_commits_before_team_deletion_checks_evidence() {
     .await
     .unwrap();
 
-    // This is the lock held by the Jeopardy submit path after its live status
-    // check and until its Submission/FirstSolve transaction commits.
     let mut submit = pool.begin().await.unwrap();
     let submit_backend: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
         .fetch_one(&mut *submit)
@@ -686,9 +697,6 @@ async fn inflight_submit_commits_before_team_deletion_checks_evidence() {
         }
     });
 
-    // Wait until revocation is demonstrably behind the submit transaction's
-    // participation lock. In the vulnerable ordering this was the later UPDATE,
-    // after the no-evidence decision had already been made.
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             let submit_blocks_deletion: bool =

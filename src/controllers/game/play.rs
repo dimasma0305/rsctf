@@ -825,7 +825,10 @@ pub async fn get_challenge(
         return Err(AppError::not_found("Challenge not found"));
     }
 
-    let mut context = ClientFlagContext::default();
+    let mut context = ClientFlagContext {
+        participation_id: Some(ctx.participation.id),
+        ..Default::default()
+    };
 
     // Per-team instance -> running container connection entry.
     if !ctx.archived {

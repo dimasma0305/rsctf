@@ -8,6 +8,7 @@ use std::process::Stdio;
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::Duration;
 
+use sha2::{Digest, Sha256};
 use tokio::process::Command;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tokio::time::timeout;
@@ -275,8 +276,41 @@ static CHECKOUT_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Weak<CheckoutMutex>>>> =
 /// scan or push-back from replacing files between containment checks and reads.
 pub struct CheckoutLockGuard {
     _guard: OwnedMutexGuard<()>,
-    _distributed: Option<crate::utils::single_flight::PgAdvisoryLock>,
+    _distributed: Option<CheckoutSessionLock>,
     _checkout_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+/// Repository checkouts legitimately span Git and filesystem I/O. Use a
+/// close-on-drop session lock instead of retaining an otherwise-empty SQL
+/// transaction for that whole lifecycle.
+struct CheckoutSessionLock {
+    _connection: sqlx::pool::PoolConnection<sqlx::Postgres>,
+}
+
+impl CheckoutSessionLock {
+    async fn acquire(pool: &sqlx::PgPool, key: &str) -> AppResult<Self> {
+        let mut connection = pool
+            .acquire()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        connection.close_on_drop();
+        // Match PgAdvisoryLock's established key exactly so a rolling deploy
+        // remains mutually exclusive with the previous transaction guard.
+        let digest = Sha256::digest(key.as_bytes());
+        let lock_key = i64::from_be_bytes(
+            digest[..8]
+                .try_into()
+                .expect("SHA-256 prefix is exactly eight bytes"),
+        );
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(lock_key)
+            .execute(&mut *connection)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        Ok(Self {
+            _connection: connection,
+        })
+    }
 }
 
 /// Serialize the complete lifecycle of a persistent checkout. The key resolves
@@ -336,21 +370,16 @@ pub async fn lock_checkout_distributed(
         }
     };
     let local = checkout_lock.lock_owned().await;
-    // A repository scan can hold this checkout lock while it briefly takes an
-    // A&D configuration lock and performs ordinary queries. Bound that nesting
-    // independently from container provisioning so scans cannot reserve the
-    // entire pool or consume provisioning permits for the duration of a clone.
+    // Bound the one close-on-drop session connection independently from
+    // container provisioning. No PostgreSQL transaction spans clone/package or
+    // object-store work.
     let checkout_permit = checkout_gate()
         .clone()
         .acquire_owned()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let distributed = crate::utils::single_flight::PgAdvisoryLock::acquire(
-        pool,
-        &format!("git-checkout:{}", key.display()),
-    )
-    .await
-    .map_err(|error| AppError::internal(format!("lock shared repository checkout: {error}")))?;
+    let distributed =
+        CheckoutSessionLock::acquire(pool, &format!("git-checkout:{}", key.display())).await?;
     Ok(CheckoutLockGuard {
         _guard: local,
         _distributed: Some(distributed),

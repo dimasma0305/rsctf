@@ -152,6 +152,31 @@ pub(crate) async fn acquire_roster_mutation(
     })
 }
 
+/// Fail-fast variant for bounded player-facing profile/credential changes.
+/// Same-team duplicates and aggregate admission pressure are rejected before a
+/// PostgreSQL checkout, and the advisory lock itself has a short pool deadline.
+pub(crate) async fn acquire_profile_mutation(
+    pool: &sqlx::PgPool,
+    team_id: i32,
+) -> AppResult<RosterMutationLock> {
+    const MESSAGE: &str = "Team profile capacity is busy; retry shortly";
+    let key = format!("team-roster:{team_id}");
+    let local = crate::utils::single_flight::try_coalesce(&key)
+        .ok_or_else(|| AppError::overloaded(MESSAGE, 1))?;
+    let admission = crate::utils::single_flight::try_roster_access_permit()
+        .ok_or_else(|| AppError::overloaded(MESSAGE, 1))?;
+    let distributed =
+        crate::utils::single_flight::PgAdvisoryLock::try_acquire_game_control(pool, &key)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+            .ok_or_else(|| AppError::overloaded(MESSAGE, 1))?;
+    Ok(RosterMutationLock {
+        distributed,
+        local,
+        _admission: admission,
+    })
+}
+
 /// Reject ordinary team mutations after deletion has durably started. Callers
 /// hold the team-roster advisory lock in this transaction, so the check cannot
 /// race the deletion fence or final cascade on another replica.
@@ -179,21 +204,26 @@ pub(crate) async fn require_team_mutable(
 pub(crate) async fn finalize_team_deletion(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     team_id: i32,
-) -> AppResult<bool> {
-    let deletion_pending: Option<bool> =
-        sqlx::query_scalar(r#"SELECT deletion_pending FROM "Teams" WHERE id = $1 FOR UPDATE"#)
-            .bind(team_id)
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    match deletion_pending {
-        None => return Ok(false),
-        Some(false) => {
-            return Err(AppError::conflict(
-                "Team deletion has not been durably fenced",
-            ));
-        }
-        Some(true) => {}
+) -> AppResult<Option<String>> {
+    let team: Option<(bool, Option<String>)> = sqlx::query_as(
+        r#"SELECT deletion_pending, avatar_hash
+             FROM "Teams" WHERE id = $1 FOR UPDATE"#,
+    )
+    .bind(team_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some((deletion_pending, avatar_hash)) = team else {
+        return Ok(None);
+    };
+    if !deletion_pending {
+        return Err(AppError::conflict(
+            "Team deletion has not been durably fenced",
+        ));
+    }
+    if let Some(hash) = avatar_hash.as_deref() {
+        crate::services::blob_refs::lock_direct_hashes_locked(transaction, std::iter::once(hash))
+            .await?;
     }
 
     let game_ids: Vec<i32> = sqlx::query_scalar(
@@ -287,7 +317,10 @@ pub(crate) async fn finalize_team_deletion(
     if removed.is_none() {
         return Err(AppError::conflict("Team deletion fence changed"));
     }
-    Ok(true)
+    if let Some(hash) = avatar_hash.as_deref() {
+        crate::services::blob_refs::release_direct_hash_locked(transaction, hash).await?;
+    }
+    Ok(avatar_hash)
 }
 
 /// Cross-replica ownership of the external phase of one durable team deletion.
@@ -330,14 +363,14 @@ impl TeamDeletionLease {
 
     /// Finalize all ownership rows in one transaction on the connection that
     /// already owns the session lock, then release that lock explicitly.
-    pub(crate) async fn finalize(mut self, team_id: i32) -> AppResult<()> {
+    pub(crate) async fn finalize(mut self, team_id: i32) -> AppResult<Option<String>> {
         let mut transaction = self
             .lock
             .connection_mut()
             .begin()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-        finalize_team_deletion(&mut transaction, team_id).await?;
+        let avatar_hash = finalize_team_deletion(&mut transaction, team_id).await?;
         transaction
             .commit()
             .await
@@ -345,7 +378,20 @@ impl TeamDeletionLease {
         self.lock
             .release()
             .await
-            .map_err(|error| AppError::internal(error.to_string()))
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        Ok(avatar_hash)
+    }
+}
+
+pub(crate) async fn cleanup_deleted_team_avatar(st: &SharedState, avatar_hash: Option<String>) {
+    let Some(hash) = avatar_hash else {
+        return;
+    };
+    crate::controllers::assets::invalidate_asset_gate(st, &hash).await;
+    if let Err(error) =
+        crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash).await
+    {
+        tracing::warn!(%error, %hash, "deleted team avatar purge deferred");
     }
 }
 

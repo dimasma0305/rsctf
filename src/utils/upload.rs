@@ -52,6 +52,9 @@ pub const ASSET_TOTAL_BYTES: usize = 192 * MIB;
 /// Multipart field count is bounded independently from bytes so thousands of
 /// tiny parts cannot turn one HTTP token into unbounded serial storage work.
 pub const ASSET_FILE_COUNT: usize = 32;
+/// Named single-file forms accept a few metadata fields but never an
+/// attacker-controlled number of tiny multipart parts.
+pub const SINGLE_FILE_FIELD_COUNT: usize = 4;
 pub const ARCHIVE_FILE_BYTES: usize = 64 * MIB;
 /// Repository-generated source ZIPs may add central-directory overhead to the
 /// 64 MiB uncompressed source budget.

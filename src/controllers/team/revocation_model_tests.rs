@@ -28,3 +28,19 @@ fn participation_rows_decode_only_known_statuses() {
     }
     assert!(participation::Model::try_from(participation_row(i16::MAX)).is_err());
 }
+
+#[tokio::test]
+async fn profile_mutation_rejects_a_same_team_waiter_before_pool_checkout() {
+    let team_id = 918_273;
+    let key = format!("team-roster:{team_id}");
+    let _leader = crate::utils::single_flight::coalesce(&key).await;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgres://postgres:postgres@127.0.0.1/rsctf")
+        .expect("valid lazy PostgreSQL URL");
+
+    let error = match acquire_profile_mutation(&pool, team_id).await {
+        Ok(_) => panic!("same-team profile waiter was admitted"),
+        Err(error) => error,
+    };
+    assert_eq!(error.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+}

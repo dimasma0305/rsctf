@@ -291,10 +291,12 @@ pub async fn update_game(
 ) -> AppResult<RequestResponse<GameInfoModel>> {
     manager_or_admin(&st, &user, id).await?;
     let discord_webhook = model.validate()?;
-    model.validate_event_security(&st)?;
     let operation_id = model.operation_id.ok_or_else(|| {
         AppError::bad_request("A stable operationId is required to save event settings")
     })?;
+    if operation_id.is_nil() {
+        return Err(AppError::bad_request("operationId must be a non-zero UUID"));
+    }
     if model.configuration_revision < 0 {
         return Err(AppError::bad_request(
             "configurationRevision must be non-negative",
@@ -360,6 +362,12 @@ pub async fn update_game(
             current_vpn_policy.4,
             current_vpn_policy.5,
         );
+    // Environment-backed VPN validation applies only to a new policy intent.
+    // An exact operation replay or a metadata-only/no-op save must remain
+    // recoverable while the VPN owner is temporarily unavailable.
+    if vpn_policy_changed {
+        model.validate_event_security(&st)?;
+    }
     let vpn_policy_reason = if vpn_policy_changed {
         let reason = model
             .vpn_policy_change_reason
@@ -781,6 +789,7 @@ pub async fn delete_game(
         }
     }
     if let Some(hash) = poster_hash {
+        crate::controllers::assets::invalidate_asset_gate(&st, &hash).await;
         if let Err(error) =
             crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
                 .await

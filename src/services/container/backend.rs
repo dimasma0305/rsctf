@@ -128,6 +128,13 @@ pub trait ContainerManager: Send + Sync {
         ))
     }
 
+    /// Locate the backend identity owned by a durable create operation without
+    /// requiring the original launch definition. Recovery uses this only to
+    /// adopt/publish or destroy an ambiguous, otherwise-unowned workload.
+    async fn find_operation_runtime(&self, _operation_id: &str) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
     async fn destroy(&self, id: &str) -> AppResult<()>;
     async fn query(&self, id: &str) -> AppResult<ContainerStatus>;
 

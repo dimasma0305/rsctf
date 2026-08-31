@@ -1,6 +1,6 @@
 //! Atomic persistence and deployment-local sanitization for game archives.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use sea_orm::DatabaseTransaction;
 
@@ -26,6 +26,13 @@ pub(super) async fn persist_game_import(
         }
     }
     let prepared_attachments = prepare_import_attachments(st, entries, export_challenges).await?;
+    let published_hashes = prepared_attachments
+        .iter()
+        .filter_map(|attachment| match attachment {
+            PreparedImportAttachment::Local(stage) => Some(stage.blob.hash.clone()),
+            PreparedImportAttachment::None | PreparedImportAttachment::Remote(_) => None,
+        })
+        .collect::<BTreeSet<_>>();
     let mut prepared_attachments = prepared_attachments.into_iter();
     let transaction = crate::utils::database::begin_seaorm_transaction(&st.db).await?;
     let result = persist_game_import_locked(
@@ -45,6 +52,9 @@ pub(super) async fn persist_game_import(
                 ));
             }
             transaction.commit().await?;
+            for hash in published_hashes {
+                crate::controllers::assets::invalidate_asset_gate(st, &hash).await;
+            }
             Ok(game_id)
         }
         Err(error) => {

@@ -28,6 +28,7 @@ struct Inner {
     requests: AtomicUsize,
     sources: DashMap<String, Arc<AtomicUsize>>,
     request_hashes: DashMap<String, Arc<AtomicUsize>>,
+    request_hash_count: AtomicUsize,
 }
 
 pub struct AssetDownloadPermit {
@@ -56,30 +57,15 @@ impl AssetDownloadAdmission {
                 requests: AtomicUsize::new(0),
                 sources: DashMap::new(),
                 request_hashes: DashMap::new(),
+                request_hash_count: AtomicUsize::new(0),
             }),
         }
     }
 
     pub fn try_acquire_request(&self, source: &str, hash: &str) -> Option<AssetRequestPermit> {
-        let source_key = source.to_string();
-        let source_counter = increment(
-            &self.inner.sources,
-            source_key.clone(),
-            MAX_PER_SOURCE_REQUESTS,
-        )?;
-        let hash_key = hash.to_string();
-        let hash_counter = match increment_distinct_bounded(
-            &self.inner.request_hashes,
-            hash_key.clone(),
-            MAX_PER_HASH_REQUESTS,
-            MAX_DISTINCT_REQUEST_HASHES,
-        ) {
-            Some(counter) => counter,
-            None => {
-                release(&self.inner.sources, source_key, &source_counter);
-                return None;
-            }
-        };
+        // Take the constant-cardinality deployment ceiling first. A rotating
+        // source/hash flood must fail before it can allocate caller-controlled
+        // entries in either DashMap.
         if self
             .inner
             .requests
@@ -88,10 +74,35 @@ impl AssetDownloadAdmission {
             })
             .is_err()
         {
-            release(&self.inner.request_hashes, hash_key, &hash_counter);
-            release(&self.inner.sources, source_key, &source_counter);
             return None;
         }
+        let source_key = source.to_string();
+        let source_counter = match increment(
+            &self.inner.sources,
+            source_key.clone(),
+            MAX_PER_SOURCE_REQUESTS,
+        ) {
+            Some(counter) => counter,
+            None => {
+                self.inner.requests.fetch_sub(1, Ordering::AcqRel);
+                return None;
+            }
+        };
+        let hash_key = hash.to_string();
+        let hash_counter = match increment_distinct_bounded(
+            &self.inner.request_hashes,
+            hash_key.clone(),
+            MAX_PER_HASH_REQUESTS,
+            MAX_DISTINCT_REQUEST_HASHES,
+            &self.inner.request_hash_count,
+        ) {
+            Some(counter) => counter,
+            None => {
+                release(&self.inner.sources, source_key, &source_counter);
+                self.inner.requests.fetch_sub(1, Ordering::AcqRel);
+                return None;
+            }
+        };
         Some(AssetRequestPermit {
             admission: self.clone(),
             source: (source_key, source_counter),
@@ -164,10 +175,11 @@ impl Drop for AssetDownloadPermit {
 impl Drop for AssetRequestPermit {
     fn drop(&mut self) {
         self.admission.inner.requests.fetch_sub(1, Ordering::AcqRel);
-        release(
+        release_distinct(
             &self.admission.inner.request_hashes,
             self.hash.0.clone(),
             &self.hash.1,
+            &self.admission.inner.request_hash_count,
         );
         release(
             &self.admission.inner.sources,
@@ -202,16 +214,11 @@ fn increment_distinct_bounded<K>(
     key: K,
     per_key_limit: usize,
     distinct_limit: usize,
+    distinct_count: &AtomicUsize,
 ) -> Option<Arc<AtomicUsize>>
 where
     K: Eq + std::hash::Hash + Clone,
 {
-    // This is a soft cardinality ceiling backed by the race-safe global
-    // active-request ceiling. Check before taking an entry shard lock: calling
-    // `DashMap::len` while an entry guard is held can deadlock on that shard.
-    if !map.contains_key(&key) && map.len() >= distinct_limit {
-        return None;
-    }
     match map.entry(key) {
         Entry::Occupied(entry) => {
             let counter = entry.get().clone();
@@ -223,9 +230,36 @@ where
                 .map(|_| counter)
         }
         Entry::Vacant(entry) => {
+            distinct_count
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                    (value < distinct_limit).then_some(value + 1)
+                })
+                .ok()?;
             let counter = Arc::new(AtomicUsize::new(1));
             entry.insert(counter.clone());
             Some(counter)
+        }
+    }
+}
+
+fn release_distinct<K>(
+    map: &DashMap<K, Arc<AtomicUsize>>,
+    key: K,
+    counter: &Arc<AtomicUsize>,
+    distinct_count: &AtomicUsize,
+) where
+    K: Eq + std::hash::Hash + Clone,
+{
+    if counter.fetch_sub(1, Ordering::AcqRel) != 1 {
+        return;
+    }
+    if let Entry::Occupied(entry) = map.entry(key) {
+        if Arc::ptr_eq(entry.get(), counter)
+            && counter.load(Ordering::Acquire) == 0
+            && Arc::strong_count(counter) == 2
+        {
+            entry.remove();
+            distinct_count.fetch_sub(1, Ordering::AcqRel);
         }
     }
 }
@@ -314,6 +348,40 @@ mod tests {
         assert!(admission
             .try_acquire_request("another-source", &format!("{:064x}", 0))
             .is_some());
+        assert_eq!(
+            admission.inner.request_hash_count.load(Ordering::Acquire),
+            MAX_DISTINCT_REQUEST_HASHES
+        );
         drop(permits);
+        assert_eq!(
+            admission.inner.request_hash_count.load(Ordering::Acquire),
+            0
+        );
+        assert!(admission.inner.request_hashes.is_empty());
+    }
+
+    #[test]
+    fn global_request_ceiling_rejects_before_allocating_new_source_or_hash_keys() {
+        let admission = AssetDownloadAdmission::new();
+        let permits = (0..MAX_ACTIVE_REQUESTS)
+            .map(|index| {
+                admission
+                    .try_acquire_request(
+                        &format!("source-{index}"),
+                        &format!("{:064x}", index % MAX_DISTINCT_REQUEST_HASHES),
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let sources = admission.inner.sources.len();
+        let hashes = admission.inner.request_hashes.len();
+        assert!(admission
+            .try_acquire_request("attacker-new-source", &"f".repeat(64))
+            .is_none());
+        assert_eq!(admission.inner.sources.len(), sources);
+        assert_eq!(admission.inner.request_hashes.len(), hashes);
+        drop(permits);
+        assert!(admission.inner.sources.is_empty());
+        assert!(admission.inner.request_hashes.is_empty());
     }
 }

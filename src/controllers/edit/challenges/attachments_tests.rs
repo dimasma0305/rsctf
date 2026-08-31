@@ -170,7 +170,7 @@ async fn execute_replace(
 async fn execute_flag_removal(
     pool: &sqlx::PgPool,
     flag_id: i32,
-) -> AppResult<Option<Option<String>>> {
+) -> AppResult<Option<crate::controllers::edit::flags::FlagRemoval>> {
     let mut definition =
         crate::services::challenge_workloads::acquire_definition_lock(pool, 1, 11).await?;
     let result = crate::controllers::edit::flags::remove_flag_locked(
@@ -596,6 +596,7 @@ async fn post_commit_blob_cleanup_failure_keeps_the_successful_swap_visible() {
     let swap = execute_replace(&harness.pool, Some(&prepared))
         .await
         .expect("metadata swap should commit before physical cleanup");
+    assert_eq!(swap.revoked_hash.as_deref(), Some("staged"));
     assert_eq!(swap.deleted_hash.as_deref(), Some("staged"));
 
     let storage = FailingDeleteStorage::default();

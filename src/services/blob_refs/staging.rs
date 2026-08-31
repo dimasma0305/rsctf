@@ -4,35 +4,24 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 use super::*;
 
+mod identity;
+mod owners;
+pub(crate) use identity::scoped_operation_id;
+
 const STORE_DEADLINE: Duration = Duration::from_secs(45);
 const LOCAL_STORE_JOBS: usize = 4;
 const DEPLOYMENT_STORE_JOBS: i64 = 32;
+const DEPLOYMENT_STAGE_RECORDS: i64 = 4_096;
+const DEPLOYMENT_STORE_BYTES: i64 = 1024 * 1024 * 1024;
 const STAGE_CLAIM_LOCK: &str = "rsctf:blob-stage-admission";
 
 static STORE_ADMISSION: std::sync::LazyLock<Arc<Semaphore>> =
     std::sync::LazyLock::new(|| Arc::new(Semaphore::new(LOCAL_STORE_JOBS)));
-
-/// Derive an endpoint-scoped blob operation from a caller's idempotency key.
-/// This keeps the staging table globally unique without making operation IDs
-/// from unrelated endpoints conflict with each other.
-pub(crate) fn scoped_operation_id(root: Uuid, scope: &str, ordinal: u64) -> Uuid {
-    let mut digest = Sha256::new();
-    digest.update(scope.as_bytes());
-    digest.update(root.as_bytes());
-    digest.update(ordinal.to_be_bytes());
-    let digest = digest.finalize();
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Uuid::from_bytes(bytes)
-}
 
 #[derive(Clone, Debug)]
 pub(crate) struct StagedBlob {
@@ -116,15 +105,38 @@ async fn claim_stage(
     name: &str,
     size: i64,
 ) -> AppResult<Claim> {
-    let mut tx = crate::utils::database::begin_sqlx_transaction(pool)
-        .await
-        .map_err(database_error)?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-        .bind(STAGE_CLAIM_LOCK)
-        .execute(&mut *tx)
-        .await
-        .map_err(database_error)?;
-    lock_hash(&mut tx, hash).await.map_err(database_error)?;
+    let mut tx = match tokio::time::timeout(
+        Duration::from_millis(250),
+        crate::utils::database::begin_sqlx_transaction(pool),
+    )
+    .await
+    {
+        Ok(result) => result.map_err(database_error)?,
+        Err(_) => return Err(AppError::overloaded("Blob staging admission is busy", 1)),
+    };
+    let admitted =
+        sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(STAGE_CLAIM_LOCK)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(database_error)?;
+    if !admitted {
+        tx.rollback().await.map_err(database_error)?;
+        return Err(AppError::overloaded("Blob staging admission is busy", 1));
+    }
+    let hash_admitted =
+        sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(hash)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(database_error)?;
+    if !hash_admitted {
+        tx.rollback().await.map_err(database_error)?;
+        return Err(AppError::overloaded(
+            "This blob is being published; retry in a moment",
+            1,
+        ));
+    }
     let deletion_active: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(
                SELECT 1 FROM "BlobDeletionOperations"
@@ -167,6 +179,25 @@ async fn claim_stage(
         )?;
         match row.state.as_str() {
             "Ready" | "Published" => {
+                if row.lease_expires_at_utc <= Utc::now() {
+                    let retention = if row.state == "Published" {
+                        "24 hours"
+                    } else {
+                        "15 minutes"
+                    };
+                    sqlx::query(
+                        r#"UPDATE "BlobStagingOperations"
+                              SET lease_expires_at_utc = clock_timestamp()
+                                  + $2::interval
+                            WHERE operation_id = $1
+                              AND state IN ('Ready', 'Published')"#,
+                    )
+                    .bind(operation_id)
+                    .bind(retention)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(database_error)?;
+                }
                 tx.commit().await.map_err(database_error)?;
                 return Ok(Claim::Recovered(staged));
             }
@@ -177,17 +208,28 @@ async fn claim_stage(
                     2,
                 ));
             }
+            "Failed" if row.lease_expires_at_utc > Utc::now() => {
+                tx.commit().await.map_err(database_error)?;
+                return Err(AppError::overloaded(
+                    "The same blob operation is being reclaimed",
+                    2,
+                ));
+            }
             "Storing" | "Failed" => {
-                let active: i64 = sqlx::query_scalar(
-                    r#"SELECT COUNT(*)::bigint
+                let (active, active_bytes): (i64, i64) = sqlx::query_as(
+                    r#"SELECT COUNT(*) FILTER (WHERE state = 'Storing')::bigint,
+                              COALESCE(SUM(file_size) FILTER (
+                                  WHERE state IN ('Storing', 'Ready')
+                              ), 0)::bigint
                          FROM "BlobStagingOperations"
-                        WHERE state = 'Storing'
-                          AND lease_expires_at_utc > clock_timestamp()"#,
+                        WHERE lease_expires_at_utc > clock_timestamp()"#,
                 )
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(database_error)?;
-                if active >= DEPLOYMENT_STORE_JOBS {
+                if active >= DEPLOYMENT_STORE_JOBS
+                    || active_bytes.saturating_add(size) > DEPLOYMENT_STORE_BYTES
+                {
                     tx.commit().await.map_err(database_error)?;
                     return Err(AppError::overloaded(
                         "Blob storage capacity is busy; retry in a moment",
@@ -212,15 +254,22 @@ async fn claim_stage(
         }
     }
 
-    let active: i64 = sqlx::query_scalar(
-        r#"SELECT COUNT(*)::bigint
+    let (active, stage_records, active_bytes): (i64, i64, i64) = sqlx::query_as(
+        r#"SELECT COUNT(*) FILTER (WHERE state = 'Storing')::bigint,
+                  COUNT(*)::bigint,
+                  COALESCE(SUM(file_size) FILTER (
+                      WHERE state IN ('Storing', 'Ready')
+                  ), 0)::bigint
              FROM "BlobStagingOperations"
-            WHERE state = 'Storing' AND lease_expires_at_utc > clock_timestamp()"#,
+            WHERE lease_expires_at_utc > clock_timestamp()"#,
     )
     .fetch_one(&mut *tx)
     .await
     .map_err(database_error)?;
-    if active >= DEPLOYMENT_STORE_JOBS {
+    if active >= DEPLOYMENT_STORE_JOBS
+        || stage_records >= DEPLOYMENT_STAGE_RECORDS
+        || active_bytes.saturating_add(size) > DEPLOYMENT_STORE_BYTES
+    {
         tx.commit().await.map_err(database_error)?;
         return Err(AppError::overloaded(
             "Blob storage capacity is busy; retry in a moment",
@@ -476,14 +525,22 @@ pub(crate) async fn publish_staged_blob_for_owner(
                 "Blob upload receipt was already consumed by another owner",
             ));
         }
-        return sqlx::query_scalar::<_, i32>(
+        let file_id = sqlx::query_scalar::<_, i32>(
             r#"SELECT id FROM "Files" WHERE hash = $1 AND reference_count > 0"#,
         )
         .bind(&staged.blob.hash)
         .fetch_optional(&mut **transaction)
         .await
         .map_err(database_error)?
-        .ok_or_else(|| AppError::conflict("published blob is no longer owned"));
+        .ok_or_else(|| AppError::conflict("published blob is no longer owned"))?;
+        if !owners::published_owner_still_matches(transaction, staged, publication_scope, file_id)
+            .await?
+        {
+            return Err(AppError::conflict(
+                "Blob upload receipt owner changed after publication",
+            ));
+        }
+        return Ok(file_id);
     }
     if row.state != "Ready" || row.lease_expires_at_utc <= Utc::now() {
         return Err(AppError::conflict("Blob staging operation is not ready"));
@@ -604,41 +661,280 @@ fn validate_publication_scope(publication_scope: &str) -> AppResult<()> {
     Ok(())
 }
 
+enum StageCleanupClaim {
+    ReceiptRemoved,
+    Unpublished { token: String },
+}
+
+struct StageCleanupResult {
+    finalized: bool,
+    purged: bool,
+}
+
+/// Fence one stage before touching object storage. An unpublished row remains
+/// as a durable, non-publishable cleanup claim until deletion is acknowledged.
+async fn claim_stage_cleanup(
+    pool: &PgPool,
+    operation_id: Uuid,
+    hash: &str,
+    exact_ready: Option<&StagedBlob>,
+) -> AppResult<Option<StageCleanupClaim>> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(database_error)?;
+    lock_hash(&mut transaction, hash)
+        .await
+        .map_err(database_error)?;
+    let row = sqlx::query_as::<_, StageRow>(
+        r#"SELECT owner_scope, owner_user_id, content_hash, file_name, file_size,
+                  state, lease_expires_at_utc, published_owner_scope
+             FROM "BlobStagingOperations"
+            WHERE operation_id = $1 AND content_hash = $2
+            FOR UPDATE"#,
+    )
+    .bind(operation_id)
+    .bind(hash)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    let Some(row) = row else {
+        transaction.commit().await.map_err(database_error)?;
+        return Ok(None);
+    };
+
+    if let Some(staged) = exact_ready {
+        if row.state != "Ready"
+            || row.owner_scope != staged.owner_scope
+            || row.owner_user_id != staged.owner_user_id
+            || row.content_hash != staged.blob.hash
+            || row.file_name != staged.blob.name
+            || row.file_size != staged.blob.size
+        {
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(None);
+        }
+    }
+
+    if row.state == "Published" {
+        if exact_ready.is_some() {
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(None);
+        }
+        let removed = sqlx::query(
+            r#"DELETE FROM "BlobStagingOperations"
+                WHERE operation_id = $1 AND content_hash = $2
+                  AND state = 'Published'
+                  AND lease_expires_at_utc <= clock_timestamp()"#,
+        )
+        .bind(operation_id)
+        .bind(hash)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
+        return Ok((removed.rows_affected() == 1).then_some(StageCleanupClaim::ReceiptRemoved));
+    }
+    if !matches!(row.state.as_str(), "Storing" | "Ready" | "Failed") {
+        return Err(AppError::internal("invalid blob staging state"));
+    }
+
+    let token = format!("stage-cleanup:{}", Uuid::new_v4());
+    let claimed = sqlx::query(
+        r#"UPDATE "BlobStagingOperations"
+              SET state = 'Failed',
+                  lease_expires_at_utc = clock_timestamp() + interval '2 minutes',
+                  last_error = $3
+            WHERE operation_id = $1 AND content_hash = $2
+              AND state = $4
+              AND ($5 = FALSE OR lease_expires_at_utc <= clock_timestamp())"#,
+    )
+    .bind(operation_id)
+    .bind(hash)
+    .bind(&token)
+    .bind(&row.state)
+    .bind(exact_ready.is_none())
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
+    Ok((claimed.rows_affected() == 1).then_some(StageCleanupClaim::Unpublished { token }))
+}
+
+async fn delete_stage_cleanup_claim(
+    pool: &PgPool,
+    operation_id: Uuid,
+    hash: &str,
+    token: &str,
+) -> AppResult<bool> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(database_error)?;
+    lock_hash(&mut transaction, hash)
+        .await
+        .map_err(database_error)?;
+    let removed = sqlx::query(
+        r#"DELETE FROM "BlobStagingOperations"
+            WHERE operation_id = $1 AND content_hash = $2
+              AND state = 'Failed' AND last_error = $3"#,
+    )
+    .bind(operation_id)
+    .bind(hash)
+    .bind(token)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
+    Ok(removed.rows_affected() == 1)
+}
+
+async fn defer_stage_cleanup_claim(
+    pool: &PgPool,
+    operation_id: Uuid,
+    hash: &str,
+    token: &str,
+    error: &str,
+) -> AppResult<()> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(database_error)?;
+    lock_hash(&mut transaction, hash)
+        .await
+        .map_err(database_error)?;
+    sqlx::query(
+        r#"UPDATE "BlobStagingOperations"
+              SET lease_expires_at_utc = clock_timestamp() + interval '30 seconds',
+                  last_error = left($4, 1000)
+            WHERE operation_id = $1 AND content_hash = $2
+              AND state = 'Failed' AND last_error = $3"#,
+    )
+    .bind(operation_id)
+    .bind(hash)
+    .bind(token)
+    .bind(error)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
+    Ok(())
+}
+
+async fn finish_stage_cleanup_without_purge(
+    pool: &PgPool,
+    operation_id: Uuid,
+    hash: &str,
+    token: &str,
+) -> AppResult<bool> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(database_error)?;
+    lock_hash(&mut transaction, hash)
+        .await
+        .map_err(database_error)?;
+    let owns_claim: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM "BlobStagingOperations"
+                WHERE operation_id = $1 AND content_hash = $2
+                  AND state = 'Failed' AND last_error = $3
+           )"#,
+    )
+    .bind(operation_id)
+    .bind(hash)
+    .bind(token)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if !owns_claim {
+        transaction.commit().await.map_err(database_error)?;
+        return Ok(false);
+    }
+
+    let finalized = if hash_is_referenced(&mut transaction, hash).await? {
+        sqlx::query(
+            r#"DELETE FROM "BlobStagingOperations"
+                WHERE operation_id = $1 AND content_hash = $2
+                  AND state = 'Failed' AND last_error = $3"#,
+        )
+        .bind(operation_id)
+        .bind(hash)
+        .bind(token)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        true
+    } else {
+        sqlx::query(
+            r#"UPDATE "BlobStagingOperations"
+                  SET lease_expires_at_utc = clock_timestamp() + interval '30 seconds',
+                      last_error = 'blob cleanup deferred while deletion is active'
+                WHERE operation_id = $1 AND content_hash = $2
+                  AND state = 'Failed' AND last_error = $3"#,
+        )
+        .bind(operation_id)
+        .bind(hash)
+        .bind(token)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        false
+    };
+    transaction.commit().await.map_err(database_error)?;
+    Ok(finalized)
+}
+
+async fn run_stage_cleanup(
+    pool: &PgPool,
+    storage: &dyn BlobStorage,
+    operation_id: Uuid,
+    hash: &str,
+    token: &str,
+) -> AppResult<StageCleanupResult> {
+    match purge_if_unreferenced(pool, storage, hash).await {
+        Ok(true) => Ok(StageCleanupResult {
+            finalized: delete_stage_cleanup_claim(pool, operation_id, hash, token).await?,
+            purged: true,
+        }),
+        Ok(false) => Ok(StageCleanupResult {
+            finalized: finish_stage_cleanup_without_purge(pool, operation_id, hash, token).await?,
+            purged: false,
+        }),
+        Err(error) => {
+            if let Err(persist_error) =
+                defer_stage_cleanup_claim(pool, operation_id, hash, token, &error.to_string()).await
+            {
+                tracing::warn!(
+                    %operation_id,
+                    %hash,
+                    %persist_error,
+                    "failed to persist deferred stage cleanup"
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
 /// Discard a one-shot stage after its owner transaction definitely failed.
 /// A concurrently published receipt is preserved; only this exact still-ready
-/// operation is removed before the usual fresh reachability-checked purge.
+/// operation is claimed before the usual fresh reachability-checked purge.
 pub(crate) async fn discard_unpublished_stage(
     pool: &PgPool,
     storage: &dyn BlobStorage,
     staged: &StagedBlob,
 ) -> AppResult<bool> {
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
-        .await
-        .map_err(database_error)?;
-    lock_hash(&mut transaction, &staged.blob.hash)
-        .await
-        .map_err(database_error)?;
-    let removed = sqlx::query_scalar::<_, String>(
-        r#"DELETE FROM "BlobStagingOperations"
-            WHERE operation_id = $1
-              AND owner_scope = $2
-              AND owner_user_id IS NOT DISTINCT FROM $3
-              AND content_hash = $4
-              AND state = 'Ready'
-        RETURNING content_hash"#,
-    )
-    .bind(staged.operation_id)
-    .bind(&staged.owner_scope)
-    .bind(staged.owner_user_id)
-    .bind(&staged.blob.hash)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(database_error)?;
-    transaction.commit().await.map_err(database_error)?;
-    if removed.is_none() {
+    let claim =
+        claim_stage_cleanup(pool, staged.operation_id, &staged.blob.hash, Some(staged)).await?;
+    let Some(StageCleanupClaim::Unpublished { token }) = claim else {
         return Ok(false);
-    }
-    purge_if_unreferenced(pool, storage, &staged.blob.hash).await
+    };
+    Ok(run_stage_cleanup(
+        pool,
+        storage,
+        staged.operation_id,
+        &staged.blob.hash,
+        &token,
+    )
+    .await?
+    .purged)
 }
 
 /// Reclaim a bounded batch. Published result receipts expire without touching
@@ -648,277 +944,48 @@ pub(crate) async fn purge_expired_stages(
     storage: &dyn BlobStorage,
     limit: i64,
 ) -> AppResult<u64> {
-    let rows = sqlx::query_as::<_, (String, String)>(
-        r#"DELETE FROM "BlobStagingOperations"
-            WHERE operation_id IN (
-                SELECT operation_id
-                  FROM "BlobStagingOperations"
-                 WHERE lease_expires_at_utc <= clock_timestamp()
-                 ORDER BY lease_expires_at_utc, operation_id
-                 LIMIT $1
-                 FOR UPDATE SKIP LOCKED
-            )
-            RETURNING content_hash, state"#,
+    let rows = sqlx::query_as::<_, (Uuid, String)>(
+        r#"SELECT operation_id, content_hash
+             FROM "BlobStagingOperations"
+            WHERE lease_expires_at_utc <= clock_timestamp()
+            ORDER BY lease_expires_at_utc, operation_id
+            LIMIT $1"#,
     )
     .bind(limit.clamp(1, 128))
     .fetch_all(pool)
     .await
     .map_err(database_error)?;
     let mut reclaimed = 0_u64;
-    for (hash, state) in rows {
-        if state != "Published" {
-            let another_stage: bool = sqlx::query_scalar(
-                r#"SELECT EXISTS(
-                       SELECT 1 FROM "BlobStagingOperations"
-                        WHERE content_hash = $1 AND state <> 'Published'
-                          AND lease_expires_at_utc > clock_timestamp()
-                   )"#,
-            )
-            .bind(&hash)
-            .fetch_one(pool)
-            .await
-            .map_err(database_error)?;
-            if !another_stage {
-                let _ = purge_if_unreferenced(pool, storage, &hash).await?;
+    for (operation_id, hash) in rows {
+        match claim_stage_cleanup(pool, operation_id, &hash, None).await {
+            Ok(Some(StageCleanupClaim::ReceiptRemoved)) => reclaimed += 1,
+            Ok(Some(StageCleanupClaim::Unpublished { token })) => {
+                match run_stage_cleanup(pool, storage, operation_id, &hash, &token).await {
+                    Ok(result) if result.finalized => reclaimed += 1,
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            %operation_id,
+                            %hash,
+                            %error,
+                            "expired blob stage cleanup deferred"
+                        );
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    %operation_id,
+                    %hash,
+                    %error,
+                    "failed to claim expired blob stage cleanup"
+                );
             }
         }
-        reclaimed += 1;
     }
     Ok(reclaimed)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::services::blob_refs::test_support::CoordinatedStorage;
-    use sqlx::postgres::PgPoolOptions;
-    use std::sync::atomic::Ordering;
-
-    #[test]
-    fn staging_limits_are_finite() {
-        assert_ne!(LOCAL_STORE_JOBS, 0);
-        assert!(DEPLOYMENT_STORE_JOBS > LOCAL_STORE_JOBS as i64);
-        assert!(STORE_DEADLINE <= Duration::from_secs(60));
-    }
-
-    #[test]
-    fn scoped_operations_are_stable_and_isolated() {
-        let root = Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap();
-        assert_eq!(
-            scoped_operation_id(root, "asset-upload", 0),
-            scoped_operation_id(root, "asset-upload", 0)
-        );
-        assert_ne!(
-            scoped_operation_id(root, "asset-upload", 0),
-            scoped_operation_id(root, "asset-upload", 1)
-        );
-        assert_ne!(
-            scoped_operation_id(root, "asset-upload", 0),
-            scoped_operation_id(root, "challenge-import", 0)
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn exact_replay_stores_once_and_publishes_one_reference() {
-        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to PostgreSQL");
-        let admin = PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&database_url)
-            .await
-            .unwrap();
-        let schema = format!("blob_stage_{}", Uuid::new_v4().simple());
-        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
-            .execute(&admin)
-            .await
-            .unwrap();
-        let search_path = schema.clone();
-        let pool = PgPoolOptions::new()
-            .max_connections(3)
-            .after_connect(move |connection, _| {
-                let statement = format!(r#"SET search_path TO "{search_path}""#);
-                Box::pin(async move {
-                    sqlx::query(&statement).execute(connection).await?;
-                    Ok(())
-                })
-            })
-            .connect(&database_url)
-            .await
-            .unwrap();
-        sqlx::query(
-            r#"CREATE TABLE "Files" (
-                   id SERIAL PRIMARY KEY, hash VARCHAR(64) NOT NULL UNIQUE,
-                   upload_time_utc TIMESTAMPTZ NOT NULL, file_size BIGINT NOT NULL,
-                   name TEXT NOT NULL, reference_count BIGINT NOT NULL
-               )"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        crate::services::blob_refs::test_support::install_operation_tables(&pool).await;
-
-        let storage = CoordinatedStorage::default();
-        let owner = Uuid::new_v4();
-        let operation = Uuid::new_v4();
-        let first = stage_blob(
-            &pool,
-            &storage,
-            operation,
-            "asset-upload:test:0",
-            Some(owner),
-            "proof.bin",
-            b"immutable",
-        )
-        .await
-        .unwrap();
-        let replay = stage_blob(
-            &pool,
-            &storage,
-            operation,
-            "asset-upload:test:0",
-            Some(owner),
-            "proof.bin",
-            b"immutable",
-        )
-        .await
-        .unwrap();
-        assert_eq!(first.blob.hash, replay.blob.hash);
-        assert_eq!(storage.stores.load(Ordering::SeqCst), 1);
-
-        let mut first_publish = pool.begin().await.unwrap();
-        let first_id = publish_staged_blob_for_owner(&mut first_publish, &first, "attachment:11")
-            .await
-            .unwrap();
-        first_publish.commit().await.unwrap();
-        let mut replay_publish = pool.begin().await.unwrap();
-        let replay_id =
-            publish_staged_blob_for_owner(&mut replay_publish, &replay, "attachment:11")
-                .await
-                .unwrap();
-        replay_publish.commit().await.unwrap();
-        assert_eq!(first_id, replay_id);
-        let references: i64 =
-            sqlx::query_scalar(r#"SELECT reference_count FROM "Files" WHERE id = $1"#)
-                .bind(first_id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(references, 1);
-
-        let mut wrong_owner = pool.begin().await.unwrap();
-        let wrong_owner_error =
-            publish_staged_blob_for_owner(&mut wrong_owner, &replay, "attachment:12")
-                .await
-                .expect_err("one upload receipt must not create a second owner");
-        assert_eq!(wrong_owner_error.status(), axum::http::StatusCode::CONFLICT);
-        wrong_owner.rollback().await.unwrap();
-
-        let raced = stage_blob(
-            &pool,
-            &storage,
-            Uuid::new_v4(),
-            "asset-upload:race:0",
-            Some(owner),
-            "race.bin",
-            b"immutable-race",
-        )
-        .await
-        .unwrap();
-        let barrier = Arc::new(tokio::sync::Barrier::new(2));
-        let publish = |scope: &'static str| {
-            let pool = pool.clone();
-            let staged = raced.clone();
-            let barrier = barrier.clone();
-            tokio::spawn(async move {
-                let mut transaction = pool.begin().await.unwrap();
-                barrier.wait().await;
-                match publish_staged_blob_for_owner(&mut transaction, &staged, scope).await {
-                    Ok(file_id) => {
-                        transaction.commit().await.unwrap();
-                        Ok(file_id)
-                    }
-                    Err(error) => {
-                        transaction.rollback().await.unwrap();
-                        Err(error.status())
-                    }
-                }
-            })
-        };
-        let (left, right) = tokio::join!(publish("attachment:21"), publish("attachment:22"));
-        let outcomes = [left.unwrap(), right.unwrap()];
-        assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
-        assert_eq!(
-            outcomes
-                .iter()
-                .filter(|outcome| outcome == &&Err(axum::http::StatusCode::CONFLICT))
-                .count(),
-            1
-        );
-        let raced_references: i64 =
-            sqlx::query_scalar(r#"SELECT reference_count FROM "Files" WHERE hash = $1"#)
-                .bind(&raced.blob.hash)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(raced_references, 1);
-
-        let recovered = load_ready_upload_stage(&pool, operation, owner, &first.blob.hash)
-            .await
-            .unwrap();
-        assert_eq!(recovered.operation_id, operation);
-
-        let same_content = stage_blob(
-            &pool,
-            &storage,
-            Uuid::new_v4(),
-            "account-avatar",
-            Some(owner),
-            "proof.bin",
-            b"immutable",
-        )
-        .await
-        .unwrap();
-        let mut no_op = pool.begin().await.unwrap();
-        let no_op_id = consume_staged_blob_with_existing_reference(&mut no_op, &same_content)
-            .await
-            .unwrap();
-        no_op.commit().await.unwrap();
-        assert_eq!(no_op_id, first_id);
-        let mut no_op_replay = pool.begin().await.unwrap();
-        assert_eq!(
-            consume_staged_blob_with_existing_reference(&mut no_op_replay, &same_content)
-                .await
-                .unwrap(),
-            first_id
-        );
-        no_op_replay.commit().await.unwrap();
-        let references_after_no_op: i64 =
-            sqlx::query_scalar(r#"SELECT reference_count FROM "Files" WHERE id = $1"#)
-                .bind(first_id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(references_after_no_op, 1);
-
-        sqlx::query(r#"UPDATE "Files" SET reference_count = 0 WHERE id = $1"#)
-            .bind(first_id)
-            .execute(&pool)
-            .await
-            .unwrap();
-        let mut expired_owner_replay = pool.begin().await.unwrap();
-        assert!(
-            publish_staged_blob(&mut expired_owner_replay, &replay)
-                .await
-                .is_err(),
-            "a publication receipt must not resurrect a released physical blob"
-        );
-        expired_owner_replay.rollback().await.unwrap();
-
-        pool.close().await;
-        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
-            .execute(&admin)
-            .await
-            .unwrap();
-    }
-}
+mod tests;

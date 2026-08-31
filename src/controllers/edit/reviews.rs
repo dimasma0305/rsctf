@@ -18,11 +18,16 @@ pub async fn update_poster(
         crate::utils::upload::reserve_buffered(crate::utils::upload::IMAGE_BODY_BYTES)?;
 
     let mut data: Option<Vec<u8>> = None;
+    let mut field_count = 0usize;
     while let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?
     {
+        field_count += 1;
+        if field_count > crate::utils::upload::SINGLE_FILE_FIELD_COUNT {
+            return Err(AppError::bad_request("Too many multipart fields"));
+        }
         if field.name() == Some("file") {
             let bytes = field
                 .bytes()
@@ -98,7 +103,9 @@ pub async fn update_poster(
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    crate::controllers::assets::invalidate_asset_gate(&st, &blob.hash).await;
     if let Some(old_hash) = replaced_hash {
+        crate::controllers::assets::invalidate_asset_gate(&st, &old_hash).await;
         if let Err(error) = crate::services::blob_refs::purge_if_unreferenced(
             st.pg(),
             st.storage.as_ref(),

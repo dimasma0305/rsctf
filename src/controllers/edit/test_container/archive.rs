@@ -282,4 +282,26 @@ pub(super) async fn persist_challenge_archive(
         ),
         Err(error) => tracing::warn!(%error, "audit archive: persist {dir_name} failed"),
     }
+    // Finalize either possible outcome without assuming that a failed COMMIT
+    // acknowledgement means PostgreSQL rolled the transaction back. A real
+    // publication has an exact Published receipt; a definite no-op/failure
+    // still owns a Ready stage that can be discarded immediately.
+    if let Err(error) = sqlx::query(
+        r#"DELETE FROM "BlobStagingOperations"
+            WHERE operation_id = $1 AND state = 'Published'
+              AND published_owner_scope = $2"#,
+    )
+    .bind(staged.operation_id)
+    .bind(format!("challenge-source-archive:{challenge_id}"))
+    .execute(st.pg())
+    .await
+    {
+        tracing::warn!(%error, operation_id = %staged.operation_id, "audit archive: receipt cleanup deferred");
+    }
+    if let Err(error) =
+        crate::services::blob_refs::discard_unpublished_stage(st.pg(), st.storage.as_ref(), &staged)
+            .await
+    {
+        tracing::warn!(%error, hash = %staged.blob.hash, "audit archive: stage cleanup deferred");
+    }
 }

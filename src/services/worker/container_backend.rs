@@ -463,6 +463,22 @@ impl ContainerManager for WorkerContainerManager {
         self.place_validated(spec, operation_id, flag).await
     }
 
+    async fn find_operation_runtime(&self, operation_id: &str) -> AppResult<Option<String>> {
+        let workload = self
+            .store
+            .find_workload_by_owner("container", operation_id)
+            .await
+            .map_err(store_error)?;
+        Ok(workload.map(|workload| {
+            WorkerHandle {
+                workload_id: workload.id,
+                assignment_id: workload.assignment_id,
+                generation: workload.generation,
+            }
+            .encode()
+        }))
+    }
+
     async fn destroy(&self, id: &str) -> AppResult<()> {
         let handle = parse_worker_handle(id)
             .ok_or_else(|| AppError::bad_request("invalid worker container identity"))?;

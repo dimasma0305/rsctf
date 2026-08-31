@@ -1,8 +1,9 @@
 //! Team avatar upload handler.
 
 use axum::extract::{Multipart, Path, State};
+use axum::http::HeaderMap;
 
-use super::{acquire_roster_mutation, ensure_roster_change_allowed};
+use super::{acquire_profile_mutation, ensure_roster_change_allowed};
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::CurrentUser;
 use crate::utils::error::{AppError, AppResult};
@@ -14,6 +15,7 @@ const MAX_AVATAR_BYTES: usize = crate::utils::upload::IMAGE_FILE_BYTES;
 pub async fn avatar(
     State(st): State<SharedState>,
     user: CurrentUser,
+    headers: HeaderMap,
     Path(id): Path<i32>,
     mut multipart: Multipart,
 ) -> AppResult<RequestResponse<String>> {
@@ -40,7 +42,36 @@ pub async fn avatar(
     if owner.1 {
         return Err(AppError::conflict("Team is being deleted"));
     }
-    super::profile::enforce_mutation_budget(&mut preflight, id, user.id).await?;
+    let header_operation_id = headers
+        .get("x-rsctf-operation-id")
+        .map(|value| {
+            value
+                .to_str()
+                .ok()
+                .and_then(|value| value.parse::<uuid::Uuid>().ok())
+                .filter(|operation_id| !operation_id.is_nil())
+                .ok_or_else(|| AppError::bad_request("Invalid avatar operation ID"))
+        })
+        .transpose()?;
+    let known_retry = if let Some(operation_id) = header_operation_id {
+        sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(
+                   SELECT 1 FROM "TeamProfileOperations"
+                    WHERE operation_id = $1 AND team_id = $2 AND actor_user_id = $3
+               )"#,
+        )
+        .bind(operation_id)
+        .bind(id)
+        .bind(user.id)
+        .fetch_one(&mut *preflight)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+    } else {
+        false
+    };
+    if !known_retry {
+        super::profile::enforce_mutation_budget(&mut preflight, id, user.id).await?;
+    }
     super::roster_policy::preflight_roster_change_allowed(&mut preflight, id).await?;
     drop(preflight);
     let _upload_reservation =
@@ -106,8 +137,14 @@ pub async fn avatar(
             _ => return Err(AppError::bad_request("Unexpected avatar upload field")),
         }
     }
-    let operation_id =
-        operation_id.ok_or_else(|| AppError::bad_request("operationId is required"))?;
+    let operation_id = operation_id
+        .filter(|operation_id| !operation_id.is_nil())
+        .ok_or_else(|| AppError::bad_request("operationId must be a non-zero UUID"))?;
+    if header_operation_id.is_some_and(|header| header != operation_id) {
+        return Err(AppError::bad_request(
+            "Avatar operation header does not match the multipart operationId",
+        ));
+    }
     let profile_revision =
         profile_revision.ok_or_else(|| AppError::bad_request("profileRevision is required"))?;
     let bytes = data.ok_or_else(|| AppError::bad_request("No file provided"))?;
@@ -130,7 +167,7 @@ pub async fn avatar(
     let result_url = format!("/assets/{content_hash}/avatar");
 
     // Reconcile exact retries and same-content no-ops before touching storage.
-    let mut roster = acquire_roster_mutation(st.pg(), id).await?;
+    let mut roster = acquire_profile_mutation(st.pg(), id).await?;
     let initial = sqlx::query_as::<_, (Option<String>, uuid::Uuid, bool, i64)>(
         r#"SELECT avatar_hash, captain_id, deletion_pending, profile_revision
               FROM "Teams" WHERE id = $1"#,
@@ -185,7 +222,11 @@ pub async fn avatar(
     let staged = crate::services::blob_refs::stage_blob(
         st.pg(),
         st.storage.as_ref(),
-        operation_id,
+        crate::services::blob_refs::scoped_operation_id(
+            operation_id,
+            &format!("team-avatar:{id}"),
+            0,
+        ),
         &format!("team-avatar:{id}"),
         Some(user.id),
         "avatar",
@@ -197,7 +238,7 @@ pub async fn avatar(
     // captaincy and the deletion fence under the same roster lock used by the
     // final team cascade, then commit the blob reference and avatar hash in that
     // transaction.
-    let mut roster = acquire_roster_mutation(st.pg(), id).await?;
+    let mut roster = acquire_profile_mutation(st.pg(), id).await?;
     let live = sqlx::query_as::<_, (Option<String>, String, uuid::Uuid, bool, i64)>(
         r#"SELECT avatar_hash, name, captain_id, deletion_pending, profile_revision
               FROM "Teams" WHERE id = $1"#,
@@ -270,7 +311,9 @@ pub async fn avatar(
             .await?;
     }
     roster.release().await?;
+    crate::controllers::assets::invalidate_asset_gate(&st, &blob.hash).await;
     if let Some(old_hash) = old_hash {
+        crate::controllers::assets::invalidate_asset_gate(&st, &old_hash).await;
         if let Err(error) = crate::services::blob_refs::purge_if_unreferenced(
             st.pg(),
             st.storage.as_ref(),

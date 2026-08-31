@@ -94,8 +94,14 @@ pub use git::{
     head_sha, lock_checkout, lock_checkout_distributed, sync_repo, validate_binding_repo_url,
     validate_git_ref, validate_github_repo_url, CheckoutLockGuard, GitCredentials,
 };
+mod checkout_snapshot;
+pub use checkout_snapshot::CheckoutSnapshot;
 mod package;
 use package::{find_dockerfile_context, image_tag, parse_enum, resolve_category, zip_context_dir};
+mod archive;
+use archive::{discard_archive, finish_archive_post_commit, publish_archive, stage_archive};
+mod fence;
+use fence::{reacquire_import, snapshot_import};
 mod generator;
 pub(crate) use generator::GENERATOR_CONTEXT_SUBDIR;
 
@@ -124,13 +130,16 @@ mod import_identity;
 use import_identity::{
     associate_import_source_identity, durable_repo_manifest_path, find_imported_challenge,
 };
-pub use import_identity::{import_manifest, import_manifest_with_source_identity};
+pub use import_identity::{
+    import_manifest, import_manifest_with_source_identity, import_repository_snapshot_manifest,
+};
 mod runtime;
 use runtime::{live_runtime_update_deferred, LiveRuntimeIntent};
 mod grading;
 use grading::{competition_scoring_started_locked, grading_fence_locked, GradingIntent};
 mod policy;
 pub use policy::ImportPolicy;
+pub(crate) use policy::MAX_PENDING_CHALLENGES_PER_USER_GAME;
 use policy::{initialize_new_import_review, validate_pending_manifest, MAX_PENDING_MANIFEST_BYTES};
 #[cfg(test)]
 use policy::{MAX_PENDING_HINTS, MAX_PENDING_STATIC_FLAGS};
@@ -164,9 +173,10 @@ const MAX_REPO_DEPTH: usize = 32;
 /// are updated in place by durable manifest path so submissions and solve state
 /// retain the same challenge id across scans.
 ///
-/// Repository callers must hold the shared per-game A&D/KotH configuration
-/// lock while importing their sorted manifest set. Both repository scans and
-/// archive imports do so, serializing legacy identity adoption across replicas.
+/// This function owns a two-phase per-game A&D/KotH configuration fence: it
+/// snapshots identity, releases all domain locks for blob/checker preparation,
+/// then reacquires game -> definition and revalidates exact row revisions before
+/// publication. Callers must not wrap it in another game-control transaction.
 /// [`ImportPolicy`] establishes a new row's review state and decides whether
 /// build/checker preparation may run; an update preserves its established
 /// review and enabled state.
@@ -180,24 +190,8 @@ pub(super) async fn import_manifest_inner(
     manifest: &Path,
     policy: ImportPolicy,
     import_source_identity: Option<&str>,
+    source_yaml_path_override: Option<&str>,
 ) -> AppResult<ManifestImportResult> {
-    // Fail early with a friendly message rather than surfacing an FK violation
-    // from the INSERT below.
-    let game = game::Entity::find_by_id(game_id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found(format!("game {game_id} not found")))?;
-    let game_deletion_pending: bool =
-        sqlx::query_scalar(r#"SELECT deletion_pending FROM "Games" WHERE id = $1"#)
-            .bind(game_id)
-            .fetch_optional(st.pg())
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?
-            .ok_or_else(|| AppError::not_found(format!("game {game_id} not found")))?;
-    if game_deletion_pending {
-        return Err(AppError::conflict("Game is being deleted"));
-    }
-
     if policy.is_pending() {
         let manifest_bytes = tokio::fs::metadata(manifest)
             .await
@@ -237,23 +231,21 @@ pub(super) async fn import_manifest_inner(
     let raw_type = model.challenge_type.as_deref().unwrap_or("");
     let challenge_type = parse_enum::<ChallengeType>(raw_type)
         .ok_or_else(|| AppError::bad_request(format!("unknown challenge type '{raw_type}'")))?;
-    let source_yaml_path = import_source_identity
-        .is_none()
-        .then(|| {
-            durable_repo_manifest_path(&st.config.storage_root, game.repo_binding_id, manifest)
-        })
-        .flatten();
-    let existing = if let Some(source_identity) = import_source_identity {
-        find_imported_challenge(st, game_id, source_identity).await?
-    } else {
-        find_repository_challenge(
-            st,
-            game_id,
-            game.repo_binding_id,
-            source_yaml_path.as_deref(),
-        )
-        .await?
-    };
+    // Take an exact, short database snapshot first. All package inspection,
+    // blob loading/staging, and checker preparation below happens after these
+    // domain locks have been released.
+    let import_snapshot = snapshot_import(
+        st,
+        game_id,
+        manifest,
+        import_source_identity,
+        source_yaml_path_override,
+        policy,
+    )
+    .await?;
+    let game = import_snapshot.game.clone();
+    let existing = import_snapshot.existing.clone();
+    let source_yaml_path = import_snapshot.source_yaml_path.clone();
     if existing
         .as_ref()
         .is_some_and(|challenge| challenge.challenge_type != challenge_type)
@@ -617,6 +609,23 @@ pub(super) async fn import_manifest_inner(
     } else {
         None
     };
+    let is_update = existing.is_some();
+    let archive_intent = stage_archive(
+        st,
+        game_id,
+        preserve_live_runtime,
+        archive_package.as_deref(),
+    )
+    .await?;
+    drop(archive_package);
+    let attachment_intent = stage_attachment(
+        st,
+        game_id,
+        package_dir,
+        model.provide.as_deref(),
+        is_update,
+    )
+    .await;
     let mut ad_checker_image = None;
     let mut checker_artifact_guard = None;
 
@@ -628,6 +637,8 @@ pub(super) async fn import_manifest_inner(
         let guard = match acquire_checker_artifact_guard(st).await {
             Ok(guard) => guard,
             Err(error) => {
+                discard_archive(st, &archive_intent).await;
+                discard_attachment(st, &attachment_intent).await;
                 return Err(error);
             }
         };
@@ -635,6 +646,8 @@ pub(super) async fn import_manifest_inner(
             if let Err(release_error) = guard.release().await {
                 tracing::warn!(%release_error, "checker publication guard release failed");
             }
+            discard_archive(st, &archive_intent).await;
+            discard_attachment(st, &attachment_intent).await;
             return Err(error);
         }
         ad_checker_image = Some(dest.clone());
@@ -645,89 +658,54 @@ pub(super) async fn import_manifest_inner(
     };
 
     let now = Utc::now();
-    let is_update = existing.is_some();
-    // The scan already holds the per-game configuration lock, matching runtime
-    // edits' game -> definition order. Definition-only build/attachment work
-    // can still be in flight, so fail quickly rather than stretching the game
-    // fence across an unbounded wait.
-    let mut definition_lock = None;
-    if let Some(challenge) = existing.as_ref() {
-        let acquired = crate::services::challenge_workloads::try_acquire_definition_lock(
-            st.pg(),
-            game_id,
-            challenge.id,
-        )
-        .await;
-        let mut lock = match acquired {
-            Ok(Some(lock)) => lock,
-            Ok(None) => {
-                cleanup_unpublished_checker(
-                    checker_prepared,
-                    checker_prep.as_ref(),
-                    &mut checker_artifact_guard,
-                )
-                .await;
-                return Err(AppError::conflict(
-                    "challenge definition is being updated; retry the repository scan",
-                ));
-            }
-            Err(error) => {
-                cleanup_unpublished_checker(
-                    checker_prepared,
-                    checker_prep.as_ref(),
-                    &mut checker_artifact_guard,
-                )
-                .await;
-                return Err(error);
-            }
-        };
-        // The retained game + definition advisory locks are the mutation
-        // fence. Do not take a row lock here: the enum-rich model update below
-        // intentionally uses a separate SeaORM transaction, and a FOR SHARE
-        // lock on this transaction would self-deadlock that UPDATE.
-        let deletion_pending = sqlx::query_scalar::<_, bool>(
-            r#"SELECT deletion_pending
-                  FROM "GameChallenges"
-                 WHERE id = $1 AND game_id = $2"#,
-        )
-        .bind(challenge.id)
-        .bind(game_id)
-        .fetch_optional(&mut **lock.transaction_mut())
-        .await;
-        let deletion_pending = match deletion_pending {
-            Ok(value) => value,
-            Err(error) => {
-                cleanup_unpublished_checker(
-                    checker_prepared,
-                    checker_prep.as_ref(),
-                    &mut checker_artifact_guard,
-                )
-                .await;
-                let _ = lock.release().await;
-                return Err(AppError::internal(error.to_string()));
-            }
-        };
-        if deletion_pending != Some(false) {
+    let mut mutation_fence = match reacquire_import(
+        st,
+        game_id,
+        &import_snapshot,
+        import_source_identity,
+        policy,
+    )
+    .await
+    {
+        Ok(fence) => fence,
+        Err(error) => {
             cleanup_unpublished_checker(
                 checker_prepared,
                 checker_prep.as_ref(),
                 &mut checker_artifact_guard,
             )
             .await;
-            lock.release()
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
-            return match deletion_pending {
-                Some(true) => Err(AppError::conflict("Challenge is being deleted")),
-                _ => Err(AppError::not_found("Challenge not found")),
-            };
+            discard_archive(st, &archive_intent).await;
+            discard_attachment(st, &attachment_intent).await;
+            return Err(error);
         }
-        definition_lock = Some(lock);
-    }
+    };
+    let reserved_challenge_id = if is_update {
+        None
+    } else {
+        match mutation_fence.reserve_created_challenge(game_id).await {
+            Ok(challenge_id) => Some(challenge_id),
+            Err(error) => {
+                let _ = mutation_fence.release().await;
+                cleanup_unpublished_checker(
+                    checker_prepared,
+                    checker_prep.as_ref(),
+                    &mut checker_artifact_guard,
+                )
+                .await;
+                discard_archive(st, &archive_intent).await;
+                discard_attachment(st, &attachment_intent).await;
+                return Err(error);
+            }
+        }
+    };
     let mut am = existing
         .clone()
         .map(game_challenge::ActiveModel::from)
         .unwrap_or_default();
+    if let Some(challenge_id) = reserved_challenge_id {
+        am.id = Set(challenge_id);
+    }
     am.game_id = Set(game_id);
     am.title = Set(name);
     am.content = Set(content);
@@ -902,66 +880,53 @@ pub(super) async fn import_manifest_inner(
     let (challenge, grading_update_deferred) = match persisted {
         Ok(result) => result,
         Err(error) => {
+            let _ = mutation_fence.release().await;
             cleanup_unpublished_checker(
                 checker_prepared,
                 checker_prep.as_ref(),
                 &mut checker_artifact_guard,
             )
             .await;
-            if let Some(lock) = definition_lock.take() {
-                let _ = lock.release().await;
-            }
+            discard_archive(st, &archive_intent).await;
+            discard_attachment(st, &attachment_intent).await;
             return Err(error);
         }
     };
-
-    // Keep the content-addressed file reference, owning challenge row, and old
-    // reference release in one SQL transaction. Holding the definition fence
-    // through this swap prevents a build from observing the short interval in
-    // which the metadata update has committed but the archive owner has not.
-    if !preserve_live_runtime {
-        let archive = archive_package
-            .as_deref()
-            .map(|bytes| ("challenge-source.zip", bytes));
-        if let Err(error) = crate::services::blob_refs::store_and_replace_challenge_archive(
-            st.pg(),
-            st.storage.as_ref(),
-            challenge.id,
-            archive,
-        )
-        .await
-        {
-            if let Some(lock) = definition_lock.take() {
-                let _ = lock.release().await;
-            }
+    // Bytes were staged before the mutation fence. Only short owner/refcount
+    // transactions run here; cache invalidation and physical purge wait until
+    // every game/definition lock has been released.
+    let archive_post_commit = match publish_archive(st, challenge.id, &archive_intent).await {
+        Ok(post_commit) => post_commit,
+        Err(error) => {
+            let _ = mutation_fence.release().await;
             if let Some(guard) = checker_artifact_guard.take() {
                 let _ = guard.release().await;
             }
+            discard_archive(st, &archive_intent).await;
+            discard_attachment(st, &attachment_intent).await;
             return Err(error);
         }
-    }
+    };
+    let (attachment_synced, attachment_post_commit, attachment_publication_failed) =
+        match publish_attachment(st, challenge.id, &attachment_intent, is_update).await {
+            Ok((synced, post_commit)) => (synced, post_commit, false),
+            Err(failure) => {
+                tracing::warn!(error = %failure.error, challenge_id = challenge.id, "git_sync: attachment publication failed");
+                (false, failure.post_commit, true)
+            }
+        };
+    let fence_release = mutation_fence.release().await;
     if let Some(guard) = checker_artifact_guard.take() {
         if let Err(error) = guard.release().await {
             tracing::warn!(%error, "checker publication guard release failed");
         }
     }
-
-    // Attach the challenge's provided artifact — the RSCTF `provide:` path, or the
-    // TCP1P `dist/` convention when it's absent. Retain the same definition
-    // fence through replacement/removal so an interactive edit cannot race it.
-    let attachment_synced = sync_attachment(
-        st,
-        challenge.id,
-        package_dir,
-        model.provide.as_deref(),
-        is_update,
-    )
-    .await;
-    if let Some(lock) = definition_lock.take() {
-        lock.release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+    finish_attachment_post_commit(st, attachment_post_commit).await;
+    finish_archive_post_commit(st, archive_post_commit).await;
+    if attachment_publication_failed {
+        discard_attachment(st, &attachment_intent).await;
     }
+    fence_release?;
 
     Ok(ManifestImportResult {
         challenge_id: challenge.id,
@@ -980,7 +945,9 @@ pub(super) async fn import_manifest_inner(
 /// `EditController.TryPushBackAsync`). See [`push_back`].
 mod attach;
 pub use attach::repair_missing_attachments;
-use attach::sync_attachment;
+use attach::{
+    discard_attachment, finish_attachment_post_commit, publish_attachment, stage_attachment,
+};
 mod push_back;
 pub(crate) use push_back::serialize_challenge_preserving_source;
 pub use push_back::{push_file, serialize_challenge};

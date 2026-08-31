@@ -5,6 +5,7 @@ use sha2::Sha256;
 use uuid::Uuid;
 
 use crate::utils::codec::{random_hex, sha256_str};
+use crate::utils::error::{AppError, AppResult};
 
 /// Per-game team salt: `SHA256("RSCTF@{private_key}@PK")`.
 pub fn team_hash_salt(private_key: &str) -> String {
@@ -39,6 +40,23 @@ pub fn generate_flag(template: Option<&str>, team_hash: &str) -> String {
     }
 }
 
+/// Generate a practice/Jeopardy flag that the canonical submit endpoint can
+/// actually receive. This runtime backstop fails closed for legacy oversized
+/// templates instead of launching a container with an impossible answer.
+pub fn generate_flag_checked(template: Option<&str>, team_hash: &str) -> AppResult<String> {
+    let flag = generate_flag(template, team_hash);
+    if flag.as_bytes().len() > crate::controllers::game::MAX_FLAG_LENGTH {
+        tracing::warn!(
+            produced_bytes = flag.as_bytes().len(),
+            "generated flag exceeds the player submission envelope"
+        );
+        return Err(AppError::unavailable(
+            "Challenge generated an invalid flag; ask an administrator to repair it",
+        ));
+    }
+    Ok(flag)
+}
+
 /// Expand a flag template deterministically for one crash-retryable workload.
 /// The team hash keeps the result secret even though an idempotency key may be
 /// visible to an administrator or transport log.
@@ -61,6 +79,26 @@ pub fn generate_retryable_flag(
             .replace("[UUID]", &uuid)
             .replace("[TEAM_HASH]", &team_hash[..team_hash.len().min(16)]),
     }
+}
+
+/// Deterministic counterpart of [`generate_flag_checked`] for a runtime whose
+/// create may be adopted after a lost response or process restart.
+pub fn generate_retryable_flag_checked(
+    template: Option<&str>,
+    team_hash: &str,
+    operation_id: &str,
+) -> AppResult<String> {
+    let flag = generate_retryable_flag(template, team_hash, operation_id);
+    if flag.as_bytes().len() > crate::controllers::game::MAX_FLAG_LENGTH {
+        tracing::warn!(
+            produced_bytes = flag.as_bytes().len(),
+            "generated retryable flag exceeds the player submission envelope"
+        );
+        return Err(AppError::unavailable(
+            "Challenge generated an invalid flag; ask an administrator to repair it",
+        ));
+    }
+    Ok(flag)
 }
 
 fn deterministic_uuid(digest: &str) -> String {
@@ -123,6 +161,17 @@ mod tests {
         assert_eq!(
             generate_retryable_flag(None, "team-secret-hash", "operation-1"),
             generate_retryable_flag(Some(""), "team-secret-hash", "operation-1")
+        );
+    }
+
+    #[test]
+    fn checked_generation_rejects_an_unsubmittable_expansion() {
+        let template = format!("flag{{{}}}", "[GUID]".repeat(4));
+        assert!(generate_flag_checked(Some(&template), &"a".repeat(64)).is_err());
+        assert!(generate_flag_checked(Some("flag{[TEAM_HASH]}"), &"b".repeat(64)).is_ok());
+        assert!(
+            generate_retryable_flag_checked(Some(&template), &"a".repeat(64), "operation",)
+                .is_err()
         );
     }
 }

@@ -40,9 +40,9 @@ pub use avatar::avatar;
 pub use models::*;
 pub(crate) use profile::process_profile_invalidations;
 pub(crate) use revocation::{
-    acquire_roster_mutation, invalidate_removed_membership_cache, mark_team_participations_revoked,
-    require_team_mutable, revoke_participation_capabilities, revoke_team_shared_capabilities,
-    TeamDeletionLease,
+    acquire_profile_mutation, acquire_roster_mutation, cleanup_deleted_team_avatar,
+    invalidate_removed_membership_cache, mark_team_participations_revoked, require_team_mutable,
+    revoke_participation_capabilities, revoke_team_shared_capabilities, TeamDeletionLease,
 };
 use revocation::{remove_membership, revoke_team_shared_capabilities_locked};
 pub(crate) use roster_policy::ensure_roster_change_allowed;
@@ -183,7 +183,7 @@ pub async fn update_team(
     Path(id): Path<i32>,
     Json(model): Json<TeamUpdateModel>,
 ) -> AppResult<RequestResponse<TeamInfoModel>> {
-    let mut roster = acquire_roster_mutation(st.pg(), id).await?;
+    let mut roster = acquire_profile_mutation(st.pg(), id).await?;
     require_team_mutable(roster.transaction_mut(), id).await?;
     let info = profile::update_locked(roster.transaction_mut(), id, user.id, model).await?;
     roster.release().await?;
@@ -239,7 +239,8 @@ pub async fn delete_team(
     // 7 days (RSCTF `DeleteTeam` → `FlushScoreboardsForGames`). Best-effort.
     flush_scoreboard_for_team(&st, team.id).await?;
 
-    deletion_lease.finalize(team.id).await?;
+    let avatar_hash = deletion_lease.finalize(team.id).await?;
+    cleanup_deleted_team_avatar(&st, avatar_hash).await;
     flush_scoreboards_for_games(&st, &affected_game_ids).await;
 
     // RSCTF `Team_Deleted` — "Delete team {name}" (TeamController, Success).

@@ -375,4 +375,107 @@ mod tests {
         assert!(configuration_changed(&original, &current));
         assert!(!scoreboard_changed(&original, &current));
     }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn operation_replay_and_effect_generations_are_exact_and_coalesced() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let mut connection = pool.acquire().await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TEMP TABLE "GameConfigurationOperations" (
+                operation_id UUID PRIMARY KEY,
+                game_id INTEGER NOT NULL,
+                actor_user_id UUID NOT NULL,
+                request_digest TEXT NOT NULL,
+                expected_revision BIGINT NOT NULL,
+                result_revision BIGINT NOT NULL,
+                result JSONB NOT NULL,
+                created_at_utc TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TEMP TABLE "GameConfigurationEffects" (
+                game_id INTEGER PRIMARY KEY,
+                configuration_revision BIGINT NOT NULL,
+                invalidate_game BOOLEAN NOT NULL,
+                invalidate_scoreboards BOOLEAN NOT NULL,
+                invalidate_policy BOOLEAN NOT NULL,
+                claim_id UUID,
+                claim_expires_at_utc TIMESTAMPTZ,
+                updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TEMP TABLE "AdNetworkReconcileState" (
+                id INTEGER PRIMARY KEY,
+                requested_generation BIGINT NOT NULL,
+                applied_generation BIGINT NOT NULL,
+                requested_at TIMESTAMPTZ NOT NULL,
+                applied_at TIMESTAMPTZ NOT NULL
+            );
+            "#,
+        )
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+
+        let operation_id = Uuid::new_v4();
+        let actor_id = Uuid::new_v4();
+        let digest = "a".repeat(64);
+        let mut result: GameInfoModel = serde_json::from_value(serde_json::json!({})).unwrap();
+        result.id = 7;
+        result.configuration_revision = 4;
+        store_operation(
+            &mut connection,
+            operation_id,
+            7,
+            actor_id,
+            &digest,
+            3,
+            &result,
+        )
+        .await
+        .unwrap();
+        let replay = replay_operation(&mut connection, operation_id, 7, actor_id, &digest)
+            .await
+            .unwrap()
+            .expect("exact operation must replay");
+        assert_eq!(replay.id, 7);
+        assert_eq!(replay.configuration_revision, 4);
+        assert!(matches!(
+            replay_operation(&mut connection, operation_id, 7, actor_id, &"b".repeat(64),)
+                .await
+                .unwrap_err(),
+            AppError::Conflict(_)
+        ));
+
+        enqueue_effects(&mut connection, 7, 4, false, false)
+            .await
+            .unwrap();
+        enqueue_effects(&mut connection, 7, 5, true, true)
+            .await
+            .unwrap();
+        let effect: (i64, bool, bool, bool) = sqlx::query_as(
+            r#"SELECT configuration_revision, invalidate_game,
+                      invalidate_scoreboards, invalidate_policy
+                 FROM "GameConfigurationEffects" WHERE game_id = 7"#,
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .unwrap();
+        assert_eq!(effect, (5, true, true, true));
+        let generation: i64 = sqlx::query_scalar(
+            r#"SELECT requested_generation FROM "AdNetworkReconcileState" WHERE id = 1"#,
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .unwrap();
+        assert_eq!(
+            generation, 1,
+            "metadata-only effects must not request VPN work"
+        );
+    }
 }

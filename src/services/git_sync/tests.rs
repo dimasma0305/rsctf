@@ -11,17 +11,70 @@ fn repository_challenges_disable_blood_bonus_unless_explicitly_enabled() {
     assert!(!disable_blood_bonus_or_default(Some(false)));
 }
 
+#[test]
+fn import_stages_artifacts_before_reacquiring_domain_fences() {
+    let source = include_str!("mod.rs");
+    let archive_stage = source.find("let archive_intent = stage_archive(").unwrap();
+    let attachment_stage = source
+        .find("let attachment_intent = stage_attachment(")
+        .unwrap();
+    let reacquire = source.find("reacquire_import(").unwrap();
+    assert!(archive_stage < reacquire);
+    assert!(attachment_stage < reacquire);
+}
+
+#[test]
+fn new_import_reserves_its_definition_fence_before_insert() {
+    let source = include_str!("mod.rs");
+    let reserve = source.find(".reserve_created_challenge(game_id)").unwrap();
+    let persist = source
+        .find("let persisted: AppResult<(game_challenge::Model, bool)>")
+        .unwrap();
+    assert!(reserve < persist);
+    assert!(!source.contains("bind_created_challenge"));
+}
+
+#[test]
+fn known_git_sync_publications_finalize_their_stage_receipts() {
+    let attachment = include_str!("attach.rs");
+    let archive = include_str!("archive.rs");
+    for source in [attachment, archive] {
+        assert!(source.contains("consume_with_existing_reference_as"));
+        assert!(source.contains("state = 'Published'"));
+        assert!(source.contains("published_owner_scope = $2"));
+    }
+}
+
+#[test]
+fn uncertain_attachment_commit_keeps_post_commit_invalidation_work() {
+    let attachment = include_str!("attach.rs");
+    let import = include_str!("mod.rs");
+    assert!(attachment.contains("post_commit: AttachmentPostCommit"));
+    assert!(attachment.contains("return Err(AttachmentPublishFailure"));
+    assert!(import.contains("(false, failure.post_commit, true)"));
+    let finish = import.find("finish_attachment_post_commit(").unwrap();
+    let discard = import
+        .rfind("discard_attachment(st, &attachment_intent).await")
+        .unwrap();
+    assert!(finish < discard);
+}
+
+#[test]
+fn test_container_archive_finalizes_every_stage_outcome() {
+    let source = include_str!("../../controllers/edit/test_container/archive.rs");
+    assert!(source.contains("state = 'Published'"));
+    assert!(source.contains("discard_unpublished_stage("));
+}
+
 async fn import_with_game_lock(
     state: &SharedState,
     game_id: i32,
     manifest: &Path,
 ) -> AppResult<ManifestImportResult> {
-    let lock = crate::services::ad_engine::acquire_ad_game_lock(&state.db, game_id).await?;
-    let result = import_manifest(state, game_id, manifest, ImportPolicy::Trusted).await;
-    lock.release()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    result
+    // The import owns its short snapshot and publication fences. Keeping this
+    // historical helper name avoids churn in the regression suite while
+    // ensuring tests do not self-contend on an outer game transaction.
+    import_manifest(state, game_id, manifest, ImportPolicy::Trusted).await
 }
 
 #[test]

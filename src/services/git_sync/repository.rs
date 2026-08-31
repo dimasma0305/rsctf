@@ -18,8 +18,6 @@ pub(super) async fn find_repository_challenge(
     let Some(source_yaml_path) = source_yaml_path else {
         return Ok(None);
     };
-    let legacy_relative =
-        binding_id.and_then(|binding_id| relative_manifest_identity(binding_id, source_yaml_path));
     let candidates = sqlx::query_as::<_, (i32, String)>(
         r#"SELECT id, source_yaml_path
              FROM "GameChallenges"
@@ -33,14 +31,8 @@ pub(super) async fn find_repository_challenge(
     let ids = candidates
         .into_iter()
         .filter_map(|(id, stored)| {
-            (stored == source_yaml_path
-                || binding_id.zip(legacy_relative.as_deref()).is_some_and(
-                    |(binding_id, relative)| {
-                        stored == relative
-                            || legacy_repo_manifest_matches(&stored, binding_id, relative)
-                    },
-                ))
-            .then_some(id)
+            repository_manifest_identity_matches(&stored, binding_id, source_yaml_path)
+                .then_some(id)
         })
         .collect::<Vec<_>>();
     match ids.as_slice() {
@@ -53,6 +45,24 @@ pub(super) async fn find_repository_challenge(
             "repository manifest is already linked to multiple challenges",
         )),
     }
+}
+
+/// Match the canonical binding-scoped identity and the two legacy path forms.
+/// Kept as a pure helper so imports can resolve identity on their already-owned
+/// game-control transaction without checking out another database connection.
+pub(super) fn repository_manifest_identity_matches(
+    stored: &str,
+    binding_id: Option<i32>,
+    source_yaml_path: &str,
+) -> bool {
+    let legacy_relative =
+        binding_id.and_then(|binding_id| relative_manifest_identity(binding_id, source_yaml_path));
+    stored == source_yaml_path
+        || binding_id
+            .zip(legacy_relative.as_deref())
+            .is_some_and(|(binding_id, relative)| {
+                stored == relative || legacy_repo_manifest_matches(stored, binding_id, relative)
+            })
 }
 
 pub(super) fn scoped_manifest_identity(binding_id: i32, relative: &str) -> String {

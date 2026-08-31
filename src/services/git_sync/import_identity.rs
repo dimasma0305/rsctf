@@ -13,7 +13,42 @@ pub async fn import_manifest(
     manifest: &Path,
     policy: ImportPolicy,
 ) -> AppResult<ManifestImportResult> {
-    super::import_manifest_inner(st, game_id, manifest, policy, None).await
+    super::import_manifest_inner(st, game_id, manifest, policy, None, None).await
+}
+
+/// Import a manifest from an immutable binding snapshot while retaining the
+/// binding-relative identity used by persistent checkouts. The snapshot path
+/// itself is deliberately never persisted because it is removed after the
+/// scan and differs across replicas.
+pub async fn import_repository_snapshot_manifest(
+    st: &SharedState,
+    game_id: i32,
+    manifest: &Path,
+    policy: ImportPolicy,
+    binding_id: i32,
+    source_path: &str,
+) -> AppResult<ManifestImportResult> {
+    let prefix = format!("binding/{binding_id}/");
+    let relative_manifest = source_path.strip_prefix(&prefix).unwrap_or_default();
+    let relative = Path::new(relative_manifest);
+    if binding_id <= 0
+        || relative_manifest.is_empty()
+        || relative_manifest.len() > 1_024
+        || relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(AppError::internal(
+            "invalid repository snapshot manifest identity",
+        ));
+    }
+    super::import_manifest_inner(st, game_id, manifest, policy, None, Some(source_path)).await
 }
 
 /// Import a job-owned manifest with an identity that survives retries and
@@ -30,7 +65,7 @@ pub async fn import_manifest_with_source_identity(
             "invalid challenge import source identity",
         ));
     }
-    super::import_manifest_inner(st, game_id, manifest, policy, Some(source_identity)).await
+    super::import_manifest_inner(st, game_id, manifest, policy, Some(source_identity), None).await
 }
 
 /// Persist a replica-independent source identity only when the manifest resolves

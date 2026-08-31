@@ -9,6 +9,143 @@ pub(super) struct ManagedContainerOwner {
     pub exercise_instance_id: Option<i32>,
 }
 
+const REAP_LEASE: std::time::Duration = std::time::Duration::from_secs(300);
+const REAP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
+const REAP_EXTERNAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+
+#[derive(Clone, Copy)]
+pub(super) struct ReapClaim {
+    pub(super) lease_owner: uuid::Uuid,
+}
+
+pub(super) async fn claim_reap_on(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    candidate: &container::Model,
+    scope_key: &str,
+) -> AppResult<Option<ReapClaim>> {
+    let mut existing = sqlx::query_as::<_, (String, uuid::Uuid, uuid::Uuid, bool)>(
+        r#"SELECT backend_id, container_id, lease_owner,
+                  lease_expires_at_utc > clock_timestamp() AS lease_active
+             FROM "ManagedContainerReapOperations"
+            WHERE backend_id = $1 OR container_id = $2
+            ORDER BY backend_id
+            FOR UPDATE"#,
+    )
+    .bind(&candidate.container_id)
+    .bind(candidate.id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if existing.len() > 1 {
+        return Err(AppError::conflict(
+            "Container reaper identity conflicts with multiple runtimes",
+        ));
+    }
+    let lease_owner = uuid::Uuid::new_v4();
+    if let Some((backend_id, container_id, _prior_owner, lease_active)) = existing.pop() {
+        if backend_id != candidate.container_id || container_id != candidate.id {
+            return Err(AppError::conflict(
+                "Container reaper identity conflicts with another runtime",
+            ));
+        }
+        if lease_active {
+            return Ok(None);
+        }
+        sqlx::query(
+            r#"UPDATE "ManagedContainerReapOperations"
+                  SET lease_owner = $3, scope_key = $5,
+                      lease_expires_at_utc = clock_timestamp() + make_interval(secs => $4),
+                      updated_at_utc = clock_timestamp(), last_error = NULL
+                WHERE backend_id = $1 AND container_id = $2"#,
+        )
+        .bind(&candidate.container_id)
+        .bind(candidate.id)
+        .bind(lease_owner)
+        .bind(REAP_LEASE.as_secs() as i32)
+        .bind(scope_key)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    } else {
+        sqlx::query(
+            r#"INSERT INTO "ManagedContainerReapOperations"
+                   (backend_id, container_id, scope_key, lease_owner, lease_expires_at_utc)
+               VALUES ($1, $2, $3, $4,
+                       clock_timestamp() + make_interval(secs => $5))"#,
+        )
+        .bind(&candidate.container_id)
+        .bind(candidate.id)
+        .bind(scope_key)
+        .bind(lease_owner)
+        .bind(REAP_LEASE.as_secs() as i32)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    Ok(Some(ReapClaim { lease_owner }))
+}
+
+async fn abandon_reap_claim(
+    pool: &sqlx::PgPool,
+    candidate: &container::Model,
+    claim: ReapClaim,
+) -> AppResult<()> {
+    sqlx::query(
+        r#"DELETE FROM "ManagedContainerReapOperations"
+            WHERE backend_id = $1 AND container_id = $2 AND lease_owner = $3"#,
+    )
+    .bind(&candidate.container_id)
+    .bind(candidate.id)
+    .bind(claim.lease_owner)
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
+async fn retain_failed_reap_claim(
+    pool: &sqlx::PgPool,
+    candidate: &container::Model,
+    claim: ReapClaim,
+    error: &AppError,
+) {
+    let message = error.to_string().chars().take(512).collect::<String>();
+    if let Err(update_error) = sqlx::query(
+        r#"UPDATE "ManagedContainerReapOperations"
+              SET lease_expires_at_utc = clock_timestamp() + make_interval(secs => $4),
+                  updated_at_utc = clock_timestamp(), last_error = $5
+            WHERE backend_id = $1 AND container_id = $2 AND lease_owner = $3"#,
+    )
+    .bind(&candidate.container_id)
+    .bind(candidate.id)
+    .bind(claim.lease_owner)
+    .bind(REAP_RETRY_DELAY.as_secs() as i32)
+    .bind(message)
+    .execute(pool)
+    .await
+    {
+        tracing::warn!(%update_error, backend_id = %candidate.container_id, "failed to retain durable reaper retry claim");
+    }
+}
+
+pub(super) async fn managed_reap_active(
+    pool: &sqlx::PgPool,
+    container_id: uuid::Uuid,
+    backend_id: &str,
+) -> AppResult<bool> {
+    sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM "ManagedContainerReapOperations"
+                WHERE container_id = $1 AND backend_id = $2
+           )"#,
+    )
+    .bind(container_id)
+    .bind(backend_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
 /// Resolve only an owner whose reverse pointer still names this exact container.
 /// The forward ids on a stale Containers row are hints used to prioritize a
 /// match; they never authorize detaching an instance that already points at a
@@ -109,6 +246,7 @@ pub(super) async fn clear_destroyed_managed_container(
     exercise_instance_id: Option<i32>,
     shared_challenge_id: Option<i32>,
     test_challenge_id: Option<i32>,
+    reap_claim: Option<ReapClaim>,
 ) -> AppResult<()> {
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
@@ -176,15 +314,28 @@ pub(super) async fn clear_destroyed_managed_container(
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some(claim) = reap_claim {
+        sqlx::query(
+            r#"DELETE FROM "ManagedContainerReapOperations"
+                WHERE backend_id = $1 AND container_id = $2 AND lease_owner = $3"#,
+        )
+        .bind(backend_id)
+        .bind(container_id)
+        .bind(claim.lease_owner)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    }
     transaction
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))
 }
 
-/// Revoke and destroy one persisted container. The exact owner lock prevents a
-/// replacement from publishing between network revocation and runtime destroy.
-/// No owner identity is released until the backend confirms destruction.
+/// Revoke and destroy one persisted container. The exact owner lock publishes
+/// a durable teardown claim, then releases its pooled connection before any
+/// network/capture/blob work. Player lifecycle claims observe that marker and
+/// fail fast until teardown finishes or maintenance reconciles it.
 pub(crate) async fn destroy_managed_container_row(
     st: &SharedState,
     candidate: &container::Model,
@@ -204,23 +355,94 @@ pub(crate) async fn destroy_managed_container_row(
     } else {
         None
     };
-    let distributed = if let Some(key) = flight_key {
+    let mut distributed = if let Some(key) = flight_key {
         Some(crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), key).await?)
     } else {
         None
     };
 
-    let result = async {
-        let Some(current) = container::Entity::find_by_id(candidate.id)
-            .one(&st.db)
-            .await?
-        else {
-            return Ok(false);
+    let reap_claim = if let (Some(owner), Some(lock)) = (owner.as_ref(), distributed.as_mut()) {
+        let player_operation_active = if let Some(instance_id) = owner.game_instance_id {
+            sqlx::query_scalar::<_, bool>(
+                r#"SELECT EXISTS(
+                       SELECT 1 FROM "PlayerContainerOperations" operation
+                       JOIN "GameInstances" instance
+                         ON instance.participation_id = operation.participation_id
+                      WHERE instance.id = $1 AND operation.state = 'Running'
+                        AND operation.lease_expires_at_utc > clock_timestamp()
+                   )"#,
+            )
+            .bind(instance_id)
+            .fetch_one(&mut **lock.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+        } else if let Some(challenge_id) = owner.shared_challenge_id {
+            sqlx::query_scalar::<_, bool>(
+                r#"SELECT EXISTS(
+                       SELECT 1 FROM "PlayerContainerOperations"
+                        WHERE scope_key = $1 AND state = 'Running'
+                          AND lease_expires_at_utc > clock_timestamp()
+                   )"#,
+            )
+            .bind(format!("shared-challenge:{challenge_id}"))
+            .fetch_one(&mut **lock.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+        } else {
+            false
         };
-        if honor_refresh && current.expect_stop_at >= Utc::now() {
+        let exercise_operation_active = if let Some(instance_id) = owner.exercise_instance_id {
+            sqlx::query_scalar::<_, bool>(
+                r#"SELECT EXISTS(
+                       SELECT 1 FROM "ExerciseContainerOperations" operation
+                       JOIN "ExerciseInstances" instance
+                         ON instance.user_id = operation.user_id
+                        AND instance.exercise_id = operation.exercise_id
+                      WHERE instance.id = $1 AND operation.state = 'Running'
+                        AND operation.lease_expires_at_utc > clock_timestamp()
+                   )"#,
+            )
+            .bind(instance_id)
+            .fetch_one(&mut **lock.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+        } else {
+            false
+        };
+        if player_operation_active || exercise_operation_active {
+            let lock = distributed.take().expect("checked lifecycle lock exists");
+            lock.release().await.map_err(AppError::from)?;
             return Ok(false);
         }
+        let claim = claim_reap_on(lock.transaction_mut(), candidate, &owner.lock_key).await?;
+        let lock = distributed.take().expect("checked lifecycle lock exists");
+        lock.release().await.map_err(AppError::from)?;
+        let Some(claim) = claim else {
+            return Ok(false);
+        };
+        Some(claim)
+    } else {
+        None
+    };
 
+    let current = container::Entity::find_by_id(candidate.id)
+        .one(&st.db)
+        .await?
+        .filter(|current| current.container_id == candidate.container_id);
+    let Some(current) = current else {
+        if let Some(claim) = reap_claim {
+            abandon_reap_claim(st.pg(), candidate, claim).await?;
+        }
+        return Ok(false);
+    };
+    if honor_refresh && current.expect_stop_at >= Utc::now() {
+        if let Some(claim) = reap_claim {
+            abandon_reap_claim(st.pg(), candidate, claim).await?;
+        }
+        return Ok(false);
+    }
+
+    let result = tokio::time::timeout(REAP_EXTERNAL_DEADLINE, async {
         // Stage the restrictive endpoint while retaining Koth/A&D identities.
         // Cache eviction precedes the kernel fence; destroy failure leaves the
         // Containers row and inactive endpoint available for an exact retry.
@@ -253,20 +475,17 @@ pub(crate) async fn destroy_managed_container_row(
             exercise_instance_id,
             owner.as_ref().and_then(|owner| owner.shared_challenge_id),
             owner.as_ref().and_then(|owner| owner.test_challenge_id),
+            reap_claim,
         )
         .await?;
         Ok(true)
+    })
+    .await
+    .unwrap_or_else(|_| Err(AppError::overloaded("Container teardown timed out", 10)));
+    if let Err(error) = &result {
+        if let Some(claim) = reap_claim {
+            retain_failed_reap_claim(st.pg(), candidate, claim, error).await;
+        }
     }
-    .await;
-
-    let released = if let Some(lock) = distributed {
-        lock.release().await.map_err(AppError::from)
-    } else {
-        Ok(())
-    };
-    match (result, released) {
-        (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-        (Ok(reaped), Ok(())) => Ok(reaped),
-    }
+    result
 }

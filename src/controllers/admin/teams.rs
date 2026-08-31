@@ -178,7 +178,8 @@ pub async fn delete_team(
     crate::controllers::team::destroy_team_containers(&st, team.id).await?;
     crate::controllers::team::flush_scoreboard_for_team(&st, team.id).await?;
 
-    deletion_lease.finalize(team.id).await?;
+    let avatar_hash = deletion_lease.finalize(team.id).await?;
+    crate::controllers::team::cleanup_deleted_team_avatar(&st, avatar_hash).await;
     crate::controllers::team::flush_scoreboards_for_games(&st, &affected_game_ids).await;
     Ok(RequestResponse::ok(id.to_string()))
 }

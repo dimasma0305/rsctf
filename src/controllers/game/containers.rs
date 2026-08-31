@@ -10,7 +10,7 @@ use deletion::{delete_expected_team_container_locked, DeleteContainerOutcome};
 mod extension;
 use eligibility::{
     authorize_on_demand_build, ineligible_container_start_error, load_eligible_shared_challenge,
-    player_container_request_is_eligible, ContainerRequestMode,
+    player_container_request_is_eligible, player_request_is_eligible_now, ContainerRequestMode,
 };
 use extension::extend_expected_team_container_locked;
 mod image_repair;
@@ -23,7 +23,7 @@ use publication::{
 };
 mod operations;
 mod policy;
-pub(crate) use operations::purge_terminal as purge_terminal_operations;
+pub(crate) use operations::sweep as sweep_container_operations;
 use policy::{allows_practice_container, container_op_too_frequent};
 mod reaping;
 pub(crate) use reaping::destroy_managed_container_row;
@@ -40,16 +40,6 @@ use workload_fence::{
 #[serde(rename_all = "camelCase")]
 pub struct ExpectedContainerQuery {
     pub expected_container_id: Uuid,
-}
-
-fn operation_id_from_headers(headers: &HeaderMap) -> AppResult<Uuid> {
-    let Some(value) = headers.get("x-rsctf-operation-id") else {
-        return Ok(Uuid::new_v4());
-    };
-    let value = value
-        .to_str()
-        .map_err(|_| AppError::bad_request("Invalid container operation ID"))?;
-    Uuid::parse_str(value).map_err(|_| AppError::bad_request("Invalid container operation ID"))
 }
 
 /// `POST /api/game/{id}/container/{challengeId}` — provision a per-team dynamic
@@ -83,27 +73,52 @@ pub async fn create_container(
             "Container creation is not allowed for this challenge",
         ));
     }
-    let requested_operation_id = operation_id_from_headers(&headers)?;
+    let requested_operation = operations::operation_request(&headers)?;
     let shared = uses_shared_container(&challenge);
     let operation_scope = if shared {
         format!("shared-challenge:{cid}")
     } else {
         format!("participation:{}", ctx.participation.id)
     };
+    let expected_publication_id = if shared {
+        challenge.shared_container_id
+    } else {
+        sqlx::query_scalar::<_, Option<Uuid>>(
+            r#"SELECT container_id FROM "GameInstances"
+                WHERE participation_id = $1 AND challenge_id = $2"#,
+        )
+        .bind(ctx.participation.id)
+        .bind(cid)
+        .fetch_optional(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .flatten()
+    };
+    // This is a pure definition projection. Queued lazy-build challenges bind
+    // their immutable fence after the build; already-resolved challenges bind
+    // it in the admission row so a concurrent save cannot change the intent.
+    let expected_definition_fence =
+        crate::services::challenge_workloads::resolve_runtime(&st, &challenge)
+            .ok()
+            .map(|runtime| runtime.publication_fence);
     let operation = match operations::claim_create(
         st.pg(),
-        requested_operation_id,
+        requested_operation.operation_id,
         &operation_scope,
         user.id,
         id,
         (!shared).then_some(ctx.participation.id),
         cid,
+        expected_publication_id,
+        expected_definition_fence.as_deref(),
+        requested_operation.may_adopt_stale,
     )
     .await?
     {
         operations::ClaimOutcome::Recovered(model) => return Ok(RequestResponse::ok(model)),
         operations::ClaimOutcome::Following => {
-            let model = operations::wait_for_result(st.pg(), requested_operation_id).await?;
+            let model =
+                operations::wait_for_result(st.pg(), requested_operation.operation_id).await?;
             return Ok(RequestResponse::ok(model));
         }
         operations::ClaimOutcome::Owned(operation) => operation,
@@ -116,24 +131,6 @@ pub async fn create_container(
     });
     let model = operations::await_owner(owner).await?;
     Ok(RequestResponse::ok(model))
-}
-
-async fn player_request_is_eligible_now(
-    st: &SharedState,
-    caller: LiveParticipationIdentity<'_>,
-    challenge_id: i32,
-    mode: ContainerRequestMode,
-) -> AppResult<bool> {
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let eligible =
-        player_container_request_is_eligible(&mut transaction, caller, challenge_id, mode).await?;
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(eligible)
 }
 
 async fn perform_create_container(
@@ -220,10 +217,31 @@ async fn perform_create_container(
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("Game not found"))?;
-    let (challenge, workload, identity, _publication_fence, legacy_image) =
+    let (challenge, workload, identity, publication_fence, legacy_image) =
         load_playable_definition_snapshot(&st, id, cid).await?;
+    operations::bind_definition(st.pg(), &operation, &publication_fence).await?;
     let container_policy =
         crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
+
+    // Validate and derive the retry-stable flag before any stale runtime is
+    // revoked. A malformed legacy template must be a non-destructive failure.
+    let selected_static_flag = crate::services::challenge_workloads::load_selected_static_flag(
+        st.pg(),
+        cid,
+        challenge.challenge_type,
+    )
+    .await?;
+    let flag = if challenge.challenge_type == ChallengeType::DynamicContainer {
+        let salt = flag_generator::team_hash_salt(&game.private_key);
+        let team_hash = flag_generator::team_challenge_hash(&salt, cid, &participation.token);
+        flag_generator::generate_retryable_flag_checked(
+            challenge.flag_template.as_deref(),
+            &team_hash,
+            &operation.operation_id.to_string(),
+        )?
+    } else {
+        selected_static_flag.clone().unwrap_or_default()
+    };
 
     // Look up any prior instance for this challenge. A live (Running) container is a
     // hard error — RSCTF returns 400 Game_ContainerAlreadyCreated rather than handing
@@ -292,24 +310,6 @@ async fn perform_create_container(
         }
     }
 
-    // Flag to inject: a DynamicContainer gets a per-team dynamic flag; a
-    // StaticContainer serves the challenge's STATIC flag (identical for every
-    // team — the one a player reads off the page and submits). Generating a
-    // per-team flag for a static container made the submitted static flag never
-    // match, so a StaticContainer solve always failed.
-    let selected_static_flag = crate::services::challenge_workloads::load_selected_static_flag(
-        st.pg(),
-        cid,
-        challenge.challenge_type,
-    )
-    .await?;
-    let flag = if challenge.challenge_type == ChallengeType::DynamicContainer {
-        let salt = flag_generator::team_hash_salt(&game.private_key);
-        let team_hash = flag_generator::team_challenge_hash(&salt, cid, &participation.token);
-        flag_generator::generate_flag(challenge.flag_template.as_deref(), &team_hash)
-    } else {
-        selected_static_flag.clone().unwrap_or_default()
-    };
     let game_kind = crate::services::container::game_kind_for_challenge(challenge.challenge_type);
     let platform_proxy =
         crate::controllers::admin::container_port_mapping(&st).await == "PlatformProxy";
@@ -321,6 +321,7 @@ async fn perform_create_container(
     );
     let container_uuid = operation.publication_id;
     let operation_id = Some(format!("player-container:{}", operation.operation_id));
+    operations::mark_runtime_started(st.pg(), &operation).await?;
     let info = match workload {
         Some(spec) => {
             let spec = crate::services::challenge_workloads::with_environment(
@@ -359,6 +360,7 @@ async fn perform_create_container(
                 .await?
         }
     };
+    operations::record_backend(st.pg(), &operation, &info.id).await?;
 
     let backend_id = info.id.clone();
     // Reacquire the legacy publication/reaper fence only after runtime I/O has
@@ -460,6 +462,21 @@ async fn perform_create_container(
         }
     };
 
+    // The runtime owner and its recoverable operation receipt become visible
+    // in one commit. A crash after this point cannot make an exact retry launch
+    // a second backend merely because the HTTP acknowledgement was lost.
+    let operation_result = ContainerInfoModel::from(&c);
+    if let Err(error) =
+        operations::complete_locked(distributed.transaction_mut(), &operation, &operation_result)
+            .await
+    {
+        distributed.rollback().await?;
+        if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
+            tracing::warn!(%backend_id, error = %destroy_error, "unpublished container destroy failed after receipt rejection");
+        }
+        return Err(error);
+    }
+
     let still_eligible = match player_container_request_is_eligible(
         distributed.transaction_mut(),
         caller,
@@ -518,7 +535,7 @@ async fn perform_create_container(
         tracing::warn!(game = id, challenge = cid, error = %err, "container start event persist failed");
     }
 
-    Ok(ContainerInfoModel::from(&c))
+    Ok(operation_result)
 }
 
 /// `DELETE /api/game/{id}/container/{challengeId}` — tear down the team's container.
@@ -552,23 +569,24 @@ pub async fn delete_container(
             "Container creation is not allowed for this challenge",
         ));
     }
-    let operation_id = operation_id_from_headers(&headers)?;
+    let operation_request = operations::operation_request(&headers)?;
     let scope = format!("participation:{}", ctx.participation.id);
     let operation = match operations::claim_delete(
         st.pg(),
-        operation_id,
+        operation_request.operation_id,
         &scope,
         user.id,
         id,
         ctx.participation.id,
         cid,
         query.expected_container_id,
+        operation_request.may_adopt_stale,
     )
     .await?
     {
         operations::ClaimOutcome::Recovered(()) => return Ok(StatusCode::OK),
         operations::ClaimOutcome::Following => {
-            operations::wait_for_result::<()>(st.pg(), operation_id).await?;
+            operations::wait_for_result::<()>(st.pg(), operation_request.operation_id).await?;
             return Ok(StatusCode::OK);
         }
         operations::ClaimOutcome::Owned(operation) => operation,
@@ -709,7 +727,7 @@ pub async fn extend_container(
             "Container creation is not allowed for this challenge",
         ));
     }
-    let operation_id = operation_id_from_headers(&headers)?;
+    let operation_request = operations::operation_request(&headers)?;
     let scope = if shared {
         format!("shared-challenge:{cid}")
     } else {
@@ -717,19 +735,21 @@ pub async fn extend_container(
     };
     let operation = match operations::claim_extend(
         st.pg(),
-        operation_id,
+        operation_request.operation_id,
         &scope,
         user.id,
         id,
         (!shared).then_some(ctx.participation.id),
         cid,
         query.expected_container_id,
+        operation_request.may_adopt_stale,
     )
     .await?
     {
         operations::ClaimOutcome::Recovered(model) => return Ok(RequestResponse::ok(model)),
         operations::ClaimOutcome::Following => {
-            let model = operations::wait_for_result(st.pg(), operation_id).await?;
+            let model =
+                operations::wait_for_result(st.pg(), operation_request.operation_id).await?;
             return Ok(RequestResponse::ok(model));
         }
         operations::ClaimOutcome::Owned(operation) => operation,
@@ -960,18 +980,8 @@ async fn perform_extend_container(
 }
 
 #[cfg(test)]
-mod operation_header_tests {
-    use super::*;
-
-    #[test]
-    fn malformed_explicit_operation_identity_is_not_silently_replaced() {
-        let mut headers = HeaderMap::new();
-        headers.insert("x-rsctf-operation-id", "not-a-uuid".parse().unwrap());
-        assert!(operation_id_from_headers(&headers).is_err());
-        headers.remove("x-rsctf-operation-id");
-        assert!(operation_id_from_headers(&headers).is_ok());
-    }
-}
+#[path = "containers/operation_header_tests.rs"]
+mod operation_header_tests;
 
 #[cfg(test)]
 #[path = "containers/delete_tests.rs"]

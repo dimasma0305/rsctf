@@ -30,23 +30,7 @@ pub async fn clone_game(
     let source =
         super::update_support::load_game_locked(source_control.transaction_mut(), id, true).await?;
     let sources = if model.include_challenges {
-        sqlx::query_scalar::<_, serde_json::Value>(
-            r#"SELECT to_jsonb(challenge)
-                 FROM "GameChallenges" challenge
-                WHERE challenge.game_id = $1
-                ORDER BY challenge.id"#,
-        )
-        .bind(id)
-        .fetch_all(&mut **source_control.transaction_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?
-        .into_iter()
-        .map(|value| {
-            serde_json::from_value(value).map_err(|error| {
-                AppError::internal(format!("could not decode challenge snapshot: {error}"))
-            })
-        })
-        .collect::<AppResult<Vec<game_challenge::Model>>>()?
+        load_game_challenges_locked(source_control.transaction_mut(), id).await?
     } else {
         Vec::new()
     };
@@ -176,8 +160,11 @@ pub async fn delete_writeups(
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<GameInfoModel>> {
     let game = load_game(&st, id).await?;
-    let deleted_hashes = crate::services::blob_refs::clear_game_writeups(st.pg(), id).await?;
-    for hash in deleted_hashes {
+    let cleared = crate::services::blob_refs::clear_game_writeups(st.pg(), id).await?;
+    for hash in &cleared.revoked_hashes {
+        crate::controllers::assets::invalidate_asset_gate(&st, hash).await;
+    }
+    for hash in cleared.deleted_hashes {
         if let Err(error) =
             crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
                 .await

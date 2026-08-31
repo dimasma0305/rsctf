@@ -8,7 +8,9 @@ use crate::app_state::SharedState;
 use crate::utils::error::{is_unique_violation, AppError, AppResult};
 
 const PROFILE_MUTATIONS_PER_MINUTE: i64 = 8;
+const PROFILE_MUTATION_RETRY_SECONDS: u64 = 8;
 const INVALIDATION_GAME_PAGE: i64 = 32;
+const INVALIDATION_TEAM_BATCH: i64 = 4;
 
 #[derive(sqlx::FromRow)]
 struct TeamProfileRow {
@@ -173,6 +175,7 @@ pub(super) async fn enforce_mutation_budget(
     let recent = sqlx::query_scalar::<_, i64>(
         r#"SELECT COUNT(*) FROM "TeamProfileOperations"
             WHERE team_id = $1 AND actor_user_id = $2
+              AND result_revision > expected_revision
               AND created_at_utc >= CURRENT_TIMESTAMP - INTERVAL '1 minute'"#,
     )
     .bind(team_id)
@@ -181,7 +184,7 @@ pub(super) async fn enforce_mutation_budget(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     if recent >= PROFILE_MUTATIONS_PER_MINUTE {
-        return Err(AppError::TooManyRequests);
+        return Err(AppError::too_many_requests(PROFILE_MUTATION_RETRY_SECONDS));
     }
     Ok(())
 }
@@ -285,6 +288,9 @@ pub(super) async fn update_locked(
     let operation_id = model
         .operation_id
         .ok_or_else(|| AppError::bad_request("operationId is required"))?;
+    if operation_id.is_nil() {
+        return Err(AppError::bad_request("operationId must be a non-zero UUID"));
+    }
     if model.profile_revision < 0 {
         return Err(AppError::bad_request(
             "profileRevision must not be negative",
@@ -387,7 +393,7 @@ pub(crate) async fn process_profile_invalidations(state: &SharedState) -> AppRes
                 WHERE claim_expires_at_utc IS NULL
                    OR claim_expires_at_utc <= CURRENT_TIMESTAMP
                 ORDER BY updated_at_utc, team_id
-                FOR UPDATE SKIP LOCKED LIMIT 32
+                FOR UPDATE SKIP LOCKED LIMIT $2
            )
            UPDATE "TeamProfileInvalidations" effect
               SET claim_id = $1,
@@ -397,6 +403,7 @@ pub(crate) async fn process_profile_invalidations(state: &SharedState) -> AppRes
         RETURNING effect.team_id, effect.profile_revision, effect.after_game_id"#,
     )
     .bind(claim_id)
+    .bind(INVALIDATION_TEAM_BATCH)
     .fetch_all(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -491,5 +498,6 @@ mod tests {
             request_digest(&second).unwrap(),
             request_digest(&third).unwrap()
         );
+        assert!(INVALIDATION_TEAM_BATCH * INVALIDATION_GAME_PAGE <= 128);
     }
 }

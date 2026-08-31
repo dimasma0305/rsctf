@@ -50,31 +50,27 @@ pub(crate) async fn acquire_game_lock(
     game_id: i32,
 ) -> AppResult<GameControlLock> {
     let key = game_lock_key(game_id);
-    let local = crate::utils::single_flight::coalesce(&key).await;
+    let local = crate::utils::single_flight::try_coalesce(&key).ok_or_else(|| {
+        AppError::overloaded("Game configuration capacity is busy; retry shortly", 1)
+    })?;
     let admission = GAME_CONTROL_ADMISSION
         .clone()
         .try_acquire_owned()
-        .map_err(|_| AppError::unavailable("Game configuration capacity is busy; retry shortly"))?;
-    let database = crate::utils::single_flight::PgAdvisoryLock::acquire(
+        .map_err(|_| {
+            AppError::overloaded("Game configuration capacity is busy; retry shortly", 1)
+        })?;
+    let database = crate::utils::single_flight::PgAdvisoryLock::try_acquire_game_control(
         db.get_postgres_connection_pool(),
         &key,
     )
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::overloaded("Game configuration capacity is busy; retry shortly", 1))?;
     Ok(GameControlLock {
         database,
         local,
         admission,
     })
-}
-
-/// Clear the published holder for one hill while its game control lock is held.
-pub(crate) async fn clear_challenge_control(
-    db: &DatabaseConnection,
-    game_id: i32,
-    challenge_id: i32,
-) -> AppResult<()> {
-    clear_challenge_control_locked(db.get_postgres_connection_pool(), game_id, challenge_id).await
 }
 
 pub(crate) async fn clear_challenge_control_locked<'e, E>(
@@ -369,9 +365,61 @@ pub(crate) async fn revoke_koth_capabilities(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use sea_orm::SqlxPostgresConnector;
     use sqlx::{Connection, PgConnection};
 
-    use super::{game_lock_key, revoke_game_capabilities, revoke_koth_capabilities_locked};
+    use crate::utils::error::AppError;
+
+    use super::{
+        acquire_game_lock, game_lock_key, revoke_game_capabilities,
+        revoke_koth_capabilities_locked, GAME_CONTROL_CONCURRENCY,
+    };
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn distinct_game_overload_fails_before_pool_headroom_is_consumed() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections((GAME_CONTROL_CONCURRENCY + 1) as u32)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let database = SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone());
+        let seed = (uuid::Uuid::new_v4().as_u128() % 1_000_000_000) as i32;
+        let mut controls = Vec::with_capacity(GAME_CONTROL_CONCURRENCY);
+        for offset in 0..GAME_CONTROL_CONCURRENCY {
+            controls.push(
+                acquire_game_lock(&database, seed + offset as i32)
+                    .await
+                    .unwrap(),
+            );
+        }
+
+        let error = match acquire_game_lock(&database, seed + GAME_CONTROL_CONCURRENCY as i32).await
+        {
+            Ok(control) => {
+                control.release().await.unwrap();
+                panic!("the fifth distinct game mutation must fail fast");
+            }
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            AppError::RetryableUnavailable { retry_after: 1, .. }
+        ));
+        let headroom = tokio::time::timeout(Duration::from_secs(1), pool.acquire())
+            .await
+            .expect("overloaded game mutation consumed reserved pool headroom")
+            .unwrap();
+        drop(headroom);
+
+        for control in controls {
+            control.release().await.unwrap();
+        }
+    }
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]

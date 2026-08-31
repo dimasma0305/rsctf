@@ -20,12 +20,13 @@ use crate::utils::flag_generator;
 use crate::utils::shared::{ArrayResponse, MessageResponse, RequestResponse};
 
 mod operations;
+pub(crate) use operations::sweep as sweep_container_operations;
 
 const DEFAULT_EXERCISE_PAGE_SIZE: u64 = 24;
 const MAX_EXERCISE_PAGE_SIZE: u64 = 50;
 const MAX_EXERCISE_CATALOG_ROWS: u64 = 500;
 const MAX_AUTO_DESTROY_PER_CREATE: usize = 2;
-const MAX_TRACKED_EXERCISE_CONTAINERS: usize = 64;
+const MAX_TRACKED_EXERCISE_CONTAINERS: usize = 128;
 const EXERCISE_OVERLOAD_RETRY_SECONDS: u64 = 2;
 const MAX_EXERCISE_SUBMIT_BODY_BYTES: usize = 1_024;
 
@@ -402,8 +403,8 @@ pub async fn submit(
     else {
         return Err(AppError::too_many_requests(EXERCISE_OVERLOAD_RETRY_SECONDS));
     };
-    let current = sqlx::query_scalar::<_, Option<i32>>(
-        r#"SELECT flag_id
+    let current = sqlx::query_as::<_, (bool, Option<i32>)>(
+        r#"SELECT is_solved, flag_id
              FROM "ExerciseInstances"
             WHERE exercise_id = $1 AND user_id = $2
             FOR UPDATE"#,
@@ -414,12 +415,21 @@ pub async fn submit(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
 
+    if current.is_some_and(|(is_solved, _)| is_solved) {
+        distributed.release().await?;
+        return Ok(RequestResponse::ok(AnswerResult::Accepted));
+    }
+
     // Only the caller's current occupied flag and author-defined unoccupied
     // static flags are eligible. Other users' and stale instance flags share
     // the exercise id, so exercise-id-only fallback would cross that boundary.
-    let accepted =
-        eligible_exercise_flag(distributed.transaction_mut(), id, current.flatten(), answer)
-            .await?;
+    let accepted = eligible_exercise_flag(
+        distributed.transaction_mut(),
+        id,
+        current.and_then(|(_, flag_id)| flag_id),
+        answer,
+    )
+    .await?;
 
     let result = if accepted {
         AnswerResult::Accepted
@@ -521,6 +531,11 @@ async fn perform_create_container(
         runtime_backend != crate::services::container::ContainerBackendKind::Worker
             && crate::services::challenge_images::shared_docker_daemon_acknowledged(),
     )?;
+    let flag = flag_generator::generate_retryable_flag_checked(
+        e.flag_template.as_deref(),
+        &flag_generator::exercise_user_hash(st.config.identity_hash_key.as_bytes(), id, user.id),
+        &operation.operation_id.to_string(),
+    )?;
 
     // The durable active-user operation owns this lifecycle across replicas.
     // No pooled connection is retained while Docker or a worker is inspected.
@@ -603,10 +618,6 @@ async fn perform_create_container(
         }
     }
 
-    let flag = flag_generator::generate_flag_checked(
-        e.flag_template.as_deref(),
-        &flag_generator::exercise_user_hash(st.config.identity_hash_key.as_bytes(), id, user.id),
-    )?;
     let game_kind = crate::services::container::game_kind_for_challenge(e.challenge_type);
     let platform_proxy =
         crate::controllers::admin::container_port_mapping(&st).await == "PlatformProxy";
@@ -617,6 +628,7 @@ async fn perform_create_container(
         false,
     );
     let cuuid = operation.publication_id;
+    operations::mark_runtime_started(st.pg(), &operation).await?;
     let info = st
         .containers
         .create(ContainerSpec {
@@ -637,6 +649,7 @@ async fn perform_create_container(
             operation_id: Some(format!("exercise-container:{}", operation.operation_id)),
         })
         .await?;
+    operations::record_backend(st.pg(), &operation, &info.id).await?;
 
     let backend_id = info.id.clone();
     let mut created_flag_id = None;

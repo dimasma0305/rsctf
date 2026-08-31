@@ -25,6 +25,8 @@ CREATE INDEX IF NOT EXISTS ix_teamprofileoperations_scope_created
     ON "TeamProfileOperations" (team_id, actor_user_id, created_at_utc DESC);
 CREATE INDEX IF NOT EXISTS ix_teamprofileoperations_created
     ON "TeamProfileOperations" (created_at_utc, operation_id);
+CREATE INDEX IF NOT EXISTS ix_participations_team_game_profile_policy
+    ON "Participations" (team_id, game_id, status);
 
 CREATE TABLE IF NOT EXISTS "TeamProfileInvalidations" (
     team_id INTEGER PRIMARY KEY REFERENCES "Teams" (id) ON DELETE CASCADE,
@@ -71,5 +73,6 @@ mod tests {
         assert!(UP_SQL.contains("result JSONB NOT NULL"));
         assert!(UP_SQL.contains("team_id INTEGER PRIMARY KEY"));
         assert!(UP_SQL.contains("after_game_id INTEGER NOT NULL DEFAULT 0"));
+        assert!(UP_SQL.contains("(team_id, game_id, status)"));
     }
 }

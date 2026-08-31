@@ -13,12 +13,26 @@ use uuid::Uuid;
 use crate::utils::enums::ContainerStatus;
 use crate::utils::error::{AppError, AppResult};
 
+mod recovery;
+pub(crate) use recovery::sweep;
+
 const CLAIM_LOCK: &str = "rsctf:exercise-container-operation-admission";
 const MAX_DEPLOYMENT_OPERATIONS: i64 = 16;
 const MAX_LOCAL_OPERATIONS: usize = 4;
 const OPERATION_DEADLINE: Duration = Duration::from_secs(120);
 const RESULT_WAIT_DEADLINE: Duration = Duration::from_secs(125);
 const MAX_LOCAL_RESULT_KEYS: usize = 128;
+const MANAGED_REAP_PENDING_SQL: &str = r#"SELECT EXISTS(
+       SELECT 1
+         FROM "ManagedContainerReapOperations" reap
+         JOIN "Containers" container
+           ON container.id = reap.container_id
+          AND container.container_id = reap.backend_id
+        WHERE reap.scope_key = $1
+           OR ($2::uuid IS NOT NULL
+               AND container.id = $2
+               AND container.container_id = reap.backend_id)
+)"#;
 
 static LOCAL_ADMISSION: std::sync::LazyLock<Arc<Semaphore>> =
     std::sync::LazyLock::new(|| Arc::new(Semaphore::new(MAX_LOCAL_OPERATIONS)));
@@ -123,6 +137,16 @@ fn recovered<T: DeserializeOwned>(row: &mut OperationRow) -> AppResult<T> {
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
+async fn active_count(transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> AppResult<i64> {
+    sqlx::query_scalar(
+        r#"SELECT COUNT(*)::bigint FROM "ExerciseContainerOperations"
+            WHERE state = 'Running' AND lease_expires_at_utc > clock_timestamp()"#,
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)
+}
+
 async fn claim<T: DeserializeOwned>(
     pool: &sqlx::PgPool,
     operation_id: Uuid,
@@ -132,9 +156,20 @@ async fn claim<T: DeserializeOwned>(
     expected_publication_id: Option<Uuid>,
     may_adopt_stale: bool,
 ) -> AppResult<ClaimOutcome<T>> {
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
-        .await
-        .map_err(database_error)?;
+    let mut transaction = match tokio::time::timeout(
+        Duration::from_millis(250),
+        crate::utils::database::begin_sqlx_transaction(pool),
+    )
+    .await
+    {
+        Ok(result) => result.map_err(database_error)?,
+        Err(_) => {
+            return Err(AppError::overloaded(
+                "Exercise operation capacity is busy",
+                2,
+            ))
+        }
+    };
     let admitted =
         sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))")
             .bind(CLAIM_LOCK)
@@ -144,6 +179,32 @@ async fn claim<T: DeserializeOwned>(
     if !admitted {
         transaction.rollback().await.map_err(database_error)?;
         return Err(AppError::too_many_requests(2));
+    }
+    let runtime_lock_key = format!("exercise-container:{user_id}:{exercise_id}");
+    let runtime_available = crate::utils::single_flight::try_acquire_transaction_advisory_lock(
+        &mut transaction,
+        &runtime_lock_key,
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !runtime_available {
+        transaction.rollback().await.map_err(database_error)?;
+        return Err(AppError::too_many_requests(2));
+    }
+    // Read the reaper's durable marker only after taking the same owner lock;
+    // this closes its commit/release hand-off without spanning runtime I/O.
+    let teardown_pending: bool = sqlx::query_scalar(MANAGED_REAP_PENDING_SQL)
+        .bind(&runtime_lock_key)
+        .bind(expected_publication_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+    if teardown_pending {
+        transaction.rollback().await.map_err(database_error)?;
+        return Err(AppError::overloaded(
+            "Container teardown is being reconciled",
+            2,
+        ));
     }
     sqlx::query(
         r#"WITH expired AS (
@@ -230,11 +291,22 @@ async fn claim<T: DeserializeOwned>(
             transaction.commit().await.map_err(database_error)?;
             return Ok(ClaimOutcome::Following);
         }
+        if active_count(&mut transaction).await? >= MAX_DEPLOYMENT_OPERATIONS {
+            transaction.commit().await.map_err(database_error)?;
+            return Err(AppError::overloaded(
+                "Exercise container capacity is busy",
+                2,
+            ));
+        }
         let reclaimed = sqlx::query(
             r#"UPDATE "ExerciseContainerOperations"
                   SET state = 'Running', result = NULL,
                       updated_at_utc = clock_timestamp(),
-                      lease_expires_at_utc = clock_timestamp() + interval '3 minutes'
+                      lease_expires_at_utc = clock_timestamp() + interval '3 minutes',
+                      runtime_started = CASE WHEN state = 'Failed' THEN FALSE
+                                             ELSE runtime_started END,
+                      backend_id = CASE WHEN state = 'Failed' THEN NULL
+                                        ELSE backend_id END
                 WHERE operation_id = $1"#,
         )
         .bind(operation_id)
@@ -255,9 +327,10 @@ async fn claim<T: DeserializeOwned>(
         }));
     }
 
-    let competing = sqlx::query_as::<_, (Uuid, i32, String, Uuid, bool)>(
+    let competing = sqlx::query_as::<_, (Uuid, i32, String, Uuid, bool, bool)>(
         r#"SELECT operation_id, exercise_id, intent, publication_id,
-                  lease_expires_at_utc > clock_timestamp() AS lease_active
+                  lease_expires_at_utc > clock_timestamp() AS lease_active,
+                  runtime_started
              FROM "ExerciseContainerOperations"
             WHERE user_id = $1 AND state = 'Running'
             LIMIT 1"#,
@@ -266,8 +339,14 @@ async fn claim<T: DeserializeOwned>(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(database_error)?;
-    if let Some((stale_id, stale_exercise_id, stale_intent, publication_id, lease_active)) =
-        competing
+    if let Some((
+        stale_id,
+        stale_exercise_id,
+        stale_intent,
+        publication_id,
+        lease_active,
+        runtime_started,
+    )) = competing
     {
         if lease_active {
             transaction.commit().await.map_err(database_error)?;
@@ -276,7 +355,26 @@ async fn claim<T: DeserializeOwned>(
         let same_target = stale_exercise_id == exercise_id
             && stale_intent == intent.as_str()
             && expected_publication_id.is_none_or(|expected| expected == publication_id);
-        if may_adopt_stale && same_target {
+        if !runtime_started {
+            sqlx::query(
+                r#"UPDATE "ExerciseContainerOperations"
+                      SET state = 'Failed', result = NULL,
+                          lease_expires_at_utc = clock_timestamp(),
+                          updated_at_utc = clock_timestamp()
+                    WHERE operation_id = $1 AND state = 'Running'"#,
+            )
+            .bind(stale_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        } else if may_adopt_stale && same_target {
+            if active_count(&mut transaction).await? >= MAX_DEPLOYMENT_OPERATIONS {
+                transaction.commit().await.map_err(database_error)?;
+                return Err(AppError::overloaded(
+                    "Exercise container capacity is busy",
+                    2,
+                ));
+            }
             let adopted = sqlx::query(
                 r#"UPDATE "ExerciseContainerOperations"
                       SET result = NULL, updated_at_utc = clock_timestamp(),
@@ -299,20 +397,15 @@ async fn claim<T: DeserializeOwned>(
                 operation_id: stale_id,
                 publication_id,
             }));
+        } else {
+            transaction.commit().await.map_err(database_error)?;
+            return Err(AppError::conflict(
+                "Retry the original exercise container operation ID so its runtime can be reconciled",
+            ));
         }
-        transaction.commit().await.map_err(database_error)?;
-        return Err(AppError::conflict(
-            "Retry the original exercise container operation ID so its runtime can be reconciled",
-        ));
     }
 
-    let active = sqlx::query_scalar::<_, i64>(
-        r#"SELECT COUNT(*)::bigint FROM "ExerciseContainerOperations"
-            WHERE state = 'Running' AND lease_expires_at_utc > clock_timestamp()"#,
-    )
-    .fetch_one(&mut *transaction)
-    .await
-    .map_err(database_error)?;
+    let active = active_count(&mut transaction).await?;
     if active >= MAX_DEPLOYMENT_OPERATIONS {
         transaction.commit().await.map_err(database_error)?;
         return Err(AppError::overloaded(
@@ -405,6 +498,61 @@ pub(super) async fn claim_delete(
     .await
 }
 
+pub(super) async fn mark_runtime_started(
+    pool: &sqlx::PgPool,
+    operation: &ClaimedOperation,
+) -> AppResult<()> {
+    let updated = sqlx::query(
+        r#"UPDATE "ExerciseContainerOperations"
+              SET runtime_started = TRUE, updated_at_utc = clock_timestamp()
+            WHERE operation_id = $1 AND publication_id = $2 AND state = 'Running'"#,
+    )
+    .bind(operation.operation_id)
+    .bind(operation.publication_id)
+    .execute(pool)
+    .await
+    .map_err(database_error)?;
+    if updated.rows_affected() != 1 {
+        return Err(AppError::conflict(
+            "Exercise operation ownership changed before runtime launch",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) async fn record_backend(
+    pool: &sqlx::PgPool,
+    operation: &ClaimedOperation,
+    backend_id: &str,
+) -> AppResult<()> {
+    if backend_id.is_empty() || backend_id.len() > 512 {
+        return Err(AppError::internal(
+            "exercise backend identity exceeds its durable bound",
+        ));
+    }
+    let stored = sqlx::query_scalar::<_, String>(
+        r#"UPDATE "ExerciseContainerOperations"
+              SET backend_id = COALESCE(backend_id, $3),
+                  updated_at_utc = clock_timestamp()
+            WHERE operation_id = $1 AND publication_id = $2
+              AND state = 'Running' AND runtime_started = TRUE
+        RETURNING backend_id"#,
+    )
+    .bind(operation.operation_id)
+    .bind(operation.publication_id)
+    .bind(backend_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| AppError::conflict("Exercise operation ownership changed after launch"))?;
+    if stored != backend_id {
+        return Err(AppError::conflict(
+            "Exercise operation resolved to another backend runtime",
+        ));
+    }
+    Ok(())
+}
+
 async fn complete<T: Serialize>(
     pool: &sqlx::PgPool,
     operation: &ClaimedOperation,
@@ -433,11 +581,32 @@ async fn complete<T: Serialize>(
     Ok(())
 }
 
-async fn fail(pool: &sqlx::PgPool, operation: &ClaimedOperation) {
-    if let Err(error) = sqlx::query(
+async fn settle_failed_work(pool: &sqlx::PgPool, operation: &ClaimedOperation) {
+    let terminalized = match sqlx::query(
         r#"UPDATE "ExerciseContainerOperations"
               SET state = 'Failed', result = NULL,
                   updated_at_utc = clock_timestamp(),
+                  lease_expires_at_utc = clock_timestamp()
+            WHERE operation_id = $1 AND publication_id = $2
+              AND state = 'Running' AND runtime_started = FALSE"#,
+    )
+    .bind(operation.operation_id)
+    .bind(operation.publication_id)
+    .execute(pool)
+    .await
+    {
+        Ok(result) => result.rows_affected() == 1,
+        Err(error) => {
+            tracing::warn!(%error, operation_id = %operation.operation_id, "failed to terminalize pre-launch exercise operation");
+            false
+        }
+    };
+    if terminalized {
+        return;
+    }
+    if let Err(error) = sqlx::query(
+        r#"UPDATE "ExerciseContainerOperations"
+              SET updated_at_utc = clock_timestamp(),
                   lease_expires_at_utc = clock_timestamp()
             WHERE operation_id = $1 AND publication_id = $2 AND state = 'Running'"#,
     )
@@ -446,7 +615,7 @@ async fn fail(pool: &sqlx::PgPool, operation: &ClaimedOperation) {
     .execute(pool)
     .await
     {
-        tracing::warn!(%error, operation_id = %operation.operation_id, "failed to release exercise operation");
+        tracing::warn!(%error, operation_id = %operation.operation_id, "failed to release ambiguous exercise operation");
     }
 }
 
@@ -463,7 +632,7 @@ where
         let permit: OwnedSemaphorePermit = match LOCAL_ADMISSION.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
-                fail(&pool, &operation).await;
+                settle_failed_work(&pool, &operation).await;
                 return Err(AppError::overloaded(
                     "Local exercise container capacity is busy",
                     2,
@@ -478,11 +647,11 @@ where
                 Ok(value)
             }
             Ok(Err(error)) => {
-                fail(&pool, &operation).await;
+                settle_failed_work(&pool, &operation).await;
                 Err(error)
             }
             Err(_) => {
-                fail(&pool, &operation).await;
+                settle_failed_work(&pool, &operation).await;
                 Err(AppError::overloaded(
                     "Exercise container operation timed out",
                     2,
@@ -573,6 +742,14 @@ mod tests {
         assert!((1..=256).contains(&MAX_LOCAL_RESULT_KEYS));
     }
 
+    #[test]
+    fn exercise_claim_fences_exact_durable_reap_markers() {
+        assert!(MANAGED_REAP_PENDING_SQL.contains("reap.scope_key = $1"));
+        assert!(MANAGED_REAP_PENDING_SQL.contains("container.id = reap.container_id"));
+        assert!(MANAGED_REAP_PENDING_SQL.contains("container.container_id = reap.backend_id"));
+        assert!(MANAGED_REAP_PENDING_SQL.contains("container.id = $2"));
+    }
+
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
     async fn exact_replay_and_competing_intent_use_one_pool_connection() {
@@ -602,11 +779,16 @@ mod tests {
             CREATE TABLE "AspNetUsers" (id UUID PRIMARY KEY);
             CREATE TABLE "ExerciseChallenges" (id INTEGER PRIMARY KEY);
             CREATE TABLE "Containers" (
-                id UUID PRIMARY KEY, status SMALLINT NOT NULL
+                id UUID PRIMARY KEY, status SMALLINT NOT NULL,
+                container_id TEXT NOT NULL
             );
             CREATE TABLE "ExerciseInstances" (
                 user_id UUID NOT NULL, exercise_id INTEGER NOT NULL,
                 container_id UUID, is_loaded BOOLEAN NOT NULL
+            );
+            CREATE TABLE "ManagedContainerReapOperations" (
+                backend_id TEXT PRIMARY KEY, container_id UUID NOT NULL UNIQUE,
+                scope_key TEXT NOT NULL
             );
             "#,
         )
@@ -617,6 +799,10 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::raw_sql(crate::migrations::EXERCISE_OPERATION_RECOVERY_SQL)
+            .execute(&pool)
+            .await
+            .unwrap();
         let user_id = Uuid::new_v4();
         sqlx::query(r#"INSERT INTO "AspNetUsers" VALUES ($1)"#)
             .bind(user_id)
@@ -624,6 +810,62 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(r#"INSERT INTO "ExerciseChallenges" VALUES (7)"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let reaping_container = Uuid::new_v4();
+        sqlx::query(
+            r#"INSERT INTO "Containers" (id, status, container_id)
+               VALUES ($1, $2, 'backend-reaping')"#,
+        )
+        .bind(reaping_container)
+        .bind(ContainerStatus::Running as i16)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "ManagedContainerReapOperations"
+                   (backend_id, container_id, scope_key)
+               VALUES ('backend-reaping', $1, $2)"#,
+        )
+        .bind(reaping_container)
+        .bind(format!("exercise-container:{user_id}:7"))
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            claim_create(&pool, Uuid::new_v4(), user_id, 7, None, false)
+                .await
+                .unwrap_err(),
+            AppError::RetryableUnavailable { .. }
+        ));
+        sqlx::query(
+            r#"UPDATE "ManagedContainerReapOperations"
+                  SET scope_key = 'exercise-container:another-scope'"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            claim_create(
+                &pool,
+                Uuid::new_v4(),
+                user_id,
+                7,
+                Some(reaping_container),
+                false,
+            )
+            .await
+            .unwrap_err(),
+            AppError::RetryableUnavailable { .. }
+        ));
+        sqlx::query(r#"DELETE FROM "ManagedContainerReapOperations""#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"DELETE FROM "Containers" WHERE id = $1"#)
+            .bind(reaping_container)
             .execute(&pool)
             .await
             .unwrap();
@@ -654,12 +896,15 @@ mod tests {
         .unwrap_err();
         assert!(matches!(competing, AppError::TooManyRequests { .. }));
 
-        sqlx::query(r#"INSERT INTO "Containers" VALUES ($1, $2)"#)
-            .bind(operation.publication_id)
-            .bind(ContainerStatus::Running as i16)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "Containers" (id, status, container_id)
+               VALUES ($1, $2, 'backend-live')"#,
+        )
+        .bind(operation.publication_id)
+        .bind(ContainerStatus::Running as i16)
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(r#"INSERT INTO "ExerciseInstances" VALUES ($1, 7, $2, TRUE)"#)
             .bind(user_id)
             .bind(operation.publication_id)

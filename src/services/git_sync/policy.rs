@@ -20,6 +20,7 @@ pub enum ImportPolicy {
 pub(super) const MAX_PENDING_MANIFEST_BYTES: u64 = 1024 * 1024;
 pub(super) const MAX_PENDING_STATIC_FLAGS: usize = 64;
 pub(super) const MAX_PENDING_HINTS: usize = 64;
+pub(crate) const MAX_PENDING_CHALLENGES_PER_USER_GAME: i64 = 10;
 const MAX_PENDING_FLAG_BYTES: usize = 4 * 1024;
 const MAX_PENDING_HINT_BYTES: usize = 16 * 1024;
 

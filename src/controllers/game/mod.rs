@@ -302,6 +302,9 @@ pub struct GameJoinCheckInfoModel {
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientFlagContext {
+    /// Current accepted participation, used only to scope durable lifecycle
+    /// operation identities across account/team changes in the same tab.
+    pub participation_id: Option<i32>,
     /// Immutable container UUID used to fence asynchronous lifecycle results.
     pub instance_id: Option<Uuid>,
     pub instance_entry: Option<String>,
@@ -965,7 +968,7 @@ pub use cheat_evidence::*;
 pub use combined_scoreboard::*;
 pub use containers::*;
 pub(crate) use containers::{
-    prepare_queued_image, purge_terminal_operations, repair_missing_legacy_image,
+    prepare_queued_image, repair_missing_legacy_image, sweep_container_operations,
 };
 use lookups::*;
 pub use participation_review::*;

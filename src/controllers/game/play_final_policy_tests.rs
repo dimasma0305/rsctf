@@ -16,6 +16,7 @@ fn challenge_model() -> ChallengeDetailModel {
         hints: None,
         score: 100,
         context: ClientFlagContext {
+            participation_id: Some(8),
             instance_id: Some(Uuid::from_u128(4)),
             instance_entry: Some("tcp://private.example:31337".into()),
             close_time: Some(Utc::now()),

@@ -41,19 +41,10 @@ pub async fn approve_challenge(
     Path((id, c_id)): Path<(i32, i32)>,
 ) -> AppResult<MessageResponse> {
     manager_or_admin(&st, &user, id).await?;
-    // Review activation/deactivation changes runtime eligibility. Retain the
-    // challenge-wide transition through checker/build publication or teardown
-    // so a concurrent approve/reject cannot overtake stale cleanup.
-    let runtime_transition =
-        crate::services::challenge_workloads::acquire_runtime_transition_lock(st.pg(), c_id)
-            .await?;
+    // Review activation/deactivation changes runtime eligibility.
     let mut challenge = load_challenge(&st, id, c_id).await?;
     deletion::reject_pending_mutation(st.pg(), id, c_id).await?;
     if challenge.review_status == ChallengeReviewStatus::Active {
-        runtime_transition
-            .release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
         return Ok(MessageResponse::ok(""));
     }
     if let Some(spec) = challenge.workload_spec.clone() {
@@ -62,20 +53,27 @@ pub async fn approve_challenge(
             spec,
         )?;
     }
-    // A submitted archive is immutable blob content. Prepare its reviewed
-    // process checker before opening the game transaction. The retained runtime
-    // transition is a close-on-drop session lease, so storage I/O cannot convoy
-    // event-control transactions.
-    let mut checker_artifact_guard = if challenge.challenge_type.uses_ad_engine() {
-        Some(crate::services::git_sync::acquire_checker_artifact_guard(&st).await?)
-    } else {
-        None
-    };
+    // A submitted archive is immutable blob content. Load and prepare it before
+    // acquiring either PostgreSQL-backed publication fence. A newly prepared
+    // revision is protected by the collector's age grace; an existing revision
+    // is already reachable from this pending challenge. The exact challenge is
+    // revalidated after both fences are acquired below.
     let checker_path = if challenge.challenge_type.uses_ad_engine() {
         crate::services::git_sync::prepare_reviewed_checker(&st, &challenge).await?
     } else {
         challenge.ad_checker_image.clone()
     };
+    let mut checker_artifact_guard = if challenge.challenge_type.uses_ad_engine() {
+        Some(crate::services::git_sync::acquire_checker_artifact_guard(&st).await?)
+    } else {
+        None
+    };
+    // Retain the challenge-wide transition only through the short publication
+    // and later runtime/build work; no blob-store read happens while it owns a
+    // pooled connection.
+    let runtime_transition =
+        crate::services::challenge_workloads::acquire_runtime_transition_lock(st.pg(), c_id)
+            .await?;
 
     // Pending local-container imports deliberately retain the complete reviewed
     // package and do not execute Docker. Before activation, publish the valid
