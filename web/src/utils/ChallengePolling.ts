@@ -1,4 +1,5 @@
 import { httpErrorStatus, retryAfterMilliseconds } from '@Utils/ProfileRetry'
+import { getServerNowMilliseconds } from '@Utils/ServerClock'
 import { createUuid } from '@Utils/Uuid'
 
 export const MAX_CHALLENGE_POLL_RETRIES = 3
@@ -59,6 +60,15 @@ const responseTraceId = (error: unknown) => {
   return safeDiagnosticId(traceId ?? null)
 }
 
+const challengeRetryAfterMilliseconds = (error: unknown, now: number): number | null => {
+  const headerDelay = retryAfterMilliseconds(error, now)
+  const retryAt = error && typeof error === 'object' ? (error as { retryAt?: unknown }).retryAt : undefined
+  const deadlineDelay = typeof retryAt === 'number' && Number.isFinite(retryAt) ? Math.max(0, retryAt - now) : null
+  if (headerDelay === null) return deadlineDelay
+  if (deadlineDelay === null) return headerDelay
+  return Math.max(headerDelay, deadlineDelay)
+}
+
 export const createChallengeRequestId = (resource: ChallengeReadResource) => `challenge-${resource}-${createUuid()}`
 
 export const challengeRequestHeaders = (requestId: string) => ({
@@ -72,7 +82,7 @@ export const challengeRequestHeaders = (requestId: string) => ({
 export const captureChallengeReadFailure = (error: unknown, resource: ChallengeReadResource, requestId: string) => {
   const normalized =
     error && typeof error === 'object' ? error : new Error('Challenge request failed', { cause: error })
-  const retryAfter = retryAfterMilliseconds(normalized)
+  const retryAfter = challengeRetryAfterMilliseconds(normalized, getServerNowMilliseconds())
   READ_FAILURES.set(normalized, {
     resource,
     requestId,
@@ -136,11 +146,11 @@ export const challengePollRetryDelay = (
   error: unknown,
   retryCount: number,
   random: () => number = Math.random,
-  now: number = Date.now()
+  now: number = getServerNowMilliseconds()
 ): number | null => {
   if (retryCount >= MAX_CHALLENGE_POLL_RETRIES || !isChallengePollRetryable(error)) return null
 
-  const retryAfter = retryAfterMilliseconds(error, now)
+  const retryAfter = challengeRetryAfterMilliseconds(error, now)
   if (retryAfter !== null && retryAfter > MAX_CHALLENGE_RETRY_AFTER_MS) return null
   const jitter = 0.8 + Math.min(1, Math.max(0, random())) * 0.4
   const backoff = Math.min(MAX_CHALLENGE_BACKOFF_MS, Math.round(1_000 * 2 ** retryCount * jitter))
@@ -185,7 +195,8 @@ export const createChallengePollOwner = () => {
 
 type RecoveryEntry = {
   dueAt: number
-  action: () => void
+  action: () => boolean | void
+  deferred: boolean
 }
 
 /**
@@ -196,43 +207,80 @@ type RecoveryEntry = {
 export const createChallengeRecoveryOwner = () => {
   const entries = new Map<string, RecoveryEntry>()
   let timer: ReturnType<typeof setTimeout> | null = null
+  let removeActivityListeners: (() => void) | null = null
 
-  const arm = () => {
+  const stopListeningForActivity = () => {
+    removeActivityListeners?.()
+    removeActivityListeners = null
+  }
+
+  const syncActivityListeners = () => {
+    const hasDeferred = Array.from(entries.values()).some((entry) => entry.deferred)
+    if (!hasDeferred) {
+      stopListeningForActivity()
+      return
+    }
+    if (removeActivityListeners) return
+    const currentDocument = typeof document === 'undefined' ? null : document
+    const currentWindow = typeof window === 'undefined' ? null : window
+    if (!currentDocument && !currentWindow) return
+    const resume = () => {
+      for (const [key, entry] of entries) {
+        if (!entry.deferred || entry.action() === false) continue
+        entries.delete(key)
+      }
+      syncActivityListeners()
+      arm()
+    }
+    currentDocument?.addEventListener('visibilitychange', resume)
+    currentWindow?.addEventListener('focus', resume)
+    currentWindow?.addEventListener('online', resume)
+    removeActivityListeners = () => {
+      currentDocument?.removeEventListener('visibilitychange', resume)
+      currentWindow?.removeEventListener('focus', resume)
+      currentWindow?.removeEventListener('online', resume)
+    }
+  }
+
+  function arm() {
     if (timer !== null) clearTimeout(timer)
     timer = null
-    if (entries.size === 0) return
+    syncActivityListeners()
+    const scheduled = Array.from(entries.values()).filter((entry) => !entry.deferred)
+    if (scheduled.length === 0) return
     const now = Date.now()
-    const nextDue = Math.min(...Array.from(entries.values(), (entry) => entry.dueAt))
+    const nextDue = Math.min(...scheduled.map((entry) => entry.dueAt))
     timer = setTimeout(
       () => {
         timer = null
         const readyAt = Date.now()
-        const ready: RecoveryEntry[] = []
         for (const [key, entry] of entries) {
-          if (entry.dueAt > readyAt) continue
-          entries.delete(key)
-          ready.push(entry)
+          if (entry.deferred || entry.dueAt > readyAt) continue
+          if (entry.action() === false) entry.deferred = true
+          else entries.delete(key)
         }
+        syncActivityListeners()
         arm()
-        for (const entry of ready) entry.action()
       },
       Math.max(0, nextDue - now)
     )
   }
 
   return {
-    schedule(key: string, delay: number, action: () => void) {
-      entries.set(key, { dueAt: Date.now() + Math.max(0, delay), action })
+    schedule(key: string, delay: number, action: () => boolean | void) {
+      entries.set(key, { dueAt: Date.now() + Math.max(0, delay), action, deferred: false })
       arm()
     },
     cancel(key: string) {
       if (!entries.delete(key)) return
+      syncActivityListeners()
       arm()
     },
     cancelAll() {
       entries.clear()
       if (timer !== null) clearTimeout(timer)
       timer = null
+      stopListeningForActivity()
     },
     pendingEntryCount: () => entries.size,
     pendingTimerCount: () => (timer === null ? 0 : 1),

@@ -39,6 +39,15 @@ test('challenge polling bounds transient retries and honors Retry-After', () => 
     null
   )
   assert.equal(isChallengePollRetryable({ response: { status: 503 } }), true)
+  assert.equal(
+    challengePollRetryDelay({ retryAt: 12_000 }, 0, () => 0, 0),
+    12_000,
+    'typed VPN proof failures must retain their circuit retry deadline'
+  )
+  assert.equal(
+    challengePollRetryDelay({ retryAt: 360_001 }, 0, () => 0, 0),
+    null
+  )
 })
 
 test('challenge poll owner keeps one request and one retry timer', () => {

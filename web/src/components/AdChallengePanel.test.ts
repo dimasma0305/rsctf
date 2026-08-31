@@ -97,7 +97,7 @@ test('A&D failures stay retryable and a missing BYOC row never requests managed 
   let stateReads = 0
   gameApi.gameAdState = (async () => {
     stateReads += 1
-    if (stateReads !== 3) throw permanentError
+    if (stateReads !== 4) throw permanentError
     return {
       status: 200,
       data: state,
@@ -162,6 +162,15 @@ test('A&D failures stay retryable and a missing BYOC row never requests managed 
     assert.ok(mounted.container.querySelector('button[aria-label="Retry A&D state"]'))
 
     await act(async () => mounted.root.unmount())
+    mounted = await mount(false, undefined, true, 13, 50)
+    const failedByocText = mounted.container.textContent ?? ''
+    assert.match(failedByocText, /access was revoked/i)
+    assert.match(failedByocText, /self-hosted BYOC challenge/i)
+    assert.doesNotMatch(failedByocText, /No service for your team yet|Ensure containers/i)
+    assert.ok(mounted.container.querySelector('a[href="/api/Game/13/Ad/Byoc/Setup/50"][download]'))
+    assert.ok(mounted.container.querySelector('a[href="/api/Game/13/Ad/Byoc/Compose/50"][download]'))
+
+    await act(async () => mounted.root.unmount())
     mounted = await mount(true)
     assert.ok(mounted.container.querySelector('[role="alert"]'), 'snapshot-only failures must not render nothing')
     const retry = mounted.container.querySelector<HTMLButtonElement>('button[aria-label="Retry A&D state"]')
@@ -171,7 +180,7 @@ test('A&D failures stay retryable and a missing BYOC row never requests managed 
       retry.click()
       await flush()
     })
-    assert.equal(stateReads, 3, 'explicit Retry performs one fresh state read')
+    assert.equal(stateReads, 4, 'explicit Retry performs one fresh state read')
     assert.equal(mounted.container.querySelector('[role="alert"]'), null)
     assert.match(mounted.container.querySelector('a[download]')?.textContent ?? '', /Download \.tar\.gz/)
 
