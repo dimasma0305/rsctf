@@ -54,7 +54,8 @@ async fn maximum_body_and_roster_remain_bounded_before_snapshot_work() {
            );
            CREATE TABLE "KothApiTeamTokens" (
              game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
-             participation_id INTEGER NOT NULL, token TEXT NOT NULL
+             participation_id INTEGER NOT NULL, token TEXT NOT NULL,
+             revocation_pending BOOLEAN NOT NULL
            );
            CREATE TABLE "KothApiObservationOperations" (
              challenge_id INTEGER NOT NULL, game_id INTEGER NOT NULL,
@@ -78,7 +79,7 @@ async fn maximum_body_and_roster_remain_bounded_before_snapshot_work() {
            SELECT 7, jsonb_agg(value ORDER BY value)
              FROM generate_series(1, 2000) value;
            INSERT INTO "KothApiTeamTokens"
-           SELECT 7, 9, value, 'koth_max_' || value::text
+           SELECT 7, 9, value, 'koth_max_' || value::text, FALSE
              FROM generate_series(1, 2000) value;"#,
     )
     .execute(&pool)
