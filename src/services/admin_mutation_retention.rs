@@ -2,32 +2,18 @@
 
 use crate::utils::error::{AppError, AppResult};
 
-const PURGE_STATEMENTS: [&str; 6] = [
+const PURGE_STATEMENTS: [&str; 3] = [
     r#"DELETE FROM "BulkChallengeMutationOperations" WHERE ctid IN (
           SELECT ctid FROM "BulkChallengeMutationOperations"
            WHERE state = 2
              AND completed_at_utc < clock_timestamp() - INTERVAL '30 days'
            ORDER BY completed_at_utc, game_id, operation_id
            LIMIT $1 FOR UPDATE SKIP LOCKED)"#,
-    r#"DELETE FROM "BulkChallengeMutationOperations" WHERE ctid IN (
-          SELECT ctid FROM "BulkChallengeMutationOperations"
-           WHERE state IN (0, 1)
-             AND lease_expires_at_utc <= clock_timestamp()
-             AND created_at_utc < clock_timestamp() - INTERVAL '7 days'
-           ORDER BY created_at_utc, game_id, operation_id
-           LIMIT $1 FOR UPDATE SKIP LOCKED)"#,
     r#"DELETE FROM "FlagImportOperations" WHERE ctid IN (
           SELECT ctid FROM "FlagImportOperations"
-           WHERE state = 1
+           WHERE state IN (1, 2)
              AND completed_at_utc < clock_timestamp() - INTERVAL '30 days'
            ORDER BY completed_at_utc, challenge_id, operation_id
-           LIMIT $1 FOR UPDATE SKIP LOCKED)"#,
-    r#"DELETE FROM "FlagImportOperations" WHERE ctid IN (
-          SELECT ctid FROM "FlagImportOperations"
-           WHERE state = 0
-             AND lease_expires_at_utc <= clock_timestamp()
-             AND created_at_utc < clock_timestamp() - INTERVAL '7 days'
-           ORDER BY created_at_utc, challenge_id, operation_id
            LIMIT $1 FOR UPDATE SKIP LOCKED)"#,
     r#"DELETE FROM "TeamInviteOperations" WHERE ctid IN (
           SELECT ctid FROM "TeamInviteOperations"
@@ -35,17 +21,11 @@ const PURGE_STATEMENTS: [&str; 6] = [
              AND created_at_utc < clock_timestamp() - INTERVAL '30 days'
            ORDER BY created_at_utc, team_id, operation_id
            LIMIT $1 FOR UPDATE SKIP LOCKED)"#,
-    r#"DELETE FROM "TeamInviteOperations" WHERE ctid IN (
-          SELECT ctid FROM "TeamInviteOperations"
-           WHERE reconciled_at_utc IS NULL
-             AND created_at_utc < clock_timestamp() - INTERVAL '30 days'
-           ORDER BY created_at_utc, team_id, operation_id
-           LIMIT $1 FOR UPDATE SKIP LOCKED)"#,
 ];
 
-/// Purge a bounded page from each operation family. Running leases are never
-/// removed until they are both expired and old enough that every documented
-/// handler/runtime deadline has elapsed.
+/// Purge a bounded page of terminal operation identities. Pending, running,
+/// and unreconciled work remains durable regardless of age so a reconciler can
+/// always resume it rather than silently abandoning an external side effect.
 pub async fn purge_expired(pool: &sqlx::PgPool, limit_per_family: i64) -> AppResult<u64> {
     let limit = limit_per_family.clamp(1, 512);
     let mut transaction = pool
@@ -77,13 +57,16 @@ mod tests {
     use std::str::FromStr;
 
     #[test]
-    fn every_operation_family_has_terminal_and_abandoned_retention() {
+    fn every_operation_family_purges_only_terminal_reconciled_work() {
         let sql = PURGE_STATEMENTS.join("\n");
         assert!(sql.contains("BulkChallengeMutationOperations"));
         assert!(sql.contains("FlagImportOperations"));
         assert!(sql.contains("TeamInviteOperations"));
-        assert!(sql.contains("lease_expires_at_utc <= clock_timestamp()"));
-        assert!(sql.contains("reconciled_at_utc IS NULL"));
+        assert!(sql.contains("state = 2"));
+        assert!(sql.contains("state IN (1, 2)"));
+        assert!(sql.contains("reconciled_at_utc IS NOT NULL"));
+        assert!(!sql.contains("state IN (0, 1)"));
+        assert!(!sql.contains("reconciled_at_utc IS NULL"));
         assert!(PURGE_STATEMENTS
             .iter()
             .all(|statement| statement.contains("LIMIT $1 FOR UPDATE SKIP LOCKED")));
@@ -91,7 +74,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn terminal_and_abandoned_rows_are_purged_without_touching_recent_work() {
+    async fn only_terminal_reconciled_rows_are_purged_regardless_of_pending_age() {
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
             .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
         let admin = PgPoolOptions::new()
@@ -140,7 +123,8 @@ mod tests {
             INSERT INTO "BulkChallengeMutationOperations" VALUES
                 (1, '00000000-0000-0000-0000-000000000001', 2, NOW(), NOW() - INTERVAL '31 days', NOW() - INTERVAL '31 days'),
                 (1, '00000000-0000-0000-0000-000000000002', 1, NOW() - INTERVAL '8 days', NULL, NOW() - INTERVAL '8 days'),
-                (1, '00000000-0000-0000-0000-000000000003', 1, NOW() - INTERVAL '1 hour', NULL, NOW() - INTERVAL '1 hour');
+                (1, '00000000-0000-0000-0000-000000000003', 0, NOW() - INTERVAL '8 days', NULL, NOW() - INTERVAL '8 days'),
+                (1, '00000000-0000-0000-0000-00000000000a', 1, NOW() - INTERVAL '1 hour', NULL, NOW() - INTERVAL '1 hour');
             INSERT INTO "FlagImportOperations" VALUES
                 (1, '00000000-0000-0000-0000-000000000004', 1, NOW(), NOW() - INTERVAL '31 days', NOW() - INTERVAL '31 days'),
                 (1, '00000000-0000-0000-0000-000000000005', 0, NOW() - INTERVAL '8 days', NULL, NOW() - INTERVAL '8 days'),
@@ -155,7 +139,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(purge_expired(&pool, 1).await.unwrap(), 6);
+        assert_eq!(purge_expired(&pool, 1).await.unwrap(), 3);
         let remaining: i64 = sqlx::query_scalar(
             r#"SELECT
                 (SELECT COUNT(*) FROM "BulkChallengeMutationOperations")
@@ -165,7 +149,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(remaining, 3);
+        assert_eq!(remaining, 7);
 
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

@@ -543,7 +543,11 @@ fn validate_import_challenges(challenges: &[ExportChallengeModel]) -> AppResult<
             )?;
         }
         if challenge.challenge_type == ChallengeType::DynamicContainer {
-            if let Some(template) = challenge.flag_template.as_deref() {
+            if let Some(template) = challenge
+                .flag_template
+                .as_deref()
+                .filter(|template| !crate::utils::flag_policy::is_blank(template))
+            {
                 crate::utils::flag_policy::validate_dynamic_template(template)
                     .map_err(|error| AppError::bad_request(error.to_string()))?;
             }

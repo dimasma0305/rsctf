@@ -200,7 +200,7 @@ pub(super) async fn load_hill_spec(st: &SharedState, cycle: &CycleRow) -> AppRes
                      FROM "FlagContexts" flag
                     WHERE flag.challenge_id = challenge.id
                       AND OCTET_LENGTH(flag.flag) BETWEEN 1 AND 127
-                      AND flag.flag !~ '(^[[:space:]])|([[:space:]]$)'
+                      AND NOT rsctf_flag_has_boundary_whitespace(flag.flag)
                     ORDER BY flag.id
                     LIMIT 1) AS runtime_flag,
                   EXISTS (
@@ -208,7 +208,7 @@ pub(super) async fn load_hill_spec(st: &SharedState, cycle: &CycleRow) -> AppRes
                      WHERE flag.challenge_id = challenge.id
                        AND NOT (
                          OCTET_LENGTH(flag.flag) BETWEEN 1 AND 127
-                         AND flag.flag !~ '(^[[:space:]])|([[:space:]]$)'
+                         AND NOT rsctf_flag_has_boundary_whitespace(flag.flag)
                        )
                   ) AS runtime_flag_invalid
              FROM "GameChallenges" challenge

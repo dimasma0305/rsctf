@@ -49,7 +49,11 @@ pub fn start_control_listener(
                         }
                         "InternalByocRevokeChallenge" => {
                             if let Ok(id) = event.payload.parse::<i32>() {
-                                if let Err(error) = st.byoc.disconnect_challenge_inner(&st.db, id, false).await {
+                                if let Err(error) = st
+                                    .byoc
+                                    .disconnect_challenge_inner(&st.db, id, false, false)
+                                    .await
+                                {
                                     tracing::warn!(challenge = id, %error, "cross-replica BYOC challenge revocation failed");
                                 }
                             }

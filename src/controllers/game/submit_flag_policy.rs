@@ -13,7 +13,7 @@ pub(super) async fn ensure_flag_contexts(
                 WHERE challenge_id = $1
                   AND NOT (
                       OCTET_LENGTH(flag) BETWEEN 1 AND $2
-                      AND flag !~ '(^[[:space:]])|([[:space:]]$)'
+                      AND NOT rsctf_flag_has_boundary_whitespace(flag)
                   )
            )"#,
     )
@@ -45,7 +45,7 @@ pub(super) async fn ensure_variants(
                       jsonb_typeof(manifest->'flag') IS DISTINCT FROM 'string'
                       OR NOT (
                           OCTET_LENGTH(manifest->>'flag') BETWEEN 1 AND $3
-                          AND manifest->>'flag' !~ '(^[[:space:]])|([[:space:]]$)'
+                          AND NOT rsctf_flag_has_boundary_whitespace(manifest->>'flag')
                       )
                   )
            )"#,

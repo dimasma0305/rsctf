@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { parsePlainFlagRows, validateFlagRows } from './FlagImport'
+import { parsePlainFlagRows, parseRemoteFlagRows, validateFlagRows } from './FlagImport'
 
 const utility = readFileSync('src/utils/FlagImport.ts', 'utf8')
 const modal = readFileSync('src/components/admin/FlagCreateModal.tsx', 'utf8')
@@ -13,7 +13,7 @@ test('flag imports bound rows and UTF-8 field bytes before sending', () => {
   assert.match(utility, /MAX_FLAG_IMPORT_ROWS = 100/)
   assert.match(utility, /MAX_FLAG_BYTES = 127/)
   assert.match(utility, /TextEncoder/)
-  assert.match(utility, /row\.flag\.trim\(\) !== row\.flag/)
+  assert.match(utility, /hasFlagBoundaryWhitespace\(row\.flag\)/)
   assert.match(modal, /submitting\.current/)
   assert.match(remoteModal, /operationId\.current \?\?= crypto\.randomUUID\(\)/)
   assert.match(localModal, /operationId\.current \?\?= crypto\.randomUUID\(\)/)
@@ -32,5 +32,12 @@ test('flag row validation uses UTF-8 bytes and canonical surrounding whitespace'
   assert.equal(validateFlagRows([{ flag: '界'.repeat(42) }]), null)
   assert.match(validateFlagRows([{ flag: '界'.repeat(43) }]) ?? '', /127 UTF-8 bytes/)
   assert.match(validateFlagRows([{ flag: ' flag{answer}' }]) ?? '', /whitespace/)
+  assert.match(validateFlagRows([{ flag: '\u00a0flag{answer}' }]) ?? '', /whitespace/)
+  assert.match(validateFlagRows([{ flag: 'flag{answer}\u2003' }]) ?? '', /whitespace/)
+  assert.match(validateFlagRows([{ flag: '\ufeffflag{answer}' }]) ?? '', /whitespace/)
   assert.equal(parsePlainFlagRows('flag{one}\n\nflag{two}').length, 2)
+  assert.equal(parsePlainFlagRows('flag{one}\n\u00a0\u2003\nflag{two}').length, 2)
+  assert.deepEqual(parseRemoteFlagRows('flag{one}\u2003https://example.test/file'), [
+    { flag: 'flag{one}', attachmentType: 'Remote', remoteUrl: 'https://example.test/file' },
+  ])
 })

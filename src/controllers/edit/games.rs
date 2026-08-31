@@ -36,6 +36,9 @@ pub struct GameInfoModel {
     pub poster_url: Option<String>,
     #[serde(default)]
     pub public_key: String,
+    /// Monotonic source fence used by the bounded clone contract.
+    #[serde(default, skip_deserializing)]
+    pub source_revision: i64,
     #[serde(default = "default_true")]
     pub practice_mode: bool,
     #[serde(
@@ -129,6 +132,7 @@ impl GameInfoModel {
             discord_webhook: g.discord_webhook.clone(),
             poster_url: g.poster_url(),
             public_key: g.public_key.clone(),
+            source_revision: g.challenge_configuration_revision,
             practice_mode: g.practice_mode,
             start_time_utc: g.start_time_utc,
             end_time_utc: g.end_time_utc,
@@ -770,7 +774,8 @@ pub async fn update_game(
                vpn_provider_dns_telemetry_enabled = $37,
                vpn_source_asn_telemetry_enabled = $38,
                vpn_device_sharing_telemetry_enabled = $39,
-               vpn_policy_revision = $40
+               vpn_policy_revision = $40,
+               challenge_configuration_revision = challenge_configuration_revision + 1
              WHERE id = $1"#,
     )
     .bind(id)

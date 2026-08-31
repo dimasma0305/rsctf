@@ -830,6 +830,8 @@ pub async fn update(
         model.real_name.as_deref(),
         model.std_number.as_deref(),
     )?;
+    let original_user_name = current.user_name.clone();
+    let mut user_name_changed = false;
     let mut am: user::ActiveModel = current.into();
 
     if let Some(name) = model.user_name {
@@ -851,6 +853,7 @@ pub async fn update(
             {
                 return Err(AppError::conflict("Username already taken"));
             }
+            user_name_changed = original_user_name.as_deref() != Some(name.as_str());
             am.normalized_user_name = Set(Some(norm));
             am.user_name = Set(Some(name));
         }
@@ -868,6 +871,12 @@ pub async fn update(
         am.std_number = Set(std_number);
     }
     am.update(&st.db).await?;
+    if user_name_changed {
+        if let Err(error) = crate::controllers::team::flush_scoreboard_for_user(&st, user.id).await
+        {
+            tracing::warn!(%error, user_id = %user.id, "post-rename scoreboard invalidation deferred");
+        }
+    }
 
     // RSCTF `AccountController` audit event (`Account_UserUpdated`). Best-effort.
     crate::services::audit::info(

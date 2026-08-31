@@ -1579,6 +1579,9 @@ export interface GameInfoModel {
   poster?: string | null;
   /** Game public key */
   publicKey?: string;
+  /** Monotonic source fence used by the bounded clone contract. */
+  /** @format int64 */
+  sourceRevision: number;
   /** Is the game in practice mode (accessible even after the game ends) */
   practiceMode?: boolean;
   /**
@@ -1697,6 +1700,9 @@ export interface ArrayResponseOfGameInfoModel {
 export interface GameCloneModel {
   /** Stable across retries of the same organizer action. */
   operationId: string;
+  /** Source revision observed before submitting the clone intent. */
+  /** @format int64 */
+  expectedSourceRevision: number;
   title: string;
   /** @format int64 */
   startTimeUtc: number;
@@ -1768,12 +1774,12 @@ export interface Division {
   /**
    * The name of the division.
    * @minLength 1
-   * @maxLength 31
+   * @maxLength 128
    */
   name: string;
   /**
    * Invitation code for joining the division.
-   * @maxLength 32
+   * @maxLength 256
    */
   inviteCode?: string | null;
   /** Permissions associated with the division. */
@@ -1795,12 +1801,12 @@ export interface DivisionCreateModel {
   /**
    * The name of the division.
    * @minLength 1
-   * @maxLength 31
+   * @maxLength 128
    */
   name: string;
   /**
    * Invitation code for joining the division.
-   * @maxLength 32
+   * @maxLength 256
    */
   inviteCode?: string | null;
   /** Permissions associated with the division. */
@@ -1824,12 +1830,12 @@ export interface DivisionEditModel {
   expectedRevision: number;
   /**
    * The name of the division.
-   * @maxLength 31
+   * @maxLength 128
    */
   name?: string | null;
   /**
    * Invitation code for joining the division.
-   * @maxLength 32
+   * @maxLength 256
    */
   inviteCode?: string | null;
   /** Permissions associated with the division. */

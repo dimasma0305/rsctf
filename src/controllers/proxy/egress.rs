@@ -281,7 +281,7 @@ pub(super) async fn build_egress_scan(
                                   AND participation.game_id = $4
                                   AND flag.id = $5
                                   AND OCTET_LENGTH(flag.flag) BETWEEN 1 AND $6
-                                  AND flag.flag !~ '(^[[:space:]])|([[:space:]]$)'"#,
+                                  AND NOT rsctf_flag_has_boundary_whitespace(flag.flag)"#,
                         )
                         .bind(key.participation_id)
                         .bind(key.challenge_id)

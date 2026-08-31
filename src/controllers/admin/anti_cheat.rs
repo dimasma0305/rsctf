@@ -376,14 +376,37 @@ struct StoredOverrideOperation {
 const MAX_ACTIVE_VPN_OVERRIDES: i64 = 16;
 const VPN_OVERRIDE_HISTORY_LIMIT: i64 = 100;
 const VPN_OVERRIDE_MAINTENANCE_LIMIT: i64 = 128;
+const CREATE_VPN_OVERRIDE_SQL: &str = r#"
+    WITH observed_clock AS MATERIALIZED (
+        SELECT clock_timestamp() AS now
+    )
+    INSERT INTO "EventVpnGateOverrides"
+      (id, game_id, created_by_user_id, reason, created_at_utc,
+       expires_at_utc, policy_revision)
+    SELECT $1, $2, $3, $4, observed_clock.now,
+           observed_clock.now + make_interval(mins => $5), $6
+      FROM observed_clock
+    RETURNING expires_at_utc
+"#;
 
-fn override_request_digest(action: &str, reason: &str, duration: i32, id: Option<Uuid>) -> Vec<u8> {
+fn valid_override_reason(reason: &str) -> bool {
+    (8..=512).contains(&reason.chars().count())
+}
+
+fn override_request_digest(
+    action: &str,
+    reason: &str,
+    duration: i32,
+    id: Option<Uuid>,
+    expected_policy_revision: i64,
+) -> Vec<u8> {
     let mut digest = Sha256::new();
     digest.update(b"rsctf:event-vpn-override-operation:v1\0");
     digest.update(action.as_bytes());
     digest.update([0]);
     digest.update(reason.as_bytes());
     digest.update(duration.to_be_bytes());
+    digest.update(expected_policy_revision.to_be_bytes());
     if let Some(id) = id {
         digest.update(id.as_bytes());
     }
@@ -514,14 +537,20 @@ pub async fn create_event_vpn_override(
     let reason = request.reason.trim();
     if request.operation_id.is_nil()
         || request.expected_policy_revision < 1
-        || !(8..=512).contains(&reason.len())
+        || !valid_override_reason(reason)
         || !(1..=60).contains(&request.duration_minutes)
     {
         return Err(AppError::bad_request(
-            "Override requires an operation ID, observed policy revision, an 8 to 512 byte reason, and 1 to 60 minute duration",
+            "Override requires an operation ID, observed policy revision, an 8 to 512 character reason, and 1 to 60 minute duration",
         ));
     }
-    let digest = override_request_digest("create", reason, request.duration_minutes, None);
+    let digest = override_request_digest(
+        "create",
+        reason,
+        request.duration_minutes,
+        None,
+        request.expected_policy_revision,
+    );
     let mut transaction = st
         .pg()
         .begin()
@@ -579,22 +608,16 @@ pub async fn create_event_vpn_override(
     }
     let policy_revision = current_revision + 1;
     let id = Uuid::now_v7();
-    let expires_at_utc: DateTime<Utc> = sqlx::query_scalar(
-        r#"INSERT INTO "EventVpnGateOverrides"
-             (id, game_id, created_by_user_id, reason, expires_at_utc, policy_revision)
-           VALUES ($1, $2, $3, $4,
-                   clock_timestamp() + make_interval(mins => $5), $6)
-           RETURNING expires_at_utc"#,
-    )
-    .bind(id)
-    .bind(game_id)
-    .bind(admin.0.id)
-    .bind(reason)
-    .bind(request.duration_minutes)
-    .bind(policy_revision)
-    .fetch_one(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    let expires_at_utc: DateTime<Utc> = sqlx::query_scalar(CREATE_VPN_OVERRIDE_SQL)
+        .bind(id)
+        .bind(game_id)
+        .bind(admin.0.id)
+        .bind(reason)
+        .bind(request.duration_minutes)
+        .bind(policy_revision)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     sqlx::query(r#"UPDATE "Games" SET vpn_policy_revision = $2 WHERE id = $1"#)
         .bind(game_id)
         .bind(policy_revision)
@@ -640,7 +663,13 @@ pub async fn revoke_event_vpn_override(
             "Revoke requires an operation ID and observed policy revision",
         ));
     }
-    let digest = override_request_digest("revoke", "", 0, Some(override_id));
+    let digest = override_request_digest(
+        "revoke",
+        "",
+        0,
+        Some(override_id),
+        request.expected_policy_revision,
+    );
     let mut transaction = st
         .pg()
         .begin()
@@ -766,20 +795,37 @@ mod tests {
     #[test]
     fn vpn_override_operation_digest_binds_every_semantic_input() {
         let id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
-        let create = override_request_digest("create", "incident response", 15, None);
+        let create = override_request_digest("create", "incident response", 15, None, 7);
         assert_eq!(
             create,
-            override_request_digest("create", "incident response", 15, None)
+            override_request_digest("create", "incident response", 15, None, 7)
         );
         assert_ne!(
             create,
-            override_request_digest("create", "incident response", 16, None)
+            override_request_digest("create", "incident response", 16, None, 7)
         );
         assert_ne!(
             create,
-            override_request_digest("create", "different reason", 15, None)
+            override_request_digest("create", "different reason", 15, None, 7)
         );
-        assert_ne!(create, override_request_digest("revoke", "", 0, Some(id)));
+        assert_ne!(
+            create,
+            override_request_digest("create", "incident response", 15, None, 8)
+        );
+        assert_ne!(
+            create,
+            override_request_digest("revoke", "", 0, Some(id), 7)
+        );
+    }
+
+    #[test]
+    fn vpn_override_reason_and_expiry_match_the_database_contract() {
+        assert!(!valid_override_reason(&"界".repeat(7)));
+        assert!(valid_override_reason(&"界".repeat(8)));
+        assert!(valid_override_reason(&"界".repeat(512)));
+        assert!(!valid_override_reason(&"界".repeat(513)));
+        assert!(CREATE_VPN_OVERRIDE_SQL.contains("created_at_utc"));
+        assert!(CREATE_VPN_OVERRIDE_SQL.contains("observed_clock.now + make_interval"));
     }
 
     #[test]

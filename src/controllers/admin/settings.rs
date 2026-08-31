@@ -252,6 +252,23 @@ pub struct BuildRegistryConfig {
 /// `container_provider` exposes a read-only backend summary plus the mutable
 /// `portMappingType` preference persisted by `get_config` / `update_config`.
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContainerProviderInfoModel {
+    /// Read-only runtime backend summary. Accepted on PUT so the canonical GET
+    /// model can be round-tripped, but never persisted by settings mutation.
+    #[serde(default, rename = "type")]
+    pub provider_type: Option<String>,
+    #[serde(default)]
+    pub port_mapping_type: Option<String>,
+    #[serde(default)]
+    pub traffic_capture: bool,
+    #[serde(default)]
+    pub kubernetes_namespace: Option<String>,
+    #[serde(default)]
+    pub image_pull_policy: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigEditModel {
     /// Present on GET and required as `expectedRevision` on PUT.
@@ -287,7 +304,7 @@ pub struct ConfigEditModel {
     #[serde(default, skip_deserializing)]
     pub proxy_trust: Option<ProxyTrustConfig>,
     #[serde(default)]
-    pub container_provider: Option<Value>,
+    pub container_provider: Option<ContainerProviderInfoModel>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -531,13 +548,13 @@ pub async fn get_config(
     let stored_port_mapping = get("ContainerProvider:PortMappingType");
     let port_mapping_type =
         normalized_container_port_mapping(stored_port_mapping.as_deref()).to_string();
-    let container_provider = serde_json::json!({
-        "type": "Docker",
-        "portMappingType": port_mapping_type,
-        "trafficCapture": false,
-        "kubernetesNamespace": null,
-        "imagePullPolicy": null,
-    });
+    let container_provider = ContainerProviderInfoModel {
+        provider_type: Some("Docker".to_string()),
+        port_mapping_type: Some(port_mapping_type),
+        traffic_capture: false,
+        kubernetes_namespace: None,
+        image_pull_policy: None,
+    };
 
     let revision = sqlx::query_scalar::<_, i64>(
         r#"SELECT revision FROM "PlatformSettingsState" WHERE singleton = 1"#,
@@ -814,8 +831,25 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            model.container_provider.unwrap()["portMappingType"],
-            "Default"
+            model
+                .container_provider
+                .unwrap()
+                .port_mapping_type
+                .as_deref(),
+            Some("Default")
+        );
+    }
+
+    #[test]
+    fn container_provider_rejects_unknown_settings_fields() {
+        assert!(
+            serde_json::from_value::<ConfigEditModel>(serde_json::json!({
+                "containerProvider": {
+                    "portMappingType": "Default",
+                    "unboundedIgnoredPayload": { "nested": true }
+                }
+            }))
+            .is_err()
         );
     }
 

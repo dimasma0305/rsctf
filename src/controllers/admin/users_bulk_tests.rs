@@ -346,6 +346,7 @@ async fn registration_lock_closes_bulk_creation_precheck_race() {
     let result = contender.await.unwrap().unwrap();
     assert_eq!(result.id, public_id);
     assert!(!result.created);
+    assert!(result.user_name_changed);
     let count: i64 = sqlx::query_scalar(
         r#"SELECT COUNT(*)::bigint FROM "AspNetUsers" WHERE normalized_email = 'RACER@EXAMPLE.TEST'"#,
     )

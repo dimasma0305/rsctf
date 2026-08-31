@@ -253,6 +253,14 @@ pub(crate) async fn destroy_persisted_service(
     state: &SharedState,
     service_id: i32,
 ) -> AppResult<()> {
+    destroy_persisted_service_with_vpn(state, service_id, true).await
+}
+
+pub(crate) async fn destroy_persisted_service_with_vpn(
+    state: &SharedState,
+    service_id: i32,
+    reconcile_vpn: bool,
+) -> AppResult<()> {
     let backend_id = sqlx::query_scalar::<_, Option<String>>(
         r#"SELECT container_id FROM "AdTeamServices" WHERE id = $1"#,
     )
@@ -263,7 +271,11 @@ pub(crate) async fn destroy_persisted_service(
     let Some(backend_id) = backend_id else {
         return Ok(());
     };
-    crate::services::ad_vpn::deactivate_team_service(&state.db, service_id).await?;
+    if reconcile_vpn {
+        crate::services::ad_vpn::deactivate_team_service(&state.db, service_id).await?;
+    } else {
+        crate::services::ad_vpn::deactivate_team_service_deferred(&state.db, service_id).await?;
+    }
     if let Some(backend_id) = backend_id {
         crate::services::traffic::destroy_container_after_capture_fence(state, &backend_id).await?;
     }

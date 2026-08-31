@@ -6,7 +6,6 @@
 
 use std::time::Duration;
 
-use futures::{stream, StreamExt};
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
@@ -15,7 +14,14 @@ use crate::app_state::SharedState;
 use crate::services::mail::MailSender;
 use crate::utils::error::{AppError, AppResult};
 
+mod delivery;
+mod preparation;
+use delivery::reconcile_with_sender;
+pub use preparation::{try_prepare, MailPreparationPermit};
+
 const MAIL_ADMISSION_LOCK_ID: i64 = 0x5253_4354_464d_4149; // "RSCTFMAI"
+const MAX_CONCURRENT_PREPARATIONS: usize = 16;
+const PREPARATION_LEASE_SECONDS: i64 = 30;
 const MAX_ACTIVE_MESSAGES: i64 = 4_096;
 const MAX_ACTIVE_MESSAGE_BYTES: i64 = 64 * 1024 * 1024;
 const MAX_STORED_ROWS: i64 = 65_536;
@@ -101,6 +107,39 @@ fn validate_intent(intent: &MailIntent<'_>) -> AppResult<()> {
     Ok(())
 }
 
+async fn load_existing_intent(
+    transaction: &mut Transaction<'_, Postgres>,
+    operation_id: Uuid,
+) -> AppResult<Option<(i16, Uuid, Vec<u8>)>> {
+    sqlx::query_as(
+        r#"SELECT purpose, account_id, request_digest
+             FROM "MailOutbox"
+            WHERE operation_id = $1"#,
+    )
+    .bind(operation_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
+fn replay_existing_intent(
+    existing: (i16, Uuid, Vec<u8>),
+    intent: &MailIntent<'_>,
+    canonical_request_digest: &[u8],
+) -> AppResult<EnqueueOutcome> {
+    let (purpose, account_id, stored_digest) = existing;
+    if purpose == intent.purpose as i16
+        && account_id == intent.account_id
+        && stored_digest == canonical_request_digest
+    {
+        Ok(EnqueueOutcome::Replayed)
+    } else {
+        Err(AppError::conflict(
+            "Mail operation identity was already used for another request",
+        ))
+    }
+}
+
 /// Persist one canonical intent inside the caller's account transaction.
 ///
 /// The operation identity is exact-replay safe. A different operation for the
@@ -118,32 +157,23 @@ pub async fn enqueue_in_transaction(
     let source_digest = intent.source.map(|source| digest(source.trim()));
     let canonical_request_digest = request_digest(&intent, &generation_digest, &destination_digest);
 
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+    if let Some(existing) = load_existing_intent(transaction, intent.operation_id).await? {
+        return replay_existing_intent(existing, &intent, &canonical_request_digest);
+    }
+
+    let admission_owner: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
         .bind(MAIL_ADMISSION_LOCK_ID)
-        .execute(&mut **transaction)
+        .fetch_one(&mut **transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    if !admission_owner {
+        return Err(AppError::too_many_requests(1));
+    }
 
-    let existing: Option<(i16, Uuid, Vec<u8>)> = sqlx::query_as(
-        r#"SELECT purpose, account_id, request_digest
-             FROM "MailOutbox"
-            WHERE operation_id = $1
-            FOR UPDATE"#,
-    )
-    .bind(intent.operation_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some((purpose, account_id, stored_digest)) = existing {
-        if purpose == intent.purpose as i16
-            && account_id == intent.account_id
-            && stored_digest == canonical_request_digest
-        {
-            return Ok(EnqueueOutcome::Replayed);
-        }
-        return Err(AppError::conflict(
-            "Mail operation identity was already used for another request",
-        ));
+    // A concurrent owner may have committed this operation between the initial
+    // replay read and our nonblocking lock acquisition.
+    if let Some(existing) = load_existing_intent(transaction, intent.operation_id).await? {
+        return replay_existing_intent(existing, &intent, &canonical_request_digest);
     }
 
     let (
@@ -261,101 +291,6 @@ pub async fn enqueue_in_transaction(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(EnqueueOutcome::Inserted)
-}
-
-async fn claim_pending(pool: &sqlx::PgPool, limit: i64) -> AppResult<(Uuid, Vec<LeasedMail>)> {
-    let lease_token = Uuid::new_v4();
-    let mut transaction = pool
-        .begin()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let slots: Vec<i16> = sqlx::query_scalar(
-        r#"SELECT slot_id
-             FROM "MailDeliverySlots"
-            WHERE lease_expires_at_utc IS NULL
-               OR lease_expires_at_utc <= clock_timestamp()
-            ORDER BY slot_id
-            LIMIT $1
-            FOR UPDATE SKIP LOCKED"#,
-    )
-    .bind(limit.clamp(1, CLAIM_LIMIT))
-    .fetch_all(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if slots.is_empty() {
-        transaction
-            .commit()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        return Ok((lease_token, Vec::new()));
-    }
-    let jobs: Vec<(Uuid, String, String, String, i16)> = sqlx::query_as(
-        r#"SELECT operation_id, destination, subject, html_body, attempts
-             FROM "MailOutbox"
-            WHERE delivered_at_utc IS NULL
-              AND dead_at_utc IS NULL
-              AND superseded_at_utc IS NULL
-              AND attempts < $2
-              AND available_at_utc <= clock_timestamp()
-              AND (lease_expires_at_utc IS NULL
-                   OR lease_expires_at_utc <= clock_timestamp())
-            ORDER BY available_at_utc, created_at_utc, operation_id
-            LIMIT $1
-            FOR UPDATE SKIP LOCKED"#,
-    )
-    .bind(i64::try_from(slots.len()).unwrap_or(CLAIM_LIMIT))
-    .bind(MAX_ATTEMPTS)
-    .fetch_all(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-
-    let mut leased = Vec::with_capacity(jobs.len());
-    for (slot, (operation_id, destination, subject, html_body, attempts)) in
-        slots.into_iter().zip(jobs)
-    {
-        sqlx::query(
-            r#"UPDATE "MailDeliverySlots"
-                  SET lease_token = $1,
-                      lease_expires_at_utc = clock_timestamp()
-                          + ($2::BIGINT * INTERVAL '1 second')
-                WHERE slot_id = $3"#,
-        )
-        .bind(lease_token)
-        .bind(LEASE_SECONDS)
-        .bind(slot)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        sqlx::query(
-            r#"UPDATE "MailOutbox"
-                  SET lease_token = $1,
-                      lease_expires_at_utc = clock_timestamp()
-                          + ($2::BIGINT * INTERVAL '1 second'),
-                      delivery_slot = $3,
-                      attempts = attempts + 1
-                WHERE operation_id = $4"#,
-        )
-        .bind(lease_token)
-        .bind(LEASE_SECONDS)
-        .bind(slot)
-        .bind(operation_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        leased.push(LeasedMail {
-            operation_id,
-            destination,
-            subject,
-            html_body,
-            attempts: attempts + 1,
-            delivery_slot: slot,
-        });
-    }
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok((lease_token, leased))
 }
 
 fn retry_delay_seconds(attempts: i16, operation_id: Uuid) -> i64 {
@@ -515,24 +450,36 @@ async fn purge_terminal(pool: &sqlx::PgPool, limit: i64) -> AppResult<u64> {
 
 /// Drain one bounded batch with one effective database/environment SMTP config.
 pub async fn reconcile(pool: &sqlx::PgPool, limit: i64) -> AppResult<usize> {
+    // Terminal maintenance never increments an attempt and remains safe while
+    // SMTP is unavailable.
     expire_stale(pool, MAINTENANCE_LIMIT).await?;
-    let (lease_token, jobs) = claim_pending(pool, limit).await?;
-    let claimed = jobs.len();
-    if jobs.is_empty() {
+    let pending: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS (
+               SELECT 1 FROM "MailOutbox"
+                WHERE delivered_at_utc IS NULL
+                  AND dead_at_utc IS NULL
+                  AND superseded_at_utc IS NULL
+                  AND attempts < $1
+                  AND available_at_utc <= clock_timestamp()
+                  AND (lease_expires_at_utc IS NULL
+                       OR lease_expires_at_utc <= clock_timestamp())
+           )"#,
+    )
+    .bind(MAX_ATTEMPTS)
+    .fetch_one(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !pending {
         return Ok(0);
     }
+    // Resolve and validate transport before claiming durable work. Missing or
+    // malformed SMTP settings defer pending rows without consuming their finite
+    // attempt budget or delivery-slot leases.
     let sender = MailSender::from_database(pool).await?;
-    let results = stream::iter(jobs.into_iter().map(|job| {
-        let sender = sender.clone();
-        async move { deliver_one(pool, sender, lease_token, job).await }
-    }))
-    .buffer_unordered(MAX_CONCURRENT_DELIVERIES)
-    .collect::<Vec<_>>()
-    .await;
-    for result in results {
-        result?;
+    if !sender.is_configured() {
+        return Ok(0);
     }
-    Ok(claimed)
+    reconcile_with_sender(pool, limit, sender).await
 }
 
 /// Start the shutdown-aware control-plane mail owner. Fixed database slots keep
@@ -642,7 +589,7 @@ mod tests {
             .options([("search_path", schema.as_str())]);
         let pool = PgPoolOptions::new()
             .max_connections(8)
-            .connect_with(options)
+            .connect_with(options.clone())
             .await
             .unwrap();
         sqlx::raw_sql(
@@ -676,6 +623,20 @@ mod tests {
               lease_expires_at_utc TIMESTAMPTZ
             );
             INSERT INTO "MailDeliverySlots" (slot_id) VALUES (0), (1), (2), (3);
+            CREATE TABLE "MailPreparationSlots" (
+              slot_id SMALLINT PRIMARY KEY,
+              lease_token UUID,
+              lease_expires_at_utc TIMESTAMPTZ
+            );
+            INSERT INTO "MailPreparationSlots" (slot_id)
+            SELECT slot_id FROM generate_series(0, 15) AS slot_id;
+            CREATE TABLE "Configs" (
+              config_key TEXT PRIMARY KEY,
+              value TEXT
+            );
+            INSERT INTO "Configs" (config_key, value) VALUES
+              ('EmailConfig:Smtp:Host', 'smtp.example.test'),
+              ('EmailConfig:SenderAddress', 'not a mailbox');
             "#,
         )
         .execute(&pool)
@@ -713,6 +674,95 @@ mod tests {
             EnqueueOutcome::Inserted
         );
         transaction.commit().await.unwrap();
+
+        // An exact durable replay must not queue behind global admission, while
+        // a new operation must fail fast when another replica owns the lock.
+        // This guards against cancelled HTTP work leaving PostgreSQL waiters
+        // alive long enough to drain the connection pool.
+        let mut admission_blocker = pool.begin().await.unwrap();
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(MAIL_ADMISSION_LOCK_ID)
+            .execute(&mut *admission_blocker)
+            .await
+            .unwrap();
+        let mut replay_while_blocked = pool.begin().await.unwrap();
+        let replay_outcome = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            enqueue_in_transaction(
+                &mut replay_while_blocked,
+                MailIntent {
+                    operation_id: original_operation,
+                    purpose: MailPurpose::PasswordRecovery,
+                    account_id: accounts[0],
+                    security_generation: "stamp-a",
+                    destination: "first@example.test",
+                    source: Some("192.0.2.1"),
+                    subject: "Reset replay",
+                    html_body: "rendered content is excluded from the replay identity",
+                },
+            ),
+        )
+        .await
+        .expect("an exact replay must not wait for global mail admission")
+        .unwrap();
+        assert_eq!(replay_outcome, EnqueueOutcome::Replayed);
+        replay_while_blocked.rollback().await.unwrap();
+
+        let mut blocked_new_operation = pool.begin().await.unwrap();
+        let admission_busy = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            enqueue_in_transaction(
+                &mut blocked_new_operation,
+                MailIntent {
+                    operation_id: Uuid::new_v4(),
+                    purpose: MailPurpose::PasswordRecovery,
+                    account_id: accounts[1],
+                    security_generation: "stamp-b",
+                    destination: "busy@example.test",
+                    source: Some("192.0.2.2"),
+                    subject: "Reset",
+                    html_body: "new body",
+                },
+            ),
+        )
+        .await
+        .expect("global mail admission contention must fail without queueing")
+        .expect_err("a new operation cannot bypass the held admission lock");
+        assert_eq!(
+            admission_busy.status(),
+            axum::http::StatusCode::TOO_MANY_REQUESTS
+        );
+        blocked_new_operation.rollback().await.unwrap();
+        admission_blocker.rollback().await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&pool),
+        )
+        .await
+        .expect("admission contention must not strand a pool connection")
+        .unwrap();
+
+        assert!(try_prepare(
+            &pool,
+            original_operation,
+            MailPurpose::PasswordRecovery,
+            "first@example.test",
+            Some("192.0.2.1"),
+        )
+        .await
+        .unwrap()
+        .is_none());
+        let rebound = try_prepare(
+            &pool,
+            original_operation,
+            MailPurpose::PasswordRecovery,
+            "different@example.test",
+            Some("192.0.2.1"),
+        )
+        .await
+        .err()
+        .expect("one mail operation cannot be rebound to another destination");
+        assert_eq!(rebound.status(), axum::http::StatusCode::CONFLICT);
 
         let mut replay = pool.begin().await.unwrap();
         assert_eq!(
@@ -766,8 +816,160 @@ mod tests {
         .unwrap();
         assert!(original_terminal);
 
-        let (_, first_claim) = claim_pending(&pool, 64).await.unwrap();
-        let (_, second_claim) = claim_pending(&pool, 64).await.unwrap();
+        assert_eq!(reconcile(&pool, CLAIM_LIMIT).await.unwrap(), 0);
+        let attempted_before_smtp: i64 =
+            sqlx::query_scalar(r#"SELECT COALESCE(SUM(attempts), 0)::BIGINT FROM "MailOutbox""#)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(attempted_before_smtp, 0);
+        let (claimed_messages, claimed_slots): (i64, i64) = sqlx::query_as(
+            r#"SELECT
+                  (SELECT COUNT(*)::BIGINT FROM "MailOutbox"
+                    WHERE lease_token IS NOT NULL),
+                  (SELECT COUNT(*)::BIGINT FROM "MailDeliverySlots"
+                    WHERE lease_token IS NOT NULL)"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((claimed_messages, claimed_slots), (0, 0));
+
+        let mut preparation = try_prepare(
+            &pool,
+            Uuid::new_v4(),
+            MailPurpose::PasswordRecovery,
+            "prepared@example.test",
+            Some("192.0.2.249"),
+        )
+        .await
+        .unwrap()
+        .expect("new intent owns one preparation slot");
+        preparation.bind_account(accounts[5]).await.unwrap();
+        let leased_preparations: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*)::BIGINT FROM "MailPreparationSlots"
+                WHERE lease_token IS NOT NULL"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(leased_preparations, 1);
+        preparation.release().await;
+        let leased_after_release: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*)::BIGINT FROM "MailPreparationSlots"
+                WHERE lease_token IS NOT NULL"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(leased_after_release, 0);
+
+        let mut reclaimed = try_prepare(
+            &pool,
+            Uuid::new_v4(),
+            MailPurpose::PasswordRecovery,
+            "reclaimed@example.test",
+            Some("192.0.2.248"),
+        )
+        .await
+        .unwrap()
+        .expect("new intent owns one preparation slot");
+        reclaimed.bind_account(accounts[4]).await.unwrap();
+        let replacement_owner = Uuid::new_v4();
+        sqlx::query(
+            r#"UPDATE "MailPreparationSlots"
+                  SET lease_token = $1,
+                      lease_expires_at_utc = clock_timestamp() + INTERVAL '1 minute'
+                WHERE lease_token IS NOT NULL"#,
+        )
+        .bind(replacement_owner)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let stale_owner = reclaimed
+            .ensure_owned()
+            .await
+            .expect_err("a reclaimed preparation lease fences the stale owner");
+        assert_eq!(
+            stale_owner.status(),
+            axum::http::StatusCode::TOO_MANY_REQUESTS
+        );
+        reclaimed.release().await;
+        let replacement_still_owned: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS (
+                   SELECT 1 FROM "MailPreparationSlots" WHERE lease_token = $1
+               )"#,
+        )
+        .bind(replacement_owner)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(replacement_still_owned);
+
+        sqlx::query(
+            r#"UPDATE "MailPreparationSlots"
+                  SET lease_token = $1,
+                      lease_expires_at_utc = clock_timestamp() + INTERVAL '1 minute'"#,
+        )
+        .bind(Uuid::new_v4())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let preparation_full = try_prepare(
+            &pool,
+            Uuid::new_v4(),
+            MailPurpose::PasswordRecovery,
+            "capacity@example.test",
+            Some("192.0.2.250"),
+        )
+        .await
+        .err()
+        .expect("all database preparation slots are leased");
+        assert_eq!(
+            preparation_full.status(),
+            axum::http::StatusCode::TOO_MANY_REQUESTS
+        );
+        sqlx::query(
+            r#"UPDATE "MailPreparationSlots"
+                  SET lease_token = NULL, lease_expires_at_utc = NULL"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let single_connection_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        let mut single_connection_owner = try_prepare(
+            &single_connection_pool,
+            Uuid::new_v4(),
+            MailPurpose::PasswordRecovery,
+            "single-connection@example.test",
+            Some("192.0.2.247"),
+        )
+        .await
+        .unwrap()
+        .expect("single-connection preparation is admitted");
+        single_connection_owner
+            .bind_account(accounts[3])
+            .await
+            .unwrap();
+        let mut final_transaction = single_connection_pool.begin().await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            single_connection_owner.ensure_owned_in_transaction(&mut final_transaction),
+        )
+        .await
+        .expect("transaction-bound fence must not acquire a second pool connection")
+        .unwrap();
+        final_transaction.rollback().await.unwrap();
+        single_connection_owner.release().await;
+        single_connection_pool.close().await;
+
+        let (_, first_claim) = super::delivery::claim_pending(&pool, 64).await.unwrap();
+        let (_, second_claim) = super::delivery::claim_pending(&pool, 64).await.unwrap();
         assert_eq!(first_claim.len(), 4);
         assert!(second_claim.is_empty());
 

@@ -221,6 +221,7 @@ pub async fn update_user(
     // Repeating an already-banned update is the retry path when an earlier
     // external VPN/BYOC teardown failed after the role change committed.
     let revoke_shared = role_request_requires_shared_revocation(model.role);
+    let original_user_name = target.user_name.clone();
     let original_normalized_email = target.normalized_email.clone();
     let rotate_stamp = role_change_requires_stamp_rotation(target.role, model.role)
         || (target.email_confirmed && model.email_confirmed == Some(false))
@@ -229,6 +230,7 @@ pub async fn update_user(
             model.email.as_deref(),
         );
     let mut credential_email_to_invalidate = None;
+    let mut user_name_changed = false;
 
     crate::controllers::account::validate_profile_fields(
         model.bio.as_deref(),
@@ -255,6 +257,7 @@ pub async fn update_user(
             {
                 return Err(AppError::conflict("Username already taken"));
             }
+            user_name_changed = original_user_name.as_deref() != Some(name.as_str());
             am.normalized_user_name = Set(Some(norm));
             am.user_name = Set(Some(name));
         }
@@ -306,6 +309,11 @@ pub async fn update_user(
 
     am.update(&txn).await?;
     txn.commit().await?;
+    if user_name_changed {
+        if let Err(error) = crate::controllers::team::flush_scoreboard_for_user(&st, userid).await {
+            tracing::warn!(%error, user_id = %userid, "post-admin-rename scoreboard invalidation deferred");
+        }
+    }
     if let Some(old_email) = credential_email_to_invalidate {
         super::users_credentials::invalidate_import_credential(
             st.cache.as_ref(),
@@ -480,6 +488,9 @@ pub async fn reset_password(
             return Ok(super::users_credentials::private_no_store(
                 RequestResponse::ok(password),
             ));
+        }
+        if status == 2 {
+            return Err(AppError::not_found("Password reset result has expired"));
         }
     }
     let source = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()))

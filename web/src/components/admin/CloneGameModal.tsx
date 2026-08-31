@@ -85,6 +85,7 @@ export const CloneGameModal: FC<CloneGameModalProps> = ({ game, ...props }) => {
     setLoading(true)
     const scope = JSON.stringify({
       gameId: game.id,
+      sourceRevision: game.sourceRevision,
       title: title.trim(),
       start: start!.getTime(),
       end: end!.getTime(),
@@ -94,6 +95,7 @@ export const CloneGameModal: FC<CloneGameModalProps> = ({ game, ...props }) => {
     try {
       const response = await api.edit.editCloneGame(game.id, {
         operationId,
+        expectedSourceRevision: game.sourceRevision,
         title: title.trim(),
         startTimeUtc: start!.getTime(),
         endTimeUtc: end!.getTime(),

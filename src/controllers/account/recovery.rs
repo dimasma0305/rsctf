@@ -4,7 +4,9 @@ use super::*;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
+mod recovery_mail;
 mod reset_ticket_store;
+use recovery_mail::process_recovery_mail;
 pub(super) use reset_ticket_store::invalidate_password_reset_tokens;
 use reset_ticket_store::{
     insert_reset_ticket, lock_reset_identity, reset_current_key, PasswordResetTicket,
@@ -17,7 +19,14 @@ use super::email_change_support::{
 };
 
 const RECOVERY_TTL: std::time::Duration = ACCOUNT_LINK_TTL;
-const RECOVERY_RESPONSE_FLOOR: std::time::Duration = std::time::Duration::from_millis(25);
+const RECOVERY_RESPONSE_FLOOR: std::time::Duration = std::time::Duration::from_secs(1);
+
+async fn recovery_success(started: tokio::time::Instant) -> MessageResponse {
+    if let Some(remaining) = RECOVERY_RESPONSE_FLOOR.checked_sub(started.elapsed()) {
+        tokio::time::sleep(remaining).await;
+    }
+    MessageResponse::ok("If that email is registered, a password reset link has been sent.")
+}
 
 async fn update_authenticated_password(
     pool: &sqlx::PgPool,
@@ -193,107 +202,13 @@ pub async fn recovery(
         String::new()
     };
 
-    if let Some(user) = user::Entity::find()
-        .filter(user::Column::NormalizedEmail.eq(norm_email.clone()))
-        .one(&st.db)
-        .await?
-    {
-        let token = crate::utils::codec::random_token(32);
-        let current_key = reset_current_key(user.id);
-        let mut transaction = match st.pg().begin().await {
-            Ok(transaction) => transaction,
-            Err(error) => {
-                tracing::error!(%error, operation_id = %operation_id, "password-recovery mail transaction failed");
-                if let Some(remaining) =
-                    RECOVERY_RESPONSE_FLOOR.checked_sub(response_started.elapsed())
-                {
-                    tokio::time::sleep(remaining).await;
-                }
-                return Ok(MessageResponse::ok(
-                    "If that email is registered, a password reset link has been sent.",
-                ));
-            }
-        };
-        let token_hash = Sha256::digest(token.as_bytes()).to_vec();
-        let identity = match lock_reset_identity(&mut transaction, user.id, &norm_email).await {
-            Ok(identity) => identity,
-            Err(error) => {
-                tracing::warn!(%error, operation_id = %operation_id, "password-recovery identity revalidation failed");
-                None
-            }
-        };
-        if let Some((ticket, user_email)) = identity {
-            let base = std::env::var("RSCTF_PUBLIC_URL")
-                .ok()
-                .map(|u| u.trim_end_matches('/').to_string())
-                .unwrap_or_default();
-            let link = format!(
-                "{base}/account/reset?token={token}&email={}",
-                crate::utils::codec::base64_encode(user_email.as_bytes())
-            );
-            let (subject, body) =
-                crate::services::mail::reset_password(&link, Some(st.config.global.title.as_str()));
-            let outcome = crate::services::mail_outbox::enqueue_in_transaction(
-                &mut transaction,
-                crate::services::mail_outbox::MailIntent {
-                    operation_id,
-                    purpose: crate::services::mail_outbox::MailPurpose::PasswordRecovery,
-                    account_id: user.id,
-                    security_generation: &ticket.security_stamp,
-                    destination: &user_email,
-                    source: request_ip.as_deref(),
-                    subject: &subject,
-                    html_body: &body,
-                },
-            )
-            .await;
-            match outcome {
-                Ok(crate::services::mail_outbox::EnqueueOutcome::Inserted) => {
-                    if let Err(error) =
-                        insert_reset_ticket(&mut transaction, &ticket, &token_hash).await
-                    {
-                        let _ = transaction.rollback().await;
-                        tracing::warn!(%error, operation_id = %operation_id, "password-recovery ticket was not admitted");
-                    } else if let Err(error) = transaction.commit().await {
-                        tracing::error!(%error, operation_id = %operation_id, "password-recovery mail commit failed");
-                    } else {
-                        invalidate_password_reset_tokens(&st, user.id).await;
-                        let ticket_bytes = serde_json::to_vec(&ticket).map_err(|error| {
-                            AppError::internal(format!("password-reset ticket: {error}"))
-                        })?;
-                        st.cache
-                            .set(
-                                &format!("pwreset:{token}"),
-                                &ticket_bytes,
-                                Some(RECOVERY_TTL),
-                            )
-                            .await;
-                        st.cache
-                            .set(&current_key, token.as_bytes(), Some(RECOVERY_TTL))
-                            .await;
-                    }
-                }
-                Ok(crate::services::mail_outbox::EnqueueOutcome::Replayed) => {
-                    if let Err(error) = transaction.commit().await {
-                        tracing::error!(%error, operation_id = %operation_id, "password-recovery replay commit failed");
-                    }
-                }
-                Err(error) => {
-                    let _ = transaction.rollback().await;
-                    tracing::warn!(%error, operation_id = %operation_id, "password-recovery mail intent was not admitted");
-                }
-            }
-        } else {
-            let _ = transaction.rollback().await;
-        }
-    }
+    // Do not cancel this future on a process-local wall-clock deadline: doing so
+    // can drop the transaction after the SMTP intent has begun committing and
+    // leave the caller with an ambiguous success. Every PostgreSQL statement in
+    // the preparation path has a shorter server-side timeout instead.
+    process_recovery_mail(&st, operation_id, &norm_email, request_ip.as_deref()).await?;
 
-    if let Some(remaining) = RECOVERY_RESPONSE_FLOOR.checked_sub(response_started.elapsed()) {
-        tokio::time::sleep(remaining).await;
-    }
-    Ok(MessageResponse::ok(
-        "If that email is registered, a password reset link has been sent.",
-    ))
+    Ok(recovery_success(response_started).await)
 }
 
 /// `POST /api/account/passwordreset` -> `void`.
@@ -352,6 +267,20 @@ pub async fn password_reset(
         }
     }
 
+    // A terminal operation replay above performs no credential work and remains
+    // stable even while the work budget is full. New/recoverable work is admitted
+    // on the only trustworthy identity available before ticket/account reads,
+    // then extended with resolved semantic identities below.
+    let source =
+        anti_cheat::client_ip(&headers, Some(peer.ip())).unwrap_or_else(|| peer.ip().to_string());
+    let source_scope = format!("credential-source:{source}");
+    let mut credential_work = crate::services::credential_admission::try_acquire_scopes(
+        st.pg(),
+        crate::services::credential_admission::CredentialWorkClass::Interactive,
+        &[&source_scope],
+    )
+    .await?;
+
     let key = format!("pwreset:{}", model.r_token);
     let durable_ticket: Option<(Uuid, String)> = sqlx::query_as(
         r#"SELECT user_id, security_stamp
@@ -398,17 +327,11 @@ pub async fn password_reset(
         "credential-account:{}:{}",
         ticket.user_id, ticket.security_stamp
     );
-    let source =
-        anti_cheat::client_ip(&headers, Some(peer.ip())).unwrap_or_else(|| peer.ip().to_string());
-    let source_scope = format!("credential-source:{source}");
-    let mut credential_work = crate::services::credential_admission::try_acquire_scopes(
-        st.pg(),
-        crate::services::credential_admission::CredentialWorkClass::Interactive,
-        &[&account_scope, &source_scope],
-    )
-    .await?;
+    let token_scope = format!("credential-reset-token:{}", hex::encode(&token_hash));
     let email_scope = format!("credential-email:{norm_email}");
-    credential_work.try_add_scopes(&[&email_scope]).await?;
+    credential_work
+        .try_add_scopes(&[&account_scope, &token_scope, &email_scope])
+        .await?;
 
     let lease_token = Uuid::new_v4();
     let mut claim = st
@@ -817,19 +740,17 @@ pub async fn mail_change_confirm(
         .filter(|email| email.len() <= MAX_EMAIL_BYTES)
         .map(|email| email.trim().to_lowercase())
         .ok_or_else(|| AppError::bad_request("Invalid email"))?;
-    if let Some(confirmed) = confirm_email_change_ticket(
-        st.pg(),
-        st.config.as_ref(),
-        &model.token,
-        &supplied_email,
-    )
-    .await?
+    if let Some(confirmed) =
+        confirm_email_change_ticket(st.pg(), st.config.as_ref(), &model.token, &supplied_email)
+            .await?
     {
         let current_key = format!("emailchange-current:{}", confirmed.user_id);
         st.cache
             .compare_and_remove(&current_key, model.token.as_bytes())
             .await;
-        st.cache.remove(&format!("emailchange:{}", model.token)).await;
+        st.cache
+            .remove(&format!("emailchange:{}", model.token))
+            .await;
         crate::services::audit::info(
             &st,
             "AccountController",

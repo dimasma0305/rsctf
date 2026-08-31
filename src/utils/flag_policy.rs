@@ -16,6 +16,44 @@ const TEAM_HASH_TOKEN: &str = "[TEAM_HASH]";
 const UUID_EXPANDED_BYTES: usize = 36;
 const TEAM_HASH_EXPANDED_BYTES: usize = 16;
 
+/// The exact boundary-whitespace alphabet shared with PostgreSQL and the web
+/// flag-import parser. This is Unicode White_Space plus U+FEFF, which browsers
+/// also treat as trim whitespace. Keeping the set explicit prevents locale or
+/// runtime Unicode-table differences from changing the accepted flag grammar.
+pub fn is_flag_whitespace(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0009}'
+            | '\u{000A}'
+            | '\u{000B}'
+            | '\u{000C}'
+            | '\u{000D}'
+            | '\u{0020}'
+            | '\u{0085}'
+            | '\u{00A0}'
+            | '\u{1680}'
+            | '\u{2000}'
+            ..='\u{200A}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202F}'
+                | '\u{205F}'
+                | '\u{3000}'
+                | '\u{FEFF}'
+    )
+}
+
+pub fn has_boundary_whitespace(value: &str) -> bool {
+    value.chars().next().is_some_and(is_flag_whitespace)
+        || value.chars().next_back().is_some_and(is_flag_whitespace)
+}
+
+/// Empty and whitespace-only template input both select the bounded default
+/// generator. Non-empty input is preserved verbatim for canonical validation.
+pub fn is_blank(value: &str) -> bool {
+    value.chars().all(is_flag_whitespace)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FlagPolicyError {
     Empty,
@@ -56,7 +94,7 @@ pub fn validate_normal(value: &str) -> Result<(), FlagPolicyError> {
             maximum: NORMAL_FLAG_MAX_BYTES,
         });
     }
-    if value.trim() != value {
+    if has_boundary_whitespace(value) {
         return Err(FlagPolicyError::SurroundingWhitespace);
     }
     Ok(())
@@ -94,7 +132,7 @@ pub fn validate_dynamic_template(template: &str) -> Result<(), FlagPolicyError> 
             maximum: NORMAL_FLAG_MAX_BYTES,
         });
     }
-    if template.trim() != template {
+    if has_boundary_whitespace(template) {
         return Err(FlagPolicyError::SurroundingWhitespace);
     }
     if !(template.contains(GUID_TOKEN)
@@ -152,6 +190,18 @@ mod tests {
             validate_normal(" flag{answer}"),
             Err(FlagPolicyError::SurroundingWhitespace)
         );
+        for whitespace in ['\u{0085}', '\u{00A0}', '\u{2003}', '\u{202F}', '\u{FEFF}'] {
+            assert_eq!(
+                validate_normal(&format!("{whitespace}flag{{answer}}")),
+                Err(FlagPolicyError::SurroundingWhitespace)
+            );
+            assert_eq!(
+                validate_normal(&format!("flag{{answer}}{whitespace}")),
+                Err(FlagPolicyError::SurroundingWhitespace)
+            );
+        }
+        assert!(is_blank("\u{00A0}\u{2003}\u{FEFF}"));
+        assert!(!is_blank("\u{00A0}x\u{2003}"));
     }
 
     #[test]
@@ -169,6 +219,10 @@ mod tests {
         assert_eq!(
             validate_dynamic_template("flag{same-for-every-team}"),
             Err(FlagPolicyError::TemplateTooTrivial)
+        );
+        assert_eq!(
+            validate_dynamic_template("flag{[UUID]}\u{2003}"),
+            Err(FlagPolicyError::SurroundingWhitespace)
         );
     }
 

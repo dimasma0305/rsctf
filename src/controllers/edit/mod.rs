@@ -508,6 +508,7 @@ pub struct AttachmentCreateModel {
 #[serde(rename_all = "camelCase")]
 pub struct GameCloneModel {
     pub operation_id: Uuid,
+    pub expected_source_revision: i64,
     #[serde(default)]
     pub title: String,
     #[serde(default = "epoch", with = "crate::utils::datetime::millis")]
@@ -546,10 +547,26 @@ pub struct DivisionEditModel {
     pub operation_id: Uuid,
     pub expected_revision: i64,
     pub name: Option<String>,
-    pub invite_code: Option<String>,
+    /// Outer `None` means the field was omitted; `Some(None)` is an explicit
+    /// JSON `null` that clears the code; `Some(Some(value))` replaces it.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_nullable_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub invite_code: Option<Option<String>>,
     pub default_permissions: Option<i32>,
     #[serde(default)]
     pub challenge_configs: Option<Vec<DivisionChallengeConfigInput>>,
+}
+
+fn deserialize_present_nullable_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 /// Inbound half of RSCTF `DivisionChallengeConfigModel` — a per-challenge

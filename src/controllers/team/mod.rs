@@ -33,6 +33,7 @@ mod lifecycle;
 mod models;
 mod revocation;
 mod roster_policy;
+mod scoreboard_invalidation;
 mod signature;
 pub(crate) use account_lifecycle::{create_team_rows, transfer_captain_locked};
 pub use avatar::avatar;
@@ -46,6 +47,7 @@ pub(crate) use revocation::{
 };
 use revocation::{remove_membership, revoke_team_shared_capabilities_locked};
 pub(crate) use roster_policy::ensure_roster_change_allowed;
+pub(crate) use scoreboard_invalidation::{flush_scoreboard_for_user, flush_scoreboards_for_users};
 pub use signature::verify_signature;
 
 /// Each user may captain at most this many teams. Mirrors RSCTF `MaxTeamsAllowed`.

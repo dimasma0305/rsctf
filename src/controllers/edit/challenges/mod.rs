@@ -196,7 +196,8 @@ fn challenge_scoring_fields_changed(
         requested != challenge.deadline_utc
     });
     let flag_template_changed = model.flag_template.as_ref().is_some_and(|template| {
-        let requested = (!template.trim().is_empty()).then_some(template.as_str());
+        let requested =
+            (!crate::utils::flag_policy::is_blank(template)).then_some(template.as_str());
         requested != challenge.flag_template.as_deref()
     });
     deadline_changed
@@ -331,12 +332,7 @@ pub async fn update_challenge(
 
     // Guard: enabling a non-dynamic challenge with no flags is rejected.
     if model.is_enabled == Some(true) && !challenge.is_enabled && !ch_type.is_dynamic() {
-        let flags = load_flags(&st, c_id).await?;
-        if flags.is_empty() {
-            return Err(AppError::bad_request(
-                "Cannot enable a challenge that has no flag",
-            ));
-        }
+        super::flags::ensure_static_flag_can_enable_locked(control.transaction_mut(), c_id).await?;
     }
     if model.enable_traffic_capture == Some(true) && !ch_type.is_container() {
         return Err(AppError::bad_request(
@@ -403,7 +399,7 @@ pub async fn update_challenge(
     // placeholder occurrence expands. Blank input clears the template and uses
     // the bounded default generator.
     if let Some(t) = model.flag_template.as_deref() {
-        if !t.trim().is_empty() && ch_type == ChallengeType::DynamicContainer {
+        if !crate::utils::flag_policy::is_blank(t) && ch_type == ChallengeType::DynamicContainer {
             crate::utils::flag_policy::validate_dynamic_template(t)
                 .map_err(|error| AppError::bad_request(error.to_string()))?;
         }
@@ -553,7 +549,11 @@ pub async fn update_challenge(
         // RSCTF `GameChallenge.Update`: an empty/whitespace-only flag template is the
         // client's "clear" sentinel — store null instead of persisting an empty string.
         // Mirrors `FlagTemplate = string.IsNullOrWhiteSpace(template) ? null : template`.
-        am.flag_template = Set(if v.trim().is_empty() { None } else { Some(v) });
+        am.flag_template = Set(if crate::utils::flag_policy::is_blank(&v) {
+            None
+        } else {
+            Some(v)
+        });
     }
     if let Some(v) = model.category {
         am.category = Set(v);
@@ -868,7 +868,7 @@ pub async fn delete_challenge(
     Path((id, c_id)): Path<(i32, i32)>,
 ) -> AppResult<MessageResponse> {
     manager_or_admin(&st, &user, id).await?;
-    delete_challenge_core(st, id, c_id, true).await
+    delete_challenge_core(st, id, c_id, true, true).await
 }
 
 pub(crate) async fn delete_challenge_core(
@@ -876,6 +876,7 @@ pub(crate) async fn delete_challenge_core(
     id: i32,
     c_id: i32,
     reconcile_scoreboards: bool,
+    reconcile_vpn: bool,
 ) -> AppResult<MessageResponse> {
     // Share the hard-deletion admission domain with whole-game deletion before
     // retaining the outer runtime-transition transaction.
@@ -909,7 +910,9 @@ pub(crate) async fn delete_challenge_core(
         if challenge.challenge_type == ChallengeType::KingOfTheHill {
             crate::services::ad_engine::clear_challenge_control(&st.db, id, c_id).await?;
         }
-        crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+        if reconcile_vpn {
+            crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+        }
     }
     engine_control
         .release()
@@ -923,7 +926,13 @@ pub(crate) async fn delete_challenge_core(
         destroy_challenge_containers(&st, &challenge, false, true).await?;
     }
     if challenge.ad_self_hosted {
-        st.byoc.disconnect_challenge(&st.db, c_id).await?;
+        if reconcile_vpn {
+            st.byoc.disconnect_challenge(&st.db, c_id).await?;
+        } else {
+            st.byoc
+                .disconnect_challenge_deferred_vpn(&st.db, c_id)
+                .await?;
+        }
     }
 
     // Reacquire game control before the test/definition gates. Engine writers

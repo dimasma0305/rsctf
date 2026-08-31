@@ -1,5 +1,41 @@
 use super::*;
 
+#[test]
+fn invite_patch_distinguishes_omitted_clear_and_replace() {
+    let omitted: DivisionEditModel = serde_json::from_value(serde_json::json!({
+        "operationId": Uuid::new_v4(),
+        "expectedRevision": 1
+    }))
+    .unwrap();
+    assert_eq!(omitted.invite_code, None);
+
+    let clear: DivisionEditModel = serde_json::from_value(serde_json::json!({
+        "operationId": Uuid::new_v4(),
+        "expectedRevision": 1,
+        "inviteCode": null
+    }))
+    .unwrap();
+    assert_eq!(clear.invite_code, Some(None));
+
+    let replace: DivisionEditModel = serde_json::from_value(serde_json::json!({
+        "operationId": Uuid::new_v4(),
+        "expectedRevision": 1,
+        "inviteCode": "qualifier"
+    }))
+    .unwrap();
+    assert_eq!(replace.invite_code, Some(Some("qualifier".to_string())));
+}
+
+#[test]
+fn create_and_update_share_invite_code_normalization() {
+    assert_eq!(
+        normalize_division_invite_code(Some("  qualifier  ")),
+        Some("qualifier")
+    );
+    assert_eq!(normalize_division_invite_code(Some("   ")), None);
+    assert_eq!(normalize_division_invite_code(None), None);
+}
+
 use std::str::FromStr;
 use std::time::Duration;
 

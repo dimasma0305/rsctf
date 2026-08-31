@@ -199,7 +199,9 @@ export const DivisionEditDrawer: FC<DivisionEditDrawerProps> = ({
         }
         operationId.current = edit.operationId
         if (model.name !== division.name) edit.name = model.name
-        if ((model.inviteCode ?? '') !== (division.inviteCode ?? '')) edit.inviteCode = model.inviteCode
+        if ((model.inviteCode ?? '') !== (division.inviteCode ?? '')) {
+          edit.inviteCode = model.inviteCode?.trim() ? model.inviteCode : null
+        }
         if (model.defaultPermissions !== division.defaultPermissions) edit.defaultPermissions = model.defaultPermissions
         if (JSON.stringify(desiredConfigs) !== JSON.stringify(currentConfigs)) edit.challengeConfigs = desiredConfigs
         if (Object.keys(edit).length === 2) {

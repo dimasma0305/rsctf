@@ -6,12 +6,60 @@ use sea_orm_migration::prelude::*;
 pub struct Migration;
 
 pub(crate) const UP_SQL: &str = r#"
+-- Keep this explicit alphabet byte-for-byte aligned with Rust flag_policy and
+-- web FlagImport. It is Unicode White_Space plus browser-trimmed U+FEFF.
+CREATE OR REPLACE FUNCTION rsctf_flag_is_whitespace(input_character TEXT)
+RETURNS BOOLEAN
+LANGUAGE SQL
+IMMUTABLE
+PARALLEL SAFE
+STRICT
+SET search_path FROM CURRENT
+AS $function$
+    SELECT input_character IN (
+        CHR(9), CHR(10), CHR(11), CHR(12), CHR(13), CHR(32),
+        CHR(133), CHR(160), CHR(5760),
+        CHR(8192), CHR(8193), CHR(8194), CHR(8195), CHR(8196),
+        CHR(8197), CHR(8198), CHR(8199), CHR(8200), CHR(8201), CHR(8202),
+        CHR(8232), CHR(8233), CHR(8239), CHR(8287), CHR(12288), CHR(65279)
+    )
+$function$;
+
+CREATE OR REPLACE FUNCTION rsctf_flag_has_boundary_whitespace(input_value TEXT)
+RETURNS BOOLEAN
+LANGUAGE SQL
+IMMUTABLE
+PARALLEL SAFE
+STRICT
+SET search_path FROM CURRENT
+AS $function$
+    SELECT input_value <> '' AND (
+        rsctf_flag_is_whitespace(LEFT(input_value, 1))
+        OR rsctf_flag_is_whitespace(RIGHT(input_value, 1))
+    )
+$function$;
+
+CREATE OR REPLACE FUNCTION rsctf_flag_is_blank(input_value TEXT)
+RETURNS BOOLEAN
+LANGUAGE SQL
+IMMUTABLE
+PARALLEL SAFE
+STRICT
+SET search_path FROM CURRENT
+AS $function$
+    SELECT NOT EXISTS (
+        SELECT 1
+          FROM UNNEST(string_to_array(input_value, NULL)) AS codepoints(codepoint)
+         WHERE NOT rsctf_flag_is_whitespace(codepoint)
+    )
+$function$;
+
 CREATE TABLE IF NOT EXISTS "FlagImportOperations" (
     challenge_id      INTEGER NOT NULL,
     operation_id      UUID NOT NULL,
     actor_user_id     UUID NOT NULL,
     request_digest    BYTEA NOT NULL CHECK (OCTET_LENGTH(request_digest) = 32),
-    state             SMALLINT NOT NULL DEFAULT 0 CHECK (state IN (0, 1)),
+    state             SMALLINT NOT NULL DEFAULT 0 CHECK (state IN (0, 1, 2)),
     lease_token       UUID NOT NULL,
     inserted_count    INTEGER NULL CHECK (inserted_count >= 0 AND inserted_count <= 100),
     duplicate_count   INTEGER NULL CHECK (duplicate_count >= 0 AND duplicate_count <= 100),
@@ -28,23 +76,44 @@ CREATE TABLE IF NOT EXISTS "FlagImportOperations" (
         CHECK ((state = 0 AND completed_at_utc IS NULL
                          AND inserted_count IS NULL AND duplicate_count IS NULL)
                OR (state = 1 AND completed_at_utc IS NOT NULL
-                         AND inserted_count IS NOT NULL AND duplicate_count IS NOT NULL))
+                         AND inserted_count IS NOT NULL AND duplicate_count IS NOT NULL)
+               OR (state = 2 AND completed_at_utc IS NOT NULL
+                         AND inserted_count IS NULL AND duplicate_count IS NULL))
 );
+
+CREATE TABLE IF NOT EXISTS "FlagImportSlots" (
+    slot_id          SMALLINT PRIMARY KEY CHECK (slot_id BETWEEN 0 AND 3),
+    lease_token      UUID NULL,
+    expires_at_utc   TIMESTAMPTZ NULL,
+    CHECK ((lease_token IS NULL) = (expires_at_utc IS NULL))
+);
+INSERT INTO "FlagImportSlots" (slot_id)
+VALUES (0), (1), (2), (3)
+ON CONFLICT DO NOTHING;
+CREATE INDEX IF NOT EXISTS ix_flag_import_slot_expiry
+    ON "FlagImportSlots" (expires_at_utc, slot_id);
 
 CREATE INDEX IF NOT EXISTS ix_flag_import_operations_retention
     ON "FlagImportOperations" (completed_at_utc, challenge_id, operation_id)
-    WHERE state = 1;
+    WHERE state IN (1, 2);
 CREATE INDEX IF NOT EXISTS ix_flag_import_operations_abandoned
     ON "FlagImportOperations" (created_at_utc, lease_expires_at_utc,
                                challenge_id, operation_id)
     WHERE state = 0;
 ALTER TABLE "FlagContexts"
     ADD COLUMN IF NOT EXISTS canonical_identity_enforced BOOLEAN NOT NULL DEFAULT TRUE;
+UPDATE "FlagContexts"
+   SET canonical_identity_enforced = FALSE
+ WHERE challenge_id IS NOT NULL
+   AND NOT (
+       OCTET_LENGTH(flag) BETWEEN 1 AND 127
+       AND NOT rsctf_flag_has_boundary_whitespace(flag)
+   );
 WITH ranked AS (
     SELECT id,
            ROW_NUMBER() OVER (PARTITION BY challenge_id, flag ORDER BY id) AS ordinal
       FROM "FlagContexts"
-     WHERE challenge_id IS NOT NULL
+     WHERE challenge_id IS NOT NULL AND canonical_identity_enforced
 )
 UPDATE "FlagContexts" context
    SET canonical_identity_enforced = FALSE
@@ -75,7 +144,7 @@ UPDATE "GameChallenges"
    SET flag_template = NULL
  WHERE "Type" = 3
    AND flag_template IS NOT NULL
-   AND flag_template ~ '^[[:space:]]*$';
+   AND rsctf_flag_is_blank(flag_template);
 
 INSERT INTO "FlagPolicyViolations"
     (challenge_id, flag_context_id, violation_type, observed_bytes)
@@ -84,7 +153,7 @@ SELECT flag.challenge_id, flag.id, 'flag_context', OCTET_LENGTH(flag.flag)
  WHERE flag.challenge_id IS NOT NULL
    AND NOT (
        OCTET_LENGTH(flag.flag) BETWEEN 1 AND 127
-       AND flag.flag !~ '(^[[:space:]])|([[:space:]]$)'
+       AND NOT rsctf_flag_has_boundary_whitespace(flag.flag)
    )
 ON CONFLICT DO NOTHING;
 
@@ -108,7 +177,7 @@ SELECT variant.challenge_id, NULL, 'variant:' || variant.id::TEXT,
  WHERE jsonb_typeof(variant.manifest->'flag') IS DISTINCT FROM 'string'
     OR NOT (
         OCTET_LENGTH(variant.manifest->>'flag') BETWEEN 1 AND 127
-        AND variant.manifest->>'flag' !~ '(^[[:space:]])|([[:space:]]$)'
+        AND NOT rsctf_flag_has_boundary_whitespace(variant.manifest->>'flag')
     )
 ON CONFLICT DO NOTHING;
 
@@ -136,7 +205,7 @@ SELECT challenge.id, NULL, 'dynamic_template',
    AND challenge.flag_template IS NOT NULL
    AND challenge.flag_template <> ''
    AND (
-       challenge.flag_template ~ '(^[[:space:]])|([[:space:]]$)'
+       rsctf_flag_has_boundary_whitespace(challenge.flag_template)
        OR NOT (
            challenge.flag_template LIKE '%[GUID]%'
            OR challenge.flag_template LIKE '%[UUID]%'
@@ -169,6 +238,15 @@ UPDATE "GameChallenges" challenge
         WHERE violation.challenge_id = challenge.id
    );
 
+ALTER TABLE "FlagContexts"
+    DROP CONSTRAINT IF EXISTS ck_flagcontexts_canonical_normal_flag;
+ALTER TABLE "AdFlags"
+    DROP CONSTRAINT IF EXISTS ck_adflags_canonical_flag;
+ALTER TABLE "ChallengeVariants"
+    DROP CONSTRAINT IF EXISTS ck_challengevariants_canonical_flag;
+ALTER TABLE "GameChallenges"
+    DROP CONSTRAINT IF EXISTS ck_gamechallenges_dynamic_flag_template;
+
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -180,7 +258,7 @@ BEGIN
           ADD CONSTRAINT ck_flagcontexts_canonical_normal_flag
           CHECK (
               OCTET_LENGTH(flag) BETWEEN 1 AND 127
-              AND flag !~ '(^[[:space:]])|([[:space:]]$)'
+              AND NOT rsctf_flag_has_boundary_whitespace(flag)
           ) NOT VALID;
     END IF;
 
@@ -207,7 +285,7 @@ BEGIN
           CHECK (
               COALESCE(jsonb_typeof(manifest->'flag') = 'string', FALSE)
               AND OCTET_LENGTH(manifest->>'flag') BETWEEN 1 AND 127
-              AND manifest->>'flag' !~ '(^[[:space:]])|([[:space:]]$)'
+              AND NOT rsctf_flag_has_boundary_whitespace(manifest->>'flag')
           ) NOT VALID;
     END IF;
 
@@ -223,7 +301,7 @@ BEGIN
               OR flag_template IS NULL
               OR flag_template = ''
               OR (
-                  flag_template !~ '(^[[:space:]])|([[:space:]]$)'
+                  NOT rsctf_flag_has_boundary_whitespace(flag_template)
                   AND (
                       flag_template LIKE '%[GUID]%'
                       OR flag_template LIKE '%[UUID]%'
@@ -263,9 +341,13 @@ ALTER TABLE "ChallengeVariants"
     DROP CONSTRAINT IF EXISTS ck_challengevariants_canonical_flag;
 DROP TABLE IF EXISTS "FlagPolicyViolations";
 DROP TABLE IF EXISTS "FlagImportOperations";
+DROP TABLE IF EXISTS "FlagImportSlots";
 DROP INDEX IF EXISTS ux_flag_contexts_challenge_flag;
 ALTER TABLE "FlagContexts"
     DROP COLUMN IF EXISTS canonical_identity_enforced;
+DROP FUNCTION IF EXISTS rsctf_flag_is_blank(TEXT);
+DROP FUNCTION IF EXISTS rsctf_flag_has_boundary_whitespace(TEXT);
+DROP FUNCTION IF EXISTS rsctf_flag_is_whitespace(TEXT);
 "#;
 
 #[async_trait::async_trait]
@@ -287,6 +369,8 @@ impl MigrationTrait for Migration {
 #[cfg(test)]
 mod tests {
     use super::UP_SQL;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    use std::str::FromStr;
 
     #[test]
     fn imports_have_one_identity_bounded_results_and_indexed_duplicate_checks() {
@@ -294,6 +378,8 @@ mod tests {
         assert!(UP_SQL.contains("lease_token       UUID NOT NULL"));
         assert!(UP_SQL.contains("inserted_count <= 100"));
         assert!(UP_SQL.contains("ix_flag_import_operations_abandoned"));
+        assert!(UP_SQL.contains("FlagImportSlots"));
+        assert!(UP_SQL.contains("state IN (0, 1, 2)"));
         assert!(
             UP_SQL.contains("CREATE UNIQUE INDEX IF NOT EXISTS ux_flag_contexts_challenge_flag")
         );
@@ -315,12 +401,119 @@ mod tests {
 
     #[test]
     fn database_template_formula_matches_runtime_replacement_deltas() {
-        assert!(UP_SQL.contains("flag_template ~ '^[[:space:]]*$'"));
+        assert!(UP_SQL.contains("CREATE OR REPLACE FUNCTION rsctf_flag_is_whitespace"));
+        assert!(UP_SQL.contains("CREATE OR REPLACE FUNCTION rsctf_flag_is_blank"));
+        assert!(UP_SQL.contains("IMMUTABLE"));
+        assert!(UP_SQL.contains("CHR(160)"));
+        assert!(UP_SQL.contains("CHR(8195)"));
+        assert!(UP_SQL.contains("CHR(65279)"));
+        assert!(UP_SQL.contains("rsctf_flag_is_blank(flag_template)"));
+        assert!(!UP_SQL.contains("flag_template ~"));
         assert!(UP_SQL.contains("OR flag_template = ''"));
         assert!(UP_SQL.contains("+ 30::BIGINT *"));
         assert!(UP_SQL.contains("REPLACE(flag_template, '[GUID]', '')"));
         assert!(UP_SQL.contains("REPLACE(flag_template, '[UUID]', '')"));
         assert!(UP_SQL.contains("+ 5::BIGINT *"));
         assert!(UP_SQL.contains("REPLACE(flag_template, '[TEAM_HASH]', '')"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn oversized_legacy_flag_is_excluded_before_unique_index_creation() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("flag_index_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE "AspNetUsers" (id UUID PRIMARY KEY);
+            CREATE TABLE "GameChallenges" (
+                id INTEGER PRIMARY KEY,
+                "Type" SMALLINT NOT NULL DEFAULT 0,
+                flag_template TEXT NULL,
+                is_enabled BOOLEAN NOT NULL DEFAULT TRUE
+            );
+            CREATE TABLE "FlagContexts" (
+                id SERIAL PRIMARY KEY,
+                challenge_id INTEGER NULL REFERENCES "GameChallenges"(id),
+                flag TEXT NOT NULL,
+                is_occupied BOOLEAN NOT NULL DEFAULT FALSE
+            );
+            CREATE TABLE "AdTeamServices" (
+                id INTEGER PRIMARY KEY,
+                challenge_id INTEGER NOT NULL REFERENCES "GameChallenges"(id)
+            );
+            CREATE TABLE "AdFlags" (
+                id INTEGER PRIMARY KEY,
+                team_service_id INTEGER NOT NULL REFERENCES "AdTeamServices"(id),
+                flag TEXT NOT NULL
+            );
+            CREATE TABLE "ChallengeVariants" (
+                id UUID PRIMARY KEY,
+                challenge_id INTEGER NOT NULL REFERENCES "GameChallenges"(id),
+                manifest JSONB NOT NULL
+            );
+            INSERT INTO "GameChallenges" (id) VALUES (1);
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut state = 0x9e37_79b9_u32;
+        let oversized_flag = (0..8_192)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                char::from(b'!' + (state % 94) as u8)
+            })
+            .collect::<String>();
+        assert!(oversized_flag.len() > 3 * 1_024);
+        sqlx::query(r#"INSERT INTO "FlagContexts" (challenge_id, flag) VALUES (1, $1)"#)
+            .bind(&oversized_flag)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::raw_sql(UP_SQL).execute(&pool).await.unwrap();
+
+        let (canonical, enabled, violations) = sqlx::query_as::<_, (bool, bool, i64)>(
+            r#"SELECT context.canonical_identity_enforced,
+                      challenge.is_enabled,
+                      (SELECT COUNT(*)::bigint FROM "FlagPolicyViolations")
+                 FROM "FlagContexts" context
+                 JOIN "GameChallenges" challenge ON challenge.id = context.challenge_id
+                WHERE context.challenge_id = 1"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(!canonical);
+        assert!(!enabled);
+        assert_eq!(violations, 1);
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
     }
 }

@@ -51,6 +51,16 @@ import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
 import { requireApiCollection } from '@Utils/ApiCollection'
 import { downloadBlob } from '@Utils/ApiHelper'
 import { controlJobResultCount, createOperationId, waitForControlJob } from '@Utils/ControlJobs'
+import {
+  clearEventVpnOverrideCreateOperation,
+  clearEventVpnOverrideRevokeOperation,
+  readEventVpnOverrideOperations,
+  retainEventVpnOverrideCreateOperation,
+  retainEventVpnOverrideRevokeOperation,
+  type EventVpnOverrideCreateOperation,
+  type EventVpnOverrideRevokeOperation,
+} from '@Utils/EventVpnOverrideOperations'
+import { isRetryableHttpError } from '@Utils/HttpError'
 import { getInputNumber, randomInviteCode, showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { createUuid } from '@Utils/Uuid'
@@ -100,8 +110,8 @@ const GameInfoEdit: FC = () => {
   const [vpnOverrides, setVpnOverrides] = useState<EventVpnOverrideModel[]>([])
   const [vpnPolicyRevision, setVpnPolicyRevision] = useState<number>(1)
   const vpnMutationOwner = useRef(false)
-  const createOverrideOperation = useRef<{ operationId: string; signature: string } | null>(null)
-  const revokeOverrideOperations = useRef(new Map<string, string>())
+  const createOverrideOperation = useRef<EventVpnOverrideCreateOperation | null>(null)
+  const revokeOverrideOperations = useRef(new Map<string, EventVpnOverrideRevokeOperation>())
   const [overrideReason, setOverrideReason] = useState('')
   const [overrideMinutes, setOverrideMinutes] = useState<number | string>(15)
   const [purgeReason, setPurgeReason] = useState('')
@@ -217,6 +227,26 @@ const GameInfoEdit: FC = () => {
     },
     []
   )
+
+  useEffect(() => {
+    if (numId < 0) {
+      createOverrideOperation.current = null
+      revokeOverrideOperations.current.clear()
+      setOverrideReason('')
+      setOverrideMinutes(15)
+      return
+    }
+    const recovered = readEventVpnOverrideOperations(sessionStorage, numId)
+    createOverrideOperation.current = recovered.create
+    revokeOverrideOperations.current = new Map(recovered.revokes.map((operation) => [operation.overrideId, operation]))
+    if (recovered.create) {
+      setOverrideReason(recovered.create.reason)
+      setOverrideMinutes(recovered.create.durationMinutes)
+    } else {
+      setOverrideReason('')
+      setOverrideMinutes(15)
+    }
+  }, [numId])
 
   useEffect(() => {
     let cancelled = false
@@ -461,9 +491,10 @@ const GameInfoEdit: FC = () => {
     if (!game?.id || vpnMutationOwner.current) return
     const reason = overrideReason.trim()
     const durationMinutes = Number(overrideMinutes)
+    const reasonCharacters = Array.from(reason).length
     if (
-      reason.length < 8 ||
-      reason.length > 512 ||
+      reasonCharacters < 8 ||
+      reasonCharacters > 512 ||
       !Number.isInteger(durationMinutes) ||
       durationMinutes < 1 ||
       durationMinutes > 60
@@ -481,22 +512,31 @@ const GameInfoEdit: FC = () => {
     vpnMutationOwner.current = true
     setEventSecurityAction('override')
     const signature = `${reason}\0${durationMinutes}`
-    const operationId =
-      createOverrideOperation.current?.signature === signature
-        ? createOverrideOperation.current.operationId
-        : createUuid()
-    createOverrideOperation.current = { operationId, signature }
+    const operation = retainEventVpnOverrideCreateOperation(
+      sessionStorage,
+      {
+        gameId: game.id,
+        signature,
+        reason,
+        durationMinutes,
+        expectedPolicyRevision: vpnPolicyRevision,
+      },
+      createOverrideOperation.current,
+      createUuid
+    )
+    createOverrideOperation.current = operation
     try {
       await api.eventSecurity.createVpnOverride(game.id, {
         reason,
         durationMinutes,
-        operationId,
-        expectedPolicyRevision: vpnPolicyRevision,
+        operationId: operation.operationId,
+        expectedPolicyRevision: operation.expectedPolicyRevision,
       })
       const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
       const snapshot = vpnOverrideSnapshot(refreshed.data)
       setVpnOverrides(snapshot.overrides)
       if (snapshot.policyRevision !== null) setVpnPolicyRevision(snapshot.policyRevision)
+      clearEventVpnOverrideCreateOperation(sessionStorage, game.id, operation.operationId)
       createOverrideOperation.current = null
       setOverrideReason('')
       showNotification({
@@ -513,6 +553,10 @@ const GameInfoEdit: FC = () => {
       } catch {
         // Preserve the known operation for an explicit retry when reconciliation is unavailable.
       }
+      if (!isRetryableHttpError(error)) {
+        clearEventVpnOverrideCreateOperation(sessionStorage, game.id, operation.operationId)
+        createOverrideOperation.current = null
+      }
       showErrorMsg(error, t)
     } finally {
       vpnMutationOwner.current = false
@@ -524,17 +568,27 @@ const GameInfoEdit: FC = () => {
     if (!game?.id || vpnMutationOwner.current) return
     vpnMutationOwner.current = true
     setEventSecurityAction(`revoke:${overrideId}`)
-    const operationId = revokeOverrideOperations.current.get(overrideId) ?? createUuid()
-    revokeOverrideOperations.current.set(overrideId, operationId)
+    const operation = retainEventVpnOverrideRevokeOperation(
+      sessionStorage,
+      {
+        gameId: game.id,
+        overrideId,
+        expectedPolicyRevision: vpnPolicyRevision,
+      },
+      revokeOverrideOperations.current.get(overrideId) ?? null,
+      createUuid
+    )
+    revokeOverrideOperations.current.set(overrideId, operation)
     try {
       await api.eventSecurity.revokeVpnOverride(game.id, overrideId, {
-        operationId,
-        expectedPolicyRevision: vpnPolicyRevision,
+        operationId: operation.operationId,
+        expectedPolicyRevision: operation.expectedPolicyRevision,
       })
       const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
       const snapshot = vpnOverrideSnapshot(refreshed.data)
       setVpnOverrides(snapshot.overrides)
       if (snapshot.policyRevision !== null) setVpnPolicyRevision(snapshot.policyRevision)
+      clearEventVpnOverrideRevokeOperation(sessionStorage, game.id, overrideId, operation.operationId)
       revokeOverrideOperations.current.delete(overrideId)
       showNotification({
         color: 'teal',
@@ -549,6 +603,10 @@ const GameInfoEdit: FC = () => {
         if (snapshot.policyRevision !== null) setVpnPolicyRevision(snapshot.policyRevision)
       } catch {
         // Preserve the known operation for an explicit retry when reconciliation is unavailable.
+      }
+      if (!isRetryableHttpError(error)) {
+        clearEventVpnOverrideRevokeOperation(sessionStorage, game.id, overrideId, operation.operationId)
+        revokeOverrideOperations.current.delete(overrideId)
       }
       showErrorMsg(error, t)
     } finally {

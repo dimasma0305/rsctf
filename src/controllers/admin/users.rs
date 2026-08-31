@@ -865,56 +865,73 @@ pub async fn add_users(
     // RSCTF logs `users.Count` — the number of rows successfully upserted (created
     // + updated). Capture it before the consuming loop below.
     let created_count = prepared.len();
+    let mut renamed_user_ids = Vec::new();
 
-    for (m, user_name, email, norm_name, norm_email) in prepared {
-        credential_work.renew_if_needed().await?;
-        let password_hash = hash_password_async(m.password.clone()).await?;
-        credential_work.ensure_owned().await?;
-        let team_name = m
-            .team_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        let cached_team_id = team_name.and_then(|name| team_by_name.get(name).copied());
-        let update_real_name = m
-            .real_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let update_std_number = m
-            .std_number
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let update_phone = m
-            .phone
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let provision = provision_explicit_user(
-            st.pg(),
-            ExplicitUserWrite {
-                user_name: &user_name,
-                normalized_user_name: &norm_name,
-                email: &email,
-                normalized_email: &norm_email,
-                password_hash: &password_hash,
-                phone: m.phone.as_deref(),
-                create_real_name: m.real_name.as_deref().unwrap_or_default(),
-                create_std_number: m.std_number.as_deref().unwrap_or_default(),
-                update_real_name,
-                update_std_number,
-                update_phone,
-                now,
-            },
-            team_name,
-            cached_team_id,
-        )
-        .await?;
-        if let (Some(name), Some(team_id)) = (team_name, provision.team_id) {
-            team_by_name.insert(name.to_string(), team_id);
+    // Each row commits independently. Always invalidate renames from earlier
+    // rows even if a later hash/provisioning step fails and the endpoint returns
+    // a partial-result error.
+    let provision_result: AppResult<()> = async {
+        for (m, user_name, email, norm_name, norm_email) in prepared {
+            credential_work.renew_if_needed().await?;
+            let password_hash = hash_password_async(m.password.clone()).await?;
+            credential_work.ensure_owned().await?;
+            let team_name = m
+                .team_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let cached_team_id = team_name.and_then(|name| team_by_name.get(name).copied());
+            let update_real_name = m
+                .real_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let update_std_number = m
+                .std_number
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let update_phone = m
+                .phone
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let provision = provision_explicit_user(
+                st.pg(),
+                ExplicitUserWrite {
+                    user_name: &user_name,
+                    normalized_user_name: &norm_name,
+                    email: &email,
+                    normalized_email: &norm_email,
+                    password_hash: &password_hash,
+                    phone: m.phone.as_deref(),
+                    create_real_name: m.real_name.as_deref().unwrap_or_default(),
+                    create_std_number: m.std_number.as_deref().unwrap_or_default(),
+                    update_real_name,
+                    update_std_number,
+                    update_phone,
+                    now,
+                },
+                team_name,
+                cached_team_id,
+            )
+            .await?;
+            if let (Some(name), Some(team_id)) = (team_name, provision.team_id) {
+                team_by_name.insert(name.to_string(), team_id);
+            }
+            if provision.user_name_changed {
+                renamed_user_ids.push(provision.id);
+            }
         }
+        Ok(())
     }
+    .await;
+    if let Err(error) =
+        crate::controllers::team::flush_scoreboards_for_users(&st, &renamed_user_ids).await
+    {
+        tracing::warn!(%error, renamed_users = renamed_user_ids.len(), "post-bulk-rename scoreboard invalidation deferred");
+    }
+    provision_result?;
 
     // RSCTF `AdminController` audit event (`Admin_UserBatchAdded`).
     crate::services::audit::info(

@@ -312,7 +312,13 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
       }
     } catch (e) {
       showErrorMsg(e, t)
-      if (generation === inviteRequestGeneration.current) setInviteLoadError(true)
+      if (generation === inviteRequestGeneration.current) {
+        setInviteLoadError(true)
+        // A lost mutation response may still have committed, while another tab
+        // may already own a newer revision. Reconcile through the safe captain
+        // read before allowing an old code to remain copyable.
+        await loadInviteCode()
+      }
     } finally {
       inviteMutationOwner.current = false
       if (generation === inviteRequestGeneration.current) setInviteLoading(false)

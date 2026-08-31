@@ -17,18 +17,68 @@ fn byte_budgets_count_utf8_not_characters() {
 
 #[test]
 fn request_digest_is_stable_but_revision_and_value_sensitive() {
-    let updates = BTreeMap::from([
-        ("GlobalConfig:Slogan".to_string(), Some("two".to_string())),
-        ("GlobalConfig:Title".to_string(), Some("one".to_string())),
-    ]);
-    let same = updates.clone().into_iter().rev().collect();
+    let operation_id = Uuid::new_v4();
+    let model = ConfigEditModel {
+        operation_id: Some(operation_id),
+        expected_revision: Some(4),
+        container_provider: Some(ContainerProviderInfoModel {
+            provider_type: Some("Docker".to_string()),
+            port_mapping_type: Some("PlatformProxy".to_string()),
+            traffic_capture: false,
+            kubernetes_namespace: None,
+            image_pull_policy: None,
+        }),
+        ..ConfigEditModel::default()
+    };
+    let same: ConfigEditModel =
+        serde_json::from_value(serde_json::to_value(&model).unwrap()).unwrap();
     assert_eq!(
-        settings_request_digest(4, BrandingAction::Keep, &updates).unwrap(),
-        settings_request_digest(4, BrandingAction::Keep, &same).unwrap()
+        settings_request_digest(4, &model).unwrap(),
+        settings_request_digest(4, &same).unwrap()
     );
     assert_ne!(
-        settings_request_digest(4, BrandingAction::Keep, &updates).unwrap(),
-        settings_request_digest(5, BrandingAction::Keep, &updates).unwrap()
+        settings_request_digest(4, &model).unwrap(),
+        settings_request_digest(5, &model).unwrap()
+    );
+
+    let changed = ConfigEditModel {
+        operation_id: Some(operation_id),
+        expected_revision: Some(4),
+        container_provider: Some(ContainerProviderInfoModel {
+            port_mapping_type: Some("Default".to_string()),
+            ..ContainerProviderInfoModel::default()
+        }),
+        ..ConfigEditModel::default()
+    };
+    assert_ne!(
+        settings_request_digest(4, &model).unwrap(),
+        settings_request_digest(4, &changed).unwrap()
+    );
+}
+
+#[test]
+fn request_digest_ignores_read_only_container_provider_summary() {
+    let first = ConfigEditModel {
+        container_provider: Some(ContainerProviderInfoModel {
+            provider_type: Some("Docker".to_string()),
+            port_mapping_type: Some("PlatformProxy".to_string()),
+            ..ContainerProviderInfoModel::default()
+        }),
+        ..ConfigEditModel::default()
+    };
+    let second = ConfigEditModel {
+        container_provider: Some(ContainerProviderInfoModel {
+            provider_type: Some("Kubernetes".to_string()),
+            port_mapping_type: Some("PlatformProxy".to_string()),
+            traffic_capture: true,
+            kubernetes_namespace: Some("ctf".to_string()),
+            image_pull_policy: Some("Always".to_string()),
+        }),
+        ..ConfigEditModel::default()
+    };
+    assert_eq!(
+        settings_request_digest(0, &first).unwrap(),
+        settings_request_digest(0, &second).unwrap()
     );
 }
 
@@ -116,7 +166,15 @@ async fn failed_nth_write_rolls_back_and_completed_operation_replays() {
 
     let operation_id = Uuid::new_v4();
     let actor = Uuid::new_v4();
-    let digest = settings_request_digest(0, BrandingAction::Keep, &updates).unwrap();
+    let digest_model = ConfigEditModel {
+        expected_revision: Some(0),
+        global_config: Some(GlobalConfig {
+            title: "new title".to_string(),
+            ..GlobalConfig::default()
+        }),
+        ..ConfigEditModel::default()
+    };
+    let digest = settings_request_digest(0, &digest_model).unwrap();
     let mut committed = pool.begin().await.unwrap();
     assert_eq!(lock_settings_revision(&mut committed).await.unwrap(), 0);
     write_config_updates(&mut committed, &updates)

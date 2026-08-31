@@ -27,6 +27,75 @@ fn rejects_duplicate_and_oversized_intents_before_reservation() {
     );
 }
 
+#[test]
+fn bulk_admission_and_long_reconciliation_do_not_queue_http_handlers() {
+    let source = include_str!("bulk.rs");
+    let reserve = source
+        .split_once("async fn reserve_operation(")
+        .unwrap()
+        .1
+        .split_once("async fn abandon_operation(")
+        .unwrap()
+        .0;
+    assert!(reserve.contains("pg_try_advisory_xact_lock"));
+    assert!(!reserve.contains("SELECT pg_advisory_xact_lock"));
+
+    let handler = source
+        .split_once("pub async fn mutate_challenges_bulk(")
+        .unwrap()
+        .1;
+    assert!(handler.contains("complete_desired_state(\n                &st,"));
+    assert!(handler.contains("lease_token,\n                false,"));
+    assert!(handler.contains("spawn_desired_state_job_with_permit("));
+}
+
+#[test]
+fn desired_state_reconciles_only_the_event_wide_effects_each_type_needs() {
+    let static_attachment = DesiredRuntimeEffect {
+        challenge_id: 1,
+        challenge_type: ChallengeType::StaticAttachment as i16,
+        ad_self_hosted: false,
+    };
+    assert!(!desired::effect_has_runtime(&static_attachment));
+    assert!(!desired::effect_needs_vpn_reconciliation(
+        &static_attachment
+    ));
+
+    let static_container = DesiredRuntimeEffect {
+        challenge_id: 2,
+        challenge_type: ChallengeType::StaticContainer as i16,
+        ad_self_hosted: false,
+    };
+    assert!(desired::effect_has_runtime(&static_container));
+    assert!(!desired::effect_needs_vpn_reconciliation(&static_container));
+
+    let attack_defense = DesiredRuntimeEffect {
+        challenge_id: 3,
+        challenge_type: ChallengeType::AttackDefense as i16,
+        ad_self_hosted: true,
+    };
+    assert!(desired::effect_has_runtime(&attack_defense));
+    assert!(desired::effect_needs_vpn_reconciliation(&attack_defense));
+}
+
+#[test]
+fn bulk_disable_clears_only_changed_koth_holders_set_wise() {
+    let changed = [
+        (11, ChallengeType::StaticContainer as i16, false),
+        (12, ChallengeType::KingOfTheHill as i16, false),
+        (13, ChallengeType::AttackDefense as i16, true),
+        (14, ChallengeType::KingOfTheHill as i16, false),
+    ];
+    assert_eq!(
+        desired::disabled_koth_challenge_ids(false, &changed),
+        vec![12, 14]
+    );
+    assert!(desired::disabled_koth_challenge_ids(true, &changed).is_empty());
+    assert!(desired::CLEAR_DISABLED_KOTH_TARGETS_SQL.contains("challenge_id = ANY($2)"));
+    assert!(desired::CLEAR_DISABLED_KOTH_TARGETS_SQL.contains("holder_participation_id = NULL"));
+    assert!(desired::CLEAR_DISABLED_KOTH_TARGETS_SQL.contains("held_since = NULL"));
+}
+
 #[tokio::test]
 async fn delete_dispatch_has_no_unbounded_waiter_queue() {
     let first = BULK_DELETE_SLOTS.clone().try_acquire_owned().unwrap();
@@ -37,6 +106,28 @@ async fn delete_dispatch_has_no_unbounded_waiter_queue() {
     assert_eq!(
         BULK_DELETE_SLOTS.available_permits(),
         BULK_DELETE_CONCURRENCY
+    );
+}
+
+#[tokio::test]
+async fn desired_state_dispatch_has_no_unbounded_waiter_queue() {
+    let permits = (0..BULK_DESIRED_STATE_CONCURRENCY)
+        .map(|_| {
+            BULK_DESIRED_STATE_SLOTS
+                .clone()
+                .try_acquire_owned()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert!(BULK_DESIRED_STATE_SLOTS
+        .clone()
+        .try_acquire_owned()
+        .is_err());
+    assert_eq!(BULK_DESIRED_STATE_SLOTS.available_permits(), 0);
+    drop(permits);
+    assert_eq!(
+        BULK_DESIRED_STATE_SLOTS.available_permits(),
+        BULK_DESIRED_STATE_CONCURRENCY
     );
 }
 
@@ -78,6 +169,18 @@ async fn expired_desired_state_operation_has_one_replica_safe_lease_owner() {
              lease_expires_at_utc TIMESTAMPTZ NOT NULL,
              PRIMARY KEY (game_id, operation_id)
            );"#,
+    )
+    .execute(&first_pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(
+        r#"CREATE TABLE "BulkChallengeDesiredStateSlots" (
+             slot_id SMALLINT PRIMARY KEY,
+             lease_token UUID NULL,
+             expires_at_utc TIMESTAMPTZ NULL
+           );
+           INSERT INTO "BulkChallengeDesiredStateSlots" (slot_id)
+           VALUES (0), (1), (2), (3);"#,
     )
     .execute(&first_pool)
     .await

@@ -185,7 +185,10 @@ fn serialize_challenge_inner(
         description: Some(description),
         challenge_type: Some(format!("{:?}", ch.challenge_type)),
         category: Some(format!("{:?}", ch.category)),
-        flag_template: ch.flag_template.clone().filter(|s| !s.is_empty()),
+        flag_template: ch
+            .flag_template
+            .clone()
+            .filter(|template| !crate::utils::flag_policy::is_blank(template)),
         hints,
         flags: if flag_texts.is_empty() {
             None
@@ -229,7 +232,10 @@ fn serialize_challenge_inner(
             enable_traffic_capture: ch.enable_traffic_capture.then_some(true),
             enable_shared_container: ch.enable_shared_container.then_some(true),
             network_mode: ch.network_mode.filter(|mode| *mode != NetworkMode::Open),
-            flag_template: ch.flag_template.clone().filter(|s| !s.is_empty()),
+            flag_template: ch
+                .flag_template
+                .clone()
+                .filter(|template| !crate::utils::flag_policy::is_blank(template)),
         });
     }
 

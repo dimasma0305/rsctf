@@ -11,8 +11,10 @@ CREATE TABLE IF NOT EXISTS "GameCloneOperations" (
     operation_id UUID PRIMARY KEY,
     source_game_id INTEGER NOT NULL REFERENCES "Games" (id) ON DELETE CASCADE,
     requested_by UUID NOT NULL REFERENCES "AspNetUsers" (id) ON DELETE CASCADE,
-    request_digest VARCHAR(64) NOT NULL,
-    source_revision VARCHAR(64) NOT NULL,
+    request_digest VARCHAR(64) NOT NULL
+        CHECK (request_digest ~ '^[0-9a-f]{64}$'),
+    source_revision VARCHAR(32) NOT NULL
+        CHECK (source_revision ~ '^[0-9a-f]{32}$'),
     destination_game_id INTEGER REFERENCES "Games" (id) ON DELETE SET NULL,
     status SMALLINT NOT NULL DEFAULT 0 CHECK (status BETWEEN 0 AND 2),
     error_message VARCHAR(512),
@@ -26,6 +28,9 @@ CREATE TABLE IF NOT EXISTS "GameCloneOperations" (
 
 CREATE INDEX IF NOT EXISTS ix_gamecloneoperations_source_created
     ON "GameCloneOperations" (source_game_id, created_at_utc DESC);
+CREATE INDEX IF NOT EXISTS ix_gamecloneoperations_retention
+    ON "GameCloneOperations" (completed_at_utc, operation_id)
+    WHERE status IN (1, 2);
 "#;
 
 #[async_trait::async_trait]
@@ -49,7 +54,10 @@ mod tests {
     fn clone_intent_and_result_are_durable() {
         assert!(UP_SQL.contains("operation_id UUID PRIMARY KEY"));
         assert!(UP_SQL.contains("request_digest VARCHAR(64) NOT NULL"));
-        assert!(UP_SQL.contains("source_revision VARCHAR(64) NOT NULL"));
+        assert!(UP_SQL.contains("request_digest ~ '^[0-9a-f]{64}$'"));
+        assert!(UP_SQL.contains("source_revision VARCHAR(32) NOT NULL"));
+        assert!(UP_SQL.contains("source_revision ~ '^[0-9a-f]{32}$'"));
         assert!(UP_SQL.contains("destination_game_id INTEGER"));
+        assert!(UP_SQL.contains("ix_gamecloneoperations_retention"));
     }
 }

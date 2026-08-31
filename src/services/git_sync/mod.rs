@@ -386,8 +386,7 @@ pub(super) async fn import_manifest_inner(
     let flag_template = container
         .and_then(|c| c.flag_template.clone())
         .or(model.flag_template.clone())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        .filter(|template| !crate::utils::flag_policy::is_blank(template));
 
     // Container fields only apply to container-typed challenges. `provide:`
     // attachments and the image auto-build pipeline are separate slices.

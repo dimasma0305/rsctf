@@ -32,19 +32,71 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
         CREATE TABLE "GameChallenges" (
             id INTEGER PRIMARY KEY,
             game_id INTEGER NOT NULL REFERENCES "Games"(id),
+            title TEXT NULL,
+            content TEXT NULL,
+            category SMALLINT NULL,
             is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
             deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
             review_status SMALLINT NOT NULL DEFAULT 1,
             "Type" SMALLINT NOT NULL DEFAULT 0,
             ad_self_hosted BOOLEAN NOT NULL DEFAULT FALSE,
-            flag_template TEXT NULL
+            hints JSONB NULL,
+            deadline_utc TIMESTAMPTZ NULL,
+            submission_limit INTEGER NULL,
+            container_image TEXT NULL,
+            memory_limit INTEGER NULL,
+            storage_limit INTEGER NULL,
+            cpu_count INTEGER NULL,
+            expose_port INTEGER NULL,
+            workload_spec JSONB NULL,
+            file_name TEXT NULL,
+            flag_template TEXT NULL,
+            review_note TEXT NULL,
+            attachment_id INTEGER NULL,
+            enable_traffic_capture BOOLEAN NULL,
+            enable_shared_container BOOLEAN NULL,
+            disable_blood_bonus BOOLEAN NULL,
+            original_score INTEGER NULL,
+            min_score_rate DOUBLE PRECISION NULL,
+            difficulty DOUBLE PRECISION NULL,
+            score_curve SMALLINT NULL,
+            network_mode SMALLINT NULL,
+            variant_mode SMALLINT NULL,
+            variant_generator_build_context_subdir TEXT NULL,
+            solve_receipt_mode SMALLINT NULL,
+            receipt_verifier_identity TEXT NULL,
+            ad_checker_image TEXT NULL,
+            ad_allow_egress BOOLEAN NULL,
+            ad_allow_self_reset BOOLEAN NULL,
+            ad_ssh_requires_flag BOOLEAN NULL,
+            ad_scoring_weight DOUBLE PRECISION NULL
         );
         CREATE TABLE "FlagContexts" (
             id SERIAL PRIMARY KEY,
             challenge_id INTEGER NULL REFERENCES "GameChallenges"(id),
-            flag TEXT NOT NULL
+            flag TEXT NOT NULL,
+            is_occupied BOOLEAN NOT NULL DEFAULT FALSE
         );
-        CREATE TABLE "Divisions" (id INTEGER PRIMARY KEY);
+        CREATE TABLE "GameNotices" (
+            id SERIAL PRIMARY KEY,
+            game_id INTEGER NOT NULL REFERENCES "Games"(id),
+            "Type" SMALLINT NOT NULL,
+            values JSONB NOT NULL,
+            publish_time_utc TIMESTAMPTZ NOT NULL
+        );
+        CREATE TABLE "Divisions" (
+            id INTEGER PRIMARY KEY,
+            game_id INTEGER NULL REFERENCES "Games"(id),
+            name TEXT NOT NULL DEFAULT 'division',
+            invite_code TEXT NULL,
+            default_permissions INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE "DivisionChallengeConfigs" (
+            division_id INTEGER NOT NULL REFERENCES "Divisions"(id),
+            challenge_id INTEGER NOT NULL REFERENCES "GameChallenges"(id),
+            permissions INTEGER NOT NULL,
+            PRIMARY KEY (division_id, challenge_id)
+        );
         CREATE TABLE "Teams" (id INTEGER PRIMARY KEY);
         CREATE TABLE "AdTeamServices" (
             id INTEGER PRIMARY KEY,
@@ -70,18 +122,41 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::raw_sql(super::m0306_bulk_challenge_mutations::UP_SQL)
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::raw_sql(super::m0307_division_revision_operations::UP_SQL)
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::raw_sql(super::m0308_team_invite_rotation::UP_SQL)
-        .execute(&pool)
-        .await
-        .unwrap();
+    for _ in 0..2 {
+        sqlx::raw_sql(super::m0330_mail_preparation_slots::UP_SQL)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let mail_preparation_slots: i64 =
+        sqlx::query_scalar(r#"SELECT COUNT(*)::BIGINT FROM "MailPreparationSlots""#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(mail_preparation_slots, 16);
+    for _ in 0..2 {
+        sqlx::raw_sql(super::m0306_bulk_challenge_mutations::UP_SQL)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(super::m0307_division_revision_operations::UP_SQL)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(super::m0308_team_invite_rotation::UP_SQL)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let bulk_slots: (i64, i64) = sqlx::query_as(
+        r#"SELECT
+              (SELECT COUNT(*)::BIGINT FROM "BulkChallengeDeletionSlots"),
+              (SELECT COUNT(*)::BIGINT FROM "BulkChallengeDesiredStateSlots")"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(bulk_slots, (2, 4));
 
     let actor = uuid::Uuid::new_v4();
     sqlx::query(r#"INSERT INTO "AspNetUsers" VALUES ($1)"#)
@@ -198,13 +273,24 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
     .await
     .unwrap();
     sqlx::query(
-        r#"INSERT INTO "FlagContexts" (challenge_id, flag)
-           VALUES (10, 'flag{same}'), (10, 'flag{same}'), (11, $1)"#,
+        r#"INSERT INTO "GameChallenges" (id, game_id, "Type", flag_template)
+           VALUES (15, 1, 0, NULL), (16, 1, 3, $1), (17, 1, 3, $2)"#,
     )
-    .bind("x".repeat(128))
+    .bind("flag{[GUID]}\u{2003}")
+    .bind("\u{00a0}\u{2003}")
     .execute(&pool)
     .await
     .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "FlagContexts" (challenge_id, flag)
+           VALUES (10, 'flag{same}'), (10, 'flag{same}'), (11, $1), (15, $2)"#,
+    )
+    .bind("x".repeat(128))
+    .bind("\u{00a0}flag{legacy}")
+    .execute(&pool)
+    .await
+    .unwrap();
+
     sqlx::query(r#"INSERT INTO "Divisions" (id) VALUES (20)"#)
         .execute(&pool)
         .await
@@ -214,10 +300,32 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
         .await
         .unwrap();
 
-    sqlx::raw_sql(super::m0309_flag_import_operations::UP_SQL)
-        .execute(&pool)
-        .await
-        .unwrap();
+    for _ in 0..2 {
+        sqlx::raw_sql(super::m0309_flag_import_operations::UP_SQL)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let flag_import_slots: i64 =
+        sqlx::query_scalar(r#"SELECT COUNT(*)::BIGINT FROM "FlagImportSlots""#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(flag_import_slots, 4);
+
+    let whitespace_parity: (bool, bool, bool, bool) = sqlx::query_as(
+        r#"SELECT rsctf_flag_has_boundary_whitespace($1),
+                  rsctf_flag_has_boundary_whitespace($2),
+                  rsctf_flag_is_blank($3),
+                  rsctf_flag_has_boundary_whitespace('flag{plain}')"#,
+    )
+    .bind("\u{00a0}flag{answer}")
+    .bind("flag{answer}\u{2003}")
+    .bind("\u{00a0}\u{2003}\u{feff}")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(whitespace_parity, (true, true, true, false));
 
     let duplicate_rows: (i64, i64) = sqlx::query_as(
         r#"SELECT COUNT(*)::bigint,
@@ -245,6 +353,19 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
             .await
             .unwrap();
     assert_eq!(default_template, (true, None));
+    let unicode_policy_rows: Vec<(i32, bool, Option<String>)> = sqlx::query_as(
+        r#"SELECT id, is_enabled, flag_template FROM "GameChallenges"
+            WHERE id IN (15, 16, 17) ORDER BY id"#,
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(unicode_policy_rows[0], (15, false, None));
+    assert_eq!(
+        unicode_policy_rows[1],
+        (16, false, Some("flag{[GUID]}\u{2003}".to_string()))
+    );
+    assert_eq!(unicode_policy_rows[2], (17, true, None));
     sqlx::query(
         r#"INSERT INTO "GameChallenges" (id, game_id, "Type", flag_template)
            VALUES (13, 1, 0, '')"#,
@@ -300,6 +421,19 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
             .as_deref(),
         Some("23514")
     );
+    let unicode_boundary_flag =
+        sqlx::query(r#"INSERT INTO "FlagContexts" (challenge_id, flag) VALUES (10, $1)"#)
+            .bind("flag{answer}\u{00a0}")
+            .execute(&pool)
+            .await
+            .unwrap_err();
+    assert_eq!(
+        unicode_boundary_flag
+            .as_database_error()
+            .and_then(|error| error.code())
+            .as_deref(),
+        Some("23514")
+    );
 
     let digest = vec![0_u8; 32];
     let bulk_operation = uuid::Uuid::new_v4();
@@ -339,8 +473,8 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
     sqlx::query(
         r#"INSERT INTO "DivisionUpdateOperations"
              (division_id, operation_id, actor_user_id, request_digest,
-              expected_revision, result_revision)
-           VALUES (20, $1, $2, $3, 1, 1)"#,
+              expected_revision, result_revision, result_snapshot)
+           VALUES (20, $1, $2, $3, 1, 1, '{}'::jsonb)"#,
     )
     .bind(division_operation)
     .bind(actor)
@@ -351,8 +485,8 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
     let duplicate_division = sqlx::query(
         r#"INSERT INTO "DivisionUpdateOperations"
              (division_id, operation_id, actor_user_id, request_digest,
-              expected_revision, result_revision)
-           VALUES (20, $1, $2, $3, 1, 1)"#,
+              expected_revision, result_revision, result_snapshot)
+           VALUES (20, $1, $2, $3, 1, 1, '{}'::jsonb)"#,
     )
     .bind(division_operation)
     .bind(actor)
@@ -432,11 +566,37 @@ async fn admin_mutation_migrations_preserve_legacy_rows_and_enforce_operation_id
         Some("23505")
     );
 
+    let revision_before_runtime: i64 =
+        sqlx::query_scalar(r#"SELECT challenge_configuration_revision FROM "Games" WHERE id = 1"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "FlagContexts" (challenge_id, flag, is_occupied)
+           VALUES (10, 'flag{runtime}', TRUE)"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let revision_after_runtime: i64 =
+        sqlx::query_scalar(r#"SELECT challenge_configuration_revision FROM "Games" WHERE id = 1"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        revision_after_runtime, revision_before_runtime,
+        "ephemeral runtime flags must not invalidate organizer intents"
+    );
+    sqlx::query(r#"UPDATE "GameChallenges" SET title = 'changed' WHERE id = 10"#)
+        .execute(&pool)
+        .await
+        .unwrap();
     let revision: i64 =
         sqlx::query_scalar(r#"SELECT challenge_configuration_revision FROM "Games" WHERE id = 1"#)
             .fetch_one(&pool)
             .await
             .unwrap();
+    assert_eq!(revision, revision_before_runtime + 1);
     assert!(
         revision > 1,
         "challenge and flag triggers did not advance revision"

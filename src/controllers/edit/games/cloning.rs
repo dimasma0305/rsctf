@@ -62,10 +62,13 @@ WITH source AS MATERIALIZED (
     INSERT INTO "FlagContexts" (
         flag, is_occupied, attachment_id, challenge_id, exercise_id
     )
-    SELECT flag.flag, FALSE, NULL, source.clone_id, NULL
+    SELECT DISTINCT ON (source.clone_id, flag.flag)
+           flag.flag, FALSE, NULL, source.clone_id, NULL
       FROM source
       JOIN "FlagContexts" flag ON flag.challenge_id = source.id
      WHERE EXISTS (SELECT 1 FROM inserted WHERE inserted.id = source.clone_id)
+       AND flag.is_occupied = FALSE
+     ORDER BY source.clone_id, flag.flag, flag.id
     RETURNING id
 )
 SELECT (SELECT COUNT(*) FROM inserted)::bigint,
@@ -84,6 +87,7 @@ struct CloneOperationRow {
 fn clone_request_digest(source_id: i32, model: &GameCloneModel, title: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(source_id.to_be_bytes());
+    digest.update(model.expected_source_revision.to_be_bytes());
     digest.update(title.as_bytes());
     digest.update(model.start_time_utc.timestamp_millis().to_be_bytes());
     digest.update(model.end_time_utc.timestamp_millis().to_be_bytes());
@@ -92,9 +96,9 @@ fn clone_request_digest(source_id: i32, model: &GameCloneModel, title: &str) -> 
 }
 
 fn validate_clone_request(model: &GameCloneModel) -> AppResult<String> {
-    if model.operation_id.is_nil() {
+    if model.operation_id.is_nil() || model.expected_source_revision < 1 {
         return Err(AppError::bad_request(
-            "A valid clone operation ID is required",
+            "A valid clone operation ID and observed source revision are required",
         ));
     }
     let title = model.title.trim();
@@ -190,8 +194,8 @@ pub async fn clone_game(
         .execute(&mut **source_control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let game_revision: String = sqlx::query_scalar(
-        r#"SELECT md5(row_to_json(source)::text)
+    let (game_revision, source_configuration_revision): (String, i64) = sqlx::query_as(
+        r#"SELECT md5(row_to_json(source)::text), challenge_configuration_revision
              FROM "Games" source WHERE source.id = $1"#,
     )
     .bind(id)
@@ -199,6 +203,11 @@ pub async fn clone_game(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Game not found"))?;
+    if model.expected_source_revision != source_configuration_revision {
+        return Err(AppError::conflict(format!(
+            "Source game changed; current revision is {source_configuration_revision}"
+        )));
+    }
     let (challenge_count, flag_count, source_revision) = if model.include_challenges {
         // Admit by cheap counts before any row JSON/string aggregation. Legacy
         // oversized sources therefore fail without materializing their content.
@@ -208,11 +217,14 @@ pub async fn clone_game(
                            WHERE game_id = $1 LIMIT $2
                       ) bounded_challenges),
                       (SELECT COUNT(*) FROM (
-                          SELECT 1
+                          SELECT flag.challenge_id, flag.flag
                             FROM "FlagContexts" flag
                             JOIN "GameChallenges" challenge
                               ON challenge.id = flag.challenge_id
-                           WHERE challenge.game_id = $1 LIMIT $3
+                           WHERE challenge.game_id = $1
+                             AND flag.is_occupied = FALSE
+                           GROUP BY flag.challenge_id, flag.flag
+                           LIMIT $3
                       ) bounded_flags)"#,
         )
         .bind(id)
@@ -231,9 +243,9 @@ pub async fn clone_game(
             r#"SELECT challenge.id
                  FROM "FlagContexts" flag
                  JOIN "GameChallenges" challenge ON challenge.id = flag.challenge_id
-                WHERE challenge.game_id = $1
+                WHERE challenge.game_id = $1 AND flag.is_occupied = FALSE
                   AND (OCTET_LENGTH(flag.flag) NOT BETWEEN 1 AND $2
-                       OR flag.flag ~ '(^[[:space:]])|([[:space:]]$)')
+                       OR rsctf_flag_has_boundary_whitespace(flag.flag))
                 ORDER BY challenge.id LIMIT 1"#,
         )
         .bind(id)
@@ -252,7 +264,7 @@ pub async fn clone_game(
                 WHERE game_id = $1 AND "Type" = $2 AND flag_template IS NOT NULL
                   AND flag_template <> ''
                   AND OCTET_LENGTH(flag_template) <= $3
-                  AND flag_template !~ '(^[[:space:]])|([[:space:]]$)'
+                  AND NOT rsctf_flag_has_boundary_whitespace(flag_template)
                   AND (flag_template LIKE '%[GUID]%'
                        OR flag_template LIKE '%[UUID]%'
                        OR flag_template LIKE '%[TEAM_HASH]%')
@@ -295,7 +307,7 @@ pub async fn clone_game(
                           SELECT string_agg(md5(row_to_json(flag)::text), '' ORDER BY flag.id)
                             FROM "FlagContexts" flag
                             JOIN "GameChallenges" challenge ON challenge.id = flag.challenge_id
-                           WHERE challenge.game_id = $1
+                           WHERE challenge.game_id = $1 AND flag.is_occupied = FALSE
                       ), ''))"#,
         )
         .bind(id)
@@ -426,6 +438,21 @@ pub async fn clone_game(
     if completed != 1 {
         return Err(AppError::conflict("Clone operation lost its reservation"));
     }
+    sqlx::query(
+        r#"WITH expired AS (
+               SELECT operation_id FROM "GameCloneOperations"
+                WHERE status IN (1, 2)
+                  AND completed_at_utc < clock_timestamp() - INTERVAL '30 days'
+                ORDER BY completed_at_utc, operation_id
+                LIMIT 128
+           )
+           DELETE FROM "GameCloneOperations" operation
+            USING expired
+            WHERE operation.operation_id = expired.operation_id"#,
+    )
+    .execute(&mut **source_control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     source_control
         .release()
         .await
@@ -440,6 +467,7 @@ mod clone_contract_tests {
     fn clone_model() -> GameCloneModel {
         GameCloneModel {
             operation_id: Uuid::new_v4(),
+            expected_source_revision: 1,
             title: "Clone target".to_string(),
             start_time_utc: Utc::now(),
             end_time_utc: Utc::now() + chrono::Duration::days(1),
@@ -452,6 +480,8 @@ mod clone_contract_tests {
         assert!(CLONE_CHALLENGES_SQL.contains("WITH source AS MATERIALIZED"));
         assert!(CLONE_CHALLENGES_SQL.contains("nextval(pg_get_serial_sequence"));
         assert!(CLONE_CHALLENGES_SQL.contains("JOIN \"FlagContexts\""));
+        assert!(CLONE_CHALLENGES_SQL.contains("flag.is_occupied = FALSE"));
+        assert!(CLONE_CHALLENGES_SQL.contains("DISTINCT ON (source.clone_id, flag.flag)"));
         assert!(!CLONE_CHALLENGES_SQL.contains("SELECT *"));
     }
 

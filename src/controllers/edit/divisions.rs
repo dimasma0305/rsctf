@@ -10,7 +10,7 @@ const MAX_DIVISION_INVITE_BYTES: usize = 256;
 /// RSCTF `Division` (Api.ts) — camelCase wire shape. The raw `division::Model`
 /// is snake_case and leaks the `gameId` column (`[JsonIgnore]` in RSCTF), so
 /// every division handler maps through this DTO instead.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionDetailModel {
     pub id: i32,
@@ -116,6 +116,22 @@ async fn load_division_details(
     rows.into_iter().map(TryInto::try_into).collect()
 }
 
+async fn load_division_detail_locked(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+    division_id: i32,
+) -> AppResult<DivisionDetailModel> {
+    let row = sqlx::query_as::<_, DivisionDetailRow>(DIVISION_DETAIL_SQL)
+        .bind(game_id)
+        .bind(Some(division_id))
+        .bind(1_i64)
+        .fetch_optional(connection)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .ok_or_else(|| AppError::not_found("Division not found"))?;
+    row.try_into()
+}
+
 fn valid_permission_mask(value: i32) -> bool {
     const KNOWN: i32 = GamePermission::JOIN_GAME
         | GamePermission::RANK_OVERALL
@@ -126,6 +142,10 @@ fn valid_permission_mask(value: i32) -> bool {
         | GamePermission::GET_BLOOD
         | GamePermission::AFFECT_DYNAMIC_SCORE;
     value == GamePermission::ALL || (value >= 0 && value & !KNOWN == 0)
+}
+
+fn normalize_division_invite_code(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 fn validate_division_input(
@@ -406,13 +426,14 @@ pub async fn create_division(
             "An event may contain at most {MAX_DIVISIONS} divisions"
         )));
     }
+    let normalized_invite_code = normalize_division_invite_code(model.invite_code.as_deref());
     let created_id: i32 = sqlx::query_scalar(
         r#"INSERT INTO "Divisions" (game_id, name, invite_code, default_permissions)
            VALUES ($1, $2, $3, $4) RETURNING id"#,
     )
     .bind(id)
     .bind(model.name.trim())
-    .bind(&model.invite_code)
+    .bind(normalized_invite_code)
     .bind(model.default_permissions.unwrap_or(GamePermission::ALL))
     .fetch_one(&mut **control.transaction_mut())
     .await
@@ -451,7 +472,10 @@ pub async fn update_division(
     }
     validate_division_input(
         model.name.as_deref(),
-        model.invite_code.as_deref(),
+        model
+            .invite_code
+            .as_ref()
+            .and_then(|invite_code| invite_code.as_deref()),
         model.default_permissions,
         model.challenge_configs.as_deref(),
     )?;
@@ -460,6 +484,30 @@ pub async fn update_division(
     )
     .to_vec();
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    let stored = sqlx::query_as::<_, (Uuid, Vec<u8>, JsonValue)>(
+        r#"SELECT actor_user_id, request_digest, result_snapshot
+             FROM "DivisionUpdateOperations"
+            WHERE division_id = $1 AND operation_id = $2"#,
+    )
+    .bind(division_id)
+    .bind(model.operation_id)
+    .fetch_optional(&mut **control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some((actor, digest, result_snapshot)) = stored {
+        if actor != user.id || digest != request_digest {
+            return Err(AppError::conflict(
+                "The operation ID is already bound to another division update",
+            ));
+        }
+        let detail: DivisionDetailModel = serde_json::from_value(result_snapshot)
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        control
+            .release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(RequestResponse::ok(detail));
+    }
     require_game_mutable(control.transaction_mut(), id).await?;
     validate_challenge_configs_locked(
         control.transaction_mut(),
@@ -478,39 +526,6 @@ pub async fn update_division(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Division not found"))?;
-    let stored = sqlx::query_as::<_, (Uuid, Vec<u8>, i64)>(
-        r#"SELECT actor_user_id, request_digest, result_revision
-             FROM "DivisionUpdateOperations"
-            WHERE division_id = $1 AND operation_id = $2"#,
-    )
-    .bind(division_id)
-    .bind(model.operation_id)
-    .fetch_optional(&mut **control.transaction_mut())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some((actor, digest, result_revision)) = stored {
-        if actor != user.id || digest != request_digest {
-            return Err(AppError::conflict(
-                "The operation ID is already bound to another division update",
-            ));
-        }
-        if result_revision != current.3 {
-            return Err(AppError::conflict(format!(
-                "A newer division revision {} is authoritative",
-                current.3
-            )));
-        }
-        control
-            .release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        let detail = load_division_details(st.pg(), id, Some(division_id))
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| AppError::not_found("Division not found"))?;
-        return Ok(RequestResponse::ok(detail));
-    }
     if model.expected_revision != current.3 {
         return Err(AppError::conflict(format!(
             "Division changed; current revision is {}",
@@ -535,10 +550,13 @@ pub async fn update_division(
         .name
         .as_deref()
         .is_some_and(|value| value.trim() != current.0.as_str());
-    let invite_changed = model
+    let requested_invite_code = model
         .invite_code
-        .as_deref()
-        .is_some_and(|value| Some(value) != current.1.as_deref());
+        .as_ref()
+        .map(|value| normalize_division_invite_code(value.as_deref()));
+    let invite_changed = requested_invite_code
+        .as_ref()
+        .is_some_and(|value| *value != current.1.as_deref());
     let metadata_changed = name_changed || invite_changed;
     let configs_changed = requested_configs
         .as_ref()
@@ -560,15 +578,17 @@ pub async fn update_division(
     if metadata_changed || policy_changed {
         sqlx::query(
             r#"UPDATE "Divisions" SET
-                   name = COALESCE($3, name), invite_code = COALESCE($4, invite_code),
-                   default_permissions = COALESCE($5, default_permissions),
-                   revision = $6, policy_revision = $7
+                   name = COALESCE($3, name),
+                   invite_code = CASE WHEN $4 THEN $5 ELSE invite_code END,
+                   default_permissions = COALESCE($6, default_permissions),
+                   revision = $7, policy_revision = $8
                  WHERE id = $1 AND game_id = $2"#,
         )
         .bind(division_id)
         .bind(id)
         .bind(model.name.as_deref().map(str::trim))
-        .bind(&model.invite_code)
+        .bind(requested_invite_code.is_some())
+        .bind(requested_invite_code.flatten())
         .bind(model.default_permissions)
         .bind(result_revision)
         .bind(policy_revision)
@@ -584,11 +604,14 @@ pub async fn update_division(
             .await?;
         }
     }
+    let result = load_division_detail_locked(control.transaction_mut(), id, division_id).await?;
+    let result_snapshot =
+        serde_json::to_value(&result).map_err(|error| AppError::internal(error.to_string()))?;
     sqlx::query(
         r#"INSERT INTO "DivisionUpdateOperations"
              (division_id, operation_id, actor_user_id, request_digest,
-              expected_revision, result_revision)
-           VALUES ($1, $2, $3, $4, $5, $6)"#,
+              expected_revision, result_revision, result_snapshot)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
     )
     .bind(division_id)
     .bind(model.operation_id)
@@ -596,6 +619,7 @@ pub async fn update_division(
     .bind(&request_digest)
     .bind(model.expected_revision)
     .bind(result_revision)
+    .bind(sqlx::types::Json(result_snapshot))
     .execute(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -622,12 +646,7 @@ pub async fn update_division(
     if policy_changed || name_changed {
         invalidate_division_caches(&st, id, division_id).await?;
     }
-    let updated = load_division_details(st.pg(), id, Some(division_id))
-        .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| AppError::internal("Updated division disappeared"))?;
-    Ok(RequestResponse::ok(updated))
+    Ok(RequestResponse::ok(result))
 }
 
 /// `DELETE /api/edit/games/{id}/divisions/{divisionId}` — void.

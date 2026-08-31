@@ -141,6 +141,7 @@ pub(crate) async fn destroy_challenge_containers(
         challenge.id,
         require_inactive,
         strict,
+        true,
     )
     .await
 }
@@ -156,6 +157,7 @@ pub(crate) async fn destroy_challenge_containers_by_id(
     challenge_id: i32,
     require_inactive: bool,
     strict: bool,
+    reconcile_vpn: bool,
 ) -> AppResult<()> {
     let challenge = ChallengeTeardownIdentity {
         id: challenge_id,
@@ -249,7 +251,12 @@ pub(crate) async fn destroy_challenge_containers_by_id(
             return Ok(());
         }
         let teardown: AppResult<()> = async {
-            crate::services::ad::service_lifecycle::destroy_persisted_service(st, service.id).await
+            crate::services::ad::service_lifecycle::destroy_persisted_service_with_vpn(
+                st,
+                service.id,
+                reconcile_vpn,
+            )
+            .await
         }
         .await;
         let released = distributed
@@ -374,7 +381,9 @@ pub(crate) async fn destroy_challenge_containers_by_id(
             for game_id in koth_game_ids {
                 crate::controllers::game::ad::invalidate_live_hill_snapshot(st, game_id).await;
             }
-            crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+            if reconcile_vpn {
+                crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+            }
             destroy_after_capture_fence(st, &container_id).await?;
             if !clear_destroyed_koth_target(st.pg(), target.id, &container_id).await?
                 && koth_target_still_owns_backend(st.pg(), target.id).await?

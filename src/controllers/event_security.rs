@@ -54,7 +54,7 @@ async fn load_sensor_flag_patterns(
                     AND challenge.is_enabled = TRUE AND challenge.review_status = 0
                     AND challenge."Type" NOT IN (4, 5)
                     AND OCTET_LENGTH(flag.flag) BETWEEN 1 AND $3
-                    AND flag.flag !~ '(^[[:space:]])|([[:space:]]$)'
+                    AND NOT rsctf_flag_has_boundary_whitespace(flag.flag)
                  UNION ALL
                  SELECT variant.challenge_id, variant.participation_id,
                         variant.manifest->>'flag'
@@ -65,7 +65,7 @@ async fn load_sensor_flag_patterns(
                     AND challenge.is_enabled = TRUE AND challenge.review_status = 0
                     AND jsonb_typeof(variant.manifest->'flag') = 'string'
                     AND OCTET_LENGTH(variant.manifest->>'flag') BETWEEN 1 AND $3
-                    AND variant.manifest->>'flag' !~ '(^[[:space:]])|([[:space:]]$)'
+                    AND NOT rsctf_flag_has_boundary_whitespace(variant.manifest->>'flag')
              ) source
             ORDER BY source.challenge_id, source.owning_participation_id
             LIMIT $2"#,

@@ -274,7 +274,7 @@ async fn run_jobs(state: &SharedState) {
     }
 
     match crate::controllers::edit::recover_bulk_delete_jobs(state).await {
-        Ok(n) if n > 0 => tracing::info!(n, "cron: resumed bounded bulk challenge deletion(s)"),
+        Ok(n) if n > 0 => tracing::info!(n, "cron: resumed bounded bulk challenge operation(s)"),
         Ok(_) => {}
         Err(e) => tracing::warn!("cron: bulk challenge deletion recovery failed: {e}"),
     }

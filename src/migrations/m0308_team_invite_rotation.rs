@@ -48,9 +48,23 @@ CREATE INDEX IF NOT EXISTS ix_team_invite_operations_pending
     WHERE reconciled_at_utc IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_team_invite_operations_revision
     ON "TeamInviteOperations" (team_id, result_revision);
+
+CREATE TABLE IF NOT EXISTS "TeamInviteReconciliationSlots" (
+    slot_id          SMALLINT PRIMARY KEY CHECK (slot_id BETWEEN 0 AND 1),
+    lease_token      UUID NULL,
+    expires_at_utc   TIMESTAMPTZ NULL,
+    CONSTRAINT ck_team_invite_reconciliation_slot_lease
+        CHECK ((lease_token IS NULL) = (expires_at_utc IS NULL))
+);
+INSERT INTO "TeamInviteReconciliationSlots" (slot_id)
+VALUES (0), (1)
+ON CONFLICT (slot_id) DO NOTHING;
+CREATE INDEX IF NOT EXISTS ix_team_invite_reconciliation_slot_expiry
+    ON "TeamInviteReconciliationSlots" (expires_at_utc, slot_id);
 "#;
 
 const DOWN_SQL: &str = r#"
+DROP TABLE IF EXISTS "TeamInviteReconciliationSlots";
 DROP TABLE IF EXISTS "TeamInviteOperations";
 ALTER TABLE "Teams"
     DROP CONSTRAINT IF EXISTS ck_teams_invite_revision,
@@ -84,5 +98,7 @@ mod tests {
         assert!(UP_SQL.contains("reconciled_at_utc"));
         assert!(UP_SQL.contains("WHERE reconciled_at_utc IS NOT NULL"));
         assert!(UP_SQL.contains("WHERE reconciled_at_utc IS NULL"));
+        assert!(UP_SQL.contains("TeamInviteReconciliationSlots"));
+        assert!(UP_SQL.contains("slot_id BETWEEN 0 AND 1"));
     }
 }

@@ -24,6 +24,12 @@ test('every one-time credential surface sends a revision fence and checks respon
   }
 })
 
+test('SSH generation rejects a late one-time response after an account switch', () => {
+  assert.match(adGuide, /playerCredentialOperationStorageKey\(viewerScopeAtStart, gameId, 'ad-ssh'\)/)
+  assert.match(adGuide, /activeSshViewerScope\.current !== viewerScopeAtStart/)
+  assert.match(adGuide, /SSH credential response for an older account was ignored/)
+})
+
 test('credential plaintext remains in React session memory rather than web storage', () => {
   for (const source of [tokenOwner, adGuide, kothGuide, kothHill]) {
     assert.equal(source.includes('localStorage'), false)

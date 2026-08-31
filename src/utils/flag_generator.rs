@@ -29,10 +29,10 @@ pub fn exercise_user_hash(secret: &[u8], exercise_id: i32, user_id: Uuid) -> Str
 }
 
 /// Expand a flag template's placeholders. Supports `[GUID]`, `[UUID]`, and
-/// `[TEAM_HASH]`; an empty template yields a random `flag{...}`.
+/// `[TEAM_HASH]`; a canonical blank template yields a random `flag{...}`.
 pub fn generate_flag(template: Option<&str>, team_hash: &str) -> String {
-    match template {
-        None | Some("") => format!("flag{{{}}}", random_hex(16)),
+    match template.filter(|template| !crate::utils::flag_policy::is_blank(template)) {
+        None => format!("flag{{{}}}", random_hex(16)),
         Some(t) => t
             .replace("[GUID]", &Uuid::new_v4().to_string())
             .replace("[UUID]", &Uuid::new_v4().to_string())
@@ -55,8 +55,8 @@ pub fn generate_retryable_flag(
     };
     let guid = deterministic_uuid(&derive("guid"));
     let uuid = deterministic_uuid(&derive("uuid"));
-    match template {
-        None | Some("") => format!("flag{{{}}}", &derive("empty")[..32]),
+    match template.filter(|template| !crate::utils::flag_policy::is_blank(template)) {
+        None => format!("flag{{{}}}", &derive("empty")[..32]),
         Some(template) => template
             .replace("[GUID]", &guid)
             .replace("[UUID]", &uuid)
@@ -82,7 +82,9 @@ pub fn generate_retryable_flag_checked(
 }
 
 fn validate_template_if_present(template: Option<&str>) -> AppResult<()> {
-    if let Some(template) = template.filter(|template| !template.is_empty()) {
+    if let Some(template) =
+        template.filter(|template| !crate::utils::flag_policy::is_blank(template))
+    {
         crate::utils::flag_policy::validate_dynamic_template(template).map_err(|error| {
             tracing::warn!(%error, "invalid dynamic flag template rejected at runtime");
             AppError::unavailable(
@@ -193,6 +195,10 @@ mod tests {
         assert_eq!(
             generate_retryable_flag(None, "team-secret-hash", "operation-1"),
             generate_retryable_flag(Some(""), "team-secret-hash", "operation-1")
+        );
+        assert_eq!(
+            generate_retryable_flag(None, "team-secret-hash", "operation-1"),
+            generate_retryable_flag(Some("\u{00a0}\u{2003}"), "team-secret-hash", "operation-1")
         );
     }
 

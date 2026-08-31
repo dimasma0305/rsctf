@@ -166,6 +166,8 @@ mod m0306_bulk_challenge_mutations;
 mod m0307_division_revision_operations;
 mod m0308_team_invite_rotation;
 mod m0309_flag_import_operations;
+mod m0330_mail_preparation_slots;
+mod m0331_username_scoreboard_invalidation;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -343,6 +345,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0307_division_revision_operations::Migration),
             Box::new(m0308_team_invite_rotation::Migration),
             Box::new(m0309_flag_import_operations::Migration),
+            Box::new(m0330_mail_preparation_slots::Migration),
+            Box::new(m0331_username_scoreboard_invalidation::Migration),
         ]
     }
 }
@@ -488,7 +492,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 40..],
+            &names[names.len() - 42..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -530,6 +534,8 @@ mod tests {
                 "m0307_division_revision_operations",
                 "m0308_team_invite_rotation",
                 "m0309_flag_import_operations",
+                "m0330_mail_preparation_slots",
+                "m0331_username_scoreboard_invalidation",
             ]
         );
     }

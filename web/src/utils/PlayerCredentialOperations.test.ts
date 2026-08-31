@@ -50,6 +50,22 @@ test('only the active operation and next revision may disclose one-time material
   assert.equal(readPlayerCredentialOperation(storage, key), null)
 })
 
+test('SSH recovery identities cannot cross authenticated viewers in one browser profile', () => {
+  const storage = memoryStorage()
+  const firstViewerKey = playerCredentialOperationStorageKey('user:7:User', 13, 'ad-ssh')
+  const secondViewerKey = playerCredentialOperationStorageKey('user:8:User', 13, 'ad-ssh')
+  const firstViewer = claimPlayerCredentialOperation(storage, firstViewerKey, 8, 'generate', 1_000, () => firstId)
+  const secondViewer = claimPlayerCredentialOperation(storage, secondViewerKey, 0, 'generate', 2_000, () => secondId)
+
+  assert.notEqual(firstViewerKey, secondViewerKey)
+  assert.equal(firstViewer.operationId, firstId)
+  assert.equal(secondViewer.operationId, secondId)
+  assert.equal(
+    ownsPlayerCredentialResult(storage, secondViewerKey, firstViewer, { operationId: firstId, revision: 9 }),
+    false
+  )
+})
+
 test('malformed metadata is rejected while stale UI revisions preserve recovery', () => {
   const storage = memoryStorage()
   const key = playerCredentialOperationStorageKey('user:7:User', 13, 'koth-api', 42)

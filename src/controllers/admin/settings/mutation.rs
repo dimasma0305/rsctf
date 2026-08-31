@@ -191,7 +191,13 @@ pub async fn update_config(
         .expected_revision
         .filter(|revision| (0..MAX_JS_REVISION).contains(revision))
         .ok_or_else(|| AppError::bad_request("expectedRevision is invalid"))?;
+    validate_container_provider_shape(model.container_provider.as_ref())?;
     let branding_action = model.branding_action;
+    // Fingerprint the browser's canonical wire intent before secret-preserving
+    // or environment-fallback resolution reads mutable live state. Otherwise
+    // an exact replay could acquire a different digest after a later settings
+    // revision changed the value that an empty secret intentionally preserves.
+    let request_digest = settings_request_digest(expected_revision, &model)?;
     let mut updates = collect_relational_updates(&mut model)?;
     let has_security_update =
         model.account_policy.is_some() || model.captcha.is_some() || model.o_auth.is_some();
@@ -207,43 +213,7 @@ pub async fn update_config(
         .await
         .map_err(database_error)?;
     let current_revision = lock_settings_revision(&mut transaction).await?;
-    crate::services::anti_cheat::lock_policy_update(&mut transaction).await?;
-    let security_updates = security_policy::prepare_security_updates(
-        &mut transaction,
-        st.config.as_ref(),
-        model.account_policy.take(),
-        model.captcha.take(),
-        model.o_auth.take(),
-    )
-    .await?;
-    extend_updates(&mut updates, security_updates)?;
-
     let existing = load_operation(&mut transaction, operation_id).await?;
-    let branding_hash = resolve_branding_hash(
-        &mut transaction,
-        operation_id,
-        admin.id,
-        branding_action,
-        existing.as_ref(),
-    )
-    .await?;
-    match branding_action {
-        BrandingAction::Keep => {}
-        BrandingAction::Set => {
-            let hash = branding_hash.clone().ok_or_else(|| {
-                AppError::conflict("Upload branding for this operation before saving")
-            })?;
-            updates.insert("GlobalConfig:LogoHash".to_string(), Some(hash.clone()));
-            updates.insert("GlobalConfig:FaviconHash".to_string(), Some(hash));
-        }
-        BrandingAction::Clear => {
-            updates.insert("GlobalConfig:LogoHash".to_string(), None);
-            updates.insert("GlobalConfig:FaviconHash".to_string(), None);
-        }
-    }
-    validate_aggregate(&updates)?;
-    let request_digest = settings_request_digest(expected_revision, branding_action, &updates)?;
-
     if let Some(existing) = existing {
         if existing.actor_user_id != Some(admin.id)
             || existing.expected_revision != expected_revision
@@ -265,6 +235,40 @@ pub async fn update_config(
             "Settings changed in another tab; current revision is {current_revision}"
         )));
     }
+    crate::services::anti_cheat::lock_policy_update(&mut transaction).await?;
+    let security_updates = security_policy::prepare_security_updates(
+        &mut transaction,
+        st.config.as_ref(),
+        model.account_policy.take(),
+        model.captcha.take(),
+        model.o_auth.take(),
+    )
+    .await?;
+    extend_updates(&mut updates, security_updates)?;
+
+    let branding_hash = resolve_branding_hash(
+        &mut transaction,
+        operation_id,
+        admin.id,
+        branding_action,
+        None,
+    )
+    .await?;
+    match branding_action {
+        BrandingAction::Keep => {}
+        BrandingAction::Set => {
+            let hash = branding_hash.clone().ok_or_else(|| {
+                AppError::conflict("Upload branding for this operation before saving")
+            })?;
+            updates.insert("GlobalConfig:LogoHash".to_string(), Some(hash.clone()));
+            updates.insert("GlobalConfig:FaviconHash".to_string(), Some(hash));
+        }
+        BrandingAction::Clear => {
+            updates.insert("GlobalConfig:LogoHash".to_string(), None);
+            updates.insert("GlobalConfig:FaviconHash".to_string(), None);
+        }
+    }
+    validate_aggregate(&updates)?;
     if updates.is_empty() && branding_action == BrandingAction::Keep {
         return Err(AppError::bad_request("No settings changes were supplied"));
     }
@@ -599,8 +603,8 @@ fn collect_relational_updates(model: &mut ConfigEditModel) -> AppResult<ConfigUp
     }
     if let Some(provider) = model.container_provider.take() {
         let mode = provider
-            .get("portMappingType")
-            .and_then(Value::as_str)
+            .port_mapping_type
+            .as_deref()
             .ok_or_else(|| AppError::bad_request("portMappingType is required"))?;
         if !matches!(mode, "Default" | "PlatformProxy") {
             return Err(AppError::bad_request("portMappingType is invalid"));
@@ -612,6 +616,33 @@ fn collect_relational_updates(model: &mut ConfigEditModel) -> AppResult<ConfigUp
     }
     validate_security_fields(model)?;
     Ok(updates)
+}
+
+fn validate_container_provider_shape(
+    provider: Option<&ContainerProviderInfoModel>,
+) -> AppResult<()> {
+    let Some(provider) = provider else {
+        return Ok(());
+    };
+    match provider.port_mapping_type.as_deref() {
+        Some("Default" | "PlatformProxy") => {}
+        Some(_) => return Err(AppError::bad_request("portMappingType is invalid")),
+        None => return Err(AppError::bad_request("portMappingType is required")),
+    }
+    if provider
+        .provider_type
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "Docker" | "Kubernetes"))
+    {
+        return Err(AppError::bad_request("Container provider type is invalid"));
+    }
+    if let Some(namespace) = provider.kubernetes_namespace.as_deref() {
+        validate_text(namespace, "Kubernetes namespace", 253, false)?;
+    }
+    if let Some(policy) = provider.image_pull_policy.as_deref() {
+        validate_text(policy, "Kubernetes image pull policy", 64, false)?;
+    }
+    Ok(())
 }
 
 fn validate_security_fields(model: &mut ConfigEditModel) -> AppResult<()> {
@@ -766,13 +797,29 @@ fn validate_aggregate(updates: &ConfigUpdates) -> AppResult<()> {
     Ok(())
 }
 
-fn settings_request_digest(
-    expected_revision: i64,
-    branding_action: BrandingAction,
-    updates: &ConfigUpdates,
-) -> AppResult<Vec<u8>> {
-    let canonical = serde_json::to_vec(&(expected_revision, branding_action, updates))
-        .map_err(|error| AppError::internal(error.to_string()))?;
+fn settings_request_digest(expected_revision: i64, model: &ConfigEditModel) -> AppResult<Vec<u8>> {
+    // Tuple order is stable and all nested DTOs have stable struct field order;
+    // excluded transport/result fields cannot make replay depend on the server
+    // response or the operation key itself.
+    let canonical = serde_json::to_vec(&(
+        b"rsctf:platform-settings-intent:v2".as_slice(),
+        expected_revision,
+        model.branding_action,
+        &model.account_policy,
+        &model.global_config,
+        &model.container_policy,
+        &model.build_registry,
+        &model.email,
+        &model.captcha,
+        &model.o_auth,
+        &model.registry,
+        &model.donations,
+        model
+            .container_provider
+            .as_ref()
+            .and_then(|provider| provider.port_mapping_type.as_deref()),
+    ))
+    .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(Sha256::digest(canonical).to_vec())
 }
 

@@ -433,7 +433,7 @@ pub async fn load_selected_static_flag(
                    SELECT flag FROM "FlagContexts"
                     WHERE challenge_id = $1
                       AND OCTET_LENGTH(flag) BETWEEN 1 AND $2
-                      AND flag !~ '(^[[:space:]])|([[:space:]]$)'
+                      AND NOT rsctf_flag_has_boundary_whitespace(flag)
                     ORDER BY id
                     LIMIT 1
                ) AS selected,
@@ -442,7 +442,7 @@ pub async fn load_selected_static_flag(
                     WHERE challenge_id = $1
                       AND NOT (
                           OCTET_LENGTH(flag) BETWEEN 1 AND $2
-                          AND flag !~ '(^[[:space:]])|([[:space:]]$)'
+                          AND NOT rsctf_flag_has_boundary_whitespace(flag)
                       )
                ) AS has_invalid"#,
     )
