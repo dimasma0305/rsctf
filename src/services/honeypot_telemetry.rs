@@ -850,7 +850,15 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let at = Utc::now() - chrono::Duration::days(RETENTION_AGE_DAYS + 1);
+        // Keep every observation in one aggregate minute regardless of when
+        // the test starts. A wall-clock value in the minute's final seconds
+        // otherwise makes the concurrent offsets spill into a second row.
+        let old = Utc::now() - chrono::Duration::days(RETENTION_AGE_DAYS + 1);
+        let bucket_millis = old.timestamp_millis().div_euclid(BUCKET_MILLIS) * BUCKET_MILLIS;
+        let at = Utc
+            .timestamp_millis_opt(bucket_millis + 5_000)
+            .single()
+            .expect("aggregate test bucket is a valid timestamp");
         let mut pending = HashMap::new();
         merge_observation(&mut pending, observation(at, 1));
         merge_observation(
