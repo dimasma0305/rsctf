@@ -735,6 +735,23 @@ BEGIN
   DELETE FROM "GameEvents" WHERE game_id=${id};
   DELETE FROM "GameNotices" WHERE game_id=${id};
   DELETE FROM "BuildRecords" WHERE game_id=${id};
+  -- Identity evidence is append-only in every application session. This
+  -- superuser-only disposable fixture transaction has already locked and
+  -- title-verified the exact game, so bypass triggers only long enough to
+  -- remove that game's observations and fixture-only global login evidence.
+  PERFORM set_config('session_replication_role', 'replica', true);
+  DELETE FROM "IdentityObservations" observation
+    WHERE observation.game_id=${id}
+       OR (
+         observation.game_id IS NULL
+         AND observation.user_id=ANY(fixture_user_ids)
+         AND NOT EXISTS (
+           SELECT 1 FROM "UserParticipations" historical
+            WHERE historical.user_id=observation.user_id
+              AND historical.game_id<>${id}
+         )
+       );
+  PERFORM set_config('session_replication_role', 'origin', true);
   DELETE FROM "UserParticipations" WHERE game_id=${id};
   DELETE FROM "GameInstances" instance
     WHERE instance.challenge_id IN (

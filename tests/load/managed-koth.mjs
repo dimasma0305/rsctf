@@ -467,7 +467,41 @@ async function arenaPlay(target, token, score = 0) {
 async function exerciseActivePlayerRotation(target, capability) {
   const participantIndex = current.cohort.partIds.indexOf(capability.pid);
   requireCondition(participantIndex >= 0, 'rotation capability has no cohort identity');
-  const playerJwt = mintJwt(current.cohort.userIds[participantIndex], undefined, 1);
+  const playerUserId = current.cohort.userIds[participantIndex];
+  const reset = await A.api(
+    'DELETE',
+    `/api/admin/users/${encodeURIComponent(playerUserId)}/password?operationId=${randomUUID()}`,
+    { jwt: A.adminJwt(), timeoutMs: 10_000 },
+  );
+  const password = unwrap(reset);
+  requireCondition(
+    reset.status === 200 && typeof password === 'string' && password.length >= 8,
+    `rotation player's password reset returned ${reset.status}`,
+  );
+  const userName = sql(
+    `SELECT user_name FROM "AspNetUsers" WHERE id='${playerUserId}'::uuid`,
+  );
+  const login = await A.api('POST', '/api/account/login', {
+    body: { userName, password },
+    timeoutMs: 10_000,
+  });
+  requireCondition(
+    login.status === 200,
+    `rotation player's scoped login returned ${login.status}: ${login.text?.slice(0, 200)}`,
+  );
+  const scopedObservations = Number(sql(
+    `SELECT count(*) FROM "IdentityObservations" ` +
+      `WHERE user_id='${playerUserId}'::uuid AND game_id=${current.gameId} ` +
+      `AND team_id=${current.cohort.teamIds[participantIndex]} ` +
+      `AND participation_id=${capability.pid} AND observed_at_utc>=(` +
+        `SELECT start_time_utc FROM "Games" WHERE id=${current.gameId}) ` +
+      `AND observed_at_utc<=clock_timestamp()`,
+  ));
+  requireCondition(
+    Number.isSafeInteger(scopedObservations) && scopedObservations > 0,
+    'rotation player login did not retain a live-event identity observation',
+  );
+  const playerJwt = mintJwt(playerUserId, undefined, 1);
   const otherPid = current.cohort.partIds[(participantIndex + 1) % current.cohort.partIds.length];
   const before = capabilityState(capability.pid);
   const otherBefore = capabilityState(otherPid);
@@ -488,7 +522,7 @@ async function exerciseActivePlayerRotation(target, capability) {
   requireCondition(
     read.status === 200 && currentToken?.status === 'ready' &&
       currentToken?.token === before.token && Number.isSafeInteger(currentToken?.revision),
-    `player capability read returned ${read.status} before emergency rotation`,
+    `player capability read returned ${read.status} before emergency rotation: ${read.text?.slice(0, 200)}`,
   );
 
   const request = {

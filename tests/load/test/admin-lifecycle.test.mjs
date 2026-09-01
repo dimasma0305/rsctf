@@ -1331,6 +1331,14 @@ test("disposable started-game fallback is exact, blob-safe, and rejects forged n
     assert.match(cleanup, /PERFORM pg_advisory_xact_lock\(-?\d+\)/);
     assert.match(cleanup, /writeup_id IS NOT NULL/);
     assert.match(cleanup, /original_archive_blob_path IS NOT NULL/);
+    const identityDelete = cleanup.indexOf('DELETE FROM "IdentityObservations"');
+    const participationDelete = cleanup.indexOf('DELETE FROM "Participations" WHERE game_id=42');
+    assert.ok(identityDelete > 0 && identityDelete < participationDelete);
+    assert.match(
+      cleanup,
+      /set_config\('session_replication_role', 'replica', true\)[\s\S]*DELETE FROM "IdentityObservations"[\s\S]*set_config\('session_replication_role', 'origin', true\)/,
+    );
+    assert.match(cleanup, /historical\.game_id<>42/);
     assert.match(
       cleanup,
       /RAISE EXCEPTION 'disposable admin fixture % still owns blob metadata'/,

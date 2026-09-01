@@ -88,6 +88,18 @@ test('managed KotH recovery submits a dense wave then resolves a new runtime', (
   assert.doesNotMatch(restart, /\);\n  await exactHealth\(sameTarget\.arenaUrl/);
 });
 
+test('active player rotation establishes a real live-event identity observation', () => {
+  const rotation = runner.slice(
+    runner.indexOf('async function exerciseActivePlayerRotation('),
+    runner.indexOf('async function assertHiddenEvent('),
+  );
+  assert.match(rotation, /\/api\/admin\/users\/\$\{encodeURIComponent\(playerUserId\)\}\/password/);
+  assert.match(rotation, /A\.api\('POST', '\/api\/account\/login'/);
+  assert.match(rotation, /FROM "IdentityObservations"/);
+  assert.match(rotation, /observed_at_utc>=/);
+  assert.doesNotMatch(rotation, /INSERT INTO "IdentityObservations"/);
+});
+
 test('managed KotH traffic is fixed-arrival and gates auth abuse independently', () => {
   assert.match(scenario, /executor: 'constant-arrival-rate'/);
   assert.doesNotMatch(scenario, /constant-vus/);
