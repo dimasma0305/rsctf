@@ -78,6 +78,10 @@ test("development gateway exposes the backend health contract", () => {
   assert.match(viteConfig, /'\/healthz': TARGET/);
 });
 
+test("development API proxy carries BYOC WebSocket upgrades", () => {
+  assert.match(viteConfig, /'\/api':\s*\{[\s\S]*?target: TARGET,[\s\S]*?ws: true/);
+});
+
 test("public development gateway preserves Traefik's authenticated client address", () => {
   assert.match(
     publicCompose,
