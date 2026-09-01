@@ -411,11 +411,14 @@ fn holder_identity_is_current(
 
 fn control_status_is_player_visible(
     holder_identity_is_current: bool,
+    managed_crown_cycle: bool,
     reset_phase: &str,
     is_scorable: bool,
     result_is_scorable: bool,
 ) -> bool {
-    holder_identity_is_current && reset_phase == "Active" && is_scorable && result_is_scorable
+    holder_identity_is_current
+        && result_is_scorable
+        && (!managed_crown_cycle || (reset_phase == "Active" && is_scorable))
 }
 
 fn endpoint_identity_is_current(
@@ -550,6 +553,7 @@ pub async fn koth_hill_state(
     let holder_team_name = holder_is_current.then_some(base.holder_team_name).flatten();
     let control_status_is_visible = control_status_is_player_visible(
         holder_is_current,
+        base.managed_crown_cycle,
         &view.reset_phase,
         view.is_scorable,
         base.result_is_scorable,
@@ -775,21 +779,31 @@ mod token_cache_tests {
 
     #[test]
     fn readiness_samples_are_not_presented_as_player_checker_failures() {
-        assert!(control_status_is_player_visible(true, "Active", true, true));
+        assert!(control_status_is_player_visible(
+            true, true, "Active", true, true
+        ));
         assert!(!control_status_is_player_visible(
+            true,
             true,
             "Readiness",
             false,
             false
         ));
         assert!(!control_status_is_player_visible(
-            true, "Creating", false, false
+            true, true, "Creating", false, false
         ));
         assert!(!control_status_is_player_visible(
-            false, "Active", true, true
+            false, true, "Active", true, true
         ));
         assert!(!control_status_is_player_visible(
-            true, "Active", true, false
+            true, true, "Active", true, false
+        ));
+        assert!(control_status_is_player_visible(
+            true,
+            false,
+            "Readiness",
+            false,
+            true
         ));
     }
 

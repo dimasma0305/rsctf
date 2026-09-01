@@ -20,7 +20,7 @@ import {
 } from '@Utils/ChallengePolling'
 import { encryptApiData } from '@Utils/Crypto'
 import { downloadEventVpnConfig } from '@Utils/EventVpnDownload'
-import { isEventVpnAccessError } from '@Utils/EventVpnProof'
+import { allowEventVpnReconnectRetry, isEventVpnAccessError } from '@Utils/EventVpnProof'
 import { FlagSubmitAttemptOwner } from '@Utils/FlagSubmitAttempt'
 import { flagVerdictReducer } from '@Utils/FlagVerdict'
 import { createFlagVerdictPoller, sameFlagVerdictIdentity, type FlagVerdictIdentity } from '@Utils/FlagVerdictPolling'
@@ -318,6 +318,11 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     if (solverError) reads.push(mutateSolvers())
     await Promise.allSettled(reads)
   }, [challenge, challengeError, mutate, mutateSolvers, solverError])
+
+  const retryAfterEventVpnConnect = useCallback(async () => {
+    allowEventVpnReconnectRetry(gameId)
+    await retryFailedReads()
+  }, [gameId, retryFailedReads])
 
   const wrongFlagHints = t('challenge.content.wrong_flag_hints', {
     returnObjects: true,
@@ -783,7 +788,9 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       gameTitle={gameTitle}
       eventHref={eventHref}
       loading={readEnabled && challenge === undefined && challengeError === undefined}
-      onRetryLoad={readEnabled ? () => void retryFailedReads() : undefined}
+      onRetryLoad={
+        readEnabled ? () => void (eventVpnDisconnected ? retryAfterEventVpnConnect() : retryFailedReads()) : undefined
+      }
       challenge={{
         ...(challenge ?? {}),
         title: challenge?.title ?? title,

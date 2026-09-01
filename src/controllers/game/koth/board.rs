@@ -40,6 +40,7 @@ struct HillRow {
     holder_participation_id: Option<i32>,
     holder_team_name: Option<String>,
     claim_source: String,
+    managed_crown_cycle: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -239,7 +240,12 @@ async fn compute_koth_board_inner(
                       THEN COALESCE(NULLIF(frozen.item->>'claimSource', ''), 'Marker')
                     WHEN observer.challenge_id IS NOT NULL THEN 'Api'
                     ELSE 'Marker'
-                  END AS claim_source
+                  END AS claim_source,
+                  EXISTS (
+                      SELECT 1 FROM "KothCrownCycles" crown
+                       WHERE crown.game_id = challenge.game_id
+                         AND crown.challenge_id = challenge.id
+                    ) AS managed_crown_cycle
              FROM "GameChallenges" challenge
         LEFT JOIN "KothOfficialConfigs" config
                ON config.game_id = challenge.game_id
@@ -329,6 +335,7 @@ async fn compute_koth_board_inner(
                 container_port: row.container_port,
                 container_id: row.container_id,
                 claim_source: row.claim_source,
+                managed_crown_cycle: row.managed_crown_cycle,
             })
         })
         .collect::<AppResult<_>>()?;
@@ -522,6 +529,7 @@ pub(super) struct KothHillInfo {
     pub(super) container_id: Option<String>,
     /// `Marker` is exclusive boot2root control; `Api` is a multi-team arena.
     pub(super) claim_source: String,
+    pub(super) managed_crown_cycle: bool,
 }
 
 /// One team eligible to appear on the board.

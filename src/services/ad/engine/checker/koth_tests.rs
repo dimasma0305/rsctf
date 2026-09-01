@@ -152,9 +152,10 @@ async fn recovery_query_returns_only_unresolved_hills() {
 
 #[test]
 fn practice_roster_with_one_capability_has_a_complete_token_window() {
-    assert!(token_window_complete(1, 1));
-    assert!(!token_window_complete(0, 1));
-    assert!(!token_window_complete(0, 0));
+    assert!(token_window_complete(1, 1, true));
+    assert!(!token_window_complete(1, 1, false));
+    assert!(!token_window_complete(0, 1, true));
+    assert!(!token_window_complete(0, 0, true));
 }
 
 #[tokio::test]
@@ -181,7 +182,8 @@ async fn live_capability_field_excludes_a_banned_snapshot_team() {
         );
         CREATE TEMP TABLE "Games" (
           id INTEGER PRIMARY KEY, start_time_utc TIMESTAMPTZ NOT NULL,
-          end_time_utc TIMESTAMPTZ NOT NULL
+          end_time_utc TIMESTAMPTZ NOT NULL,
+          practice_mode BOOLEAN NOT NULL
         );
         CREATE TEMP TABLE "KothOfficialConfigs" (
           game_id INTEGER PRIMARY KEY, claim_confirmation_ticks INTEGER NOT NULL,
@@ -227,7 +229,7 @@ async fn live_capability_field_excludes_a_banned_snapshot_team() {
           (11, 7, 21, 1), (12, 7, 22, 1), (13, 7, 23, 1);
         INSERT INTO "Games" VALUES
           (7, clock_timestamp() - interval '1 hour',
-              clock_timestamp() + interval '1 hour');
+              clock_timestamp() + interval '1 hour', FALSE);
         INSERT INTO "KothOfficialConfigs" VALUES
           (7, 2, '[11,12,13]'::jsonb,
               '[{"challengeId":9,"claimSource":"Api"}]'::jsonb);
@@ -284,9 +286,18 @@ async fn live_capability_field_excludes_a_banned_snapshot_team() {
         .unwrap();
     assert_eq!(live.eligible_roster, vec![11]);
     assert_eq!((live.token_count, live.roster_count), (1, 1));
-    // An official one-team roster can only be frozen for practice mode. Its
-    // complete capability window must remain scorable after ineligible teams
-    // are filtered from the immutable snapshot.
+    // A competitive snapshot cannot become one-team practice when bans or
+    // deletion later shrink its currently eligible roster.
+    assert!(!live.has_complete_token_window());
+
+    sqlx::query(r#"UPDATE "Games" SET practice_mode = TRUE WHERE id = 7"#)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let live = load_live_hill(&mut connection, 7, 9, &round)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(live.has_complete_token_window());
 }
 
@@ -340,6 +351,7 @@ async fn persistent_api_arena_recovers_after_three_committed_functional_failures
         claim_confirmation_ticks: 2,
         token_count: 2,
         roster_count: 2,
+        practice_mode: false,
         eligible_roster: vec![11, 12],
         game_start: now - chrono::Duration::minutes(1),
         game_end: now + chrono::Duration::hours(1),
