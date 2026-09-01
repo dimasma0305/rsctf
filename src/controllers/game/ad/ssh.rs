@@ -71,6 +71,7 @@ pub async fn get_ssh_key(
     let part = resolve_participation(&st, &user, id).await?;
     // Read the public half and its durable revision in one statement snapshot;
     // a split read can otherwise pair an old key with a newer mutation fence.
+    #[allow(clippy::type_complexity)]
     let row: (
         bool,
         String,

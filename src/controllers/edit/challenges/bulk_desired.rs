@@ -546,6 +546,7 @@ pub(super) fn effect_needs_vpn_reconciliation(effect: &DesiredRuntimeEffect) -> 
         || effect.challenge_type == ChallengeType::KingOfTheHill as i16
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn reconcile_desired_state(
     st: &SharedState,
     game_id: i32,

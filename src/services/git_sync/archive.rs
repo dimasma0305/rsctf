@@ -84,10 +84,7 @@ async fn publish_archive_mutation(
 
         crate::services::blob_refs::lock_direct_hashes_locked(
             &mut transaction,
-            old_hash
-                .iter()
-                .map(String::as_str)
-                .chain(expected_hash.into_iter()),
+            old_hash.iter().map(String::as_str).chain(expected_hash),
         )
         .await?;
 

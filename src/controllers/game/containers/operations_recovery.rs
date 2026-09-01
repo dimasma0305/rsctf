@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn recovery_work_is_bounded_and_uses_the_shared_reaper_fence() {
-        assert!(MAX_RECOVERIES_PER_PASS <= 4);
+        const { assert!(MAX_RECOVERIES_PER_PASS <= 4) };
         assert!(RECOVERY_ATTEMPT_DEADLINE <= Duration::from_secs(2 * 60));
         assert!(MANAGED_REAP_PENDING_SQL.contains("reap.scope_key = $1"));
     }

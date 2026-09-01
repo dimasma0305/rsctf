@@ -448,13 +448,7 @@ pub(super) async fn import_manifest_inner(
     let mut requested_static_flags = if uses_ad {
         Vec::new()
     } else {
-        model
-            .flags
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
+        model.flags.as_deref().unwrap_or_default().to_vec()
     };
     requested_static_flags.sort();
     requested_static_flags.dedup();

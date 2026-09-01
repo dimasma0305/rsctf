@@ -440,7 +440,6 @@ async fn maintain_archive_lease(
 /// `{storage_root}/capture/{challengeId}/{participationId}/{name}.pcap`. This is
 /// where a live NIC capture (`services::traffic::capture_live`) writes; the
 /// endpoints below serve whatever is present, independent of how it got there.
-
 pub async fn get_all_traffic(
     State(st): State<SharedState>,
     _user: MonitorUser,

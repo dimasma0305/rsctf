@@ -138,6 +138,7 @@ async fn stage_prepared_attachment(
 /// Publish a pre-staged attachment with its owner/ref metadata in one short
 /// transaction. Same-content imports consume the stage without acquiring a
 /// second reference or leaving a Ready lease behind.
+#[allow(clippy::result_large_err)]
 pub(super) async fn publish_attachment(
     st: &SharedState,
     challenge_id: i32,
@@ -177,10 +178,7 @@ pub(super) async fn publish_attachment(
 
         crate::services::blob_refs::lock_direct_hashes_locked(
             &mut transaction,
-            old_hash
-                .iter()
-                .map(String::as_str)
-                .chain(expected_hash.into_iter()),
+            old_hash.iter().map(String::as_str).chain(expected_hash),
         )
         .await?;
         let mut invalidate_hashes = old_hash.iter().cloned().collect::<Vec<_>>();

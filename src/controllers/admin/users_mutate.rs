@@ -351,8 +351,7 @@ async fn delete_user_rows_and_avatar(
     Ok(avatar_hash)
 }
 
-/// `DELETE /api/admin/users/{userid}/password` — reset the user's password to a
-/// freshly generated value and return the plaintext (RSCTF `string` success).
+/// Reset a user's password and return the generated plaintext once.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminPasswordResetQuery {
@@ -372,6 +371,7 @@ pub async fn reset_password(
             "A valid password-reset operation ID is required",
         ));
     }
+    #[allow(clippy::type_complexity)]
     let existing: Option<(Uuid, Uuid, i16, Option<Vec<u8>>, Option<Vec<u8>>, bool)> =
         sqlx::query_as(
             r#"SELECT user_id, requested_by, status, result_ciphertext, result_nonce,

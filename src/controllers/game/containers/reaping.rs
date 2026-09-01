@@ -238,6 +238,7 @@ pub(super) async fn resolve_managed_container_owner(
 /// Clear every exact reverse owner and the exact Containers identity in one
 /// transaction. Zero-row CAS updates are valid: they mean a replacement won and
 /// must remain attached.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn clear_destroyed_managed_container(
     pool: &sqlx::PgPool,
     container_id: uuid::Uuid,

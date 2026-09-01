@@ -166,7 +166,7 @@ impl HoneypotTelemetry {
         entry.last_seen = now;
         let (estimated_hits, sampled_hits) = if entry.seen <= SOURCE_BURST {
             (1, 0)
-        } else if (entry.seen - SOURCE_BURST) % SAMPLE_EVERY == 0 {
+        } else if (entry.seen - SOURCE_BURST).is_multiple_of(SAMPLE_EVERY) {
             (i64::from(SAMPLE_EVERY), i64::from(SAMPLE_EVERY))
         } else {
             drop(entries);

@@ -195,8 +195,8 @@ pub async fn try_prepare(
     source: Option<&str>,
 ) -> AppResult<Option<MailPreparationPermit>> {
     if operation_id.is_nil()
-        || destination.as_bytes().len() > 320
-        || source.is_some_and(|source| source.as_bytes().len() > 256)
+        || destination.len() > 320
+        || source.is_some_and(|source| source.len() > 256)
     {
         return Err(AppError::bad_request(
             "Mail preparation exceeds supported limits",

@@ -77,19 +77,20 @@ cargo llvm-cov \
   --test-threads=1 \
   --skip s3_round_trip \
   --skip stale_conditional_delete_cannot_destroy_a_real_replacement_runtime \
+  --skip real_docker_large_file_and_fifo_are_bounded_without_exec \
+  --skip live_daemon_response_is_streamed_and_decoded \
   --skip target_fk_deletes_scoped_tokens \
   --skip ownership_constraints_are_validated_cascades \
-  --skip database_board_is_finite_bounded_and_serializable \
-  --skip database_aggregate_is_bounded_by_stable_roster \
-  --skip database_epoch_rollup_is_idempotent \
-  --skip database_rollup_invalidation_keeps_only_the_safe_prefix
+  --skip postgres_stamps_follow_commit_order_without_cross_source_deadlock \
+  --skip postgres_sealed_source_six_and_nine_writes_do_not_redirty_the_game \
+  --skip postgres_two_operations_share_active_and_completed_generation \
+  --skip postgres_coalesces_retries_and_recovers_one_expired_lease
 ```
 
-The skipped S3 test requires a live disposable object store. The conditional
-delete test requires a local Docker daemon and an immutable image ID through
-`RSCTF_TEST_CONTAINER_IMAGE`. Two migration inspection checks require an
-already fully migrated installation, and the other four checks require a
-pre-provisioned A&D game. They remain explicit environment tests rather than
+The skipped S3 test requires a live disposable object store. Three Docker
+checks require specifically prepared disposable containers or an immutable
+image ID. Six database checks inspect an already migrated, pre-provisioned
+installation. They remain explicit environment tests rather than
 self-contained CI fixtures.
 
 ## Event-scale validation

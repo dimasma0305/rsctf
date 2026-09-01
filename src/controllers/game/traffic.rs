@@ -650,7 +650,7 @@ mod flow_contract_tests {
 
     #[test]
     fn cached_inspector_work_is_bounded_and_never_runs_on_tokio_workers() {
-        assert!(FLOW_FILTER_SLOTS > 0 && FLOW_FILTER_SLOTS <= 4);
+        const { assert!(FLOW_FILTER_SLOTS > 0 && FLOW_FILTER_SLOTS <= 4) };
         let source = include_str!("traffic.rs");
         assert!(source.contains("FLOW_FILTER_CAPACITY"));
         assert!(source.contains("try_acquire_owned()"));

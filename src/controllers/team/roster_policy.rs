@@ -98,7 +98,7 @@ pub(crate) async fn ensure_roster_change_allowed(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     team_id: i32,
 ) -> AppResult<()> {
-    let state = load_roster_state(&mut **transaction, team_id).await?;
+    let state = load_roster_state(transaction, team_id).await?;
     let Some(game_id) = state.3 else {
         return Ok(());
     };
@@ -111,7 +111,7 @@ pub(crate) async fn ensure_roster_change_allowed(
     // The blocker can end while its fence is being acquired. Re-evaluate at
     // the mutation's linearization point; a concurrent activation that starts
     // after this point is ordered after the completed profile mutation.
-    reject_frozen_state(load_roster_state(&mut **transaction, team_id).await?)
+    reject_frozen_state(load_roster_state(transaction, team_id).await?)
 }
 
 #[cfg(test)]

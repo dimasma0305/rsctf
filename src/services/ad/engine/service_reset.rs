@@ -74,6 +74,7 @@ pub(crate) async fn prepare_service_reset(
 ) -> AppResult<ServiceResetPreparation> {
     let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
     let tx = control.transaction_mut();
+    #[allow(clippy::type_complexity)]
     let current: Option<(Option<i32>, Option<String>, bool, Option<String>)> = sqlx::query_as(
         r#"SELECT round.id,
                   CASE WHEN OCTET_LENGTH(flag.flag) = 38

@@ -291,68 +291,66 @@ impl EventReceiver {
             Event(Result<HubEvent, broadcast::error::RecvError>, usize),
         }
 
-        loop {
-            let selected = {
-                let (channels, resync_channels, resync) = (
-                    &mut self.channels,
-                    &mut self.resync_channels,
-                    &mut self.resync,
-                );
-                let receive_event = async {
-                    if channels.is_empty() {
-                        return std::future::pending().await;
-                    }
-                    let pending = channels
-                        .iter_mut()
-                        .map(|channel| Box::pin(channel.receiver.recv()))
-                        .collect::<Vec<_>>();
-                    let (result, selected, _) = select_all(pending).await;
-                    (result, selected)
-                };
-                let receive_scoped_resync = async {
-                    if resync_channels.is_empty() {
-                        return std::future::pending().await;
-                    }
-                    let pending = resync_channels
-                        .iter_mut()
-                        .map(|channel| Box::pin(channel.receiver.recv()))
-                        .collect::<Vec<_>>();
-                    let (result, _, _) = select_all(pending).await;
-                    result
-                };
-                tokio::select! {
-                    biased;
-                    resync = resync.recv() => Selected::GlobalResync(resync),
-                    resync = receive_scoped_resync => Selected::ScopedResync(resync),
-                    (result, index) = receive_event => Selected::Event(result, index),
+        let selected = {
+            let (channels, resync_channels, resync) = (
+                &mut self.channels,
+                &mut self.resync_channels,
+                &mut self.resync,
+            );
+            let receive_event = async {
+                if channels.is_empty() {
+                    return std::future::pending().await;
                 }
+                let pending = channels
+                    .iter_mut()
+                    .map(|channel| Box::pin(channel.receiver.recv()))
+                    .collect::<Vec<_>>();
+                let (result, selected, _) = select_all(pending).await;
+                (result, selected)
             };
-
-            let result = match selected {
-                Selected::GlobalResync(Ok(()))
-                | Selected::GlobalResync(Err(broadcast::error::RecvError::Lagged(_)))
-                | Selected::ScopedResync(Ok(()))
-                | Selected::ScopedResync(Err(broadcast::error::RecvError::Lagged(_))) => {
-                    Err(broadcast::error::RecvError::Lagged(0))
+            let receive_scoped_resync = async {
+                if resync_channels.is_empty() {
+                    return std::future::pending().await;
                 }
-                Selected::GlobalResync(Err(broadcast::error::RecvError::Closed))
-                | Selected::ScopedResync(Err(broadcast::error::RecvError::Closed)) => {
-                    Err(broadcast::error::RecvError::Closed)
-                }
-                Selected::Event(result, index) => {
-                    // `select_all` resolves the first ready future. Rotate past
-                    // the shard that won so a continuously-ready target cannot
-                    // starve another target served by the same connection.
-                    let channel_count = self.channels.len();
-                    self.channels.rotate_left((index + 1) % channel_count);
-                    result
-                }
+                let pending = resync_channels
+                    .iter_mut()
+                    .map(|channel| Box::pin(channel.receiver.recv()))
+                    .collect::<Vec<_>>();
+                let (result, _, _) = select_all(pending).await;
+                result
             };
-            if matches!(result, Err(broadcast::error::RecvError::Lagged(_))) {
-                self.fanout.lagged_receivers.fetch_add(1, Ordering::Relaxed);
+            tokio::select! {
+                biased;
+                resync = resync.recv() => Selected::GlobalResync(resync),
+                resync = receive_scoped_resync => Selected::ScopedResync(resync),
+                (result, index) = receive_event => Selected::Event(result, index),
             }
-            return result;
+        };
+
+        let result = match selected {
+            Selected::GlobalResync(Ok(()))
+            | Selected::GlobalResync(Err(broadcast::error::RecvError::Lagged(_)))
+            | Selected::ScopedResync(Ok(()))
+            | Selected::ScopedResync(Err(broadcast::error::RecvError::Lagged(_))) => {
+                Err(broadcast::error::RecvError::Lagged(0))
+            }
+            Selected::GlobalResync(Err(broadcast::error::RecvError::Closed))
+            | Selected::ScopedResync(Err(broadcast::error::RecvError::Closed)) => {
+                Err(broadcast::error::RecvError::Closed)
+            }
+            Selected::Event(result, index) => {
+                // `select_all` resolves the first ready future. Rotate past
+                // the shard that won so a continuously-ready target cannot
+                // starve another target served by the same connection.
+                let channel_count = self.channels.len();
+                self.channels.rotate_left((index + 1) % channel_count);
+                result
+            }
+        };
+        if matches!(result, Err(broadcast::error::RecvError::Lagged(_))) {
+            self.fanout.lagged_receivers.fetch_add(1, Ordering::Relaxed);
         }
+        result
     }
 }
 

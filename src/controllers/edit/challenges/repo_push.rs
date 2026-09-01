@@ -40,6 +40,7 @@ struct DatabaseSnapshot {
     revision: i64,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum DatabaseSnapshotResult {
     Ready(DatabaseSnapshot),
     Retry,

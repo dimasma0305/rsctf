@@ -85,6 +85,15 @@ test("managed image builds use a pinned compact Python base", () => {
   assert.doesNotMatch(source, /LOAD_FIXTURE_PYTHON_IMAGE \|\|\s*['"]python:3\.12-alpine['"]/);
 });
 
+test("game creation supplies the required idempotency identity", () => {
+  const source = readFileSync(new URL("../applib.mjs", import.meta.url), "utf8");
+  const createGame = source.slice(
+    source.indexOf("export async function createGame"),
+    source.indexOf("export async function setGameSchedule"),
+  );
+  assert.match(createGame, /headers: \{ 'idempotency-key': randomUUID\(\) \}/);
+});
+
 function reservePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();

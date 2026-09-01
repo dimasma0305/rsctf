@@ -204,7 +204,7 @@ pub(crate) async fn execute_workload_rollout_job(
                 // request timeout can still become reachable without another
                 // edit request having to repair stale container metadata.
                 if publish_container_metadata(
-                    &st,
+                    st,
                     container_id,
                     &backend_id,
                     &next_handle,
@@ -244,7 +244,7 @@ pub(crate) async fn execute_workload_rollout_job(
     {
         return Ok(result);
     }
-    await_rollout_convergence(&st, &mut result, pending).await?;
+    await_rollout_convergence(st, &mut result, pending).await?;
     Ok(result)
 }
 

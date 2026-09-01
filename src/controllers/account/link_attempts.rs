@@ -64,6 +64,7 @@ async fn lock_generation(
 
 /// Persist a candidate before delivery. A resend is deliberately not current
 /// yet, so failed SMTP delivery cannot invalidate the last delivered link.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn stage(
     transaction: &mut Transaction<'_, Postgres>,
     mail_operation_id: Uuid,
@@ -143,6 +144,7 @@ pub(super) async fn claim(
     };
     crate::services::mail_outbox::lock_link_generation(transaction, account_id, purpose as i16)
         .await?;
+    #[allow(clippy::type_complexity)]
     let row: Option<(Uuid, Vec<u8>, Vec<u8>, bool, bool, Option<JsonValue>)> = sqlx::query_as(
         r#"SELECT account_id, security_generation_digest, destination_digest,
                   is_current, expires_at_utc > clock_timestamp(), result

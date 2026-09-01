@@ -14,6 +14,7 @@ const CONCURRENCY: usize = 8;
 static SLOTS: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(CONCURRENCY));
 
+#[allow(clippy::result_large_err)]
 pub(super) async fn authenticate(
     st: &SharedState,
     credential: Option<&str>,

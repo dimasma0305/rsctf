@@ -125,7 +125,14 @@ async function must(r, what) {
 const unwrap = (r) => (r.json && 'data' in r.json ? r.json.data : r.json);
 
 export async function createGame(body) {
-  const r = await must(await api('POST', '/api/edit/games', { ...jwtOpt(), body }), 'createGame');
+  const r = await must(
+    await api('POST', '/api/edit/games', {
+      ...jwtOpt(),
+      body,
+      headers: { 'idempotency-key': randomUUID() },
+    }),
+    'createGame',
+  );
   return unwrap(r).id;
 }
 export async function setGameSchedule(gid, start, end) {

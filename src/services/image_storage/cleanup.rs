@@ -529,6 +529,7 @@ fn remaining_backlog(scanned: i64, ledger_removed: i64) -> i64 {
     scanned.saturating_sub(ledger_removed).max(0)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn evict_candidate(
     st: SharedState,
     docker: Docker,
@@ -732,7 +733,6 @@ async fn evict_candidate(
             "evicted {} ({detail}){ledger_note}",
             candidate.canonical_ref
         )),
-        ..CandidateOutcome::default()
     }
 }
 

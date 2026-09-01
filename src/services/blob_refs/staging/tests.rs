@@ -37,7 +37,7 @@ impl BlobStorage for OneShotFailingDeleteStorage {
 fn staging_limits_are_finite() {
     assert_ne!(LOCAL_STORE_JOBS, 0);
     assert!(DEPLOYMENT_STORE_JOBS > LOCAL_STORE_JOBS as i64);
-    assert!(DEPLOYMENT_STAGE_RECORDS > DEPLOYMENT_STORE_JOBS);
+    const { assert!(DEPLOYMENT_STAGE_RECORDS > DEPLOYMENT_STORE_JOBS) };
     assert!(DEPLOYMENT_STORE_BYTES >= crate::utils::upload::ASSET_TOTAL_BYTES as i64);
     assert!(STORE_DEADLINE <= Duration::from_secs(60));
 }

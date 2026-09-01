@@ -93,6 +93,7 @@ impl From<ByocGrantRow> for ByocGrant {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ByocAgentAuthorization {
     Authorized(ByocCapabilityFence),
     RetryAt(chrono::DateTime<chrono::Utc>),

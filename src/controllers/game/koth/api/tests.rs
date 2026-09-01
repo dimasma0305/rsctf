@@ -376,12 +376,12 @@ fn observer_context_cache_and_work_bounds_are_explicit() {
     );
     assert!(OBSERVER_CONTEXT_TTL <= std::time::Duration::from_secs(5));
     assert!(OBSERVER_CONTEXT_DEADLINE <= std::time::Duration::from_secs(2));
-    assert!(OBSERVER_CONTEXT_MAX_BYTES <= 512 * 1_024);
+    const { assert!(OBSERVER_CONTEXT_MAX_BYTES <= 512 * 1_024) };
     assert_eq!(
         OBSERVER_CONTEXT_CACHE_MAX_BYTES,
         OBSERVER_CONTEXT_MAX_BYTES + OBSERVER_CONTEXT_VALIDATOR_BYTES
     );
-    assert!(OBSERVER_CONTEXT_CHALLENGE_WEIGHT < OBSERVER_CONTEXT_GLOBAL_WEIGHT);
+    const { assert!(OBSERVER_CONTEXT_CHALLENGE_WEIGHT < OBSERVER_CONTEXT_GLOBAL_WEIGHT) };
 }
 
 #[test]

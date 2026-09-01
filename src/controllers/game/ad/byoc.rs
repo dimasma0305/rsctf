@@ -876,8 +876,6 @@ fn text_attachment(content_type: &str, filename: &str, body: String) -> Response
         .into_response()
 }
 
-/// Escape a title for safe single-line embedding in generated shell/YAML.
-
 #[cfg(test)]
 #[path = "byoc_tests.rs"]
 mod tests;

@@ -121,6 +121,7 @@ fn database_error(error: sqlx::Error) -> AppError {
     AppError::internal(error.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_identity(
     row: &OperationRow,
     scope_key: &str,
@@ -569,6 +570,7 @@ async fn claim<T: DeserializeOwned>(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn claim_create(
     pool: &sqlx::PgPool,
     operation_id: Uuid,

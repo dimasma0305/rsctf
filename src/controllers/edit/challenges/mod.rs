@@ -863,15 +863,15 @@ pub(crate) async fn delete_challenge_core(
     }
 
     // Revoke A&D/KotH routes before any backing address can be freed.
-    if challenge.challenge_type.uses_ad_engine() {
-        if challenge.challenge_type == ChallengeType::KingOfTheHill {
-            crate::services::ad_engine::clear_challenge_control_locked(
-                &mut **engine_control.transaction_mut(),
-                id,
-                c_id,
-            )
-            .await?;
-        }
+    if challenge.challenge_type.uses_ad_engine()
+        && challenge.challenge_type == ChallengeType::KingOfTheHill
+    {
+        crate::services::ad_engine::clear_challenge_control_locked(
+            &mut **engine_control.transaction_mut(),
+            id,
+            c_id,
+        )
+        .await?;
     }
     engine_control
         .release()

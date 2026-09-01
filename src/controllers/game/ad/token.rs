@@ -51,6 +51,7 @@ pub async fn get_token(
     // Metadata and its fence must come from one PostgreSQL statement snapshot.
     // Otherwise an old hint can be paired with a newly committed revision and
     // authorize an overwrite of a credential the caller never observed.
+    #[allow(clippy::type_complexity)]
     let row: (
         bool,
         String,

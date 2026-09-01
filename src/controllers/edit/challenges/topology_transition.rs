@@ -7,6 +7,7 @@ pub(super) struct TopologyTransition {
     pub resuming: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn resolve(
     connection: &mut sqlx::PgConnection,
     challenge_id: i32,
@@ -67,6 +68,7 @@ pub(super) async fn resolve(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn begin(
     connection: &mut sqlx::PgConnection,
     challenge_id: i32,

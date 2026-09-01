@@ -725,6 +725,7 @@ async fn finish_scoped_model_response<T: Serialize>(
     release_with_result(roster, result).await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn finish_participant_response(
     pool: &sqlx::PgPool,
     user: &CurrentUser,

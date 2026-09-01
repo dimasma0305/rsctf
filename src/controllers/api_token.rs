@@ -316,6 +316,7 @@ pub async fn restore_token(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
 
+    #[allow(clippy::type_complexity)]
     let state: (
         bool,
         Option<DateTime<Utc>>,
@@ -462,8 +463,8 @@ mod tests {
             ]
         );
         assert!(normalize_scopes(Some(vec!["api:*".into()])).is_err());
-        assert!(MAX_ACTIVE_TOKENS_PER_OWNER > 0);
-        assert!(MAX_PAGE_SIZE <= 100);
+        const { assert!(MAX_ACTIVE_TOKENS_PER_OWNER > 0) };
+        const { assert!(MAX_PAGE_SIZE <= 100) };
     }
 
     #[test]

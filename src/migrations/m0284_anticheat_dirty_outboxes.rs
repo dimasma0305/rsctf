@@ -4,11 +4,8 @@ use sea_orm_migration::prelude::*;
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 pub(crate) const UP_SQL: &str = r#"
--- Drain established evidence writers at their outermost fences before taking
--- child-table locks for the backfill/trigger hand-off. Games is the canonical
--- audit-intake fence; telemetry ingest and purge both serialize through the
--- per-game usage row but touch the three VPN child tables in opposite order.
--- The outer locks prevent a child-lock inversion during this one-time cutover.
+-- Fence established evidence writers before locking child tables for cutover.
+-- The outer locks prevent child-lock inversion between ingest and purge.
 LOCK TABLE "Games" IN EXCLUSIVE MODE;
 LOCK TABLE "AntiCheatTelemetryUsage" IN EXCLUSIVE MODE;
 LOCK TABLE "SuspicionEvents", "Participations", "IdentityObservations",
@@ -36,9 +33,8 @@ ALTER TABLE "CheatInfo"
 ALTER TABLE "Participations"
     ADD COLUMN IF NOT EXISTS reconciliation_version BIGINT NULL;
 
--- Keep a transactional rerun private while filling the legacy NULLs. A failed
--- normal migration attempt rolls back atomically; a completed rerun has no
--- NULL versions left to rank again.
+-- Keep a transactional rerun private while filling legacy NULLs. A failed
+-- attempt rolls back atomically; a completed rerun has nothing left to rank.
 DROP TRIGGER IF EXISTS tr_suspicion_outbox_anticheat_dirty
     ON "SuspicionEvaluationOutbox";
 DROP TRIGGER IF EXISTS tr_aa_suspicion_outbox_completion_version
@@ -76,8 +72,7 @@ DROP TRIGGER IF EXISTS zz_vpn_flag_reconciliation_version_immutable
 DROP TRIGGER IF EXISTS zz_participation_reconciliation_version_immutable
     ON "Participations";
 
--- Append-only guards predate this database-owned column. Disable them only
--- inside the writer fence while legacy rows receive their initial version.
+-- Disable append-only guards inside the fence while legacy rows get a version.
 ALTER TABLE "IdentityObservations"
     DISABLE TRIGGER tr_identity_observations_append_only;
 ALTER TABLE "ContainerAccessEvents"
@@ -690,18 +685,24 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        let original_sources: Vec<(i16, i64, i64, Option<DateTime<Utc>>, Option<DateTime<Utc>>)> =
-            sqlx::query_as(
-                r#"SELECT source_kind, dirty_version, applied_version,
+        #[allow(clippy::type_complexity)]
+        let original_sources: Vec<(
+            i16,
+            i64,
+            i64,
+            Option<DateTime<Utc>>,
+            Option<DateTime<Utc>>,
+        )> = sqlx::query_as(
+            r#"SELECT source_kind, dirty_version, applied_version,
                        dirtied_at_utc, applied_at_utc
                   FROM "AntiCheatReconciliationSources"
                  WHERE game_id = $1 AND source_kind IN (0, 1, 3)
                  ORDER BY source_kind"#,
-            )
-            .bind(game_id)
-            .fetch_all(&pool)
-            .await
-            .unwrap();
+        )
+        .bind(game_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
 
         let probe = format!("anticheat_version_probe_{}", Uuid::new_v4().simple());
         sqlx::query(&format!(
@@ -714,9 +715,8 @@ mod tests {
         .await
         .unwrap();
 
-        // An outbox job can allocate its identity long before completion. A
-        // higher identity completes and is applied first; the lower identity's
-        // later completion must still receive a discoverable later version.
+        // A later identity may finish first; the earlier job's eventual
+        // completion must still receive a discoverable later version.
         let mut lower_id_late = pool.begin().await.unwrap();
         let lower_id: i64 = sqlx::query_scalar(&format!(
             r#"INSERT INTO "{probe}" DEFAULT VALUES RETURNING evidence_id"#

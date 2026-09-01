@@ -670,7 +670,6 @@ fn file_preview_json(file: crate::services::container::ContainerFile) -> JsonVal
 /// File / Snapshot / player-reset endpoints). On a failed relaunch we return 400
 /// (and null the stale container link) rather than report a phantom success that
 /// leaves the box down, mirroring RSCTF's `RestartContainerAsync` `return false`.
-
 pub async fn ad_restart_service(
     State(st): State<SharedState>,
     user: CurrentUser,

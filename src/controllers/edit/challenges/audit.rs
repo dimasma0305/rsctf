@@ -21,6 +21,7 @@ static AUDIT_DOWNLOAD_ADMISSION: LazyLock<Arc<tokio::sync::Semaphore>> =
 static AUDIT_ARCHIVE_FLIGHTS: LazyLock<
     crate::utils::single_flight::SingleFlight<AuditProjectionFill>,
 > = LazyLock::new(crate::utils::single_flight::SingleFlight::new);
+#[allow(clippy::type_complexity)]
 static AUDIT_PROJECTION_CACHE: LazyLock<Mutex<VecDeque<(String, Arc<JsonValue>)>>> =
     LazyLock::new(|| Mutex::new(VecDeque::new()));
 

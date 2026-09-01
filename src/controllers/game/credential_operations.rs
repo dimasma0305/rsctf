@@ -205,6 +205,7 @@ fn encrypt_result<T: Serialize>(
     Ok((ciphertext, nonce))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decrypt_result<T: DeserializeOwned>(
     st: &SharedState,
     scope: CredentialScope,

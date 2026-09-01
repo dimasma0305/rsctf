@@ -384,9 +384,8 @@ fn insert_snapshot(snapshot: Arc<FlowSnapshot>) {
     let expired = cache
         .entries
         .iter()
-        .filter_map(|(identity, entry)| {
-            (entry.inserted_at.elapsed() > CACHE_TTL).then(|| identity.clone())
-        })
+        .filter(|(_, entry)| entry.inserted_at.elapsed() > CACHE_TTL)
+        .map(|(identity, _)| identity.clone())
         .collect::<Vec<_>>();
     for identity in expired {
         if let Some(entry) = cache.entries.remove(&identity) {

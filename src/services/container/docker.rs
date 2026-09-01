@@ -71,10 +71,10 @@ pub(super) fn parse_file_archive(archive: &[u8], limit: usize) -> AppResult<Cont
     use std::io::Read;
 
     let mut archive = tar::Archive::new(archive);
-    let entries = archive.entries().map_err(|error| {
+    let mut entries = archive.entries().map_err(|error| {
         AppError::bad_request(format!("invalid container file archive: {error}"))
     })?;
-    for entry in entries {
+    if let Some(entry) = entries.next() {
         let entry = entry.map_err(|error| {
             AppError::bad_request(format!("invalid container file archive entry: {error}"))
         })?;

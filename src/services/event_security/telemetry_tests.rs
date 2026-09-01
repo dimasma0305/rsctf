@@ -455,6 +455,7 @@ async fn postgres_exact_batch_replay_leaves_reconciliation_clean() {
     .await
     .unwrap();
 
+    #[allow(clippy::type_complexity)]
     let dns_row: (
         Uuid,
         i32,
@@ -477,6 +478,7 @@ async fn postgres_exact_batch_replay_leaves_reconciliation_clean() {
     .fetch_one(&mut *transaction)
     .await
     .unwrap();
+    #[allow(clippy::type_complexity)]
     let network_row: (
         Uuid,
         i32,

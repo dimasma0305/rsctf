@@ -163,6 +163,7 @@ pub(super) fn require_delivery_origin(
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn enqueue_confirmation(
     st: &SharedState,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,

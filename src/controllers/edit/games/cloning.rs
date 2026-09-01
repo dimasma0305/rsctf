@@ -316,8 +316,7 @@ pub async fn clone_game(
             ));
         }
         if let Some((challenge_id, _)) = templates.iter().find(|(_, template)| {
-            expanded_flag_template_bytes(template)
-                .map_or(true, |bytes| bytes > MAX_CLONE_FLAG_BYTES)
+            expanded_flag_template_bytes(template).is_none_or(|bytes| bytes > MAX_CLONE_FLAG_BYTES)
         }) {
             return Err(AppError::conflict(format!(
                 "Source challenge {challenge_id} has an oversized dynamic flag template"
@@ -486,6 +485,7 @@ pub async fn clone_game(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod clone_contract_tests {
     use super::*;
 

@@ -308,7 +308,7 @@ fn operation_budgets_and_deadlines_are_finite() {
     assert!((1..=64).contains(&MAX_DEPLOYMENT_OPERATIONS));
     assert!((1..=16).contains(&MAX_LOCAL_OPERATIONS));
     assert!(OPERATION_DEADLINE <= Duration::from_secs(5 * 60));
-    assert!(MAX_LOCAL_RESULT_KEYS <= 512);
+    const { assert!(MAX_LOCAL_RESULT_KEYS <= 512) };
 }
 
 #[test]
