@@ -235,6 +235,7 @@ jobs:
           set -euo pipefail
           umask 077
           password="Aa1$(openssl rand -hex 24)"
+          operation_id="$(cat /proc/sys/kernel/random/uuid)"
           echo "::add-mask::$password"
           payload="$RUNNER_TEMP/bootstrap.json"
           response="$RUNNER_TEMP/bootstrap-response.json"
@@ -243,7 +244,8 @@ jobs:
             --arg password "$password" \
             --arg email "managed-koth-${GITHUB_RUN_ID}@load.test" \
             --arg bootstrapToken "$RSCTF_BOOTSTRAP_TOKEN" \
-            '{userName: $userName, password: $password, email: $email, bootstrapToken: $bootstrapToken}' \
+            --arg operationId "$operation_id" \
+            '{userName: $userName, password: $password, email: $email, bootstrapToken: $bootstrapToken, operationId: $operationId}' \
             > "$payload"
           status="$(curl --silent --show-error \
             --output "$response" \
@@ -254,7 +256,11 @@ jobs:
           rm -f "$payload"
           if [[ "$status" != "200" ]]; then
             echo "::error::Administrator bootstrap returned HTTP ${status}."
-            jq -c 'del(.token, .data.token)' "$response" || true
+            if jq -e . "$response" >/dev/null 2>&1; then
+              jq -c 'del(.token, .data.token)' "$response"
+            else
+              echo "::error::Administrator bootstrap returned a non-JSON error body."
+            fi
             exit 1
           fi
           rm -f "$response"

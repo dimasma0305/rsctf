@@ -123,6 +123,17 @@ test('managed KotH workflow validates an exact main candidate and reaps the deri
   assert.match(workflow, /remaining_scope_networks/);
 });
 
+test('managed KotH bootstrap carries the stable registration operation identity', () => {
+  const bootstrap = workflow.slice(
+    workflow.indexOf('- name: Bootstrap isolated administrator'),
+    workflow.indexOf('- name: Seed fallback-cleanup probes'),
+  );
+  assert.match(bootstrap, /operation_id="\$\(cat \/proc\/sys\/kernel\/random\/uuid\)"/);
+  assert.match(bootstrap, /--arg operationId "\$operation_id"/);
+  assert.match(bootstrap, /operationId: \$operationId/);
+  assert.match(bootstrap, /jq -e \. "\$response"/);
+});
+
 test('managed KotH polling uses a fresh administrator rate-limit identity', () => {
   const pollingIdentity = runner.slice(
     runner.indexOf('async function provisionPollingAdmin()'),
