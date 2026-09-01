@@ -533,30 +533,14 @@ async fn real_kubernetes_legacy_retry_and_authoritative_rollback() {
         Err(AppError::Conflict(_))
     ));
     std::env::set_var("RSCTF_K8S_AD_SERVICE_CIDR", "10.96.0.0/12");
+    // Pod status is owned by kubelet; a test-side status patch can be reverted
+    // immediately and cannot deterministically represent a terminal workload.
+    // The mock regression above covers terminal adoption. Keep this live test
+    // focused on API-server adoption, configuration fencing, and exact cleanup.
     manager
-        .pods()
-        .patch_status(
-            &current.id,
-            &kube::api::PatchParams::default(),
-            &kube::api::Patch::Merge(&serde_json::json!({
-                "status": { "phase": "Failed" }
-            })),
-        )
+        .destroy(&current.id)
         .await
-        .expect("mark the retry fixture Pod terminal through the real status API");
-    assert!(matches!(
-        manager.create(cidr_bound).await,
-        Err(AppError::Conflict(_))
-    ));
-    assert!(
-        manager
-            .pods()
-            .get_opt(&current.id)
-            .await
-            .expect("inspect terminal retry cleanup")
-            .is_none(),
-        "a terminal adopted Pod remained after the operation was rejected"
-    );
+        .expect("clean up the Service-CIDR retry fixture");
 
     let quota_namespace = std::env::var("RSCTF_K8S_REJECTION_NAMESPACE")
         .expect("rejection namespace configured by the live script");
