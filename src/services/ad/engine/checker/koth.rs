@@ -74,8 +74,12 @@ pub(super) struct LiveHill {
 
 impl LiveHill {
     fn has_complete_token_window(&self) -> bool {
-        self.roster_count >= 2 && self.token_count == self.roster_count
+        token_window_complete(self.token_count, self.roster_count)
     }
+}
+
+fn token_window_complete(token_count: i64, roster_count: i64) -> bool {
+    roster_count >= 1 && token_count == roster_count
 }
 
 async fn load_live_hill(

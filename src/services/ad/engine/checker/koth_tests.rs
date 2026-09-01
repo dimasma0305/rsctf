@@ -150,6 +150,13 @@ async fn recovery_query_returns_only_unresolved_hills() {
     assert_eq!(pending, vec![(10, "Marker".to_string())]);
 }
 
+#[test]
+fn practice_roster_with_one_capability_has_a_complete_token_window() {
+    assert!(token_window_complete(1, 1));
+    assert!(!token_window_complete(0, 1));
+    assert!(!token_window_complete(0, 0));
+}
+
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn live_capability_field_excludes_a_banned_snapshot_team() {
@@ -277,7 +284,10 @@ async fn live_capability_field_excludes_a_banned_snapshot_team() {
         .unwrap();
     assert_eq!(live.eligible_roster, vec![11]);
     assert_eq!((live.token_count, live.roster_count), (1, 1));
-    assert!(!live.has_complete_token_window());
+    // An official one-team roster can only be frozen for practice mode. Its
+    // complete capability window must remain scorable after ineligible teams
+    // are filtered from the immutable snapshot.
+    assert!(live.has_complete_token_window());
 }
 
 #[tokio::test]

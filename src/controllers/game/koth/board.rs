@@ -173,6 +173,7 @@ async fn compute_koth_board_inner(
                      AND ($3::timestamptz IS NULL OR activation.created_at <= $3)
                    WHERE result.game_id = $1
                      AND result.challenge_id = challenge.id
+                     AND result.is_scorable = TRUE
                      AND ($2::timestamptz IS NULL
                           OR (NOT $4 AND round.start_time_utc <= $2)
                           OR ($4 AND round.start_time_utc < $2))
