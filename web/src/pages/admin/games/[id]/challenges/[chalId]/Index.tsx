@@ -46,6 +46,8 @@ import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { WithChallengeEdit } from '@Components/admin/WithChallengeEdit'
 import { ScoreFunc } from '@Components/charts/ScoreFunc'
 import { challengeRevision, ChallengeMutationOperation, prepareChallengeMutation } from '@Utils/ChallengeMutation'
+import { controlJobResultCount, createOperationId, startControlJob, waitForControlJob } from '@Utils/ControlJobs'
+import { RetryableMutationOwner } from '@Utils/RetryableMutationOwner'
 import { getInputNumber, NetworkModeItem, NetworkModeList, showErrorMsg, useNetworkModeMap } from '@Utils/Shared'
 import {
   ChallengeCategoryItem,
@@ -55,6 +57,7 @@ import {
   ChallengeCategoryList,
 } from '@Utils/Shared'
 import { createDefaultJeopardyWorkloadSpec, formatWorkloadSpec, parseJeopardyWorkloadSpec } from '@Utils/WorkloadSpec'
+import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import { useEditChallenge, useEditChallenges } from '@Hooks/useEdit'
 import { useAdminGame, useGameStatus } from '@Hooks/useGame'
 import api, {
@@ -144,6 +147,8 @@ const GameChallengeEdit: FC = () => {
   )
 
   const [disabled, setDisabled] = useState(false)
+  const rolloutPromiseRef = useRef<Promise<void> | null>(null)
+  const rolloutAbortRef = useRef<AbortController | null>(null)
 
   const [minRate, setMinRate] = useState((challenge?.minScoreRate ?? DEFAULT_JEOPARDY_MIN_SCORE_RATE) * 100)
   const [category, setCategory] = useState<string | null>(challenge?.category ?? ChallengeCategory.Misc)
@@ -165,6 +170,7 @@ const GameChallengeEdit: FC = () => {
   const workloadToggleRef = useRef<HTMLInputElement>(null)
   const workloadInputRef = useRef<HTMLTextAreaElement>(null)
   const updateOperation = useRef<ChallengeMutationOperation | null>(null)
+  const updateRequestOwner = useRef(new RetryableMutationOwner())
   const [currentAcceptCount, setCurrentAcceptCount] = useState(0)
   const [previewOpened, setPreviewOpened] = useState(false)
   const [execOpened, setExecOpened] = useState(false)
@@ -175,6 +181,13 @@ const GameChallengeEdit: FC = () => {
   const networkModeLabelMap = useNetworkModeMap()
 
   const { t } = useTranslation()
+
+  useEffect(() => {
+    updateRequestOwner.current.cancel()
+    updateOperation.current = null
+    setDisabled(false)
+    return () => updateRequestOwner.current.cancel()
+  }, [id, chalId])
 
   // Unsaved-changes guard. A stable serialization of the editable state is captured as
   // the "saved" baseline whenever the challenge (re)loads — including right after a save,
@@ -305,20 +318,27 @@ const GameChallengeEdit: FC = () => {
       }
     }
 
+    const expectedRevision = challengeRevision(challenge)
+    if (expectedRevision === undefined) return null
+    const prepared = prepareChallengeMutation(
+      {
+        ...update,
+        deadlineUtc: deadline ? deadline.valueOf() : 0,
+        isEnabled: undefined,
+      },
+      expectedRevision,
+      updateOperation.current
+    )
+    const lease = updateRequestOwner.current.claim(prepared.operation.digest, prepared.operation.id)
+    if (!lease) return null
+    updateOperation.current = prepared.operation
     setDisabled(true)
 
     try {
-      const prepared = prepareChallengeMutation(
-        {
-          ...update,
-          deadlineUtc: deadline ? deadline.valueOf() : 0,
-          isEnabled: undefined,
-        },
-        challengeRevision(challenge),
-        updateOperation.current
-      )
-      updateOperation.current = prepared.operation
-      const res = await api.edit.editUpdateGameChallenge(numId, numCId, prepared.payload)
+      const res = await api.edit.editUpdateGameChallenge(numId, numCId, prepared.payload, {
+        signal: lease.signal,
+      })
+      if (!updateRequestOwner.current.settle(lease, true)) return null
       updateOperation.current = null
       if (!noFeedback) {
         showNotification({
@@ -327,21 +347,20 @@ const GameChallengeEdit: FC = () => {
           icon: <Icon path={mdiCheck} size={1} />,
         })
       }
-      mutate(res.data)
-      mutateChals()
+      await Promise.all([mutate(res.data), mutateChals()])
+      if (!noFeedback) setDisabled(false)
       return res.data
     } catch (e) {
+      if (!updateRequestOwner.current.settle(lease, false)) return null
       showErrorMsg(e, t)
-      if (noFeedback) setDisabled(false)
+      setDisabled(false)
       return null
-    } finally {
-      if (!noFeedback) {
-        setDisabled(false)
-      }
     }
   }
 
   const [building, setBuilding] = useState(false)
+  const buildFlight = useRef<Promise<void> | null>(null)
+  const buildAbort = useRef(new AbortController())
   const inFlightBuild = challenge?.buildStatus === 'Queued' || challenge?.buildStatus === 'Building'
   const isBuildable =
     (challenge?.type === 'StaticContainer' ||
@@ -350,33 +369,74 @@ const GameChallengeEdit: FC = () => {
       challenge?.type === 'KingOfTheHill') &&
     challenge?.buildStatus !== 'NotApplicable'
 
-  // While a build is in flight, the worker streams the docker output
-  // to Challenge.LastBuildLog every ~2s. Re-fetch on the same cadence
-  // so the inline log section below updates live.
-  useEffect(() => {
-    if (!inFlightBuild) return
-    const timer = window.setInterval(() => {
-      mutate()
-    }, 2000)
-    return () => window.clearInterval(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inFlightBuild])
+  const buildStatusQuery = api.edit.useEditGetChallengeBuildStatus(
+    numId,
+    numCId,
+    CompletionPollSWRConfig,
+    inFlightBuild
+  )
+  useCompletionPolling({
+    key: inFlightBuild ? `/api/edit/games/${numId}/challenges/${numCId}/buildstatus` : '',
+    phase: `challenge:${numId}:${numCId}`,
+    enabled: inFlightBuild,
+    data: buildStatusQuery.data,
+    error: buildStatusQuery.error,
+    isValidating: buildStatusQuery.isValidating,
+    mutate: buildStatusQuery.mutate,
+    successDelay: () => 2_000,
+  })
 
-  const onBuildNow = async () => {
-    setBuilding(true)
-    try {
-      await api.edit.editRebuildChallengeImage(numId, numCId)
-      showNotification({
-        color: 'teal',
-        message: t('admin.notification.builds.enqueued'),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-      mutate()
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setBuilding(false)
-    }
+  useEffect(() => {
+    const status = buildStatusQuery.data
+    if (!status) return
+    void mutate(
+      (current) =>
+        current ? { ...current, buildStatus: status.buildStatus, lastBuildLog: status.lastBuildLog ?? null } : current,
+      { revalidate: false }
+    )
+    void mutateChals(
+      (current) =>
+        current?.map((item) =>
+          item.id === numCId
+            ? { ...item, buildStatus: status.buildStatus, lastBuildLog: status.lastBuildLog ?? null }
+            : item
+        ),
+      { revalidate: false }
+    )
+  }, [buildStatusQuery.data, mutate, mutateChals, numCId])
+
+  useEffect(() => () => buildAbort.current.abort(), [])
+
+  const onBuildNow = () => {
+    if (buildFlight.current) return buildFlight.current
+    const operationId = createOperationId()
+    const task = (async () => {
+      setBuilding(true)
+      try {
+        const job = await startControlJob(
+          operationId,
+          () =>
+            api.edit.editRebuildChallengeImage(numId, numCId, operationId, {
+              signal: buildAbort.current.signal,
+            }),
+          buildAbort.current.signal
+        )
+        showNotification({
+          color: 'teal',
+          message: t('admin.notification.builds.enqueued'),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+        await waitForControlJob(job, buildAbort.current.signal)
+        await Promise.all([mutate(), mutateChals(), buildStatusQuery.mutate()])
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+      } finally {
+        setBuilding(false)
+        buildFlight.current = null
+      }
+    })()
+    buildFlight.current = task
+    return task
   }
 
   const onConfirmDelete = async () => {
@@ -461,37 +521,66 @@ const GameChallengeEdit: FC = () => {
     }
   }
 
+  useEffect(() => () => rolloutAbortRef.current?.abort(), [])
+
   const onRolloutWorkloads = async () => {
     if (rolloutBlockedByStatefulService) return
+    if (rolloutPromiseRef.current) return rolloutPromiseRef.current
+    const operationId = createOperationId()
+    const controller = new AbortController()
+    rolloutAbortRef.current?.abort()
+    rolloutAbortRef.current = controller
     setRollingWorkload(true)
-    const saved = await onUpdate(
-      {
-        ...challengeInfo,
-        category: category as ChallengeCategory,
-        minScoreRate: minRate / 100,
-      },
-      true
-    )
-    if (!saved) {
-      setRollingWorkload(false)
-      return
-    }
-
+    const request = (async () => {
+      const saved = await onUpdate(
+        {
+          ...challengeInfo,
+          category: category as ChallengeCategory,
+          minScoreRate: minRate / 100,
+        },
+        true
+      )
+      if (!saved) return
+      try {
+        let job
+        try {
+          job = (
+            await api.edit.editRolloutChallengeWorkloads(numId, numCId, operationId, {
+              headers: { 'X-RSCTF-Expected-Workload': saved.workloadIdentity ?? '' },
+              signal: controller.signal,
+            })
+          ).data
+        } catch (error) {
+          if (controller.signal.aborted) throw error
+          job = (await api.eventSecurity.getControlJobByOperation(operationId, { signal: controller.signal })).data
+        }
+        const completed = await waitForControlJob(job, controller.signal)
+        const result = {
+          matched: controlJobResultCount(completed, 'matched'),
+          updated: controlJobResultCount(completed, 'updated'),
+          alreadyCurrent: controlJobResultCount(completed, 'alreadyCurrent'),
+          stale: controlJobResultCount(completed, 'stale'),
+          incompatible: controlJobResultCount(completed, 'incompatible'),
+          insufficientCapacity: controlJobResultCount(completed, 'insufficientCapacity'),
+          failed: controlJobResultCount(completed, 'failed'),
+        }
+        const incomplete = result.stale + result.incompatible + result.insufficientCapacity + result.failed
+        showNotification({
+          color: incomplete === 0 ? 'teal' : 'orange',
+          message: t('admin.content.games.challenges.workload_spec.rollout_result', { ...result }),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+        mutate()
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+      }
+    })()
+    rolloutPromiseRef.current = request
     try {
-      const response = await api.edit.editRolloutChallengeWorkloads(numId, numCId, {
-        headers: { 'X-RSCTF-Expected-Workload': saved.workloadIdentity ?? '' },
-      })
-      const result = response.data
-      const incomplete = result.stale + result.incompatible + result.insufficientCapacity + result.failed
-      showNotification({
-        color: incomplete === 0 ? 'teal' : 'orange',
-        message: t('admin.content.games.challenges.workload_spec.rollout_result', { ...result }),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-      mutate()
-    } catch (e) {
-      showErrorMsg(e, t)
+      await request
     } finally {
+      if (rolloutPromiseRef.current === request) rolloutPromiseRef.current = null
+      if (rolloutAbortRef.current === controller) rolloutAbortRef.current = null
       setRollingWorkload(false)
       setDisabled(false)
     }

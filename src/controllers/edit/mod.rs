@@ -9,9 +9,8 @@
 //! success so the React ClientApp stays functional — never a 4xx. Those are
 //! marked with `// TODO`.
 
-use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
-use axum::http::header;
+use axum::http::{header, HeaderMap};
 use axum::response::Response;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
@@ -21,11 +20,11 @@ use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, Set, TransactionTrait,
+    QuerySelect, Set,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value as JsonValue};
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 use uuid::Uuid;
 
 use crate::app_state::SharedState;
@@ -48,39 +47,18 @@ use crate::utils::error::{AppError, AppResult};
 use crate::utils::flag_generator;
 use crate::utils::shared::{ArrayResponse, MessageResponse, PageParams, RequestResponse};
 
-const BLOOD_BONUS_DEFAULT: i64 = (50 << 20) + (30 << 10) + 10;
-
-/// Port of RSCTF `BloodBonus.FromValue`: a packed value whose any of the three
-/// 10-bit fields ((v>>0)&0x3ff, (v>>10)&0x3ff, (v>>20)&0x3ff) exceeds 1000 is
-/// rejected, falling back to the default packed value.
-fn blood_bonus_from_value(value: i64) -> i64 {
-    const MASK: i64 = 0x3ff;
-    const BASE: i64 = 1000;
-    if (value & MASK) > BASE || ((value >> 10) & MASK) > BASE || ((value >> 20) & MASK) > BASE {
-        BLOOD_BONUS_DEFAULT
-    } else {
-        value
-    }
-}
-
-fn epoch() -> DateTime<Utc> {
-    DateTime::<Utc>::from_timestamp(0, 0).expect("unix epoch is a valid timestamp")
-}
-fn default_true() -> bool {
-    true
-}
-fn default_container_limit() -> i32 {
-    3
-}
-fn default_blood_bonus() -> i64 {
-    BLOOD_BONUS_DEFAULT
-}
+pub(crate) mod control_jobs;
+use control_jobs::{cancel_control_job, get_control_job, get_control_job_by_operation};
+mod defaults;
+use defaults::{
+    blood_bonus_from_value, default_blood_bonus, default_container_limit, default_true, epoch,
+};
 
 // ============================================================================
 //  DTOs
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostEditModel {
     pub title: Option<String>,
@@ -127,7 +105,7 @@ impl PostDetailModel {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeInfoModel {
     #[serde(default)]
@@ -136,6 +114,8 @@ pub struct ChallengeInfoModel {
     pub category: ChallengeCategory,
     #[serde(default = "default_type", rename = "type")]
     pub challenge_type: ChallengeType,
+    #[serde(default)]
+    pub operation_id: Uuid,
 }
 fn default_category() -> ChallengeCategory {
     ChallengeCategory::Misc
@@ -147,9 +127,13 @@ fn default_score_curve() -> ScoreCurve {
     ScoreCurve::Standard
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeUpdateModel {
+    #[serde(default)]
+    pub operation_id: Uuid,
+    #[serde(default)]
+    pub expected_revision: i64,
     pub title: Option<String>,
     pub content: Option<String>,
     pub flag_template: Option<String>,
@@ -200,6 +184,15 @@ where
     T: Deserialize<'de>,
 {
     Option::<T>::deserialize(deserializer).map(Some)
+}
+
+fn present_optional_millis<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<DateTime<Utc>>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    crate::utils::datetime::millis_opt::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Serialize)]
@@ -254,6 +247,7 @@ impl AttachmentInfoModel {
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeSummaryModel {
     pub id: i32,
+    pub revision: i64,
     pub title: String,
     pub category: ChallengeCategory,
     #[serde(rename = "type")]
@@ -267,12 +261,14 @@ pub struct ChallengeSummaryModel {
     pub review_status: ChallengeReviewStatus,
     pub build_status: ChallengeBuildStatus,
     pub has_original_archive: bool,
+    pub configuration_revision: i64,
 }
 
 impl ChallengeSummaryModel {
-    fn from_challenge(c: &game_challenge::Model) -> Self {
+    fn from_challenge(c: &game_challenge::Model, configuration_revision: i64) -> Self {
         Self {
             id: c.id,
+            revision: c.revision,
             title: c.title.clone(),
             category: c.category,
             challenge_type: c.challenge_type,
@@ -284,6 +280,7 @@ impl ChallengeSummaryModel {
             review_status: c.review_status,
             build_status: c.build_status,
             has_original_archive: c.original_archive_blob_path.is_some(),
+            configuration_revision,
         }
     }
 }
@@ -293,6 +290,7 @@ impl ChallengeSummaryModel {
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeEditDetailModel {
     pub id: i32,
+    pub revision: i64,
     pub title: String,
     pub content: String,
     pub category: ChallengeCategory,
@@ -404,6 +402,7 @@ impl ChallengeEditDetailModel {
         let storage_quota_enforced = st.containers.storage_quota_enforced().await;
         Ok(Self {
             id: c.id,
+            revision: c.revision,
             title: c.title.clone(),
             content: c.content.clone(),
             category: c.category,
@@ -466,7 +465,7 @@ impl ChallengeEditDetailModel {
 
 /// RSCTF `Models/Request/Edit/FlagCreateModel` — a flag plus optional attachment
 /// metadata (the attachment the flag hands out on solve).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlagCreateModel {
     pub flag: String,
@@ -475,7 +474,16 @@ pub struct FlagCreateModel {
     #[serde(default)]
     pub file_hash: Option<String>,
     #[serde(default)]
+    pub upload_id: Option<Uuid>,
+    #[serde(default)]
     pub remote_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlagImportRequest {
+    pub operation_id: Uuid,
+    pub flags: Vec<FlagCreateModel>,
 }
 
 /// RSCTF `Models/Request/Edit/AttachmentCreateModel` — new attachment for a
@@ -488,6 +496,8 @@ pub struct AttachmentCreateModel {
     #[serde(default)]
     pub file_hash: Option<String>,
     #[serde(default)]
+    pub upload_id: Option<Uuid>,
+    #[serde(default)]
     pub remote_url: Option<String>,
 }
 
@@ -496,6 +506,9 @@ pub struct AttachmentCreateModel {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameCloneModel {
+    pub operation_id: Uuid,
+    pub expected_source_revision: i64,
+    pub expected_challenge_revision: i64,
     #[serde(default)]
     pub title: String,
     #[serde(default = "epoch", with = "crate::utils::datetime::millis")]
@@ -511,8 +524,10 @@ pub struct GameCloneModel {
 pub struct GameNoticeModel {
     #[serde(default)]
     pub content: String,
-    #[serde(default, with = "crate::utils::datetime::millis_opt")]
-    pub publish_at: Option<DateTime<Utc>>,
+    pub operation_id: Uuid,
+    /// Missing preserves the existing schedule; explicit null publishes now.
+    #[serde(default, deserialize_with = "present_optional_millis")]
+    pub publish_at: Option<Option<DateTime<Utc>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -528,20 +543,38 @@ pub struct DivisionCreateModel {
     pub challenge_configs: Option<Vec<DivisionChallengeConfigInput>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionEditModel {
+    pub operation_id: Uuid,
+    pub expected_revision: i64,
     pub name: Option<String>,
-    pub invite_code: Option<String>,
+    /// Outer `None` means the field was omitted; `Some(None)` is an explicit
+    /// JSON `null` that clears the code; `Some(Some(value))` replaces it.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_nullable_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub invite_code: Option<Option<String>>,
     pub default_permissions: Option<i32>,
     #[serde(default)]
     pub challenge_configs: Option<Vec<DivisionChallengeConfigInput>>,
 }
 
+fn deserialize_present_nullable_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
 /// Inbound half of RSCTF `DivisionChallengeConfigModel` — a per-challenge
 /// permission override for a division. `permissions` is a numeric
 /// `GamePermission` bit-set; defaults to `All` when omitted (matching the C#).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionChallengeConfigInput {
     pub challenge_id: i32,
@@ -638,8 +671,19 @@ impl PendingChallengeModel {
 //  Router
 // ============================================================================
 
+const GAME_CLONE_COMPAT_ROUTE: &str = "/api/edit/games/{id}/Clone";
+const GAME_CLONE_CANONICAL_ROUTE: &str = "/api/edit/games/{id}/clone";
+
 pub fn router() -> Router<SharedState> {
     Router::new()
+        .route(
+            "/api/edit/jobs/operations/{operationId}",
+            get(get_control_job_by_operation),
+        )
+        .route(
+            "/api/edit/jobs/{jobId}",
+            get(get_control_job).post(cancel_control_job),
+        )
         // --- Posts ---
         .route("/api/edit/posts", post(add_post))
         .route("/api/edit/posts/{id}", put(update_post).delete(delete_post))
@@ -656,14 +700,15 @@ pub fn router() -> Router<SharedState> {
             get(get_game).put(update_game).delete(delete_game),
         )
         .route("/api/edit/games/{id}/HashSalt", get(get_hash_salt))
-        .route("/api/edit/games/{id}/Clone", post(clone_game))
+        .route(GAME_CLONE_COMPAT_ROUTE, post(clone_game))
+        .route(GAME_CLONE_CANONICAL_ROUTE, post(clone_game))
         .route(
             "/api/edit/games/{id}/variants",
             get(event_security::list_variants),
         )
         .route(
             "/api/edit/games/{id}/variants/generate",
-            post(event_security::generate_variants),
+            limited(Policy::Concurrency, post(event_security::generate_variants)),
         )
         .route("/api/edit/games/{id}/writeups", delete(delete_writeups))
         .route(
@@ -699,6 +744,10 @@ pub fn router() -> Router<SharedState> {
             get(get_challenges).post(add_challenge),
         )
         .route(
+            "/api/edit/games/{id}/challenges/bulk",
+            post(mutate_challenges_bulk).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route(
             "/api/edit/games/{id}/challenges/submit",
             post(submit_challenge).layer(DefaultBodyLimit::max(
                 crate::utils::upload::ARCHIVE_BODY_BYTES,
@@ -713,6 +762,14 @@ pub fn router() -> Router<SharedState> {
         .route(
             "/api/edit/games/{id}/challenges/importfromgithub",
             post(import_from_github),
+        )
+        .route(
+            "/api/edit/games/{id}/challenges/buildstatuses",
+            get(list_challenge_build_statuses),
+        )
+        .route(
+            "/api/edit/games/{id}/challenges/importjobs/{jobId}",
+            get(test_container::import_jobs::get_job),
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}",
@@ -734,15 +791,23 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/auditmeta",
-            get(get_challenge_audit_meta),
+            limited(Policy::Query, get(get_challenge_audit_meta)),
+        )
+        .route(
+            "/api/edit/games/{id}/challenges/{cId}/auditarchive",
+            limited(Policy::Query, get(download_challenge_audit_archive)),
+        )
+        .route(
+            "/api/edit/games/{id}/challenges/{cId}/buildstatus",
+            get(get_challenge_build_status),
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/rebuild",
-            post(rebuild_challenge),
+            limited(Policy::Concurrency, post(rebuild_challenge)),
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/workload/rollout",
-            post(rollout_workloads),
+            limited(Policy::Concurrency, post(rollout_workloads)),
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/container",
@@ -750,7 +815,9 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/flags",
-            post(add_flags),
+            get(get_flags)
+                .post(add_flags)
+                .layer(DefaultBodyLimit::max(256 * 1024)),
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/flags/{fId}",
@@ -759,11 +826,15 @@ pub fn router() -> Router<SharedState> {
         // --- Notices ---
         .route(
             "/api/edit/games/{id}/notices",
-            get(get_notices).post(add_notice),
+            get(get_notices)
+                .post(add_notice)
+                .layer(DefaultBodyLimit::max(64 * 1024)),
         )
         .route(
             "/api/edit/games/{id}/notices/{noticeId}",
-            put(update_notice).delete(delete_notice),
+            put(update_notice)
+                .delete(delete_notice)
+                .layer(DefaultBodyLimit::max(64 * 1024)),
         )
         // --- Divisions ---
         .route(
@@ -784,7 +855,7 @@ pub fn router() -> Router<SharedState> {
         .route("/api/edit/games/{id}/ad/Live", get(ad_live_state))
         .route(
             "/api/edit/games/{id}/ad/EnsureContainers",
-            post(ad_ensure_containers),
+            limited(Policy::Concurrency, post(ad_ensure_containers)),
         )
         .route(
             "/api/edit/games/{id}/ad/ScoringPause",
@@ -800,7 +871,7 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/File",
-            get(ad_service_file),
+            limited(Policy::Container, get(ad_service_file)),
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Inspector",
@@ -812,7 +883,7 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Restart",
-            post(ad_restart_service),
+            limited(Policy::Container, post(ad_restart_service)),
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Snapshot",
@@ -820,15 +891,15 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Snapshot/Changes",
-            get(ad_snapshot_changes),
+            limited(Policy::Container, get(ad_snapshot_changes)),
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/SnapshotDiff",
-            get(ad_snapshot_diff),
+            limited(Policy::Container, get(ad_snapshot_diff)),
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Snapshots",
-            get(ad_service_snapshots),
+            limited(Policy::Container, get(ad_service_snapshots)),
         )
 }
 
@@ -861,41 +932,6 @@ async fn manager_or_admin(
     }
 }
 
-/// Co-organizer view of a user (RSCTF `UserInfoModel`). The manager-list route is
-/// typed `ProfileUserInfoModel[]` on the client, so the camelCase field set
-/// mirrors that shape (`userId`/`userName`/`stdNumber`/`hasManagedGames`, ...).
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ManagerInfoModel {
-    pub user_id: Uuid,
-    pub user_name: Option<String>,
-    pub email: Option<String>,
-    pub role: Role,
-    pub bio: String,
-    pub real_name: String,
-    pub std_number: String,
-    pub phone: Option<String>,
-    pub avatar: Option<String>,
-    pub has_managed_games: bool,
-}
-
-impl ManagerInfoModel {
-    fn from_user(u: &user::Model) -> Self {
-        Self {
-            user_id: u.id,
-            user_name: u.user_name.clone(),
-            email: u.email.clone(),
-            role: u.role,
-            bio: u.bio.clone(),
-            real_name: u.real_name.clone(),
-            std_number: u.std_number.clone(),
-            phone: u.phone_number.clone(),
-            avatar: u.avatar_url(),
-            has_managed_games: true,
-        }
-    }
-}
-
 // ============================================================================
 //  Posts
 // ============================================================================
@@ -903,12 +939,14 @@ impl ManagerInfoModel {
 mod ad;
 mod builds;
 mod challenges;
+pub(crate) use challenges::recover_bulk_delete_jobs;
 mod deletion_locks;
 mod divisions;
 mod event_security;
 mod flags;
 mod games;
 mod helpers;
+mod manager_model;
 mod notices;
 mod posts;
 mod reviews;
@@ -925,6 +963,7 @@ pub use divisions::*;
 pub use flags::*;
 pub use games::*;
 pub(crate) use helpers::*;
+pub use manager_model::ManagerInfoModel;
 pub use notices::*;
 pub use posts::*;
 pub use reviews::*;

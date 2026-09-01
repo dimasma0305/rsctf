@@ -631,6 +631,10 @@ pub(crate) async fn load_challenge(
         .ok_or_else(|| AppError::not_found("Challenge not found"))
 }
 
+#[path = "helpers/challenge_rows.rs"]
+mod challenge_rows;
+pub(crate) use challenge_rows::load_challenge_locked;
+
 /// Ensure every division of `game_id` has a per-challenge config row for
 /// `challenge_id`. Insert-if-missing seeded with the division's default
 /// permissions — never clobbers an existing (possibly admin-tuned) row.
@@ -711,8 +715,21 @@ pub(crate) async fn load_user_names(
 /// Mirrors RSCTF `BlobRepository.DeleteAttachment`. Idempotent when the row is
 /// already gone.
 pub(crate) async fn delete_attachment(st: &SharedState, attachment_id: i32) -> AppResult<()> {
+    let affected_hash = sqlx::query_scalar::<_, String>(
+        r#"SELECT file.hash
+             FROM "Attachments" attachment
+             JOIN "Files" file ON file.id = attachment.local_file_id
+            WHERE attachment.id = $1"#,
+    )
+    .bind(attachment_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     let deleted_hash =
         crate::services::blob_refs::delete_attachment(st.pg(), attachment_id).await?;
+    if let Some(hash) = affected_hash.as_deref() {
+        crate::controllers::assets::invalidate_asset_gate(st, hash).await;
+    }
     if let Some(hash) = deleted_hash {
         if let Err(error) =
             crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
@@ -945,32 +962,3 @@ pub(crate) async fn destroy_game_test_containers_locked(
 #[cfg(test)]
 #[path = "helpers_teardown_tests.rs"]
 mod teardown_tests;
-
-pub(crate) async fn load_flags(st: &SharedState, c_id: i32) -> AppResult<Vec<FlagInfoModel>> {
-    let flags = flag_context::Entity::find()
-        .filter(flag_context::Column::ChallengeId.eq(c_id))
-        .all(&st.db)
-        .await?;
-    let mut out = Vec::with_capacity(flags.len());
-    for f in flags {
-        let attachment = match f.attachment_id {
-            Some(aid) => match attachment::Entity::find_by_id(aid).one(&st.db).await? {
-                Some(a) => {
-                    let file = match a.local_file_id {
-                        Some(fid) => local_file::Entity::find_by_id(fid).one(&st.db).await?,
-                        None => None,
-                    };
-                    Some(AttachmentInfoModel::from_attachment(&a, file.as_ref()))
-                }
-                None => None,
-            },
-            None => None,
-        };
-        out.push(FlagInfoModel {
-            id: f.id,
-            flag: f.flag,
-            attachment,
-        });
-    }
-    Ok(out)
-}

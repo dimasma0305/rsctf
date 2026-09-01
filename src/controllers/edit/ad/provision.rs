@@ -30,17 +30,6 @@ fn ad_service_operation_id(
     })
 }
 
-fn manual_reconcile_response(launched: i32, failures: i32) -> AppResult<MessageResponse> {
-    if failures > 0 {
-        return Err(AppError::unavailable(format!(
-            "Launched {launched} service container(s), but {failures} workload(s) remain unavailable; retry with the same operation"
-        )));
-    }
-    Ok(MessageResponse::ok(format!(
-        "Launched {launched} service container(s)"
-    )))
-}
-
 fn is_manual_operation_conflict(error: &AppError, operation_id: Option<Uuid>) -> bool {
     operation_id.is_some() && matches!(error, AppError::Conflict(_))
 }
@@ -56,6 +45,10 @@ fn should_provision_vpn(
 
 fn should_reconcile_vpn(need_vpn: bool, has_managed_challenges: bool) -> bool {
     need_vpn || has_managed_challenges
+}
+
+fn should_ensure_network(reconcile_vpn: bool, topology_owner: bool) -> bool {
+    reconcile_vpn && topology_owner
 }
 
 async fn current_ad_pair(
@@ -164,15 +157,210 @@ async fn deactivate_stale_pair(
 /// (whole game, every accepted team).
 pub async fn ad_ensure_containers(
     State(st): State<SharedState>,
-    _admin: AdminUser,
+    user: CurrentUser,
     Path(game_id): Path<i32>,
     headers: HeaderMap,
-) -> AppResult<MessageResponse> {
-    let operation_id = reconcile_operation_id(&headers)?;
-    let game = load_game(&st, game_id).await?;
-    let (launched, failures) =
-        ensure_ad_containers(&st, &game, None, true, true, Some(operation_id)).await?;
-    manual_reconcile_response(launched, failures)
+) -> AppResult<(
+    axum::http::StatusCode,
+    RequestResponse<crate::services::control_jobs::ControlJobModel>,
+)> {
+    manager_or_admin(&st, &user, game_id).await?;
+    let operation = reconcile_operation_id(&headers)?;
+    let input = serde_json::json!({ "ensureVpn": true, "ensureKoth": true });
+    let fingerprint = super::super::control_jobs::fingerprint(&input)?;
+    let job = crate::services::control_jobs::enqueue(
+        st.pg(),
+        crate::services::control_jobs::ControlJobKind::AdReconcile,
+        &format!("game:{game_id}"),
+        game_id,
+        None,
+        operation,
+        &fingerprint,
+        input,
+    )
+    .await?;
+    crate::services::control_jobs::merge_reconcile_input(
+        st.pg(),
+        job.id,
+        serde_json::json!({ "ensureVpn": true, "ensureKoth": true }),
+    )
+    .await?;
+    let job = crate::services::control_jobs::get(st.pg(), job.id)
+        .await?
+        .ok_or_else(|| AppError::internal("queued reconcile job disappeared"))?;
+    crate::services::control_jobs::kick(st);
+    Ok((axum::http::StatusCode::ACCEPTED, RequestResponse::ok(job)))
+}
+
+pub(crate) async fn run_ad_reconcile_job(
+    st: &SharedState,
+    claimed: &crate::services::control_jobs::ClaimedControlJob,
+    ensure_vpn: bool,
+    ensure_koth: bool,
+) -> AppResult<(i32, i32)> {
+    let game_id = claimed.model.game_id;
+    let game = load_game(st, game_id).await?;
+    let (has_managed_ad, has_engine_challenge): (bool, bool) = sqlx::query_as(
+        r#"SELECT
+             EXISTS (
+               SELECT 1 FROM "GameChallenges"
+                WHERE game_id = $1 AND is_enabled = TRUE
+                  AND review_status = $2 AND "Type" = $3
+                  AND ad_self_hosted = FALSE
+             ),
+             EXISTS (
+               SELECT 1 FROM "GameChallenges"
+                WHERE game_id = $1 AND is_enabled = TRUE
+                  AND review_status = $2 AND "Type" IN ($3, $4)
+             )"#,
+    )
+    .bind(game_id)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .bind(ChallengeType::AttackDefense as i16)
+    .bind(ChallengeType::KingOfTheHill as i16)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let need_vpn = should_provision_vpn(
+        crate::services::ad_vpn::enabled(),
+        game.is_active(Utc::now()),
+        has_engine_challenge,
+        ensure_vpn,
+    );
+    if should_ensure_network(should_reconcile_vpn(need_vpn, has_managed_ad), true)
+        && st.containers.backend_kind() == crate::services::container::ContainerBackendKind::Docker
+    {
+        st.containers
+            .ensure_network(
+                &crate::services::ad_vpn::services_network(),
+                &crate::services::ad_vpn::services_cidr(),
+            )
+            .await?;
+    }
+    const PARTICIPATION_PAGE_SIZE: i64 = 64;
+    let participation_total: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM "Participations" WHERE game_id = $1 AND status = $2"#,
+    )
+    .bind(game_id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let progress_total = i32::try_from(participation_total.max(1)).unwrap_or(i32::MAX);
+    crate::services::control_jobs::set_progress(
+        st.pg(),
+        claimed.model.id,
+        claimed.lease_token,
+        0,
+        progress_total,
+    )
+    .await?;
+    let mut cursor = 0;
+    let mut launched = 0i32;
+    let mut failures = 0i32;
+    let mut examined = 0i32;
+    let mut cancelled = false;
+    loop {
+        let participation_ids = sqlx::query_scalar::<_, i32>(
+            r#"SELECT id FROM "Participations"
+                WHERE game_id = $1 AND status = $2 AND id > $3
+                ORDER BY id LIMIT $4"#,
+        )
+        .bind(game_id)
+        .bind(ParticipationStatus::Accepted as i16)
+        .bind(cursor)
+        .bind(PARTICIPATION_PAGE_SIZE)
+        .fetch_all(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if participation_ids.is_empty() {
+            break;
+        }
+        for participation_id in participation_ids {
+            if crate::services::control_jobs::cancellation_requested(
+                st.pg(),
+                claimed.model.id,
+                claimed.lease_token,
+            )
+            .await?
+            {
+                cancelled = true;
+                break;
+            }
+            cursor = participation_id;
+            let (page_launched, page_failures) = ensure_ad_containers(
+                st,
+                &game,
+                Some(participation_id),
+                ensure_vpn,
+                false,
+                false,
+                Some(claimed.model.operation_id),
+            )
+            .await?;
+            launched = launched.saturating_add(page_launched);
+            failures = failures.saturating_add(page_failures);
+            examined = examined.saturating_add(1).min(progress_total);
+            crate::services::control_jobs::set_progress(
+                st.pg(),
+                claimed.model.id,
+                claimed.lease_token,
+                examined,
+                progress_total,
+            )
+            .await?;
+        }
+        if cancelled {
+            break;
+        }
+    }
+    if cancelled {
+        return Ok((launched, failures));
+    }
+    if ensure_vpn || has_managed_ad {
+        crate::services::ad_vpn::reconcile_for_deployment(&st.db).await?;
+    }
+    if ensure_koth {
+        crate::controllers::game::koth::ensure_koth_hills_with_operation(
+            st,
+            game.id,
+            Some(claimed.model.operation_id),
+        )
+        .await?;
+    }
+    Ok((launched, failures))
+}
+
+pub(crate) async fn request_ad_reconcile_job(
+    st: &SharedState,
+    game_id: i32,
+    ensure_vpn: bool,
+    ensure_koth: bool,
+) -> AppResult<crate::services::control_jobs::ControlJobModel> {
+    let input = serde_json::json!({ "ensureVpn": ensure_vpn, "ensureKoth": ensure_koth });
+    let fingerprint = super::super::control_jobs::fingerprint(&input)?;
+    let job = crate::services::control_jobs::enqueue(
+        st.pg(),
+        crate::services::control_jobs::ControlJobKind::AdReconcile,
+        &format!("game:{game_id}"),
+        game_id,
+        None,
+        uuid::Uuid::new_v4(),
+        &fingerprint,
+        input,
+    )
+    .await?;
+    crate::services::control_jobs::merge_reconcile_input(
+        st.pg(),
+        job.id,
+        serde_json::json!({ "ensureVpn": ensure_vpn, "ensureKoth": ensure_koth }),
+    )
+    .await?;
+    let job = crate::services::control_jobs::get(st.pg(), job.id)
+        .await?
+        .ok_or_else(|| AppError::internal("queued reconcile job disappeared"))?;
+    crate::services::control_jobs::kick(st.clone());
+    Ok(job)
 }
 
 /// Reusable core of [`ad_ensure_containers`]: launch the platform-hosted A&D
@@ -204,6 +392,10 @@ pub(crate) async fn ensure_ad_containers(
     // The round pipeline repairs A&D before checking, but KotH only after the
     // checker has persisted a dead-backend receipt for the published holder.
     ensure_koth: bool,
+    // Durable event jobs page participants and finalize topology exactly once
+    // after the final page. Direct one-team acceptance keeps the old immediate
+    // finalization behavior.
+    finalize_topology: bool,
     // A manual reconcile keeps one request identity across retries. Binding it
     // to each service lets Docker/Kubernetes adopt a container created before
     // a lost response or process crash instead of launching a duplicate.
@@ -263,7 +455,7 @@ pub(crate) async fn ensure_ad_containers(
     // Create the isolated service network before peer/firewall reconciliation,
     // then retain the allocator-selected address so BYOC rows can never drift
     // from WireGuard cryptokey routing after a collision probe.
-    if reconcile_vpn
+    if should_ensure_network(reconcile_vpn, finalize_topology)
         && st.containers.backend_kind() == crate::services::container::ContainerBackendKind::Docker
     {
         st.containers
@@ -398,21 +590,22 @@ pub(crate) async fn ensure_ad_containers(
             let team_hash =
                 crate::utils::flag_generator::team_challenge_hash(&salt, c.id, &p.token);
             let operation_id = ad_service_operation_id(reconcile_operation_id, game.id, p.id, c.id);
-            let flag = operation_id.as_deref().map_or_else(
-                || {
-                    crate::utils::flag_generator::generate_flag(
-                        c.flag_template.as_deref(),
-                        &team_hash,
-                    )
-                },
-                |operation_id| {
-                    crate::utils::flag_generator::generate_retryable_flag(
-                        c.flag_template.as_deref(),
-                        &team_hash,
-                        operation_id,
-                    )
-                },
-            );
+            let flag = match operation_id.as_deref() {
+                Some(operation_id) => crate::utils::flag_generator::generate_retryable_ad_flag(
+                    &team_hash,
+                    operation_id,
+                ),
+                None => crate::utils::flag_generator::generate_ad_flag(),
+            };
+            let flag = match flag {
+                Ok(flag) => flag,
+                Err(error) => {
+                    tracing::error!(challenge = c.id, %error, "A&D warmup flag generation failed");
+                    failures += 1;
+                    distributed.release().await?;
+                    continue;
+                }
+            };
             let image = match crate::services::challenge_images::runtime_image(st, &c) {
                 Ok(image) => image,
                 Err(error) => {
@@ -610,11 +803,11 @@ pub(crate) async fn ensure_ad_containers(
     }
 
     // Reconcile the wg0 hub with the (possibly newly-created) peer set.
-    if reconcile_vpn {
+    if reconcile_vpn && finalize_topology {
         crate::services::ad_vpn::reconcile_for_deployment(&st.db).await?;
     }
 
-    if ensure_koth {
+    if ensure_koth && finalize_topology {
         crate::controllers::game::koth::ensure_koth_hills_with_operation(
             st,
             game.id,
@@ -633,8 +826,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        ad_service_operation_id, is_manual_operation_conflict, manual_reconcile_response,
-        reconcile_operation_id, should_provision_vpn, should_reconcile_vpn, IDEMPOTENCY_KEY_HEADER,
+        ad_service_operation_id, is_manual_operation_conflict, reconcile_operation_id,
+        should_ensure_network, should_provision_vpn, should_reconcile_vpn, IDEMPOTENCY_KEY_HEADER,
     };
 
     #[test]
@@ -667,15 +860,6 @@ mod tests {
             Some(service.as_str())
         );
         assert_eq!(ad_service_operation_id(None, 7, 11, 13), None);
-    }
-
-    #[test]
-    fn partial_manual_reconcile_is_not_an_acknowledged_success() {
-        assert!(manual_reconcile_response(3, 0).is_ok());
-        assert!(matches!(
-            manual_reconcile_response(3, 1),
-            Err(crate::utils::error::AppError::ServiceUnavailable(_))
-        ));
     }
 
     #[test]
@@ -714,6 +898,13 @@ mod tests {
         let need_vpn = should_provision_vpn(true, true, true, false);
         assert!(!need_vpn);
         assert!(should_reconcile_vpn(need_vpn, true));
+    }
+
+    #[test]
+    fn paged_reconcile_has_one_network_topology_owner() {
+        assert!(should_ensure_network(true, true));
+        assert!(!should_ensure_network(true, false));
+        assert!(!should_ensure_network(false, true));
     }
 }
 
@@ -779,7 +970,7 @@ pub(crate) async fn provision_accepted_participation(
     ensure_instances(st, participation_id, game_id).await?;
     if let Some(game) = game::Entity::find_by_id(game_id).one(&st.db).await? {
         let (_, failures) =
-            ensure_ad_containers(st, &game, Some(participation_id), true, true, None).await?;
+            ensure_ad_containers(st, &game, Some(participation_id), true, true, true, None).await?;
         if failures > 0 {
             return Err(AppError::unavailable(format!(
                 "{failures} accepted-participation service workload(s) remain unavailable"

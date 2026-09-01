@@ -4,7 +4,11 @@ import test from 'node:test'
 import { act, createElement, type FC, type PropsWithChildren, useState } from 'react'
 import type { Key, SWRConfiguration } from 'swr'
 import { challengeIdFromHash, ownedChallengeIdFromHash } from '../components/ChallengePanel'
-import { shouldReadChallenge } from '../components/GameChallengeModal'
+import {
+  containerOperationScope,
+  operationStorageKey,
+  shouldReadChallenge,
+} from '../components/GameChallengeModal'
 import { installTestDom } from '../test/installDom'
 import {
   RouteLifecycleBoundary,
@@ -19,6 +23,19 @@ type Deferred<T> = {
   resolve: (value: T) => void
   reject: (error: unknown) => void
 }
+
+test('container operation replay identities are isolated by kind and challenge scope', () => {
+  assert.notEqual(
+    operationStorageKey('create', 'game:1:challenge:2'),
+    operationStorageKey('create', 'game:1:challenge:3')
+  )
+  assert.notEqual(
+    operationStorageKey('create', 'game:1:challenge:2'),
+    operationStorageKey('delete', 'game:1:challenge:2')
+  )
+  assert.notEqual(containerOperationScope('user-a', 7, 1, 2), containerOperationScope('user-b', 7, 1, 2))
+  assert.notEqual(containerOperationScope('user-a', 7, 1, 2), containerOperationScope('user-a', 8, 1, 2))
+})
 
 const deferred = <T>(): Deferred<T> => {
   let resolve!: (value: T) => void

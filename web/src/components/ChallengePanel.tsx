@@ -29,25 +29,29 @@ import { Icon } from '@mdi/react'
 import { FC, useEffect, useState, useMemo, type FocusEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useParams } from 'react-router'
+import type { AdStateOwner } from '@Components/AdChallengePanel'
 import { ChallengeCard } from '@Components/ChallengeCard'
 import { Empty } from '@Components/Empty'
 import { GameChallengeModal } from '@Components/GameChallengeModal'
 import { WriteupSubmitModal } from '@Components/WriteupSubmitModal'
 import { useChallengeCategoryLabelMap, SubmissionTypeIconMap } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import { useGame, useGameStatus, useGameTeamInfo } from '@Hooks/useGame'
+import { useGameStatus, useGameTeamInfo } from '@Hooks/useGame'
 import { ChallengeInfo, ChallengeCategory, ChallengeType, SubmissionType } from '@Api'
 import classes from '@Styles/ChallengePanel.module.css'
 
-export const ChallengePanel: FC = () => {
+type ChallengePanelProps = {
+  teamState: ReturnType<typeof useGameTeamInfo>
+  adStateOwner?: AdStateOwner
+}
+
+export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwner }) => {
   const { hash } = useLocation()
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
 
-  const { teamInfo, error: teamInfoError, mutate: mutateTeamInfo } = useGameTeamInfo(numId)
+  const { teamInfo, game, error: teamInfoError, mutate: mutateTeamInfo } = teamState
   const challenges = teamInfo?.challenges
-
-  const { game } = useGame(numId)
   const { finished } = useGameStatus(game)
   const isCompact = useIsMobile()
 
@@ -620,6 +624,7 @@ export const ChallengePanel: FC = () => {
           title={challenge?.title ?? ''}
           score={challenge?.score ?? 0}
           challengeId={challenge.id}
+          adStateOwner={adStateOwner}
         />
       )}
     </>

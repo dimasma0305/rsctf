@@ -177,6 +177,7 @@ mod tests {
             r#"SELECT (
                    SELECT COUNT(*) FROM pg_trigger
                     WHERE tgname = 'rsctf_koth_role_eligibility_fence'
+                      AND tgrelid = '"AspNetUsers"'::regclass
                       AND NOT tgisinternal
                  ),
                  (SELECT BOOL_AND(NOT revocation_pending)

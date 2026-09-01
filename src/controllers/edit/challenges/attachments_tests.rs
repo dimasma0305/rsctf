@@ -107,6 +107,7 @@ impl AttachmentHarness {
         .execute(&pool)
         .await
         .unwrap();
+        crate::services::blob_refs::test_support::install_operation_tables(&pool).await;
         Self {
             admin,
             pool,
@@ -170,7 +171,7 @@ async fn execute_replace(
 async fn execute_flag_removal(
     pool: &sqlx::PgPool,
     flag_id: i32,
-) -> AppResult<Option<Option<String>>> {
+) -> AppResult<Option<crate::controllers::edit::flags::FlagRemoval>> {
     let mut definition =
         crate::services::challenge_workloads::acquire_definition_lock(pool, 1, 11).await?;
     let result = crate::controllers::edit::flags::remove_flag_locked(
@@ -208,6 +209,29 @@ fn remote_attachments_require_absolute_http_urls() {
     ] {
         assert!(validate_remote_attachment_url(invalid).is_err());
     }
+}
+
+#[test]
+fn local_attachment_requires_its_exact_staged_upload_receipt() {
+    let local = prepare_attachment(Some(FileType::Local), Some("a".repeat(64)), None)
+        .unwrap()
+        .unwrap();
+    assert!(validate_upload_binding(Some(&local), None).is_err());
+    assert!(validate_upload_binding(Some(&local), Some(Uuid::new_v4())).is_ok());
+
+    let remote = prepare_attachment(
+        Some(FileType::Remote),
+        None,
+        Some("https://files.example/challenge.zip".to_string()),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(validate_upload_binding(Some(&remote), Some(Uuid::new_v4())).is_err());
+    assert_eq!(attachment_publication_scope(41), "attachment:41");
+    assert_ne!(
+        attachment_publication_scope(41),
+        attachment_publication_scope(42)
+    );
 }
 
 #[tokio::test]
@@ -573,6 +597,7 @@ async fn post_commit_blob_cleanup_failure_keeps_the_successful_swap_visible() {
     let swap = execute_replace(&harness.pool, Some(&prepared))
         .await
         .expect("metadata swap should commit before physical cleanup");
+    assert_eq!(swap.revoked_hash.as_deref(), Some("staged"));
     assert_eq!(swap.deleted_hash.as_deref(), Some("staged"));
 
     let storage = FailingDeleteStorage::default();

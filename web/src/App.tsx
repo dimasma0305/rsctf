@@ -163,7 +163,10 @@ export const App: FC = () => (
     value={{
       // Keep the theme/config hooks and every route on one cache. In particular,
       // the admin settings mutation must reach useCustomTheme immediately.
-      refreshInterval: 60_000,
+      refreshInterval: 0,
+      refreshWhenHidden: false,
+      refreshWhenOffline: false,
+      shouldRetryOnError: false,
       keepPreviousData: false,
       provider: localCacheProvider,
       fetcher: authAwareFetcher,

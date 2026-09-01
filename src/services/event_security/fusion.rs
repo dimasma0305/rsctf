@@ -8,6 +8,10 @@ use crate::app_state::SharedState;
 use crate::services::suspicion::{self, RiskBand, SuspicionEventRow};
 use crate::utils::error::{AppError, AppResult};
 
+#[path = "fusion/incremental.rs"]
+mod incremental;
+pub(crate) use incremental::{derive_context_findings_incremental, FusionCursors};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[repr(i16)]
@@ -254,7 +258,7 @@ pub async fn review_finding(
     status: FindingReviewStatus,
     note: Option<&str>,
 ) -> AppResult<()> {
-    if note.is_some_and(|value| value.len() > 4_000) {
+    if note.is_some_and(|value| value.chars().count() > 4_000) {
         return Err(AppError::bad_request("Review note is too long"));
     }
     let inserted = sqlx::query(
@@ -525,7 +529,10 @@ pub async fn fused_breakdown(
     })
 }
 
-pub async fn derive_context_findings(st: &SharedState, game_id: i32) -> AppResult<usize> {
+pub(crate) async fn derive_context_findings_full(
+    st: &SharedState,
+    game_id: i32,
+) -> AppResult<usize> {
     let mut transaction = st
         .pg()
         .begin()
@@ -693,6 +700,14 @@ pub async fn derive_context_findings(st: &SharedState, game_id: i32) -> AppResul
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(usize::try_from(inserted + sharing).unwrap_or(usize::MAX))
+}
+
+/// Compatibility entry point used by the existing durable
+/// `SecurityDerivation` control job. Manual and scheduled callers therefore
+/// share the same per-game generation and lease instead of launching parallel
+/// telemetry scans.
+pub async fn derive_context_findings(st: &SharedState, game_id: i32) -> AppResult<usize> {
+    crate::services::suspicion::execute_game_reconciliation(st, game_id).await
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const rateLimiterCore = read('../../../src/middlewares/rate_limiter.rs');
+const rateLimiterPolicy = read('../../../src/middlewares/rate_limiter/policy.rs');
 const kothAdmission = read('../../../src/middlewares/rate_limiter/koth.rs');
 const rateLimiter = `${rateLimiterCore}\n${kothAdmission}`;
 const authentication = read(
@@ -75,7 +76,7 @@ test('managed KotH admits the complete 2,000-team same-source login wave', () =>
   );
   assert.match(rateLimiter, /method == Method::POST && path == AUTH_PATH/);
   assert.match(
-    rateLimiterCore,
+    rateLimiterPolicy,
     /Policy::KothCapabilityAdmission\s*=>\s*koth::source_admission_kind\(\)/,
   );
   assert.match(

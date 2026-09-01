@@ -6,6 +6,8 @@ import {
   assignUniqueKothApiCrown,
   isRetriableKothApiContextFailure,
   kothApiEvidence,
+  kothApiObservation,
+  kothApiRetryDelayMs,
   validateKothApiContext,
 } from '../applib.mjs';
 import {
@@ -43,9 +45,11 @@ test('KotH API headers use the documented wire names and sha256 prefix', () => {
 
 test('KotH API success writes retry only transient context fences', () => {
   assert.equal(
-    isRetriableKothApiContextFailure(
-      new Error('fetch KotH API context → 409 {"title":"Leaderboard KotH context is not active"}'),
-    ),
+    isRetriableKothApiContextFailure({
+      status: 409,
+      json: { code: 'stale_context' },
+      text: '{"code":"stale_context"}',
+    }),
     true,
   );
   assert.equal(
@@ -53,7 +57,7 @@ test('KotH API success writes retry only transient context fences', () => {
       status: 409,
       text: '{"title":"Leaderboard KotH context changed; fetch context and retry"}',
     }),
-    true,
+    false,
   );
   assert.equal(
     isRetriableKothApiContextFailure({
@@ -66,6 +70,21 @@ test('KotH API success writes retry only transient context fences', () => {
     isRetriableKothApiContextFailure({ status: 401, text: 'Unauthorized' }),
     false,
   );
+  assert.equal(isRetriableKothApiContextFailure({ status: 429, text: '' }), true);
+  assert.equal(isRetriableKothApiContextFailure({ status: 503, text: '' }), true);
+  assert.equal(
+    isRetriableKothApiContextFailure(new DOMException('response lost', 'TimeoutError')),
+    true,
+  );
+  assert.equal(
+    kothApiRetryDelayMs(
+      { headers: new Headers({ 'retry-after': '2' }) },
+      0,
+      () => 0,
+    ),
+    2_000,
+  );
+  assert.equal(kothApiRetryDelayMs({}, 3, () => 0.5), 1_000);
 });
 
 test('KotH API signing rejects ambiguous identities and oversized payloads', () => {
@@ -75,6 +94,96 @@ test('KotH API signing rejects ambiguous identities and oversized payloads', () 
     () => kothObservationMessage(timestamp, 7, 9, 'x'.repeat(512 * 1024 + 1)),
     /512 KiB/,
   );
+});
+
+test('the supplied referee retries the exact body after its commit changes context', async (context) => {
+  const now = Date.now();
+  const contextModel = {
+    apiVersion: 'v2',
+    context: 'c'.repeat(64),
+    cycleNumber: 4,
+    resetAttempt: 1,
+    roundNumber: 17,
+    cycleStartsAt: now - 30_000,
+    cycleEndsAt: now + 60_000,
+    scoringEndsAt: now + 60_000,
+    waveWindowStartsAt: now - 10_000,
+    waveWindowEndsAt: now + 10_000,
+    generatedAt: now - 20_000,
+    eligibleTokenHashes: [],
+    objectiveIds: [],
+    objectiveSchemaHash: null,
+  };
+  const posts = [];
+  const contextValidators = [];
+  let loseFirstResponse = true;
+  let contextReads = 0;
+  context.mock.method(globalThis, 'fetch', async (input, init = {}) => {
+    const url = String(input);
+    if (url.endsWith('/context')) {
+      const validator = new Headers(init.headers).get('If-None-Match');
+      contextValidators.push(validator);
+      if (validator === '"context-v2"') return new Response(null, { status: 304 });
+      contextReads += 1;
+      const model = contextReads === 1
+        ? contextModel
+        : {
+            ...contextModel,
+            context: 'd'.repeat(64),
+            objectiveIds: ['quality', 'throughput'],
+            objectiveSchemaHash: 'e'.repeat(64),
+            generatedAt: contextModel.generatedAt + 1,
+          };
+      return new Response(JSON.stringify(model), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          etag: contextReads === 1 ? '"context-v1"' : '"context-v2"',
+        },
+      });
+    }
+    posts.push({
+      body: String(init.body),
+      timestamp: new Headers(init.headers).get('x-rsctf-timestamp'),
+    });
+    if (loseFirstResponse) {
+      loseFirstResponse = false;
+      throw new DOMException('response lost after commit', 'TimeoutError');
+    }
+    return new Response(JSON.stringify({ accepted: true }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  await assert.rejects(
+    kothApiObservation(701, 901, secret, [], {
+      deadlineMs: performance.now() + 5_000,
+    }),
+    /response lost after commit/,
+  );
+  const replay = await kothApiObservation(701, 901, secret, [], {
+    deadlineMs: performance.now() + 5_000,
+  });
+  assert.equal(replay.status, 200);
+  const next = await kothApiObservation(701, 901, secret, [], {
+    deadlineMs: performance.now() + 5_000,
+  });
+  assert.equal(next.status, 200);
+  assert.equal(posts.length, 3);
+  assert.equal(posts[1].body, posts[0].body, 'lost-response retry must retain the canonical body');
+  assert.notEqual(
+    posts[1].timestamp,
+    posts[0].timestamp,
+    'the exact body is signed with a fresh timestamp',
+  );
+  const firstIntent = JSON.parse(posts[0].body);
+  const nextIntent = JSON.parse(posts[2].body);
+  assert.equal(nextIntent.context, 'd'.repeat(64));
+  assert.equal(nextIntent.waves.length, 2);
+  assert.deepEqual(nextIntent.waves[0], firstIntent.waves[0]);
+  assert.equal(nextIntent.waves[1].waveId, 'load-17-01');
+  assert.deepEqual(contextValidators, [null, '"context-v1"', '"context-v2"']);
 });
 
 test('Leaderboard load evidence uses hashes and equivalent native score scales', () => {
@@ -163,6 +272,8 @@ test('Leaderboard load fixture requires a complete fenced context window', () =>
     waveWindowEndsAt: 180_000,
     generatedAt: 125_000,
     eligibleTokenHashes: ['b'.repeat(64), 'c'.repeat(64)],
+    objectiveIds: ['quality'],
+    objectiveSchemaHash: 'd'.repeat(64),
   };
   assert.equal(validateKothApiContext(context), context);
   assert.equal(
@@ -188,6 +299,8 @@ test('Leaderboard load fixture requires a complete fenced context window', () =>
     { ...context, scoringEndsAt: 180_000, waveWindowEndsAt: 180_002 },
     { ...context, waveWindowEndsAt: context.waveWindowStartsAt },
     { ...context, eligibleTokenHashes: ['b'.repeat(64), 'b'.repeat(64)] },
+    { ...context, objectiveIds: ['Not-Canonical'] },
+    { ...context, objectiveSchemaHash: null },
   ]) {
     assert.throws(() => validateKothApiContext(malformed), /context response is malformed/);
   }

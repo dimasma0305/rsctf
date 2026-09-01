@@ -17,6 +17,8 @@ pub(super) const PENDING_AD_SERVICES_SQL: &str = r#"SELECT result.team_service_i
         WHERE result.round_id = $1
           AND result.sla_credit IS NULL
           AND delivery.delivered = TRUE
+          AND OCTET_LENGTH(flag.flag) = 38
+          AND flag.flag ~ '^flag[{][A-Za-z0-9_-]{32}[}]$'
           AND (delivery.delivery_kind <> 'Managed'
                OR delivery.container_id IS NOT DISTINCT FROM service.container_id)"#;
 
@@ -118,14 +120,21 @@ pub(super) async fn check_services(
         return Ok(());
     }
     let service_ids: Vec<i32> = services.iter().map(|service| service.id).collect();
-    let flags: std::collections::HashMap<i32, String> = ad_flag::Entity::find()
-        .filter(ad_flag::Column::RoundId.eq(round_id))
-        .filter(ad_flag::Column::TeamServiceId.is_in(service_ids))
-        .all(db)
-        .await?
-        .into_iter()
-        .map(|flag| (flag.team_service_id, flag.flag))
-        .collect();
+    let flags: std::collections::HashMap<i32, String> = sqlx::query_as::<_, (i32, String)>(
+        r#"SELECT team_service_id, flag
+                 FROM "AdFlags"
+                WHERE round_id = $1
+                  AND team_service_id = ANY($2)
+                  AND OCTET_LENGTH(flag) = 38
+                  AND flag ~ '^flag[{][A-Za-z0-9_-]{32}[}]$'"#,
+    )
+    .bind(round_id)
+    .bind(&service_ids)
+    .fetch_all(db.get_postgres_connection_pool())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .into_iter()
+    .collect();
     let pending_receipts: Vec<FlagDeliveryReceipt> =
         sqlx::query_as::<_, (i32, chrono::DateTime<Utc>)>(PENDING_AD_SERVICES_SQL)
             .bind(round_id)

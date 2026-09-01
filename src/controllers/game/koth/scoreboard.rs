@@ -145,7 +145,11 @@ async fn koth_scoreboard_bundle(
         is_monitor,
     );
     let (st2, game2) = (st.clone(), game.clone());
-    cached_koth_bundle(st.cache.clone(), key.clone(), move || async move {
+    let ttl = super::super::scoreboard_encoding::final_or_live_cache_ttl(
+        !game.practice_mode && now >= game.end_time_utc,
+        KOTH_CACHE_TTL,
+    );
+    cached_koth_bundle(st.cache.clone(), key.clone(), ttl, move || async move {
         let model = build_koth_scoreboard(&st2, &game2, is_monitor, now)
             .await
             .ok()?;
@@ -162,6 +166,7 @@ async fn koth_scoreboard_bundle(
 async fn cached_koth_bundle<Build, BuildFuture>(
     cache: std::sync::Arc<dyn crate::services::cache::Cache>,
     key: String,
+    ttl: std::time::Duration,
     build: Build,
 ) -> AppResult<bytes::Bytes>
 where
@@ -189,7 +194,7 @@ where
             }
             let (bytes, cacheable) = build().await?;
             if cacheable {
-                cache2.set(&key2, &bytes, Some(KOTH_CACHE_TTL)).await;
+                cache2.set(&key2, &bytes, Some(ttl)).await;
             }
             Some(bytes)
         })
@@ -226,6 +231,9 @@ pub async fn scoreboard(
     let is_monitor = maybe.as_ref().is_some_and(|u| u.is_monitor());
     if !can_view_koth_standings(game.hidden, is_monitor) {
         return Err(AppError::not_found("Game not found"));
+    }
+    if Utc::now() < game.start_time_utc && !is_monitor {
+        return Err(AppError::game_not_started());
     }
     let bundle = koth_scoreboard_bundle(&st, &game, is_monitor).await?;
     let validator_scope = if is_monitor {
@@ -286,11 +294,16 @@ mod tests {
             let builds = builds.clone();
             let key = key.clone();
             async move {
-                cached_koth_bundle(cache, key, move || async move {
-                    builds.fetch_add(1, Ordering::SeqCst);
-                    tokio::task::yield_now().await;
-                    Some((bytes::Bytes::from_static(b"{\"version\":41}"), true))
-                })
+                cached_koth_bundle(
+                    cache,
+                    key,
+                    std::time::Duration::from_secs(30),
+                    move || async move {
+                        builds.fetch_add(1, Ordering::SeqCst);
+                        tokio::task::yield_now().await;
+                        Some((bytes::Bytes::from_static(b"{\"version\":41}"), true))
+                    },
+                )
                 .await
                 .unwrap()
             }
@@ -301,10 +314,15 @@ mod tests {
             .all(|response| response.as_ref() == b"{\"version\":41}"));
         assert_eq!(builds.load(Ordering::SeqCst), 1);
         let second_version_builds = builds.clone();
-        let cached = cached_koth_bundle(cache, key, move || async move {
-            second_version_builds.fetch_add(1, Ordering::SeqCst);
-            Some((bytes::Bytes::from_static(b"unexpected"), true))
-        })
+        let cached = cached_koth_bundle(
+            cache,
+            key,
+            std::time::Duration::from_secs(30),
+            move || async move {
+                second_version_builds.fetch_add(1, Ordering::SeqCst);
+                Some((bytes::Bytes::from_static(b"unexpected"), true))
+            },
+        )
         .await
         .unwrap();
         assert_eq!(cached.as_ref(), b"{\"version\":41}");

@@ -1,8 +1,8 @@
 //! Edit-facing A&D operator console.
 use crate::services::ad::koth_capability_cache::finish_game_epoch_mutation_if_any;
-use crate::services::container::storage_limit_or_default;
 use axum::extract::Query;
 use axum::response::IntoResponse;
+use base64::Engine as _;
 
 use super::*;
 
@@ -14,6 +14,44 @@ pub use inspector::*;
 pub use provision::*;
 pub(crate) use provision_recovery::*;
 pub use state::*;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DesiredStateDecision {
+    AlreadyCurrent,
+    Transition { next_revision: i64 },
+}
+
+fn decide_desired_state(
+    current: bool,
+    current_revision: i64,
+    desired: bool,
+    expected_revision: i64,
+    resource: &str,
+) -> AppResult<DesiredStateDecision> {
+    // A command observed at the current revision is an ordinary no-op when its
+    // desired value is already authoritative. A command observed at exactly
+    // the preceding revision is the one safe lost-response replay: one real
+    // boolean transition necessarily produced the current value and revision.
+    //
+    // Do not accept older matching values. After two or more transitions the
+    // same boolean can recur, but that does not make the old command a replay
+    // of the latest transition.
+    let exact_replay =
+        desired == current && expected_revision.checked_add(1) == Some(current_revision);
+    if desired == current && (expected_revision == current_revision || exact_replay) {
+        return Ok(DesiredStateDecision::AlreadyCurrent);
+    }
+    if expected_revision != current_revision {
+        return Err(AppError::conflict(format!(
+            "{resource} state changed; current revision is {current_revision}"
+        )));
+    }
+    let next_revision = current_revision
+        .checked_add(1)
+        .filter(|revision| *revision <= 9_007_199_254_740_991)
+        .ok_or_else(|| AppError::conflict(format!("{resource} control revision is exhausted")))?;
+    Ok(DesiredStateDecision::Transition { next_revision })
+}
 
 /// A&D admin — force round-advance result (`Api.ts` `AdAdvanceRoundResult`).
 #[derive(Debug, Serialize)]
@@ -60,25 +98,40 @@ pub async fn ad_advance_round(
     }))
 }
 
-/// `POST /api/edit/games/{id}/ad/ScoringPause` -> `{ scoringPaused: boolean }`.
-///
-/// Port of `AdAdminController.ToggleScoringPause`: flip `Game.AdScoringPaused`,
-/// stamping `AdScoringPausedAt` on pause. On resume, extend the current round by
-/// the paused duration so it doesn't instantly expire. Its start timestamp is
-/// immutable because official freeze/cutoff views use it as evidence identity.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdScoringDesiredState {
+    pub paused: bool,
+    pub revision: i64,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdScoringCommandResult {
+    pub scoring_paused: bool,
+    pub revision: i64,
+}
+
+/// Set the explicit scoring state under an optimistic revision fence. Replays of
+/// an already-applied intent are side-effect-free, so a lost response can never
+/// turn a retry into the opposite transition.
 pub async fn ad_scoring_pause(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path(game_id): Path<i32>,
-) -> AppResult<RequestResponse<JsonValue>> {
+    Json(command): Json<AdScoringDesiredState>,
+) -> AppResult<RequestResponse<AdScoringCommandResult>> {
     manager_or_admin(&st, &user, game_id).await?;
+    if command.revision < 1 {
+        return Err(AppError::bad_request("revision must be positive"));
+    }
     // Checker result persistence takes the same lock. A pass that committed first
     // stays committed; a pass already running when pause wins may still land in
     // the unchanged current round, and no new pass starts while paused.
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, game_id).await?;
     let tx = control.transaction_mut();
-    let (was_paused, paused_at): (bool, Option<DateTime<Utc>>) = sqlx::query_as(
-        r#"SELECT ad_scoring_paused, ad_scoring_paused_at
+    let (was_paused, paused_at, revision): (bool, Option<DateTime<Utc>>, i64) = sqlx::query_as(
+        r#"SELECT ad_scoring_paused, ad_scoring_paused_at, ad_control_revision
              FROM "Games" WHERE id = $1 FOR UPDATE"#,
     )
     .bind(game_id)
@@ -86,10 +139,29 @@ pub async fn ad_scoring_pause(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Game not found"))?;
-    let paused = !was_paused;
+    let decision = decide_desired_state(
+        was_paused,
+        revision,
+        command.paused,
+        command.revision,
+        "Scoring",
+    )?;
+    if decision == DesiredStateDecision::AlreadyCurrent {
+        control
+            .release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(RequestResponse::ok(AdScoringCommandResult {
+            scoring_paused: was_paused,
+            revision,
+        }));
+    }
+    let DesiredStateDecision::Transition { next_revision } = decision else {
+        unreachable!("already-current scoring command returned above")
+    };
 
     // Resuming: give the live round back the time it was frozen for.
-    if !paused {
+    if !command.paused {
         sqlx::query(
             r#"UPDATE "AdRounds" round
                   SET end_time_utc = round.end_time_utc
@@ -111,11 +183,14 @@ pub async fn ad_scoring_pause(
         r#"UPDATE "Games"
               SET ad_scoring_paused = $2,
                   ad_scoring_paused_at = CASE WHEN $2
-                    THEN clock_timestamp() ELSE NULL END
-            WHERE id = $1"#,
+                    THEN clock_timestamp() ELSE NULL END,
+                  ad_control_revision = $3
+            WHERE id = $1 AND ad_control_revision = $4"#,
     )
     .bind(game_id)
-    .bind(paused)
+    .bind(command.paused)
+    .bind(next_revision)
+    .bind(revision)
     .execute(&mut **tx)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -125,22 +200,38 @@ pub async fn ad_scoring_pause(
         .map_err(|error| AppError::internal(error.to_string()))?;
     flush_ad_scoreboard(&st, game_id).await;
 
-    Ok(RequestResponse::ok(json!({ "scoringPaused": paused })))
+    Ok(RequestResponse::ok(AdScoringCommandResult {
+        scoring_paused: command.paused,
+        revision: next_revision,
+    }))
 }
 
-/// `POST /api/edit/games/{id}/ad/Challenges/{challengeId}/Toggle` ->
-/// `{ isEnabled: boolean }`.
-///
-/// Port of `AdAdminController.ToggleChallenge`: flip the target challenge's
-/// `IsEnabled`. Gated on `UsesAdEngine()` so BOTH A&D and KotH challenges toggle
-/// (the KotH console's per-hill switch hits this same route); non-A&D/KotH
-/// challenges are rejected.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdChallengeDesiredState {
+    pub enabled: bool,
+    pub revision: i64,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdChallengeCommandResult {
+    pub is_enabled: bool,
+    pub revision: i64,
+}
+
+/// Set one A&D/KotH challenge's explicit enabled state. Only the winning
+/// revision performs teardown; exact replays return the authoritative result.
 pub async fn ad_toggle_challenge(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((game_id, challenge_id)): Path<(i32, i32)>,
-) -> AppResult<RequestResponse<JsonValue>> {
+    Json(command): Json<AdChallengeDesiredState>,
+) -> AppResult<RequestResponse<AdChallengeCommandResult>> {
     manager_or_admin(&st, &user, game_id).await?;
+    if command.revision < 1 {
+        return Err(AppError::bad_request("revision must be positive"));
+    }
     // Enabled-state transitions and their slow runtime cleanup are one ordered
     // operation across replicas. The outer transition must precede the game
     // control lock, matching the general challenge update/delete path.
@@ -149,41 +240,60 @@ pub async fn ad_toggle_challenge(
         challenge_id,
     )
     .await?;
-    let challenge = game_challenge::Entity::find()
-        .filter(game_challenge::Column::Id.eq(challenge_id))
-        .filter(game_challenge::Column::GameId.eq(game_id))
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Challenge not found"))?;
-    if !challenge.challenge_type.uses_ad_engine() {
-        return Err(AppError::bad_request("Not an A&D / KotH challenge"));
-    }
-
     let mut engine_control =
         Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, game_id).await?);
-    if ad_epoch_scoring_started_locked(
-        engine_control
-            .as_mut()
-            .expect("engine challenge holds the game control lock")
-            .transaction_mut(),
-        game_id,
-    )
-    .await?
-    {
-        return Err(AppError::bad_request(
-            "A&D/KotH challenge enabled state is locked after epoch scoring has started.",
-        ));
-    }
-    let challenge = game_challenge::Entity::find()
-        .filter(game_challenge::Column::Id.eq(challenge_id))
-        .filter(game_challenge::Column::GameId.eq(game_id))
-        .one(&st.db)
-        .await?
+    let tx = engine_control
+        .as_mut()
+        .expect("engine challenge holds the game control lock")
+        .transaction_mut();
+    let (challenge_type, is_enabled, revision, deletion_pending): (i16, bool, i64, bool) =
+        sqlx::query_as(
+            r#"SELECT "Type", is_enabled, ad_control_revision, deletion_pending
+                 FROM "GameChallenges"
+                WHERE id = $1 AND game_id = $2
+                FOR UPDATE"#,
+        )
+        .bind(challenge_id)
+        .bind(game_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
         .ok_or_else(|| AppError::not_found("Challenge not found"))?;
-    crate::controllers::edit::reject_pending_mutation(st.pg(), game_id, challenge_id).await?;
-
-    let is_enabled = !challenge.is_enabled;
-    let cache_mutation = if challenge.challenge_type == ChallengeType::KingOfTheHill {
+    if challenge_type != ChallengeType::AttackDefense as i16
+        && challenge_type != ChallengeType::KingOfTheHill as i16
+    {
+        return Err(AppError::bad_request("Not an A&D / KotH challenge"));
+    }
+    if deletion_pending {
+        return Err(AppError::conflict("Challenge is being deleted"));
+    }
+    let decision = decide_desired_state(
+        is_enabled,
+        revision,
+        command.enabled,
+        command.revision,
+        "Challenge",
+    )?;
+    if decision == DesiredStateDecision::AlreadyCurrent {
+        engine_control
+            .take()
+            .expect("engine control lock exists")
+            .release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        runtime_transition
+            .release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(RequestResponse::ok(AdChallengeCommandResult {
+            is_enabled,
+            revision,
+        }));
+    }
+    let DesiredStateDecision::Transition { next_revision } = decision else {
+        unreachable!("already-current challenge command returned above")
+    };
+    let cache_mutation = if challenge_type == ChallengeType::KingOfTheHill as i16 {
         Some(
             crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
                 st.cache.as_ref(),
@@ -194,39 +304,63 @@ pub async fn ad_toggle_challenge(
     } else {
         None
     };
-    let toggled = sqlx::query(
+    let toggled = match sqlx::query(
         r#"UPDATE "GameChallenges"
-              SET is_enabled = $3
+              SET is_enabled = $3, ad_control_revision = $4
             WHERE id = $1 AND game_id = $2
-              AND deletion_pending = FALSE"#,
+              AND deletion_pending = FALSE AND ad_control_revision = $5"#,
     )
     .bind(challenge_id)
     .bind(game_id)
-    .bind(is_enabled)
-    .execute(st.pg())
+    .bind(command.enabled)
+    .bind(next_revision)
+    .bind(revision)
+    .execute(&mut **tx)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .rows_affected();
+    {
+        Ok(result) => result.rows_affected(),
+        Err(error) => {
+            finish_game_epoch_mutation_if_any(st.cache.as_ref(), game_id, cache_mutation).await;
+            return Err(AppError::internal(error.to_string()));
+        }
+    };
     if toggled != 1 {
         finish_game_epoch_mutation_if_any(st.cache.as_ref(), game_id, cache_mutation).await;
         return Err(AppError::conflict("Challenge is being deleted"));
     }
-    // Eligibility committed on the standalone write. Publish its new epoch
-    // before best-effort projection cleanup or the read-only game lock release.
-    finish_game_epoch_mutation_if_any(st.cache.as_ref(), game_id, cache_mutation).await;
-    if !is_enabled && challenge.challenge_type == ChallengeType::KingOfTheHill {
-        crate::services::ad_engine::clear_challenge_control(&st.db, game_id, challenge_id).await?;
+    if !command.enabled && challenge_type == ChallengeType::KingOfTheHill as i16 {
+        if let Err(error) = sqlx::query(
+            r#"UPDATE "KothTargets"
+                  SET holder_participation_id = NULL, held_since = NULL
+                WHERE game_id = $1 AND challenge_id = $2"#,
+        )
+        .bind(game_id)
+        .bind(challenge_id)
+        .execute(&mut **tx)
+        .await
+        {
+            finish_game_epoch_mutation_if_any(st.cache.as_ref(), game_id, cache_mutation).await;
+            return Err(AppError::internal(error.to_string()));
+        }
     }
     if let Some(lock) = engine_control {
         lock.release()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
     }
+    // Commit acknowledgement is the publication point. An uncertain commit
+    // deliberately leaves the marker fail-closed; known rollback paths above
+    // restore the epoch immediately.
+    finish_game_epoch_mutation_if_any(st.cache.as_ref(), game_id, cache_mutation).await;
     // Both A&D and KotH challenge membership feeds the shared epoch surfaces.
     // Flush after either engine-backed toggle so KotH eligibility and board
     // caches do not wait for their TTL on the writer replica.
     flush_ad_scoreboard(&st, game_id).await;
-    if !is_enabled {
+    let challenge = game_challenge::Entity::find_by_id(challenge_id)
+        .one(&st.db)
+        .await?
+        .ok_or_else(|| AppError::not_found("Challenge not found"))?;
+    if !command.enabled {
         st.byoc.disconnect_challenge(&st.db, challenge_id).await?;
         let _ =
             crate::controllers::edit::destroy_challenge_containers(&st, &challenge, true, false)
@@ -237,8 +371,74 @@ pub async fn ad_toggle_challenge(
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    if command.enabled {
+        // Enabling changes the desired topology. Admission is event-scoped and
+        // coalesces with the scheduler/manual ensure owner before any grid scan.
+        request_ad_reconcile_job(&st, game_id, true, true).await?;
+    }
 
-    Ok(RequestResponse::ok(json!({ "isEnabled": is_enabled })))
+    Ok(RequestResponse::ok(AdChallengeCommandResult {
+        is_enabled: command.enabled,
+        revision: next_revision,
+    }))
+}
+
+#[cfg(test)]
+mod desired_state_tests {
+    use super::{decide_desired_state, DesiredStateDecision};
+
+    #[test]
+    fn exact_replay_is_a_noop_even_after_revision_advanced() {
+        assert_eq!(
+            decide_desired_state(true, 8, true, 7, "resource").unwrap(),
+            DesiredStateDecision::AlreadyCurrent
+        );
+    }
+
+    #[test]
+    fn current_state_noop_requires_the_current_revision() {
+        assert_eq!(
+            decide_desired_state(true, 8, true, 8, "resource").unwrap(),
+            DesiredStateDecision::AlreadyCurrent
+        );
+    }
+
+    #[test]
+    fn matching_value_from_an_older_generation_is_not_a_replay() {
+        let error = decide_desired_state(true, 10, true, 7, "resource").unwrap_err();
+        assert_eq!(error.status(), axum::http::StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn future_revision_is_rejected_even_when_the_value_matches() {
+        let error = decide_desired_state(true, 8, true, 9, "resource").unwrap_err();
+        assert_eq!(error.status(), axum::http::StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn stale_opposite_intent_is_rejected() {
+        assert!(decide_desired_state(true, 8, false, 7, "resource").is_err());
+    }
+
+    #[test]
+    fn matching_revision_advances_once() {
+        assert_eq!(
+            decide_desired_state(false, 8, true, 8, "resource").unwrap(),
+            DesiredStateDecision::Transition { next_revision: 9 }
+        );
+    }
+
+    #[test]
+    fn javascript_safe_revision_limit_is_enforced() {
+        assert!(decide_desired_state(
+            false,
+            9_007_199_254_740_991,
+            true,
+            9_007_199_254_740_991,
+            "resource"
+        )
+        .is_err());
+    }
 }
 
 /// Body of `POST .../Checks/{checkId}/Override` (`Api.ts` `AdOverrideCheckModel`).
@@ -349,10 +549,10 @@ pub async fn ad_override_check(
 /// `GET /api/edit/games/{id}/ad/Services/{adTeamServiceId}/File` ->
 /// `AdFileViewModel`.
 ///
-/// Port of `AdAdminController.File`: inspect one file inside a team's service
-/// container. rsctf reads the CURRENT content by exec-ing `cat <path>` in the
-/// live container (best-effort: empty when the service has no platform
-/// container). The image `baseline` + `unifiedDiff` need an offline image read
+/// Inspect one file inside a team's service container through the runtime's
+/// bounded archive API. This deliberately never launches a participant-owned
+/// process, so FIFOs and devices cannot strand an exec after cancellation. The
+/// image `baseline` + `unifiedDiff` need an offline image read
 /// rsctf doesn't have, so they stay null (the UI then shows current only). BYOC
 /// self-hosted services expose only a relay, not the team's box — return empty
 /// rather than leak relay internals (RSCTF refuses outright).
@@ -363,41 +563,29 @@ pub async fn ad_service_file(
     Query(q): Query<AdFileQuery>,
 ) -> AppResult<RequestResponse<JsonValue>> {
     manager_or_admin(&st, &user, game_id).await?;
-    if q.path.trim().is_empty() {
-        return Err(AppError::bad_request("A file path is required"));
-    }
-    let svc = ad_team_service::Entity::find_by_id(ats_id)
-        .one(&st.db)
-        .await?
-        .filter(|s| s.game_id == game_id)
-        .ok_or_else(|| AppError::not_found("Service not found"))?;
-
-    let self_hosted = game_challenge::Entity::find_by_id(svc.challenge_id)
-        .one(&st.db)
-        .await?
-        .map(|c| c.ad_self_hosted)
-        .unwrap_or(false);
+    crate::services::ad::forensics::validate_path(&q.path)?;
+    let svc = live_forensics_service(&st, game_id, ats_id).await?;
 
     let container_running = svc.container_id.is_some();
-    let current: JsonValue = match svc.container_id.as_deref().filter(|c| !c.is_empty()) {
-        Some(cid) if !self_hosted => {
-            match st
-                .containers
-                .exec(cid, vec!["cat".into(), q.path.clone()])
-                .await
-            {
-                Ok(text) if !text.is_empty() => json!({
-                    "size": text.len(),
-                    "truncated": false,
-                    // exec surfaces stdout+stderr as a lossy String, so we always
-                    // present the current side as text (the base64 path is only
-                    // reachable with raw bytes, which this backend can't yield).
-                    "binary": false,
-                    "text": text,
-                    "base64": null,
-                }),
-                _ => JsonValue::Null,
-            }
+    let current = match svc.container_id.as_deref() {
+        Some(cid) if !svc.self_hosted => {
+            let _permit = crate::services::ad::forensics::acquire(
+                st.pg(),
+                cid,
+                crate::services::ad::forensics::ForensicsWork::File,
+            )
+            .await?;
+            let file = tokio::time::timeout(
+                crate::services::ad::forensics::FILE_DEADLINE,
+                st.containers.read_file(
+                    cid,
+                    &q.path,
+                    crate::services::ad::forensics::MAX_FILE_PREVIEW_BYTES,
+                ),
+            )
+            .await
+            .map_err(|_| crate::services::ad::forensics::timeout_error("file read"))??;
+            file_preview_json(file)
         }
         _ => JsonValue::Null,
     };
@@ -415,6 +603,56 @@ pub async fn ad_service_file(
 #[derive(Debug, Deserialize)]
 pub struct AdFileQuery {
     pub path: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct LiveForensicsService {
+    container_id: Option<String>,
+    self_hosted: bool,
+}
+
+async fn live_forensics_service(
+    st: &SharedState,
+    game_id: i32,
+    ats_id: i32,
+) -> AppResult<LiveForensicsService> {
+    sqlx::query_as(
+        r#"SELECT NULLIF(service.container_id, '') AS container_id,
+                  challenge.ad_self_hosted AS self_hosted
+             FROM "AdTeamServices" service
+             JOIN "GameChallenges" challenge
+               ON challenge.id = service.challenge_id
+              AND challenge.game_id = service.game_id
+            WHERE service.id = $1 AND service.game_id = $2"#,
+    )
+    .bind(ats_id)
+    .bind(game_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Service not found"))
+}
+
+fn file_preview_json(file: crate::services::container::ContainerFile) -> JsonValue {
+    let (text, binary_bytes) = match String::from_utf8(file.bytes) {
+        Ok(text)
+            if text.chars().all(|character| {
+                !character.is_control() || matches!(character, '\n' | '\r' | '\t')
+            }) =>
+        {
+            (Some(text), None)
+        }
+        Ok(text) => (None, Some(text.into_bytes())),
+        Err(error) => (None, Some(error.into_bytes())),
+    };
+    let binary = binary_bytes.is_some();
+    json!({
+        "size": file.size,
+        "truncated": file.truncated,
+        "binary": binary,
+        "text": text,
+        "base64": binary_bytes.map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
+    })
 }
 
 /// `POST /api/edit/games/{id}/ad/Services/{adTeamServiceId}/Restart` -> void.
@@ -436,166 +674,38 @@ pub async fn ad_restart_service(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((game_id, ats_id)): Path<(i32, i32)>,
-) -> AppResult<MessageResponse> {
+    headers: axum::http::HeaderMap,
+) -> AppResult<(
+    axum::http::StatusCode,
+    RequestResponse<crate::services::control_jobs::ControlJobModel>,
+)> {
     manager_or_admin(&st, &user, game_id).await?;
-    let initial = ad_team_service::Entity::find_by_id(ats_id)
+    let service = ad_team_service::Entity::find_by_id(ats_id)
         .one(&st.db)
         .await?
-        .filter(|s| s.game_id == game_id)
+        .filter(|service| service.game_id == game_id)
         .ok_or_else(|| AppError::not_found("Service not found"))?;
-    let lock_key = format!(
-        "ad-service:{}:{}",
-        initial.participation_id, initial.challenge_id
-    );
-    let _local = crate::utils::single_flight::coalesce(&lock_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &lock_key)
-            .await?;
-    let svc = ad_team_service::Entity::find_by_id(ats_id)
-        .one(&st.db)
-        .await?
-        .filter(|s| s.game_id == game_id)
-        .ok_or_else(|| AppError::not_found("Service not found"))?;
-
-    let challenge = game_challenge::Entity::find_by_id(svc.challenge_id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Challenge not found"))?;
-    if challenge.ad_self_hosted {
-        return Err(AppError::bad_request(
-            "Self-hosted (BYOC) services cannot be restarted from the platform",
-        ));
-    }
-
-    let game = game::Entity::find_by_id(game_id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Game not found"))?;
-    if !game.is_active(Utc::now()) {
-        return Err(AppError::bad_request(
-            "Service restart is only available while the game is running",
-        ));
-    }
-    let image = crate::services::challenge_images::runtime_image(&st, &challenge)?;
-    let part = participation::Entity::find_by_id(svc.participation_id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Participation not found"))?;
-
-    // Fence checker persistence before changing endpoint identity. A pending
-    // current sample becomes explicit zero-credit reset downtime, while a verdict
-    // that already committed remains untouched.
-    let replacement = crate::services::ad_engine::prepare_service_reset(
-        &st.db,
+    let operation_id = super::control_jobs::operation_id(&headers)?;
+    let input = serde_json::json!({
+        "serviceId": service.id,
+        "participationId": service.participation_id,
+        "expectedBackendId": service.container_id,
+        "playerPolicy": false,
+    });
+    let fingerprint = super::control_jobs::fingerprint(&input)?;
+    let job = crate::services::control_jobs::enqueue(
+        st.pg(),
+        crate::services::control_jobs::ControlJobKind::AdReset,
+        &format!("ad-service:{}", service.id),
         game_id,
-        svc.id,
-        "administrator restart before checker completion",
+        Some(service.challenge_id),
+        operation_id,
+        &fingerprint,
+        input,
     )
     .await?;
-    // Revoke the endpoint before teardown so Docker cannot reuse its address while
-    // the old game policy still authorizes it.
-    crate::services::ad_vpn::deactivate_team_service(&st.db, svc.id).await?;
-    // Keep the persisted backend identity retryable until capture is fenced and
-    // the runtime confirms destruction.
-    if let Some(cid) = &replacement.retired_container_id {
-        crate::services::traffic::destroy_container_after_capture_fence(&st, cid).await?;
-    }
-
-    let prepared_round_id = replacement.prepared_round_id;
-    let flag = replacement.current_flag.unwrap_or_else(|| {
-        let salt = crate::utils::flag_generator::team_hash_salt(&game.private_key);
-        let team_hash =
-            crate::utils::flag_generator::team_challenge_hash(&salt, challenge.id, &part.token);
-        crate::utils::flag_generator::generate_flag(challenge.flag_template.as_deref(), &team_hash)
-    });
-
-    let info = match st
-        .containers
-        .create(ContainerSpec::ad_service(
-            image,
-            ContainerResourceLimits {
-                memory_limit: challenge.memory_limit.unwrap_or(256),
-                cpu_count: challenge.cpu_count.unwrap_or(1),
-                storage_limit: storage_limit_or_default(challenge.storage_limit),
-            },
-            challenge.expose_port.unwrap_or(80),
-            part.team_id,
-            challenge.ad_allow_egress,
-            flag,
-        ))
-        .await
-    {
-        Ok(i) => i,
-        Err(_) => {
-            return Err(AppError::bad_request("Restart failed; check logs"));
-        }
-    };
-
-    let backend_id = info.id.clone();
-    let retained = crate::services::ad::service_lifecycle::retain_created_backend_identity(
-        st.pg(),
-        game_id,
-        svc.participation_id,
-        svc.challenge_id,
-        &backend_id,
-    )
-    .await;
-    if let Err(error) = retained {
-        if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
-            tracing::error!(%backend_id, %destroy_error,
-                "failed to destroy replacement whose retry identity could not be retained");
-        }
-        return Err(error);
-    }
-    if !retained.expect("retention error returned above") {
-        st.containers.destroy(&backend_id).await?;
-        return Err(AppError::conflict(
-            "Service ownership disappeared while the replacement was launching",
-        ));
-    }
-    let published = match crate::services::ad_engine::publish_service_reset(
-        &st.db,
-        game_id,
-        svc.id,
-        &info.ip,
-        info.port,
-        &info.id,
-        prepared_round_id,
-        true,
-    )
-    .await
-    {
-        Ok(published) => published,
-        Err(error) => {
-            crate::services::ad::service_lifecycle::rollback_created_backend(
-                &st,
-                svc.participation_id,
-                svc.challenge_id,
-                &backend_id,
-            )
-            .await?;
-            return Err(error);
-        }
-    };
-    if !published {
-        crate::services::ad::service_lifecycle::rollback_created_backend(
-            &st,
-            svc.participation_id,
-            svc.challenge_id,
-            &backend_id,
-        )
-        .await?;
-        return Err(AppError::conflict(
-            "Service eligibility changed while the replacement was launching",
-        ));
-    }
-
-    distributed.release().await?;
-    if challenge.enable_traffic_capture {
-        crate::services::traffic::start_container_capture(&st, &backend_id).await?;
-    }
-    crate::services::ad_vpn::reconcile_for_deployment(&st.db).await?;
-    Ok(MessageResponse::ok(""))
+    crate::services::control_jobs::kick(st);
+    Ok((axum::http::StatusCode::ACCEPTED, RequestResponse::ok(job)))
 }
 
 /// `GET /api/edit/games/{id}/ad/Services/{adTeamServiceId}/Snapshot` — admin
@@ -610,6 +720,7 @@ pub async fn ad_restart_service(
 pub async fn ad_download_snapshot(
     State(st): State<SharedState>,
     user: CurrentUser,
+    headers: axum::http::HeaderMap,
     Path((game_id, ats_id)): Path<(i32, i32)>,
 ) -> AppResult<Response> {
     manager_or_admin(&st, &user, game_id).await?;
@@ -629,35 +740,92 @@ pub async fn ad_download_snapshot(
         ));
     }
 
-    let persisted = crate::services::blob_refs::load_service_snapshot(st.pg(), svc.id).await?;
-    let (archive, filename) = if let Some(snapshot) = persisted {
-        let archive = st
-            .storage
-            .load_bounded(
-                &snapshot.hash,
-                crate::services::ad::snapshots::MAX_STORED_SNAPSHOT_BYTES,
-            )
-            .await?;
-        (archive, snapshot.name)
-    } else {
-        let Some(cid) = svc.container_id.as_deref().filter(|c| !c.is_empty()) else {
-            return Err(AppError::not_found(
-                "Snapshot not available for this service",
-            ));
+    if let Some(snapshot) =
+        crate::services::blob_refs::load_service_snapshot(st.pg(), svc.id).await?
+    {
+        let grant = crate::controllers::game::ad::snapshot_download::SnapshotResponseGrant {
+            team_service_id: svc.id,
+            snapshot_id: snapshot.id,
+            hash: snapshot.hash,
+            filename: snapshot.name,
+            file_size: snapshot.file_size,
         };
-        let archive =
-            crate::services::ad::snapshots::export_archive(st.containers.as_ref(), cid).await?;
-        let filename =
-            crate::services::ad::snapshots::archive_name(svc.participation_id, svc.challenge_id);
-        (archive, filename)
+        let prepared =
+            match crate::controllers::game::ad::snapshot_download::prepare_snapshot_stream(
+                &st, &headers, &grant,
+            )
+            .await?
+            {
+                crate::controllers::game::ad::snapshot_download::SnapshotPreparation::Ready(
+                    prepared,
+                ) => prepared,
+                crate::controllers::game::ad::snapshot_download::SnapshotPreparation::Response(
+                    response,
+                ) => return Ok(response),
+            };
+        // Storage may be slow. Revalidate both operator authority and the exact
+        // retained relation after opening the immutable stream.
+        manager_or_admin(&st, &user, game_id).await?;
+        let current = crate::services::blob_refs::load_service_snapshot(st.pg(), svc.id).await?;
+        let service_available: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                   SELECT 1
+                     FROM "AdTeamServices" service
+                     JOIN "GameChallenges" challenge
+                       ON challenge.id = service.challenge_id
+                      AND challenge.game_id = service.game_id
+                    WHERE service.id = $1
+                      AND service.game_id = $2
+                      AND challenge.ad_self_hosted = FALSE
+                      AND challenge.deletion_pending = FALSE
+               )"#,
+        )
+        .bind(svc.id)
+        .bind(game_id)
+        .fetch_one(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if !service_available
+            || current.as_ref().is_none_or(|current| {
+                current.id != grant.snapshot_id
+                    || current.hash != grant.hash
+                    || current.name != grant.filename
+                    || current.file_size != grant.file_size
+            })
+        {
+            return Err(AppError::not_found("Snapshot is no longer available"));
+        }
+        return prepared.into_response(&grant.filename);
+    }
+
+    let Some(cid) = svc.container_id.as_deref().filter(|c| !c.is_empty()) else {
+        return Err(AppError::not_found(
+            "Snapshot not available for this service",
+        ));
     };
+    let permit = match st
+        .bulk_export_admission
+        .try_acquire(
+            std::sync::Arc::clone(&st.cache),
+            crate::services::ad::snapshots::MAX_STORED_SNAPSHOT_BYTES,
+        )
+        .await
+    {
+        Ok(permit) => std::sync::Arc::new(permit),
+        Err(_) => return Ok(crate::services::bulk_export::overload_response()),
+    };
+    let archive =
+        crate::services::ad::snapshots::export_archive(st.containers.as_ref(), cid).await?;
+    let filename =
+        crate::services::ad::snapshots::archive_name(svc.participation_id, svc.challenge_id);
+    let archive_len = archive.len();
     Ok((
         [
             (
                 header::CONTENT_TYPE,
                 crate::services::ad::snapshots::SNAPSHOT_CONTENT_TYPE.to_string(),
             ),
-            (header::CONTENT_LENGTH, archive.len().to_string()),
+            (header::CONTENT_LENGTH, archive_len.to_string()),
             (header::CACHE_CONTROL, "private, no-store".to_string()),
             (header::PRAGMA, "no-cache".to_string()),
             (
@@ -665,7 +833,7 @@ pub async fn ad_download_snapshot(
                 format!("attachment; filename=\"{filename}\""),
             ),
         ],
-        archive,
+        crate::services::bulk_export::permitted_bytes_body(archive, permit),
     )
         .into_response())
 }
@@ -680,21 +848,17 @@ pub async fn ad_snapshot_changes(
     manager_or_admin(&st, &user, game_id).await?;
     let changes = snapshot_changes_for(&st, game_id, ats_id).await?;
     let persisted = crate::services::blob_refs::load_service_snapshot(st.pg(), ats_id).await?;
-    let live: bool = sqlx::query_scalar(
-        r#"SELECT container_id IS NOT NULL
-             FROM "AdTeamServices"
-            WHERE id = $1 AND game_id = $2"#,
-    )
-    .bind(ats_id)
-    .bind(game_id)
-    .fetch_optional(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("Service not found"))?;
+    let live_service = live_forensics_service(&st, game_id, ats_id).await?;
+    let live = live_service.container_id.is_some() && !live_service.self_hosted;
     Ok(RequestResponse::ok(json!({
-        "snapshotAvailable": persisted.is_some() || !changes.is_empty(),
+        "snapshotAvailable": persisted.is_some() || changes.observed > 0,
         "live": live,
-        "changes": changes.iter().map(|c| json!({"path": c.path, "kind": c.kind})).collect::<Vec<_>>(),
+        "changes": changes.changes.iter().map(|c| json!({
+            "path": c.path,
+            "kind": change_kind_number(&c.kind),
+        })).collect::<Vec<_>>(),
+        "observedChanges": changes.observed,
+        "truncated": changes.truncated,
     })))
 }
 
@@ -707,15 +871,17 @@ pub async fn ad_snapshot_diff(
 ) -> AppResult<RequestResponse<JsonValue>> {
     manager_or_admin(&st, &user, game_id).await?;
     let changes = snapshot_changes_for(&st, game_id, ats_id).await?;
-    let added: Vec<String> = changes
+    let added: Vec<JsonValue> = changes
+        .changes
         .iter()
         .filter(|c| c.kind == "Added")
-        .map(|c| c.path.clone())
+        .map(|c| json!({ "path": c.path, "kind": 1 }))
         .collect();
-    let removed: Vec<String> = changes
+    let removed: Vec<JsonValue> = changes
+        .changes
         .iter()
         .filter(|c| c.kind == "Deleted")
-        .map(|c| c.path.clone())
+        .map(|c| json!({ "path": c.path, "kind": 2 }))
         .collect();
     Ok(RequestResponse::ok(
         json!({ "added": added, "removed": removed }),
@@ -731,12 +897,14 @@ pub async fn ad_service_snapshots(
 ) -> AppResult<RequestResponse<Vec<JsonValue>>> {
     manager_or_admin(&st, &user, game_id).await?;
     let changes = snapshot_changes_for(&st, game_id, ats_id).await?;
-    if changes.is_empty() {
+    if changes.changes.is_empty() {
         return Ok(RequestResponse::ok(Vec::new()));
     }
     Ok(RequestResponse::ok(vec![json!({
         "id": ats_id,
-        "changeCount": changes.len(),
+        "changeCount": changes.changes.len(),
+        "observedChangeCount": changes.observed,
+        "truncated": changes.truncated,
         "kind": "live",
     })]))
 }
@@ -747,16 +915,43 @@ async fn snapshot_changes_for(
     st: &SharedState,
     game_id: i32,
     ats_id: i32,
-) -> AppResult<Vec<crate::services::container::FileChange>> {
-    let svc = crate::models::data::ad_team_service::Entity::find()
-        .filter(crate::models::data::ad_team_service::Column::Id.eq(ats_id))
-        .filter(crate::models::data::ad_team_service::Column::GameId.eq(game_id))
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Service not found"))?;
-    match svc.container_id {
-        Some(cid) => st.containers.snapshot_changes(&cid).await,
-        None => Ok(Vec::new()),
+) -> AppResult<std::sync::Arc<crate::services::ad::forensics::BoundedChanges>> {
+    let svc = live_forensics_service(st, game_id, ats_id).await?;
+    if svc.self_hosted {
+        return Ok(std::sync::Arc::new(
+            crate::services::ad::forensics::bound_changes(Vec::new()),
+        ));
+    }
+    let Some(cid) = svc.container_id else {
+        return Ok(std::sync::Arc::new(
+            crate::services::ad::forensics::bound_changes(Vec::new()),
+        ));
+    };
+    if let Some(cached) = crate::services::ad::forensics::cached_changes(&cid) {
+        return Ok(cached);
+    }
+    let _permit = crate::services::ad::forensics::acquire(
+        st.pg(),
+        &cid,
+        crate::services::ad::forensics::ForensicsWork::Changes,
+    )
+    .await?;
+    let changes = tokio::time::timeout(
+        crate::services::ad::forensics::CHANGE_DEADLINE,
+        st.containers.snapshot_changes(&cid),
+    )
+    .await
+    .map_err(|_| crate::services::ad::forensics::timeout_error("change scan"))??;
+    let bounded = std::sync::Arc::new(crate::services::ad::forensics::bound_changes(changes));
+    crate::services::ad::forensics::cache_changes(&cid, std::sync::Arc::clone(&bounded));
+    Ok(bounded)
+}
+
+fn change_kind_number(kind: &str) -> i32 {
+    match kind {
+        "Added" => 1,
+        "Deleted" => 2,
+        _ => 0,
     }
 }
 

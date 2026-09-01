@@ -14,9 +14,10 @@ pub(super) async fn assert_submission_evidence_fence(
     team_id: i32,
     participation_id: i32,
 ) -> i32 {
-    // The import starts pre-work while a submit-side shared lock is held. A
-    // wrong attempt committed before the exclusive importer proceeds is enough
-    // to make the old grading policy durable, even before game start.
+    // The import starts pre-work while a submit-side shared lock is held. The
+    // bounded game-control admission must fail closed instead of retaining a
+    // pooled connection behind that fence. A retry after the wrong attempt
+    // commits must then observe the durable grading evidence.
     let race_dir = root
         .join("repos")
         .join(binding_id.to_string())
@@ -63,15 +64,18 @@ pub(super) async fn assert_submission_evidence_fence(
         .unwrap();
     let task_state = state.clone();
     let task_manifest = manifest.clone();
-    let mut import_task =
+    let import_task =
         tokio::spawn(
             async move { import_with_game_lock(&task_state, game_id, &task_manifest).await },
         );
-    assert!(
-        tokio::time::timeout(Duration::from_millis(150), &mut import_task)
-            .await
-            .is_err()
-    );
+    let blocked = tokio::time::timeout(Duration::from_secs(2), import_task)
+        .await
+        .expect("contended import must fail without waiting on the database fence")
+        .unwrap();
+    assert!(matches!(
+        blocked,
+        Err(AppError::RetryableUnavailable { .. })
+    ));
     submission::ActiveModel {
         answer: Set("wrong attempt".to_string()),
         status: Set(AnswerResult::WrongAnswer),
@@ -87,7 +91,9 @@ pub(super) async fn assert_submission_evidence_fence(
     .await
     .unwrap();
     submit_fence.commit().await.unwrap();
-    let result = import_task.await.unwrap().unwrap();
+    let result = import_with_game_lock(state, game_id, &manifest)
+        .await
+        .unwrap();
     assert!(result.grading_update_deferred);
     assert_eq!(
         sqlx::query_scalar::<_, i32>(
@@ -513,7 +519,7 @@ pub(super) async fn assert_binding_update_and_delete_fences(
             binding_id,
             crate::controllers::admin::RepoBindingUpdateModel {
                 r#ref: Some("release/latest".to_string()),
-                interval_seconds: Some(17),
+                interval_seconds: Some(60),
                 status: Some("Paused".to_string()),
                 github_token: Some("new-token".to_string()),
                 push_on_edit: Some(true),
@@ -527,14 +533,16 @@ pub(super) async fn assert_binding_update_and_delete_fences(
             .is_err()
     );
     let scan_time = Utc::now();
-    crate::controllers::admin::record_scan_completion(
-        state,
-        binding_id,
-        scan_time,
-        Some("scan-commit".to_string()),
-        "scan complete".to_string(),
-        scan_time + chrono::Duration::seconds(60),
+    sqlx::query(
+        r#"UPDATE "RepoBindings"
+              SET last_scan_utc = $2, last_commit_sha = 'scan-commit',
+                  last_scan_message = 'scan complete', next_scan_utc = $3
+            WHERE id = $1"#,
     )
+    .bind(binding_id)
+    .bind(scan_time)
+    .bind(scan_time + chrono::Duration::seconds(60))
+    .execute(state.pg())
     .await
     .unwrap();
     drop(scan_fence);

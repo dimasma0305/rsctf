@@ -2,10 +2,10 @@ import { Button, Stack, Text, TextInput } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AccessibleModal, AccessibleModalProps } from '@Components/AccessibleModal'
-import { encryptApiData } from '@Utils/Crypto'
+import { collectEncryptedFingerprintIdentity } from '@Utils/FingerprintIdentity'
 import { showErrorMsg } from '@Utils/Shared'
 import { isValidTeamInviteCode } from '@Utils/TeamInvite'
 import { settleTeamJoinAttempt } from '@Utils/TeamJoinFlow'
@@ -30,10 +30,14 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
   ...modalProps
 }) => {
   const [joining, setJoining] = useState(false)
+  const joinOperationRef = useRef<AbortController | null>(null)
   const { t } = useTranslation()
   const validCode = isValidTeamInviteCode(code)
 
+  useEffect(() => () => joinOperationRef.current?.abort(), [])
+
   const onJoinTeam = async () => {
+    if (joinOperationRef.current) return
     if (!validCode) {
       showNotification({
         color: 'red',
@@ -44,26 +48,18 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
       return
     }
 
+    const controller = new AbortController()
+    joinOperationRef.current = controller
     setJoining(true)
     try {
       await settleTeamJoinAttempt({
         accept: async () => {
           const identity = enableBrowserFingerprint
             ? await (async () => {
-                const challengeResponse = await api.account.accountFingerprintChallenge()
-                const challenge = challengeResponse.data.data
-                if (!challenge?.nonce || !challenge.requiredSignals) {
-                  throw new Error('Invalid fingerprint challenge')
-                }
-                const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
-                const payload = await getFingerprintPayload({
-                  nonce: challenge.nonce,
-                  requiredSignals: challenge.requiredSignals,
-                })
+                const payload = await collectEncryptedFingerprintIdentity(t, apiPublicKey, controller.signal)
                 return {
                   code,
-                  fingerprint: await encryptApiData(t, payload.fingerprint, apiPublicKey),
-                  fingerprintProof: await encryptApiData(t, payload.proof, apiPublicKey),
+                  ...payload,
                 }
               })()
             : { code }
@@ -81,9 +77,12 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
           onCodeChange('')
           modalProps.onClose()
         },
-        onRejected: (error) => showErrorMsg(error, t),
+        onRejected: (error) => {
+          if (!controller.signal.aborted) showErrorMsg(error, t)
+        },
       })
     } finally {
+      if (joinOperationRef.current === controller) joinOperationRef.current = null
       setJoining(false)
     }
   }

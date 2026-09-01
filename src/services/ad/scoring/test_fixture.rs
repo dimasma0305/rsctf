@@ -151,7 +151,9 @@ async fn seed_complete_epoch(pool: &sqlx::PgPool) {
         )
         SELECT 901000 + round.number * 10 + service.ordinal,
                round.id, service.id,
-               'flag{' || round.number || '-' || service.ordinal || '}',
+               'flag{' || LPAD(
+                 (round.number * 10 + service.ordinal)::TEXT, 32, '0'
+               ) || '}',
                round.start_time_utc, TRUE, 1.0
           FROM "AdRounds" round
           CROSS JOIN (VALUES (900041, 1), (900042, 2)) service(id, ordinal)

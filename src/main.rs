@@ -2,6 +2,7 @@
 //! composition root (`AppState`), runs migrations, and serves the API.
 
 mod cli;
+mod startup_policy;
 
 // argon2 (password hashing) is memory-hard — ~19 MiB per hash. glibc malloc keeps those
 // large freed chunks in its arenas instead of returning them to the OS, so a register/
@@ -23,6 +24,10 @@ use rsctf::server;
 use rsctf::services::cache::{Cache, InMemoryCache, RedisCache, TieredCache};
 use rsctf::services::event_bus::EventBus;
 use rsctf::services::token::TokenService;
+use startup_policy::{
+    owns_feed_reconciliation, owns_mail_reconciliation, owns_suspicion_reconciliation,
+    should_run_migrations,
+};
 
 const HTTP_DEREGISTRATION_DELAY: Duration = Duration::from_secs(5);
 const HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(25);
@@ -582,6 +587,13 @@ fn start_background_services(
     use rsctf::services::cron::{self, RoundSchedulerScope};
 
     let mut required = Vec::new();
+    // Every HTTP-serving process owns a process-local observation queue. Its
+    // supervised writer must therefore run with the same state on every role;
+    // idle roles consume no database work.
+    required.push(RequiredTask::Unit(
+        "flag-egress observation writer",
+        rsctf::services::flag_egress_observations::start_writer(state, shutdown.clone()),
+    ));
     if owns_feed_reconciliation(role) {
         required.push(RequiredTask::Unit(
             "game-event feed cursor reconciler",
@@ -595,6 +607,17 @@ fn start_background_services(
             "flag-egress feed cursor reconciler",
             rsctf::services::flag_egress_feed::start_reconciler(state.clone(), shutdown.clone()),
         ));
+        required.push(RequiredTask::Unit(
+            "normal-notice delivery reconciler",
+            rsctf::services::notice_delivery::start_reconciler(state.clone(), shutdown.clone()),
+        ));
+        required.push(RequiredTask::Unit(
+            "solve-receipt lifecycle reconciler",
+            rsctf::services::event_security::start_receipt_maintenance(
+                state.clone(),
+                shutdown.clone(),
+            ),
+        ));
     }
     if owns_suspicion_reconciliation(role) {
         required.push(RequiredTask::Unit(
@@ -607,6 +630,12 @@ fn start_background_services(
         required.push(RequiredTask::Unit(
             "Discord webhook reconciler",
             rsctf::services::discord_webhook::start_reconciler(state.clone(), shutdown.clone()),
+        ));
+    }
+    if owns_mail_reconciliation(role) {
+        required.push(RequiredTask::Unit(
+            "mail outbox reconciler",
+            rsctf::services::mail_outbox::start_reconciler(state.clone(), shutdown.clone()),
         ));
     }
     if let Some(worker_plane) = worker_plane {
@@ -626,6 +655,29 @@ fn start_background_services(
     }
     match role {
         RuntimeRole::All | RuntimeRole::Control => {
+            required.push(RequiredTask::Unit(
+                "challenge import worker",
+                rsctf::controllers::edit::start_import_job_worker(state.clone(), shutdown.clone()),
+            ));
+            required.push(RequiredTask::Unit(
+                "challenge revision effect worker",
+                rsctf::controllers::edit::start_challenge_revision_effect_worker(
+                    state.clone(),
+                    shutdown.clone(),
+                ),
+            ));
+            required.push(RequiredTask::Unit(
+                "mutation retention worker",
+                rsctf::services::mutation_retention::start(state.clone(), shutdown.clone()),
+            ));
+            required.push(RequiredTask::Unit(
+                "repository push worker",
+                rsctf::controllers::edit::start_repo_push_worker(state.clone(), shutdown.clone()),
+            ));
+            required.push(RequiredTask::Unit(
+                "repository binding scheduler",
+                rsctf::services::repo_binding_scheduler::start(state.clone(), shutdown.clone()),
+            ));
             if rsctf::services::ad_vpn::enabled() {
                 required.push(RequiredTask::Unit(
                     "A&D network reconcile",
@@ -697,7 +749,32 @@ fn start_background_services(
                 ),
             ));
         }
-        RuntimeRole::Development | RuntimeRole::Web | RuntimeRole::Migrate => {}
+        RuntimeRole::Development => {
+            required.push(RequiredTask::Unit(
+                "challenge import worker",
+                rsctf::controllers::edit::start_import_job_worker(state.clone(), shutdown.clone()),
+            ));
+            required.push(RequiredTask::Unit(
+                "challenge revision effect worker",
+                rsctf::controllers::edit::start_challenge_revision_effect_worker(
+                    state.clone(),
+                    shutdown.clone(),
+                ),
+            ));
+            required.push(RequiredTask::Unit(
+                "mutation retention worker",
+                rsctf::services::mutation_retention::start(state.clone(), shutdown.clone()),
+            ));
+            required.push(RequiredTask::Unit(
+                "repository push worker",
+                rsctf::controllers::edit::start_repo_push_worker(state.clone(), shutdown.clone()),
+            ));
+            required.push(RequiredTask::Unit(
+                "repository binding scheduler",
+                rsctf::services::repo_binding_scheduler::start(state.clone(), shutdown.clone()),
+            ));
+        }
+        RuntimeRole::Web | RuntimeRole::Migrate => {}
     }
 
     if let Some(topology) = rsctf::services::runtime_topology::spawn(
@@ -713,6 +790,12 @@ fn start_background_services(
     }
 
     let mut optional = Vec::new();
+    if role.capabilities().api || role.capabilities().network {
+        optional.push(rsctf::services::honeypot_telemetry::start_writer(
+            state,
+            shutdown.clone(),
+        ));
+    }
     if role.capabilities().api {
         optional.push(rsctf::services::feed_publication::start_publisher(
             state,
@@ -735,26 +818,6 @@ fn start_background_services(
     }
 
     supervise_background_tasks(required, optional, shutdown)
-}
-
-fn owns_suspicion_reconciliation(role: RuntimeRole) -> bool {
-    matches!(
-        role,
-        RuntimeRole::All | RuntimeRole::Development | RuntimeRole::Control | RuntimeRole::Engine
-    )
-}
-
-fn owns_feed_reconciliation(role: RuntimeRole) -> bool {
-    matches!(
-        role,
-        RuntimeRole::All | RuntimeRole::Development | RuntimeRole::Control | RuntimeRole::Engine
-    )
-}
-
-fn should_run_migrations(role: RuntimeRole, combined_migrations_disabled: bool) -> bool {
-    role == RuntimeRole::Migrate
-        || role == RuntimeRole::Development
-        || (role == RuntimeRole::All && !combined_migrations_disabled)
 }
 
 fn supervise_background_tasks(
@@ -902,11 +965,34 @@ mod startup_tests {
     }
 
     #[test]
+    fn mail_reconciliation_runs_only_on_the_external_control_owner() {
+        assert!(owns_mail_reconciliation(RuntimeRole::All));
+        assert!(owns_mail_reconciliation(RuntimeRole::Control));
+        assert!(owns_mail_reconciliation(RuntimeRole::Development));
+        assert!(!owns_mail_reconciliation(RuntimeRole::Web));
+        assert!(!owns_mail_reconciliation(RuntimeRole::Engine));
+        assert!(!owns_mail_reconciliation(RuntimeRole::Network));
+        assert!(!owns_mail_reconciliation(RuntimeRole::Migrate));
+    }
+
+    #[test]
     fn combined_role_with_migrations_disabled_takes_schema_verification_path() {
         assert!(!should_run_migrations(RuntimeRole::All, true));
         assert!(should_run_migrations(RuntimeRole::All, false));
         assert!(should_run_migrations(RuntimeRole::Migrate, true));
         assert!(should_run_migrations(RuntimeRole::Development, true));
         assert!(!should_run_migrations(RuntimeRole::Web, false));
+    }
+
+    #[test]
+    fn repository_workers_are_required_in_control_and_development_topologies() {
+        let source = include_str!("main.rs");
+        assert_eq!(
+            source.matches("\"repository binding scheduler\"").count(),
+            2
+        );
+        assert_eq!(source.matches("\"repository push worker\"").count(), 2);
+        assert!(source.contains("services::repo_binding_scheduler::start"));
+        assert!(source.contains("start_repo_push_worker"));
     }
 }

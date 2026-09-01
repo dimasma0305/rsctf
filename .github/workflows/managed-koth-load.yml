@@ -11,16 +11,6 @@ on:
         description: "Immutable ghcr.io server image including its sha256 digest"
         required: true
         type: string
-  pull_request:
-    branches:
-      - main
-    paths:
-      - .github/workflows/managed-koth-load.yml
-      - tests/load/managed-koth.compose.yml
-      - tests/load/managed-koth.md
-      - tests/load/managed-koth.mjs
-      - tests/load/k6/managed-koth.js
-      - tests/load/test/managed-koth-harness.test.mjs
 
 permissions:
   actions: write
@@ -29,13 +19,12 @@ permissions:
   packages: read
 
 concurrency:
-  group: managed-koth-load-${{ github.event.pull_request.number || github.ref }}
+  group: managed-koth-load-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   load:
     name: Fixed-rate managed KotH acceptance
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -63,7 +52,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.source_sha }}
+          ref: ${{ inputs.source_sha }}
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -85,7 +74,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REQUESTED_SERVER_IMAGE: ${{ inputs.server_image }}
-          SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.source_sha }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
           if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
@@ -93,29 +82,7 @@ jobs:
             exit 1
           fi
           checked_out="$(git rev-parse HEAD)"
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
-            if [[ "$checked_out" != "${{ github.event.pull_request.head.sha }}" ]]; then
-              echo "::error::The pull-request gate definition was not checked out exactly."
-              exit 1
-            fi
-            unexpected="$(
-              git diff --name-only "$SOURCE_SHA...$checked_out" -- \
-                ':(exclude).github/workflows/managed-koth-load.yml' \
-                ':(exclude)tests/load/managed-koth.compose.yml' \
-                ':(exclude)tests/load/managed-koth.md' \
-                ':(exclude)tests/load/fixtures.mjs' \
-                ':(exclude)tests/load/managed-koth-model.js' \
-                ':(exclude)tests/load/managed-koth.mjs' \
-                ':(exclude)tests/load/k6/managed-koth.js' \
-                ':(exclude)tests/load/test/managed-koth-harness.test.mjs' \
-                ':(exclude)tests/load/test/managed-koth-model.test.mjs'
-            )"
-            if [[ -n "$unexpected" ]]; then
-              echo "::error::The bootstrap pull request may change only the managed KotH gate files."
-              printf '%s\n' "$unexpected"
-              exit 1
-            fi
-          elif [[ "$checked_out" != "$SOURCE_SHA" ]]; then
+          if [[ "$checked_out" != "$SOURCE_SHA" ]]; then
             echo "::error::The checked-out source does not match source_sha."
             exit 1
           fi

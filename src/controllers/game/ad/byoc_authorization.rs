@@ -15,6 +15,8 @@ pub(crate) struct ByocGrant {
     pub(crate) expose_port: Option<i32>,
     pub(crate) game_secret: String,
     pub(crate) team_secret: String,
+    start_time_utc: chrono::DateTime<chrono::Utc>,
+    end_time_utc: chrono::DateTime<chrono::Utc>,
 }
 
 impl ByocGrant {
@@ -70,6 +72,8 @@ struct ByocGrantRow {
     expose_port: Option<i32>,
     game_secret: String,
     team_secret: String,
+    start_time_utc: chrono::DateTime<chrono::Utc>,
+    end_time_utc: chrono::DateTime<chrono::Utc>,
 }
 
 impl From<ByocGrantRow> for ByocGrant {
@@ -83,8 +87,17 @@ impl From<ByocGrantRow> for ByocGrant {
             expose_port: row.expose_port,
             game_secret: row.game_secret,
             team_secret: row.team_secret,
+            start_time_utc: row.start_time_utc,
+            end_time_utc: row.end_time_utc,
         }
     }
+}
+
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum ByocAgentAuthorization {
+    Authorized(ByocCapabilityFence),
+    RetryAt(chrono::DateTime<chrono::Utc>),
+    Terminal,
 }
 
 /// Re-read and row-lock every mutable grant after the caller has acquired the
@@ -111,7 +124,9 @@ pub(crate) async fn load_byoc_grant_on(
                   challenge.build_image_digest,
                   challenge.expose_port,
                   game.private_key AS game_secret,
-                  team.invite_token AS team_secret
+                  team.invite_token AS team_secret,
+                  game.start_time_utc,
+                  game.end_time_utc
              FROM "Participations" participation
              JOIN "Games" game ON game.id = participation.game_id
              JOIN "Teams" team ON team.id = participation.team_id
@@ -161,6 +176,63 @@ pub(crate) async fn authorize_byoc_capability(
     domain: &str,
     token: &str,
 ) -> AppResult<Option<ByocCapabilityFence>> {
+    authorize_byoc_capability_inner(
+        pool,
+        game_id,
+        participation_id,
+        challenge_id,
+        domain,
+        token,
+        true,
+    )
+    .await
+}
+
+/// Classify agent admission without turning a valid pre-start capability into
+/// a permanent rejection. All other ineligible/revoked states are terminal.
+pub(crate) async fn authorize_byoc_agent_capability(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    participation_id: i32,
+    challenge_id: i32,
+    token: &str,
+) -> AppResult<ByocAgentAuthorization> {
+    let Some(authorization) = authorize_byoc_capability_inner(
+        pool,
+        game_id,
+        participation_id,
+        challenge_id,
+        "adbyocagent:",
+        token,
+        false,
+    )
+    .await?
+    else {
+        return Ok(ByocAgentAuthorization::Terminal);
+    };
+    let now = chrono::Utc::now();
+    if now < authorization.grant.start_time_utc {
+        let retry_at = authorization.grant.start_time_utc;
+        authorization.release().await?;
+        return Ok(ByocAgentAuthorization::RetryAt(retry_at));
+    }
+    if now > authorization.grant.end_time_utc {
+        authorization.release().await?;
+        return Ok(ByocAgentAuthorization::Terminal);
+    }
+    Ok(ByocAgentAuthorization::Authorized(authorization))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn authorize_byoc_capability_inner(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    participation_id: i32,
+    challenge_id: i32,
+    domain: &str,
+    token: &str,
+    require_active_game: bool,
+) -> AppResult<Option<ByocCapabilityFence>> {
     // The preliminary team id chooses the advisory domain only. It grants
     // nothing: the fenced query below requires the participation to still map
     // to this exact team, closing a concurrent move/delete/recreate race.
@@ -191,7 +263,7 @@ pub(crate) async fn authorize_byoc_capability(
         participation_id,
         team_id,
         challenge_id,
-        true,
+        require_active_game,
     )
     .await?;
     let Some(grant) = grant else {

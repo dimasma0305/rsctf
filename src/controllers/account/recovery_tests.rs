@@ -1,6 +1,102 @@
 use super::*;
+use crate::services::cache::Cache as _;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::str::FromStr;
+
+#[test]
+fn password_reset_admission_precedes_state_reads_and_hashing() {
+    let source = include_str!("recovery.rs");
+    let handler = source
+        .split_once("pub async fn password_reset(")
+        .unwrap()
+        .1
+        .split_once("pub async fn change_email(")
+        .unwrap()
+        .0;
+    let source_admission = handler.find("try_acquire_scopes(").unwrap();
+    assert!(handler.find("\"PasswordResetAttempts\"").unwrap() < source_admission);
+    assert!(source_admission < handler.find("\"PasswordResetTickets\"").unwrap());
+    assert!(source_admission < handler.find("user::Entity::find_by_id").unwrap());
+
+    let semantic_admission = handler.find("try_add_scopes").unwrap();
+    assert!(handler[..semantic_admission].contains("credential-reset-token:"));
+    let password_hash = handler.find("hash_password_async").unwrap();
+    let ownership_fence = handler.find("credential_work.ensure_owned").unwrap();
+    let account_mutation = handler.find("UPDATE \"AspNetUsers\"").unwrap();
+    assert!(semantic_admission < password_hash);
+    assert!(password_hash < ownership_fence);
+    assert!(ownership_fence < account_mutation);
+}
+
+#[test]
+fn recovery_reserves_mail_work_before_lookup_and_token_construction() {
+    let helper = include_str!("recovery/recovery_mail.rs");
+    let preparation = helper.find("mail_outbox::try_prepare(").unwrap();
+    let account_lookup = helper.find("SELECT id FROM \"AspNetUsers\"").unwrap();
+    let account_binding = helper.find("preparation.bind_account").unwrap();
+    let lookup_transaction = helper.find("let mut lookup").unwrap();
+    let final_transaction = helper.find("let mut transaction").unwrap();
+    let lookup_bounds = helper.find("set_recovery_sql_bounds(&mut lookup)").unwrap();
+    let final_bounds = helper
+        .find("set_recovery_sql_bounds(&mut transaction)")
+        .unwrap();
+    let identity_lock = helper.find("lock_reset_identity").unwrap();
+    let token_construction = helper.find("random_token(32)").unwrap();
+    assert!(preparation < account_lookup);
+    assert!(lookup_transaction < account_lookup);
+    assert!(lookup_transaction < lookup_bounds);
+    assert!(lookup_bounds < account_lookup);
+    assert!(account_lookup < account_binding);
+    assert!(account_binding < final_transaction);
+    assert!(final_transaction < final_bounds);
+    assert!(final_bounds < identity_lock);
+    assert!(account_binding < token_construction);
+    assert!(
+        helper.find("enqueue_in_transaction(").unwrap()
+            < helper.find("ensure_owned_in_transaction").unwrap()
+    );
+
+    let handler = include_str!("recovery.rs");
+    assert!(!handler.contains("tokio::time::timeout("));
+    assert!(helper.contains("SET LOCAL lock_timeout = '300ms'"));
+    assert!(helper.contains("SET LOCAL statement_timeout = '700ms'"));
+}
+
+#[tokio::test]
+async fn failed_mail_commit_restores_the_previous_ticket_without_overwriting_newer_state() {
+    let cache = crate::services::cache::InMemoryCache::new();
+    cache.set("current", b"old", Some(RECOVERY_TTL)).await;
+    cache
+        .set("ticket:old", b"old-ticket", Some(RECOVERY_TTL))
+        .await;
+
+    let publication =
+        publish_ticket(&cache, "current".into(), "ticket:", b"new", b"new-ticket").await;
+    assert_eq!(
+        cache.get("current").await.as_deref(),
+        Some(b"new".as_slice())
+    );
+    assert!(cache.get("ticket:old").await.is_none());
+    rollback_ticket_publication(&cache, publication).await;
+    assert_eq!(
+        cache.get("current").await.as_deref(),
+        Some(b"old".as_slice())
+    );
+    assert_eq!(
+        cache.get("ticket:old").await.as_deref(),
+        Some(b"old-ticket".as_slice())
+    );
+    assert!(cache.get("ticket:new").await.is_none());
+
+    let publication =
+        publish_ticket(&cache, "current".into(), "ticket:", b"ours", b"ours-ticket").await;
+    cache.set("current", b"newer", Some(RECOVERY_TTL)).await;
+    rollback_ticket_publication(&cache, publication).await;
+    assert_eq!(
+        cache.get("current").await.as_deref(),
+        Some(b"newer".as_slice())
+    );
+}
 
 #[test]
 fn unknown_login_uses_a_valid_dummy_argon2_hash() {
@@ -21,18 +117,6 @@ fn email_domain_validation_requires_one_complete_address() {
     ));
     assert!(!verify_email_domain("@allowed.test", "allowed.test"));
     assert!(!verify_email_domain("user@", ""));
-}
-
-#[test]
-fn email_change_ticket_is_bound_to_the_security_stamp() {
-    let ticket = EmailChangeTicket {
-        user_id: Uuid::nil(),
-        new_email: "new@example.test".to_string(),
-        security_stamp: "stamp-1".to_string(),
-    };
-    let encoded = serde_json::to_vec(&ticket).unwrap();
-    let decoded: EmailChangeTicket = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(decoded.security_stamp, "stamp-1");
 }
 
 #[tokio::test]

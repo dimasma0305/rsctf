@@ -136,8 +136,12 @@ test("development secrets are stable, private, and independent", () => {
 test("development workflow documents hot reload, SSH forwarding, and the release boundary", () => {
   assert.match(runner, /spawnBackend/);
   assert.match(runner, /backendWatchers/);
+  assert.match(runner, /bounded-cargo\.sh/);
+  assert.match(runner, /rsctf-target/);
+  assert.doesNotMatch(runner, /spawn\("cargo"/);
   assert.match(runner, /vite/);
   assert.match(guide, /hot module replacement/i);
+  assert.match(guide, /shared bounded Cargo target/i);
   assert.match(guide, /ssh -L 63000:127\.0\.0\.1:63000/);
   assert.match(guide, /node scripts\/dev\.mjs --public/);
   assert.match(

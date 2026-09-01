@@ -93,7 +93,7 @@ test('proof-aware Axios requests coalesce minting and renew an expired proof', a
   }
 })
 
-test('proof-controller 401 disconnects do not become login expiry and failed minting is circuit-bounded', async () => {
+test('VPN disconnects do not become login expiry and failed minting is circuit-bounded', async () => {
   const browser = new Window({ url: 'https://rsctf.test/games/19/challenges' })
   const restoreDom = installTestDom(browser)
   const client = axios.create()
@@ -114,7 +114,7 @@ test('proof-controller 401 disconnects do not become login expiry and failed min
     }
     if (url === 'https://event-vpn.test/proof') {
       proofs += 1
-      throw failure(config, 401)
+      throw failure(config, 403)
     }
     throw new Error(`unexpected request ${url}`)
   }

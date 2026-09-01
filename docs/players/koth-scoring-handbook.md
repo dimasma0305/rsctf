@@ -202,13 +202,13 @@ Within one scoring context, every accepted finalized wave is append-only. A
 later snapshot may add a new wave but cannot alter or remove an earlier one.
 
 The capability survives health recovery and runtime replacement. A player may
-explicitly rotate it after suspected exposure before official KotH scoring, or
-while organizers have paused scoring. Active unpaused scoring rejects manual
-rotation without changing the token or evidence. The first allowed emergency
-rotation is immediate; further allowed rotations have a 60-second cooldown and
-return `429` with `Retry-After`. Security and eligibility revocation are never
-delayed by that cooldown and do not consume or reset the player-only timer. A
-successful rotation immediately removes the old
+explicitly rotate it after suspected exposure, including during active
+unpaused scoring. The first emergency rotation is immediate; further rotations
+have a 60-second cooldown and return `429` with `Retry-After`. Each intent is
+revision-fenced and retryable by its operation ID, so an ambiguous response
+cannot commit a second credential. Security and eligibility revocation are
+never delayed by that cooldown and do not consume or reset the player-only
+timer. A successful rotation immediately removes the old
 digest from the eligible set and clears only that team's current unsettled rows;
 every other team's
 evidence and already settled epoch evidence remain immutable. An ineligible

@@ -519,6 +519,7 @@ mod correlation;
 mod detectors;
 mod honeypot;
 mod outbox;
+mod reconciliation;
 mod scoring;
 pub use cheat_checks::*;
 pub use cheat_stat::*;
@@ -529,4 +530,5 @@ pub use honeypot::*;
 #[cfg(test)]
 pub(crate) use outbox::seal_reconciled_game_for_test;
 pub use outbox::*;
+pub(crate) use reconciliation::{execute_game_reconciliation, SourceCursor, SOURCE_BATCH};
 pub use scoring::*;

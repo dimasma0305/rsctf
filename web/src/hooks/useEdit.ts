@@ -3,13 +3,17 @@ import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { ChallengeInfoModel } from '@Api'
 
 export const useEditChallenge = (numId: number, numCId: number) => {
-  const { data: challenge, error, mutate } = api.edit.useEditGetGameChallenge(numId, numCId, OnceSWRConfig)
+  const { data: challenge, error, mutate, isValidating } = api.edit.useEditGetGameChallenge(
+    numId,
+    numCId,
+    OnceSWRConfig
+  )
 
-  return { challenge, error, mutate }
+  return { challenge, error, mutate, isValidating }
 }
 
 export const useEditChallenges = (numId: number) => {
-  const { data, error, mutate } = api.edit.useEditGetGameChallenges(numId, OnceSWRConfig)
+  const { data, error, mutate, isValidating } = api.edit.useEditGetGameChallenges(numId, OnceSWRConfig)
 
   const [sortedChallenges, setSortedChallenges] = useState<ChallengeInfoModel[] | null>(null)
 
@@ -19,5 +23,5 @@ export const useEditChallenges = (numId: number) => {
     }
   }, [data])
 
-  return { challenges: sortedChallenges, error, mutate }
+  return { challenges: sortedChallenges, error, mutate, isValidating }
 }

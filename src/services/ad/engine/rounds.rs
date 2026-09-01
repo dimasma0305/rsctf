@@ -163,7 +163,6 @@ pub struct RoundCursor {
 type RoundRow = (i32, i32, chrono::DateTime<Utc>, chrono::DateTime<Utc>, bool);
 #[derive(Debug, sqlx::FromRow)]
 struct GameSettings {
-    private_key: String,
     ad_tick_seconds: Option<i32>,
     ad_warmup_seconds: Option<i32>,
     ad_min_grace_period_seconds: Option<i32>,
@@ -367,7 +366,7 @@ async fn prepare_round_transaction(
     _requested_at: chrono::DateTime<Utc>,
 ) -> AppResult<AdvancedRound> {
     let game_settings: GameSettings = sqlx::query_as(
-        r#"SELECT private_key, ad_tick_seconds, ad_warmup_seconds,
+        r#"SELECT ad_tick_seconds, ad_warmup_seconds,
                   ad_min_grace_period_seconds,
                   start_time_utc, end_time_utc,
                   ad_scoring_paused, ad_scoring_start_round,
@@ -785,7 +784,6 @@ async fn prepare_round_transaction(
     }
 
     if !services.is_empty() {
-        let salt = crate::utils::flag_generator::team_hash_salt(&game_settings.private_key);
         let service_ids: Vec<i32> = services.iter().map(|service| service.0).collect();
         let checker_qualified: Vec<bool> = services
             .iter()
@@ -794,15 +792,8 @@ async fn prepare_round_transaction(
         let service_weights: Vec<f64> = services.iter().map(|service| service.5).collect();
         let generated_flags: Vec<String> = services
             .iter()
-            .map(|service| {
-                let seed = crate::utils::flag_generator::team_challenge_hash(
-                    &salt,
-                    service.2,
-                    &format!("{}:{}", service.1, target_number),
-                );
-                crate::utils::flag_generator::generate_flag(None, &seed)
-            })
-            .collect();
+            .map(|_| crate::utils::flag_generator::generate_ad_flag())
+            .collect::<AppResult<Vec<_>>>()?;
         sqlx::query(
             r#"INSERT INTO "AdFlags"
                  (round_id, team_service_id, flag, planted_at, checker_qualified,
@@ -860,6 +851,8 @@ async fn prepare_round_transaction(
               AND challenge.is_enabled = TRUE
               AND challenge.review_status = $4
               AND challenge."Type" = $5
+              AND OCTET_LENGTH(flag.flag) = 38
+              AND flag.flag ~ '^flag[{][A-Za-z0-9_-]{32}[}]$'
             ORDER BY service.id, flag.id"#,
         )
         .bind(round.0)

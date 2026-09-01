@@ -15,7 +15,6 @@ use std::collections::BTreeMap;
 
 use crate::app_state::SharedState;
 use crate::models::data::{config, post, user};
-use crate::services::captcha::CaptchaSettings;
 use crate::utils::codec;
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::{ArrayResponse, RequestResponse};
@@ -159,6 +158,21 @@ pub struct HashPowChallenge {
     pub id: String,
     pub challenge: String,
     pub difficulty: i32,
+    /// Absolute Unix time in milliseconds; the browser refreshes before this
+    /// boundary instead of submitting an already-expired proof.
+    pub expires_at: i64,
+}
+
+fn hashpow_challenge_response(challenge: HashPowChallenge) -> Response {
+    let mut response = RequestResponse::ok(challenge).into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    response
 }
 
 pub fn router() -> Router<SharedState> {
@@ -169,7 +183,16 @@ pub fn router() -> Router<SharedState> {
         .route("/api/posts/page", get(get_posts_page))
         .route("/api/posts/{id}", get(get_post))
         .route("/api/captcha", get(get_captcha))
-        .route("/api/captcha/powchallenge", get(get_pow_challenge))
+        .route(
+            "/api/captcha/powchallenge",
+            crate::middlewares::rate_limiter::limited(
+                crate::middlewares::rate_limiter::Policy::PowIssuanceGlobal,
+                crate::middlewares::rate_limiter::limited(
+                    crate::middlewares::rate_limiter::Policy::PowIssuanceSource,
+                    get(get_pow_challenge),
+                ),
+            ),
+        )
 }
 
 /// `GET /api/Config` — client-facing site configuration.
@@ -358,7 +381,10 @@ pub async fn get_post(
 pub async fn get_captcha(
     State(st): State<SharedState>,
 ) -> AppResult<RequestResponse<ClientCaptchaInfoModel>> {
-    let settings = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
+    let settings = st
+        .captcha_settings
+        .load(st.pg(), st.config.account.use_captcha)
+        .await?;
     // RSCTF `InfoController` (line 148): advertise the captcha provider to the
     // client ONLY when AccountPolicy.UseCaptcha is enabled. Otherwise the
     // login/register captcha widget still renders — and for HashPow it grinds a
@@ -376,47 +402,31 @@ pub async fn get_captcha(
 
 /// `GET /api/captcha/powchallenge` — proof-of-work challenge.
 ///
-/// Ports RSCTF `InfoController.PowChallenge`. When the configured captcha
-/// provider is `HashPow`, mint a fresh random challenge plus a short-lived
-/// cache entry (5-minute sliding window, matching RSCTF) so the paired
-/// verification step can later confirm the client's nonce, and return the
-/// `HashPowChallenge` shape the client expects. For any other provider
+/// When the configured captcha provider is `HashPow`, mint a signed,
+/// self-contained challenge. Issuance creates no per-challenge cache entry;
+/// verification writes only a bounded one-use marker after valid work. For any other provider
 /// (notably `None`) RSCTF has no PoW to issue and returns `404 NotFound`,
 /// so we do the same.
 ///
-pub async fn get_pow_challenge(
-    State(st): State<SharedState>,
-) -> AppResult<RequestResponse<HashPowChallenge>> {
-    // The provider + difficulty come from the LIVE captcha config (the same
-    // source the verify step reads), so the client solves the PoW at exactly the
-    // difficulty the server later checks against.
-    let settings = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
-    let difficulty = if settings.provider == "HashPow" {
-        settings.difficulty
-    } else {
-        // "None"/Turnstile: no PoW challenge to issue — RSCTF returns 404.
-        return Err(AppError::not_found("PoW challenge is not available"));
-    };
+pub async fn get_pow_challenge(State(st): State<SharedState>) -> AppResult<Response> {
+    // Anonymous requests share one short-lived, invalidatable settings read.
+    // Verification reloads the authoritative policy, so a changed revision
+    // invalidates every outstanding challenge even across replicas.
+    let settings = st
+        .captcha_settings
+        .load(st.pg(), st.config.account.use_captcha)
+        .await?;
+    let issued = crate::services::captcha::issue_hashpow_challenge(
+        &settings,
+        st.config.jwt_secret.as_bytes(),
+        Utc::now().timestamp(),
+    )?;
 
-    // RSCTF: 8 random challenge bytes (returned as lowercase hex) keyed by a
-    // 12-char random hex id. We store the hex challenge string itself so the
-    // verifier hashes exactly what the client was handed.
-    let id = codec::random_hex(6); // 6 bytes -> 12 hex chars
-    let challenge = codec::random_hex(8); // 8 bytes -> 16 hex chars
-
-    // CacheKey.HashPow(id) => "_HP_{id}"; 5-minute expiry.
-    st.cache
-        .set(
-            &format!("_HP_{id}"),
-            challenge.as_bytes(),
-            Some(std::time::Duration::from_secs(5 * 60)),
-        )
-        .await;
-
-    Ok(RequestResponse::ok(HashPowChallenge {
-        id,
-        challenge,
-        difficulty: difficulty as i32,
+    Ok(hashpow_challenge_response(HashPowChallenge {
+        id: issued.id,
+        challenge: issued.challenge,
+        difficulty: issued.difficulty as i32,
+        expires_at: issued.expires_at.saturating_mul(1_000),
     }))
 }
 
@@ -539,8 +549,9 @@ mod tests {
     use axum::response::IntoResponse;
 
     use super::{
-        conditional_post_feed_response, effective_port_mapping, etag_list_matches, PostInfoModel,
-        PostPageParams, MAX_POST_PAGE_SIZE, POST_FEED_CACHE_CONTROL,
+        conditional_post_feed_response, effective_port_mapping, etag_list_matches,
+        hashpow_challenge_response, HashPowChallenge, PostInfoModel, PostPageParams,
+        MAX_POST_PAGE_SIZE, POST_FEED_CACHE_CONTROL,
     };
     use crate::utils::shared::{ArrayResponse, RequestResponse};
 
@@ -601,6 +612,27 @@ mod tests {
         assert_eq!(value["data"], serde_json::json!([]));
         assert_eq!(value["length"], 0);
         assert_eq!(value["total"], 123);
+    }
+
+    #[tokio::test]
+    async fn hashpow_issuance_is_never_browser_or_shared_cacheable() {
+        let response = hashpow_challenge_response(HashPowChallenge {
+            id: "signed-id".to_string(),
+            challenge: "0011223344556677".to_string(),
+            difficulty: 18,
+            expires_at: 1_700_000_000_000,
+        });
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, no-store"
+        );
+        assert_eq!(response.headers()[header::PRAGMA], "no-cache");
+
+        let body = to_bytes(response.into_body(), 1_024).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["id"], "signed-id");
+        assert_eq!(value["expiresAt"], 1_700_000_000_000_i64);
     }
 
     #[test]

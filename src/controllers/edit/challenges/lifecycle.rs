@@ -12,8 +12,21 @@ pub(super) struct RuntimeDefinitionSnapshot {
 /// projection automatically includes newly-added safety fields, so an older
 /// topology transition fails closed when a concurrent writer publishes a
 /// definition shape it does not understand.
+#[cfg(test)]
 pub(super) async fn runtime_definition_snapshot(
     pool: &sqlx::PgPool,
+    challenge_id: i32,
+    challenge_type: ChallengeType,
+) -> AppResult<RuntimeDefinitionSnapshot> {
+    let mut connection = pool
+        .acquire()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    runtime_definition_snapshot_locked(&mut connection, challenge_id, challenge_type).await
+}
+
+pub(super) async fn runtime_definition_snapshot_locked(
+    connection: &mut sqlx::PgConnection,
     challenge_id: i32,
     challenge_type: ChallengeType,
 ) -> AppResult<RuntimeDefinitionSnapshot> {
@@ -28,7 +41,7 @@ pub(super) async fn runtime_definition_snapshot(
             WHERE challenge.id = $1"#,
     )
     .bind(challenge_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Challenge not found"))?;
@@ -40,7 +53,7 @@ pub(super) async fn runtime_definition_snapshot(
                 ORDER BY flag"#,
         )
         .bind(challenge_id)
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?
     } else {
@@ -135,6 +148,34 @@ pub(crate) async fn destroy_challenge_containers(
     require_inactive: bool,
     strict: bool,
 ) -> AppResult<()> {
+    destroy_challenge_containers_by_id(
+        st,
+        challenge.game_id,
+        challenge.id,
+        require_inactive,
+        strict,
+        true,
+    )
+    .await
+}
+
+struct ChallengeTeardownIdentity {
+    id: i32,
+    game_id: i32,
+}
+
+pub(crate) async fn destroy_challenge_containers_by_id(
+    st: &SharedState,
+    game_id: i32,
+    challenge_id: i32,
+    require_inactive: bool,
+    strict: bool,
+    reconcile_vpn: bool,
+) -> AppResult<()> {
+    let challenge = ChallengeTeardownIdentity {
+        id: challenge_id,
+        game_id,
+    };
     if !teardown_allowed(st.pg(), challenge.id, true).await {
         if strict {
             return Err(AppError::conflict(
@@ -223,7 +264,12 @@ pub(crate) async fn destroy_challenge_containers(
             return Ok(());
         }
         let teardown: AppResult<()> = async {
-            crate::services::ad::service_lifecycle::destroy_persisted_service(st, service.id).await
+            crate::services::ad::service_lifecycle::destroy_persisted_service_with_vpn(
+                st,
+                service.id,
+                reconcile_vpn,
+            )
+            .await
         }
         .await;
         let released = distributed
@@ -348,7 +394,9 @@ pub(crate) async fn destroy_challenge_containers(
             for game_id in koth_game_ids {
                 crate::controllers::game::ad::invalidate_live_hill_snapshot(st, game_id).await;
             }
-            crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+            if reconcile_vpn {
+                crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+            }
             destroy_after_capture_fence(st, &container_id).await?;
             if !clear_destroyed_koth_target(st.pg(), target.id, &container_id).await?
                 && koth_target_still_owns_backend(st.pg(), target.id).await?

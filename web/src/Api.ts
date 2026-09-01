@@ -275,6 +275,8 @@ export type RegisterModel = ModelWithCaptcha & {
   fingerprintProof?: string | null;
   /** Deployment bootstrap secret, required only for the first administrator. */
   bootstrapToken?: string | null;
+  /** Stable identity retained through an ambiguous account/mail commit. */
+  operationId: string;
 };
 
 export interface ModelWithCaptcha {
@@ -290,10 +292,14 @@ export type RecoveryModel = ModelWithCaptcha & {
    * @minLength 1
    */
   email: string;
+  /** Stable identity retained through an ambiguous account/mail commit. */
+  operationId: string;
 };
 
 /** Account password reset */
 export interface PasswordResetModel {
+  /** Stable across retries of this reset attempt. */
+  operationId: string;
   /**
    * Password
    * @minLength 1
@@ -410,6 +416,8 @@ export interface MailChangeModel {
   newMail: string;
   /** Current password used to re-authenticate this security-sensitive change. */
   password: string;
+  /** Stable identity retained through an ambiguous account/mail commit. */
+  operationId: string;
 }
 
 /** Basic account information */
@@ -441,6 +449,14 @@ export interface ProfileUserInfoModel {
 
 /** Global configuration update */
 export interface ConfigEditModel {
+  /** Monotonic authoritative revision returned by GET. */
+  revision?: number;
+  /** Stable mutation intent, required on PUT. */
+  operationId?: string | null;
+  /** Revision observed before editing, required on PUT. */
+  expectedRevision?: number | null;
+  /** Optional branding change consumed by the same settings operation. */
+  brandingAction?: BrandingAction;
   /** User policy */
   accountPolicy?: AccountPolicy | null;
   /** Global configuration */
@@ -465,6 +481,23 @@ export interface ConfigEditModel {
   /** Active container backend summary. The backend type is read-only; the
    *  Jeopardy port-mapping preference is editable. */
   containerProvider?: ContainerProviderInfoModel | null;
+}
+
+export enum BrandingAction {
+  Keep = "Keep",
+  Set = "Set",
+  Clear = "Clear",
+}
+
+export interface SettingsMutationResult {
+  operationId: string;
+  revision: number;
+  brandingHash?: string | null;
+}
+
+export interface SettingsBrandingStageResult {
+  operationId: string;
+  brandingHash: string;
 }
 
 export interface DonationConfig {
@@ -862,8 +895,46 @@ export interface TeamInfoModel {
   avatar?: string | null;
   /** Is locked */
   locked?: boolean;
+  /** Monotonic team profile revision */
+  profileRevision?: number;
   /** Team members */
   members?: TeamUserInfoModel[] | null;
+}
+
+export interface TeamInviteModel {
+  code: string;
+  revision: number;
+}
+
+/** Compact current-user team choice for event enrollment. */
+export interface TeamSelectorInfoModel {
+  /** @format int32 */
+  id: number;
+  name: string;
+  captain: boolean;
+}
+
+/** One recent event represented in the current user's statistics. */
+export interface GameStatItem {
+  /** @format int32 */
+  gameId: number;
+  gameTitle: string;
+  /** @format int64 */
+  endTimeUtc: number;
+  /** @format int32 */
+  solves: number;
+}
+
+/** Compact current-user solve statistics. */
+export interface UserStatsModel {
+  /** @format int32 */
+  totalSolves: number;
+  /** @format int32 */
+  totalFirstBloods: number;
+  /** @format int32 */
+  gamesParticipated: number;
+  solvesByCategory: Record<string, number>;
+  games: GameStatItem[];
 }
 
 /** Team member information */
@@ -977,6 +1048,8 @@ export interface WriteupInfoModel {
   divisions?: Record<string, string>;
   /** Writeups list */
   writeups?: WriteupInfo[];
+  /** Total matching writeups */
+  total?: number;
 }
 
 export interface WriteupInfo {
@@ -1165,6 +1238,10 @@ export interface LocalFile {
    * @minLength 1
    */
   name: string;
+  /** Staged upload identity consumed atomically with its attachment owner. */
+  uploadId?: string | null;
+  /** @format int64 */
+  size?: number;
 }
 
 /** This record represents the response for an API token request. */
@@ -1177,7 +1254,7 @@ export interface ApiTokenResponse {
 /** Represents an API token for programmatic access. */
 export interface ApiToken {
   /**
-   * The unique identifier for the token, also used as the JWT ID (jti).
+   * The unique identifier for the managed token metadata.
    * @format guid
    */
   id?: string;
@@ -1192,7 +1269,7 @@ export interface ApiToken {
    * @format guid
    * @minLength 1
    */
-  creatorId: string;
+  creatorId?: string | null;
   /**
    * The timestamp when the token was created.
    * @format uint64
@@ -1212,6 +1289,10 @@ export interface ApiToken {
   isRevoked: boolean;
   /** The name of the user who created the token. */
   creator?: string | null;
+  /** Fixed authority audience for this managed credential. */
+  audience: string;
+  /** Explicit least-privilege authorities granted to this credential. */
+  scopes: ("api:read" | "api:write")[];
 }
 
 /** API token creation model. */
@@ -1224,6 +1305,8 @@ export interface ApiTokenCreateModel {
   name: string;
   /** The duration for which the token will be valid, in days. */
   expiresIn?: number | null;
+  /** Explicit authorities. Omitted credentials are read-only. */
+  scopes?: ("api:read" | "api:write")[] | null;
 }
 
 export interface ProblemDetails {
@@ -1300,6 +1383,12 @@ export interface EventVpnOverrideModel {
   /** @format uint64 */
   revokedAtUtc?: number | null;
   active: boolean;
+}
+
+export interface EventVpnOverrideList {
+  policyRevision: number;
+  activeLimit: number;
+  overrides: EventVpnOverrideModel[];
 }
 
 export interface SuspicionRecordResult {
@@ -1533,6 +1622,9 @@ export interface GameInfoModel {
   poster?: string | null;
   /** Game public key */
   publicKey?: string;
+  /** Monotonic source fence used by the bounded clone contract. */
+  /** @format int64 */
+  sourceRevision: number;
   /** Is the game in practice mode (accessible even after the game ends) */
   practiceMode?: boolean;
   /**
@@ -1622,6 +1714,12 @@ export interface GameInfoModel {
   vpnSourceAsnTelemetryEnabled?: boolean;
   /** Record when one event peer appears from several endpoint identities. */
   vpnDeviceSharingTelemetryEnabled?: boolean;
+  /** Optimistic concurrency revision for the complete editable game configuration. */
+  configurationRevision?: number;
+  /** Optimistic concurrency revision for challenge definitions in this game. */
+  challengeConfigurationRevision?: number;
+  /** Stable idempotency identity for one settings save intent. */
+  operationId?: string | null;
   /**
    * Response-owned server clock sample for lifecycle display.
    * @format uint64
@@ -1645,6 +1743,50 @@ export interface ArrayResponseOfGameInfoModel {
    * @format int32
    */
   total?: number;
+}
+
+/** Idempotent request to clone a game and its challenge definitions. */
+export interface GameCloneModel {
+  /** Stable across retries of the same organizer action. */
+  operationId: string;
+  /** Source revision observed before submitting the clone intent. */
+  /** @format int64 */
+  expectedSourceRevision: number;
+  /** Challenge-definition revision observed before submitting the clone intent. */
+  /** @format int64 */
+  expectedChallengeRevision: number;
+  title: string;
+  /** @format int64 */
+  startTimeUtc: number;
+  /** @format int64 */
+  endTimeUtc: number;
+  includeChallenges: boolean;
+}
+
+export interface AdminUserImportRowResult {
+  email: string;
+  realName: string;
+  userName: string;
+  password: string;
+  teamName?: string;
+  status: "created" | "updated" | "skipped";
+  error?: string;
+}
+
+export interface AdminUserImportResult {
+  total: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  users: AdminUserImportRowResult[];
+}
+
+export interface AdminUserImportJobStatus {
+  operationId: string;
+  status: string;
+  total: number;
+  completed: number;
+  result?: AdminUserImportResult | null;
 }
 
 /**
@@ -1676,6 +1818,10 @@ export interface GameNoticeModel {
    * @minLength 1
    */
   content: string;
+  /** Stable client identity used to recover an exactly-once mutation result. */
+  operationId: string;
+  /** Unix milliseconds; null publishes immediately and omission preserves an update schedule. */
+  publishAt?: number | null;
 }
 
 export interface Division {
@@ -1684,16 +1830,18 @@ export interface Division {
   /**
    * The name of the division.
    * @minLength 1
-   * @maxLength 31
+   * @maxLength 128
    */
   name: string;
   /**
    * Invitation code for joining the division.
-   * @maxLength 32
+   * @maxLength 256
    */
   inviteCode?: string | null;
   /** Permissions associated with the division. */
   defaultPermissions?: GamePermission;
+  revision: number;
+  policyRevision: number;
   /** Challenge configs for this division. */
   challengeConfigs?: DivisionChallengeConfig[];
 }
@@ -1709,12 +1857,12 @@ export interface DivisionCreateModel {
   /**
    * The name of the division.
    * @minLength 1
-   * @maxLength 31
+   * @maxLength 128
    */
   name: string;
   /**
    * Invitation code for joining the division.
-   * @maxLength 32
+   * @maxLength 256
    */
   inviteCode?: string | null;
   /** Permissions associated with the division. */
@@ -1734,14 +1882,16 @@ export interface DivisionChallengeConfigModel {
 }
 
 export interface DivisionEditModel {
+  operationId: string;
+  expectedRevision: number;
   /**
    * The name of the division.
-   * @maxLength 31
+   * @maxLength 128
    */
   name?: string | null;
   /**
    * Invitation code for joining the division.
-   * @maxLength 32
+   * @maxLength 256
    */
   inviteCode?: string | null;
   /** Permissions associated with the division. */
@@ -1831,6 +1981,7 @@ export interface WorkloadSpec {
 export interface WorkloadRolloutModel {
   matched: number;
   updated: number;
+  alreadyCurrent: number;
   stale: number;
   incompatible: number;
   insufficientCapacity: number;
@@ -1844,6 +1995,8 @@ export interface ChallengeEditDetailModel {
    * @format int32
    */
   id?: number;
+  /** Monotonic ordinary-definition revision. */
+  revision: number;
   /**
    * Challenge title
    * @minLength 1
@@ -2024,6 +2177,27 @@ export interface FlagInfoModel {
   attachment?: Attachment | null;
 }
 
+export interface FlagPolicyViolationModel {
+  flagContextId?: number | null;
+  violationType: string;
+  observedBytes: number;
+  /** @format int64 */
+  detectedAtUtc: number;
+}
+
+export interface FlagPageModel {
+  items: FlagInfoModel[];
+  /** @format int64 */
+  total: number;
+  /** @format int64 */
+  offset: number;
+  /** @format int64 */
+  limit: number;
+  /** @format int64 */
+  violationCount: number;
+  violations: FlagPolicyViolationModel[];
+}
+
 /** Basic challenge information (Edit) */
 export interface ChallengeInfoModel {
   /**
@@ -2031,6 +2205,10 @@ export interface ChallengeInfoModel {
    * @format int32
    */
   id?: number;
+  /** Monotonic ordinary-definition revision on list responses. */
+  revision?: number;
+  /** Stable opaque identity retained across retry of this exact create. */
+  operationId?: string;
   /**
    * Challenge title
    * @minLength 1
@@ -2068,6 +2246,30 @@ export interface ChallengeInfoModel {
   buildStatus?: ChallengeBuildStatus;
   /** True iff an OriginalArchiveBlobPath is on file (i.e. Rebuild has something to rebuild from) */
   hasOriginalArchive?: boolean;
+  /** Event-wide challenge configuration revision used by bounded bulk edits. */
+  configurationRevision?: number;
+}
+
+export type BulkChallengeAction = "Enable" | "Disable" | "Delete"
+
+export interface BulkChallengeMutationRequest {
+  operationId: string
+  expectedRevision: number
+  action: BulkChallengeAction
+  challengeIds: number[]
+}
+
+export interface BulkChallengeOutcome {
+  challengeId: number
+  status: "Changed" | "Unchanged" | "Rejected" | "Deleted"
+  message?: string | null
+}
+
+export interface BulkChallengeMutationResult {
+  operationId: string
+  state: "Pending" | "Complete"
+  configurationRevision: number
+  outcomes: BulkChallengeOutcome[]
 }
 
 /** Review state of a challenge */
@@ -2119,6 +2321,11 @@ export interface ChallengeBuildAuditModel {
   logTail?: string | null
   errorMessage?: string | null
   durationMs: number
+}
+
+export interface ChallengeBuildStatusModel {
+  buildStatus: ChallengeBuildStatus
+  lastBuildLog?: string | null
 }
 
 /** One row of the live in-progress strip */
@@ -2193,6 +2400,10 @@ export interface ImageCleanupReport {
 
 /** Challenge update information (Edit) */
 export interface ChallengeUpdateModel {
+  /** Stable opaque identity retained across retry of this exact edit. */
+  operationId?: string;
+  /** Revision observed by the editor; stale values are rejected. */
+  expectedRevision?: number;
   /**
    * Challenge title
    * @minLength 1
@@ -2335,11 +2546,30 @@ export interface AdBatchSubmitResultModel {
 export interface AdTokenGenerateResultModel {
   token: string;
   hint: string;
-  rotatedAt: string;
+  operationId: string;
+  revision: number;
+  participationId: number;
+  teamId: number;
+  /** Unix milliseconds. */
+  recoveryExpiresAt: number;
+  /** Unix milliseconds. */
+  rotatedAt: number;
+}
+
+export interface PlayerCredentialMutationModel {
+  operationId: string;
+  expectedRevision: number;
+}
+
+export interface PlayerCredentialMutationResultModel {
+  operationId: string;
+  revision: number;
+  /** Unix milliseconds. */
+  recoveryExpiresAt: number;
 }
 
 /** A&D SSH key — body for POST /api/Game/{id}/Ad/Ssh/Key. */
-export interface AdSshKeyUploadModel {
+export interface AdSshKeyUploadModel extends PlayerCredentialMutationModel {
   publicKey: string;
 }
 
@@ -2349,11 +2579,17 @@ export interface AdSshKeyInfoModel {
   algorithm: string;
   fingerprint: string;
   platformGenerated: boolean;
-  createdAt?: string | null;
-  lastUsedAt?: string | null;
+  /** Unix milliseconds. */
+  createdAt?: number | null;
+  /** Unix milliseconds. */
+  lastUsedAt?: number | null;
   /** Hostname:port the player ssh's to (Ad:Ssh:PublicHost/Port). */
   jumpHost?: string | null;
+  revision: number;
 }
+
+/** A&D SSH key — successful upload response with mutation ownership. */
+export interface AdSshKeyMutationResultModel extends AdSshKeyInfoModel, PlayerCredentialMutationResultModel {}
 
 /** A&D SSH key — server-generated keypair (private key shown once). */
 export interface AdSshKeyGeneratedModel {
@@ -2361,7 +2597,12 @@ export interface AdSshKeyGeneratedModel {
   publicKey: string;
   privateKey: string;
   fingerprint: string;
-  createdAt: string;
+  operationId: string;
+  revision: number;
+  /** Unix milliseconds. */
+  recoveryExpiresAt: number;
+  /** Unix milliseconds. */
+  createdAt: number;
 }
 
 export interface AdEpochScoreModel {
@@ -2445,11 +2686,17 @@ export interface AdScoreboardModel {
 export interface AdTokenHintModel {
   exists: boolean;
   hint: string;
-  createdAt?: string | null;
-  lastRotatedAt?: string | null;
-  lastUsedAt?: string | null;
+  /** Unix milliseconds. */
+  createdAt?: number | null;
+  /** Unix milliseconds. */
+  lastRotatedAt?: number | null;
+  /** Unix milliseconds. */
+  lastUsedAt?: number | null;
   /** True iff caller is captain of the participating team. */
   canManage: boolean;
+  revision: number;
+  participationId: number;
+  teamId: number;
 }
 
 /** A&D — per-service row in the player's state view. */
@@ -2578,6 +2825,8 @@ export interface AdChallengeStateModel {
   challengeId: number;
   title: string;
   isEnabled: boolean;
+  /** Optimistic-concurrency fence for enabled-state commands. */
+  controlRevision: number;
   tickSeconds: number;
   flagLifetimeTicks: number;
   teamsWithLiveContainer?: number | null;
@@ -2617,6 +2866,10 @@ export interface AdSnapshotChangesModel {
   /** True when computed live from the running container (mid-game), not a stored snapshot. */
   live?: boolean;
   changes: AdSnapshotChange[];
+  /** Total runtime entries observed before response sanitization and caps. */
+  observedChanges?: number;
+  /** True when unsafe or excess entries were omitted from this bounded response. */
+  truncated?: boolean;
   /** Path categories filtered out of `changes` (runtime/churn blacklist), shown via the info button. */
   filteredCategories?: string[];
 }
@@ -2677,6 +2930,8 @@ export interface AdGameStateModel {
   /** @format uint64 */
   roundEndsAt?: number | null;
   scoringPaused: boolean;
+  /** Optimistic-concurrency fence for scoring desired-state commands. */
+  controlRevision: number;
   /** When scoring was paused (null if running) — the UI freezes the round timer at this instant. */
   /** @format uint64 */
   scoringPausedAt?: number | null;
@@ -2712,6 +2967,7 @@ export interface AdLiveStateModel {
   /** @format uint64 */
   roundEndsAt?: number | null;
   scoringPaused: boolean;
+  controlRevision: number;
   /** @format uint64 */
   scoringPausedAt?: number | null;
   /** @format uint64 */
@@ -2725,12 +2981,59 @@ export interface AdOverrideCheckModel {
   note?: string | null;
 }
 
+export interface AdScoringDesiredState {
+  paused: boolean;
+  revision: number;
+}
+
+export interface AdScoringCommandResult {
+  scoringPaused: boolean;
+  revision: number;
+}
+
+export interface AdChallengeDesiredState {
+  enabled: boolean;
+  revision: number;
+}
+
+export interface AdChallengeCommandResult {
+  isEnabled: boolean;
+  revision: number;
+}
+
+export type ControlJobStatus = "Queued" | "Running" | "Succeeded" | "Failed" | "Cancelled";
+
+export interface ControlJobModel {
+  id: string;
+  kind: string;
+  scopeKey: string;
+  gameId: number;
+  challengeId?: number | null;
+  operationId: string;
+  fingerprint: string;
+  status: ControlJobStatus;
+  progressCurrent: number;
+  progressTotal: number;
+  requestedGeneration: number;
+  result?: Record<string, unknown> | null;
+  error?: string | null;
+  cancellationRequested: boolean;
+  /** @format uint64 */
+  createdAtUtc: number;
+  /** @format uint64 */
+  updatedAtUtc: number;
+  /** @format uint64 */
+  finishedAtUtc?: number | null;
+}
+
 /** New attachment information (Edit) */
 export interface AttachmentCreateModel {
   /** Attachment type */
   attachmentType?: FileType;
   /** File hash (local file) */
   fileHash?: string | null;
+  /** Opaque staged-upload identity returned by the assets API. */
+  uploadId?: string | null;
   /** File URL (remote file) */
   remoteUrl?: string | null;
 }
@@ -2747,8 +3050,20 @@ export interface FlagCreateModel {
   attachmentType?: FileType;
   /** File hash (local file) */
   fileHash?: string | null;
+  /** Opaque staged-upload identity returned by the assets API. */
+  uploadId?: string | null;
   /** File URL (remote file) */
   remoteUrl?: string | null;
+}
+
+export interface FlagImportRequest {
+  operationId: string;
+  flags: FlagCreateModel[];
+}
+
+export interface FlagImportResult {
+  inserted: number;
+  duplicates: number;
 }
 
 /** List response */
@@ -3393,6 +3708,26 @@ export interface CheatInfoModel {
   submission: Submission & { answer: string; status: AnswerResult; time: number };
 }
 
+/** One stable incident row in the bounded monitor feed. */
+export interface CheatIncidentPageItem extends CheatInfoModel {
+  id: number;
+  /** Unix milliseconds used with id as the older-page keyset cursor. */
+  observedAt: number;
+}
+
+export interface CheatIncidentCursor {
+  observedAt: number;
+  id: number;
+}
+
+/** Bounded initial, older-history, or reconnect-delta incident page. */
+export interface CheatIncidentPage {
+  data: CheatIncidentPageItem[];
+  nextBefore: CheatIncidentCursor | null;
+  checkpointId: number;
+  hasMore: boolean;
+}
+
 /** Team participation information */
 export interface ParticipationModel {
   /**
@@ -3435,6 +3770,10 @@ export interface ChallengeTrafficModel {
    * @format int32
    */
   count?: number;
+  /** Total indexed capture bytes. */
+  size?: number;
+  /** Unix milliseconds of the newest capture. */
+  updateTime?: number;
 }
 
 /** Team traffic information */
@@ -3460,48 +3799,81 @@ export interface TeamTrafficModel {
    * @format int32
    */
   count?: number;
+  /** Total indexed capture bytes. */
+  size?: number;
+  /** Unix milliseconds of the newest capture. */
+  updateTime?: number;
+}
+
+export interface TrafficInventoryPage<T> {
+  items: T[];
+  nextCursor: string | null;
 }
 
 /** File record */
 /** Direction of a captured payload chunk relative to the proxied container */
 export type TrafficFlowDirection = "ContainerToTeam" | "TeamToContainer"
 
-/** Compact summary of a single proxied TCP session in a pcap */
+/** Compact summary of one bounded TCP-session index entry. Times are Unix milliseconds. */
 export interface TrafficFlowSummary {
+  /** Stable canonical identity for disambiguating reused connection ports. */
+  flowId: string
   connectionPort: number
-  firstSeenUtc: string
-  lastSeenUtc: string
+  firstSeenUtc: number
+  lastSeenUtc: number
   peerIp: string
   packetsIn: number
   packetsOut: number
   bytesIn: number
   bytesOut: number
   flagHits: number
+  payloadTruncated: boolean
 }
 
-/** One contiguous payload chunk in a flow */
+/** One retained packet-payload chunk in a flow. Payload retention is explicitly bounded. */
 export interface TrafficFlowChunk {
   direction: TrafficFlowDirection
-  timestampUtc: string
+  timestampUtc: number
   /** Base64-encoded raw bytes */
   payloadBase64: string
   /** Byte offsets within the decoded payload where a known flag begins */
   flagOffsets: number[]
 }
 
-/** Full payload detail of a single flow */
+/** Bounded functional payload detail from the exact snapshot that produced the summary. */
 export interface TrafficFlowDetail extends TrafficFlowSummary {
+  snapshotVersion: string
   chunks: TrafficFlowChunk[]
 }
 
-/** Filter parameters for the flow-list endpoint */
-export interface FlowFilter {
+/** Validated filter and page parameters for the flow-list endpoint. */
+export interface TrafficFlowQuery {
   regexPattern?: string
   peerIpContains?: string
-  startUtc?: string
-  endUtc?: string
+  startUtc?: number
+  endUtc?: number
   direction?: TrafficFlowDirection
   flagsOnly?: boolean
+  page?: number
+  pageSize?: number
+}
+
+/** One page bound to an immutable file identity, size, and modification time. */
+export interface TrafficFlowPage {
+  items: TrafficFlowSummary[]
+  page: number
+  pageSize: number
+  totalItems: number
+  totalPages: number
+  snapshotVersion: string
+  indexedPayloadBytes: number
+  payloadTruncated: boolean
+}
+
+/** Snapshot selection for a detail read. */
+export interface TrafficFlowDetailQuery {
+  snapshotVersion?: string
+  flowId?: string
 }
 
 /** Result of a challenge import (tarball or github) */
@@ -3513,8 +3885,22 @@ export interface ChallengeImportResult {
   messages: string[]
 }
 
+export type ChallengeImportJobStatus = "Queued" | "Running" | "Succeeded" | "Failed"
+
+/** Durable identity and terminal result for one admitted challenge import. */
+export interface ChallengeImportJobModel {
+  jobId: string
+  status: ChallengeImportJobStatus
+  result?: ChallengeImportResult | null
+  error?: string | null
+  createdAt: number
+  updatedAt: number
+}
+
 /** Body for POST /api/Edit/Games/{id}/Challenges/ImportFromGitHub */
 export interface ImportFromGitHubModel {
+  /** Stable UUID used to recover an exact retry without duplicating work. */
+  operationId?: string | null
   repoUrl: string
   ref?: string | null
   subpath?: string | null
@@ -3566,7 +3952,17 @@ export interface RepoBindingInfoModel {
    * Requires a PAT with Contents:write scope.
    */
   pushOnEdit?: boolean
+  /** Number of coalesced challenge edits waiting for upstream publication. */
+  pushBacklog?: number
+  /** Latest bounded push failure, when queued work is retrying. */
+  pushLastError?: string | null
   games: RepoBindingGameSummary[]
+}
+
+export interface ArrayResponseOfRepoBindingInfoModel {
+  data: RepoBindingInfoModel[]
+  length: number
+  total?: number
 }
 
 /** Body for POST /api/Admin/RepoBindings */
@@ -3612,6 +4008,12 @@ export interface RepoBindingScanHistoryModel {
   messages?: string | null
 }
 
+export interface ArrayResponseOfRepoBindingScanHistoryModel {
+  data: RepoBindingScanHistoryModel[]
+  length: number
+  total?: number
+}
+
 /** One file inside the audit archive */
 export interface ChallengeAuditFile {
   path: string
@@ -3626,6 +4028,21 @@ export interface ChallengeAuditModel {
   archiveAvailable: boolean
   buildStatus?: ChallengeBuildStatus
   lastBuildLog?: string | null
+}
+
+/** Compact mutable challenge-build state. Source archive inspection is a separate immutable read. */
+export interface ChallengeBuildStatusModel {
+  challengeId: number
+  buildStatus: ChallengeBuildStatus
+  lastBuildLog?: string | null
+  archiveAvailable: boolean
+  archiveVersion?: string | null
+}
+
+/** Compact parent-list state; logs and archive metadata belong to the detail resource. */
+export interface ChallengeBuildListStatusModel {
+  challengeId: number
+  buildStatus: ChallengeBuildStatus
 }
 
 /** Row returned by GET .../PendingChallenges (includes Pending + Rejected) */
@@ -3708,6 +4125,12 @@ export interface GameDetailModel {
    * @format uint64
    */
   writeupDeadline: number;
+}
+
+/** Compact live participant projection; challenge catalog and team token are bootstrap-only. */
+export interface GameParticipantDeltaModel {
+  /** Current scoreboard row for the caller's team. */
+  rank?: ScoreboardItem | null;
 }
 
 /** Participation for review (Admin). Kept for the legacy raw-array endpoint. */
@@ -3865,6 +4288,8 @@ export interface ClientChallengeVariant {
 }
 
 export interface ClientFlagContext {
+  /** Current accepted participation used to scope durable container operation recovery. */
+  participationId?: number | null;
   /** Immutable container UUID used to fence asynchronous lifecycle results. */
   instanceId?: string | null;
   /**
@@ -4164,6 +4589,11 @@ export interface HashPowChallenge {
    * @format int32
    */
   difficulty?: number;
+  /**
+   * Absolute proof expiry
+   * @format int64
+   */
+  expiresAt?: number;
 }
 
 /** Team information update */
@@ -4178,6 +4608,10 @@ export interface TeamUpdateModel {
    * @maxLength 255
    */
   bio?: string | null;
+  /** Expected team profile revision */
+  profileRevision?: number;
+  /** Stable identity for retrying this update */
+  operationId?: string;
 }
 
 export interface TeamTransferModel {
@@ -4197,7 +4631,8 @@ export interface SignatureVerifyModel {
    */
   teamToken: string;
   /**
-   * Game public key, Base64 encoded
+   * Canonical stored game public key, Base64 encoded. Verification also
+   * requires a live accepted participation for the signed team.
    * @minLength 1
    */
   publicKey: string;
@@ -4395,6 +4830,35 @@ export class Api<
   SecurityDataType extends unknown,
 > extends HttpClient<SecurityDataType> {
   account = {
+    /**
+     * @description Get compact solve statistics for the current user
+     *
+     * @tags Account
+     * @name AccountStats
+     * @request GET:/api/account/stats
+     */
+    accountStats: (params: RequestParams = {}) =>
+      this.request<UserStatsModel, RequestResponse>({
+        path: `/api/account/stats`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useAccountStats: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<UserStatsModel, RequestResponse>(
+        doFetch ? `/api/account/stats` : null,
+        options,
+      ),
+
+    mutateAccountStats: (
+      data?: UserStatsModel | Promise<UserStatsModel>,
+      options?: MutatorOptions,
+    ) => mutate<UserStatsModel>(`/api/account/stats`, data, options),
+
     /**
      * @description Use this API to update user's avatar. User permissions required.
      *
@@ -5381,10 +5845,19 @@ export class Api<
      * @summary Reset user password
      * @request DELETE:/api/admin/users/{userid}/password
      */
-    adminResetPassword: (userid: string, params: RequestParams = {}) =>
+    adminResetPassword: (userid: string, operationId: string, params: RequestParams = {}) =>
       this.request<string, RequestResponse>({
         path: `/api/admin/users/${userid}/password`,
         method: "DELETE",
+        query: { operationId },
+        format: "json",
+        ...params,
+      }),
+
+    adminRecoverUserImport: (operationId: string, params: RequestParams = {}) =>
+      this.request<AdminUserImportJobStatus, RequestResponse>({
+        path: `/api/admin/users/import/${operationId}`,
+        method: "GET",
         format: "json",
         ...params,
       }),
@@ -5539,11 +6012,40 @@ export class Api<
      * @request PUT:/api/admin/config
      */
     adminUpdateConfigs: (data: ConfigEditModel, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+      this.request<SettingsMutationResult, RequestResponse>({
         path: `/api/admin/config`,
         method: "PUT",
         body: data,
         type: ContentType.Json,
+        ...params,
+      }),
+
+    /** Reconcile a committed settings intent after an ambiguous response. */
+    adminGetSettingsOperation: (
+      operationId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<SettingsMutationResult, RequestResponse>({
+        path: `/api/admin/config/operations/${operationId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /** Stage an optional logo for one settings intent without publishing it. */
+    adminStageSettingsBranding: (
+      operationId: string,
+      data: {
+        /** @format binary */
+        file?: File | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<SettingsBrandingStageResult, RequestResponse>({
+        path: `/api/admin/config/logo/stage/${operationId}`,
+        method: "POST",
+        body: data,
+        type: ContentType.FormData,
         ...params,
       }),
 
@@ -5815,10 +6317,15 @@ export class Api<
      * @summary Get all Writeup basic information
      * @request GET:/api/admin/writeups/{id}
      */
-    adminWriteups: (id: number, params: RequestParams = {}) =>
+    adminWriteups: (
+      id: number,
+      query?: { count?: number; skip?: number; divisionId?: number },
+      params: RequestParams = {},
+    ) =>
       this.request<WriteupInfoModel, RequestResponse>({
         path: `/api/admin/writeups/${id}`,
         method: "GET",
+        query: query,
         format: "json",
         ...params,
       }),
@@ -5832,11 +6339,12 @@ export class Api<
      */
     useAdminWriteups: (
       id: number,
+      query?: { count?: number; skip?: number; divisionId?: number },
       options?: SWRConfiguration,
       doFetch: boolean = true,
     ) =>
       useSWR<WriteupInfoModel, RequestResponse>(
-        doFetch ? `/api/admin/writeups/${id}` : null,
+        doFetch ? [`/api/admin/writeups/${id}`, query] : null,
         options,
       ),
 
@@ -5850,9 +6358,10 @@ export class Api<
      */
     mutateAdminWriteups: (
       id: number,
+      query?: { count?: number; skip?: number; divisionId?: number },
       data?: WriteupInfoModel | Promise<WriteupInfoModel>,
       options?: MutatorOptions,
-    ) => mutate<WriteupInfoModel>(`/api/admin/writeups/${id}`, data, options),
+    ) => mutate<WriteupInfoModel>([`/api/admin/writeups/${id}`, query], data, options),
 
     /**
      * @description List configured repo bindings
@@ -5860,24 +6369,38 @@ export class Api<
      * @name AdminListRepoBindings
      * @request GET:/api/admin/repobindings
      */
-    adminListRepoBindings: (params: RequestParams = {}) =>
-      this.request<RepoBindingInfoModel[], RequestResponse>({
+    adminListRepoBindings: (
+      query?: { count?: number; skip?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfRepoBindingInfoModel, RequestResponse>({
         path: `/api/admin/repobindings`,
         method: "GET",
+        query,
         format: "json",
         ...params,
       }),
 
-    useAdminListRepoBindings: (options?: SWRConfiguration, doFetch: boolean = true) =>
-      useSWR<RepoBindingInfoModel[], RequestResponse>(
-        doFetch ? `/api/admin/repobindings` : null,
+    useAdminListRepoBindings: (
+      query?: { count?: number; skip?: number },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfRepoBindingInfoModel, RequestResponse>(
+        doFetch ? [`/api/admin/repobindings`, query] : null,
         options,
       ),
 
     mutateAdminListRepoBindings: (
-      data?: RepoBindingInfoModel[] | Promise<RepoBindingInfoModel[]>,
+      query?: { count?: number; skip?: number },
+      data?: ArrayResponseOfRepoBindingInfoModel | Promise<ArrayResponseOfRepoBindingInfoModel>,
       options?: MutatorOptions,
-    ) => mutate<RepoBindingInfoModel[]>(`/api/admin/repobindings`, data, options),
+    ) =>
+      mutate<ArrayResponseOfRepoBindingInfoModel>(
+        [`/api/admin/repobindings`, query],
+        data,
+        options,
+      ),
 
     /**
      * @description Register a new repo binding (immediately scans for .gzevent manifests)
@@ -5918,10 +6441,15 @@ export class Api<
      * @name AdminGetRepoBindingScans
      * @request GET:/api/admin/repobindings/{id}/scans
      */
-    adminGetRepoBindingScans: (id: number, params: RequestParams = {}) =>
-      this.request<RepoBindingScanHistoryModel[], RequestResponse>({
+    adminGetRepoBindingScans: (
+      id: number,
+      query?: { count?: number; skip?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfRepoBindingScanHistoryModel, RequestResponse>({
         path: `/api/admin/repobindings/${id}/scans`,
         method: "GET",
+        query,
         format: "json",
         ...params,
       }),
@@ -6075,10 +6603,11 @@ export class Api<
      * @name AdminBulkRebuildFailed
      * @request POST:/api/admin/games/{gameId}/bulkrebuild
      */
-    adminBulkRebuildFailed: (gameId: number, params: RequestParams = {}) =>
-      this.request<BulkRebuildResultModel, RequestResponse>({
+    adminBulkRebuildFailed: (gameId: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/admin/games/${gameId}/bulkrebuild`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),
@@ -6214,10 +6743,11 @@ export class Api<
      * @name AdminReenqueueBuild
      * @request POST:/api/admin/builds/{auditId}/reenqueue
      */
-    adminReenqueueBuild: (auditId: number, params: RequestParams = {}) =>
-      this.request<ChallengeAuditModel, RequestResponse>({
+    adminReenqueueBuild: (auditId: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/admin/builds/${auditId}/reenqueue`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),
@@ -6256,6 +6786,24 @@ export class Api<
       this.request<ApiToken[], RequestResponse>({
         path: `/api/tokens`,
         method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /** Retrieve one bounded page without changing the legacy first-page call. */
+    apiTokenListTokensPage: (
+      query?: {
+        /** @format uint32 */
+        page?: number;
+        /** @format uint16 */
+        pageSize?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ApiToken[], RequestResponse>({
+        path: `/api/tokens`,
+        method: "GET",
+        query: query,
         format: "json",
         ...params,
       }),
@@ -6401,9 +6949,11 @@ export class Api<
       data: {
         files?: File[] | null;
       },
-      query?: {
+      query: {
         /** Unified filename */
         filename?: string | null;
+        /** Stable identity for a replayable upload/consume flow. */
+        operationId: string;
       },
       params: RequestParams = {},
     ) =>
@@ -6583,14 +7133,27 @@ export class Api<
     editAddFlags: (
       id: number,
       cId: number,
-      data: FlagCreateModel[],
+      data: FlagImportRequest,
       params: RequestParams = {},
     ) =>
-      this.request<void, RequestResponse>({
+      this.request<FlagImportResult, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${cId}/flags`,
         method: "POST",
         body: data,
         type: ContentType.Json,
+        ...params,
+      }),
+
+    editGetFlags: (
+      id: number,
+      cId: number,
+      query?: { offset?: number; limit?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<FlagPageModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/flags`,
+        method: "GET",
+        query,
         ...params,
       }),
 
@@ -6602,9 +7165,29 @@ export class Api<
      * @summary Add Game
      * @request POST:/api/edit/games
      */
-    editAddGame: (data: GameInfoModel, params: RequestParams = {}) =>
+    editAddGame: (data: GameInfoModel, operationId: string, params: RequestParams = {}) =>
       this.request<GameInfoModel, RequestResponse>({
         path: `/api/edit/games`,
+        method: "POST",
+        body: data,
+        headers: { "Idempotency-Key": operationId },
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Reusing an operation ID with identical input returns the
+     * original hidden destination game.
+     *
+     * @tags Edit
+     * @name EditCloneGame
+     * @summary Clone Game
+     * @request POST:/api/edit/games/{id}/clone
+     */
+    editCloneGame: (id: number, data: GameCloneModel, params: RequestParams = {}) =>
+      this.request<number, RequestResponse>({
+        path: `/api/edit/games/${id}/clone`,
         method: "POST",
         body: data,
         type: ContentType.Json,
@@ -6664,11 +7247,12 @@ export class Api<
      * @summary Add Post
      * @request POST:/api/edit/posts
      */
-    editAddPost: (data: PostEditModel, params: RequestParams = {}) =>
+    editAddPost: (data: PostEditModel, operationId: string, params: RequestParams = {}) =>
       this.request<string, RequestResponse>({
         path: `/api/edit/posts`,
         method: "POST",
         body: data,
+        headers: { "Idempotency-Key": operationId },
         type: ContentType.Json,
         format: "json",
         ...params,
@@ -6727,11 +7311,13 @@ export class Api<
     editRolloutChallengeWorkloads: (
       id: number,
       cId: number,
+      operationId: string,
       params: RequestParams = {},
     ) =>
-      this.request<WorkloadRolloutModel, RequestResponse>({
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${cId}/workload/rollout`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),
@@ -7034,6 +7620,20 @@ export class Api<
       this.request<ChallengeInfoModel[], RequestResponse>({
         path: `/api/edit/games/${id}/challenges`,
         method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    editMutateGameChallengesBulk: (
+      id: number,
+      data: BulkChallengeMutationRequest,
+      params: RequestParams = {},
+    ) =>
+      this.request<BulkChallengeMutationResult, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/bulk`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -7569,10 +8169,17 @@ export class Api<
      * @name EditAdToggleChallenge
      * @request POST:/api/edit/games/{id}/ad/Challenges/{challengeId}/Toggle
      */
-    editAdToggleChallenge: (id: number, challengeId: number, params: RequestParams = {}) =>
-      this.request<{ isEnabled: boolean }, RequestResponse>({
+    editAdToggleChallenge: (
+      id: number,
+      challengeId: number,
+      data: AdChallengeDesiredState,
+      params: RequestParams = {},
+    ) =>
+      this.request<AdChallengeCommandResult, RequestResponse>({
         path: `/api/edit/games/${id}/ad/Challenges/${challengeId}/Toggle`,
         method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -7583,10 +8190,16 @@ export class Api<
      * @name EditAdForceRestart
      * @request POST:/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Restart
      */
-    editAdForceRestart: (id: number, adTeamServiceId: number, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+    editAdForceRestart: (
+      id: number,
+      adTeamServiceId: number,
+      operationId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/ad/Services/${adTeamServiceId}/Restart`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         ...params,
       }),
 
@@ -7627,7 +8240,7 @@ export class Api<
         typeof operationIdOrParams === "string"
           ? params
           : operationIdOrParams ?? params;
-      return this.request<void, RequestResponse>({
+      return this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/ad/EnsureContainers`,
         method: "POST",
         ...requestParams,
@@ -7644,10 +8257,12 @@ export class Api<
      * @name EditAdToggleScoringPause
      * @request POST:/api/edit/games/{id}/ad/ScoringPause
      */
-    editAdToggleScoringPause: (id: number, params: RequestParams = {}) =>
-      this.request<{ scoringPaused: boolean }, RequestResponse>({
+    editAdToggleScoringPause: (id: number, data: AdScoringDesiredState, params: RequestParams = {}) =>
+      this.request<AdScoringCommandResult, RequestResponse>({
         path: `/api/edit/games/${id}/ad/ScoringPause`,
         method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -7847,11 +8462,13 @@ export class Api<
     editSubmitChallenge: (
       id: number,
       archive: File,
+      operationId: string,
       params: RequestParams = {},
     ) => {
       const fd = new FormData()
       fd.append("archive", archive)
-      return this.request<ChallengeImportResult, RequestResponse>({
+      fd.append("operationId", operationId)
+      return this.request<ChallengeImportJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/submit`,
         method: "POST",
         body: fd,
@@ -7870,11 +8487,13 @@ export class Api<
     editImportChallenge: (
       id: number,
       archive: File,
+      operationId: string,
       params: RequestParams = {},
     ) => {
       const fd = new FormData()
       fd.append("archive", archive)
-      return this.request<ChallengeImportResult, RequestResponse>({
+      fd.append("operationId", operationId)
+      return this.request<ChallengeImportJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/import`,
         method: "POST",
         body: fd,
@@ -7895,11 +8514,30 @@ export class Api<
       data: ImportFromGitHubModel,
       params: RequestParams = {},
     ) =>
-      this.request<ChallengeImportResult, RequestResponse>({
+      this.request<ChallengeImportJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/importfromgithub`,
         method: "POST",
         body: data,
         type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Recover the status/result of an admitted challenge import.
+     *
+     * @tags Edit
+     * @name EditGetChallengeImportJob
+     * @request GET:/api/edit/games/{id}/challenges/importjobs/{jobId}
+     */
+    editGetChallengeImportJob: (
+      id: number,
+      jobId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeImportJobModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/importjobs/${jobId}`,
+        method: "GET",
         format: "json",
         ...params,
       }),
@@ -7963,6 +8601,59 @@ export class Api<
       }),
 
     /**
+     * @description Compact build status for one challenge. Does not load or parse the retained source archive.
+     * @tags Edit
+     * @name EditGetChallengeBuildStatus
+     * @request GET:/api/edit/games/{id}/challenges/{cId}/buildstatus
+     */
+    editGetChallengeBuildStatus: (
+      id: number,
+      cId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeBuildStatusModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/buildstatus`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useEditGetChallengeBuildStatus: (
+      id: number,
+      cId: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ChallengeBuildStatusModel, RequestResponse>(
+        doFetch ? `/api/edit/games/${id}/challenges/${cId}/buildstatus` : null,
+        options,
+      ),
+
+    /**
+     * @description Compact build-status inventory for all active challenges in one event.
+     * @tags Edit
+     * @name EditGetChallengeBuildStatuses
+     * @request GET:/api/edit/games/{id}/challenges/buildstatuses
+     */
+    editGetChallengeBuildStatuses: (id: number, params: RequestParams = {}) =>
+      this.request<ChallengeBuildListStatusModel[], RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/buildstatuses`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useEditGetChallengeBuildStatuses: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ChallengeBuildListStatusModel[], RequestResponse>(
+        doFetch ? `/api/edit/games/${id}/challenges/buildstatuses` : null,
+        options,
+      ),
+
+    /**
      * @description Re-run the auto-build pipeline against a challenge's persisted archive.
      * @tags Edit
      * @name EditRebuildChallengeImage
@@ -7971,11 +8662,13 @@ export class Api<
     editRebuildChallengeImage: (
       id: number,
       cId: number,
+      operationId: string,
       params: RequestParams = {},
     ) =>
-      this.request<ChallengeAuditModel, RequestResponse>({
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${cId}/rebuild`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),
@@ -8066,6 +8759,36 @@ export class Api<
       data?: GameDetailModel | Promise<GameDetailModel>,
       options?: MutatorOptions,
     ) => mutate<GameDetailModel>(`/api/game/${id}/details`, data, options),
+
+    /**
+     * @description Retrieves only the caller team's live scoreboard projection.
+     * @tags Game
+     * @name GameParticipantDelta
+     * @request GET:/api/game/{id}/details/participant
+     */
+    gameParticipantDelta: (id: number, params: RequestParams = {}) =>
+      this.request<GameParticipantDeltaModel, RequestResponse>({
+        path: `/api/game/${id}/details/participant`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useGameParticipantDelta: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<GameParticipantDeltaModel, RequestResponse>(
+        doFetch ? `/api/game/${id}/details/participant` : null,
+        options,
+      ),
+
+    mutateGameParticipantDelta: (
+      id: number,
+      data?: GameParticipantDeltaModel | Promise<GameParticipantDeltaModel>,
+      options?: MutatorOptions,
+    ) => mutate<GameParticipantDeltaModel>(`/api/game/${id}/details/participant`, data, options),
 
     /**
      * @description Retrieves game cheat data; requires Monitor permission
@@ -8987,13 +9710,13 @@ export class Api<
       challengeId: number,
       partId: number,
       filename: string,
-      filter: FlowFilter = {},
+      query: TrafficFlowQuery = {},
       params: RequestParams = {},
     ) =>
-      this.request<TrafficFlowSummary[], RequestResponse>({
+      this.request<TrafficFlowPage, RequestResponse>({
         path: `/api/game/captures/${challengeId}/${partId}/${filename}/flows`,
         method: "GET",
-        query: filter,
+        query,
         format: "json",
         ...params,
       }),
@@ -9011,11 +9734,13 @@ export class Api<
       partId: number,
       filename: string,
       connectionPort: number,
+      query: TrafficFlowDetailQuery = {},
       params: RequestParams = {},
     ) =>
       this.request<TrafficFlowDetail, RequestResponse>({
         path: `/api/game/captures/${challengeId}/${partId}/${filename}/flow/${connectionPort}`,
         method: "GET",
+        query,
         format: "json",
         ...params,
       }),
@@ -9525,10 +10250,40 @@ export class Api<
      * @name GameAdResetService
      * @request POST:/api/Game/{id}/Ad/Services/{adTeamServiceId}/Reset
      */
-    gameAdResetService: (id: number, adTeamServiceId: number, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+    gameAdResetService: (
+      id: number,
+      adTeamServiceId: number,
+      operationId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Services/${adTeamServiceId}/Reset`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
+        ...params,
+      }),
+
+    gameAdResetJob: (id: number, jobId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/ResetJobs/${jobId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    gameAdCancelResetJob: (id: number, jobId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/ResetJobs/${jobId}`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    gameAdResetJobByOperation: (id: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/ResetJobs/Operations/${operationId}`,
+        method: "GET",
+        format: "json",
         ...params,
       }),
 
@@ -9578,10 +10333,16 @@ export class Api<
      * @name GameAdRotateToken
      * @request POST:/api/Game/{id}/Ad/Token
      */
-    gameAdRotateToken: (id: number, params: RequestParams = {}) =>
+    gameAdRotateToken: (
+      id: number,
+      data: PlayerCredentialMutationModel,
+      params: RequestParams = {},
+    ) =>
       this.request<AdTokenGenerateResultModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Token`,
         method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -9633,10 +10394,17 @@ export class Api<
      * @name GameAdRevokeToken
      * @request DELETE:/api/Game/{id}/Ad/Token
      */
-    gameAdRevokeToken: (id: number, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+    gameAdRevokeToken: (
+      id: number,
+      data: PlayerCredentialMutationModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<PlayerCredentialMutationResultModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Token`,
         method: "DELETE",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
         ...params,
       }),
 
@@ -9647,7 +10415,7 @@ export class Api<
      * @request POST:/api/Game/{id}/Ad/Ssh/Key
      */
     adGameUploadSshKey: (id: number, data: AdSshKeyUploadModel, params: RequestParams = {}) =>
-      this.request<AdSshKeyInfoModel, RequestResponse>({
+      this.request<AdSshKeyMutationResultModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Ssh/Key`,
         method: "POST",
         body: data,
@@ -9662,10 +10430,16 @@ export class Api<
      * @name AdGameGenerateSshKey
      * @request POST:/api/Game/{id}/Ad/Ssh/Key/Generate
      */
-    adGameGenerateSshKey: (id: number, params: RequestParams = {}) =>
+    adGameGenerateSshKey: (
+      id: number,
+      data: PlayerCredentialMutationModel,
+      params: RequestParams = {},
+    ) =>
       this.request<AdSshKeyGeneratedModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Ssh/Key/Generate`,
         method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -9706,10 +10480,17 @@ export class Api<
      * @name AdGameRevokeSshKey
      * @request DELETE:/api/Game/{id}/Ad/Ssh/Key
      */
-    adGameRevokeSshKey: (id: number, params: RequestParams = {}) =>
-      this.request<void, RequestResponse>({
+    adGameRevokeSshKey: (
+      id: number,
+      data: PlayerCredentialMutationModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<PlayerCredentialMutationResultModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Ssh/Key`,
         method: "DELETE",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
         ...params,
       }),
 
@@ -10562,6 +11343,35 @@ export class Api<
   };
   team = {
     /**
+     * @description Get compact current-user team choices for event enrollment
+     *
+     * @tags Team
+     * @name TeamGetSelector
+     * @request GET:/api/team/selector
+     */
+    teamGetSelector: (params: RequestParams = {}) =>
+      this.request<TeamSelectorInfoModel[], RequestResponse>({
+        path: `/api/team/selector`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useTeamGetSelector: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<TeamSelectorInfoModel[], RequestResponse>(
+        doFetch ? `/api/team/selector` : null,
+        options,
+      ),
+
+    mutateTeamGetSelector: (
+      data?: TeamSelectorInfoModel[] | Promise<TeamSelectorInfoModel[]>,
+      options?: MutatorOptions,
+    ) => mutate<TeamSelectorInfoModel[]>(`/api/team/selector`, data, options),
+
+    /**
      * @description Interface to accept invitation, requires User permission and not being in team
      *
      * @tags Team
@@ -10600,6 +11410,10 @@ export class Api<
       data: {
         /** @format binary */
         file?: File | null;
+        /** Stable identity for retrying this avatar publication. */
+        operationId?: string | null;
+        /** @format int64 */
+        profileRevision?: number;
       },
       params: RequestParams = {},
     ) =>
@@ -10610,6 +11424,10 @@ export class Api<
         type: ContentType.FormData,
         format: "json",
         ...params,
+        headers: {
+          ...params.headers,
+          ...(data.operationId ? { "x-rsctf-operation-id": data.operationId } : {}),
+        },
       }),
 
     /**
@@ -10620,11 +11438,12 @@ export class Api<
      * @summary Create team
      * @request POST:/api/team
      */
-    teamCreateTeam: (data: TeamUpdateModel, params: RequestParams = {}) =>
+    teamCreateTeam: (data: TeamUpdateModel, operationId: string, params: RequestParams = {}) =>
       this.request<TeamInfoModel, RequestResponse>({
         path: `/api/team`,
         method: "POST",
         body: data,
+        headers: { "Idempotency-Key": operationId },
         type: ContentType.Json,
         format: "json",
         ...params,
@@ -10747,7 +11566,7 @@ export class Api<
      * @request GET:/api/team/{id}/invite
      */
     teamInviteCode: (id: number, params: RequestParams = {}) =>
-      this.request<string, RequestResponse>({
+      this.request<TeamInviteModel, RequestResponse>({
         path: `/api/team/${id}/invite`,
         method: "GET",
         format: "json",
@@ -10766,7 +11585,7 @@ export class Api<
       options?: SWRConfiguration,
       doFetch: boolean = true,
     ) =>
-      useSWR<string, RequestResponse>(
+      useSWR<TeamInviteModel, RequestResponse>(
         doFetch ? `/api/team/${id}/invite` : null,
         options,
       ),
@@ -10781,9 +11600,9 @@ export class Api<
      */
     mutateTeamInviteCode: (
       id: number,
-      data?: string | Promise<string>,
+      data?: TeamInviteModel | Promise<TeamInviteModel>,
       options?: MutatorOptions,
-    ) => mutate<string>(`/api/team/${id}/invite`, data, options),
+    ) => mutate<TeamInviteModel>(`/api/team/${id}/invite`, data, options),
 
     /**
      * @description User kick API, kick user with corresponding ID, requires team creator permission
@@ -10846,10 +11665,16 @@ export class Api<
      * @summary Update invitation token
      * @request PUT:/api/team/{id}/invite
      */
-    teamUpdateInviteToken: (id: number, params: RequestParams = {}) =>
-      this.request<string, RequestResponse>({
+    teamUpdateInviteToken: (
+      id: number,
+      data: { operationId: string; expectedRevision: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<TeamInviteModel, RequestResponse>({
         path: `/api/team/${id}/invite`,
         method: "PUT",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),
@@ -10898,6 +11723,30 @@ export class Api<
   };
 
   eventSecurity = {
+    getControlJob: (jobId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/edit/jobs/${jobId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    cancelControlJob: (jobId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/edit/jobs/${jobId}`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    getControlJobByOperation: (operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/edit/jobs/operations/${operationId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
     gameVpnChallenge: (gameId: number, params: RequestParams = {}) =>
       this.request<EventVpnChallengeModel, RequestResponse>({
         path: `/api/game/${gameId}/vpn/challenge`,
@@ -10936,18 +11785,20 @@ export class Api<
         ...params,
       }),
 
-    generateVariants: (gameId: number, params: RequestParams = {}) =>
-      this.request<{ generated: number }, RequestResponse>({
+    generateVariants: (gameId: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/edit/games/${gameId}/variants/generate`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),
 
-    deriveFindings: (gameId: number, params: RequestParams = {}) =>
-      this.request<{ inserted: number }, RequestResponse>({
+    deriveFindings: (gameId: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
         path: `/api/admin/games/${gameId}/anti-cheat/derive`,
         method: "POST",
+        headers: { "Idempotency-Key": operationId },
         format: "json",
         ...params,
       }),
@@ -10994,10 +11845,10 @@ export class Api<
 
     createVpnOverride: (
       gameId: number,
-      data: { reason: string; durationMinutes: number },
+      data: { reason: string; durationMinutes: number; operationId: string; expectedPolicyRevision: number },
       params: RequestParams = {},
     ) =>
-      this.request<{ id: string; expiresAtUtc: number }, RequestResponse>({
+      this.request<{ id: string; expiresAtUtc: number; policyRevision: number }, RequestResponse>({
         path: `/api/admin/games/${gameId}/vpn-override`,
         method: "POST",
         body: data,
@@ -11007,7 +11858,7 @@ export class Api<
       }),
 
     listVpnOverrides: (gameId: number, params: RequestParams = {}) =>
-      this.request<EventVpnOverrideModel[], RequestResponse>({
+      this.request<EventVpnOverrideList, RequestResponse>({
         path: `/api/admin/games/${gameId}/vpn-overrides`,
         method: "GET",
         format: "json",
@@ -11017,11 +11868,14 @@ export class Api<
     revokeVpnOverride: (
       gameId: number,
       overrideId: string,
+      data: { operationId: string; expectedPolicyRevision: number },
       params: RequestParams = {},
     ) =>
-      this.request<void, RequestResponse>({
+      this.request<{ id: string; expiresAtUtc: number; policyRevision: number }, RequestResponse>({
         path: `/api/admin/games/${gameId}/vpn-override/${overrideId}/revoke`,
         method: "POST",
+        body: data,
+        type: ContentType.Json,
         ...params,
       }),
   };

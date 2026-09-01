@@ -340,13 +340,21 @@ fn merge_service_detail(
 /// Revision fence for a board the caller is authorized to observe. Public
 /// callers cannot distinguish a private game from an absent one; monitors can
 /// build and cache the private board in their separate cache namespace.
+#[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
+pub(crate) struct AdScoreboardRevision {
+    pub(crate) revision: String,
+    pub(crate) immutable_final: bool,
+}
+
 pub(crate) async fn ad_scoreboard_revision(
     pool: &PgPool,
     game_id: i32,
     is_monitor: bool,
-) -> AppResult<Option<String>> {
-    sqlx::query_scalar::<_, String>(
-        r#"SELECT game.xmin::text
+) -> AppResult<Option<AdScoreboardRevision>> {
+    sqlx::query_as::<_, AdScoreboardRevision>(
+        r#"SELECT game.xmin::text AS revision,
+                  (NOT game.practice_mode AND game.end_time_utc <= clock_timestamp())
+                    AS immutable_final
              FROM "Games" AS game
             WHERE game.id = $1 AND (game.hidden = FALSE OR $2)"#,
     )

@@ -43,6 +43,7 @@ import relativeTime from 'dayjs/plugin/relativeTime'
 import { FC, MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AdChallengePanel } from '@Components/AdChallengePanel'
+import type { AdStateOwner } from '@Components/AdChallengePanel'
 import { ChallengeDeadlineNotice } from '@Components/ChallengeDeadlineNotice'
 import { FlagVerdictOverlay } from '@Components/FlagVerdictOverlay'
 import { InstanceEntry } from '@Components/InstanceEntry'
@@ -110,6 +111,7 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
   gameId?: number
   flagVerdict?: FlagVerdictState | null
   onDismissFlagVerdict?: () => void
+  adStateOwner?: AdStateOwner
 }
 
 export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
@@ -145,6 +147,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     gameId,
     flagVerdict,
     onDismissFlagVerdict,
+    adStateOwner,
     withOverlay = true,
     overlayProps,
     withCloseButton = true,
@@ -181,8 +184,11 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const [comment, setComment] = useState('')
   const [isSubmittingReview, setIsSubmittingReview] = useState(false)
   const [reviewSubmitted, setReviewSubmitted] = useState(false)
+  const reviewSubmittingRef = useRef(false)
+  const reviewChallengeIdRef = useRef<number | undefined>((challenge as any)?.id)
   const flagInputRef = useRef<HTMLInputElement>(null)
   const reviewStartRef = useRef<HTMLButtonElement>(null)
+  const reviewCommentRef = useRef<HTMLTextAreaElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const focusAfterVerdictRef = useRef<FlagVerdictKind | null>(null)
 
@@ -193,6 +199,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   }
 
   useEffect(() => {
+    reviewChallengeIdRef.current = (challenge as any)?.id
     if (flagVerdict || !focusAfterVerdictRef.current) return
 
     const kind = focusAfterVerdictRef.current
@@ -216,6 +223,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   // Keyed on the challenge id — otherwise submitting one review leaves
   // reviewSubmitted=true and blocks the review UI on every OTHER challenge.
   useEffect(() => {
+    reviewSubmittingRef.current = false
+    setIsSubmittingReview(false)
     setRating((challenge as any)?.userRating ?? ReviewRating.None)
     setComment((challenge as any)?.userComment ?? '')
     setReviewSubmitted(false)
@@ -621,6 +630,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
 
       <Stack gap={4}>
         <Textarea
+          ref={reviewCommentRef}
           label={t('challenge.review.comment', 'Comment')}
           placeholder={t('challenge.review.placeholder', 'Leave a comment...')}
           value={comment}
@@ -645,17 +655,26 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           loading={isSubmittingReview}
           disabled={rating === ReviewRating.None}
           onClick={async () => {
-            if (onReviewSubmit) {
-              setIsSubmittingReview(true)
+            if (!onReviewSubmit || reviewSubmittingRef.current) return
+            const reviewChallengeId = (challenge as any)?.id as number | undefined
+            reviewSubmittingRef.current = true
+            setIsSubmittingReview(true)
+            try {
               await onReviewSubmit(rating, comment)
-              setIsSubmittingReview(false)
+              if (reviewChallengeIdRef.current !== reviewChallengeId) return
               setReviewSubmitted(true)
               // Fresh-solve nudge: submit then close. When editing an existing
-              // review, keep the modal open so it stays editable (onReviewSubmit
-              // already shows a "saved" toast).
+              // review, keep the modal open so it stays editable.
               if (justSolved) {
                 setFlag('')
                 modalProps.onClose()
+              }
+            } catch {
+              window.requestAnimationFrame(() => reviewCommentRef.current?.focus({ preventScroll: true }))
+            } finally {
+              if (reviewChallengeIdRef.current === reviewChallengeId) {
+                reviewSubmittingRef.current = false
+                setIsSubmittingReview(false)
               }
             }
           }}
@@ -709,6 +728,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
             challengeId={challenge?.id ?? 0}
             active={Boolean(modalProps.opened)}
             selfHosted={challenge?.adSelfHosted === true}
+            stateOwner={adStateOwner}
           />
         )}
         {eventAction}
@@ -730,6 +750,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
             gameId={gameId}
             challengeId={challenge?.id ?? 0}
             active={Boolean(modalProps.opened)}
+            stateOwner={adStateOwner}
             selfHosted={challenge?.adSelfHosted === true}
             snapshotOnly
           />

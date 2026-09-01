@@ -117,7 +117,11 @@ test('challenge modal ticks only while an open deadline needs updates', async (c
 
     await act(async () => context.mock.timers.tick(2_500))
     assert.ok(commits > deadlineCommits, 'an open deadline must remain reactive')
-    assert.equal(flagInput.disabled, true)
+    const expiredFlagInput = browser.document.querySelector<HTMLInputElement>(
+      'form[data-guide="flag-submit"] input'
+    )
+    assert.ok(expiredFlagInput)
+    assert.equal(expiredFlagInput.disabled, true)
   } finally {
     await act(async () => root.unmount())
     context.mock.timers.reset()
@@ -127,7 +131,7 @@ test('challenge modal ticks only while an open deadline needs updates', async (c
   }
 })
 
-test('form edits and verdict polling preserve animated Markdown until challenge identity or source changes', async (context) => {
+test('form edits and verdict polling preserve animated Markdown until challenge identity or source changes', async () => {
   const browser = new Window({ url: 'https://rsctf.test/' })
   const restoreDom = installTestDom(browser)
   const i18n = i18next.createInstance()
@@ -163,7 +167,6 @@ test('form edits and verdict polling preserve animated Markdown until challenge 
   let replaceContent: (() => void) | undefined
   let switchChallenge: (() => void) | undefined
   let setVerdictPolling: ((value: boolean) => void) | undefined
-  let animationTimer: ReturnType<typeof setInterval> | undefined
 
   const Harness: FC = () => {
     const [flag, setFlag] = useState('')
@@ -227,14 +230,10 @@ test('form edits and verdict polling preserve animated Markdown until challenge 
     assert.ok(input)
     assert.ok(receipt)
     assert.ok(initialAnimation)
-    let frame = 0
-    context.mock.timers.enable({ apis: ['setInterval'] })
-    animationTimer = setInterval(() => {
-      frame += 1
-      initialAnimation.dataset.frame = `running-${frame}`
-    }, 100)
-    context.mock.timers.tick(300)
-    assert.equal(initialAnimation.dataset.frame, 'running-3')
+    // Model state owned by a challenge animation after it has started. React
+    // must retain this exact node and its runtime-owned state across form and
+    // verdict renders; no wall-clock delay is needed to prove that identity.
+    initialAnimation.dataset.frame = 'running'
 
     await act(async () => {
       const setValue = Object.getOwnPropertyDescriptor(browser.HTMLInputElement.prototype, 'value')?.set
@@ -243,10 +242,9 @@ test('form edits and verdict polling preserve animated Markdown until challenge 
       input.dispatchEvent(new browser.Event('input', { bubbles: true }))
       input.dispatchEvent(new browser.Event('change', { bubbles: true }))
     })
-    context.mock.timers.tick(200)
     const afterTyping = browser.document.querySelector<HTMLElement>('.tower-animation')
     assert.equal(afterTyping, initialAnimation)
-    assert.equal(afterTyping?.dataset.frame, 'running-5')
+    assert.equal(afterTyping?.dataset.frame, 'running')
 
     await act(async () => {
       const setValue = Object.getOwnPropertyDescriptor(browser.HTMLTextAreaElement.prototype, 'value')?.set
@@ -255,14 +253,12 @@ test('form edits and verdict polling preserve animated Markdown until challenge 
       receipt.dispatchEvent(new browser.Event('input', { bubbles: true }))
       receipt.dispatchEvent(new browser.Event('change', { bubbles: true }))
     })
-    context.mock.timers.tick(200)
     assert.equal(browser.document.querySelector('.tower-animation'), initialAnimation)
-    assert.equal(initialAnimation.dataset.frame, 'running-7')
+    assert.equal(initialAnimation.dataset.frame, 'running')
 
     await act(async () => setVerdictPolling?.(true))
-    context.mock.timers.tick(200)
     assert.equal(browser.document.querySelector('.tower-animation'), initialAnimation)
-    assert.equal(initialAnimation.dataset.frame, 'running-9')
+    assert.equal(initialAnimation.dataset.frame, 'running')
     await act(async () => setVerdictPolling?.(false))
 
     await act(async () => {
@@ -275,14 +271,13 @@ test('form edits and verdict polling preserve animated Markdown until challenge 
     const identityReplacement = browser.document.querySelector<HTMLElement>('.tower-animation')
     assert.notEqual(identityReplacement, initialAnimation)
     assert.equal(identityReplacement?.textContent, 'animated tower')
+    assert.equal(identityReplacement?.dataset.frame, 'initial')
 
     await act(async () => replaceContent?.())
     const replacedAnimation = browser.document.querySelector<HTMLElement>('.tower-animation')
     assert.notEqual(replacedAnimation, identityReplacement)
     assert.equal(replacedAnimation?.textContent, 'new animation')
   } finally {
-    if (animationTimer !== undefined) clearInterval(animationTimer)
-    context.mock.timers.reset()
     await act(async () => root.unmount())
     delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
     await browser.happyDOM.close()

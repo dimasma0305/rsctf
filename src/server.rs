@@ -208,6 +208,12 @@ fn finish_router(app: Router<SharedState>, state: SharedState, serve_frontend: b
         state.clone(),
         crate::middlewares::user_activity::middleware,
     ))
+    // Public bait paths bypass the ordinary `/api` limiter. Admit them before
+    // handler authentication and silently return the same 404 on saturation.
+    .layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::controllers::honeypot::admission_middleware,
+    ))
     .layer(TraceLayer::new_for_http().make_span_with(RedactedHttpMakeSpan))
     .layer(axum::middleware::from_fn_with_state(
         state.clone(),

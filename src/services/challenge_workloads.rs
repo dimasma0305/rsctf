@@ -371,7 +371,7 @@ pub fn runtime_transition_lock_key(challenge_id: i32) -> String {
 pub async fn acquire_runtime_transition_lock(
     pool: &sqlx::PgPool,
     challenge_id: i32,
-) -> AppResult<crate::utils::single_flight::PgAdvisoryLock> {
+) -> AppResult<crate::utils::single_flight::PgSessionAdvisoryLock> {
     crate::utils::single_flight::PgAdvisoryLock::acquire_transition(
         pool,
         &runtime_transition_lock_key(challenge_id),
@@ -428,16 +428,39 @@ pub async fn load_selected_static_flag(
     if challenge_type == ChallengeType::DynamicContainer {
         return Ok(None);
     }
-    sqlx::query_scalar::<_, String>(
-        r#"SELECT flag FROM "FlagContexts"
-            WHERE challenge_id = $1
-         ORDER BY id
-           LIMIT 1"#,
+    let (selected, has_invalid): (Option<String>, bool) = sqlx::query_as(
+        r#"SELECT (
+                   SELECT flag FROM "FlagContexts"
+                    WHERE challenge_id = $1
+                      AND OCTET_LENGTH(flag) BETWEEN 1 AND $2
+                      AND NOT rsctf_flag_has_boundary_whitespace(flag)
+                    ORDER BY id
+                    LIMIT 1
+               ) AS selected,
+               EXISTS (
+                   SELECT 1 FROM "FlagContexts"
+                    WHERE challenge_id = $1
+                      AND NOT (
+                          OCTET_LENGTH(flag) BETWEEN 1 AND $2
+                          AND NOT rsctf_flag_has_boundary_whitespace(flag)
+                      )
+               ) AS has_invalid"#,
     )
     .bind(challenge_id)
-    .fetch_optional(pool)
+    .bind(i32::try_from(crate::utils::flag_policy::NORMAL_FLAG_MAX_BYTES).unwrap_or(127))
+    .fetch_one(pool)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if has_invalid {
+        tracing::warn!(
+            challenge_id,
+            "invalid legacy static flag blocked at runtime"
+        );
+        return Err(AppError::unavailable(
+            "Challenge has an invalid flag definition; ask an administrator to repair it",
+        ));
+    }
+    Ok(selected)
 }
 
 fn ensure_selected_static_flag_unchanged(
@@ -576,6 +599,8 @@ mod tests {
             challenge_type: ChallengeType::KingOfTheHill,
             hints: None,
             is_enabled: true,
+            revision: 1,
+            ad_control_revision: 1,
             deadline_utc: None,
             submission_limit: 0,
             accepted_count: 0,

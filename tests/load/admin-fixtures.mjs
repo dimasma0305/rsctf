@@ -395,10 +395,18 @@ export async function multipartRequest(path, {
   expected = 200,
   label = `multipart POST ${path}`,
   timeoutMs = 120_000,
+  headers = {},
 } = {}) {
   const form = new FormData();
   form.append('file', new Blob([content], { type: contentType }), filename);
-  const response = await rawRequest('POST', path, { baseUrl, jwt, ip, body: form, timeoutMs });
+  const response = await rawRequest('POST', path, {
+    baseUrl,
+    jwt,
+    ip,
+    body: form,
+    headers,
+    timeoutMs,
+  });
   return expectStatus(response, expected, label);
 }
 

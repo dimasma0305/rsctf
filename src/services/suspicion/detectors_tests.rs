@@ -8,6 +8,9 @@ use super::{
 use crate::services::suspicion::cheat_stat::collaboration_candidates;
 use sqlx::postgres::PgPoolOptions;
 
+#[path = "detectors_tests/reconciliation_replay.rs"]
+mod reconciliation_replay;
+
 #[allow(clippy::too_many_arguments)]
 async fn persist_suspicion_event_with_weight(
     pool: &sqlx::PgPool,
@@ -40,8 +43,16 @@ fn suspicion_write_is_conflict_gated_before_canonical_projection() {
         .contains("ON CONFLICT (game_id, participation_id, kind, evidence_key) DO NOTHING"));
     assert!(INSERT_SUSPICION_EVENT_SQL.contains("WITH participant AS MATERIALIZED"));
     assert!(INSERT_SUSPICION_EVENT_SQL.contains("FOR UPDATE"));
+    assert!(INSERT_SUSPICION_EVENT_SQL.contains("SELECT 1 FROM \"SuspicionEvents\" existing"));
+    assert!(INSERT_SUSPICION_EVENT_SQL.contains("existing.evidence_key = $5"));
     assert!(INSERT_SUSPICION_EVENT_SQL.contains("EXISTS (SELECT 1 FROM inserted)"));
     assert!(!INSERT_SUSPICION_EVENT_SQL.contains("suspicion_score +"));
+}
+
+#[tokio::test]
+#[ignore = "requires migrated disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn postgres_detector_replay_does_not_redirty_reconciliation() {
+    reconciliation_replay::assert_detector_replay_does_not_redirty_reconciliation().await;
 }
 
 #[test]

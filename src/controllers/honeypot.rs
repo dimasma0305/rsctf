@@ -2,13 +2,15 @@
 //!
 //! A set of decoy "bait" routes for well-known scanner/attacker targets
 //! (`/.env`, `/wp-login.php`, `/.git/config`, actuator endpoints, backup archives,
-//! …). Each hit is retained as raw telemetry. These global routes do not carry a
-//! trustworthy game/participation identity, so they never create suspicion events;
-//! an authenticated caller id is retained only for manual audit. Every handler
-//! returns a plausible 404 so the decoy never reveals itself.
+//! …). Admitted hits are sampled and combined into bounded minute aggregates.
+//! These global routes do not carry a trustworthy game/participation identity, so
+//! they never create suspicion events; a consistently authenticated caller id may
+//! be retained only for manual audit. Every handler returns a plausible 404 so the
+//! decoy never reveals itself.
 
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, Extension, Request, State};
 use axum::http::{header, HeaderMap, StatusCode, Uri};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
@@ -62,16 +64,44 @@ pub fn router() -> Router<SharedState> {
     router
 }
 
-/// Every bait route funnels here: retain raw telemetry and return an innocuous 404.
+fn not_found_response() -> Response {
+    (StatusCode::NOT_FOUND, "Not Found").into_response()
+}
+
+pub(crate) async fn admission_middleware(
+    State(st): State<SharedState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    if !BAITS.contains(&request.uri().path()) {
+        return next.run(request).await;
+    }
+    let peer_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(peer)| peer.ip());
+    let Some(remote_ip) = crate::services::anti_cheat::client_ip(request.headers(), peer_ip) else {
+        return not_found_response();
+    };
+    let Some(admission) =
+        st.honeypot_telemetry
+            .admit_source(st.config.as_ref(), &remote_ip, request.uri().path())
+    else {
+        return not_found_response();
+    };
+    request.extensions_mut().insert(admission);
+    next.run(request).await
+}
+
+/// Every admitted bait route funnels here: enqueue bounded telemetry and
+/// return an innocuous 404 without awaiting PostgreSQL.
 async fn bait(
+    Extension(admission): Extension<crate::services::honeypot_telemetry::HoneypotAdmission>,
     State(st): State<SharedState>,
     MaybeUser(user): MaybeUser,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     uri: Uri,
     headers: HeaderMap,
 ) -> Response {
-    let bait_path = uri.path().to_string();
-    let remote_ip = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()));
     // SameSite=Lax cookies accompany cross-site top-level GET navigations. Never
     // let another site frame/link a bait URL and assign suspicion to the victim;
     // requests without same-origin browser provenance remain anonymous signals.
@@ -84,12 +114,51 @@ async fn bait(
     });
     let user_agent = headers
         .get(header::USER_AGENT)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
+        .and_then(|value| value.to_str().ok());
 
-    crate::services::suspicion::record_honeypot_hit(&st, user, &bait_path, remote_ip, user_agent)
-        .await;
+    crate::services::suspicion::record_honeypot_hit(&st, user, uri.path(), user_agent, admission);
 
     // Decoy response — a plausible "nothing here", never revealing the trap.
-    (StatusCode::NOT_FOUND, "Not Found").into_response()
+    not_found_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use axum::body::to_bytes;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn admitted_and_saturated_paths_share_the_exact_decoy_response() {
+        let first = not_found_response();
+        let second = not_found_response();
+        assert_eq!(first.status(), StatusCode::NOT_FOUND);
+        assert_eq!(second.status(), first.status());
+        let first_body = to_bytes(first.into_body(), 32).await.unwrap();
+        let second_body = to_bytes(second.into_body(), 32).await.unwrap();
+        assert_eq!(first_body, second_body);
+        assert_eq!(first_body.as_ref(), b"Not Found");
+    }
+
+    #[test]
+    fn bait_inventory_is_unique_and_storage_bounded() {
+        let unique = BAITS.iter().copied().collect::<BTreeSet<_>>();
+        assert_eq!(unique.len(), BAITS.len());
+        assert!(BAITS.iter().all(|bait| bait.len() <= 128));
+    }
+
+    #[test]
+    fn admission_is_layered_before_handler_authentication() {
+        let server = include_str!("../server.rs");
+        assert!(server.contains("crate::controllers::honeypot::admission_middleware"));
+        let source = include_str!("honeypot.rs");
+        let admission = source
+            .find("pub(crate) async fn admission_middleware")
+            .unwrap();
+        let handler = source.find("async fn bait(").unwrap();
+        assert!(admission < handler);
+        assert!(source[admission..handler].contains("return not_found_response()"));
+    }
 }

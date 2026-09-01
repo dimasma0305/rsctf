@@ -1,8 +1,42 @@
 //! Source projections for the lazy suspicion-evidence review endpoint.
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use super::*;
+
+pub(super) const MAX_PRIOR_IDENTITY_HINTS: i64 = 12;
+pub(super) const MAX_IDENTITY_SAMPLE_ROWS: usize = 200;
+pub(super) const MAX_PAIR_SAMPLE_ROWS: i64 = 12;
+pub(super) const MAX_WRONG_INTERVAL_ATTEMPTS: i64 = 256;
+pub(super) const MAX_CHALLENGE_SOLVER_ROWS: i64 = 256;
+pub(super) const MAX_SUBMISSION_CONTEXT_ROWS: i64 = 64;
+pub(super) const BURST_SOLVE_ROWS: i64 = 3;
+const CHALLENGE_LEADING_SOLVES: i64 = 2;
+
+#[path = "cheat_evidence_correlations.rs"]
+mod correlations;
+pub(super) use correlations::{add_identity_source, add_pair_source};
+
+fn capped_count_text(count: i64, maximum: i64, truncated: bool) -> String {
+    if truncated {
+        format!("at least {}", maximum.saturating_add(1))
+    } else {
+        count.to_string()
+    }
+}
+
+fn challenge_snapshot_at(event: &EventEvidenceRow, ty: SuspicionType) -> Option<DateTime<Utc>> {
+    if matches!(
+        ty,
+        SuspicionType::ZeroWrongAttempts
+            | SuspicionType::AdaptiveFastSolve
+            | SuspicionType::FirstBloodAnomaly
+    ) {
+        // These rules are emitted only by the barrier-backed final sweep and
+        // intentionally use the complete competitive-window population.
+        None
+    } else {
+        Some(event.created_at)
+    }
+}
 
 pub(super) fn add_synthetic_preview(
     event: &EventEvidenceRow,
@@ -212,45 +246,83 @@ pub(super) async fn add_submission_source(
     let Some(row) = submission_row(pool, event).await? else {
         return Ok(());
     };
-    let access: (i64, Option<DateTime<Utc>>, i64, Option<bool>) = sqlx::query_as(
-        r#"SELECT COUNT(*)::bigint,
-                  MIN(access.connected_at_utc),
-                  COUNT(*) FILTER (WHERE access.accessing_user_id = submission.user_id)::bigint,
-                  BOOL_OR(access.remote_ip_hash = submission.submit_remote_ip_hash)
-             FROM "Submissions" submission
-        LEFT JOIN "ContainerAccessEvents" access
-               ON access.game_id = submission.game_id
-              AND access.challenge_id = submission.challenge_id
-              AND access.container_owner_participation_id = submission.participation_id
-              AND access.container_id = submission.container_id
-              AND access.is_monitor = FALSE
-              AND access.connected_at_utc <= submission.submit_time_utc
-            WHERE submission.id = $1
-         GROUP BY submission.user_id, submission.submit_remote_ip_hash"#,
+    let access: (i64, Option<DateTime<Utc>>, i64, Option<bool>, bool) = sqlx::query_as(
+        r#"WITH target AS MATERIALIZED (
+               SELECT game_id, challenge_id, participation_id, container_id,
+                      user_id, submit_remote_ip_hash, submit_time_utc
+                 FROM "Submissions" WHERE id = $1
+           ), sampled AS MATERIALIZED (
+               SELECT access.connected_at_utc, access.id, access.accessing_user_id,
+                      access.remote_ip_hash, target.user_id, target.submit_remote_ip_hash
+                 FROM target JOIN "ContainerAccessEvents" access
+                   ON access.game_id = target.game_id
+                  AND access.challenge_id = target.challenge_id
+                  AND access.container_owner_participation_id = target.participation_id
+                  AND access.container_id = target.container_id
+                  AND access.is_monitor = FALSE
+                  AND access.connected_at_utc <= target.submit_time_utc
+                ORDER BY access.connected_at_utc DESC, access.id DESC LIMIT $2
+           ), bounded AS MATERIALIZED (
+               SELECT * FROM sampled ORDER BY connected_at_utc DESC, id DESC LIMIT $3
+           )
+           SELECT COUNT(*)::bigint, MIN(connected_at_utc),
+                  COUNT(*) FILTER (WHERE accessing_user_id = user_id)::bigint,
+                  BOOL_OR(remote_ip_hash = submit_remote_ip_hash),
+                  (SELECT COUNT(*) FROM sampled) > $3
+             FROM bounded"#,
     )
     .bind(row.submission_id)
+    .bind(MAX_SUBMISSION_CONTEXT_ROWS.saturating_add(1))
+    .bind(MAX_SUBMISSION_CONTEXT_ROWS)
     .fetch_optional(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
-    .unwrap_or((0, None, 0, None));
-    let baseline: (i64, Option<bool>, Option<String>) = sqlx::query_as(
-        r#"SELECT COUNT(DISTINCT observation.value_hash)::bigint,
-                  BOOL_OR(observation.value_hash = submission.submit_remote_ip_hash),
-                  STRING_AGG(DISTINCT observation.value_hint, ', ')
-             FROM "Submissions" submission
-        LEFT JOIN "IdentityObservations" observation
-               ON observation.game_id = submission.game_id
-              AND observation.participation_id = submission.participation_id
-              AND observation.kind = 'Ip'
-              AND observation.observed_at_utc <= submission.submit_time_utc
-            WHERE submission.id = $1
-         GROUP BY submission.submit_remote_ip_hash"#,
+    .unwrap_or((0, None, 0, None, false));
+    let baseline: (i64, Option<bool>, Vec<String>, bool) = sqlx::query_as(
+        r#"WITH target AS MATERIALIZED (
+               SELECT game_id, participation_id, submit_time_utc, submit_remote_ip_hash
+                 FROM "Submissions"
+                WHERE id = $1
+            ), sampled AS MATERIALIZED (
+               SELECT observation.id, observation.observed_at_utc,
+                      observation.value_hash, observation.value_hint,
+                      target.submit_remote_ip_hash
+                 FROM target JOIN "IdentityObservations" observation ON
+                      observation.game_id = target.game_id
+                  AND observation.participation_id = target.participation_id
+                  AND observation.kind = 'Ip'
+                  AND observation.observed_at_utc <= target.submit_time_utc
+                ORDER BY observation.observed_at_utc DESC, observation.id DESC LIMIT $2
+            ), bounded AS MATERIALIZED (
+               SELECT * FROM sampled ORDER BY observed_at_utc DESC, id DESC LIMIT $3
+            )
+            SELECT COUNT(DISTINCT value_hash)::bigint,
+                   BOOL_OR(value_hash = submit_remote_ip_hash),
+                   ARRAY(
+                       SELECT DISTINCT hint.value_hint FROM bounded hint
+                        ORDER BY hint.value_hint LIMIT $4
+                   ), (SELECT COUNT(*) FROM sampled) > $3
+              FROM bounded"#,
     )
     .bind(row.submission_id)
+    .bind(MAX_SUBMISSION_CONTEXT_ROWS.saturating_add(1))
+    .bind(MAX_SUBMISSION_CONTEXT_ROWS)
+    .bind(MAX_PRIOR_IDENTITY_HINTS)
     .fetch_optional(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
-    .unwrap_or((0, None, None));
+    .unwrap_or((0, None, Vec::new(), false));
+
+    if access.4 {
+        review.limitations.push(format!(
+            "Submission access context is capped at the latest {MAX_SUBMISSION_CONTEXT_ROWS} matching records; counts and matches below describe that bounded sample."
+        ));
+    }
+    if baseline.3 {
+        review.limitations.push(format!(
+            "Pre-submit identity context is capped at the latest {MAX_SUBMISSION_CONTEXT_ROWS} observations; identity counts and matches below describe that bounded sample."
+        ));
+    }
 
     let mut facts = vec![
         fact("Submission", format!("#{}", row.submission_id)),
@@ -267,37 +339,74 @@ pub(super) async fn add_submission_source(
             hash_hint(row.remote_ip_hash.as_deref()),
         ),
         fact(
-            "Known game IP identities before submit",
+            if baseline.3 {
+                "Known IP identities in bounded pre-submit sample"
+            } else {
+                "Known game IP identities before submit"
+            },
             baseline.0.to_string(),
         ),
         fact(
             "Submission IP matched prior game identity",
-            baseline.1.map_or(
-                "not comparable",
-                |matched| if matched { "yes" } else { "no" },
-            ),
+            baseline.1.map_or("not comparable", |matched| {
+                if matched {
+                    "yes"
+                } else if baseline.3 {
+                    "not found in bounded sample"
+                } else {
+                    "no"
+                }
+            }),
         ),
     ];
-    if let Some(hints) = baseline.2.filter(|hints| !hints.is_empty()) {
-        facts.push(fact("Prior masked IP hints", hints));
+    if !baseline.2.is_empty() {
+        facts.push(fact("Prior masked IP hints", baseline.2.join(", ")));
     }
     if let Some(container_id) = row.container_id {
         facts.push(fact("Container generation", container_id.to_string()));
-        facts.push(fact("Matching access records", access.0.to_string()));
-        facts.push(fact("Submitter access records", access.2.to_string()));
+        facts.push(fact(
+            if access.4 {
+                "Matching access records (lower bound)"
+            } else {
+                "Matching access records"
+            },
+            capped_count_text(access.0, MAX_SUBMISSION_CONTEXT_ROWS, access.4),
+        ));
+        facts.push(fact(
+            if access.4 {
+                "Submitter accesses in bounded sample"
+            } else {
+                "Submitter access records"
+            },
+            access.2.to_string(),
+        ));
         facts.push(fact(
             "Submission IP matched an access IP",
-            access.3.map_or(
-                "not comparable",
-                |matched| if matched { "yes" } else { "no" },
-            ),
+            access.3.map_or("not comparable", |matched| {
+                if matched {
+                    "yes"
+                } else if access.4 {
+                    "not found in bounded sample"
+                } else {
+                    "no"
+                }
+            }),
         ));
+        if let Some(first) = access.1 {
+            facts.push(fact(
+                if access.4 {
+                    "Earliest access in bounded sample"
+                } else {
+                    "First proxy access"
+                },
+                format_time(first),
+            ));
+        }
     }
     for (label, value) in [
         ("First challenge open", row.first_open_at),
         ("First attachment download", row.first_download_at),
         ("First container start", row.first_container_start_at),
-        ("First proxy access", access.1),
         ("Last container operation", row.container_last_operation),
     ] {
         if let Some(value) = value {
@@ -334,87 +443,166 @@ pub(super) async fn add_challenge_source(
     let Some(challenge_id) = event.challenge_id else {
         return Ok(());
     };
-    let solves = sqlx::query_as::<_, SolveSourceRow>(
-        r#"SELECT submission.id AS submission_id,
-                  submission.participation_id,
-                  team.name AS team_name,
-                  challenge.title AS challenge_title,
-                  submission.submit_time_utc AS submitted_at,
-                  game.start_time_utc AS game_start,
-                  (SELECT COUNT(*)::bigint
-                     FROM "Submissions" wrong
-                    WHERE wrong.game_id = submission.game_id
-                      AND wrong.participation_id = submission.participation_id
-                      AND wrong.challenge_id = submission.challenge_id
-                      AND wrong.status = $3
-                      AND wrong.submit_time_utc < submission.submit_time_utc) AS wrong_before
-             FROM "FirstSolves" first_solve
-             JOIN "Submissions" submission
-               ON submission.id = first_solve.submission_id
-              AND submission.participation_id = first_solve.participation_id
-              AND submission.challenge_id = first_solve.challenge_id
-             JOIN "Participations" participation
-               ON participation.id = submission.participation_id
-              AND participation.game_id = submission.game_id
-             JOIN "Teams" team ON team.id = participation.team_id
-             JOIN "GameChallenges" challenge
-               ON challenge.id = submission.challenge_id
-              AND challenge.game_id = submission.game_id
-             JOIN "Games" game ON game.id = submission.game_id
-            WHERE submission.game_id = $1
-              AND submission.challenge_id = $2
-              AND submission.status = $4
-              AND submission.submit_time_utc >= game.start_time_utc
-              AND submission.submit_time_utc < game.end_time_utc
-            ORDER BY submission.submit_time_utc, submission.id"#,
+    let snapshot_at = challenge_snapshot_at(event, ty);
+    let summary: (i64, Option<f64>, bool) = sqlx::query_as(
+        r#"WITH candidate AS MATERIALIZED (
+               SELECT submission.submit_time_utc, submission.id, game.start_time_utc
+                 FROM "FirstSolves" first_solve
+                 JOIN "Submissions" submission ON submission.id = first_solve.submission_id
+                  AND submission.participation_id = first_solve.participation_id
+                  AND submission.challenge_id = first_solve.challenge_id
+                 JOIN "Participations" participation ON participation.id = submission.participation_id
+                  AND participation.game_id = submission.game_id
+                 JOIN "Games" game ON game.id = submission.game_id
+                WHERE submission.game_id = $1 AND submission.challenge_id = $2
+                  AND submission.status = $3
+                  AND submission.submit_time_utc >= game.start_time_utc
+                  AND submission.submit_time_utc < game.end_time_utc
+                  AND participation.competitive_admitted_at_utc IS NOT NULL
+                  AND participation.competitive_admitted_at_utc < game.end_time_utc
+                  AND ($4::TIMESTAMPTZ IS NULL OR submission.submit_time_utc <= $4)
+                ORDER BY submission.submit_time_utc, submission.id
+                LIMIT $5
+           ), bounded AS MATERIALIZED (
+               SELECT * FROM candidate ORDER BY submit_time_utc, id LIMIT $6
+           )
+           SELECT COUNT(*)::bigint,
+                  PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY (EXTRACT(EPOCH FROM
+                      (submit_time_utc - start_time_utc)) * 1000)::double precision)::double precision,
+                  (SELECT COUNT(*) FROM candidate) > $6
+             FROM bounded"#,
+    )
+    .bind(event.game_id)
+    .bind(challenge_id)
+    .bind(AnswerResult::Accepted as i16)
+    .bind(snapshot_at)
+    .bind(MAX_CHALLENGE_SOLVER_ROWS.saturating_add(1))
+    .bind(MAX_CHALLENGE_SOLVER_ROWS)
+    .fetch_one(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+
+    let selected_solves = sqlx::query_as::<_, SolveSourceRow>(
+        r#"WITH canonical AS NOT MATERIALIZED (
+               SELECT submission.id AS submission_id, submission.participation_id,
+                      team.name AS team_name, challenge.title AS challenge_title,
+                      submission.submit_time_utc AS submitted_at, game.start_time_utc AS game_start,
+                      submission.game_id, submission.challenge_id
+                 FROM "FirstSolves" first_solve
+                 JOIN "Submissions" submission ON submission.id = first_solve.submission_id
+                  AND submission.participation_id = first_solve.participation_id
+                  AND submission.challenge_id = first_solve.challenge_id
+                 JOIN "Participations" participation ON participation.id = submission.participation_id
+                  AND participation.game_id = submission.game_id
+                 JOIN "Teams" team ON team.id = participation.team_id
+                 JOIN "GameChallenges" challenge ON challenge.id = submission.challenge_id
+                  AND challenge.game_id = submission.game_id
+                 JOIN "Games" game ON game.id = submission.game_id
+                WHERE submission.game_id = $1
+                  AND submission.challenge_id = $2
+                  AND submission.status = $4
+                  AND submission.submit_time_utc >= game.start_time_utc AND submission.submit_time_utc < game.end_time_utc
+                  AND participation.competitive_admitted_at_utc IS NOT NULL AND participation.competitive_admitted_at_utc < game.end_time_utc
+                  AND ($5::TIMESTAMPTZ IS NULL OR submission.submit_time_utc <= $5)
+            ), selected AS (
+               SELECT head_solve.*, 0 AS selection_group
+                 FROM (
+                     SELECT * FROM canonical ORDER BY submitted_at, submission_id LIMIT $6
+                 ) head_solve
+                UNION ALL
+               SELECT participant.*, 1 AS selection_group
+                 FROM (
+                     SELECT * FROM canonical WHERE participation_id = $7
+                      ORDER BY submitted_at, submission_id LIMIT 1
+                 ) participant
+                ORDER BY selection_group, submitted_at, submission_id
+            )
+            SELECT selected.submission_id, selected.participation_id,
+                   selected.team_name, selected.challenge_title, selected.submitted_at, selected.game_start,
+                   (SELECT COUNT(*)::bigint FROM (
+                        SELECT 1 FROM "Submissions" wrong
+                         WHERE wrong.game_id = selected.game_id
+                           AND wrong.participation_id = selected.participation_id
+                           AND wrong.challenge_id = selected.challenge_id
+                           AND wrong.status = $3
+                           AND wrong.submit_time_utc >= selected.game_start
+                           AND wrong.submit_time_utc < selected.submitted_at
+                         ORDER BY wrong.submit_time_utc DESC, wrong.id DESC LIMIT $8
+                    ) bounded_wrong) AS wrong_before
+              FROM selected
+             ORDER BY selection_group, submitted_at, submission_id"#,
     )
     .bind(event.game_id)
     .bind(challenge_id)
     .bind(AnswerResult::WrongAnswer as i16)
     .bind(AnswerResult::Accepted as i16)
+    .bind(snapshot_at)
+    .bind(CHALLENGE_LEADING_SOLVES)
+    .bind(event.participation_id)
+    .bind(MAX_WRONG_INTERVAL_ATTEMPTS.saturating_add(1))
     .fetch_all(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    let leading_count = usize::try_from(summary.0.min(CHALLENGE_LEADING_SOLVES)).unwrap_or(0);
+    let leading_solves = &selected_solves[..leading_count];
+    let participant = selected_solves
+        .iter()
+        .find(|solve| solve.participation_id == event.participation_id);
+
     let wrong_pattern = matches!(
         ty,
         SuspicionType::HighWrongRate | SuspicionType::AutomatedPattern
     );
-    if solves.is_empty() && !wrong_pattern {
+    if summary.0 == 0 && !wrong_pattern {
         return Ok(());
     }
 
-    let participant = solves
-        .iter()
-        .find(|solve| solve.participation_id == event.participation_id);
-    let mut offsets = solves
-        .iter()
-        .map(|solve| (solve.submitted_at - solve.game_start).num_milliseconds() as f64)
-        .collect::<Vec<_>>();
+    if summary.2 {
+        review.limitations.push(format!(
+            "Challenge reconstruction is capped at the earliest {MAX_CHALLENGE_SOLVER_ROWS} canonical solves; solver counts and the median below describe that bounded sample."
+        ));
+    }
     let mut facts = vec![
         fact(
             "Challenge",
             event
                 .challenge_title
                 .clone()
-                .or_else(|| solves.first().map(|solve| solve.challenge_title.clone()))
+                .or_else(|| {
+                    leading_solves
+                        .first()
+                        .map(|solve| solve.challenge_title.clone())
+                })
+                .or_else(|| participant.map(|solve| solve.challenge_title.clone()))
                 .unwrap_or_else(|| format!("#{challenge_id}")),
         ),
-        fact("Canonical solver count", solves.len().to_string()),
+        fact(
+            if summary.2 {
+                "Canonical solver count (lower bound)"
+            } else {
+                "Canonical solver count"
+            },
+            capped_count_text(summary.0, MAX_CHALLENGE_SOLVER_ROWS, summary.2),
+        ),
     ];
-    if !offsets.is_empty() {
-        offsets.sort_by(|a, b| a.total_cmp(b));
-        let median_ms = if offsets.len().is_multiple_of(2) {
-            (offsets[offsets.len() / 2 - 1] + offsets[offsets.len() / 2]) / 2.0
-        } else {
-            offsets[offsets.len() / 2]
-        };
-        facts.push(fact("First solver team", &solves[0].team_name));
+    if let (Some(first), Some(median_ms)) = (leading_solves.first(), summary.1) {
+        facts.push(fact("First solver team", &first.team_name));
         facts.push(fact(
-            "Community median solve offset",
+            if summary.2 {
+                "Bounded solver-sample median offset"
+            } else {
+                "Community median solve offset"
+            },
             duration_text(median_ms.round() as i64),
         ));
     }
     if let Some(participant) = participant {
+        let wrong_before_truncated = participant.wrong_before > MAX_WRONG_INTERVAL_ATTEMPTS;
+        if wrong_before_truncated {
+            review.limitations.push(format!(
+                "Wrong attempts before the selected solve are capped at {MAX_WRONG_INTERVAL_ATTEMPTS}; the displayed count is a lower bound."
+            ));
+        }
         facts.extend([
             fact("Team solve", format_time(participant.submitted_at)),
             fact(
@@ -424,8 +612,16 @@ pub(super) async fn add_challenge_source(
                 ),
             ),
             fact(
-                "Wrong attempts before solve",
-                participant.wrong_before.to_string(),
+                if wrong_before_truncated {
+                    "Wrong attempts before solve (lower bound)"
+                } else {
+                    "Wrong attempts before solve"
+                },
+                capped_count_text(
+                    participant.wrong_before.min(MAX_WRONG_INTERVAL_ATTEMPTS),
+                    MAX_WRONG_INTERVAL_ATTEMPTS,
+                    wrong_before_truncated,
+                ),
             ),
             fact(
                 "Canonical solve submission",
@@ -433,58 +629,101 @@ pub(super) async fn add_challenge_source(
             ),
         ]);
     }
-    if solves.len() >= 2 {
+    if leading_solves.len() == usize::try_from(CHALLENGE_LEADING_SOLVES).unwrap_or(2) {
         facts.push(fact(
             "First-to-second solve gap",
-            duration_text((solves[1].submitted_at - solves[0].submitted_at).num_milliseconds()),
+            duration_text(
+                (leading_solves[1].submitted_at - leading_solves[0].submitted_at)
+                    .num_milliseconds(),
+            ),
         ));
     }
 
     if wrong_pattern {
-        let wrong_times: Vec<DateTime<Utc>> = sqlx::query_scalar(
-            r#"SELECT submit_time_utc
-                 FROM "Submissions"
-                WHERE game_id = $1
-                  AND participation_id = $2
-                  AND challenge_id = $3
-                  AND status = $4
-                  AND submit_time_utc <= $5
-                ORDER BY submit_time_utc, id"#,
+        let wrong_summary: (i64, i64, i64, bool) = sqlx::query_as(
+            r#"WITH sampled AS MATERIALIZED (
+                   SELECT submission.submit_time_utc, submission.id
+                     FROM "Submissions" submission
+                     JOIN "Games" game ON game.id = submission.game_id
+                    WHERE submission.game_id = $1
+                      AND submission.participation_id = $2 AND submission.challenge_id = $3
+                      AND submission.status = $4
+                      AND submission.submit_time_utc >= game.start_time_utc AND submission.submit_time_utc < game.end_time_utc
+                      AND submission.submit_time_utc <= $5
+                    ORDER BY submission.submit_time_utc DESC, submission.id DESC
+                    LIMIT $6
+                ), bounded AS MATERIALIZED (
+                   SELECT submit_time_utc, id FROM sampled
+                    ORDER BY submit_time_utc DESC, id DESC LIMIT $7
+                ), counts AS MATERIALIZED (
+                   SELECT COUNT(*)::bigint AS total, COUNT(*) FILTER (WHERE
+                              submit_time_utc >= $5 - INTERVAL '60 seconds')::bigint AS recent
+                     FROM bounded
+                ), ordered AS (
+                   SELECT submit_time_utc, id,
+                          LAG(submit_time_utc) OVER (ORDER BY submit_time_utc, id) AS previous_at
+                     FROM bounded
+                ), intervals AS (
+                   SELECT submit_time_utc, id,
+                          previous_at IS NOT NULL AND submit_time_utc >= previous_at
+                              AND submit_time_utc - previous_at < INTERVAL '2 seconds'
+                              AS is_fast
+                     FROM ordered
+                ), runs AS (
+                   SELECT is_fast, SUM(CASE WHEN is_fast THEN 0 ELSE 1 END)
+                              OVER (ORDER BY submit_time_utc, id) AS run_id
+                     FROM intervals
+                ), fast_runs AS (
+                   SELECT run_id, COUNT(*)::bigint AS interval_count FROM runs WHERE is_fast
+                    GROUP BY run_id
+                )
+                SELECT counts.total, counts.recent, COALESCE(MAX(interval_count), 0)::bigint,
+                       (SELECT COUNT(*) FROM sampled) > $7
+                  FROM counts LEFT JOIN fast_runs ON TRUE
+              GROUP BY counts.total, counts.recent"#,
         )
         .bind(event.game_id)
         .bind(event.participation_id)
         .bind(challenge_id)
         .bind(AnswerResult::WrongAnswer as i16)
         .bind(event.created_at)
-        .fetch_all(pool)
+        .bind(MAX_WRONG_INTERVAL_ATTEMPTS.saturating_add(1))
+        .bind(MAX_WRONG_INTERVAL_ATTEMPTS)
+        .fetch_one(pool)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-        let rolling = wrong_times
-            .iter()
-            .filter(|time| event.created_at - **time <= chrono::Duration::seconds(60))
-            .count();
-        let mut fastest_run = 0usize;
-        let mut run = 0usize;
-        for pair in wrong_times.windows(2) {
-            let delta = (pair[1] - pair[0]).num_milliseconds();
-            if (0..2_000).contains(&delta) {
-                run += 1;
-                fastest_run = fastest_run.max(run);
-            } else {
-                run = 0;
-            }
+        if wrong_summary.3 {
+            review.limitations.push(format!(
+                "Wrong-attempt reconstruction reads only the latest {MAX_WRONG_INTERVAL_ATTEMPTS} wrong attempts through the event; total, recent-window, and interval facts below are bounded lower-bound/sample values."
+            ));
         }
         facts.push(fact(
-            "Wrong attempts through event",
-            wrong_times.len().to_string(),
+            if wrong_summary.3 {
+                "Wrong attempts through event (lower bound)"
+            } else {
+                "Wrong attempts through event"
+            },
+            capped_count_text(
+                wrong_summary.0,
+                MAX_WRONG_INTERVAL_ATTEMPTS,
+                wrong_summary.3,
+            ),
         ));
         facts.push(fact(
-            "Wrong attempts in prior 60 seconds",
-            rolling.to_string(),
+            if wrong_summary.3 {
+                "Wrong attempts in prior 60 seconds (bounded sample)"
+            } else {
+                "Wrong attempts in prior 60 seconds"
+            },
+            wrong_summary.1.to_string(),
         ));
         facts.push(fact(
-            "Consecutive sub-2-second intervals",
-            fastest_run.to_string(),
+            if wrong_summary.3 {
+                "Consecutive sub-2-second intervals (bounded sample)"
+            } else {
+                "Consecutive sub-2-second intervals"
+            },
+            wrong_summary.2.to_string(),
         ));
     }
 
@@ -507,7 +746,8 @@ pub(super) async fn add_burst_source(
     event: &EventEvidenceRow,
     review: &mut SuspicionEvidenceReview,
 ) -> AppResult<()> {
-    let rows: Vec<(String, DateTime<Utc>)> = sqlx::query_as(
+    // The latest three solves through the earliest qualifying completion recreate its trigger.
+    let mut rows: Vec<(String, DateTime<Utc>)> = sqlx::query_as(
         r#"SELECT challenge.title, submission.submit_time_utc
              FROM "FirstSolves" first_solve
              JOIN "Submissions" submission
@@ -517,31 +757,39 @@ pub(super) async fn add_burst_source(
              JOIN "GameChallenges" challenge
                ON challenge.id = submission.challenge_id
               AND challenge.game_id = submission.game_id
+             JOIN "Participations" participation
+               ON participation.id = submission.participation_id
+              AND participation.game_id = submission.game_id
              JOIN "Games" game ON game.id = submission.game_id
             WHERE submission.game_id = $1
               AND submission.participation_id = $2
               AND submission.status = $3
-              AND submission.submit_time_utc >= game.start_time_utc
-              AND submission.submit_time_utc < game.end_time_utc
-            ORDER BY submission.submit_time_utc, submission.id"#,
+              AND submission.submit_time_utc >= game.start_time_utc AND submission.submit_time_utc < game.end_time_utc
+              AND submission.submit_time_utc <= $4
+              AND participation.competitive_admitted_at_utc IS NOT NULL AND participation.competitive_admitted_at_utc < game.end_time_utc
+            ORDER BY submission.submit_time_utc DESC, submission.id DESC
+            LIMIT $5"#,
     )
     .bind(event.game_id)
     .bind(event.participation_id)
     .bind(AnswerResult::Accepted as i16)
+    .bind(event.created_at)
+    .bind(BURST_SOLVE_ROWS)
     .fetch_all(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let best = rows
-        .windows(3)
-        .min_by_key(|window| window[2].1 - window[0].1);
-    let Some(best) = best else {
+    if rows.len() != usize::try_from(BURST_SOLVE_ROWS).unwrap_or(3) {
         return Ok(());
-    };
+    }
+    rows.reverse();
+    if rows[2].1 - rows[0].1 > chrono::Duration::seconds(60) {
+        return Ok(());
+    }
     review.sources.push(EvidenceSourceReview {
         source_type: "solveBurst".to_string(),
         title: "Fastest three-solve window".to_string(),
         source_id: Some("canonical-first-solves".to_string()),
-        recorded_at: Some(best[2].1),
+        recorded_at: Some(rows[2].1),
         immutable: true,
         summary:
             "The detector requires at least three distinct canonical solves inside 60 seconds."
@@ -549,277 +797,15 @@ pub(super) async fn add_burst_source(
         facts: vec![
             fact(
                 "Window",
-                duration_text((best[2].1 - best[0].1).num_milliseconds()),
+                duration_text((rows[2].1 - rows[0].1).num_milliseconds()),
             ),
             fact(
                 "Solves",
-                best.iter()
+                rows.iter()
                     .map(|(title, time)| format!("{title} @ {}", format_time(*time)))
                     .collect::<Vec<_>>()
                     .join("; "),
             ),
-        ],
-    });
-    mark_supporting(review);
-    Ok(())
-}
-
-pub(super) async fn add_identity_source(
-    pool: &sqlx::PgPool,
-    event: &EventEvidenceRow,
-    ty: SuspicionType,
-    review: &mut SuspicionEvidenceReview,
-) -> AppResult<()> {
-    let (hash, user_id, hash_column, same_team_only) = match ty {
-        SuspicionType::SharedIp => (
-            parse_hash_key(&event.evidence_key, "shared-ip:"),
-            None,
-            "value_hash",
-            true,
-        ),
-        SuspicionType::SharedFingerprint => (
-            parse_hash_key(&event.evidence_key, "shared-fingerprint:"),
-            None,
-            "value_hash",
-            false,
-        ),
-        SuspicionType::CrossTeamIp => (
-            parse_hash_key(&event.evidence_key, "cross-team-ip:"),
-            None,
-            "value_hash",
-            false,
-        ),
-        SuspicionType::SubnetOverlap => (
-            parse_hash_key(&event.evidence_key, "subnet-overlap:"),
-            None,
-            "subnet_group_hash",
-            false,
-        ),
-        SuspicionType::FingerprintChurn => (
-            None,
-            parse_uuid_user_key(&event.evidence_key, "fingerprint-churn:"),
-            "value_hash",
-            false,
-        ),
-        SuspicionType::IpChurn => (
-            None,
-            parse_uuid_user_key(&event.evidence_key, "ip-churn:"),
-            "value_hash",
-            false,
-        ),
-        SuspicionType::SessionConcurrency => (
-            None,
-            parse_uuid_user_key(&event.evidence_key, "session-concurrency:"),
-            "value_hash",
-            false,
-        ),
-        _ => return Ok(()),
-    };
-    if hash.is_none() && user_id.is_none() {
-        return Ok(());
-    }
-    let rows = sqlx::query_as::<_, IdentitySourceRow>(
-        r#"SELECT observation.user_id,
-                  account.user_name,
-                  team.name AS team_name,
-                  observation.kind,
-                  observation.value_hint,
-                  observation.source,
-                  observation.observed_at_utc AS observed_at
-             FROM "IdentityObservations" observation
-             JOIN "Games" game ON game.id = observation.game_id
-             JOIN "UserParticipations" roster
-               ON roster.user_id = observation.user_id
-              AND roster.game_id = observation.game_id
-              AND roster.team_id = observation.team_id
-              AND roster.participation_id = observation.participation_id
-             JOIN "Participations" participation
-               ON participation.id = roster.participation_id
-              AND participation.game_id = roster.game_id
-             JOIN "Teams" team ON team.id = roster.team_id
-             JOIN "AspNetUsers" account ON account.id = observation.user_id
-            WHERE observation.game_id = $1
-              AND observation.observed_at_utc >= game.start_time_utc
-              AND observation.observed_at_utc < game.end_time_utc
-              AND participation.competitive_admitted_at_utc IS NOT NULL
-              AND ($2::BYTEA IS NULL
-                   OR ($4 = 'value_hash' AND observation.value_hash = $2)
-                   OR ($4 = 'subnet_group_hash' AND observation.subnet_group_hash = $2))
-              AND ($3::UUID IS NULL OR observation.user_id = $3)
-              AND (NOT $5 OR observation.team_id = $6)
-            ORDER BY observation.observed_at_utc, observation.id
-            LIMIT 200"#,
-    )
-    .bind(event.game_id)
-    .bind(hash)
-    .bind(user_id)
-    .bind(hash_column)
-    .bind(same_team_only)
-    .bind(event.team_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if rows.is_empty() {
-        return Ok(());
-    }
-
-    let teams = rows
-        .iter()
-        .map(|row| row.team_name.clone())
-        .collect::<BTreeSet<_>>();
-    let users = rows
-        .iter()
-        .map(|row| format!("{} ({})", row.user_name, row.user_id))
-        .collect::<BTreeSet<_>>();
-    let hints = rows
-        .iter()
-        .map(|row| row.value_hint.clone())
-        .collect::<BTreeSet<_>>();
-    let sources = rows
-        .iter()
-        .map(|row| row.source.clone())
-        .collect::<BTreeSet<_>>();
-    let kinds = rows
-        .iter()
-        .map(|row| row.kind.clone())
-        .collect::<BTreeSet<_>>();
-    let first = rows
-        .first()
-        .map(|row| row.observed_at)
-        .expect("non-empty rows");
-    let last = rows
-        .last()
-        .map(|row| row.observed_at)
-        .expect("non-empty rows");
-    review.sources.push(EvidenceSourceReview {
-        source_type: "identityObservations".to_string(),
-        title: "Privacy-preserving identity observations".to_string(),
-        source_id: Some(event.evidence_key.clone()),
-        recorded_at: Some(event.created_at),
-        immutable: true,
-        summary: "Only masked hints and deployment-keyed hashes are used for equality; raw IP addresses and fingerprints are not exposed."
-            .to_string(),
-        facts: vec![
-            fact("Observation kinds", kinds.into_iter().collect::<Vec<_>>().join(", ")),
-            fact("Distinct identities", hints.len().to_string()),
-            fact("Masked identity hints", hints.into_iter().take(12).collect::<Vec<_>>().join(", ")),
-            fact("Teams", teams.into_iter().take(12).collect::<Vec<_>>().join(", ")),
-            fact("Users", users.into_iter().take(12).collect::<Vec<_>>().join(", ")),
-            fact("Admission sources", sources.into_iter().collect::<Vec<_>>().join(", ")),
-            fact("First observed", format_time(first)),
-            fact("Last observed", format_time(last)),
-        ],
-    });
-    mark_supporting(review);
-    Ok(())
-}
-
-pub(super) async fn add_pair_source(
-    pool: &sqlx::PgPool,
-    event: &EventEvidenceRow,
-    ty: SuspicionType,
-    review: &mut SuspicionEvidenceReview,
-) -> AppResult<()> {
-    let participants = if ty == SuspicionType::SequenceSimilarity {
-        let Some(pair) = event.evidence_key.strip_prefix("pair:") else {
-            return Ok(());
-        };
-        let mut parts = pair
-            .split(':')
-            .filter_map(|value| value.parse::<i32>().ok());
-        let (Some(left), Some(right), None) = (parts.next(), parts.next(), parts.next()) else {
-            return Ok(());
-        };
-        [left, right]
-    } else {
-        let Some(source) = parse_i32_key(&event.evidence_key, "source:") else {
-            return Ok(());
-        };
-        [source, event.participation_id]
-    };
-    let rows: Vec<(i32, String, i32, String, DateTime<Utc>)> = sqlx::query_as(
-        r#"SELECT submission.participation_id,
-                  team.name,
-                  submission.challenge_id,
-                  challenge.title,
-                  submission.submit_time_utc
-             FROM "FirstSolves" first_solve
-             JOIN "Submissions" submission
-               ON submission.id = first_solve.submission_id
-              AND submission.participation_id = first_solve.participation_id
-              AND submission.challenge_id = first_solve.challenge_id
-             JOIN "Participations" participation
-               ON participation.id = submission.participation_id
-              AND participation.game_id = submission.game_id
-             JOIN "Teams" team ON team.id = participation.team_id
-             JOIN "GameChallenges" challenge
-               ON challenge.id = submission.challenge_id
-              AND challenge.game_id = submission.game_id
-             JOIN "Games" game ON game.id = submission.game_id
-            WHERE submission.game_id = $1
-              AND submission.participation_id = ANY($2::INTEGER[])
-              AND submission.status = $3
-              AND submission.submit_time_utc >= game.start_time_utc
-              AND submission.submit_time_utc < game.end_time_utc
-            ORDER BY submission.submit_time_utc, submission.id"#,
-    )
-    .bind(event.game_id)
-    .bind(&participants[..])
-    .bind(AnswerResult::Accepted as i16)
-    .fetch_all(pool)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let mut by_part: BTreeMap<i32, BTreeMap<i32, (String, DateTime<Utc>)>> = BTreeMap::new();
-    let mut team_names = BTreeMap::new();
-    for (participation_id, team_name, challenge_id, title, time) in rows {
-        team_names.insert(participation_id, team_name);
-        by_part
-            .entry(participation_id)
-            .or_default()
-            .insert(challenge_id, (title, time));
-    }
-    let (Some(left), Some(right)) = (by_part.get(&participants[0]), by_part.get(&participants[1]))
-    else {
-        return Ok(());
-    };
-    let mut shared = left
-        .iter()
-        .filter_map(|(challenge_id, (title, left_time))| {
-            let (_, right_time) = right.get(challenge_id)?;
-            Some((title.clone(), *left_time, *right_time))
-        })
-        .collect::<Vec<_>>();
-    shared.sort_by_key(|row| row.1.max(row.2));
-    let sample = shared
-        .iter()
-        .take(12)
-        .map(|(title, left_time, right_time)| {
-            format!(
-                "{title}: {}",
-                duration_text((*right_time - *left_time).num_milliseconds())
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
-    review.sources.push(EvidenceSourceReview {
-        source_type: "canonicalSolvePair".to_string(),
-        title: "Cross-team canonical solve comparison".to_string(),
-        source_id: Some(event.evidence_key.clone()),
-        recorded_at: Some(event.created_at),
-        immutable: true,
-        summary: "This review lists the immutable solve overlap. The detector applies additional final-snapshot prevalence and consistency filters before emitting."
-            .to_string(),
-        facts: vec![
-            fact(
-                "Teams",
-                format!(
-                    "{} ↔ {}",
-                    team_names.get(&participants[0]).cloned().unwrap_or_else(|| participants[0].to_string()),
-                    team_names.get(&participants[1]).cloned().unwrap_or_else(|| participants[1].to_string())
-                ),
-            ),
-            fact("Shared canonical solves", shared.len().to_string()),
-            fact("Solve-gap sample", if sample.is_empty() { "none".to_string() } else { sample }),
         ],
     });
     mark_supporting(review);

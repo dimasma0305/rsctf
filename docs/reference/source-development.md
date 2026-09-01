@@ -18,7 +18,8 @@ The runner:
 - starts PostgreSQL and Redis in the dedicated `rsctf-source-dev` Compose project;
 - binds every service to loopback rather than exposing a development server;
 - generates stable local-only secrets under the ignored `.rsctf-dev/` directory;
-- runs the Rust API from the working tree and rebuilds it after backend changes;
+- builds the Rust API through the shared bounded Cargo target, then restarts it after
+  a locally batched backend change;
 - runs Vite with hot module replacement for changes under `web/src/`; and
 - runs the real suspicion reconciler for anti-cheat development; and
 - disables round scheduling, checker execution, container provisioning, packet
@@ -31,8 +32,9 @@ token. You can print it again without starting the services:
 node scripts/dev.mjs --token
 ```
 
-The first Rust build can take several minutes. Later rebuilds reuse Cargo's
-incremental cache. PostgreSQL, Redis, uploaded development files, and generated
+The first Rust build can take several minutes. Later rebuilds reuse the same bounded
+Cargo target and compiler cache as other worktrees, and source changes are debounced
+into local batches. PostgreSQL, Redis, uploaded development files, and generated
 secrets persist across source-process restarts.
 
 ## Develop on a remote machine

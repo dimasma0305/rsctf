@@ -2,9 +2,13 @@ use super::evidence::ResolvedInputRow;
 use super::*;
 use axum::http::HeaderValue;
 use hmac::{Hmac, KeyInit, Mac};
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use std::str::FromStr;
 
 use crate::utils::enums::ParticipationStatus;
+
+mod distinct;
+mod max_bounds;
 
 fn row(participation_id: i32, earned: i64) -> ResolvedInputRow {
     ResolvedInputRow {
@@ -133,6 +137,53 @@ fn finalized_waves_may_only_gain_an_unchanged_suffix() {
     assert!(ensure_finalized_waves_are_append_only(&[first], &[changed]).is_err());
 }
 
+#[test]
+fn semantic_request_identity_normalizes_wave_and_team_order_and_binds_signer() {
+    let first = parse_and_normalize(
+        br#"{
+          "context":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "objectiveIds":["quality"],
+          "waves":[
+            {"waveId":"wave-b","endedAtUnixMs":20,"teams":[
+              {"tokenHash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","activity":{"earned":1,"possible":1},"objectives":[{"earned":1,"possible":1}],"isCrown":false},
+              {"tokenHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","activity":{"earned":1,"possible":1},"objectives":[{"earned":1,"possible":1}],"isCrown":true}
+            ]},
+            {"waveId":"wave-a","endedAtUnixMs":10,"teams":[]}
+          ]
+        }"#,
+    )
+    .unwrap();
+    let reordered = parse_and_normalize(
+        br#"{"waves":[{"teams":[],"endedAtUnixMs":10,"waveId":"wave-a"},{"teams":[{"isCrown":true,"objectives":[{"possible":1,"earned":1}],"activity":{"possible":1,"earned":1},"tokenHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{"isCrown":false,"objectives":[{"possible":1,"earned":1}],"activity":{"possible":1,"earned":1},"tokenHash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],"endedAtUnixMs":20,"waveId":"wave-b"}],"objectiveIds":["quality"],"context":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+    )
+    .unwrap();
+    let body_digest = canonical_input_digest(&first);
+    assert_eq!(body_digest, canonical_input_digest(&reordered));
+    assert_eq!(observation_weight(MAX_BODY_BYTES, &first), 6);
+    assert_ne!(
+        observation_request_digest(7, 9, "observer:7:9", &body_digest),
+        observation_request_digest(7, 9, "target:7:9:41:2", &body_digest)
+    );
+}
+
+#[tokio::test]
+async fn stale_context_is_the_only_typed_retryable_conflict() {
+    let response = observation_error_response(AppError::conflict(STALE_CONTEXT_MESSAGE)).unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(response.headers()[axum::http::header::RETRY_AFTER], "1");
+    let body = axum::body::to_bytes(response.into_body(), 1_024)
+        .await
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["code"], "stale_context");
+
+    let permanent = observation_error_response(AppError::conflict(
+        "Leaderboard objective IDs and order are frozen for this challenge",
+    ))
+    .unwrap_err();
+    assert_eq!(permanent.status(), axum::http::StatusCode::CONFLICT);
+}
+
 fn signed_headers(
     secret: &str,
     timestamp: &str,
@@ -163,6 +214,158 @@ fn signed_headers(
         .unwrap(),
     );
     headers
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn concurrent_semantic_duplicates_join_one_durable_response_and_expired_leases_reclaim() {
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let schema = format!("rsctf_koth_retry_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let options = PgConnectOptions::from_str(&database_url)
+        .unwrap()
+        .options([("search_path", schema.as_str())]);
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        r#"CREATE TABLE "KothApiObservationOperations" (
+             challenge_id INTEGER NOT NULL,
+             game_id INTEGER NOT NULL,
+             request_digest BYTEA NOT NULL,
+             signer_scope TEXT NOT NULL,
+             body_digest BYTEA NOT NULL,
+             context_hash CHAR(64) NOT NULL,
+             lease_token UUID NOT NULL,
+             lease_expires_at TIMESTAMPTZ NOT NULL,
+             response JSONB NULL,
+             created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+             completed_at TIMESTAMPTZ NULL,
+             expires_at TIMESTAMPTZ NOT NULL
+               DEFAULT (clock_timestamp() + interval '10 minutes'),
+             PRIMARY KEY (challenge_id, request_digest)
+           );"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let body_digest = [7_u8; 32];
+    let request_digest = observation_request_digest(7, 9, "observer:7:9", &body_digest);
+    let first = reserve_observation(
+        &pool,
+        7,
+        9,
+        "observer:7:9",
+        &"a".repeat(64),
+        body_digest,
+        request_digest,
+    )
+    .await
+    .unwrap();
+    let ObservationReservationResult::Owner(owner) = first else {
+        panic!("first request must own the operation");
+    };
+    let contender_pool = pool.clone();
+    let contender = tokio::spawn(async move {
+        reserve_observation(
+            &contender_pool,
+            7,
+            9,
+            "observer:7:9",
+            &"a".repeat(64),
+            body_digest,
+            request_digest,
+        )
+        .await
+        .unwrap()
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let accepted_at = DateTime::from_timestamp_millis(Utc::now().timestamp_millis()).unwrap();
+    let response = KothObservationAcceptedModel {
+        accepted: true,
+        cycle_number: 4,
+        reset_attempt: 2,
+        round_number: 5,
+        submitted_waves: 1,
+        submitted_teams: 2,
+        recognized_teams: 2,
+        accepted_at,
+    };
+    sqlx::query(
+        r#"UPDATE "KothApiObservationOperations"
+              SET response = $4, completed_at = clock_timestamp()
+            WHERE challenge_id = $1 AND request_digest = $2 AND lease_token = $3"#,
+    )
+    .bind(9_i32)
+    .bind(request_digest.as_slice())
+    .bind(owner.lease_token)
+    .bind(serde_json::to_value(&response).unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let ObservationReservationResult::Completed(joined) = contender.await.unwrap() else {
+        panic!("concurrent duplicate must join the completed result");
+    };
+    assert_eq!(joined.accepted_at, accepted_at);
+    assert_eq!(joined.recognized_teams, 2);
+
+    let reclaim_digest = [8_u8; 32];
+    let stale = reserve_observation(
+        &pool,
+        7,
+        9,
+        "observer:7:9",
+        &"b".repeat(64),
+        [9_u8; 32],
+        reclaim_digest,
+    )
+    .await
+    .unwrap();
+    let ObservationReservationResult::Owner(stale) = stale else {
+        panic!("new request must own its operation");
+    };
+    sqlx::query(
+        r#"UPDATE "KothApiObservationOperations"
+              SET lease_expires_at = clock_timestamp() - interval '1 second'
+            WHERE challenge_id = 9 AND request_digest = $1"#,
+    )
+    .bind(reclaim_digest.as_slice())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let reclaimed = reserve_observation(
+        &pool,
+        7,
+        9,
+        "observer:7:9",
+        &"b".repeat(64),
+        [9_u8; 32],
+        reclaim_digest,
+    )
+    .await
+    .unwrap();
+    let ObservationReservationResult::Owner(reclaimed) = reclaimed else {
+        panic!("expired lease must be reclaimable");
+    };
+    assert_ne!(reclaimed.lease_token, stale.lease_token);
+
+    pool.close().await;
+    sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+        .execute(&admin)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -262,6 +465,16 @@ async fn signed_snapshot_is_tick_bound_normalized_replay_safe_and_hash_only() {
             CREATE TEMP TABLE "KothApiRequestReplays" (
               request_hash BYTEA PRIMARY KEY, challenge_id INTEGER,
               expires_at TIMESTAMPTZ
+            );
+            CREATE TEMP TABLE "KothApiObservationOperations" (
+              challenge_id INTEGER, game_id INTEGER,
+              request_digest BYTEA, signer_scope TEXT, body_digest BYTEA,
+              context_hash CHAR(64), lease_token UUID,
+              lease_expires_at TIMESTAMPTZ, response JSONB,
+              created_at TIMESTAMPTZ DEFAULT clock_timestamp(),
+              completed_at TIMESTAMPTZ, expires_at TIMESTAMPTZ
+                DEFAULT (clock_timestamp() + interval '10 minutes'),
+              PRIMARY KEY (challenge_id, request_digest)
             );
             "#,
     )
@@ -379,6 +592,17 @@ async fn signed_snapshot_is_tick_bound_normalized_replay_safe_and_hash_only() {
     .unwrap();
     assert!(!String::from_utf8_lossy(&body).contains("current-token-a"));
     let timestamp = Utc::now().timestamp_millis().to_string();
+    let invalid_headers = signed_headers("not-a-current-referee-secret", &timestamp, 7, 9, &body);
+    let invalid = accept_observation(&pool, 7, 9, &invalid_headers, &body)
+        .await
+        .unwrap_err();
+    assert_eq!(invalid.status(), axum::http::StatusCode::UNAUTHORIZED);
+    let reserved_after_invalid_hmac: i64 =
+        sqlx::query_scalar(r#"SELECT COUNT(*) FROM "KothApiObservationOperations""#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(reserved_after_invalid_hmac, 0);
     // The managed target credential is sufficient for the first schema-free
     // snapshot; no external reporter participates in the scoring path.
     let headers = signed_headers("target-reporter-secret", &timestamp, 7, 9, &body);
@@ -476,10 +700,27 @@ async fn signed_snapshot_is_tick_bound_normalized_replay_safe_and_hash_only() {
         ("heat-17".to_string(), 11, 1_000_000, 2_000_000, 2, true)
     );
 
+    let snapshot_before_retry: DateTime<Utc> =
+        sqlx::query_scalar(r#"SELECT accepted_at FROM "KothApiSnapshots" WHERE target_id = 3"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     let replay = accept_observation(&pool, 7, 9, &headers, &body)
         .await
-        .unwrap_err();
-    assert_eq!(replay.status(), axum::http::StatusCode::CONFLICT);
+        .unwrap();
+    assert_eq!(replay.accepted_at, accepted.accepted_at);
+    let retry_timestamp = (timestamp.parse::<i64>().unwrap() + 10).to_string();
+    let retry_headers = signed_headers("target-reporter-secret", &retry_timestamp, 7, 9, &body);
+    let lost_response_retry = accept_observation(&pool, 7, 9, &retry_headers, &body)
+        .await
+        .unwrap();
+    assert_eq!(lost_response_retry.accepted_at, accepted.accepted_at);
+    let snapshot_after_retry: DateTime<Utc> =
+        sqlx::query_scalar(r#"SELECT accepted_at FROM "KothApiSnapshots" WHERE target_id = 3"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(snapshot_after_retry, snapshot_before_retry);
 
     let rewritten_body = serde_json::to_vec(&serde_json::json!({
         "context": context,

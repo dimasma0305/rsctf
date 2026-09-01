@@ -12,9 +12,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use chrono::Utc;
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
-};
+use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
 use serde::Deserialize;
 use std::net::SocketAddr;
 use uuid::Uuid;
@@ -23,26 +21,38 @@ use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::CurrentUser;
 use crate::models::data::{container, game_instance, participation, team, team_member, user};
 use crate::services::anti_cheat;
-use crate::utils::codec::random_hex;
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
 
 mod account_lifecycle;
 mod avatar;
+mod invite;
 mod lifecycle;
 mod models;
+mod profile;
+mod reads;
 mod revocation;
 mod roster_policy;
-pub(crate) use account_lifecycle::{create_team_rows, transfer_captain_locked};
+mod scoreboard_invalidation;
+mod signature;
+#[cfg(test)]
+use account_lifecycle::create_team_rows;
+pub(crate) use account_lifecycle::{create_team_rows_in, transfer_captain_locked};
 pub use avatar::avatar;
+pub(crate) use invite::recover_pending_invite_rotations;
+pub use invite::{invite_code, update_invite_token};
 pub use models::*;
+pub(crate) use profile::process_profile_invalidations;
+use reads::{load_team_selector, load_user_team_infos};
 pub(crate) use revocation::{
-    acquire_roster_mutation, invalidate_removed_membership_cache, mark_team_participations_revoked,
-    require_team_mutable, revoke_participation_capabilities, revoke_team_shared_capabilities,
-    TeamDeletionLease,
+    acquire_profile_mutation, acquire_roster_mutation, cleanup_deleted_team_avatar,
+    invalidate_removed_membership_cache, mark_team_participations_revoked, require_team_mutable,
+    revoke_participation_capabilities, revoke_team_shared_capabilities, TeamDeletionLease,
 };
 use revocation::{remove_membership, revoke_team_shared_capabilities_locked};
 pub(crate) use roster_policy::ensure_roster_change_allowed;
+pub(crate) use scoreboard_invalidation::{flush_scoreboard_for_user, flush_scoreboards_for_users};
+pub use signature::verify_signature;
 
 /// Each user may captain at most this many teams. Mirrors RSCTF `MaxTeamsAllowed`.
 pub(crate) const MAX_TEAMS_ALLOWED: u64 = 3;
@@ -84,6 +94,7 @@ mod profile_tests {
 pub fn router() -> Router<SharedState> {
     Router::new()
         .route("/api/team", get(get_teams_info).post(create_team))
+        .route("/api/team/selector", get(get_team_selector))
         .route(
             "/api/team/{id}",
             get(get_basic_info).put(update_team).delete(delete_team),
@@ -93,7 +104,17 @@ pub fn router() -> Router<SharedState> {
             get(invite_code).put(update_invite_token),
         )
         .route("/api/team/accept", post(accept))
-        .route("/api/team/verify", post(verify_signature))
+        .route(
+            "/api/team/verify",
+            crate::middlewares::rate_limiter::limited(
+                crate::middlewares::rate_limiter::Policy::TeamSignatureGlobal,
+                crate::middlewares::rate_limiter::limited(
+                    crate::middlewares::rate_limiter::Policy::TeamSignatureSource,
+                    post(verify_signature),
+                ),
+            )
+            .layer(DefaultBodyLimit::max(signature::BODY_LIMIT_BYTES)),
+        )
         .route("/api/team/{id}/leave", post(leave))
         .route("/api/team/{id}/kick/{userId}", post(kick_user))
         .route("/api/team/{id}/transfer", put(transfer))
@@ -122,41 +143,91 @@ pub async fn get_teams_info(
     State(st): State<SharedState>,
     user: CurrentUser,
 ) -> AppResult<RequestResponse<Vec<TeamInfoModel>>> {
-    let teams = user_teams(&st, user.id).await?;
-    let mut out = Vec::with_capacity(teams.len());
-    for team in &teams {
-        out.push(to_info(&st, team, true).await?);
-    }
-    Ok(RequestResponse::ok(out))
+    Ok(RequestResponse::ok(
+        load_user_team_infos(st.pg(), user.id).await?,
+    ))
+}
+
+/// `GET /api/team/selector` — compact, bounded team choices for event joins.
+pub async fn get_team_selector(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+) -> AppResult<RequestResponse<Vec<TeamSelectorInfoModel>>> {
+    Ok(RequestResponse::ok(
+        load_team_selector(st.pg(), user.id).await?,
+    ))
 }
 
 /// `POST /api/team` — create a team; creator becomes captain.
 pub async fn create_team(
     State(st): State<SharedState>,
     user: CurrentUser,
+    headers: HeaderMap,
     Json(model): Json<TeamUpdateModel>,
 ) -> AppResult<RequestResponse<TeamInfoModel>> {
     let name = model.name.unwrap_or_default().trim().to_string();
     validate_team_profile(Some(&name), model.bio.as_deref())?;
-    let team_id = create_team_rows(
-        st.pg(),
+    let operation_id = crate::controllers::edit::control_jobs::operation_id(&headers)?;
+    let fingerprint = crate::services::mutation_operations::fingerprint(
+        "team-create",
+        &(&name, model.bio.as_deref()),
+    )?;
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let replay = crate::services::mutation_operations::claim(
+        &mut transaction,
         user.id,
-        &user.security_stamp,
-        &name,
-        model.bio.as_deref(),
+        "team-create",
+        "account",
+        operation_id,
+        fingerprint,
     )
     .await?;
+    let (team_id, created) = if let Some(replay) = replay {
+        let id = replay
+            .result_id
+            .parse::<i32>()
+            .map_err(|_| AppError::internal("invalid retained team result identity"))?;
+        (id, false)
+    } else {
+        let id = create_team_rows_in(
+            &mut transaction,
+            user.id,
+            &user.security_stamp,
+            &name,
+            model.bio.as_deref(),
+        )
+        .await?;
+        crate::services::mutation_operations::complete(
+            &mut transaction,
+            user.id,
+            "team-create",
+            "account",
+            operation_id,
+            &id.to_string(),
+            None,
+        )
+        .await?;
+        (id, true)
+    };
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     let team = load_team(&st, team_id).await?;
 
     // RSCTF `Team_Created` — "Create team {name}" (TeamController, Success).
-    crate::services::audit::info(
-        &st,
-        "TeamController",
-        Some(user.name.clone()),
-        None,
-        format!("Create team {}", team.name),
-    )
-    .await;
+    if created {
+        crate::services::audit::info(
+            &st,
+            "TeamController",
+            Some(user.name.clone()),
+            None,
+            format!("Create team {}", team.name),
+        )
+        .await;
+    }
 
     let info = to_info(&st, &team, true).await?;
     Ok(RequestResponse::ok(info))
@@ -169,36 +240,16 @@ pub async fn update_team(
     Path(id): Path<i32>,
     Json(model): Json<TeamUpdateModel>,
 ) -> AppResult<RequestResponse<TeamInfoModel>> {
-    let mut roster = acquire_roster_mutation(st.pg(), id).await?;
+    let mut roster = acquire_profile_mutation(st.pg(), id).await?;
     require_team_mutable(roster.transaction_mut(), id).await?;
-    let team = load_team(&st, id).await?;
-    require_captain(&team, &user)?;
-
-    let old_name = team.name.clone();
-    let mut am: team::ActiveModel = team.into();
-    let normalized_name = model.name.as_deref().map(str::trim);
-    validate_team_profile(normalized_name, model.bio.as_deref())?;
-    if let Some(name) = model.name {
-        let name = name.trim().to_string();
-        // RSCTF `UpdateTeam` → `Team.UpdateInfo` does not enforce name uniqueness;
-        // the invite code embeds the id, so duplicate bounded names are harmless.
-        am.name = Set(name);
-    }
-    if let Some(bio) = model.bio {
-        am.bio = Set(Some(bio));
-    }
-    let team = am.update(&st.db).await?;
+    let info = profile::update_locked(roster.transaction_mut(), id, user.id, model).await?;
     roster.release().await?;
-
-    // RSCTF `FlushScoreboardCacheForTeam`: a rename must invalidate the scoreboard
-    // caches for every game the team is in, otherwise the board keeps the old name
-    // (the live board rides a 7-day sliding cache; A&D/KotH boards never auto-
-    // regenerate once a game is paused/ended). Only flush on an actual name change,
-    // matching the C# ordinal compare. Cache eviction is best-effort.
-    if team.name != old_name {
-        flush_scoreboard_for_team(&st, team.id).await?;
-    }
-    let info = to_info(&st, &team, true).await?;
+    let effects_state = st.clone();
+    tokio::spawn(async move {
+        if let Err(error) = profile::process_profile_invalidations(&effects_state).await {
+            tracing::warn!(%error, "team profile invalidation failed");
+        }
+    });
     Ok(RequestResponse::ok(info))
 }
 
@@ -245,7 +296,8 @@ pub async fn delete_team(
     // 7 days (RSCTF `DeleteTeam` → `FlushScoreboardsForGames`). Best-effort.
     flush_scoreboard_for_team(&st, team.id).await?;
 
-    deletion_lease.finalize(team.id).await?;
+    let avatar_hash = deletion_lease.finalize(team.id).await?;
+    cleanup_deleted_team_avatar(&st, avatar_hash).await;
     flush_scoreboards_for_games(&st, &affected_game_ids).await;
 
     // RSCTF `Team_Deleted` — "Delete team {name}" (TeamController, Success).
@@ -259,42 +311,6 @@ pub async fn delete_team(
     .await;
 
     Ok(RequestResponse::ok(info))
-}
-
-/// `GET /api/team/{id}/invite` — current invite code (captain only).
-pub async fn invite_code(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-    Path(id): Path<i32>,
-) -> AppResult<RequestResponse<String>> {
-    let team = load_team(&st, id).await?;
-    require_captain(&team, &user)?;
-    Ok(RequestResponse::ok(team.invite_code()))
-}
-
-/// `PUT /api/team/{id}/invite` — regenerate the invite token (captain only).
-pub async fn update_invite_token(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-    Path(id): Path<i32>,
-) -> AppResult<RequestResponse<String>> {
-    let mut roster = acquire_roster_mutation(st.pg(), id).await?;
-    require_team_mutable(roster.transaction_mut(), id).await?;
-    let team = load_team(&st, id).await?;
-    require_captain(&team, &user)?;
-
-    let mut am: team::ActiveModel = team.into();
-    am.invite_token = Set(random_hex(16));
-    let team = am.update(&st.db).await?;
-    roster.release().await?;
-    for part in participation::Entity::find()
-        .filter(participation::Column::TeamId.eq(team.id))
-        .all(&st.db)
-        .await?
-    {
-        st.byoc.disconnect_participation(&st.db, part.id).await?;
-    }
-    Ok(RequestResponse::ok(team.invite_code()))
 }
 
 /// `POST /api/team/accept` — join a team via its invite code (`name:id:token`).
@@ -649,67 +665,6 @@ pub async fn transfer(
     Ok(RequestResponse::ok(info))
 }
 
-/// `POST /api/team/verify` — verify a team signature. Mirrors RSCTF
-/// `TeamController.VerifySignature` / `CryptoUtils.VerifySignature`:
-///
-/// * `publicKey` is the game's Ed25519 public key, standard-Base64 encoded
-///   (must decode to exactly 32 bytes).
-/// * `teamToken` is `<id>:<signature>` where `<signature>` is the standard-Base64
-///   Ed25519 signature over the UTF-8 bytes of `RSCTF_TEAM_{id}`.
-///
-/// Returns void 200 when the signature is valid, 400 on malformed input, and 401
-/// when the signature does not verify.
-pub async fn verify_signature(
-    State(_st): State<SharedState>,
-    Json(model): Json<SignatureVerifyModel>,
-) -> AppResult<StatusCode> {
-    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-
-    // Public key: Base64 → 32 raw bytes.
-    let pk_bytes = crate::utils::codec::base64_decode(&model.public_key)
-        .ok_or_else(|| AppError::bad_request("Invalid signature"))?;
-    let pk_arr: [u8; 32] = pk_bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| AppError::bad_request("Invalid signature"))?;
-
-    // Team token: `<id>:<signature>` (split on the first colon).
-    let pos = model
-        .team_token
-        .find(':')
-        .ok_or_else(|| AppError::bad_request("Invalid signature"))?;
-    let (id_str, rest) = model.team_token.split_at(pos);
-    let sign = &rest[1..];
-    let team_id: i32 = id_str
-        .parse()
-        .map_err(|_| AppError::bad_request("Invalid signature"))?;
-    if sign.is_empty() {
-        return Err(AppError::bad_request("Invalid signature"));
-    }
-
-    // Data that was signed: `RSCTF_TEAM_{id}`.
-    let data = format!("RSCTF_TEAM_{team_id}");
-
-    // Beyond this point a malformed key/signature is treated as a failed
-    // verification (401), never a 500 — RSCTF surfaces the same Unauthorized.
-    let verified = (|| {
-        let verifying_key = VerifyingKey::from_bytes(&pk_arr).ok()?;
-        let sign_bytes = crate::utils::codec::base64_decode(sign)?;
-        let sign_arr: [u8; 64] = sign_bytes.as_slice().try_into().ok()?;
-        let signature = Signature::from_bytes(&sign_arr);
-        Some(verifying_key.verify(data.as_bytes(), &signature).is_ok())
-    })()
-    .unwrap_or(false);
-
-    if verified {
-        // RSCTF `VerifySignature` returns a bare `Ok()` (empty 200); the client
-        // types the success case as `void`, so emit an empty 200.
-        Ok(StatusCode::OK)
-    } else {
-        Err(AppError::Unauthorized)
-    }
-}
-
 // --- Helpers ---------------------------------------------------------------
 
 async fn load_team(st: &SharedState, id: i32) -> AppResult<team::Model> {
@@ -777,30 +732,9 @@ async fn to_info(
         bio: team.bio.clone(),
         avatar: team.avatar_url(),
         locked: team.locked,
+        profile_revision: team.profile_revision,
         members,
     })
-}
-
-/// Every team the user captains or is a roster member of, ordered by id.
-async fn user_teams(st: &SharedState, user_id: Uuid) -> AppResult<Vec<team::Model>> {
-    let member_team_ids: Vec<i32> = team_member::Entity::find()
-        .filter(team_member::Column::UserId.eq(user_id))
-        .all(&st.db)
-        .await?
-        .into_iter()
-        .map(|r| r.team_id)
-        .collect();
-
-    let mut cond = team::Column::CaptainId.eq(user_id);
-    if !member_team_ids.is_empty() {
-        cond = cond.or(team::Column::Id.is_in(member_team_ids));
-    }
-    let teams = team::Entity::find()
-        .filter(cond)
-        .order_by_asc(team::Column::Id)
-        .all(&st.db)
-        .await?;
-    Ok(teams)
 }
 
 /// Distinct ids of the games the team has (or had) a participation in.

@@ -46,6 +46,33 @@ fn safe_retained_updates_do_not_block_missing_challenge_reconciliation() {
 }
 
 #[test]
+fn scans_release_the_mutable_checkout_before_importing_snapshot_files() {
+    let source = include_str!("repo_bindings.rs");
+    let snapshot = source
+        .find(".immutable_snapshot(&dest, id)")
+        .expect("scan creates an immutable checkout snapshot");
+    let import = source
+        .find("import_repository_snapshot_manifest(")
+        .expect("scan imports snapshot manifests");
+    assert!(snapshot < import);
+    assert!(source.contains("snapshot.manifest_identity(m).await"));
+    assert!(!source.contains("discover_events(&dest)"));
+}
+
+#[test]
+fn scan_messages_are_bounded_before_history_and_wire_serialization() {
+    let messages = (0..300)
+        .map(|index| format!("{index}: {}", "x".repeat(4_000)))
+        .collect();
+    let bounded = bound_scan_messages(messages);
+    assert_eq!(bounded.len(), MAX_SCAN_MESSAGES + 1);
+    assert!(bounded[..MAX_SCAN_MESSAGES]
+        .iter()
+        .all(|message| message.chars().count() <= MAX_SCAN_MESSAGE_CHARS));
+    assert!(bounded.last().unwrap().contains("omitted"));
+}
+
+#[test]
 fn event_preflight_rejects_missing_and_nested_event_roots() {
     assert!(validate_event_preflight(
         &["one/.gzevent".into(), "two/.gzevent".into()],

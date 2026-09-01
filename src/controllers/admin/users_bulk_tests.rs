@@ -346,6 +346,7 @@ async fn registration_lock_closes_bulk_creation_precheck_race() {
     let result = contender.await.unwrap().unwrap();
     assert_eq!(result.id, public_id);
     assert!(!result.created);
+    assert!(result.user_name_changed);
     let count: i64 = sqlx::query_scalar(
         r#"SELECT COUNT(*)::bigint FROM "AspNetUsers" WHERE normalized_email = 'RACER@EXAMPLE.TEST'"#,
     )
@@ -653,7 +654,7 @@ async fn failed_team_assignment_rolls_back_recredential_and_creation() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn later_full_team_failure_is_a_skipped_row_without_losing_other_results() {
-    use super::super::users::{import_row_step, ImportUserResult};
+    use super::super::users::{import_row_step, terminal_import_row_reason, ImportUserResult};
     use crate::controllers::admin::users_credentials::credential_cache_key;
 
     let harness = Harness::new().await;
@@ -713,7 +714,7 @@ async fn later_full_team_failure_is_a_skipped_row_without_losing_other_results()
         error: None,
     }];
 
-    let second_reason = import_row_step(
+    let second_error = import_row_step(
         provision_import_user(
             &harness.pool,
             import_write("SECOND@EXAMPLE.TEST", "second-hash"),
@@ -726,6 +727,8 @@ async fn later_full_team_failure_is_a_skipped_row_without_losing_other_results()
         "provision",
     )
     .expect_err("full team unexpectedly accepted the second row");
+    let second_reason = terminal_import_row_reason(&second_error)
+        .expect("a full team is a deterministic skipped-row result");
     response_rows.push(ImportUserResult {
         email: "second@example.test".to_string(),
         real_name: "Second".to_string(),
@@ -950,51 +953,5 @@ async fn failed_commit_removes_the_just_published_plaintext() {
     harness.cleanup().await;
 }
 
-#[tokio::test]
-#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-async fn credential_publication_tracks_the_last_committed_import() {
-    use crate::controllers::admin::users_credentials::{
-        credential_cache_key, CachedImportCredential,
-    };
-
-    let harness = Harness::new().await;
-    let email = "race@example.test";
-    let normalized_email = "RACE@EXAMPLE.TEST";
-    let first = provision_import_user(
-        &harness.pool,
-        import_write(normalized_email, "first-hash"),
-        credential_write(&harness, "first-password"),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
-    let ImportProvision::Provisioned(first) = first else {
-        panic!("first import was unexpectedly skipped");
-    };
-    let second = provision_import_user(
-        &harness.pool,
-        import_write(normalized_email, "second-hash"),
-        credential_write(&harness, "second-password"),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
-    let ImportProvision::Provisioned(second) = second else {
-        panic!("second import was unexpectedly skipped");
-    };
-    assert_eq!(first.id, second.id);
-    assert_ne!(first.security_stamp, second.security_stamp);
-
-    let value = harness
-        .cache
-        .get(&credential_cache_key(email))
-        .await
-        .expect("newest credential disappeared");
-    let credential: CachedImportCredential = serde_json::from_slice(&value).unwrap();
-    assert_eq!(credential.user_id, second.id);
-    assert_eq!(credential.security_stamp, second.security_stamp);
-    assert_eq!(credential.password, "second-password");
-    harness.cleanup().await;
-}
+#[path = "users_bulk_tests_publication.rs"]
+mod publication;

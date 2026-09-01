@@ -714,6 +714,8 @@ mod scheduling_tests {
     fn pending_roster_requires_unresolved_identity_matched_delivery() {
         assert!(ad::PENDING_AD_SERVICES_SQL.contains("result.sla_credit IS NULL"));
         assert!(ad::PENDING_AD_SERVICES_SQL.contains("delivery.delivered = TRUE"));
+        assert!(ad::PENDING_AD_SERVICES_SQL.contains("OCTET_LENGTH(flag.flag) = 38"));
+        assert!(ad::PENDING_AD_SERVICES_SQL.contains("[A-Za-z0-9_-]{32}"));
         assert!(ad::PENDING_AD_SERVICES_SQL
             .contains("delivery.container_id IS NOT DISTINCT FROM service.container_id"));
     }
@@ -786,7 +788,8 @@ mod scheduling_tests {
               sla_credit DOUBLE PRECISION
             );
             CREATE TEMP TABLE "AdFlags" (
-              round_id INTEGER NOT NULL, team_service_id INTEGER NOT NULL
+              round_id INTEGER NOT NULL, team_service_id INTEGER NOT NULL,
+              flag TEXT NOT NULL
             );
             CREATE TEMP TABLE "AdFlagDeliveryResults" (
               round_id INTEGER NOT NULL, team_service_id INTEGER NOT NULL,
@@ -800,7 +803,14 @@ mod scheduling_tests {
               (1,7,'one'), (2,7,'two'), (3,7,'replacement'), (4,7,NULL), (5,7,'five');
             INSERT INTO "AdCheckResults" VALUES
               (101,1,NULL), (101,2,1.0), (101,3,NULL), (101,4,NULL), (101,5,NULL);
-            INSERT INTO "AdFlags" VALUES (101,1), (101,2), (101,3), (101,4);
+            INSERT INTO "AdFlags" VALUES
+              (101,1,'flag{AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA}'),
+              (101,2,'flag{BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB}'),
+              (101,3,'flag{CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC}'),
+              (101,4,'flag{DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD}'),
+              (101,5,'legacy-invalid');
+            INSERT INTO "AdFlagDeliveryResults" VALUES
+              (101,5,'Managed','five',TRUE,clock_timestamp());
             INSERT INTO "AdFlagDeliveryResults" VALUES
               (101,1,'Managed','one',TRUE,clock_timestamp()),
               (101,2,'Managed','two',TRUE,clock_timestamp()),

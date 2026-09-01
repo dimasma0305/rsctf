@@ -36,6 +36,7 @@ const panel = readFileSync(
   'utf8',
 );
 const playerLoad = readFileSync(new URL('../k6/player.js', import.meta.url), 'utf8');
+const managedKothLoad = readFileSync(new URL('../managed-koth.mjs', import.meta.url), 'utf8');
 
 function section(source, start, end) {
   const from = source.indexOf(start);
@@ -107,8 +108,26 @@ test('epoch eviction recovery is writer-fenced and player rotation stays partici
   );
   assert.match(rotation, /begin_participant_epoch_mutation/);
   assert.match(rotation, /finish_participant_epoch_mutation/);
-  assert.doesNotMatch(rotation, /begin_game_epoch_mutation/);
+  assert.match(rotation, /game_cache_mutation = if reconciled\.is_empty\(\)/);
+  assert.match(rotation, /clear_unsettled_scores_for_capability_change[\s\S]*&\[part\.id\]/);
   assert.match(capabilityCache, /player_rotation_changes_only_that_participants_namespace/);
+});
+
+test('active-scoring emergency rotation is revisioned, retryable, and team-local', () => {
+  const rotation = section(tokens, 'pub async fn rotate_koth_api_token', '#[cfg(test)]');
+  assert.doesNotMatch(rotation, /scoring_started|ad_scoring_paused|load_manual_api_rotation_gate/);
+  assert.match(rotation, /CredentialMutationInput\(request\)/);
+  assert.match(rotation, /credential_operations::reserve/);
+  assert.match(rotation, /CredentialReservation::Recovered/);
+  assert.match(rotation, /credential_operations::complete/);
+  assert.match(rotation, /rotate_player_api_capability/);
+  assert.match(rotation, /token_rotation_cooldown_response/);
+  assert.match(rotation, /clear_unsettled_scores_for_capability_change[\s\S]*&\[part\.id\]/);
+  assert.doesNotMatch(rotation, /clear_unsettled_scores_for_capability_change[\s\S]*roster_snapshot/);
+  assert.match(managedKothLoad, /exerciseActivePlayerRotation/);
+  assert.match(managedKothLoad, /NOT ad_scoring_paused/);
+  assert.match(managedKothLoad, /recovered\?\.token === rotated\.token/);
+  assert.match(managedKothLoad, /JSON\.stringify\(otherAfter\) === JSON\.stringify\(otherBefore\)/);
 });
 
 test('capability mutations disable before commit and ticket-finalize after it', () => {
@@ -139,6 +158,19 @@ test('capability mutations disable before commit and ticket-finalize after it', 
   assert.match(capabilityCache, /stale_finalizer_cannot_overwrite_a_newer_replica_mutation_marker/);
   assert.match(capabilityCache, /newest_replica_mutation_can_publish_after_a_stale_finalizer/);
   assert.match(cache, /local_only_values_never_reach_the_shared_tier_or_another_replica/);
+
+  const gameControlRelease = capabilityCache.slice(
+    capabilityCache.indexOf('pub(crate) async fn release_game_control'),
+  );
+  const releaseMarker = gameControlRelease.indexOf('begin_game_epoch_mutation_if');
+  const releaseCommit = gameControlRelease.indexOf('control\n        .release', releaseMarker);
+  const releasePublish = gameControlRelease.indexOf(
+    'finish_game_epoch_mutation_if_any',
+    releaseCommit,
+  );
+  assert.ok(
+    releaseMarker >= 0 && releaseCommit > releaseMarker && releasePublish > releaseCommit,
+  );
 });
 
 test('deterministic no-write edit exits restore the cache epoch', () => {
@@ -147,11 +179,9 @@ test('deterministic no-write edit exits restore the cache epoch', () => {
   assertRestorePrecedes(approval, 'if updated != 1', 'Challenge review state changed');
   assertRestorePrecedes(challengeReview, 'if rejected != 1', 'Challenge is being deleted');
   assertRestorePrecedes(adEdit, 'if toggled != 1', 'Challenge is being deleted');
-  assertRestorePrecedes(
-    challengeEdit,
-    'if fenced.rows_affected() != 1',
-    'Challenge eligibility changed',
-  );
+  const topologyBegin = challengeEdit.indexOf('topology_transition::begin(');
+  const topologyCommit = challengeEdit.indexOf('release_game_control(', topologyBegin);
+  assert.ok(topologyBegin >= 0 && topologyCommit > topologyBegin);
 
   const deletion = section(challengeEdit, 'pub async fn delete_challenge', 'pub(crate) struct BuildOutcome');
   const fenceFailure = deletion.indexOf('if let Err(error)');
@@ -162,7 +192,7 @@ test('deterministic no-write edit exits restore the cache epoch', () => {
   const approvalCommit = approval.indexOf('lock.release()', approval.indexOf('if updated != 1'));
   const approvalPublish = approval.indexOf('finish_game_epoch_mutation_if_any', approvalCommit);
   assert.ok(approvalCommit >= 0 && approvalPublish > approvalCommit);
-  const deletionCommit = deletion.indexOf('definition_lock.release().await?');
+  const deletionCommit = deletion.indexOf('engine_control\n        .release()');
   const deletionPublish = deletion.indexOf('finish_game_epoch_mutation_if_any', deletionCommit);
   assert.ok(deletionCommit >= 0 && deletionPublish > deletionCommit);
 });

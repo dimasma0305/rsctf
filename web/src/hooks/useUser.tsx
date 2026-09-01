@@ -1,13 +1,15 @@
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
-import { useSWRConfig } from 'swr'
+import { type KeyedMutator, type MutatorCallback, type MutatorOptions, useSWRConfig } from 'swr'
 import { setAuthSession } from '@Utils/AuthState'
+import { clearLegacySensitiveBrowserStorage } from '@Utils/Cache'
+import { invalidatePlayerReads, TEAM_SELECTOR_PATH } from '@Utils/PlayerReadCache'
 import { createProfileRetryTimers, profileErrorDisposition, profileRetryScheduleDelay } from '@Utils/ProfileRetry'
-import api from '@Api'
+import api, { type TeamInfoModel } from '@Api'
 
 const handledBannedProfileErrors = new WeakSet<object>()
 
@@ -99,17 +101,50 @@ export const useUserRole = () => {
 }
 
 export const useTeams = () => {
+  const { mutate: mutateCache } = useSWRConfig()
   const {
     data: teams,
     error,
-    mutate,
+    mutate: mutateTeams,
   } = api.team.useTeamGetTeamsInfo({
-    refreshInterval: 120000,
+    refreshInterval: 0,
+    refreshWhenHidden: false,
+    refreshWhenOffline: false,
     shouldRetryOnError: false,
     revalidateOnFocus: false,
+    revalidateOnReconnect: false,
   })
 
+  const mutate: KeyedMutator<TeamInfoModel[]> = useCallback(
+    async <MutationData = TeamInfoModel[],>(
+      data?: TeamInfoModel[] | Promise<TeamInfoModel[] | undefined> | MutatorCallback<TeamInfoModel[]>,
+      options?: boolean | MutatorOptions<TeamInfoModel[], MutationData>
+    ) => {
+      const result = await mutateTeams<MutationData>(data, options)
+      await invalidatePlayerReads(mutateCache, [TEAM_SELECTOR_PATH])
+      return result
+    },
+    [mutateCache, mutateTeams]
+  )
+
   return { teams, error, mutate }
+}
+
+/** Compact, one-shot team choices for event enrollment. */
+export const useTeamSelector = (active = true) => {
+  const query = api.team.useTeamGetSelector(
+    {
+      refreshInterval: 0,
+      refreshWhenHidden: false,
+      refreshWhenOffline: false,
+      shouldRetryOnError: false,
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false,
+    },
+    active
+  )
+
+  return { teams: query.data, error: query.error, mutate: query.mutate }
 }
 
 export const useLogOut = () => {
@@ -121,6 +156,7 @@ export const useLogOut = () => {
   return async () => {
     try {
       await api.account.accountLogOut()
+      clearLegacySensitiveBrowserStorage()
       navigate('/')
       mutate((key) => typeof key === 'string' && key.includes('game/'), undefined, {
         revalidate: false,
@@ -132,6 +168,7 @@ export const useLogOut = () => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch {
+      clearLegacySensitiveBrowserStorage()
       navigate('/')
       mutateProfile(undefined, { revalidate: false })
     }

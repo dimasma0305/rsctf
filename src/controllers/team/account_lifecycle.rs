@@ -10,6 +10,7 @@ use crate::utils::error::{AppError, AppResult};
 /// Atomically revalidate the authenticated captain, enforce the captain limit,
 /// and create both ownership rows. The exact JWT stamp binds this durable
 /// mutation to the principal that passed authentication before any lock wait.
+#[cfg(test)]
 pub(crate) async fn create_team_rows(
     pool: &sqlx::PgPool,
     creator_id: Uuid,
@@ -21,16 +22,38 @@ pub(crate) async fn create_team_rows(
         .begin()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    let team_id = create_team_rows_in(
+        &mut transaction,
+        creator_id,
+        expected_security_stamp,
+        name,
+        bio,
+    )
+    .await?;
+    transaction.commit().await.map_err(database_error)?;
+    Ok(team_id)
+}
+
+/// Transaction-sharing form used by the idempotent HTTP create ledger. Keeping
+/// the captain fence, quota check, team row, membership row, and operation
+/// result in one commit prevents a lost response from consuming another slot.
+pub(crate) async fn create_team_rows_in(
+    transaction: &mut Transaction<'_, Postgres>,
+    creator_id: Uuid,
+    expected_security_stamp: &str,
+    name: &str,
+    bio: Option<&str>,
+) -> AppResult<i32> {
     // Creating a team links its already-authenticated captain without an
     // invite admission. Mark this trusted roster insert explicitly so the
     // rolling-upgrade TeamMembers fence rejects only legacy public joins.
-    anti_cheat::mark_identity_neutral_insert(&mut transaction).await?;
-    lock_acting_account(&mut transaction, creator_id, expected_security_stamp).await?;
+    anti_cheat::mark_identity_neutral_insert(transaction).await?;
+    lock_acting_account(transaction, creator_id, expected_security_stamp).await?;
 
     let captained: i64 =
         sqlx::query_scalar(r#"SELECT COUNT(*)::bigint FROM "Teams" WHERE captain_id = $1"#)
             .bind(creator_id)
-            .fetch_one(&mut *transaction)
+            .fetch_one(&mut **transaction)
             .await
             .map_err(database_error)?;
     if captained >= MAX_TEAMS_ALLOWED as i64 {
@@ -47,16 +70,15 @@ pub(crate) async fn create_team_rows(
     .bind(bio)
     .bind(random_hex(16))
     .bind(creator_id)
-    .fetch_one(&mut *transaction)
+    .fetch_one(&mut **transaction)
     .await
     .map_err(database_error)?;
     sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES ($1, $2)"#)
         .bind(team_id)
         .bind(creator_id)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
-    transaction.commit().await.map_err(database_error)?;
     Ok(team_id)
 }
 

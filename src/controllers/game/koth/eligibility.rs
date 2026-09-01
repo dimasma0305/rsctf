@@ -7,13 +7,17 @@ use crate::utils::enums::{ChallengeReviewStatus, ChallengeType};
 use crate::utils::error::{AppError, AppResult};
 
 const LIVE_HILL_CACHE_TTL: Duration = Duration::from_secs(1);
-const LIVE_HILLS_SQL: &str = r#"SELECT id
-      FROM "GameChallenges"
-     WHERE game_id = $1
-       AND is_enabled = TRUE
-       AND review_status = $2
-       AND "Type" = $3
-     ORDER BY id"#;
+const LIVE_HILLS_SQL: &str = r#"SELECT challenge.id
+      FROM "GameChallenges" challenge
+      JOIN "Games" game ON game.id = challenge.game_id
+     WHERE challenge.game_id = $1
+       AND game.deletion_pending = FALSE
+       AND game.start_time_utc <= clock_timestamp()
+       AND game.end_time_utc > clock_timestamp()
+       AND challenge.is_enabled = TRUE
+       AND challenge.review_status = $2
+       AND challenge."Type" = $3
+     ORDER BY challenge.id"#;
 
 static LIVE_HILL_SF: std::sync::LazyLock<
     crate::utils::single_flight::SingleFlight<Option<BTreeSet<i32>>>,
@@ -143,7 +147,13 @@ mod tests {
             .expect("RSCTF_TEST_DATABASE_URL must point to PostgreSQL");
         let mut connection = PgConnection::connect(&database_url).await.unwrap();
         sqlx::raw_sql(
-            r#"CREATE TEMP TABLE "GameChallenges" (
+            r#"CREATE TEMP TABLE "Games" (
+                 id INTEGER PRIMARY KEY,
+                 deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
+                 start_time_utc TIMESTAMPTZ NOT NULL,
+                 end_time_utc TIMESTAMPTZ NOT NULL
+               );
+               CREATE TEMP TABLE "GameChallenges" (
                  id INTEGER PRIMARY KEY,
                  game_id INTEGER NOT NULL,
                  is_enabled BOOLEAN NOT NULL,
@@ -155,12 +165,31 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
+            r#"INSERT INTO "Games" VALUES
+               (10, FALSE, clock_timestamp() - interval '1 hour',
+                           clock_timestamp() + interval '1 hour'),
+               (11, FALSE, clock_timestamp() - interval '1 hour',
+                           clock_timestamp() + interval '1 hour'),
+               (12, FALSE, clock_timestamp() + interval '1 hour',
+                           clock_timestamp() + interval '2 hours'),
+               (13, FALSE, clock_timestamp() - interval '2 hours',
+                           clock_timestamp() - interval '1 hour'),
+               (14, TRUE, clock_timestamp() - interval '1 hour',
+                          clock_timestamp() + interval '1 hour')"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        sqlx::query(
             r#"INSERT INTO "GameChallenges" VALUES
                (1, 10, TRUE, $1, $2),
                (2, 10, FALSE, $1, $2),
                (3, 10, TRUE, $3, $2),
                (4, 10, TRUE, $1, $4),
-               (5, 11, TRUE, $1, $2)"#,
+               (5, 11, TRUE, $1, $2),
+               (6, 12, TRUE, $1, $2),
+               (7, 13, TRUE, $1, $2),
+               (8, 14, TRUE, $1, $2)"#,
         )
         .bind(ChallengeReviewStatus::Active as i16)
         .bind(ChallengeType::KingOfTheHill as i16)
@@ -179,5 +208,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(ids, vec![1]);
+
+        for game_id in [12, 13, 14] {
+            let ids = sqlx::query_scalar::<_, i32>(LIVE_HILLS_SQL)
+                .bind(game_id)
+                .bind(ChallengeReviewStatus::Active as i16)
+                .bind(ChallengeType::KingOfTheHill as i16)
+                .fetch_all(&mut connection)
+                .await
+                .unwrap();
+            assert!(ids.is_empty(), "game {game_id} must not expose live hills");
+        }
     }
 }

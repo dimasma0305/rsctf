@@ -42,16 +42,20 @@ test('challenge mutation strips server-owned operation fields and supports older
 })
 
 test('every ordinary challenge create and update call sends a prepared operation', () => {
-  const files = [
-    'src/components/admin/ChallengeCreateModal.tsx',
-    'src/pages/admin/games/[id]/challenges/Index.tsx',
-    'src/pages/admin/games/[id]/challenges/[chalId]/Index.tsx',
-    'src/pages/admin/games/[id]/challenges/[chalId]/Flags.tsx',
+  const callSites = [
+    ['src/components/admin/ChallengeCreateModal.tsx', 'editAddGameChallenge'],
+    ['src/pages/admin/games/[id]/challenges/Index.tsx', 'editUpdateGameChallenge'],
+    ['src/pages/admin/games/[id]/challenges/[chalId]/Index.tsx', 'editUpdateGameChallenge'],
+    ['src/pages/admin/games/[id]/challenges/[chalId]/Flags.tsx', 'editUpdateGameChallenge'],
   ]
-  const source = files.map((file) => readFileSync(file, 'utf8')).join('\n')
+  const sources = new Map(callSites.map(([file]) => [file, readFileSync(file, 'utf8')]))
+  const source = [...sources.values()].join('\n')
 
   assert.equal((source.match(/editAddGameChallenge\(/g) ?? []).length, 1)
-  assert.equal((source.match(/editUpdateGameChallenge\(/g) ?? []).length, 4)
-  assert.equal((source.match(/editAddGameChallenge\([^\n]*prepared\.payload\)/g) ?? []).length, 1)
-  assert.equal((source.match(/editUpdateGameChallenge\([^\n]*prepared\.payload\)/g) ?? []).length, 4)
+  assert.equal((source.match(/editUpdateGameChallenge\(/g) ?? []).length, 3)
+  for (const [file, method] of callSites) {
+    const call = sources.get(file)?.match(new RegExp(`api\\.edit\\.${method}\\(([^)]*)\\)`, 's'))
+    assert.ok(call, `${file} has its ordinary ${method} call`)
+    assert.match(call[1], /(?:^|,\s*)prepared\.payload(?:\s*,|$)/)
+  }
 })

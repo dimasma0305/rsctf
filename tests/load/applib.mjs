@@ -125,7 +125,14 @@ async function must(r, what) {
 const unwrap = (r) => (r.json && 'data' in r.json ? r.json.data : r.json);
 
 export async function createGame(body) {
-  const r = await must(await api('POST', '/api/edit/games', { ...jwtOpt(), body }), 'createGame');
+  const r = await must(
+    await api('POST', '/api/edit/games', {
+      ...jwtOpt(),
+      body,
+      headers: { 'idempotency-key': randomUUID() },
+    }),
+    'createGame',
+  );
   return unwrap(r).id;
 }
 export async function setGameSchedule(gid, start, end) {
@@ -138,7 +145,7 @@ export async function setGameSchedule(gid, start, end) {
   return must(
     await api('PUT', `/api/edit/games/${gid}`, {
       ...jwtOpt(),
-      body: { ...current, start, end },
+      body: { ...current, start, end, operationId: randomUUID() },
     }),
     'setGameSchedule'
   );
@@ -147,17 +154,24 @@ export async function createChallenge(gid, body) {
   const r = await must(
     await api('POST', `/api/edit/games/${gid}/challenges`, {
       ...jwtOpt(),
-      body,
+      body: { ...body, operationId: body.operationId || randomUUID() },
     }),
     'createChallenge'
   );
   return unwrap(r).id;
 }
 export async function setChallenge(gid, cid, body) {
+  const current = unwrap(
+    await must(await api('GET', `/api/edit/games/${gid}/challenges/${cid}`, jwtOpt()), 'getChallenge')
+  );
   return must(
     await api('PUT', `/api/edit/games/${gid}/challenges/${cid}`, {
       ...jwtOpt(),
-      body,
+      body: {
+        ...body,
+        operationId: body.operationId || randomUUID(),
+        expectedRevision: body.expectedRevision ?? current.revision,
+      },
     }),
     'setChallenge'
   );
@@ -179,7 +193,10 @@ export async function rebuildChallengeImage(gid, cid, requestedImage, label = 'c
   }
 
   const response = await must(
-    await api('POST', `/api/edit/games/${gameId}/challenges/${challengeId}/rebuild`, jwtOpt()),
+    await api('POST', `/api/edit/games/${gameId}/challenges/${challengeId}/rebuild`, {
+      ...jwtOpt(),
+      headers: { 'idempotency-key': randomUUID() },
+    }),
     `rebuild ${label}`
   );
   assertSuccessfulBuildResponse(unwrap(response), label);
@@ -198,7 +215,10 @@ export async function rebuildChallengeImage(gid, cid, requestedImage, label = 'c
   return assertImmutableBuildRecord(JSON.parse(raw), requestedImage, label);
 }
 export async function addFlags(gid, cid, flags) {
-  const body = flags.map((f) => ({ flag: f }));
+  const body = {
+    operationId: randomUUID(),
+    flags: flags.map((f) => ({ flag: f })),
+  };
   return must(
     await api('POST', `/api/edit/games/${gid}/challenges/${cid}/flags`, {
       ...jwtOpt(),
@@ -299,12 +319,17 @@ export async function setAdScoringPaused(gid, desired) {
   if (!Number.isSafeInteger(gameId) || gameId <= 0 || typeof desired !== 'boolean') {
     throw new Error(`invalid scoring-pause request ${gid}/${desired}`);
   }
-  const current = sql(`SELECT ad_scoring_paused::text FROM "Games" WHERE id=${gameId}`);
-  if (!current) throw new Error(`cannot pause missing game ${gameId}`);
-  if ((current === 'true' || current === 't') === desired) return desired;
+  const rawCurrent = sql(
+    `SELECT json_build_object('paused',ad_scoring_paused,'revision',ad_control_revision)::text ` +
+      `FROM "Games" WHERE id=${gameId}`,
+  );
+  if (!rawCurrent) throw new Error(`cannot pause missing game ${gameId}`);
+  const current = JSON.parse(rawCurrent);
+  if (current.paused === desired) return desired;
   const response = await must(
     await api('POST', `/api/edit/games/${gameId}/ad/ScoringPause`, {
       ...jwtOpt(),
+      body: { paused: desired, revision: Number(current.revision) },
     }),
     `${desired ? 'pause' : 'resume'} scoring`
   );
@@ -767,21 +792,24 @@ export async function teardownNamespace(gameIds) {
 export async function uploadAsset(filename, content) {
   const fd = new FormData();
   fd.append('file', new Blob([content]), filename);
-  const r = await fetch(`${TARGET}/api/assets`, {
+  const operationId = randomUUID();
+  const r = await fetch(`${TARGET}/api/assets?operationId=${operationId}`, {
     method: 'POST',
     headers: { authorization: `Bearer ${adminJwt()}`, 'x-real-ip': '10.9.9.9' },
     body: fd,
   });
   const j = await r.json().catch(() => null);
-  const hash = Array.isArray(j) ? j[0]?.hash : j?.hash;
-  if (r.status >= 300 || !hash) throw new Error(`uploadAsset → ${r.status} ${JSON.stringify(j)?.slice(0, 120)}`);
-  return hash;
+  const uploaded = Array.isArray(j) ? j[0] : j;
+  if (r.status >= 300 || !uploaded?.hash || !uploaded?.uploadId) {
+    throw new Error(`uploadAsset → ${r.status} ${JSON.stringify(j)?.slice(0, 120)}`);
+  }
+  return { hash: uploaded.hash, uploadId: uploaded.uploadId };
 }
-export async function setAttachment(gid, cid, fileHash) {
+export async function setAttachment(gid, cid, uploaded) {
   return must(
     await api('POST', `/api/edit/games/${gid}/challenges/${cid}/attachment`, {
       ...jwtOpt(),
-      body: { attachmentType: 'Local', fileHash },
+      body: { attachmentType: 'Local', fileHash: uploaded.hash, uploadId: uploaded.uploadId },
     }),
     'setAttachment'
   );
@@ -1525,6 +1553,7 @@ export async function configureKothApiObserver(gid, cid) {
 
 let lastKothObservationTimestamp = 0;
 const kothObservationLedgers = new Map();
+const kothContextValidators = new Map();
 
 export function kothApiEvidence(token, index) {
   if (typeof token !== 'string') return null;
@@ -1602,6 +1631,8 @@ export function assignUniqueKothApiCrown(teams) {
 
 export function validateKothApiContext(contextModel) {
   const eligible = contextModel?.eligibleTokenHashes;
+  const objectiveIds = contextModel?.objectiveIds;
+  const objectiveSchemaHash = contextModel?.objectiveSchemaHash;
   if (
     contextModel?.apiVersion !== 'v2' ||
     typeof contextModel?.context !== 'string' ||
@@ -1626,7 +1657,14 @@ export function validateKothApiContext(contextModel) {
     !Number.isSafeInteger(contextModel?.generatedAt) ||
     !Array.isArray(eligible) ||
     eligible.some((hash) => typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash)) ||
-    new Set(eligible).size !== eligible.length
+    new Set(eligible).size !== eligible.length ||
+    !Array.isArray(objectiveIds) ||
+    objectiveIds.length > 16 ||
+    objectiveIds.some((id) => typeof id !== 'string' || !/^[a-z][a-z0-9_.-]{0,63}$/.test(id)) ||
+    new Set(objectiveIds).size !== objectiveIds.length ||
+    (objectiveIds.length === 0
+      ? objectiveSchemaHash !== null
+      : typeof objectiveSchemaHash !== 'string' || !/^[0-9a-f]{64}$/.test(objectiveSchemaHash))
   ) {
     throw new Error('KotH API context response is malformed');
   }
@@ -1652,21 +1690,37 @@ export async function kothApiObservation(
     if (remainingMs <= 0) throw new Error('KotH API context retry deadline exhausted');
     return remainingMs;
   };
+  const scope = `${gameId}:${challengeId}`;
+  const cachedContext = kothContextValidators.get(scope);
   const contextResponse = await api(
     'GET',
     `/api/v1/koth/games/${gameId}/challenges/${challengeId}/context`,
     {
       ip: '10.9.9.10',
       timeoutMs: requestTimeout(),
-      headers: { 'x-rsctf-api-version': 'v2' },
+      headers: {
+        'x-rsctf-api-version': 'v2',
+        ...(cachedContext?.etag ? { 'If-None-Match': cachedContext.etag } : {}),
+      },
     },
   );
-  if (contextResponse.status !== 200) {
-    throw new Error(
+  let contextModel;
+  if (contextResponse.status === 304 && cachedContext) {
+    contextModel = cachedContext.model;
+  } else if (contextResponse.status === 200) {
+    contextModel = validateKothApiContext(unwrap(contextResponse));
+    const etag = contextResponse.headers.get('etag');
+    if (etag) kothContextValidators.set(scope, { etag, model: contextModel });
+    else kothContextValidators.delete(scope);
+  } else {
+    const error = new Error(
       `fetch KotH API context → ${contextResponse.status} ${contextResponse.text?.slice(0, 200)}`,
     );
+    error.status = contextResponse.status;
+    error.code = contextResponse.json?.code;
+    error.retryAfter = contextResponse.headers.get('retry-after');
+    throw error;
   }
-  const contextModel = validateKothApiContext(unwrap(contextResponse));
   const context = contextModel.context;
   const tokens = Array.isArray(tokenOrTokens)
     ? tokenOrTokens
@@ -1679,35 +1733,65 @@ export async function kothApiObservation(
     .map((token, index) => kothApiEvidence(token, index))
     .filter(Boolean);
   assignUniqueKothApiCrown(teams);
-  const scope = `${gameId}:${challengeId}`;
   const previous = kothObservationLedgers.get(scope);
-  const ledger = previous?.context === context
+  // An acknowledgement can be lost after the snapshot and first objective
+  // scheme commit. That commit changes the public context, but the durable
+  // operation is still keyed by the prior exact body. Keep that pending intent
+  // until the server returns its stored response or definitively rejects it.
+  const sameSettlement = previous &&
+    previous.cycleNumber === contextModel.cycleNumber &&
+    previous.resetAttempt === contextModel.resetAttempt &&
+    previous.roundNumber === contextModel.roundNumber;
+  const replayingPriorSettlement = Boolean(previous?.pending && !sameSettlement);
+  const ledger = previous?.pending
     ? previous
-    : { context, sequence: 0, waves: [] };
+    : sameSettlement
+    ? previous
+    : {
+        context,
+        cycleNumber: contextModel.cycleNumber,
+        resetAttempt: contextModel.resetAttempt,
+        roundNumber: contextModel.roundNumber,
+        sequence: 0,
+        waves: [],
+        pending: null,
+      };
   if (ledger.waves.length >= 64) {
     throw new Error('KotH API load fixture exhausted the 64-wave settlement bound');
   }
-  const earliest = ledger.waves.length === 0
-    ? contextModel.waveWindowStartsAt
-    : ledger.waves.at(-1).endedAtUnixMs;
-  const endedAtUnixMs = Math.max(
-    earliest,
-    Math.min(Date.now(), contextModel.waveWindowEndsAt - 1),
-  );
-  if (endedAtUnixMs >= contextModel.waveWindowEndsAt) {
-    throw new Error('KotH API load fixture settlement window has no timestamp left');
+  let pending = ledger.pending;
+  if (!pending) {
+    ledger.context = context;
+    const earliest = ledger.waves.length === 0
+      ? contextModel.waveWindowStartsAt
+      : ledger.waves.at(-1).endedAtUnixMs;
+    const endedAtUnixMs = Math.max(
+      earliest,
+      Math.min(Date.now(), contextModel.waveWindowEndsAt - 1),
+    );
+    if (endedAtUnixMs >= contextModel.waveWindowEndsAt) {
+      throw new Error('KotH API load fixture settlement window has no timestamp left');
+    }
+    const nextWave = {
+      waveId: `load-${contextModel.roundNumber}-${String(ledger.sequence).padStart(2, '0')}`,
+      endedAtUnixMs,
+      teams,
+    };
+    const proposedWaves = [...ledger.waves, nextWave];
+    pending = {
+      rawBody: JSON.stringify({
+        context,
+        objectiveIds: ['quality', 'throughput'],
+        waves: proposedWaves,
+      }),
+      proposedWaves,
+    };
+    ledger.pending = pending;
+    // Retain the exact intent before sending. A timeout can mean PostgreSQL
+    // committed even though the acknowledgement never reached the referee.
+    kothObservationLedgers.set(scope, ledger);
   }
-  const nextWave = {
-    waveId: `load-${contextModel.roundNumber}-${String(ledger.sequence).padStart(2, '0')}`,
-    endedAtUnixMs,
-    teams,
-  };
-  const proposedWaves = [...ledger.waves, nextWave];
-  const rawBody = JSON.stringify({
-    context,
-    objectiveIds: ['quality', 'throughput'],
-    waves: proposedWaves,
-  });
+  const { rawBody, proposedWaves } = pending;
   const timestamp = Math.max(Date.now(), lastKothObservationTimestamp + 1);
   lastKothObservationTimestamp = timestamp;
   const response = await api(
@@ -1721,19 +1805,68 @@ export async function kothApiObservation(
     },
   );
   if (response.status === 200) {
-    ledger.sequence += 1;
-    ledger.waves = proposedWaves;
+    if (!replayingPriorSettlement) {
+      ledger.context = context;
+      ledger.cycleNumber = contextModel.cycleNumber;
+      ledger.resetAttempt = contextModel.resetAttempt;
+      ledger.roundNumber = contextModel.roundNumber;
+      ledger.sequence += 1;
+      ledger.waves = proposedWaves;
+      ledger.pending = null;
+      kothObservationLedgers.set(scope, ledger);
+    } else {
+      // The stored acknowledgement belongs to a prior settlement fence. Start
+      // the newly fetched round cleanly on the next cycle instead of carrying
+      // an append-only prefix across rounds.
+      kothObservationLedgers.set(scope, {
+        context,
+        cycleNumber: contextModel.cycleNumber,
+        resetAttempt: contextModel.resetAttempt,
+        roundNumber: contextModel.roundNumber,
+        sequence: 0,
+        waves: [],
+        pending: null,
+      });
+    }
+  } else if ([400, 401, 403, 409, 413].includes(response.status)) {
+    // A definitive rejection proves this exact intent did not commit. Retain
+    // bodies across timeout, admission, and temporary server failures.
+    ledger.pending = null;
     kothObservationLedgers.set(scope, ledger);
   }
   return response;
 }
 
 export function isRetriableKothApiContextFailure(value) {
-  const status = value instanceof Error ? null : Number(value?.status);
+  const status = Number(value?.status);
   const detail = value instanceof Error ? value.message : String(value?.text || '');
-  return (status === 409 || /fetch KotH API context → 409\b/.test(detail)) &&
-    (detail.includes('Leaderboard KotH context is not active') ||
-      detail.includes('Leaderboard KotH context changed; fetch context and retry'));
+  const code = value instanceof Error ? value.code : value?.json?.code;
+  if (status === 429 || status === 503) return true;
+  if (
+    value instanceof Error &&
+    (value.name === 'AbortError' ||
+      value.name === 'TimeoutError' ||
+      /\b(?:fetch failed|connection reset|timed out|response lost)\b/i.test(detail))
+  ) {
+    return true;
+  }
+  return status === 409 && code === 'stale_context';
+}
+
+export function kothApiRetryDelayMs(value, attempt, random = Math.random) {
+  if (!Number.isSafeInteger(attempt) || attempt < 0 || typeof random !== 'function') {
+    throw new TypeError('KotH retry delay requires a non-negative attempt and random source');
+  }
+  const rawRetryAfter = value instanceof Error
+    ? value.retryAfter
+    : value?.headers?.get?.('retry-after');
+  const retryAfterSeconds = Number(rawRetryAfter);
+  const retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+    ? Math.ceil(retryAfterSeconds * 1_000)
+    : 0;
+  const exponentialCap = Math.min(4_000, 250 * 2 ** Math.min(attempt, 8));
+  const jitter = Math.floor(Math.max(0, Math.min(1, Number(random()))) * exponentialCap);
+  return Math.max(retryAfterMs, jitter);
 }
 
 export async function kothApiCaptureWrite(
@@ -1743,16 +1876,30 @@ export async function kothApiCaptureWrite(
   tokenOrTokens,
   options,
 ) {
-  const response = await retryTransientUntil(
-    ({ deadlineMs }) => kothApiObservation(
+  const deadlineMs = performance.now() + 10_000;
+  let response;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      response = await kothApiObservation(
         gid,
         cid,
         secret,
         tokenOrTokens,
         { ...options, deadlineMs },
-      ),
-    isRetriableKothApiContextFailure,
-  );
+      );
+      if (!isRetriableKothApiContextFailure(response)) break;
+    } catch (error) {
+      if (!isRetriableKothApiContextFailure(error)) throw error;
+      response = error;
+    }
+    const remainingMs = deadlineMs - performance.now();
+    if (remainingMs <= 0) {
+      if (response instanceof Error) throw response;
+      break;
+    }
+    await sleep(Math.min(kothApiRetryDelayMs(response, attempt), remainingMs));
+  }
+  if (response instanceof Error) throw response;
   if (response.status !== 200) {
     throw new Error(
       `write KotH Leaderboard evidence → ${response.status} ${response.text?.slice(0, 200)}`,

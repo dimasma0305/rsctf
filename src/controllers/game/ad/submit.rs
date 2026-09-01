@@ -10,6 +10,7 @@ const AD_FLAG_LIFETIME_TICKS_DEFAULT: i32 = 5;
 
 /// Max flags accepted in one batch submit (RSCTF bounds this server-side).
 const AD_MAX_BATCH: usize = 100;
+pub(super) const AD_SUBMIT_BODY_BYTES: usize = 16 * 1024;
 
 /// Resolve the latest row for one submitted flag together with its service,
 /// but expose the service only when it still belongs to the authoritative
@@ -153,7 +154,8 @@ pub struct AdBatchSubmitModel {
     pub flags: Vec<String>,
 }
 
-/// `AdSubmitResultModel` — per-flag result row (echoed in input order).
+/// `AdSubmitResultModel` — per-flag result row in input order. Malformed input
+/// uses a bounded ordinal label rather than reflecting attacker-sized bytes.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdSubmitResultModel {
@@ -171,6 +173,20 @@ pub struct AdSubmitResultModel {
 pub struct AdBatchSubmitResultModel {
     pub accepted_count: i32,
     pub results: Vec<AdSubmitResultModel>,
+}
+
+fn bounded_result_label(index: usize, value: &str) -> String {
+    if crate::utils::flag_policy::validate_ad(value).is_ok() {
+        value.to_owned()
+    } else {
+        format!("#{}", index.saturating_add(1))
+    }
+}
+
+fn ad_submit_cost_units(distinct_plausible: usize, admitted_bytes: usize) -> usize {
+    distinct_plausible
+        .saturating_add(admitted_bytes.div_ceil(crate::utils::flag_policy::AD_FLAG_BYTES))
+        .max(1)
 }
 
 enum AdSubmitCaller {
@@ -284,20 +300,20 @@ pub async fn submit(
         }
     };
 
-    // Charge the canonical participation for the database work the batch can
-    // cause. Repeated flags are adjudicated once below, malformed flags never
-    // reach PostgreSQL, and neither should consume 100 work units merely because
-    // the response echoes 100 rows.
+    // Charge both unique lookup work and admitted bytes. Malformed values never
+    // reach PostgreSQL, while the route-level body ceiling bounds their parse
+    // cost even when none matches the fixed grammar.
     let distinct_plausible_flags = model
         .flags
         .iter()
-        .map(|flag| flag.trim())
+        .map(String::as_str)
         .filter(|flag| is_plausible_flag(flag))
         .collect::<HashSet<_>>()
         .len();
+    let admitted_bytes = model.flags.iter().map(String::len).sum();
+    let submit_cost = ad_submit_cost_units(distinct_plausible_flags, admitted_bytes);
     if let Some(response) =
-        crate::middlewares::rate_limiter::admit_ad_submit(id, attacker.id, distinct_plausible_flags)
-            .await
+        crate::middlewares::rate_limiter::admit_ad_submit(id, attacker.id, submit_cost).await
     {
         return Ok(response);
     }
@@ -349,8 +365,9 @@ pub async fn submit(
         let results = model
             .flags
             .into_iter()
-            .map(|f| AdSubmitResultModel {
-                flag: f,
+            .enumerate()
+            .map(|(index, flag)| AdSubmitResultModel {
+                flag: bounded_result_label(index, &flag),
                 status: status.to_string(),
                 flag_planted_at_round: None,
                 message: Some(message.to_string()),
@@ -371,8 +388,9 @@ pub async fn submit(
         let results = model
             .flags
             .into_iter()
-            .map(|f| AdSubmitResultModel {
-                flag: f,
+            .enumerate()
+            .map(|(index, flag)| AdSubmitResultModel {
+                flag: bounded_result_label(index, &flag),
                 status: "paused".to_string(),
                 flag_planted_at_round: None,
                 message: Some("scoring is paused — submissions are not being recorded".to_string()),
@@ -410,14 +428,22 @@ pub async fn submit(
     };
 
     // Length already gated above (1..=AD_MAX_BATCH), so process the whole batch.
-    for raw in model.flags.into_iter() {
-        let flag_text = raw.trim().to_string();
+    for (index, flag_text) in model.flags.into_iter().enumerate() {
+        if !is_plausible_flag(&flag_text) {
+            results.push(AdSubmitResultModel {
+                flag: bounded_result_label(index, &flag_text),
+                status: "rejected".to_string(),
+                flag_planted_at_round: None,
+                message: Some("flag does not match the A&D grammar".to_string()),
+            });
+            continue;
+        }
         let outcome = match adjudicated.get(&flag_text).copied() {
             Some(previous) => SubmitOneResult::without_broadcast(repeated_batch_result(previous)),
             None => {
                 let result =
                     submit_one(roster.transaction_mut(), &submit_context, &flag_text).await?;
-                adjudicated.insert(flag_text, result.decision);
+                adjudicated.insert(flag_text.clone(), result.decision);
                 result
             }
         };
@@ -429,7 +455,7 @@ pub async fn submit(
             accepted_count += 1;
         }
         results.push(AdSubmitResultModel {
-            flag: raw,
+            flag: flag_text,
             status: status.to_string(),
             flag_planted_at_round: planted,
             message: None,
@@ -549,15 +575,7 @@ fn repeated_batch_result(
 }
 
 fn is_plausible_flag(value: &str) -> bool {
-    const PREFIX: &[u8] = b"flag{";
-    const PAYLOAD_LEN: usize = 32;
-    let bytes = value.as_bytes();
-    bytes.len() == PREFIX.len() + PAYLOAD_LEN + 1
-        && bytes.starts_with(PREFIX)
-        && bytes.ends_with(b"}")
-        && bytes[PREFIX.len()..PREFIX.len() + PAYLOAD_LEN]
-            .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    crate::utils::flag_policy::validate_ad(value).is_ok()
 }
 
 fn require_active_victim(
@@ -777,8 +795,10 @@ async fn submit_one(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_plausible_flag, repeated_batch_result, require_active_victim, ActiveVictimFlag,
-        ActiveVictimService, ACCEPTED_ATTACK_SQL, ACTIVE_VICTIM_FLAG_SQL,
+        ad_submit_cost_units, bounded_result_label, is_plausible_flag, repeated_batch_result,
+        require_active_victim, ActiveVictimFlag, ActiveVictimService, AdBatchSubmitResultModel,
+        AdSubmitResultModel, ACCEPTED_ATTACK_SQL, ACTIVE_VICTIM_FLAG_SQL, AD_MAX_BATCH,
+        AD_SUBMIT_BODY_BYTES,
     };
 
     #[test]
@@ -909,6 +929,31 @@ mod tests {
             assert!(!is_plausible_flag(invalid), "accepted {invalid:?}");
         }
         assert!(!is_plausible_flag(&"x".repeat(1024 * 1024)));
+        assert_eq!(bounded_result_label(8, &"x".repeat(1024)), "#9");
+        assert_eq!(ad_submit_cost_units(100, 3_800), 200);
+        assert_eq!(ad_submit_cost_units(0, 3_800), 100);
+    }
+
+    #[test]
+    fn malformed_batch_results_never_reflect_attacker_sized_values() {
+        let raw = "x".repeat(4_096);
+        let results: Vec<_> = (0..AD_MAX_BATCH)
+            .map(|index| AdSubmitResultModel {
+                flag: bounded_result_label(index, &raw),
+                status: "rejected".to_string(),
+                flag_planted_at_round: None,
+                message: Some("flag does not match the A&D grammar".to_string()),
+            })
+            .collect();
+        let body = serde_json::to_vec(&AdBatchSubmitResultModel {
+            accepted_count: 0,
+            results,
+        })
+        .unwrap();
+        assert!(body.len() < AD_SUBMIT_BODY_BYTES);
+        assert!(!body
+            .windows(raw.len())
+            .any(|window| window == raw.as_bytes()));
     }
 }
 

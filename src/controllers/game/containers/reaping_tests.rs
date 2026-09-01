@@ -2,7 +2,10 @@ use std::str::FromStr;
 
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
-use super::reaping::{clear_destroyed_managed_container, resolve_managed_container_owner};
+use super::reaping::{
+    claim_reap_on, clear_destroyed_managed_container, managed_reap_active,
+    resolve_managed_container_owner,
+};
 
 struct Harness {
     admin: sqlx::PgPool,
@@ -68,6 +71,15 @@ impl Harness {
                 is_loaded BOOLEAN NOT NULL,
                 last_container_operation TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
             );
+            CREATE TABLE "ManagedContainerReapOperations" (
+                backend_id TEXT PRIMARY KEY,
+                container_id UUID NOT NULL UNIQUE,
+                scope_key TEXT NOT NULL,
+                lease_owner UUID NOT NULL,
+                lease_expires_at_utc TIMESTAMPTZ NOT NULL,
+                updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                last_error TEXT
+            );
             "#,
         )
         .execute(&pool)
@@ -104,6 +116,85 @@ impl Harness {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn durable_reap_claim_survives_lock_release_and_is_exactly_reclaimable() {
+    let harness = Harness::new().await;
+    let candidate = crate::models::data::container::Model {
+        id: harness.stale,
+        image: "image".to_string(),
+        container_id: "runtime-stale".to_string(),
+        status: crate::utils::enums::ContainerStatus::Running,
+        started_at: chrono::Utc::now(),
+        expect_stop_at: chrono::Utc::now(),
+        is_proxy: false,
+        ip: "127.0.0.1".to_string(),
+        port: 31337,
+        public_ip: None,
+        public_port: None,
+        game_instance_id: None,
+        exercise_instance_id: None,
+        ad_team_service_id: None,
+    };
+    let mut first = harness.pool.begin().await.unwrap();
+    let first_claim = claim_reap_on(&mut first, &candidate, "shared-container:7")
+        .await
+        .unwrap()
+        .expect("first reaper did not acquire durable ownership");
+    first.commit().await.unwrap();
+
+    let mut duplicate = harness.pool.begin().await.unwrap();
+    assert!(
+        claim_reap_on(&mut duplicate, &candidate, "shared-container:7")
+            .await
+            .unwrap()
+            .is_none(),
+        "duplicate reaper crossed the committed lease"
+    );
+    duplicate.commit().await.unwrap();
+    sqlx::query(
+        r#"UPDATE "ManagedContainerReapOperations"
+              SET lease_expires_at_utc = clock_timestamp() - interval '1 second'"#,
+    )
+    .execute(&harness.pool)
+    .await
+    .unwrap();
+    assert!(
+        managed_reap_active(&harness.pool, candidate.id, &candidate.container_id)
+            .await
+            .unwrap(),
+        "an expired durable marker must still fence runtime reuse until reconciliation"
+    );
+    let mut recovery = harness.pool.begin().await.unwrap();
+    let recovered = claim_reap_on(&mut recovery, &candidate, "shared-container:7")
+        .await
+        .unwrap()
+        .expect("expired reaper lease was not recoverable");
+    assert_ne!(first_claim.lease_owner, recovered.lease_owner);
+    recovery.commit().await.unwrap();
+
+    clear_destroyed_managed_container(
+        &harness.pool,
+        candidate.id,
+        &candidate.container_id,
+        None,
+        None,
+        None,
+        None,
+        Some(recovered),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "ManagedContainerReapOperations""#,)
+            .fetch_one(&harness.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn stale_game_forward_id_never_detaches_the_replacement() {
     let harness = Harness::new().await;
     sqlx::query(
@@ -132,6 +223,7 @@ async fn stale_game_forward_id_never_detaches_the_replacement() {
         harness.stale,
         "runtime-stale",
         Some(11),
+        None,
         None,
         None,
         None,
@@ -192,6 +284,7 @@ async fn exercise_owner_uses_the_established_lock_and_clears_exactly() {
         owner.exercise_instance_id,
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -229,6 +322,7 @@ async fn exercise_cleanup_does_not_detach_a_new_replacement() {
         Some(19),
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -263,6 +357,7 @@ async fn inspector_reaper_uses_the_service_lock_and_clears_exact_identity() {
         &harness.pool,
         harness.stale,
         "runtime-stale",
+        None,
         None,
         None,
         None,

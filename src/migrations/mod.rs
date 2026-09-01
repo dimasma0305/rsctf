@@ -20,6 +20,10 @@ pub(crate) fn test_pg_connect_options(database_url: &str) -> sqlx::postgres::PgC
         .application_name(test_process_application_name())
 }
 
+#[cfg(test)]
+mod admin_mutation_migration_tests;
+#[cfg(test)]
+mod credential_workflow_tests;
 mod m0001_init;
 mod m0002_extra;
 mod m0003_managers;
@@ -139,6 +143,58 @@ mod m0116_game_event_feed_pending;
 mod m0242_participation_provision_jobs;
 mod m0243_koth_api_revocation_fence;
 mod m0244_koth_api_player_rotation_cooldown;
+mod m0250_team_signature_key_index;
+mod m0251_koth_referee_retry;
+mod m0252_player_credential_operations;
+mod m0260_ad_control_revisions;
+mod m0261_control_plane_jobs;
+mod m0262_challenge_import_jobs;
+mod m0263_control_job_cancellation;
+mod m0264_blob_staging_operations;
+mod m0265_game_notice_delivery;
+mod m0270_worker_workload_quarantine;
+mod m0271_worker_enrollment_operations;
+mod m0272_event_sensor_batches;
+mod m0273_receipt_variant_lifecycle;
+mod m0280_traffic_capture_inventory;
+mod m0281_anticheat_read_bounds;
+mod m0282_docker_image_cleanup_jobs;
+mod m0283_incremental_anticheat_reconciliation;
+mod m0284_anticheat_dirty_outboxes;
+mod m0285_honeypot_telemetry_buckets;
+mod m0286_docker_image_cleanup_order;
+mod m0290_distributed_proxy_admission;
+mod m0300_game_clone_operations;
+mod m0301_admin_credential_jobs;
+mod m0302_credential_mutation_recovery;
+mod m0303_mail_outbox;
+mod m0304_platform_settings_operations;
+mod m0305_event_vpn_override_operations;
+mod m0306_bulk_challenge_mutations;
+mod m0307_division_revision_operations;
+mod m0308_team_invite_rotation;
+mod m0309_flag_import_operations;
+mod m0310_player_container_operations;
+mod m0311_blob_deletion_operations;
+mod m0312_traffic_archive_admission;
+mod m0313_game_configuration_operations;
+mod m0314_team_profile_operations;
+mod m0315_exercise_api_bounds;
+mod m0316_exercise_container_operations;
+mod m0317_blob_stage_publication_owner;
+mod m0318_player_container_operation_recovery;
+mod m0319_exercise_container_operation_recovery;
+mod m0320_revisioned_mutations;
+mod m0321_account_link_attempts;
+mod m0322_managed_api_tokens;
+mod m0323_repo_binding_scheduler;
+mod m0330_mail_preparation_slots;
+mod m0331_username_scoreboard_invalidation;
+mod m0332_repository_manifest_lookup;
+mod m0333_account_mail_consumption;
+mod m0334_flag_import_staging;
+mod m0340_player_read_indexes;
+mod m0341_account_link_delivery_activation;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -160,6 +216,20 @@ pub(crate) use m0115_flag_egress_feed_cursor::UP_SQL as FLAG_EGRESS_FEED_CURSOR_
 pub(crate) use m0116_game_event_feed_pending::UP_SQL as GAME_EVENT_FEED_PENDING_SQL;
 #[cfg(test)]
 pub(crate) use m0242_participation_provision_jobs::UP_SQL as PARTICIPATION_PROVISION_JOBS_SQL;
+#[cfg(test)]
+pub(crate) use m0280_traffic_capture_inventory::UP_SQL as TRAFFIC_CAPTURE_INVENTORY_SQL;
+#[cfg(test)]
+pub(crate) use m0286_docker_image_cleanup_order::UP_SQL as IMAGE_CLEANUP_ORDER_INDEX_SQL;
+#[cfg(test)]
+pub(crate) use m0310_player_container_operations::UP_SQL as PLAYER_CONTAINER_OPERATIONS_SQL;
+#[cfg(test)]
+pub(crate) use m0316_exercise_container_operations::UP_SQL as EXERCISE_CONTAINER_OPERATIONS_SQL;
+#[cfg(test)]
+pub(crate) use m0318_player_container_operation_recovery::UP_SQL as PLAYER_OPERATION_RECOVERY_SQL;
+#[cfg(test)]
+pub(crate) use m0319_exercise_container_operation_recovery::UP_SQL as EXERCISE_OPERATION_RECOVERY_SQL;
+#[cfg(test)]
+pub(crate) use m0332_repository_manifest_lookup::UP_SQL as REPOSITORY_MANIFEST_LOOKUP_INDEX_SQL;
 
 pub struct Migrator;
 
@@ -292,6 +362,58 @@ impl MigratorTrait for Migrator {
             Box::new(m0242_participation_provision_jobs::Migration),
             Box::new(m0243_koth_api_revocation_fence::Migration),
             Box::new(m0244_koth_api_player_rotation_cooldown::Migration),
+            Box::new(m0250_team_signature_key_index::Migration),
+            Box::new(m0251_koth_referee_retry::Migration),
+            Box::new(m0252_player_credential_operations::Migration),
+            Box::new(m0260_ad_control_revisions::Migration),
+            Box::new(m0261_control_plane_jobs::Migration),
+            Box::new(m0262_challenge_import_jobs::Migration),
+            Box::new(m0263_control_job_cancellation::Migration),
+            Box::new(m0264_blob_staging_operations::Migration),
+            Box::new(m0265_game_notice_delivery::Migration),
+            Box::new(m0270_worker_workload_quarantine::Migration),
+            Box::new(m0271_worker_enrollment_operations::Migration),
+            Box::new(m0272_event_sensor_batches::Migration),
+            Box::new(m0273_receipt_variant_lifecycle::Migration),
+            Box::new(m0280_traffic_capture_inventory::Migration),
+            Box::new(m0281_anticheat_read_bounds::Migration),
+            Box::new(m0282_docker_image_cleanup_jobs::Migration),
+            Box::new(m0283_incremental_anticheat_reconciliation::Migration),
+            Box::new(m0284_anticheat_dirty_outboxes::Migration),
+            Box::new(m0285_honeypot_telemetry_buckets::Migration),
+            Box::new(m0286_docker_image_cleanup_order::Migration),
+            Box::new(m0290_distributed_proxy_admission::Migration),
+            Box::new(m0300_game_clone_operations::Migration),
+            Box::new(m0301_admin_credential_jobs::Migration),
+            Box::new(m0302_credential_mutation_recovery::Migration),
+            Box::new(m0303_mail_outbox::Migration),
+            Box::new(m0304_platform_settings_operations::Migration),
+            Box::new(m0305_event_vpn_override_operations::Migration),
+            Box::new(m0306_bulk_challenge_mutations::Migration),
+            Box::new(m0307_division_revision_operations::Migration),
+            Box::new(m0308_team_invite_rotation::Migration),
+            Box::new(m0309_flag_import_operations::Migration),
+            Box::new(m0310_player_container_operations::Migration),
+            Box::new(m0311_blob_deletion_operations::Migration),
+            Box::new(m0312_traffic_archive_admission::Migration),
+            Box::new(m0313_game_configuration_operations::Migration),
+            Box::new(m0314_team_profile_operations::Migration),
+            Box::new(m0315_exercise_api_bounds::Migration),
+            Box::new(m0316_exercise_container_operations::Migration),
+            Box::new(m0317_blob_stage_publication_owner::Migration),
+            Box::new(m0318_player_container_operation_recovery::Migration),
+            Box::new(m0319_exercise_container_operation_recovery::Migration),
+            Box::new(m0320_revisioned_mutations::Migration),
+            Box::new(m0321_account_link_attempts::Migration),
+            Box::new(m0322_managed_api_tokens::Migration),
+            Box::new(m0323_repo_binding_scheduler::Migration),
+            Box::new(m0330_mail_preparation_slots::Migration),
+            Box::new(m0331_username_scoreboard_invalidation::Migration),
+            Box::new(m0332_repository_manifest_lookup::Migration),
+            Box::new(m0333_account_mail_consumption::Migration),
+            Box::new(m0334_flag_import_staging::Migration),
+            Box::new(m0340_player_read_indexes::Migration),
+            Box::new(m0341_account_link_delivery_activation::Migration),
         ]
     }
 }
@@ -422,7 +544,7 @@ fn migration_ledger_diff(expected: &[String], applied: &[String]) -> (Vec<String
 
 #[cfg(test)]
 mod tests {
-    use std::{str::FromStr, time::Duration};
+    use std::{collections::HashSet, str::FromStr, time::Duration};
 
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
     use sqlx::{ConnectOptions as _, Connection as _};
@@ -436,8 +558,10 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
+        assert_eq!(names.len(), 171);
+        assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
-            &names[names.len() - 17..],
+            &names[names.len() - 69..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -456,6 +580,58 @@ mod tests {
                 "m0242_participation_provision_jobs",
                 "m0243_koth_api_revocation_fence",
                 "m0244_koth_api_player_rotation_cooldown",
+                "m0250_team_signature_key_index",
+                "m0251_koth_referee_retry",
+                "m0252_player_credential_operations",
+                "m0260_ad_control_revisions",
+                "m0261_control_plane_jobs",
+                "m0262_challenge_import_jobs",
+                "m0263_control_job_cancellation",
+                "m0264_blob_staging_operations",
+                "m0265_game_notice_delivery",
+                "m0270_worker_workload_quarantine",
+                "m0271_worker_enrollment_operations",
+                "m0272_event_sensor_batches",
+                "m0273_receipt_variant_lifecycle",
+                "m0280_traffic_capture_inventory",
+                "m0281_anticheat_read_bounds",
+                "m0282_docker_image_cleanup_jobs",
+                "m0283_incremental_anticheat_reconciliation",
+                "m0284_anticheat_dirty_outboxes",
+                "m0285_honeypot_telemetry_buckets",
+                "m0286_docker_image_cleanup_order",
+                "m0290_distributed_proxy_admission",
+                "m0300_game_clone_operations",
+                "m0301_admin_credential_jobs",
+                "m0302_credential_mutation_recovery",
+                "m0303_mail_outbox",
+                "m0304_platform_settings_operations",
+                "m0305_event_vpn_override_operations",
+                "m0306_bulk_challenge_mutations",
+                "m0307_division_revision_operations",
+                "m0308_team_invite_rotation",
+                "m0309_flag_import_operations",
+                "m0310_player_container_operations",
+                "m0311_blob_deletion_operations",
+                "m0312_traffic_archive_admission",
+                "m0313_game_configuration_operations",
+                "m0314_team_profile_operations",
+                "m0315_exercise_api_bounds",
+                "m0316_exercise_container_operations",
+                "m0317_blob_stage_publication_owner",
+                "m0318_player_container_operation_recovery",
+                "m0319_exercise_container_operation_recovery",
+                "m0320_revisioned_mutations",
+                "m0321_account_link_attempts",
+                "m0322_managed_api_tokens",
+                "m0323_repo_binding_scheduler",
+                "m0330_mail_preparation_slots",
+                "m0331_username_scoreboard_invalidation",
+                "m0332_repository_manifest_lookup",
+                "m0333_account_mail_consumption",
+                "m0334_flag_import_staging",
+                "m0340_player_read_indexes",
+                "m0341_account_link_delivery_activation",
             ]
         );
     }

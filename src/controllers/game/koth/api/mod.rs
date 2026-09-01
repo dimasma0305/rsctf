@@ -5,19 +5,20 @@
 //! the only component that can turn a stable, healthy snapshot into score.
 
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, HeaderValue};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::Json;
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, KeyInit, Mac};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::app_state::SharedState;
 use crate::utils::enums::{ParticipationStatus, Role};
 use crate::utils::error::{AppError, AppResult};
-use crate::utils::shared::RequestResponse;
 
 mod admin;
+mod admission;
 mod authentication;
 mod submission;
 #[cfg(test)]
@@ -33,6 +34,9 @@ pub(super) const SIGNATURE_HEADER: &str = "x-rsctf-signature";
 pub(super) const SIGNATURE_PREFIX: &str = "sha256=";
 pub(super) const CONTEXT_API_VERSION_HEADER: &str = "x-rsctf-api-version";
 pub(super) const MAX_CLOCK_SKEW_MS: u64 = 5 * 60 * 1_000;
+pub(super) const CONTEXT_INACTIVE_MESSAGE: &str = "Leaderboard KotH context is not active";
+pub(super) const STALE_CONTEXT_MESSAGE: &str =
+    "Leaderboard KotH context changed; fetch context and retry";
 pub(super) const INSERT_REPLAY_SQL: &str = r#"INSERT INTO "KothApiRequestReplays"
              (request_hash, challenge_id, expires_at)
            VALUES ($1, $2, clock_timestamp() + interval '10 minutes')
@@ -128,7 +132,7 @@ pub struct KothObserverContextModel {
     generated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KothObserverContextV2Model {
     api_version: &'static str,
@@ -159,7 +163,7 @@ pub struct KothObserverContextV2Model {
     generated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KothObservationAcceptedModel {
     pub(super) accepted: bool,
@@ -171,6 +175,143 @@ pub struct KothObservationAcceptedModel {
     pub(super) recognized_teams: usize,
     #[serde(with = "crate::utils::datetime::millis")]
     pub(super) accepted_at: DateTime<Utc>,
+}
+
+const OBSERVER_CONTEXT_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+const OBSERVER_CONTEXT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+const OBSERVER_CONTEXT_FILL_DEADLINE: std::time::Duration = std::time::Duration::from_millis(1_800);
+const OBSERVER_CONTEXT_MAX_BYTES: usize = 512 * 1_024;
+const OBSERVER_CONTEXT_VALIDATOR_BYTES: usize = 32;
+const OBSERVER_CONTEXT_CACHE_MAX_BYTES: usize =
+    OBSERVER_CONTEXT_VALIDATOR_BYTES + OBSERVER_CONTEXT_MAX_BYTES;
+const OBSERVER_CONTEXT_GLOBAL_WEIGHT: usize = 16;
+const OBSERVER_CONTEXT_CHALLENGE_WEIGHT: usize = 4;
+static OBSERVER_CONTEXT_ADMISSION: std::sync::LazyLock<admission::WeightedAdmission> =
+    std::sync::LazyLock::new(|| admission::WeightedAdmission::new(OBSERVER_CONTEXT_GLOBAL_WEIGHT));
+static OBSERVER_CONTEXT_SF: std::sync::LazyLock<
+    crate::utils::single_flight::SingleFlight<ContextFill>,
+> = std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
+
+#[derive(Clone, Default)]
+enum ContextFill {
+    Ready {
+        generation: i64,
+        context: CachedObserverContext,
+    },
+    Inactive,
+    TooLarge,
+    #[default]
+    Failed,
+}
+
+#[derive(Clone)]
+struct CachedObserverContext {
+    body: bytes::Bytes,
+    validator: [u8; OBSERVER_CONTEXT_VALIDATOR_BYTES],
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RetryableRefereeError {
+    title: String,
+    status: u16,
+    code: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContextVersion {
+    V1,
+    V2,
+}
+
+impl ContextVersion {
+    fn cache_suffix(self) -> &'static str {
+        match self {
+            Self::V1 => "v1",
+            Self::V2 => "v2",
+        }
+    }
+}
+
+fn requested_context_version(headers: &HeaderMap) -> AppResult<ContextVersion> {
+    match headers.get(CONTEXT_API_VERSION_HEADER) {
+        None => Ok(ContextVersion::V1),
+        Some(value) if value.as_bytes() == b"v2" => Ok(ContextVersion::V2),
+        Some(_) => Err(AppError::bad_request(
+            "Leaderboard context API version is unsupported",
+        )),
+    }
+}
+
+#[cfg(test)]
+fn context_v2_requested(headers: &HeaderMap) -> AppResult<bool> {
+    requested_context_version(headers).map(|version| version == ContextVersion::V2)
+}
+
+pub(super) fn retry_after_response(error: AppError, code: &'static str, seconds: u64) -> Response {
+    let status = error.status();
+    let retry_after_seconds = seconds.max(1);
+    tracing::warn!(
+        referee_retry_code = code,
+        http_status = status.as_u16(),
+        retry_after_seconds,
+        "KotH referee request returned a retryable response"
+    );
+    let mut response = (
+        status,
+        Json(RetryableRefereeError {
+            title: error.to_string(),
+            status: status.as_u16(),
+            code,
+        }),
+    )
+        .into_response();
+    response.headers_mut().insert(
+        header::RETRY_AFTER,
+        HeaderValue::from_str(&retry_after_seconds.to_string())
+            .expect("positive integer Retry-After is a valid header"),
+    );
+    response
+}
+
+fn observer_context_cache_key(
+    game_id: i32,
+    challenge_id: i32,
+    generation: i64,
+    version: ContextVersion,
+) -> String {
+    format!(
+        "_KothObserverContextV6_{game_id}_{challenge_id}_{generation}_{}",
+        version.cache_suffix()
+    )
+}
+
+fn fresh_observer_context(body: bytes::Bytes) -> CachedObserverContext {
+    CachedObserverContext {
+        validator: Sha256::digest(&body).into(),
+        body,
+    }
+}
+
+fn encode_observer_context_cache(context: &CachedObserverContext) -> bytes::Bytes {
+    let mut encoded = Vec::with_capacity(OBSERVER_CONTEXT_VALIDATOR_BYTES + context.body.len());
+    encoded.extend_from_slice(&context.validator);
+    encoded.extend_from_slice(&context.body);
+    bytes::Bytes::from(encoded)
+}
+
+fn decode_observer_context_cache(encoded: bytes::Bytes) -> Option<CachedObserverContext> {
+    if encoded.len() <= OBSERVER_CONTEXT_VALIDATOR_BYTES
+        || encoded.len() > OBSERVER_CONTEXT_CACHE_MAX_BYTES
+    {
+        return None;
+    }
+    let mut validator = [0_u8; OBSERVER_CONTEXT_VALIDATOR_BYTES];
+    validator.copy_from_slice(&encoded[..OBSERVER_CONTEXT_VALIDATOR_BYTES]);
+    Some(CachedObserverContext {
+        body: encoded.slice(OBSERVER_CONTEXT_VALIDATOR_BYTES..),
+        validator,
+    })
 }
 
 pub(super) async fn load_active_context<'e, E>(
@@ -265,7 +406,12 @@ where
     .bind(crate::services::ad::engine::koth_api::API_WAVE_SETTLEMENT_LAG_SECONDS)
     .fetch_optional(executor)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))
+    .map_err(|error| {
+        admission::referee_database_error(
+            error,
+            "Leaderboard KotH context is temporarily unavailable",
+        )
+    })
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
@@ -324,82 +470,104 @@ where
     .bind(Role::Banned as i16)
     .fetch_all(executor)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))
+    .map_err(|error| {
+        admission::referee_database_error(
+            error,
+            "Leaderboard KotH context is temporarily unavailable",
+        )
+    })
 }
 
-/// Public, non-secret fence bound to the exact container, cycle, and scoring tick.
-async fn load_observer_context_data(
+async fn context_generation(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    challenge_id: i32,
+) -> AppResult<Option<i64>> {
+    sqlx::query_scalar(
+        r#"SELECT generation FROM "KothObserverContextGenerations"
+            WHERE game_id = $1 AND challenge_id = $2"#,
+    )
+    .bind(game_id)
+    .bind(challenge_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| {
+        admission::referee_database_error(
+            error,
+            "Leaderboard KotH context is temporarily unavailable",
+        )
+    })
+}
+
+async fn build_observer_context(
     st: &SharedState,
     game_id: i32,
     challenge_id: i32,
-) -> AppResult<(
-    ActiveObserverContext,
-    DateTime<Utc>,
-    DateTime<Utc>,
-    Vec<String>,
-)> {
-    let context = load_active_context(st.pg(), game_id, challenge_id)
-        .await?
-        .ok_or_else(|| AppError::conflict("Leaderboard KotH context is not active"))?;
-    let (wave_window_starts_at, wave_window_ends_at) = context.wave_window();
-    let eligible_capabilities = load_eligible_capabilities(st.pg(), game_id, challenge_id).await?;
+    version: ContextVersion,
+) -> AppResult<ContextFill> {
+    let mut transaction = crate::utils::database::begin_read_only_repeatable_read(st.pg())
+        .await
+        .map_err(|error| {
+            admission::referee_database_error(
+                error,
+                "Leaderboard KotH context is temporarily unavailable",
+            )
+        })?;
+    let generation: Option<(i64, DateTime<Utc>)> = sqlx::query_as(
+        r#"SELECT generation, generated_at
+              FROM "KothObserverContextGenerations"
+             WHERE game_id = $1 AND challenge_id = $2"#,
+    )
+    .bind(game_id)
+    .bind(challenge_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some((generation, generated_at)) = generation else {
+        return Ok(ContextFill::Inactive);
+    };
+    let Some(context) = load_active_context(&mut *transaction, game_id, challenge_id).await? else {
+        return Ok(ContextFill::Inactive);
+    };
+    let eligible_capabilities =
+        load_eligible_capabilities(&mut *transaction, game_id, challenge_id).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     if eligible_capabilities.len() > super::api_contract::MAX_TEAM_ENTRIES {
-        return Err(AppError::conflict(
-            "Leaderboard KotH roster exceeds the supported 2,000 teams",
-        ));
+        return Ok(ContextFill::TooLarge);
     }
     let eligible_tokens: Vec<_> = eligible_capabilities
-        .iter()
-        .map(|capability| capability.token.clone())
+        .into_iter()
+        .map(|capability| capability.token)
         .collect();
-    Ok((
-        context,
-        wave_window_starts_at,
-        wave_window_ends_at,
-        eligible_tokens,
-    ))
-}
-
-fn context_v2_requested(headers: &HeaderMap) -> AppResult<bool> {
-    match headers.get(CONTEXT_API_VERSION_HEADER) {
-        None => Ok(false),
-        Some(value) if value.as_bytes() == b"v2" => Ok(true),
-        Some(_) => Err(AppError::bad_request(
-            "Leaderboard context API version is unsupported",
-        )),
-    }
-}
-
-fn versioned_context_response<T: Serialize>(model: T) -> Response {
-    let mut response = RequestResponse::ok(model).into_response();
-    response.headers_mut().insert(
-        header::VARY,
-        HeaderValue::from_static(CONTEXT_API_VERSION_HEADER),
-    );
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
-}
-
-pub async fn observer_context(
-    State(st): State<SharedState>,
-    Path((game_id, challenge_id)): Path<(i32, i32)>,
-    headers: HeaderMap,
-) -> AppResult<Response> {
-    let use_v2 = context_v2_requested(&headers)?;
-    let (context, wave_window_starts_at, wave_window_ends_at, eligible_tokens) =
-        load_observer_context_data(&st, game_id, challenge_id).await?;
+    let (wave_window_starts_at, wave_window_ends_at) = context.wave_window();
     let token_hashes = || {
         eligible_tokens
             .iter()
             .map(|token| crate::services::ad::koth_api_capability::token_hash_hex(token))
             .collect()
     };
-    if use_v2 {
-        return Ok(versioned_context_response(KothObserverContextV2Model {
+    let opaque = || context.opaque_context(game_id, challenge_id, &eligible_tokens);
+    let serialized = match version {
+        ContextVersion::V1 => serde_json::to_vec(&KothObserverContextModel {
+            api_version: "v1",
+            context: opaque(),
+            cycle_number: context.cycle_number,
+            reset_attempt: context.reset_attempt,
+            round_number: context.round_number,
+            cycle_ends_at: context.cycle_ends_at,
+            wave_window_starts_at,
+            wave_window_ends_at,
+            eligible_token_hashes: token_hashes(),
+            objective_ids: context.objective_ids.clone().unwrap_or_default(),
+            objective_schema_hash: context.objective_schema_hash.as_ref().map(hex::encode),
+            generated_at,
+        }),
+        ContextVersion::V2 => serde_json::to_vec(&KothObserverContextV2Model {
             api_version: "v2",
-            context: context.opaque_context(game_id, challenge_id, &eligible_tokens),
+            context: opaque(),
             cycle_number: context.cycle_number,
             reset_attempt: context.reset_attempt,
             round_number: context.round_number,
@@ -411,23 +579,201 @@ pub async fn observer_context(
             eligible_token_hashes: token_hashes(),
             objective_ids: context.objective_ids.clone().unwrap_or_default(),
             objective_schema_hash: context.objective_schema_hash.as_ref().map(hex::encode),
-            generated_at: Utc::now(),
-        }));
+            generated_at,
+        }),
     }
-    Ok(versioned_context_response(KothObserverContextModel {
-        api_version: "v1",
-        context: context.opaque_context(game_id, challenge_id, &eligible_tokens),
-        cycle_number: context.cycle_number,
-        reset_attempt: context.reset_attempt,
-        round_number: context.round_number,
-        cycle_ends_at: context.cycle_ends_at,
-        wave_window_starts_at,
-        wave_window_ends_at,
-        eligible_token_hashes: token_hashes(),
-        objective_ids: context.objective_ids.clone().unwrap_or_default(),
-        objective_schema_hash: context.objective_schema_hash.as_ref().map(hex::encode),
-        generated_at: Utc::now(),
-    }))
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let body = bytes::Bytes::from(serialized);
+    if body.len() > OBSERVER_CONTEXT_MAX_BYTES {
+        return Ok(ContextFill::TooLarge);
+    }
+    Ok(ContextFill::Ready {
+        generation,
+        context: fresh_observer_context(body),
+    })
+}
+
+async fn observer_context_body(
+    st: &SharedState,
+    game_id: i32,
+    challenge_id: i32,
+    version: ContextVersion,
+) -> AppResult<CachedObserverContext> {
+    let generation = context_generation(st.pg(), game_id, challenge_id)
+        .await?
+        .ok_or_else(|| AppError::conflict(CONTEXT_INACTIVE_MESSAGE))?;
+    let key = observer_context_cache_key(game_id, challenge_id, generation, version);
+    if let Some(encoded) = st.cache.get(&key).await {
+        if let Some(context) = decode_observer_context_cache(encoded) {
+            tracing::debug!(
+                referee_operation = "context",
+                cache_status = "hit",
+                game_id,
+                challenge_id,
+                generation,
+                response_bytes = context.body.len(),
+                "served cached KotH referee context"
+            );
+            return Ok(context);
+        }
+        st.cache.remove(&key).await;
+    }
+    let st_for_fill = st.clone();
+    let key_for_fill = key.clone();
+    let filled = OBSERVER_CONTEXT_SF
+        .run_with_timeout(&key, OBSERVER_CONTEXT_FILL_DEADLINE, move || async move {
+            if let Some(encoded) = st_for_fill.cache.get(&key_for_fill).await {
+                if let Some(context) = decode_observer_context_cache(encoded) {
+                    return ContextFill::Ready {
+                        generation,
+                        context,
+                    };
+                }
+                st_for_fill.cache.remove(&key_for_fill).await;
+            }
+            let fill_started = std::time::Instant::now();
+            match build_observer_context(&st_for_fill, game_id, challenge_id, version).await {
+                Ok(ContextFill::Ready {
+                    generation: built_generation,
+                    context,
+                }) => {
+                    let built_key = observer_context_cache_key(
+                        game_id,
+                        challenge_id,
+                        built_generation,
+                        version,
+                    );
+                    let encoded = encode_observer_context_cache(&context);
+                    st_for_fill
+                        .cache
+                        .set(&built_key, &encoded, Some(OBSERVER_CONTEXT_TTL))
+                        .await;
+                    tracing::info!(
+                        referee_operation = "context_fill",
+                        game_id,
+                        challenge_id,
+                        generation = built_generation,
+                        response_bytes = context.body.len(),
+                        elapsed_ms = fill_started.elapsed().as_millis(),
+                        "built KotH referee context"
+                    );
+                    ContextFill::Ready {
+                        generation: built_generation,
+                        context,
+                    }
+                }
+                Ok(other) => other,
+                Err(error) => {
+                    tracing::warn!(
+                        game_id,
+                        challenge_id,
+                        error = %error,
+                        "KotH observer context cache fill failed"
+                    );
+                    ContextFill::Failed
+                }
+            }
+        })
+        .await;
+    match filled {
+        ContextFill::Ready { context, .. } => Ok(context),
+        ContextFill::Inactive => Err(AppError::conflict(CONTEXT_INACTIVE_MESSAGE)),
+        ContextFill::TooLarge => Err(AppError::conflict(
+            "Leaderboard KotH context exceeds the supported response size",
+        )),
+        ContextFill::Failed => Err(AppError::unavailable(
+            "Leaderboard KotH context is temporarily unavailable",
+        )),
+    }
+}
+
+fn if_none_match(headers: &HeaderMap, etag: &str) -> bool {
+    fn weak_value(value: &str) -> &str {
+        let value = value.trim();
+        value.strip_prefix("W/").unwrap_or(value)
+    }
+    headers.get_all(header::IF_NONE_MATCH).iter().any(|value| {
+        value.to_str().is_ok_and(|value| {
+            value.split(',').any(|candidate| {
+                let candidate = candidate.trim();
+                candidate == "*" || weak_value(candidate) == weak_value(etag)
+            })
+        })
+    })
+}
+
+fn context_response(context: CachedObserverContext, headers: &HeaderMap) -> AppResult<Response> {
+    let etag = format!("\"rsctf-koth-context-{}\"", hex::encode(context.validator));
+    let mut response = if if_none_match(headers, &etag) {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else {
+        context.body.into_response()
+    };
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=0, must-revalidate"),
+    );
+    response.headers_mut().insert(
+        header::VARY,
+        HeaderValue::from_static(CONTEXT_API_VERSION_HEADER),
+    );
+    response.headers_mut().insert(
+        header::ETAG,
+        HeaderValue::from_str(&etag).map_err(|error| AppError::internal(error.to_string()))?,
+    );
+    if response.status() != StatusCode::NOT_MODIFIED {
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+    }
+    Ok(response)
+}
+
+/// Public, non-secret fence bound to the exact container, cycle, and scoring tick.
+pub async fn observer_context(
+    State(st): State<SharedState>,
+    Path((game_id, challenge_id)): Path<(i32, i32)>,
+    headers: HeaderMap,
+) -> AppResult<Response> {
+    let version = requested_context_version(&headers)?;
+    let scope = format!("context:{game_id}:{challenge_id}");
+    let Some(_permit) =
+        OBSERVER_CONTEXT_ADMISSION.try_acquire(scope, 1, OBSERVER_CONTEXT_CHALLENGE_WEIGHT)
+    else {
+        return Ok(retry_after_response(
+            AppError::too_many_requests(1),
+            "koth_context_admission",
+            1,
+        ));
+    };
+    let body = match tokio::time::timeout(
+        OBSERVER_CONTEXT_DEADLINE,
+        observer_context_body(&st, game_id, challenge_id, version),
+    )
+    .await
+    {
+        Ok(Ok(body)) => body,
+        Ok(Err(error @ AppError::ServiceUnavailable(_))) => {
+            return Ok(retry_after_response(error, "koth_context_unavailable", 1));
+        }
+        Ok(Err(AppError::Conflict(title))) if title == CONTEXT_INACTIVE_MESSAGE => {
+            return Ok(retry_after_response(
+                AppError::Conflict(title),
+                "stale_context",
+                1,
+            ));
+        }
+        Ok(Err(error)) => return Err(error),
+        Err(_) => {
+            return Ok(retry_after_response(
+                AppError::unavailable("Leaderboard KotH context timed out; retry later"),
+                "koth_context_timeout",
+                1,
+            ));
+        }
+    };
+    context_response(body, &headers)
 }
 
 pub(super) fn parse_timestamp(headers: &HeaderMap, now_ms: i64) -> AppResult<(i64, &str)> {
@@ -506,339 +852,5 @@ fn opaque_context(context: OpaqueContext<'_>) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::http::HeaderValue;
-    use sqlx::{Connection, PgConnection};
-
-    fn signed_headers(
-        secret: &str,
-        timestamp: &str,
-        game_id: i32,
-        challenge_id: i32,
-        body: &[u8],
-    ) -> HeaderMap {
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
-        mac.update(timestamp.as_bytes());
-        mac.update(b".");
-        mac.update(game_id.to_string().as_bytes());
-        mac.update(b".");
-        mac.update(challenge_id.to_string().as_bytes());
-        mac.update(b".");
-        mac.update(body);
-        let mut headers = HeaderMap::new();
-        headers.insert(TIMESTAMP_HEADER, HeaderValue::from_static("123"));
-        headers.insert(
-            SIGNATURE_HEADER,
-            HeaderValue::from_str(&format!(
-                "{SIGNATURE_PREFIX}{}",
-                hex::encode(mac.finalize().into_bytes())
-            ))
-            .unwrap(),
-        );
-        headers
-    }
-
-    #[test]
-    fn signature_binds_timestamp_scope_and_exact_body() {
-        let body = br#"{"context":"abc","teams":[]}"#;
-        let headers = signed_headers("secret", "123", 7, 9, body);
-        let signature = parse_signature(&headers).unwrap();
-        assert!(verify_signature("secret", "123", 7, 9, body, &signature).is_ok());
-        assert!(verify_signature("secret", "124", 7, 9, body, &signature).is_err());
-        assert!(verify_signature("secret", "123", 8, 9, body, &signature).is_err());
-        assert!(verify_signature("secret", "123", 7, 10, body, &signature).is_err());
-        assert!(verify_signature("secret", "123", 7, 9, b"{}", &signature).is_err());
-    }
-
-    #[test]
-    fn context_changes_for_every_runtime_and_scoring_window() {
-        let context = |game_id,
-                       challenge_id,
-                       target_id,
-                       cycle_id,
-                       reset_attempt,
-                       reporting_revision,
-                       container_id,
-                       round_id,
-                       objective_schema_hash,
-                       eligible_tokens| {
-            opaque_context(OpaqueContext {
-                game_id,
-                challenge_id,
-                target_id,
-                cycle_id,
-                reset_attempt,
-                reporting_revision,
-                container_id,
-                round_id,
-                objective_schema_hash,
-                eligible_tokens,
-            })
-        };
-        let tokens = vec!["token-a".to_string(), "token-b".to_string()];
-        let base = context(7, 9, 3, 41, 1, 5, "container-a", 51, None, &tokens);
-        assert_eq!(base.len(), 64);
-        assert_ne!(
-            base,
-            context(8, 9, 3, 41, 1, 5, "container-a", 51, None, &tokens)
-        );
-        assert_ne!(
-            base,
-            context(7, 9, 4, 41, 1, 5, "container-a", 51, None, &tokens)
-        );
-        assert_ne!(
-            base,
-            context(7, 9, 3, 42, 1, 5, "container-a", 51, None, &tokens)
-        );
-        assert_ne!(
-            base,
-            context(7, 9, 3, 41, 2, 5, "container-a", 51, None, &tokens)
-        );
-        assert_ne!(
-            base,
-            context(7, 9, 3, 41, 1, 6, "container-a", 51, None, &tokens)
-        );
-        assert_ne!(
-            base,
-            context(7, 9, 3, 41, 1, 5, "container-b", 51, None, &tokens)
-        );
-        assert_ne!(
-            base,
-            context(7, 9, 3, 41, 1, 5, "container-a", 52, None, &tokens)
-        );
-        assert_ne!(
-            base,
-            context(
-                7,
-                9,
-                3,
-                41,
-                1,
-                5,
-                "container-a",
-                51,
-                Some(&[1; 32]),
-                &tokens
-            )
-        );
-        assert_ne!(
-            base,
-            context(
-                7,
-                9,
-                3,
-                41,
-                1,
-                5,
-                "container-a",
-                51,
-                None,
-                &["token-a".to_string(), "rotated-token".to_string()]
-            )
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn observation_rebase_removes_every_ineligible_identity_and_repairs_crowns() {
-        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
-        let mut connection = PgConnection::connect(&database_url).await.unwrap();
-        sqlx::raw_sql(
-            r#"
-            CREATE TEMP TABLE "Participations" (
-              id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
-              team_id INTEGER NOT NULL, status SMALLINT NOT NULL
-            );
-            CREATE TEMP TABLE "Teams" (
-              id INTEGER PRIMARY KEY, captain_id INTEGER NOT NULL,
-              deletion_pending BOOLEAN NOT NULL
-            );
-            CREATE TEMP TABLE "TeamMembers" (team_id INTEGER, user_id INTEGER);
-            CREATE TEMP TABLE "AspNetUsers" (id INTEGER PRIMARY KEY, role SMALLINT NOT NULL);
-            CREATE TEMP TABLE "KothOfficialConfigs" (
-              game_id INTEGER PRIMARY KEY, roster_snapshot JSONB NOT NULL
-            );
-            CREATE TEMP TABLE "KothApiTeamTokens" (
-              game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
-              participation_id INTEGER NOT NULL, token TEXT NOT NULL UNIQUE,
-              generation INTEGER NOT NULL DEFAULT 1,
-              rotated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-              last_used_at TIMESTAMPTZ,
-              revocation_pending BOOLEAN NOT NULL DEFAULT FALSE,
-              PRIMARY KEY (game_id, challenge_id, participation_id)
-            );
-            CREATE TEMP TABLE "KothApiSnapshots" (
-              target_id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
-              challenge_id INTEGER NOT NULL, snapshot_hash BYTEA NOT NULL
-            );
-            CREATE TEMP TABLE "KothApiSnapshotScores" (
-              target_id INTEGER NOT NULL, wave_id TEXT NOT NULL,
-              participation_id INTEGER NOT NULL,
-              activity_earned BIGINT NOT NULL,
-              activity_possible BIGINT NOT NULL,
-              objective_earned BIGINT NOT NULL,
-              objective_possible BIGINT NOT NULL,
-              objective_count SMALLINT NOT NULL,
-              is_crown BOOLEAN NOT NULL,
-              PRIMARY KEY (target_id, wave_id, participation_id)
-            );
-            CREATE UNIQUE INDEX uq_test_koth_api_crown
-              ON "KothApiSnapshotScores" (target_id, wave_id)
-              WHERE is_crown;
-            INSERT INTO "KothOfficialConfigs" VALUES
-              (7, '[11,12,13,14,15]');
-            INSERT INTO "Participations" VALUES
-              (11, 7, 21, 1), (12, 7, 22, 3), (13, 7, 23, 1),
-              (14, 7, 24, 1), (15, 7, 25, 1);
-            INSERT INTO "Teams" VALUES
-              (21, 101, FALSE), (22, 102, FALSE), (23, 103, TRUE),
-              (24, 104, FALSE), (25, 105, FALSE);
-            INSERT INTO "AspNetUsers" VALUES
-              (101, 1), (102, 1), (103, 1), (104, 1), (105, 1),
-              (204, 0);
-            INSERT INTO "TeamMembers" VALUES (24, 204), (25, 205);
-            INSERT INTO "KothApiTeamTokens"
-              (game_id, challenge_id, participation_id, token) VALUES
-              (7, 9, 11, 'koth_eligible_team'),
-              (7, 9, 12, 'koth_suspended_team'),
-              (7, 9, 13, 'koth_deleting_team'),
-              (7, 9, 14, 'koth_banned_team'),
-              (7, 9, 15, 'koth_missing_account');
-            INSERT INTO "KothApiSnapshots" VALUES
-              (3, 7, 9, decode(repeat('11', 32), 'hex'));
-            INSERT INTO "KothApiSnapshotScores" VALUES
-              (3, 'status', 11, 1, 1, 1, 2, 1, FALSE),
-              (3, 'status', 12, 1, 1, 3, 4, 1, TRUE),
-              (3, 'deletion', 11, 1, 1, 1, 2, 1, FALSE),
-              (3, 'deletion', 13, 1, 1, 3, 4, 1, TRUE),
-              (3, 'banned', 11, 1, 1, 1, 2, 1, FALSE),
-              (3, 'banned', 14, 1, 1, 3, 4, 1, TRUE),
-              (3, 'missing-account', 11, 1, 1, 1, 2, 1, FALSE),
-              (3, 'missing-account', 15, 1, 1, 3, 4, 1, TRUE);
-            "#,
-        )
-        .execute(&mut connection)
-        .await
-        .unwrap();
-
-        let before: Vec<u8> = sqlx::query_scalar(
-            r#"SELECT snapshot_hash FROM "KothApiSnapshots" WHERE target_id = 3"#,
-        )
-        .fetch_one(&mut connection)
-        .await
-        .unwrap();
-        let mut transaction = connection.begin().await.unwrap();
-        let eligible = load_eligible_capabilities(&mut *transaction, 7, 9)
-            .await
-            .unwrap();
-        assert_eq!(
-            eligible
-                .iter()
-                .map(|capability| capability.participation_id)
-                .collect::<Vec<_>>(),
-            [11]
-        );
-        assert_eq!(
-            crate::services::ad::koth_api_capability::retain_eligible_unsettled_scores(
-                &mut transaction,
-                7,
-                9,
-                3,
-                &[11],
-            )
-            .await
-            .unwrap(),
-            4
-        );
-        let rows: Vec<(String, i32, bool)> = sqlx::query_as(
-            r#"SELECT wave_id, participation_id, is_crown
-                 FROM "KothApiSnapshotScores"
-                ORDER BY wave_id, participation_id"#,
-        )
-        .fetch_all(&mut *transaction)
-        .await
-        .unwrap();
-        assert_eq!(
-            rows,
-            vec![
-                ("banned".to_string(), 11, true),
-                ("deletion".to_string(), 11, true),
-                ("missing-account".to_string(), 11, true),
-                ("status".to_string(), 11, true),
-            ]
-        );
-        let after: Vec<u8> = sqlx::query_scalar(
-            r#"SELECT snapshot_hash FROM "KothApiSnapshots" WHERE target_id = 3"#,
-        )
-        .fetch_one(&mut *transaction)
-        .await
-        .unwrap();
-        assert_ne!(after, before);
-
-        let rotated_challenges =
-            crate::services::ad::koth_api_capability::force_rotate_event_capabilities(
-                &mut transaction,
-                7,
-                &[12, 14, 15],
-            )
-            .await
-            .unwrap();
-        assert_eq!(rotated_challenges.into_iter().collect::<Vec<_>>(), [9]);
-        sqlx::raw_sql(
-            r#"UPDATE "Participations" SET status = 1 WHERE id = 12;
-               UPDATE "AspNetUsers" SET role = 1 WHERE id = 204;
-               INSERT INTO "AspNetUsers" VALUES (205, 1);"#,
-        )
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
-        let restored = load_eligible_capabilities(&mut *transaction, 7, 9)
-            .await
-            .unwrap();
-        assert_eq!(
-            restored
-                .iter()
-                .map(|capability| capability.participation_id)
-                .collect::<Vec<_>>(),
-            [11, 12, 14, 15]
-        );
-        let restored_state: (i64, i64, bool) = sqlx::query_as(
-            r#"SELECT COUNT(*),
-                      COUNT(*) FILTER (WHERE generation = 2),
-                      NOT EXISTS (
-                        SELECT 1 FROM "KothApiTeamTokens"
-                         WHERE token IN (
-                           'koth_suspended_team',
-                           'koth_banned_team',
-                           'koth_missing_account'
-                         )
-                      )
-                 FROM "KothApiTeamTokens"
-                WHERE participation_id = ANY($1)"#,
-        )
-        .bind([11, 12, 14, 15].as_slice())
-        .fetch_one(&mut *transaction)
-        .await
-        .unwrap();
-        assert_eq!(restored_state, (4, 3, true));
-        transaction.commit().await.unwrap();
-    }
-
-    #[test]
-    fn timestamp_window_is_strict() {
-        let now = 1_000_000_i64;
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            TIMESTAMP_HEADER,
-            HeaderValue::from_str(&(now - MAX_CLOCK_SKEW_MS as i64).to_string()).unwrap(),
-        );
-        assert!(parse_timestamp(&headers, now).is_ok());
-        headers.insert(
-            TIMESTAMP_HEADER,
-            HeaderValue::from_str(&(now - MAX_CLOCK_SKEW_MS as i64 - 1).to_string()).unwrap(),
-        );
-        assert!(parse_timestamp(&headers, now).is_err());
-    }
-}
+#[path = "tests.rs"]
+mod tests;

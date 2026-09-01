@@ -2,7 +2,10 @@
 
 use super::*;
 
+mod mutation;
 mod security_policy;
+
+pub use mutation::{get_settings_operation, stage_branding, update_config};
 
 pub use crate::services::container_policy::ContainerPolicy;
 pub use crate::services::donations::{DonationConfig, DonationProvider};
@@ -16,8 +19,6 @@ pub(crate) fn normalized_container_port_mapping(value: Option<&str>) -> &'static
         _ => DEFAULT_CONTAINER_PORT_MAPPING,
     }
 }
-
-// ─── Config ──────────────────────────────────────────────────────────────────
 
 /// RSCTF `GlobalConfig`.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -249,8 +250,35 @@ pub struct BuildRegistryConfig {
 /// `container_provider` exposes a read-only backend summary plus the mutable
 /// `portMappingType` preference persisted by `get_config` / `update_config`.
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContainerProviderInfoModel {
+    /// Read-only runtime backend summary. Accepted on PUT so the canonical GET
+    /// model can be round-tripped, but never persisted by settings mutation.
+    #[serde(default, rename = "type")]
+    pub provider_type: Option<String>,
+    #[serde(default)]
+    pub port_mapping_type: Option<String>,
+    #[serde(default)]
+    pub traffic_capture: bool,
+    #[serde(default)]
+    pub kubernetes_namespace: Option<String>,
+    #[serde(default)]
+    pub image_pull_policy: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigEditModel {
+    /// Present on GET and required as `expectedRevision` on PUT.
+    #[serde(default, skip_deserializing)]
+    pub revision: i64,
+    /// Stable browser intent used to make an ambiguous retry exact.
+    #[serde(default)]
+    pub operation_id: Option<Uuid>,
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
+    #[serde(default)]
+    pub branding_action: BrandingAction,
     #[serde(default)]
     pub account_policy: Option<AccountPolicy>,
     #[serde(default)]
@@ -274,7 +302,30 @@ pub struct ConfigEditModel {
     #[serde(default, skip_deserializing)]
     pub proxy_trust: Option<ProxyTrustConfig>,
     #[serde(default)]
-    pub container_provider: Option<Value>,
+    pub container_provider: Option<ContainerProviderInfoModel>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum BrandingAction {
+    #[default]
+    Keep,
+    Set,
+    Clear,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsMutationResult {
+    pub operation_id: Uuid,
+    pub revision: i64,
+    pub branding_hash: Option<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsBrandingStageResult {
+    pub operation_id: Uuid,
+    pub branding_hash: String,
 }
 
 /// `GET /api/admin/config` — assemble the `ConfigEditModel` from the flat
@@ -284,9 +335,37 @@ pub async fn get_config(
     State(st): State<SharedState>,
     _admin: AdminUser,
 ) -> AppResult<RequestResponse<ConfigEditModel>> {
-    let rows = config::Entity::find().all(&st.db).await?;
-    let map: BTreeMap<String, Option<String>> =
-        rows.into_iter().map(|c| (c.config_key, c.value)).collect();
+    let rows = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"SELECT config_key, value
+             FROM "Configs"
+            WHERE config_key LIKE 'GlobalConfig:%'
+               OR config_key LIKE 'AccountPolicy:%'
+               OR config_key LIKE 'ContainerPolicy:%'
+               OR config_key LIKE 'EmailConfig:%'
+               OR config_key LIKE 'CaptchaConfig:%'
+               OR config_key LIKE 'OAuthConfig:%'
+               OR config_key LIKE 'RegistryConfig:%'
+               OR config_key LIKE 'BuildRegistryConfig:%'
+               OR config_key LIKE 'DonationConfig:%'
+               OR config_key = 'ContainerProvider:PortMappingType'
+            ORDER BY config_key
+            LIMIT 129"#,
+    )
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if rows.len() > 128
+        || rows.iter().fold(0usize, |total, (key, value)| {
+            total
+                .saturating_add(key.len())
+                .saturating_add(value.as_ref().map_or(0, String::len))
+        }) > 128 * 1024
+    {
+        return Err(AppError::internal(
+            "Stored platform settings exceed the bounded admin projection",
+        ));
+    }
+    let map: BTreeMap<String, Option<String>> = rows.into_iter().collect();
 
     let get = |key: &str| map.get(key).cloned().flatten();
     // Persisted values are lowercase `bool::to_string()` (matching the existing
@@ -467,15 +546,26 @@ pub async fn get_config(
     let stored_port_mapping = get("ContainerProvider:PortMappingType");
     let port_mapping_type =
         normalized_container_port_mapping(stored_port_mapping.as_deref()).to_string();
-    let container_provider = serde_json::json!({
-        "type": "Docker",
-        "portMappingType": port_mapping_type,
-        "trafficCapture": false,
-        "kubernetesNamespace": null,
-        "imagePullPolicy": null,
-    });
+    let container_provider = ContainerProviderInfoModel {
+        provider_type: Some("Docker".to_string()),
+        port_mapping_type: Some(port_mapping_type),
+        traffic_capture: false,
+        kubernetes_namespace: None,
+        image_pull_policy: None,
+    };
+
+    let revision = sqlx::query_scalar::<_, i64>(
+        r#"SELECT revision FROM "PlatformSettingsState" WHERE singleton = 1"#,
+    )
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
 
     Ok(RequestResponse::ok(ConfigEditModel {
+        revision,
+        operation_id: None,
+        expected_revision: None,
+        branding_action: BrandingAction::Keep,
         account_policy: Some(account),
         global_config: Some(global),
         container_policy: Some(container),
@@ -488,208 +578,6 @@ pub async fn get_config(
         proxy_trust: Some(proxy_trust),
         container_provider: Some(container_provider),
     }))
-}
-
-/// `PUT /api/admin/config` — persist the config sections back into the flat
-/// `Configs` key/value table. Mirrors RSCTF's reflection-driven `SaveConfig`,
-/// which writes one `{ClassName}:{Prop}` row per field (nested classes recurse
-/// with `:`). Proxy trust is the exception: it is read-only and sourced from
-/// `RSCTF_TRUSTED_PROXY_CIDRS` before request authentication runs.
-///
-/// Two RSCTF behaviors are mirrored: (1) a `None` field is never written
-/// (`MapConfigsInternal` early-returns on null); (2) secret fields (SMTP /
-/// registry / captcha / oauth passwords) preserve the stored value when the
-/// incoming value is empty — achieved here by simply skipping the upsert, which
-/// leaves the existing row untouched. Secrets are stored PLAINTEXT at rest
-/// (RSCTF XOR-obfuscates with the deployment `XorKey`; that obfuscation is out
-/// of scope here — a best-effort deviation, same risk profile as RSCTF running
-/// without an `XorKey`).
-pub async fn update_config(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-    Json(mut model): Json<ConfigEditModel>,
-) -> AppResult<MessageResponse> {
-    // Reject the complete request before any independently persisted section
-    // can change. In particular, an invalid container policy must not leave a
-    // successful security/global partial save behind an HTTP 400 response.
-    if let Some(policy) = model.container_policy.as_ref() {
-        policy.validate()?;
-    }
-    if let Some(donations) = model.donations.as_ref() {
-        crate::services::donations::validate_config(st.pg(), donations).await?;
-    }
-    let account_policy = model.account_policy.take();
-    let captcha = model.captcha.take();
-    let o_auth = model.o_auth.take();
-    let donations = model.donations.take();
-    if account_policy.is_some() || captcha.is_some() || o_auth.is_some() {
-        security_policy::save_security_policy(
-            st.pg(),
-            st.config.as_ref(),
-            account_policy,
-            captcha,
-            o_auth,
-        )
-        .await?;
-    }
-
-    if let Some(g) = model.global_config {
-        upsert_config(&st, "GlobalConfig:Title", Some(g.title)).await?;
-        upsert_config(&st, "GlobalConfig:Slogan", Some(g.slogan)).await?;
-        upsert_config(&st, "GlobalConfig:Description", g.description).await?;
-        upsert_config(&st, "GlobalConfig:FooterInfo", g.footer_info).await?;
-        upsert_config(&st, "GlobalConfig:CustomTheme", g.custom_theme).await?;
-        // Branding hashes are read-only in the generic settings form. Only the
-        // dedicated upload/delete endpoints may mutate them because those
-        // endpoints serialize both keys with the blob ref-count transaction.
-        // Ignoring these echoed DTO fields also prevents a stale admin form
-        // from resurrecting a hash whose object has already been purged.
-        let _ = (g.logo_hash, g.favicon_hash);
-        upsert_config(
-            &st,
-            "GlobalConfig:ApiEncryption",
-            Some(g.api_encryption.to_string()),
-        )
-        .await?;
-    }
-
-    if let Some(c) = model.container_policy {
-        upsert_config(
-            &st,
-            "ContainerPolicy:AutoDestroyOnLimitReached",
-            Some(c.auto_destroy_on_limit_reached.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "ContainerPolicy:MaxExerciseContainerCountPerUser",
-            Some(c.max_exercise_container_count_per_user.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "ContainerPolicy:DefaultLifetime",
-            Some(c.default_lifetime.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "ContainerPolicy:ExtensionDuration",
-            Some(c.extension_duration.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "ContainerPolicy:RenewalWindow",
-            Some(c.renewal_window.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "ContainerPolicy:BuildImagesOnDemand",
-            Some(c.build_images_on_demand.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "ContainerPolicy:ImageCleanupEnabled",
-            Some(c.image_cleanup_enabled.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "ContainerPolicy:ImageIdleRetentionHours",
-            Some(c.image_idle_retention_hours.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "ContainerPolicy:BuildCacheRetentionHours",
-            Some(c.build_cache_retention_hours.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "ContainerPolicy:MinimumFreeStorageGiB",
-            Some(c.minimum_free_storage_gib.to_string()),
-        )
-        .await?;
-    }
-
-    // --- Advanced sections ---------------------------------------------------
-    // `write_opt`: RSCTF skips null values, so only persist Some(_).
-    // `write_secret`: empty/None preserves the stored value (skip the upsert).
-    async fn write_opt(st: &SharedState, key: &str, v: Option<String>) -> AppResult<()> {
-        if let Some(val) = v {
-            upsert_config(st, key, Some(val)).await?;
-        }
-        Ok(())
-    }
-    async fn write_secret(st: &SharedState, key: &str, v: Option<String>) -> AppResult<()> {
-        match v {
-            Some(val) if !val.is_empty() => upsert_config(st, key, Some(val)).await,
-            _ => Ok(()),
-        }
-    }
-
-    if let Some(e) = model.email {
-        upsert_config(&st, "EmailConfig:UserName", Some(e.user_name)).await?;
-        write_secret(&st, "EmailConfig:Password", Some(e.password)).await?;
-        write_opt(&st, "EmailConfig:SenderAddress", e.sender_address).await?;
-        write_opt(&st, "EmailConfig:SenderName", e.sender_name).await?;
-        if let Some(s) = e.smtp {
-            upsert_config(&st, "EmailConfig:Smtp:Host", Some(s.host)).await?;
-            upsert_config(&st, "EmailConfig:Smtp:Port", Some(s.port.to_string())).await?;
-            upsert_config(
-                &st,
-                "EmailConfig:Smtp:BypassCertVerify",
-                Some(s.bypass_cert_verify.to_string()),
-            )
-            .await?;
-        }
-    }
-
-    if let Some(r) = model.registry {
-        write_opt(&st, "RegistryConfig:ServerAddress", r.server_address).await?;
-        write_opt(&st, "RegistryConfig:UserName", r.user_name).await?;
-        write_secret(&st, "RegistryConfig:Password", r.password).await?;
-    }
-
-    if let Some(b) = model.build_registry {
-        upsert_config(
-            &st,
-            "BuildRegistryConfig:PushOnBuild",
-            Some(b.push_on_build.to_string()),
-        )
-        .await?;
-        write_opt(&st, "BuildRegistryConfig:Server", b.server).await?;
-        write_opt(&st, "BuildRegistryConfig:Namespace", b.namespace).await?;
-        write_opt(&st, "BuildRegistryConfig:Username", b.username).await?;
-        write_secret(&st, "BuildRegistryConfig:Password", b.password).await?;
-    }
-
-    if let Some(donations) = donations {
-        crate::services::donations::save_config(st.pg(), st.cache.as_ref(), donations).await?;
-    }
-
-    // Container-provider port-mapping mode (Default = direct host:port,
-    // PlatformProxy = wsrx-proxied). The client sends the whole
-    // `ContainerProviderInfoModel`, but only `portMappingType` is mutable here;
-    // accept only the two `ContainerPortMappingType` wire values, ignore the rest.
-    if let Some(cp) = model.container_provider {
-        if let Some(mode) = cp.get("portMappingType").and_then(|v| v.as_str()) {
-            if mode == "Default" || mode == "PlatformProxy" {
-                upsert_config(
-                    &st,
-                    "ContainerProvider:PortMappingType",
-                    Some(mode.to_string()),
-                )
-                .await?;
-            }
-        }
-    }
-
-    Ok(MessageResponse::ok(""))
 }
 
 /// Reads the admin-set container port-mapping mode
@@ -709,32 +597,6 @@ pub(crate) async fn container_port_mapping(st: &SharedState) -> String {
     normalized_container_port_mapping(value.as_deref()).to_string()
 }
 
-async fn upsert_config(st: &SharedState, key: &str, value: Option<String>) -> AppResult<()> {
-    match config::Entity::find_by_id(key.to_string())
-        .one(&st.db)
-        .await?
-    {
-        Some(existing) => {
-            if existing.value == value {
-                return Ok(());
-            }
-            let mut am: config::ActiveModel = existing.into();
-            am.value = Set(value);
-            am.update(&st.db).await?;
-        }
-        None => {
-            config::ActiveModel {
-                config_key: Set(key.to_string()),
-                value: Set(value),
-                cache_keys: Set(None),
-            }
-            .insert(&st.db)
-            .await?;
-        }
-    }
-    Ok(())
-}
-
 /// Maximum logo upload size (mirrors RSCTF's 3 MiB cap).
 const MAX_LOGO_BYTES: usize = crate::utils::upload::IMAGE_FILE_BYTES;
 
@@ -745,17 +607,24 @@ const MAX_LOGO_BYTES: usize = crate::utils::upload::IMAGE_FILE_BYTES;
 /// to 640/256 px; here the original bytes are used for both.
 pub async fn logo_upload(
     State(st): State<SharedState>,
-    _admin: AdminUser,
+    AdminUser(admin): AdminUser,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> AppResult<MessageResponse> {
+    let operation_root = crate::utils::upload::required_operation_id(&headers)?;
     let _upload_reservation =
         crate::utils::upload::reserve_buffered(crate::utils::upload::IMAGE_BODY_BYTES)?;
     let mut data: Option<(String, Vec<u8>)> = None;
+    let mut field_count = 0usize;
     while let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?
     {
+        field_count += 1;
+        if field_count > crate::utils::upload::SINGLE_FILE_FIELD_COUNT {
+            return Err(AppError::bad_request("Too many multipart fields"));
+        }
         if field.name() == Some("file") {
             let name = field.file_name().unwrap_or("logo").to_string();
             let bytes = field
@@ -775,17 +644,35 @@ pub async fn logo_upload(
         return Err(AppError::bad_request("File is too large"));
     }
 
+    let staged = crate::services::blob_refs::stage_blob(
+        st.pg(),
+        st.storage.as_ref(),
+        crate::services::blob_refs::scoped_operation_id(operation_root, "platform-branding", 0),
+        "platform-branding",
+        Some(admin.id),
+        &name,
+        &bytes,
+    )
+    .await?;
+
     let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query(
+        r#"SELECT revision FROM "PlatformSettingsState"
+            WHERE singleton = 1 FOR UPDATE"#,
+    )
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     // The two keys are one branding operation. Serialize them so concurrent
     // replicas cannot leave LogoHash and FaviconHash on different uploads.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('rsctf:branding-logo', 0))")
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let old_hashes: std::collections::BTreeSet<String> = sqlx::query_scalar(
-        r#"SELECT value
+    let old_entries: Vec<(String, String)> = sqlx::query_as(
+        r#"SELECT config_key, value
              FROM "Configs"
             WHERE config_key IN ('GlobalConfig:LogoHash', 'GlobalConfig:FaviconHash')
               AND value IS NOT NULL
@@ -793,24 +680,49 @@ pub async fn logo_upload(
     )
     .fetch_all(&mut *transaction)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .into_iter()
-    .collect();
-    let (blob, _) = crate::services::blob_refs::store_and_acquire_in_transaction(
-        st.storage.as_ref(),
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let old_hashes = old_entries
+        .iter()
+        .map(|(_, hash)| hash.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    crate::services::blob_refs::lock_direct_hashes_locked(
         &mut transaction,
-        &name,
-        &bytes,
+        std::iter::once(staged.blob.hash.as_str()).chain(old_hashes.iter().map(String::as_str)),
     )
     .await?;
-    for key in ["GlobalConfig:LogoHash", "GlobalConfig:FaviconHash"] {
+    let blob = staged.blob.clone();
+    let new_hash = blob.hash.clone();
+    let unchanged = old_entries.len() == 2
+        && old_entries
+            .iter()
+            .all(|(_, old_hash)| old_hash == &new_hash);
+    if unchanged {
+        staged
+            .consume_with_existing_reference(&mut transaction)
+            .await?;
+    } else {
+        crate::services::blob_refs::publish_staged_blob(&mut transaction, &staged).await?;
+        for key in ["GlobalConfig:LogoHash", "GlobalConfig:FaviconHash"] {
+            sqlx::query(
+                r#"INSERT INTO "Configs" (config_key, value, cache_keys)
+                   VALUES ($1, $2, NULL)
+                   ON CONFLICT (config_key) DO UPDATE SET value = EXCLUDED.value"#,
+            )
+            .bind(key)
+            .bind(&blob.hash)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        }
+        for old_hash in &old_hashes {
+            crate::services::blob_refs::release_direct_hash_locked(&mut transaction, old_hash)
+                .await?;
+        }
         sqlx::query(
-            r#"INSERT INTO "Configs" (config_key, value, cache_keys)
-               VALUES ($1, $2, NULL)
-               ON CONFLICT (config_key) DO UPDATE SET value = EXCLUDED.value"#,
+            r#"UPDATE "PlatformSettingsState"
+                  SET revision = revision + 1, updated_at = clock_timestamp()
+                WHERE singleton = 1"#,
         )
-        .bind(key)
-        .bind(&blob.hash)
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -820,10 +732,19 @@ pub async fn logo_upload(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
+    crate::controllers::assets::invalidate_asset_gate(&st, &new_hash).await;
+
     for old_hash in old_hashes {
-        if let Err(error) =
-            crate::services::blob_refs::release_and_purge(st.pg(), st.storage.as_ref(), &old_hash)
-                .await
+        if old_hash == new_hash {
+            continue;
+        }
+        crate::controllers::assets::invalidate_asset_gate(&st, &old_hash).await;
+        if let Err(error) = crate::services::blob_refs::purge_if_unreferenced(
+            st.pg(),
+            st.storage.as_ref(),
+            &old_hash,
+        )
+        .await
         {
             tracing::warn!(%error, hash = %old_hash, "old branding blob purge failed");
         }
@@ -839,6 +760,7 @@ pub async fn logo_delete(
 ) -> AppResult<MessageResponse> {
     let old_hashes = clear_branding_hashes(st.pg()).await?;
     for old_hash in old_hashes {
+        crate::controllers::assets::invalidate_asset_gate(&st, &old_hash).await;
         if let Err(error) = crate::services::blob_refs::purge_if_unreferenced(
             st.pg(),
             st.storage.as_ref(),
@@ -862,6 +784,13 @@ async fn clear_branding_hashes(
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query(
+        r#"SELECT revision FROM "PlatformSettingsState"
+            WHERE singleton = 1 FOR UPDATE"#,
+    )
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('rsctf:branding-logo', 0))")
         .execute(&mut *transaction)
         .await
@@ -889,6 +818,16 @@ async fn clear_branding_hashes(
     .map_err(|error| AppError::internal(error.to_string()))?;
     for old_hash in &old_hashes {
         crate::services::blob_refs::release_direct_hash_locked(&mut transaction, old_hash).await?;
+    }
+    if !old_hashes.is_empty() {
+        sqlx::query(
+            r#"UPDATE "PlatformSettingsState"
+                  SET revision = revision + 1, updated_at = clock_timestamp()
+                WHERE singleton = 1"#,
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     }
     transaction
         .commit()
@@ -925,8 +864,25 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            model.container_provider.unwrap()["portMappingType"],
-            "Default"
+            model
+                .container_provider
+                .unwrap()
+                .port_mapping_type
+                .as_deref(),
+            Some("Default")
+        );
+    }
+
+    #[test]
+    fn container_provider_rejects_unknown_settings_fields() {
+        assert!(
+            serde_json::from_value::<ConfigEditModel>(serde_json::json!({
+                "containerProvider": {
+                    "portMappingType": "Default",
+                    "unboundedIgnoredPayload": { "nested": true }
+                }
+            }))
+            .is_err()
         );
     }
 

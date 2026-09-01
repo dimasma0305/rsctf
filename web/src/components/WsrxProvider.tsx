@@ -4,7 +4,7 @@ import { mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { Wsrx, WsrxError, WsrxErrorKind, WsrxFeature, WsrxInstance, WsrxOptions, WsrxState } from '@xdsec/wsrx'
 import { t } from 'i18next'
-import { createContext, useCallback, use, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, use, useEffect, useMemo, useRef, useState } from 'react'
 import { showErrorMsg } from '@Utils/Shared'
 import { useConfig } from '@Hooks/useConfig'
 import { ContainerPortMappingType } from '@Api'
@@ -72,7 +72,22 @@ interface WsrxContextType {
   wsrxOptions: CustomWsrxOptions
   doWsrxConnect: () => void
   applyWsrxOptions: (options: CustomWsrxOptions) => void
+  watchPendingTunnel: (remote: string, onExpired: () => void) => () => void
+  scheduleTunnelDrain: (local: string, delayMilliseconds: number) => void
 }
+
+interface PendingTunnelWatcher {
+  deadline: number
+  onExpired: () => void
+}
+
+interface DrainingTunnel {
+  deadline: number
+  timer: ReturnType<typeof setTimeout>
+}
+
+const ACCELERATED_SYNC_INTERVAL_MS = 1_500
+const ACCELERATED_SYNC_WINDOW_MS = 8_000
 
 const WsrxContext = createContext<WsrxContextType | null>(null)
 
@@ -96,6 +111,10 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const [wsrxState, setWsrxState] = useState<WsrxState>(WsrxState.Invalid)
   const [wsrxInstances, setWsrxInstances] = useState<WsrxInstance[]>([])
   const platformConfig = useConfig()
+  const pendingTunnels = useRef(new Map<string, Map<symbol, PendingTunnelWatcher>>())
+  const drainingTunnels = useRef(new Map<string, DrainingTunnel>())
+  const syncInFlight = useRef<Promise<void> | null>(null)
+  const [pendingRevision, setPendingRevision] = useState(0)
 
   const [wsrxOptions, persistWsrxOptions] = useLocalStorage<CustomWsrxOptions>({
     key: 'wsrx-options',
@@ -104,6 +123,54 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   })
 
   const wsrx = useMemo(() => new Wsrx(getWsrxConfig(wsrxOptions)), [])
+
+  const cancelPendingTunnels = useCallback(() => {
+    pendingTunnels.current.clear()
+    setPendingRevision((revision) => revision + 1)
+  }, [])
+
+  const watchPendingTunnel = useCallback((remote: string, onExpired: () => void) => {
+    if (!remote) return () => undefined
+    const watcherId = Symbol(remote)
+    const watchers = pendingTunnels.current.get(remote) ?? new Map<symbol, PendingTunnelWatcher>()
+    watchers.set(watcherId, { deadline: Date.now() + ACCELERATED_SYNC_WINDOW_MS, onExpired })
+    pendingTunnels.current.set(remote, watchers)
+    setPendingRevision((revision) => revision + 1)
+    return () => {
+      const current = pendingTunnels.current.get(remote)
+      current?.delete(watcherId)
+      if (current?.size === 0) pendingTunnels.current.delete(remote)
+      setPendingRevision((revision) => revision + 1)
+    }
+  }, [])
+
+  const scheduleTunnelDrain = useCallback(
+    (local: string, delayMilliseconds: number) => {
+      if (!local || !Number.isFinite(delayMilliseconds)) return
+      const delay = Math.max(0, delayMilliseconds)
+      const deadline = Date.now() + delay
+      const existing = drainingTunnels.current.get(local)
+      if (existing && existing.deadline >= deadline) return
+      if (existing) clearTimeout(existing.timer)
+
+      const timer = setTimeout(() => {
+        drainingTunnels.current.delete(local)
+        void wsrx.delete(local).catch(() => undefined)
+      }, delay)
+      drainingTunnels.current.set(local, { deadline, timer })
+    },
+    [wsrx]
+  )
+
+  useEffect(
+    () => () => {
+      const drainingLocals = Array.from(drainingTunnels.current.keys())
+      for (const draining of drainingTunnels.current.values()) clearTimeout(draining.timer)
+      drainingTunnels.current.clear()
+      for (const local of drainingLocals) void wsrx.delete(local).catch(() => undefined)
+    },
+    [wsrx]
+  )
 
   const doWsrxConnect = useDebouncedCallback(async () => {
     try {
@@ -119,12 +186,80 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
 
   const applyWsrxOptions = useCallback(
     (options: CustomWsrxOptions) => {
+      cancelPendingTunnels()
       wsrx.setOptions(getWsrxConfig(options))
       persistWsrxOptions(options)
       doWsrxConnect()
     },
-    [doWsrxConnect, persistWsrxOptions, wsrx]
+    [cancelPendingTunnels, doWsrxConnect, persistWsrxOptions, wsrx]
   )
+
+  useEffect(() => {
+    if (pendingTunnels.current.size === 0) return
+    if (wsrxState !== WsrxState.Usable) {
+      pendingTunnels.current.forEach((watchers) => watchers.forEach((watcher) => watcher.onExpired()))
+      pendingTunnels.current.clear()
+      return
+    }
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const settleWatchers = () => {
+      const now = Date.now()
+      const instances = wsrx.list()
+      pendingTunnels.current.forEach((watchers, remote) => {
+        if (
+          instances.some(
+            (instance) => instance.remote === remote && typeof instance.latency === 'number' && instance.latency >= 0
+          )
+        ) {
+          pendingTunnels.current.delete(remote)
+          return
+        }
+        watchers.forEach((watcher, watcherId) => {
+          if (watcher.deadline > now) return
+          watchers.delete(watcherId)
+          watcher.onExpired()
+        })
+        if (watchers.size === 0) pendingTunnels.current.delete(remote)
+      })
+    }
+
+    const run = async () => {
+      settleWatchers()
+      if (cancelled || pendingTunnels.current.size === 0) return
+      try {
+        if (!syncInFlight.current) {
+          syncInFlight.current = wsrx.sync().finally(() => {
+            syncInFlight.current = null
+          })
+        }
+        await syncInFlight.current
+      } catch {
+        if (!cancelled) {
+          pendingTunnels.current.forEach((watchers) => watchers.forEach((watcher) => watcher.onExpired()))
+          pendingTunnels.current.clear()
+        }
+        return
+      }
+      settleWatchers()
+      if (!cancelled && pendingTunnels.current.size > 0) {
+        const nextDeadline = Math.min(
+          ...Array.from(pendingTunnels.current.values()).flatMap((watchers) =>
+            Array.from(watchers.values()).map((watcher) => watcher.deadline)
+          )
+        )
+        const delay = Math.max(0, Math.min(ACCELERATED_SYNC_INTERVAL_MS, nextDeadline - Date.now()))
+        timer = setTimeout(() => void run(), delay)
+      }
+    }
+
+    void run()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [pendingRevision, wsrx, wsrxState])
 
   useEffect(() => {
     if (!wsrxOptions || platformConfig.config.portMapping !== ContainerPortMappingType.PlatformProxy) return
@@ -180,8 +315,19 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       wsrxOptions,
       doWsrxConnect,
       applyWsrxOptions,
+      watchPendingTunnel,
+      scheduleTunnelDrain,
     }),
-    [wsrx, wsrxState, wsrxInstances, wsrxOptions, doWsrxConnect, applyWsrxOptions]
+    [
+      wsrx,
+      wsrxState,
+      wsrxInstances,
+      wsrxOptions,
+      doWsrxConnect,
+      applyWsrxOptions,
+      watchPendingTunnel,
+      scheduleTunnelDrain,
+    ]
   )
 
   return <WsrxContext.Provider value={contextValue}>{children}</WsrxContext.Provider>

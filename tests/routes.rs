@@ -37,6 +37,63 @@ fn each_controller_router_builds() {
 }
 
 #[cfg(test)]
+mod challenge_audit_archive_route {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use sea_orm::SqlxPostgresConnector;
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    use rsctf::app_state::{AppState, SharedState};
+    use rsctf::models::internal::configs::{AppConfig, RuntimeRole};
+    use rsctf::services::cache::InMemoryCache;
+    use rsctf::services::container::NoopContainerManager;
+    use rsctf::services::token::TokenService;
+    use rsctf::storage::LocalBlobStorage;
+
+    fn test_state() -> SharedState {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .unwrap();
+        let database = SqlxPostgresConnector::from_sqlx_postgres_pool(pool);
+        let root = std::env::temp_dir().join(format!(
+            "rsctf-audit-archive-route-{}",
+            Uuid::new_v4().simple()
+        ));
+        let mut config = AppConfig::default();
+        config.runtime_role = RuntimeRole::All;
+        AppState::new(
+            database,
+            Arc::new(config),
+            Arc::new(InMemoryCache::new()),
+            Arc::new(LocalBlobStorage::new(root)),
+            TokenService::new("0123456789abcdef0123456789abcdef", 60),
+            Arc::new(NoopContainerManager),
+        )
+    }
+
+    async fn get(path: &str) -> axum::response::Response {
+        rsctf::controllers::edit::router()
+            .with_state(test_state())
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn retained_source_download_is_case_exact_and_rejects_anonymous_users() {
+        let exact = get("/api/edit/games/7/challenges/11/auditarchive").await;
+        assert_eq!(exact.status(), StatusCode::UNAUTHORIZED);
+
+        let wrong_case = get("/api/edit/games/7/challenges/11/AuditArchive").await;
+        assert_eq!(wrong_case.status(), StatusCode::NOT_FOUND);
+    }
+}
+
+#[cfg(test)]
 mod koth_recovery_ownership {
     use std::sync::Arc;
 

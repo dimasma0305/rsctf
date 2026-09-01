@@ -2,10 +2,11 @@ import { Button, Text } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router'
 import { AccountView } from '@Components/AccountView'
+import { RetryableMutationOwner } from '@Utils/RetryableMutationOwner'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import api from '@Api'
 
@@ -16,6 +17,7 @@ const Verify: FC = () => {
   const token = sp.get('token')
   const email = sp.get('email')
   const [disabled, setDisabled] = useState(false)
+  const owner = useRef(new RetryableMutationOwner())
   let decodeEmail = ''
   try {
     decodeEmail = email ? window.atob(email) : ''
@@ -26,6 +28,12 @@ const Verify: FC = () => {
   const { t } = useTranslation()
 
   usePageTitle(t('account.title.verify'))
+
+  useEffect(() => {
+    owner.current.cancel()
+    setDisabled(false)
+    return () => owner.current.cancel()
+  }, [token, email])
 
   const verify = async (event: React.SyntheticEvent) => {
     event.preventDefault()
@@ -40,10 +48,13 @@ const Verify: FC = () => {
       return
     }
 
+    const lease = owner.current.claim(JSON.stringify({ token, email }))
+    if (!lease) return
     setDisabled(true)
 
     try {
-      await api.account.accountVerify({ token, email })
+      await api.account.accountVerify({ token, email }, { signal: lease.signal })
+      if (!owner.current.settle(lease, true)) return
       showNotification({
         color: 'teal',
         title: t('account.notification.verify.success'),
@@ -52,13 +63,13 @@ const Verify: FC = () => {
       })
       navigate('/account/login')
     } catch {
+      if (!owner.current.settle(lease, false)) return
       showNotification({
         color: 'red',
         title: t('account.notification.verify.failed'),
         message: t('common.error.param_error'),
         icon: <Icon path={mdiClose} size={1} />,
       })
-    } finally {
       setDisabled(false)
     }
   }
@@ -73,7 +84,7 @@ const Verify: FC = () => {
           <Text size="md" fw={500}>
             {t('account.content.verify.message')}
           </Text>
-          <Button mt="lg" type="submit" w={{ base: '100%', xs: '50%' }} disabled={disabled}>
+          <Button mt="lg" type="submit" w={{ base: '100%', xs: '50%' }} disabled={disabled} loading={disabled}>
             {t('account.button.verify_account')}
           </Button>
         </>

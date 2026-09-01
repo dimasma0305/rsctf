@@ -105,6 +105,7 @@ fn persistent_replacement_preserves_the_static_runtime_flag() {
         allow_egress: false,
         checker_dir: None,
         runtime_flag: Some("flag{sealed-runtime-value}".to_string()),
+        runtime_flag_invalid: false,
     };
 
     let spec = replacement_container_spec(cycle.expected_image.clone(), &cycle, &hill, None);
@@ -149,6 +150,7 @@ fn managed_reporter_replaces_a_pre_upgrade_create_orphan() {
         allow_egress: false,
         checker_dir: None,
         runtime_flag: Some("flag{sealed-runtime-value}".to_string()),
+        runtime_flag_invalid: false,
     };
     let reporter = crate::services::ad::koth_reporter::TargetReporterRuntime {
         env: vec![(

@@ -14,6 +14,7 @@ import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { AdGuideModal } from '@Components/AdGuideModal'
+import { useAdToken } from '@Components/AdToolkitSections'
 import { ChallengePanel } from '@Components/ChallengePanel'
 import { GameNoticePanel } from '@Components/GameNoticePanel'
 import { KothGuideModal } from '@Components/KothGuideModal'
@@ -34,7 +35,8 @@ const Challenges: FC = () => {
   const { t } = useTranslation()
   const isCompact = useIsMobile(1200)
 
-  const { teamInfo, game } = useGameTeamInfo(numId)
+  const teamState = useGameTeamInfo(numId)
+  const { teamInfo, game } = teamState
   const { now: serverNow } = useGameStatus(game)
   const archived = isReadOnlyGameArchive(game, serverNow.valueOf())
   // Three separate flags so the toolkit buttons can be shown / hidden
@@ -57,9 +59,14 @@ const Challenges: FC = () => {
     return { hasAdChallenges: a, hasKothChallenges: k, hasAdEngine: a || k }
   }, [teamInfo])
 
-  const { adState } = useAdState(numId, hasAdEngine && !archived)
+  const { adState, error: adStateError, mutate: mutateAdState } = useAdState(numId, hasAdEngine && !archived)
+  const adStateOwner = useMemo(
+    () => ({ data: adState, error: adStateError, mutate: mutateAdState }),
+    [adState, adStateError, mutateAdState]
+  )
   const [adGuideOpened, adGuideHandlers] = useDisclosure(false)
   const [kothGuideOpened, kothGuideHandlers] = useDisclosure(false)
+  const tokenOwner = useAdToken(numId, hasAdEngine && !archived)
 
   const roundEndsIn = adRoundSecondsRemaining(
     adState?.roundEndsAt,
@@ -89,7 +96,7 @@ const Challenges: FC = () => {
             </Alert>
           )}
           <Flex direction={isCompact ? 'column' : 'row'} gap="sm" justify="space-between" align="flex-start" w="100%">
-            <ChallengePanel />
+            <ChallengePanel teamState={teamState} adStateOwner={hasAdEngine && !archived ? adStateOwner : undefined} />
             <Stack gap="sm" w={isCompact ? '100%' : '22rem'} miw={isCompact ? 0 : '22rem'}>
               {!archived && adState?.scoringPaused && (
                 <Alert
@@ -197,14 +204,26 @@ const Challenges: FC = () => {
                   {t('game.button.koth.open_toolkit', 'KotH Toolkit')}
                 </Button>
               )}
-              <TeamRank />
+              <TeamRank teamState={teamState} />
               <GameNoticePanel />
             </Stack>
           </Flex>
 
-          {hasAdChallenges && <AdGuideModal gameId={numId} opened={adGuideOpened} onClose={adGuideHandlers.close} />}
+          {hasAdChallenges && (
+            <AdGuideModal
+              gameId={numId}
+              tokenOwner={tokenOwner}
+              opened={adGuideOpened}
+              onClose={adGuideHandlers.close}
+            />
+          )}
           {hasKothChallenges && (
-            <KothGuideModal gameId={numId} opened={kothGuideOpened} onClose={kothGuideHandlers.close} />
+            <KothGuideModal
+              gameId={numId}
+              tokenOwner={tokenOwner}
+              opened={kothGuideOpened}
+              onClose={kothGuideHandlers.close}
+            />
           )}
         </WithGameTab>
       </WithRole>

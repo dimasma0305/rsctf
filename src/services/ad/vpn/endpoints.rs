@@ -11,6 +11,16 @@ use crate::utils::error::{AppError, AppResult};
 /// backend identity until the traffic-capture owner acknowledges that its old
 /// filter is gone; `stop_container_capture` clears this retained pointer.
 pub async fn deactivate_team_service(db: &DatabaseConnection, service_id: i32) -> AppResult<()> {
+    deactivate_team_service_deferred(db, service_id).await?;
+    ensure_hub_and_sync(db).await
+}
+
+/// Remove one service endpoint while deferring the expensive event-wide VPN
+/// rebuild to a surrounding bounded batch.
+pub async fn deactivate_team_service_deferred(
+    db: &DatabaseConnection,
+    service_id: i32,
+) -> AppResult<()> {
     if enabled() {
         SYNC_DIRTY.store(true, std::sync::atomic::Ordering::Release);
     }
@@ -25,7 +35,7 @@ pub async fn deactivate_team_service(db: &DatabaseConnection, service_id: i32) -
     .execute(db.get_postgres_connection_pool())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    ensure_hub_and_sync(db).await
+    Ok(())
 }
 
 fn unique_backend_ids(backend_ids: &[String]) -> Vec<String> {

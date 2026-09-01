@@ -429,7 +429,11 @@ async function managedContext(expectedRoster) {
   requireCondition(response.status === 200, `managed context returned ${response.status}`);
   const context = A.validateKothApiContext(unwrap(response));
   const vary = new Set(String(response.headers.get('vary') || '').split(',').map((item) => item.trim().toLowerCase()));
-  requireCondition(response.headers.get('cache-control') === 'no-store', 'managed context is cacheable');
+  requireCondition(
+    response.headers.get('cache-control') === 'public, max-age=0, must-revalidate',
+    'managed context does not require validator revalidation',
+  );
+  requireCondition(/^"rsctf-koth-context-[0-9a-f]{64}"$/.test(response.headers.get('etag') || ''), 'managed context omits its strong validator');
   requireCondition(vary.has('x-rsctf-api-version'), 'managed context omits its API-version variance');
   requireCondition(context.eligibleTokenHashes.length === expectedRoster, `managed context roster is ${context.eligibleTokenHashes.length}/${expectedRoster}`);
   return context;
@@ -458,6 +462,103 @@ async function arenaPlay(target, token, score = 0) {
     body: { token, score },
     timeoutMs: 10_000,
   });
+}
+
+async function exerciseActivePlayerRotation(target, capability) {
+  const participantIndex = current.cohort.partIds.indexOf(capability.pid);
+  requireCondition(participantIndex >= 0, 'rotation capability has no cohort identity');
+  const playerJwt = mintJwt(current.cohort.userIds[participantIndex], undefined, 1);
+  const otherPid = current.cohort.partIds[(participantIndex + 1) % current.cohort.partIds.length];
+  const before = capabilityState(capability.pid);
+  const otherBefore = capabilityState(otherPid);
+  requireCondition(
+    sql(
+      `SELECT (clock_timestamp() >= start_time_utc AND clock_timestamp() < end_time_utc ` +
+        `AND NOT ad_scoring_paused)::text FROM "Games" WHERE id=${current.gameId}`,
+    ) === 'true',
+    'player emergency rotation was not exercised during active unpaused scoring',
+  );
+
+  const read = await A.api(
+    'GET',
+    `/api/game/${current.gameId}/ad/koth/${current.challengeId}/token`,
+    { jwt: playerJwt, timeoutMs: 10_000 },
+  );
+  const currentToken = unwrap(read);
+  requireCondition(
+    read.status === 200 && currentToken?.status === 'ready' &&
+      currentToken?.token === before.token && Number.isSafeInteger(currentToken?.revision),
+    `player capability read returned ${read.status} before emergency rotation`,
+  );
+
+  const request = {
+    operationId: randomUUID(),
+    expectedRevision: currentToken.revision,
+  };
+  const rotatedResponse = await A.api(
+    'POST',
+    `/api/game/${current.gameId}/ad/koth/${current.challengeId}/token`,
+    { jwt: playerJwt, body: request, timeoutMs: 10_000 },
+  );
+  const rotated = unwrap(rotatedResponse);
+  requireCondition(
+    rotatedResponse.status === 200 && rotated?.status === 'ready' &&
+      rotated?.operationId === request.operationId &&
+      rotated?.revision === request.expectedRevision + 1 &&
+      /^koth_[A-Za-z0-9_-]{8,128}$/.test(String(rotated?.token || '')) &&
+      rotated.token !== before.token,
+    `active-scoring emergency rotation returned ${rotatedResponse.status}`,
+  );
+  requireCondition(
+    rotatedResponse.headers.get('cache-control') === 'private, no-store' &&
+      rotatedResponse.headers.get('pragma') === 'no-cache',
+    'one-time player capability response is cacheable',
+  );
+
+  const recoveredResponse = await A.api(
+    'POST',
+    `/api/game/${current.gameId}/ad/koth/${current.challengeId}/token`,
+    { jwt: playerJwt, body: request, timeoutMs: 10_000 },
+  );
+  const recovered = unwrap(recoveredResponse);
+  requireCondition(
+    recoveredResponse.status === 200 && recovered?.operationId === rotated.operationId &&
+      recovered?.revision === rotated.revision && recovered?.token === rotated.token,
+    'retrying the same credential operation did not recover the exact result',
+  );
+
+  const cooldown = await A.api(
+    'POST',
+    `/api/game/${current.gameId}/ad/koth/${current.challengeId}/token`,
+    {
+      jwt: playerJwt,
+      body: { operationId: randomUUID(), expectedRevision: rotated.revision },
+      timeoutMs: 10_000,
+    },
+  );
+  requireCondition(
+    cooldown.status === 429 && /^[1-9][0-9]*$/.test(cooldown.headers.get('retry-after') || ''),
+    `immediate second emergency rotation returned ${cooldown.status} without a bounded cooldown`,
+  );
+
+  const after = capabilityState(capability.pid);
+  const otherAfter = capabilityState(otherPid);
+  requireCondition(
+    after.token === rotated.token && after.generation === before.generation + 1 &&
+      !after.revocationPending,
+    'emergency rotation did not advance exactly one durable capability generation',
+  );
+  requireCondition(
+    JSON.stringify(otherAfter) === JSON.stringify(otherBefore),
+    'one team emergency rotation changed another team capability',
+  );
+  const stale = await arenaPlay(target, before.token);
+  const accepted = await arenaPlay(target, rotated.token, 0);
+  requireCondition(stale.status === 401, `old emergency capability returned ${stale.status}`);
+  requireCondition(
+    accepted.status === 200 && accepted.json?.accepted === true,
+    `rotated emergency capability returned ${accepted.status}`,
+  );
 }
 
 async function assertHiddenEvent(ordinaryJwt) {
@@ -878,6 +979,9 @@ async function main() {
     180,
   );
 
+  await exerciseActivePlayerRotation(target, capabilities[0]);
+  capabilities = sortedCapabilities();
+  writeCapabilities(capabilities);
   const restart = await restartManagedReporterProcess(target, reporterBaseUrl);
   target = restart.target;
   await waitUntil(

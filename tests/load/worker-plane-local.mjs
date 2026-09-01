@@ -6,7 +6,7 @@
 // worker-plane.mjs. Cleanup is scoped to the unique Compose project and worker
 // identity; the normal `rsctf` project is never addressed.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import {
   chmodSync,
@@ -640,6 +640,7 @@ async function main() {
       password: randomBytes(16).toString('base64url'),
       email: `worker-e2e-${process.pid}@load.test`,
       bootstrapToken,
+      operationId: randomUUID(),
     },
   });
   const adminToken = A.adminJwt();

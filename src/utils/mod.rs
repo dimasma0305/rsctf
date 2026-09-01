@@ -7,6 +7,7 @@ pub mod datetime;
 pub mod enums;
 pub mod error;
 pub mod flag_generator;
+pub mod flag_policy;
 pub(crate) mod redis;
 pub mod scoring;
 pub mod shared;

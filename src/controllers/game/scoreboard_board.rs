@@ -178,6 +178,71 @@ fn build_timeline_series(item: &ScoreboardItem) -> Json {
 /// collapsing every client's ~10s `/details` + `/scoreboard` poll into at most one
 /// full recompute per variant per window (they were recomputed on every request).
 const SCOREBOARD_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+const PARTICIPANT_INDEX_MAX_GAMES: usize = 256;
+
+#[derive(Clone)]
+struct ParticipantScoreboardIndex {
+    expires_at: std::time::Instant,
+    items: std::sync::Arc<HashMap<i32, ScoreboardItem>>,
+}
+
+static PARTICIPANT_SCOREBOARD_INDEX: std::sync::LazyLock<
+    std::sync::RwLock<HashMap<String, ParticipantScoreboardIndex>>,
+> = std::sync::LazyLock::new(Default::default);
+
+static PARTICIPANT_SCOREBOARD_SF: std::sync::LazyLock<
+    crate::utils::single_flight::SingleFlight<Option<ParticipantScoreboardIndex>>,
+> = std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
+
+fn participant_index_from_board(board: &ScoreboardModel) -> ParticipantScoreboardIndex {
+    ParticipantScoreboardIndex {
+        expires_at: std::time::Instant::now() + SCOREBOARD_CACHE_TTL,
+        items: std::sync::Arc::new(
+            board
+                .items
+                .iter()
+                .cloned()
+                .map(|item| (item.id, item))
+                .collect(),
+        ),
+    }
+}
+
+fn participant_index_get(key: &str) -> Option<ParticipantScoreboardIndex> {
+    let now = std::time::Instant::now();
+    let cached = PARTICIPANT_SCOREBOARD_INDEX
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(key)
+        .filter(|entry| entry.expires_at > now)
+        .cloned();
+    if cached.is_some() {
+        return cached;
+    }
+    PARTICIPANT_SCOREBOARD_INDEX
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .retain(|_, entry| entry.expires_at > now);
+    None
+}
+
+fn participant_index_store(key: String, index: ParticipantScoreboardIndex) {
+    let mut cache = PARTICIPANT_SCOREBOARD_INDEX
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let now = std::time::Instant::now();
+    cache.retain(|_, entry| entry.expires_at > now);
+    if cache.len() >= PARTICIPANT_INDEX_MAX_GAMES && !cache.contains_key(&key) {
+        if let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.expires_at)
+            .map(|(key, _)| key.clone())
+        {
+            cache.remove(&oldest);
+        }
+    }
+    cache.insert(key, index);
+}
 
 /// Versioned cache keys keep a rolling old standard-scoreboard replica (which
 /// expects raw JSON) from serving the new atomic bundle as JSON. Cron/team/admin
@@ -279,6 +344,7 @@ pub(crate) async fn build_scoreboard_bundle(
                 return Some(bytes);
             }
             let model = build_scoreboard(&st2, &g2, is_monitor).await.ok()?;
+            participant_index_store(key2.clone(), participant_index_from_board(&model));
             let raw = bytes::Bytes::from(serde_json::to_vec(&model).ok()?);
             let built = super::scoreboard_encoding::build_stable_bundle(
                 raw,
@@ -288,9 +354,11 @@ pub(crate) async fn build_scoreboard_bundle(
             .await
             .ok()?;
             if built.cacheable {
-                st2.cache
-                    .set(&key2, &built.bytes, Some(SCOREBOARD_CACHE_TTL))
-                    .await;
+                let ttl = super::scoreboard_encoding::final_or_live_cache_ttl(
+                    !g2.practice_mode && Utc::now() >= g2.end_time_utc,
+                    SCOREBOARD_CACHE_TTL,
+                );
+                st2.cache.set(&key2, &built.bytes, Some(ttl)).await;
             }
             Some(built.bytes)
         })
@@ -320,6 +388,42 @@ pub(crate) async fn build_scoreboard_cached(
 ) -> AppResult<ScoreboardModel> {
     let bytes = build_scoreboard_json(st, g, is_monitor).await?;
     serde_json::from_slice::<ScoreboardModel>(&bytes).map_err(|e| AppError::internal(e.to_string()))
+}
+
+/// Return one participant row without making every caller deserialize and scan
+/// the event-wide scoreboard. One replica builds this bounded index per shared
+/// scoreboard generation; synchronized misses coalesce on the scoreboard key.
+pub(crate) async fn build_participant_scoreboard_item(
+    st: &SharedState,
+    g: &game::Model,
+    is_monitor: bool,
+    team_id: i32,
+) -> AppResult<Option<ScoreboardItem>> {
+    let key = scoreboard_cache_key(g, is_monitor);
+    if let Some(index) = participant_index_get(&key) {
+        return Ok(index.items.get(&team_id).cloned());
+    }
+
+    let st = st.clone();
+    let game = g.clone();
+    let flight_key = key.clone();
+    let index = PARTICIPANT_SCOREBOARD_SF
+        .run(&key, move || async move {
+            if let Some(index) = participant_index_get(&flight_key) {
+                return Some(index);
+            }
+            let bytes = build_scoreboard_json(&st, &game, is_monitor).await.ok()?;
+            if let Some(index) = participant_index_get(&flight_key) {
+                return Some(index);
+            }
+            let board = serde_json::from_slice::<ScoreboardModel>(&bytes).ok()?;
+            let index = participant_index_from_board(&board);
+            participant_index_store(flight_key, index.clone());
+            Some(index)
+        })
+        .await
+        .ok_or_else(|| AppError::internal("participant scoreboard index fill failed"))?;
+    Ok(index.items.get(&team_id).cloned())
 }
 
 pub(crate) async fn build_scoreboard(
@@ -780,6 +884,28 @@ mod tests {
         let before = game_row_cache_generation(game_id);
         invalidate_game_row_cache(game_id);
         assert_ne!(game_row_cache_generation(game_id), before);
+    }
+
+    #[test]
+    fn participant_index_projects_one_team_without_rescanning_the_board() {
+        let first = row(7, 120, DateTime::<Utc>::MIN_UTC).0;
+        let second = row(9, 80, DateTime::<Utc>::MIN_UTC).0;
+        let board = ScoreboardModel {
+            update_time_utc: DateTime::<Utc>::MIN_UTC,
+            blood_bonus: 0,
+            timelines: Vec::new(),
+            items: vec![first, second],
+            divisions: Vec::new(),
+            challenges: BTreeMap::new(),
+            challenge_count: 0,
+            freeze: None,
+            is_frozen_view: false,
+        };
+
+        let index = participant_index_from_board(&board);
+        assert_eq!(index.items.len(), 2);
+        assert_eq!(index.items.get(&9).map(|item| item.score), Some(80));
+        assert!(index.items.get(&404).is_none());
     }
 
     #[tokio::test]

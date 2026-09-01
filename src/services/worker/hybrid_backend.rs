@@ -8,7 +8,7 @@ use rsctf_worker_protocol::{GameKind, ValidatedWorkloadSpec};
 
 use super::{parse_worker_handle, WorkerContainerManager};
 use crate::services::container::{
-    ContainerBackendKind, ContainerExecAdmission, ContainerExecError, ContainerInfo,
+    ContainerBackendKind, ContainerExecAdmission, ContainerExecError, ContainerFile, ContainerInfo,
     ContainerLiveness, ContainerManager, ContainerSpec, ContainerStatus, FileChange,
 };
 use crate::utils::error::{AppError, AppResult};
@@ -97,6 +97,20 @@ impl ContainerManager for HybridWorkerContainerManager {
         }
     }
 
+    async fn find_operation_runtime(&self, operation_id: &str) -> AppResult<Option<String>> {
+        let (local, worker) = tokio::join!(
+            self.local.find_operation_runtime(operation_id),
+            self.worker.find_operation_runtime(operation_id)
+        );
+        match (local?, worker?) {
+            (Some(_), Some(_)) => Err(AppError::conflict(
+                "multiple container backends claim one operation identity",
+            )),
+            (Some(id), None) | (None, Some(id)) => Ok(Some(id)),
+            (None, None) => Ok(None),
+        }
+    }
+
     async fn destroy(&self, id: &str) -> AppResult<()> {
         if Self::is_worker_id(id) {
             self.worker.destroy(id).await
@@ -140,6 +154,15 @@ impl ContainerManager for HybridWorkerContainerManager {
             ));
         }
         self.local.snapshot_changes(id).await
+    }
+
+    async fn read_file(&self, id: &str, path: &str, limit: usize) -> AppResult<ContainerFile> {
+        if Self::is_worker_id(id) {
+            return Err(AppError::bad_request(
+                "file inspection is not supported for remote workers",
+            ));
+        }
+        self.local.read_file(id, path, limit).await
     }
 
     async fn exec(&self, id: &str, command: Vec<String>) -> AppResult<String> {

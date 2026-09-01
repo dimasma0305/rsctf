@@ -389,6 +389,40 @@ pub(crate) async fn is_api_hill(
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
+/// Player mutation eligibility is frozen with the official KotH configuration.
+/// An accepted participation outside that snapshot must not mint a capability
+/// that the reporting authenticator will immediately reject.
+pub(crate) async fn is_api_hill_participation(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+    challenge_id: i32,
+    participation_id: i32,
+) -> AppResult<bool> {
+    sqlx::query_scalar(
+        r#"SELECT EXISTS (
+             SELECT 1
+               FROM "KothOfficialConfigs" config
+               JOIN LATERAL jsonb_array_elements(config.hills_snapshot) hill
+                 ON (hill->>'challengeId')::integer = $2
+                AND COALESCE(NULLIF(hill->>'claimSource', ''), 'Marker') = 'Api'
+               JOIN LATERAL jsonb_array_elements(config.roster_snapshot) roster(item)
+                 ON $3 = CASE jsonb_typeof(roster.item)
+                      WHEN 'number' THEN (roster.item #>> '{}')::integer
+                      WHEN 'object' THEN
+                        NULLIF(roster.item->>'participationId', '')::integer
+                      ELSE NULL
+                    END
+              WHERE config.game_id = $1
+           )"#,
+    )
+    .bind(game_id)
+    .bind(challenge_id)
+    .bind(participation_id)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
 /// Capture the first live cycle capability for an API hill. Subsequent pristine
 /// resets deliberately do nothing, leaving the event token unchanged.
 pub(crate) async fn ensure_for_cycle(

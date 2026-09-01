@@ -2,22 +2,197 @@
 
 use crate::services::live_roster::LiveParticipationIdentity;
 use crate::utils::error::{AppError, AppResult};
-use axum::http::header;
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use std::ops::Range;
+use std::sync::Arc;
 
-pub(super) struct SnapshotResponseGrant {
-    pub(super) team_service_id: i32,
-    pub(super) snapshot_id: i64,
-    pub(super) hash: String,
-    pub(super) filename: String,
+pub(crate) struct SnapshotResponseGrant {
+    pub(crate) team_service_id: i32,
+    pub(crate) snapshot_id: i64,
+    pub(crate) hash: String,
+    pub(crate) filename: String,
+    pub(crate) file_size: i64,
 }
 
-pub(super) async fn finish_snapshot_response(
+pub(crate) enum SnapshotPreparation {
+    Ready(PreparedSnapshot),
+    Response(Response),
+}
+
+pub(crate) struct PreparedSnapshot {
+    stream: crate::storage::BlobByteStream,
+    permit: Arc<crate::services::bulk_export::BulkExportPermit>,
+    size: u64,
+    range: Range<u64>,
+    partial: bool,
+    etag: String,
+}
+
+fn parse_byte_range(value: &str, size: u64) -> Result<Range<u64>, ()> {
+    let value = value.strip_prefix("bytes=").ok_or(())?;
+    if value.is_empty() || value.contains(',') || size == 0 {
+        return Err(());
+    }
+    let (start, end) = value.split_once('-').ok_or(())?;
+    if start.is_empty() {
+        let suffix = end.parse::<u64>().map_err(|_| ())?;
+        if suffix == 0 {
+            return Err(());
+        }
+        return Ok(size.saturating_sub(suffix)..size);
+    }
+    let start = start.parse::<u64>().map_err(|_| ())?;
+    if start >= size {
+        return Err(());
+    }
+    let end = if end.is_empty() {
+        size
+    } else {
+        let inclusive = end.parse::<u64>().map_err(|_| ())?;
+        if inclusive < start {
+            return Err(());
+        }
+        inclusive.saturating_add(1).min(size)
+    };
+    Ok(start..end)
+}
+
+fn range_not_satisfiable(size: u64, etag: &str) -> Response {
+    let mut response = StatusCode::RANGE_NOT_SATISFIABLE.into_response();
+    response
+        .headers_mut()
+        .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    response.headers_mut().insert(
+        header::CONTENT_RANGE,
+        HeaderValue::from_str(&format!("bytes */{size}")).expect("valid content range"),
+    );
+    response.headers_mut().insert(
+        header::ETAG,
+        HeaderValue::from_str(etag).expect("snapshot hash is a valid ETag"),
+    );
+    response
+}
+
+/// Admit before opening storage and stream only the selected immutable range.
+pub(crate) async fn prepare_snapshot_stream(
+    st: &crate::app_state::SharedState,
+    headers: &HeaderMap,
+    grant: &SnapshotResponseGrant,
+) -> AppResult<SnapshotPreparation> {
+    let size = u64::try_from(grant.file_size)
+        .map_err(|_| AppError::not_found("Snapshot has an invalid stored size"))?;
+    if size > crate::services::ad::snapshots::MAX_STORED_SNAPSHOT_BYTES as u64 {
+        return Err(AppError::payload_too_large("Snapshot exceeds 128 MiB"));
+    }
+    let etag = format!("\"{}\"", grant.hash);
+    let requested_range = if headers
+        .get(header::IF_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|validator| validator != etag)
+    {
+        None
+    } else {
+        match headers.get(header::RANGE) {
+            Some(value) => match value
+                .to_str()
+                .map_err(|_| ())
+                .and_then(|value| parse_byte_range(value, size))
+            {
+                Ok(range) => Some(range),
+                Err(()) => {
+                    return Ok(SnapshotPreparation::Response(range_not_satisfiable(
+                        size, &etag,
+                    )))
+                }
+            },
+            None => None,
+        }
+    };
+    let permit = match st
+        .bulk_export_admission
+        .try_acquire(
+            Arc::clone(&st.cache),
+            usize::try_from(size).unwrap_or(usize::MAX),
+        )
+        .await
+    {
+        Ok(permit) => Arc::new(permit),
+        Err(_) => {
+            return Ok(SnapshotPreparation::Response(
+                crate::services::bulk_export::overload_response(),
+            ))
+        }
+    };
+    let range = requested_range.clone().unwrap_or(0..size);
+    let stream = st.storage.stream_range(&grant.hash, range.clone()).await?;
+    Ok(SnapshotPreparation::Ready(PreparedSnapshot {
+        stream,
+        permit,
+        size,
+        range,
+        partial: requested_range.is_some(),
+        etag,
+    }))
+}
+
+impl PreparedSnapshot {
+    pub(crate) fn into_response(self, filename: &str) -> AppResult<Response> {
+        let length = self.range.end - self.range.start;
+        let mut response = Response::new(crate::services::bulk_export::permitted_stream_body(
+            self.stream,
+            self.permit,
+        ));
+        *response.status_mut() = if self.partial {
+            StatusCode::PARTIAL_CONTENT
+        } else {
+            StatusCode::OK
+        };
+        let headers = response.headers_mut();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(crate::services::ad::snapshots::SNAPSHOT_CONTENT_TYPE),
+        );
+        headers.insert(
+            header::CONTENT_LENGTH,
+            HeaderValue::from_str(&length.to_string()).expect("u64 content length is ASCII"),
+        );
+        headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+        headers.insert(
+            header::ETAG,
+            HeaderValue::from_str(&self.etag).expect("snapshot hash is a valid ETag"),
+        );
+        headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store"),
+        );
+        headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_str(&crate::utils::content_disposition::attachment(filename))
+                .map_err(|_| AppError::bad_request("Invalid snapshot filename"))?,
+        );
+        if self.partial {
+            headers.insert(
+                header::CONTENT_RANGE,
+                HeaderValue::from_str(&format!(
+                    "bytes {}-{}/{}",
+                    self.range.start,
+                    self.range.end - 1,
+                    self.size
+                ))
+                .expect("valid snapshot content range"),
+            );
+        }
+        Ok(response)
+    }
+}
+
+async fn authorize_snapshot_response(
     pool: &sqlx::PgPool,
     caller: LiveParticipationIdentity<'_>,
-    grant: SnapshotResponseGrant,
-    archive: Vec<u8>,
-) -> AppResult<Response> {
+    grant: &SnapshotResponseGrant,
+) -> AppResult<()> {
     // Blob storage may be slow and must never run while a pool connection is
     // retained. Revalidate only after the archive is ready, then build the
     // response under the exact roster/account fence so a completed kick or
@@ -71,7 +246,7 @@ pub(super) async fn finish_snapshot_response(
     .bind(grant.snapshot_id)
     .bind(&grant.hash)
     .bind(&grant.filename)
-    .bind(i64::try_from(archive.len()).unwrap_or(i64::MAX))
+    .bind(grant.file_size)
     .fetch_optional(&mut **roster.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
@@ -80,25 +255,18 @@ pub(super) async fn finish_snapshot_response(
         roster.release().await?;
         return Err(AppError::not_found("Snapshot is no longer available"));
     }
-    let response = (
-        [
-            (
-                header::CONTENT_TYPE,
-                crate::services::ad::snapshots::SNAPSHOT_CONTENT_TYPE.to_string(),
-            ),
-            (header::CONTENT_LENGTH, archive.len().to_string()),
-            (header::CACHE_CONTROL, "private, no-store".to_string()),
-            (header::PRAGMA, "no-cache".to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", grant.filename),
-            ),
-        ],
-        archive,
-    )
-        .into_response();
     roster.release().await?;
-    Ok(response)
+    Ok(())
+}
+
+pub(crate) async fn finish_snapshot_response(
+    pool: &sqlx::PgPool,
+    caller: LiveParticipationIdentity<'_>,
+    grant: SnapshotResponseGrant,
+    prepared: PreparedSnapshot,
+) -> AppResult<Response> {
+    authorize_snapshot_response(pool, caller, &grant).await?;
+    prepared.into_response(&grant.filename)
 }
 
 #[cfg(test)]
@@ -109,6 +277,26 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+
+    #[test]
+    fn retained_snapshot_ranges_are_single_and_bounded() {
+        assert_eq!(parse_byte_range("bytes=10-19", 100), Ok(10..20));
+        assert_eq!(parse_byte_range("bytes=90-", 100), Ok(90..100));
+        assert_eq!(parse_byte_range("bytes=-10", 100), Ok(90..100));
+        assert!(parse_byte_range("bytes=10-9", 100).is_err());
+        assert!(parse_byte_range("bytes=0-1,4-5", 100).is_err());
+        assert!(parse_byte_range("bytes=100-", 100).is_err());
+    }
+
+    #[test]
+    fn retained_snapshot_admission_precedes_storage_open() {
+        let source = include_str!("snapshot_download.rs");
+        let handler = source
+            .find("pub(crate) async fn prepare_snapshot_stream(")
+            .unwrap();
+        let body = &source[handler..];
+        assert!(body.find("bulk_export_admission").unwrap() < body.find("stream_range").unwrap());
+    }
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
@@ -232,6 +420,7 @@ mod tests {
             snapshot_id: 7,
             hash: "snapshot-hash".to_string(),
             filename: "snapshot.tar.zst".to_string(),
+            file_size: 3,
         };
         let caller = LiveParticipationIdentity {
             user_id,
@@ -243,7 +432,7 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            finish_snapshot_response(&pool, caller, grant(), vec![1, 2, 3]),
+            authorize_snapshot_response(&pool, caller, &grant()),
         )
         .await
         .expect("a one-connection pool deadlocked")
@@ -257,7 +446,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            finish_snapshot_response(&pool, caller, grant(), vec![1, 2, 3]).await,
+            authorize_snapshot_response(&pool, caller, &grant()).await,
             Err(AppError::NotFound(_))
         ));
         sqlx::query(r#"UPDATE "Games" SET ad_allow_snapshot_download = TRUE WHERE id = 1"#)
@@ -269,7 +458,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            finish_snapshot_response(&pool, caller, grant(), vec![1, 2, 3]).await,
+            authorize_snapshot_response(&pool, caller, &grant()).await,
             Err(AppError::NotFound(_))
         ));
         sqlx::query(r#"UPDATE "GameChallenges" SET ad_self_hosted = FALSE WHERE id = 4"#)
@@ -286,7 +475,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            finish_snapshot_response(&pool, caller, grant(), vec![4, 5, 6]).await,
+            authorize_snapshot_response(&pool, caller, &grant()).await,
             Err(AppError::Forbidden)
         ));
 
@@ -302,7 +491,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            finish_snapshot_response(&pool, caller, grant(), vec![4, 5, 6]).await,
+            authorize_snapshot_response(&pool, caller, &grant()).await,
             Err(AppError::NotFound(_))
         ));
 

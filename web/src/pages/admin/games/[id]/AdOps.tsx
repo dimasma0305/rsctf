@@ -4,6 +4,7 @@ import {
   Badge,
   Button,
   Center,
+  Code,
   CopyButton,
   Divider,
   Group,
@@ -41,7 +42,6 @@ import {
   mdiClose,
   mdiCloseCircle,
   mdiConsole,
-  mdiDownload,
   mdiFileOutline,
   mdiFileTree,
   mdiFolderOutline,
@@ -56,12 +56,14 @@ import {
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useEffect, useMemo, useState } from 'react'
+import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
+import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
 import { KothOpsPanel } from '@Components/admin/KothOpsPanel'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { controlJobResultCount, createOperationId, waitForControlJob } from '@Utils/ControlJobs'
 import { httpErrorStatus } from '@Utils/HttpError'
 import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
 import { useServerNow } from '@Utils/ServerClock'
@@ -171,16 +173,32 @@ const langFromPath = (p: string): string => {
 
 // Shiki-highlighted code block. Shiki escapes the code, so the rendered HTML
 // is safe even though the content comes from a team's container.
+const MAX_HIGHLIGHT_CHARACTERS = 64 * 1024
+
 const ShikiBlock: FC<{ code: string; lang: string }> = ({ code, lang }) => (
-  <ScrollArea h={400} type="auto">
-    <div
-      style={{ fontSize: 12 }}
-      // Shiki escapes source text; DOMPurify remains the final sink boundary.
-      // eslint-disable-next-line react/no-danger
-      dangerouslySetInnerHTML={{ __html: sanitizeMarkdownHtml(highlight(code, lang)) }}
-    />
+  <ScrollArea h={400} type="auto" aria-label="File preview">
+    {code.length > MAX_HIGHLIGHT_CHARACTERS ? (
+      <Code block style={{ fontSize: 12, whiteSpace: 'pre' }}>
+        {code}
+      </Code>
+    ) : (
+      <div
+        style={{ fontSize: 12 }}
+        // Shiki escapes source text; DOMPurify remains the final sink boundary.
+        // eslint-disable-next-line react/no-danger
+        dangerouslySetInnerHTML={{ __html: sanitizeMarkdownHtml(highlight(code, lang)) }}
+      />
+    )}
   </ScrollArea>
 )
+
+const forensicsErrorMessage = (error: unknown): string => {
+  const status = (error as { response?: { status?: number } })?.response?.status
+  if (status === 429 || status === 503) return 'Inspection is busy or timed out. Retry in a moment.'
+  if (status === 413) return 'This item is too large to inspect safely.'
+  if (status === 400) return 'This path cannot be previewed safely. Use the shell if necessary.'
+  return 'Could not read live filesystem evidence.'
+}
 
 // ---- changed-files folder tree ----
 interface TreeNode {
@@ -301,26 +319,34 @@ const FileDetail: FC<{ gameId: number; sid: number; path: string; onBack: () => 
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState<AdFileViewModel | null>(null)
   const [view, setView] = useState<'diff' | 'current' | 'original'>('diff')
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [retryGeneration, setRetryGeneration] = useState(0)
+  const requestGeneration = useRef(0)
 
   useEffect(() => {
-    let cancelled = false
+    const controller = new AbortController()
+    const generation = ++requestGeneration.current
     setLoading(true)
     setData(null)
+    setLoadError(null)
     api.edit
-      .editAdFile(gameId, sid, { path })
+      .editAdFile(gameId, sid, { path }, { signal: controller.signal })
       .then(({ data }) => {
-        if (cancelled) return
+        if (controller.signal.aborted || generation !== requestGeneration.current) return
         setData(data)
         setView(data.unifiedDiff ? 'diff' : data.current ? 'current' : 'original')
       })
-      .catch(() => undefined)
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted && generation === requestGeneration.current)
+          setLoadError(forensicsErrorMessage(error))
+      })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!controller.signal.aborted && generation === requestGeneration.current) setLoading(false)
       })
     return () => {
-      cancelled = true
+      controller.abort()
     }
-  }, [gameId, sid, path])
+  }, [gameId, sid, path, retryGeneration])
 
   const lang = langFromPath(path)
 
@@ -344,7 +370,7 @@ const FileDetail: FC<{ gameId: number; sid: number; path: string; onBack: () => 
       <Stack gap={4}>
         {blob.truncated && (
           <Text size="xs" c="orange">
-            {t('admin.content.ad_ops.file.truncated', 'Showing the first 256 KiB (truncated).')}
+            {t('admin.content.ad_ops.file.truncated', 'Showing a bounded preview (truncated).')}
           </Text>
         )}
         <ShikiBlock code={blob.text ?? ''} lang={lang} />
@@ -389,10 +415,17 @@ const FileDetail: FC<{ gameId: number; sid: number; path: string; onBack: () => 
         <Center h={200}>
           <Loader size="sm" />
         </Center>
-      ) : !data ? (
-        <Text size="sm" c="dimmed">
-          {t('admin.content.ad_ops.file.load_failed', 'Could not read this file from the container.')}
-        </Text>
+      ) : loadError || !data ? (
+        <Alert color="orange" title={t('admin.content.ad_ops.file.load_failed', 'File preview unavailable')}>
+          <Stack gap="xs">
+            <Text size="sm">
+              {loadError ?? t('admin.content.ad_ops.file.load_failed', 'Could not read this file.')}
+            </Text>
+            <Button variant="light" size="xs" onClick={() => setRetryGeneration((value) => value + 1)}>
+              {t('common.button.retry', 'Retry')}
+            </Button>
+          </Stack>
+        </Alert>
       ) : view === 'diff' ? (
         data.unifiedDiff ? (
           <ShikiBlock code={data.unifiedDiff} lang="diff" />
@@ -433,14 +466,17 @@ const SnapshotHistory: FC<{ gameId: number; sid: number; onSelect: (path: string
   const [toId, setToId] = useState<string | null>(null)
   const [diff, setDiff] = useState<AdSnapshotTimeDiffModel | null>(null)
   const [diffLoading, setDiffLoading] = useState(false)
+  const pointsGeneration = useRef(0)
+  const diffGeneration = useRef(0)
 
   useEffect(() => {
-    let cancelled = false
+    const controller = new AbortController()
+    const generation = ++pointsGeneration.current
     setLoading(true)
     api.edit
-      .editAdServiceSnapshots(gameId, sid)
+      .editAdServiceSnapshots(gameId, sid, { signal: controller.signal })
       .then(({ data }) => {
-        if (cancelled) return
+        if (controller.signal.aborted || generation !== pointsGeneration.current) return
         setPoints(data)
         if (data.length >= 2) {
           setFromId(String(data[0].id))
@@ -449,28 +485,34 @@ const SnapshotHistory: FC<{ gameId: number; sid: number; onSelect: (path: string
       })
       .catch(() => undefined)
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!controller.signal.aborted && generation === pointsGeneration.current) setLoading(false)
       })
     return () => {
-      cancelled = true
+      controller.abort()
     }
   }, [gameId, sid])
 
   useEffect(() => {
     if (!fromId || !toId) return
-    let cancelled = false
+    const controller = new AbortController()
+    const generation = ++diffGeneration.current
     setDiffLoading(true)
     api.edit
-      .editAdSnapshotTimeDiff(gameId, sid, { fromId: Number(fromId), toId: Number(toId) })
+      .editAdSnapshotTimeDiff(
+        gameId,
+        sid,
+        { fromId: Number(fromId), toId: Number(toId) },
+        { signal: controller.signal }
+      )
       .then(({ data }) => {
-        if (!cancelled) setDiff(data)
+        if (!controller.signal.aborted && generation === diffGeneration.current) setDiff(data)
       })
       .catch(() => undefined)
       .finally(() => {
-        if (!cancelled) setDiffLoading(false)
+        if (!controller.signal.aborted && generation === diffGeneration.current) setDiffLoading(false)
       })
     return () => {
-      cancelled = true
+      controller.abort()
     }
   }, [gameId, sid, fromId, toId])
 
@@ -564,6 +606,11 @@ const SnapshotModal: FC<{
   const [changes, setChanges] = useState<AdSnapshotChange[]>([])
   const [live, setLive] = useState(false)
   const [filteredCats, setFilteredCats] = useState<string[]>([])
+  const [changesTruncated, setChangesTruncated] = useState(false)
+  const [observedChanges, setObservedChanges] = useState(0)
+  const [changesError, setChangesError] = useState<string | null>(null)
+  const [changesRetry, setChangesRetry] = useState(0)
+  const changesGeneration = useRef(0)
   const [fileSearch, setFileSearch] = useState('')
   const [debouncedFileSearch] = useDebouncedValue(fileSearch, 200)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -607,29 +654,36 @@ const SnapshotModal: FC<{
 
   useEffect(() => {
     if (sid === undefined) return
-    let cancelled = false
+    const controller = new AbortController()
+    const generation = ++changesGeneration.current
     setLoading(true)
     setChanges([])
     setLive(false)
+    setChangesError(null)
+    setChangesTruncated(false)
+    setObservedChanges(0)
     api.edit
-      .editAdSnapshotChanges(gameId, sid)
+      .editAdSnapshotChanges(gameId, sid, { signal: controller.signal })
       .then(({ data }) => {
-        if (!cancelled) {
+        if (!controller.signal.aborted && generation === changesGeneration.current) {
           setChanges(data.changes ?? [])
           setLive(!!data.live)
           setFilteredCats(data.filteredCategories ?? [])
+          setChangesTruncated(!!data.truncated)
+          setObservedChanges(data.observedChanges ?? data.changes?.length ?? 0)
         }
       })
-      .catch(() => {
-        // changes are best-effort; the tarball download is the source of truth
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted && generation === changesGeneration.current)
+          setChangesError(forensicsErrorMessage(error))
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!controller.signal.aborted && generation === changesGeneration.current) setLoading(false)
       })
     return () => {
-      cancelled = true
+      controller.abort()
     }
-  }, [gameId, sid])
+  }, [gameId, sid, changesRetry])
 
   const downloadUrl = target ? api.edit.editAdSnapshotUrl(gameId, target.cell.adTeamServiceId) : '#'
   const filename = target
@@ -655,15 +709,13 @@ const SnapshotModal: FC<{
         <Group justify="space-between" wrap="wrap" gap="sm">
           <Group gap="sm" wrap="nowrap">
             {hasSnapshot && (
-              <Button
-                component="a"
-                href={downloadUrl}
-                download={filename}
+              <SnapshotDownloadButton
+                url={downloadUrl}
+                filename={filename}
+                downloadKey={`admin:snapshot:${gameId}:${target.cell.adTeamServiceId}`}
+                label={t('admin.button.ad_ops.snapshot.download', 'Download .tar.gz')}
                 variant="default"
-                leftSection={<Icon path={mdiDownload} size={0.9} />}
-              >
-                {t('admin.button.ad_ops.snapshot.download', 'Download .tar.gz')}
-              </Button>
+              />
             )}
             <Tooltip
               label={
@@ -693,7 +745,7 @@ const SnapshotModal: FC<{
           <Group gap={6} wrap="nowrap">
             <Text size="sm" c="dimmed">
               {t('admin.content.ad_ops.snapshot.changed_count', {
-                count: changes.length,
+                count: observedChanges,
                 defaultValue: '{{count}} file(s) changed vs original image',
               })}
             </Text>
@@ -794,6 +846,15 @@ const SnapshotModal: FC<{
               <Center h={120}>
                 <Loader size="sm" />
               </Center>
+            ) : changesError ? (
+              <Alert color="orange" title={t('admin.content.ad_ops.snapshot.load_failed', 'Changes unavailable')}>
+                <Stack gap="xs">
+                  <Text size="sm">{changesError}</Text>
+                  <Button variant="light" size="xs" onClick={() => setChangesRetry((value) => value + 1)}>
+                    {t('common.button.retry', 'Retry')}
+                  </Button>
+                </Stack>
+              </Alert>
             ) : changes.length === 0 ? (
               <Text size="sm" c="dimmed">
                 {t(
@@ -803,6 +864,15 @@ const SnapshotModal: FC<{
               </Text>
             ) : (
               <>
+                {changesTruncated && (
+                  <Alert color="orange" title={t('admin.content.ad_ops.snapshot.bounded', 'Bounded result')}>
+                    {t(
+                      'admin.content.ad_ops.snapshot.bounded_detail',
+                      'The container reported {{observed}} changes. Only a safe bounded subset is shown; narrow the investigation with the shell if needed.',
+                      { observed: observedChanges }
+                    )}
+                  </Alert>
+                )}
                 <TextInput
                   size="xs"
                   aria-label={t('admin.placeholder.ad_ops.search_file', 'Filter files')}
@@ -867,12 +937,27 @@ const AdOps: FC = () => {
   const { t } = useTranslation()
   const modals = useModals()
   const [busy, setBusy] = useState(false)
-  const [busyHill, setBusyHill] = useState<number | null>(null)
-  const ensureContainersOwner = useMemo(
-    () => new RetryableOperationKey(undefined, `rsctf:ad-ensure-containers:${numId}`),
-    [numId]
-  )
-  useEffect(() => () => ensureContainersOwner.release(), [ensureContainersOwner])
+  const [pendingHillStates, setPendingHillStates] = useState<Map<number, boolean>>(new Map())
+  const [pendingScoringPaused, setPendingScoringPaused] = useState<boolean | null>(null)
+  const resetJobsRef = useRef(new Map<number, Promise<void>>())
+  const resetAbortRef = useRef(new Map<number, AbortController>())
+  const [resettingServices, setResettingServices] = useState<Set<number>>(new Set())
+  const hillCommandRef = useRef(new Map<number, Promise<void>>())
+  const scoringCommandRef = useRef<Promise<void> | null>(null)
+  const ensureJobRef = useRef<Promise<void> | null>(null)
+  const ensureAbortRef = useRef(new AbortController())
+  const ensureContainersKey = useRef<{ gameId: number; owner: RetryableOperationKey } | null>(null)
+  if (ensureContainersKey.current?.gameId !== numId) {
+    ensureContainersKey.current = {
+      gameId: numId,
+      owner: new RetryableOperationKey(undefined, `rsctf:ad-ensure-containers:${numId}`),
+    }
+  }
+  useEffect(() => () => ensureAbortRef.current.abort(), [])
+  useEffect(() => {
+    const owner = ensureContainersKey.current?.owner
+    return () => owner?.release()
+  }, [numId])
   // Which side of the console is showing. A&D vs KotH challenges are disjoint
   // sets in a game; the switch only appears when both exist (see showViewSwitch).
   const [view, setView] = useState<'ad' | 'koth'>('ad')
@@ -942,40 +1027,76 @@ const AdOps: FC = () => {
     (fetchKoth && koth === undefined && !kothError)
 
   const toggleHill = async (hill: AdminKothHill) => {
-    setBusyHill(hill.challengeId)
-    try {
-      await api.edit.editAdToggleChallenge(numId, hill.challengeId)
-      await mutateKoth()
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setBusyHill(null)
-    }
+    const active = hillCommandRef.current.get(hill.challengeId)
+    if (active) return active
+    const desiredEnabled = !hill.isEnabled
+    const command = (async () => {
+      setPendingHillStates((current) => new Map(current).set(hill.challengeId, desiredEnabled))
+      try {
+        await api.edit.editAdToggleChallenge(numId, hill.challengeId, {
+          enabled: desiredEnabled,
+          revision: hill.controlRevision,
+        })
+        await mutateKoth()
+      } catch (e) {
+        await mutateKoth()
+        showErrorMsg(e, t)
+      } finally {
+        setPendingHillStates((current) => {
+          const next = new Map(current)
+          next.delete(hill.challengeId)
+          return next
+        })
+        hillCommandRef.current.delete(hill.challengeId)
+      }
+    })()
+    hillCommandRef.current.set(hill.challengeId, command)
+    return command
   }
 
   const ensureContainers = async () => {
-    const operationOwner = ensureContainersOwner
+    if (ensureJobRef.current) return ensureJobRef.current
+    const operationOwner = ensureContainersKey.current!.owner
     const operationId = operationOwner.claim()
-    setBusy(true)
-    try {
-      await api.edit.editAdEnsureContainers(numId, operationId)
-      operationOwner.complete(operationId)
-      showNotification({
-        color: 'teal',
-        icon: <Icon path={mdiCheck} size={1} />,
-        title: t('admin.notification.ad_ops.ensure_queued.title', 'Container reconcile queued'),
-        message: t('admin.notification.ad_ops.ensure_queued.message', 'Missing A&D containers will spin up shortly.'),
-      })
-      setTimeout(() => {
-        mutate()
-        mutateKoth()
-      }, 3_000)
-    } catch (e) {
-      if (httpErrorStatus(e) === 409) operationOwner.complete(operationId)
-      showErrorMsg(e, t)
-    } finally {
-      setBusy(false)
-    }
+    const task = (async () => {
+      setBusy(true)
+      try {
+        let job
+        try {
+          job = (await api.edit.editAdEnsureContainers(numId, operationId)).data
+        } catch (startError) {
+          if (httpErrorStatus(startError) === 409) throw startError
+          try {
+            job = (await api.eventSecurity.getControlJobByOperation(operationId)).data
+          } catch {
+            throw startError
+          }
+        }
+        const completed = await waitForControlJob(job, ensureAbortRef.current.signal)
+        operationOwner.complete(operationId)
+        const launched = controlJobResultCount(completed, 'launched')
+        const failures = controlJobResultCount(completed, 'failures')
+        showNotification({
+          color: failures === 0 ? 'teal' : 'orange',
+          icon: <Icon path={failures === 0 ? mdiCheck : mdiAlertCircleOutline} size={1} />,
+          title: t('admin.notification.ad_ops.ensure_queued.title', 'Container reconcile completed'),
+          message: t(
+            'admin.notification.ad_ops.ensure_completed.message',
+            '{{launched}} launched, {{failures}} failed.',
+            { launched, failures }
+          ),
+        })
+        await Promise.all([mutate(), mutateKoth()])
+      } catch (e) {
+        if (httpErrorStatus(e) === 409) operationOwner.complete(operationId)
+        if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+      } finally {
+        setBusy(false)
+        ensureJobRef.current = null
+      }
+    })()
+    ensureJobRef.current = task
+    return task
   }
 
   // Reset = destroy the running container and recreate it from the challenge
@@ -998,44 +1119,93 @@ const AdOps: FC = () => {
         cancel: t('admin.content.ad_ops.reset_confirm.cancel', 'Cancel'),
       },
       confirmProps: { color: 'red' },
-      onConfirm: async () => {
-        try {
-          await api.edit.editAdForceRestart(numId, cell.adTeamServiceId)
-          showNotification({
-            color: 'teal',
-            icon: <Icon path={mdiRestart} size={1} />,
-            title: t('admin.notification.ad_ops.restart_queued.title', 'Reset queued'),
-            message: t(
-              'admin.notification.ad_ops.restart_queued.message',
-              'Container will be recreated from the base image in seconds.'
-            ),
-          })
-          setTimeout(() => mutate(), 3_000)
-        } catch (e) {
-          showErrorMsg(e, t)
-        }
+      onConfirm: () => {
+        if (resetJobsRef.current.has(cell.adTeamServiceId)) return
+        const operationId = createOperationId()
+        const controller = new AbortController()
+        resetAbortRef.current.set(cell.adTeamServiceId, controller)
+        setResettingServices((current) => new Set(current).add(cell.adTeamServiceId))
+        const request = (async () => {
+          try {
+            let job
+            try {
+              job = (
+                await api.edit.editAdForceRestart(numId, cell.adTeamServiceId, operationId, {
+                  signal: controller.signal,
+                })
+              ).data
+            } catch (error) {
+              if (controller.signal.aborted) throw error
+              job = (await api.eventSecurity.getControlJobByOperation(operationId, { signal: controller.signal })).data
+            }
+            await waitForControlJob(job, controller.signal)
+            showNotification({
+              color: 'teal',
+              icon: <Icon path={mdiRestart} size={1} />,
+              title: t('admin.notification.ad_ops.restart_queued.title', 'Reset queued'),
+              message: t(
+                'admin.notification.ad_ops.restart_queued.message',
+                'Container will be recreated from the base image in seconds.'
+              ),
+            })
+            await mutate()
+          } catch (e) {
+            if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+          } finally {
+            resetJobsRef.current.delete(cell.adTeamServiceId)
+            resetAbortRef.current.delete(cell.adTeamServiceId)
+            setResettingServices((current) => {
+              const next = new Set(current)
+              next.delete(cell.adTeamServiceId)
+              return next
+            })
+          }
+        })()
+        resetJobsRef.current.set(cell.adTeamServiceId, request)
       },
     })
   }
 
+  useEffect(
+    () => () => {
+      resetAbortRef.current.forEach((controller) => controller.abort())
+      resetAbortRef.current.clear()
+    },
+    []
+  )
+
   const toggleScoringPause = async () => {
-    setBusy(true)
-    try {
-      const { data } = await api.edit.editAdToggleScoringPause(numId)
-      showNotification({
-        color: data.scoringPaused ? 'orange' : 'teal',
-        icon: <Icon path={data.scoringPaused ? mdiPauseCircleOutline : mdiCheck} size={1} />,
-        message: data.scoringPaused
-          ? t('admin.notification.ad_ops.scoring_paused', 'Scoring paused — rounds + checks frozen.')
-          : t('admin.notification.ad_ops.scoring_resumed', 'Scoring resumed.'),
-      })
-      mutate()
-      mutateKoth()
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setBusy(false)
-    }
+    if (scoringCommandRef.current) return scoringCommandRef.current
+    const snapshot = showKoth ? koth : state
+    if (!snapshot) return
+    const desiredPaused = !snapshot.scoringPaused
+    const command = (async () => {
+      setBusy(true)
+      setPendingScoringPaused(desiredPaused)
+      try {
+        const { data } = await api.edit.editAdToggleScoringPause(numId, {
+          paused: desiredPaused,
+          revision: snapshot.controlRevision,
+        })
+        showNotification({
+          color: data.scoringPaused ? 'orange' : 'teal',
+          icon: <Icon path={data.scoringPaused ? mdiPauseCircleOutline : mdiCheck} size={1} />,
+          message: data.scoringPaused
+            ? t('admin.notification.ad_ops.scoring_paused', 'Scoring paused — rounds + checks frozen.')
+            : t('admin.notification.ad_ops.scoring_resumed', 'Scoring resumed.'),
+        })
+        await Promise.all([mutate(), mutateKoth()])
+      } catch (e) {
+        await Promise.all([mutate(), mutateKoth()])
+        showErrorMsg(e, t)
+      } finally {
+        setBusy(false)
+        setPendingScoringPaused(null)
+        scoringCommandRef.current = null
+      }
+    })()
+    scoringCommandRef.current = command
+    return command
   }
 
   const overrideCheck = async (checkId: number, newStatus: AdCheckStatus) => {
@@ -1119,6 +1289,7 @@ const AdOps: FC = () => {
     roundStartedAt: null,
     roundEndsAt: null,
     scoringPaused: false,
+    controlRevision: 1,
     scoringPausedAt: null,
     challenges: [],
     teams: [],
@@ -1127,6 +1298,7 @@ const AdOps: FC = () => {
   // While paused, freeze the countdown at the pause instant — the round isn't
   // burning time (resume shifts its end forward), so the timer must stop too.
   const scoringPaused = showKoth ? (koth?.scoringPaused ?? false) : adState.scoringPaused
+  const displayedScoringPaused = pendingScoringPaused ?? scoringPaused
   const scoringPausedAt = showKoth ? koth?.scoringPausedAt : adState.scoringPausedAt
   const currentRound = showKoth ? koth?.latestRound : adState.currentRound
   const roundEndsAt = showKoth ? koth?.currentRoundEndsAt : adState.roundEndsAt
@@ -1333,16 +1505,21 @@ const AdOps: FC = () => {
                 {t('admin.button.ad_ops.ensure_containers', 'Ensure containers')}
               </Button>
               <Button
-                leftSection={<Icon path={scoringPaused ? mdiPlayCircle : mdiPauseCircleOutline} size={0.9} />}
+                leftSection={<Icon path={displayedScoringPaused ? mdiPlayCircle : mdiPauseCircleOutline} size={0.9} />}
                 variant="default"
-                color={scoringPaused ? 'teal' : 'orange'}
+                color={displayedScoringPaused ? 'teal' : 'orange'}
                 size={isMobile ? 'xs' : 'sm'}
                 disabled={busy}
+                aria-busy={pendingScoringPaused !== null}
                 onClick={toggleScoringPause}
               >
-                {scoringPaused
-                  ? t('admin.button.ad_ops.resume_scoring', 'Resume scoring')
-                  : t('admin.button.ad_ops.pause_scoring', 'Pause scoring')}
+                {pendingScoringPaused === true
+                  ? t('admin.button.ad_ops.pausing_scoring', 'Pausing scoring…')
+                  : pendingScoringPaused === false
+                    ? t('admin.button.ad_ops.resuming_scoring', 'Resuming scoring…')
+                    : scoringPaused
+                      ? t('admin.button.ad_ops.resume_scoring', 'Resume scoring')
+                      : t('admin.button.ad_ops.pause_scoring', 'Pause scoring')}
               </Button>
             </Group>
           </Group>
@@ -1410,7 +1587,7 @@ const AdOps: FC = () => {
               koth={koth}
               onShell={openShell}
               onToggleHill={toggleHill}
-              busyHill={busyHill}
+              pendingHillStates={pendingHillStates}
               onMutate={() => mutateKoth()}
             />
           ) : adState.teams.length === 0 ? (
@@ -1570,6 +1747,8 @@ const AdOps: FC = () => {
                                         size={44}
                                         variant="subtle"
                                         color="gray"
+                                        loading={resettingServices.has(cell.adTeamServiceId)}
+                                        disabled={resettingServices.has(cell.adTeamServiceId)}
                                         aria-label={t(
                                           'admin.tooltip.ad_ops.reset',
                                           'Reset container to its base image'

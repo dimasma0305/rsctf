@@ -7,11 +7,24 @@ import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR from 'swr'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
+import {
+  claimPlayerCredentialOperation,
+  clearPlayerCredentialOperation,
+  ownsPlayerCredentialResult,
+  parsePlayerCredentialRevision,
+  playerCredentialOperationStorageKey,
+  playerCredentialOperationWasRejected,
+  playerCredentialRevisionSignalKey,
+  playerCredentialStorage,
+  publishPlayerCredentialRevision,
+  withPlayerCredentialLock,
+} from '@Utils/PlayerCredentialOperations'
 import { showErrorMsg } from '@Utils/Shared'
+import { useViewerIdentity } from '@Utils/ViewerIdentity'
 import { isKothResetTransition, kothConfirmationProgress, maxKothCooldownTicks } from '@Utils/kothLifecycle'
 import { CompletionPollSWRConfig, jitterPollingDelay, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import type { KothLifecycleFields } from '@Hooks/useGame'
-import api from '@Api'
+import api, { ContentType } from '@Api'
 import misc from '@Styles/Misc.module.css'
 
 const KOTH_POLL_INTERVAL_MS = 5_000
@@ -37,6 +50,12 @@ interface KothTokenModel {
   round: number
   token: string | null
   status: 'warmup' | 'no-cycle-token' | 'ready'
+  revision: number
+}
+
+interface KothTokenMutationResultModel extends KothTokenModel {
+  operationId: string
+  recoveryExpiresAt: number
 }
 
 interface KothHillStateModel extends KothLifecycleFields {
@@ -103,13 +122,22 @@ const useAbortableApiRead = <T,>(enabled: boolean) => {
  */
 export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challengeId, active }) => {
   const { t } = useTranslation()
+  const { scope } = useViewerIdentity()
   const modals = useModals()
   const [rotating, setRotating] = useState(false)
+  const rotatingRef = useRef(false)
+  const responseGeneration = useRef(0)
 
   // The Token endpoint requires player auth (cookie session). The token is
   // scoped to this hill. Marker tokens rotate per crown cycle; Leaderboard
   // capabilities remain stable for the event unless the player rotates one.
   const enabled = active && gameId > 0 && challengeId > 0
+
+  useEffect(() => {
+    rotatingRef.current = false
+    responseGeneration.current += 1
+    setRotating(false)
+  }, [challengeId, enabled, gameId, scope])
   const tokenKey = enabled ? `/api/game/${gameId}/ad/koth/${challengeId}/token` : null
   const stateKey = enabled ? `/api/game/${gameId}/ad/koth/${challengeId}/state` : null
   const tokenFetcher = useAbortableApiRead<KothTokenModel>(enabled)
@@ -126,6 +154,20 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
     isValidating: stateValidating,
     mutate: mutateState,
   } = useSWR<KothHillStateModel>(stateKey, stateFetcher, CompletionPollSWRConfig)
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !enabled) return
+    const signalKey = playerCredentialRevisionSignalKey(gameId, 'koth-api', challengeId)
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== signalKey) return
+      const signal = parsePlayerCredentialRevision(event.newValue)
+      if (!signal || signal.revision <= (tokenData?.revision ?? 0)) return
+      responseGeneration.current += 1
+      void mutateToken()
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [challengeId, enabled, gameId, mutateToken, tokenData?.revision])
   useCompletionPolling({
     key: tokenKey ?? '',
     phase: 'open',
@@ -174,14 +216,48 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
       },
       confirmProps: { color: 'orange' },
       onConfirm: async () => {
+        if (rotatingRef.current) return
+        rotatingRef.current = true
         setRotating(true)
+        const generation = ++responseGeneration.current
+        const storage = playerCredentialStorage()
+        const operationKey = playerCredentialOperationStorageKey(scope, gameId, 'koth-api', challengeId)
         try {
-          const response = await api.request<KothTokenModel>({
-            path: `/api/game/${gameId}/ad/koth/${challengeId}/token`,
-            method: 'POST',
-            format: 'json',
+          const result = await withPlayerCredentialLock(operationKey, async () => {
+            const operation = claimPlayerCredentialOperation(storage, operationKey, tokenData?.revision ?? 0, 'rotate')
+            try {
+              const response = await api.request<KothTokenMutationResultModel>({
+                path: `/api/game/${gameId}/ad/koth/${challengeId}/token`,
+                method: 'POST',
+                body: {
+                  operationId: operation.operationId,
+                  expectedRevision: operation.expectedRevision,
+                },
+                type: ContentType.Json,
+                format: 'json',
+              })
+              if (!ownsPlayerCredentialResult(storage, operationKey, operation, response.data)) {
+                throw new Error('A stale KotH credential response was ignored')
+              }
+              clearPlayerCredentialOperation(storage, operationKey, operation.operationId)
+              publishPlayerCredentialRevision(
+                storage,
+                playerCredentialRevisionSignalKey(gameId, 'koth-api', challengeId),
+                {
+                  operationId: response.data.operationId,
+                  revision: response.data.revision,
+                }
+              )
+              return response.data
+            } catch (error) {
+              if (playerCredentialOperationWasRejected(error)) {
+                clearPlayerCredentialOperation(storage, operationKey, operation.operationId)
+              }
+              throw error
+            }
           })
-          await mutateToken(response.data, { revalidate: false })
+          if (generation !== responseGeneration.current) return
+          await mutateToken(result, { revalidate: false })
           showNotification({
             color: 'teal',
             icon: <Icon path={mdiCheck} size={1} />,
@@ -191,8 +267,10 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
             ),
           })
         } catch (error) {
+          await mutateToken().catch(() => undefined)
           showErrorMsg(error, t)
         } finally {
+          rotatingRef.current = false
           setRotating(false)
         }
       },

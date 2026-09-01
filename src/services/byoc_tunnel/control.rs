@@ -11,7 +11,12 @@ pub fn start_control_listener(
     st: SharedState,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
-    let mut events = st.events.subscribe();
+    const CONTROL_TARGETS: &[&str] = &[
+        "InternalByocRevokeParticipation",
+        "InternalByocRevokeTeam",
+        "InternalByocRevokeChallenge",
+    ];
+    let mut events = st.events.subscribe_global_targets(CONTROL_TARGETS);
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -40,9 +45,20 @@ pub fn start_control_listener(
                                 }
                             }
                         }
+                        "InternalByocRevokeTeam" => {
+                            if let Ok(id) = event.payload.parse::<i32>() {
+                                if let Err(error) = st.byoc.disconnect_team_inner(&st.db, id, false).await {
+                                    tracing::warn!(team = id, %error, "cross-replica BYOC team revocation failed");
+                                }
+                            }
+                        }
                         "InternalByocRevokeChallenge" => {
                             if let Ok(id) = event.payload.parse::<i32>() {
-                                if let Err(error) = st.byoc.disconnect_challenge_inner(&st.db, id, false).await {
+                                if let Err(error) = st
+                                    .byoc
+                                    .disconnect_challenge_inner(&st.db, id, false, false)
+                                    .await
+                                {
                                     tracing::warn!(challenge = id, %error, "cross-replica BYOC challenge revocation failed");
                                 }
                             }

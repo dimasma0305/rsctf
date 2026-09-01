@@ -102,11 +102,12 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
           ('00000000-0000-0000-0000-000000000009', 'repair-user',
            FALSE, FALSE, FALSE, FALSE, 0, 0, '', clock_timestamp(),
            clock_timestamp(), clock_timestamp(), '', '', '', FALSE);
-        INSERT INTO "Teams" (id, name, locked, invite_token, captain_id)
+        INSERT INTO "Teams"
+          (id, name, locked, profile_revision, invite_token, captain_id)
         VALUES
-          (90, 'repair-submit', FALSE, 'repair-submit-token',
+          (90, 'repair-submit', FALSE, 1, 'repair-submit-token',
            '00000000-0000-0000-0000-000000000009'),
-          (91, 'repair-source', FALSE, 'repair-source-token',
+          (91, 'repair-source', FALSE, 1, 'repair-source-token',
            '00000000-0000-0000-0000-000000000009');
         INSERT INTO "Games"
           (id, title, public_key, private_key, hidden, practice_mode,
@@ -114,8 +115,9 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
            allow_user_submissions, writeup_required,
            team_member_count_limit, container_count_limit,
            start_time_utc, end_time_utc, writeup_deadline,
-           writeup_note, blood_bonus_value, ad_allow_snapshot_download,
-           ad_scoring_paused, ad_epoch_ticks, koth_epoch_ticks,
+           writeup_note, blood_bonus_value, challenge_configuration_revision,
+           configuration_revision, ad_allow_snapshot_download,
+           ad_scoring_paused, ad_control_revision, ad_epoch_ticks, koth_epoch_ticks,
            koth_cycle_ticks, koth_champion_cooldown_ticks,
            koth_claim_confirmation_ticks, vpn_access_required,
            vpn_behavior_telemetry_enabled, vpn_flag_scan_enabled,
@@ -126,8 +128,8 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
            '', '', FALSE, FALSE, FALSE, 4, 4,
            clock_timestamp() - INTERVAL '1 hour',
            clock_timestamp() + INTERVAL '1 hour',
-           clock_timestamp() + INTERVAL '2 hours', '', 0, FALSE,
-           FALSE, 8, 12, 3, 1, 2,
+           clock_timestamp() + INTERVAL '2 hours', '', 0,
+           1, 1, FALSE, FALSE, 1, 8, 12, 3, 1, 2,
            FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, 1);
         INSERT INTO "Participations"
           (id, status, token, game_id, team_id, suspicion_score)
@@ -136,6 +138,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
           (921, 1, 'repair-source-participation', 9, 91, 0);
         INSERT INTO "GameChallenges"
           (id, game_id, title, content, category, "Type", is_enabled,
+           revision, ad_control_revision,
            submission_limit, accepted_count, submission_count,
            review_status, build_status, enable_traffic_capture,
            enable_shared_container, disable_blood_bonus, original_score,
@@ -143,7 +146,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
            ad_allow_self_reset, ad_ssh_requires_flag, ad_self_hosted,
            variant_mode, variant_generator_build_status, solve_receipt_mode)
         VALUES
-          (930, 9, 'repair-challenge', '', 0, 2, TRUE, 0, 0, 0, 0, 0,
+          (930, 9, 'repair-challenge', '', 0, 2, TRUE, 1, 1, 0, 0, 0, 0, 0,
            FALSE, FALSE, FALSE, 100, 0.2, 1.0, 0, FALSE, FALSE,
            FALSE, FALSE, 0, 0, 0);
         INSERT INTO "Submissions"
@@ -220,8 +223,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
     .await
     .unwrap();
 
-    // SeaORM's `steps` is a count, not a target migration number. Apply only
-    // m0089 here so the pre-m0091 event below is genuinely quarantined later.
+    // Apply only m0089 so the pre-m0091 event below is quarantined later.
     Migrator::up(&db, Some(1)).await.unwrap();
     db.execute_unprepared(UP_SQL).await.unwrap();
     let rejected_cohort_is_submission_time: bool = sqlx::query_scalar(
@@ -277,9 +279,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
         .to_string()
         .contains("ck_suspicion_outbox_kind"));
 
-    // m0091 deliberately quarantines every pre-cutover detector row. The m89
-    // job seeded from immutable CheatInfo must then recreate the canonical hard
-    // event once, without restoring the untrusted row's contribution.
+    // Recreate the canonical hard event without restoring untrusted evidence.
     sqlx::query(
         r#"INSERT INTO "SuspicionEvents"
              (game_id, participation_id, challenge_id, kind, evidence_key,
@@ -394,8 +394,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
             .unwrap();
     assert!(outbox_exists);
 
-    // Compatibility triggers canonicalize a previous binary's legacy insert
-    // and create its durable evaluation in the same transaction.
+    // Canonicalize a legacy insert and its durable evaluation atomically.
     sqlx::raw_sql(
         r#"
         INSERT INTO "AspNetUsers"
@@ -409,11 +408,11 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
            FALSE, FALSE, FALSE, FALSE, 0, 0, '', clock_timestamp(),
            clock_timestamp(), clock_timestamp(), '', '', '', FALSE);
         INSERT INTO "Teams"
-          (id, name, locked, invite_token, captain_id)
+          (id, name, locked, profile_revision, invite_token, captain_id)
         VALUES
-          (10, 'submit-team', FALSE, 'submit-token',
+          (10, 'submit-team', FALSE, 1, 'submit-token',
            '00000000-0000-0000-0000-000000000001'),
-          (11, 'source-team', FALSE, 'source-token',
+          (11, 'source-team', FALSE, 1, 'source-token',
            '00000000-0000-0000-0000-000000000001');
         INSERT INTO "Games"
           (id, title, public_key, private_key, hidden, practice_mode,
@@ -421,8 +420,9 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
            allow_user_submissions, writeup_required,
            team_member_count_limit, container_count_limit,
            start_time_utc, end_time_utc, writeup_deadline,
-           writeup_note, blood_bonus_value, ad_allow_snapshot_download,
-           ad_scoring_paused, ad_epoch_ticks, koth_epoch_ticks,
+           writeup_note, blood_bonus_value, challenge_configuration_revision,
+           configuration_revision, ad_allow_snapshot_download,
+           ad_scoring_paused, ad_control_revision, ad_epoch_ticks, koth_epoch_ticks,
            koth_cycle_ticks, koth_champion_cooldown_ticks,
            koth_claim_confirmation_ticks, vpn_access_required,
            vpn_behavior_telemetry_enabled, vpn_flag_scan_enabled,
@@ -432,8 +432,8 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
           (1, 'game', 'public', 'private', FALSE, FALSE, '', '', FALSE,
            FALSE, FALSE, 4, 4, clock_timestamp() - INTERVAL '1 hour',
            clock_timestamp() + INTERVAL '1 hour',
-           clock_timestamp() + INTERVAL '2 hours', '', 0, FALSE,
-           FALSE, 8, 12, 3, 1, 2,
+           clock_timestamp() + INTERVAL '2 hours', '', 0,
+           1, 1, FALSE, FALSE, 1, 8, 12, 3, 1, 2,
            FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, 1);
         INSERT INTO "Participations"
           (id, status, token, game_id, team_id, suspicion_score)
@@ -442,6 +442,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
           (21, 1, 'source-participation', 1, 11, 0);
         INSERT INTO "GameChallenges"
           (id, game_id, title, content, category, "Type", is_enabled,
+           revision, ad_control_revision,
            submission_limit, accepted_count, submission_count,
            review_status, build_status, enable_traffic_capture,
            enable_shared_container, disable_blood_bonus, original_score,
@@ -449,7 +450,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
            ad_allow_self_reset, ad_ssh_requires_flag, ad_self_hosted,
            variant_mode, variant_generator_build_status, solve_receipt_mode)
         VALUES
-          (30, 1, 'challenge', '', 0, 2, TRUE, 0, 0, 0, 0, 0,
+          (30, 1, 'challenge', '', 0, 2, TRUE, 1, 1, 0, 0, 0, 0, 0,
            FALSE, FALSE, FALSE, 100, 0.2, 1.0, 0, FALSE, FALSE,
            FALSE, FALSE, 0, 0, 0);
         INSERT INTO "Submissions"
@@ -672,19 +673,18 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
     .unwrap();
     assert!(competitive_admission.is_some());
 
-    // Once the configured competition is over, neither a direct Accepted
-    // practice join nor a later Pending->Accepted admin transition can enter
-    // the immutable final cohort.
+    // Post-event joins and approvals cannot enter the immutable final cohort.
     sqlx::raw_sql(
         r#"
         UPDATE "Games"
            SET end_time_utc = clock_timestamp() - INTERVAL '1 second'
          WHERE id = 1;
-        INSERT INTO "Teams" (id, name, locked, invite_token, captain_id)
+        INSERT INTO "Teams"
+          (id, name, locked, profile_revision, invite_token, captain_id)
         VALUES
-          (12, 'post-end-direct', FALSE, 'post-end-direct-token',
+          (12, 'post-end-direct', FALSE, 1, 'post-end-direct-token',
            '00000000-0000-0000-0000-000000000001'),
-          (13, 'post-end-transition', FALSE, 'post-end-transition-token',
+          (13, 'post-end-transition', FALSE, 1, 'post-end-transition-token',
            '00000000-0000-0000-0000-000000000001');
         INSERT INTO "Participations"
           (id, status, token, game_id, team_id, suspicion_score)
@@ -717,8 +717,9 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
 
     // A queued writer must observe durable closure even if game end moves ahead.
     sqlx::query(
-        r#"INSERT INTO "Teams" (id, name, locked, invite_token, captain_id)
-           VALUES (17, 'queued-after-close', FALSE, 'queued-after-close-token',
+        r#"INSERT INTO "Teams"
+             (id, name, locked, profile_revision, invite_token, captain_id)
+           VALUES (17, 'queued-after-close', FALSE, 1, 'queued-after-close-token',
                    '00000000-0000-0000-0000-000000000001')"#,
     )
     .execute(&pool)
@@ -785,18 +786,17 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
     .await
     .unwrap();
 
-    // Exercise the ended-game legacy backfill on an idempotent rerun. Current
-    // Rejected status cannot erase a proven competitor: exact start is
-    // included, while pre-start, exact-end, and post-end rows remain excluded.
+    // A rerun retains proven competitors while excluding out-of-window rows.
     sqlx::raw_sql(
         r#"
-        INSERT INTO "Teams" (id, name, locked, invite_token, captain_id)
+        INSERT INTO "Teams"
+          (id, name, locked, profile_revision, invite_token, captain_id)
         VALUES
-          (14, 'pre-start', FALSE, 'pre-start-token',
+          (14, 'pre-start', FALSE, 1, 'pre-start-token',
            '00000000-0000-0000-0000-000000000001'),
-          (15, 'at-start', FALSE, 'at-start-token',
+          (15, 'at-start', FALSE, 1, 'at-start-token',
            '00000000-0000-0000-0000-000000000001'),
-          (16, 'at-end', FALSE, 'at-end-token',
+          (16, 'at-end', FALSE, 1, 'at-end-token',
            '00000000-0000-0000-0000-000000000001');
         INSERT INTO "Participations"
           (id, status, token, game_id, team_id, suspicion_score)

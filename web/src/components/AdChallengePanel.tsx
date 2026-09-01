@@ -2,9 +2,12 @@ import { Alert, Badge, Button, CopyButton, Group, Loader, Stack, Text, Tooltip }
 import { showNotification } from '@mantine/notifications'
 import { mdiAlertCircleOutline, mdiConsole, mdiDownload, mdiRefresh, mdiRestart, mdiServerNetwork } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useCallback, useState } from 'react'
+import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import type { KeyedMutator } from 'swr'
+import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
+import { createOperationId, waitForControlJob } from '@Utils/ControlJobs'
 import { httpErrorStatus } from '@Utils/ProfileRetry'
 import { showErrorMsg } from '@Utils/Shared'
 import { useChallengePolling } from '@Hooks/useChallengePolling'
@@ -30,8 +33,8 @@ interface AdChallengePanelProps {
   gameId: number
   challengeId: number
   active: boolean
-  /** Authoritative ownership from the challenge DTO, available before a BYOC
-   * agent creates the team's first service row. */
+  /** Authoritative challenge ownership from the player challenge DTO. This is
+   * available before the first BYOC agent creates a team-service row. */
   selfHosted?: boolean
   /**
    * Render ONLY the post-game snapshot (service backup) download, hiding the
@@ -40,6 +43,13 @@ interface AdChallengePanelProps {
    * defended-service backup must still be downloadable.
    */
   snapshotOnly?: boolean
+  stateOwner?: AdStateOwner
+}
+
+export interface AdStateOwner {
+  data?: AdStateModel
+  error?: unknown
+  mutate: KeyedMutator<AdStateModel>
 }
 
 interface ByocEnrollmentProps {
@@ -151,6 +161,7 @@ const ByocEnrollment: FC<ByocEnrollmentProps> = ({ gameId, challengeId, state })
     </Alert>
   )
 }
+
 /**
  * Per-challenge A&amp;D status block: container IP+port, the current flag the
  * team should defend, the latest health-check verdict, and a reset-to-baseline
@@ -164,6 +175,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
   active,
   selfHosted = false,
   snapshotOnly,
+  stateOwner,
 }) => {
   const { t } = useTranslation()
   const stateRequest = useCallback(
@@ -173,16 +185,15 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
     },
     [gameId]
   )
-  const {
-    data: adState,
-    error: stateError,
-    mutate: mutateState,
-  } = useChallengePolling<AdStateModel>({
+  const polledState = useChallengePolling<AdStateModel>({
     key: gameId > 0 ? `/api/Game/${gameId}/Ad/State` : null,
-    active,
+    active: active && !stateOwner,
     refreshInterval: snapshotOnly ? 0 : 10_000,
     request: stateRequest,
   })
+  const adState = stateOwner?.data ?? polledState.data
+  const stateError = stateOwner?.error ?? polledState.error
+  const mutateState = stateOwner?.mutate ?? polledState.mutate
   const sshRequest = useCallback(
     async (signal: AbortSignal) => {
       const response = await api.game.adGameGetSshKey(gameId, { signal })
@@ -197,6 +208,9 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
     request: sshRequest,
   })
   const [resetting, setResetting] = useState(false)
+  const resetPromiseRef = useRef<Promise<void> | null>(null)
+  const resetAbortRef = useRef<AbortController | null>(null)
+  useEffect(() => () => resetAbortRef.current?.abort(), [])
 
   const service: AdTeamServiceStateModel | undefined = adState?.services.find((s) => s.challengeId === challengeId)
   const isSelfHosted = selfHosted || service?.selfHosted === true
@@ -210,16 +224,14 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
           {t('game.content.ad.snapshot', 'Post-game snapshot')}:
         </Text>
         <Tooltip label={t('game.tooltip.ad.snapshot', 'Download the final container filesystem as a TAR archive.')}>
-          <Button
-            component="a"
-            href={api.game.gameAdDownloadSnapshotUrl(gameId, service.adTeamServiceId)}
-            download
+          <SnapshotDownloadButton
+            url={api.game.gameAdDownloadSnapshotUrl(gameId, service.adTeamServiceId)}
+            filename={`ad-snapshot-service${service.adTeamServiceId}.tar.gz`}
+            downloadKey={`player:snapshot:${gameId}:${service.adTeamServiceId}`}
+            label={t('game.button.ad.download_snapshot', 'Download .tar.gz')}
             size="compact-xs"
             variant="light"
-            leftSection={<Icon path={mdiDownload} size={0.7} />}
-          >
-            {t('game.button.ad.download_snapshot', 'Download .tar.gz')}
-          </Button>
+          />
         </Tooltip>
       </Group>
     ) : null
@@ -337,19 +349,47 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
 
   const onReset = async () => {
     if (!service) return
+    if (resetPromiseRef.current) return resetPromiseRef.current
+    const operationId = createOperationId()
+    const controller = new AbortController()
+    resetAbortRef.current?.abort()
+    resetAbortRef.current = controller
     setResetting(true)
+    const request = (async () => {
+      try {
+        let job
+        try {
+          job = (
+            await api.game.gameAdResetService(gameId, service.adTeamServiceId, operationId, {
+              signal: controller.signal,
+            })
+          ).data
+        } catch (error) {
+          if (controller.signal.aborted) throw error
+          job = (await api.game.gameAdResetJobByOperation(gameId, operationId, { signal: controller.signal })).data
+        }
+        await waitForControlJob(
+          job,
+          controller.signal,
+          async (jobId, signal) => (await api.game.gameAdResetJob(gameId, jobId, { signal })).data
+        )
+        showNotification({
+          color: 'teal',
+          icon: <Icon path={mdiRestart} size={1} />,
+          title: t('game.notification.ad.reset_queued.title', 'Reset queued'),
+          message: t('game.notification.ad.reset_queued.message', 'Container will rebuild in seconds.'),
+        })
+        await mutateState()
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+      }
+    })()
+    resetPromiseRef.current = request
     try {
-      await api.game.gameAdResetService(gameId, service.adTeamServiceId)
-      showNotification({
-        color: 'teal',
-        icon: <Icon path={mdiRestart} size={1} />,
-        title: t('game.notification.ad.reset_queued.title', 'Reset queued'),
-        message: t('game.notification.ad.reset_queued.message', 'Container will rebuild in seconds.'),
-      })
-      setTimeout(() => mutateState(), 3_000)
-    } catch (e) {
-      showErrorMsg(e, t)
+      await request
     } finally {
+      if (resetPromiseRef.current === request) resetPromiseRef.current = null
+      if (resetAbortRef.current === controller) resetAbortRef.current = null
       setResetting(false)
     }
   }

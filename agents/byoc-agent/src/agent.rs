@@ -13,12 +13,13 @@
 //!
 //! Only one outbound connection is needed; no inbound port / public IP / VPN.
 
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bollard::exec::{CreateExecOptions, ResizeExecOptions, StartExecResults};
 use bollard::Docker;
@@ -32,16 +33,20 @@ use tokio::net::TcpStream;
 use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
-use tokio_tungstenite::tungstenite::{Bytes, Message};
+use tokio_tungstenite::tungstenite::{Bytes, Error as WebSocketError, Message};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use yamux::{Connection, Mode, Stream as YamuxStream};
 
 use crate::{
-    env, must_env, yamux_config, AGENT_PROTOCOL, AGENT_PROTOCOL_HEADER, RECONNECT_DELAY,
-    STREAM_EXEC, STREAM_FLAG, STREAM_SERVICE,
+    env, must_env, yamux_config, AGENT_PROTOCOL, AGENT_PROTOCOL_HEADER, STREAM_EXEC, STREAM_FLAG,
+    STREAM_SERVICE,
 };
+
+#[path = "agent_handshake.rs"]
+mod handshake;
+use handshake::handshake_failure;
 
 // ---------------------------------------------------------------------------
 // WebSocket <-> byte-stream adapter
@@ -156,6 +161,128 @@ impl FAsyncWrite for WsByteStream {
 
 const MAX_FLAG_BYTES: usize = 4096;
 const FLAG_ACK: u8 = b'A';
+const AGENT_STATE_HEADER: &str = "x-rsctf-byoc-state";
+const STABLE_TUNNEL_LIFETIME: Duration = Duration::from_secs(60);
+const MINIMUM_RECONNECT_DELAY: Duration = Duration::from_millis(250);
+const BASE_RECONNECT_DELAY: Duration = Duration::from_secs(1);
+const MAXIMUM_RECONNECT_DELAY: Duration = Duration::from_secs(5 * 60);
+const MAXIMUM_SERVER_RETRY_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+static RECONNECT_ENTROPY_STATE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug)]
+struct ConnectFailure {
+    message: String,
+    state: Option<String>,
+    terminal: bool,
+    retry_after: Option<Duration>,
+    connected_for: Option<Duration>,
+}
+
+impl ConnectFailure {
+    fn transport(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            state: None,
+            terminal: false,
+            retry_after: None,
+            connected_for: None,
+        }
+    }
+
+    fn connected(message: impl Into<String>, connected_for: Duration) -> Self {
+        Self {
+            connected_for: Some(connected_for),
+            ..Self::transport(message)
+        }
+    }
+}
+
+#[derive(Default)]
+struct ReconnectPolicy {
+    attempt: u32,
+}
+
+impl ReconnectPolicy {
+    fn delay(&mut self, failure: &ConnectFailure) -> Option<Duration> {
+        self.delay_with_sample(failure, reconnect_entropy())
+    }
+
+    fn delay_with_sample(&mut self, failure: &ConnectFailure, sample: u64) -> Option<Duration> {
+        if failure.terminal {
+            return None;
+        }
+        if failure
+            .connected_for
+            .is_some_and(|lifetime| lifetime >= STABLE_TUNNEL_LIFETIME)
+        {
+            self.attempt = 0;
+        } else {
+            self.attempt = self.attempt.saturating_add(1);
+        }
+        let jitter = jittered_reconnect_delay(self.attempt, sample);
+        Some(
+            failure
+                .retry_after
+                .map_or(jitter, |minimum| minimum.saturating_add(jitter))
+                .min(MAXIMUM_SERVER_RETRY_AFTER),
+        )
+    }
+}
+
+fn jittered_reconnect_delay(attempt: u32, sample: u64) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(20);
+    let ceiling_millis = BASE_RECONNECT_DELAY
+        .as_millis()
+        .saturating_mul(1_u128 << exponent)
+        .min(MAXIMUM_RECONNECT_DELAY.as_millis()) as u64;
+    let minimum_millis = MINIMUM_RECONNECT_DELAY.as_millis() as u64;
+    let span = ceiling_millis.saturating_sub(minimum_millis);
+    Duration::from_millis(minimum_millis + sample % span.saturating_add(1))
+}
+
+fn reconnect_entropy() -> u64 {
+    let seed = RECONNECT_ENTROPY_STATE.load(Ordering::Relaxed);
+    if seed == 0 {
+        seed_reconnect_entropy("");
+    }
+    let mut current = RECONNECT_ENTROPY_STATE.load(Ordering::Relaxed);
+    loop {
+        let mut next = current;
+        next ^= next << 13;
+        next ^= next >> 7;
+        next ^= next << 17;
+        match RECONNECT_ENTROPY_STATE.compare_exchange_weak(
+            current,
+            next.max(1),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return next,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn seed_reconnect_entropy(agent_scope: &str) {
+    if RECONNECT_ENTROPY_STATE.load(Ordering::Relaxed) == 0 {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let mut scope = DefaultHasher::new();
+        agent_scope.hash(&mut scope);
+        let initialized = now
+            ^ u64::from(std::process::id()).rotate_left(17)
+            ^ scope.finish().rotate_left(31)
+            ^ 0x9e37_79b9_7f4a_7c15;
+        let _ = RECONNECT_ENTROPY_STATE.compare_exchange(
+            0,
+            initialized.max(1),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+}
 
 #[derive(Clone)]
 struct AppliedFlag {
@@ -202,29 +329,43 @@ pub async fn run_agent() {
     let flag_file = env("RSCTF_BYOC_FLAG_FILE", "/flag"); // where to write the rotating flag
     let service_container = env("RSCTF_BYOC_SERVICE_CONTAINER", "");
     let flag_sink = Arc::new(FlagSink::default());
+    let mut reconnect = ReconnectPolicy::default();
+    // The bearer-bearing URL is not logged, but its hash de-correlates agents
+    // that start under the same clock/PID conditions (for example PID 1 in
+    // hundreds of Compose containers after a synchronized outage).
+    seed_reconnect_entropy(&tunnel_url);
 
     loop {
-        let generation = match flag_sink.begin_connection().await {
-            Ok(generation) => generation,
-            Err(error) => {
-                warn!(%error, "tunnel: could not begin flag connection generation");
-                tokio::time::sleep(RECONNECT_DELAY).await;
-                continue;
-            }
+        let failure = match flag_sink.begin_connection().await {
+            Ok(generation) => connect_once(
+                &tunnel_url,
+                &service,
+                &flag_file,
+                &service_container,
+                flag_sink.clone(),
+                generation,
+            )
+            .await
+            .expect_err("a tunnel session only returns after it closes"),
+            Err(error) => ConnectFailure::transport(format!(
+                "could not begin flag connection generation: {error}"
+            )),
         };
-        if let Err(e) = connect_once(
-            &tunnel_url,
-            &service,
-            &flag_file,
-            &service_container,
-            flag_sink.clone(),
-            generation,
-        )
-        .await
-        {
-            warn!("tunnel: {e}; reconnecting in 3s");
-        }
-        tokio::time::sleep(RECONNECT_DELAY).await;
+        let Some(delay) = reconnect.delay(&failure) else {
+            error!(
+                state = failure.state.as_deref().unwrap_or("terminal"),
+                error = %failure.message,
+                "tunnel authorization is terminal; stopping the agent"
+            );
+            return;
+        };
+        warn!(
+            state = failure.state.as_deref().unwrap_or("transient"),
+            error = %failure.message,
+            retry_after_ms = delay.as_millis(),
+            "tunnel disconnected; reconnecting after backoff"
+        );
+        tokio::time::sleep(delay).await;
     }
 }
 
@@ -237,8 +378,15 @@ async fn connect_once(
     service_container: &str,
     flag_sink: Arc<FlagSink>,
     generation: u64,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (ws, _response) = connect_async(tunnel_request(tunnel_url)?).await?;
+) -> Result<(), ConnectFailure> {
+    let request =
+        tunnel_request(tunnel_url).map_err(|error| ConnectFailure::transport(error.to_string()))?;
+    let (ws, _response) = match connect_async(request).await {
+        Ok(connected) => connected,
+        Err(WebSocketError::Http(response)) => return Err(handshake_failure(*response)),
+        Err(error) => return Err(ConnectFailure::transport(error.to_string())),
+    };
+    let connected_at = Instant::now();
     let socket = WsByteStream::new(ws);
 
     let mut conn = Connection::new(socket, yamux_config(), Mode::Client);
@@ -266,9 +414,17 @@ async fn connect_once(
                 ));
             }
             Some(Err(error)) => {
-                break Err::<(), Box<dyn std::error::Error + Send + Sync>>(Box::new(error));
+                break Err(ConnectFailure::connected(
+                    error.to_string(),
+                    connected_at.elapsed(),
+                ));
             }
-            None => break Err("tunnel closed".into()),
+            None => {
+                break Err(ConnectFailure::connected(
+                    "tunnel closed",
+                    connected_at.elapsed(),
+                ))
+            }
         }
     };
     handlers.abort_all();
@@ -557,6 +713,7 @@ mod websocket_stream_tests {
     use futures::{SinkExt as _, StreamExt as _};
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
+    use tokio_tungstenite::tungstenite::http::{Response as HttpResponse, StatusCode};
     use tokio_util::compat::TokioAsyncReadCompatExt;
 
     fn test_path(label: &str) -> std::path::PathBuf {
@@ -568,6 +725,101 @@ mod websocket_stream_tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    fn rejection(
+        status: StatusCode,
+        state: &'static str,
+        retry_after: Option<u64>,
+    ) -> HttpResponse<Option<Vec<u8>>> {
+        let mut builder = HttpResponse::builder()
+            .status(status)
+            .header(AGENT_STATE_HEADER, state);
+        if let Some(seconds) = retry_after {
+            builder = builder.header("retry-after", seconds.to_string());
+        }
+        builder.body(None).unwrap()
+    }
+
+    #[test]
+    fn terminal_handshakes_stop_reconnecting() {
+        for status in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::UPGRADE_REQUIRED,
+        ] {
+            let failure = handshake_failure(rejection(status, "terminal-revoked", None));
+            assert!(failure.terminal);
+            assert!(ReconnectPolicy::default().delay(&failure).is_none());
+        }
+    }
+
+    #[test]
+    fn transient_handshakes_honor_retry_after_and_cap_it() {
+        let failure = handshake_failure(rejection(
+            StatusCode::REQUEST_TIMEOUT,
+            "transient-overload",
+            Some(60),
+        ));
+        assert!(!failure.terminal);
+        let delay = ReconnectPolicy::default()
+            .delay_with_sample(&failure, 0)
+            .unwrap();
+        assert!(
+            delay >= Duration::from_secs(60) + MINIMUM_RECONNECT_DELAY
+                && delay <= Duration::from_secs(61)
+        );
+
+        let capped = handshake_failure(rejection(
+            StatusCode::TOO_EARLY,
+            "retry-at-event-start",
+            Some(u64::MAX),
+        ));
+        let capped_delay = ReconnectPolicy::default().delay_with_sample(&capped, 0);
+        assert_eq!(capped_delay, Some(MAXIMUM_SERVER_RETRY_AFTER));
+    }
+
+    #[test]
+    fn retry_after_cohorts_keep_a_jittered_spread() {
+        let failure = handshake_failure(rejection(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "transient-non-network-replica",
+            Some(30),
+        ));
+        let samples = (0..256)
+            .map(|sample| {
+                ReconnectPolicy::default()
+                    .delay_with_sample(&failure, sample * 7919)
+                    .unwrap()
+            })
+            .collect::<std::collections::HashSet<_>>();
+        assert!(samples.len() > 100, "Retry-After cohort jitter collapsed");
+        assert!(samples.iter().all(|delay| {
+            *delay >= Duration::from_secs(30) + MINIMUM_RECONNECT_DELAY
+                && *delay <= Duration::from_secs(31)
+        }));
+    }
+
+    #[test]
+    fn reconnect_jitter_is_bounded_and_stable_sessions_reset_attempts() {
+        let samples = (0..256)
+            .map(|sample| jittered_reconnect_delay(12, sample * 7919))
+            .collect::<std::collections::HashSet<_>>();
+        assert!(samples.len() > 100, "reconnect jitter collapsed");
+        assert!(samples.iter().all(|delay| {
+            *delay >= MINIMUM_RECONNECT_DELAY && *delay <= MAXIMUM_RECONNECT_DELAY
+        }));
+
+        let mut policy = ReconnectPolicy::default();
+        let short_failure = ConnectFailure::connected("closed", Duration::from_secs(2));
+        for expected in 1..=17 {
+            let _ = policy.delay(&short_failure).unwrap();
+            assert_eq!(policy.attempt, expected);
+        }
+        let stable_failure = ConnectFailure::connected("closed", STABLE_TUNNEL_LIFETIME);
+        let delay = policy.delay(&stable_failure).unwrap();
+        assert_eq!(policy.attempt, 0);
+        assert!(delay <= BASE_RECONNECT_DELAY);
     }
 
     #[tokio::test]

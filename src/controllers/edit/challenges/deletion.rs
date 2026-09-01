@@ -2,6 +2,7 @@ use sqlx::{Executor, Postgres, Transaction};
 
 use crate::utils::enums::ChallengeType;
 use crate::utils::error::{AppError, AppResult};
+#[cfg(test)]
 use crate::utils::single_flight::PgAdvisoryLock;
 
 type DeletionState = (i16, bool, bool, i32, i32, bool, bool, bool);
@@ -22,6 +23,7 @@ fn validate_pending_mutation(state: Option<(bool, bool)>) -> AppResult<()> {
     }
 }
 
+#[cfg(test)]
 pub(super) async fn acquire_definition_lock(
     pool: &sqlx::PgPool,
     game_id: i32,

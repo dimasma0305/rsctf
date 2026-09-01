@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { NoticeType, type GameNotice } from '../Api'
 import { currentListSnapshotRows } from './LatestRequest'
-import { MAX_GAME_NOTICE_ROWS, mergeGameNotices, receiveGameNotice } from './NoticeFeed'
+import { invalidateGameNotice, MAX_GAME_NOTICE_ROWS, mergeGameNotices, receiveGameNotice } from './NoticeFeed'
 
 const notice = (id: number, type = NoticeType.FirstBlood): GameNotice => ({
   id,
@@ -53,6 +53,19 @@ test('an organizer notice survives one hundred newer live system notices', () =>
   assert.equal(merged[0], organizer)
   assert.ok(merged.some(({ id }) => id === organizer.id))
   assert.equal(new Set(merged.map(({ id }) => id)).size, MAX_GAME_NOTICE_ROWS)
+})
+
+test('a mutation event invalidates a socket-only notice before HTTP deletion backfill', () => {
+  const live = [notice(7, NoticeType.Normal), notice(8)]
+
+  assert.deepEqual(
+    invalidateGameNotice(7, live).map(({ id }) => id),
+    [8]
+  )
+  assert.deepEqual(
+    invalidateGameNotice(99, live).map(({ id }) => id),
+    [7, 8]
+  )
 })
 
 test('a game or viewer-scope transition hides the previous principal buffer synchronously', () => {

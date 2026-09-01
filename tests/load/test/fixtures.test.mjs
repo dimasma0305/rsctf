@@ -85,6 +85,49 @@ test("managed image builds use a pinned compact Python base", () => {
   assert.doesNotMatch(source, /LOAD_FIXTURE_PYTHON_IMAGE \|\|\s*['"]python:3\.12-alpine['"]/);
 });
 
+test("load mutation helpers supply current operation and revision identities", () => {
+  const source = readFileSync(new URL("../applib.mjs", import.meta.url), "utf8");
+  const createGame = source.slice(
+    source.indexOf("export async function createGame"),
+    source.indexOf("export async function setGameSchedule"),
+  );
+  assert.match(createGame, /headers: \{ 'idempotency-key': randomUUID\(\) \}/);
+  const gameSchedule = source.slice(
+    source.indexOf("export async function setGameSchedule"),
+    source.indexOf("export async function createChallenge"),
+  );
+  assert.match(gameSchedule, /operationId: randomUUID\(\)/);
+  const challengeMutations = source.slice(
+    source.indexOf("export async function createChallenge"),
+    source.indexOf("export async function addFlags"),
+  );
+  assert.match(challengeMutations, /operationId: body\.operationId \|\| randomUUID\(\)/);
+  assert.match(challengeMutations, /expectedRevision: body\.expectedRevision \?\? current\.revision/);
+  assert.match(challengeMutations, /headers: \{ 'idempotency-key': randomUUID\(\) \}/);
+  const flagImport = source.slice(
+    source.indexOf("export async function addFlags"),
+    source.indexOf("export async function deleteGame"),
+  );
+  assert.match(flagImport, /operationId: randomUUID\(\)/);
+  assert.match(flagImport, /flags: flags\.map/);
+  const scoringPause = source.slice(
+    source.indexOf("export async function setAdScoringPaused"),
+    source.indexOf("export function adScoringPaused"),
+  );
+  assert.match(scoringPause, /body: \{ paused: desired, revision: Number\(current\.revision\) \}/);
+  const assetUpload = source.slice(
+    source.indexOf("export async function uploadAsset"),
+    source.indexOf("export async function setAttachment"),
+  );
+  assert.match(assetUpload, /\/api\/assets\?operationId=\$\{operationId\}/);
+  assert.match(assetUpload, /uploaded\?\.uploadId/);
+  const attachmentMutation = source.slice(
+    source.indexOf("export async function setAttachment"),
+    source.indexOf("\/\/ ── Real BYOC fleet"),
+  );
+  assert.match(attachmentMutation, /fileHash: uploaded\.hash, uploadId: uploaded\.uploadId/);
+});
+
 function reservePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();

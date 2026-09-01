@@ -3,8 +3,10 @@ import { useInputState } from '@mantine/hooks'
 import { notifications, showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { FC, MutableRefObject, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useSWRConfig } from 'swr'
+import type { AdStateOwner } from '@Components/AdChallengePanel'
 import { ChallengeModal, SolverInfo } from '@Components/ChallengeModal'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
 import {
@@ -29,11 +31,14 @@ import {
   extendReconciledInstance,
   mergeExtendedInstanceContext,
 } from '@Utils/InstanceLifecycle'
+import { ACCOUNT_STATS_PATH, CHALLENGE_CATALOG_PATH, invalidatePlayerReads } from '@Utils/PlayerReadCache'
 import { httpErrorStatus } from '@Utils/ProfileRetry'
+import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
 import { showErrorMsg } from '@Utils/Shared'
 import { ChallengeCategoryItemProps } from '@Utils/Shared'
 import { useChallengePolling } from '@Hooks/useChallengePolling'
 import { useConfig } from '@Hooks/useConfig'
+import { useUser } from '@Hooks/useUser'
 import api, {
   AnswerResult,
   ChallengeDetailModel,
@@ -58,13 +63,58 @@ interface GameChallengeModalProps extends ModalProps {
   status?: SubmissionType
   /** Proven by the current catalog/team response, not by a retained selection. */
   challengeOwned?: boolean
+  adStateOwner?: AdStateOwner
 }
 
 interface PendingFlagVerdict extends FlagVerdictIdentity {
   attemptId: string
 }
 
+type ContainerOperationKind = 'create' | 'delete' | 'extend'
+type ContainerOperationOwner = { scope: string; id: string; key: RetryableOperationKey }
+
+export const operationStorageKey = (kind: ContainerOperationKind, scope: string) =>
+  `rsctf:container-operation:${kind}:${encodeURIComponent(scope)}`
+
+export const containerOperationScope = (
+  userId: string | undefined,
+  participationId: number | null | undefined,
+  gameId: number,
+  challengeId: number
+) => `${userId ?? 'anonymous'}:${participationId ?? 'unresolved'}:${gameId}:${challengeId}`
+
+const isTerminalContainerOperationError = (error: unknown) => {
+  const status = httpErrorStatus(error)
+  return status !== null && status >= 400 && status < 500 && status !== 409 && status !== 429
+}
+
+const retainContainerOperation = (
+  kind: ContainerOperationKind,
+  ownerRef: MutableRefObject<ContainerOperationOwner | null>,
+  scope: string
+) => {
+  const current = ownerRef.current
+  if (current?.scope === scope) {
+    current.key.claim()
+    return current
+  }
+  current?.key.release()
+  const key = new RetryableOperationKey(undefined, operationStorageKey(kind, scope))
+  const owner = { scope, id: key.claim(), key }
+  ownerRef.current = owner
+  return owner
+}
+
+const clearContainerOperation = (
+  ownerRef: MutableRefObject<ContainerOperationOwner | null>,
+  owner: ContainerOperationOwner
+) => {
+  if (ownerRef.current === owner) ownerRef.current = null
+  owner.key.complete(owner.id)
+}
+
 export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
+  const { mutate: mutateCache } = useSWRConfig()
   const {
     gameId,
     gameTitle,
@@ -78,6 +128,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     title,
     score,
     challengeOwned = true,
+    adStateOwner,
     ...modalProps
   } = props
 
@@ -163,11 +214,12 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   )
 
   const { config } = useConfig()
+  const { user } = useUser()
   const { t } = useTranslation()
 
   const pollErrorMessage = (error: unknown, resource: 'challenge' | 'solvers') => {
     if (!error) return undefined
-    const failure = challengeReadFailure(error, resource)
+    const failure = challengeReadFailure(error)
     const reference = failure
       ? failure.serverTraceId === failure.requestId
         ? ` ${t('challenge.error.request_trace_reference', 'Request/server trace')}: ${failure.requestId}.`
@@ -297,6 +349,9 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   const [solvedChallengeId, setSolvedChallengeId] = useState<number | null>(null)
   const [flagVerdict, dispatchFlagVerdict] = useReducer(flagVerdictReducer, null)
   const submitAttemptOwnerRef = useRef<FlagSubmitAttemptOwner | null>(null)
+  const containerCreateOperationRef = useRef<ContainerOperationOwner | null>(null)
+  const containerDeleteOperationRef = useRef<ContainerOperationOwner | null>(null)
+  const containerExtendOperationRef = useRef<ContainerOperationOwner | null>(null)
   if (submitAttemptOwnerRef.current === null) {
     submitAttemptOwnerRef.current = new FlagSubmitAttemptOwner()
   }
@@ -341,14 +396,29 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   }, [gameId, challengeId, readEnabled])
 
   const isLimitReached = (challenge?.limit && (challenge.attempts ?? 0) >= challenge.limit) || false
+  const operationScope = containerOperationScope(user?.userId, challenge?.context?.participationId, gameId, challengeId)
+
+  useEffect(
+    () => () => {
+      containerCreateOperationRef.current?.key.release()
+      containerDeleteOperationRef.current?.key.release()
+      containerExtendOperationRef.current?.key.release()
+    },
+    [operationScope, readEnabled]
+  )
 
   const onCreate = async () => {
     if (!readEnabled || disabled) return
     setDisabled(true)
+    let operation: ContainerOperationOwner | undefined
 
     try {
-      const res = await api.game.gameCreateContainer(gameId, challengeId)
+      operation = retainContainerOperation('create', containerCreateOperationRef, operationScope)
+      const res = await api.game.gameCreateContainer(gameId, challengeId, {
+        headers: { 'X-RSCTF-Operation-Id': operation.id },
+      })
       if (!(await confirmCreatedInstance(res.data, mutate))) return
+      clearContainerOperation(containerCreateOperationRef, operation)
       showNotification({
         color: 'teal',
         title: t('challenge.notification.instance.created.title'),
@@ -356,6 +426,9 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch (e) {
+      if (operation && isTerminalContainerOperationError(e)) {
+        clearContainerOperation(containerCreateOperationRef, operation)
+      }
       showErrorMsg(e, t)
     } finally {
       setDisabled(false)
@@ -363,6 +436,9 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   }
 
   const requestDestroy = async () => {
+    let operation = containerDeleteOperationRef.current?.scope.startsWith(`${operationScope}:`)
+      ? containerDeleteOperationRef.current
+      : undefined
     try {
       await destroyReconciledInstance<ChallengeDetailModel>({
         refresh: mutate,
@@ -371,14 +447,20 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
           const expectedContainerId = latest.context?.instanceId
           if (!expectedContainerId)
             throw new Error('The refreshed challenge response is missing its instance identity.')
-          await api.game.gameDeleteContainer(gameId, challengeId, {
-            expectedContainerId,
-          })
+          const scope = `${operationScope}:${expectedContainerId}`
+          operation = retainContainerOperation('delete', containerDeleteOperationRef, scope)
+          await api.game.gameDeleteContainer(
+            gameId,
+            challengeId,
+            { expectedContainerId },
+            { headers: { 'X-RSCTF-Operation-Id': operation.id } }
+          )
         },
         publishAbsent: async (deleted) => {
           await mutate((current) => clearDestroyedInstanceContext(current, deleted), { revalidate: false })
         },
       })
+      if (operation) clearContainerOperation(containerDeleteOperationRef, operation)
       showNotification({
         color: 'teal',
         title: t('challenge.notification.instance.destroyed.title'),
@@ -386,6 +468,9 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch (e) {
+      if (operation && isTerminalContainerOperationError(e)) {
+        clearContainerOperation(containerDeleteOperationRef, operation)
+      }
       showErrorMsg(e, t)
     }
   }
@@ -403,20 +488,36 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   const onExtend = async () => {
     if (!readEnabled || disabled) return
     setDisabled(true)
+    let operation: ContainerOperationOwner | undefined
 
     try {
       await extendReconciledInstance({
         refresh: mutate,
-        extend: async (expectedContainerId) =>
-          (
-            await api.game.gameExtendContainerLifetime(gameId, challengeId, {
-              expectedContainerId,
-            })
-          ).data,
+        extend: async (expectedContainerId) => {
+          operation = retainContainerOperation(
+            'extend',
+            containerExtendOperationRef,
+            `${operationScope}:${expectedContainerId}`
+          )
+          return (
+            await api.game.gameExtendContainerLifetime(
+              gameId,
+              challengeId,
+              { expectedContainerId },
+              { headers: { 'X-RSCTF-Operation-Id': operation.id } }
+            )
+          ).data
+        },
         publish: async (extension) => {
           await mutate((latest) => mergeExtendedInstanceContext(latest, extension), { revalidate: false })
         },
       })
+      if (operation) clearContainerOperation(containerExtendOperationRef, operation)
+    } catch (e) {
+      if (operation && isTerminalContainerOperationError(e)) {
+        clearContainerOperation(containerExtendOperationRef, operation)
+      }
+      showErrorMsg(e, t)
     } finally {
       setDisabled(false)
     }
@@ -513,6 +614,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       })
     } catch (e) {
       showErrorMsg(e, t)
+      throw e
     }
   }
 
@@ -591,6 +693,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
     if (data === AnswerResult.Accepted) {
       setSolvedChallengeId(identity.challengeId)
+      void invalidatePlayerReads(mutateCache, [ACCOUNT_STATS_PATH, CHALLENGE_CATALOG_PATH])
       updateNotification({
         id: 'flag-submitted',
         color: 'teal',
@@ -694,6 +797,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       onDismissFlagVerdict={() => {
         if (flagVerdict) dispatchFlagVerdict({ type: 'dismiss', sequence: flagVerdict.sequence })
       }}
+      adStateOwner={adStateOwner}
     />
   )
 }

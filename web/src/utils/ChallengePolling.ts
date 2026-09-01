@@ -1,5 +1,4 @@
 import { httpErrorStatus, retryAfterMilliseconds } from '@Utils/ProfileRetry'
-import { getServerNowMilliseconds } from '@Utils/ServerClock'
 import { createUuid } from '@Utils/Uuid'
 
 export const MAX_CHALLENGE_POLL_RETRIES = 3
@@ -22,7 +21,7 @@ export interface ChallengeReadFailure {
   retryAfterMilliseconds?: number
 }
 
-const READ_FAILURES = new WeakMap<object, Map<ChallengeReadResource, ChallengeReadFailure>>()
+const READ_FAILURES = new WeakMap<object, ChallengeReadFailure>()
 const SAFE_DIAGNOSTIC_ID = /^[A-Za-z0-9._:-]{8,128}$/
 
 type ErrorWithResponseHeaders = {
@@ -60,15 +59,6 @@ const responseTraceId = (error: unknown) => {
   return safeDiagnosticId(traceId ?? null)
 }
 
-const challengeRetryAfterMilliseconds = (error: unknown, now: number): number | null => {
-  const headerDelay = retryAfterMilliseconds(error, now)
-  const retryAt = error && typeof error === 'object' ? (error as { retryAt?: unknown }).retryAt : undefined
-  const deadlineDelay = typeof retryAt === 'number' && Number.isFinite(retryAt) ? Math.max(0, retryAt - now) : null
-  if (headerDelay === null) return deadlineDelay
-  if (deadlineDelay === null) return headerDelay
-  return Math.max(headerDelay, deadlineDelay)
-}
-
 export const createChallengeRequestId = (resource: ChallengeReadResource) => `challenge-${resource}-${createUuid()}`
 
 export const challengeRequestHeaders = (requestId: string) => ({
@@ -82,21 +72,19 @@ export const challengeRequestHeaders = (requestId: string) => ({
 export const captureChallengeReadFailure = (error: unknown, resource: ChallengeReadResource, requestId: string) => {
   const normalized =
     error && typeof error === 'object' ? error : new Error('Challenge request failed', { cause: error })
-  const retryAfter = challengeRetryAfterMilliseconds(normalized, getServerNowMilliseconds())
-  const failures = READ_FAILURES.get(normalized) ?? new Map<ChallengeReadResource, ChallengeReadFailure>()
-  failures.set(resource, {
+  const retryAfter = retryAfterMilliseconds(normalized)
+  READ_FAILURES.set(normalized, {
     resource,
     requestId,
     serverTraceId: responseTraceId(normalized),
     retryAfterMilliseconds:
       retryAfter !== null && retryAfter >= 0 && retryAfter <= MAX_CHALLENGE_RETRY_AFTER_MS ? retryAfter : undefined,
   })
-  READ_FAILURES.set(normalized, failures)
   return normalized
 }
 
-export const challengeReadFailure = (error: unknown, resource: ChallengeReadResource) =>
-  error && typeof error === 'object' ? READ_FAILURES.get(error)?.get(resource) : undefined
+export const challengeReadFailure = (error: unknown) =>
+  error && typeof error === 'object' ? READ_FAILURES.get(error) : undefined
 
 export class NonJsonResponseError extends Error {
   readonly status: number
@@ -148,11 +136,11 @@ export const challengePollRetryDelay = (
   error: unknown,
   retryCount: number,
   random: () => number = Math.random,
-  now: number = getServerNowMilliseconds()
+  now: number = Date.now()
 ): number | null => {
   if (retryCount >= MAX_CHALLENGE_POLL_RETRIES || !isChallengePollRetryable(error)) return null
 
-  const retryAfter = challengeRetryAfterMilliseconds(error, now)
+  const retryAfter = retryAfterMilliseconds(error, now)
   if (retryAfter !== null && retryAfter > MAX_CHALLENGE_RETRY_AFTER_MS) return null
   const jitter = 0.8 + Math.min(1, Math.max(0, random())) * 0.4
   const backoff = Math.min(MAX_CHALLENGE_BACKOFF_MS, Math.round(1_000 * 2 ** retryCount * jitter))
@@ -197,8 +185,7 @@ export const createChallengePollOwner = () => {
 
 type RecoveryEntry = {
   dueAt: number
-  action: () => boolean | void
-  deferred: boolean
+  action: () => void
 }
 
 /**
@@ -209,80 +196,43 @@ type RecoveryEntry = {
 export const createChallengeRecoveryOwner = () => {
   const entries = new Map<string, RecoveryEntry>()
   let timer: ReturnType<typeof setTimeout> | null = null
-  let removeActivityListeners: (() => void) | null = null
 
-  const stopListeningForActivity = () => {
-    removeActivityListeners?.()
-    removeActivityListeners = null
-  }
-
-  const syncActivityListeners = () => {
-    const hasDeferred = Array.from(entries.values()).some((entry) => entry.deferred)
-    if (!hasDeferred) {
-      stopListeningForActivity()
-      return
-    }
-    if (removeActivityListeners) return
-    const currentDocument = typeof document === 'undefined' ? null : document
-    const currentWindow = typeof window === 'undefined' ? null : window
-    if (!currentDocument && !currentWindow) return
-    const resume = () => {
-      for (const [key, entry] of entries) {
-        if (!entry.deferred || entry.action() === false) continue
-        entries.delete(key)
-      }
-      syncActivityListeners()
-      arm()
-    }
-    currentDocument?.addEventListener('visibilitychange', resume)
-    currentWindow?.addEventListener('focus', resume)
-    currentWindow?.addEventListener('online', resume)
-    removeActivityListeners = () => {
-      currentDocument?.removeEventListener('visibilitychange', resume)
-      currentWindow?.removeEventListener('focus', resume)
-      currentWindow?.removeEventListener('online', resume)
-    }
-  }
-
-  function arm() {
+  const arm = () => {
     if (timer !== null) clearTimeout(timer)
     timer = null
-    syncActivityListeners()
-    const scheduled = Array.from(entries.values()).filter((entry) => !entry.deferred)
-    if (scheduled.length === 0) return
+    if (entries.size === 0) return
     const now = Date.now()
-    const nextDue = Math.min(...scheduled.map((entry) => entry.dueAt))
+    const nextDue = Math.min(...Array.from(entries.values(), (entry) => entry.dueAt))
     timer = setTimeout(
       () => {
         timer = null
         const readyAt = Date.now()
+        const ready: RecoveryEntry[] = []
         for (const [key, entry] of entries) {
-          if (entry.deferred || entry.dueAt > readyAt) continue
-          if (entry.action() === false) entry.deferred = true
-          else entries.delete(key)
+          if (entry.dueAt > readyAt) continue
+          entries.delete(key)
+          ready.push(entry)
         }
-        syncActivityListeners()
         arm()
+        for (const entry of ready) entry.action()
       },
       Math.max(0, nextDue - now)
     )
   }
 
   return {
-    schedule(key: string, delay: number, action: () => boolean | void) {
-      entries.set(key, { dueAt: Date.now() + Math.max(0, delay), action, deferred: false })
+    schedule(key: string, delay: number, action: () => void) {
+      entries.set(key, { dueAt: Date.now() + Math.max(0, delay), action })
       arm()
     },
     cancel(key: string) {
       if (!entries.delete(key)) return
-      syncActivityListeners()
       arm()
     },
     cancelAll() {
       entries.clear()
       if (timer !== null) clearTimeout(timer)
       timer = null
-      stopListeningForActivity()
     },
     pendingEntryCount: () => entries.size,
     pendingTimerCount: () => (timer === null ? 0 : 1),

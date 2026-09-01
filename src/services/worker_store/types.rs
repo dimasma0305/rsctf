@@ -15,6 +15,14 @@ pub enum WorkerStoreError {
     Conflict(String),
 }
 
+#[derive(Clone, Debug)]
+pub enum EnrollmentClaim {
+    Claimed { worker_id: Uuid },
+    Completed { worker_id: Uuid, response: Value },
+    InProgress,
+    Invalid,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkerAdministrativeState {
     Enabled,
@@ -353,6 +361,7 @@ pub enum PlacementOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DefinitionUpdateOutcome {
     Updated { generation: i64 },
+    AlreadyCurrent { generation: i64 },
     Stale,
     WorkerNoLongerCompatible,
     InsufficientCapacity,

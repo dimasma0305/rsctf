@@ -13,6 +13,8 @@ use crate::utils::enums::{ChallengeReviewStatus, ChallengeType};
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::{MessageResponse, RequestResponse};
 
+const ROTATE_KOTH_TOKEN_BINDING: &[u8] = b"rotate-koth-api-token";
+
 /// The capability a team uses on one exact hill. Marker tokens are scoped to a
 /// crown cycle; Leaderboard/API tokens are stable until explicit rotation.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -22,6 +24,21 @@ pub struct KothTokenModel {
     pub token: Option<String>,
     /// `"warmup"` (no round yet) | `"no-cycle-token"` | `"ready"`.
     pub status: String,
+    pub revision: i64,
+}
+
+/// Successful capability rotation. Keeping this separate from the read model
+/// makes response ownership fields mandatory for every mutation result.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct KothTokenMutationResultModel {
+    pub round: i32,
+    pub token: Option<String>,
+    pub status: String,
+    pub revision: i64,
+    pub operation_id: uuid::Uuid,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub recovery_expires_at: chrono::DateTime<chrono::Utc>,
 }
 
 enum KothTokenCaller {
@@ -58,26 +75,6 @@ fn token_rotation_cooldown_response(retry_after_seconds: u64) -> Response {
         HeaderValue::from_static("private, no-store"),
     );
     response
-}
-
-fn manual_api_rotation_is_allowed(scoring_started: bool, scoring_paused: bool) -> bool {
-    !scoring_started || scoring_paused
-}
-
-async fn load_manual_api_rotation_gate(
-    connection: &mut sqlx::PgConnection,
-    game_id: i32,
-) -> AppResult<(bool, bool)> {
-    sqlx::query_as(
-        r#"SELECT koth_scoring_start_round IS NOT NULL,
-                  ad_scoring_paused
-             FROM "Games" WHERE id = $1"#,
-    )
-    .bind(game_id)
-    .fetch_optional(connection)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("Game not found"))
 }
 
 async fn acquire_koth_token_read_fence(
@@ -254,7 +251,7 @@ pub async fn koth_hill_token(
     // API arenas take the primary-key fast path. The second value distinguishes
     // a missing token on an already-issued API hill from a Marker hill without
     // reparsing the frozen JSON snapshot on every cache fill.
-    let stable: (Option<String>, bool, bool) = sqlx::query_as(
+    let stable: (Option<String>, bool, bool, i64) = sqlx::query_as(
         r#"SELECT
              (SELECT token
                 FROM "KothApiTeamTokens"
@@ -275,7 +272,17 @@ pub async fn koth_hill_token(
                   AND challenge.is_enabled = TRUE
                   AND challenge.review_status = $4
                   AND challenge."Type" = $5
-             )"#,
+             ),
+             COALESCE(
+               (SELECT revision FROM "PlayerCredentialRevisions"
+                 WHERE participation_id = $3
+                   AND credential_kind = 'KothApi'
+                   AND challenge_id = $2),
+               (SELECT generation::BIGINT FROM "KothApiTeamTokens"
+                 WHERE game_id = $1 AND challenge_id = $2
+                   AND participation_id = $3),
+               0
+             )::BIGINT"#,
     )
     .bind(id)
     .bind(challenge_id)
@@ -326,6 +333,7 @@ pub async fn koth_hill_token(
         round: latest_round,
         token,
         status,
+        revision: stable.3,
     };
     if let (Some(epochs), Ok(json)) = (live_epochs.as_ref(), serde_json::to_vec(&model)) {
         let key = crate::services::ad::koth_capability_cache::hill_token_key(
@@ -518,10 +526,18 @@ pub async fn rotate_koth_api_token(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((id, challenge_id)): Path<(i32, i32)>,
+    crate::controllers::game::credential_operations::CredentialMutationInput(request): crate::controllers::game::credential_operations::CredentialMutationInput,
 ) -> AppResult<Response> {
     let part = resolve_participation(&st, &user, id).await?;
     require_live_hill(&st, id, challenge_id).await?;
     let mut roster = crate::controllers::game::ad::acquire_roster_access(&st, &user, &part).await?;
+
+    crate::utils::single_flight::acquire_transaction_advisory_lock(
+        roster.transaction_mut(),
+        &crate::services::ad::engine::game_lock_key(id),
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     if !crate::services::ad::koth_api_capability::is_api_hill(
         roster.transaction_mut(),
         id,
@@ -534,20 +550,15 @@ pub async fn rotate_koth_api_token(
             "Only Leaderboard/API KotH capabilities can be rotated manually",
         ));
     }
-
-    crate::utils::single_flight::acquire_transaction_advisory_lock(
+    if !crate::services::ad::koth_api_capability::is_api_hill_participation(
         roster.transaction_mut(),
-        &crate::services::ad::engine::game_lock_key(id),
+        id,
+        challenge_id,
+        part.id,
     )
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let (scoring_started, scoring_paused) =
-        load_manual_api_rotation_gate(roster.transaction_mut(), id).await?;
-    if !manual_api_rotation_is_allowed(scoring_started, scoring_paused) {
-        roster.release().await?;
-        return Err(AppError::conflict(
-            "Leaderboard capability rotation is available before official scoring or while scoring is paused",
-        ));
+    .await?
+    {
+        return Err(AppError::Forbidden);
     }
     let reconciled =
         crate::services::ad::koth_api_capability::reconcile_pending_event_capabilities(
@@ -557,6 +568,55 @@ pub async fn rotate_koth_api_token(
             Some(&[part.id]),
         )
         .await?;
+    let latest_round = load_latest_round_on(roster.transaction_mut(), id).await?;
+    let scope = crate::controllers::game::credential_operations::CredentialScope {
+        participation_id: part.id,
+        game_id: id,
+        challenge_id,
+        actor_user_id: user.id,
+        kind: crate::controllers::game::credential_operations::CredentialKind::KothApi,
+    };
+    let reservation: crate::controllers::game::credential_operations::CredentialReservation<
+        KothTokenMutationResultModel,
+    > = crate::controllers::game::credential_operations::reserve(
+        &st,
+        roster.transaction_mut(),
+        scope,
+        request,
+        ROTATE_KOTH_TOKEN_BINDING,
+    )
+    .await?;
+    let operation = match reservation {
+        crate::controllers::game::credential_operations::CredentialReservation::Recovered(
+            result,
+        ) => {
+            let is_current: bool = sqlx::query_scalar(
+                r#"SELECT EXISTS (
+                     SELECT 1 FROM "KothApiTeamTokens"
+                      WHERE game_id = $1 AND challenge_id = $2
+                        AND participation_id = $3 AND token = $4
+                        AND NOT revocation_pending
+                   )"#,
+            )
+            .bind(id)
+            .bind(challenge_id)
+            .bind(part.id)
+            .bind(result.token.as_deref().unwrap_or_default())
+            .fetch_one(&mut **roster.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+            if !is_current {
+                return Err(AppError::conflict(
+                    "credential operation no longer names the active KotH capability",
+                ));
+            }
+            roster.release().await?;
+            return Ok(no_store_token_response(result));
+        }
+        crate::controllers::game::credential_operations::CredentialReservation::Fresh(
+            operation,
+        ) => operation,
+    };
     let token = match crate::services::ad::koth_api_capability::rotate_player_api_capability(
         roster.transaction_mut(),
         id,
@@ -569,6 +629,12 @@ pub async fn rotate_koth_api_token(
         crate::services::ad::koth_api_capability::PlayerApiTokenRotation::Cooldown {
             retry_after_seconds,
         } => {
+            crate::controllers::game::credential_operations::cancel(
+                roster.transaction_mut(),
+                scope,
+                operation,
+            )
+            .await?;
             let cache_mutation = if reconciled.is_empty() {
                 None
             } else {
@@ -592,6 +658,24 @@ pub async fn rotate_koth_api_token(
             return Ok(token_rotation_cooldown_response(retry_after_seconds));
         }
     };
+    let durable_generation: i64 = sqlx::query_scalar(
+        r#"SELECT generation::BIGINT FROM "KothApiTeamTokens"
+            WHERE game_id = $1 AND challenge_id = $2
+              AND participation_id = $3 AND token = $4
+              AND NOT revocation_pending"#,
+    )
+    .bind(id)
+    .bind(challenge_id)
+    .bind(part.id)
+    .bind(&token)
+    .fetch_one(&mut **roster.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if durable_generation != operation.result_revision {
+        return Err(AppError::conflict(
+            "KotH capability revision changed during rotation",
+        ));
+    }
     crate::services::ad::koth_api_capability::clear_unsettled_scores_for_capability_change(
         roster.transaction_mut(),
         id,
@@ -599,27 +683,71 @@ pub async fn rotate_koth_api_token(
         &[part.id],
     )
     .await?;
-    let latest_round = load_latest_round_on(roster.transaction_mut(), id).await?;
-    let cache_mutation =
-        crate::services::ad::koth_capability_cache::begin_participant_epoch_mutation(
+    let result = KothTokenMutationResultModel {
+        round: latest_round,
+        token: Some(token),
+        status: "ready".to_string(),
+        revision: operation.result_revision,
+        operation_id: operation.operation_id,
+        recovery_expires_at: operation.recovery_expires_at,
+    };
+    crate::controllers::game::credential_operations::complete(
+        &st,
+        roster.transaction_mut(),
+        scope,
+        operation,
+        &result,
+    )
+    .await?;
+    let mut game_cache_mutation = if reconciled.is_empty() {
+        None
+    } else {
+        Some(
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
+                st.cache.as_ref(),
+                id,
+            )
+            .await?,
+        )
+    };
+    let participant_cache_mutation =
+        match crate::services::ad::koth_capability_cache::begin_participant_epoch_mutation(
             st.cache.as_ref(),
             id,
             part.id,
         )
-        .await?;
+        .await
+        {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                if let Some(mutation) = game_cache_mutation.take() {
+                    crate::services::ad::koth_capability_cache::finish_game_epoch_mutation(
+                        st.cache.as_ref(),
+                        id,
+                        mutation,
+                    )
+                    .await;
+                }
+                return Err(error);
+            }
+        };
     roster.release().await?;
+    if let Some(mutation) = game_cache_mutation {
+        crate::services::ad::koth_capability_cache::finish_game_epoch_mutation(
+            st.cache.as_ref(),
+            id,
+            mutation,
+        )
+        .await;
+    }
     crate::services::ad::koth_capability_cache::finish_participant_epoch_mutation(
         st.cache.as_ref(),
         id,
         part.id,
-        cache_mutation,
+        participant_cache_mutation,
     )
     .await;
-    Ok(no_store_token_response(KothTokenModel {
-        round: latest_round,
-        token: Some(token),
-        status: "ready".to_string(),
-    }))
+    Ok(no_store_token_response(result))
 }
 
 #[cfg(test)]
@@ -627,16 +755,18 @@ mod tests {
     use axum::http::header;
 
     use super::{
-        load_manual_api_rotation_gate, manual_api_rotation_is_allowed, no_store_token_response,
-        token_rotation_cooldown_response, KothTokenModel,
+        no_store_token_response, token_rotation_cooldown_response, KothTokenMutationResultModel,
     };
 
     #[test]
     fn plaintext_capability_responses_cannot_be_cached() {
-        let response = no_store_token_response(KothTokenModel {
+        let response = no_store_token_response(KothTokenMutationResultModel {
             round: 7,
             token: Some("koth_example_token".to_string()),
             status: "ready".to_string(),
+            revision: 3,
+            operation_id: uuid::Uuid::from_u128(1),
+            recovery_expires_at: chrono::Utc::now(),
         });
         assert_eq!(
             response
@@ -663,52 +793,5 @@ mod tests {
             response.headers()[header::CACHE_CONTROL],
             "private, no-store"
         );
-    }
-
-    #[test]
-    fn player_rotation_is_gated_once_official_scoring_starts() {
-        assert!(manual_api_rotation_is_allowed(false, false));
-        assert!(manual_api_rotation_is_allowed(false, true));
-        assert!(manual_api_rotation_is_allowed(true, true));
-        assert!(!manual_api_rotation_is_allowed(true, false));
-    }
-
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn mixed_ad_start_does_not_close_the_koth_rotation_window() {
-        use sqlx::Connection as _;
-
-        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
-        let mut connection = sqlx::PgConnection::connect(&database_url).await.unwrap();
-        sqlx::raw_sql(
-            r#"CREATE TEMP TABLE "Games" (
-                 id INTEGER PRIMARY KEY,
-                 ad_scoring_start_round INTEGER,
-                 koth_scoring_start_round INTEGER,
-                 ad_scoring_paused BOOLEAN NOT NULL
-               );
-               INSERT INTO "Games" VALUES (7, 3, NULL, FALSE);"#,
-        )
-        .execute(&mut connection)
-        .await
-        .unwrap();
-
-        let (koth_started, paused) = load_manual_api_rotation_gate(&mut connection, 7)
-            .await
-            .unwrap();
-        assert!(!koth_started);
-        assert!(!paused);
-        assert!(manual_api_rotation_is_allowed(koth_started, paused));
-
-        sqlx::query(r#"UPDATE "Games" SET koth_scoring_start_round = 5 WHERE id = 7"#)
-            .execute(&mut connection)
-            .await
-            .unwrap();
-        let (koth_started, paused) = load_manual_api_rotation_gate(&mut connection, 7)
-            .await
-            .unwrap();
-        assert!(koth_started);
-        assert!(!manual_api_rotation_is_allowed(koth_started, paused));
     }
 }

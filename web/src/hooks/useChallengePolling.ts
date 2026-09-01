@@ -109,13 +109,13 @@ export const useChallengePolling = <T>({
         return
       }
       recoveryOwner.schedule(ownedRecoveryKey, delay, () => {
-        const ready =
+        if (
           activeRef.current &&
           (config.refreshWhenHidden || config.isVisible()) &&
           (config.refreshWhenOffline || config.isOnline())
-        if (!ready) return false
-        void revalidate(options)
-        return true
+        ) {
+          void revalidate(options)
+        }
       })
     },
   })

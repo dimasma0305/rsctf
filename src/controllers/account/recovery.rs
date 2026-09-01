@@ -1,200 +1,32 @@
 //! Account recovery / email-verification / password-reset / mail-change confirm
 //! — split from account/mod.rs to stay under the 1000-line rule.
 use super::*;
-use sea_orm::sea_query::Expr;
-use sea_orm::DatabaseTransaction;
+use hmac::{Hmac, KeyInit, Mac};
+use sha2::{Digest, Sha256};
 
-const RECOVERY_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
-const RECOVERY_RESPONSE_FLOOR: std::time::Duration = std::time::Duration::from_millis(25);
+mod recovery_mail;
+mod reset_ticket_store;
+use recovery_mail::process_recovery_mail;
+pub(super) use reset_ticket_store::invalidate_password_reset_tokens;
+use reset_ticket_store::{
+    insert_reset_ticket, lock_reset_identity, reset_current_key, PasswordResetTicket,
+};
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct PasswordResetTicket {
-    user_id: Uuid,
-    security_stamp: String,
-}
+use super::email_change_support::{
+    confirm_email_change_ticket, email_confirmation_required, update_email_serialized,
+    EmailUpdateMode, EmailUpdateOutcome, EmailUpdateRequest, ACCOUNT_LINK_TTL,
+};
+#[cfg(test)]
+use super::email_change_support::{publish_ticket, rollback_ticket_publication};
 
-fn reset_current_key(user_id: Uuid) -> String {
-    format!("pwreset-current:{user_id}")
-}
+const RECOVERY_TTL: std::time::Duration = ACCOUNT_LINK_TTL;
+const RECOVERY_RESPONSE_FLOOR: std::time::Duration = std::time::Duration::from_secs(1);
 
-pub(crate) fn verify_email_domain(email: &str, domain_list: &str) -> bool {
-    let Some((local, domain)) = email.split_once('@') else {
-        return false;
-    };
-    if local.is_empty() || domain.is_empty() || domain.contains('@') {
-        return false;
+async fn recovery_success(started: tokio::time::Instant) -> MessageResponse {
+    if let Some(remaining) = RECOVERY_RESPONSE_FLOOR.checked_sub(started.elapsed()) {
+        tokio::time::sleep(remaining).await;
     }
-    if domain_list.trim().is_empty() {
-        return true;
-    }
-    domain_list
-        .split(',')
-        .map(str::trim)
-        .filter(|domain| !domain.is_empty())
-        .any(|allowed| allowed.eq_ignore_ascii_case(domain))
-}
-
-pub(crate) async fn load_email_domain_list(st: &SharedState) -> AppResult<String> {
-    Ok(
-        config::Entity::find_by_id("AccountPolicy:EmailDomainList".to_string())
-            .one(&st.db)
-            .await?
-            .and_then(|row| row.value)
-            .unwrap_or_default(),
-    )
-}
-
-async fn email_confirmation_required(st: &SharedState) -> AppResult<bool> {
-    Ok(
-        config::Entity::find_by_id("AccountPolicy:EmailConfirmationRequired".to_string())
-            .one(&st.db)
-            .await?
-            .and_then(|row| row.value)
-            .map(|value| value == "true")
-            .unwrap_or(st.config.account.email_confirmation_required),
-    )
-}
-
-async fn update_password_if_stamp_matches(
-    txn: &DatabaseTransaction,
-    user_id: Uuid,
-    normalized_email: &str,
-    expected_stamp: &str,
-    password_hash: String,
-    new_stamp: String,
-) -> AppResult<bool> {
-    let result = user::Entity::update_many()
-        .col_expr(user::Column::PasswordHash, Expr::value(password_hash))
-        .col_expr(user::Column::SecurityStamp, Expr::value(new_stamp))
-        .filter(user::Column::Id.eq(user_id))
-        .filter(user::Column::NormalizedEmail.eq(normalized_email))
-        .filter(user::Column::SecurityStamp.eq(expected_stamp))
-        .exec(txn)
-        .await?;
-    Ok(result.rows_affected == 1)
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum EmailUpdateOutcome {
-    Updated,
-    Conflict,
-    StampMismatch,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EmailUpdateMode {
-    Immediate,
-    ConfirmedTicket,
-}
-
-struct EmailUpdateRequest<'a> {
-    user_id: Uuid,
-    expected_stamp: &'a str,
-    email: &'a str,
-    normalized_email: &'a str,
-    new_stamp: String,
-    mode: EmailUpdateMode,
-}
-
-/// Commit an email identity change under the same cross-replica lock used by
-/// password registration, OAuth provisioning, and admin identity writers.
-/// `normalized_email` is not protected by a database unique constraint on
-/// existing installations, so the in-lock recheck is the authoritative guard;
-/// any earlier handler-level lookup is only a fast failure path.
-async fn update_email_serialized(
-    pool: &sqlx::PgPool,
-    config: &crate::models::internal::configs::AppConfig,
-    request: EmailUpdateRequest<'_>,
-) -> AppResult<EmailUpdateOutcome> {
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(REGISTRATION_LOCK_ID)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-
-    // REGISTRATION_LOCK_ID precedes the shared account-policy lock everywhere
-    // a user identity can be created or changed. Revalidate the domain and
-    // confirmation mode here, after any admin policy update we waited behind.
-    let policy =
-        crate::services::anti_cheat::lock_and_load_account_policy(&mut transaction, config).await?;
-    if !verify_email_domain(request.email, &policy.email_domain_list) {
-        return Err(AppError::bad_request("Email domain is not allowed"));
-    }
-    if request.mode == EmailUpdateMode::Immediate && policy.email_confirmation_required {
-        return Err(AppError::bad_request(
-            "Email confirmation policy changed; retry the email change",
-        ));
-    }
-
-    let collision: bool = sqlx::query_scalar(
-        r#"SELECT EXISTS(
-               SELECT 1 FROM "AspNetUsers"
-                WHERE normalized_email = $1 AND id <> $2
-           )"#,
-    )
-    .bind(request.normalized_email)
-    .bind(request.user_id)
-    .fetch_one(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if collision {
-        transaction
-            .rollback()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        return Ok(EmailUpdateOutcome::Conflict);
-    }
-
-    let result = sqlx::query(
-        r#"UPDATE "AspNetUsers"
-              SET email = $1,
-                  normalized_email = $2,
-                  email_confirmed = TRUE,
-                  security_stamp = $3
-            WHERE id = $4
-              AND security_stamp = $5
-              AND email_confirmed = TRUE
-              AND role <> $6"#,
-    )
-    .bind(request.email)
-    .bind(request.normalized_email)
-    .bind(request.new_stamp)
-    .bind(request.user_id)
-    .bind(request.expected_stamp)
-    .bind(Role::Banned as i16)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if result.rows_affected() != 1 {
-        transaction
-            .rollback()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        return Ok(EmailUpdateOutcome::StampMismatch);
-    }
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(EmailUpdateOutcome::Updated)
-}
-
-pub(super) async fn invalidate_password_reset_tokens(st: &SharedState, user_id: Uuid) {
-    let current_key = reset_current_key(user_id);
-    if let Some(token) = st.cache.get(&current_key).await {
-        if st
-            .cache
-            .compare_and_remove(&current_key, token.as_ref())
-            .await
-        {
-            if let Ok(token) = std::str::from_utf8(&token) {
-                st.cache.remove(&format!("pwreset:{token}")).await;
-            }
-        }
-    }
+    MessageResponse::ok("If that email is registered, a password reset link has been sent.")
 }
 
 async fn update_authenticated_password(
@@ -256,15 +88,31 @@ pub async fn logout(
 pub async fn change_password(
     State(st): State<SharedState>,
     user: CurrentUser,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(model): Json<PasswordChangeModel>,
 ) -> AppResult<Response> {
     validate_password(&model.new)?;
+    let account_scope = format!("credential-account:{}:{}", user.id, user.security_stamp);
+    let source =
+        anti_cheat::client_ip(&headers, Some(peer.ip())).unwrap_or_else(|| peer.ip().to_string());
+    let source_scope = format!("credential-source:{source}");
+    let mut credential_work = crate::services::credential_admission::try_acquire_scopes(
+        st.pg(),
+        crate::services::credential_admission::CredentialWorkClass::Interactive,
+        &[&account_scope, &source_scope],
+    )
+    .await?;
     let current = load_user(&st, user.id).await?;
     if !current.email_confirmed
         || current.role == Role::Banned
         || current.security_stamp.as_deref() != Some(user.security_stamp.as_str())
     {
         return Err(AppError::Unauthorized);
+    }
+    if let Some(normalized_email) = current.normalized_email.as_deref() {
+        let email_scope = format!("credential-email:{normalized_email}");
+        credential_work.try_add_scopes(&[&email_scope]).await?;
     }
     let old_hash = current.password_hash.clone().unwrap_or_default();
     if model.old.len() > MAX_PASSWORD_BYTES {
@@ -273,7 +121,9 @@ pub async fn change_password(
     if !verify_password_async(model.old, old_hash.clone()).await {
         return Err(AppError::bad_request("Old password is incorrect"));
     }
+    credential_work.ensure_owned().await?;
     let new_hash = hash_password_async(model.new).await?;
+    credential_work.ensure_owned().await?;
     let new_stamp = Uuid::new_v4().to_string();
     if !update_authenticated_password(
         st.pg(),
@@ -315,6 +165,8 @@ pub async fn change_password(
 /// whether a matching user was found or the mail relay was even configured.
 pub async fn recovery(
     State(st): State<SharedState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(model): Json<RecoveryModel>,
 ) -> AppResult<MessageResponse> {
     // Captcha gate (RSCTF `AccountController.Recovery`: `if (UseCaptcha &&
@@ -326,7 +178,11 @@ pub async fn recovery(
         crate::services::captcha::CaptchaSettings::load(st.pg(), st.config.account.use_captcha)
             .await?;
     let captcha_admission = captcha
-        .verify_local(model.challenge.as_deref().unwrap_or(""), st.cache.as_ref())
+        .verify_local(
+            model.challenge.as_deref().unwrap_or(""),
+            st.cache.as_ref(),
+            st.config.jwt_secret.as_bytes(),
+        )
         .await?;
     crate::services::anti_cheat::authorize_captcha_admission(
         st.pg(),
@@ -336,78 +192,24 @@ pub async fn recovery(
     .await?;
 
     let response_started = tokio::time::Instant::now();
+    let operation_id = model.operation_id;
+    if operation_id.is_nil() {
+        return Err(AppError::bad_request("operationId is required"));
+    }
+    let request_ip = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()));
     let norm_email = if model.email.len() <= MAX_EMAIL_BYTES {
         model.email.trim().to_uppercase()
     } else {
         String::new()
     };
 
-    if let Some(user) = user::Entity::find()
-        .filter(user::Column::NormalizedEmail.eq(norm_email))
-        .one(&st.db)
-        .await?
-    {
-        // Opaque single-use token. A per-user current-generation pointer makes a
-        // newer recovery request supersede every older outstanding link.
-        let token = crate::utils::codec::random_token(32);
-        let key = format!("pwreset:{token}");
-        let current_key = reset_current_key(user.id);
-        invalidate_password_reset_tokens(&st, user.id).await;
-        let ticket = PasswordResetTicket {
-            user_id: user.id,
-            security_stamp: user.security_stamp.clone().unwrap_or_default(),
-        };
-        let ticket = serde_json::to_vec(&ticket)
-            .map_err(|e| AppError::internal(format!("password-reset ticket: {e}")))?;
-        st.cache.set(&key, &ticket, Some(RECOVERY_TTL)).await;
-        st.cache
-            .set(&current_key, token.as_bytes(), Some(RECOVERY_TTL))
-            .await;
+    // Do not cancel this future on a process-local wall-clock deadline: doing so
+    // can drop the transaction after the SMTP intent has begun committing and
+    // leave the caller with an ambiguous success. Every PostgreSQL statement in
+    // the preparation path has a shorter server-side timeout instead.
+    process_recovery_mail(&st, operation_id, &norm_email, request_ip.as_deref()).await?;
 
-        // Build the link the SPA's /account/reset page consumes: the token verbatim
-        // plus the base64-encoded email (as RSCTF's GetEmailLink does). An optional
-        // RSCTF_PUBLIC_URL makes it absolute; otherwise it stays site-relative.
-        let user_email = user
-            .email
-            .clone()
-            .unwrap_or_else(|| model.email.trim().to_string());
-        let base = std::env::var("RSCTF_PUBLIC_URL")
-            .ok()
-            .map(|u| u.trim_end_matches('/').to_string())
-            .unwrap_or_default();
-        let link = format!(
-            "{base}/account/reset?token={token}&email={}",
-            crate::utils::codec::base64_encode(user_email.as_bytes())
-        );
-
-        // SMTP latency and audit insertion must not reveal whether the lookup hit.
-        // Token generation stays ordered on the request path, while delivery runs
-        // best-effort after the indistinguishable response has been produced.
-        let background = st.clone();
-        tokio::spawn(async move {
-            let (subject, body) = crate::services::mail::reset_password(
-                &link,
-                Some(background.config.global.title.as_str()),
-            );
-            let sender = crate::services::mail::MailSender::from_env();
-            let _ = sender.send(&user_email, &subject, &body).await;
-            crate::services::audit::info(
-                &background,
-                "AccountController",
-                None,
-                None,
-                format!("Password recovery email requested for {user_email}"),
-            )
-            .await;
-        });
-    }
-
-    if let Some(remaining) = RECOVERY_RESPONSE_FLOOR.checked_sub(response_started.elapsed()) {
-        tokio::time::sleep(remaining).await;
-    }
-    Ok(MessageResponse::ok(
-        "If that email is registered, a password reset link has been sent.",
-    ))
+    Ok(recovery_success(response_started).await)
 }
 
 /// `POST /api/account/passwordreset` -> `void`.
@@ -416,8 +218,15 @@ pub async fn recovery(
 /// named by the (base64) email, then re-hash and store the new password.
 pub async fn password_reset(
     State(st): State<SharedState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(model): Json<PasswordResetModel>,
 ) -> AppResult<Response> {
+    if model.operation_id.is_nil() {
+        return Err(AppError::bad_request(
+            "A valid password-reset operation ID is required",
+        ));
+    }
     if model.password.len() < 6 {
         return Err(AppError::bad_request(
             "Password must be at least 6 characters",
@@ -431,14 +240,72 @@ pub async fn password_reset(
         return Err(AppError::bad_request("Invalid or expired reset token"));
     }
 
+    let token_hash = Sha256::digest(model.r_token.as_bytes()).to_vec();
+    let mut digest_builder = Hmac::<Sha256>::new_from_slice(st.config.jwt_secret.as_bytes())
+        .map_err(|_| AppError::internal("initialize password reset request digest"))?;
+    Mac::update(&mut digest_builder, b"rsctf:password-reset-attempt:v1\0");
+    Mac::update(&mut digest_builder, model.email.as_bytes());
+    Mac::update(&mut digest_builder, model.password.as_bytes());
+    let request_digest = digest_builder.finalize().into_bytes().to_vec();
+    let operation_replay: Option<(Vec<u8>, Vec<u8>, i16)> = sqlx::query_as(
+        r#"SELECT token_hash, request_digest, status
+             FROM "PasswordResetAttempts" WHERE operation_id = $1"#,
+    )
+    .bind(model.operation_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some((bound_token, bound_digest, status)) = operation_replay {
+        if bound_token != token_hash || bound_digest != request_digest {
+            return Err(AppError::conflict(
+                "Password reset operation ID is bound to different input",
+            ));
+        }
+        if status == 1 {
+            let mut resp = MessageResponse::ok("").into_response();
+            set_cookie(&mut resp, &clear_session_cookie(st.config.cookie_secure))?;
+            return Ok(resp);
+        }
+    }
+
+    // A terminal operation replay above performs no credential work and remains
+    // stable even while the work budget is full. New/recoverable work is admitted
+    // on the only trustworthy identity available before ticket/account reads,
+    // then extended with resolved semantic identities below.
+    let source =
+        anti_cheat::client_ip(&headers, Some(peer.ip())).unwrap_or_else(|| peer.ip().to_string());
+    let source_scope = format!("credential-source:{source}");
+    let mut credential_work = crate::services::credential_admission::try_acquire_scopes(
+        st.pg(),
+        crate::services::credential_admission::CredentialWorkClass::Interactive,
+        &[&source_scope],
+    )
+    .await?;
+
     let key = format!("pwreset:{}", model.r_token);
-    let ticket_bytes = st
-        .cache
-        .get(&key)
-        .await
-        .ok_or_else(|| AppError::bad_request("Invalid or expired reset token"))?;
-    let ticket: PasswordResetTicket = serde_json::from_slice(&ticket_bytes)
-        .map_err(|_| AppError::bad_request("Invalid or expired reset token"))?;
+    let durable_ticket: Option<(Uuid, String)> = sqlx::query_as(
+        r#"SELECT user_id, security_stamp
+             FROM "PasswordResetTickets"
+            WHERE token_hash = $1
+              AND expires_at_utc > clock_timestamp()
+              AND superseded_at_utc IS NULL
+              AND consumed_at_utc IS NULL"#,
+    )
+    .bind(&token_hash)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let ticket = if let Some((user_id, security_stamp)) = durable_ticket {
+        PasswordResetTicket {
+            user_id,
+            security_stamp,
+        }
+    } else {
+        // A cache-only legacy ticket has no recoverable absolute expiry. Never
+        // extend it by promoting it at presentation time; new recovery links
+        // are durable from issuance and preserve their original deadline.
+        return Err(AppError::bad_request("Invalid or expired reset token"));
+    };
 
     // The (base64) email must resolve to the same account the token was minted for.
     let email = crate::utils::codec::base64_decode(&model.email)
@@ -457,49 +324,180 @@ pub async fn password_reset(
     if current.security_stamp.as_deref() != Some(ticket.security_stamp.as_str()) {
         return Err(AppError::bad_request("Invalid or expired reset token"));
     }
+    let account_scope = format!(
+        "credential-account:{}:{}",
+        ticket.user_id, ticket.security_stamp
+    );
+    let token_scope = format!("credential-reset-token:{}", hex::encode(&token_hash));
+    let email_scope = format!("credential-email:{norm_email}");
+    credential_work
+        .try_add_scopes(&[&account_scope, &token_scope, &email_scope])
+        .await?;
 
-    // Do the expensive work before claiming the token. The conditional database
-    // update below still rejects a concurrent security-stamp rotation.
-    let new_hash = hash_password_async(model.password.clone()).await?;
-
-    // Atomically claim the current generation, then consume its ticket. Exactly
-    // one concurrent request can pass this point, and an older generation cannot.
-    let current_key = reset_current_key(ticket.user_id);
-    if !st
-        .cache
-        .compare_and_remove(&current_key, model.r_token.as_bytes())
+    let lease_token = Uuid::new_v4();
+    let mut claim = st
+        .pg()
+        .begin()
         .await
-    {
-        return Err(AppError::bad_request("Invalid or expired reset token"));
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let ticket_claimable: bool = sqlx::query_scalar(
+        r#"SELECT expires_at_utc > clock_timestamp()
+                  AND superseded_at_utc IS NULL AND consumed_at_utc IS NULL
+             FROM "PasswordResetTickets"
+            WHERE token_hash = $1 FOR UPDATE"#,
+    )
+    .bind(&token_hash)
+    .fetch_optional(&mut *claim)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .unwrap_or(false);
+    let existing: Option<(Uuid, Vec<u8>, i16, bool)> = sqlx::query_as(
+        r#"SELECT operation_id, request_digest, status,
+                  lease_expires_at_utc > clock_timestamp()
+             FROM "PasswordResetAttempts" WHERE token_hash = $1 FOR UPDATE"#,
+    )
+    .bind(&token_hash)
+    .fetch_optional(&mut *claim)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some((operation_id, digest, status, lease_live)) = existing {
+        if operation_id != model.operation_id || digest != request_digest {
+            return Err(AppError::conflict(
+                "Reset token is already bound to another attempt",
+            ));
+        }
+        if status == 1 {
+            claim
+                .rollback()
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+            let mut resp = MessageResponse::ok("").into_response();
+            set_cookie(&mut resp, &clear_session_cookie(st.config.cookie_secure))?;
+            return Ok(resp);
+        }
+        if lease_live {
+            return Err(AppError::too_many_requests(1));
+        }
+        if !ticket_claimable {
+            return Err(AppError::bad_request("Invalid or expired reset token"));
+        }
+        sqlx::query(
+            r#"UPDATE "PasswordResetAttempts"
+                  SET lease_token = $2,
+                      lease_expires_at_utc = clock_timestamp() + INTERVAL '45 seconds'
+                WHERE operation_id = $1 AND status = 0"#,
+        )
+        .bind(model.operation_id)
+        .bind(lease_token)
+        .execute(&mut *claim)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    } else {
+        if !ticket_claimable {
+            return Err(AppError::bad_request("Invalid or expired reset token"));
+        }
+        sqlx::query(
+            r#"INSERT INTO "PasswordResetAttempts"
+                   (operation_id, token_hash, request_digest, lease_token,
+                    lease_expires_at_utc)
+               VALUES ($1, $2, $3, $4,
+                       clock_timestamp() + INTERVAL '45 seconds')"#,
+        )
+        .bind(model.operation_id)
+        .bind(&token_hash)
+        .bind(&request_digest)
+        .bind(lease_token)
+        .execute(&mut *claim)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     }
-    let consumed = st
-        .cache
-        .get_and_remove(&key)
+    claim
+        .commit()
         .await
-        .ok_or_else(|| AppError::bad_request("Invalid or expired reset token"))?;
-    if consumed != ticket_bytes {
-        return Err(AppError::bad_request("Invalid or expired reset token"));
+        .map_err(|error| AppError::internal(error.to_string()))?;
+
+    let new_hash = hash_password_async(model.password.clone()).await?;
+    credential_work.ensure_owned().await?;
+    let renewed_attempt = sqlx::query(
+        r#"UPDATE "PasswordResetAttempts"
+              SET lease_expires_at_utc = clock_timestamp() + INTERVAL '45 seconds'
+            WHERE operation_id = $1 AND lease_token = $2 AND status = 0"#,
+    )
+    .bind(model.operation_id)
+    .bind(lease_token)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    if renewed_attempt != 1 {
+        return Err(AppError::conflict("Password reset attempt lost its lease"));
     }
 
     // Authorize the write against the same security stamp. A concurrent logout or
     // password change either wins first and makes this affect zero rows, or wins
     // afterward and replaces this reset.
     let name = current.user_name.clone().unwrap_or_default();
-    let txn = crate::utils::database::begin_seaorm_transaction(&st.db).await?;
-    let updated = update_password_if_stamp_matches(
-        &txn,
-        ticket.user_id,
-        &norm_email,
-        &ticket.security_stamp,
-        new_hash,
-        Uuid::new_v4().to_string(),
+    let mut transaction = st
+        .pg()
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let updated = sqlx::query(
+        r#"UPDATE "AspNetUsers"
+              SET password_hash = $4, security_stamp = $5
+            WHERE id = $1 AND normalized_email = $2 AND security_stamp = $3"#,
     )
-    .await?;
-    if !updated {
-        txn.rollback().await?;
+    .bind(ticket.user_id)
+    .bind(&norm_email)
+    .bind(&ticket.security_stamp)
+    .bind(new_hash)
+    .bind(Uuid::new_v4().to_string())
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    if updated != 1 {
+        transaction
+            .rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         return Err(AppError::bad_request("Invalid or expired reset token"));
     }
-    txn.commit().await?;
+    let consumed = sqlx::query(
+        r#"UPDATE "PasswordResetTickets"
+              SET consumed_at_utc = clock_timestamp()
+            WHERE token_hash = $1 AND consumed_at_utc IS NULL
+              AND superseded_at_utc IS NULL AND expires_at_utc > clock_timestamp()"#,
+    )
+    .bind(&token_hash)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    let completed = sqlx::query(
+        r#"UPDATE "PasswordResetAttempts"
+              SET status = 1, completed_at_utc = clock_timestamp()
+            WHERE operation_id = $1 AND lease_token = $2 AND status = 0"#,
+    )
+    .bind(model.operation_id)
+    .bind(lease_token)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    if consumed != 1 || completed != 1 {
+        transaction
+            .rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Err(AppError::conflict("Password reset attempt lost its lease"));
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    st.cache.remove(&reset_current_key(ticket.user_id)).await;
+    st.cache.remove(&key).await;
 
     // RSCTF `AccountController` audit event (`Account_PasswordReset`). Best-effort.
     crate::services::audit::info(
@@ -523,12 +521,30 @@ pub async fn password_reset(
 pub async fn change_email(
     State(st): State<SharedState>,
     user: CurrentUser,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(model): Json<MailChangeModel>,
 ) -> AppResult<Response> {
+    let operation_id = model.operation_id;
+    if operation_id.is_nil() {
+        return Err(AppError::bad_request("operationId is required"));
+    }
+    let request_ip = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()));
     let new_mail = model.new_mail.trim().to_lowercase();
     if new_mail.len() > MAX_EMAIL_BYTES || !new_mail.contains('@') {
         return Err(AppError::bad_request("Invalid email address"));
     }
+    let account_scope = format!("credential-account:{}:{}", user.id, user.security_stamp);
+    let destination_scope = format!("credential-email:{}", new_mail.to_uppercase());
+    let source =
+        anti_cheat::client_ip(&headers, Some(peer.ip())).unwrap_or_else(|| peer.ip().to_string());
+    let source_scope = format!("credential-source:{source}");
+    let mut credential_work = crate::services::credential_admission::try_acquire_scopes(
+        st.pg(),
+        crate::services::credential_admission::CredentialWorkClass::Interactive,
+        &[&account_scope, &destination_scope, &source_scope],
+    )
+    .await?;
     if !verify_email_domain(&new_mail, &load_email_domain_list(&st).await?) {
         return Err(AppError::bad_request("Email domain is not allowed"));
     }
@@ -541,6 +557,12 @@ pub async fn change_email(
     {
         return Err(AppError::Unauthorized);
     }
+    if let Some(normalized_email) = current.normalized_email.as_deref() {
+        let current_email_scope = format!("credential-email:{normalized_email}");
+        credential_work
+            .try_add_scopes(&[&current_email_scope])
+            .await?;
+    }
     if model.password.len() > MAX_PASSWORD_BYTES {
         return Err(AppError::bad_request("Current password is incorrect"));
     }
@@ -552,6 +574,7 @@ pub async fn change_email(
     {
         return Err(AppError::bad_request("Current password is incorrect"));
     }
+    credential_work.ensure_owned().await?;
     let expected_stamp = user.security_stamp.clone();
     if user::Entity::find()
         .filter(user::Column::NormalizedEmail.eq(norm.clone()))
@@ -566,31 +589,8 @@ pub async fn change_email(
     let confirmation_required = email_confirmation_required(&st).await?;
     let mut refreshed_stamp = None;
     if confirmation_required {
-        let sender = crate::services::mail::MailSender::from_env();
-        if !sender.is_configured() {
-            return Err(AppError::bad_request(
-                "Email confirmation is required but SMTP is not configured",
-            ));
-        }
         let token = crate::utils::codec::random_token(32);
-        let key = format!("emailchange:{token}");
-        let current_key = format!("emailchange-current:{}", user.id);
-        if let Some(previous) = st.cache.get(&current_key).await {
-            if let Ok(previous) = std::str::from_utf8(&previous) {
-                st.cache.remove(&format!("emailchange:{previous}")).await;
-            }
-        }
-        let ticket = EmailChangeTicket {
-            user_id: user.id,
-            new_email: new_mail.clone(),
-            security_stamp: expected_stamp.clone(),
-        };
-        let bytes = serde_json::to_vec(&ticket)
-            .map_err(|e| AppError::internal(format!("email-change ticket: {e}")))?;
-        st.cache.set(&key, &bytes, Some(RECOVERY_TTL)).await;
-        st.cache
-            .set(&current_key, token.as_bytes(), Some(RECOVERY_TTL))
-            .await;
+        let expires_at_unix = Utc::now().timestamp() + RECOVERY_TTL.as_secs() as i64;
 
         let encoded = crate::utils::codec::base64_encode(new_mail.as_bytes())
             .replace('+', "%2B")
@@ -606,13 +606,64 @@ pub async fn change_email(
             &link,
             Some(st.config.global.title.as_str()),
         );
-        if let Err(error) = sender.send(&new_mail, &subject, &body).await {
-            st.cache.remove(&key).await;
-            st.cache
-                .compare_and_remove(&current_key, token.as_bytes())
-                .await;
-            return Err(error);
+        let mut transaction = st
+            .pg()
+            .begin()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(REGISTRATION_LOCK_ID)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        let identity_is_current = sqlx::query_scalar::<_, bool>(
+            r#"SELECT TRUE FROM "AspNetUsers"
+                WHERE id = $1 AND security_stamp = $2
+                  AND email_confirmed = TRUE AND role <> $3
+                FOR SHARE"#,
+        )
+        .bind(user.id)
+        .bind(&expected_stamp)
+        .bind(Role::Banned as i16)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .unwrap_or(false);
+        if !identity_is_current {
+            return Err(AppError::Unauthorized);
         }
+        let outcome = crate::services::mail_outbox::enqueue_in_transaction(
+            &mut transaction,
+            crate::services::mail_outbox::MailIntent {
+                operation_id,
+                purpose: crate::services::mail_outbox::MailPurpose::EmailChange,
+                account_id: user.id,
+                security_generation: &expected_stamp,
+                destination: &new_mail,
+                source: request_ip.as_deref(),
+                subject: &subject,
+                html_body: &body,
+            },
+        )
+        .await?;
+        let inserted = outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted;
+        if inserted {
+            super::link_attempts::stage(
+                &mut transaction,
+                operation_id,
+                &token,
+                super::link_attempts::Purpose::EmailChange,
+                user.id,
+                &expected_stamp,
+                &norm,
+                expires_at_unix,
+            )
+            .await?;
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
     } else {
         let new_stamp = Uuid::new_v4().to_string();
         match update_email_serialized(
@@ -656,11 +707,116 @@ pub async fn change_email(
     Ok(response)
 }
 
+enum DigestLinkResult {
+    Absent,
+    Replayed,
+    Updated(String),
+}
+
+async fn confirm_digest_email_change(
+    st: &SharedState,
+    token: &str,
+    email: &str,
+) -> AppResult<DigestLinkResult> {
+    let token_digest = super::link_attempts::digest(token.as_bytes());
+    let exists: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(SELECT 1 FROM "AccountLinkAttempts"
+                           WHERE token_digest = $1 AND purpose = $2)"#,
+    )
+    .bind(token_digest.to_vec())
+    .bind(super::link_attempts::Purpose::EmailChange as i16)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !exists {
+        return Ok(DigestLinkResult::Absent);
+    }
+
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let attempt = match super::link_attempts::claim(
+        &mut transaction,
+        token,
+        super::link_attempts::Purpose::EmailChange,
+    )
+    .await?
+    {
+        super::link_attempts::Claim::Completed(_) => {
+            transaction
+                .commit()
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+            return Ok(DigestLinkResult::Replayed);
+        }
+        super::link_attempts::Claim::Pending(attempt) => attempt,
+    };
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(REGISTRATION_LOCK_ID)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let policy =
+        anti_cheat::lock_and_load_account_policy(&mut transaction, st.config.as_ref()).await?;
+    if !verify_email_domain(email, &policy.email_domain_list) {
+        return Err(AppError::bad_request("Email domain is not allowed"));
+    }
+    let normalized = email.to_uppercase();
+    if attempt.destination_digest != super::link_attempts::digest(normalized.as_bytes()) {
+        return Err(AppError::bad_request("Invalid email"));
+    }
+    let current: Option<(Option<String>, String)> = sqlx::query_as(
+        r#"SELECT user_name, security_stamp FROM "AspNetUsers"
+            WHERE id = $1 AND email_confirmed = TRUE AND role <> $2 FOR UPDATE"#,
+    )
+    .bind(attempt.account_id)
+    .bind(Role::Banned as i16)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some((name, security_stamp)) = current else {
+        return Err(AppError::bad_request(
+            "Invalid or expired email-change token",
+        ));
+    };
+    if attempt.security_generation_digest != super::link_attempts::digest(security_stamp.as_bytes())
+    {
+        return Err(AppError::bad_request(
+            "Invalid or expired email-change token",
+        ));
+    }
+    let changed = sqlx::query(
+        r#"UPDATE "AspNetUsers" SET email = $1, normalized_email = $2,
+                  security_stamp = $3
+            WHERE id = $4 AND security_stamp = $5 AND NOT EXISTS (
+                SELECT 1 FROM "AspNetUsers" WHERE normalized_email = $2 AND id <> $4
+            )"#,
+    )
+    .bind(email)
+    .bind(&normalized)
+    .bind(Uuid::new_v4().to_string())
+    .bind(attempt.account_id)
+    .bind(&security_stamp)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if changed.rows_affected() != 1 {
+        return Err(AppError::conflict("Email already registered"));
+    }
+    super::link_attempts::complete(
+        &mut transaction,
+        &attempt,
+        &serde_json::json!({ "status": "emailChanged" }),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(DigestLinkResult::Updated(name.unwrap_or_default()))
+}
+
 /// `POST /api/account/mailchangeconfirm` -> `void`.
-///
-/// Apply a pending email change via a cached single-use token that maps to the
-/// account; the new address arrives base64-encoded in `email`. A missing token
-/// degrades to a plain success (never 500), matching `verify`.
 pub async fn mail_change_confirm(
     State(st): State<SharedState>,
     Json(model): Json<AccountVerifyModel>,
@@ -673,6 +829,52 @@ pub async fn mail_change_confirm(
             "Invalid or expired email-change token",
         ));
     }
+    let supplied_email = crate::utils::codec::base64_decode(&model.email)
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .filter(|email| email.len() <= MAX_EMAIL_BYTES)
+        .map(|email| email.trim().to_lowercase())
+        .ok_or_else(|| AppError::bad_request("Invalid email"))?;
+    match confirm_digest_email_change(&st, &model.token, &supplied_email).await? {
+        DigestLinkResult::Replayed => return Ok(MessageResponse::ok("")),
+        DigestLinkResult::Updated(name) => {
+            crate::services::audit::info(
+                &st,
+                "AccountController",
+                Some(name.clone()),
+                None,
+                format!("User {name} changed email"),
+            )
+            .await;
+            return Ok(MessageResponse::ok(""));
+        }
+        DigestLinkResult::Absent => {}
+    }
+
+    if let Some(confirmed) =
+        confirm_email_change_ticket(st.pg(), st.config.as_ref(), &model.token, &supplied_email)
+            .await?
+    {
+        st.cache
+            .compare_and_remove(
+                &format!("emailchange-current:{}", confirmed.user_id),
+                model.token.as_bytes(),
+            )
+            .await;
+        st.cache
+            .remove(&format!("emailchange:{}", model.token))
+            .await;
+        crate::services::audit::info(
+            &st,
+            "AccountController",
+            Some(confirmed.user_name.clone()),
+            None,
+            format!("User {} changed email", confirmed.user_name),
+        )
+        .await;
+        return Ok(MessageResponse::ok(""));
+    }
+
+    // Compatibility for cache-only links issued before the durable migrations.
     let key = format!("emailchange:{}", model.token);
     let ticket_bytes = st
         .cache
@@ -681,59 +883,30 @@ pub async fn mail_change_confirm(
         .ok_or_else(|| AppError::bad_request("Invalid or expired email-change token"))?;
     let ticket: EmailChangeTicket = serde_json::from_slice(&ticket_bytes)
         .map_err(|_| AppError::bad_request("Invalid or expired email-change token"))?;
-    let supplied_email = crate::utils::codec::base64_decode(&model.email)
-        .and_then(|b| String::from_utf8(b).ok())
-        .filter(|email| email.len() <= MAX_EMAIL_BYTES)
-        .map(|email| email.trim().to_lowercase())
-        .ok_or_else(|| AppError::bad_request("Invalid email"))?;
-    if supplied_email != ticket.new_email {
-        return Err(AppError::bad_request("Invalid email"));
-    }
-    if !verify_email_domain(&ticket.new_email, &load_email_domain_list(&st).await?) {
-        return Err(AppError::bad_request("Email domain is not allowed"));
-    }
-    let normalized = ticket.new_email.to_uppercase();
-    if user::Entity::find()
-        .filter(user::Column::NormalizedEmail.eq(normalized.clone()))
-        .filter(user::Column::Id.ne(ticket.user_id))
-        .one(&st.db)
-        .await?
-        .is_some()
+    if supplied_email != ticket.new_email
+        || !verify_email_domain(&ticket.new_email, &load_email_domain_list(&st).await?)
     {
-        return Err(AppError::conflict("Email already registered"));
+        return Err(AppError::bad_request("Invalid email"));
     }
     let current = user::Entity::find_by_id(ticket.user_id)
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::bad_request("Invalid or expired email-change token"))?;
-    if current.security_stamp.as_deref() != Some(ticket.security_stamp.as_str()) {
-        return Err(AppError::bad_request(
-            "Invalid or expired email-change token",
-        ));
-    }
-
-    let current_key = format!("emailchange-current:{}", ticket.user_id);
-    if !st
-        .cache
-        .compare_and_remove(&current_key, model.token.as_bytes())
-        .await
+    if current.security_stamp.as_deref() != Some(ticket.security_stamp.as_str())
+        || !st
+            .cache
+            .compare_and_remove(
+                &format!("emailchange-current:{}", ticket.user_id),
+                model.token.as_bytes(),
+            )
+            .await
+        || st.cache.get_and_remove(&key).await.as_deref() != Some(ticket_bytes.as_ref())
     {
         return Err(AppError::bad_request(
             "Invalid or expired email-change token",
         ));
     }
-    let consumed = st
-        .cache
-        .get_and_remove(&key)
-        .await
-        .ok_or_else(|| AppError::bad_request("Invalid or expired email-change token"))?;
-    if consumed != ticket_bytes {
-        return Err(AppError::bad_request(
-            "Invalid or expired email-change token",
-        ));
-    }
-
-    let name = current.user_name.clone().unwrap_or_default();
+    let name = current.user_name.unwrap_or_default();
     match update_email_serialized(
         st.pg(),
         st.config.as_ref(),
@@ -741,7 +914,7 @@ pub async fn mail_change_confirm(
             user_id: ticket.user_id,
             expected_stamp: &ticket.security_stamp,
             email: &ticket.new_email,
-            normalized_email: &normalized,
+            normalized_email: &ticket.new_email.to_uppercase(),
             new_stamp: Uuid::new_v4().to_string(),
             mode: EmailUpdateMode::ConfirmedTicket,
         },
@@ -749,16 +922,13 @@ pub async fn mail_change_confirm(
     .await?
     {
         EmailUpdateOutcome::Updated => {}
-        EmailUpdateOutcome::Conflict => {
-            return Err(AppError::conflict("Email already registered"));
-        }
+        EmailUpdateOutcome::Conflict => return Err(AppError::conflict("Email already registered")),
         EmailUpdateOutcome::StampMismatch => {
             return Err(AppError::bad_request(
                 "Invalid or expired email-change token",
             ));
         }
     }
-
     crate::services::audit::info(
         &st,
         "AccountController",
@@ -767,7 +937,6 @@ pub async fn mail_change_confirm(
         format!("User {name} changed email"),
     )
     .await;
-
     Ok(MessageResponse::ok(""))
 }
 

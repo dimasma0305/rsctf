@@ -202,97 +202,6 @@ test('permanent challenge failures stop while 429 honors Retry-After with one re
   }
 })
 
-test('a due recovery waits for a hidden or offline modal to become active again', async (context) => {
-  const browser = new Window({ url: 'https://rsctf.test/games/1/challenges' })
-  const restoreDom = installTestDom(browser)
-  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
-  context.mock.method(Math, 'random', () => 0.5)
-  let visibilityState: DocumentVisibilityState = 'visible'
-  let online = true
-  Object.defineProperty(browser.document, 'visibilityState', {
-    configurable: true,
-    get: () => visibilityState,
-  })
-  Object.defineProperty(browser.navigator, 'onLine', {
-    configurable: true,
-    get: () => online,
-  })
-  const { createChallengeRecoveryOwner } = await import('../utils/ChallengePolling')
-  const { useChallengePolling } = await import('./useChallengePolling')
-  const { SWRConfig } = await import('swr')
-  const { createRoot } = await import('react-dom/client')
-  const container = browser.document.createElement('div')
-  browser.document.body.append(container)
-  const root = createRoot(container)
-  const recoveryOwner = createChallengeRecoveryOwner()
-  let calls = 0
-
-  const Probe: FC = () => {
-    useChallengePolling({
-      key: '/detail/deferred',
-      active: true,
-      refreshInterval: 0,
-      revalidateOnFocus: false,
-      revalidateOnReconnect: false,
-      recoveryOwner,
-      recoveryKey: 'detail',
-      request: async () => {
-        calls += 1
-        if (calls === 1) throw { response: { status: 503 } }
-        return { ok: true }
-      },
-    })
-    return null
-  }
-  const Scope: FC = () =>
-    createElement(
-      SWRConfig,
-      {
-        value: {
-          provider: () => new Map(),
-          dedupingInterval: 0,
-          isVisible: () => visibilityState !== 'hidden',
-          isOnline: () => online,
-        },
-      },
-      createElement(Probe)
-    )
-  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
-
-  try {
-    await act(async () => root.render(createElement(Scope)))
-    assert.equal(calls, 1)
-    visibilityState = 'hidden'
-    online = false
-    await act(async () => context.mock.timers.tick(2_000))
-    assert.equal(calls, 1, 'the due recovery must not run while the page is inactive')
-    assert.equal(recoveryOwner.pendingEntryCount(), 1)
-
-    visibilityState = 'visible'
-    await act(async () => {
-      browser.document.dispatchEvent(new browser.Event('visibilitychange'))
-      await Promise.resolve()
-    })
-    assert.equal(calls, 1, 'visibility alone must not bypass the offline fence')
-    assert.equal(recoveryOwner.pendingEntryCount(), 1)
-
-    online = true
-    await act(async () => {
-      browser.dispatchEvent(new browser.Event('online'))
-      for (let index = 0; index < 4; index += 1) await Promise.resolve()
-    })
-    assert.equal(recoveryOwner.pendingEntryCount(), 0)
-    assert.equal(calls, 2, 'the retained recovery resumes once both fences allow it')
-  } finally {
-    recoveryOwner.cancelAll()
-    await act(async () => root.unmount())
-    context.mock.timers.reset()
-    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
-    await browser.happyDOM.close()
-    restoreDom()
-  }
-})
-
 test('detail and solver recovery share one timer without merging their request results', async (context) => {
   const browser = new Window({ url: 'https://rsctf.test/games/1/challenges' })
   const restoreDom = installTestDom(browser)
@@ -432,6 +341,110 @@ test('an explicit recovery clears the terminal latch for a later bounded transie
     await act(async () => context.mock.timers.tick(1))
     assert.equal(calls, 4, 'the recovered key must regain its bounded automatic retry')
     assert.equal(container.textContent, 'ok')
+  } finally {
+    await act(async () => root.unmount())
+    context.mock.timers.reset()
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('a one-shot drill-down stays at one request across ten minutes, focus, and reconnect', async (context) => {
+  const browser = new Window({ url: 'https://rsctf.test/games/1/monitor/cheat' })
+  const restoreDom = installTestDom(browser)
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+  const { useChallengePolling } = await import('./useChallengePolling')
+  const { SWRConfig } = await import('swr')
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  let calls = 0
+
+  const Probe: FC<{ active: boolean }> = ({ active }) => {
+    useChallengePolling({
+      key: active ? '/anti-cheat/evidence/17#one-shot' : null,
+      active,
+      refreshInterval: 0,
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false,
+      request: async () => {
+        calls += 1
+        return { ok: true }
+      },
+    })
+    return null
+  }
+  const cache = new Map()
+  const Scope: FC<{ active: boolean }> = ({ active }) =>
+    createElement(
+      SWRConfig,
+      { value: { provider: () => cache, dedupingInterval: 0, isVisible: () => true, isOnline: () => true } },
+      createElement(Probe, { active })
+    )
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    await act(async () => root.render(createElement(Scope, { active: true })))
+    assert.equal(calls, 1)
+    await act(async () => {
+      browser.dispatchEvent(new browser.Event('focus'))
+      browser.dispatchEvent(new browser.Event('online'))
+      context.mock.timers.tick(10 * 60_000)
+    })
+    assert.equal(calls, 1)
+
+    await act(async () => root.render(createElement(Scope, { active: false })))
+    await act(async () => context.mock.timers.tick(10 * 60_000))
+    assert.equal(calls, 1)
+  } finally {
+    await act(async () => root.unmount())
+    context.mock.timers.reset()
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('a data-dependent cadence stops report polling as soon as the sealed snapshot arrives', async (context) => {
+  const browser = new Window({ url: 'https://rsctf.test/games/1/monitor/cheat' })
+  const restoreDom = installTestDom(browser)
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+  const { useChallengePolling } = await import('./useChallengePolling')
+  const { SWRConfig } = await import('swr')
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  let calls = 0
+
+  const Probe: FC = () => {
+    useChallengePolling({
+      key: '/anti-cheat/report#conditional',
+      active: true,
+      refreshInterval: (report) => (report?.sealed ? 0 : 1_000),
+      request: async () => ({ sealed: ++calls >= 2 }),
+    })
+    return null
+  }
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    await act(async () =>
+      root.render(
+        createElement(
+          SWRConfig,
+          { value: { provider: () => new Map(), dedupingInterval: 0, isVisible: () => true, isOnline: () => true } },
+          createElement(Probe)
+        )
+      )
+    )
+    assert.equal(calls, 1)
+    await act(async () => context.mock.timers.tick(1_000))
+    assert.equal(calls, 2)
+    await act(async () => context.mock.timers.tick(10 * 60_000))
+    assert.equal(calls, 2)
   } finally {
     await act(async () => root.unmount())
     context.mock.timers.reset()

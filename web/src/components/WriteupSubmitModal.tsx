@@ -22,9 +22,10 @@ import { mdiAlertCircleOutline, mdiCheck, mdiExclamationThick, mdiFileDocumentOu
 import { Icon } from '@mdi/react'
 import cx from 'clsx'
 import dayjs from 'dayjs'
-import { FC, useEffect, useMemo, useState } from 'react'
+import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { Markdown } from '@Components/MarkdownRenderer'
+import { BLOB_OPERATION_HEADER, BlobUploadOperation, retainBlobUploadOperation } from '@Utils/BlobUploadOperations'
 import { useLanguage } from '@Utils/I18n'
 import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
@@ -54,6 +55,7 @@ export const WriteupSubmitModal: FC<WriteupSubmitModalProps> = ({ gameId, writeu
   const [uploading, setUploading] = useState(false)
   const [deadlineRejected, setDeadlineRejected] = useState(false)
   const [progress, setProgress] = useState(0)
+  const uploadOperation = useRef<BlobUploadOperation | null>(null)
   const noteColor = data?.submitted ? theme.colors.teal[5] : theme.colors.red[5]
   const deadlinePassed = !ddl.isValid() || now.isAfter(ddl)
   const disabled = uploading || deadlinePassed || deadlineRejected
@@ -64,6 +66,7 @@ export const WriteupSubmitModal: FC<WriteupSubmitModalProps> = ({ gameId, writeu
     setDeadlineRejected(false)
     setUploading(false)
     setProgress(0)
+    uploadOperation.current = null
   }, [gameId, wpddl])
 
   const onUpload = async (file: File | null) => {
@@ -73,17 +76,20 @@ export const WriteupSubmitModal: FC<WriteupSubmitModalProps> = ({ gameId, writeu
     setUploading(true)
 
     try {
+      uploadOperation.current = retainBlobUploadOperation(uploadOperation.current, file)
       await api.game.gameSubmitWriteup(
         gameId,
         {
           file,
         },
         {
+          headers: { [BLOB_OPERATION_HEADER]: uploadOperation.current.id },
           onUploadProgress: (e) => {
             setProgress((e.loaded / (e.total ?? 1)) * 100)
           },
         }
       )
+      uploadOperation.current = null
       setProgress(100)
       showNotification({
         color: 'teal',

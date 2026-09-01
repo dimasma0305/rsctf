@@ -2,20 +2,17 @@
 use super::*;
 
 mod archive;
+pub(super) mod import_jobs;
 mod import_policy;
 mod path;
-use archive::{extract_zip, persist_challenge_archive};
+use archive::persist_challenge_archive;
 #[cfg(test)]
 use archive::{extract_zip_with_limits, ArchiveLimits};
 use import_policy::validate_import_batch;
 use path::{resolve_subpath, validate_subpath};
 
-const MAX_PENDING_CHALLENGES_PER_USER_GAME: i64 = 10;
 const TEST_IMAGE_PREPARE_ATTEMPTS: usize = 3;
-static TRUSTED_CHALLENGE_IMPORT_SLOTS: tokio::sync::Semaphore =
-    tokio::sync::Semaphore::const_new(2);
-static PUBLIC_CHALLENGE_SUBMISSION_SLOTS: tokio::sync::Semaphore =
-    tokio::sync::Semaphore::const_new(1);
+pub use import_jobs::start_worker as start_import_job_worker;
 
 const PENDING_CHALLENGE_COUNT_SQL: &str = r#"SELECT COUNT(*)
       FROM "GameChallenges"
@@ -171,10 +168,10 @@ pub async fn create_test_container(
     // runtime modes mirror their currently-selected static flag.
     let flag = if challenge.challenge_type == ChallengeType::DynamicContainer {
         let seed = sha256_str(&Uuid::new_v4().to_string());
-        Some(flag_generator::generate_flag(
+        Some(flag_generator::generate_flag_checked(
             challenge.flag_template.as_deref(),
             &seed,
-        ))
+        )?)
     } else {
         selected_static_flag.clone()
     };
@@ -374,11 +371,10 @@ pub async fn destroy_test_container(
 /// Result of a challenge import (uploaded archive or GitHub clone), consumed by
 /// the frontend challenge-management contract. Serialized raw (camelCase).
 ///
-/// Because `git_sync::import_manifest` is create-only (a fresh INSERT per
-/// manifest, never an update), every successful manifest is counted as
-/// `imported`; `updated`/`skipped` stay 0. `messages` collects one line per failed
-/// manifest, prefixed with the manifest's parent directory name.
-#[derive(Debug, Default, Serialize)]
+/// A first-seen source manifest is counted as `imported`; recovery of the same
+/// durable source identity is counted as `updated`. `messages` collects one line
+/// per failed manifest, prefixed with the manifest's parent directory name.
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeImportResult {
     pub imported: i32,
@@ -395,6 +391,8 @@ pub struct ChallengeImportResult {
 #[serde(rename_all = "camelCase")]
 pub struct ImportFromGitHubModel {
     #[serde(default)]
+    pub operation_id: Option<Uuid>,
+    #[serde(default)]
     pub repo_url: String,
     #[serde(default, rename = "ref")]
     pub git_ref: Option<String>,
@@ -409,11 +407,12 @@ pub struct ImportFromGitHubModel {
 /// RSCTF `ChallengeImportService`. Never fails: a per-manifest error is recorded
 /// as a `failed` count + a `messages` line (prefixed with the manifest's parent
 /// directory) rather than aborting the whole import.
-async fn import_from_dir(
+pub(super) async fn import_from_dir(
     st: &SharedState,
     game_id: i32,
     dir: &std::path::Path,
     policy: crate::services::git_sync::ImportPolicy,
+    source_revision: &str,
 ) -> ChallengeImportResult {
     let mut result = ChallengeImportResult::default();
     let manifests = match crate::services::git_sync::discover_challenges(dir).await {
@@ -469,11 +468,13 @@ async fn import_from_dir(
             .fetch_one(&mut **configuration_lock.transaction_mut())
             .await;
         match pending_count {
-            Ok(count) if count < MAX_PENDING_CHALLENGES_PER_USER_GAME => {}
+            Ok(count)
+                if count < crate::services::git_sync::MAX_PENDING_CHALLENGES_PER_USER_GAME => {}
             Ok(_) => {
                 result.failed = manifests.len() as i32;
                 result.messages.push(format!(
-                    "At most {MAX_PENDING_CHALLENGES_PER_USER_GAME} pending challenges may be submitted per user and game."
+                    "At most {} pending challenges may be submitted per user and game.",
+                    crate::services::git_sync::MAX_PENDING_CHALLENGES_PER_USER_GAME
                 ));
                 let _ = configuration_lock.release().await;
                 return result;
@@ -486,11 +487,35 @@ async fn import_from_dir(
             }
         }
     }
+    if let Err(error) = configuration_lock.release().await {
+        result.failed = manifests.len() as i32;
+        result
+            .messages
+            .push(format!("challenge import unlock failed: {error}"));
+        return result;
+    }
     let mut build_jobs = Vec::new();
     let mut generator_build_jobs = Vec::new();
     let mut archive_jobs = Vec::new();
     for manifest in manifests {
-        match crate::services::git_sync::import_manifest(st, game_id, &manifest, policy).await {
+        let relative = manifest
+            .strip_prefix(dir)
+            .unwrap_or(manifest.as_path())
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source_identity = format!(
+            "import/{}",
+            crate::utils::codec::sha256_hex(format!("{source_revision}\0{relative}").as_bytes())
+        );
+        match crate::services::git_sync::import_manifest_with_source_identity(
+            st,
+            game_id,
+            &manifest,
+            policy,
+            &source_identity,
+        )
+        .await
+        {
             Ok(imported) => {
                 if imported.created {
                     result.imported += 1;
@@ -542,11 +567,6 @@ async fn import_from_dir(
             }
         }
     }
-    if let Err(error) = configuration_lock.release().await {
-        result
-            .messages
-            .push(format!("challenge import unlock failed: {error}"));
-    }
     for (challenge_id, manifest) in archive_jobs {
         persist_challenge_archive(st, challenge_id, &manifest).await;
     }
@@ -592,7 +612,10 @@ async fn import_from_dir(
         {
             continue;
         }
-        let (outcome, _) = run_challenge_build(st, &challenge, "Import", 1).await;
+        // Durable import retries are an ensure operation. The cross-replica
+        // build lock rechecks an already-published immutable image and avoids
+        // rebuilding the same recovered source revision.
+        let outcome = ensure_challenge_image(st, &challenge).await;
         if outcome.status != ChallengeBuildStatus::Success {
             result.failed += 1;
             result.messages.push(format!(
@@ -617,55 +640,46 @@ async fn import_from_dir(
     result
 }
 
-/// Read the first non-empty multipart field into memory. The client posts the ZIP
-/// under `archive`; we take the first non-empty part regardless of field name.
-async fn read_first_archive_field(multipart: &mut Multipart) -> AppResult<Vec<u8>> {
+/// Read the bounded archive and optional idempotency identity. Older clients
+/// that omit `operationId` remain supported with a server-generated identity.
+async fn read_archive_fields(multipart: &mut Multipart) -> AppResult<(Vec<u8>, Uuid)> {
+    let mut archive = None;
+    let mut operation_id = None;
     while let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?
     {
-        let bytes = field
-            .bytes()
-            .await
-            .map_err(|e| AppError::bad_request(format!("could not read archive: {e}")))?;
-        if !bytes.is_empty() {
-            if bytes.len() > crate::utils::upload::ARCHIVE_FILE_BYTES {
-                return Err(AppError::bad_request("Challenge archive is too large"));
+        match field.name() {
+            Some("operationId") => {
+                let value = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::bad_request(format!("invalid operationId: {e}")))?;
+                operation_id = Some(
+                    Uuid::parse_str(value.trim())
+                        .map_err(|_| AppError::bad_request("operationId must be a UUID"))?,
+                );
             }
-            return Ok(bytes.to_vec());
+            Some("archive") | None if archive.is_none() => {
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError::bad_request(format!("could not read archive: {e}")))?;
+                if !bytes.is_empty() {
+                    if bytes.len() > crate::utils::upload::ARCHIVE_FILE_BYTES {
+                        return Err(AppError::bad_request("Challenge archive is too large"));
+                    }
+                    archive = Some(bytes.to_vec());
+                }
+            }
+            _ => {}
         }
     }
-    Err(AppError::bad_request("No archive file provided"))
-}
-
-/// Extract an uploaded ZIP into a unique temp dir, import every manifest it
-/// contains under `game_id`, then always remove the temp dir (even on error).
-async fn import_archive_bytes(
-    st: &SharedState,
-    game_id: i32,
-    bytes: &[u8],
-    policy: crate::services::git_sync::ImportPolicy,
-) -> AppResult<ChallengeImportResult> {
-    let tmp = std::env::temp_dir().join(format!("rsctf-import-{}", Uuid::new_v4()));
-    // Create only the unpredictable leaf and fail on any pre-existing entry;
-    // never follow a final-component symlink in a shared temporary directory.
-    tokio::fs::create_dir(&tmp)
-        .await
-        .map_err(|e| AppError::internal(format!("create temp dir: {e}")))?;
-    // Keep the fallible work in one place so the temp-dir removal below always runs
-    // — a `?` here must not jump over the cleanup.
-    let archive = bytes.to_vec();
-    let extract_dest = tmp.clone();
-    let outcome = async {
-        tokio::task::spawn_blocking(move || extract_zip(&archive, &extract_dest))
-            .await
-            .map_err(|e| AppError::internal(format!("ZIP extraction task failed: {e}")))??;
-        Ok::<_, AppError>(import_from_dir(st, game_id, &tmp, policy).await)
-    }
-    .await;
-    let _ = tokio::fs::remove_dir_all(&tmp).await;
-    outcome
+    Ok((
+        archive.ok_or_else(|| AppError::bad_request("No archive file provided"))?,
+        operation_id.unwrap_or_else(Uuid::new_v4),
+    ))
 }
 
 /// Validate the lexical shape of an optional repository subpath before cloning.
@@ -680,7 +694,7 @@ pub async fn submit_challenge(
     user: CurrentUser,
     Path(id): Path<i32>,
     mut multipart: Multipart,
-) -> AppResult<RequestResponse<ChallengeImportResult>> {
+) -> AppResult<Response> {
     // 404 if the game is missing (RSCTF Game_NotFound).
     let game = game::Entity::find_by_id(id)
         .one(&st.db)
@@ -695,26 +709,27 @@ pub async fn submit_challenge(
             title: "User submissions are disabled for this game.".into(),
         });
     }
-    let _upload_reservation =
-        crate::utils::upload::reserve_buffered(crate::utils::upload::ARCHIVE_BODY_BYTES)?;
+    let upload_reservation =
+        match crate::utils::upload::reserve_buffered(crate::utils::upload::ARCHIVE_BODY_BYTES) {
+            Ok(reservation) => reservation,
+            Err(AppError::ServiceUnavailable(_)) => return Ok(import_jobs::busy()),
+            Err(error) => return Err(error),
+        };
     // Buffer and validate the bounded upload before occupying the scarce import
     // worker; a slow client must not monopolize submission capacity.
-    let bytes = read_first_archive_field(&mut multipart).await?;
-    let _permit = PUBLIC_CHALLENGE_SUBMISSION_SLOTS
-        .try_acquire()
-        .map_err(|_| {
-            AppError::unavailable("Challenge submission capacity is busy; retry shortly")
-        })?;
-    let result = import_archive_bytes(
+    let (bytes, operation_id) = read_archive_fields(&mut multipart).await?;
+    import_jobs::enqueue_zip(
         &st,
         id,
-        &bytes,
+        user.id,
+        operation_id,
+        bytes,
         crate::services::git_sync::ImportPolicy::PendingReview {
             submitted_by_user_id: user.id,
         },
+        upload_reservation,
     )
-    .await?;
-    Ok(RequestResponse::ok(result))
+    .await
 }
 
 /// `POST /api/edit/games/{id}/challenges/import` — admin/game-admin ZIP import
@@ -724,22 +739,25 @@ pub async fn import_challenge(
     user: CurrentUser,
     Path(id): Path<i32>,
     mut multipart: Multipart,
-) -> AppResult<RequestResponse<ChallengeImportResult>> {
+) -> AppResult<Response> {
     manager_or_admin(&st, &user, id).await?;
-    let _upload_reservation =
-        crate::utils::upload::reserve_buffered(crate::utils::upload::ARCHIVE_BODY_BYTES)?;
-    let _permit = TRUSTED_CHALLENGE_IMPORT_SLOTS
-        .try_acquire()
-        .map_err(|_| AppError::unavailable("Challenge import capacity is busy; retry shortly"))?;
-    let bytes = read_first_archive_field(&mut multipart).await?;
-    let result = import_archive_bytes(
+    let upload_reservation =
+        match crate::utils::upload::reserve_buffered(crate::utils::upload::ARCHIVE_BODY_BYTES) {
+            Ok(reservation) => reservation,
+            Err(AppError::ServiceUnavailable(_)) => return Ok(import_jobs::busy()),
+            Err(error) => return Err(error),
+        };
+    let (bytes, operation_id) = read_archive_fields(&mut multipart).await?;
+    import_jobs::enqueue_zip(
         &st,
         id,
-        &bytes,
+        user.id,
+        operation_id,
+        bytes,
         crate::services::git_sync::ImportPolicy::Trusted,
+        upload_reservation,
     )
-    .await?;
-    Ok(RequestResponse::ok(result))
+    .await
 }
 
 /// `POST /api/edit/games/{id}/challenges/importfromgithub` — admin/game-admin
@@ -751,46 +769,25 @@ pub async fn import_from_github(
     user: CurrentUser,
     Path(id): Path<i32>,
     Json(model): Json<ImportFromGitHubModel>,
-) -> AppResult<RequestResponse<ChallengeImportResult>> {
+) -> AppResult<Response> {
     manager_or_admin(&st, &user, id).await?;
 
     let repo_url = crate::services::git_sync::validate_github_repo_url(&model.repo_url)?;
-    // Embed the PAT for a private repo (no-op when the token is empty/absent).
-    let auth_url = crate::services::git_sync::GitCredentials::new(
-        model.github_token.clone().unwrap_or_default(),
-    )
-    .apply(&repo_url);
     let git_ref = crate::services::git_sync::validate_git_ref(model.git_ref.as_deref())?;
-    let branch = git_ref.as_deref();
     let subpath = validate_subpath(model.subpath.as_deref())?;
-
-    let tmp = std::env::temp_dir().join(format!("rsctf-import-{}", Uuid::new_v4()));
-    tokio::fs::create_dir(&tmp)
-        .await
-        .map_err(|e| AppError::internal(format!("create temp dir: {e}")))?;
-
-    // Fallible work in one place so the temp-dir removal always runs.
-    let outcome = async {
-        // A clone failure is a client error (bad URL/ref/token); the error text is
-        // already credential-scrubbed by git_sync.
-        crate::services::git_sync::sync_repo(&auth_url, branch, &tmp)
-            .await
-            .map_err(|e| AppError::bad_request(format!("git clone failed: {e}")))?;
-        let scan_root = resolve_subpath(&tmp, subpath.as_deref())?;
-        Ok::<_, AppError>(
-            import_from_dir(
-                &st,
-                id,
-                &scan_root,
-                crate::services::git_sync::ImportPolicy::Trusted,
-            )
-            .await,
-        )
-    }
-    .await;
-    let _ = tokio::fs::remove_dir_all(&tmp).await;
-    let result = outcome?;
-    Ok(RequestResponse::ok(result))
+    import_jobs::enqueue_git(
+        &st,
+        id,
+        user.id,
+        model.operation_id.unwrap_or_else(Uuid::new_v4),
+        import_jobs::GitImportSource {
+            repo_url,
+            git_ref,
+            subpath,
+            token: model.github_token.unwrap_or_default(),
+        },
+    )
+    .await
 }
 
 #[cfg(test)]

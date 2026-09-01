@@ -25,6 +25,13 @@ pub struct FileChange {
 }
 
 #[derive(Debug, Clone)]
+pub struct ContainerFile {
+    pub bytes: Vec<u8>,
+    pub size: u64,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct ContainerStatus {
     pub id: String,
     pub status: String,
@@ -121,6 +128,13 @@ pub trait ContainerManager: Send + Sync {
         ))
     }
 
+    /// Locate the backend identity owned by a durable create operation without
+    /// requiring the original launch definition. Recovery uses this only to
+    /// adopt/publish or destroy an ambiguous, otherwise-unowned workload.
+    async fn find_operation_runtime(&self, _operation_id: &str) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
     async fn destroy(&self, id: &str) -> AppResult<()>;
     async fn query(&self, id: &str) -> AppResult<ContainerStatus>;
 
@@ -157,6 +171,15 @@ pub trait ContainerManager: Send + Sync {
 
     async fn snapshot_changes(&self, _id: &str) -> AppResult<Vec<FileChange>> {
         Ok(Vec::new())
+    }
+
+    /// Read one regular file without launching a process inside an untrusted
+    /// workload. Implementations must stop after `limit` bytes and report the
+    /// original size and whether the preview was truncated.
+    async fn read_file(&self, _id: &str, _path: &str, _limit: usize) -> AppResult<ContainerFile> {
+        Err(AppError::bad_request(
+            "bounded file inspection is not supported by this backend",
+        ))
     }
 
     async fn exec(&self, _id: &str, _cmd: Vec<String>) -> AppResult<String> {

@@ -1,78 +1,25 @@
-//! Admin user mutation handlers (update/delete/reset-password) — split from
-//! users.rs to keep each file under the 1000-line rule.
+//! Admin user update, delete, and password-reset handlers.
 use super::*;
+use axum::extract::ConnectInfo;
+use std::net::SocketAddr;
 
-fn role_change_requires_stamp_rotation(current: Role, requested: Option<Role>) -> bool {
-    requested.is_some_and(|role| role != current)
-}
+#[path = "users_reset_crypto.rs"]
+mod reset_crypto;
+use reset_crypto::{decrypt_admin_reset, encrypt_admin_reset};
 
-fn role_request_requires_shared_revocation(requested: Option<Role>) -> bool {
-    requested == Some(Role::Banned)
-}
+#[path = "users_mutate_policy.rs"]
+mod policy;
+#[cfg(test)]
+use policy::affected_team_ids;
+use policy::{
+    account_lifecycle_key, email_change_requires_stamp_rotation, revoke_user_shared_teams,
+    role_change_requires_stamp_rotation, role_request_requires_shared_revocation,
+    unban_requires_prior_shared_revocation, validate_admin_update,
+};
 
-fn unban_requires_prior_shared_revocation(current: Role, requested: Option<Role>) -> bool {
-    current == Role::Banned && requested.is_some_and(|role| role != Role::Banned)
-}
-
-fn email_change_requires_stamp_rotation(
-    current_normalized_email: Option<&str>,
-    requested_email: Option<&str>,
-) -> bool {
-    requested_email
-        .map(str::trim)
-        .filter(|email| !email.is_empty())
-        .map(|email| email.to_uppercase())
-        .is_some_and(|email| current_normalized_email != Some(email.as_str()))
-}
-
-fn account_lifecycle_key(user_id: Uuid) -> String {
-    format!("account-lifecycle:{user_id}")
-}
-
-async fn revoke_user_shared_teams(st: &SharedState, user_id: Uuid) -> AppResult<()> {
-    for team_id in affected_team_ids(st.pg(), user_id).await? {
-        let roster = crate::controllers::team::acquire_roster_mutation(st.pg(), team_id).await?;
-        let parts = crate::controllers::team::revoke_team_shared_capabilities(st, team_id).await?;
-        roster.release().await?;
-        crate::controllers::team::invalidate_removed_membership_cache(st, user_id, &parts).await?;
-    }
-    Ok(())
-}
-
-async fn validate_admin_update(
-    transaction: &sea_orm::DatabaseTransaction,
-    target: &user::Model,
-    caller_id: Uuid,
-    requested_role: Option<Role>,
-) -> AppResult<()> {
-    // Admin-war protection: an admin may edit their own profile, but may not
-    // mutate a *fellow* admin (ban / demote / rename).
-    if target.role == Role::Admin && caller_id != target.id {
-        return Err(AppError::bad_request("Cannot modify another administrator"));
-    }
-
-    if target.role == Role::Admin
-        && requested_role.is_some_and(|role| role != Role::Admin)
-        && user::Entity::find()
-            .filter(user::Column::Role.eq(Role::Admin))
-            .count(transaction)
-            .await?
-            <= 1
-    {
-        return Err(AppError::bad_request(
-            "Cannot demote or ban the last administrator",
-        ));
-    }
-    Ok(())
-}
-
-/// Make an account fail closed before any roster snapshot or capability
-/// teardown begins. Locking the account row closes the hand-off with team
-/// invite acceptance: an accept either retains a share lock and commits before
-/// this update (so the later snapshot sees it), or observes the banned role and
-/// is rejected. The normalized email is returned from the same locked snapshot
-/// so deletion can invalidate import-only plaintext without racing an email
-/// mutation.
+/// Fence an account before roster teardown and return its locked email.
+/// The account row closes the hand-off with concurrent invite acceptance, and
+/// the same snapshot lets deletion invalidate import-only credentials safely.
 pub(crate) async fn fence_user_for_deletion(
     pool: &sqlx::PgPool,
     user_id: Uuid,
@@ -86,10 +33,8 @@ pub(crate) async fn fence_user_for_deletion(
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    // This is deliberately a separate statement from the team-link lookup. A
-    // PostgreSQL statement keeps the snapshot it took before waiting for this
-    // row lock; combining the EXISTS with FOR UPDATE could therefore miss a
-    // roster link committed by the transaction that just released the row.
+    // Keep this separate from the team lookup so READ COMMITTED takes a fresh
+    // snapshot after a competing transaction releases the account row.
     let account: Option<(i16, Option<String>)> = sqlx::query_as(
         r#"SELECT role, normalized_email
              FROM "AspNetUsers"
@@ -106,13 +51,9 @@ pub(crate) async fn fence_user_for_deletion(
     if role == Role::Admin as i16 {
         return Err(AppError::bad_request("Cannot delete another administrator"));
     }
-    // A new statement gets a fresh READ COMMITTED snapshot after the account
-    // lock is held. Team creation/transfer and invite acceptance must take that
-    // same account lock, so a roster link can neither be hidden by the stale
-    // snapshot from before the wait nor appear after this check. Physical
-    // deletion is deliberately limited to unteamed accounts: Ban is the safe
-    // emergency revocation path, while deleting a live or historical roster row
-    // would change competition evidence and can partially tear down a team.
+    // Team mutations take the same lock, so links cannot appear after this
+    // fresh lookup. Physical deletion remains limited to unteamed accounts to
+    // preserve competition evidence; Ban is the emergency revocation path.
     let association: Option<String> = sqlx::query_scalar(
         r#"SELECT CASE
                WHEN EXISTS(SELECT 1 FROM "Teams" WHERE captain_id = $1)
@@ -163,9 +104,7 @@ async fn fence_user_identity_for_deletion(
 ) -> AppResult<()> {
     let normalized_email = fence_user_for_deletion(pool, user_id).await?;
     if let Some(email) = normalized_email {
-        // The durable ban and stamp rotation now make the cached password
-        // ineligible for delivery. Compare by immutable user id so an
-        // overlapping account replacement can never lose its newer secret.
+        // Compare by immutable user id so a replacement keeps its newer secret.
         super::users_credentials::invalidate_import_credential(cache, user_id, &email).await;
     }
     Ok(())
@@ -215,6 +154,7 @@ pub async fn update_user(
     // Repeating an already-banned update is the retry path when an earlier
     // external VPN/BYOC teardown failed after the role change committed.
     let revoke_shared = role_request_requires_shared_revocation(model.role);
+    let original_user_name = target.user_name.clone();
     let original_normalized_email = target.normalized_email.clone();
     let rotate_stamp = role_change_requires_stamp_rotation(target.role, model.role)
         || (target.email_confirmed && model.email_confirmed == Some(false))
@@ -223,6 +163,7 @@ pub async fn update_user(
             model.email.as_deref(),
         );
     let mut credential_email_to_invalidate = None;
+    let mut user_name_changed = false;
 
     crate::controllers::account::validate_profile_fields(
         model.bio.as_deref(),
@@ -249,6 +190,7 @@ pub async fn update_user(
             {
                 return Err(AppError::conflict("Username already taken"));
             }
+            user_name_changed = original_user_name.as_deref() != Some(name.as_str());
             am.normalized_user_name = Set(Some(norm));
             am.user_name = Set(Some(name));
         }
@@ -300,6 +242,11 @@ pub async fn update_user(
 
     am.update(&txn).await?;
     txn.commit().await?;
+    if user_name_changed {
+        if let Err(error) = crate::controllers::team::flush_scoreboard_for_user(&st, userid).await {
+            tracing::warn!(%error, user_id = %userid, "post-admin-rename scoreboard invalidation deferred");
+        }
+    }
     if let Some(old_email) = credential_email_to_invalidate {
         super::users_credentials::invalidate_import_credential(
             st.cache.as_ref(),
@@ -341,45 +288,136 @@ pub async fn delete_user(
     // existing team/participation link before changing the account.
     fence_user_identity_for_deletion(st.pg(), st.cache.as_ref(), userid).await?;
 
-    // ApiToken.Creator is ON DELETE RESTRICT — clear the user's tokens first.
-    api_token::Entity::delete_many()
-        .filter(api_token::Column::CreatorId.eq(userid))
-        .exec(&st.db)
-        .await?;
-
-    user::Entity::delete_by_id(userid).exec(&st.db).await?;
+    // Delete the direct avatar owner and release its logical blob reference in
+    // the same short transaction. The object purge remains post-commit and
+    // retryable; an account crash can no longer leave a positive-reference
+    // orphan that maintenance deliberately preserves.
+    let avatar_hash = delete_user_rows_and_avatar(st.pg(), userid).await?;
     account_lifecycle.release().await?;
+    if let Some(hash) = avatar_hash {
+        crate::controllers::assets::invalidate_asset_gate(&st, &hash).await;
+        if let Err(error) =
+            crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
+                .await
+        {
+            tracing::warn!(%error, %hash, "deleted account avatar purge deferred");
+        }
+    }
     Ok(RequestResponse::ok(userid.to_string()))
 }
 
-async fn affected_team_ids(pool: &sqlx::PgPool, user_id: Uuid) -> AppResult<Vec<i32>> {
-    sqlx::query_scalar(
-        r#"SELECT team_id FROM "TeamMembers" WHERE user_id = $1
-           UNION
-           SELECT team_id FROM "UserParticipations" WHERE user_id = $1
-           UNION
-           SELECT id AS team_id FROM "Teams" WHERE captain_id = $1
-           ORDER BY team_id"#,
+async fn delete_user_rows_and_avatar(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+) -> AppResult<Option<String>> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let avatar_hash = sqlx::query_scalar::<_, Option<String>>(
+        r#"SELECT avatar_hash FROM "AspNetUsers" WHERE id = $1 FOR UPDATE"#,
     )
     .bind(user_id)
-    .fetch_all(pool)
+    .fetch_optional(&mut *transaction)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("User not found"))?;
+    if let Some(hash) = avatar_hash.as_deref() {
+        crate::services::blob_refs::lock_direct_hashes_locked(
+            &mut transaction,
+            std::iter::once(hash),
+        )
+        .await?;
+    }
+    sqlx::query(r#"DELETE FROM "ApiTokens" WHERE creator_id = $1"#)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let removed = sqlx::query(r#"DELETE FROM "AspNetUsers" WHERE id = $1"#)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if removed.rows_affected() != 1 {
+        return Err(AppError::conflict("Account deletion fence changed"));
+    }
+    if let Some(hash) = avatar_hash.as_deref() {
+        crate::services::blob_refs::release_direct_hash_locked(&mut transaction, hash).await?;
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(avatar_hash)
 }
 
-/// `DELETE /api/admin/users/{userid}/password` — reset the user's password to a
-/// freshly generated value and return the plaintext (RSCTF `string` success).
+/// Reset a user's password and return the generated plaintext once.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminPasswordResetQuery {
+    pub operation_id: Uuid,
+}
+
 pub async fn reset_password(
     State(st): State<SharedState>,
-    _admin: AdminUser,
+    AdminUser(admin): AdminUser,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(userid): Path<Uuid>,
+    Query(query): Query<AdminPasswordResetQuery>,
 ) -> AppResult<Response> {
-    let password = generate_password();
-    let hash = hash_password_async(password.clone()).await?;
-
-    let txn = crate::controllers::account::locked_registration_transaction(&st).await?;
+    if query.operation_id.is_nil() {
+        return Err(AppError::bad_request(
+            "A valid password-reset operation ID is required",
+        ));
+    }
+    #[allow(clippy::type_complexity)]
+    let existing: Option<(Uuid, Uuid, i16, Option<Vec<u8>>, Option<Vec<u8>>, bool)> =
+        sqlx::query_as(
+            r#"SELECT user_id, requested_by, status, result_ciphertext, result_nonce,
+                      result_expires_at_utc > clock_timestamp()
+                 FROM "AdminPasswordResetOperations" WHERE operation_id = $1"#,
+        )
+        .bind(query.operation_id)
+        .fetch_optional(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some((bound_user, bound_admin, status, ciphertext, nonce, live)) = existing {
+        if bound_user != userid || bound_admin != admin.id {
+            return Err(AppError::conflict(
+                "Password reset operation ID is bound to another request",
+            ));
+        }
+        if status == 1 {
+            if !live {
+                return Err(AppError::not_found("Password reset result has expired"));
+            }
+            let password = decrypt_admin_reset(
+                &st.config.jwt_secret,
+                query.operation_id,
+                userid,
+                ciphertext.as_deref().unwrap_or_default(),
+                nonce.as_deref().unwrap_or_default(),
+            )?;
+            return Ok(super::users_credentials::private_no_store(
+                RequestResponse::ok(password),
+            ));
+        }
+        if status == 2 {
+            return Err(AppError::not_found("Password reset result has expired"));
+        }
+    }
+    let source = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()))
+        .unwrap_or_else(|| peer.ip().to_string());
+    let source_scope = format!("credential-source:{source}");
+    let mut credential_work = crate::services::credential_admission::try_acquire_scopes(
+        st.pg(),
+        crate::services::credential_admission::CredentialWorkClass::Interactive,
+        &[&source_scope],
+    )
+    .await?;
     let target = user::Entity::find_by_id(userid)
-        .one(&txn)
+        .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("User not found"))?;
     if target.role == Role::Admin {
@@ -387,21 +425,122 @@ pub async fn reset_password(
             "Administrator passwords must be changed from the account security flow",
         ));
     }
+    let target_stamp = target
+        .security_stamp
+        .clone()
+        .ok_or_else(|| AppError::conflict("User credential state is unavailable"))?;
+    let mut learned_scopes = vec![format!("credential-account:{userid}:{target_stamp}")];
+    if let Some(normalized_email) = target.normalized_email.as_deref() {
+        learned_scopes.push(format!("credential-email:{normalized_email}"));
+    }
+    let learned_scope_refs = learned_scopes
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    credential_work.try_add_scopes(&learned_scope_refs).await?;
+    let lease_token = Uuid::new_v4();
+    sqlx::query(
+        r#"UPDATE "AdminPasswordResetOperations"
+              SET status = 2
+            WHERE user_id = $1 AND operation_id <> $2 AND status = 0
+              AND lease_expires_at_utc <= clock_timestamp()"#,
+    )
+    .bind(userid)
+    .bind(query.operation_id)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let reserved = sqlx::query(
+        r#"INSERT INTO "AdminPasswordResetOperations"
+               (operation_id, user_id, requested_by, lease_token, lease_expires_at_utc)
+           VALUES ($1, $2, $3, $4, clock_timestamp() + INTERVAL '45 seconds')
+           ON CONFLICT (operation_id) DO UPDATE
+             SET lease_token = EXCLUDED.lease_token,
+                 lease_expires_at_utc = EXCLUDED.lease_expires_at_utc,
+                 result_expires_at_utc = clock_timestamp() + INTERVAL '15 minutes'
+           WHERE "AdminPasswordResetOperations".user_id = EXCLUDED.user_id
+             AND "AdminPasswordResetOperations".requested_by = EXCLUDED.requested_by
+             AND "AdminPasswordResetOperations".status = 0
+             AND "AdminPasswordResetOperations".lease_expires_at_utc <= clock_timestamp()"#,
+    )
+    .bind(query.operation_id)
+    .bind(userid)
+    .bind(admin.id)
+    .bind(lease_token)
+    .execute(st.pg())
+    .await;
+    match reserved {
+        Ok(result) if result.rows_affected() == 1 => {}
+        Ok(_) => return Err(AppError::too_many_requests(1)),
+        Err(error) if crate::utils::error::is_unique_violation(&error) => {
+            return Err(AppError::too_many_requests(1));
+        }
+        Err(error) => return Err(AppError::internal(error.to_string())),
+    }
+    let password = generate_password();
+    let hash = hash_password_async(password.clone()).await?;
+    credential_work.ensure_owned().await?;
     let credential_email_to_invalidate = target.normalized_email.clone();
-
-    let mut am: user::ActiveModel = target.into();
-    am.password_hash = Set(Some(hash));
-    am.security_stamp = Set(Some(Uuid::new_v4().to_string()));
-    am.update(&txn).await?;
-    // Keep the account row locked until the import-only plaintext has been
-    // removed. A concurrent credential email either consumes the old value
-    // before this reset linearizes, or observes the cache removal afterwards;
-    // it can never send the pre-reset password after the new hash commits.
+    let (ciphertext, nonce) =
+        encrypt_admin_reset(&st.config.jwt_secret, query.operation_id, userid, &password)?;
+    let mut transaction = st
+        .pg()
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let updated = sqlx::query(
+        r#"UPDATE "AspNetUsers"
+              SET password_hash = $2, security_stamp = $3
+            WHERE id = $1 AND security_stamp = $4 AND role <> $5"#,
+    )
+    .bind(userid)
+    .bind(hash)
+    .bind(Uuid::new_v4().to_string())
+    .bind(&target_stamp)
+    .bind(Role::Admin as i16)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    if updated != 1 {
+        transaction
+            .rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Err(AppError::conflict("User credential changed concurrently"));
+    }
+    let completed = sqlx::query(
+        r#"UPDATE "AdminPasswordResetOperations"
+              SET status = 1, result_ciphertext = $3, result_nonce = $4,
+                  completed_at_utc = clock_timestamp(),
+                  result_expires_at_utc = clock_timestamp() + INTERVAL '15 minutes'
+            WHERE operation_id = $1 AND lease_token = $2 AND status = 0"#,
+    )
+    .bind(query.operation_id)
+    .bind(lease_token)
+    .bind(ciphertext)
+    .bind(nonce.as_slice())
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    if completed != 1 {
+        transaction
+            .rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Err(AppError::conflict(
+            "Password reset operation lost its lease",
+        ));
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     if let Some(email) = credential_email_to_invalidate {
         super::users_credentials::invalidate_import_credential(st.cache.as_ref(), userid, &email)
             .await;
     }
-    txn.commit().await?;
 
     Ok(super::users_credentials::private_no_store(
         RequestResponse::ok(password),
@@ -599,11 +738,46 @@ mod tests {
               id UUID PRIMARY KEY,
               role SMALLINT NOT NULL,
               security_stamp TEXT,
-              normalized_email TEXT
+              normalized_email TEXT,
+              avatar_hash TEXT
+            );
+            CREATE TABLE "Files" (
+              id SERIAL PRIMARY KEY,
+              hash TEXT NOT NULL UNIQUE,
+              reference_count BIGINT NOT NULL
+            );
+            CREATE TABLE "Attachments" (
+              id INTEGER PRIMARY KEY,
+              local_file_id INTEGER
+            );
+            CREATE TABLE "Participations" (
+              id INTEGER PRIMARY KEY,
+              writeup_id INTEGER
+            );
+            CREATE TABLE "AdServiceSnapshots" (
+              id BIGSERIAL PRIMARY KEY,
+              local_file_id INTEGER NOT NULL
+            );
+            CREATE TABLE "ApiTokens" (
+              id UUID PRIMARY KEY,
+              creator_id UUID
             );
             CREATE TABLE "Teams" (
               id INTEGER PRIMARY KEY,
-              captain_id UUID NOT NULL
+              captain_id UUID NOT NULL,
+              avatar_hash TEXT
+            );
+            CREATE TABLE "Games" (
+              id INTEGER PRIMARY KEY,
+              poster_hash TEXT
+            );
+            CREATE TABLE "Configs" (
+              config_key TEXT PRIMARY KEY,
+              value TEXT
+            );
+            CREATE TABLE "GameChallenges" (
+              id INTEGER PRIMARY KEY,
+              original_archive_blob_path TEXT
             );
             CREATE TABLE "TeamMembers" (
               team_id INTEGER NOT NULL,
@@ -645,6 +819,24 @@ mod tests {
             .await
             .unwrap();
         }
+        let avatar_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        sqlx::query(r#"UPDATE "AspNetUsers" SET avatar_hash = $2 WHERE id = $1"#)
+            .bind(ordinary)
+            .bind(avatar_hash)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"INSERT INTO "Files" (hash, reference_count) VALUES ($1, 1)"#)
+            .bind(avatar_hash)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"INSERT INTO "ApiTokens" (id, creator_id) VALUES ($1, $2)"#)
+            .bind(Uuid::new_v4())
+            .bind(ordinary)
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query(r#"INSERT INTO "Teams" (id, captain_id) VALUES (1, $1)"#)
             .bind(captain)
             .execute(&pool)
@@ -774,6 +966,29 @@ mod tests {
                 .await
                 .unwrap(),
             Role::User as i16
+        );
+
+        assert_eq!(
+            delete_user_rows_and_avatar(&pool, ordinary)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(avatar_hash)
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(r#"SELECT reference_count FROM "Files""#)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0,
+            "account deletion leaked its avatar reference"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "ApiTokens""#)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
         );
 
         pool.close().await;

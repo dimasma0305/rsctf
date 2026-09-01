@@ -8,9 +8,6 @@ const MAX_GAME_IMPORT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_GAME_IMPORT_COMPRESSION_RATIO: u64 = 200;
 const MAX_GAME_IMPORT_PATH_COMPONENTS: usize = 32;
 static GAME_IMPORT_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
-const MAX_GAME_EXPORT_FILES: usize = 2_048;
-const MAX_GAME_EXPORT_ATTACHMENT_BYTES: usize = 128 * 1024 * 1024;
-static GAME_EXPORT_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 #[derive(Clone, Copy)]
 struct GameImportLimits {
@@ -545,6 +542,20 @@ fn validate_import_challenges(challenges: &[ExportChallengeModel]) -> AppResult<
                 spec,
             )?;
         }
+        if challenge.challenge_type == ChallengeType::DynamicContainer {
+            if let Some(template) = challenge
+                .flag_template
+                .as_deref()
+                .filter(|template| !crate::utils::flag_policy::is_blank(template))
+            {
+                crate::utils::flag_policy::validate_dynamic_template(template)
+                    .map_err(|error| AppError::bad_request(error.to_string()))?;
+            }
+        }
+        for flag in &challenge.flags {
+            crate::utils::flag_policy::validate_normal(&flag.flag)
+                .map_err(|error| AppError::bad_request(error.to_string()))?;
+        }
     }
     Ok(())
 }
@@ -671,231 +682,13 @@ fn read_import_text<'a>(
         .transpose()
 }
 
-/// Resolve an `attachment_id` into `(type, hash, remote_url, file_name)` and, for
-/// a `Local` file that is present in blob storage, queue its bytes for bundling
-/// under `files/` (deduped by hash). Mirrors `GameExportService` loading
-/// `Attachment.LocalFile` and `CopyFileByHashAsync`.
-async fn resolve_export_attachment(
-    st: &SharedState,
-    attachment_id: Option<i32>,
-    embed: &mut BTreeMap<String, Vec<u8>>,
-    embed_bytes: &mut usize,
-) -> AppResult<(
-    Option<FileType>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-)> {
-    let Some(aid) = attachment_id else {
-        return Ok((None, None, None, None));
-    };
-    let Some(a) = attachment::Entity::find_by_id(aid).one(&st.db).await? else {
-        return Ok((None, None, None, None));
-    };
-    let (hash, name) = match a.local_file_id {
-        Some(fid) => match local_file::Entity::find_by_id(fid).one(&st.db).await? {
-            Some(lf) => (Some(lf.hash), Some(lf.name)),
-            None => (None, None),
-        },
-        None => (None, None),
-    };
-    // Bundle the blob bytes for a Local file that still exists in storage.
-    if a.file_type == FileType::Local {
-        if let Some(h) = &hash {
-            if !embed.contains_key(h) {
-                if embed.len() >= MAX_GAME_EXPORT_FILES {
-                    return Err(AppError::bad_request(
-                        "Game export contains too many attachment files",
-                    ));
-                }
-                if let Ok(bytes) = st
-                    .storage
-                    .load_bounded(h, MAX_GAME_EXPORT_ATTACHMENT_BYTES)
-                    .await
-                {
-                    *embed_bytes = embed_bytes
-                        .checked_add(bytes.len())
-                        .filter(|total| *total <= MAX_GAME_EXPORT_ATTACHMENT_BYTES)
-                        .ok_or_else(|| {
-                            AppError::bad_request("Game export attachments exceed the size limit")
-                        })?;
-                    embed.insert(h.clone(), bytes);
-                }
-            }
-        }
-    }
-    Ok((Some(a.file_type), hash, a.remote_url, name))
-}
-
-fn build_game_export_zip(
-    export_game: ExportGameModel,
-    export_challenges: Vec<ExportChallengeModel>,
-    embed: BTreeMap<String, Vec<u8>>,
-) -> Result<Vec<u8>, String> {
-    let game_json = serde_json::to_string_pretty(&export_game)
-        .map_err(|error| format!("serialize game.json: {error}"))?;
-    let mut zip_writer = zip::ZipWriter::new(Cursor::new(Vec::<u8>::new()));
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-
-    zip_writer
-        .start_file("game.json", options)
-        .map_err(|error| format!("zip write: {error}"))?;
-    zip_writer
-        .write_all(game_json.as_bytes())
-        .map_err(|error| format!("zip write: {error}"))?;
-
-    zip_writer
-        .add_directory("challenges/", options)
-        .map_err(|error| format!("zip write: {error}"))?;
-    for challenge in &export_challenges {
-        let body = serde_json::to_string_pretty(challenge)
-            .map_err(|error| format!("serialize challenge: {error}"))?;
-        zip_writer
-            .start_file(
-                format!("challenges/challenge-{}.json", challenge.id),
-                options,
-            )
-            .map_err(|error| format!("zip write: {error}"))?;
-        zip_writer
-            .write_all(body.as_bytes())
-            .map_err(|error| format!("zip write: {error}"))?;
-    }
-
-    if !embed.is_empty() {
-        zip_writer
-            .add_directory("files/", options)
-            .map_err(|error| format!("zip write: {error}"))?;
-        for (hash, bytes) in &embed {
-            zip_writer
-                .start_file(format!("files/{hash}"), options)
-                .map_err(|error| format!("zip write: {error}"))?;
-            zip_writer
-                .write_all(bytes)
-                .map_err(|error| format!("zip write: {error}"))?;
-        }
-    }
-
-    zip_writer
-        .finish()
-        .map(|writer| writer.into_inner())
-        .map_err(|error| format!("zip write: {error}"))
-}
-
-/// `POST /api/edit/games/{id}/export` — export a game as a ZIP package
-/// (`game.json` + `challenges/challenge-{id}.json`, flags inlined). Streams the
-/// bytes back as an `application/zip` attachment. Mirrors
-/// `GameExportService.ExportGameAsync`.
-pub async fn export_game(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-    Path(id): Path<i32>,
-) -> AppResult<Response> {
-    manager_or_admin(&st, &user, id).await?;
-    let game = load_game(&st, id).await?;
-
-    let challenges = game_challenge::Entity::find()
-        .filter(game_challenge::Column::GameId.eq(id))
-        .all(&st.db)
-        .await?;
-
-    // Build the transfer models. `embed` accumulates the `Local` attachment blob
-    // bytes (deduped by content hash) to bundle under `files/` — mirroring
-    // `GameExportService.CopyAttachmentsAsync`.
-    let mut export_game = ExportGameModel::from_game(&game);
-
-    // Divisions + their per-challenge permission configs, so a multi-division game
-    // round-trips. Challenge configs key on the SOURCE challenge id; import remaps.
-    let divisions = division::Entity::find()
-        .filter(division::Column::GameId.eq(id))
-        .order_by_asc(division::Column::Id)
-        .all(&st.db)
-        .await?;
-    let mut export_divisions = Vec::with_capacity(divisions.len());
-    for d in divisions {
-        let challenge_configs = division_challenge_config::Entity::find()
-            .filter(division_challenge_config::Column::DivisionId.eq(d.id))
-            .order_by_asc(division_challenge_config::Column::ChallengeId)
-            .all(&st.db)
-            .await?
-            .into_iter()
-            .map(|c| ExportDivisionConfigModel {
-                challenge_id: c.challenge_id,
-                permissions: c.permissions,
-            })
-            .collect();
-        export_divisions.push(ExportDivisionModel {
-            name: d.name,
-            invite_code: d.invite_code,
-            default_permissions: d.default_permissions,
-            challenge_configs,
-        });
-    }
-    export_game.divisions = export_divisions;
-
-    let mut export_challenges = Vec::with_capacity(challenges.len());
-    let mut embed: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    let mut embed_bytes = 0usize;
-    for c in &challenges {
-        // Challenge-level attachment: RSCTF loads `challenge.Attachment` for ALL
-        // types (only Flags are gated to static challenges), so resolve it
-        // outside the flag branch below.
-        let (ch_type, ch_hash, ch_url, ch_name) =
-            resolve_export_attachment(&st, c.attachment_id, &mut embed, &mut embed_bytes).await?;
-
-        // Dynamic containers generate flags at runtime and carry no FlagContext
-        // rows — skip flag loading for them (as RSCTF does).
-        let flags = if c.challenge_type == ChallengeType::DynamicContainer {
-            Vec::new()
-        } else {
-            let rows = flag_context::Entity::find()
-                .filter(flag_context::Column::ChallengeId.eq(c.id))
-                .all(&st.db)
-                .await?;
-            let mut out = Vec::with_capacity(rows.len());
-            for f in rows {
-                let (attachment_type, file_hash, remote_url, file_name) =
-                    resolve_export_attachment(&st, f.attachment_id, &mut embed, &mut embed_bytes)
-                        .await?;
-                out.push(ExportFlagModel {
-                    flag: f.flag,
-                    attachment_type,
-                    file_hash,
-                    remote_url,
-                    file_name,
-                });
-            }
-            out
-        };
-        export_challenges.push(ExportChallengeModel::from_challenge(
-            c, flags, ch_type, ch_hash, ch_url, ch_name,
-        ));
-    }
-
-    let _permit = GAME_EXPORT_SLOTS
-        .try_acquire()
-        .map_err(|_| AppError::unavailable("Game export capacity is busy; retry shortly"))?;
-    let buf = tokio::task::spawn_blocking(move || {
-        build_game_export_zip(export_game, export_challenges, embed)
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("game export task failed: {error}")))?
-    .map_err(AppError::internal)?;
-
-    let filename = format!("game-{id}-export.zip");
-    Response::builder()
-        .header(header::CONTENT_TYPE, "application/zip")
-        .header(
-            header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{filename}\""),
-        )
-        .body(Body::from(buf))
-        .map_err(|e| AppError::internal(format!("build response: {e}")))
-}
-
 #[cfg(test)]
 #[path = "transfer_archive_tests.rs"]
 mod archive_tests;
+
+#[path = "transfer_export.rs"]
+mod export;
+pub use export::export_game;
 
 #[path = "transfer_import.rs"]
 mod import_persistence;
