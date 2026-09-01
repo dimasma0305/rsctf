@@ -787,9 +787,22 @@ function currentSnapshotIdentity() {
   };
 }
 
-async function restartManagedReporterProcess(target, reporterBaseUrl) {
+async function restartManagedReporterProcess(target, reporterBaseUrl, rotatedParticipationId) {
   const before = currentSnapshotIdentity();
-  requireCondition(before.waves === 1 && before.rows === ROSTER_SIZE, 'pre-restart snapshot is not one exact dense wave');
+  const rotatedRows = Number(sql(
+    `SELECT count(*) FROM "KothApiSnapshotScores" score ` +
+      `JOIN "KothApiSnapshots" snapshot ON snapshot.target_id=score.target_id ` +
+      `WHERE snapshot.game_id=${current.gameId} AND snapshot.challenge_id=${current.challengeId} ` +
+      `AND score.participation_id=${Number(rotatedParticipationId)}`,
+  ));
+  requireCondition(
+    before.waves === 1 && before.rows === ROSTER_SIZE - 1 && rotatedRows === 0,
+    `pre-restart snapshot did not fence exactly the rotated player: ${JSON.stringify({
+      ...before,
+      rotatedParticipationId,
+      rotatedRows,
+    })}`,
+  );
   const restarted = docker(['restart', '--time', '2', target.containerId]);
   requireCondition(restarted.status === 0, 'managed reporter process restart failed');
   const sameTarget = await waitUntil(
@@ -1040,10 +1053,15 @@ async function main() {
     180,
   );
 
+  const rotatedParticipationId = capabilities[0].pid;
   await exerciseActivePlayerRotation(target, capabilities[0]);
   capabilities = sortedCapabilities();
   writeCapabilities(capabilities);
-  const restart = await restartManagedReporterProcess(target, reporterBaseUrl);
+  const restart = await restartManagedReporterProcess(
+    target,
+    reporterBaseUrl,
+    rotatedParticipationId,
+  );
   target = restart.target;
   await waitUntil(
     'restarted reporter active context',

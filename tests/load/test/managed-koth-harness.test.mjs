@@ -71,6 +71,9 @@ test('managed KotH recovery submits a dense wave then resolves a new runtime', (
   const traffic = reconstruction.indexOf('runK6Phase({');
   assert.ok(restartCall > 0 && restartCall < activeContext && activeContext < traffic);
   assert.match(runner, /sameRoundPrefix \|\| reconstructed\.roundId > restart\.before\.roundId/);
+  assert.match(restart, /before\.rows === ROSTER_SIZE - 1/);
+  assert.match(restart, /score\.participation_id=\$\{Number\(rotatedParticipationId\)\}/);
+  assert.match(restart, /rotatedRows === 0/);
   assert.match(runner, /jsonb_agg\(jsonb_build_array\(/);
   assert.match(runner, /A\.adScoringPaused\(current\.gameId\)/);
   assert.match(runner, /candidate\.containerId !== target\.containerId/);
