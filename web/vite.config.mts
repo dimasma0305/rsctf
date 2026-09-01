@@ -40,7 +40,10 @@ export default defineConfig(({ mode }) => {
       allowedHosts: true,
       proxy: {
         '/healthz': TARGET,
-        '/api': TARGET,
+        '/api': {
+          target: TARGET,
+          ws: true,
+        },
         '/swagger': TARGET,
         '/assets': TARGET,
         '/hub': {

@@ -32,8 +32,22 @@ pub(crate) fn must_env(key: &str) -> String {
     }
 }
 
+fn install_tls_crypto_provider() -> Result<(), &'static str> {
+    if rustls::crypto::CryptoProvider::get_default().is_some() {
+        return Ok(());
+    }
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| "failed to install the process-wide ring TLS provider")
+}
+
 #[tokio::main]
 async fn main() {
+    if let Err(error) = install_tls_crypto_provider() {
+        eprintln!("rsctf-byoc-agent: {error}");
+        std::process::exit(1);
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -48,4 +62,15 @@ async fn main() {
     }
 
     agent::run_agent().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installs_a_tls_crypto_provider_before_connecting() {
+        install_tls_crypto_provider().unwrap();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+    }
 }
