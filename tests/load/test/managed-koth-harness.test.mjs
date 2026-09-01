@@ -108,13 +108,15 @@ test('managed KotH traffic is fixed-arrival and gates auth abuse independently',
   assert.doesNotMatch(scenario, /\/api\/game\/\$\{GAME\}\/ad\/koth\/\$\{CHALLENGE\}\/state/);
 });
 
-test('managed KotH workflow publishes missing candidates and reaps the derived Docker scope', () => {
+test('managed KotH workflow validates an exact main candidate and reaps the derived Docker scope', () => {
   assert.match(workflow, /actions: write/);
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.doesNotMatch(workflow, /pull_request:/);
+  assert.match(workflow, /ref: \$\{\{ inputs\.source_sha \}\}/);
+  assert.match(workflow, /SOURCE_SHA: \$\{\{ inputs\.source_sha \}\}/);
+  assert.match(workflow, /The load candidate must be the exact current main commit/);
   assert.match(workflow, /gh workflow run image\.yml --ref main/);
   assert.match(workflow, /The exact current-main candidate image was not published within 40 minutes/);
-  assert.match(workflow, /:\(exclude\)tests\/load\/fixtures\.mjs/);
-  assert.match(workflow, /:\(exclude\)tests\/load\/managed-koth-model\.js/);
-  assert.match(workflow, /:\(exclude\)tests\/load\/test\/managed-koth-model\.test\.mjs/);
   assert.match(workflow, /printf 'explicit\\0%s'/);
   assert.match(workflow, /label=rsctf\.managed=\$managed_scope/);
   assert.match(workflow, /Seed fallback-cleanup probes/);

@@ -423,6 +423,10 @@ function repositoryRouterSources() {
   };
 }
 
+function withQuoteVariants(source) {
+  return `${source}\n${source.replaceAll('"', "'")}`;
+}
+
 const worker = {
   id: "018f3c6a-d79b-7cc0-8f68-8fdbad0f57bb",
   name: "admin-lifecycle-worker",
@@ -499,6 +503,21 @@ function sampleBody(kind, status) {
       return new Uint8Array([0x50, 0x4b]);
     case "import":
       return { total: 0, created: 0, updated: 0, skipped: 0, users: [] };
+    case "import-job":
+      return {
+        operationId: worker.id,
+        status: "Completed",
+        total: 0,
+        completed: 0,
+        result: { total: 0, created: 0, updated: 0, skipped: 0, users: [] },
+      };
+    case "settings-mutation":
+      return { operationId: worker.id, revision: 1, brandingHash: null };
+    case "settings-branding-stage":
+      return {
+        operationId: worker.id,
+        brandingHash: "a".repeat(64),
+      };
     case "credential-send":
       return { sent: 0, failed: 0, results: [] };
     case "user":
@@ -625,6 +644,7 @@ function sampleResponse(operation) {
       : [
             "private-string",
             "import",
+            "import-job",
             "credential-send",
             "worker-created",
             "enrollment-token",
@@ -635,15 +655,15 @@ function sampleResponse(operation) {
   return { status, body: sampleBody(operation.responseKind, status), headers };
 }
 
-test("catalog covers all 75 HTTP operations and keeps SignalR as separate surfaces", () => {
-  assert.equal(ADMIN_OPERATIONS.length, 75);
-  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 75);
+test("catalog covers all 78 HTTP operations and keeps SignalR as separate surfaces", () => {
+  assert.equal(ADMIN_OPERATIONS.length, 78);
+  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 78);
   assert.deepEqual(
     ADMIN_OPERATIONS.reduce((counts, operation) => {
       counts[operation.method] = (counts[operation.method] || 0) + 1;
       return counts;
     }, {}),
-    { GET: 33, PUT: 6, POST: 26, DELETE: 10 },
+    { GET: 35, PUT: 6, POST: 27, DELETE: 10 },
   );
   const enroll = ADMIN_OPERATIONS.find(({ id }) => id === "worker_enroll");
   assert.deepEqual(
@@ -712,7 +732,7 @@ test("fixed-rate admin load uses one bounded instance batch and never a per-row 
 test("authorization classes keep Admin, manager, and enrollment-token surfaces explicit", () => {
   assert.equal(
     ADMIN_OPERATIONS.filter(({ auth }) => auth === "admin").length,
-    73,
+    76,
   );
   assert.deepEqual(
     ADMIN_OPERATIONS.filter(({ auth }) => auth !== "admin").map(
@@ -844,12 +864,15 @@ test("container acceptance emulates an external image prune and requires one aut
     join(REPOSITORY, "tests/load/admin-lifecycle.mjs"),
     "utf8",
   );
-  const drill = orchestrator.slice(
+  const drill = withQuoteVariants(orchestrator.slice(
     orchestrator.indexOf("async function runtimeImageRepairLifecycle()"),
     orchestrator.indexOf("async function observabilityAndRuntime()"),
-  );
+  ));
   assert.match(drill, /runnableChallengeArchive/);
-  assert.match(drill, /docker\(\['image', 'rm', '--force', oldImage\]\)/);
+  assert.match(
+    drill,
+    /docker\(\[\s*["']image["']\s*,\s*["']rm["']\s*,\s*["']--force["']\s*,\s*oldImage\s*\]\)/,
+  );
   assert.match(drill, /trigger='RuntimeRepair'/);
   assert.match(
     drill,
@@ -941,11 +964,11 @@ test("read-origin matrix covers every live read on every eligible replica exactl
 test("repository router source and lifecycle catalog have exact bidirectional coverage", () => {
   const sources = repositoryRouterSources();
   assert.deepEqual(assertRouterCoverage(sources), {
-    operations: 75,
+    operations: 78,
     signalR: 2,
   });
   const parsed = parseAdminRouterOperations(sources);
-  assert.equal(parsed.operations.length, 75);
+  assert.equal(parsed.operations.length, 78);
   assert.equal(parsed.signalR.length, 2);
 });
 
@@ -990,8 +1013,8 @@ test("router parser ignores route-like text in Rust comments and strings", () =>
 
 test("coverage accounting rejects omissions, duplicates, and unknown operations", () => {
   assert.deepEqual(assertCompleteCoverage(ADMIN_OPERATION_IDS), {
-    covered: 75,
-    required: 75,
+    covered: 78,
+    required: 78,
     missing: [],
     extra: [],
   });
@@ -1016,8 +1039,8 @@ test("coverage accounting rejects omissions, duplicates, and unknown operations"
   assert.deepEqual(
     assertCompleteCoverage(allSurfaces, { includeSignalR: true }),
     {
-      covered: 77,
-      required: 77,
+      covered: 80,
+      required: 80,
       missing: [],
       extra: [],
     },
@@ -1523,12 +1546,12 @@ test("stable replica projections remove only request-local and sampled volatilit
 });
 
 test("k6 admin scenario holds a fixed rate, polls shared contracts only, and fails on any error", () => {
-  const source = readFileSync(
+  const source = withQuoteVariants(readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), "../k6/admin-lifecycle.js"),
     "utf8",
-  );
+  ));
   assert.match(source, /ADMIN_READ_OPERATIONS,[\s\S]*validateAdminResponse/);
-  assert.match(source, /executor: 'constant-arrival-rate'/);
+  assert.match(source, /executor:\s*["']constant-arrival-rate["']/);
   assert.match(source, /exec\.scenario\.iterationInTest/);
   assert.match(source, /const WEB_TARGETS/);
   assert.match(source, /const CONTROL_TARGET/);
@@ -1536,7 +1559,7 @@ test("k6 admin scenario holds a fixed rate, polls shared contracts only, and fai
   assert.match(source, /RATE > 2/);
   assert.match(
     source,
-    /75-request setup matrix shares the 150\/min admin quota/,
+    /78-request setup matrix shares the 150\/min admin quota/,
   );
   assert.match(source, /new Trend\(`\$\{operation\.id\}_ms`/);
   assert.match(source, /server_5xx: \['rate==0'\]/);
@@ -1555,13 +1578,13 @@ test("k6 admin scenario holds a fixed rate, polls shared contracts only, and fai
 test("orchestrator holds a database lease and exercises every privileged authorization class", () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
   const fixtureSource = readFileSync(join(root, "admin-fixtures.mjs"), "utf8");
-  const lifecycleSource = readFileSync(
+  const lifecycleSource = withQuoteVariants(readFileSync(
     join(root, "admin-lifecycle.mjs"),
     "utf8",
-  );
+  ));
   assert.match(fixtureSource, /pg_try_advisory_lock/);
   assert.match(fixtureSource, /pg_advisory_unlock/);
-  assert.match(lifecycleSource, /operation\.auth === 'admin'/);
+  assert.match(lifecycleSource, /operation\.auth === ["']admin["']/);
   assert.match(lifecycleSource, /Monitor authorization returned/);
   assert.match(lifecycleSource, /cross-game manager authorization returned/);
   assert.match(
@@ -1589,7 +1612,7 @@ test("orchestrator persists global configuration before its first mutation", () 
   );
   const persisted = source.indexOf("saveRecovery();", snapshot);
   const mutation = source.indexOf(
-    "await call('PUT', '/api/admin/config'",
+    'await call("PUT", "/api/admin/config"',
     snapshot,
   );
   assert.ok(snapshot >= 0 && persisted > snapshot && mutation > persisted);
@@ -1621,7 +1644,7 @@ test("repository HTTP scan retries preserve the solved challenge identity and ev
   assert.match(source, /same-commit repository retry changed solve evidence/);
   assert.match(source, /grading\\\/scoring changes were retained/);
   assert.match(source, /deleteDisposableLoadGame\(deletingId, expectedTitle\)/);
-  assert.match(source, /attachmentType: 'None'/);
+  assert.match(source, /attachmentType:\s*["']None["']/);
 });
 
 test("cleanup removes build history for every disposable game, including image fixtures", () => {

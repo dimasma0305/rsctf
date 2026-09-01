@@ -83,7 +83,6 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         summary: Set(String::new()),
         content: Set(String::new()),
         hidden: Set(false),
-        // Pre-start practice alone must not freeze repository grading.
         practice_mode: Set(true),
         accept_without_review: Set(false),
         allow_user_submissions: Set(false),
@@ -255,7 +254,6 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
     .execute(state.pg())
     .await
     .expect("record challenge progress");
-    // A legacy replica path must migrate in place without losing solve history.
     let legacy_replica_path = format!(
         "/different-node/storage/repos/{}/event/web/challenge.yaml",
         binding.id
@@ -437,7 +435,6 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         .unwrap(),
         Some(replacement_attachment_id)
     );
-    // Removing both attachment sources must stop serving stale repository data.
     tokio::fs::write(
         &manifest,
         "name: Renamed\ndescription: attachment removed\ntype: StaticAttachment\ncategory: Misc\nflags:\n  - flag{new}\n",
@@ -465,7 +462,6 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
             .unwrap(),
         0
     );
-    // Reject domain-type mutation at a stable historical identity.
     tokio::fs::write(
         &manifest,
         "name: Renamed\ntype: DynamicAttachment\ncategory: Misc\n",

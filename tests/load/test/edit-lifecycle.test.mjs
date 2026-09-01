@@ -79,9 +79,16 @@ function controllerSources() {
   );
 }
 
+// Source-shape checks must survive the repository formatter choosing either
+// JavaScript quote style. Retain the original for SQL/Rust string assertions
+// and append a normalized view for JavaScript call expressions.
+function withQuoteVariants(source) {
+  return `${source}\n${source.replaceAll('"', "'")}`;
+}
+
 function positiveCallExpressions(source) {
   const calls = [];
-  for (const match of source.matchAll(/\bcall\('([^']+)'/g)) {
+  for (const match of source.matchAll(/\bcall\((["'])([^"']+)\1/g)) {
     const open = source.indexOf("(", match.index);
     let depth = 0;
     let quote = null;
@@ -132,8 +139,8 @@ function positiveCallExpressions(source) {
         }
       }
     }
-    assert.notEqual(end, -1, `unterminated positive call for ${match[1]}`);
-    calls.push({ id: match[1], source: source.slice(match.index, end) });
+    assert.notEqual(end, -1, `unterminated positive call for ${match[2]}`);
+    calls.push({ id: match[2], source: source.slice(match.index, end) });
   }
   return calls;
 }
@@ -179,6 +186,22 @@ function objectBody(kind) {
       return [];
     case "page":
       return { data: [], total: 0, length: 0 };
+    case "flag-page":
+      return {
+        items: [],
+        total: 0,
+        offset: 0,
+        limit: 100,
+        violationCount: 0,
+        violations: [],
+      };
+    case "bulk-challenge":
+      return {
+        operationId: "00000000-0000-4000-8000-000000000020",
+        state: "Complete",
+        configurationRevision: 1,
+        outcomes: [],
+      };
     case "zip":
       return new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
     case "audit-archive":
@@ -359,34 +382,34 @@ function sampleResponse(operation) {
   };
 }
 
-test("catalog has exactly all 79 edit method/path operations", () => {
-  assert.equal(EDIT_OPERATIONS.length, 79);
-  assert.equal(new Set(EDIT_OPERATION_IDS).size, 79);
+test("catalog has exactly all 82 edit method/path operations", () => {
+  assert.equal(EDIT_OPERATIONS.length, 82);
+  assert.equal(new Set(EDIT_OPERATION_IDS).size, 82);
   assert.equal(
     new Set(EDIT_OPERATIONS.map(({ method, path }) => `${method} ${path}`))
       .size,
-    79,
+    82,
   );
   assert.deepEqual(
     EDIT_OPERATIONS.reduce((counts, operation) => {
       counts[operation.method] = (counts[operation.method] || 0) + 1;
       return counts;
     }, {}),
-    { GET: 31, POST: 31, PUT: 6, DELETE: 11 },
+    { GET: 32, POST: 33, PUT: 6, DELETE: 11 },
   );
   assert.deepEqual(
     EDIT_OPERATIONS.reduce((counts, operation) => {
       counts[operation.auth] = (counts[operation.auth] || 0) + 1;
       return counts;
     }, {}),
-    { manager: 64, admin: 13, "managed-list": 1, "user-submit": 1 },
+    { manager: 66, admin: 14, "managed-list": 1, "user-submit": 1 },
   );
 });
 
 test("catalog and every production controller source have exact bidirectional coverage", () => {
   const sources = controllerSources();
-  assert.deepEqual(assertEditRouterCoverage(sources), { operations: 79 });
-  assert.equal(parseEditRouterOperations(sources).length, 79);
+  assert.deepEqual(assertEditRouterCoverage(sources), { operations: 82 });
+  assert.equal(parseEditRouterOperations(sources).length, 82);
 });
 
 test("control-plane edit routes retain exact production paths and distinct fixture parameters", () => {
@@ -574,8 +597,8 @@ test("every declared response contract has an accepting and rejecting unit sampl
 
 test("coverage accounting rejects missing, duplicate, and unknown operation ids", () => {
   assert.deepEqual(assertCompleteEditCoverage(EDIT_OPERATION_IDS), {
-    covered: 79,
-    required: 79,
+    covered: 82,
+    required: 82,
   });
   assert.throws(
     () => assertCompleteEditCoverage(EDIT_OPERATION_IDS.slice(1)),
@@ -601,7 +624,7 @@ test("the disposable orchestrator has one explicit positive call for every catal
     "utf8",
   );
   const invoked = positiveCallExpressions(source).map(({ id }) => id);
-  assert.equal(invoked.length, 79);
+  assert.equal(invoked.length, 82);
   assert.deepEqual(new Set(invoked), new Set(EDIT_OPERATION_IDS));
   assert.equal(
     new Set(invoked).size,
@@ -611,17 +634,17 @@ test("the disposable orchestrator has one explicit positive call for every catal
 });
 
 test("pending challenge fixtures obey the one-manifest public submission boundary", () => {
-  const source = readFileSync(
+  const source = withQuoteVariants(readFileSync(
     join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
     "utf8",
+  ));
+  assert.match(
+    source,
+    /const pendingApproveArchive = challengeArchive\(\[\s*\{\s*name: `Pending Approve/,
   );
   assert.match(
     source,
-    /const pendingApproveArchive = challengeArchive\(\[\s*\{ name: `Pending Approve/,
-  );
-  assert.match(
-    source,
-    /const pendingRejectArchive = challengeArchive\(\[\s*\{ name: `Pending Reject/,
+    /const pendingRejectArchive = challengeArchive\(\[\s*\{\s*name: `Pending Reject/,
   );
   assert.match(source, /await call\('edit_challenge_submit'/);
   assert.match(
@@ -635,10 +658,10 @@ test("pending challenge fixtures obey the one-manifest public submission boundar
 });
 
 test("every manager-class positive uses the delegated manager token", () => {
-  const source = readFileSync(
+  const source = withQuoteVariants(readFileSync(
     join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
     "utf8",
-  );
+  ));
   const calls = new Map(
     positiveCallExpressions(source).map((call) => [call.id, call.source]),
   );
@@ -697,13 +720,16 @@ test("organizer cleanup derives fixture-owned mutable tags without mutating the 
 });
 
 test("failed edit acceptance retains its manifest after successful cleanup", () => {
-  const source = readFileSync(
+  const rawSource = readFileSync(
     join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
     "utf8",
   );
-  const cleanup = source.slice(
-    source.indexOf("async function cleanup()"),
-    source.indexOf("async function main()"),
+  const source = withQuoteVariants(rawSource);
+  const cleanup = withQuoteVariants(
+    rawSource.slice(
+      rawSource.indexOf("async function cleanup()"),
+      rawSource.indexOf("async function main()"),
+    ),
   );
   assert.doesNotMatch(cleanup, /removeRecovery\(/);
   assert.match(source, /shouldRetainLifecycleManifest\(/);
@@ -711,7 +737,10 @@ test("failed edit acceptance retains its manifest after successful cleanup", () 
   assert.match(source, /state\.cleanupVerified = cleanupVerified/);
   assert.match(source, /state\.completed = !failure/);
   assert.match(source, /state\.scenarioFailure = String\(error\?\.stack/);
-  assert.match(source, /state\.cleanupFailure = String\(cleanupError\?\.stack/);
+  assert.match(
+    source,
+    /state\.cleanupFailure = String\(\s*cleanupError\?\.stack/,
+  );
   assert.match(source, /state\.leaseFailures\.push/);
   assert.match(source, /state\.scenarioFailure[^]*?saveRecovery\(\)/);
   assert.match(source, /state\.cleanupFailure[^]*?saveRecovery\(\)/);
@@ -730,19 +759,22 @@ test("failed edit acceptance retains its manifest after successful cleanup", () 
   );
   assert.match(
     source,
-    /countContainerFatalLogs\(containerId, state\.startedAt\)/,
+    /countContainerFatalLogs\(\s*containerId,\s*state\.startedAt,?\s*\)/,
   );
   assert.match(source, /RSCTF_ACCEPTANCE_REPORTABLE=1 rejects SKIP_EDIT_K6=1/);
 });
 
 test("edit cleanup is stable and GitHub import is fenced before and after", () => {
-  const source = readFileSync(
+  const rawSource = readFileSync(
     join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
     "utf8",
   );
-  const cleanup = source.slice(
-    source.indexOf("function editResidualSnapshot()"),
-    source.indexOf("async function main()"),
+  const source = withQuoteVariants(rawSource);
+  const cleanup = withQuoteVariants(
+    rawSource.slice(
+      rawSource.indexOf("function editResidualSnapshot()"),
+      rawSource.indexOf("async function main()"),
+    ),
   );
   assert.match(cleanup, /EDIT_CLEANUP_STABILITY_MS/);
   assert.match(cleanup, /for \(let pass = 0; pass < 2; pass \+= 1\)/);
@@ -814,21 +846,21 @@ test("identity admission is isolated from the public game-delete success fixture
     join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
     "utf8",
   );
-  const prepare = source.slice(
+  const prepare = withQuoteVariants(source.slice(
     source.indexOf("async function prepareFutureFixture()"),
     source.indexOf("async function prepareAdFixture()"),
-  );
-  const cleanup = source.slice(
+  ));
+  const cleanup = withQuoteVariants(source.slice(
     source.indexOf("async function deleteFutureGame("),
     source.indexOf("async function removeOwnedImages()"),
-  );
+  ));
   assert.match(prepare, /title: titleFor\(tags\.auth\)/);
   assert.match(prepare, /A\.seedCohort\(authorizationGameId, 3\)/);
   assert.doesNotMatch(prepare, /A\.seedCohort\(context\.gameId, 3\)/);
   assert.match(cleanup, /title === titleFor\(tags\.auth\)/);
   assert.match(
     cleanup,
-    /deleteDisposableAdminGame\(gameId, tags\.auth, \{ runtimeIds: state\.runtimeIds \}\)/,
+    /deleteDisposableAdminGame\(gameId, tags\.auth,\s*\{\s*runtimeIds: state\.runtimeIds,?\s*\}\)/,
   );
 });
 
@@ -846,10 +878,10 @@ test("edit acceptance awaits the shared orchestration lease with the canonical p
 });
 
 test("GitHub import defaults to the challenge repository rather than its parent gitlink", () => {
-  const source = readFileSync(
+  const source = withQuoteVariants(readFileSync(
     join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
     "utf8",
-  );
+  ));
   assert.match(
     source,
     /https:\/\/github\.com\/dimasma0305\/rsctf-challenges\.git/,
@@ -863,10 +895,10 @@ test("inspector acceptance keeps challenge eligibility while simulating an offli
     join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
     "utf8",
   );
-  const prepare = source.slice(
+  const prepare = withQuoteVariants(source.slice(
     source.indexOf("async function prepareAdFixture()"),
     source.indexOf("async function prepareKothFixture()"),
-  );
+  ));
   assert.match(prepare, /isEnabled === true/);
   assert.match(
     prepare,
@@ -902,21 +934,21 @@ test("A&D and KotH create fixtures immediately prove every supplied engine setti
   ]) {
     assert.match(source, new RegExp(`\\b${field}:`), field);
   }
-  const adPrepare = source.slice(
+  const adPrepare = withQuoteVariants(source.slice(
     source.indexOf("async function prepareAdFixture()"),
     source.indexOf("async function prepareKothFixture()"),
-  );
-  const kothPrepare = source.slice(
+  ));
+  const kothPrepare = withQuoteVariants(source.slice(
     source.indexOf("async function prepareKothFixture()"),
     source.indexOf("async function exerciseInspector()"),
-  );
+  ));
   assert.match(
     adPrepare,
-    /assertPersistedGameSettings\(context\.adGameId, AD_CREATION_SETTINGS/,
+    /assertPersistedGameSettings\(\s*context\.adGameId,\s*AD_CREATION_SETTINGS/,
   );
   assert.match(
     kothPrepare,
-    /assertPersistedGameSettings\(context\.kothGameId, KOTH_CREATION_SETTINGS/,
+    /assertPersistedGameSettings\(\s*context\.kothGameId,\s*KOTH_CREATION_SETTINGS/,
   );
   assert.match(adPrepare, /A\.buildManagedAdImage\(\)/);
   assert.match(adPrepare, /const exposePort = suppliedImage \? 80 : 8080/);
@@ -960,17 +992,18 @@ test("game import acceptance reads back portable semantics and proves late-failu
     join(REPOSITORY, "tests/load/edit-lifecycle-fixtures.mjs"),
     "utf8",
   );
-  const destructive = orchestrator.slice(
+  const rawDestructive = orchestrator.slice(
     orchestrator.indexOf("async function destructivePositiveSurface()"),
     orchestrator.indexOf("async function deleteFutureGame("),
   );
+  const destructive = withQuoteVariants(rawDestructive);
   assert.match(destructive, /assertSemanticGameImport\(/);
   assert.match(destructive, /importedGameModel\.poster == null/);
   assert.match(destructive, /importedChecker\?\.adCheckerImage == null/);
   assert.match(destructive, /transactionalFailureGameArchive\(/);
   assert.match(destructive, /expectStatus\(rollbackResponse, 500/);
   assert.equal(
-    (destructive.match(/assertFailedGameImportRolledBack\(/g) || []).length,
+    (rawDestructive.match(/assertFailedGameImportRolledBack\(/g) || []).length,
     2,
   );
   assert.ok(
@@ -1022,14 +1055,14 @@ test("KotH fixture uses public provisioning and proves exact durable and Docker 
     join(REPOSITORY, "tests/load/edit-lifecycle-fixtures.mjs"),
     "utf8",
   );
-  const prepare = orchestrator.slice(
+  const prepare = withQuoteVariants(orchestrator.slice(
     orchestrator.indexOf("async function prepareKothFixture()"),
     orchestrator.indexOf("async function exerciseInspector()"),
-  );
-  const cleanup = orchestrator.slice(
+  ));
+  const cleanup = withQuoteVariants(orchestrator.slice(
     orchestrator.indexOf("async function cleanup()"),
     orchestrator.indexOf("async function main()"),
-  );
+  ));
   assert.match(
     prepare,
     /\/api\/edit\/games\/\$\{context\.kothGameId\}\/ad\/EnsureContainers/,
@@ -1037,7 +1070,7 @@ test("KotH fixture uses public provisioning and proves exact durable and Docker 
   assert.match(prepare, /headers: \{ 'idempotency-key': randomUUID\(\) \}/);
   assert.match(
     prepare,
-    /discoverManagedKothHill\(context\.kothGameId, context\.kothChallengeId\)/,
+    /discoverManagedKothHill\(\s*context\.kothGameId,\s*context\.kothChallengeId,?\s*\)/,
   );
   assert.match(prepare, /state\.runtimeIds\.push\(hill\.backendId\)/);
   assert.doesNotMatch(prepare, /seedKothTarget|startHill/);
@@ -1122,10 +1155,10 @@ test("A&D override acceptance changes authoritative evidence and proves both inv
     join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
     "utf8",
   );
-  const positives = source.slice(
+  const positives = withQuoteVariants(source.slice(
     source.indexOf("async function positiveReadAndMutationSurface()"),
     source.indexOf("async function runReadSimulation()"),
-  );
+  ));
   assert.match(positives, /FROM \"AdEpochRollups\" rollup/);
   assert.match(positives, /result\.sla_credit IS NOT NULL/);
   assert.match(positives, /overrideTarget\.status !== overrideBefore\.status/);
@@ -1158,11 +1191,11 @@ test("A&D override acceptance changes authoritative evidence and proves both inv
     );
   assert.match(
     positives,
-    /redisRaw\(\['SET', key, cacheSentinel, 'EX', '300'\]/,
+    /redisRaw\(\s*\['SET', key, cacheSentinel, 'EX', '300'\]/,
   );
   assert.match(positives, /redisRaw\(\['EXISTS', key\]/);
   assert.ok(
-    positives.indexOf("call('edit_ad_check_override'") <
+    positives.indexOf('call("edit_ad_check_override"') <
       positives.indexOf("const overrideAfter"),
     "authoritative readback must happen after the public override",
   );
@@ -1170,14 +1203,14 @@ test("A&D override acceptance changes authoritative evidence and proves both inv
 });
 
 test("KotH recovery acceptance faults a scoped durable phase and proves receipt/runtime convergence", () => {
-  const source = readFileSync(
+  const source = withQuoteVariants(readFileSync(
     join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
     "utf8",
-  );
-  const positives = source.slice(
+  ));
+  const positives = withQuoteVariants(source.slice(
     source.indexOf("async function positiveReadAndMutationSurface()"),
     source.indexOf("async function runReadSimulation()"),
-  );
+  ));
   assert.match(positives, /setAdScoringPaused\(context\.kothGameId, true\)/);
   assert.match(positives, /phase='ReadinessPending'/);
   assert.match(positives, /cycle\.phase='Active'/);

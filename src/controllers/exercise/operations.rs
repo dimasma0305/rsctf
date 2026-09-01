@@ -92,9 +92,6 @@ pub(super) fn operation_request(headers: &HeaderMap) -> AppResult<OperationReque
     let Some(value) = headers.get("x-rsctf-operation-id") else {
         return Ok(OperationRequest {
             operation_id: Uuid::new_v4(),
-            // A legacy caller cannot resend a server-generated identity. If
-            // its process died, let its next request resume a stale operation
-            // for this exact exercise and intent instead of blocking forever.
             may_adopt_stale: true,
         });
     };
@@ -191,8 +188,6 @@ async fn claim<T: DeserializeOwned>(
         transaction.rollback().await.map_err(database_error)?;
         return Err(AppError::too_many_requests(2));
     }
-    // Read the reaper's durable marker only after taking the same owner lock;
-    // this closes its commit/release hand-off without spanning runtime I/O.
     let teardown_pending: bool = sqlx::query_scalar(MANAGED_REAP_PENDING_SQL)
         .bind(&runtime_lock_key)
         .bind(expected_publication_id)

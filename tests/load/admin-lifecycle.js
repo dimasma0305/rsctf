@@ -44,8 +44,27 @@ export const ADMIN_OPERATIONS = Object.freeze([
   }),
   operation("admin_config_update", "PUT", "/api/admin/config", {
     mutation: true,
-    responseKind: "message",
+    responseKind: "settings-mutation",
   }),
+  operation(
+    "admin_config_operation_get",
+    "GET",
+    "/api/admin/config/operations/{operation_id}",
+    {
+      responseKind: "settings-mutation",
+      params: { operation_id: "operationId" },
+    },
+  ),
+  operation(
+    "admin_branding_stage",
+    "POST",
+    "/api/admin/config/logo/stage/{operation_id}",
+    {
+      mutation: true,
+      responseKind: "settings-branding-stage",
+      params: { operation_id: "operationId" },
+    },
+  ),
   operation("admin_logo_upload", "POST", "/api/admin/config/logo", {
     mutation: true,
     responseKind: "message",
@@ -131,6 +150,15 @@ export const ADMIN_OPERATIONS = Object.freeze([
     mutation: true,
     responseKind: "import",
   }),
+  operation(
+    "admin_users_import_recover",
+    "GET",
+    "/api/admin/users/import/{operationId}",
+    {
+      responseKind: "import-job",
+      params: { operationId: "operationId" },
+    },
+  ),
   operation(
     "admin_credentials_send",
     "POST",
@@ -1456,6 +1484,33 @@ export function validateAdminResponse(operationId, response) {
         body.total === body.created + body.updated + body.skipped &&
         privateNoStore(headers)
       );
+    case "import-job":
+      return (
+        object(body) &&
+        typeof body.operationId === "string" &&
+        ["Running", "Completed"].includes(body.status) &&
+        Number.isSafeInteger(body.total) &&
+        Number.isSafeInteger(body.completed) &&
+        body.total >= body.completed &&
+        (body.result === null || body.result === undefined || object(body.result)) &&
+        privateNoStore(headers)
+      );
+    case "settings-mutation":
+      return (
+        object(body) &&
+        typeof body.operationId === "string" &&
+        Number.isSafeInteger(body.revision) &&
+        body.revision >= 0 &&
+        (body.brandingHash === null ||
+          body.brandingHash === undefined ||
+          /^[a-f0-9]{64}$/.test(body.brandingHash))
+      );
+    case "settings-branding-stage":
+      return (
+        object(body) &&
+        typeof body.operationId === "string" &&
+        /^[a-f0-9]{64}$/.test(body.brandingHash)
+      );
     case "credential-send":
       return (
         object(body) &&
@@ -1756,15 +1811,32 @@ function routeCalls(source) {
   return calls;
 }
 
+function rustStringConstants(source) {
+  return new Map(
+    [...source.matchAll(/\bconst\s+([A-Z][A-Z0-9_]*)\s*:\s*&str\s*=\s*"((?:\\.|[^"\\])*)"\s*;/g)].map(
+      ([, name, value]) => [
+        name,
+        value.replaceAll('\\"', '"').replaceAll("\\\\", "\\"),
+      ],
+    ),
+  );
+}
+
 function parsedRoutes(source) {
+  const constants = rustStringConstants(source);
   const routes = [];
   for (const call of routeCalls(source)) {
     const pathMatch = call.match(/^\s*"((?:\\.|[^"\\])*)"\s*,/);
-    if (!pathMatch)
+    const constantMatch = call.match(/^\s*([A-Z][A-Z0-9_]*)\s*,/);
+    if (!pathMatch && !constantMatch)
       throw new Error(
         `could not parse Axum route path from: ${call.slice(0, 80)}`,
       );
-    const path = pathMatch[1].replaceAll('\\"', '"').replaceAll("\\\\", "\\");
+    const path = pathMatch
+      ? pathMatch[1].replaceAll('\\"', '"').replaceAll("\\\\", "\\")
+      : constants.get(constantMatch[1]);
+    if (!path)
+      throw new Error(`could not resolve Axum route constant ${constantMatch[1]}`);
     const methods = [
       ...call.matchAll(/\b(get|post|put|delete|patch)\s*\(/g),
     ].map((entry) => entry[1].toUpperCase());

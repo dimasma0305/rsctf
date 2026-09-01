@@ -716,6 +716,8 @@ function materializeCatalogPath(template, fixture) {
     userid: fixture.userId,
     challengeid: fixture.challengeId,
     auditid: fixture.auditId,
+    operationid: fixture.operationId,
+    operation_id: fixture.operationId,
   };
   let path = template.replace(/\{([^}]+)\}/g, (_, key) => {
     const normalized = key.toLowerCase();
@@ -899,12 +901,14 @@ async function identityLifecycle() {
   state.teamIds.push(team.id);
   saveRecovery();
 
+  const importOperationId = randomUUID();
   const importedResponse = await call(
     "POST",
     "/api/admin/users/import",
     "/api/admin/users/import",
     {
       body: {
+        operationId: importOperationId,
         rows: [
           {
             email: names.importEmail,
@@ -934,6 +938,18 @@ async function identityLifecycle() {
           typeof user.password === "string" && user.password.length >= 8,
       ),
     "user import did not return both one-time passwords",
+  );
+  const recoveredImport = await call(
+    "GET",
+    "/api/admin/users/import/{operationId}",
+    `/api/admin/users/import/${importOperationId}`,
+  );
+  const recoveredImportModel = exactJson(recoveredImport, "user import recovery");
+  requireCondition(
+    recoveredImportModel.status === "Completed" &&
+      recoveredImportModel.completed === importedModel.total &&
+      recoveredImportModel.result?.users?.length === importedModel.users.length,
+    "user import recovery did not return the complete durable result",
   );
   const imported = userByEmail(names.importEmail);
   const cacheDelete = userByEmail(names.cacheDeleteEmail);
@@ -1145,25 +1161,6 @@ async function configurationLifecycle() {
     "branding lifecycle requires an empty disposable branding slot",
   );
 
-  const changed = {
-    ...originalGlobalConfig,
-    title: `RSCTF admin lifecycle ${tag}`,
-    slogan: `replica convergence ${tag}`,
-  };
-  await call("PUT", "/api/admin/config", "/api/admin/config", {
-    body: { globalConfig: changed },
-  });
-  for (const [index, baseUrl] of webTargets.entries()) {
-    const replica = await adminApi("GET", "/api/admin/config", {
-      baseUrl,
-      ip: `10.252.10.${index + 1}`,
-    });
-    requireCondition(
-      replica.json?.globalConfig?.title === changed.title,
-      `web replica ${index + 1} did not converge on the config mutation`,
-    );
-  }
-
   const onePixelPng = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
     "base64",
@@ -1172,6 +1169,7 @@ async function configurationLifecycle() {
     filename: `${tag}.png`,
     content: onePixelPng,
     contentType: "image/png",
+    headers: { "x-rsctf-operation-id": randomUUID() },
   });
   recordCoverage("POST", "/api/admin/config/logo", uploaded);
   console.log("  ✓ admin.config.logo.upload");
@@ -1198,6 +1196,62 @@ async function configurationLifecycle() {
       afterDelete.json?.globalConfig?.faviconHash === null,
     "logo delete did not clear both branding hashes",
   );
+
+  const current = exactJson(afterDelete, "config before revisioned mutation");
+  const operationId = randomUUID();
+  const staged = await multipartRequest(
+    `/api/admin/config/logo/stage/${operationId}`,
+    {
+      filename: `${tag}-staged.png`,
+      content: onePixelPng,
+      contentType: "image/png",
+    },
+  );
+  recordCoverage(
+    "POST",
+    "/api/admin/config/logo/stage/{operation_id}",
+    staged,
+  );
+  const changed = {
+    ...originalGlobalConfig,
+    title: `RSCTF admin lifecycle ${tag}`,
+    slogan: `replica convergence ${tag}`,
+  };
+  const mutation = await call("PUT", "/api/admin/config", "/api/admin/config", {
+    body: {
+      operationId,
+      expectedRevision: current.revision,
+      brandingAction: "Set",
+      globalConfig: changed,
+    },
+  });
+  const mutationModel = exactJson(mutation, "revisioned settings mutation");
+  const recoveredMutation = await call(
+    "GET",
+    "/api/admin/config/operations/{operation_id}",
+    `/api/admin/config/operations/${operationId}`,
+  );
+  requireCondition(
+    JSON.stringify(exactJson(recoveredMutation, "settings recovery")) ===
+      JSON.stringify(mutationModel),
+    "settings operation recovery changed the committed result",
+  );
+  for (const [index, baseUrl] of webTargets.entries()) {
+    const replica = await adminApi("GET", "/api/admin/config", {
+      baseUrl,
+      ip: `10.252.10.${index + 1}`,
+    });
+    requireCondition(
+      replica.json?.globalConfig?.title === changed.title,
+      `web replica ${index + 1} did not converge on the config mutation`,
+    );
+  }
+  const afterStagedUpload = await adminApi("GET", "/api/admin/config");
+  requireCondition(
+    afterStagedUpload.json?.globalConfig?.logoHash === mutationModel.brandingHash,
+    "revisioned branding mutation did not publish its staged hash",
+  );
+  await adminApi("DELETE", "/api/admin/config/logo");
 
   const myIp = await call("GET", "/api/admin/MyIp", "/api/admin/MyIp");
   requireCondition(
@@ -3870,8 +3924,17 @@ async function cleanup() {
       // so run its idempotent delete even if the main scenario failed between
       // upload and its ordinary delete step.
       await adminApi("DELETE", "/api/admin/config/logo");
+      const current = exactJson(
+        await adminApi("GET", "/api/admin/config"),
+        "config cleanup revision",
+      );
       await adminApi("PUT", "/api/admin/config", {
-        body: { globalConfig: restoreConfig },
+        body: {
+          operationId: randomUUID(),
+          expectedRevision: current.revision,
+          brandingAction: "Keep",
+          globalConfig: restoreConfig,
+        },
       });
     }
   });
@@ -3945,6 +4008,7 @@ async function main() {
       auditId: state.buildRecordIds.find(Boolean) || 1,
       bindingId: state.repoBindingIds.find(Boolean) || 1,
       workerId,
+      operationId: randomUUID(),
     });
   } catch (error) {
     primaryError = error;

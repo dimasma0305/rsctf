@@ -1,5 +1,4 @@
-//! Admin user mutation handlers (update/delete/reset-password) — split from
-//! users.rs to keep each file under the 1000-line rule.
+//! Admin user update, delete, and password-reset handlers.
 use super::*;
 use axum::extract::ConnectInfo;
 use std::net::SocketAddr;
@@ -18,13 +17,9 @@ use policy::{
     unban_requires_prior_shared_revocation, validate_admin_update,
 };
 
-/// Make an account fail closed before any roster snapshot or capability
-/// teardown begins. Locking the account row closes the hand-off with team
-/// invite acceptance: an accept either retains a share lock and commits before
-/// this update (so the later snapshot sees it), or observes the banned role and
-/// is rejected. The normalized email is returned from the same locked snapshot
-/// so deletion can invalidate import-only plaintext without racing an email
-/// mutation.
+/// Fence an account before roster teardown and return its locked email.
+/// The account row closes the hand-off with concurrent invite acceptance, and
+/// the same snapshot lets deletion invalidate import-only credentials safely.
 pub(crate) async fn fence_user_for_deletion(
     pool: &sqlx::PgPool,
     user_id: Uuid,
@@ -38,10 +33,8 @@ pub(crate) async fn fence_user_for_deletion(
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    // This is deliberately a separate statement from the team-link lookup. A
-    // PostgreSQL statement keeps the snapshot it took before waiting for this
-    // row lock; combining the EXISTS with FOR UPDATE could therefore miss a
-    // roster link committed by the transaction that just released the row.
+    // Keep this separate from the team lookup so READ COMMITTED takes a fresh
+    // snapshot after a competing transaction releases the account row.
     let account: Option<(i16, Option<String>)> = sqlx::query_as(
         r#"SELECT role, normalized_email
              FROM "AspNetUsers"
@@ -58,13 +51,9 @@ pub(crate) async fn fence_user_for_deletion(
     if role == Role::Admin as i16 {
         return Err(AppError::bad_request("Cannot delete another administrator"));
     }
-    // A new statement gets a fresh READ COMMITTED snapshot after the account
-    // lock is held. Team creation/transfer and invite acceptance must take that
-    // same account lock, so a roster link can neither be hidden by the stale
-    // snapshot from before the wait nor appear after this check. Physical
-    // deletion is deliberately limited to unteamed accounts: Ban is the safe
-    // emergency revocation path, while deleting a live or historical roster row
-    // would change competition evidence and can partially tear down a team.
+    // Team mutations take the same lock, so links cannot appear after this
+    // fresh lookup. Physical deletion remains limited to unteamed accounts to
+    // preserve competition evidence; Ban is the emergency revocation path.
     let association: Option<String> = sqlx::query_scalar(
         r#"SELECT CASE
                WHEN EXISTS(SELECT 1 FROM "Teams" WHERE captain_id = $1)
@@ -115,9 +104,7 @@ async fn fence_user_identity_for_deletion(
 ) -> AppResult<()> {
     let normalized_email = fence_user_for_deletion(pool, user_id).await?;
     if let Some(email) = normalized_email {
-        // The durable ban and stamp rotation now make the cached password
-        // ineligible for delivery. Compare by immutable user id so an
-        // overlapping account replacement can never lose its newer secret.
+        // Compare by immutable user id so a replacement keeps its newer secret.
         super::users_credentials::invalidate_import_credential(cache, user_id, &email).await;
     }
     Ok(())

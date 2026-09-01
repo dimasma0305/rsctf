@@ -223,8 +223,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
     .await
     .unwrap();
 
-    // SeaORM's `steps` is a count, not a target migration number. Apply only
-    // m0089 here so the pre-m0091 event below is genuinely quarantined later.
+    // Apply only m0089 so the pre-m0091 event below is quarantined later.
     Migrator::up(&db, Some(1)).await.unwrap();
     db.execute_unprepared(UP_SQL).await.unwrap();
     let rejected_cohort_is_submission_time: bool = sqlx::query_scalar(
@@ -280,9 +279,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
         .to_string()
         .contains("ck_suspicion_outbox_kind"));
 
-    // m0091 deliberately quarantines every pre-cutover detector row. The m89
-    // job seeded from immutable CheatInfo must then recreate the canonical hard
-    // event once, without restoring the untrusted row's contribution.
+    // Recreate the canonical hard event without restoring untrusted evidence.
     sqlx::query(
         r#"INSERT INTO "SuspicionEvents"
              (game_id, participation_id, challenge_id, kind, evidence_key,
@@ -397,8 +394,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
             .unwrap();
     assert!(outbox_exists);
 
-    // Compatibility triggers canonicalize a previous binary's legacy insert
-    // and create its durable evaluation in the same transaction.
+    // Canonicalize a legacy insert and its durable evaluation atomically.
     sqlx::raw_sql(
         r#"
         INSERT INTO "AspNetUsers"
@@ -677,9 +673,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
     .unwrap();
     assert!(competitive_admission.is_some());
 
-    // Once the configured competition is over, neither a direct Accepted
-    // practice join nor a later Pending->Accepted admin transition can enter
-    // the immutable final cohort.
+    // Post-event joins and approvals cannot enter the immutable final cohort.
     sqlx::raw_sql(
         r#"
         UPDATE "Games"
@@ -792,9 +786,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
     .await
     .unwrap();
 
-    // Exercise the ended-game legacy backfill on an idempotent rerun. Current
-    // Rejected status cannot erase a proven competitor: exact start is
-    // included, while pre-start, exact-end, and post-end rows remain excluded.
+    // A rerun retains proven competitors while excluding out-of-window rows.
     sqlx::raw_sql(
         r#"
         INSERT INTO "Teams"

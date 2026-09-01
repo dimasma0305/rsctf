@@ -744,6 +744,13 @@ async function prepareFutureFixture() {
       { flag: `flag{edit_remove_${runKey}}` },
     ],
   });
+  const flagPage = await call("edit_flags_get", {
+    jwt: identities.managerJwt,
+  });
+  requireCondition(
+    flagPage.model.items.length === 2 && flagPage.model.total === 2,
+    "bounded flag read did not return the authored fixture flags",
+  );
   context.flagId = Number(
     sql(
       `SELECT id FROM "FlagContexts" WHERE challenge_id=${context.challengeId} ` +
@@ -1383,10 +1390,11 @@ async function positiveReadAndMutationSurface() {
     ...primaryGameModel,
     summary: `updated edit acceptance ${runKey}`,
   };
-  await call("edit_game_update", {
+  const updatedGame = await call("edit_game_update", {
     jwt: identities.managerJwt,
     body: updatedGameBody,
   });
+  primaryGameModel = updatedGame.model;
   const salt = await call("edit_game_hash_salt", {
     jwt: identities.managerJwt,
   });
@@ -1407,6 +1415,35 @@ async function positiveReadAndMutationSurface() {
   requireCondition(
     generatedVariants.model.generated === 0,
     "fixture with no configured generators unexpectedly created variants",
+  );
+  const bulkOperation = {
+    operationId: randomUUID(),
+    expectedRevision: primaryGameModel.configurationRevision,
+    action: "Enable",
+    challengeIds: [context.challengeId],
+  };
+  let bulkEnable = await call("edit_challenges_bulk", {
+    jwt: identities.managerJwt,
+    body: bulkOperation,
+  });
+  for (let attempt = 0; bulkEnable.model.state === "Pending" && attempt < 120; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const response = await uncatalogued(
+      "POST",
+      `/api/edit/games/${context.gameId}/challenges/bulk`,
+      { jwt: identities.managerJwt, body: bulkOperation },
+    );
+    const model = responseBody(response, operationById.get("edit_challenges_bulk"));
+    validateEditResponse("edit_challenges_bulk", {
+      status: response.status,
+      body: model,
+      headers: response.headers,
+    });
+    bulkEnable = { model, response };
+  }
+  requireCondition(
+    bulkEnable.model.state === "Complete",
+    "bulk challenge mutation did not reach its durable terminal state",
   );
 
   const clone = await call("edit_game_clone", {
@@ -1429,6 +1466,17 @@ async function positiveReadAndMutationSurface() {
   console.log(
     `  ✓ clone preserved ${cloneShape.cloneChallenges} challenge template(s) without live ownership`,
   );
+  const compatClone = await call("edit_game_clone_compat", {
+    body: {
+      title: `EDIT-COMPAT-CLONE-${runKey}`,
+      startTimeUtc: primaryGameModel.start,
+      endTimeUtc: primaryGameModel.end,
+      includeChallenges: false,
+    },
+  });
+  state.gameIds.push(compatClone.model);
+  state.futureGameIds.push(compatClone.model);
+  saveRecovery();
   await call("edit_game_writeups_delete");
   await call("edit_scoreboard_flush", { jwt: identities.managerJwt });
   const admins = await call("edit_game_admins_get");

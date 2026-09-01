@@ -102,6 +102,22 @@ export const EDIT_OPERATIONS = Object.freeze([
     mutation: true,
     responseKind: "number",
   }),
+  operation("edit_game_clone_compat", "POST", "/api/edit/games/{id}/clone", {
+    auth: "admin",
+    params: game,
+    mutation: true,
+    responseKind: "number",
+  }),
+  operation(
+    "edit_challenges_bulk",
+    "POST",
+    "/api/edit/games/{id}/challenges/bulk",
+    {
+      params: game,
+      mutation: true,
+      responseKind: "bulk-challenge",
+    },
+  ),
   operation(
     "edit_game_writeups_delete",
     "DELETE",
@@ -123,6 +139,15 @@ export const EDIT_OPERATIONS = Object.freeze([
     params: game,
     responseKind: "zip",
   }),
+  operation(
+    "edit_flags_get",
+    "GET",
+    "/api/edit/games/{id}/challenges/{cId}/flags",
+    {
+      params: challenge,
+      responseKind: "flag-page",
+    },
+  ),
   operation(
     "edit_scoreboard_flush",
     "POST",
@@ -900,6 +925,28 @@ export function validateEditResponse(operationOrId, response) {
       ) {
         throw new Error(`${item.id} expected a page`);
       }
+      break;
+    case "flag-page":
+      object();
+      if (
+        !Array.isArray(body.items) ||
+        !Number.isSafeInteger(body.total) ||
+        !Number.isSafeInteger(body.offset) ||
+        !Number.isSafeInteger(body.limit) ||
+        !Number.isSafeInteger(body.violationCount) ||
+        !Array.isArray(body.violations)
+      )
+        throw new Error(`${item.id} expected a bounded flag page`);
+      break;
+    case "bulk-challenge":
+      object();
+      if (
+        typeof body.operationId !== "string" ||
+        !["Pending", "Complete"].includes(body.state) ||
+        !Number.isSafeInteger(body.configurationRevision) ||
+        !Array.isArray(body.outcomes)
+      )
+        throw new Error(`${item.id} expected a bulk mutation result`);
       break;
     case "zip":
       if (!(body instanceof Uint8Array) || body[0] !== 0x50 || body[1] !== 0x4b)
