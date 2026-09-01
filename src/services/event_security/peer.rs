@@ -426,19 +426,13 @@ pub fn proof_url(game_id: i32) -> AppResult<String> {
     Ok(format!("{base}/api/game/{game_id}/vpn/proof"))
 }
 
-pub async fn render_user_config(
-    st: &SharedState,
-    user: &CurrentUser,
-    part: &participation::Model,
-) -> AppResult<String> {
-    let peer = ensure_user_peer(st, user, part).await?;
-    let proof_url = proof_url(part.game_id)?;
-    let endpoint = std::env::var("RSCTF_AD_VPN_SERVER_ENDPOINT")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| AppError::unavailable("RSCTF_AD_VPN_SERVER_ENDPOINT is required"))?;
-    let mut allowed = std::env::var("RSCTF_EVENT_VPN_ALLOWED_IPS")
-        .unwrap_or_else(|_| crate::services::ad_vpn::client_cidr())
+fn event_profile_routes(
+    configured: Option<&str>,
+    service_routes: Vec<String>,
+    client_route: String,
+) -> AppResult<Vec<String>> {
+    let mut allowed = configured
+        .unwrap_or_default()
         .split(',')
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -452,11 +446,37 @@ pub async fn render_user_config(
             "Event VPN must use split-tunnel routes; default routes are forbidden",
         ));
     }
-    for route in crate::services::ad_vpn::service_route_cidrs().map_err(AppError::internal)? {
+    for route in service_routes
+        .into_iter()
+        .chain(std::iter::once(client_route))
+    {
         if !allowed.contains(&route) {
             allowed.push(route);
         }
     }
+    Ok(allowed)
+}
+
+pub async fn render_user_config(
+    st: &SharedState,
+    user: &CurrentUser,
+    part: &participation::Model,
+) -> AppResult<String> {
+    let peer = ensure_user_peer(st, user, part).await?;
+    let proof_url = proof_url(part.game_id)?;
+    let endpoint = std::env::var("RSCTF_AD_VPN_SERVER_ENDPOINT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| AppError::unavailable("RSCTF_AD_VPN_SERVER_ENDPOINT is required"))?;
+    // The Toolkit profile also reaches managed BYOC peers in the client
+    // network. Kernel policy still limits each event's peers to its exact live
+    // targets, so adding the route does not grant cross-event access.
+    let configured = std::env::var("RSCTF_EVENT_VPN_ALLOWED_IPS").ok();
+    let allowed = event_profile_routes(
+        configured.as_deref(),
+        crate::services::ad_vpn::service_route_cidrs().map_err(AppError::internal)?,
+        crate::services::ad_vpn::client_cidr(),
+    )?;
     let server_public_key = crate::services::ad_vpn::server_public_key(&st.db).await?;
     Ok(format!(
         "# RSCTF event {game_id}; VPN proof endpoint: {proof_url}\n\
@@ -509,5 +529,30 @@ mod tests {
         let second = allocate_address("10.14.0.0/29", 1, user, &used).unwrap();
         assert_ne!(first, second);
         assert_ne!(first, "10.14.0.1");
+    }
+
+    #[test]
+    fn personal_event_profile_includes_toolkit_routes_once() {
+        let allowed = event_profile_routes(
+            Some("192.0.2.0/28, 10.13.41.0/24"),
+            vec!["10.13.41.0/24".to_string()],
+            "10.13.42.0/24".to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            allowed,
+            vec!["192.0.2.0/28", "10.13.41.0/24", "10.13.42.0/24"]
+        );
+        assert_eq!(
+            allowed
+                .iter()
+                .filter(|route| route.as_str() == "10.13.41.0/24")
+                .count(),
+            1
+        );
+        assert!(
+            event_profile_routes(Some("0.0.0.0/0"), Vec::new(), "10.13.42.0/24".to_string())
+                .is_err()
+        );
     }
 }

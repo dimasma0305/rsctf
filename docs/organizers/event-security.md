@@ -62,8 +62,10 @@ silently converted into an automatic certainty percentage.
 5. In **Edit game → Event Security**, enable **Require event VPN**. Enable each
    telemetry category separately. Save a reasoned policy change before the game
    starts.
-6. Players download their event profile from the game page. The web client mints
-   a new 30-second proof after rsctf verifies the live peer handshake.
+6. Players download their personal profile from the game page or the A&D/KotH
+   Toolkit. For a gated event both locations return the same credential, so a
+   player never needs two tunnels. The web client mints a new 30-second proof
+   after rsctf verifies the live peer handshake.
 
 During `[start, end)`, game APIs, protected assets, and challenge proxy sessions
 recheck the exact live peer source. A policy change, account/session revocation,

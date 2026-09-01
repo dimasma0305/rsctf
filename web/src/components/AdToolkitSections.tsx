@@ -409,8 +409,10 @@ interface AdVpnSectionProps {
 
 /**
  * The "VPN config" accordion item, shared by the A&D and KotH toolkits. One
- * WireGuard tunnel reaches both engines' bridges, so both link to the same
- * /Ad/Vpn/Config endpoint. Must be rendered inside a Mantine <Accordion>.
+ * WireGuard tunnel reaches both engines' bridges. When the event VPN gate is
+ * enabled, this endpoint returns the same personal profile as the event-page
+ * download; otherwise it preserves the team profile used by legacy A&D events.
+ * Must be rendered inside a Mantine <Accordion>.
  */
 export const AdVpnSection: FC<AdVpnSectionProps> = ({ gameId, title, intro, linuxHint }) => {
   const { t } = useTranslation()

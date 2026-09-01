@@ -1,9 +1,9 @@
 //! `Ad/Vpn/Config` endpoint — download a WireGuard `.conf` for the caller's A&D
 //! participation. Ported from RSCTF's `AdGameController.DownloadVpnConfig`.
 //!
-//! rsctf persists a unique per-participation peer and programs the in-process
-//! WireGuard hub from that same row, so downloaded keys and addresses always
-//! match the live cryptokey-routing state.
+//! A gated event returns the caller's personal event peer from both download
+//! locations. An ungated event preserves the established shared-participation
+//! peer used by A&D/BYOC automation.
 
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
@@ -204,7 +204,6 @@ pub async fn download_vpn_config(
     Path(id): Path<i32>,
 ) -> AppResult<Response> {
     let part = resolve_participation(&st, &user, id).await?;
-    let roster_access = acquire_roster_access(&st, &user, &part).await?;
 
     // Game must have at least one A&D or KotH challenge (mirrors RSCTF's hasAd).
     let has_ad = game_challenge::Entity::find()
@@ -233,6 +232,20 @@ pub async fn download_vpn_config(
         .await?
         .ok_or_else(|| AppError::not_found("Game not found"))?;
 
+    // A mandatory event VPN is a personal, session-bound credential. Returning
+    // the legacy team-shared peer here would preserve a non-attributable player
+    // path and would leave the Toolkit download trapped behind the very gate it
+    // is meant to unlock.
+    if game.vpn_access_required {
+        let conf = crate::services::event_security::render_user_config(&st, &user, &part).await?;
+        return Ok(crate::controllers::game::event_vpn_config_response(
+            id, conf,
+        ));
+    }
+
+    // Keep shared team credentials only for events that have not enabled the
+    // personal VPN gate. BYOC bundles deliberately continue to use this peer.
+    let roster_access = acquire_roster_access(&st, &user, &part).await?;
     let conf = render_wg_config(&st, &game, &user.name, part.id).await?;
     let safe_user_name = safe_user_slug(&user.name);
     roster_access.release().await?;

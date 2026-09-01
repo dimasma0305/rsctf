@@ -292,7 +292,8 @@ includes:
 ### 3.2 Connect to the VPN
 
 1. Download the WireGuard configuration from the game.
-2. Store it privately; it grants your team network access.
+2. Store it privately. A gated event profile identifies you personally; an
+   ungated legacy profile grants shared team network access.
 3. Import it into the official WireGuard client or a compatible client.
 4. Activate the tunnel.
 5. Test one address from the current target list.
@@ -300,6 +301,10 @@ includes:
 Only routes configured by the organizer should traverse the tunnel. If enabling
 it breaks unrelated Internet access, disconnect and report the behavior to the
 organizer.
+
+When the organizer requires an event VPN, the game-page download and the A&D or
+KotH Toolkit download are the same personal profile. Import either one, not
+both. Events without that gate retain the team-scoped Toolkit profile.
 
 ### 3.3 Access your service
 

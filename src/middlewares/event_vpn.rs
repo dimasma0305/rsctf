@@ -39,12 +39,25 @@ fn protected_game_path(path: &str) -> Option<i32> {
         return None;
     }
     let suffix = segments.next();
+    // The compatibility Toolkit download is another entry point for the same
+    // personal profile when the event gate is enabled. Exempt only that exact
+    // path; every other A&D/KotH route remains proof-protected.
+    let is_toolkit_vpn_config = suffix.is_some_and(|segment| segment.eq_ignore_ascii_case("ad"))
+        && segments
+            .next()
+            .is_some_and(|segment| segment.eq_ignore_ascii_case("vpn"))
+        && segments
+            .next()
+            .is_some_and(|segment| segment.eq_ignore_ascii_case("config"))
+        && segments.next().is_none();
     // Joining, the public event summary, enrollment, and the connectivity check
-    // must remain reachable before a participant has a VPN profile.
+    // must remain reachable before a participant has a VPN profile. Both profile
+    // download routes enforce accepted participation in their controllers.
     if suffix.is_none()
         || suffix.is_some_and(|segment| {
             segment.eq_ignore_ascii_case("vpn") || segment.eq_ignore_ascii_case("check")
         })
+        || is_toolkit_vpn_config
     {
         return None;
     }
@@ -199,6 +212,12 @@ mod tests {
         assert_eq!(protected_game_path("/api/game/7/vpn/config"), None);
         assert_eq!(protected_game_path("/api/Game/7/Check"), None);
         assert_eq!(protected_game_path("/api/Game/7/Vpn/Config"), None);
+        assert_eq!(protected_game_path("/api/Game/7/Ad/Vpn/Config"), None);
+        assert_eq!(
+            protected_game_path("/api/Game/7/Ad/Vpn/Config/extra"),
+            Some(7)
+        );
+        assert_eq!(protected_game_path("/api/Game/7/Ad/Targets"), Some(7));
         assert_eq!(protected_game_path("/api/game/recent"), None);
         assert_eq!(protected_game_path("/api/game/0/details"), None);
         assert_eq!(protected_game_path("/api/game/-1/details"), None);

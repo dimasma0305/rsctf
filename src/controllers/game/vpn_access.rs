@@ -340,8 +340,14 @@ pub async fn vpn_config(
     }
     let part = accepted_participation(&st, &user, game_id).await?;
     let config = crate::services::event_security::render_user_config(&st, &user, &part).await?;
+    Ok(event_vpn_config_response(game_id, config))
+}
+
+/// Keep the event-page and A&D/KotH Toolkit downloads byte-for-byte identical
+/// when an event requires personal VPN proof.
+pub(crate) fn event_vpn_config_response(game_id: i32, config: String) -> Response {
     let disposition = format!("attachment; filename=rsctf-event-{game_id}.conf");
-    Ok((
+    (
         [
             (
                 header::CONTENT_TYPE,
@@ -352,12 +358,33 @@ pub async fn vpn_config(
         ],
         config,
     )
-        .into_response())
+        .into_response()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn personal_profile_response_is_stable_for_both_download_routes() {
+        let response = event_vpn_config_response(19, "personal-profile".to_string());
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=rsctf-event-19.conf"
+        );
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "private, no-store"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), b"personal-profile");
+    }
 
     #[test]
     fn mint_failures_preserve_auth_and_retry_boundaries() {
