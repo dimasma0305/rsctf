@@ -48,12 +48,14 @@ silently converted into an automatic certainty percentage.
 1. Deploy the managed WireGuard owner and configure three independent 32+
    character secrets: `RSCTF_EVENT_VPN_CREDENTIAL_KEY`,
    `RSCTF_EVENT_SENSOR_TOKEN`, and `RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN`.
-2. Set `RSCTF_EVENT_VPN_PROOF_URL` to an HTTPS rsctf origin whose exact address
-   is routed through WireGuard. Keep it on the same browser origin so the
-   session cookie is not shared with another site.
-3. Set `RSCTF_EVENT_VPN_ALLOWED_IPS` to only the proof-origin `/32` and any exact
-   event-service routes. `0.0.0.0/0` and `::/0` are rejected. rsctf never needs
-   to carry all player Internet traffic.
+2. Set `RSCTF_EVENT_VPN_PROOF_URL` to the public HTTPS rsctf browser origin.
+   The proof endpoint checks the caller against the WireGuard peer's public
+   endpoint and a handshake no older than 90 seconds, so the session cookie is
+   never shared with another site.
+3. Set `RSCTF_EVENT_VPN_ALLOWED_IPS` only for additional exact event-service
+   routes. Do not add the WireGuard server's own public address: routing the
+   endpoint back into its tunnel creates a loop. `0.0.0.0/0` and `::/0` are
+   rejected; rsctf never needs to carry all player Internet traffic.
 4. Start the optional sensor sidecar only if telemetry is wanted. It receives
    `NET_RAW`, but no database credential, Docker socket, TUN administration, or
    writable root filesystem.
@@ -61,7 +63,7 @@ silently converted into an automatic certainty percentage.
    telemetry category separately. Save a reasoned policy change before the game
    starts.
 6. Players download their event profile from the game page. The web client mints
-   a new 30-second proof over the tunnel when a protected request needs it.
+   a new 30-second proof after rsctf verifies the live peer handshake.
 
 During `[start, end)`, game APIs, protected assets, and challenge proxy sessions
 recheck the exact live peer source. A policy change, account/session revocation,

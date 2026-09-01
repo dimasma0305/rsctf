@@ -183,8 +183,8 @@ uses S3.
 | `RSCTF_AD_VPN_ALLOWED_IPS` | Derived routes | Optional explicit routes in player profiles |
 | `RSCTF_KOTH_REPORTER_BASE_URL` | Unset | Private absolute HTTP(S) origin, without a path/query/credentials, that managed Leaderboard targets use for capability exchange, context reads, and evidence submission. Configure the same value on the lifecycle-owning role and web roles that serve organizer status; web roles treat it only as a capability flag. Kubernetes requires a cross-namespace Service origin such as `http://rsctf-network.rsctf-system.svc:8080`; callback policy allows that Service port and rsctf's configured bind/target port to cover Service translation. Leaving it unset keeps legacy external reporting only. |
 | `RSCTF_EVENT_VPN_CREDENTIAL_KEY` | Unset | Independent 32+ character key for event peer private-key encryption and short-lived proof signing |
-| `RSCTF_EVENT_VPN_PROOF_URL` | Unset | HTTPS rsctf origin reachable only over an event split route; required before an event can enable its VPN gate |
-| `RSCTF_EVENT_VPN_ALLOWED_IPS` | VPN client CIDR plus service routes | Additional narrow split-tunnel routes in event profiles; default routes are rejected |
+| `RSCTF_EVENT_VPN_PROOF_URL` | Unset | Public HTTPS rsctf browser origin used after a live WireGuard handshake; required before an event can enable its VPN gate |
+| `RSCTF_EVENT_VPN_ALLOWED_IPS` | VPN client CIDR plus service routes | Additional narrow event-service routes; never include the WireGuard endpoint address, and default routes are rejected |
 | `RSCTF_EVENT_SENSOR_TOKEN` | Unset | Independent 32+ character bearer credential shared only by the network owner and optional sensor sidecar |
 | `RSCTF_EVENT_SENSOR_API_URL` | `http://127.0.0.1:8080` | Loopback HTTP or HTTPS machine API used by the sidecar |
 | `RSCTF_EVENT_SENSOR_INTERFACE` | `wg0` | Capture interface for aggregate event telemetry |

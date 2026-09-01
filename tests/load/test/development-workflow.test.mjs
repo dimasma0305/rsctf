@@ -18,6 +18,10 @@ const compose = readFileSync(
   join(root, "deploy/compose.development.yml"),
   "utf8",
 );
+const publicCompose = readFileSync(
+  join(root, "deploy/compose.development.public.yml"),
+  "utf8",
+);
 const runner = readFileSync(join(root, "scripts/dev.mjs"), "utf8");
 const viteConfig = readFileSync(join(root, "web/vite.config.mts"), "utf8");
 const guide = readFileSync(
@@ -72,6 +76,13 @@ test("development frontend binding is explicit and never wildcard", () => {
 
 test("development gateway exposes the backend health contract", () => {
   assert.match(viteConfig, /'\/healthz': TARGET/);
+});
+
+test("public development gateway preserves Traefik's authenticated client address", () => {
+  assert.match(
+    publicCompose,
+    /X-Forwarded-For: \{http\.request\.header\.X-Real-IP\}/,
+  );
 });
 
 test("development hub proxy preserves the browser origin for CSRF validation", () => {

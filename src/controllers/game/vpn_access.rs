@@ -1,4 +1,4 @@
-//! Player enrollment and tunnel-only proof endpoints for event VPN access.
+//! Player enrollment and live-tunnel proof endpoints for event VPN access.
 
 use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{header, HeaderMap};
@@ -6,11 +6,14 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use std::sync::LazyLock;
+use std::time::{Duration, SystemTime};
 
 use super::*;
 
 const EVENT_VPN_MINT_CONCURRENCY: usize = 8;
+const EVENT_VPN_HANDSHAKE_MAX_AGE: Duration = Duration::from_secs(90);
 static EVENT_VPN_MINT_SLOTS: LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
     LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(EVENT_VPN_MINT_CONCURRENCY)));
 static CHALLENGE_MINTS: LazyLock<
@@ -199,7 +202,7 @@ pub async fn vpn_proof(
     Json(request): Json<EventVpnProofRequest>,
 ) -> AppResult<RequestResponse<EventVpnProofModel>> {
     let source = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()))
-        .and_then(|value| value.parse::<std::net::Ipv4Addr>().ok())
+        .and_then(|value| value.parse::<IpAddr>().ok())
         .ok_or(AppError::Forbidden)?;
     let discriminator = format!(
         "{}:{}",
@@ -227,7 +230,7 @@ async fn mint_proof(
     st: SharedState,
     user: CurrentUser,
     game_id: i32,
-    source: std::net::Ipv4Addr,
+    source: IpAddr,
     request: EventVpnProofRequest,
     lock_key: &str,
 ) -> AppResult<EventVpnProofModel> {
@@ -254,9 +257,7 @@ async fn mint_proof(
             "The event VPN gate is not currently active",
         ));
     }
-    let source = crate::services::event_security::verified_peer_source(st.pg(), game_id, source)
-        .await?
-        .ok_or(AppError::Forbidden)?;
+    let source = verified_live_peer(&st, game_id, user.id, part.id, source).await?;
     if source.user_id != user.id
         || source.participation_id != part.id
         || source.policy_revision != policy.revision
@@ -283,6 +284,47 @@ async fn mint_proof(
     };
     lock.release().await.map_err(AppError::from)?;
     Ok(model)
+}
+
+fn live_session_matches_source(
+    source: IpAddr,
+    session: crate::services::ad_vpn::LivePeerSession,
+    now: SystemTime,
+) -> bool {
+    session.endpoint.ip() == source
+        && now
+            .duration_since(session.last_handshake)
+            .is_ok_and(|age| age <= EVENT_VPN_HANDSHAKE_MAX_AGE)
+}
+
+async fn verified_live_peer(
+    st: &SharedState,
+    game_id: i32,
+    user_id: uuid::Uuid,
+    participation_id: i32,
+    source: IpAddr,
+) -> AppResult<crate::services::event_security::VerifiedPeerSource> {
+    if let IpAddr::V4(source) = source {
+        if let Some(peer) =
+            crate::services::event_security::verified_peer_source(st.pg(), game_id, source).await?
+        {
+            return Ok(peer);
+        }
+    }
+    let peer = crate::services::event_security::verified_user_peer(
+        st.pg(),
+        game_id,
+        user_id,
+        participation_id,
+    )
+    .await?
+    .ok_or(AppError::Forbidden)?;
+    let session = crate::services::ad_vpn::live_peer_session(&peer.public_key)
+        .await?
+        .filter(|session| live_session_matches_source(source, *session, SystemTime::now()))
+        .ok_or(AppError::Forbidden)?;
+    let _ = session;
+    Ok(peer)
 }
 
 pub async fn vpn_config(
@@ -362,5 +404,35 @@ mod tests {
         ));
         drop(permits);
         assert!(mint_permit().is_ok());
+    }
+
+    #[test]
+    fn same_origin_proof_requires_a_recent_handshake_from_the_same_source() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let source = "198.51.100.7".parse().unwrap();
+        let recent = crate::services::ad_vpn::LivePeerSession {
+            endpoint: "198.51.100.7:51820".parse().unwrap(),
+            last_handshake: now - Duration::from_secs(30),
+        };
+        assert!(live_session_matches_source(source, recent, now));
+
+        let stale = crate::services::ad_vpn::LivePeerSession {
+            last_handshake: now - Duration::from_secs(91),
+            ..recent
+        };
+        assert!(!live_session_matches_source(source, stale, now));
+        assert!(!live_session_matches_source(
+            "198.51.100.8".parse().unwrap(),
+            recent,
+            now
+        ));
+        assert!(!live_session_matches_source(
+            source,
+            crate::services::ad_vpn::LivePeerSession {
+                last_handshake: now + Duration::from_secs(1),
+                ..recent
+            },
+            now
+        ));
     }
 }

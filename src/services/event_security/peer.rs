@@ -44,6 +44,7 @@ pub struct VerifiedPeerSource {
     pub peer_id: Uuid,
     pub user_id: Uuid,
     pub participation_id: i32,
+    pub public_key: String,
     pub generation: i32,
     pub policy_revision: i64,
     pub security_stamp: String,
@@ -314,6 +315,7 @@ pub async fn verified_peer_source(
 ) -> AppResult<Option<VerifiedPeerSource>> {
     sqlx::query_as::<_, VerifiedPeerSource>(
         r#"SELECT peer.id AS peer_id, peer.user_id, peer.participation_id,
+                  peer.public_key,
                   peer.generation, game.vpn_policy_revision AS policy_revision,
                   account.security_stamp
              FROM "EventVpnUserPeers" peer
@@ -357,6 +359,60 @@ pub async fn verified_peer_source(
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
+pub async fn verified_user_peer(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    user_id: Uuid,
+    participation_id: i32,
+) -> AppResult<Option<VerifiedPeerSource>> {
+    sqlx::query_as::<_, VerifiedPeerSource>(
+        r#"SELECT peer.id AS peer_id, peer.user_id, peer.participation_id,
+                  peer.public_key,
+                  peer.generation, game.vpn_policy_revision AS policy_revision,
+                  account.security_stamp
+             FROM "EventVpnUserPeers" peer
+             JOIN "Games" game ON game.id = peer.game_id
+             JOIN "Participations" participation
+               ON participation.game_id = peer.game_id
+              AND participation.id = peer.participation_id
+             JOIN "UserParticipations" historical
+               ON historical.user_id = peer.user_id
+              AND historical.game_id = peer.game_id
+              AND historical.participation_id = peer.participation_id
+              AND historical.team_id = participation.team_id
+             JOIN "Teams" team ON team.id = participation.team_id
+             JOIN "AspNetUsers" account ON account.id = peer.user_id
+            WHERE peer.game_id = $1
+              AND peer.user_id = $2
+              AND peer.participation_id = $3
+              AND peer.revoked_at_utc IS NULL
+              AND game.deletion_pending = FALSE
+              AND game.vpn_access_required = TRUE
+              AND game.start_time_utc <= clock_timestamp()
+              AND clock_timestamp() < game.end_time_utc
+              AND participation.status = $4
+              AND team.deletion_pending = FALSE
+              AND account.email_confirmed = TRUE
+              AND account.role <> $5
+              AND account.security_stamp IS NOT NULL
+              AND (
+                    team.captain_id = peer.user_id
+                    OR EXISTS (
+                        SELECT 1 FROM "TeamMembers" member
+                         WHERE member.team_id = team.id AND member.user_id = peer.user_id
+                    )
+              )"#,
+    )
+    .bind(game_id)
+    .bind(user_id)
+    .bind(participation_id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .bind(Role::Banned as i16)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
 pub fn proof_url(game_id: i32) -> AppResult<String> {
     let base = std::env::var("RSCTF_EVENT_VPN_PROOF_URL")
         .ok()
@@ -364,7 +420,7 @@ pub fn proof_url(game_id: i32) -> AppResult<String> {
         .filter(|value| value.starts_with("https://") && value.len() > 8)
         .ok_or_else(|| {
             AppError::unavailable(
-                "Event VPN requires an HTTPS RSCTF_EVENT_VPN_PROOF_URL routed through WireGuard",
+                "Event VPN requires an HTTPS RSCTF_EVENT_VPN_PROOF_URL on the browser origin",
             )
         })?;
     Ok(format!("{base}/api/game/{game_id}/vpn/proof"))

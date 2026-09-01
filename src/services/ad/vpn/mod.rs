@@ -301,6 +301,45 @@ pub fn enabled() -> bool {
         .unwrap_or(false)
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct LivePeerSession {
+    pub endpoint: SocketAddr,
+    pub last_handshake: std::time::SystemTime,
+}
+
+/// Read the authenticated network session for one WireGuard public key.
+///
+/// This lets the same-origin HTTPS proof flow verify a live tunnel without
+/// routing the VPN server's public address back into that same tunnel.
+pub async fn live_peer_session(public_key: &str) -> AppResult<Option<LivePeerSession>> {
+    if !enabled() {
+        return Ok(None);
+    }
+    let public_key = public_key.to_owned();
+    tokio::task::spawn_blocking(move || {
+        use defguard_wireguard_rs::{WGApi, WireguardInterfaceApi};
+
+        let api =
+            WGApi::<defguard_wireguard_rs::Kernel>::new(IFNAME.to_string()).map_err(|error| {
+                AppError::internal(format!("failed to open WireGuard API: {error}"))
+            })?;
+        let host = api.read_interface_data().map_err(|error| {
+            AppError::internal(format!("failed to read WireGuard peer state: {error}"))
+        })?;
+        Ok(host.peers.into_iter().find_map(|(key, peer)| {
+            if key.to_string() != public_key {
+                return None;
+            }
+            Some(LivePeerSession {
+                endpoint: peer.endpoint?,
+                last_handshake: peer.last_handshake?,
+            })
+        }))
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("WireGuard peer read task failed: {error}")))?
+}
+
 /// Read the public endpoint currently authenticated for each kernel peer.
 ///
 /// The privileged network owner performs this read so the packet-capture
