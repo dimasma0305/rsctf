@@ -35,6 +35,7 @@ import { GameProgress } from '@Components/GameProgress'
 import { Markdown } from '@Components/MarkdownRenderer'
 import { WithNavBar } from '@Components/WithNavbar'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
+import { downloadEventVpnConfig } from '@Utils/EventVpnDownload'
 import { collectEncryptedFingerprintIdentity } from '@Utils/FingerprintIdentity'
 import { useLanguage } from '@Utils/I18n'
 import { CHALLENGE_CATALOG_PATH, invalidatePlayerReads } from '@Utils/PlayerReadCache'
@@ -178,16 +179,7 @@ const GameDetail: FC = () => {
 
   const onDownloadVpnConfig = async () => {
     try {
-      const response = await api.eventSecurity.gameVpnConfig(numId)
-      const blob = new Blob([response.data], { type: 'text/plain;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = `rsctf-event-${numId}.conf`
-      document.body.appendChild(anchor)
-      anchor.click()
-      anchor.remove()
-      URL.revokeObjectURL(url)
+      await downloadEventVpnConfig(numId)
     } catch (err) {
       showErrorMsg(err, t)
     }

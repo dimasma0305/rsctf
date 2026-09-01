@@ -36,6 +36,7 @@ import {
   mdiOpenInNew,
   mdiThumbUp,
   mdiThumbDown,
+  mdiVpn,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
@@ -73,6 +74,11 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
   challenge?: ChallengeDetailModel
   loading?: boolean
   loadError?: string
+  /** True when challenge material is withheld because the caller is outside
+   * the event VPN. The modal presents setup before any internal target. */
+  eventVpnDisconnected?: boolean
+  eventVpnDownloading?: boolean
+  onDownloadEventVpn?: () => void | Promise<void>
   /** A failed refresh after usable challenge material was already loaded. */
   refreshError?: string
   onRetryLoad?: () => void
@@ -119,6 +125,9 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     challenge,
     loading,
     loadError,
+    eventVpnDisconnected,
+    eventVpnDownloading,
+    onDownloadEventVpn,
     refreshError,
     onRetryLoad,
     cateData,
@@ -306,18 +315,45 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     >
       {loadError ? (
         <Alert
-          color="red"
-          icon={<Icon path={mdiAlertCircleOutline} size={0.9} aria-hidden="true" />}
-          title={t('challenge.content.load_failed.title', 'Challenge could not be loaded')}
+          color={eventVpnDisconnected ? 'cyan' : 'red'}
+          icon={<Icon path={eventVpnDisconnected ? mdiVpn : mdiAlertCircleOutline} size={0.9} aria-hidden="true" />}
+          title={
+            eventVpnDisconnected
+              ? t('challenge.vpn.required.title', 'Connect to the event VPN first')
+              : t('challenge.content.load_failed.title', 'Challenge could not be loaded')
+          }
           role="alert"
         >
           <Stack gap="sm">
             <Text size="sm">{loadError}</Text>
-            {onRetryLoad && (
-              <Button variant="outline" onClick={onRetryLoad}>
-                {t('common.button.retry', 'Retry')}
-              </Button>
+            {eventVpnDisconnected && (
+              <Text size="sm">
+                {t(
+                  'challenge.vpn.required.instructions',
+                  'Download and import your personal WireGuard profile, connect it, then retry. Challenge targets stay hidden until the VPN connection is verified.'
+                )}
+              </Text>
             )}
+            <Group gap="sm" wrap="wrap">
+              {eventVpnDisconnected && onDownloadEventVpn && (
+                <Button
+                  variant="filled"
+                  onClick={() => void onDownloadEventVpn()}
+                  loading={eventVpnDownloading}
+                  leftSection={<Icon path={mdiVpn} size={0.8} aria-hidden="true" />}
+                  data-guide="event-vpn-download"
+                >
+                  {t('game.button.event_vpn', 'Download event VPN')}
+                </Button>
+              )}
+              {onRetryLoad && (
+                <Button variant="outline" onClick={onRetryLoad}>
+                  {eventVpnDisconnected
+                    ? t('challenge.vpn.retry', 'I’m connected — retry')
+                    : t('common.button.retry', 'Retry')}
+                </Button>
+              )}
+            </Group>
           </Stack>
         </Alert>
       ) : loading || challenge?.content === undefined ? (
