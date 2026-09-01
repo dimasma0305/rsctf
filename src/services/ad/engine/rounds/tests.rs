@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 
 use super::{
-    authoritative_round_window, classify_round_target, complete_engine_scoring_roster,
-    koth_scoring_lifecycle_ready, minimum_round_duration_seconds, network_scope_matches,
-    playable_round_window, prepared_checker_exists, valid_service_endpoint, RoundTargetDisposition,
+    authoritative_round_window, classify_round_target, complete_ad_scoring_roster,
+    complete_koth_scoring_roster, koth_scoring_lifecycle_ready, minimum_round_duration_seconds,
+    network_scope_matches, playable_round_window, prepared_checker_exists, valid_service_endpoint,
+    RoundTargetDisposition,
 };
 use chrono::{Duration, Utc};
 
@@ -38,93 +39,109 @@ fn service_readiness_rejects_provisioning_placeholders() {
 fn scoring_roster_requires_two_complete_teams() {
     let challenges = [10, 11];
     let complete = HashSet::from([(1, 10), (1, 11), (2, 10), (2, 11)]);
-    assert!(complete_engine_scoring_roster(
+    assert!(complete_ad_scoring_roster(
         &[1, 2],
         &challenges,
-        false,
-        false,
         &complete,
         true,
-        true,
+        false,
     ));
-    assert!(!complete_engine_scoring_roster(
+    assert!(!complete_ad_scoring_roster(
         &[1],
         &challenges,
-        false,
-        false,
         &complete,
         true,
-        true,
+        false,
     ));
     let partial = HashSet::from([(1, 10), (1, 11), (2, 10)]);
-    assert!(!complete_engine_scoring_roster(
+    assert!(!complete_ad_scoring_roster(
         &[1, 2],
         &challenges,
-        false,
-        false,
         &partial,
         true,
-        true,
+        false,
     ));
-    assert!(!complete_engine_scoring_roster(
+    assert!(!complete_ad_scoring_roster(
         &[1, 2],
         &[],
-        false,
-        false,
         &complete,
         true,
-        true,
+        false,
     ));
-    assert!(!complete_engine_scoring_roster(
+    assert!(!complete_ad_scoring_roster(
         &[1, 2],
         &challenges,
-        false,
-        false,
         &complete,
         false,
-        true,
-    ));
-}
-
-#[test]
-fn koth_scoring_requires_ready_crown_lifecycle() {
-    let empty = HashSet::new();
-    assert!(complete_engine_scoring_roster(
-        &[1, 2],
-        &[],
-        true,
-        true,
-        &empty,
-        true,
-        true,
-    ));
-    assert!(!complete_engine_scoring_roster(
-        &[1, 2],
-        &[],
-        true,
-        false,
-        &empty,
-        true,
-        true,
-    ));
-    assert!(!complete_engine_scoring_roster(
-        &[1, 2],
-        &[],
-        true,
-        true,
-        &empty,
-        true,
         false,
     ));
 }
 
 #[test]
-fn only_boot2root_koth_requires_the_managed_vpn() {
-    assert!(koth_scoring_lifecycle_ready(true, false, false));
-    assert!(koth_scoring_lifecycle_ready(true, false, true));
-    assert!(!koth_scoring_lifecycle_ready(true, true, false));
-    assert!(koth_scoring_lifecycle_ready(true, true, true));
-    assert!(!koth_scoring_lifecycle_ready(false, false, true));
+fn practice_koth_starts_independently_from_incomplete_ad_services() {
+    assert!(complete_koth_scoring_roster(
+        &[1],
+        true,
+        true,
+        true,
+        true,
+        true,
+    ));
+    assert!(!complete_koth_scoring_roster(
+        &[1],
+        true,
+        true,
+        true,
+        true,
+        false,
+    ));
+
+    let missing_ad_services = HashSet::new();
+    assert!(!complete_ad_scoring_roster(
+        &[1],
+        &[58],
+        &missing_ad_services,
+        true,
+        true,
+    ));
+}
+
+#[test]
+fn koth_scoring_requires_ready_target_checker_and_crown_lifecycle() {
+    assert!(complete_koth_scoring_roster(
+        &[1, 2],
+        true,
+        true,
+        true,
+        true,
+        false,
+    ));
+    assert!(!complete_koth_scoring_roster(
+        &[1, 2],
+        true,
+        false,
+        true,
+        true,
+        false,
+    ));
+    assert!(!complete_koth_scoring_roster(
+        &[1, 2],
+        true,
+        true,
+        false,
+        true,
+        false,
+    ));
+}
+
+#[test]
+fn managed_vpn_is_required_only_when_a_marker_cooldown_can_select_a_champion() {
+    assert!(koth_scoring_lifecycle_ready(true, false, 1, 2, false));
+    assert!(koth_scoring_lifecycle_ready(true, true, 0, 2, false));
+    assert!(koth_scoring_lifecycle_ready(true, true, 1, 1, false));
+    assert!(!koth_scoring_lifecycle_ready(true, true, 1, 2, false));
+    assert!(koth_scoring_lifecycle_ready(true, true, 1, 2, true));
+    assert!(!koth_scoring_lifecycle_ready(false, false, 0, 1, true));
 }
 
 #[test]

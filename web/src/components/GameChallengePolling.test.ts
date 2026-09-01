@@ -7,6 +7,7 @@ const panel = readFileSync('src/components/ChallengePanel.tsx', 'utf8')
 const shell = readFileSync('src/components/ChallengeModal.tsx', 'utf8')
 const hook = readFileSync('src/hooks/useChallengePolling.ts', 'utf8')
 const apiContract = readFileSync('src/Api.ts', 'utf8')
+const vpnDownload = readFileSync('src/utils/EventVpnDownload.ts', 'utf8')
 
 test('closed challenge modals own no detail, solver, A&D, or KotH polling key', () => {
   assert.match(
@@ -43,11 +44,11 @@ test('an open challenge detail is mutation-driven instead of periodically replac
   assert.match(modal, /refresh: mutate/)
   assert.match(
     modal,
-    /loadError=\{challenge === undefined \? pollErrorMessage\(challengeError, 'challenge'\) : undefined\}/
+    /loadError=\{eventVpnDisconnected \|\| challenge === undefined \? challengePollError : undefined\}/
   )
   assert.match(
     modal,
-    /refreshError=\{challenge !== undefined \? pollErrorMessage\(challengeError, 'challenge'\) : undefined\}/
+    /refreshError=\{challenge !== undefined && !eventVpnDisconnected \? challengePollError : undefined\}/
   )
   assert.match(
     modal,
@@ -75,6 +76,19 @@ test('solver-only failure remains secondary and typed failures do not collapse i
   assert.match(modal, /status === 429/)
   assert.match(modal, /status !== null && status >= 500/)
   assert.match(modal, /Request reference/)
+})
+
+test('a typed disconnected VPN read exposes setup before retrying protected challenge material', () => {
+  assert.match(
+    modal,
+    /eventVpnRequired && isEventVpnAccessError\(challengeError\) && challengeError\.kind === 'disconnected'/
+  )
+  assert.match(modal, /onDownloadEventVpn=\{eventVpnDisconnected \? onDownloadEventVpn : undefined\}/)
+  assert.match(shell, /eventVpnDisconnected[\s\S]*Download event VPN[\s\S]*I’m connected — retry/)
+  assert.match(shell, /Challenge targets stay hidden until the VPN connection is verified/)
+  assert.match(vpnDownload, /gameVpnConfig\(gameId\)/)
+  assert.match(vpnDownload, /anchor\.download = `rsctf-event-\$\{gameId\}\.conf`/)
+  assert.match(vpnDownload, /finally[\s\S]*anchor\.remove\(\)[\s\S]*URL\.revokeObjectURL\(url\)/)
 })
 
 test('ambiguous container failures retain their retry identity while terminal client failures clear it', () => {

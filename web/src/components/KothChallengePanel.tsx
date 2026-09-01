@@ -21,7 +21,12 @@ import {
 } from '@Utils/PlayerCredentialOperations'
 import { showErrorMsg } from '@Utils/Shared'
 import { useViewerIdentity } from '@Utils/ViewerIdentity'
-import { isKothResetTransition, kothConfirmationProgress, maxKothCooldownTicks } from '@Utils/kothLifecycle'
+import {
+  isKothResetTransition,
+  kothConfirmationProgress,
+  maxKothCooldownTicks,
+  visibleKothControlStatus,
+} from '@Utils/kothLifecycle'
 import { CompletionPollSWRConfig, jitterPollingDelay, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import type { KothLifecycleFields } from '@Hooks/useGame'
 import api, { ContentType } from '@Api'
@@ -190,8 +195,8 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
   })
 
   const resetPhase = stateData?.resetPhase ?? 'Active'
-  const displayedStatus = stateData?.status
   const isResetting = (stateData?.cycleNumber ?? 0) > 0 && isKothResetTransition(resetPhase)
+  const displayedStatus = visibleKothControlStatus(stateData?.status, resetPhase)
   const [confirmationCurrent, confirmationRequired] = kothConfirmationProgress(
     stateData?.provisionalConfirmationTicks,
     stateData?.claimConfirmationTicks
@@ -523,7 +528,9 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
         )}
         {tokenData?.status === 'no-cycle-token' && (
           <Text size="xs" c="orange" fs="italic">
-            {isApiArena
+            {isResetting
+              ? t('game.content.koth.token_preparing', 'Preparing the capability for this crown cycle…')
+              : isApiArena
               ? t('game.content.koth.no_api_token', 'No arena capability has been issued yet')
               : t('game.content.koth.no_token', 'No capability was issued for this crown cycle')}
           </Text>
@@ -595,7 +602,7 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
 
       {/* No hill rendered yet — the operator has not ensured containers, or a
           lifecycle transition is rebuilding it. Surface a hint instead of silence. */}
-      {!stateData?.ip && stateData && (
+      {!stateData?.ip && stateData && !isResetting && (
         <Alert icon={<Icon path={mdiAlertCircleOutline} size={0.9} />} color="orange" variant="light" p="xs">
           <Text size="xs">
             {t(

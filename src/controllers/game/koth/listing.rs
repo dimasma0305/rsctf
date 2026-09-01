@@ -69,9 +69,24 @@ pub async fn koth_hills(
                 .iter()
                 .any(|cooldown| cooldown.participation_id == caller.participation.id);
             let holder = board.holder_by_challenge.get(&hill.challenge_id).copied();
-            let (status, round) = match board.latest_control_by_challenge.get(&hill.challenge_id) {
-                Some((status, round)) => (Some(status.clone()), *round),
-                None => (None, 0),
+            let control_status_is_visible = control_status_is_player_visible(
+                holder_identity_is_current(
+                    view.cycle_number,
+                    hill.container_id.as_deref(),
+                    view.replacement_container_id.as_deref(),
+                ),
+                hill.managed_crown_cycle,
+                &view.reset_phase,
+                view.is_scorable,
+                true,
+            );
+            let (status, round) = if control_status_is_visible {
+                match board.latest_control_by_challenge.get(&hill.challenge_id) {
+                    Some((status, round)) => (Some(status.clone()), *round),
+                    None => (None, 0),
+                }
+            } else {
+                (None, 0)
             };
             KothHillListItem {
                 challenge_id: hill.challenge_id,

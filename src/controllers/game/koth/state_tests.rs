@@ -32,7 +32,8 @@ async fn hill_state_query_returns_only_the_requested_game_and_challenge_endpoint
            CREATE TEMP TABLE "KothControlResults" (
              id BIGINT PRIMARY KEY, game_id INTEGER NOT NULL,
              challenge_id INTEGER NOT NULL, container_id TEXT,
-             status SMALLINT, checked_at TIMESTAMPTZ, ad_round_id INTEGER NOT NULL
+             status SMALLINT, is_scorable BOOLEAN NOT NULL,
+             checked_at TIMESTAMPTZ, ad_round_id INTEGER NOT NULL
            );"#,
     )
     .execute(&mut connection)
@@ -50,9 +51,9 @@ async fn hill_state_query_returns_only_the_requested_game_and_challenge_endpoint
              (42, 11, 2, 'container-other-game', '10.0.1.2', 41337, 31);
            INSERT INTO "KothCrownCycles" VALUES (10, 2), (11, 2);
            INSERT INTO "KothControlResults" VALUES
-             (50, 10, 2, 'container-requested', 0, NOW(), 7),
-             (51, 10, 3, 'container-unrelated', 2, NOW(), 7),
-             (52, 11, 2, 'container-other-game', 1, NOW(), 7);"#,
+             (50, 10, 2, 'container-requested', 0, TRUE, NOW(), 7),
+             (51, 10, 3, 'container-unrelated', 2, FALSE, NOW(), 7),
+             (52, 11, 2, 'container-other-game', 1, TRUE, NOW(), 7);"#,
     )
     .execute(&mut connection)
     .await
@@ -75,6 +76,7 @@ async fn hill_state_query_returns_only_the_requested_game_and_challenge_endpoint
         requested.evidence_container_id.as_deref(),
         Some("container-requested")
     );
+    assert_eq!(requested.result_is_scorable, Some(true));
     assert!(requested.managed_crown_cycle);
 
     // A challenge absent from game 10 returns no target projection even though

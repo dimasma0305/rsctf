@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { installTestDom } from '../test/installDom'
 import {
+  allowEventVpnReconnectRetry,
   eventVpnFetch,
   eventVpnProofTestApi,
   installEventVpnProof,
@@ -99,10 +100,15 @@ test('VPN disconnects do not become login expiry and failed minting is circuit-b
   const client = axios.create()
   let challenges = 0
   let proofs = 0
+  let connected = false
 
   client.defaults.adapter = async (config) => {
     const url = config.url ?? ''
-    if (url === '/api/game/19/challenges/7') throw failure(config, 401)
+    if (url === '/api/game/19/challenges/7') {
+      const proof = AxiosHeaders.from(config.headers).get('x-rsctf-vpn-proof')
+      if (proof === 'reconnected-proof') return response(config, 200, { id: 7 })
+      throw failure(config, 401)
+    }
     if (url === '/api/game/19/vpn/challenge') {
       challenges += 1
       return response(config, 200, {
@@ -114,7 +120,12 @@ test('VPN disconnects do not become login expiry and failed minting is circuit-b
     }
     if (url === 'https://event-vpn.test/proof') {
       proofs += 1
-      throw failure(config, 403)
+      if (!connected) throw failure(config, 403)
+      return response(config, 200, {
+        proof: 'reconnected-proof',
+        proofHeader: 'x-rsctf-vpn-proof',
+        expiresAtUtc: Date.now() + 60_000,
+      })
     }
     throw new Error(`unexpected request ${url}`)
   }
@@ -134,6 +145,47 @@ test('VPN disconnects do not become login expiry and failed minting is circuit-b
     assert.equal(challenges, 1)
     assert.equal(proofs, 1)
     assert.equal(eventVpnProofTestApi.failedGames(), 1)
+
+    connected = true
+    assert.equal(allowEventVpnReconnectRetry(19), true)
+    await client.get('/api/game/19/challenges/7')
+    assert.equal(challenges, 2)
+    assert.equal(proofs, 2)
+    assert.equal(eventVpnProofTestApi.failedGames(), 0)
+  } finally {
+    eventVpnProofTestApi.reset()
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('manual VPN reconnect does not bypass server rate-limit backoff', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/games/19/challenges' })
+  const restoreDom = installTestDom(browser)
+  const client = axios.create()
+  let challenges = 0
+
+  client.defaults.adapter = async (config) => {
+    if (config.url === '/api/game/19/challenges/7') throw failure(config, 401)
+    if (config.url === '/api/game/19/vpn/challenge') {
+      challenges += 1
+      throw failure(config, 429)
+    }
+    throw new Error(`unexpected request ${config.url}`)
+  }
+
+  try {
+    eventVpnProofTestApi.reset()
+    installEventVpnProof(client)
+    await assert.rejects(client.get('/api/game/19/challenges/7'), (error: unknown) => {
+      assert.equal(isEventVpnAccessError(error), true)
+      return isEventVpnAccessError(error) && error.kind === 'rate-limited'
+    })
+    assert.equal(allowEventVpnReconnectRetry(19), false)
+    await assert.rejects(client.get('/api/game/19/challenges/7'), (error: unknown) =>
+      Boolean(isEventVpnAccessError(error) && error.kind === 'rate-limited')
+    )
+    assert.equal(challenges, 1)
   } finally {
     eventVpnProofTestApi.reset()
     await browser.happyDOM.close()

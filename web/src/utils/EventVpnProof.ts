@@ -54,6 +54,16 @@ export class EventVpnAccessError extends Error {
 export const isEventVpnAccessError = (error: unknown): error is EventVpnAccessError =>
   error instanceof EventVpnAccessError
 
+/** Allow one explicit user-initiated reconnect attempt without weakening the
+ * backoff for rate limits or infrastructure failures. Failed retries retain
+ * their attempt count and therefore continue the bounded backoff sequence. */
+export const allowEventVpnReconnectRetry = (gameId: number) => {
+  const failure = proofFailures.get(gameId)
+  if (failure?.error.kind !== 'disconnected') return false
+  failure.retryAt = getServerNowMilliseconds()
+  return true
+}
+
 const browserOrigin = () => (typeof window === 'undefined' ? 'http://localhost' : window.location.origin)
 
 export const protectedEventGameId = (value: string | undefined): number | null => {

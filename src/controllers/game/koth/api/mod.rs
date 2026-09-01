@@ -505,7 +505,7 @@ async fn build_observer_context(
     challenge_id: i32,
     version: ContextVersion,
 ) -> AppResult<ContextFill> {
-    let mut transaction = crate::utils::database::begin_read_only_repeatable_read(st.pg())
+    let mut transaction = crate::utils::database::begin_repeatable_read(st.pg())
         .await
         .map_err(|error| {
             admission::referee_database_error(

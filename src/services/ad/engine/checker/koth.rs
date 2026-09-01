@@ -65,6 +65,7 @@ pub(super) struct LiveHill {
     claim_confirmation_ticks: i32,
     token_count: i64,
     roster_count: i64,
+    practice_mode: bool,
     pub(super) eligible_roster: Vec<i32>,
     game_start: chrono::DateTime<Utc>,
     game_end: chrono::DateTime<Utc>,
@@ -74,8 +75,13 @@ pub(super) struct LiveHill {
 
 impl LiveHill {
     fn has_complete_token_window(&self) -> bool {
-        self.roster_count >= 2 && self.token_count == self.roster_count
+        token_window_complete(self.token_count, self.roster_count, self.practice_mode)
     }
+}
+
+fn token_window_complete(token_count: i64, roster_count: i64, practice_mode: bool) -> bool {
+    let minimum_roster = if practice_mode { 1 } else { 2 };
+    roster_count >= minimum_roster && token_count == roster_count
 }
 
 async fn load_live_hill(
@@ -111,6 +117,7 @@ async fn load_live_hill(
                              AND token.revoked_at IS NULL)
                   END AS token_count,
                   cardinality(eligible.participation_ids)::bigint AS roster_count,
+                  game.practice_mode,
                   eligible.participation_ids AS eligible_roster,
                   game.start_time_utc AS game_start,
                   game.end_time_utc AS game_end,

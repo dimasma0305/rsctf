@@ -131,6 +131,92 @@ test('challenge modal ticks only while an open deadline needs updates', async (c
   }
 })
 
+test('a disconnected event VPN presents setup before challenge material', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/' })
+  const restoreDom = installTestDom(browser)
+  const i18n = i18next.createInstance()
+  await i18n.init({ lng: 'en-US', fallbackLng: 'en-US' })
+  const category: ChallengeCategoryItemProps = {
+    name: ChallengeCategory.Misc,
+    desrc: 'Miscellaneous',
+    icon: mdiHelpCircleOutline,
+    color: 'gray',
+    colors: Array(10).fill('#868e96') as ChallengeCategoryItemProps['colors'],
+  }
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const { createRoot } = await import('react-dom/client')
+  const root = createRoot(container)
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+  let downloads = 0
+  let retries = 0
+
+  try {
+    await act(async () => {
+      root.render(
+        createElement(
+          HeadlessMantineProvider,
+          null,
+          createElement(
+            I18nextProvider,
+            { i18n },
+            createElement(
+              LanguageProvider,
+              null,
+              createElement(ChallengeModal, {
+                opened: true,
+                onClose: () => undefined,
+                transitionProps: { duration: 0 },
+                challenge: { title: 'Serpent Circuit', content: 'Internal target: 10.13.37.59:5000' },
+                cateData: category,
+                loadError: 'Connect to the event VPN, then retry the challenge.',
+                eventVpnDisconnected: true,
+                onDownloadEventVpn: () => {
+                  downloads += 1
+                },
+                onRetryLoad: () => {
+                  retries += 1
+                },
+                flag: '',
+                setFlag: () => undefined,
+                receiptProof: '',
+                setReceiptProof: () => undefined,
+                onCreate: () => undefined,
+                onDestroy: () => undefined,
+                onSubmitFlag: () => undefined,
+              })
+            )
+          )
+        )
+      )
+    })
+
+    const alert = browser.document.querySelector('[role="alert"]')
+    assert.ok(alert)
+    assert.match(alert.textContent ?? '', /Connect to the event VPN first/)
+    assert.match(alert.textContent ?? '', /Challenge targets stay hidden until the VPN connection is verified/)
+    assert.doesNotMatch(
+      browser.document.querySelector('[data-guide="challenge-material"]')?.textContent ?? '',
+      /10\.13\.37\.59/
+    )
+
+    const buttons = Array.from(alert.querySelectorAll('button'))
+    const download = buttons.find((button) => button.textContent?.includes('Download event VPN'))
+    const retry = buttons.find((button) => button.textContent?.includes('connected'))
+    assert.ok(download)
+    assert.ok(retry)
+    await act(async () => download.click())
+    await act(async () => retry.click())
+    assert.equal(downloads, 1)
+    assert.equal(retries, 1)
+  } finally {
+    await act(async () => root.unmount())
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
 test('form edits and verdict polling preserve animated Markdown until challenge identity or source changes', async () => {
   const browser = new Window({ url: 'https://rsctf.test/' })
   const restoreDom = installTestDom(browser)

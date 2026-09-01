@@ -19,7 +19,8 @@ import {
   NonJsonResponseError,
 } from '@Utils/ChallengePolling'
 import { encryptApiData } from '@Utils/Crypto'
-import { isEventVpnAccessError } from '@Utils/EventVpnProof'
+import { downloadEventVpnConfig } from '@Utils/EventVpnDownload'
+import { allowEventVpnReconnectRetry, isEventVpnAccessError } from '@Utils/EventVpnProof'
 import { FlagSubmitAttemptOwner } from '@Utils/FlagSubmitAttempt'
 import { flagVerdictReducer } from '@Utils/FlagVerdict'
 import { createFlagVerdictPoller, sameFlagVerdictIdentity, type FlagVerdictIdentity } from '@Utils/FlagVerdictPolling'
@@ -318,6 +319,11 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     await Promise.allSettled(reads)
   }, [challenge, challengeError, mutate, mutateSolvers, solverError])
 
+  const retryAfterEventVpnConnect = useCallback(async () => {
+    allowEventVpnReconnectRetry(gameId)
+    await retryFailedReads()
+  }, [gameId, retryFailedReads])
+
   const wrongFlagHints = t('challenge.content.wrong_flag_hints', {
     returnObjects: true,
   }) as string[]
@@ -343,6 +349,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   })
 
   const [disabled, setDisabled] = useState(false)
+  const [eventVpnDownloading, setEventVpnDownloading] = useState(false)
   const [pendingSubmission, setPendingSubmission] = useState<PendingFlagVerdict | null>(null)
   const [flag, setFlag] = useInputState('')
   const [receiptProof, setReceiptProof] = useInputState('')
@@ -397,6 +404,21 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
   const isLimitReached = (challenge?.limit && (challenge.attempts ?? 0) >= challenge.limit) || false
   const operationScope = containerOperationScope(user?.userId, challenge?.context?.participationId, gameId, challengeId)
+  const eventVpnDisconnected = Boolean(
+    eventVpnRequired && isEventVpnAccessError(challengeError) && challengeError.kind === 'disconnected'
+  )
+
+  const onDownloadEventVpn = async () => {
+    if (eventVpnDownloading) return
+    setEventVpnDownloading(true)
+    try {
+      await downloadEventVpnConfig(gameId)
+    } catch (error) {
+      showErrorMsg(error, t)
+    } finally {
+      setEventVpnDownloading(false)
+    }
+  }
 
   useEffect(
     () => () => {
@@ -758,13 +780,17 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     }
   }
 
+  const challengePollError = pollErrorMessage(challengeError, 'challenge')
+
   return (
     <ChallengeModal
       {...modalProps}
       gameTitle={gameTitle}
       eventHref={eventHref}
       loading={readEnabled && challenge === undefined && challengeError === undefined}
-      onRetryLoad={readEnabled ? () => void retryFailedReads() : undefined}
+      onRetryLoad={
+        readEnabled ? () => void (eventVpnDisconnected ? retryAfterEventVpnConnect() : retryFailedReads()) : undefined
+      }
       challenge={{
         ...(challenge ?? {}),
         title: challenge?.title ?? title,
@@ -775,8 +801,11 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       justSolved={solvedChallengeId === challengeId}
       solvers={solvers}
       solverTotal={solverPage?.total}
-      loadError={challenge === undefined ? pollErrorMessage(challengeError, 'challenge') : undefined}
-      refreshError={challenge !== undefined ? pollErrorMessage(challengeError, 'challenge') : undefined}
+      loadError={eventVpnDisconnected || challenge === undefined ? challengePollError : undefined}
+      eventVpnDisconnected={eventVpnDisconnected}
+      eventVpnDownloading={eventVpnDownloading}
+      onDownloadEventVpn={eventVpnDisconnected ? onDownloadEventVpn : undefined}
+      refreshError={challenge !== undefined && !eventVpnDisconnected ? challengePollError : undefined}
       solverError={challenge !== undefined ? pollErrorMessage(solverError, 'solvers') : undefined}
       flag={flag}
       setFlag={setFlag}
