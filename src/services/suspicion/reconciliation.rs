@@ -145,7 +145,7 @@ pub(super) async fn eligible_games(
         .map_err(database_error)
 }
 
-async fn request_final_if_ready(
+pub(super) async fn request_final_if_ready(
     pool: &sqlx::PgPool,
     game_id: i32,
     finalize_grace_seconds: u64,
@@ -231,7 +231,7 @@ async fn claim_reconciliation(
               SET lease_token = $2,
                   lease_expires_at_utc = clock_timestamp()
                     + ($3::bigint * INTERVAL '1 second'),
-                  attempts = attempts + 1,
+                  attempts = queue.attempts + 1,
                   last_started_at_utc = clock_timestamp(),
                   updated_at_utc = clock_timestamp()
              FROM "SuspicionReconciliationState" reconciliation

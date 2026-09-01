@@ -588,7 +588,16 @@ pub(crate) async fn seal_reconciled_game_for_test(
     Ok(true)
 }
 
-async fn schedule_one_game(state: &SharedState, game_id: i32) -> AppResult<bool> {
+async fn schedule_one_game(
+    state: &SharedState,
+    game_id: i32,
+    final_snapshot_due: bool,
+    finalize_grace_seconds: u64,
+) -> AppResult<bool> {
+    if final_snapshot_due {
+        super::reconciliation::request_final_if_ready(state.pg(), game_id, finalize_grace_seconds)
+            .await?;
+    }
     crate::services::control_jobs::request_security_derivation(
         state,
         game_id,
@@ -606,8 +615,8 @@ pub async fn reconcile_games(state: &SharedState) -> AppResult<usize> {
     let games = super::reconciliation::eligible_games(state.pg(), finalize_grace_seconds).await?;
 
     let mut reconciled = 0;
-    for (game_id, _final_snapshot_due) in games {
-        match schedule_one_game(state, game_id).await {
+    for (game_id, final_snapshot_due) in games {
+        match schedule_one_game(state, game_id, final_snapshot_due, finalize_grace_seconds).await {
             Ok(true) => reconciled += 1,
             Ok(false) => {}
             Err(error) => {

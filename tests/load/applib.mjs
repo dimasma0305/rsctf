@@ -145,7 +145,7 @@ export async function setGameSchedule(gid, start, end) {
   return must(
     await api('PUT', `/api/edit/games/${gid}`, {
       ...jwtOpt(),
-      body: { ...current, start, end },
+      body: { ...current, start, end, operationId: randomUUID() },
     }),
     'setGameSchedule'
   );
@@ -154,17 +154,24 @@ export async function createChallenge(gid, body) {
   const r = await must(
     await api('POST', `/api/edit/games/${gid}/challenges`, {
       ...jwtOpt(),
-      body,
+      body: { ...body, operationId: body.operationId || randomUUID() },
     }),
     'createChallenge'
   );
   return unwrap(r).id;
 }
 export async function setChallenge(gid, cid, body) {
+  const current = unwrap(
+    await must(await api('GET', `/api/edit/games/${gid}/challenges/${cid}`, jwtOpt()), 'getChallenge')
+  );
   return must(
     await api('PUT', `/api/edit/games/${gid}/challenges/${cid}`, {
       ...jwtOpt(),
-      body,
+      body: {
+        ...body,
+        operationId: body.operationId || randomUUID(),
+        expectedRevision: body.expectedRevision ?? current.revision,
+      },
     }),
     'setChallenge'
   );
@@ -186,7 +193,10 @@ export async function rebuildChallengeImage(gid, cid, requestedImage, label = 'c
   }
 
   const response = await must(
-    await api('POST', `/api/edit/games/${gameId}/challenges/${challengeId}/rebuild`, jwtOpt()),
+    await api('POST', `/api/edit/games/${gameId}/challenges/${challengeId}/rebuild`, {
+      ...jwtOpt(),
+      headers: { 'idempotency-key': randomUUID() },
+    }),
     `rebuild ${label}`
   );
   assertSuccessfulBuildResponse(unwrap(response), label);
@@ -205,7 +215,10 @@ export async function rebuildChallengeImage(gid, cid, requestedImage, label = 'c
   return assertImmutableBuildRecord(JSON.parse(raw), requestedImage, label);
 }
 export async function addFlags(gid, cid, flags) {
-  const body = flags.map((f) => ({ flag: f }));
+  const body = {
+    operationId: randomUUID(),
+    flags: flags.map((f) => ({ flag: f })),
+  };
   return must(
     await api('POST', `/api/edit/games/${gid}/challenges/${cid}/flags`, {
       ...jwtOpt(),
@@ -306,12 +319,17 @@ export async function setAdScoringPaused(gid, desired) {
   if (!Number.isSafeInteger(gameId) || gameId <= 0 || typeof desired !== 'boolean') {
     throw new Error(`invalid scoring-pause request ${gid}/${desired}`);
   }
-  const current = sql(`SELECT ad_scoring_paused::text FROM "Games" WHERE id=${gameId}`);
-  if (!current) throw new Error(`cannot pause missing game ${gameId}`);
-  if ((current === 'true' || current === 't') === desired) return desired;
+  const rawCurrent = sql(
+    `SELECT json_build_object('paused',ad_scoring_paused,'revision',ad_control_revision)::text ` +
+      `FROM "Games" WHERE id=${gameId}`,
+  );
+  if (!rawCurrent) throw new Error(`cannot pause missing game ${gameId}`);
+  const current = JSON.parse(rawCurrent);
+  if (current.paused === desired) return desired;
   const response = await must(
     await api('POST', `/api/edit/games/${gameId}/ad/ScoringPause`, {
       ...jwtOpt(),
+      body: { paused: desired, revision: Number(current.revision) },
     }),
     `${desired ? 'pause' : 'resume'} scoring`
   );
@@ -774,21 +792,24 @@ export async function teardownNamespace(gameIds) {
 export async function uploadAsset(filename, content) {
   const fd = new FormData();
   fd.append('file', new Blob([content]), filename);
-  const r = await fetch(`${TARGET}/api/assets`, {
+  const operationId = randomUUID();
+  const r = await fetch(`${TARGET}/api/assets?operationId=${operationId}`, {
     method: 'POST',
     headers: { authorization: `Bearer ${adminJwt()}`, 'x-real-ip': '10.9.9.9' },
     body: fd,
   });
   const j = await r.json().catch(() => null);
-  const hash = Array.isArray(j) ? j[0]?.hash : j?.hash;
-  if (r.status >= 300 || !hash) throw new Error(`uploadAsset → ${r.status} ${JSON.stringify(j)?.slice(0, 120)}`);
-  return hash;
+  const uploaded = Array.isArray(j) ? j[0] : j;
+  if (r.status >= 300 || !uploaded?.hash || !uploaded?.uploadId) {
+    throw new Error(`uploadAsset → ${r.status} ${JSON.stringify(j)?.slice(0, 120)}`);
+  }
+  return { hash: uploaded.hash, uploadId: uploaded.uploadId };
 }
-export async function setAttachment(gid, cid, fileHash) {
+export async function setAttachment(gid, cid, uploaded) {
   return must(
     await api('POST', `/api/edit/games/${gid}/challenges/${cid}/attachment`, {
       ...jwtOpt(),
-      body: { attachmentType: 'Local', fileHash },
+      body: { attachmentType: 'Local', fileHash: uploaded.hash, uploadId: uploaded.uploadId },
     }),
     'setAttachment'
   );

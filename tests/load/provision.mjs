@@ -355,12 +355,14 @@ async function main() {
   }
   // Give the first static challenge a real downloadable attachment (stresses /assets serving).
   const attachName = 'challenge.zip';
-  const attachHash = await interruptibleMutation(
+  const uploadedAttachment = await interruptibleMutation(
     A.uploadAsset(attachName, 'loadtest-attachment-payload-'.repeat(500))
   );
-  await interruptibleMutation(A.setAttachment(jeoGame, Number(Object.keys(staticFlags)[0]), attachHash));
-  staticCatalog[0].attachmentPath = `/assets/${attachHash}/${attachName}`;
-  console.log(`  attachment uploaded (${attachHash.slice(0, 12)}…)`);
+  await interruptibleMutation(
+    A.setAttachment(jeoGame, Number(Object.keys(staticFlags)[0]), uploadedAttachment)
+  );
+  staticCatalog[0].attachmentPath = `/assets/${uploadedAttachment.hash}/${attachName}`;
+  console.log(`  attachment uploaded (${uploadedAttachment.hash.slice(0, 12)}…)`);
   // one container challenge for the container cohort
   const containerChal = await interruptibleMutation(A.createChallenge(jeoGame, {
     title: 'jeo-box',
@@ -582,7 +584,7 @@ async function main() {
     plantedFlags: planted,
     dedupFlag: planted[0]?.flag || null,
     attackerUuid: mix.userIds[0],
-    attachHash,
+    attachHash: uploadedAttachment.hash,
     attachName,
     attachChal: Number(Object.keys(staticFlags)[0]),
     kothContainer: crown.containerId,
