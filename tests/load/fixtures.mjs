@@ -578,7 +578,7 @@ def reporter_once():
         or len(set(eligible)) != len(eligible)
         or any(not isinstance(item, str) or len(item) != 64 for item in eligible)
         or context.get("objectiveIds") not in ([], OBJECTIVE_IDS)
-        or context_headers.get("cache-control") != "no-store"
+        or context_headers.get("cache-control") != "public, max-age=0, must-revalidate"
         or not vary_has_api_version(context_headers)
     ):
         raise RuntimeError("managed reporter received an invalid 2,000-team context")
@@ -674,7 +674,7 @@ def reporter_once():
         or frozen_context.get("resetAttempt") != context.get("resetAttempt")
         or frozen_context.get("roundNumber") != context.get("roundNumber")
         or frozen_context.get("eligibleTokenHashes") != eligible
-        or frozen_headers.get("cache-control") != "no-store"
+        or frozen_headers.get("cache-control") != "public, max-age=0, must-revalidate"
         or not vary_has_api_version(frozen_headers)
     ):
         raise RuntimeError("managed reporter objective schema did not freeze")

@@ -21,6 +21,11 @@ test('managed KotH runner provisions hidden and paused before any live reporter 
   assert.match(provision, /hidden: true/);
   assert.ok(pause > 0 && pause < ensure);
   assert.ok(ensure < bootstrap && bootstrap < schedule && schedule < resume);
+  assert.match(provision, /const ensureOperationId = randomUUID\(\)/);
+  assert.match(provision, /retryTransientUntil\([\s\S]*idempotency-key': ensureOperationId/);
+  assert.match(provision, /initial\.status === 202/);
+  assert.match(provision, /A\.waitForControlJob\([\s\S]*initial managed target provisioning/);
+  assert.match(provision, /Number\(ensureJob\.result\?\.failures\) === 0/);
   assert.match(runner, /managedKothHarnessConfig\(process\.env\)/);
   assert.match(model, /MANAGED_KOTH_STRESS_ACK/);
   assert.match(model, /MANAGED_KOTH_DISPOSABLE/);
@@ -38,6 +43,7 @@ test('managed KotH bootstrap waits for the committed target process to listen', 
   );
   assert.match(bootstrap, /reporterConfigured === false/);
   assert.match(bootstrap, /reporterHealthy === true/);
+  assert.match(runner, /last secret-free reporter status/);
 });
 
 test('managed KotH runner uses only the injected reporter and keeps credentials ephemeral', () => {
@@ -148,6 +154,8 @@ test('managed KotH polling uses a fresh administrator rate-limit identity', () =
 });
 
 test('managed target derives its bounded cohort and Crown from submitted scores', () => {
+  assert.match(fixture, /cache-control"\) != "public, max-age=0, must-revalidate"/);
+  assert.doesNotMatch(fixture, /cache-control"\) != "no-store"/);
   assert.match(fixture, /scoreable = score > 0/);
   assert.match(fixture, /len\(active_hashes\) >= ACTIVE_FLEET/);
   assert.match(fixture, /len\(active_hashes\) == ACTIVE_FLEET/);

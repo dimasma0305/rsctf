@@ -63,6 +63,18 @@ export function assertSuccessfulBuildResponse(model, label) {
   }
 }
 
+/** Validate the terminal durable job returned by the asynchronous rebuild API. */
+export function assertSuccessfulBuildJob(job, label) {
+  if (job?.status !== "Succeeded") {
+    const diagnostic = typeof job?.error === "string" ? `: ${job.error}` : "";
+    throw new Error(
+      `${label} immutable rebuild control job ended as ${job?.status || "unknown"}${diagnostic}`,
+    );
+  }
+  assertSuccessfulBuildResponse(job.result, label);
+  return job.result;
+}
+
 /** Validate the durable record after the synchronous rebuild response. */
 export function assertImmutableBuildRecord(record, requestedImage, label) {
   const requested =

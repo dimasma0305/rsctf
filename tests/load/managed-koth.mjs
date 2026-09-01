@@ -898,12 +898,28 @@ async function provision(reporterBaseUrl) {
   await A.configureKothApiObserver(current.gameId, current.challengeId);
   await A.setChallenge(current.gameId, current.challengeId, { isEnabled: true });
   current.cohort = A.seedCohort(current.gameId, ROSTER_SIZE);
-  const initial = await A.api('POST', `/api/edit/games/${current.gameId}/ad/EnsureContainers`, {
-    jwt: A.adminJwt(),
-    headers: { 'idempotency-key': randomUUID() },
-    timeoutMs: 180_000,
-  });
-  requireCondition(initial.status === 200, `initial managed target provisioning returned ${initial.status}`);
+  const ensureOperationId = randomUUID();
+  const initial = await retryTransientUntil(
+    () => A.api('POST', `/api/edit/games/${current.gameId}/ad/EnsureContainers`, {
+      jwt: A.adminJwt(),
+      headers: { 'idempotency-key': ensureOperationId },
+      timeoutMs: 30_000,
+    }),
+    (candidate) => candidate instanceof Error || candidate?.status === 429 || candidate?.status >= 500,
+    { budgetMs: 30_000, delayMs: 1_000 },
+  );
+  requireCondition(
+    initial.status === 202,
+    `initial managed target provisioning returned ${initial.status}: ${initial.text?.slice(0, 300)}`,
+  );
+  const ensureJob = await A.waitForControlJob(
+    unwrap(initial),
+    'initial managed target provisioning',
+  );
+  requireCondition(
+    Number(ensureJob.result?.failures) === 0,
+    `initial managed target provisioning retained ${ensureJob.result?.failures} failures`,
+  );
   await assertReporterFreeBootstrapTarget();
   requireCondition(
     sql(`SELECT hidden::text||'|'||ad_scoring_paused::text FROM "Games" WHERE id=${current.gameId}`) === 'true|true',
@@ -919,12 +935,23 @@ async function provision(reporterBaseUrl) {
     360,
   );
   await exactHealth(target.arenaUrl, 'managed target');
-  await waitUntil(
-    'managed reporter bootstrap',
-    () => reporterStatus(target),
-    (status) => status.reporterConfigured && status.reporterHealthy &&
-      status.contextRefreshes > 0 && status.eligibleRoster === ROSTER_SIZE,
-  );
+  let lastBootstrapStatus;
+  try {
+    await waitUntil(
+      'managed reporter bootstrap',
+      async () => {
+        lastBootstrapStatus = await reporterStatus(target);
+        return lastBootstrapStatus;
+      },
+      (status) => status.reporterConfigured && status.reporterHealthy &&
+        status.contextRefreshes > 0 && status.eligibleRoster === ROSTER_SIZE,
+    );
+  } catch (error) {
+    throw new Error(
+      `${error.message}; last secret-free reporter status: ${JSON.stringify(lastBootstrapStatus)}`,
+      { cause: error },
+    );
+  }
   return target;
 }
 

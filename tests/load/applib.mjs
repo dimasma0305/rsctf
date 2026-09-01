@@ -23,7 +23,7 @@ import { cohortSeedQuery, parseCohortSeedResult } from './cohort-seed.js';
 import { materializeFixtures } from './fixtures.mjs';
 import {
   assertImmutableBuildRecord,
-  assertSuccessfulBuildResponse,
+  assertSuccessfulBuildJob,
   isImmutableImageReference,
 } from './fixture-image-config.js';
 import { retainedManifestMatchesGame } from './retention-identity.mjs';
@@ -177,6 +177,44 @@ export async function setChallenge(gid, cid, body) {
   );
 }
 
+const CONTROL_JOB_STATUSES = new Set(['Queued', 'Running', 'Succeeded', 'Failed', 'Cancelled']);
+const TERMINAL_CONTROL_JOB_STATUSES = new Set(['Succeeded', 'Failed', 'Cancelled']);
+
+/** Wait for one durable operator job, tolerating bounded transient read failures. */
+export async function waitForControlJob(initial, label = 'control job', timeoutMs = 15 * 60_000) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new TypeError('control-job timeout must be positive');
+  }
+  const requireJob = (value) => {
+    if (typeof value?.id !== 'string' || !CONTROL_JOB_STATUSES.has(value?.status)) {
+      throw new Error(`${label} did not return a valid control job`);
+    }
+    return value;
+  };
+  let job = requireJob(initial);
+  const deadline = performance.now() + timeoutMs;
+  let delayMs = 250;
+  while (!TERMINAL_CONTROL_JOB_STATUSES.has(job.status)) {
+    const remainingMs = deadline - performance.now();
+    if (remainingMs <= 0) {
+      throw new Error(`${label} did not finish within ${Math.ceil(timeoutMs / 60_000)} minutes`);
+    }
+    await sleep(Math.min(delayMs, remainingMs));
+    const polled = await retryTransientUntil(
+      () => api('GET', `/api/edit/jobs/${job.id}`, jwtOpt()),
+      (candidate) => candidate instanceof Error || candidate.status === 429 || candidate.status >= 500,
+      { budgetMs: Math.min(10_000, remainingMs), delayMs: 500 },
+    );
+    job = requireJob(unwrap(await must(polled, `poll ${label}`)));
+    delayMs = Math.min(2_000, Math.ceil(delayMs * 1.5));
+  }
+  if (job.status !== 'Succeeded') {
+    const diagnostic = typeof job.error === 'string' ? `: ${job.error}` : '';
+    throw new Error(`${label} ended as ${job.status}${diagnostic}`);
+  }
+  return job;
+}
+
 /** Rebuild one exact challenge and verify the immutable result committed. */
 export async function rebuildChallengeImage(gid, cid, requestedImage, label = 'challenge') {
   const gameId = Number(gid);
@@ -199,7 +237,8 @@ export async function rebuildChallengeImage(gid, cid, requestedImage, label = 'c
     }),
     `rebuild ${label}`
   );
-  assertSuccessfulBuildResponse(unwrap(response), label);
+  const job = await waitForControlJob(unwrap(response), `${label} immutable rebuild`);
+  assertSuccessfulBuildJob(job, label);
 
   // The rebuild wire model intentionally exposes status/log only. Read back the
   // durable identity so provisioning never races ahead on a successful-looking
