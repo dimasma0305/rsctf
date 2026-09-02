@@ -273,6 +273,7 @@ async fn latest_verdict_work_and_live_query_count_stay_bounded_as_history_grows(
         .await
         .expect("load compact live projection");
     assert_eq!(game.current_round, Some(41));
+    assert_eq!(game.control_revision, 0);
     assert_eq!(cells.len(), SERVICE_COUNT as usize);
     assert_eq!(
         AD_LIVE_QUERY_EXECUTIONS.load(Ordering::Relaxed),
