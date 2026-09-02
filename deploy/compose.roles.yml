@@ -153,11 +153,11 @@ services:
     healthcheck:
       test:
         - CMD
-        - python3
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).read()"
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
+        - /usr/local/bin/rsctf
+        - healthcheck
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
     stop_grace_period: 5m

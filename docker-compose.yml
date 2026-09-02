@@ -38,9 +38,11 @@ services:
       - ./deploy/postgres/init/00-pg-stat-statements.sql:/docker-entrypoint-initdb.d/00-pg-stat-statements.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
+      interval: 30s
       timeout: 5s
-      retries: 10
+      retries: 5
+      start_period: 30s
+      start_interval: 5s
 
   redis:
     image: redis:7-alpine
@@ -55,9 +57,11 @@ services:
     command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      interval: 30s
       timeout: 3s
-      retries: 10
+      retries: 5
+      start_period: 30s
+      start_interval: 5s
 
   rsctf-proxy-firewall:
     build: .
@@ -83,10 +87,11 @@ services:
     pids_limit: 32
     healthcheck:
       test: ["CMD", "/usr/local/sbin/rsctf-proxy-firewall", "check"]
-      interval: 2s
+      interval: 30s
       timeout: 2s
-      retries: 15
-      start_period: 2s
+      retries: 3
+      start_period: 10s
+      start_interval: 2s
     stop_grace_period: 10s
     logging: *core-logging
 
@@ -177,11 +182,12 @@ services:
       RSCTF_CREDENTIAL_IP_ADMISSION_PER_MINUTE: "${RSCTF_CREDENTIAL_IP_ADMISSION_PER_MINUTE:-30000}"
       RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE: "${RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE:-6000}"
     healthcheck:
-      test: ["CMD", "python3", "-c", "import sys,urllib.request; sys.exit(urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).read()!=b'ok')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      test: ["CMD", "/usr/local/bin/rsctf", "healthcheck"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
     stop_grace_period: 5m
     # The in-process A&D WireGuard hub creates + configures a kernel `wg0` and
     # masquerades VPN traffic — needs NET_ADMIN, NET_RAW for the iptables ipset

@@ -32,10 +32,11 @@ services:
       - backend
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
+      interval: 30s
       timeout: 5s
-      retries: 20
-      start_period: 10s
+      retries: 5
+      start_period: 30s
+      start_interval: 5s
     stop_grace_period: 30s
 
   redis:
@@ -62,9 +63,11 @@ services:
       - backend
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      interval: 30s
       timeout: 3s
-      retries: 10
+      retries: 5
+      start_period: 30s
+      start_interval: 5s
 
   rsctf:
     image: ${RSCTF_IMAGE:?Set RSCTF_IMAGE to an immutable ghcr.io/dimasma0305/rsctf@sha256 digest}
@@ -189,13 +192,13 @@ services:
     healthcheck:
       test:
         - CMD
-        - python3
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).read()"
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
+        - /usr/local/bin/rsctf
+        - healthcheck
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
     stop_grace_period: 5m
 
 networks:
