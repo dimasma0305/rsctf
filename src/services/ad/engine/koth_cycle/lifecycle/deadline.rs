@@ -392,16 +392,20 @@ async fn persist_recovery_error(
 /// and records its latest failure for operators and the idempotent cron path.
 pub(super) async fn record_recovery_error(
     st: &SharedState,
+    game_id: i32,
     cycle_id: i64,
     message: &str,
 ) -> AppResult<()> {
-    let mut connection = st
-        .pg()
-        .acquire()
+    // Keep the error-only fallback on the same game -> cycle lock order as
+    // every authoritative KotH transition. In particular, an event deletion
+    // owns the game lock while cascading cycle rows; updating a cycle first
+    // here would deadlock when PostgreSQL checks that cascade.
+    let mut control = super::super::super::koth_auth::acquire_game_lock(&st.db, game_id).await?;
+    persist_recovery_error(control.transaction_mut(), cycle_id, message).await?;
+    control
+        .release()
         .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    persist_recovery_error(&mut connection, cycle_id, message).await?;
-    Ok(())
+        .map_err(|error| AppError::internal(error.to_string()))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -629,6 +633,28 @@ mod tests {
         persist_deadline_access_revocation, persist_deadline_snapshot_receipt,
         persist_deadline_target_deactivation, persist_recovery_error, CompletedCleanup,
     };
+
+    #[test]
+    fn recovery_error_writer_takes_the_game_lock_before_the_cycle_row() {
+        let source = include_str!("deadline.rs");
+        let start = source
+            .find("pub(super) async fn record_recovery_error(")
+            .expect("recovery error writer exists");
+        let end = source[start..]
+            .find("\n#[derive(Clone, Copy, Debug")
+            .map(|offset| start + offset)
+            .expect("recovery error writer boundary exists");
+        let writer = &source[start..end];
+        let game_lock = writer
+            .find("koth_auth::acquire_game_lock")
+            .expect("recovery error writer owns the game lock");
+        let cycle_update = writer
+            .find("persist_recovery_error")
+            .expect("recovery error writer updates the cycle");
+
+        assert!(game_lock < cycle_update);
+        assert!(!writer.contains("st.pg().acquire()"));
+    }
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]

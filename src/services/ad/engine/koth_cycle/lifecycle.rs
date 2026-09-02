@@ -935,7 +935,7 @@ pub(crate) async fn recover_ended_cycle_transitions(st: &SharedState) -> AppResu
             _ => Ok(()),
         };
         if let Err(error) = &result {
-            deadline::record_recovery_error(st, cycle_id, &error.to_string()).await?;
+            deadline::record_recovery_error(st, game_id, cycle_id, &error.to_string()).await?;
             tracing::warn!(
                 game = game_id,
                 challenge = challenge_id,
