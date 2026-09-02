@@ -699,6 +699,7 @@ pub fn router() -> Router<SharedState> {
             "/api/edit/games/{id}",
             get(get_game).put(update_game).delete(delete_game),
         )
+        .route("/api/edit/games/{id}/purge", post(purge_game))
         .route("/api/edit/games/{id}/HashSalt", get(get_hash_salt))
         .route(GAME_CLONE_COMPAT_ROUTE, post(clone_game))
         .route(GAME_CLONE_CANONICAL_ROUTE, post(clone_game))

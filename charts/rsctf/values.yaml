@@ -272,6 +272,9 @@ config:
   adminConfirm: false
   activeOnRegister: true
   useCaptcha: false
+  # Emergency platform-admin capability. Keep false outside a controlled
+  # maintenance window because purged competition history is unrecoverable.
+  allowCompetitionHistoryPurge: false
   migrate: true
   logLevel: info
   # Base pool floor: 2 for migrate; 5R+2P+3 for engine; 5R+2P+13 for web;

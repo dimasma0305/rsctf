@@ -42,6 +42,7 @@ data:
   RSCTF_ADMIN_CONFIRM: {{ .Values.config.adminConfirm | quote }}
   RSCTF_ACTIVE_ON_REGISTER: {{ .Values.config.activeOnRegister | quote }}
   RSCTF_USE_CAPTCHA: {{ .Values.config.useCaptcha | quote }}
+  RSCTF_ALLOW_COMPETITION_HISTORY_PURGE: {{ .Values.config.allowCompetitionHistoryPurge | quote }}
   {{- if eq .Values.runtimeRole "all" }}
   RSCTF_MIGRATE: {{ ternary "1" "0" .Values.config.migrate | quote }}
   {{- end }}

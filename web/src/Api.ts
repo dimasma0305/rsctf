@@ -1729,6 +1729,16 @@ export interface GameInfoModel {
   vpnPolicyChangeReason?: string | null;
 }
 
+/** Explicit authorization for irreversible event-history deletion. */
+export interface GamePurgeModel {
+  /** Stable retry identity. */
+  operationId: string;
+  /** Configuration revision currently displayed to the administrator. */
+  expectedConfigurationRevision: number;
+  /** Must exactly match the current event title. */
+  confirmationTitle: string;
+}
+
 /** List response */
 export interface ArrayResponseOfGameInfoModel {
   /** Data */
@@ -4564,6 +4574,8 @@ export interface ClientConfig {
   allowPasswordRegistration?: boolean;
   /** Whether newly registered accounts must confirm their email */
   emailConfirmationRequired?: boolean;
+  /** Whether platform administrators may explicitly purge competition history. */
+  allowCompetitionHistoryPurge?: boolean;
   /** Whether Google OAuth sign-in is configured and available */
   enableGoogleAuth?: boolean;
   /** Whether Discord OAuth sign-in is configured and available */
@@ -7353,6 +7365,28 @@ export class Api<
       this.request<GameInfoModel, RequestResponse>({
         path: `/api/edit/games/${id}`,
         method: "DELETE",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Permanently erase a hidden, disabled event and its competition history; requires platform administrator privileges and an explicitly enabled deployment.
+     *
+     * @tags Edit
+     * @name EditPurgeGame
+     * @summary Purge Game History
+     * @request POST:/api/edit/games/{id}/purge
+     */
+    editPurgeGame: (
+      id: number,
+      data: GamePurgeModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<GameInfoModel, RequestResponse>({
+        path: `/api/edit/games/${id}/purge`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),

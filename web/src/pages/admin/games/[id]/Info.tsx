@@ -64,6 +64,8 @@ import { isRetryableHttpError } from '@Utils/HttpError'
 import { getInputNumber, randomInviteCode, showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { createUuid } from '@Utils/Uuid'
+import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
+import { useConfig } from '@Hooks/useConfig'
 import { useAdminGame } from '@Hooks/useGame'
 import { useUser } from '@Hooks/useUser'
 import api, { EventVpnOverrideModel, Role } from '@Api'
@@ -98,6 +100,7 @@ const GameInfoEdit: FC = () => {
   const numId = parseInt(id ?? '-1')
   const { game: gameSource, mutate } = useAdminGame(numId)
   const { user } = useUser()
+  const { config } = useConfig()
   const [game, setGame] = useState<CompatibleGameInfoModel>()
   const navigate = useNavigate()
 
@@ -115,6 +118,11 @@ const GameInfoEdit: FC = () => {
   const [overrideReason, setOverrideReason] = useState('')
   const [overrideMinutes, setOverrideMinutes] = useState<number | string>(15)
   const [purgeReason, setPurgeReason] = useState('')
+  const [purgeConfirmation, setPurgeConfirmation] = useState('')
+  const purgeOperation = useRef<{
+    signature: string
+    owner: RetryableOperationKey
+  } | null>(null)
   const [start, setStart] = useInputState(dayjs())
   const [end, setEnd] = useInputState(dayjs())
   const [freeze, setFreeze] = useState<dayjs.Dayjs | null>(null)
@@ -387,6 +395,50 @@ const GameInfoEdit: FC = () => {
       navigate('/admin/games')
     } catch (e) {
       showErrorMsg(e, t)
+    }
+  }
+
+  const onConfirmPurge = async () => {
+    if (!gameSource?.id || purgeConfirmation !== gameSource.title) return
+    const expectedConfigurationRevision = gameSource.configurationRevision ?? 0
+    const signature = JSON.stringify({
+      gameId: gameSource.id,
+      expectedConfigurationRevision,
+      confirmationTitle: purgeConfirmation,
+    })
+    const previous = purgeOperation.current
+    const operationOwner =
+      previous?.signature === signature
+        ? previous
+        : {
+            signature,
+            owner: new RetryableOperationKey(
+              createOperationId,
+              `rsctf:event-purge:${gameSource.id}:${expectedConfigurationRevision}`
+            ),
+          }
+    purgeOperation.current = operationOwner
+    const operationId = operationOwner.owner.claim()
+    setDisabled(true)
+    try {
+      await api.edit.editPurgeGame(gameSource.id, {
+        operationId,
+        expectedConfigurationRevision,
+        confirmationTitle: purgeConfirmation,
+      })
+      operationOwner.owner.complete(operationId)
+      purgeOperation.current = null
+      showNotification({
+        color: 'teal',
+        message: t('admin.notification.games.info.purged', 'Event and competition history permanently deleted'),
+        icon: <Icon path={mdiCheck} size={1} />,
+      })
+      navigate('/admin/games')
+    } catch (error) {
+      operationOwner.owner.release()
+      showErrorMsg(error, t)
+    } finally {
+      setDisabled(false)
     }
   }
 
@@ -871,6 +923,54 @@ const GameInfoEdit: FC = () => {
                   onChange={(e) => game && setGame({ ...game, allowUserSubmissions: e.target.checked })}
                 />
               </SimpleGrid>
+              {isAdmin && config.allowCompetitionHistoryPurge && (
+                <Paper withBorder p="md" radius="md">
+                  <Stack gap="sm">
+                    <Text fw={600} c="red">
+                      {t('admin.content.games.info.purge.title', 'Permanently delete competition history')}
+                    </Text>
+                    <Text size="sm" c="dimmed">
+                      {t(
+                        'admin.content.games.info.purge.description',
+                        'This cannot be undone. Hide the event, disable every challenge, then type the exact current event title.'
+                      )}
+                    </Text>
+                    <TextInput
+                      label={t('admin.content.games.info.purge.confirmation', 'Exact event title')}
+                      value={purgeConfirmation}
+                      disabled={disabled}
+                      autoComplete="off"
+                      onChange={(event) => setPurgeConfirmation(event.currentTarget.value)}
+                    />
+                    <Button
+                      color="red"
+                      variant="filled"
+                      disabled={disabled || !gameSource?.hidden || purgeConfirmation !== gameSource?.title}
+                      onClick={() =>
+                        modals.openConfirmModal({
+                          title: t('admin.content.games.info.purge.confirm_title', 'Delete all event history?'),
+                          children: (
+                            <Text size="sm">
+                              {t(
+                                'admin.content.games.info.purge.confirm_description',
+                                'All scores, submissions, teams, audit evidence, and challenge resources owned by this event will be permanently erased.'
+                              )}
+                            </Text>
+                          ),
+                          labels: {
+                            confirm: t('admin.content.games.info.purge.confirm_button', 'Permanently delete'),
+                            cancel: t('common.cancel', 'Cancel'),
+                          },
+                          confirmProps: { color: 'red' },
+                          onConfirm: onConfirmPurge,
+                        })
+                      }
+                    >
+                      {t('admin.content.games.info.purge.button', 'Permanently delete event')}
+                    </Button>
+                  </Stack>
+                </Paper>
+              )}
             </Stack>
           )}
           {activeSection === 'writeups' && (

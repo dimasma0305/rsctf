@@ -49,15 +49,11 @@ fn game_info_server_time_is_response_owned_and_uses_unix_milliseconds() {
 
 #[test]
 fn game_delete_stamps_server_time_after_delayed_teardown() {
-    let source = include_str!("games.rs");
+    let source = include_str!("games/deletion_handlers.rs");
     let delete_start = source
         .find("pub async fn delete_game(")
         .expect("delete_game controller exists");
-    let delete_end = source[delete_start..]
-        .find("\nmod cloning;")
-        .map(|offset| delete_start + offset)
-        .expect("delete_game controller boundary exists");
-    let delete = &source[delete_start..delete_end];
+    let delete = &source[delete_start..];
     let final_teardown = delete
         .rfind("flush_game_scoreboards(&st, id).await;")
         .expect("delete_game completes its final cache teardown");

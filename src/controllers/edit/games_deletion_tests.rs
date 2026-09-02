@@ -3,7 +3,31 @@ use std::time::Duration;
 
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
-use super::{delete_ad_game_data, fence_game_for_deletion};
+use super::{
+    delete_ad_game_data, fence_game_for_deletion, fence_game_for_purge, purge_request_digest,
+    validate_purge_request, GamePurgeModel,
+};
+
+#[test]
+fn purge_request_requires_stable_identity_revision_and_exact_title() {
+    let valid = GamePurgeModel {
+        operation_id: uuid::Uuid::from_u128(7),
+        expected_configuration_revision: 4,
+        confirmation_title: "Archived finals".to_string(),
+    };
+    validate_purge_request(&valid).unwrap();
+    assert_eq!(purge_request_digest(9, &valid).unwrap().len(), 64);
+
+    let mut invalid = valid.clone();
+    invalid.operation_id = uuid::Uuid::nil();
+    assert!(validate_purge_request(&invalid).is_err());
+    invalid = valid.clone();
+    invalid.expected_configuration_revision = -1;
+    assert!(validate_purge_request(&invalid).is_err());
+    invalid = valid;
+    invalid.confirmation_title.clear();
+    assert!(validate_purge_request(&invalid).is_err());
+}
 
 struct DeletionFenceHarness {
     admin: sqlx::PgPool,
@@ -267,6 +291,44 @@ async fn game_deletion_fence_allows_only_future_games_without_evidence() {
             .await
             .unwrap(),
         1
+    );
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn explicit_purge_fence_blocks_new_play_but_accepts_existing_evidence() {
+    let harness = DeletionFenceHarness::new().await;
+    harness.add_game(7, true, true).await;
+    sqlx::query(r#"INSERT INTO "Submissions" VALUES (71, 7, 70, 700)"#)
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"INSERT INTO "AdRounds" VALUES (72, 7)"#)
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+
+    let mut purge = harness.pool.begin().await.unwrap();
+    fence_game_for_purge(&mut purge, 7).await.unwrap();
+    purge.commit().await.unwrap();
+
+    let state: (bool, bool, bool, bool) = sqlx::query_as(
+        r#"SELECT deletion_pending, hidden, NOT practice_mode,
+                  freeze_time_utc IS NULL
+             FROM "Games" WHERE id = 7"#,
+    )
+    .fetch_one(&harness.pool)
+    .await
+    .unwrap();
+    assert_eq!(state, (true, true, true, true));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Submissions" WHERE game_id = 7"#)
+            .fetch_one(&harness.pool)
+            .await
+            .unwrap(),
+        1,
+        "the fence must not erase evidence before atomic cleanup"
     );
     harness.cleanup().await;
 }

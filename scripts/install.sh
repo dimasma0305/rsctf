@@ -603,6 +603,7 @@ write_new_environment() {
     printf '\nRSCTF_PUBLIC_URL=%s\n' "$PUBLIC_URL"
     printf 'RSCTF_COOKIE_SECURE=%s\n' "$(cookie_secure_value)"
     printf 'RSCTF_USE_CAPTCHA=false\n'
+    printf 'RSCTF_ALLOW_COMPETITION_HISTORY_PURGE=false\n'
     printf 'RSCTF_HTTP_BIND_IP=%s\n' "$HTTP_BIND_IP"
     printf 'RSCTF_HTTP_PORT=%s\n' "$HTTP_PORT"
     printf 'RSCTF_TRUSTED_PROXY_CIDRS=%s\n' "$TRUSTED_PROXY_CIDRS"

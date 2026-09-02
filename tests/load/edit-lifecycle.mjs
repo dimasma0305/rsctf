@@ -1385,6 +1385,13 @@ async function positiveReadAndMutationSurface() {
     body: { title: `Edit acceptance updated ${runKey}`, isPinned: true },
   });
   const game = await call("edit_game_get", { jwt: identities.managerJwt });
+  await call("edit_game_purge", {
+    body: {
+      operationId: "00000000-0000-0000-0000-000000000000",
+      expectedConfigurationRevision: 0,
+      confirmationTitle: "",
+    },
+  });
   primaryGameModel = game.model;
   const updatedGameBody = {
     ...primaryGameModel,

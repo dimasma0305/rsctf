@@ -92,6 +92,16 @@ export const EDIT_OPERATIONS = Object.freeze([
     mutation: true,
     responseKind: "game",
   }),
+  operation("edit_game_purge", "POST", "/api/edit/games/{id}/purge", {
+    auth: "admin",
+    params: game,
+    mutation: true,
+    responseKind: "error",
+    // Acceptance never erases its fixture: disabled deployments reject the
+    // capability first; enabled deployments reject this deliberately invalid
+    // request before claiming a durable purge operation.
+    expectedStatuses: [400, 403],
+  }),
   operation("edit_game_hash_salt", "GET", "/api/edit/games/{id}/HashSalt", {
     params: game,
     responseKind: "private-string",

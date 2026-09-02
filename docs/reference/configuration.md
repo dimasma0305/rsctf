@@ -97,6 +97,16 @@ validation and must retain the same short authorization window.
 | `RSCTF_ACTIVE_ON_REGISTER` | `true` | Make later registered users active immediately |
 | `RSCTF_USE_CAPTCHA` | `false` | Startup fallback for CAPTCHA enforcement. The installer writes the disabled default explicitly; a policy saved in the Admin UI takes precedence |
 
+## Irreversible event purge
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RSCTF_ALLOW_COMPETITION_HISTORY_PURGE` | `false` | Allow a platform administrator to call `POST /api/edit/games/{id}/purge`. The request must carry a stable `operationId`, the current `expectedConfigurationRevision`, and the exact current event title in `confirmationTitle`; the event must already be hidden and every challenge disabled. This permanently erases competition evidence and cannot be undone. |
+
+Keep this disabled on ordinary and production deployments. The regular
+`DELETE /api/edit/games/{id}` endpoint continues refusing to erase an event
+that started or recorded competition evidence, regardless of this setting.
+
 `RSCTF_ADMIN_CONFIRM` is loaded into the startup configuration, but the current
 live registration path does not consume it. Configure account approval with the
 active account policy in the Admin UI and test it with a normal account.

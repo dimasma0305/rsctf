@@ -174,6 +174,10 @@ pub struct AppConfig {
     pub event_sensor_token: String,
     /// Bearer secret accepted only by trusted solve-verifier workloads.
     pub solve_receipt_issuer_token: String,
+    /// Emergency operator capability for irreversibly erasing an event and
+    /// its competition evidence. This remains disabled unless the deployment
+    /// explicitly opts in; ordinary event deletion never consults it.
+    pub allow_competition_history_purge: bool,
     pub jwt_ttl_secs: i64,
     jwt_ttl_error: Option<String>,
     /// Emit the session cookie with `Secure`. Disable only for explicit local
@@ -279,6 +283,10 @@ impl AppConfig {
             event_vpn_credential_key: env_or("RSCTF_EVENT_VPN_CREDENTIAL_KEY", ""),
             event_sensor_token: env_or("RSCTF_EVENT_SENSOR_TOKEN", ""),
             solve_receipt_issuer_token: env_or("RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN", ""),
+            allow_competition_history_purge: env_bool(
+                "RSCTF_ALLOW_COMPETITION_HISTORY_PURGE",
+                false,
+            ),
             jwt_ttl_secs,
             jwt_ttl_error,
             cookie_secure: env_bool("RSCTF_COOKIE_SECURE", true),

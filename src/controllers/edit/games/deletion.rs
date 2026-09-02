@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeletionEvidencePolicy {
+    Preserve,
+    Purge,
+}
+
 /// Extend the caller's per-game control transaction with every existing
 /// challenge definition key in stable id order. This is deliberately done
 /// before the game row is locked: an attachment writer that already owns a
@@ -35,10 +41,11 @@ async fn acquire_game_definition_locks(
 /// visible to the evidence query, or observes the committed end marker and
 /// cannot publish afterward. A committed marker is also the authorization for
 /// teardown to finish after the scheduled start instant; retries still repeat
-/// every evidence check.
-pub(super) async fn fence_game_for_deletion(
+/// every policy-specific fence check.
+async fn fence_game_for_deletion_with_policy(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     game_id: i32,
+    evidence_policy: DeletionEvidencePolicy,
 ) -> AppResult<()> {
     acquire_game_definition_locks(tx, game_id).await?;
     let (already_pending, scheduled_start) = sqlx::query_as::<_, (bool, chrono::DateTime<Utc>)>(
@@ -101,6 +108,10 @@ pub(super) async fn fence_game_for_deletion(
     .fetch_all(&mut **tx)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+
+    if evidence_policy == DeletionEvidencePolicy::Purge {
+        return Ok(());
+    }
 
     let mut protected = sqlx::query_scalar::<_, bool>(
         r#"SELECT (NOT $2 AND $3 <= clock_timestamp())
@@ -171,6 +182,24 @@ pub(super) async fn fence_game_for_deletion(
         ));
     }
     Ok(())
+}
+
+/// Fence an unstarted, evidence-free event for the ordinary safe delete path.
+pub(super) async fn fence_game_for_deletion(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+) -> AppResult<()> {
+    fence_game_for_deletion_with_policy(tx, game_id, DeletionEvidencePolicy::Preserve).await
+}
+
+/// Fence an event for the separately authorized competition-history purge.
+/// This retains every writer lock and deny-new-play marker used by ordinary
+/// deletion, but deliberately does not reject already-recorded evidence.
+pub(super) async fn fence_game_for_purge(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+) -> AppResult<()> {
+    fence_game_for_deletion_with_policy(tx, game_id, DeletionEvidencePolicy::Purge).await
 }
 
 /// Delete the A&D evidence owned by one game while the caller holds the

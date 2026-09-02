@@ -382,34 +382,34 @@ function sampleResponse(operation) {
   };
 }
 
-test("catalog has exactly all 82 edit method/path operations", () => {
-  assert.equal(EDIT_OPERATIONS.length, 82);
-  assert.equal(new Set(EDIT_OPERATION_IDS).size, 82);
+test("catalog has exactly all 83 edit method/path operations", () => {
+  assert.equal(EDIT_OPERATIONS.length, 83);
+  assert.equal(new Set(EDIT_OPERATION_IDS).size, 83);
   assert.equal(
     new Set(EDIT_OPERATIONS.map(({ method, path }) => `${method} ${path}`))
       .size,
-    82,
+    83,
   );
   assert.deepEqual(
     EDIT_OPERATIONS.reduce((counts, operation) => {
       counts[operation.method] = (counts[operation.method] || 0) + 1;
       return counts;
     }, {}),
-    { GET: 32, POST: 33, PUT: 6, DELETE: 11 },
+    { GET: 32, POST: 34, PUT: 6, DELETE: 11 },
   );
   assert.deepEqual(
     EDIT_OPERATIONS.reduce((counts, operation) => {
       counts[operation.auth] = (counts[operation.auth] || 0) + 1;
       return counts;
     }, {}),
-    { manager: 66, admin: 14, "managed-list": 1, "user-submit": 1 },
+    { manager: 66, admin: 15, "managed-list": 1, "user-submit": 1 },
   );
 });
 
 test("catalog and every production controller source have exact bidirectional coverage", () => {
   const sources = controllerSources();
-  assert.deepEqual(assertEditRouterCoverage(sources), { operations: 82 });
-  assert.equal(parseEditRouterOperations(sources).length, 82);
+  assert.deepEqual(assertEditRouterCoverage(sources), { operations: 83 });
+  assert.equal(parseEditRouterOperations(sources).length, 83);
 });
 
 test("control-plane edit routes retain exact production paths and distinct fixture parameters", () => {
@@ -597,8 +597,8 @@ test("every declared response contract has an accepting and rejecting unit sampl
 
 test("coverage accounting rejects missing, duplicate, and unknown operation ids", () => {
   assert.deepEqual(assertCompleteEditCoverage(EDIT_OPERATION_IDS), {
-    covered: 82,
-    required: 82,
+    covered: 83,
+    required: 83,
   });
   assert.throws(
     () => assertCompleteEditCoverage(EDIT_OPERATION_IDS.slice(1)),
@@ -624,7 +624,7 @@ test("the disposable orchestrator has one explicit positive call for every catal
     "utf8",
   );
   const invoked = positiveCallExpressions(source).map(({ id }) => id);
-  assert.equal(invoked.length, 82);
+  assert.equal(invoked.length, 83);
   assert.deepEqual(new Set(invoked), new Set(EDIT_OPERATION_IDS));
   assert.equal(
     new Set(invoked).size,

@@ -109,6 +109,7 @@ grep -Fxq 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24' "$local_checkout/deploy
 grep -Fxq 'RSCTF_DOCKER_PROXY_BIND=172.31.253.1' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_CHALLENGE_PROXY_BRIDGE=rsctf-proxy0' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_USE_CAPTCHA=false' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_ALLOW_COMPETITION_HISTORY_PURGE=false' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=50' "$local_checkout/deploy/.env"
 grep -Fq 'The first-administrator setup token is stored only in' \
   "$TEMP_DIRECTORY/local.out"
@@ -201,6 +202,7 @@ grep -Fxq 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24' "$target/deploy/.env"
 grep -Fxq 'RSCTF_DOCKER_PROXY_BIND=172.31.253.1' "$target/deploy/.env"
 grep -Fxq 'RSCTF_CHALLENGE_PROXY_BRIDGE=rsctf-proxy0' "$target/deploy/.env"
 grep -Fxq 'RSCTF_USE_CAPTCHA=false' "$target/deploy/.env"
+grep -Fxq 'RSCTF_ALLOW_COMPETITION_HISTORY_PURGE=false' "$target/deploy/.env"
 grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=50' "$target/deploy/.env"
 for helper in \
   compose-maintenance-cutover.sh \

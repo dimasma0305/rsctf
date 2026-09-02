@@ -28,6 +28,7 @@ const fallbackConfig: ClientConfig = {
   allowRegister: true,
   allowPasswordRegistration: true,
   emailConfirmationRequired: false,
+  allowCompetitionHistoryPurge: false,
   donationsEnabled: false,
   donationProvider: null,
   donationUrl: null,
