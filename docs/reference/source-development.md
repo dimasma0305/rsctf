@@ -98,3 +98,39 @@ project quotas (or another supported driver) or a quota-capable worker.
 
 This stack is for debugging and review. A production deployment must still be
 built by the release workflow and rolled out by immutable image digest.
+
+## Exercise the full Docker and VPN runtime locally
+
+Use `compose.dev.yml` when a change must exercise container provisioning, A&D,
+KotH, or the event VPN. It reuses the isolated development PostgreSQL and Redis,
+but runs the shared locally linked Rust binary inside a stable development
+runtime image. A backend-only source change therefore needs no release image:
+
+```sh
+scripts/bounded-cargo.sh build --locked
+docker compose -f compose.dev.yml up --detach --build --wait
+```
+
+Create `.rsctf-dev/runtime.container.env` first with the deployment-specific
+RSCTF settings and secrets required by the feature under test. Keep it mode
+`0600`; `.rsctf-dev/` is ignored and must never be committed. The dedicated A&D
+network must also exist with the configured service subnet. For the standard
+development subnet:
+
+```sh
+docker network inspect rsctf-source-dev-ad >/dev/null 2>&1 || \
+  docker network create --subnet 10.13.41.0/24 rsctf-source-dev-ad
+```
+
+After a Rust edit, rebuild and restart only the backend:
+
+```sh
+scripts/bounded-cargo.sh build --locked
+docker compose -f compose.dev.yml restart backend
+```
+
+The binary directory, files directory, API/SSH/VPN ports, and backend A&D
+address can be overridden with `RSCTF_DEV_BINARY_DIR`,
+`RSCTF_DEV_STORAGE_DIR`, `RSCTF_DEV_BACKEND_PORT`, `RSCTF_DEV_SSH_PORT`,
+`RSCTF_DEV_VPN_PORT`, and `RSCTF_DEV_AD_BACKEND_IP`. Do not use this full-runtime
+profile with production databases, secrets, storage, or networks.

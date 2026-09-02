@@ -1,0 +1,70 @@
+name: rsctf-source-dev
+
+# Reuse the repository's isolated PostgreSQL and Redis definitions. The
+# backend below runs the locally linked binary inside the same Ubuntu/network
+# boundary as the full development deployment, so source iteration does not
+# rebuild a release image and A&D VPN validation remains meaningful.
+include:
+  - path: deploy/compose.development.yml
+
+x-development-logging: &development-logging
+  driver: json-file
+  options:
+    max-size: 5m
+    max-file: "2"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.development-runtime
+    restart: unless-stopped
+    init: true
+    env_file:
+      - path: ./.rsctf-dev/runtime.container.env
+        required: true
+    environment:
+      RSCTF_BIND: 0.0.0.0:8080
+      RSCTF_DATABASE_URL: postgres://rsctf_dev:rsctf_dev@db:5432/rsctf_dev
+      RSCTF_REDIS_URL: redis://redis:6379
+      RSCTF_STATIC_DIR: /app/web/build
+      RSCTF_STORAGE_ROOT: /data/files
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:${RSCTF_DEV_BACKEND_PORT:-18080}:8080"
+      - "${RSCTF_DEV_SSH_PORT:-2223}:2223"
+      - "${RSCTF_DEV_VPN_PORT:-51821}:51821/udp"
+    volumes:
+      - ${RSCTF_DEV_BINARY_DIR:-./.git/rsctf-target/debug}:/opt/rsctf-debug:ro
+      - ${RSCTF_DEV_STORAGE_DIR:-./.rsctf-dev/files}:/data/files
+      - ./web/build:/app/web/build:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      default: {}
+      ad:
+        ipv4_address: ${RSCTF_DEV_AD_BACKEND_IP:-10.13.41.5}
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import sys,urllib.request; sys.exit(urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).read()!=b'ok')"
+      interval: 5s
+      timeout: 4s
+      start_period: 20s
+      retries: 12
+    logging: *development-logging
+
+networks:
+  ad:
+    external: true
+    name: rsctf-source-dev-ad

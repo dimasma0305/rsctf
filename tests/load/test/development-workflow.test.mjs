@@ -22,6 +22,11 @@ const publicCompose = readFileSync(
   join(root, "deploy/compose.development.public.yml"),
   "utf8",
 );
+const fullRuntimeCompose = readFileSync(join(root, "compose.dev.yml"), "utf8");
+const developmentRuntimeImage = readFileSync(
+  join(root, "deploy/Dockerfile.development-runtime"),
+  "utf8",
+);
 const runner = readFileSync(join(root, "scripts/dev.mjs"), "utf8");
 const viteConfig = readFileSync(join(root, "web/vite.config.mts"), "utf8");
 const guide = readFileSync(
@@ -39,6 +44,19 @@ test("source development dependencies are isolated and loopback-only", () => {
     compose,
     /docker\.sock|network_mode|external:|rsctf:\s*$/m,
   );
+});
+
+test("full-runtime development mounts one local binary cache without publishing an image", () => {
+  assert.match(fullRuntimeCompose, /path: deploy\/compose\.development\.yml/);
+  assert.match(fullRuntimeCompose, /\.\/\.git\/rsctf-target\/debug/);
+  assert.match(fullRuntimeCompose, /\/opt\/rsctf-debug:ro/);
+  assert.match(fullRuntimeCompose, /127\.0\.0\.1:\$\{RSCTF_DEV_BACKEND_PORT:-18080\}:8080/);
+  assert.match(fullRuntimeCompose, /no-new-privileges:true/);
+  assert.match(fullRuntimeCompose, /NET_ADMIN/);
+  assert.match(fullRuntimeCompose, /rsctf-source-dev-ad/);
+  assert.match(developmentRuntimeImage, /^FROM ubuntu:24\.04@sha256:[0-9a-f]{64}$/m);
+  assert.doesNotMatch(developmentRuntimeImage, /cargo|rustc/);
+  assert.match(developmentRuntimeImage, /ENTRYPOINT \["\/opt\/rsctf-debug\/rsctf"\]/);
 });
 
 test("development runner rejects invalid and colliding ports", () => {
