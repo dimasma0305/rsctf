@@ -1,4 +1,7 @@
-use super::deletion::{delete_ad_game_data, fence_game_for_deletion, fence_game_for_purge};
+use super::deletion::{
+    delete_ad_game_data, delete_restricted_game_history, fence_game_for_deletion,
+    fence_game_for_purge,
+};
 use super::*;
 
 /// `DELETE /api/edit/games/{id}` — returns the deleted game (contract:
@@ -341,6 +344,9 @@ async fn delete_game_with_policy(
     // deleting rollups or the Games row they reference.
     crate::services::ad::scoring::lock_epoch_rollups(&mut *tx, id).await?;
     crate::controllers::game::koth::lock_epoch_rollups(&mut *tx, id).await?;
+    if purge.is_some() {
+        delete_restricted_game_history(tx, id).await?;
+    }
     delete_ad_game_data(tx, id).await?;
     let deleted_challenge_artifacts =
         crate::services::blob_refs::delete_game_challenges_locked(tx, id).await?;

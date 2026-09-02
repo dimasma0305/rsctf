@@ -336,3 +336,34 @@ pub(super) async fn delete_ad_game_data(
         .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(())
 }
+
+/// Remove rows whose intentionally restrictive foreign keys protect retained
+/// competition or VPN evidence from an ordinary game cascade. This is called
+/// only by the separately authorized purge path, inside the final game-control
+/// transaction. Child evidence is removed before its restrictive parent.
+pub(super) async fn delete_restricted_game_history(
+    tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+    game_id: i32,
+) -> AppResult<()> {
+    for statement in [
+        r#"DELETE FROM "CheatInfo" WHERE game_id = $1"#,
+        r#"DELETE FROM "SuspicionEvaluationOutbox" WHERE game_id = $1"#,
+        r#"DELETE FROM "AntiCheatTelemetryUsage" WHERE game_id = $1"#,
+        r#"DELETE FROM "VpnDnsProviderBuckets" WHERE game_id = $1"#,
+        r#"DELETE FROM "VpnFlagTransportEvents" WHERE game_id = $1"#,
+        r#"DELETE FROM "VpnFlowTelemetryBuckets" WHERE game_id = $1"#,
+        r#"DELETE FROM "VpnPeerNetworkObservations" WHERE game_id = $1"#,
+        r#"DELETE FROM "EventVpnOverrideOperations" WHERE game_id = $1"#,
+        r#"DELETE FROM "EventVpnOverrideExpirations" WHERE game_id = $1"#,
+        r#"DELETE FROM "EventVpnGateOverrides" WHERE game_id = $1"#,
+        r#"DELETE FROM "EventVpnPolicyAudit" WHERE game_id = $1"#,
+        r#"DELETE FROM "EventVpnUserPeers" WHERE game_id = $1"#,
+    ] {
+        sqlx::query(statement)
+            .bind(game_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    Ok(())
+}
