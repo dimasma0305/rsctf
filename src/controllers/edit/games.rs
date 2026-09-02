@@ -876,8 +876,8 @@ pub use deletion_handlers::{delete_game, purge_game, GamePurgeModel};
 
 #[cfg(test)]
 use deletion::{
-    delete_ad_game_data, delete_restricted_game_history, fence_game_for_deletion,
-    fence_game_for_purge,
+    delete_ad_game_data, delete_detached_game_history, delete_restricted_game_history,
+    fence_game_for_deletion, fence_game_for_purge,
 };
 #[cfg(test)]
 use deletion_handlers::{purge_request_digest, validate_purge_request};

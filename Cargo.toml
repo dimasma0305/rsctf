@@ -1,6 +1,6 @@
 [package]
 name = "rsctf"
-version = "0.1.110"
+version = "0.1.111"
 autobins = false
 edition = "2021"
 license = "MIT"

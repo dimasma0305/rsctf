@@ -196,6 +196,7 @@ mod m0334_flag_import_staging;
 mod m0340_player_read_indexes;
 mod m0341_account_link_delivery_activation;
 mod m0342_game_purge_operations;
+mod m0343_event_history_purge_trigger_authorization;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -416,6 +417,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0340_player_read_indexes::Migration),
             Box::new(m0341_account_link_delivery_activation::Migration),
             Box::new(m0342_game_purge_operations::Migration),
+            Box::new(m0343_event_history_purge_trigger_authorization::Migration),
         ]
     }
 }
@@ -560,10 +562,10 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 172);
+        assert_eq!(names.len(), 173);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
-            &names[names.len() - 70..],
+            &names[names.len() - 71..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -635,6 +637,7 @@ mod tests {
                 "m0340_player_read_indexes",
                 "m0341_account_link_delivery_activation",
                 "m0342_game_purge_operations",
+                "m0343_event_history_purge_trigger_authorization",
             ]
         );
     }

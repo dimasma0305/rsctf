@@ -4,8 +4,9 @@ use std::time::Duration;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 use super::{
-    delete_ad_game_data, delete_restricted_game_history, fence_game_for_deletion,
-    fence_game_for_purge, purge_request_digest, validate_purge_request, GamePurgeModel,
+    delete_ad_game_data, delete_detached_game_history, delete_restricted_game_history,
+    fence_game_for_deletion, fence_game_for_purge, purge_request_digest, validate_purge_request,
+    GamePurgeModel,
 };
 
 #[test]
@@ -868,6 +869,14 @@ async fn purge_cleanup_removes_every_restrictive_history_branch_in_dependency_or
           game_id INTEGER NOT NULL,
           peer_id INTEGER NOT NULL REFERENCES "EventVpnUserPeers"(id) ON DELETE RESTRICT
         );
+        CREATE TEMP TABLE "BuildRecords" (game_id INTEGER NOT NULL);
+        CREATE TEMP TABLE "ChallengeUpdateOperations" (game_id INTEGER NOT NULL);
+        CREATE TEMP TABLE "GameEvents" (game_id INTEGER NOT NULL);
+        CREATE TEMP TABLE "GameNotices" (game_id INTEGER NOT NULL);
+        CREATE TEMP TABLE "SuspicionEvents" (game_id INTEGER NOT NULL);
+        CREATE TEMP TABLE "IdentityObservations" (game_id INTEGER NOT NULL);
+        CREATE TEMP TABLE "UserParticipations" (game_id INTEGER NOT NULL);
+        CREATE TEMP TABLE "Participations" (game_id INTEGER NOT NULL);
 
         INSERT INTO "Games" VALUES (1), (2);
         INSERT INTO "Submissions" VALUES (11, 1), (22, 2);
@@ -883,18 +892,41 @@ async fn purge_cleanup_removes_every_restrictive_history_branch_in_dependency_or
         INSERT INTO "VpnFlagTransportEvents" VALUES (1, 111), (2, 222);
         INSERT INTO "VpnFlowTelemetryBuckets" VALUES (1, 111), (2, 222);
         INSERT INTO "VpnPeerNetworkObservations" VALUES (1, 111), (2, 222);
+        INSERT INTO "BuildRecords" VALUES (1), (2);
+        INSERT INTO "ChallengeUpdateOperations" VALUES (1), (2);
+        INSERT INTO "GameEvents" VALUES (1), (2);
+        INSERT INTO "GameNotices" VALUES (1), (2);
+        INSERT INTO "SuspicionEvents" VALUES (1), (2);
+        INSERT INTO "IdentityObservations" VALUES (1), (2);
+        INSERT INTO "UserParticipations" VALUES (1), (2);
+        INSERT INTO "Participations" VALUES (1), (2);
         "#,
     )
     .execute(&mut *tx)
     .await
     .unwrap();
 
-    delete_restricted_game_history(&mut tx, 1).await.unwrap();
-    delete_restricted_game_history(&mut tx, 1).await.unwrap();
+    let operation_id = uuid::Uuid::from_u128(81);
+    delete_restricted_game_history(&mut tx, 1, operation_id)
+        .await
+        .unwrap();
+    delete_restricted_game_history(&mut tx, 1, operation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT current_setting('rsctf.event_history_purge_operation')",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap(),
+        operation_id.to_string()
+    );
     sqlx::query(r#"DELETE FROM "Games" WHERE id = 1"#)
         .execute(&mut *tx)
         .await
         .unwrap();
+    delete_detached_game_history(&mut tx, 1).await.unwrap();
 
     for table in [
         "Games",
@@ -911,6 +943,14 @@ async fn purge_cleanup_removes_every_restrictive_history_branch_in_dependency_or
         "VpnFlagTransportEvents",
         "VpnFlowTelemetryBuckets",
         "VpnPeerNetworkObservations",
+        "BuildRecords",
+        "ChallengeUpdateOperations",
+        "GameEvents",
+        "GameNotices",
+        "SuspicionEvents",
+        "IdentityObservations",
+        "UserParticipations",
+        "Participations",
     ] {
         let count: i64 = sqlx::query_scalar(&format!(r#"SELECT COUNT(*) FROM "{table}""#))
             .fetch_one(&mut *tx)

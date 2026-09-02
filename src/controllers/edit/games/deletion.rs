@@ -344,7 +344,15 @@ pub(super) async fn delete_ad_game_data(
 pub(super) async fn delete_restricted_game_history(
     tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
     game_id: i32,
+    operation_id: Uuid,
 ) -> AppResult<()> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT set_config('rsctf.event_history_purge_operation', $1::text, TRUE)",
+    )
+    .bind(operation_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     for statement in [
         r#"DELETE FROM "CheatInfo" WHERE game_id = $1"#,
         r#"DELETE FROM "SuspicionEvaluationOutbox" WHERE game_id = $1"#,
@@ -358,6 +366,33 @@ pub(super) async fn delete_restricted_game_history(
         r#"DELETE FROM "EventVpnGateOverrides" WHERE game_id = $1"#,
         r#"DELETE FROM "EventVpnPolicyAudit" WHERE game_id = $1"#,
         r#"DELETE FROM "EventVpnUserPeers" WHERE game_id = $1"#,
+    ] {
+        sqlx::query(statement)
+            .bind(game_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Remove event-owned rows that intentionally have no cascading game foreign
+/// key. Run this after deleting `Games`: cascades first clear every live child
+/// that can reference a participation, then these detached audit/roster rows
+/// can be removed without weakening their normal retention constraints.
+pub(super) async fn delete_detached_game_history(
+    tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+    game_id: i32,
+) -> AppResult<()> {
+    for statement in [
+        r#"DELETE FROM "BuildRecords" WHERE game_id = $1"#,
+        r#"DELETE FROM "ChallengeUpdateOperations" WHERE game_id = $1"#,
+        r#"DELETE FROM "GameEvents" WHERE game_id = $1"#,
+        r#"DELETE FROM "GameNotices" WHERE game_id = $1"#,
+        r#"DELETE FROM "SuspicionEvents" WHERE game_id = $1"#,
+        r#"DELETE FROM "IdentityObservations" WHERE game_id = $1"#,
+        r#"DELETE FROM "UserParticipations" WHERE game_id = $1"#,
+        r#"DELETE FROM "Participations" WHERE game_id = $1"#,
     ] {
         sqlx::query(statement)
             .bind(game_id)

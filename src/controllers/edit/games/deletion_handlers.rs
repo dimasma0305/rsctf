@@ -1,6 +1,6 @@
 use super::deletion::{
-    delete_ad_game_data, delete_restricted_game_history, fence_game_for_deletion,
-    fence_game_for_purge,
+    delete_ad_game_data, delete_detached_game_history, delete_restricted_game_history,
+    fence_game_for_deletion, fence_game_for_purge,
 };
 use super::*;
 
@@ -344,8 +344,8 @@ async fn delete_game_with_policy(
     // deleting rollups or the Games row they reference.
     crate::services::ad::scoring::lock_epoch_rollups(&mut *tx, id).await?;
     crate::controllers::game::koth::lock_epoch_rollups(&mut *tx, id).await?;
-    if purge.is_some() {
-        delete_restricted_game_history(tx, id).await?;
+    if let Some(intent) = purge.as_ref() {
+        delete_restricted_game_history(tx, id, intent.operation_id).await?;
     }
     delete_ad_game_data(tx, id).await?;
     let deleted_challenge_artifacts =
@@ -365,6 +365,9 @@ async fn delete_game_with_policy(
         .map_err(|error| AppError::internal(error.to_string()))?;
     if deleted.rows_affected() != 1 {
         return Err(AppError::not_found("Game not found"));
+    }
+    if purge.is_some() {
+        delete_detached_game_history(tx, id).await?;
     }
     if let Some(hash) = poster_hash.as_deref() {
         crate::services::blob_refs::release_direct_hash_locked(tx, hash).await?;
