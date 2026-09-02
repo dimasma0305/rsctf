@@ -250,6 +250,24 @@ mod tests {
             .await
             .unwrap();
         let mut tx = pool.begin().await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TEMP TABLE "GamePurgeOperations" (
+                operation_id UUID PRIMARY KEY,
+                game_id INTEGER NOT NULL,
+                actor_user_id UUID NOT NULL,
+                request_digest TEXT NOT NULL,
+                expected_configuration_revision BIGINT NOT NULL,
+                confirmation_title TEXT NOT NULL,
+                status SMALLINT NOT NULL DEFAULT 0,
+                result JSONB,
+                completed_at_utc TIMESTAMPTZ
+            );
+            "#,
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
         sqlx::raw_sql(UP_SQL).execute(&mut *tx).await.unwrap();
 
         let operation_id = uuid::Uuid::new_v4();
