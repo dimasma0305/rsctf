@@ -11,6 +11,7 @@ import { useLocation, useRoutes } from 'react-router'
 import { SWRConfig } from 'swr'
 import routes from '~react-pages'
 import { ErrorFallback } from '@Components/ErrorFallback'
+import { RoutePrefetcher } from '@Components/RoutePrefetcher'
 import { WsrxProvider } from '@Components/WsrxProvider'
 import { PlayerGuideProvider } from '@Components/guide/PlayerGuide'
 import { shouldRedirectOnUnauthorized } from '@Utils/AuthState'
@@ -137,6 +138,7 @@ const ThemedApp: FC = () => {
               <WsrxProvider>
                 <PlayerGuideProvider>
                   <ViewerIdentityProvider>
+                    <RoutePrefetcher />
                     <RouteAccessibility />
                     <Suspense
                       fallback={

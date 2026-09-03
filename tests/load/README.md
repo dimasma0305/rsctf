@@ -1483,6 +1483,10 @@ flag-publication lag rather than aggregate closed-loop request throughput.
 The 4 August capability row uses the same-runtime adjacent player harness in
 [`REPORT.md`](REPORT.md#event-stable-leaderboard-capability-rollout--4-august-2026);
 both sides completed the same 301 scheduled iterations after a cold Redis start.
+The 3 September client row uses the same-host Chromium harness, ten cold-cache
+documents per build, 180 ms latency, and 200 Kbit/s throughput. Its paired
+fixed-rate HTTP run is a production health guardrail; no backend CPU reduction
+is inferred from a frontend-only route-module change.
 Their held throughput and CPU windows are not comparable to the replicated
 player-load rows. App CPU is both web replicas plus control for the 16 July
 campaign and the single web-only rsctf container for the 19 July campaign;
@@ -1508,6 +1512,7 @@ metric regresses, so the ledger does not hide the cost of an optimization.
 | 2026-08-02 | Start A&D publication concurrently with the independent KotH transition | Same 400-VU/4-tunnel/300-s shape; 3,796.390 → 3,840.847 req/s observed | Unpublished/late rounds 1 → 0 | — | — | Publication 9.638 → 5.662 s (-41.3%) | Maximum 10.453 → 5.703 s; 0 5xx/integrity failures after |
 | 2026-08-04 | Event-stable Leaderboard capabilities with a primary-key token read | 10 → 10 iterations/s target; 301 → 301 completed | API token fill: crown/target join → PK lookup; 20/20 values preserved | 7.435 → 8.133 (+9.4%) | 31.299 → 21.454 (-31.5%) | KotH token 179.49 → 46.28 ms (-74.2%) | App CPU regression disclosed; DB -45.7%, Redis -40.5%; 0 errors/5xx/invalid boards |
 | 2026-08-13 | Weight Overall by locked challenge counts; allocation-free semantic validation | 100.010 → 99.994 req/s | Server query count unchanged; validator per-team arrays 4 → 0 | 11.328 → 9.960 | — | Overall 41.145 → 32.786 ms | 0 failures/drops; RSS +4.636 MiB disclosed; shared-host observation |
+| 2026-09-03 | Bounded lazy route-module prefetch | 10 → 10 controlled browser trials | `/games` route ready before activation; at most 2 sequential background modules | — | — | Click-ready p50 784.2 → 64.1 ms (-91.8%) | p95 804.9 → 108.1 ms; +1.61 KiB gzip entry; fixed-rate feed 0 drops/5xx |
 
 At the same one-batch/s load, the 100-distinct-known case also improved: p95
 790.76 → 367.97 ms and stack CPU 21.644 → 10.811 CPU-seconds. The

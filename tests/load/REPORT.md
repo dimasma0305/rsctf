@@ -14,6 +14,40 @@
 > offenders plus 95 clean controls; older six/94 and honeypot-score figures are
 > historical results, not acceptance expectations.
 
+## Bounded route-module prefetch benchmark — 3 September 2026
+
+The anonymous home-to-games transition was measured against the exact parent
+source and release-candidate production builds on the same host and Chromium
+CDP harness. Each side used ten fresh root documents, a disabled and cleared
+HTTP cache, 180 ms latency, 200 Kbit/s downstream/upstream throughput, and a
+2.5-second settled-page window before the click. The timer started immediately
+before the `/games` link activation and stopped when the Games heading became
+visible.
+
+| Click-to-route-ready | Parent | Candidate |
+| --- | ---: | ---: |
+| Average | 783.5 ms | 68.7 ms |
+| p50 | 784.2 ms | 64.1 ms |
+| p90 | 801.6 ms | 75.3 ms |
+| p95 / maximum | 804.9 ms | 108.1 ms |
+
+The candidate primes existing lazy route chunks on pointer, keyboard-focus, or
+touch intent. A settled-page scan begins after 1.2 seconds and loads no more
+than two distinct route modules, sequentially. It never prefetches route API
+data, cross-origin links, catch-all pages, or connections reporting data-saver,
+2G, or slow-2G. A production-like homepage observation recorded four bounded
+background JavaScript requests totaling 12,117 encoded bytes. The compressed
+entry chunk grew from 75.59 KiB to 77.20 KiB (+1.61 KiB); route chunks remained
+split.
+
+The companion public-safe production gate held two conditional homepage-feed
+requests per second for 30 seconds before rollout. It completed 60/60 scheduled
+iterations with no drops, misses, invalid responses, or 5xx responses; endpoint
+p95 was 9.93 ms. Desktop and 320-pixel Chromium audits of the home and games
+routes reported no failures, runtime errors, or Axe violations. This row claims
+only interactive route readiness: the fixed-rate HTTP gate is a server-health
+guardrail, not evidence that speculative static downloads reduce backend CPU.
+
 ## Bounded live-feed recovery acceptance — 28 August 2026
 
 The event, submission, notice, admin-log, and Flag Egress feed changes were
