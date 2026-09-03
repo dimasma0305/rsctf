@@ -218,17 +218,31 @@ async fn ensure_flag_import_capacity(
 }
 
 /// The accepted static flags and a dynamic flag template are scoring policy,
-/// not ordinary challenge content. Production callers own the game-control
-/// lock and the challenge-scoped JFLG lock, making this decision linearizable
-/// with both engine startup and a first accepted submit.
+/// not ordinary challenge content. A disabled challenge that has never
+/// received a submission is still inert and may be prepared after the event
+/// starts. Once it is live or has any durable player evidence, its authored
+/// flags are immutable. Production callers own the game-control lock, the
+/// challenge definition lock, and the challenge-scoped JFLG lock, making this
+/// decision linearizable with both activation and a first accepted submit.
 async fn ensure_flag_policy_mutable_locked(
     connection: &mut sqlx::PgConnection,
     game_id: i32,
     challenge_id: i32,
 ) -> AppResult<()> {
-    let challenge_exists = sqlx::query_scalar::<_, bool>(
-        r#"SELECT TRUE FROM "GameChallenges"
-            WHERE game_id = $1 AND id = $2"#,
+    let (is_enabled, has_player_evidence) = sqlx::query_as::<_, (bool, bool)>(
+        r#"SELECT challenge.is_enabled,
+                  challenge.accepted_count > 0
+                  OR challenge.submission_count > 0
+                  OR EXISTS (
+                       SELECT 1 FROM "Submissions" submission
+                        WHERE submission.challenge_id = challenge.id
+                  )
+                  OR EXISTS (
+                       SELECT 1 FROM "FirstSolves" solve
+                        WHERE solve.challenge_id = challenge.id
+                  ) AS has_player_evidence
+             FROM "GameChallenges" challenge
+            WHERE challenge.game_id = $1 AND challenge.id = $2"#,
     )
     .bind(game_id)
     .bind(challenge_id)
@@ -236,9 +250,12 @@ async fn ensure_flag_policy_mutable_locked(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Challenge not found"))?;
-    debug_assert!(challenge_exists);
-    let scoring_started = competition_scoring_started_locked(connection, game_id).await?;
-    if scoring_started {
+    if has_player_evidence {
+        return Err(AppError::bad_request(
+            "Challenge flags are locked after the challenge has received player submissions.",
+        ));
+    }
+    if is_enabled && competition_scoring_started_locked(connection, game_id).await? {
         return Err(AppError::bad_request(
             "Challenge flags are locked after competition scoring has started.",
         ));
@@ -725,6 +742,105 @@ mod policy_tests {
             .unwrap_err();
         assert_eq!(rejected.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
 
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn live_event_allows_only_disabled_challenges_without_player_evidence() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("flag_policy_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE "Games" (
+                id INTEGER PRIMARY KEY,
+                start_time_utc TIMESTAMPTZ NOT NULL,
+                ad_scoring_start_round BIGINT NULL,
+                koth_scoring_start_round BIGINT NULL
+            );
+            CREATE TABLE "GameChallenges" (
+                id INTEGER PRIMARY KEY,
+                game_id INTEGER NOT NULL,
+                is_enabled BOOLEAN NOT NULL,
+                accepted_count INTEGER NOT NULL DEFAULT 0,
+                submission_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE "Participations" (
+                id INTEGER PRIMARY KEY,
+                game_id INTEGER NOT NULL
+            );
+            CREATE TABLE "Submissions" (
+                id INTEGER PRIMARY KEY,
+                challenge_id INTEGER NOT NULL
+            );
+            CREATE TABLE "FirstSolves" (
+                participation_id INTEGER NOT NULL,
+                challenge_id INTEGER NOT NULL
+            );
+            INSERT INTO "Games"
+                (id, start_time_utc, ad_scoring_start_round, koth_scoring_start_round)
+            VALUES (20, clock_timestamp() - INTERVAL '1 hour', 1, 1);
+            INSERT INTO "GameChallenges"
+                (id, game_id, is_enabled, accepted_count, submission_count)
+            VALUES (86, 20, FALSE, 0, 0);
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut connection = pool.acquire().await.unwrap();
+        ensure_flag_policy_mutable_locked(&mut connection, 20, 86)
+            .await
+            .expect("an untouched disabled challenge remains configurable");
+
+        sqlx::query(r#"UPDATE "GameChallenges" SET is_enabled = TRUE WHERE id = 86"#)
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        let live = ensure_flag_policy_mutable_locked(&mut connection, 20, 86)
+            .await
+            .expect_err("an enabled challenge changed flags during live scoring");
+        assert_eq!(live.status(), axum::http::StatusCode::BAD_REQUEST);
+
+        sqlx::raw_sql(
+            r#"
+            UPDATE "GameChallenges" SET is_enabled = FALSE WHERE id = 86;
+            INSERT INTO "Submissions" (id, challenge_id) VALUES (1, 86);
+            "#,
+        )
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+        let attempted = ensure_flag_policy_mutable_locked(&mut connection, 20, 86)
+            .await
+            .expect_err("a disabled challenge with player evidence changed flags");
+        assert_eq!(attempted.status(), axum::http::StatusCode::BAD_REQUEST);
+
+        drop(connection);
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
             .execute(&admin)
