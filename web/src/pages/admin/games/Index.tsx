@@ -32,7 +32,7 @@ import {
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { Link, useNavigate } from 'react-router'
 import { GameColorMap } from '@Components/GameCard'
@@ -49,6 +49,7 @@ import misc from '@Styles/Misc.module.css'
 import tableClasses from '@Styles/Table.module.css'
 import uploadClasses from '@Styles/Upload.module.css'
 import mobileClasses from '../AdminMobileList.module.css'
+import { buildGameInfoUpdatePayload, type GameInfoSaveOperation, prepareGameInfoSave } from './[id]/gameInfoDraft'
 
 const ITEM_COUNT_PER_PAGE = 15
 
@@ -58,6 +59,7 @@ const Games: FC = () => {
   const [cloneTarget, setCloneTarget] = useState<GameInfoModel | null>(null)
   const [disabled, setDisabled] = useState(false)
   const [progress, setProgress] = useState(0)
+  const visibilityOperations = useRef(new Map<number, GameInfoSaveOperation>())
   const { user } = useUser()
 
   const navigate = useNavigate()
@@ -95,10 +97,20 @@ const Games: FC = () => {
     setDisabled(true)
 
     try {
-      await api.edit.editUpdateGame(game.id, {
-        ...game,
-        hidden: !game.hidden,
-      })
+      const payload = buildGameInfoUpdatePayload(
+        { ...game, hidden: !game.hidden },
+        {
+          start: game.start,
+          end: game.end,
+          freeze: game.freeze ?? null,
+          writeupDeadline: game.writeupDeadline ?? game.end,
+        },
+        false
+      )
+      const prepared = prepareGameInfoSave(payload, visibilityOperations.current.get(game.id) ?? null)
+      visibilityOperations.current.set(game.id, prepared.operation)
+      await api.edit.editUpdateGame(game.id, prepared.payload)
+      visibilityOperations.current.delete(game.id)
       await mutateGames(
         (currentPage) =>
           currentPage

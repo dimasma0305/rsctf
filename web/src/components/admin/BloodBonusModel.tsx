@@ -1,10 +1,15 @@
 import { Button, Group, Modal, ModalProps, NumberInput, Stack, Text } from '@mantine/core'
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { BloodBonus } from '@Utils/Shared'
 import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { SubmissionType } from '@Api'
+import {
+  buildGameInfoUpdatePayload,
+  type GameInfoSaveOperation,
+  prepareGameInfoSave,
+} from '../../pages/admin/games/[id]/gameInfoDraft'
 
 const toNumber = (value: string | number) => {
   if (typeof value === 'string') {
@@ -22,6 +27,7 @@ export const BloodBonusModel: FC<ModalProps> = (props) => {
   const [firstBloodBonus, setFirstBloodBonus] = useState(0)
   const [secondBloodBonus, setSecondBloodBonus] = useState(0)
   const [thirdBloodBonus, setThirdBloodBonus] = useState(0)
+  const saveOperation = useRef<GameInfoSaveOperation | null>(null)
 
   const { t } = useTranslation()
 
@@ -39,11 +45,24 @@ export const BloodBonusModel: FC<ModalProps> = (props) => {
     setDisabled(true)
 
     try {
-      await api.edit.editUpdateGame(numId, {
-        ...gameSource,
-        bloodBonus: BloodBonus.fromBonus(firstBloodBonus, secondBloodBonus, thirdBloodBonus).value,
-      })
-      mutate()
+      const payload = buildGameInfoUpdatePayload(
+        {
+          ...gameSource,
+          bloodBonus: BloodBonus.fromBonus(firstBloodBonus, secondBloodBonus, thirdBloodBonus).value,
+        },
+        {
+          start: gameSource.start,
+          end: gameSource.end,
+          freeze: gameSource.freeze ?? null,
+          writeupDeadline: gameSource.writeupDeadline ?? gameSource.end,
+        },
+        false
+      )
+      const prepared = prepareGameInfoSave(payload, saveOperation.current)
+      saveOperation.current = prepared.operation
+      const response = await api.edit.editUpdateGame(numId, prepared.payload)
+      saveOperation.current = null
+      await mutate(response.data, { revalidate: false })
       props.onClose()
     } finally {
       setDisabled(false)
