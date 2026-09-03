@@ -217,7 +217,7 @@ pub(super) async fn mint_capabilities(
         .map(|_| format!("koth_{}", crate::utils::codec::random_token(18)))
         .collect();
     let mut control =
-        super::super::super::koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
+        super::super::super::koth_auth::acquire_engine_game_lock(&st.db, cycle.game_id).await?;
     let Some(issued_participations) = rotate_capability_window(
         control.transaction_mut(),
         CapabilityWindow {

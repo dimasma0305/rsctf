@@ -20,6 +20,33 @@ use crate::utils::error::AppResult;
 
 const DEFAULT_WARMUP_SECONDS: i64 = 1_800;
 const DEFAULT_GAME_CONCURRENCY: usize = 4;
+const KOTH_START_NEEDED_SQL: &str = r#"
+SELECT EXISTS(
+    SELECT 1
+      FROM "GameChallenges" challenge
+      JOIN "Games" game
+        ON game.id = challenge.game_id
+      LEFT JOIN "KothTargets" target
+        ON target.game_id = challenge.game_id
+       AND target.challenge_id = challenge.id
+     WHERE challenge.game_id = $1
+       AND challenge.is_enabled = TRUE
+       AND challenge.review_status = $2
+       AND challenge."Type" = $3
+       AND game.koth_scoring_start_round IS NULL
+       AND (
+            NULLIF(BTRIM(challenge.container_image), '') IS NULL
+            OR challenge.build_status = $4
+       )
+       AND (
+            target.id IS NULL
+            OR (
+                NULLIF(BTRIM(challenge.container_image), '') IS NOT NULL
+                AND target.container_id IS NULL
+            )
+       )
+)
+"#;
 
 #[derive(Clone, Copy, Debug, sqlx::FromRow)]
 struct ActiveGame {
@@ -181,6 +208,24 @@ async fn advance_game(
         return Ok(false);
     }
 
+    // Managed hills belong to the application, not to an operator button.
+    // Start them as soon as the event is active, including during the scoring
+    // warmup. The predicate excludes failed/queued builds and becomes false
+    // after successful publication, so the five-second discovery scan does not
+    // enqueue an idle reconcile job forever.
+    if koth_start_needed(state.pg(), schedule.id).await? {
+        let job =
+            crate::controllers::edit::request_ad_reconcile_job(state, schedule.id, false, true)
+                .await?;
+        let job = crate::services::control_jobs::wait_for_terminal(
+            state.pg(),
+            job.id,
+            std::time::Duration::from_secs(90),
+        )
+        .await?;
+        crate::services::control_jobs::result_count(&job, "failures")?;
+    }
+
     let latest = sqlx::query_as::<_, LatestRound>(
         r#"SELECT id, number, end_time_utc,
                   pipeline_completed_at IS NOT NULL AS pipeline_complete,
@@ -247,7 +292,7 @@ async fn advance_game(
     let game = load_game_model(state, schedule.id).await?;
     let repair_failures = match async {
         let job =
-            crate::controllers::edit::request_ad_reconcile_job(state, schedule.id, false, false)
+            crate::controllers::edit::request_ad_reconcile_job(state, schedule.id, false, true)
                 .await?;
         let job = crate::services::control_jobs::wait_for_terminal(
             state.pg(),
@@ -312,6 +357,24 @@ async fn advance_game(
     let budget = pipeline_budget(prepared.ends_at);
     spawn_round_pipeline(state, game, round_id, round_number, Some(prepared), budget);
     Ok(true)
+}
+
+async fn koth_start_needed(pool: &sqlx::PgPool, game_id: i32) -> AppResult<bool> {
+    koth_start_needed_with(pool, game_id).await
+}
+
+async fn koth_start_needed_with<'e, E>(executor: E, game_id: i32) -> AppResult<bool>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    sqlx::query_scalar(KOTH_START_NEEDED_SQL)
+        .bind(game_id)
+        .bind(ChallengeReviewStatus::Active as i16)
+        .bind(ChallengeType::KingOfTheHill as i16)
+        .bind(crate::utils::enums::ChallengeBuildStatus::Success as i16)
+        .fetch_one(executor)
+        .await
+        .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))
 }
 
 /// Run one game's long-lived publication/checker pipeline independently of the
@@ -424,5 +487,96 @@ mod tests {
         assert!((StdDuration::from_secs(8)..=StdDuration::from_secs(9)).contains(&short));
         let long = pipeline_budget(Utc::now() + Duration::seconds(600));
         assert_eq!(long, StdDuration::from_secs(ADVANCE_BUDGET_SECS));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn managed_hill_is_requested_once_after_its_build_becomes_ready() {
+        use sqlx::{Connection, PgConnection};
+
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let mut connection = PgConnection::connect(&database_url).await.unwrap();
+        sqlx::query(
+            r#"CREATE TEMP TABLE "Games" (
+                   id INTEGER PRIMARY KEY,
+                   koth_scoring_start_round INTEGER
+               )"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"CREATE TEMP TABLE "GameChallenges" (
+                   id INTEGER PRIMARY KEY,
+                   game_id INTEGER NOT NULL,
+                   is_enabled BOOLEAN NOT NULL,
+                   review_status SMALLINT NOT NULL,
+                   "Type" SMALLINT NOT NULL,
+                   container_image TEXT,
+                   build_status SMALLINT NOT NULL
+               )"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "Games" (id, koth_scoring_start_round)
+               VALUES (11, NULL)"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"CREATE TEMP TABLE "KothTargets" (
+                   id INTEGER PRIMARY KEY,
+                   game_id INTEGER NOT NULL,
+                   challenge_id INTEGER NOT NULL,
+                   container_id TEXT
+               )"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "GameChallenges"
+                 (id, game_id, is_enabled, review_status, "Type",
+                  container_image, build_status)
+               VALUES (7, 11, TRUE, $1, $2, 'rsctf/hill:latest', $3)"#,
+        )
+        .bind(ChallengeReviewStatus::Active as i16)
+        .bind(ChallengeType::KingOfTheHill as i16)
+        .bind(crate::utils::enums::ChallengeBuildStatus::Failed as i16)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        assert!(!koth_start_needed_with(&mut connection, 11).await.unwrap());
+        sqlx::query(r#"UPDATE "GameChallenges" SET build_status = $1 WHERE id = 7"#)
+            .bind(crate::utils::enums::ChallengeBuildStatus::Success as i16)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        assert!(koth_start_needed_with(&mut connection, 11).await.unwrap());
+
+        sqlx::query(
+            r#"INSERT INTO "KothTargets"
+                 (id, game_id, challenge_id, container_id)
+               VALUES (9, 11, 7, 'runtime-7')"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        assert!(!koth_start_needed_with(&mut connection, 11).await.unwrap());
+
+        sqlx::query(r#"DELETE FROM "KothTargets" WHERE id = 9"#)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query(r#"UPDATE "Games" SET koth_scoring_start_round = 1 WHERE id = 11"#)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        assert!(!koth_start_needed_with(&mut connection, 11).await.unwrap());
     }
 }

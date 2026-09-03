@@ -309,19 +309,47 @@ fn schedule_preserves_recorded_activity_but_allows_end_extension() {
 }
 
 #[test]
-fn finalized_or_koth_snapshotted_schedule_is_immutable() {
+fn finalized_schedule_is_immutable_but_koth_snapshot_allows_only_extension() {
     let start = chrono::Utc::now();
     let end = start + chrono::Duration::hours(1);
-    for (evidence_closed, koth_snapshotted) in [(true, false), (false, true)] {
-        assert!(validate_schedule_transition(
-            start,
-            end,
-            start,
-            end + chrono::Duration::minutes(1),
-            false,
-            evidence_closed,
-            koth_snapshotted,
-        )
-        .is_err());
-    }
+    assert!(validate_schedule_transition(
+        start,
+        end,
+        start,
+        end + chrono::Duration::minutes(1),
+        false,
+        true,
+        false,
+    )
+    .is_err());
+    assert!(validate_schedule_transition(
+        start,
+        end,
+        start,
+        end + chrono::Duration::minutes(1),
+        true,
+        false,
+        true,
+    )
+    .is_ok());
+    assert!(validate_schedule_transition(
+        start,
+        end,
+        start + chrono::Duration::minutes(1),
+        end + chrono::Duration::minutes(1),
+        true,
+        false,
+        true,
+    )
+    .is_err());
+    assert!(validate_schedule_transition(
+        start,
+        end,
+        start,
+        end - chrono::Duration::minutes(1),
+        true,
+        false,
+        true,
+    )
+    .is_err());
 }

@@ -108,7 +108,7 @@ async fn complete_unresolved_check_results(
     round_id: i32,
     lease: &RoundFinishLease,
 ) -> AppResult<()> {
-    let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
+    let mut control = super::koth_auth::acquire_engine_game_lock(db, game_id).await?;
     super::lock_owned_round_finish(control.transaction_mut(), game_id, round_id, lease).await?;
     complete_unresolved_check_results_transaction(control.transaction_mut(), game_id, round_id)
         .await?;
@@ -157,7 +157,7 @@ pub(crate) async fn complete_missing_koth_results(
     round_id: i32,
     lease: &RoundFinishLease,
 ) -> AppResult<()> {
-    let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
+    let mut control = super::koth_auth::acquire_engine_game_lock(db, game_id).await?;
     super::lock_owned_round_finish(control.transaction_mut(), game_id, round_id, lease).await?;
     complete_missing_koth_results_transaction(control.transaction_mut(), game_id, round_id).await?;
     control
@@ -242,7 +242,7 @@ pub(crate) async fn finalize_ended_round_checks(
     game_id: i32,
     grace_seconds: i64,
 ) -> AppResult<bool> {
-    let mut control_lock = super::koth_auth::acquire_game_lock(db, game_id).await?;
+    let mut control_lock = super::koth_auth::acquire_engine_game_lock(db, game_id).await?;
     let round_ids = sqlx::query_scalar::<_, i32>(
         r#"SELECT round.id
              FROM "AdRounds" round
@@ -463,7 +463,7 @@ pub(super) async fn record_check_results(
         return Ok(());
     }
 
-    let mut control_lock = super::koth_auth::acquire_game_lock(db, game_id).await?;
+    let mut control_lock = super::koth_auth::acquire_engine_game_lock(db, game_id).await?;
     let result = record_check_results_transaction(
         control_lock.transaction_mut(),
         game_id,

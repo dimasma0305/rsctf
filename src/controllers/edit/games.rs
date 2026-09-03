@@ -386,7 +386,10 @@ fn validate_schedule_transition(
             "The event schedule is locked after competitive evidence has closed.",
         ));
     }
-    if koth_config_snapshotted {
+    // A later deadline adds future rounds without rewriting the frozen roster,
+    // hill set, or crown shape. Keep every other schedule edit locked once the
+    // official KotH configuration exists.
+    if koth_config_snapshotted && (start_changed || requested_end < current_end) {
         return Err(AppError::bad_request(
             "The event schedule is locked after KotH crown scoring starts.",
         ));

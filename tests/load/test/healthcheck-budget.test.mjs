@@ -35,7 +35,9 @@ test("steady-state Docker health checks have a low fixed cadence", () => {
     ["deploy/compose.yml", 3],
     ["deploy/compose.roles.yml", 1],
     ["deploy/compose.development.yml", 2],
-    ["compose.dev.yml", 1],
+    // Backend plus the private managed-KotH callback proxy. Both use one
+    // 30-second probe; challenge targets do not poll public ingress.
+    ["compose.dev.yml", 2],
     ["deploy/compose.docker.yml", 1],
   ]);
   for (const [path, expected] of expectedIntervals) {

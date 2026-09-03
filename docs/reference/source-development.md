@@ -129,8 +129,15 @@ scripts/bounded-cargo.sh build --locked
 docker compose -f compose.dev.yml restart backend
 ```
 
+The stack keeps `rsctf-koth-reporter` on a stable private address and proxies
+managed KotH callbacks to the backend over the Compose default network. This
+lets backend rebuilds continue without sending target evidence through public
+DNS or ingress. Keep `RSCTF_DEV_KOTH_REPORTER_IP` inside the A&D service subnet
+and outside the addresses assigned to challenge containers.
+
 The binary directory, files directory, API/SSH/VPN ports, and backend A&D
 address can be overridden with `RSCTF_DEV_BINARY_DIR`,
 `RSCTF_DEV_STORAGE_DIR`, `RSCTF_DEV_BACKEND_PORT`, `RSCTF_DEV_SSH_PORT`,
-`RSCTF_DEV_VPN_PORT`, and `RSCTF_DEV_AD_BACKEND_IP`. Do not use this full-runtime
-profile with production databases, secrets, storage, or networks.
+`RSCTF_DEV_VPN_PORT`, `RSCTF_DEV_AD_BACKEND_IP`, and
+`RSCTF_DEV_KOTH_REPORTER_IP`. Do not use this full-runtime profile with
+production databases, secrets, storage, or networks.

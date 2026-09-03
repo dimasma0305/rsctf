@@ -355,7 +355,7 @@ async fn check_one_hill(
         &key,
     )
     .await?;
-    let mut control = koth_auth::acquire_game_lock(db, game_id).await?;
+    let mut control = koth_auth::acquire_engine_game_lock(db, game_id).await?;
     crate::services::ad_engine::lock_owned_round_finish(
         control.transaction_mut(),
         game_id,
@@ -574,7 +574,7 @@ async fn check_one_hill(
     let message = bounded_optional_diagnostic(message);
     let observed_at = Utc::now();
 
-    let mut control = koth_auth::acquire_game_lock(db, game_id).await?;
+    let mut control = koth_auth::acquire_engine_game_lock(db, game_id).await?;
     crate::services::ad_engine::lock_owned_round_finish(
         control.transaction_mut(),
         game_id,

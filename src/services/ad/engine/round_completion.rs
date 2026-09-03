@@ -213,7 +213,7 @@ pub(crate) async fn expire_overdue_round_finish(
     round_id: i32,
     lease: &RoundFinishLease,
 ) -> AppResult<bool> {
-    let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
+    let mut control = super::koth_auth::acquire_engine_game_lock(db, game_id).await?;
     let owned_overdue: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(
              SELECT 1 FROM "AdRounds" round

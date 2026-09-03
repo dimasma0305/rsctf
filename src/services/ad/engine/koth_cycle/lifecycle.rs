@@ -172,7 +172,8 @@ async fn finalize_previous_cycle(
         .unwrap_or(0);
 
     let mut control =
-        crate::services::ad::engine::koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
+        crate::services::ad::engine::koth_auth::acquire_engine_game_lock(&st.db, cycle.game_id)
+            .await?;
     let retired_previous = if let Some(previous_id) = previous_id {
         sqlx::query(
             r#"UPDATE "KothCrownCycles"
@@ -503,7 +504,8 @@ async fn publish_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()
     let port = cycle
         .replacement_port
         .ok_or_else(|| AppError::internal("replacement port is missing"))?;
-    let mut control = super::super::koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
+    let mut control =
+        super::super::koth_auth::acquire_engine_game_lock(&st.db, cycle.game_id).await?;
     let published = sqlx::query(
         r#"UPDATE "KothTargets" target
               SET host = $3, port = $4, container_id = $5,
@@ -578,7 +580,8 @@ async fn activate_cycle(st: &SharedState, cycle: &CycleRow, round_number: i32) -
     let enforced_cooldowns =
         crate::services::ad_vpn::enforce_cycle_cooldown(&st.db, cycle.id).await?;
     let mut control =
-        crate::services::ad::engine::koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
+        crate::services::ad::engine::koth_auth::acquire_engine_game_lock(&st.db, cycle.game_id)
+            .await?;
     sqlx::query(
         r#"UPDATE "KothCycleCooldowns"
               SET network_enforced = TRUE,

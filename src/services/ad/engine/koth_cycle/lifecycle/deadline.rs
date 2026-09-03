@@ -99,7 +99,8 @@ async fn load_cleanup_runtime_state(
 
 async fn prepare_deadline_network_shutdown(st: &SharedState, cycle: &CycleRow) -> AppResult<()> {
     let mut access =
-        crate::services::ad::engine::koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
+        crate::services::ad::engine::koth_auth::acquire_engine_game_lock(&st.db, cycle.game_id)
+            .await?;
     let revoked = persist_deadline_access_revocation(
         access.transaction_mut(),
         cycle.game_id,
@@ -400,7 +401,8 @@ pub(super) async fn record_recovery_error(
     // every authoritative KotH transition. In particular, an event deletion
     // owns the game lock while cascading cycle rows; updating a cycle first
     // here would deadlock when PostgreSQL checks that cascade.
-    let mut control = super::super::super::koth_auth::acquire_game_lock(&st.db, game_id).await?;
+    let mut control =
+        super::super::super::koth_auth::acquire_engine_game_lock(&st.db, game_id).await?;
     persist_recovery_error(control.transaction_mut(), cycle_id, message).await?;
     control
         .release()
@@ -447,7 +449,7 @@ pub(super) async fn cleanup_completed_cycle(
     destroy_deadline_runtimes(st, &runtime.container_ids).await?;
 
     let mut control =
-        super::super::super::koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
+        super::super::super::koth_auth::acquire_engine_game_lock(&st.db, cycle.game_id).await?;
     persist_completed_cleanup(
         &mut *control.transaction_mut(),
         CompletedCleanup {
@@ -487,7 +489,8 @@ pub(super) async fn complete_active_cycle(
     round_number: i32,
 ) -> AppResult<()> {
     let mut control =
-        crate::services::ad::engine::koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
+        crate::services::ad::engine::koth_auth::acquire_engine_game_lock(&st.db, cycle.game_id)
+            .await?;
     let completed: bool = sqlx::query_scalar(
         r#"WITH completed AS (
              UPDATE "KothCrownCycles"
@@ -646,7 +649,7 @@ mod tests {
             .expect("recovery error writer boundary exists");
         let writer = &source[start..end];
         let game_lock = writer
-            .find("koth_auth::acquire_game_lock")
+            .find("koth_auth::acquire_engine_game_lock")
             .expect("recovery error writer owns the game lock");
         let cycle_update = writer
             .find("persist_recovery_error")

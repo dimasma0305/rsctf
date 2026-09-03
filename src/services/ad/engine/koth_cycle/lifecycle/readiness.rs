@@ -108,7 +108,7 @@ async fn reclaim_stopped(st: &SharedState, cycle: &CycleRow, container_id: &str)
     // The lifecycle takes the hill lock before reaching this function. Taking
     // the game lock second matches the checker/capture lock order and makes
     // token revocation atomic with the durable phase transition.
-    let mut control = koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
+    let mut control = koth_auth::acquire_engine_game_lock(&st.db, cycle.game_id).await?;
     let moved = move_stopped_replacement_to_destroy(
         &mut *control.transaction_mut(),
         cycle.id,

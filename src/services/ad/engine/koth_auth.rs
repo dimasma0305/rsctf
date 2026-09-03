@@ -73,6 +73,36 @@ pub(crate) async fn acquire_game_lock(
     })
 }
 
+/// Serialize trusted round-engine work without making sibling workers fail one
+/// another. The engine deliberately probes A&D services and KotH hills in
+/// parallel, but their short persistence transactions share one per-game
+/// authority fence. Waiting happens before PostgreSQL checkout and remains
+/// bounded by the same global admission semaphore, so it cannot consume the
+/// pool headroom reserved by the fail-fast HTTP path above.
+pub(crate) async fn acquire_engine_game_lock(
+    db: &DatabaseConnection,
+    game_id: i32,
+) -> AppResult<GameControlLock> {
+    let key = game_lock_key(game_id);
+    let local = crate::utils::single_flight::coalesce(&key).await;
+    let admission = GAME_CONTROL_ADMISSION
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| AppError::unavailable("Game configuration admission is unavailable"))?;
+    let database = crate::utils::single_flight::PgAdvisoryLock::acquire(
+        db.get_postgres_connection_pool(),
+        &key,
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(GameControlLock {
+        database,
+        local,
+        admission,
+    })
+}
+
 pub(crate) async fn clear_challenge_control_locked<'e, E>(
     executor: E,
     game_id: i32,
@@ -383,7 +413,7 @@ mod tests {
     use crate::utils::error::AppError;
 
     use super::{
-        acquire_game_lock, game_lock_key, revoke_game_capabilities,
+        acquire_engine_game_lock, acquire_game_lock, game_lock_key, revoke_game_capabilities,
         revoke_koth_capabilities_locked, GAME_CONTROL_CONCURRENCY,
     };
 
@@ -429,6 +459,36 @@ mod tests {
         for control in controls {
             control.release().await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn engine_siblings_wait_for_the_same_game_instead_of_self_rejecting() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let database = SqlxPostgresConnector::from_sqlx_postgres_pool(pool);
+        let game_id = (uuid::Uuid::new_v4().as_u128() % 1_000_000_000) as i32;
+        let first = acquire_engine_game_lock(&database, game_id).await.unwrap();
+        let second = acquire_engine_game_lock(&database, game_id);
+        tokio::pin!(second);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut second)
+                .await
+                .is_err(),
+            "a sibling engine transaction must wait while the game fence is owned"
+        );
+        first.release().await.unwrap();
+        let second = tokio::time::timeout(Duration::from_secs(1), second)
+            .await
+            .expect("waiting engine transaction did not resume")
+            .unwrap();
+        second.release().await.unwrap();
     }
 
     type CapabilityRetryState = (Vec<(i32, i32, String)>, Vec<(i32, Vec<u8>)>);
