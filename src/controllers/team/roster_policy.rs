@@ -7,8 +7,9 @@ use crate::utils::error::{AppError, AppResult};
 const LOCK_TEAM_ON_ACCEPT_KEY: &str = "AccountPolicy:LockTeamOnEventAccept";
 
 /// Apply the optional legacy roster lock when a participation becomes accepted.
-/// A missing setting is deliberately off; official A&D/KotH scoring still
-/// freezes roster changes independently in [`reject_frozen_state`].
+/// A missing setting is deliberately off. Official A&D/KotH scoring still
+/// freezes removals and identity-changing roster mutations independently, while
+/// late additions remain possible unless an organizer explicitly locks the team.
 pub(crate) async fn lock_team_on_accept_if_enabled(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     team_id: i32,
@@ -97,8 +98,9 @@ async fn load_roster_state(
 
 fn reject_frozen_state(
     (locked, active_scoring, active, _blocking_game): (bool, bool, bool, Option<i32>),
+    allow_scoring_addition: bool,
 ) -> AppResult<()> {
-    if active_scoring {
+    if active_scoring && !allow_scoring_addition {
         return Err(AppError::bad_request(
             "Team membership cannot change after A&D/KotH epoch scoring has started",
         ));
@@ -116,11 +118,11 @@ pub(super) async fn preflight_roster_change_allowed(
     connection: &mut PgConnection,
     team_id: i32,
 ) -> AppResult<()> {
-    reject_frozen_state(load_roster_state(connection, team_id).await?)
+    reject_frozen_state(load_roster_state(connection, team_id).await?, false)
 }
 
-/// Reject an addition or removal while an existing participation makes the
-/// roster immutable. The caller already owns `team-roster:{team_id}`. Only the
+/// Reject a removal or profile mutation while an existing participation makes
+/// the roster immutable. The caller already owns `team-roster:{team_id}`. Only the
 /// oldest current blocker is fenced before one final predicate read; historical
 /// participations never turn one profile mutation into an unbounded lock set.
 pub(crate) async fn ensure_roster_change_allowed(
@@ -140,7 +142,27 @@ pub(crate) async fn ensure_roster_change_allowed(
     // The blocker can end while its fence is being acquired. Re-evaluate at
     // the mutation's linearization point; a concurrent activation that starts
     // after this point is ordered after the completed profile mutation.
-    reject_frozen_state(load_roster_state(transaction, team_id).await?)
+    reject_frozen_state(load_roster_state(transaction, team_id).await?, false)
+}
+
+/// Permit a new teammate during official scoring without changing the stable
+/// participation/service roster. An explicitly locked team remains immutable.
+/// The shared game fence orders the insert with a concurrent lock transition.
+pub(crate) async fn ensure_roster_addition_allowed(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    team_id: i32,
+) -> AppResult<()> {
+    let state = load_roster_state(transaction, team_id).await?;
+    let Some(game_id) = state.3 else {
+        return Ok(());
+    };
+    crate::utils::single_flight::acquire_transaction_advisory_lock(
+        transaction,
+        &crate::services::ad_engine::game_lock_key(game_id),
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    reject_frozen_state(load_roster_state(transaction, team_id).await?, true)
 }
 
 #[cfg(test)]

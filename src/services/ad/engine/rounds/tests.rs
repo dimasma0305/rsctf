@@ -2,9 +2,9 @@ use std::collections::HashSet;
 
 use super::{
     authoritative_round_window, classify_round_target, complete_ad_scoring_roster,
-    complete_koth_scoring_roster, koth_scoring_lifecycle_ready, minimum_round_duration_seconds,
-    network_scope_matches, playable_round_window, prepared_checker_exists, valid_service_endpoint,
-    RoundTargetDisposition,
+    complete_koth_scoring_roster, earliest_complete_ad_roster_round, koth_scoring_lifecycle_ready,
+    minimum_round_duration_seconds, network_scope_matches, playable_round_window,
+    prepared_checker_exists, RoundTargetDisposition,
 };
 use chrono::{Duration, Utc};
 
@@ -28,15 +28,7 @@ fn checker_readiness_requires_prepared_files() {
 }
 
 #[test]
-fn service_readiness_rejects_provisioning_placeholders() {
-    assert!(!valid_service_endpoint("", 0));
-    assert!(!valid_service_endpoint("  ", 31337));
-    assert!(!valid_service_endpoint("10.13.37.2", 0));
-    assert!(valid_service_endpoint("10.13.37.2", 31337));
-}
-
-#[test]
-fn scoring_roster_requires_two_complete_teams() {
+fn scoring_roster_requires_durable_rows_but_not_live_endpoints() {
     let challenges = [10, 11];
     let complete = HashSet::from([(1, 10), (1, 11), (2, 10), (2, 11)]);
     assert!(complete_ad_scoring_roster(
@@ -75,6 +67,57 @@ fn scoring_roster_requires_two_complete_teams() {
         false,
         false,
     ));
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn delayed_scoring_recovers_the_first_round_with_the_complete_roster() {
+    use sqlx::{Connection, PgConnection};
+
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let mut connection = PgConnection::connect(&database_url).await.unwrap();
+    sqlx::query(
+        r#"CREATE TEMP TABLE "AdRounds" (
+               id INTEGER PRIMARY KEY,
+               game_id INTEGER NOT NULL,
+               number INTEGER NOT NULL
+           )"#,
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"CREATE TEMP TABLE "AdFlags" (
+               round_id INTEGER NOT NULL,
+               team_service_id INTEGER NOT NULL
+           )"#,
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    sqlx::raw_sql(
+        r#"INSERT INTO "AdRounds" (id, game_id, number)
+           VALUES (1, 7, 1), (2, 7, 2), (3, 7, 3);
+           INSERT INTO "AdFlags" (round_id, team_service_id)
+           VALUES (1, 10), (2, 10), (2, 11), (3, 10), (3, 11)"#,
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        earliest_complete_ad_roster_round(&mut connection, 7, 3, &[10, 11])
+            .await
+            .unwrap(),
+        Some(2)
+    );
+    assert_eq!(
+        earliest_complete_ad_roster_round(&mut connection, 7, 3, &[10, 11, 12])
+            .await
+            .unwrap(),
+        None
+    );
 }
 
 #[test]

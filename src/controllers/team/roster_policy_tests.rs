@@ -17,6 +17,18 @@ async fn remove_if_allowed(pool: &sqlx::PgPool, team_id: i32, user_id: Uuid) -> 
     roster.release().await
 }
 
+async fn add_if_allowed(pool: &sqlx::PgPool, team_id: i32, user_id: Uuid) -> AppResult<()> {
+    let mut roster = super::super::acquire_roster_mutation(pool, team_id).await?;
+    ensure_roster_addition_allowed(roster.transaction_mut(), team_id).await?;
+    sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES ($1, $2)"#)
+        .bind(team_id)
+        .bind(user_id)
+        .execute(&mut **roster.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    roster.release().await
+}
+
 async fn membership_exists(pool: &sqlx::PgPool, team_id: i32, user_id: Uuid) -> bool {
     sqlx::query_scalar(
         r#"SELECT EXISTS(
@@ -159,6 +171,14 @@ async fn public_roster_removal_obeys_scoring_and_active_lock_fences() {
         assert!(membership_exists(&pool, team_id, user_id).await);
     }
 
+    for team_id in [10, 11] {
+        let late_member = Uuid::new_v4();
+        add_if_allowed(&pool, team_id, late_member)
+            .await
+            .expect("official scoring rejected a late teammate addition");
+        assert!(membership_exists(&pool, team_id, late_member).await);
+    }
+
     let suspended_error = remove_if_allowed(&pool, 17, members[7])
         .await
         .expect_err("suspension allowed an official scoring roster to change");
@@ -174,6 +194,15 @@ async fn public_roster_removal_obeys_scoring_and_active_lock_fences() {
     assert_eq!(locked_error.status(), axum::http::StatusCode::BAD_REQUEST);
     assert_eq!(locked_error.to_string(), "Team is locked by an active game");
     assert!(membership_exists(&pool, 12, members[2]).await);
+    let locked_late_member = Uuid::new_v4();
+    let locked_add_error = add_if_allowed(&pool, 12, locked_late_member)
+        .await
+        .expect_err("an explicitly locked team allowed a late teammate");
+    assert_eq!(
+        locked_add_error.to_string(),
+        "Team is locked by an active game"
+    );
+    assert!(!membership_exists(&pool, 12, locked_late_member).await);
 
     remove_if_allowed(&pool, 13, members[3])
         .await

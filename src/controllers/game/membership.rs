@@ -416,16 +416,6 @@ pub(crate) async fn persist_game_join_locked(
         None => None,
     };
 
-    // Once the first A&D/KotH epoch is official, the set of people attached
-    // to each scored participation is immutable. This also covers linking a
-    // newly joined teammate to an already Accepted or Suspended participation
-    // and replacing a rejected link with a different team's participation.
-    if mutation.scoring_started {
-        return Err(AppError::bad_request(
-            "Game membership cannot change after A&D/KotH epoch scoring has started",
-        ));
-    }
-
     // Resolve and lock the destination before deciding whether the historical
     // rejected link can be replaced. An evidence-bearing link is durable actor
     // attribution: it may be reused by the same participation, but it can never
@@ -447,6 +437,20 @@ pub(crate) async fn persist_game_join_locked(
     let reuses_historical_link = rejected_participation_id
         .zip(existing.as_ref().map(|(id, _, _)| *id))
         .is_some_and(|(historical_id, target_id)| historical_id == target_id);
+    if mutation.scoring_started
+        && (rejected_participation_id.is_some()
+            || !existing.as_ref().is_some_and(|(_, status, _)| {
+                *status == ParticipationStatus::Accepted as i16
+                    || *status == ParticipationStatus::Suspended as i16
+            }))
+    {
+        // Late teammates may attach to the team's already-stable scored
+        // participation. Never create a new scored participant, reactivate a
+        // rejected one, or move a historical user link after scoring starts.
+        return Err(AppError::bad_request(
+            "A late teammate can only join an existing scored team",
+        ));
+    }
     if let Some(historical_id) = rejected_participation_id.filter(|_| !reuses_historical_link) {
         if crate::services::participation_evidence::has_competition_evidence(
             transaction,

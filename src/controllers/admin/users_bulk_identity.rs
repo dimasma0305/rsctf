@@ -243,7 +243,7 @@ async fn fence_team_assignment(
         .await
         .map_err(database_error)?;
     if !already_member {
-        crate::controllers::team::ensure_roster_change_allowed(transaction, *id).await?;
+        crate::controllers::team::ensure_roster_addition_allowed(transaction, *id).await?;
     }
     Ok(already_member)
 }

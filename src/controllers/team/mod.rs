@@ -51,7 +51,7 @@ pub(crate) use revocation::{
     revoke_participation_capabilities, revoke_team_shared_capabilities, TeamDeletionLease,
 };
 use revocation::{remove_membership, revoke_team_shared_capabilities_locked};
-pub(crate) use roster_policy::ensure_roster_change_allowed;
+pub(crate) use roster_policy::{ensure_roster_addition_allowed, ensure_roster_change_allowed};
 pub(crate) use scoreboard_invalidation::{flush_scoreboard_for_user, flush_scoreboards_for_users};
 pub use signature::verify_signature;
 
@@ -541,7 +541,7 @@ async fn admit_team_member_with_roster_fence(
     // Identity policy/user/value locks must precede the roster's Game fences.
     // Game registration uses the same roster -> identity -> Games order; a
     // queued exclusive policy update can otherwise complete a three-way cycle.
-    ensure_roster_change_allowed(transaction, team_id).await?;
+    ensure_roster_addition_allowed(transaction, team_id).await?;
     Ok(outcome)
 }
 

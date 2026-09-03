@@ -509,10 +509,8 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
         assert_eq!(stored_status, existing_status as i16);
     }
 
-    // Once either A&D or KotH scoring has started, the membership-to-score
-    // attribution is immutable even when the team's participation already
-    // exists. A non-rejected existing link keeps its established idempotent
-    // error, while a rejected link cannot be replaced behind the scoring fence.
+    // A late teammate may link to an already-stable scored participation. The
+    // operation must not create or rewrite the team's participation row.
     for (offset, existing_status) in [
         ParticipationStatus::Accepted,
         ParticipationStatus::Suspended,
@@ -544,7 +542,7 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
             .await
             .unwrap();
         locks.acquire_game_advisory().await.unwrap();
-        let error = persist_game_join_locked(
+        let persisted = persist_game_join_locked(
             locks.transaction_mut(),
             JoinMutation {
                 user_id,
@@ -558,12 +556,9 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
             },
         )
         .await
-        .unwrap_err();
-        assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
-        assert_eq!(
-            error.to_string(),
-            "Game membership cannot change after A&D/KotH epoch scoring has started"
-        );
+        .expect("late teammate could not join an existing scored team");
+        assert_eq!(persisted.participation_id, participation_id);
+        assert_eq!(persisted.status, existing_status);
         locks.release().await.unwrap();
 
         assert_eq!(
@@ -574,7 +569,19 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
             .fetch_one(&pool)
             .await
             .unwrap(),
-            0
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                r#"SELECT COUNT(*) FROM "Participations" WHERE game_id = $1 AND team_id = $2"#,
+            )
+            .bind(game_id)
+            .bind(team_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1,
+            "late membership created a second scored participation"
         );
     }
 
@@ -640,7 +647,7 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
     .unwrap_err();
     assert_eq!(
         replacement_error.to_string(),
-        "Game membership cannot change after A&D/KotH epoch scoring has started"
+        "A late teammate can only join an existing scored team"
     );
     locks.release().await.unwrap();
     assert_eq!(

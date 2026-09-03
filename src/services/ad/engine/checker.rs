@@ -397,6 +397,7 @@ pub(crate) async fn validate_koth_functional_readiness(
     port: i32,
     round_number: i32,
     challenge_id: i32,
+    timeout: std::time::Duration,
 ) -> (AdCheckStatus, Option<String>) {
     let (status, message) = run_check(
         checker_dir,
@@ -406,7 +407,7 @@ pub(crate) async fn validate_koth_functional_readiness(
         0,
         challenge_id,
         None,
-        std::time::Duration::from_secs(checker_timeout_secs()),
+        timeout,
         false,
     )
     .await;

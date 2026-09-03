@@ -371,7 +371,7 @@ async fn registration_lock_closes_bulk_creation_precheck_race() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-async fn scored_team_rejects_a_new_bulk_member_but_allows_an_existing_member_retry() {
+async fn scored_team_allows_a_new_bulk_member_and_an_existing_member_retry() {
     let harness = Harness::new().await;
     let captain = Uuid::new_v4();
     let member = Uuid::new_v4();
@@ -428,19 +428,15 @@ async fn scored_team_rejects_a_new_bulk_member_but_allows_an_existing_member_ret
     .expect("an existing member's idempotent team assignment was rejected");
     assert_eq!(retry.team_id, Some(10));
 
-    let error = provision_explicit_user(
+    let added = provision_explicit_user(
         &harness.pool,
         explicit_write("OUTSIDER", "OUTSIDER@EXAMPLE.TEST", "outsider-new-hash"),
         Some("frozen"),
         Some(10),
     )
     .await
-    .expect_err("official scoring accepted a new bulk-imported team member");
-    assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
-    assert_eq!(
-        error.to_string(),
-        "Team membership cannot change after A&D/KotH epoch scoring has started"
-    );
+    .expect("official scoring rejected a late bulk-imported teammate");
+    assert_eq!(added.team_id, Some(10));
     let joined: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(
              SELECT 1 FROM "TeamMembers" WHERE team_id = 10 AND user_id = $1
@@ -450,17 +446,15 @@ async fn scored_team_rejects_a_new_bulk_member_but_allows_an_existing_member_ret
     .fetch_one(&harness.pool)
     .await
     .unwrap();
-    assert!(!joined);
+    assert!(joined);
     let outsider_identity: (Option<String>, Option<String>) =
         sqlx::query_as(r#"SELECT password_hash, security_stamp FROM "AspNetUsers" WHERE id = $1"#)
             .bind(outsider)
             .fetch_one(&harness.pool)
             .await
             .unwrap();
-    assert_eq!(
-        outsider_identity,
-        (Some("old-hash".into()), Some("old-stamp".into()))
-    );
+    assert_eq!(outsider_identity.0.as_deref(), Some("outsider-new-hash"));
+    assert_ne!(outsider_identity.1.as_deref(), Some("old-stamp"));
 
     sqlx::query(
         r#"UPDATE "Games" SET end_time_utc = clock_timestamp() - interval '1 second'

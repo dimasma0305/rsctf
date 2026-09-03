@@ -91,6 +91,17 @@ test('a typed disconnected VPN read exposes setup before retrying protected chal
   assert.match(vpnDownload, /finally[\s\S]*anchor\.remove\(\)[\s\S]*URL\.revokeObjectURL\(url\)/)
 })
 
+test('a disconnected event VPN gives the challenge list an actionable setup state', () => {
+  assert.match(
+    panel,
+    /game\?\.vpnAccessRequired && isEventVpnAccessError\(teamInfoError\) && teamInfoError\.kind === 'disconnected'/
+  )
+  assert.match(panel, /Connect to the event VPN to load challenges/)
+  assert.match(panel, /Download event VPN/)
+  assert.match(panel, /I’m connected — retry/)
+  assert.match(panel, /allowEventVpnReconnectRetry\(numId\)[\s\S]*mutateTeamInfo\(\)/)
+})
+
 test('ambiguous container failures retain their retry identity while terminal client failures clear it', () => {
   const terminalPolicy = modal.slice(
     modal.indexOf('const isTerminalContainerOperationError'),

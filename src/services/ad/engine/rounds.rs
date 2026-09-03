@@ -174,6 +174,15 @@ struct GameSettings {
     koth_scoring_start_round: Option<i32>,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct RoundServiceRow {
+    id: i32,
+    participation_id: i32,
+    challenge_id: i32,
+    checker_dir: Option<String>,
+    service_weight: f64,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum RoundTargetDisposition {
     Advance,
@@ -202,6 +211,44 @@ fn complete_ad_scoring_roster(
         })
 }
 
+/// Find the first round containing flags for every service in the roster that
+/// is about to become official. This lets an upgraded scheduler recover a
+/// previously blocked event without discarding already-recorded Offline/SLA
+/// evidence. On a new event there is no earlier complete round, so the caller
+/// uses the round it is currently preparing.
+async fn earliest_complete_ad_roster_round<'e, E>(
+    executor: E,
+    game_id: i32,
+    latest_round: i32,
+    service_ids: &[i32],
+) -> AppResult<Option<i32>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    if service_ids.is_empty() {
+        return Ok(None);
+    }
+    sqlx::query_scalar(
+        r#"SELECT MIN(complete_round.number)::integer
+             FROM (
+                   SELECT round.number
+                     FROM "AdRounds" round
+                     JOIN "AdFlags" flag ON flag.round_id = round.id
+                    WHERE round.game_id = $1
+                      AND round.number <= $2
+                      AND flag.team_service_id = ANY($3::integer[])
+                    GROUP BY round.id, round.number
+                   HAVING COUNT(*) = CARDINALITY($3::integer[])
+             ) complete_round"#,
+    )
+    .bind(game_id)
+    .bind(latest_round)
+    .bind(service_ids)
+    .fetch_one(executor)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
 fn complete_koth_scoring_roster(
     accepted_participations: &[i32],
     has_koth: bool,
@@ -223,10 +270,6 @@ fn prepared_checker_exists(path: Option<&str>) -> bool {
     };
     let root = std::path::Path::new(path);
     root.join("venv/bin/python3").is_file() && root.join("src/run.py").is_file()
-}
-
-fn valid_service_endpoint(host: &str, port: i32) -> bool {
-    !host.trim().is_empty() && (1..=65_535).contains(&port)
 }
 
 fn koth_scoring_lifecycle_ready(
@@ -670,21 +713,11 @@ async fn prepare_round_transaction(
         .map_err(|error| AppError::internal(error.to_string()))?,
     };
 
-    #[allow(clippy::type_complexity)]
-    let services: Vec<(
-        i32,
-        i32,
-        i32,
-        Option<String>,
-        Option<String>,
-        f64,
-        String,
-        i32,
-    )> = sqlx::query_as(
+    let services = sqlx::query_as::<_, RoundServiceRow>(
         r#"SELECT service.id, service.participation_id, service.challenge_id,
-                  service.container_id, challenge.ad_checker_image,
+                  challenge.ad_checker_image AS checker_dir,
                   LEAST(1.2, GREATEST(0.8, challenge.ad_scoring_weight))
-                    AS service_weight, service.host, service.port
+                    AS service_weight
              FROM "AdTeamServices" service
              JOIN "Participations" participation
                ON participation.id = service.participation_id
@@ -754,10 +787,12 @@ async fn prepare_round_transaction(
     let koth_targets_ready = koth_challenge_ids
         .iter()
         .all(|challenge_id| koth_target_ids.contains(challenge_id));
+    // A durable service row freezes roster membership. Its endpoint is runtime
+    // evidence: an empty BYOC host must score Offline/zero, not delay the whole
+    // event or remove that participant from the scoreboard.
     let service_pairs: HashSet<(i32, i32)> = services
         .iter()
-        .filter(|service| valid_service_endpoint(&service.6, service.7))
-        .map(|service| (service.1, service.2))
+        .map(|service| (service.participation_id, service.challenge_id))
         .collect();
     let crown_shape_ready = super::koth_cycle::valid_crown_shape(
         crown_settings.0,
@@ -789,10 +824,16 @@ async fn prepare_round_transaction(
     );
 
     // A&D and KotH freeze independent scoring boundaries. An unavailable BYOC
-    // service must not suppress a healthy shared hill, and an unavailable hill
-    // must not suppress complete A&D service pairs. Practice events may freeze
-    // one accepted team; competitive events retain the two-team minimum.
+    // service is a scored Offline service and must not suppress A&D or a healthy
+    // shared hill. An unavailable hill must not suppress a complete durable A&D
+    // roster. Practice events may freeze one accepted team; competitive events
+    // retain the two-team minimum.
     if ad_scoring_ready && game_settings.ad_scoring_start_round.is_none() {
+        let service_ids: Vec<i32> = services.iter().map(|service| service.id).collect();
+        let scoring_start_round =
+            earliest_complete_ad_roster_round(&mut **tx, game_id, target_number, &service_ids)
+                .await?
+                .unwrap_or(target_number);
         sqlx::query(
             r#"UPDATE "Games"
                   SET ad_scoring_start_round = $2
@@ -800,7 +841,7 @@ async fn prepare_round_transaction(
                   AND ad_scoring_start_round IS NULL"#,
         )
         .bind(game_id)
-        .bind(target_number)
+        .bind(scoring_start_round)
         .execute(&mut **tx)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -827,12 +868,15 @@ async fn prepare_round_transaction(
     }
 
     if !services.is_empty() {
-        let service_ids: Vec<i32> = services.iter().map(|service| service.0).collect();
+        let service_ids: Vec<i32> = services.iter().map(|service| service.id).collect();
         let checker_qualified: Vec<bool> = services
             .iter()
-            .map(|service| prepared_checker_exists(service.4.as_deref()))
+            .map(|service| prepared_checker_exists(service.checker_dir.as_deref()))
             .collect();
-        let service_weights: Vec<f64> = services.iter().map(|service| service.5).collect();
+        let service_weights: Vec<f64> = services
+            .iter()
+            .map(|service| service.service_weight)
+            .collect();
         let generated_flags: Vec<String> = services
             .iter()
             .map(|_| crate::utils::flag_generator::generate_ad_flag())

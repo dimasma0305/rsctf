@@ -24,6 +24,7 @@ import {
   mdiFlagOutline,
   mdiPuzzle,
   mdiSwordCross,
+  mdiVpn,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useState, useMemo, type FocusEvent } from 'react'
@@ -34,7 +35,9 @@ import { ChallengeCard } from '@Components/ChallengeCard'
 import { Empty } from '@Components/Empty'
 import { GameChallengeModal } from '@Components/GameChallengeModal'
 import { WriteupSubmitModal } from '@Components/WriteupSubmitModal'
-import { useChallengeCategoryLabelMap, SubmissionTypeIconMap } from '@Utils/Shared'
+import { downloadEventVpnConfig } from '@Utils/EventVpnDownload'
+import { allowEventVpnReconnectRetry, isEventVpnAccessError } from '@Utils/EventVpnProof'
+import { showErrorMsg, SubmissionTypeIconMap, useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useGameStatus, useGameTeamInfo } from '@Hooks/useGame'
 import { ChallengeInfo, ChallengeCategory, ChallengeType, SubmissionType } from '@Api'
@@ -221,6 +224,27 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
   const [writeupSubmitOpened, setWriteupSubmitOpened] = useState(false)
   const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
   const { t } = useTranslation()
+  const [eventVpnDownloading, setEventVpnDownloading] = useState(false)
+  const eventVpnDisconnected = Boolean(
+    game?.vpnAccessRequired && isEventVpnAccessError(teamInfoError) && teamInfoError.kind === 'disconnected'
+  )
+
+  const onDownloadEventVpn = async () => {
+    if (eventVpnDownloading) return
+    setEventVpnDownloading(true)
+    try {
+      await downloadEventVpnConfig(numId)
+    } catch (error) {
+      showErrorMsg(error, t)
+    } finally {
+      setEventVpnDownloading(false)
+    }
+  }
+
+  const retryTeamInfo = () => {
+    if (eventVpnDisconnected) allowEventVpnReconnectRetry(numId)
+    void mutateTeamInfo()
+  }
   const challengeKindLabels = {
     all: t('game.button.kind.all', { defaultValue: 'All' }),
     jeopardy: t('game.button.kind.jeopardy', { defaultValue: 'CTF' }),
@@ -288,24 +312,47 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
 
   if (teamInfoError && !teamInfo) {
     return (
-      <Center h="calc(100vh - 100px)" w="100%" p="md">
+      <Center h={isCompact ? undefined : 'calc(100vh - 100px)'} w="100%" p="md">
         <Alert
-          color="red"
-          icon={<Icon path={mdiAlertCircleOutline} size={0.9} aria-hidden="true" />}
-          title={t('game.content.challenge_load_failed.title', 'Challenges could not be loaded')}
+          color={eventVpnDisconnected ? 'cyan' : 'red'}
+          icon={<Icon path={eventVpnDisconnected ? mdiVpn : mdiAlertCircleOutline} size={0.9} aria-hidden="true" />}
+          title={
+            eventVpnDisconnected
+              ? t('game.vpn.challenge_list_title', 'Connect to the event VPN to load challenges')
+              : t('game.content.challenge_load_failed.title', 'Challenges could not be loaded')
+          }
           role="alert"
           maw="32rem"
         >
           <Stack gap="sm">
             <Text size="sm">
-              {t(
-                'game.content.challenge_load_failed.description',
-                'You may not have access to this event, or the request failed. Try again after checking your membership.'
-              )}
+              {eventVpnDisconnected
+                ? t(
+                    'game.vpn.challenge_list_description',
+                    'This event protects its challenge APIs with WireGuard. Download and import your personal profile, connect it, then retry.'
+                  )
+                : t(
+                    'game.content.challenge_load_failed.description',
+                    'You may not have access to this event, or the request failed. Try again after checking your membership.'
+                  )}
             </Text>
-            <Button variant="outline" onClick={() => void mutateTeamInfo()}>
-              {t('common.button.retry', 'Retry')}
-            </Button>
+            <Stack gap="xs">
+              {eventVpnDisconnected && (
+                <Button
+                  fullWidth
+                  onClick={() => void onDownloadEventVpn()}
+                  loading={eventVpnDownloading}
+                  data-guide="event-vpn-download"
+                >
+                  {t('game.button.event_vpn', 'Download event VPN')}
+                </Button>
+              )}
+              <Button fullWidth variant="outline" onClick={retryTeamInfo}>
+                {eventVpnDisconnected
+                  ? t('challenge.vpn.retry', 'I’m connected — retry')
+                  : t('common.button.retry', 'Retry')}
+              </Button>
+            </Stack>
           </Stack>
         </Alert>
       </Center>

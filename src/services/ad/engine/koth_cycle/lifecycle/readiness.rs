@@ -1,6 +1,8 @@
 //! Functional readiness and durable recovery of an unusable replacement.
 
 use serde_json::json;
+use std::future::Future;
+use std::time::Duration;
 
 use crate::app_state::SharedState;
 use crate::services::ad::engine::{koth_auth, AdCheckStatus};
@@ -12,6 +14,10 @@ use super::data::{load_hill_spec, CycleRow};
 use super::{record_receipt, set_phase};
 
 const STOPPED_ERROR: &str = "replacement container stopped before readiness";
+const READINESS_BUDGET: Duration = Duration::from_secs(5);
+const READINESS_PROBE_CAP: Duration = Duration::from_secs(2);
+const READINESS_RETRY_DELAY: Duration = Duration::from_millis(250);
+const READINESS_MAX_ATTEMPTS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum LivenessAction {
@@ -26,6 +32,40 @@ pub(super) const fn liveness_action(liveness: ContainerLiveness) -> LivenessActi
         ContainerLiveness::Stopped => LivenessAction::Reclaim,
         ContainerLiveness::Unknown => LivenessAction::Retry,
     }
+}
+
+async fn retry_functional_readiness<F, Fut>(
+    mut check: F,
+    budget: Duration,
+    probe_cap: Duration,
+    retry_delay: Duration,
+    max_attempts: usize,
+) -> (AdCheckStatus, Option<String>)
+where
+    F: FnMut(Duration) -> Fut,
+    Fut: Future<Output = (AdCheckStatus, Option<String>)>,
+{
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut last = (
+        AdCheckStatus::Offline,
+        Some("replacement did not become ready".to_string()),
+    );
+    for attempt in 0..max_attempts.max(1) {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        last = check(remaining.min(probe_cap)).await;
+        if last.0 != AdCheckStatus::Offline || attempt + 1 >= max_attempts {
+            break;
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining <= retry_delay {
+            break;
+        }
+        tokio::time::sleep(retry_delay).await;
+    }
+    last
 }
 
 /// Move the exact published replacement back into the durable destruction
@@ -152,12 +192,21 @@ pub(super) async fn validate(st: &SharedState, cycle: &CycleRow) -> AppResult<()
     let port = cycle
         .replacement_port
         .ok_or_else(|| AppError::internal("replacement port is missing"))?;
-    let (status, message) = super::super::super::checker::validate_koth_functional_readiness(
-        spec.checker_dir.as_deref(),
-        host,
-        port,
-        cycle.planned_start_round,
-        cycle.challenge_id,
+    let (status, message) = retry_functional_readiness(
+        |timeout| {
+            super::super::super::checker::validate_koth_functional_readiness(
+                spec.checker_dir.as_deref(),
+                host,
+                port,
+                cycle.planned_start_round,
+                cycle.challenge_id,
+                timeout,
+            )
+        },
+        READINESS_BUDGET,
+        READINESS_PROBE_CAP,
+        READINESS_RETRY_DELAY,
+        READINESS_MAX_ATTEMPTS,
     )
     .await;
     if status != AdCheckStatus::Ok {
@@ -225,6 +274,33 @@ mod tests {
             liveness_action(ContainerLiveness::Unknown),
             LivenessAction::Retry
         );
+    }
+
+    #[tokio::test]
+    async fn transient_offline_readiness_is_retried_without_waiting_for_another_round() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = attempts.clone();
+        let result = retry_functional_readiness(
+            move |_| {
+                let attempt = observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::future::ready(if attempt == 0 {
+                    (
+                        AdCheckStatus::Offline,
+                        Some("connection refused".to_string()),
+                    )
+                } else {
+                    (AdCheckStatus::Ok, None)
+                })
+            },
+            Duration::from_secs(1),
+            Duration::from_millis(50),
+            Duration::ZERO,
+            3,
+        )
+        .await;
+
+        assert_eq!(result, (AdCheckStatus::Ok, None));
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
