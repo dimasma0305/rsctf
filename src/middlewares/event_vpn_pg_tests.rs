@@ -19,7 +19,7 @@ use crate::utils::error::AppError;
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-async fn automation_requires_the_exact_live_peer_and_participation() {
+async fn automation_token_bypasses_browser_proof_only_for_its_event() {
     let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
         .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
     let admin = PgPoolOptions::new()
@@ -168,27 +168,16 @@ async fn automation_requires_the_exact_live_peer_and_participation() {
         partition_key: "ad:test".to_string(),
     };
     let headers = axum::http::HeaderMap::new();
-    assert!(authorize_request(
-        &state,
-        &headers,
-        Some(token.clone()),
-        false,
-        Some("10.13.42.17".parse().unwrap()),
-        7,
-    )
-    .await
-    .unwrap()
-    .is_none());
+    assert!(
+        authorize_request(&state, &headers, Some(token.clone()), false, 7,)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let mut wrong_event_token = token;
+    wrong_event_token.participation.game_id = 8;
     assert!(matches!(
-        authorize_request(
-            &state,
-            &headers,
-            Some(token),
-            false,
-            Some("10.13.42.18".parse().unwrap()),
-            7,
-        )
-        .await,
+        authorize_request(&state, &headers, Some(wrong_event_token), false, 7,).await,
         Err(AppError::Unauthorized)
     ));
 
