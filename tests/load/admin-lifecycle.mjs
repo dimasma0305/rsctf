@@ -909,6 +909,7 @@ async function identityLifecycle() {
     {
       body: {
         operationId: importOperationId,
+        sourceName: "admin-lifecycle.csv",
         rows: [
           {
             email: names.importEmail,
@@ -951,6 +952,30 @@ async function identityLifecycle() {
       recoveredImportModel.result?.users?.length === importedModel.users.length,
     "user import recovery did not return the complete durable result",
   );
+  const importHistory = await call(
+    "GET",
+    "/api/admin/users/imports",
+    "/api/admin/users/imports?count=25&skip=0",
+  );
+  requireCondition(
+    importHistory.json?.data?.some(
+      (entry) =>
+        entry.operationId === importOperationId &&
+        entry.sourceName === "admin-lifecycle.csv" &&
+        entry.detailsAvailable === true,
+    ),
+    "user import history did not retain the completed import",
+  );
+  const importHistoryDetail = await call(
+    "GET",
+    "/api/admin/users/imports/{operationId}",
+    `/api/admin/users/imports/${importOperationId}`,
+  );
+  requireCondition(
+    importHistoryDetail.json?.operationId === importOperationId &&
+      importHistoryDetail.json?.rows?.length === 2,
+    "user import history detail did not retain both row outcomes",
+  );
   const imported = userByEmail(names.importEmail);
   const cacheDelete = userByEmail(names.cacheDeleteEmail);
   state.userIds.push(imported.id, cacheDelete.id);
@@ -976,6 +1001,24 @@ async function identityLifecycle() {
     team,
   };
   saveRecovery();
+
+  const passwordEmailOperationId = randomUUID();
+  await callRaw(
+    "POST",
+    "/api/admin/users/{userid}/password-email",
+    `/api/admin/users/${imported.id}/password-email`,
+    {
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": passwordEmailOperationId,
+      },
+      body: JSON.stringify({
+        operationId: passwordEmailOperationId,
+        importOperationId,
+        importRowIndex: 0,
+      }),
+    },
+  );
 
   const list = await call(
     "GET",

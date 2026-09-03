@@ -159,6 +159,18 @@ export const ADMIN_OPERATIONS = Object.freeze([
       params: { operationId: "operationId" },
     },
   ),
+  operation("admin_users_import_history", "GET", "/api/admin/users/imports", {
+    responseKind: "page",
+    query: "count=25&skip=0",
+  }),
+  operation(
+    "admin_users_import_history_detail",
+    "GET",
+    "/api/admin/users/imports/{operationId}",
+    {
+      params: { operationId: "operationId" },
+    },
+  ),
   operation(
     "admin_credentials_send",
     "POST",
@@ -166,6 +178,16 @@ export const ADMIN_OPERATIONS = Object.freeze([
     {
       mutation: true,
       responseKind: "credential-send",
+    },
+  ),
+  operation(
+    "admin_user_password_email",
+    "POST",
+    "/api/admin/users/{userid}/password-email",
+    {
+      mutation: true,
+      responseKind: "message",
+      params: { userid: "userId" },
     },
   ),
   operation("admin_users_search", "POST", "/api/admin/users/search", {
