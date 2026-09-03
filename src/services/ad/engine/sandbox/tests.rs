@@ -1,9 +1,19 @@
 use super::{
     acquire_checker_uid, checker_firewall_command_lock, classify_firewall_check_exit,
     compatible_path_access, firewall_jump_args, install_checker_firewall, null_device_available,
-    sandbox_write_paths, target_rule_args, CheckerUidPool, CheckerUidRange, SandboxRunGuard,
+    sandbox_launcher_path, sandbox_write_paths, target_rule_args, CheckerUidPool, CheckerUidRange,
+    SandboxRunGuard,
 };
 use landlock::{AccessFs, ABI};
+
+#[test]
+fn checker_reexec_uses_the_live_linux_process_inode() {
+    let path = sandbox_launcher_path().expect("resolve sandbox launcher");
+    if cfg!(target_os = "linux") {
+        assert_eq!(path, std::path::Path::new("/proc/self/exe"));
+        assert!(std::fs::metadata(path).is_ok());
+    }
+}
 
 #[test]
 fn dropped_guard_reclaims_scratch() {

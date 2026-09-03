@@ -12,6 +12,7 @@ import { OAuthButtons } from '@Components/OAuthButtons'
 import { TermsOfService } from '@Components/TermsOfService'
 import { encryptApiData } from '@Utils/Crypto'
 import { collectEncryptedFingerprintIdentity } from '@Utils/FingerprintIdentity'
+import { setAuthSession } from '@Utils/AuthState'
 import { tryGetClientError } from '@Utils/Shared'
 import { useConfig } from '@Hooks/useConfig'
 import { usePageTitle } from '@Hooks/usePageTitle'
@@ -29,27 +30,17 @@ const Login: FC = () => {
   const [unameError, setUnameError] = useState<string | null>(null)
   const [pwdError, setPwdError] = useState<string | null>(null)
   const [disabled, setDisabled] = useState(false)
-  const [needRedirect, setNeedRedirect] = useState(false)
   const [accepted, setAccepted] = useState(false)
   const [tosOpened, { open: openTos, close: closeTos }] = useDisclosure(false)
   const loginOperationRef = useRef<{ controller: AbortController; running: boolean } | null>(null)
 
   const { captchaRef, getToken, cleanUp } = useCaptchaRef()
-  const { user, mutate } = useUser()
+  const { mutate } = useUser()
   const { config } = useConfig()
 
   const { t } = useTranslation()
 
   usePageTitle(t('account.title.login'))
-
-  useEffect(() => {
-    if (needRedirect && user) {
-      setNeedRedirect(false)
-      setTimeout(() => {
-        navigate(params.get('from') ?? '/')
-      }, 200)
-    }
-  }, [user, needRedirect])
 
   // Surface OAuth callback errors redirected here as ?error=oauth_* (the backend redirects
   // to /account/login on any external sign-in failure or admin-approval-pending outcome).
@@ -173,9 +164,16 @@ const Login: FC = () => {
         autoClose: true,
         loading: false,
       })
+      // A profile probe can already be in flight from the anonymous login
+      // screen. Revalidating that SWR key here may reuse its stale 401 and leave
+      // the successful session on this page until the user submits again.
+      // Fetch once after Set-Cookie has been processed, then publish that exact
+      // authenticated profile into the shared cache before navigating.
+      const profile = await api.account.accountProfile()
+      setAuthSession(true)
+      await mutate(profile.data, { revalidate: false })
       cleanUp(true)
-      setNeedRedirect(true)
-      mutate()
+      navigate(params.get('from') ?? '/', { replace: true })
     } catch (err: any) {
       if (operation.controller.signal.aborted) return
       const { title, message } = tryGetClientError(err, t)
