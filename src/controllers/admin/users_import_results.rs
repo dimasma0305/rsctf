@@ -21,6 +21,7 @@ pub struct ImportJobStatus {
 const MAX_IMPORT_ROWS: usize = 200;
 const MAX_IMPORT_TEAMS: usize = 100;
 const MAX_IMPORT_FIELD_BYTES: usize = 512;
+const MAX_IMPORT_SOURCE_NAME_BYTES: usize = 255;
 
 pub(super) enum ImportRowClaim {
     Owned(Uuid),
@@ -40,6 +41,14 @@ pub(super) fn validate_import_request(request: &ImportRequest) -> AppResult<()> 
     }
     if !matches!(request.team_mode.as_str(), "fromrow" | "single" | "none") {
         return Err(AppError::bad_request("Invalid import team mode"));
+    }
+    if request.source_name.as_deref().is_some_and(|value| {
+        value.is_empty()
+            || value.len() > MAX_IMPORT_SOURCE_NAME_BYTES
+            || value.contains('/')
+            || value.contains('\\')
+    }) {
+        return Err(AppError::bad_request("Invalid import file name"));
     }
     if request
         .single_team_name
@@ -99,6 +108,7 @@ pub(super) fn validate_import_request(request: &ImportRequest) -> AppResult<()> 
 
 pub(super) fn import_request_digest(request: &ImportRequest) -> AppResult<Vec<u8>> {
     let canonical = serde_json::to_vec(&(
+        &request.source_name,
         &request.rows,
         &request.team_mode,
         &request.single_team_name,
@@ -198,7 +208,58 @@ pub(super) async fn store_import_result_in_transaction(
             "Import row operation lost its durable lease",
         ));
     }
+    upsert_import_history_row(transaction, operation_id, row_index, result).await?;
     Ok(())
+}
+
+async fn upsert_import_history_row(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_id: Uuid,
+    row_index: usize,
+    result: &ImportUserResult,
+) -> AppResult<()> {
+    let bounded_error = result
+        .error
+        .as_deref()
+        .map(|error| truncate_utf8(error, 1_024));
+    sqlx::query(
+        r#"INSERT INTO "AdminUserImportHistoryRows"
+               (operation_id, row_index, user_id, email, real_name,
+                user_name, team_name, outcome, error)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           ON CONFLICT (operation_id, row_index) DO UPDATE
+             SET user_id = EXCLUDED.user_id,
+                 email = EXCLUDED.email,
+                 real_name = EXCLUDED.real_name,
+                 user_name = EXCLUDED.user_name,
+                 team_name = EXCLUDED.team_name,
+                 outcome = EXCLUDED.outcome,
+                 error = EXCLUDED.error"#,
+    )
+    .bind(operation_id)
+    .bind(i32::try_from(row_index).expect("validated import row index"))
+    .bind(result.user_id)
+    .bind(&result.email)
+    .bind(&result.real_name)
+    .bind(&result.user_name)
+    .bind(&result.team_name)
+    .bind(&result.status)
+    .bind(bounded_error)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(())
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    value[..end].to_string()
 }
 
 async fn store_import_result(
@@ -399,15 +460,31 @@ pub async fn recover_import_job(
         for (row_index, ciphertext, nonce) in encrypted_rows.unwrap_or_default() {
             let row_index = usize::try_from(row_index)
                 .map_err(|_| AppError::internal("Invalid persisted import row index"))?;
-            rows.push(decrypt_import_result(
+            let result = decrypt_import_result(
                 &st.config.jwt_secret,
                 operation_id,
                 row_index,
                 &ciphertext,
                 &nonce,
-            )?);
+            )?;
+            rows.push((row_index, result));
         }
-        Some(summarize_import(rows, total))
+        let mut history = st
+            .pg()
+            .begin()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        for (row_index, row) in &rows {
+            upsert_import_history_row(&mut history, operation_id, *row_index, row).await?;
+        }
+        history
+            .commit()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        Some(summarize_import(
+            rows.into_iter().map(|(_, row)| row).collect(),
+            total,
+        ))
     } else {
         None
     };
@@ -430,6 +507,7 @@ mod tests {
     fn request(operation_id: Uuid, emails: &[&str]) -> ImportRequest {
         ImportRequest {
             operation_id,
+            source_name: Some("players.csv".to_string()),
             rows: emails
                 .iter()
                 .map(|email| super::super::users::ImportRow {

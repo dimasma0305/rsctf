@@ -1,5 +1,17 @@
 use super::*;
 
+#[test]
+fn credential_delivery_resolves_smtp_from_admin_settings() {
+    let source = include_str!("users_credentials.rs");
+    let handler = source
+        .split("pub async fn send_credentials")
+        .nth(1)
+        .and_then(|tail| tail.split("pub async fn send_password_setup_email").next())
+        .expect("credential delivery handler source");
+    assert!(handler.contains("MailSender::from_database(st.pg()).await?"));
+    assert!(!handler.contains("MailSender::from_env()"));
+}
+
 use std::str::FromStr;
 
 use crate::services::cache::{Cache, InMemoryCache};
@@ -705,6 +717,7 @@ async fn later_full_team_failure_is_a_skipped_row_without_losing_other_results()
         panic!("first row was unexpectedly skipped");
     };
     let mut response_rows = vec![ImportUserResult {
+        user_id: Some(first.id),
         email: "first@example.test".to_string(),
         real_name: "First".to_string(),
         user_name: first.user_name,
@@ -730,6 +743,7 @@ async fn later_full_team_failure_is_a_skipped_row_without_losing_other_results()
     let second_reason = terminal_import_row_reason(&second_error)
         .expect("a full team is a deterministic skipped-row result");
     response_rows.push(ImportUserResult {
+        user_id: None,
         email: "second@example.test".to_string(),
         real_name: "Second".to_string(),
         user_name: "imported.2".to_string(),
@@ -756,6 +770,7 @@ async fn later_full_team_failure_is_a_skipped_row_without_losing_other_results()
         panic!("third row did not continue after the second row was skipped");
     };
     response_rows.push(ImportUserResult {
+        user_id: Some(third.id),
         email: "third@example.test".to_string(),
         real_name: "Third".to_string(),
         user_name: third.user_name,

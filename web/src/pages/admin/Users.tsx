@@ -23,12 +23,12 @@ import { showNotification } from '@mantine/notifications'
 import {
   mdiAccountMultiplePlus,
   mdiAccountOutline,
-  mdiAlertCircle,
   mdiArrowLeftBold,
   mdiArrowRightBold,
   mdiCheck,
   mdiDeleteOutline,
   mdiEmailArrowRightOutline,
+  mdiHistory,
   mdiLockReset,
   mdiMagnify,
   mdiPencilOutline,
@@ -40,6 +40,7 @@ import { ActionIconWithConfirm } from '@Components/ActionIconWithConfirm'
 import { ScrollingText } from '@Components/ScrollingText'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { UserEditModal, RoleColorMap } from '@Components/admin/UserEditModal'
+import { UserImportHistoryModal } from '@Components/admin/UserImportHistoryModal'
 import { UserImportModal } from '@Components/admin/UserImportModal'
 import {
   clearAdminPasswordResetOperation,
@@ -60,6 +61,7 @@ const Users: FC = () => {
   const [update, setUpdate] = useState(new Date())
   const [editModalOpened, setEditModalOpened] = useState(false)
   const [importModalOpened, setImportModalOpened] = useState(false)
+  const [importHistoryOpened, setImportHistoryOpened] = useState(false)
   const [activeUser, setActiveUser] = useState<UserInfoModel>({})
   const { data: users, total, setData: setUsers, updateData: updateUsers } = useArrayResponse<UserInfoModel>()
   const [hint, setHint] = useInputState('')
@@ -74,6 +76,7 @@ const Users: FC = () => {
   const viewport = useRef<HTMLDivElement>(null)
   const resetOperations = useRef(new Map<string, string>())
   const resetInFlight = useRef(new Set<string>())
+  const setupEmailOperations = useRef(new Map<string, string>())
 
   useEffect(() => {
     viewport.current?.scrollTo({ top: 0, behavior: 'smooth' })
@@ -143,6 +146,29 @@ const Users: FC = () => {
     }
   }
 
+  const onEditImportedUser = async (userId: string) => {
+    try {
+      const response = await api.admin.adminUserInfo(userId)
+      const profile = response.data
+      setActiveUser({
+        id: profile.userId,
+        userName: profile.userName,
+        email: profile.email,
+        bio: profile.bio,
+        phone: profile.phone,
+        realName: profile.realName,
+        stdNumber: profile.stdNumber,
+        avatar: profile.avatar,
+        role: profile.role,
+        ip: '',
+      })
+      setImportHistoryOpened(false)
+      setEditModalOpened(true)
+    } catch (error) {
+      showErrorMsg(error, t)
+    }
+  }
+
   const onResetPassword = async (user: UserInfoModel) => {
     if (!user.id || !currentUser?.userId || resetInFlight.current.has(user.id)) return
     resetInFlight.current.add(user.id)
@@ -197,45 +223,32 @@ const Users: FC = () => {
     }
   }
 
-  // Send (or re-send) a "set your password" email to a single user — the
-  // per-user counterpart of the bulk credential send in the import modal.
-  // Works any time (e.g. after an admin changes a user's email), reusing the
-  // same endpoint with a one-item list; the server returns a per-recipient
-  // result so we can show the exact failure reason if SMTP rejects it.
-  const onSendCredentials = async (user: UserInfoModel) => {
-    if (!user.email) return
+  // Re-send a safe password setup link. Unlike temporary import credentials,
+  // this works after the one-hour credential window and does not change the
+  // current password unless the recipient completes the link.
+  const onSendPasswordSetupEmail = async (user: UserInfoModel) => {
+    if (!user.id || !user.email) return
+    const operationId = setupEmailOperations.current.get(user.id) ?? crypto.randomUUID()
+    setupEmailOperations.current.set(user.id, operationId)
     setDisabled(true)
     try {
-      const resp = await fetch('/api/admin/users/credentials/send', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: [{ email: user.email, userName: user.userName ?? '' }] }),
+      await api.admin.adminSendPasswordSetupEmail(
+        user.id,
+        { operationId },
+        {
+          headers: { 'Idempotency-Key': operationId },
+        }
+      )
+      setupEmailOperations.current.delete(user.id)
+      showNotification({
+        message: t('admin.notification.users.credentials_sent', 'Password setup email queued for {{email}}', {
+          email: user.email,
+        }),
+        color: 'teal',
+        icon: <Icon path={mdiCheck} size={1} />,
       })
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({ title: undefined }))
-        throw new Error(err.title ?? t('admin.notification.users.credentials_failed', 'Failed to send email'))
-      }
-      const result: { sent: number; failed: number; results?: { error: string | null }[] } = await resp.json()
-      if (result.sent > 0) {
-        showNotification({
-          message: t('admin.notification.users.credentials_sent', 'Password-setup email sent to {{email}}', {
-            email: user.email,
-          }),
-          color: 'teal',
-          icon: <Icon path={mdiCheck} size={1} />,
-        })
-      } else {
-        const reason = result.results?.[0]?.error
-        showNotification({
-          message: reason
-            ? t('admin.notification.users.credentials_failed_reason', 'Failed to send: {{reason}}', { reason })
-            : t('admin.notification.users.credentials_failed', 'Failed to send email'),
-          color: 'red',
-          icon: <Icon path={mdiAlertCircle} size={1} />,
-        })
-      }
     } catch (err: any) {
+      if (!isRetryableHttpError(err)) setupEmailOperations.current.delete(user.id)
       showErrorMsg(err, t)
     } finally {
       setDisabled(false)
@@ -285,14 +298,24 @@ const Users: FC = () => {
             rightSection={<Icon path={mdiAccountOutline} size={1} />}
           />
           <Group w={{ base: '100%', sm: 'auto' }} justify="space-between" wrap="wrap" gap="xs">
-            <Button
-              leftSection={<Icon path={mdiAccountMultiplePlus} size={0.9} />}
-              variant="outline"
-              h={44}
-              onClick={() => setImportModalOpened(true)}
-            >
-              Import CSV
-            </Button>
+            <Group gap="xs" wrap="wrap">
+              <Button
+                leftSection={<Icon path={mdiAccountMultiplePlus} size={0.9} />}
+                variant="outline"
+                h={44}
+                onClick={() => setImportModalOpened(true)}
+              >
+                Import CSV
+              </Button>
+              <Button
+                leftSection={<Icon path={mdiHistory} size={0.9} />}
+                variant="light"
+                h={44}
+                onClick={() => setImportHistoryOpened(true)}
+              >
+                Import history
+              </Button>
+            </Group>
             <Text fw="bold" size="sm">
               <Trans
                 i18nKey="admin.content.users.stats"
@@ -421,7 +444,7 @@ const Users: FC = () => {
                               defaultValue: 'Send a "set your password" email to {{name}}?',
                             })}
                             disabled={disabled || !user.email}
-                            onClick={() => onSendCredentials(user)}
+                            onClick={() => onSendPasswordSetupEmail(user)}
                           />
                           <ActionIconWithConfirm
                             iconPath={mdiLockReset}
@@ -573,10 +596,10 @@ const Users: FC = () => {
                           defaultValue: 'Send a "set your password" email to {{name}}?',
                         })}
                         disabled={disabled || !user.email}
-                        onClick={() => onSendCredentials(user)}
+                        onClick={() => onSendPasswordSetupEmail(user)}
                       />
                       <span className={mobileClasses.actionLabel}>
-                        {t('admin.button.users.credentials', 'Credentials')}
+                        {t('admin.button.users.password_link', 'Password link')}
                       </span>
                     </Box>
                     <Box className={mobileClasses.actionCell}>
@@ -614,6 +637,11 @@ const Users: FC = () => {
           opened={importModalOpened}
           onClose={() => setImportModalOpened(false)}
           onImportComplete={() => setUpdate(new Date())}
+        />
+        <UserImportHistoryModal
+          opened={importHistoryOpened}
+          onClose={() => setImportHistoryOpened(false)}
+          onEditUser={onEditImportedUser}
         />
         <UserEditModal
           size="min(42rem, calc(100vw - 2rem))"

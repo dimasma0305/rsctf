@@ -160,6 +160,8 @@ pub struct ImportRow {
 pub struct ImportRequest {
     pub operation_id: Uuid,
     #[serde(default)]
+    pub source_name: Option<String>,
+    #[serde(default)]
     pub rows: Vec<ImportRow>,
     /// `"fromrow"` (per-row team), `"single"` (one team for all), or `"none"`.
     #[serde(default)]
@@ -174,6 +176,8 @@ pub struct ImportRequest {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportUserResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<Uuid>,
     pub email: String,
     pub real_name: String,
     pub user_name: String,
@@ -238,6 +242,7 @@ fn skipped_row(
     err: &str,
 ) -> ImportUserResult {
     ImportUserResult {
+        user_id: None,
         email: email.to_string(),
         real_name: real_name.to_string(),
         user_name: user_name.to_string(),
@@ -312,13 +317,14 @@ async fn begin_import_job(
     } else {
         sqlx::query(
             r#"INSERT INTO "AdminCredentialJobs"
-                   (operation_id, requested_by, request_digest, row_count)
-               VALUES ($1, $2, $3, $4)"#,
+                   (operation_id, requested_by, request_digest, row_count, source_name)
+               VALUES ($1, $2, $3, $4, $5)"#,
         )
         .bind(request.operation_id)
         .bind(requested_by)
         .bind(request_digest)
         .bind(i32::try_from(request.rows.len()).expect("validated row count"))
+        .bind(request.source_name.as_deref())
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;

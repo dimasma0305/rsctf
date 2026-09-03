@@ -167,7 +167,7 @@ export const UserEditModal: FC<UserEditModalProps> = (props) => {
               {t('common.label.ip')}
             </Text>
             <Text size="sm" span fw={500} ff="monospace">
-              {user.ip}
+              {user.ip || '—'}
             </Text>
           </Group>
           <Group justify="space-between">
@@ -175,7 +175,7 @@ export const UserEditModal: FC<UserEditModalProps> = (props) => {
               {t('admin.label.users.last_visit')}
             </Text>
             <Text size="sm" span fw={500} ff="monospace">
-              {dayjs(user.lastVisitedUtc).format('YYYY-MM-DD HH:mm:ss')}
+              {user.lastVisitedUtc ? dayjs(user.lastVisitedUtc).format('YYYY-MM-DD HH:mm:ss') : '—'}
             </Text>
           </Group>
         </Stack>

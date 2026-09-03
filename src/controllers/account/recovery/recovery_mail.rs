@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) async fn process_recovery_mail(
+pub(crate) async fn process_recovery_mail(
     st: &SharedState,
     operation_id: Uuid,
     normalized_email: &str,

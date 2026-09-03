@@ -155,7 +155,16 @@ pub fn router() -> Router<SharedState> {
             "/api/admin/users/import/{operationId}",
             get(recover_import_job),
         )
+        .route("/api/admin/users/imports", get(import_history))
+        .route(
+            "/api/admin/users/imports/{operationId}",
+            get(import_history_detail),
+        )
         .route("/api/admin/users/credentials/send", post(send_credentials))
+        .route(
+            "/api/admin/users/{userid}/password-email",
+            post(send_password_setup_email),
+        )
         .route("/api/admin/users/search", post(search_users))
         .route(
             "/api/admin/users/manager-autocomplete",
@@ -944,6 +953,7 @@ mod users;
 mod users_bulk_identity;
 mod users_credential_admission;
 mod users_credentials;
+mod users_import_history;
 mod users_import_results;
 mod users_mutate;
 pub use anti_cheat::*;
@@ -957,5 +967,6 @@ pub use settings::*;
 pub use teams::*;
 pub use users::*;
 pub use users_credentials::*;
+pub use users_import_history::{import_history, import_history_detail};
 pub use users_import_results::recover_import_job;
 pub use users_mutate::*;

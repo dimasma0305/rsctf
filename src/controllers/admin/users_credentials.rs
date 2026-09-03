@@ -1,14 +1,14 @@
 //! Credential delivery handlers split from `users.rs`.
 
 use super::*;
+use axum::extract::ConnectInfo;
 use futures::{stream, StreamExt};
+use std::net::SocketAddr;
 
 const MAX_CREDENTIAL_SEND_ITEMS: usize = 100;
 const CREDENTIAL_SEND_CONCURRENCY: usize = 8;
 
-/// Email remains the lookup key so the public request shape does not change,
-/// but the cached value binds the plaintext to the immutable account id. A
-/// legacy plaintext-only value deliberately fails deserialization.
+/// Bind cached plaintext to an immutable account id while retaining the email lookup key.
 pub(super) const CRED_CACHE_PREFIX: &str = "credimport:";
 pub(super) const CRED_CACHE_TTL_SECS: u64 = 60 * 60;
 
@@ -30,9 +30,7 @@ pub(super) struct CachedImportCredentialPublication {
     value: Vec<u8>,
 }
 
-/// Publish only from the still-open identity transaction that generated this
-/// stamp and password. The caller must retain the registration/row fences
-/// until the subsequent database commit completes.
+/// Publish while the identity transaction and registration fences remain held.
 pub(super) async fn cache_import_credential(
     cache: &dyn crate::services::cache::Cache,
     user_id: Uuid,
@@ -185,6 +183,10 @@ pub struct CredentialSendItem {
     pub email: String,
     #[serde(default)]
     pub user_name: String,
+    #[serde(default)]
+    pub import_operation_id: Option<Uuid>,
+    #[serde(default)]
+    pub import_row_index: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -211,6 +213,16 @@ pub struct EmailSendResult {
     pub results: Vec<CredentialSendResult>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasswordSetupEmailRequest {
+    pub operation_id: Uuid,
+    #[serde(default)]
+    pub import_operation_id: Option<Uuid>,
+    #[serde(default)]
+    pub import_row_index: Option<i32>,
+}
+
 fn failed_credential_send(
     email: String,
     user_name: String,
@@ -224,17 +236,93 @@ fn failed_credential_send(
     }
 }
 
-async fn send_one_credential(
+#[derive(Clone, Copy)]
+struct ImportHistoryRef {
+    operation_id: Uuid,
+    row_index: i32,
+}
+
+fn import_history_ref(item: &CredentialSendItem) -> AppResult<Option<ImportHistoryRef>> {
+    match (item.import_operation_id, item.import_row_index) {
+        (None, None) => Ok(None),
+        (Some(operation_id), Some(row_index))
+            if !operation_id.is_nil() && (0..200).contains(&row_index) =>
+        {
+            Ok(Some(ImportHistoryRef {
+                operation_id,
+                row_index,
+            }))
+        }
+        _ => Err(AppError::bad_request("Invalid import history reference")),
+    }
+}
+
+async fn validate_import_history_recipient(
+    pool: &sqlx::PgPool,
+    history: ImportHistoryRef,
+    email: &str,
+) -> AppResult<()> {
+    let matched: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+             SELECT 1 FROM "AdminUserImportHistoryRows"
+              WHERE operation_id = $1 AND row_index = $2
+                AND UPPER(email) = $3)"#,
+    )
+    .bind(history.operation_id)
+    .bind(history.row_index)
+    .bind(email.to_uppercase())
+    .fetch_one(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !matched {
+        return Err(AppError::bad_request(
+            "Import history row does not match this recipient",
+        ));
+    }
+    Ok(())
+}
+
+async fn record_import_delivery(
+    pool: &sqlx::PgPool,
+    history: ImportHistoryRef,
+    result: &CredentialSendResult,
+) -> AppResult<()> {
+    let error = result.error.as_deref().map(|value| {
+        let mut end = value.len().min(512);
+        while !value.is_char_boundary(end) {
+            end = end.saturating_sub(1);
+        }
+        &value[..end]
+    });
+    sqlx::query(
+        r#"UPDATE "AdminUserImportHistoryRows"
+              SET direct_delivery_status = $3,
+                  direct_delivery_error = $4,
+                  delivery_attempted_at_utc = clock_timestamp(),
+                  last_mail_operation_id = NULL
+            WHERE operation_id = $1 AND row_index = $2"#,
+    )
+    .bind(history.operation_id)
+    .bind(history.row_index)
+    .bind(if result.sent { 1_i16 } else { 2_i16 })
+    .bind(error)
+    .execute(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(())
+}
+
+async fn send_one_credential_inner(
     st: &SharedState,
     sender: &crate::services::mail::MailSender,
     platform: &str,
-    item: CredentialSendItem,
+    email: String,
+    requested_user_name: String,
 ) -> AppResult<CredentialSendResult> {
-    let email = item.email.trim().to_lowercase();
     if !sender.is_configured() {
         return Ok(failed_credential_send(
             email,
-            item.user_name,
+            requested_user_name,
             "no SMTP configured - nothing sent (dry run)",
         ));
     }
@@ -244,7 +332,7 @@ async fn send_one_credential(
     let Some(cached_value) = st.cache.get(&cache_key).await else {
         return Ok(failed_credential_send(
             email,
-            item.user_name,
+            requested_user_name,
             "credentials expired or not cached - reset the user's password to re-issue",
         ));
     };
@@ -254,7 +342,7 @@ async fn send_one_credential(
         st.cache.compare_and_remove(&cache_key, &cached_value).await;
         return Ok(failed_credential_send(
             email,
-            item.user_name,
+            requested_user_name,
             "credentials expired or not cached - reset the user's password to re-issue",
         ));
     };
@@ -353,6 +441,24 @@ async fn send_one_credential(
     }
 }
 
+async fn send_one_credential(
+    st: &SharedState,
+    sender: &crate::services::mail::MailSender,
+    platform: &str,
+    item: CredentialSendItem,
+) -> AppResult<CredentialSendResult> {
+    let history = import_history_ref(&item)?;
+    let email = item.email.trim().to_lowercase();
+    if let Some(history) = history {
+        validate_import_history_recipient(st.pg(), history, &email).await?;
+    }
+    let result = send_one_credential_inner(st, sender, platform, email, item.user_name).await?;
+    if let Some(history) = history {
+        record_import_delivery(st.pg(), history, &result).await?;
+    }
+    Ok(result)
+}
+
 /// Email cached import credentials without ever resetting the stored password.
 pub async fn send_credentials(
     State(st): State<SharedState>,
@@ -364,7 +470,7 @@ pub async fn send_credentials(
             "at most {MAX_CREDENTIAL_SEND_ITEMS} credentials can be sent per request"
         )));
     }
-    let sender = crate::services::mail::MailSender::from_env();
+    let sender = crate::services::mail::MailSender::from_database(st.pg()).await?;
     let platform = st.config.global.title.as_str();
     let results = stream::iter(
         req.items
@@ -384,6 +490,111 @@ pub async fn send_credentials(
         failed,
         results,
     })))
+}
+
+/// Queue a fresh, single-use password-setup link without exposing or replacing
+/// the current password. This remains useful after temporary import credentials
+/// have expired or were already delivered.
+pub async fn send_password_setup_email(
+    State(st): State<SharedState>,
+    AdminUser(caller): AdminUser,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(user_id): Path<Uuid>,
+    Json(request): Json<PasswordSetupEmailRequest>,
+) -> AppResult<MessageResponse> {
+    if request.operation_id.is_nil() {
+        return Err(AppError::bad_request("operationId is required"));
+    }
+    let history = match (request.import_operation_id, request.import_row_index) {
+        (None, None) => None,
+        (Some(operation_id), Some(row_index))
+            if !operation_id.is_nil() && (0..200).contains(&row_index) =>
+        {
+            Some(ImportHistoryRef {
+                operation_id,
+                row_index,
+            })
+        }
+        _ => return Err(AppError::bad_request("Invalid import history reference")),
+    };
+    if let Some(history) = history {
+        let matches: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                 SELECT 1 FROM "AdminUserImportHistoryRows"
+                  WHERE operation_id = $1 AND row_index = $2 AND user_id = $3)"#,
+        )
+        .bind(history.operation_id)
+        .bind(history.row_index)
+        .bind(user_id)
+        .fetch_one(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if !matches {
+            return Err(AppError::bad_request(
+                "Import history row does not match this user",
+            ));
+        }
+    }
+    let normalized_email: String = sqlx::query_scalar(
+        r#"SELECT normalized_email
+             FROM "AspNetUsers"
+            WHERE id = $1 AND normalized_email IS NOT NULL AND role <> $2"#,
+    )
+    .bind(user_id)
+    .bind(Role::Banned as i16)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("User with a deliverable email was not found"))?;
+    let request_ip = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()));
+    crate::controllers::account::process_recovery_mail(
+        &st,
+        request.operation_id,
+        &normalized_email,
+        request_ip.as_deref(),
+    )
+    .await?;
+    let queued: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+             SELECT 1 FROM "MailOutbox"
+              WHERE operation_id = $1 AND account_id = $2)"#,
+    )
+    .bind(request.operation_id)
+    .bind(user_id)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !queued {
+        return Err(AppError::unavailable(
+            "Password setup email could not be queued",
+        ));
+    }
+    if let Some(history) = history {
+        sqlx::query(
+            r#"UPDATE "AdminUserImportHistoryRows"
+                  SET last_mail_operation_id = $3,
+                      direct_delivery_error = NULL,
+                      delivery_attempted_at_utc = clock_timestamp()
+                WHERE operation_id = $1 AND row_index = $2 AND user_id = $4"#,
+        )
+        .bind(history.operation_id)
+        .bind(history.row_index)
+        .bind(request.operation_id)
+        .bind(user_id)
+        .execute(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    crate::services::audit::info(
+        &st,
+        "AdminController",
+        Some(caller.name),
+        None,
+        format!("Queued password setup email for user {user_id}"),
+    )
+    .await;
+    Ok(MessageResponse::ok("Password setup email queued"))
 }
 
 fn html_escape(value: &str) -> String {
@@ -418,6 +629,54 @@ mod tests {
         assert_eq!(decoded.security_stamp, "stamp-at-import");
         assert_eq!(decoded.password, "temporary-secret");
         assert!(serde_json::from_slice::<CachedImportCredential>(b"temporary-secret").is_err());
+    }
+
+    #[test]
+    fn import_history_reference_requires_one_complete_bounded_pair() {
+        let operation_id = Uuid::new_v4();
+        let valid = CredentialSendItem {
+            email: "player@example.test".to_string(),
+            user_name: "player".to_string(),
+            import_operation_id: Some(operation_id),
+            import_row_index: Some(199),
+        };
+        let reference = import_history_ref(&valid).unwrap().unwrap();
+        assert_eq!(reference.operation_id, operation_id);
+        assert_eq!(reference.row_index, 199);
+
+        for item in [
+            CredentialSendItem {
+                import_operation_id: Some(operation_id),
+                import_row_index: None,
+                ..valid_for_reference_test()
+            },
+            CredentialSendItem {
+                import_operation_id: None,
+                import_row_index: Some(0),
+                ..valid_for_reference_test()
+            },
+            CredentialSendItem {
+                import_operation_id: Some(Uuid::nil()),
+                import_row_index: Some(0),
+                ..valid_for_reference_test()
+            },
+            CredentialSendItem {
+                import_operation_id: Some(operation_id),
+                import_row_index: Some(200),
+                ..valid_for_reference_test()
+            },
+        ] {
+            assert!(import_history_ref(&item).is_err());
+        }
+    }
+
+    fn valid_for_reference_test() -> CredentialSendItem {
+        CredentialSendItem {
+            email: "player@example.test".to_string(),
+            user_name: "player".to_string(),
+            import_operation_id: None,
+            import_row_index: None,
+        }
     }
 
     #[tokio::test]

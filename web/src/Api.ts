@@ -1774,6 +1774,7 @@ export interface GameCloneModel {
 }
 
 export interface AdminUserImportRowResult {
+  userId?: string;
   email: string;
   realName: string;
   userName: string;
@@ -1797,6 +1798,57 @@ export interface AdminUserImportJobStatus {
   total: number;
   completed: number;
   result?: AdminUserImportResult | null;
+}
+
+export interface AdminUserImportHistorySummary {
+  operationId: string;
+  sourceName?: string | null;
+  requestedBy: string;
+  status: "Running" | "Completed" | "Expired";
+  total: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  /** @format int64 */
+  createdAtUtc: number;
+  /** @format int64 */
+  completedAtUtc?: number | null;
+  /** @format int64 */
+  credentialExpiresAtUtc?: number | null;
+  credentialsAvailable: boolean;
+  detailsAvailable: boolean;
+}
+
+export interface AdminUserImportHistoryRow {
+  rowIndex: number;
+  userId?: string | null;
+  userExists: boolean;
+  email: string;
+  realName: string;
+  userName: string;
+  teamName?: string | null;
+  status: "created" | "updated" | "skipped";
+  error?: string | null;
+  emailStatus: "NotSent" | "Queued" | "Sent" | "Failed";
+  emailError?: string | null;
+  /** @format int64 */
+  emailAttemptedAtUtc?: number | null;
+}
+
+export interface AdminUserImportHistoryDetail extends AdminUserImportHistorySummary {
+  rows: AdminUserImportHistoryRow[];
+}
+
+export interface ArrayResponseOfAdminUserImportHistorySummary {
+  data: AdminUserImportHistorySummary[];
+  length: number;
+  total?: number;
+}
+
+export interface AdminPasswordSetupEmailRequest {
+  operationId: string;
+  importOperationId?: string;
+  importRowIndex?: number;
 }
 
 /**
@@ -5871,6 +5923,39 @@ export class Api<
         path: `/api/admin/users/import/${operationId}`,
         method: "GET",
         format: "json",
+        ...params,
+      }),
+
+    adminUserImportHistory: (
+      query?: { count?: number; skip?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfAdminUserImportHistorySummary, RequestResponse>({
+        path: `/api/admin/users/imports`,
+        method: "GET",
+        query,
+        format: "json",
+        ...params,
+      }),
+
+    adminUserImportHistoryDetail: (operationId: string, params: RequestParams = {}) =>
+      this.request<AdminUserImportHistoryDetail, RequestResponse>({
+        path: `/api/admin/users/imports/${operationId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    adminSendPasswordSetupEmail: (
+      userId: string,
+      data: AdminPasswordSetupEmailRequest,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/users/${userId}/password-email`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
         ...params,
       }),
 

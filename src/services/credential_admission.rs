@@ -427,9 +427,13 @@ pub async fn purge_expired(pool: &sqlx::PgPool, limit: i64) -> AppResult<u64> {
                 ORDER BY job.created_at_utc, job.operation_id
                 LIMIT $1 FOR UPDATE SKIP LOCKED
            ), wiped AS (
-               DELETE FROM "AdminCredentialJobRows" row
-                USING expired
+               UPDATE "AdminCredentialJobRows" row
+                  SET result_ciphertext = NULL,
+                      result_nonce = NULL
+                 FROM expired
                 WHERE row.operation_id = expired.operation_id
+                  AND (row.result_ciphertext IS NOT NULL
+                       OR row.result_nonce IS NOT NULL)
            ), released AS (
                DELETE FROM "AdminCredentialTargetLeases" target
                 USING expired
@@ -440,7 +444,15 @@ pub async fn purge_expired(pool: &sqlx::PgPool, limit: i64) -> AppResult<u64> {
                   completed_at_utc = COALESCE(job.completed_at_utc, clock_timestamp()),
                   result_expires_at_utc = COALESCE(job.result_expires_at_utc, clock_timestamp())
              FROM expired
-            WHERE job.operation_id = expired.operation_id"#,
+           WHERE job.operation_id = expired.operation_id"#,
+        r#"DELETE FROM "AdminUserImportHistoryRows" WHERE ctid IN (
+              SELECT history.ctid
+                FROM "AdminUserImportHistoryRows" history
+                JOIN "AdminCredentialJobs" job
+                  ON job.operation_id = history.operation_id
+               WHERE job.created_at_utc < clock_timestamp() - INTERVAL '180 days'
+               ORDER BY job.created_at_utc, history.operation_id, history.row_index
+               LIMIT $1)"#,
         r#"UPDATE "AdminPasswordResetOperations"
               SET status = 2,
                   result_ciphertext = NULL,
@@ -655,6 +667,10 @@ mod tests {
             CREATE TABLE "AdminCredentialTargetLeases" (
                 operation_id UUID NOT NULL
             );
+            CREATE TABLE "AdminUserImportHistoryRows" (
+                operation_id UUID NOT NULL,
+                row_index INTEGER NOT NULL
+            );
             CREATE TABLE "AdminPasswordResetOperations" (
                 operation_id UUID PRIMARY KEY,
                 status SMALLINT NOT NULL,
@@ -736,9 +752,19 @@ mod tests {
             retained_import_rows,
             vec![
                 (
+                    Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+                    1,
+                    false,
+                ),
+                (
                     Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
                     1,
                     true,
+                ),
+                (
+                    Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap(),
+                    1,
+                    false,
                 ),
                 (
                     Uuid::parse_str("00000000-0000-0000-0000-000000000004").unwrap(),

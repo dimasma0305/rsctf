@@ -235,6 +235,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   const { t } = useTranslation()
   const [step, setStep] = useState(0)
   const [rawText, setRawText] = useState('')
+  const [sourceName, setSourceName] = useState('imported-users.csv')
   const [headers, setHeaders] = useState<string[]>([])
   const [map, setMap] = useState<ColMap>({ realName: NONE, email: NONE, teamName: NONE, stdNumber: NONE, phone: NONE })
   const [editableRows, setEditableRows] = useState<EditableRow[]>([])
@@ -243,6 +244,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   const [opts, setOpts] = useState<Options>({ emailConfirmed: true, teamMode: 'fromrow', singleTeamName: '' })
   const [loading, setLoading] = useState(false)
   const [importResult, setImportResult] = useState<CsvImportResult | null>(null)
+  const [completedOperationId, setCompletedOperationId] = useState<string | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
   const [importProgress, setImportProgress] = useState<{ completed: number; total: number } | null>(null)
   const [sendingEmail, setSendingEmail] = useState(false)
@@ -269,6 +271,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
         if (cancelled) return
         if (response.data.status === 'Completed' && response.data.result) {
           setImportResult(response.data.result)
+          setCompletedOperationId(retained.operationId)
           setImportError(null)
           setStep(4)
           clearAdminImportOperation(sessionStorage, retained.operationId)
@@ -302,7 +305,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   }, [importResult, props.opened])
 
   // Step 0 → parse headers only
-  const process = useCallback((text: string) => {
+  const process = useCallback((text: string, fileName = 'imported-users.csv') => {
     if (new Blob([text]).size > MAX_IMPORT_BYTES) {
       showNotification({ message: 'CSV must be 1 MB or smaller', color: 'red' })
       return
@@ -319,13 +322,14 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
     setHeaders(hdrs)
     setMap(autoMap(hdrs))
     setRawText(text)
+    setSourceName(fileName.slice(0, 255))
     setStep(1)
   }, [])
 
   const onFile = (f: File | null) => {
     if (!f) return
     const r = new FileReader()
-    r.onload = (e) => process(e.target?.result as string)
+    r.onload = (e) => process(e.target?.result as string, f.name)
     r.readAsText(f)
   }
 
@@ -423,6 +427,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
     setImportProgress({ completed: 0, total: rows.length })
 
     const request = {
+      sourceName,
       rows: rows.map((r) => ({
         email: r.email,
         realName: r.realName,
@@ -472,6 +477,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
       const result: CsvImportResult = await resp.json()
       setImportProgress({ completed: result.total, total: result.total })
       setImportResult(result)
+      setCompletedOperationId(operation.operationId)
       clearAdminImportOperation(sessionStorage, operation.operationId)
       importOperation.current = null
 
@@ -502,6 +508,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   const reset = () => {
     setStep(0)
     setRawText('')
+    setSourceName('imported-users.csv')
     setHeaders([])
     setMap({ realName: NONE, email: NONE, teamName: NONE, stdNumber: NONE, phone: NONE })
     setEditableRows([])
@@ -510,6 +517,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
     setOpts({ emailConfirmed: true, teamMode: 'fromrow', singleTeamName: '' })
     setLoading(false)
     setImportResult(null)
+    setCompletedOperationId(null)
     setImportError(null)
     setImportProgress(null)
     setSendingEmail(false)
@@ -545,11 +553,21 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   // (used by the "Resend failed" button). On a partial failure the per-recipient
   // results are kept so the failed subset can be retried without re-emailing the
   // ones that already succeeded.
-  const sendCredentialsEmail = async (only?: { email: string; userName: string }[]) => {
+  const sendCredentialsEmail = async (onlyEmails?: string[]) => {
     if (!importResult) return
-    const items =
-      only ??
-      importResult.users.filter((u) => u.status !== 'skipped').map((u) => ({ email: u.email, userName: u.userName }))
+    const selected = onlyEmails ? new Set(onlyEmails.map((email) => email.toLowerCase())) : null
+    const items = importResult.users.flatMap((user, importRowIndex) =>
+      user.status === 'skipped' || (selected && !selected.has(user.email.toLowerCase()))
+        ? []
+        : [
+            {
+              email: user.email,
+              userName: user.userName,
+              importOperationId: completedOperationId ?? undefined,
+              importRowIndex: completedOperationId ? importRowIndex : undefined,
+            },
+          ]
+    )
     if (items.length === 0) return
 
     setSendingEmail(true)
@@ -594,8 +612,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   }
 
   const failedRecipients = emailSendResult?.results.filter((r) => !r.sent) ?? []
-  const resendFailed = () =>
-    sendCredentialsEmail(failedRecipients.map((r) => ({ email: r.email, userName: r.userName })))
+  const resendFailed = () => sendCredentialsEmail(failedRecipients.map((recipient) => recipient.email))
 
   return (
     <Modal
@@ -688,7 +705,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                     </Button>
                   )}
                 </FileButton>
-                <Button disabled={!rawText.trim()} onClick={() => process(rawText)}>
+                <Button disabled={!rawText.trim()} onClick={() => process(rawText, 'pasted-users.csv')}>
                   Parse & Continue →
                 </Button>
               </Group>

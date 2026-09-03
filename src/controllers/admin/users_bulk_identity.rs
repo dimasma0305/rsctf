@@ -598,6 +598,7 @@ async fn provision_import_user_inner(
     let team_id = assign_team(&mut transaction, team_target, id, already_member).await?;
     let durable_result = if let Some(durable) = durable {
         let result = super::users::ImportUserResult {
+            user_id: Some(id),
             email: durable.email.to_string(),
             real_name: durable.real_name.to_string(),
             user_name: user_name.clone(),

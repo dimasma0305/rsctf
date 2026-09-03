@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 
 mod recovery_mail;
 mod reset_ticket_store;
-use recovery_mail::process_recovery_mail;
+pub(crate) use recovery_mail::process_recovery_mail;
 pub(super) use reset_ticket_store::invalidate_password_reset_tokens;
 use reset_ticket_store::{
     insert_reset_ticket, lock_reset_identity, reset_current_key, PasswordResetTicket,
