@@ -35,18 +35,23 @@ The candidate primes existing lazy route chunks on pointer, keyboard-focus, or
 touch intent. A settled-page scan begins after 1.2 seconds and loads no more
 than two distinct route modules, sequentially. It never prefetches route API
 data, cross-origin links, catch-all pages, or connections reporting data-saver,
-2G, or slow-2G. A production-like homepage observation recorded four bounded
-background JavaScript requests totaling 12,117 encoded bytes. The compressed
-entry chunk grew from 75.59 KiB to 77.20 KiB (+1.61 KiB); route chunks remained
-split.
+2G, or slow-2G. A fresh production browser expanded those two route modules
+into 11 dependency-split JavaScript responses totaling 58,038 encoded bytes.
+The compressed entry chunk grew from 75.59 KiB to 77.20 KiB (+1.61 KiB); route
+chunks remained split. After the background window, the live `/games`
+activation issued no JavaScript requests and became visible in 191.3 ms under
+the same slow-link conditions; only its normal API reads followed the click.
 
 The companion public-safe production gate held two conditional homepage-feed
-requests per second for 30 seconds before rollout. It completed 60/60 scheduled
-iterations with no drops, misses, invalid responses, or 5xx responses; endpoint
-p95 was 9.93 ms. Desktop and 320-pixel Chromium audits of the home and games
-routes reported no failures, runtime errors, or Axe violations. This row claims
-only interactive route readiness: the fixed-rate HTTP gate is a server-health
-guardrail, not evidence that speculative static downloads reduce backend CPU.
+requests per second for 30 seconds immediately before and after rollout. The
+runs completed 60/60 and 61/61 scheduler-boundary iterations with no drops,
+misses, invalid responses, or 5xx responses. Endpoint p95 was 9.93 ms before
+and 6.76 ms after; host noise at this small rate means no causal server-latency
+claim is made. Desktop and 320-pixel Chromium audits of the live home and games
+routes reported no failures, runtime errors, visual warnings, or Axe
+violations. This row claims only interactive route readiness: the fixed-rate
+HTTP gate is a server-health guardrail, not evidence that speculative static
+downloads reduce backend CPU.
 
 ## Bounded live-feed recovery acceptance — 28 August 2026
 
