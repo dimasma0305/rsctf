@@ -112,6 +112,16 @@
     tab-size: 4;
     hyphens: none;
   }
+
+  & :where(iframe[data-rsctf-video-embed]) {
+    display: block;
+    width: min(100%, 35rem);
+    height: auto;
+    aspect-ratio: 16 / 9;
+    margin-block: var(--mantine-spacing-sm);
+    border: 0;
+    border-radius: var(--mantine-radius-sm);
+  }
 }
 
 .inline {

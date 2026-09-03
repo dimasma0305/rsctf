@@ -12,7 +12,8 @@ use crate::utils::error::AppError;
 
 const CSP_VALUE: &str = "base-uri 'self'; frame-ancestors 'none'; object-src 'none'; \
     script-src 'self' https://challenges.cloudflare.com; \
-    worker-src 'self' blob:; frame-src https://challenges.cloudflare.com";
+    worker-src 'self' blob:; frame-src https://challenges.cloudflare.com \
+    https://www.youtube.com https://www.youtube-nocookie.com";
 
 /// Reject cross-origin browser mutations and cookie-authenticated WebSocket opens.
 /// Bearer clients are not CSRF-prone because browsers do not attach their token
@@ -239,7 +240,10 @@ mod tests {
     fn csp_blocks_inline_and_untrusted_scripts_without_breaking_captcha_workers() {
         assert!(CSP_VALUE.contains("script-src 'self' https://challenges.cloudflare.com"));
         assert!(CSP_VALUE.contains("worker-src 'self' blob:"));
-        assert!(CSP_VALUE.contains("frame-src https://challenges.cloudflare.com"));
+        assert!(CSP_VALUE.contains(
+            "frame-src https://challenges.cloudflare.com https://www.youtube.com \
+            https://www.youtube-nocookie.com"
+        ));
         assert!(!CSP_VALUE.contains("'unsafe-inline'"));
         assert!(!CSP_VALUE.contains("'unsafe-eval'"));
     }
