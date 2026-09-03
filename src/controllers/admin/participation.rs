@@ -272,11 +272,11 @@ async fn persist_participation_status(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     if requested_status == ParticipationStatus::Accepted {
-        sqlx::query(r#"UPDATE "Teams" SET locked = TRUE WHERE id = $1"#)
-            .bind(identity.team_id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+        crate::controllers::team::roster_policy::lock_team_on_accept_if_enabled(
+            &mut transaction,
+            identity.team_id,
+        )
+        .await?;
         for user_id in linked_user_ids {
             crate::services::anti_cheat::snapshot_recent_global_observations_for_game(
                 &mut transaction,

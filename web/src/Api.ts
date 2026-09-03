@@ -677,12 +677,16 @@ export interface AccountPolicy {
   allowRegister?: boolean;
   /** Allow users to create accounts with a username and password */
   allowPasswordRegistration?: boolean;
+  /** Allow ordinary authenticated users to create teams */
+  allowTeamCreation?: boolean;
   /** Activate account upon registration */
   activeOnRegister?: boolean;
   /** Use captcha verification */
   useCaptcha?: boolean;
   /** Email confirmation required for registration, email change, and password recovery */
   emailConfirmationRequired?: boolean;
+  /** Automatically lock a team roster when its event participation is accepted */
+  lockTeamOnEventAccept?: boolean;
   /** Email domain list, separated by commas */
   emailDomainList?: string;
   /** Enable browser fingerprinting in Login/Register */
@@ -4624,6 +4628,8 @@ export interface ClientConfig {
   donationUrl?: string | null;
   /** Whether public username/password account creation is enabled */
   allowPasswordRegistration?: boolean;
+  /** Whether ordinary users may create teams */
+  allowTeamCreation?: boolean;
   /** Whether newly registered accounts must confirm their email */
   emailConfirmationRequired?: boolean;
   /** Whether platform administrators may explicitly purge competition history. */

@@ -673,6 +673,23 @@ const Configs: FC = () => {
                   }
                 />
                 <Switch
+                  checked={accountPolicy?.allowTeamCreation ?? true}
+                  disabled={disabled}
+                  label={SwitchLabel(
+                    t('admin.content.settings.account.allow_team_creation.label', 'Allow users to create teams'),
+                    t(
+                      'admin.content.settings.account.allow_team_creation.description',
+                      'When disabled, teams can only be created by an administrator through CSV user import.'
+                    )
+                  )}
+                  onChange={(e) =>
+                    setAccountPolicy({
+                      ...accountPolicy,
+                      allowTeamCreation: e.currentTarget.checked,
+                    })
+                  }
+                />
+                <Switch
                   checked={accountPolicy?.activeOnRegister ?? true}
                   disabled={disabled}
                   label={SwitchLabel(
@@ -697,6 +714,26 @@ const Configs: FC = () => {
                     setAccountPolicy({
                       ...accountPolicy,
                       useCaptcha: e.currentTarget.checked,
+                    })
+                  }
+                />
+                <Switch
+                  checked={accountPolicy?.lockTeamOnEventAccept ?? false}
+                  disabled={disabled}
+                  label={SwitchLabel(
+                    t(
+                      'admin.content.settings.account.lock_team_on_event_accept.label',
+                      'Lock teams on event acceptance'
+                    ),
+                    t(
+                      'admin.content.settings.account.lock_team_on_event_accept.description',
+                      'Freeze the team roster automatically when its event participation is accepted. A&D and KotH rosters still freeze after scoring starts.'
+                    )
+                  )}
+                  onChange={(e) =>
+                    setAccountPolicy({
+                      ...accountPolicy,
+                      lockTeamOnEventAccept: e.currentTarget.checked,
                     })
                   }
                 />

@@ -134,6 +134,7 @@ pub struct ClientConfig {
     pub enable_browser_fingerprint: bool,
     pub allow_register: bool,
     pub allow_password_registration: bool,
+    pub allow_team_creation: bool,
     pub email_confirmation_required: bool,
     pub allow_competition_history_purge: bool,
     pub enable_google_auth: bool,
@@ -210,6 +211,7 @@ pub async fn get_client_config(
     let mut enable_browser_fingerprint = false;
     let mut allow_register = st.config.account.allow_register;
     let mut allow_password_registration = st.config.account.allow_password_registration;
+    let mut allow_team_creation = true;
     let mut email_confirmation_required = st.config.account.email_confirmation_required;
     // Container port-mapping mode advertised to the client (`ContainerPortMappingType`):
     // `Default` = direct host:port, `PlatformProxy` = wsrx-proxied. The client gates
@@ -267,6 +269,9 @@ pub async fn get_client_config(
             "AccountPolicy:AllowPasswordRegistration" => {
                 allow_password_registration = value == "true";
             }
+            "AccountPolicy:AllowTeamCreation" => {
+                allow_team_creation = value == "true";
+            }
             "AccountPolicy:EmailConfirmationRequired" => {
                 email_confirmation_required = value == "true";
             }
@@ -300,6 +305,7 @@ pub async fn get_client_config(
         enable_browser_fingerprint,
         allow_register,
         allow_password_registration,
+        allow_team_creation,
         email_confirmation_required,
         allow_competition_history_purge: st.config.allow_competition_history_purge,
         enable_google_auth: oauth.google_configured(),

@@ -27,6 +27,7 @@ const fallbackConfig: ClientConfig = {
   enableBrowserFingerprint: false,
   allowRegister: true,
   allowPasswordRegistration: true,
+  allowTeamCreation: true,
   emailConfirmationRequired: false,
   allowCompetitionHistoryPurge: false,
   donationsEnabled: false,

@@ -42,5 +42,5 @@ test('CSV import can enroll teams into bounded multi-event selections', () => {
   assert.match(importer, /Division for \$\{eventName\}/)
   assert.match(importer, /Every row needs a team name before events can be assigned/)
   assert.match(importer, /Existing\s+suspended or withdrawn participation remains unchanged/)
-  assert.match(importer, /Accepted enrollment locks the team roster/)
+  assert.match(importer, /Accepted enrollment follows the platform's\s+optional team-lock policy/)
 })

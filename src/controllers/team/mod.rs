@@ -32,11 +32,12 @@ mod models;
 mod profile;
 mod reads;
 mod revocation;
-mod roster_policy;
+pub(crate) mod roster_policy;
 mod scoreboard_invalidation;
 mod signature;
 #[cfg(test)]
 use account_lifecycle::create_team_rows;
+use account_lifecycle::ensure_player_team_creation_allowed;
 pub(crate) use account_lifecycle::{create_team_rows_in, transfer_captain_locked};
 pub use avatar::avatar;
 pub(crate) use invite::recover_pending_invite_rotations;
@@ -191,6 +192,7 @@ pub async fn create_team(
             .map_err(|_| AppError::internal("invalid retained team result identity"))?;
         (id, false)
     } else {
+        ensure_player_team_creation_allowed(&mut transaction).await?;
         let id = create_team_rows_in(
             &mut transaction,
             user.id,

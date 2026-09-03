@@ -7,6 +7,34 @@ use crate::utils::codec::random_hex;
 use crate::utils::enums::Role;
 use crate::utils::error::{AppError, AppResult};
 
+const ALLOW_TEAM_CREATION_KEY: &str = "AccountPolicy:AllowTeamCreation";
+
+/// Enforce the public team-creation policy inside the caller's mutation
+/// transaction. Admin CSV imports deliberately call [`create_team_rows_in`]
+/// directly and therefore remain available when self-service creation is off.
+pub(crate) async fn ensure_player_team_creation_allowed(
+    transaction: &mut Transaction<'_, Postgres>,
+) -> AppResult<()> {
+    let allowed: bool = sqlx::query_scalar(
+        r#"SELECT COALESCE(
+             (SELECT value = 'true' FROM "Configs" WHERE config_key = $1),
+             TRUE
+           )"#,
+    )
+    .bind(ALLOW_TEAM_CREATION_KEY)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if !allowed {
+        return Err(AppError::Coded {
+            http: axum::http::StatusCode::FORBIDDEN,
+            code: axum::http::StatusCode::FORBIDDEN.as_u16(),
+            title: "Team creation is managed by an administrator".to_string(),
+        });
+    }
+    Ok(())
+}
+
 /// Atomically revalidate the authenticated captain, enforce the captain limit,
 /// and create both ownership rows. The exact JWT stamp binds this durable
 /// mutation to the principal that passed authentication before any lock wait.

@@ -1232,7 +1232,8 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                   </Text>
                   <Text size="xs" c="dimmed">
                     Optional. Enroll every imported team in one or more events as an accepted participant. Existing
-                    suspended or withdrawn participation remains unchanged. Accepted enrollment locks the team roster.
+                    suspended or withdrawn participation remains unchanged. Accepted enrollment follows the platform's
+                    optional team-lock policy.
                   </Text>
                 </div>
                 <MultiSelect

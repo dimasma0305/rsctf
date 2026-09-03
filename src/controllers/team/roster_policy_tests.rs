@@ -59,6 +59,10 @@ async fn public_roster_removal_obeys_scoring_and_active_lock_fences() {
           id INTEGER PRIMARY KEY,
           locked BOOLEAN NOT NULL
         );
+        CREATE TABLE "Configs" (
+          config_key TEXT PRIMARY KEY,
+          value TEXT
+        );
         CREATE TABLE "Games" (
           id INTEGER PRIMARY KEY,
           end_time_utc TIMESTAMPTZ NOT NULL,
@@ -81,7 +85,8 @@ async fn public_roster_removal_obeys_scoring_and_active_lock_fences() {
         );
         INSERT INTO "Teams" (id, locked) VALUES
           (10, FALSE), (11, FALSE), (12, TRUE), (13, FALSE),
-          (14, FALSE), (15, FALSE), (16, FALSE), (17, FALSE);
+          (14, FALSE), (15, FALSE), (16, FALSE), (17, FALSE),
+          (18, FALSE), (19, FALSE);
         INSERT INTO "Games"
           (id, end_time_utc, ad_scoring_start_round, koth_scoring_start_round)
         VALUES
@@ -101,6 +106,36 @@ async fn public_roster_removal_obeys_scoring_and_active_lock_fences() {
     .execute(&pool)
     .await
     .expect("create roster policy fixture");
+
+    let mut transaction = pool.begin().await.unwrap();
+    assert!(!lock_team_on_accept_if_enabled(&mut transaction, 18)
+        .await
+        .unwrap());
+    transaction.commit().await.unwrap();
+    assert!(
+        !sqlx::query_scalar::<_, bool>(r#"SELECT locked FROM "Teams" WHERE id = 18"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    );
+    sqlx::query(
+        r#"INSERT INTO "Configs" (config_key, value)
+           VALUES ('AccountPolicy:LockTeamOnEventAccept', 'true')"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut transaction = pool.begin().await.unwrap();
+    assert!(lock_team_on_accept_if_enabled(&mut transaction, 19)
+        .await
+        .unwrap());
+    transaction.commit().await.unwrap();
+    assert!(
+        sqlx::query_scalar::<_, bool>(r#"SELECT locked FROM "Teams" WHERE id = 19"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    );
 
     let members = std::array::from_fn::<_, 8, _>(|_| Uuid::new_v4());
     for (team_id, user_id) in (10..=17).zip(members) {

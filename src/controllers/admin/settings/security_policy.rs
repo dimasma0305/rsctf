@@ -37,7 +37,7 @@ pub(super) async fn prepare_security_updates(
     if let Some(account) = account.as_ref() {
         validate_account_policy(config, account)?;
     }
-    let mut updates = Vec::with_capacity(20);
+    let mut updates = Vec::with_capacity(24);
     if let Some(account) = account {
         collect_account_policy(&mut updates, account);
     }
@@ -77,6 +77,10 @@ fn collect_account_policy(updates: &mut Vec<(String, Option<String>)>, account: 
             account.allow_password_registration.to_string(),
         ),
         (
+            "AccountPolicy:AllowTeamCreation",
+            account.allow_team_creation.to_string(),
+        ),
+        (
             "AccountPolicy:ActiveOnRegister",
             account.active_on_register.to_string(),
         ),
@@ -84,6 +88,10 @@ fn collect_account_policy(updates: &mut Vec<(String, Option<String>)>, account: 
         (
             "AccountPolicy:EmailConfirmationRequired",
             account.email_confirmation_required.to_string(),
+        ),
+        (
+            "AccountPolicy:LockTeamOnEventAccept",
+            account.lock_team_on_event_accept.to_string(),
         ),
         ("AccountPolicy:EmailDomainList", account.email_domain_list),
         (

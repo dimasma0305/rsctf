@@ -658,11 +658,11 @@ pub async fn join_game(
         target_status == ParticipationStatus::Accepted && persisted.is_accepted();
 
     if prepare_accepted_resources {
-        sqlx::query(r#"UPDATE "Teams" SET locked = TRUE WHERE id = $1"#)
-            .bind(model.team_id)
-            .execute(&mut **membership_locks.transaction_mut())
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+        crate::controllers::team::roster_policy::lock_team_on_accept_if_enabled(
+            membership_locks.transaction_mut(),
+            model.team_id,
+        )
+        .await?;
         crate::controllers::edit::enqueue_accepted_provisioning(
             membership_locks.transaction_mut(),
             id,
@@ -671,8 +671,8 @@ pub async fn join_game(
         .await?;
     }
 
-    // Commit the participation + membership + roster freeze before releasing
-    // the scoring fence. A failed commit rolls every join row back together.
+    // Commit participation, membership, and any configured roster freeze before
+    // releasing the scoring fence. A failed commit rolls every join row back.
     membership_locks.release().await?;
 
     // Join / re-request changed this user's participation — drop any cached copy so the
@@ -694,10 +694,10 @@ pub async fn join_game(
     .await;
 
     // RSCTF ShouldAcceptWithoutReview -> UpdateParticipationStatus(Accepted)
-    // (GameController.JoinGame): lock the team so its roster is frozen, then
-    // provision the participation's play resources (EnsureInstances + self-hosted
-    // A&D service containers). Mirrors the admin update_participation Accepted
-    // branch; provisioning is best-effort so a Docker outage never fails the join.
+    // (GameController.JoinGame): apply the optional roster freeze, then provision
+    // the participation's play resources (EnsureInstances + self-hosted A&D
+    // service containers). Provisioning is best-effort so a Docker outage never
+    // fails the join.
     if prepare_accepted_resources {
         if let Err(e) = crate::controllers::edit::run_accepted_provisioning_job(&st, part_id).await
         {

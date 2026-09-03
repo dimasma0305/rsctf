@@ -51,6 +51,7 @@ const Teams: FC = () => {
 
   const teamsOwned = teams?.filter((t) => t.members?.some((m) => m?.captain && m.id === user?.userId))
   const disallowCreate = (teamsOwned?.length ?? 0) >= 3
+  const allowTeamCreation = config.allowTeamCreation !== false
 
   const isMobile = useIsMobile()
 
@@ -73,14 +74,16 @@ const Teams: FC = () => {
       >
         {t('team.button.join')}
       </Button>
-      <Button
-        leftSection={<Icon path={mdiAccountMultiplePlus} size={1} />}
-        variant="filled"
-        onClick={() => setCreateOpened(true)}
-        data-guide="team-create"
-      >
-        {t('team.button.create')}
-      </Button>
+      {allowTeamCreation && (
+        <Button
+          leftSection={<Icon path={mdiAccountMultiplePlus} size={1} />}
+          variant="filled"
+          onClick={() => setCreateOpened(true)}
+          data-guide="team-create"
+        >
+          {t('team.button.create')}
+        </Button>
+      )}
     </Group>
   )
 
@@ -91,10 +94,14 @@ const Teams: FC = () => {
           <PageHeader
             eyebrow={t('team.content.workspace', 'Your workspace')}
             title={t('team.title.index')}
-            description={t(
-              'team.content.index_description',
-              'Create a team, join with an invite, and manage your roster.'
-            )}
+            description={
+              allowTeamCreation
+                ? t('team.content.index_description', 'Create a team, join with an invite, and manage your roster.')
+                : t(
+                    'team.content.index_description_organizer_managed',
+                    'Join a team with an organizer-provided invite and manage your roster.'
+                  )
+            }
             actions={teamActions(classes.headerActions)}
           />
           {teamsError || userError ? (
@@ -142,7 +149,14 @@ const Teams: FC = () => {
                     bordered
                     mdiPath={mdiAccountMultiplePlus}
                     title={t('team.content.no_team.title')}
-                    description={t('team.content.no_team.hint')}
+                    description={
+                      allowTeamCreation
+                        ? t('team.content.no_team.hint')
+                        : t(
+                            'team.content.no_team.organizer_managed',
+                            'Your organizer creates teams. Use the invitation code they provide to join yours.'
+                          )
+                    }
                     action={teamActions(classes.emptyActions)}
                   />
                 </div>
@@ -175,14 +189,16 @@ const Teams: FC = () => {
           apiPublicKey={config.apiPublicKey}
         />
 
-        <TeamCreateModal
-          opened={createOpened}
-          title={t('team.button.create')}
-          disallowCreate={disallowCreate ?? false}
-          onClose={() => setCreateOpened(false)}
-          mutate={mutateTeams}
-          onTeamReady={completeTeamSetup}
-        />
+        {allowTeamCreation && (
+          <TeamCreateModal
+            opened={createOpened}
+            title={t('team.button.create')}
+            disallowCreate={disallowCreate ?? false}
+            onClose={() => setCreateOpened(false)}
+            mutate={mutateTeams}
+            onTeamReady={completeTeamSetup}
+          />
+        )}
 
         <TeamEditModal
           opened={editOpened}

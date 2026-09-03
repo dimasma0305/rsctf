@@ -48,9 +48,13 @@ pub struct GlobalConfig {
 pub struct AccountPolicy {
     pub allow_register: bool,
     pub allow_password_registration: bool,
+    /// Allow ordinary authenticated users to create their own teams.
+    pub allow_team_creation: bool,
     pub active_on_register: bool,
     pub use_captcha: bool,
     pub email_confirmation_required: bool,
+    /// Automatically freeze a team roster when an event participation becomes accepted.
+    pub lock_team_on_event_accept: bool,
     pub email_domain_list: String,
     pub enable_browser_fingerprint: bool,
     pub require_unique_ip_per_team_user: bool,
@@ -64,9 +68,11 @@ impl Default for AccountPolicy {
         Self {
             allow_register: true,
             allow_password_registration: true,
+            allow_team_creation: true,
             active_on_register: true,
             use_captcha: false,
             email_confirmation_required: false,
+            lock_team_on_event_accept: false,
             email_domain_list: String::new(),
             enable_browser_fingerprint: false,
             require_unique_ip_per_team_user: false,
@@ -400,6 +406,10 @@ pub async fn get_config(
             "AccountPolicy:AllowPasswordRegistration",
             defaults.allow_password_registration,
         ),
+        allow_team_creation: get_bool(
+            "AccountPolicy:AllowTeamCreation",
+            defaults.allow_team_creation,
+        ),
         active_on_register: get_bool(
             "AccountPolicy:ActiveOnRegister",
             defaults.active_on_register,
@@ -408,6 +418,10 @@ pub async fn get_config(
         email_confirmation_required: get_bool(
             "AccountPolicy:EmailConfirmationRequired",
             defaults.email_confirmation_required,
+        ),
+        lock_team_on_event_accept: get_bool(
+            "AccountPolicy:LockTeamOnEventAccept",
+            defaults.lock_team_on_event_accept,
         ),
         email_domain_list: get("AccountPolicy:EmailDomainList").unwrap_or_default(),
         enable_browser_fingerprint: get_bool(

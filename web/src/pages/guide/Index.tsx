@@ -290,7 +290,12 @@ const Guide: FC = () => {
               </List.Item>
             )}
             <List.Item>
-              {t('guide.page.account.team', 'After sign-in, create a team or accept a team invitation.')}
+              {config.allowTeamCreation === false
+                ? t(
+                    'guide.page.account.assigned_team',
+                    'After sign-in, join the team assigned by your organizer using its invitation code.'
+                  )
+                : t('guide.page.account.team', 'After sign-in, create a team or accept a team invitation.')}
             </List.Item>
           </List>
           <Group gap="sm">

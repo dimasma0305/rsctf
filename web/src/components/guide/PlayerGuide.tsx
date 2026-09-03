@@ -430,28 +430,42 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
       },
       {
         id: 'team',
-        title: t('guide.tour.team.title', 'Create or join a team'),
+        title:
+          config.allowTeamCreation === false
+            ? t('guide.tour.team.join_title', 'Join your assigned team')
+            : t('guide.tour.team.title', 'Create or join a team'),
         body: user
           ? isTeamPage
-            ? t(
-                'guide.tour.team.destination_body',
-                'Choose Create or Join, then type in the highlighted field. The cursor moves to the button when it is ready.'
-              )
-            : t('guide.tour.team.body', 'Open Teams, then create a team or join one with an invite code.')
+            ? config.allowTeamCreation === false
+              ? t(
+                  'guide.tour.team.join_destination_body',
+                  'Paste the team invitation code from your organizer, then select Join.'
+                )
+              : t(
+                  'guide.tour.team.destination_body',
+                  'Choose Create or Join, then type in the highlighted field. The cursor moves to the button when it is ready.'
+                )
+            : config.allowTeamCreation === false
+              ? t('guide.tour.team.join_body', 'Open Teams and join the team assigned by your organizer.')
+              : t('guide.tour.team.body', 'Open Teams, then create a team or join one with an invite code.')
           : t('guide.tour.team.guest_body', 'Sign in first. Events are entered with a team.'),
         note: isTeamPage
           ? t('guide.tour.team.form_note', 'The guide waits here until the platform confirms that your team is ready.')
-          : t('guide.tour.team.note', 'One person creates the team; everyone else joins with its invite code.'),
+          : config.allowTeamCreation === false
+            ? t('guide.tour.team.join_note', 'Ask your organizer if you have not received a team invitation code.')
+            : t('guide.tour.team.note', 'One person creates the team; everyone else joins with its invite code.'),
         path: user && !isTeamPage ? '/teams' : !user ? '/account/login' : undefined,
         pathLabel: user ? t('guide.tour.team.open', 'Open teams') : t('guide.tour.team.login_first', 'Sign in first'),
         targetSelector: tourTarget('team'),
         requiresTargetActivation: true,
         targetPrompt:
           user && isTeamPage
-            ? t(
-                'guide.tour.team.form_action',
-                'Type in the highlighted field. When the cursor moves to Create or Join, select it.'
-              )
+            ? config.allowTeamCreation === false
+              ? t('guide.tour.team.join_action', 'Paste the highlighted invite code, then select Join.')
+              : t(
+                  'guide.tour.team.form_action',
+                  'Type in the highlighted field. When the cursor moves to Create or Join, select it.'
+                )
             : undefined,
       },
       {
@@ -523,6 +537,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
     ],
     [
       accountBody,
+      config.allowTeamCreation,
       config.emailConfirmationRequired,
       connectionBody,
       isChallengePage,

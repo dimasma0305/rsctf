@@ -4,6 +4,35 @@ use sqlx::PgConnection;
 
 use crate::utils::error::{AppError, AppResult};
 
+const LOCK_TEAM_ON_ACCEPT_KEY: &str = "AccountPolicy:LockTeamOnEventAccept";
+
+/// Apply the optional legacy roster lock when a participation becomes accepted.
+/// A missing setting is deliberately off; official A&D/KotH scoring still
+/// freezes roster changes independently in [`reject_frozen_state`].
+pub(crate) async fn lock_team_on_accept_if_enabled(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    team_id: i32,
+) -> AppResult<bool> {
+    let enabled: bool = sqlx::query_scalar(
+        r#"SELECT COALESCE(
+             (SELECT value = 'true' FROM "Configs" WHERE config_key = $1),
+             FALSE
+           )"#,
+    )
+    .bind(LOCK_TEAM_ON_ACCEPT_KEY)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if enabled {
+        sqlx::query(r#"UPDATE "Teams" SET locked = TRUE WHERE id = $1"#)
+            .bind(team_id)
+            .execute(&mut **transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    Ok(enabled)
+}
+
 async fn load_roster_state(
     connection: &mut PgConnection,
     team_id: i32,

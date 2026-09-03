@@ -72,6 +72,10 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
           locked BOOLEAN NOT NULL DEFAULT FALSE,
           deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
         );
+        CREATE TABLE "Configs" (
+          config_key TEXT PRIMARY KEY,
+          value TEXT
+        );
         CREATE TABLE "Divisions" (id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL);
         CREATE TABLE "Participations" (
           id INTEGER PRIMARY KEY,
@@ -441,6 +445,10 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
           locked BOOLEAN NOT NULL DEFAULT FALSE,
           deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
         );
+        CREATE TABLE "Configs" (
+          config_key TEXT PRIMARY KEY,
+          value TEXT
+        );
         CREATE TABLE "Divisions" (
           id INTEGER PRIMARY KEY,
           game_id INTEGER NOT NULL
@@ -531,6 +539,13 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "Configs" (config_key, value)
+           VALUES ('AccountPolicy:LockTeamOnEventAccept', 'true')"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     sqlx::query(r#"INSERT INTO "Divisions" VALUES ($1, $2)"#)
         .bind(division_id)
         .bind(identity.game_id)
