@@ -11,10 +11,20 @@
 use lettre::message::{header::ContentType, Mailbox, Message};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
+use tokio::sync::{Semaphore, SemaphorePermit};
 
 use crate::utils::error::{AppError, AppResult};
 
 const SMTP_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+pub(crate) const MAX_CONCURRENT_SMTP_DELIVERIES: usize = 4;
+static SMTP_DELIVERY_SLOTS: Semaphore = Semaphore::const_new(MAX_CONCURRENT_SMTP_DELIVERIES);
+
+async fn acquire_smtp_delivery_slot() -> AppResult<SemaphorePermit<'static>> {
+    SMTP_DELIVERY_SLOTS
+        .acquire()
+        .await
+        .map_err(|_| AppError::unavailable("SMTP delivery is shutting down"))
+}
 
 /// Validate a user-supplied recipient as one bare RFC mailbox address before
 /// persisting it as an account identity.
@@ -216,6 +226,10 @@ impl MailSender {
         subject: &str,
         html_body: &str,
     ) -> AppResult<()> {
+        // Direct admin batches, diagnostics, and the durable outbox share this
+        // ceiling. Independent transports must not each open a full pool and
+        // overload a modest submission server.
+        let _delivery_slot = acquire_smtp_delivery_slot().await?;
         let to_mbox: Mailbox = to
             .parse()
             .map_err(|e| AppError::bad_request(format!("invalid recipient address {to}: {e}")))?;
@@ -438,6 +452,16 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("SMTP is not configured"));
+    }
+
+    #[test]
+    fn smtp_delivery_gate_has_one_shared_bounded_capacity() {
+        let permits = (0..MAX_CONCURRENT_SMTP_DELIVERIES)
+            .map(|_| SMTP_DELIVERY_SLOTS.try_acquire().unwrap())
+            .collect::<Vec<_>>();
+        assert!(SMTP_DELIVERY_SLOTS.try_acquire().is_err());
+        drop(permits);
+        assert!(SMTP_DELIVERY_SLOTS.try_acquire().is_ok());
     }
 
     #[test]

@@ -6,7 +6,7 @@ use futures::{stream, StreamExt};
 use std::net::SocketAddr;
 
 const MAX_CREDENTIAL_SEND_ITEMS: usize = 100;
-const CREDENTIAL_SEND_CONCURRENCY: usize = 8;
+const CREDENTIAL_SEND_CONCURRENCY: usize = crate::services::mail::MAX_CONCURRENT_SMTP_DELIVERIES;
 
 /// Bind cached plaintext to an immutable account id while retaining the email lookup key.
 pub(super) const CRED_CACHE_PREFIX: &str = "credimport:";
