@@ -477,10 +477,14 @@ pub async fn render_user_config(
         crate::services::ad_vpn::service_route_cidrs().map_err(AppError::internal)?,
         crate::services::ad_vpn::client_cidr(),
     )?;
+    let dns = crate::services::ad_vpn::same_origin_access()
+        .map_err(AppError::internal)?
+        .map(|access| format!("DNS = {}\n", access.dns))
+        .unwrap_or_default();
     let server_public_key = crate::services::ad_vpn::server_public_key(&st.db).await?;
     Ok(format!(
         "# RSCTF event {game_id}; VPN proof endpoint: {proof_url}\n\
-         [Interface]\nPrivateKey = {private_key}\nAddress = {address}/32\n\n\
+         [Interface]\nPrivateKey = {private_key}\nAddress = {address}/32\n{dns}\n\
          [Peer]\nPublicKey = {server_public_key}\nEndpoint = {endpoint}\n\
          AllowedIPs = {allowed}\nPersistentKeepalive = 25\n",
         game_id = part.game_id,

@@ -91,6 +91,17 @@ and files together is the rollback path.
   rejects `true` because a shared bridge cannot safely isolate outbound access.
   Use the Kubernetes backend with per-workload NetworkPolicy when egress is a
   challenge requirement.
+- `compose.event-vpn-ingress.yml` adds split-horizon DNS and a private HTTPS
+  path for the same `RSCTF_DOMAIN`. Merge it after `compose.caddy.yml` and
+  `compose.ad-vpn.yml` on an all-in-one deployment. VPN profiles then resolve
+  the ordinary event hostname to Caddy inside the tunnel, so browser polling
+  and `ad_...` automation tokens arrive from the caller's exact personal peer.
+  The overlay opens only DNS on the WireGuard hub and HTTPS to the private
+  Caddy address; PostgreSQL, Redis, the application port, and other service
+  addresses remain unreachable. `RSCTF_EVENT_VPN_HUB_ADDRESS` must be the first
+  usable address of `RSCTF_AD_VPN_CLIENT_CIDR`; the backend and ingress IPs must
+  be unused hosts in `RSCTF_AD_VPN_SERVICES_CIDR`. Existing participants must
+  download the refreshed VPN profile once to receive the private resolver.
 - `compose.roles.yml` changes the public service to the `web` role and adds one
   checker-owning `control` owner. `web` keeps no Linux capabilities; `control`
   receives the same narrow checker/network set as `all`; the A&D VPN or capture

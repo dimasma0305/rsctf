@@ -2,6 +2,7 @@
 
 use super::capture_policy::{LIVE_SET, REQUIRED_SET};
 use super::firewall::{PolicySets, ServiceRoute, IFNAME, QUARANTINE_SET, TRANSITION_BLOCK_SET};
+use super::SameOriginAccess;
 
 fn transition_block_rule() -> Vec<String> {
     vec![
@@ -41,7 +42,11 @@ fn capture_gate(interface: &str, endpoint_direction: &str) -> Vec<String> {
     ]
 }
 
-pub(super) fn forwarding_rule_plan(sets: &[PolicySets]) -> Vec<Vec<String>> {
+pub(super) fn forwarding_rule_plan(
+    all_peers: &str,
+    sets: &[PolicySets],
+    same_origin: Option<SameOriginAccess>,
+) -> Vec<Vec<String>> {
     let mut rules = vec![vec![
         "-m".into(),
         "conntrack".into(),
@@ -64,6 +69,50 @@ pub(super) fn forwarding_rule_plan(sets: &[PolicySets]) -> Vec<Vec<String>> {
     rules.push(transition_block_rule());
     rules.push(capture_gate("-i", "dst,dst"));
     rules.push(capture_gate("-o", "src,src"));
+    if let Some(access) = same_origin {
+        rules.push(vec![
+            "-i".into(),
+            IFNAME.into(),
+            "-p".into(),
+            "tcp".into(),
+            "-m".into(),
+            "set".into(),
+            "--match-set".into(),
+            all_peers.into(),
+            "src".into(),
+            "-d".into(),
+            access.ingress.to_string(),
+            "--dport".into(),
+            "443".into(),
+            "-m".into(),
+            "conntrack".into(),
+            "--ctstate".into(),
+            "NEW,ESTABLISHED".into(),
+            "-j".into(),
+            "ACCEPT".into(),
+        ]);
+        rules.push(vec![
+            "-o".into(),
+            IFNAME.into(),
+            "-p".into(),
+            "tcp".into(),
+            "-s".into(),
+            access.ingress.to_string(),
+            "--sport".into(),
+            "443".into(),
+            "-m".into(),
+            "set".into(),
+            "--match-set".into(),
+            all_peers.into(),
+            "dst".into(),
+            "-m".into(),
+            "conntrack".into(),
+            "--ctstate".into(),
+            "ESTABLISHED,RELATED".into(),
+            "-j".into(),
+            "ACCEPT".into(),
+        ]);
+    }
     for game in sets {
         rules.push(vec![
             "-i".into(),
@@ -132,6 +181,7 @@ pub(super) fn input_rule_plan(
     sets: &[PolicySets],
     routes: &[ServiceRoute],
     guard_service_interfaces: bool,
+    same_origin: Option<SameOriginAccess>,
 ) -> Vec<Vec<String>> {
     let mut rules = vec![
         vec![
@@ -163,6 +213,27 @@ pub(super) fn input_rule_plan(
             "ACCEPT".into(),
         ],
     ];
+    if let Some(access) = same_origin {
+        for protocol in ["udp", "tcp"] {
+            rules.push(vec![
+                "-i".into(),
+                IFNAME.into(),
+                "-p".into(),
+                protocol.into(),
+                "-m".into(),
+                "set".into(),
+                "--match-set".into(),
+                all_peers.into(),
+                "src".into(),
+                "-d".into(),
+                access.dns.to_string(),
+                "--dport".into(),
+                "53".into(),
+                "-j".into(),
+                "ACCEPT".into(),
+            ]);
+        }
+    }
     for game in sets {
         rules.push(vec![
             "-i".into(),
@@ -259,7 +330,7 @@ mod tests {
 
     #[test]
     fn capture_gate_covers_new_and_established_both_directions() {
-        let rules = forwarding_rule_plan(&[])
+        let rules = forwarding_rule_plan("rsv_a_test", &[], None)
             .into_iter()
             .map(|rule| rule.join(" "))
             .collect::<Vec<_>>();

@@ -268,6 +268,7 @@ pub(super) fn replace_live(
     policy: &mut PreparedPolicy,
     routes: &[ServiceRoute],
     guard_service_interfaces: bool,
+    same_origin: Option<super::SameOriginAccess>,
 ) -> Result<(), String> {
     let mut filter = String::from("*filter\n");
     append_chain(
@@ -278,12 +279,13 @@ pub(super) fn replace_live(
             &policy.sets,
             routes,
             guard_service_interfaces,
+            same_origin,
         ),
     );
     append_chain(
         &mut filter,
         firewall::FORWARD_CHAIN,
-        firewall::forwarding_rule_plan(&policy.sets),
+        firewall::forwarding_rule_plan(&policy.all_peers, &policy.sets, same_origin),
     );
     append_chain(
         &mut filter,

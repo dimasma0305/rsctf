@@ -269,6 +269,7 @@ jobs:
 
           bundle_root="package/rsctf"
           install -d \
+            "$bundle_root/deploy/event-vpn" \
             "$bundle_root/deploy/postgres/init" \
             "$bundle_root/scripts" \
             dist
@@ -279,6 +280,9 @@ jobs:
             deploy/.env.example \
             deploy/.gitignore \
             "$bundle_root/deploy/"
+          install -m 0644 \
+            deploy/event-vpn/Corefile \
+            "$bundle_root/deploy/event-vpn/"
           install -m 0644 \
             deploy/postgres/init/00-pg-stat-statements.sql \
             "$bundle_root/deploy/postgres/init/"

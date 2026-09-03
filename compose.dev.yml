@@ -29,6 +29,8 @@ services:
       RSCTF_REDIS_URL: redis://redis:6379
       RSCTF_STATIC_DIR: /app/web/build
       RSCTF_STORAGE_ROOT: /data/files
+      RSCTF_EVENT_VPN_HUB_ADDRESS: ${RSCTF_DEV_VPN_HUB_ADDRESS:-10.13.42.1}
+      RSCTF_EVENT_VPN_INGRESS_IP: ${RSCTF_DEV_VPN_INGRESS_IP:-10.13.41.253}
     depends_on:
       db:
         condition: service_healthy
@@ -112,6 +114,35 @@ services:
         ipv4_address: ${RSCTF_DEV_KOTH_REPORTER_IP:-10.13.41.254}
         aliases:
           - rsctf-koth-reporter
+    logging: *development-logging
+
+  # Resolve the normal browser hostname to the private TLS ingress while a
+  # player is connected to the event tunnel. Sharing the backend namespace
+  # lets CoreDNS bind only the WireGuard hub address; it is not published on
+  # the host or any public Docker network.
+  event-vpn-dns:
+    image: coredns/coredns:1.14.7@sha256:7efd3c635b03efd68c4e8398fc45f0d993d0e9ab016f72c1cefb0fd6d01aa286
+    restart: unless-stopped
+    init: true
+    network_mode: service:backend
+    depends_on:
+      backend:
+        condition: service_healthy
+    command: ["-conf", "/etc/coredns/Corefile"]
+    environment:
+      RSCTF_DOMAIN: ${RSCTF_DEV_DOMAIN:-intechfest.1pc.tf}
+      RSCTF_EVENT_VPN_HUB_ADDRESS: ${RSCTF_DEV_VPN_HUB_ADDRESS:-10.13.42.1}
+      RSCTF_EVENT_VPN_INGRESS_IP: ${RSCTF_DEV_VPN_INGRESS_IP:-10.13.41.253}
+    volumes:
+      - ./deploy/event-vpn/Corefile:/etc/coredns/Corefile:ro
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 64m
+    cpus: 0.25
     logging: *development-logging
 
 networks:

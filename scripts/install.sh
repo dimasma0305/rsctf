@@ -280,6 +280,8 @@ validate_deployment_archive() {
     rsctf/scripts/kubernetes-maintenance-cutover.sh \
     rsctf/scripts/docker-proxy-firewall.sh \
     rsctf/deploy/compose.yml \
+    rsctf/deploy/compose.event-vpn-ingress.yml \
+    rsctf/deploy/event-vpn/Corefile \
     rsctf/deploy/release.env; do
     [[ $(grep -Fxc -- "$required" "$list_file") -eq 1 ]] \
       || die "the deployment bundle must contain exactly one ${required}"
@@ -569,6 +571,9 @@ compose_file_value() {
   if [[ "$MODE" == "caddy" ]]; then compose_files+=":compose.caddy.yml"; fi
   if [[ $AD_VPN -eq 1 ]]; then
     compose_files+=":compose.ad-vpn.yml"
+    if [[ "$MODE" == "caddy" ]]; then
+      compose_files+=":compose.event-vpn-ingress.yml"
+    fi
   elif [[ $DOCKER_BACKEND -eq 1 ]]; then
     compose_files+=":compose.docker.yml"
   fi
@@ -620,6 +625,9 @@ write_new_environment() {
     printf '\nRSCTF_AD_VPN_SERVICES_NETWORK=rsctf-ad\n'
     printf 'RSCTF_AD_VPN_CLIENT_CIDR=10.13.0.0/19\n'
     printf 'RSCTF_AD_VPN_SERVICES_CIDR=10.13.40.0/24\n'
+    printf 'RSCTF_EVENT_VPN_HUB_ADDRESS=10.13.0.1\n'
+    printf 'RSCTF_EVENT_VPN_BACKEND_IP=10.13.40.2\n'
+    printf 'RSCTF_EVENT_VPN_INGRESS_IP=10.13.40.253\n'
     printf 'RSCTF_AD_VPN_SERVER_ENDPOINT=%s:51820\n' "${PUBLIC_ENTRY:-localhost}"
     printf 'RSCTF_AD_VPN_PORT=51820\nRSCTF_AD_SSH_PORT=2222\n'
   } >"$ENV_FILE"
@@ -698,6 +706,9 @@ complete_existing_environment() {
   append_env_if_missing RSCTF_AD_VPN_SERVICES_NETWORK "${compose_project_name}-ad"
   append_env_if_missing RSCTF_AD_VPN_CLIENT_CIDR 10.13.0.0/19
   append_env_if_missing RSCTF_AD_VPN_SERVICES_CIDR 10.13.40.0/24
+  append_env_if_missing RSCTF_EVENT_VPN_HUB_ADDRESS 10.13.0.1
+  append_env_if_missing RSCTF_EVENT_VPN_BACKEND_IP 10.13.40.2
+  append_env_if_missing RSCTF_EVENT_VPN_INGRESS_IP 10.13.40.253
   append_env_if_missing RSCTF_AD_VPN_SERVER_ENDPOINT "${PUBLIC_ENTRY:-localhost}:51820"
   append_env_if_missing RSCTF_AD_VPN_PORT 51820
   append_env_if_missing RSCTF_AD_SSH_PORT 2222
@@ -766,6 +777,10 @@ check_environment_values() {
   if [[ "$files" == *compose.ad-vpn.yml* ]]; then
     [[ -n "$(env_get RSCTF_AD_VPN_SERVER_ENDPOINT)" ]] \
       || die "the A&D VPN requires RSCTF_AD_VPN_SERVER_ENDPOINT"
+  fi
+  if [[ "$files" == *compose.event-vpn-ingress.yml* ]]; then
+    [[ "$files" == *compose.caddy.yml* && "$files" == *compose.ad-vpn.yml* ]] \
+      || die "the event VPN ingress requires both the Caddy and A&D VPN overrides"
   fi
 }
 

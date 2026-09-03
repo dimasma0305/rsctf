@@ -187,6 +187,63 @@ if logging != expected:
 ' "$service"
 }
 
+assert_same_origin_event_ingress() {
+  python3 -c '
+import json
+import sys
+
+document = json.load(sys.stdin)
+services = document["services"]
+app = services["rsctf"]
+caddy = services["caddy"]
+dns = services["event-vpn-dns"]
+
+app_environment = app.get("environment") or {}
+expected_app = {
+    "RSCTF_TRUSTED_PROXY_CIDRS": "172.31.252.0/24,10.13.40.253/32",
+    "RSCTF_EVENT_VPN_HUB_ADDRESS": "10.13.0.1",
+    "RSCTF_EVENT_VPN_INGRESS_IP": "10.13.40.253",
+}
+for key, expected in expected_app.items():
+    if app_environment.get(key) != expected:
+        raise SystemExit(f"rsctf {key} mismatch: {app_environment.get(key)}")
+if app.get("networks", {}).get("rsctf-ad", {}).get("ipv4_address") != "10.13.40.2":
+    raise SystemExit("rsctf does not own the expected private ingress next hop")
+
+if set(caddy.get("cap_drop") or []) != {"ALL"}:
+    raise SystemExit("private Caddy ingress must drop all inherited capabilities")
+if set(caddy.get("cap_add") or []) != {"NET_ADMIN", "NET_BIND_SERVICE"}:
+    raise SystemExit("private Caddy ingress has unexpected capabilities")
+if "no-new-privileges:true" not in (caddy.get("security_opt") or []):
+    raise SystemExit("private Caddy ingress lacks no-new-privileges")
+if caddy.get("networks", {}).get("rsctf-ad", {}).get("ipv4_address") != "10.13.40.253":
+    raise SystemExit("private Caddy ingress address mismatch")
+entrypoint = "\n".join(caddy.get("entrypoint") or [])
+if "ip route replace" not in entrypoint or "RSCTF_AD_VPN_CLIENT_CIDR" not in entrypoint:
+    raise SystemExit("private Caddy ingress does not install the exact VPN return route")
+
+expected_image = (
+    "coredns/coredns:1.14.7@sha256:"
+    "7efd3c635b03efd68c4e8398fc45f0d993d0e9ab016f72c1cefb0fd6d01aa286"
+)
+actual_image = dns.get("image")
+if actual_image != expected_image:
+    raise SystemExit(f"event VPN DNS image is not pinned: {actual_image}")
+if dns.get("network_mode") != "service:rsctf" or dns.get("ports"):
+    raise SystemExit("event VPN DNS must share only the backend network namespace")
+if set(dns.get("cap_drop") or []) != {"ALL"}:
+    raise SystemExit("event VPN DNS must drop all inherited capabilities")
+if set(dns.get("cap_add") or []) != {"NET_BIND_SERVICE"}:
+    raise SystemExit("event VPN DNS has unexpected capabilities")
+if dns.get("read_only") is not True or dns.get("pids_limit") != 64:
+    raise SystemExit("event VPN DNS filesystem/process bounds are missing")
+if "no-new-privileges:true" not in (dns.get("security_opt") or []):
+    raise SystemExit("event VPN DNS lacks no-new-privileges")
+if document.get("networks", {}).get("rsctf-ad", {}).get("internal") is not True:
+    raise SystemExit("event VPN service network must remain internal")
+'
+}
+
 assert_private_challenge_proxy() {
   local service="$1"
   python3 -c '
@@ -337,5 +394,14 @@ split_docker=(
   | assert_proxy_firewall rsctf-control
 "${compose[@]}" -f deploy/compose.yml -f deploy/compose.caddy.yml config --format json \
   | assert_bounded_logs caddy
+
+same_origin=(
+  -f deploy/compose.yml
+  -f deploy/compose.caddy.yml
+  -f deploy/compose.ad-vpn.yml
+  -f deploy/compose.event-vpn-ingress.yml
+)
+"${compose[@]}" "${same_origin[@]}" config --format json \
+  | assert_same_origin_event_ingress
 
 echo "Compose capability ownership and log bounds are valid."

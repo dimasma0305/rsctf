@@ -23,7 +23,11 @@ done
 make_fixture() {
   local fixture=$1 package="$TEMP_DIRECTORY/package"
   rm -rf -- "$package"
-  mkdir -p "$fixture" "$package/rsctf/deploy/postgres/init" "$package/rsctf/scripts"
+  mkdir -p \
+    "$fixture" \
+    "$package/rsctf/deploy/event-vpn" \
+    "$package/rsctf/deploy/postgres/init" \
+    "$package/rsctf/scripts"
   install -m 0644 "$REPOSITORY_ROOT"/deploy/compose*.yml "$package/rsctf/deploy/"
   install -m 0644 \
     "$REPOSITORY_ROOT/deploy/Caddyfile" \
@@ -31,6 +35,9 @@ make_fixture() {
     "$REPOSITORY_ROOT/deploy/.env.example" \
     "$REPOSITORY_ROOT/deploy/.gitignore" \
     "$package/rsctf/deploy/"
+  install -m 0644 \
+    "$REPOSITORY_ROOT/deploy/event-vpn/Corefile" \
+    "$package/rsctf/deploy/event-vpn/"
   install -m 0644 \
     "$REPOSITORY_ROOT/deploy/postgres/init/00-pg-stat-statements.sql" \
     "$package/rsctf/deploy/postgres/init/"
@@ -113,6 +120,32 @@ grep -Fxq 'RSCTF_ALLOW_COMPETITION_HISTORY_PURGE=false' "$local_checkout/deploy/
 grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=50' "$local_checkout/deploy/.env"
 grep -Fq 'The first-administrator setup token is stored only in' \
   "$TEMP_DIRECTORY/local.out"
+
+vpn_checkout="$TEMP_DIRECTORY/vpn-checkout"
+mkdir -p "$vpn_checkout/scripts"
+cp -a "$REPOSITORY_ROOT/deploy" "$vpn_checkout/deploy"
+install -m 0755 "$REPOSITORY_ROOT/scripts/install.sh" "$vpn_checkout/scripts/install.sh"
+env \
+  PATH="$TEST_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  RSCTF_INSTALLER_FIXTURE="$VALID_FIXTURE" \
+  RSCTF_TEST_CURL_LOG="$TEMP_DIRECTORY/local-curl.log" \
+  RSCTF_TEST_GH_LOG="$TEMP_DIRECTORY/gh.log" \
+  bash "$vpn_checkout/scripts/install.sh" \
+    --image "$PINNED_IMAGE" \
+    --mode caddy \
+    --domain ctf.example.test \
+    --with-ad-vpn \
+    --public-entry ctf.example.test \
+    --non-interactive \
+    --configure-only \
+    >"$TEMP_DIRECTORY/vpn.out" 2>&1
+grep -Fxq \
+  'COMPOSE_FILE=compose.yml:compose.caddy.yml:compose.ad-vpn.yml:compose.event-vpn-ingress.yml' \
+  "$vpn_checkout/deploy/.env"
+grep -Fxq 'RSCTF_EVENT_VPN_HUB_ADDRESS=10.13.0.1' "$vpn_checkout/deploy/.env"
+grep -Fxq 'RSCTF_EVENT_VPN_BACKEND_IP=10.13.40.2' "$vpn_checkout/deploy/.env"
+grep -Fxq 'RSCTF_EVENT_VPN_INGRESS_IP=10.13.40.253' "$vpn_checkout/deploy/.env"
+test -f "$vpn_checkout/deploy/event-vpn/Corefile"
 
 sed -i \
   -e 's/^RSCTF_DB_MAX_CONNECTIONS=50$/RSCTF_DB_MAX_CONNECTIONS=33/' \
@@ -239,6 +272,7 @@ mkdir "$target"
 RSCTF_TEST_ENV_ARGS=(RSCTF_TEST_GH_VERIFY=1 RSCTF_TEST_LATEST_TAG=v1.2.3)
 run_installer "$VALID_FIXTURE" "$target" "$output"
 test -f "$target/deploy/compose.yml"
+test -f "$target/deploy/event-vpn/Corefile"
 grep -Fq 'releases/latest' "$TEMP_DIRECTORY/curl.log"
 
 bad_target="$TEMP_DIRECTORY/bad-latest"

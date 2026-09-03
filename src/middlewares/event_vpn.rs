@@ -4,11 +4,12 @@
 //! proof that was minted through its WireGuard peer. Proofs are bound to the
 //! live user session, participation, peer generation and policy revision.
 
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::LazyLock;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::extract::{Request, State};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::HeaderMap;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -24,6 +25,9 @@ use crate::utils::error::{AppError, AppResult};
 
 const PROOF_SUBJECT_CACHE_TTL: Duration = Duration::from_secs(2);
 static PROOF_SUBJECT_FLIGHT: LazyLock<
+    crate::utils::single_flight::SingleFlight<Option<bytes::Bytes>>,
+> = LazyLock::new(crate::utils::single_flight::SingleFlight::new);
+static AUTOMATION_SOURCE_FLIGHT: LazyLock<
     crate::utils::single_flight::SingleFlight<Option<bytes::Bytes>>,
 > = LazyLock::new(crate::utils::single_flight::SingleFlight::new);
 
@@ -147,15 +151,89 @@ async fn proof_subject_is_current(
     Ok(result.is_some())
 }
 
+fn request_source(headers: &HeaderMap, peer: Option<SocketAddr>) -> Option<Ipv4Addr> {
+    crate::services::anti_cheat::client_ip(headers, peer.map(|address| address.ip()))?
+        .parse()
+        .ok()
+}
+
+fn team_token_matches_peer(
+    token: &crate::services::ad::api_token::VerifiedTeamToken,
+    peer: &crate::services::event_security::VerifiedPeerSource,
+    game_id: i32,
+    policy_revision: i64,
+) -> bool {
+    token.participation.game_id == game_id
+        && token.participation.id == peer.participation_id
+        && peer.policy_revision == policy_revision
+}
+
+async fn automation_source_is_current(
+    st: &SharedState,
+    token: &crate::services::ad::api_token::VerifiedTeamToken,
+    game_id: i32,
+    policy_revision: i64,
+    source: Ipv4Addr,
+) -> AppResult<bool> {
+    let key = format!(
+        "event-vpn-automation-source:{game_id}:{}:{policy_revision}:{source}",
+        token.participation.id
+    );
+    if st.cache.get(&key).await.is_some() {
+        return Ok(true);
+    }
+    let app = st.clone();
+    let fill_key = key.clone();
+    let token = token.clone();
+    let result = AUTOMATION_SOURCE_FLIGHT
+        .run(&key, move || async move {
+            if app.cache.get(&fill_key).await.is_some() {
+                return Some(bytes::Bytes::from_static(b"1"));
+            }
+            let peer =
+                crate::services::event_security::verified_peer_source(app.pg(), game_id, source)
+                    .await
+                    .ok()??;
+            if !team_token_matches_peer(&token, &peer, game_id, policy_revision) {
+                return None;
+            }
+            app.cache
+                .set(&fill_key, b"1", Some(PROOF_SUBJECT_CACHE_TTL))
+                .await;
+            Some(bytes::Bytes::from_static(b"1"))
+        })
+        .await;
+    Ok(result.is_some())
+}
+
 async fn authorize_request(
     st: &SharedState,
     headers: &HeaderMap,
+    team_token: Option<crate::services::ad::api_token::VerifiedTeamToken>,
+    rejected_team_token: bool,
+    source: Option<Ipv4Addr>,
     game_id: i32,
 ) -> AppResult<Option<CurrentUser>> {
     let policy = load_policy(st, game_id).await?;
     if !policy.gate_active_at(chrono::Utc::now()) {
         return Ok(None);
     }
+
+    // Participation-scoped automation tokens are accepted only when the TLS
+    // request arrived through an exact, live personal peer belonging to the
+    // same participation. The outer global middleware has already resolved
+    // the token against the current roster; do not reinterpret it as a JWT.
+    if let Some(token) = team_token {
+        let source = source.ok_or(AppError::Unauthorized)?;
+        if automation_source_is_current(st, &token, game_id, policy.revision, source).await? {
+            return Ok(None);
+        }
+        return Err(AppError::Unauthorized);
+    }
+    if rejected_team_token {
+        return Err(AppError::Unauthorized);
+    }
+
     let token = session_token(headers).ok_or(AppError::Unauthorized)?;
     let user = authenticate_token(st, &token).await?;
     if user.is_monitor() {
@@ -186,7 +264,29 @@ pub async fn middleware(
         return next.run(request).await;
     };
     let headers = request.headers().clone();
-    match authorize_request(&st, &headers, game_id).await {
+    let team_token = request
+        .extensions()
+        .get::<crate::services::ad::api_token::VerifiedTeamToken>()
+        .cloned();
+    let rejected_team_token = request
+        .extensions()
+        .get::<crate::services::ad::api_token::RejectedTeamToken>()
+        .is_some();
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(address)| *address);
+    let source = request_source(&headers, peer);
+    match authorize_request(
+        &st,
+        &headers,
+        team_token,
+        rejected_team_token,
+        source,
+        game_id,
+    )
+    .await
+    {
         Ok(user) => {
             if let Some(user) = user {
                 request.extensions_mut().insert(user);
@@ -199,7 +299,12 @@ pub async fn middleware(
 
 #[cfg(test)]
 mod tests {
-    use super::protected_game_path;
+    use super::{protected_game_path, team_token_matches_peer};
+    use crate::models::data::participation;
+    use crate::services::ad::api_token::VerifiedTeamToken;
+    use crate::services::event_security::VerifiedPeerSource;
+    use crate::utils::enums::ParticipationStatus;
+    use uuid::Uuid;
 
     #[test]
     fn only_post_enrollment_game_paths_are_protected() {
@@ -223,4 +328,42 @@ mod tests {
         assert_eq!(protected_game_path("/api/game/-1/details"), None);
         assert_eq!(protected_game_path("/api/edit/games/7"), None);
     }
+
+    #[test]
+    fn automation_token_is_bound_to_exact_game_participation_and_policy() {
+        let token = VerifiedTeamToken {
+            participation: participation::Model {
+                id: 29,
+                status: ParticipationStatus::Accepted,
+                token: String::new(),
+                writeup_id: None,
+                game_id: 7,
+                team_id: 11,
+                division_id: None,
+                suspicion_score: 0,
+                competitive_admitted_at_utc: None,
+            },
+            partition_key: "ad:test".to_string(),
+        };
+        let peer = VerifiedPeerSource {
+            peer_id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            participation_id: 29,
+            public_key: "peer".to_string(),
+            generation: 1,
+            policy_revision: 3,
+            security_stamp: "stamp".to_string(),
+        };
+        assert!(team_token_matches_peer(&token, &peer, 7, 3));
+
+        let mut wrong_participation = peer.clone();
+        wrong_participation.participation_id = 30;
+        assert!(!team_token_matches_peer(&token, &wrong_participation, 7, 3));
+        assert!(!team_token_matches_peer(&token, &peer, 8, 3));
+        assert!(!team_token_matches_peer(&token, &peer, 7, 4));
+    }
 }
+
+#[cfg(test)]
+#[path = "event_vpn_pg_tests.rs"]
+mod pg_tests;

@@ -477,10 +477,68 @@ fn owned_rules_are_prefix(
     Ok(remaining.is_empty())
 }
 
+fn chain_rules(table: &str, chain: &str) -> Result<String, String> {
+    let args = ["-t", table, "-S", chain];
+    let output = iptables_output(&args)?;
+    if !output.status.success() {
+        return Err(command_error("iptables", &args, &output));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn same_origin_rule_text_installed(
+    input: &str,
+    forward: &str,
+    access: super::SameOriginAccess,
+) -> bool {
+    let has_pair = |rule: &str, option: &str, value: &str| {
+        let fields = rule.split_ascii_whitespace().collect::<Vec<_>>();
+        fields
+            .windows(2)
+            .any(|pair| pair[0] == option && pair[1] == value)
+    };
+    let peer_set = "--match-set rsv_a_";
+    let dns = format!("{}/32", access.dns);
+    let ingress = format!("{}/32", access.ingress);
+    let input_has = |protocol: &str| {
+        input.lines().any(|rule| {
+            rule.contains(&format!("-i {IFNAME} -p {protocol}"))
+                && rule.contains(peer_set)
+                && has_pair(rule, "-d", &dns)
+                && has_pair(rule, "--dport", "53")
+                && rule.ends_with("-j ACCEPT")
+        })
+    };
+    let request = forward.lines().any(|rule| {
+        rule.contains(&format!("-i {IFNAME} -p tcp"))
+            && rule.contains(peer_set)
+            && has_pair(rule, "-d", &ingress)
+            && has_pair(rule, "--dport", "443")
+            && has_pair(rule, "--ctstate", "NEW,ESTABLISHED")
+            && rule.ends_with("-j ACCEPT")
+    });
+    let reply = forward.lines().any(|rule| {
+        rule.contains(&format!("-o {IFNAME} -p tcp"))
+            && has_pair(rule, "-s", &ingress)
+            && has_pair(rule, "--sport", "443")
+            && rule.contains(peer_set)
+            && has_pair(rule, "--ctstate", "RELATED,ESTABLISHED")
+            && rule.ends_with("-j ACCEPT")
+    });
+    input_has("udp") && input_has("tcp") && request && reply
+}
+
+fn same_origin_rules_installed(access: super::SameOriginAccess) -> Result<bool, String> {
+    let input = chain_rules("filter", INPUT_CHAIN)?;
+    let forward = chain_rules("filter", FORWARD_CHAIN)?;
+    Ok(same_origin_rule_text_installed(&input, &forward, access))
+}
+
 pub(super) fn vpn_firewall_installed(
     client: &Ipv4Net,
     services: &[Ipv4Net],
     guard_service_interfaces: bool,
+    same_origin: Option<super::SameOriginAccess>,
 ) -> Result<bool, String> {
     let required_chains = [
         ("filter", INPUT_CHAIN),
@@ -632,6 +690,11 @@ pub(super) fn vpn_firewall_installed(
             return Err(command_error("ipset", &["list", name], &output));
         }
     }
+    if let Some(access) = same_origin {
+        if !same_origin_rules_installed(access)? {
+            return Ok(false);
+        }
+    }
     Ok(true)
 }
 
@@ -655,9 +718,16 @@ fn setup_input_guard(
     sets: &[PolicySets],
     routes: &[ServiceRoute],
     guard_service_interfaces: bool,
+    same_origin: Option<super::SameOriginAccess>,
 ) -> Result<(), String> {
     ensure_chain("filter", INPUT_CHAIN)?;
-    for rule in input_rule_plan(all_peers, sets, routes, guard_service_interfaces) {
+    for rule in input_rule_plan(
+        all_peers,
+        sets,
+        routes,
+        guard_service_interfaces,
+        same_origin,
+    ) {
         append_rule("filter", INPUT_CHAIN, &rule)?;
     }
     remove_all_rules("filter", "INPUT", &["-i", IFNAME, "-j", INPUT_CHAIN])?;
@@ -698,13 +768,19 @@ pub(super) fn setup_vpn_firewall(
     services: &[Ipv4Net],
     policies: &[GameVpnPolicy],
     guard_service_interfaces: bool,
+    same_origin: Option<super::SameOriginAccess>,
 ) -> Result<FirewallLock, String> {
     verify_ip_forwarding()?;
     let routes = resolve_service_routes(services, guard_service_interfaces)?;
     super::firewall_atomic::ensure_transition_sets()?;
     let mut policy = super::firewall_atomic::prepare(client, &routes, policies)?;
-    if vpn_firewall_installed(client, services, guard_service_interfaces)? {
-        super::firewall_atomic::replace_live(&mut policy, &routes, guard_service_interfaces)?;
+    if vpn_firewall_installed(client, services, guard_service_interfaces, same_origin)? {
+        super::firewall_atomic::replace_live(
+            &mut policy,
+            &routes,
+            guard_service_interfaces,
+            same_origin,
+        )?;
         super::firewall_atomic::cleanup_stale(&policy);
         return Ok(FirewallLock::inactive());
     }
@@ -714,10 +790,11 @@ pub(super) fn setup_vpn_firewall(
         &policy.sets,
         &routes,
         guard_service_interfaces,
+        same_origin,
     )?;
 
     ensure_chain("filter", FORWARD_CHAIN)?;
-    for rule in forwarding_rule_plan(&policy.sets) {
+    for rule in forwarding_rule_plan(&policy.all_peers, &policy.sets, same_origin) {
         append_rule("filter", FORWARD_CHAIN, &rule)?;
     }
 

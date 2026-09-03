@@ -1,6 +1,7 @@
 use super::{
-    assign_available_ip, assign_deterministic_ip, peer_address_allowed, retry_operation,
-    validate_kubernetes_service_routes, validate_vpn_networks, vpn_target, VpnBackendConfig,
+    assign_available_ip, assign_deterministic_ip, parse_same_origin_ingress, peer_address_allowed,
+    retry_operation, validate_kubernetes_service_routes, validate_same_origin_hub,
+    validate_vpn_networks, vpn_target, VpnBackendConfig,
 };
 use crate::services::container::ContainerBackendKind;
 use ipnet::Ipv4Net;
@@ -83,6 +84,7 @@ fn kubernetes_backend_requires_an_authoritative_service_cidr_without_vpn() {
         kind: ContainerBackendKind::Kubernetes,
         service_cidrs: Vec::new(),
         guard_service_interfaces: false,
+        same_origin_ingress: None,
     };
     assert!(validate_kubernetes_service_routes(&missing).is_err());
 
@@ -90,6 +92,29 @@ fn kubernetes_backend_requires_an_authoritative_service_cidr_without_vpn() {
         kind: ContainerBackendKind::Kubernetes,
         service_cidrs: vec!["10.96.0.0/12".to_string()],
         guard_service_interfaces: false,
+        same_origin_ingress: None,
     };
     assert!(validate_kubernetes_service_routes(&configured).is_ok());
+}
+
+#[test]
+fn same_origin_ingress_must_be_a_non_gateway_service_host() {
+    let services = vec!["10.13.41.0/24".to_string()];
+    assert_eq!(
+        parse_same_origin_ingress(Some("10.13.41.253"), &services).unwrap(),
+        Some("10.13.41.253".parse().unwrap())
+    );
+    assert_eq!(parse_same_origin_ingress(None, &services).unwrap(), None);
+    for rejected in ["10.13.41.0", "10.13.41.1", "10.13.41.255", "10.13.42.2"] {
+        assert!(parse_same_origin_ingress(Some(rejected), &services).is_err());
+    }
+    assert!(parse_same_origin_ingress(Some("not-an-ip"), &services).is_err());
+}
+
+#[test]
+fn same_origin_dns_must_bind_the_derived_wireguard_hub() {
+    assert!(validate_same_origin_hub(None, "10.13.0.0/19").is_ok());
+    assert!(validate_same_origin_hub(Some("10.13.0.1"), "10.13.0.0/19").is_ok());
+    assert!(validate_same_origin_hub(Some("10.13.0.2"), "10.13.0.0/19").is_err());
+    assert!(validate_same_origin_hub(Some("not-an-ip"), "10.13.0.0/19").is_err());
 }

@@ -19,7 +19,7 @@ fn firewall_plan_pairs_each_games_peer_target_and_cooldown_sets() {
         local_address: Some("10.13.40.2".parse().unwrap()),
     }];
     let sets = vec![policy_sets(10), policy_sets(11)];
-    let forward: Vec<String> = forwarding_rule_plan(&sets)
+    let forward: Vec<String> = forwarding_rule_plan("rsv_a_test", &sets, None)
         .into_iter()
         .map(|rule| rule.join(" "))
         .collect();
@@ -34,7 +34,7 @@ fn firewall_plan_pairs_each_games_peer_target_and_cooldown_sets() {
         .any(|rule| rule.contains("rsv_p_10") && rule.contains("rsv_f_11")));
     assert_eq!(forward.last().map(String::as_str), Some("-j DROP"));
 
-    let input: Vec<String> = input_rule_plan("rsv_a_test", &sets, &routes, true)
+    let input: Vec<String> = input_rule_plan("rsv_a_test", &sets, &routes, true, None)
         .into_iter()
         .map(|rule| rule.join(" "))
         .collect();
@@ -79,7 +79,7 @@ fn game_policy_set_names_are_short_and_stable() {
 #[test]
 fn quarantine_precedes_every_allow_rule() {
     let sets = vec![policy_sets(10)];
-    let forward = forwarding_rule_plan(&sets);
+    let forward = forwarding_rule_plan("rsv_a_test", &sets, None);
     assert!(forward[1].join(" ").contains("rsv_quarantine src -j DROP"));
     assert!(forward[2]
         .join(" ")
@@ -90,7 +90,7 @@ fn quarantine_precedes_every_allow_rule() {
         .unwrap();
     assert!(first_forward_allow > 2);
 
-    let input = input_rule_plan("rsv_a_test", &sets, &[], false);
+    let input = input_rule_plan("rsv_a_test", &sets, &[], false, None);
     assert!(input[0].join(" ").contains("rsv_quarantine src -j DROP"));
     assert!(input[1]
         .join(" ")
@@ -100,6 +100,75 @@ fn quarantine_precedes_every_allow_rule() {
         .position(|rule| rule.last().is_some_and(|action| action == "ACCEPT"))
         .unwrap();
     assert!(first_input_allow > 1);
+}
+
+#[test]
+fn same_origin_portal_opens_only_dns_and_https_for_live_peers() {
+    let access = super::super::SameOriginAccess {
+        dns: "10.13.42.1".parse().unwrap(),
+        ingress: "10.13.41.253".parse().unwrap(),
+    };
+    let input = input_rule_plan("rsv_a_test", &[], &[], false, Some(access))
+        .into_iter()
+        .map(|rule| rule.join(" "))
+        .collect::<Vec<_>>();
+    assert!(input.iter().any(|rule| {
+        rule.contains("-p udp")
+            && rule.contains("rsv_a_test src")
+            && rule.contains("-d 10.13.42.1 --dport 53")
+            && rule.ends_with("-j ACCEPT")
+    }));
+    assert!(input.iter().any(|rule| {
+        rule.contains("-p tcp")
+            && rule.contains("rsv_a_test src")
+            && rule.contains("-d 10.13.42.1 --dport 53")
+            && rule.ends_with("-j ACCEPT")
+    }));
+
+    let forward = forwarding_rule_plan("rsv_a_test", &[], Some(access))
+        .into_iter()
+        .map(|rule| rule.join(" "))
+        .collect::<Vec<_>>();
+    assert!(forward.iter().any(|rule| {
+        rule.contains("-i wg0 -p tcp")
+            && rule.contains("rsv_a_test src")
+            && rule.contains("-d 10.13.41.253 --dport 443")
+            && rule.contains("NEW,ESTABLISHED")
+    }));
+    assert!(forward.iter().any(|rule| {
+        rule.contains("-o wg0 -p tcp -s 10.13.41.253 --sport 443")
+            && rule.contains("rsv_a_test dst")
+            && rule.contains("ESTABLISHED,RELATED")
+    }));
+    assert!(!forward.iter().any(|rule| rule.contains("--dport 80")));
+}
+
+#[test]
+fn installed_same_origin_rules_accept_iptables_canonical_argument_order() {
+    let access = super::super::SameOriginAccess {
+        dns: "10.13.42.1".parse().unwrap(),
+        ingress: "10.13.41.253".parse().unwrap(),
+    };
+    let input = r#"
+-A RSCTF_VPN_INPUT -d 10.13.42.1/32 -i wg0 -p udp -m set --match-set rsv_a_generation src -m udp --dport 53 -j ACCEPT
+-A RSCTF_VPN_INPUT -d 10.13.42.1/32 -i wg0 -p tcp -m set --match-set rsv_a_generation src -m tcp --dport 53 -j ACCEPT
+"#;
+    let forward = r#"
+-A RSCTF_VPN_FORWARD -d 10.13.41.253/32 -i wg0 -p tcp -m set --match-set rsv_a_generation src -m tcp --dport 443 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+-A RSCTF_VPN_FORWARD -s 10.13.41.253/32 -o wg0 -p tcp -m tcp --sport 443 -m set --match-set rsv_a_generation dst -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+"#;
+    assert!(same_origin_rule_text_installed(input, forward, access));
+
+    assert!(!same_origin_rule_text_installed(
+        &input.replace("--dport 53", "--dport 5353"),
+        forward,
+        access,
+    ));
+    assert!(!same_origin_rule_text_installed(
+        input,
+        &forward.replace("--dport 443", "--dport 4443"),
+        access,
+    ));
 }
 
 #[test]

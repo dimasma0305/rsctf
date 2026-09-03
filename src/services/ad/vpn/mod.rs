@@ -65,6 +65,13 @@ struct VpnBackendConfig {
     kind: ContainerBackendKind,
     service_cidrs: Vec<String>,
     guard_service_interfaces: bool,
+    same_origin_ingress: Option<Ipv4Addr>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SameOriginAccess {
+    pub(crate) dns: Ipv4Addr,
+    pub(crate) ingress: Ipv4Addr,
 }
 
 pub fn sync_is_dirty() -> bool {
@@ -114,10 +121,12 @@ fn backend_config_for(kind: ContainerBackendKind) -> Result<VpnBackendConfig, St
         ContainerBackendKind::Kubernetes => kubernetes_services_cidr().into_iter().collect(),
         ContainerBackendKind::None | ContainerBackendKind::Worker => Vec::new(),
     };
+    let same_origin_ingress = same_origin_ingress_from_env(&service_cidrs)?;
     let config = VpnBackendConfig {
         kind,
         service_cidrs,
         guard_service_interfaces: kind == ContainerBackendKind::Docker,
+        same_origin_ingress,
     };
     validate_kubernetes_service_routes(&config)?;
 
@@ -143,6 +152,67 @@ fn backend_config_for(kind: ContainerBackendKind) -> Result<VpnBackendConfig, St
     }
 
     Ok(config)
+}
+
+fn same_origin_ingress_from_env(service_cidrs: &[String]) -> Result<Option<Ipv4Addr>, String> {
+    let value = std::env::var("RSCTF_EVENT_VPN_INGRESS_IP")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let ingress = parse_same_origin_ingress(value.as_deref(), service_cidrs)?;
+    if ingress.is_some() {
+        let configured_hub = std::env::var("RSCTF_EVENT_VPN_HUB_ADDRESS")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        validate_same_origin_hub(configured_hub.as_deref(), &client_cidr())?;
+    }
+    Ok(ingress)
+}
+
+fn validate_same_origin_hub(value: Option<&str>, client_cidr: &str) -> Result<(), String> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let address = value
+        .parse::<Ipv4Addr>()
+        .map_err(|_| "RSCTF_EVENT_VPN_HUB_ADDRESS must be an IPv4 address".to_string())?;
+    let client = parse_ipv4_network(client_cidr, "VPN client CIDR")?;
+    let expected = Ipv4Addr::from(u32::from(client.network()).saturating_add(1));
+    if address != expected {
+        return Err(format!(
+            "RSCTF_EVENT_VPN_HUB_ADDRESS must be the first usable VPN client address ({expected})"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_same_origin_ingress(
+    value: Option<&str>,
+    service_cidrs: &[String],
+) -> Result<Option<Ipv4Addr>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let address = value
+        .parse::<Ipv4Addr>()
+        .map_err(|_| "RSCTF_EVENT_VPN_INGRESS_IP must be an IPv4 address".to_string())?;
+    let valid = service_cidrs.iter().any(|value| {
+        let Ok(network) = value.parse::<Ipv4Net>() else {
+            return false;
+        };
+        let first = Ipv4Addr::from(u32::from(network.network()).saturating_add(1));
+        network.contains(&address)
+            && address != network.network()
+            && address != network.broadcast()
+            && address != first
+    });
+    if !valid {
+        return Err(
+            "RSCTF_EVENT_VPN_INGRESS_IP must be a usable host in an A&D service CIDR".to_string(),
+        );
+    }
+    Ok(Some(address))
 }
 
 fn validate_kubernetes_service_routes(config: &VpnBackendConfig) -> Result<(), String> {
@@ -178,6 +248,16 @@ fn backend_config() -> Result<&'static VpnBackendConfig, String> {
 
 pub fn service_route_cidrs() -> Result<Vec<String>, String> {
     Ok(backend_config()?.service_cidrs.clone())
+}
+
+pub(crate) fn same_origin_access() -> Result<Option<SameOriginAccess>, String> {
+    let Some(ingress) = backend_config()?.same_origin_ingress else {
+        return Ok(None);
+    };
+    let dns = hub_address()
+        .parse::<Ipv4Addr>()
+        .map_err(|_| "the A&D VPN hub address is not valid IPv4".to_string())?;
+    Ok(Some(SameOriginAccess { dns, ingress }))
 }
 
 /// A custom checker gets only exact target permissions inside these routes.

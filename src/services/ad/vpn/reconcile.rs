@@ -160,6 +160,7 @@ fn policy_fingerprint(
     configured_client_cidr: &str,
     configured_service_cidrs: &[String],
     route_fingerprint: &str,
+    same_origin: Option<SameOriginAccess>,
     peers: &[DesiredPeer],
     policies: &[GameVpnPolicy],
 ) -> [u8; 32] {
@@ -171,6 +172,10 @@ fn policy_fingerprint(
         fingerprint.update(cidr.as_bytes());
     }
     fingerprint.update(route_fingerprint.as_bytes());
+    if let Some(access) = same_origin {
+        fingerprint.update(access.dns.octets());
+        fingerprint.update(access.ingress.octets());
+    }
     for peer in peers {
         fingerprint.update(peer.stable_id.as_bytes());
         fingerprint.update(peer.game_id.to_be_bytes());
@@ -282,6 +287,7 @@ fn apply_kernel_state(
     service_networks: &[Ipv4Net],
     policies: &[GameVpnPolicy],
     guard_service_interfaces: bool,
+    same_origin: Option<SameOriginAccess>,
     incremental: bool,
 ) -> Result<(), String> {
     if incremental {
@@ -292,6 +298,7 @@ fn apply_kernel_state(
                     service_networks,
                     policies,
                     guard_service_interfaces,
+                    same_origin,
                 )?;
                 return lock.unlock();
             }
@@ -306,6 +313,7 @@ fn apply_kernel_state(
         service_networks,
         policies,
         guard_service_interfaces,
+        same_origin,
     )?;
     configure_hub_with_retry(cfg, 3)?;
     policy_lock.unlock()?;
@@ -682,6 +690,7 @@ async fn ensure_hub_and_sync_owned(db: &DatabaseConnection) -> AppResult<()> {
     let peers_rows = load_peers(db, &client_network, &service_networks).await?;
     super::capture_policy::refresh(db).await?;
     let policies = load_policies(db, &peers_rows, &client_network, &service_networks).await?;
+    let same_origin = same_origin_access().map_err(AppError::internal)?;
     let guard_service_interfaces = backend_config()
         .map_err(AppError::internal)?
         .guard_service_interfaces;
@@ -700,6 +709,7 @@ async fn ensure_hub_and_sync_owned(db: &DatabaseConnection) -> AppResult<()> {
         &configured_client_cidr,
         &configured_service_cidrs,
         &route_fingerprint,
+        same_origin,
         &peers_rows,
         &policies,
     );
@@ -721,6 +731,7 @@ async fn ensure_hub_and_sync_owned(db: &DatabaseConnection) -> AppResult<()> {
             &firewall_client,
             &firewall_services,
             guard_service_interfaces,
+            same_origin,
         )
     })
     .await
@@ -791,6 +802,7 @@ async fn ensure_hub_and_sync_owned(db: &DatabaseConnection) -> AppResult<()> {
                     &kernel_services,
                     &kernel_policies,
                     guard_service_interfaces,
+                    same_origin,
                     incremental,
                 )
             },
