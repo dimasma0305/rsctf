@@ -66,6 +66,9 @@ impl AttachmentHarness {
               id INTEGER PRIMARY KEY,
               game_id INTEGER NOT NULL,
               "Type" SMALLINT NOT NULL,
+              is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+              accepted_count INTEGER NOT NULL DEFAULT 0,
+              submission_count INTEGER NOT NULL DEFAULT 0,
               deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
               attachment_id INTEGER,
               original_archive_blob_path TEXT
@@ -79,6 +82,10 @@ impl AttachmentHarness {
             );
             CREATE TABLE "FirstSolves" (
               participation_id INTEGER NOT NULL,
+              challenge_id INTEGER NOT NULL
+            );
+            CREATE TABLE "Submissions" (
+              id INTEGER PRIMARY KEY,
               challenge_id INTEGER NOT NULL
             );
             CREATE TABLE "ExerciseChallenges" (
