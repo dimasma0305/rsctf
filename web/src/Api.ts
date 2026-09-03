@@ -4942,6 +4942,7 @@ export class Api<
         /** @format binary */
         file?: File | null;
       },
+      operationId: string,
       params: RequestParams = {},
     ) =>
       this.request<string, RequestResponse>({
@@ -4951,6 +4952,10 @@ export class Api<
         type: ContentType.FormData,
         format: "json",
         ...params,
+        headers: {
+          ...params.headers,
+          "X-RSCTF-Operation-Id": operationId,
+        },
       }),
 
     /**
@@ -6215,6 +6220,7 @@ export class Api<
         /** @format binary */
         file?: File | null;
       },
+      operationId: string,
       params: RequestParams = {},
     ) =>
       this.request<void, RequestResponse>({
@@ -6223,6 +6229,10 @@ export class Api<
         body: data,
         type: ContentType.FormData,
         ...params,
+        headers: {
+          ...params.headers,
+          "X-RSCTF-Operation-Id": operationId,
+        },
       }),
 
     /**
@@ -8544,6 +8554,7 @@ export class Api<
         /** @format binary */
         file?: File | null;
       },
+      operationId: string,
       params: RequestParams = {},
     ) =>
       this.request<string, RequestResponse>({
@@ -8553,6 +8564,10 @@ export class Api<
         type: ContentType.FormData,
         format: "json",
         ...params,
+        headers: {
+          ...params.headers,
+          "X-RSCTF-Operation-Id": operationId,
+        },
       }),
 
     /**
@@ -11035,6 +11050,7 @@ export class Api<
         /** @format binary */
         file?: File | null;
       },
+      operationId: string,
       params: RequestParams = {},
     ) =>
       this.request<void, RequestResponse>({
@@ -11043,6 +11059,10 @@ export class Api<
         body: data,
         type: ContentType.FormData,
         ...params,
+        headers: {
+          ...params.headers,
+          "X-RSCTF-Operation-Id": operationId,
+        },
       }),
   };
   info = {

@@ -28,7 +28,7 @@ import { useSearchParams } from 'react-router'
 import { PasswordChangeModal } from '@Components/PasswordChangeModal'
 import { WithNavBar } from '@Components/WithNavbar'
 import { StatsPanel } from '@Components/account/StatsPanel'
-import { BLOB_OPERATION_HEADER, BlobUploadOperation, retainBlobUploadOperation } from '@Utils/BlobUploadOperations'
+import { BlobUploadOperation, retainBlobUploadOperation } from '@Utils/BlobUploadOperations'
 import { beginMailOperation, finishMailOperation, type MailOperationOwner } from '@Utils/MailOperation'
 import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
@@ -108,10 +108,7 @@ const Profile: FC = () => {
 
     try {
       avatarOperation.current = retainBlobUploadOperation(avatarOperation.current, avatarFile)
-      await api.account.accountAvatar(
-        { file: avatarFile },
-        { headers: { [BLOB_OPERATION_HEADER]: avatarOperation.current.id } }
-      )
+      await api.account.accountAvatar({ file: avatarFile }, avatarOperation.current.id)
       updateNotification({
         id: 'upload-avatar',
         color: 'teal',

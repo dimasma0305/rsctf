@@ -25,7 +25,7 @@ import dayjs from 'dayjs'
 import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { Markdown } from '@Components/MarkdownRenderer'
-import { BLOB_OPERATION_HEADER, BlobUploadOperation, retainBlobUploadOperation } from '@Utils/BlobUploadOperations'
+import { BlobUploadOperation, retainBlobUploadOperation } from '@Utils/BlobUploadOperations'
 import { useLanguage } from '@Utils/I18n'
 import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
@@ -82,8 +82,8 @@ export const WriteupSubmitModal: FC<WriteupSubmitModalProps> = ({ gameId, writeu
         {
           file,
         },
+        uploadOperation.current.id,
         {
-          headers: { [BLOB_OPERATION_HEADER]: uploadOperation.current.id },
           onUploadProgress: (e) => {
             setProgress((e.loaded / (e.total ?? 1)) * 100)
           },

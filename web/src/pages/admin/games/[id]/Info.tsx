@@ -50,6 +50,7 @@ import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
 import { requireApiCollection } from '@Utils/ApiCollection'
 import { downloadBlob } from '@Utils/ApiHelper'
+import { BlobUploadOperation, retainBlobUploadOperation } from '@Utils/BlobUploadOperations'
 import { controlJobResultCount, createOperationId, waitForControlJob } from '@Utils/ControlJobs'
 import {
   clearEventVpnOverrideCreateOperation,
@@ -130,6 +131,7 @@ const GameInfoEdit: FC = () => {
   const saveOwner = useRef(false)
   const saveOperation = useRef<GameInfoSaveOperation | null>(null)
   const saveAbort = useRef<AbortController | null>(null)
+  const posterOperation = useRef<BlobUploadOperation | null>(null)
 
   const modals = useModals()
   const clipboard = useClipboard()
@@ -237,6 +239,10 @@ const GameInfoEdit: FC = () => {
   )
 
   useEffect(() => {
+    posterOperation.current = null
+  }, [numId])
+
+  useEffect(() => {
     if (numId < 0) {
       createOverrideOperation.current = null
       revokeOverrideOperations.current.clear()
@@ -293,7 +299,9 @@ const GameInfoEdit: FC = () => {
     })
 
     try {
-      const res = await api.edit.editUpdateGamePoster(game.id!, { file })
+      posterOperation.current = retainBlobUploadOperation(posterOperation.current, file)
+      const res = await api.edit.editUpdateGamePoster(game.id!, { file }, posterOperation.current.id)
+      posterOperation.current = null
       updateNotification({
         id: 'upload-poster',
         color: 'teal',
