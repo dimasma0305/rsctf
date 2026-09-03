@@ -154,36 +154,38 @@ fn hub_identity(prvkey: &str, port: u16, address: &str) -> [u8; 32] {
     identity.finalize().into()
 }
 
-fn policy_fingerprint(
-    prvkey: &str,
+struct PolicyFingerprintInput<'a> {
+    prvkey: &'a str,
     port: u16,
-    configured_client_cidr: &str,
-    configured_service_cidrs: &[String],
-    route_fingerprint: &str,
+    client_cidr: &'a str,
+    service_cidrs: &'a [String],
+    route: &'a str,
     same_origin: Option<SameOriginAccess>,
-    peers: &[DesiredPeer],
-    policies: &[GameVpnPolicy],
-) -> [u8; 32] {
+    peers: &'a [DesiredPeer],
+    policies: &'a [GameVpnPolicy],
+}
+
+fn policy_fingerprint(input: PolicyFingerprintInput<'_>) -> [u8; 32] {
     let mut fingerprint = Sha256::new();
-    fingerprint.update(prvkey.as_bytes());
-    fingerprint.update(port.to_be_bytes());
-    fingerprint.update(configured_client_cidr.as_bytes());
-    for cidr in configured_service_cidrs {
+    fingerprint.update(input.prvkey.as_bytes());
+    fingerprint.update(input.port.to_be_bytes());
+    fingerprint.update(input.client_cidr.as_bytes());
+    for cidr in input.service_cidrs {
         fingerprint.update(cidr.as_bytes());
     }
-    fingerprint.update(route_fingerprint.as_bytes());
-    if let Some(access) = same_origin {
+    fingerprint.update(input.route.as_bytes());
+    if let Some(access) = input.same_origin {
         fingerprint.update(access.dns.octets());
         fingerprint.update(access.ingress.octets());
     }
-    for peer in peers {
+    for peer in input.peers {
         fingerprint.update(peer.stable_id.as_bytes());
         fingerprint.update(peer.game_id.to_be_bytes());
         fingerprint.update(peer.participation_id.to_be_bytes());
         fingerprint.update(peer.public_key.as_bytes());
         fingerprint.update(peer.address.as_bytes());
     }
-    for policy in policies {
+    for policy in input.policies {
         fingerprint.update(policy.game_id.to_be_bytes());
         for peer in &policy.peers {
             fingerprint.update(peer.octets());
@@ -703,16 +705,16 @@ async fn ensure_hub_and_sync_owned(db: &DatabaseConnection) -> AppResult<()> {
     .map_err(AppError::internal)?;
     let port = listen_port();
     let address = format!("{}/{}", hub_address(), cidr_bits(&configured_client_cidr));
-    let fingerprint = policy_fingerprint(
-        &prvkey,
+    let fingerprint = policy_fingerprint(PolicyFingerprintInput {
+        prvkey: &prvkey,
         port,
-        &configured_client_cidr,
-        &configured_service_cidrs,
-        &route_fingerprint,
+        client_cidr: &configured_client_cidr,
+        service_cidrs: &configured_service_cidrs,
+        route: &route_fingerprint,
         same_origin,
-        &peers_rows,
-        &policies,
-    );
+        peers: &peers_rows,
+        policies: &policies,
+    });
     let (applied_peers, peers): (Vec<_>, Vec<_>) = peers_rows.iter().filter_map(build_peer).unzip();
     let desired = AppliedState {
         fingerprint,
