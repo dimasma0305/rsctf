@@ -6,6 +6,7 @@ import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { KeyedMutator } from 'swr'
 import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
+import { downloadBlob } from '@Utils/ApiHelper'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { createOperationId, waitForControlJob } from '@Utils/ControlJobs'
 import { httpErrorStatus } from '@Utils/ProfileRetry'
@@ -83,6 +84,19 @@ export const adServicePresentationState = (
 
 const ByocEnrollment: FC<ByocEnrollmentProps> = ({ gameId, challengeId, state }) => {
   const { t } = useTranslation()
+  const [downloadBusy, setDownloadBusy] = useState(false)
+  const download = (kind: 'Setup' | 'Compose') => {
+    const suffix = kind === 'Setup' ? 'setup' : 'compose'
+    void downloadBlob(
+      `byoc-${suffix}:${gameId}:${challengeId}`,
+      () =>
+        api.instance.get(`/api/Game/${gameId}/Ad/Byoc/${kind}/${challengeId}`, {
+          responseType: 'blob',
+        }),
+      setDownloadBusy,
+      t
+    )
+  }
   const content = {
     'byoc-absent': {
       color: 'blue',
@@ -130,9 +144,8 @@ const ByocEnrollment: FC<ByocEnrollmentProps> = ({ gameId, challengeId, state })
         <Text size="xs">{content.description}</Text>
         <Group gap="xs" wrap="wrap">
           <Button
-            component="a"
-            href={`/api/Game/${gameId}/Ad/Byoc/Setup/${challengeId}`}
-            download
+            onClick={() => download('Setup')}
+            disabled={downloadBusy}
             size="compact-xs"
             variant="light"
             leftSection={<Icon path={mdiDownload} size={0.7} aria-hidden="true" />}
@@ -146,9 +159,8 @@ const ByocEnrollment: FC<ByocEnrollmentProps> = ({ gameId, challengeId, state })
             )}
           >
             <Button
-              component="a"
-              href={`/api/Game/${gameId}/Ad/Byoc/Compose/${challengeId}`}
-              download
+              onClick={() => download('Compose')}
+              disabled={downloadBusy}
               size="compact-xs"
               variant="subtle"
               color="gray"

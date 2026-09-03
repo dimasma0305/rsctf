@@ -2,6 +2,7 @@ import { HeadlessMantineProvider } from '@mantine/core'
 import { Window } from 'happy-dom'
 import i18next from 'i18next'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { act, createElement } from 'react'
 import { I18nextProvider } from 'react-i18next'
@@ -80,6 +81,13 @@ test('A&D presentation states keep managed and BYOC lifecycle guidance distinct'
     ),
     'byoc-stale'
   )
+})
+
+test('BYOC downloads use the authenticated Event-VPN proof client instead of plain links', () => {
+  const source = readFileSync('src/components/AdChallengePanel.tsx', 'utf8')
+  assert.match(source, /api\.instance\.get\(`\/api\/Game\/\$\{gameId\}\/Ad\/Byoc\/\$\{kind\}\/\$\{challengeId\}`/)
+  assert.match(source, /responseType: 'blob'/)
+  assert.doesNotMatch(source, /href=\{`\/api\/Game\/\$\{gameId\}\/Ad\/Byoc\//)
 })
 
 test('A&D failures stay retryable and a missing BYOC row never requests managed provisioning', async () => {
@@ -167,8 +175,9 @@ test('A&D failures stay retryable and a missing BYOC row never requests managed 
     assert.match(failedByocText, /access was revoked/i)
     assert.match(failedByocText, /self-hosted BYOC challenge/i)
     assert.doesNotMatch(failedByocText, /No service for your team yet|Ensure containers/i)
-    assert.ok(mounted.container.querySelector('a[href="/api/Game/13/Ad/Byoc/Setup/50"][download]'))
-    assert.ok(mounted.container.querySelector('a[href="/api/Game/13/Ad/Byoc/Compose/50"][download]'))
+    assert.ok(mounted.container.querySelector('button'))
+    assert.match(mounted.container.textContent ?? '', /Download setup\.sh/)
+    assert.match(mounted.container.textContent ?? '', /Bring your own service/)
 
     await act(async () => mounted.root.unmount())
     mounted = await mount(true)
@@ -200,8 +209,8 @@ test('A&D failures stay retryable and a missing BYOC row never requests managed 
     const byocText = mounted.container.textContent ?? ''
     assert.match(byocText, /self-hosted BYOC challenge/i)
     assert.doesNotMatch(byocText, /No service for your team yet|Ensure containers/i)
-    assert.ok(mounted.container.querySelector('a[href="/api/Game/13/Ad/Byoc/Setup/50"][download]'))
-    assert.ok(mounted.container.querySelector('a[href="/api/Game/13/Ad/Byoc/Compose/50"][download]'))
+    assert.match(mounted.container.textContent ?? '', /Download setup\.sh/)
+    assert.match(mounted.container.textContent ?? '', /Bring your own service/)
 
     await act(async () => mounted.root.unmount())
     mounted = await mount(
