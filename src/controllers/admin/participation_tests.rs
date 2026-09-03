@@ -72,10 +72,7 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
           locked BOOLEAN NOT NULL DEFAULT FALSE,
           deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
         );
-        CREATE TABLE "Configs" (
-          config_key TEXT PRIMARY KEY,
-          value TEXT
-        );
+        CREATE TABLE "Configs" (config_key TEXT PRIMARY KEY, value TEXT);
         CREATE TABLE "Divisions" (id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL);
         CREATE TABLE "Participations" (
           id INTEGER PRIMARY KEY,
@@ -436,23 +433,14 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
           koth_scoring_start_round INTEGER,
           deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
         );
-        CREATE TABLE "GameChallenges" (
-          game_id INTEGER NOT NULL,
-          "Type" SMALLINT NOT NULL
-        );
+        CREATE TABLE "GameChallenges" (game_id INTEGER NOT NULL, "Type" SMALLINT NOT NULL);
         CREATE TABLE "Teams" (
           id INTEGER PRIMARY KEY,
           locked BOOLEAN NOT NULL DEFAULT FALSE,
           deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
         );
-        CREATE TABLE "Configs" (
-          config_key TEXT PRIMARY KEY,
-          value TEXT
-        );
-        CREATE TABLE "Divisions" (
-          id INTEGER PRIMARY KEY,
-          game_id INTEGER NOT NULL
-        );
+        CREATE TABLE "Configs" (config_key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE "Divisions" (id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL);
         CREATE TABLE "Participations" (
           id INTEGER PRIMARY KEY,
           game_id INTEGER NOT NULL,
@@ -473,10 +461,8 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
           PRIMARY KEY (game_id, challenge_id, participation_id)
         );
         CREATE TABLE "KothApiSnapshots" (
-          target_id INTEGER PRIMARY KEY,
-          game_id INTEGER NOT NULL,
-          challenge_id INTEGER NOT NULL,
-          snapshot_hash BYTEA NOT NULL
+          target_id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
+          challenge_id INTEGER NOT NULL, snapshot_hash BYTEA NOT NULL
         );
         CREATE TABLE "KothApiSnapshotScores" (
           target_id INTEGER NOT NULL,
