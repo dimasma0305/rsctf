@@ -901,10 +901,14 @@ async fn find_participation(
 }
 
 /// Per-team scoreboard token: `{teamId}:Ed25519(privateKey, "RSCTF_TEAM_{teamId}")`.
-fn participation_token(g: &game::Model, team_id: i32) -> AppResult<String> {
+pub(crate) fn participation_token_from_key(private_key: &str, team_id: i32) -> AppResult<String> {
     let signature =
-        crate::utils::crypto_utils::game_sign(&g.private_key, &format!("RSCTF_TEAM_{team_id}"))?;
+        crate::utils::crypto_utils::game_sign(private_key, &format!("RSCTF_TEAM_{team_id}"))?;
     Ok(format!("{team_id}:{signature}"))
+}
+
+fn participation_token(g: &game::Model, team_id: i32) -> AppResult<String> {
+    participation_token_from_key(&g.private_key, team_id)
 }
 
 mod catalog;
@@ -915,7 +919,7 @@ mod cheat_report_cache;
 mod combined_scoreboard;
 mod containers;
 mod lookups;
-mod membership;
+pub(crate) mod membership;
 mod participation_review;
 mod play;
 mod scoreboard;

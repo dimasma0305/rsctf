@@ -8,6 +8,7 @@ import {
   Loader,
   Modal,
   ModalProps,
+  MultiSelect,
   Paper,
   Radio,
   ScrollArea,
@@ -51,7 +52,7 @@ import {
 } from '@Utils/AdminImportOperations'
 import { quoteSpreadsheetCsvCell } from '@Utils/Csv'
 import { httpErrorStatus, isRetryableHttpError } from '@Utils/HttpError'
-import api from '@Api'
+import api, { type Division } from '@Api'
 
 // ─── Backend response types ───────────────────────────────────────────────────
 
@@ -93,6 +94,8 @@ const NONE = '(none)'
 const PAGE_SIZE = 50
 const MAX_IMPORT_ROWS = 200
 const MAX_IMPORT_BYTES = 1024 * 1024
+const MAX_IMPORT_EVENTS = 10
+const MAX_TEAM_EVENT_ASSIGNMENTS = 200
 
 interface EditableRow {
   id: string
@@ -242,6 +245,10 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   const [filterText, setFilterText] = useState('')
   const [page, setPage] = useState(1)
   const [opts, setOpts] = useState<Options>({ emailConfirmed: true, teamMode: 'fromrow', singleTeamName: '' })
+  const [selectedEventIds, setSelectedEventIds] = useState<string[]>([])
+  const [eventDivisions, setEventDivisions] = useState<Record<string, Division[]>>({})
+  const [eventDivisionIds, setEventDivisionIds] = useState<Record<string, string | null>>({})
+  const [eventDivisionError, setEventDivisionError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [importResult, setImportResult] = useState<CsvImportResult | null>(null)
   const [completedOperationId, setCompletedOperationId] = useState<string | null>(null)
@@ -253,6 +260,11 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   const importOperation = useRef<AdminImportOperation | null>(null)
   const importRecoveryAttempt = useRef<string | null>(null)
   const onImportCompleteRef = useRef(onImportComplete)
+  const { data: importEventPage, error: importEventsError } = api.edit.useEditGetGames(
+    { count: 100, skip: 0 },
+    undefined,
+    props.opened
+  )
 
   useEffect(() => {
     onImportCompleteRef.current = onImportComplete
@@ -303,6 +315,27 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
       cancelled = true
     }
   }, [importResult, props.opened])
+
+  useEffect(() => {
+    if (!props.opened || opts.teamMode === 'none' || selectedEventIds.length === 0) return
+    const missing = selectedEventIds.filter((gameId) => eventDivisions[gameId] === undefined)
+    if (missing.length === 0) return
+    let cancelled = false
+    setEventDivisionError(null)
+    Promise.all(
+      missing.map(async (gameId) => [gameId, (await api.edit.editGetDivisions(Number(gameId))).data] as const)
+    )
+      .then((entries) => {
+        if (cancelled) return
+        setEventDivisions((current) => ({ ...current, ...Object.fromEntries(entries) }))
+      })
+      .catch(() => {
+        if (!cancelled) setEventDivisionError('Could not load divisions for the selected event. Try again.')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [eventDivisions, opts.teamMode, props.opened, selectedEventIds])
 
   // Step 0 → parse headers only
   const process = useCallback((text: string, fileName = 'imported-users.csv') => {
@@ -414,6 +447,26 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   }, [activeRows])
 
   const hasErrors = invalidEmails.length > 0 || duplicateEmails.size > 0
+  const importEventOptions = useMemo(
+    () =>
+      (importEventPage?.data ?? []).flatMap((game) =>
+        game.id == null ? [] : [{ value: String(game.id), label: game.title }]
+      ),
+    [importEventPage?.data]
+  )
+  const importTeamCount = useMemo(() => {
+    if (opts.teamMode === 'single') return opts.singleTeamName.trim() ? 1 : 0
+    if (opts.teamMode === 'none') return 0
+    return new Set(activeRows.map((row) => row.teamName.trim().toLowerCase()).filter(Boolean)).size
+  }, [activeRows, opts.singleTeamName, opts.teamMode])
+  const rowsMissingTeam =
+    selectedEventIds.length > 0 && opts.teamMode === 'fromrow' && activeRows.some((row) => !row.teamName.trim())
+  const eventAssignmentCount = importTeamCount * selectedEventIds.length
+  const eventAssignmentLimitExceeded = eventAssignmentCount > MAX_TEAM_EVENT_ASSIGNMENTS
+  const eventDivisionLoading = selectedEventIds.some((gameId) => eventDivisions[gameId] === undefined)
+  const eventDivisionMissing = selectedEventIds.some(
+    (gameId) => (eventDivisions[gameId]?.length ?? 0) > 0 && !eventDivisionIds[gameId]
+  )
 
   // Step 3 → run import
   const runImport = async () => {
@@ -438,6 +491,12 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
       })),
       teamMode: opts.teamMode,
       singleTeamName: opts.teamMode === 'single' ? opts.singleTeamName : undefined,
+      eventAssignments: selectedEventIds
+        .map((gameId) => ({
+          gameId: Number(gameId),
+          divisionId: eventDivisionIds[gameId] ? Number(eventDivisionIds[gameId]) : undefined,
+        }))
+        .sort((left, right) => left.gameId - right.gameId),
       emailConfirmed: opts.emailConfirmed,
     }
     let progressTimer: number | undefined
@@ -515,6 +574,10 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
     setFilterText('')
     setPage(1)
     setOpts({ emailConfirmed: true, teamMode: 'fromrow', singleTeamName: '' })
+    setSelectedEventIds([])
+    setEventDivisions({})
+    setEventDivisionIds({})
+    setEventDivisionError(null)
     setLoading(false)
     setImportResult(null)
     setCompletedOperationId(null)
@@ -1133,7 +1196,14 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                 </Text>
                 <Radio.Group
                   value={opts.teamMode}
-                  onChange={(v) => setOpts((o) => ({ ...o, teamMode: v as Options['teamMode'] }))}
+                  onChange={(v) => {
+                    const teamMode = v as Options['teamMode']
+                    setOpts((o) => ({ ...o, teamMode }))
+                    if (teamMode === 'none') {
+                      setSelectedEventIds([])
+                      setEventDivisionError(null)
+                    }
+                  }}
                 >
                   <Stack gap="sm">
                     <Radio value="fromrow" label="Use team name from each row (from the Team column in your CSV)" />
@@ -1154,6 +1224,89 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
               </Stack>
             </Paper>
 
+            <Paper p="md" withBorder>
+              <Stack gap="sm">
+                <div>
+                  <Text fw={600} size="sm">
+                    Event Enrollment
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    Optional. Enroll every imported team in one or more events as an accepted participant. Existing
+                    suspended or withdrawn participation remains unchanged. Accepted enrollment locks the team roster.
+                  </Text>
+                </div>
+                <MultiSelect
+                  label="Events for imported teams"
+                  description={`Select up to ${MAX_IMPORT_EVENTS} events. Leave empty to create teams without enrolling them.`}
+                  placeholder={opts.teamMode === 'none' ? 'Choose a team assignment first' : 'Select events'}
+                  data={importEventOptions}
+                  value={selectedEventIds}
+                  onChange={(gameIds) => {
+                    setSelectedEventIds(gameIds)
+                    setEventDivisionError(null)
+                  }}
+                  maxValues={MAX_IMPORT_EVENTS}
+                  disabled={opts.teamMode === 'none' || Boolean(importEventsError)}
+                  searchable
+                  clearable
+                  nothingFoundMessage="No events found"
+                  aria-label="Events for imported teams"
+                />
+                {importEventPage && (importEventPage.total ?? 0) > importEventPage.data.length && (
+                  <Alert color="orange" icon={<Icon path={mdiAlertCircleOutline} size={1} />}>
+                    Only the newest 100 events are available here. Archive or delete older events before assigning them
+                    through CSV import.
+                  </Alert>
+                )}
+                {importEventsError && (
+                  <Alert color="red" icon={<Icon path={mdiAlertCircleOutline} size={1} />}>
+                    Could not load events. You can still import users without event enrollment.
+                  </Alert>
+                )}
+                {selectedEventIds.map((gameId) => {
+                  const divisions = eventDivisions[gameId]
+                  if (!divisions?.length) return null
+                  const eventName =
+                    importEventOptions.find((event) => event.value === gameId)?.label ?? `Event #${gameId}`
+                  return (
+                    <Select
+                      key={gameId}
+                      label={`Division for ${eventName}`}
+                      placeholder="Select a division"
+                      data={divisions.map((division) => ({ value: String(division.id), label: division.name }))}
+                      value={eventDivisionIds[gameId] ?? null}
+                      onChange={(divisionId) =>
+                        setEventDivisionIds((current) => ({ ...current, [gameId]: divisionId }))
+                      }
+                      required
+                      searchable
+                    />
+                  )
+                })}
+                {eventDivisionLoading && selectedEventIds.length > 0 && (
+                  <Text size="xs" c="dimmed" aria-live="polite">
+                    Loading event divisions…
+                  </Text>
+                )}
+                {eventDivisionError && (
+                  <Alert color="red" icon={<Icon path={mdiAlertCircleOutline} size={1} />}>
+                    {eventDivisionError}
+                  </Alert>
+                )}
+                {rowsMissingTeam && (
+                  <Alert color="orange" icon={<Icon path={mdiAlertCircleOutline} size={1} />}>
+                    Every row needs a team name before events can be assigned.
+                  </Alert>
+                )}
+                {eventAssignmentLimitExceeded && (
+                  <Alert color="orange" icon={<Icon path={mdiAlertCircleOutline} size={1} />}>
+                    This would create {eventAssignmentCount} team-event assignments. Reduce the teams or events to at
+                    most {MAX_TEAM_EVENT_ASSIGNMENTS} assignments per import.
+                  </Alert>
+                )}
+              </Stack>
+            </Paper>
+
             <Group justify="space-between">
               <Button variant="outline" onClick={() => setStep(2)}>
                 ← Back to Edit
@@ -1161,7 +1314,14 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
               <Button
                 color="green"
                 leftSection={<Icon path={mdiUpload} size={0.9} />}
-                disabled={opts.teamMode === 'single' && !opts.singleTeamName.trim()}
+                disabled={
+                  (opts.teamMode === 'single' && !opts.singleTeamName.trim()) ||
+                  rowsMissingTeam ||
+                  eventAssignmentLimitExceeded ||
+                  eventDivisionLoading ||
+                  eventDivisionMissing ||
+                  Boolean(eventDivisionError)
+                }
                 onClick={runImport}
               >
                 Import {activeRows.length} Users

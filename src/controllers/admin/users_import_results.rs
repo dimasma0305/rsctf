@@ -20,6 +20,8 @@ pub struct ImportJobStatus {
 
 const MAX_IMPORT_ROWS: usize = 200;
 const MAX_IMPORT_TEAMS: usize = 100;
+const MAX_IMPORT_EVENTS: usize = 10;
+const MAX_IMPORT_TEAM_EVENT_ASSIGNMENTS: usize = 200;
 const MAX_IMPORT_FIELD_BYTES: usize = 512;
 const MAX_IMPORT_SOURCE_NAME_BYTES: usize = 255;
 
@@ -42,6 +44,27 @@ pub(super) fn validate_import_request(request: &ImportRequest) -> AppResult<()> 
     if !matches!(request.team_mode.as_str(), "fromrow" | "single" | "none") {
         return Err(AppError::bad_request("Invalid import team mode"));
     }
+    if request.event_assignments.len() > MAX_IMPORT_EVENTS {
+        return Err(AppError::payload_too_large(
+            "An import may assign teams to at most 10 events",
+        ));
+    }
+    if !request.event_assignments.is_empty() && request.team_mode == "none" {
+        return Err(AppError::bad_request(
+            "Event enrollment requires team assignment",
+        ));
+    }
+    let mut event_ids = std::collections::HashSet::new();
+    for assignment in &request.event_assignments {
+        if assignment.game_id <= 0 || assignment.division_id.is_some_and(|id| id <= 0) {
+            return Err(AppError::bad_request("Invalid import event assignment"));
+        }
+        if !event_ids.insert(assignment.game_id) {
+            return Err(AppError::bad_request(
+                "An event can be selected only once per import",
+            ));
+        }
+    }
     if request.source_name.as_deref().is_some_and(|value| {
         value.is_empty()
             || value.len() > MAX_IMPORT_SOURCE_NAME_BYTES
@@ -56,6 +79,17 @@ pub(super) fn validate_import_request(request: &ImportRequest) -> AppResult<()> 
         .is_some_and(|value| value.len() > MAX_IMPORT_FIELD_BYTES)
     {
         return Err(AppError::payload_too_large("Import field is too large"));
+    }
+    if request.team_mode == "single"
+        && request
+            .single_team_name
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+    {
+        return Err(AppError::bad_request(
+            "A team name is required for single-team import",
+        ));
     }
     let mut teams = std::collections::HashSet::new();
     let mut emails = std::collections::HashSet::new();
@@ -103,15 +137,56 @@ pub(super) fn validate_import_request(request: &ImportRequest) -> AppResult<()> 
             "Import contains more than 100 distinct teams",
         ));
     }
+    if !request.event_assignments.is_empty()
+        && request.team_mode == "fromrow"
+        && request.rows.iter().any(|row| {
+            row.team_name
+                .as_deref()
+                .map(str::trim)
+                .is_none_or(str::is_empty)
+        })
+    {
+        return Err(AppError::bad_request(
+            "Every imported row needs a team name when events are selected",
+        ));
+    }
+    let effective_team_count = match request.team_mode.as_str() {
+        "single" => usize::from(
+            request
+                .single_team_name
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|name| !name.is_empty()),
+        ),
+        "fromrow" => request
+            .rows
+            .iter()
+            .filter_map(|row| row.team_name.as_deref().map(str::trim))
+            .filter(|name| !name.is_empty())
+            .map(str::to_lowercase)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        _ => 0,
+    };
+    if effective_team_count.saturating_mul(request.event_assignments.len())
+        > MAX_IMPORT_TEAM_EVENT_ASSIGNMENTS
+    {
+        return Err(AppError::payload_too_large(
+            "An import may contain at most 200 team-event assignments",
+        ));
+    }
     Ok(())
 }
 
 pub(super) fn import_request_digest(request: &ImportRequest) -> AppResult<Vec<u8>> {
+    let mut event_assignments = request.event_assignments.clone();
+    event_assignments.sort_by_key(|assignment| (assignment.game_id, assignment.division_id));
     let canonical = serde_json::to_vec(&(
         &request.source_name,
         &request.rows,
         &request.team_mode,
         &request.single_team_name,
+        &event_assignments,
         request.email_confirmed,
     ))
     .map_err(|error| AppError::internal(format!("serialize import request: {error}")))?;
@@ -521,6 +596,7 @@ mod tests {
                 .collect(),
             team_mode: "none".to_string(),
             single_team_name: None,
+            event_assignments: Vec::new(),
             email_confirmed: true,
         }
     }
@@ -553,5 +629,85 @@ mod tests {
             validate_import_request(&request),
             Err(AppError::PayloadTooLarge(_))
         ));
+    }
+
+    #[test]
+    fn single_team_mode_requires_a_team_name() {
+        let mut request = request(Uuid::new_v4(), &["player@example.test"]);
+        request.team_mode = "single".to_string();
+        assert!(matches!(
+            validate_import_request(&request),
+            Err(AppError::BadRequest(_))
+        ));
+    }
+
+    #[test]
+    fn event_assignment_requires_a_team_for_every_row() {
+        let mut request = request(Uuid::new_v4(), &["player@example.test"]);
+        request.team_mode = "fromrow".to_string();
+        request.event_assignments = vec![super::super::users::ImportEventAssignment {
+            game_id: 7,
+            division_id: None,
+        }];
+        assert!(matches!(
+            validate_import_request(&request),
+            Err(AppError::BadRequest(_))
+        ));
+        request.rows[0].team_name = Some("Team Seven".to_string());
+        assert!(validate_import_request(&request).is_ok());
+    }
+
+    #[test]
+    fn duplicate_or_invalid_event_assignment_is_rejected() {
+        let mut request = request(Uuid::new_v4(), &["player@example.test"]);
+        request.team_mode = "single".to_string();
+        request.single_team_name = Some("One Team".to_string());
+        request.event_assignments = vec![
+            super::super::users::ImportEventAssignment {
+                game_id: 7,
+                division_id: None,
+            },
+            super::super::users::ImportEventAssignment {
+                game_id: 7,
+                division_id: Some(2),
+            },
+        ];
+        assert!(matches!(
+            validate_import_request(&request),
+            Err(AppError::BadRequest(_))
+        ));
+        request.event_assignments = vec![super::super::users::ImportEventAssignment {
+            game_id: 0,
+            division_id: None,
+        }];
+        assert!(matches!(
+            validate_import_request(&request),
+            Err(AppError::BadRequest(_))
+        ));
+    }
+
+    #[test]
+    fn event_assignments_are_part_of_the_idempotency_digest() {
+        let operation_id = Uuid::new_v4();
+        let mut request = request(operation_id, &["player@example.test"]);
+        let baseline = import_request_digest(&request).unwrap();
+        request.team_mode = "single".to_string();
+        request.single_team_name = Some("One Team".to_string());
+        request.event_assignments = vec![super::super::users::ImportEventAssignment {
+            game_id: 7,
+            division_id: None,
+        }];
+        let assigned = import_request_digest(&request).unwrap();
+        assert_ne!(baseline, assigned);
+
+        request
+            .event_assignments
+            .push(super::super::users::ImportEventAssignment {
+                game_id: 3,
+                division_id: Some(4),
+            });
+        let first_order = import_request_digest(&request).unwrap();
+        request.event_assignments.reverse();
+        assert_eq!(first_order, import_request_digest(&request).unwrap());
     }
 }

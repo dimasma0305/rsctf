@@ -5,6 +5,7 @@ use super::users_bulk_identity::{
     ImportCredentialWrite, ImportProvision, ImportUserWrite,
 };
 use super::users_credential_admission::admin_credential_scopes;
+use super::users_import_events::{enroll_imported_teams, validate_import_event_assignments};
 use super::users_import_results::{
     claim_import_row, decrypt_import_result, import_request_digest, persist_and_push_import_result,
     summarize_import, validate_import_request, ImportRowClaim,
@@ -154,7 +155,16 @@ pub struct ImportRow {
     pub phone: Option<String>,
 }
 
-/// The import request (`{ rows, teamMode, singleTeamName?, emailConfirmed }`).
+/// One admin-selected event (and, when required, its division) for imported teams.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportEventAssignment {
+    pub game_id: i32,
+    #[serde(default)]
+    pub division_id: Option<i32>,
+}
+
+/// The import request (`{ rows, teamMode, eventAssignments, emailConfirmed }`).
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportRequest {
@@ -168,6 +178,8 @@ pub struct ImportRequest {
     pub team_mode: String,
     #[serde(default)]
     pub single_team_name: Option<String>,
+    #[serde(default)]
+    pub event_assignments: Vec<ImportEventAssignment>,
     #[serde(default)]
     pub email_confirmed: bool,
 }
@@ -465,6 +477,7 @@ pub async fn import_users(
     Json(req): Json<ImportRequest>,
 ) -> AppResult<Response> {
     validate_import_request(&req)?;
+    validate_import_event_assignments(st.pg(), &req.event_assignments).await?;
     let request_digest = import_request_digest(&req)?;
     let normalized_emails = req
         .rows
@@ -725,7 +738,31 @@ pub async fn import_users(
         out.push(result);
     }
 
+    let enrollment_count = match enroll_imported_teams(&st, &req.event_assignments, &out).await {
+        Ok(count) => count,
+        Err(AppError::BadRequest(reason))
+        | Err(AppError::NotFound(reason))
+        | Err(AppError::Validation(reason)) => {
+            return Err(AppError::conflict(format!(
+                "User rows are saved, but event enrollment could not finish: {reason}. Retry this same import after correcting the event or roster."
+            )));
+        }
+        Err(error) => return Err(error),
+    };
     complete_import_job(&st, req.operation_id).await?;
+    if enrollment_count > 0 {
+        crate::services::audit::info(
+            &st,
+            "AdminController",
+            Some(caller.name.clone()),
+            None,
+            format!(
+                "CSV user import {} completed {} team-event enrollments",
+                req.operation_id, enrollment_count
+            ),
+        )
+        .await;
+    }
     let result = summarize_import(out, req.rows.len());
 
     crate::services::audit::info(

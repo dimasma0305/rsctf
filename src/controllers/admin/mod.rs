@@ -953,6 +953,7 @@ mod users;
 mod users_bulk_identity;
 mod users_credential_admission;
 mod users_credentials;
+mod users_import_events;
 mod users_import_history;
 mod users_import_results;
 mod users_mutate;

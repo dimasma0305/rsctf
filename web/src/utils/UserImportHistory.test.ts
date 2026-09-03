@@ -31,3 +31,16 @@ test('import history remains usable on narrow screens and names icon actions', (
   assert.match(history, /aria-label={`Send password setup link to \$\{row\.email\}`}/)
   assert.match(history, /aria-live="polite"/)
 })
+
+test('CSV import can enroll teams into bounded multi-event selections', () => {
+  const importer = read('src/components/admin/UserImportModal.tsx')
+
+  assert.match(importer, /MAX_IMPORT_EVENTS = 10/)
+  assert.match(importer, /MAX_TEAM_EVENT_ASSIGNMENTS = 200/)
+  assert.match(importer, /label="Events for imported teams"/)
+  assert.match(importer, /eventAssignments: selectedEventIds/)
+  assert.match(importer, /Division for \$\{eventName\}/)
+  assert.match(importer, /Every row needs a team name before events can be assigned/)
+  assert.match(importer, /Existing\s+suspended or withdrawn participation remains unchanged/)
+  assert.match(importer, /Accepted enrollment locks the team roster/)
+})

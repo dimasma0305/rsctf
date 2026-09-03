@@ -203,7 +203,7 @@ pub(super) async fn existing_team_participation_locked(
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
-pub(super) fn participation_status(value: i16) -> AppResult<ParticipationStatus> {
+pub(crate) fn participation_status(value: i16) -> AppResult<ParticipationStatus> {
     match value {
         value if value == ParticipationStatus::Pending as i16 => Ok(ParticipationStatus::Pending),
         value if value == ParticipationStatus::Accepted as i16 => Ok(ParticipationStatus::Accepted),
@@ -364,21 +364,21 @@ pub(super) async fn resolve_join_policy_locked(
     })
 }
 
-pub(super) struct JoinMutation<'a> {
-    pub(super) user_id: Uuid,
-    pub(super) game_id: i32,
-    pub(super) team_id: i32,
-    pub(super) division_id: Option<i32>,
-    pub(super) target_status: ParticipationStatus,
-    pub(super) token: &'a str,
-    pub(super) member_limit: i32,
-    pub(super) scoring_started: bool,
+pub(crate) struct JoinMutation<'a> {
+    pub(crate) user_id: Uuid,
+    pub(crate) game_id: i32,
+    pub(crate) team_id: i32,
+    pub(crate) division_id: Option<i32>,
+    pub(crate) target_status: ParticipationStatus,
+    pub(crate) token: &'a str,
+    pub(crate) member_limit: i32,
+    pub(crate) scoring_started: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct PersistedGameJoin {
-    pub(super) participation_id: i32,
-    pub(super) status: ParticipationStatus,
+pub(crate) struct PersistedGameJoin {
+    pub(crate) participation_id: i32,
+    pub(crate) status: ParticipationStatus,
 }
 
 impl PersistedGameJoin {
@@ -390,7 +390,7 @@ impl PersistedGameJoin {
 /// Persist the participation and its user link in the transaction that owns the
 /// ordered user/game + team advisory locks. Any conflict therefore rolls back a
 /// newly-created participation instead of leaving a scoring-visible orphan.
-pub(super) async fn persist_game_join_locked(
+pub(crate) async fn persist_game_join_locked(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     mutation: JoinMutation<'_>,
 ) -> AppResult<PersistedGameJoin> {
