@@ -223,7 +223,7 @@ async fn enroll_team_in_event(
                 )));
             }
             crate::services::participation_evidence::ensure_evidence_preserving_update(
-                &mut **transaction,
+                transaction,
                 participation_id,
                 current_status,
                 current_status,
@@ -293,7 +293,7 @@ async fn enroll_team_in_event(
         ParticipationStatus::Pending | ParticipationStatus::Rejected
     ) {
         crate::services::participation_evidence::ensure_evidence_preserving_update(
-            &mut **transaction,
+            transaction,
             participation_id,
             current_status,
             ParticipationStatus::Accepted,
@@ -351,7 +351,7 @@ async fn enroll_team_in_event(
             .await?;
         }
         crate::controllers::edit::enqueue_accepted_provisioning(
-            &mut **transaction,
+            transaction,
             assignment.game_id,
             participation_id,
         )
