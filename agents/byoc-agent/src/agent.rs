@@ -777,6 +777,14 @@ mod websocket_stream_tests {
         ));
         let capped_delay = ReconnectPolicy::default().delay_with_sample(&capped, 0);
         assert_eq!(capped_delay, Some(MAXIMUM_SERVER_RETRY_AFTER));
+
+        let ended = handshake_failure(rejection(
+            StatusCode::TOO_EARLY,
+            "retry-after-event-close",
+            Some(30),
+        ));
+        assert!(!ended.terminal);
+        assert!(ReconnectPolicy::default().delay(&ended).is_some());
     }
 
     #[test]

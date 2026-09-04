@@ -229,7 +229,7 @@ async fn pending_game_or_challenge_cannot_issue_a_byoc_grant() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-async fn agent_authorization_distinguishes_prestart_retry_from_terminal_revocation() {
+async fn agent_authorization_distinguishes_event_window_retries_from_terminal_revocation() {
     let (admin, pool, schema) = test_pool().await;
     let bearer = agent_token("team-secret");
     let start = chrono::DateTime::from_timestamp_micros(
@@ -252,6 +252,9 @@ async fn agent_authorization_distinguishes_prestart_retry_from_terminal_revocati
             authorization.release().await.unwrap();
             panic!("a pre-start agent was admitted")
         }
+        ByocAgentAuthorization::RetryAfterEventClose => {
+            panic!("a pre-start capability was classified as an ended event")
+        }
         ByocAgentAuthorization::Terminal => panic!("a pre-start capability became terminal"),
     }
 
@@ -265,7 +268,7 @@ async fn agent_authorization_distinguishes_prestart_retry_from_terminal_revocati
         authorize_byoc_agent_capability(&pool, 3, 11, 13, &bearer)
             .await
             .unwrap(),
-        ByocAgentAuthorization::Terminal
+        ByocAgentAuthorization::RetryAfterEventClose
     ));
 
     sqlx::query(r#"UPDATE "Games" SET start_time_utc = $1, end_time_utc = $2 WHERE id = 3"#)

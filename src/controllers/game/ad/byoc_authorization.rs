@@ -97,6 +97,7 @@ impl From<ByocGrantRow> for ByocGrant {
 pub(crate) enum ByocAgentAuthorization {
     Authorized(ByocCapabilityFence),
     RetryAt(chrono::DateTime<chrono::Utc>),
+    RetryAfterEventClose,
     Terminal,
 }
 
@@ -188,8 +189,9 @@ pub(crate) async fn authorize_byoc_capability(
     .await
 }
 
-/// Classify agent admission without turning a valid pre-start capability into
-/// a permanent rejection. All other ineligible/revoked states are terminal.
+/// Classify agent admission without turning a structurally valid capability
+/// outside the event window into a permanent rejection. An operator may move
+/// either boundary after it passes; revoked credentials remain terminal.
 pub(crate) async fn authorize_byoc_agent_capability(
     pool: &sqlx::PgPool,
     game_id: i32,
@@ -218,7 +220,7 @@ pub(crate) async fn authorize_byoc_agent_capability(
     }
     if now > authorization.grant.end_time_utc {
         authorization.release().await?;
-        return Ok(ByocAgentAuthorization::Terminal);
+        return Ok(ByocAgentAuthorization::RetryAfterEventClose);
     }
     Ok(ByocAgentAuthorization::Authorized(authorization))
 }

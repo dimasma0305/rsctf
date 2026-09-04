@@ -55,6 +55,7 @@ const DEFAULT_BYOC_FALLBACK_IMAGE: &str =
 const BYOC_SECRET_CACHE_CONTROL: &str = "private, no-store";
 const BYOC_AGENT_STATE_HEADER: &str = "x-rsctf-byoc-state";
 const BYOC_AGENT_RETRY_AFTER_SECONDS: u64 = 5;
+const BYOC_AGENT_CLOSED_RETRY_AFTER_SECONDS: u64 = 30;
 const MAX_CONCURRENT_AGENT_HANDSHAKES: usize = 128;
 const MAX_AGENT_HANDSHAKE_PARTICIPATIONS: usize = 4_096;
 const MAX_AGENT_HANDSHAKE_CAPABILITIES: usize = 4_096;
@@ -680,11 +681,20 @@ pub async fn byoc_agent(
                 Some(retry_after),
             );
         }
+        Ok(super::byoc_authorization::ByocAgentAuthorization::RetryAfterEventClose) => {
+            return byoc_agent_state_response(
+                StatusCode::TOO_EARLY,
+                "The event has ended; the BYOC agent will keep retrying in case its end time is extended",
+                "retry-after-event-close",
+                false,
+                Some(BYOC_AGENT_CLOSED_RETRY_AFTER_SECONDS),
+            );
+        }
         Ok(super::byoc_authorization::ByocAgentAuthorization::Terminal) => {
             return byoc_agent_state_response(
                 StatusCode::FORBIDDEN,
-                "The BYOC capability is invalid, revoked, or the event has closed",
-                "terminal-revoked-or-closed",
+                "The BYOC capability is invalid or revoked",
+                "terminal-revoked",
                 true,
                 None,
             );

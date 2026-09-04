@@ -189,16 +189,33 @@ fn agent_handshake_states_are_machine_readable_and_retry_aware() {
     );
     assert_eq!(transient.headers().get(header::RETRY_AFTER).unwrap(), "45");
 
+    let ended = byoc_agent_state_response(
+        StatusCode::TOO_EARLY,
+        "ended",
+        "retry-after-event-close",
+        false,
+        Some(BYOC_AGENT_CLOSED_RETRY_AFTER_SECONDS),
+    );
+    assert_eq!(ended.status(), StatusCode::TOO_EARLY);
+    assert_eq!(
+        ended.headers().get(BYOC_AGENT_STATE_HEADER).unwrap(),
+        "retry-after-event-close"
+    );
+    assert_eq!(
+        ended.headers().get(header::RETRY_AFTER).unwrap(),
+        BYOC_AGENT_CLOSED_RETRY_AFTER_SECONDS.to_string().as_str()
+    );
+
     let terminal = byoc_agent_state_response(
         StatusCode::FORBIDDEN,
         "revoked",
-        "terminal-revoked-or-closed",
+        "terminal-revoked",
         true,
         None,
     );
     assert_eq!(
         terminal.headers().get(BYOC_AGENT_STATE_HEADER).unwrap(),
-        "terminal-revoked-or-closed"
+        "terminal-revoked"
     );
     assert!(terminal.headers().get(header::RETRY_AFTER).is_none());
 }
