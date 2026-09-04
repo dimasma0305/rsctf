@@ -438,15 +438,16 @@ pub(crate) async fn persist_game_join_locked(
         .zip(existing.as_ref().map(|(id, _, _)| *id))
         .is_some_and(|(historical_id, target_id)| historical_id == target_id);
     if mutation.scoring_started
-        && (rejected_participation_id.is_some()
-            || !existing.as_ref().is_some_and(|(_, status, _)| {
-                *status == ParticipationStatus::Accepted as i16
-                    || *status == ParticipationStatus::Suspended as i16
-            }))
+        && !existing.as_ref().is_some_and(|(_, status, _)| {
+            *status == ParticipationStatus::Accepted as i16
+                || *status == ParticipationStatus::Suspended as i16
+        })
     {
         // Late teammates may attach to the team's already-stable scored
-        // participation. Never create a new scored participant, reactivate a
-        // rejected one, or move a historical user link after scoring starts.
+        // participation. Never create a new scored participant or reactivate a
+        // rejected one after scoring starts. An evidence-free rejected link
+        // from another team may be replaced below; durable evidence still
+        // prevents moving its historical actor attribution.
         return Err(AppError::bad_request(
             "A late teammate can only join an existing scored team",
         ));

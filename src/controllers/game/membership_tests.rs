@@ -630,7 +630,7 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
             .await
             .unwrap();
     locks.acquire_game_advisory().await.unwrap();
-    let replacement_error = persist_game_join_locked(
+    let replacement = persist_game_join_locked(
         locks.transaction_mut(),
         JoinMutation {
             user_id: replacement_user,
@@ -644,11 +644,9 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
         },
     )
     .await
-    .unwrap_err();
-    assert_eq!(
-        replacement_error.to_string(),
-        "A late teammate can only join an existing scored team"
-    );
+    .expect("an evidence-free rejected link blocked a late teammate");
+    assert_eq!(replacement.participation_id, accepted_id);
+    assert_eq!(replacement.status, ParticipationStatus::Accepted);
     locks.release().await.unwrap();
     assert_eq!(
         sqlx::query_scalar::<_, i32>(
@@ -660,16 +658,17 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
         .fetch_one(&pool)
         .await
         .unwrap(),
-        rejected_id,
-        "the scoring fence removed or replaced the historical link"
+        accepted_id,
+        "the late teammate did not inherit the existing scored participation"
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Participations" WHERE id = $1"#)
-            .bind(accepted_id)
+            .bind(rejected_id)
             .fetch_one(&pool)
             .await
             .unwrap(),
-        1
+        0,
+        "the evidence-free rejected participation was left orphaned"
     );
 
     sqlx::query(r#"UPDATE "Participations" SET status = $1 WHERE id = $2"#)
