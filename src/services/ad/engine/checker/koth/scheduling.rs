@@ -14,6 +14,11 @@ pub(super) const KOTH_COMPLETION_MARGIN: Duration = Duration::from_secs(4);
 pub(super) const API_SNAPSHOT_ARRIVAL_GRACE: Duration = Duration::from_secs(6);
 pub(super) const API_SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(super) const API_MAX_PROBE_BUDGET: Duration = Duration::from_secs(10);
+// Begin the side-effect-free probe before the fixed evidence cutoff. The
+// snapshot reader still waits for evidence through that cutoff, while this
+// head start prevents several API hills from consuming one another's durable
+// persistence runway on the shared game-control path.
+pub(super) const API_PROBE_PRESTART_SLACK: Duration = Duration::from_secs(5);
 
 pub(super) fn api_settlement_start_instant(
     round_end: DateTime<Utc>,
@@ -23,7 +28,8 @@ pub(super) fn api_settlement_start_instant(
     let cutoff = round_end
         - chrono::Duration::seconds(
             crate::services::ad::engine::koth_api::API_WAVE_SETTLEMENT_LAG_SECONDS,
-        );
+        )
+        - chrono::Duration::from_std(API_PROBE_PRESTART_SLACK).unwrap_or_default();
     let remaining = cutoff
         .signed_duration_since(wall_now)
         .to_std()

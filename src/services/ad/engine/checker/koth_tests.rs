@@ -1,5 +1,6 @@
 use super::scheduling::{
-    api_snapshot_arrival_deadline, api_snapshot_arrival_is_pending, API_SNAPSHOT_ARRIVAL_GRACE,
+    api_snapshot_arrival_deadline, api_snapshot_arrival_is_pending, API_PROBE_PRESTART_SLACK,
+    API_SNAPSHOT_ARRIVAL_GRACE,
 };
 use super::*;
 use sqlx::{Connection, PgConnection};
@@ -93,7 +94,7 @@ fn api_snapshot_arrival_wait_does_not_settle_an_early_empty_heartbeat() {
 }
 
 #[test]
-fn api_checker_starts_at_the_lagged_wave_cutoff() {
+fn api_checker_prestarts_before_the_lagged_wave_cutoff() {
     let wall_now = Utc::now();
     let monotonic_now = tokio::time::Instant::now();
     let round_end = wall_now + chrono::Duration::seconds(60);
@@ -106,6 +107,7 @@ fn api_checker_starts_at_the_lagged_wave_cutoff() {
                 )
                 .unwrap()
             )
+            - API_PROBE_PRESTART_SLACK
     );
 }
 
