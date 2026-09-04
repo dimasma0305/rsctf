@@ -62,15 +62,49 @@ WITH source AS MATERIALIZED (
            0, 0, source.container_image, source.memory_limit,
            source.storage_limit, source.cpu_count, source.expose_port,
            source.workload_spec, source.file_name, source.flag_template, $3,
-           NULL, NULL, NULL, NULL, NULL, NULL, $4, NULL, NULL, NULL, NULL,
+           NULL, NULL, NULL, NULL, NULL, NULL,
+           CASE
+             WHEN source.build_status = $8
+              AND NULLIF(BTRIM(source.build_image_digest), '') IS NOT NULL
+             THEN $8 ELSE $4
+           END,
+           CASE
+             WHEN source.build_status = $8
+              AND NULLIF(BTRIM(source.build_image_digest), '') IS NOT NULL
+             THEN source.build_image_digest ELSE NULL
+           END,
+           CASE
+             WHEN source.build_status = $8
+              AND NULLIF(BTRIM(source.build_image_digest), '') IS NOT NULL
+             THEN 'Inherited verified immutable image from source event clone.'
+             ELSE NULL
+           END,
+           NULL, NULL,
            NULL, source.enable_traffic_capture, FALSE,
            source.disable_blood_bonus, source.original_score,
            source.min_score_rate, source.difficulty, $5, NULL, $6, $7,
            NULL, NULL, NULL, $4, NULL, source.solve_receipt_mode,
-           source.receipt_verifier_identity, NULL, FALSE, FALSE, FALSE,
+           source.receipt_verifier_identity, source.ad_checker_image, FALSE, FALSE, FALSE,
            FALSE, source.ad_scoring_weight
       FROM source
     RETURNING id
+), observer_secrets AS MATERIALIZED (
+    SELECT source.clone_id,
+           'koth_api_' || REPLACE(gen_random_uuid()::text, '-', '')
+                       || REPLACE(gen_random_uuid()::text, '-', '') AS secret
+      FROM source
+      JOIN "KothApiObservers" observer
+        ON observer.game_id = $1 AND observer.challenge_id = source.id
+     WHERE EXISTS (SELECT 1 FROM inserted WHERE inserted.id = source.clone_id)
+), copied_observers AS (
+    INSERT INTO "KothApiObservers" (
+        challenge_id, game_id, hmac_secret, secret_hint,
+        created_at, rotated_at, last_used_at
+    )
+    SELECT clone_id, $2, secret, '…' || RIGHT(secret, 6),
+           clock_timestamp(), clock_timestamp(), NULL
+      FROM observer_secrets
+    RETURNING challenge_id
 ), copied_flags AS (
     INSERT INTO "FlagContexts" (
         flag, is_occupied, attachment_id, challenge_id, exercise_id
@@ -85,7 +119,8 @@ WITH source AS MATERIALIZED (
     RETURNING id
 )
 SELECT (SELECT COUNT(*) FROM inserted)::bigint,
-       (SELECT COUNT(*) FROM copied_flags)::bigint
+       (SELECT COUNT(*) FROM copied_flags)::bigint,
+       (SELECT COUNT(*) FROM copied_observers)::bigint
 "#;
 
 #[derive(sqlx::FromRow)]
@@ -243,10 +278,11 @@ pub async fn clone_game(
     clone_configuration.end_time_utc = model.end_time_utc;
     clone_configuration.freeze_time_utc = None;
     clone_configuration.validate()?;
-    let (challenge_count, flag_count, source_revision) = if model.include_challenges {
+    let (challenge_count, flag_count, observer_count, source_revision) = if model.include_challenges
+    {
         // Admit by cheap counts before any row JSON/string aggregation. Legacy
         // oversized sources therefore fail without materializing their content.
-        let counts: (i64, i64) = sqlx::query_as(
+        let counts: (i64, i64, i64) = sqlx::query_as(
             r#"SELECT (SELECT COUNT(*) FROM (
                           SELECT 1 FROM "GameChallenges"
                            WHERE game_id = $1 LIMIT $2
@@ -260,7 +296,9 @@ pub async fn clone_game(
                              AND flag.is_occupied = FALSE
                            GROUP BY flag.challenge_id, flag.flag
                            LIMIT $3
-                      ) bounded_flags)"#,
+                      ) bounded_flags),
+                      (SELECT COUNT(*) FROM "KothApiObservers"
+                        WHERE game_id = $1)"#,
         )
         .bind(id)
         .bind(MAX_CLONE_CHALLENGES + 1)
@@ -339,9 +377,9 @@ pub async fn clone_game(
             .fetch_one(&mut **source_control.transaction_mut())
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-        (counts.0, counts.1, revision)
+        (counts.0, counts.1, counts.2, revision)
     } else {
-        (0, 0, game_revision)
+        (0, 0, 0, game_revision)
     };
     let inserted = sqlx::query(
         r#"INSERT INTO "GameCloneOperations" (
@@ -432,7 +470,7 @@ pub async fn clone_game(
     .map_err(|error| AppError::internal(error.to_string()))?;
 
     if model.include_challenges {
-        let copied: (i64, i64) = sqlx::query_as(CLONE_CHALLENGES_SQL)
+        let copied: (i64, i64, i64) = sqlx::query_as(CLONE_CHALLENGES_SQL)
             .bind(id)
             .bind(new_game_id)
             .bind(ChallengeReviewStatus::Active as i16)
@@ -440,10 +478,11 @@ pub async fn clone_game(
             .bind(ScoreCurve::Standard as i16)
             .bind(NetworkMode::Open as i16)
             .bind(ChallengeVariantMode::Disabled as i16)
+            .bind(ChallengeBuildStatus::Success as i16)
             .fetch_one(&mut **source_control.transaction_mut())
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-        if copied != (challenge_count, flag_count) {
+        if copied != (challenge_count, flag_count, observer_count) {
             return Err(AppError::internal("Clone row-count integrity check failed"));
         }
     }
@@ -509,6 +548,172 @@ mod clone_contract_tests {
         assert!(CLONE_CHALLENGES_SQL.contains("flag.is_occupied = FALSE"));
         assert!(CLONE_CHALLENGES_SQL.contains("DISTINCT ON (source.clone_id, flag.flag)"));
         assert!(!CLONE_CHALLENGES_SQL.contains("SELECT *"));
+    }
+
+    #[test]
+    fn clone_copy_keeps_only_complete_verified_runtime_provenance() {
+        assert!(CLONE_CHALLENGES_SQL.contains("source.build_status = $8"));
+        assert!(CLONE_CHALLENGES_SQL
+            .contains("NULLIF(BTRIM(source.build_image_digest), '') IS NOT NULL"));
+        assert!(CLONE_CHALLENGES_SQL.contains("THEN source.build_image_digest ELSE NULL"));
+        assert!(CLONE_CHALLENGES_SQL.contains("source.ad_checker_image"));
+        assert!(CLONE_CHALLENGES_SQL.contains("JOIN \"KothApiObservers\" observer"));
+        assert!(CLONE_CHALLENGES_SQL.contains("gen_random_uuid()"));
+        assert!(!CLONE_CHALLENGES_SQL.contains("observer.hmac_secret"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires migrated PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn cloned_runtime_is_ready_only_when_source_provenance_is_complete() {
+        use sqlx::Connection;
+
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to PostgreSQL");
+        let mut connection = sqlx::PgConnection::connect(&database_url).await.unwrap();
+        let mut transaction = connection.begin().await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TEMP TABLE "GameChallenges"
+              (LIKE public."GameChallenges" INCLUDING DEFAULTS INCLUDING IDENTITY);
+            CREATE TEMP TABLE "FlagContexts"
+              (LIKE public."FlagContexts" INCLUDING DEFAULTS INCLUDING IDENTITY);
+            CREATE TEMP TABLE "KothApiObservers"
+              (LIKE public."KothApiObservers" INCLUDING DEFAULTS);
+            CREATE TEMP SEQUENCE clone_challenge_id_seq;
+            ALTER TABLE "GameChallenges" ALTER COLUMN id
+              SET DEFAULT nextval('clone_challenge_id_seq');
+            ALTER SEQUENCE clone_challenge_id_seq OWNED BY "GameChallenges".id;
+            CREATE TEMP SEQUENCE clone_flag_id_seq;
+            ALTER TABLE "FlagContexts" ALTER COLUMN id
+              SET DEFAULT nextval('clone_flag_id_seq');
+            ALTER SEQUENCE clone_flag_id_seq OWNED BY "FlagContexts".id;
+            INSERT INTO "GameChallenges" (
+              game_id, title, content, category, "Type", is_enabled,
+              submission_limit, accepted_count, submission_count, review_status,
+              build_status, build_image_digest, container_image, ad_checker_image,
+              enable_traffic_capture, enable_shared_container, disable_blood_bonus,
+              original_score, min_score_rate, difficulty, score_curve,
+              ad_allow_egress, ad_allow_self_reset, ad_ssh_requires_flag, ad_self_hosted
+            ) VALUES
+              (7, 'verified', '', 0, 5, TRUE, 20, 0, 0, 0, 1,
+               'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+               'rsctf/source:latest', '/checkers/verified', FALSE, FALSE, FALSE,
+               1000, 0.25, 4, 0, FALSE, FALSE, FALSE, FALSE),
+              (7, 'missing digest', '', 0, 5, TRUE, 20, 0, 0, 0, 1,
+               ' ', 'rsctf/missing:latest', '/checkers/missing', FALSE, FALSE, FALSE,
+               1000, 0.25, 4, 0, FALSE, FALSE, FALSE, FALSE),
+              (7, 'failed', '', 0, 5, TRUE, 20, 0, 0, 0, 2,
+               'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+               'rsctf/failed:latest', '/checkers/failed', FALSE, FALSE, FALSE,
+               1000, 0.25, 4, 0, FALSE, FALSE, FALSE, FALSE);
+            INSERT INTO "KothApiObservers"
+              (challenge_id, game_id, hmac_secret, secret_hint)
+            SELECT id, game_id,
+                   'koth_api_source_secret_that_must_not_be_reused_1234567890',
+                   '…567890'
+              FROM "GameChallenges"
+             WHERE game_id = 7 AND title IN ('verified', 'failed');
+            "#,
+        )
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+
+        let copied: (i64, i64, i64) = sqlx::query_as(CLONE_CHALLENGES_SQL)
+            .bind(7_i32)
+            .bind(8_i32)
+            .bind(ChallengeReviewStatus::Active as i16)
+            .bind(ChallengeBuildStatus::None as i16)
+            .bind(ScoreCurve::Standard as i16)
+            .bind(NetworkMode::Open as i16)
+            .bind(ChallengeVariantMode::Disabled as i16)
+            .bind(ChallengeBuildStatus::Success as i16)
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+        assert_eq!(copied, (3, 0, 2));
+
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                i16,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                bool,
+            ),
+        >(
+            r#"SELECT title, build_status, build_image_digest, last_build_log,
+                      ad_checker_image, is_enabled
+                 FROM "GameChallenges"
+                WHERE game_id = 8 ORDER BY title"#,
+        )
+        .fetch_all(&mut *transaction)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows[0],
+            (
+                "failed".to_string(),
+                0,
+                None,
+                None,
+                Some("/checkers/failed".to_string()),
+                false
+            )
+        );
+        assert_eq!(
+            rows[1],
+            (
+                "missing digest".to_string(),
+                0,
+                None,
+                None,
+                Some("/checkers/missing".to_string()),
+                false
+            )
+        );
+        assert_eq!(rows[2].0, "verified");
+        assert_eq!(rows[2].1, ChallengeBuildStatus::Success as i16);
+        assert_eq!(
+            rows[2].2.as_deref(),
+            Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            rows[2].3.as_deref(),
+            Some("Inherited verified immutable image from source event clone.")
+        );
+        assert_eq!(rows[2].4.as_deref(), Some("/checkers/verified"));
+        assert!(!rows[2].5);
+
+        let observers: Vec<(String, String, String, i32)> = sqlx::query_as(
+            r#"SELECT challenge.title, observer.hmac_secret,
+                      observer.secret_hint, observer.game_id
+                 FROM "KothApiObservers" observer
+                 JOIN "GameChallenges" challenge ON challenge.id = observer.challenge_id
+                WHERE observer.game_id = 8
+                ORDER BY challenge.title"#,
+        )
+        .fetch_all(&mut *transaction)
+        .await
+        .unwrap();
+        assert_eq!(observers.len(), 2);
+        assert_eq!(observers[0].0, "failed");
+        assert_eq!(observers[1].0, "verified");
+        assert_ne!(observers[0].1, observers[1].1);
+        for (_, secret, hint, game_id) in observers {
+            assert!(secret.starts_with("koth_api_"));
+            assert_eq!(secret.len(), 73);
+            assert_ne!(
+                secret,
+                "koth_api_source_secret_that_must_not_be_reused_1234567890"
+            );
+            assert_eq!(hint, format!("…{}", &secret[secret.len() - 6..]));
+            assert_eq!(game_id, 8);
+        }
+        transaction.rollback().await.unwrap();
     }
 
     #[test]
