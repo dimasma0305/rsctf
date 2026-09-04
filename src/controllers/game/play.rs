@@ -255,8 +255,9 @@ pub async fn game_details(
     };
 
     // Challenge metadata follows the same kickoff and accepted-participation
-    // boundary as playable challenge details. Practice mode changes scoring and
-    // post-event reuse; it never upgrades pending/rejected participation.
+    // boundary as playable challenge details. Practice mode permits post-event
+    // reuse without changing official scores; it never upgrades pending/rejected
+    // participation.
     let can_view = can_view_challenge_catalog(
         is_monitor,
         part.as_ref().map(|participation| participation.status),

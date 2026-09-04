@@ -486,9 +486,8 @@ WITH solver_base AS (
            team.name AS team_name,
            team.avatar_hash AS team_avatar_hash,
            account.user_name,
-           (game.practice_mode OR
-              (submission.submit_time_utc >= game.start_time_utc AND
-               submission.submit_time_utc < game.end_time_utc)) AND
+           (submission.submit_time_utc >= game.start_time_utc AND
+              submission.submit_time_utc < game.end_time_utc) AND
            (challenge.deadline_utc IS NULL OR
               submission.submit_time_utc <= challenge.deadline_utc) AS is_valid,
            CASE
@@ -523,6 +522,8 @@ WITH solver_base AS (
         ON permission.division_id = division.id
        AND permission.challenge_id = challenge.id
      WHERE first_solve.challenge_id = $2
+       AND submission.submit_time_utc >= game.start_time_utc
+       AND submission.submit_time_utc < game.end_time_utc
        AND ($6::timestamptz IS NULL OR submission.submit_time_utc < $6)
 ), numbered AS (
     SELECT solver_base.*,

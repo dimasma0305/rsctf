@@ -13,6 +13,10 @@ const FIRST_SOLVE_SCOREBOARD_SQL: &str = r#"SELECT submission.participation_id, 
            ON submission.id = first_solve.submission_id
           AND submission.participation_id = first_solve.participation_id
           AND submission.challenge_id = first_solve.challenge_id
+         JOIN "Games" game
+           ON game.id = submission.game_id
+          AND submission.submit_time_utc >= game.start_time_utc
+          AND submission.submit_time_utc < game.end_time_utc
          JOIN "GameChallenges" challenge
            ON challenge.id = submission.challenge_id
           AND challenge.game_id = submission.game_id
@@ -456,11 +460,13 @@ pub(crate) async fn build_scoreboard(
     let meta_of: HashMap<i32, &game_challenge::Model> =
         challenges.iter().map(|c| (c.id, c)).collect();
 
-    // FirstSolves is the canonical one-row-per-team-and-challenge scoring set.
-    // Joining back to its accepted submission provides the timestamp/user while
-    // bounding this hot read by teams × challenges instead of the unbounded
-    // submission history. The redundant key joins fail closed if legacy data is
-    // inconsistent; the Rust map below remains a defensive uniqueness guard.
+    // FirstSolves is the canonical one-row-per-team-and-challenge accepted set.
+    // Joining back to its submission provides the timestamp/user; joining Games
+    // enforces the official [start, end) score window even when practice mode lets
+    // players keep submitting after close. This bounds the hot read by teams ×
+    // challenges instead of the unbounded submission history. The redundant key
+    // joins fail closed if legacy data is inconsistent; the Rust map below remains
+    // a defensive uniqueness guard.
     let subs: Vec<(i32, i32, DateTime<Utc>, Option<Uuid>)> =
         sqlx::query_as(FIRST_SOLVE_SCOREBOARD_SQL)
             .bind(game_id)
@@ -565,8 +571,8 @@ pub(crate) async fn build_scoreboard(
     // inside the game window and before the challenge deadline; the division's
     // GamePermission then gates GetScore / AffectDynamicScore / GetBlood independently.
     // `accepted_count` (the dynamic solve count) is driven by AffectDynamicScore, not
-    // GetScore. Practice mode waives the game-window bound — a task-directed deviation
-    // from RSCTF, whose `GenScoreboard` window check is unconditional.
+    // GetScore. Practice mode keeps challenges playable after close, but official
+    // standings and dynamic decay always remain inside the event window.
     let mut accepted_count: HashMap<i32, i32> = HashMap::new();
     // (time, part_id, chal_id, score_eligible, blood_eligible, user_id)
     let mut solve_list: Vec<EligibleSolve> = Vec::new();
@@ -582,7 +588,7 @@ pub(crate) async fn build_scoreboard(
             if cutoff.is_some_and(|cut| *t >= cut) {
                 continue;
             }
-            let within_window = g.practice_mode || (*t >= g.start_time_utc && *t < g.end_time_utc);
+            let within_window = *t >= g.start_time_utc && *t < g.end_time_utc;
             let within_deadline = challenge.deadline_utc.is_none_or(|d| *t <= d);
             let within_valid = within_window && within_deadline;
             let perm = perm_of(p.division_id, *cid);
@@ -910,12 +916,16 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn canonical_first_solve_query_ignores_duplicate_accepted_history() {
+    async fn canonical_first_solve_query_ignores_history_outside_the_event_window() {
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
             .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
         let mut connection = sqlx::PgConnection::connect(&database_url).await.unwrap();
         sqlx::raw_sql(
-            r#"CREATE TEMP TABLE "GameChallenges" (
+            r#"CREATE TEMP TABLE "Games" (
+                 id INTEGER PRIMARY KEY, practice_mode BOOLEAN NOT NULL,
+                 start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL
+               );
+               CREATE TEMP TABLE "GameChallenges" (
                  id INTEGER PRIMARY KEY, game_id INTEGER,
                  is_enabled BOOLEAN, review_status SMALLINT
                );
@@ -928,11 +938,18 @@ mod tests {
                  participation_id INTEGER, challenge_id INTEGER,
                  submission_id INTEGER
                );
+               INSERT INTO "Games" VALUES (
+                 7, TRUE, '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z'
+               );
                INSERT INTO "GameChallenges" VALUES (9, 7, TRUE, 0);
                INSERT INTO "Submissions" VALUES
                  (101, 11, 9, 7, 1, '2026-01-01T00:00:00Z', NULL),
-                 (102, 11, 9, 7, 1, '2026-01-01T00:01:00Z', NULL);
-               INSERT INTO "FirstSolves" VALUES (11, 9, 101);"#,
+                 (102, 11, 9, 7, 1, '2026-01-01T00:01:00Z', NULL),
+                 (103, 12, 9, 7, 1, '2025-12-31T23:59:59.999Z', NULL),
+                 (104, 13, 9, 7, 1, '2026-01-01T01:00:00Z', NULL),
+                 (105, 14, 9, 7, 1, '2026-01-01T01:00:00.001Z', NULL);
+               INSERT INTO "FirstSolves" VALUES
+                 (11, 9, 101), (12, 9, 103), (13, 9, 104), (14, 9, 105);"#,
         )
         .execute(&mut connection)
         .await

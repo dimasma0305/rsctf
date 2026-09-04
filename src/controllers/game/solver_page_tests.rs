@@ -116,7 +116,7 @@ async fn maximum_roster_solver_page_is_sql_bounded_and_freeze_aware() {
     .unwrap();
 
     let start = Utc.with_ymd_and_hms(2026, 8, 26, 0, 0, 0).unwrap();
-    sqlx::query(r#"INSERT INTO "Games" VALUES (1, FALSE, $1, $2)"#)
+    sqlx::query(r#"INSERT INTO "Games" VALUES (1, TRUE, $1, $2)"#)
         .bind(start)
         .bind(start + Duration::hours(1))
         .execute(&pool)
@@ -138,6 +138,22 @@ async fn maximum_roster_solver_page_is_sql_bounded_and_freeze_aware() {
             FROM generate_series(1, 500) n CROSS JOIN "Games" game WHERE game.id = 1;
         INSERT INTO "FirstSolves" (participation_id, challenge_id, submission_id)
           SELECT n, 9, n FROM generate_series(1, 500) n;
+        INSERT INTO "Teams" (id, name) VALUES
+          (501, 'Before event'), (502, 'At event end'), (503, 'After event');
+        INSERT INTO "Participations" (id, game_id, team_id, status, division_id) VALUES
+          (501, 1, 501, 1, NULL), (502, 1, 502, 1, NULL), (503, 1, 503, 1, NULL);
+        INSERT INTO "Submissions"
+          (id, participation_id, challenge_id, game_id, team_id, user_id, status, submit_time_utc)
+          SELECT 501, 501, 9, 1, 501, NULL::uuid, 1, start_time_utc - INTERVAL '1 millisecond'
+            FROM "Games" WHERE id = 1
+          UNION ALL
+          SELECT 502, 502, 9, 1, 502, NULL, 1, end_time_utc
+            FROM "Games" WHERE id = 1
+          UNION ALL
+          SELECT 503, 503, 9, 1, 503, NULL, 1, end_time_utc + INTERVAL '1 millisecond'
+            FROM "Games" WHERE id = 1;
+        INSERT INTO "FirstSolves" (participation_id, challenge_id, submission_id) VALUES
+          (501, 9, 501), (502, 9, 502), (503, 9, 503);
         "#,
     )
     .execute(&pool)
