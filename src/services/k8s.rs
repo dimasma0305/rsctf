@@ -87,6 +87,55 @@ const DEFAULT_NAMESPACE: &str = "rsctf-challenges";
 /// Env var overriding the target namespace.
 const NAMESPACE_ENV: &str = "RSCTF_K8S_NAMESPACE";
 
+fn challenge_container_ports(expose_port: i32, private_competitive: bool) -> Vec<ContainerPort> {
+    if private_competitive {
+        return vec![
+            ContainerPort {
+                name: Some("challenge-tcp".to_string()),
+                container_port: expose_port,
+                protocol: Some("TCP".to_string()),
+                ..Default::default()
+            },
+            ContainerPort {
+                name: Some("challenge-udp".to_string()),
+                container_port: expose_port,
+                protocol: Some("UDP".to_string()),
+                ..Default::default()
+            },
+        ];
+    }
+    vec![ContainerPort {
+        container_port: expose_port,
+        ..Default::default()
+    }]
+}
+
+fn challenge_service_ports(expose_port: i32, private_competitive: bool) -> Vec<ServicePort> {
+    if private_competitive {
+        return vec![
+            ServicePort {
+                name: Some("challenge-tcp".to_string()),
+                port: expose_port,
+                protocol: Some("TCP".to_string()),
+                target_port: Some(IntOrString::Int(expose_port)),
+                ..Default::default()
+            },
+            ServicePort {
+                name: Some("challenge-udp".to_string()),
+                port: expose_port,
+                protocol: Some("UDP".to_string()),
+                target_port: Some(IntOrString::Int(expose_port)),
+                ..Default::default()
+            },
+        ];
+    }
+    vec![ServicePort {
+        port: expose_port,
+        target_port: Some(IntOrString::Int(expose_port)),
+        ..Default::default()
+    }]
+}
+
 /// Env var advertising the routable node/host IP for NodePort services
 /// (RSCTF `PublicEntry`). When set, [`ContainerInfo::ip`] is this value.
 const PUBLIC_ENTRY_ENV: &str = "RSCTF_K8S_PUBLIC_ENTRY";
@@ -470,14 +519,12 @@ impl ContainerManager for KubernetesContainerManager {
         }
         let app_label = labels[APP_LABEL].clone();
 
+        let container_ports = challenge_container_ports(spec.expose_port, ad_internal);
         let container = Container {
             name: name.clone(),
             image: Some(spec.image.clone()),
             env: Some(env),
-            ports: Some(vec![ContainerPort {
-                container_port: spec.expose_port,
-                ..Default::default()
-            }]),
+            ports: Some(container_ports),
             resources: Some(ResourceRequirements {
                 limits: Some(limits),
                 requests: Some(requests),
@@ -618,6 +665,7 @@ impl ContainerManager for KubernetesContainerManager {
             ..Default::default()
         }]);
 
+        let service_ports = challenge_service_ports(spec.expose_port, ad_internal);
         let service = Service {
             metadata: ObjectMeta {
                 name: Some(name.clone()),
@@ -633,11 +681,7 @@ impl ContainerManager for KubernetesContainerManager {
                 // address that an ingress IPBlock legitimately allows.
                 external_traffic_policy: (!internal_only && isolated).then(|| "Local".to_string()),
                 selector: Some(BTreeMap::from([(APP_LABEL.to_string(), app_label.clone())])),
-                ports: Some(vec![ServicePort {
-                    port: spec.expose_port,
-                    target_port: Some(IntOrString::Int(spec.expose_port)),
-                    ..Default::default()
-                }]),
+                ports: Some(service_ports),
                 ..Default::default()
             }),
             status: None,

@@ -127,7 +127,9 @@ Set the chart's container backend to Kubernetes only after you understand the ex
   different challenge Pod from reaching the isolated workload. These Services
   use `externalTrafficPolicy: Local` to preserve the source address, so route a
   player's connection to the node currently hosting that challenge Pod.
-- A&D services use ClusterIP and per-instance NetworkPolicies.
+- A&D and KotH private services use ClusterIP and per-instance NetworkPolicies. Their one
+  declared numeric port is exposed as both TCP and UDP; policy admits only that port and
+  selected challenge Pod.
 - KotH marker reads use the narrowly scoped `pods/exec` subresource.
 - Private challenge image pull credentials are not currently attached to generated Pods.
 - Challenge images must be portable repository digests. Configure

@@ -223,6 +223,12 @@ Offline evidence. Each publication randomizes target order so database/service I
 order cannot repeatedly decide who reaches admission. Size concurrency only after
 load-testing the container runtime; increasing it blindly can overload Docker.
 
+For platform-managed A&D and KotH targets, `container.exposePort` is one numeric service
+port for both TCP and UDP. The VPN owner admits only that exact target IP and port pair for
+both protocols, including capture and crown-transition fences. Kubernetes creates matching
+TCP and UDP Service ports and NetworkPolicy entries. Health and checker probes remain TCP;
+a UDP-only challenge must also provide a small TCP health protocol on the declared port.
+
 `allowEgress: true` is supported only by the Kubernetes container backend,
 which creates a per-workload NetworkPolicy. The Docker backend rejects it for
 A&D and KotH because its shared bridge cannot safely exclude peer workloads,

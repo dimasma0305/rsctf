@@ -23,12 +23,21 @@ fn firewall_plan_pairs_each_games_peer_target_and_cooldown_sets() {
         .into_iter()
         .map(|rule| rule.join(" "))
         .collect();
-    assert!(forward
-        .iter()
-        .any(|rule| rule.contains("rsv_p_10 src") && rule.contains("rsv_f_10 dst,dst")));
-    assert!(forward
-        .iter()
-        .any(|rule| rule.contains("rsv_c_10 src,dst,dst") && rule.ends_with("-j DROP")));
+    assert!(forward.iter().any(|rule| rule.contains("-p tcp")
+        && rule.contains("rsv_p_10 src")
+        && rule.contains("rsv_f_10 dst,dst")));
+    assert!(forward.iter().any(|rule| {
+        rule.contains("-p udp")
+            && rule.contains("rsv_p_10 src")
+            && rule.contains("rsv_f_10 dst,dst")
+    }));
+    for protocol in ["tcp", "udp"] {
+        assert!(forward.iter().any(|rule| {
+            rule.contains(&format!("-p {protocol}"))
+                && rule.contains("rsv_c_10 src,dst,dst")
+                && rule.ends_with("-j DROP")
+        }));
+    }
     assert!(!forward
         .iter()
         .any(|rule| rule.contains("rsv_p_10") && rule.contains("rsv_f_11")));
@@ -38,12 +47,14 @@ fn firewall_plan_pairs_each_games_peer_target_and_cooldown_sets() {
         .into_iter()
         .map(|rule| rule.join(" "))
         .collect();
-    assert!(input
-        .iter()
-        .any(|rule| rule.contains("rsv_p_10 src") && rule.contains("rsv_l_10 dst,dst")));
-    assert!(input
-        .iter()
-        .any(|rule| rule.contains("rsv_c_10 src,dst,dst") && rule.ends_with("-j DROP")));
+    assert!(input.iter().any(|rule| rule.contains("-p tcp")
+        && rule.contains("rsv_p_10 src")
+        && rule.contains("rsv_l_10 dst,dst")));
+    assert!(input.iter().any(|rule| {
+        rule.contains("-p udp")
+            && rule.contains("rsv_p_10 src")
+            && rule.contains("rsv_l_10 dst,dst")
+    }));
     assert_eq!(input.last().map(String::as_str), Some("-j DROP"));
 
     let nat: Vec<String> = nat_rule_plan(&sets)
@@ -51,7 +62,14 @@ fn firewall_plan_pairs_each_games_peer_target_and_cooldown_sets() {
         .map(|rule| rule.join(" "))
         .collect();
     assert!(nat.iter().any(|rule| {
-        rule.contains("rsv_p_10 src")
+        rule.contains("-p tcp")
+            && rule.contains("rsv_p_10 src")
+            && rule.contains("rsv_n_10 dst,dst")
+            && rule.contains("! -o wg0")
+    }));
+    assert!(nat.iter().any(|rule| {
+        rule.contains("-p udp")
+            && rule.contains("rsv_p_10 src")
             && rule.contains("rsv_n_10 dst,dst")
             && rule.contains("! -o wg0")
     }));
@@ -81,9 +99,15 @@ fn quarantine_precedes_every_allow_rule() {
     let sets = vec![policy_sets(10)];
     let forward = forwarding_rule_plan("rsv_a_test", &sets, None);
     assert!(forward[1].join(" ").contains("rsv_quarantine src -j DROP"));
-    assert!(forward[2]
-        .join(" ")
-        .contains("rsv_transition src,dst,dst -j DROP"));
+    assert!(
+        forward
+            .iter()
+            .filter(|rule| rule
+                .join(" ")
+                .contains("rsv_transition src,dst,dst -j DROP"))
+            .count()
+            == 2
+    );
     let first_forward_allow = forward
         .iter()
         .position(|rule| rule.last().is_some_and(|action| action == "ACCEPT"))
@@ -92,9 +116,15 @@ fn quarantine_precedes_every_allow_rule() {
 
     let input = input_rule_plan("rsv_a_test", &sets, &[], false, None);
     assert!(input[0].join(" ").contains("rsv_quarantine src -j DROP"));
-    assert!(input[1]
-        .join(" ")
-        .contains("rsv_transition src,dst,dst -j DROP"));
+    assert!(
+        input
+            .iter()
+            .filter(|rule| rule
+                .join(" ")
+                .contains("rsv_transition src,dst,dst -j DROP"))
+            .count()
+            == 2
+    );
     let first_input_allow = input
         .iter()
         .position(|rule| rule.last().is_some_and(|action| action == "ACCEPT"))

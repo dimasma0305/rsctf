@@ -545,7 +545,10 @@ pub(super) fn ad_network_policy(
             egress: Some(egress),
             ingress: Some(vec![NetworkPolicyIngressRule {
                 from: Some(ingress_peers),
-                ports: Some(vec![network_port(expose_port, "TCP")]),
+                ports: Some(vec![
+                    network_port(expose_port, "TCP"),
+                    network_port(expose_port, "UDP"),
+                ]),
             }]),
             pod_selector: LabelSelector {
                 match_labels: Some(labels.clone()),

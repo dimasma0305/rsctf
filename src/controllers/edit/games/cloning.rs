@@ -574,20 +574,83 @@ mod clone_contract_tests {
         let mut transaction = connection.begin().await.unwrap();
         sqlx::raw_sql(
             r#"
-            CREATE TEMP TABLE "GameChallenges"
-              (LIKE public."GameChallenges" INCLUDING DEFAULTS INCLUDING IDENTITY);
-            CREATE TEMP TABLE "FlagContexts"
-              (LIKE public."FlagContexts" INCLUDING DEFAULTS INCLUDING IDENTITY);
-            CREATE TEMP TABLE "KothApiObservers"
-              (LIKE public."KothApiObservers" INCLUDING DEFAULTS);
-            CREATE TEMP SEQUENCE clone_challenge_id_seq;
-            ALTER TABLE "GameChallenges" ALTER COLUMN id
-              SET DEFAULT nextval('clone_challenge_id_seq');
-            ALTER SEQUENCE clone_challenge_id_seq OWNED BY "GameChallenges".id;
-            CREATE TEMP SEQUENCE clone_flag_id_seq;
-            ALTER TABLE "FlagContexts" ALTER COLUMN id
-              SET DEFAULT nextval('clone_flag_id_seq');
-            ALTER SEQUENCE clone_flag_id_seq OWNED BY "FlagContexts".id;
+            CREATE TEMP TABLE "GameChallenges" (
+              id SERIAL PRIMARY KEY,
+              game_id INTEGER NOT NULL,
+              title TEXT NOT NULL,
+              content TEXT NOT NULL,
+              category SMALLINT NOT NULL,
+              "Type" SMALLINT NOT NULL,
+              hints JSONB NULL,
+              is_enabled BOOLEAN NOT NULL,
+              revision BIGINT NOT NULL DEFAULT 0,
+              ad_control_revision BIGINT NOT NULL DEFAULT 0,
+              deadline_utc TIMESTAMPTZ NULL,
+              submission_limit INTEGER NOT NULL,
+              accepted_count INTEGER NOT NULL,
+              submission_count INTEGER NOT NULL,
+              container_image TEXT NULL,
+              memory_limit INTEGER NULL,
+              storage_limit INTEGER NULL,
+              cpu_count INTEGER NULL,
+              expose_port INTEGER NULL,
+              workload_spec JSONB NULL,
+              file_name TEXT NULL,
+              flag_template TEXT NULL,
+              review_status SMALLINT NOT NULL,
+              review_note TEXT NULL,
+              submitted_by_user_id UUID NULL,
+              submitted_at_utc TIMESTAMPTZ NULL,
+              reviewed_at_utc TIMESTAMPTZ NULL,
+              original_archive_blob_path TEXT NULL,
+              build_context_subdir TEXT NULL,
+              build_status SMALLINT NOT NULL,
+              build_image_digest TEXT NULL,
+              last_build_log TEXT NULL,
+              source_yaml_path TEXT NULL,
+              attachment_id INTEGER NULL,
+              test_container_id UUID NULL,
+              enable_traffic_capture BOOLEAN NOT NULL,
+              enable_shared_container BOOLEAN NOT NULL,
+              disable_blood_bonus BOOLEAN NOT NULL,
+              original_score INTEGER NOT NULL,
+              min_score_rate DOUBLE PRECISION NOT NULL,
+              difficulty DOUBLE PRECISION NOT NULL,
+              score_curve SMALLINT NOT NULL,
+              shared_container_id UUID NULL,
+              network_mode SMALLINT NULL,
+              variant_mode SMALLINT NOT NULL DEFAULT 0,
+              variant_generator_image TEXT NULL,
+              variant_generator_digest TEXT NULL,
+              variant_generator_build_context_subdir TEXT NULL,
+              variant_generator_build_status SMALLINT NOT NULL DEFAULT 0,
+              variant_generator_last_build_log TEXT NULL,
+              solve_receipt_mode SMALLINT NOT NULL DEFAULT 0,
+              receipt_verifier_identity TEXT NULL,
+              ad_checker_image TEXT NULL,
+              ad_allow_egress BOOLEAN NOT NULL,
+              ad_allow_self_reset BOOLEAN NOT NULL,
+              ad_ssh_requires_flag BOOLEAN NOT NULL,
+              ad_self_hosted BOOLEAN NOT NULL,
+              ad_scoring_weight DOUBLE PRECISION NOT NULL DEFAULT 1
+            );
+            CREATE TEMP TABLE "FlagContexts" (
+              id SERIAL PRIMARY KEY,
+              flag TEXT NOT NULL,
+              is_occupied BOOLEAN NOT NULL,
+              attachment_id INTEGER NULL,
+              challenge_id INTEGER NULL,
+              exercise_id INTEGER NULL
+            );
+            CREATE TEMP TABLE "KothApiObservers" (
+              challenge_id INTEGER PRIMARY KEY,
+              game_id INTEGER NOT NULL,
+              hmac_secret TEXT NOT NULL,
+              secret_hint TEXT NOT NULL,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+              rotated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+              last_used_at TIMESTAMPTZ NULL
+            );
             INSERT INTO "GameChallenges" (
               game_id, title, content, category, "Type", is_enabled,
               submission_limit, accepted_count, submission_count, review_status,

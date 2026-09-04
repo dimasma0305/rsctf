@@ -91,14 +91,16 @@ fn capture_set_script(rows: Vec<EndpointRow>) -> String {
          flush {REQUIRED_STAGE_SET}\nflush {LIVE_STAGE_SET}\n"
     );
     for ((host, port), live) in endpoints {
-        writeln!(script, "add {REQUIRED_STAGE_SET} {host},tcp:{port}")
-            .expect("writing to String cannot fail");
-        if live {
-            writeln!(
-                script,
-                "add {LIVE_STAGE_SET} {host},tcp:{port} timeout {KERNEL_LIVE_TIMEOUT_SECONDS}"
-            )
-            .expect("writing to String cannot fail");
+        for protocol in ["tcp", "udp"] {
+            writeln!(script, "add {REQUIRED_STAGE_SET} {host},{protocol}:{port}")
+                .expect("writing to String cannot fail");
+            if live {
+                writeln!(
+                    script,
+                    "add {LIVE_STAGE_SET} {host},{protocol}:{port} timeout {KERNEL_LIVE_TIMEOUT_SECONDS}"
+                )
+                .expect("writing to String cannot fail");
+            }
         }
     }
     writeln!(script, "swap {LIVE_STAGE_SET} {LIVE_SET}").expect("writing to String cannot fail");
@@ -211,9 +213,13 @@ mod tests {
             },
         ]);
         assert!(script.contains("add rsv_capture_req_stage 10.13.40.8,tcp:8080"));
+        assert!(script.contains("add rsv_capture_req_stage 10.13.40.8,udp:8080"));
         assert!(script.contains("add rsv_capture_live_stage 10.13.40.8,tcp:8080 timeout 15"));
+        assert!(script.contains("add rsv_capture_live_stage 10.13.40.8,udp:8080 timeout 15"));
         assert!(script.contains("add rsv_capture_req_stage 10.13.40.9,tcp:8081"));
+        assert!(script.contains("add rsv_capture_req_stage 10.13.40.9,udp:8081"));
         assert!(!script.contains("add rsv_capture_live_stage 10.13.40.9,tcp:8081"));
+        assert!(!script.contains("add rsv_capture_live_stage 10.13.40.9,udp:8081"));
         assert!(script.contains("swap rsv_capture_live_stage rsv_capture_live"));
         assert!(
             script.find("swap rsv_capture_live_stage").unwrap()

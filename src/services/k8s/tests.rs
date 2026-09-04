@@ -29,6 +29,30 @@ fn private_proxy_and_ad_services_use_cluster_ip() {
 }
 
 #[test]
+fn private_competitive_workloads_publish_tcp_and_udp_on_one_declared_port() {
+    let containers = challenge_container_ports(8080, true);
+    assert_eq!(containers.len(), 2);
+    assert_eq!(containers[0].name.as_deref(), Some("challenge-tcp"));
+    assert_eq!(containers[0].protocol.as_deref(), Some("TCP"));
+    assert_eq!(containers[0].container_port, 8080);
+    assert_eq!(containers[1].name.as_deref(), Some("challenge-udp"));
+    assert_eq!(containers[1].protocol.as_deref(), Some("UDP"));
+    assert_eq!(containers[1].container_port, 8080);
+
+    let services = challenge_service_ports(8080, true);
+    assert_eq!(services.len(), 2);
+    assert_eq!(services[0].name.as_deref(), Some("challenge-tcp"));
+    assert_eq!(services[0].protocol.as_deref(), Some("TCP"));
+    assert_eq!(services[0].target_port, Some(IntOrString::Int(8080)));
+    assert_eq!(services[1].name.as_deref(), Some("challenge-udp"));
+    assert_eq!(services[1].protocol.as_deref(), Some("UDP"));
+    assert_eq!(services[1].target_port, Some(IntOrString::Int(8080)));
+
+    assert_eq!(challenge_container_ports(8080, false).len(), 1);
+    assert_eq!(challenge_service_ports(8080, false).len(), 1);
+}
+
+#[test]
 fn ad_policy_is_default_deny_with_allowlisted_ingress() {
     let labels = BTreeMap::from([(APP_LABEL.to_string(), "rsctf-test".to_string())]);
     let config = network::AdNetworkConfig {
@@ -43,6 +67,10 @@ fn ad_policy_is_default_deny_with_allowlisted_ingress() {
     let spec = policy.spec.unwrap();
     assert_eq!(spec.egress, Some(Vec::new()));
     assert_eq!(spec.ingress.as_ref().map(Vec::len), Some(1));
+    let ingress_ports = spec.ingress.as_ref().unwrap()[0].ports.as_ref().unwrap();
+    assert_eq!(ingress_ports.len(), 2);
+    assert_eq!(ingress_ports[0].protocol.as_deref(), Some("TCP"));
+    assert_eq!(ingress_ports[1].protocol.as_deref(), Some("UDP"));
     assert_eq!(
         spec.ingress
             .as_ref()

@@ -40,15 +40,17 @@ pub(super) fn quarantine_transition(
             .expect("writing to a String cannot fail");
     }
     for block in blocks {
-        writeln!(
-            script,
-            "add {} {},tcp:{},{}",
-            firewall::TRANSITION_BLOCK_SET,
-            block.peer,
-            block.target.port,
-            block.target.address
-        )
-        .expect("writing to a String cannot fail");
+        for protocol in ["tcp", "udp"] {
+            writeln!(
+                script,
+                "add {} {},{protocol}:{},{}",
+                firewall::TRANSITION_BLOCK_SET,
+                block.peer,
+                block.target.port,
+                block.target.address
+            )
+            .expect("writing to a String cannot fail");
+        }
     }
     firewall::ipset_restore(&script, true)
 }
@@ -192,12 +194,14 @@ pub(super) fn prepare(
         }
         for target in &policy.targets {
             if client.contains(&target.address) {
-                writeln!(
-                    script,
-                    "add {} {},tcp:{}",
-                    sets.forward_targets, target.address, target.port
-                )
-                .expect("writing to a String cannot fail");
+                for protocol in ["tcp", "udp"] {
+                    writeln!(
+                        script,
+                        "add {} {},{protocol}:{}",
+                        sets.forward_targets, target.address, target.port
+                    )
+                    .expect("writing to a String cannot fail");
+                }
                 continue;
             }
             let Some(route) = routes
@@ -209,28 +213,34 @@ pub(super) fn prepare(
             let destination = if route.local_address == Some(target.address) {
                 &sets.local_targets
             } else {
-                writeln!(
-                    script,
-                    "add {} {},tcp:{}",
-                    sets.nat_targets, target.address, target.port
-                )
-                .expect("writing to a String cannot fail");
+                for protocol in ["tcp", "udp"] {
+                    writeln!(
+                        script,
+                        "add {} {},{protocol}:{}",
+                        sets.nat_targets, target.address, target.port
+                    )
+                    .expect("writing to a String cannot fail");
+                }
                 &sets.forward_targets
             };
-            writeln!(
-                script,
-                "add {destination} {},tcp:{}",
-                target.address, target.port
-            )
-            .expect("writing to a String cannot fail");
+            for protocol in ["tcp", "udp"] {
+                writeln!(
+                    script,
+                    "add {destination} {},{protocol}:{}",
+                    target.address, target.port
+                )
+                .expect("writing to a String cannot fail");
+            }
         }
         for block in &policy.cooldown_blocks {
-            writeln!(
-                script,
-                "add {} {},tcp:{},{}",
-                sets.cooldown_blocks, block.peer, block.target.port, block.target.address
-            )
-            .expect("writing to a String cannot fail");
+            for protocol in ["tcp", "udp"] {
+                writeln!(
+                    script,
+                    "add {} {},{protocol}:{},{}",
+                    sets.cooldown_blocks, block.peer, block.target.port, block.target.address
+                )
+                .expect("writing to a String cannot fail");
+            }
         }
     }
     // Generation names are exclusive. Ignoring an unlikely collision could
