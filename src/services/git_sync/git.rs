@@ -14,7 +14,8 @@ use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tokio::time::timeout;
 
 use super::{
-    MAX_REPO_DEPTH, MAX_REPO_ENTRIES, MAX_REPO_FILES, MAX_REPO_FILE_BYTES, MAX_REPO_TOTAL_BYTES,
+    is_git_object_pack, MAX_REPO_DEPTH, MAX_REPO_ENTRIES, MAX_REPO_FILES, MAX_REPO_FILE_BYTES,
+    MAX_REPO_TOTAL_BYTES,
 };
 use crate::utils::error::{AppError, AppResult};
 
@@ -590,6 +591,7 @@ pub(super) async fn validate_checkout_tree(root: &Path) -> AppResult<()> {
                 if files_seen > MAX_REPO_FILES {
                     return Err(AppError::bad_request("repository contains too many files"));
                 }
+                let path = entry.path();
                 let len = entry
                     .metadata()
                     .await
@@ -600,7 +602,7 @@ pub(super) async fn validate_checkout_tree(root: &Path) -> AppResult<()> {
                         ))
                     })?
                     .len();
-                if len > MAX_REPO_FILE_BYTES
+                if (!is_git_object_pack(root, &path) && len > MAX_REPO_FILE_BYTES)
                     || total_bytes.saturating_add(len) > MAX_REPO_TOTAL_BYTES
                 {
                     return Err(AppError::bad_request("repository exceeds the size limit"));
@@ -815,6 +817,7 @@ pub(super) async fn checkout_usage_exceeds(root: &Path) -> AppResult<bool> {
             if file_type.is_dir() {
                 stack.push((entry.path(), depth + 1));
             } else if file_type.is_file() {
+                let path = entry.path();
                 let size = entry
                     .metadata()
                     .await
@@ -825,7 +828,7 @@ pub(super) async fn checkout_usage_exceeds(root: &Path) -> AppResult<bool> {
                         ))
                     })?
                     .len();
-                if size > MAX_REPO_FILE_BYTES
+                if (!is_git_object_pack(root, &path) && size > MAX_REPO_FILE_BYTES)
                     || total_bytes.saturating_add(size) > MAX_REPO_TOTAL_BYTES
                 {
                     return Ok(true);

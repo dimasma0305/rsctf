@@ -298,3 +298,24 @@ async fn checkout_tree_quota_includes_git_object_storage() {
     assert!(validate_checkout_tree(&root).await.is_err());
     let _ = tokio::fs::remove_dir_all(root).await;
 }
+
+#[tokio::test]
+async fn checkout_tree_accepts_a_large_bounded_ctf_repository() {
+    let root = std::env::temp_dir().join(format!("rsctf-large-repo-{}", uuid::Uuid::new_v4()));
+    let packs = root.join(".git/objects/pack");
+    tokio::fs::create_dir_all(&packs).await.unwrap();
+    for index in 0..5 {
+        let file = tokio::fs::File::create(root.join(format!("artifact-{index}")))
+            .await
+            .unwrap();
+        file.set_len(MAX_REPO_FILE_BYTES).await.unwrap();
+    }
+    let pack = tokio::fs::File::create(packs.join("pack-repository.pack"))
+        .await
+        .unwrap();
+    pack.set_len(64 * 1024 * 1024).await.unwrap();
+
+    assert!(!checkout_usage_exceeds(&root).await.unwrap());
+    validate_checkout_tree(&root).await.unwrap();
+    let _ = tokio::fs::remove_dir_all(root).await;
+}

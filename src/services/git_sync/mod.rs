@@ -94,6 +94,8 @@ pub use git::{
     head_sha, lock_checkout, lock_checkout_distributed, sync_repo, validate_binding_repo_url,
     validate_git_ref, validate_github_repo_url, CheckoutLockGuard, GitCredentials,
 };
+mod limits;
+use limits::is_git_object_pack;
 mod checkout_snapshot;
 pub use checkout_snapshot::CheckoutSnapshot;
 mod package;
@@ -160,7 +162,10 @@ pub struct ManifestImportResult {
 const MAX_REPO_ENTRIES: usize = 4_096;
 const MAX_REPO_FILES: usize = 2_048;
 const MAX_REPO_FILE_BYTES: u64 = 32 * 1024 * 1024;
-const MAX_REPO_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+// Challenge repositories commonly contain VM kernels, debugger symbols, game
+// assets, and other build inputs. Keep a hard aggregate bound, including Git
+// object storage, while allowing a realistic multi-challenge event repository.
+const MAX_REPO_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_REPO_DEPTH: usize = 32;
 
 /// Parse a `challenge.yml` / `challenge.yaml` manifest and persist the resulting

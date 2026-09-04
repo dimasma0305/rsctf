@@ -173,6 +173,31 @@ where
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
+async fn load_reserved_addresses<'e, E>(executor: E) -> AppResult<HashSet<Ipv4Addr>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    // Event VPN peer rows are immutable audit history and their address column
+    // has a global unique index. A revoked row therefore still reserves its
+    // address even though it is no longer installed in WireGuard. Keep those
+    // historical addresses in the allocator set or a later event can select
+    // one and fail its config download with a unique-constraint violation.
+    sqlx::query_scalar::<_, String>(
+        r#"SELECT address FROM "AdVpnPeers"
+           UNION ALL
+           SELECT address FROM "EventVpnUserPeers""#,
+    )
+    .fetch_all(executor)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+    .map(|addresses| {
+        addresses
+            .into_iter()
+            .filter_map(|address| Ipv4Addr::from_str(&address).ok())
+            .collect()
+    })
+}
+
 pub async fn ensure_user_peer(
     st: &SharedState,
     user: &CurrentUser,
@@ -241,17 +266,7 @@ pub async fn ensure_user_peer(
         });
     }
 
-    let used = sqlx::query_scalar::<_, String>(
-        r#"SELECT address FROM "AdVpnPeers"
-           UNION ALL
-           SELECT address FROM "EventVpnUserPeers" WHERE revoked_at_utc IS NULL"#,
-    )
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .into_iter()
-    .filter_map(|address| Ipv4Addr::from_str(&address).ok())
-    .collect::<HashSet<_>>();
+    let used = load_reserved_addresses(&mut **tx).await?;
     let address = allocate_address(
         &crate::services::ad_vpn::client_cidr(),
         part.game_id,
@@ -560,3 +575,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "peer_pg_tests.rs"]
+mod pg_tests;
