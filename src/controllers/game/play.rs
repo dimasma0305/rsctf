@@ -589,7 +589,10 @@ pub async fn join_game(
             None => true,
             Some(participation) => participation.status == ParticipationStatus::Rejected as i16,
         };
-    if will_write_accepted {
+    let creates_late_accepted_participation = policy.scoring_started
+        && existing.is_none()
+        && target_status == ParticipationStatus::Accepted;
+    if will_write_accepted && !creates_late_accepted_participation {
         crate::controllers::edit::ensure_ad_roster_status_mutable(
             policy.scoring_started,
             existing
@@ -675,6 +678,10 @@ pub async fn join_game(
     // Commit participation, membership, and any configured roster freeze before
     // releasing the scoring fence. A failed commit rolls every join row back.
     membership_locks.release().await?;
+
+    if persisted.created_participation() {
+        crate::controllers::team::flush_scoreboards_for_games(&st, &[id]).await;
+    }
 
     // Join / re-request changed this user's participation — drop any cached copy so the
     // next poll resolves fresh (also clears a stale non-accepted entry, though those

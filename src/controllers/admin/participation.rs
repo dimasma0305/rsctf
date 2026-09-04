@@ -42,6 +42,21 @@ struct ParticipationIdentity {
     team_id: i32,
 }
 
+fn is_late_roster_admission(
+    scoring_started: bool,
+    current: ParticipationStatus,
+    requested: ParticipationStatus,
+) -> bool {
+    scoring_started
+        && requested == ParticipationStatus::Accepted
+        && matches!(
+            current,
+            ParticipationStatus::Pending
+                | ParticipationStatus::Rejected
+                | ParticipationStatus::Unsubmitted
+        )
+}
+
 /// Bounded cross-replica ownership of one team's review side effects.
 ///
 /// The PostgreSQL session lock is acquired before the short status transaction
@@ -228,14 +243,18 @@ async fn persist_participation_status(
         identity.game_id,
     )
     .await?;
-    // Suspension and reinstatement are the only reversible status mutations
-    // after scoring starts. They retain the same participation and division;
-    // rejection remains subject to both the engine boundary and evidence fence.
-    crate::controllers::edit::ensure_ad_roster_status_mutable(
-        engine_scoring_started,
-        Some(live_status),
-        requested_status,
-    )?;
+    let late_roster_admission =
+        is_late_roster_admission(engine_scoring_started, live_status, requested_status);
+    // Ordinary status changes remain frozen after scoring starts. A manager's
+    // explicit acceptance is the one append-only exception: it enrolls the
+    // late team without rewriting an existing participation or prior score.
+    if !late_roster_admission {
+        crate::controllers::edit::ensure_ad_roster_status_mutable(
+            engine_scoring_started,
+            Some(live_status),
+            requested_status,
+        )?;
+    }
     ensure_scored_division_unchanged(competition_scoring_started, live_division_id, division_id)?;
     if live_status != requested_status {
         if live_status == ParticipationStatus::Accepted {
@@ -271,6 +290,14 @@ async fn persist_participation_status(
     .execute(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    if late_roster_admission {
+        crate::services::ad::late_roster::admit_late_koth_participation(
+            &mut transaction,
+            identity.game_id,
+            identity.id,
+        )
+        .await?;
+    }
     if requested_status == ParticipationStatus::Accepted {
         crate::controllers::team::roster_policy::lock_team_on_accept_if_enabled(
             &mut transaction,
@@ -603,3 +630,7 @@ pub async fn update_participation(
 #[cfg(test)]
 #[path = "participation_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "participation_late_admission_tests.rs"]
+mod late_admission_tests;

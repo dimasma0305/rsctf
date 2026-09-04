@@ -379,11 +379,16 @@ pub(crate) struct JoinMutation<'a> {
 pub(crate) struct PersistedGameJoin {
     pub(crate) participation_id: i32,
     pub(crate) status: ParticipationStatus,
+    pub(crate) created_participation: bool,
 }
 
 impl PersistedGameJoin {
     pub(super) fn is_accepted(self) -> bool {
         self.status == ParticipationStatus::Accepted
+    }
+
+    pub(super) fn created_participation(self) -> bool {
+        self.created_participation
     }
 }
 
@@ -437,21 +442,6 @@ pub(crate) async fn persist_game_join_locked(
     let reuses_historical_link = rejected_participation_id
         .zip(existing.as_ref().map(|(id, _, _)| *id))
         .is_some_and(|(historical_id, target_id)| historical_id == target_id);
-    if mutation.scoring_started
-        && !existing.as_ref().is_some_and(|(_, status, _)| {
-            *status == ParticipationStatus::Accepted as i16
-                || *status == ParticipationStatus::Suspended as i16
-        })
-    {
-        // Late teammates may attach to the team's already-stable scored
-        // participation. Never create a new scored participant or reactivate a
-        // rejected one after scoring starts. An evidence-free rejected link
-        // from another team may be replaced below; durable evidence still
-        // prevents moving its historical actor attribution.
-        return Err(AppError::bad_request(
-            "A late teammate can only join an existing scored team",
-        ));
-    }
     if let Some(historical_id) = rejected_participation_id.filter(|_| !reuses_historical_link) {
         if crate::services::participation_evidence::has_competition_evidence(
             transaction,
@@ -520,7 +510,21 @@ pub(crate) async fn persist_game_join_locked(
         return Ok(PersistedGameJoin {
             participation_id: part_id,
             status: persisted_status,
+            created_participation: false,
         });
+    }
+
+    let created_participation = existing.is_none();
+    if created_participation
+        && mutation.scoring_started
+        && persisted_status == ParticipationStatus::Accepted
+    {
+        crate::services::ad::late_roster::admit_late_koth_participation(
+            transaction,
+            mutation.game_id,
+            part_id,
+        )
+        .await?;
     }
 
     // Also repair a legacy dangling rejected link, but only after the exact
@@ -585,6 +589,7 @@ pub(crate) async fn persist_game_join_locked(
     Ok(PersistedGameJoin {
         participation_id: part_id,
         status: persisted_status,
+        created_participation,
     })
 }
 
@@ -595,3 +600,7 @@ mod tests;
 #[cfg(test)]
 #[path = "membership_leave_tests.rs"]
 mod leave_tests;
+
+#[cfg(test)]
+#[path = "membership_late_team_tests.rs"]
+mod late_team_tests;
