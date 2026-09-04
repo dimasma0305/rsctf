@@ -50,8 +50,10 @@ async fn hill_state_query_returns_only_the_requested_game_and_challenge_endpoint
              (41, 10, 3, 'container-unrelated', '10.0.0.3', 31338, 30),
              (42, 11, 2, 'container-other-game', '10.0.1.2', 41337, 31);
            INSERT INTO "KothCrownCycles" VALUES (10, 2), (11, 2);
+           -- A successful functional check remains player-visible even when
+           -- this particular leaderboard round is not scoreable.
            INSERT INTO "KothControlResults" VALUES
-             (50, 10, 2, 'container-requested', 0, TRUE, NOW(), 7),
+             (50, 10, 2, 'container-requested', 0, FALSE, NOW(), 7),
              (51, 10, 3, 'container-unrelated', 2, FALSE, NOW(), 7),
              (52, 11, 2, 'container-other-game', 1, TRUE, NOW(), 7);"#,
     )
@@ -76,7 +78,7 @@ async fn hill_state_query_returns_only_the_requested_game_and_challenge_endpoint
         requested.evidence_container_id.as_deref(),
         Some("container-requested")
     );
-    assert_eq!(requested.result_is_scorable, Some(true));
+    assert_eq!(requested.status_raw, Some(0));
     assert!(requested.managed_crown_cycle);
 
     // A challenge absent from game 10 returns no target projection even though

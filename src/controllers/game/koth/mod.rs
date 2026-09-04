@@ -336,7 +336,6 @@ struct KothHillBase {
     holder_participation_id: Option<i32>,
     holder_team_name: Option<String>,
     status: Option<String>,
-    result_is_scorable: bool,
     #[serde(with = "crate::utils::datetime::millis_opt")]
     checked_at: Option<DateTime<Utc>>,
 }
@@ -351,7 +350,6 @@ struct KothHillBaseRow {
     holder_team_name: Option<String>,
     evidence_container_id: Option<String>,
     status_raw: Option<i16>,
-    result_is_scorable: Option<bool>,
     checked_at: Option<DateTime<Utc>>,
     managed_crown_cycle: bool,
 }
@@ -376,7 +374,6 @@ const KOTH_HILL_BASE_SQL: &str = r#"SELECT
          tm.name AS holder_team_name,
          cr.container_id AS evidence_container_id,
          cr.status AS status_raw,
-         cr.is_scorable AS result_is_scorable,
          cr.checked_at,
          EXISTS (
            SELECT 1 FROM "KothCrownCycles" crown
@@ -414,11 +411,8 @@ fn control_status_is_player_visible(
     managed_crown_cycle: bool,
     reset_phase: &str,
     is_scorable: bool,
-    result_is_scorable: bool,
 ) -> bool {
-    holder_identity_is_current
-        && result_is_scorable
-        && (!managed_crown_cycle || (reset_phase == "Active" && is_scorable))
+    holder_identity_is_current && (!managed_crown_cycle || (reset_phase == "Active" && is_scorable))
 }
 
 fn endpoint_identity_is_current(
@@ -506,7 +500,6 @@ async fn load_hill_base(st: &SharedState, id: i32, challenge_id: i32) -> AppResu
                             .map(|status| koth_check_status_label(status).to_string())
                     })
                     .flatten(),
-                result_is_scorable: row.result_is_scorable.unwrap_or(false),
                 checked_at: evidence_is_current.then_some(row.checked_at).flatten(),
             };
             let json = match serde_json::to_vec(&base) {
@@ -556,7 +549,6 @@ pub async fn koth_hill_state(
         base.managed_crown_cycle,
         &view.reset_phase,
         view.is_scorable,
-        base.result_is_scorable,
     );
     let status = control_status_is_visible.then_some(base.status).flatten();
     let checked_at = control_status_is_visible
@@ -693,7 +685,6 @@ mod token_cache_tests {
             holder_participation_id: Some(7),
             holder_team_name: Some("red".to_string()),
             status: Some("Ok".to_string()),
-            result_is_scorable: true,
             checked_at: None,
         })
         .unwrap();
@@ -779,31 +770,27 @@ mod token_cache_tests {
 
     #[test]
     fn readiness_samples_are_not_presented_as_player_checker_failures() {
-        assert!(control_status_is_player_visible(
-            true, true, "Active", true, true
-        ));
+        assert!(control_status_is_player_visible(true, true, "Active", true));
         assert!(!control_status_is_player_visible(
             true,
             true,
             "Readiness",
-            false,
             false
         ));
         assert!(!control_status_is_player_visible(
-            true, true, "Creating", false, false
+            true, true, "Creating", false
         ));
         assert!(!control_status_is_player_visible(
-            false, true, "Active", true, true
+            false, true, "Active", true
         ));
         assert!(!control_status_is_player_visible(
-            true, true, "Active", true, false
+            true, true, "Active", false
         ));
         assert!(control_status_is_player_visible(
             true,
             false,
             "Readiness",
-            false,
-            true
+            false
         ));
     }
 

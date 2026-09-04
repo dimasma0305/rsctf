@@ -79,7 +79,7 @@ WITH source AS MATERIALIZED (
              THEN 'Inherited verified immutable image from source event clone.'
              ELSE NULL
            END,
-           NULL, NULL,
+           NULL, source.attachment_id,
            NULL, source.enable_traffic_capture, FALSE,
            source.disable_blood_bonus, source.original_score,
            source.min_score_rate, source.difficulty, $5, NULL, $6, $7,
@@ -557,6 +557,7 @@ mod clone_contract_tests {
             .contains("NULLIF(BTRIM(source.build_image_digest), '') IS NOT NULL"));
         assert!(CLONE_CHALLENGES_SQL.contains("THEN source.build_image_digest ELSE NULL"));
         assert!(CLONE_CHALLENGES_SQL.contains("source.ad_checker_image"));
+        assert!(CLONE_CHALLENGES_SQL.contains("NULL, source.attachment_id"));
         assert!(CLONE_CHALLENGES_SQL.contains("JOIN \"KothApiObservers\" observer"));
         assert!(CLONE_CHALLENGES_SQL.contains("gen_random_uuid()"));
         assert!(!CLONE_CHALLENGES_SQL.contains("observer.hmac_secret"));
@@ -591,20 +592,21 @@ mod clone_contract_tests {
               game_id, title, content, category, "Type", is_enabled,
               submission_limit, accepted_count, submission_count, review_status,
               build_status, build_image_digest, container_image, ad_checker_image,
+              attachment_id,
               enable_traffic_capture, enable_shared_container, disable_blood_bonus,
               original_score, min_score_rate, difficulty, score_curve,
               ad_allow_egress, ad_allow_self_reset, ad_ssh_requires_flag, ad_self_hosted
             ) VALUES
               (7, 'verified', '', 0, 5, TRUE, 20, 0, 0, 0, 1,
                'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-               'rsctf/source:latest', '/checkers/verified', FALSE, FALSE, FALSE,
+               'rsctf/source:latest', '/checkers/verified', 101, FALSE, FALSE, FALSE,
                1000, 0.25, 4, 0, FALSE, FALSE, FALSE, FALSE),
               (7, 'missing digest', '', 0, 5, TRUE, 20, 0, 0, 0, 1,
-               ' ', 'rsctf/missing:latest', '/checkers/missing', FALSE, FALSE, FALSE,
+               ' ', 'rsctf/missing:latest', '/checkers/missing', 102, FALSE, FALSE, FALSE,
                1000, 0.25, 4, 0, FALSE, FALSE, FALSE, FALSE),
               (7, 'failed', '', 0, 5, TRUE, 20, 0, 0, 0, 2,
                'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-               'rsctf/failed:latest', '/checkers/failed', FALSE, FALSE, FALSE,
+               'rsctf/failed:latest', '/checkers/failed', NULL, FALSE, FALSE, FALSE,
                1000, 0.25, 4, 0, FALSE, FALSE, FALSE, FALSE);
             INSERT INTO "KothApiObservers"
               (challenge_id, game_id, hmac_secret, secret_hint)
@@ -641,11 +643,12 @@ mod clone_contract_tests {
                 Option<String>,
                 Option<String>,
                 Option<String>,
+                Option<i32>,
                 bool,
             ),
         >(
             r#"SELECT title, build_status, build_image_digest, last_build_log,
-                      ad_checker_image, is_enabled
+                      ad_checker_image, attachment_id, is_enabled
                  FROM "GameChallenges"
                 WHERE game_id = 8 ORDER BY title"#,
         )
@@ -661,6 +664,7 @@ mod clone_contract_tests {
                 None,
                 None,
                 Some("/checkers/failed".to_string()),
+                None,
                 false
             )
         );
@@ -672,6 +676,7 @@ mod clone_contract_tests {
                 None,
                 None,
                 Some("/checkers/missing".to_string()),
+                Some(102),
                 false
             )
         );
@@ -686,7 +691,8 @@ mod clone_contract_tests {
             Some("Inherited verified immutable image from source event clone.")
         );
         assert_eq!(rows[2].4.as_deref(), Some("/checkers/verified"));
-        assert!(!rows[2].5);
+        assert_eq!(rows[2].5, Some(101));
+        assert!(!rows[2].6);
 
         let observers: Vec<(String, String, String, i32)> = sqlx::query_as(
             r#"SELECT challenge.title, observer.hmac_secret,

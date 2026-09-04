@@ -78,7 +78,6 @@ pub async fn koth_hills(
                 hill.managed_crown_cycle,
                 &view.reset_phase,
                 view.is_scorable,
-                true,
             );
             let (status, round) = if control_status_is_visible {
                 match board.latest_control_by_challenge.get(&hill.challenge_id) {
