@@ -337,16 +337,23 @@ pub async fn submit(
     // Every query from this point through the irreversible attack INSERTs uses
     // the transaction that owns the roster fence. This avoids a second pool
     // checkout and makes revocation linearizable with the complete batch.
-    let game: Option<(DateTime<Utc>, DateTime<Utc>, bool, Option<i32>)> = sqlx::query_as(
+    let game: Option<(
+        DateTime<Utc>,
+        DateTime<Utc>,
+        bool,
+        Option<i32>,
+        Option<DateTime<Utc>>,
+    )> = sqlx::query_as(
         r#"SELECT start_time_utc, end_time_utc, ad_scoring_paused,
-                  ad_flag_lifetime_ticks
+                  ad_flag_lifetime_ticks, freeze_time_utc
              FROM "Games" WHERE id = $1"#,
     )
     .bind(id)
     .fetch_optional(&mut **roster.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let Some((game_start, game_end, scoring_paused, configured_lifetime_ticks)) = game else {
+    let Some((game_start, game_end, scoring_paused, configured_lifetime_ticks, freeze_time)) = game
+    else {
         roster.release().await?;
         return Err(AppError::not_found("Game not found"));
     };
@@ -477,6 +484,13 @@ pub async fn submit(
             st.cache.remove(&k).await;
         }
         crate::controllers::game::invalidate_combined_scoreboard(&st, id).await;
+        if crate::controllers::game::scoreboard_refresh_is_publicly_safe(
+            freeze_time,
+            game_end,
+            Utc::now(),
+        ) {
+            crate::controllers::game::publish_scoreboard_changed(&st, id, "attackDefense");
+        }
     }
     for broadcast in broadcasts {
         broadcast.publish(&st);

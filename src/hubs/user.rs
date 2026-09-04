@@ -1,4 +1,4 @@
-//! hubs/user.rs — RSCTF `UserHub` (IUserClient.ReceivedGameNotice) over SignalR.
+//! Public per-game notice and scoreboard-refresh events over SignalR.
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
@@ -13,7 +13,11 @@ use crate::app_state::SharedState;
 use crate::hubs::{admission, signalr};
 use crate::middlewares::rate_limiter::{limited, Policy};
 
-const USER_TARGETS: &[&str] = &["ReceivedGameNotice", "ReceivedGameNoticeChanged"];
+const USER_TARGETS: &[&str] = &[
+    "ReceivedGameNotice",
+    "ReceivedGameNoticeChanged",
+    "ReceivedScoreboardChanged",
+];
 
 pub fn router() -> Router<SharedState> {
     Router::new()

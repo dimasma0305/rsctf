@@ -3,11 +3,12 @@ import { useLocalStorage } from '@mantine/hooks'
 import { mdiCrown, mdiFlagOutline, mdiScaleBalance, mdiSnowflake, mdiSwordCross } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useEffect, useMemo, useState } from 'react'
+import { FC, useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
 import { AdScoreboardTable } from '@Components/AdScoreboardTable'
 import { CombinedScoreboardTable } from '@Components/CombinedScoreboardTable'
+import { GameStatus } from '@Components/GameCard'
 import { KothScoreboardTable } from '@Components/KothScoreboardTable'
 import { ScoreboardTable } from '@Components/ScoreboardTable'
 import { TeamRank } from '@Components/TeamRank'
@@ -26,6 +27,7 @@ import {
   useGameStatus,
   useKothScoreboard,
 } from '@Hooks/useGame'
+import { useScoreboardLiveRefresh } from '@Hooks/useScoreboardLiveRefresh'
 import classes from '@Styles/GameScoreboard.module.css'
 
 type ScoreboardTab = 'overall' | 'jeopardy' | 'ad' | 'koth'
@@ -47,7 +49,7 @@ const Scoreboard: FC = () => {
   // Keep the public catalog loaded even on direct #ad/#koth links. Anonymous
   // visitors cannot rely on the user-gated /Details response for tab discovery.
   const scoreboardQuery = useGameScoreboardRead(numId)
-  const { scoreboard, error: scoreboardError } = scoreboardQuery
+  const { scoreboard, error: scoreboardError, mutate: mutateJeopardyScoreboard } = scoreboardQuery
   const { game } = useGame(numId)
   const { finished, status } = useGameStatus(game)
 
@@ -152,18 +154,39 @@ const Scoreboard: FC = () => {
 
   // The route owns each selected board snapshot. Banner and table consumers
   // receive that snapshot as props instead of mounting drifting timers.
-  const { adScoreboard, error: adScoreboardError } = useAdScoreboard(numId, hasAdChallenges && effectiveTab === 'ad')
-  const { kothScoreboard, error: kothScoreboardError } = useKothScoreboard(
-    numId,
-    hasKothChallenges && effectiveTab === 'koth'
-  )
-  const { combinedScoreboard, error: combinedScoreboardError } = useCombinedScoreboard(
-    numId,
-    showTabs && effectiveTab === 'overall'
-  )
+  const {
+    adScoreboard,
+    error: adScoreboardError,
+    mutate: mutateAdScoreboard,
+  } = useAdScoreboard(numId, hasAdChallenges && effectiveTab === 'ad')
+  const {
+    kothScoreboard,
+    error: kothScoreboardError,
+    mutate: mutateKothScoreboard,
+  } = useKothScoreboard(numId, hasKothChallenges && effectiveTab === 'koth')
+  const {
+    combinedScoreboard,
+    error: combinedScoreboardError,
+    mutate: mutateCombinedScoreboard,
+  } = useCombinedScoreboard(numId, showTabs && effectiveTab === 'overall')
   const onOverallTab = effectiveTab === 'overall' && showTabs
   const onAdTab = effectiveTab === 'ad' && hasAdChallenges
   const onKothTab = effectiveTab === 'koth' && hasKothChallenges
+  const refreshActiveScoreboard = useCallback(async () => {
+    if (onOverallTab) return mutateCombinedScoreboard()
+    if (onAdTab) return mutateAdScoreboard()
+    if (onKothTab) return mutateKothScoreboard()
+    return mutateJeopardyScoreboard()
+  }, [
+    mutateAdScoreboard,
+    mutateCombinedScoreboard,
+    mutateKothScoreboard,
+    mutateJeopardyScoreboard,
+    onAdTab,
+    onKothTab,
+    onOverallTab,
+  ])
+  useScoreboardLiveRefresh(numId, status === GameStatus.OnGoing, refreshActiveScoreboard)
   const frozenView = onOverallTab
     ? combinedScoreboard?.isFrozenView
     : onAdTab

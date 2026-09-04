@@ -957,8 +957,17 @@ pub async fn submit(
         .map_err(|error| AppError::internal(error.to_string()))?;
     crate::services::feed_publication::enqueue_submission(&st, id, sub_id, committed_event_ids);
 
+    let broadcast_now = Utc::now();
+    let refresh_is_safe =
+        super::scoreboard_refresh_is_publicly_safe(freeze_time, game_end, broadcast_now);
+    if claimed_first_solve {
+        super::invalidate_standard_scoreboard(&st, id).await;
+        if refresh_is_safe {
+            super::publish_scoreboard_changed(&st, id, "jeopardy");
+        }
+    }
+
     if let Some((notice_type, notice_id, values, publish_time)) = notice_to_broadcast {
-        let broadcast_now = Utc::now();
         let in_freeze =
             freeze_time.is_some_and(|freeze| broadcast_now >= freeze && broadcast_now < game_end);
         if !in_freeze {

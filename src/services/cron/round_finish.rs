@@ -972,6 +972,7 @@ pub(super) async fn finish_prepared_round(
         })
         .to_string(),
     );
+    crate::controllers::game::publish_scoreboard_changed(state, game.id, "engines");
     tracing::debug!(
         game = game.id,
         round = next_number,

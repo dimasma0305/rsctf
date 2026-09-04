@@ -82,6 +82,7 @@ target_catalog! {
     "ReceivedGameEvent" => Game,
     "ReceivedGameNotice" => Game,
     "ReceivedGameNoticeChanged" => Game,
+    "ReceivedScoreboardChanged" => Game,
     "ReceivedFlagEgress" => Game,
     "ReceivedLog" => Global,
     "ReceivedSubmissions" => Game,
