@@ -9,6 +9,19 @@ const MAX_CLONE_TITLE_BYTES: usize = 128;
 const MAX_CLONE_DURATION_DAYS: i64 = 366;
 const MAX_CLONE_FLAG_BYTES: usize = 127;
 
+const GAME_REVISION_SQL: &str = r#"SELECT md5(row_to_json(source_game_row)::text)
+     FROM "Games" source_game_row WHERE source_game_row.id = $1"#;
+
+const CHALLENGE_REVISION_SQL: &str = r#"SELECT md5($2 || COALESCE((
+              SELECT string_agg(md5(row_to_json(challenge_row)::text), '' ORDER BY challenge_row.id)
+                FROM "GameChallenges" challenge_row WHERE challenge_row.game_id = $1
+          ), '') || COALESCE((
+              SELECT string_agg(md5(row_to_json(flag_row)::text), '' ORDER BY flag_row.id)
+                FROM "FlagContexts" flag_row
+                JOIN "GameChallenges" challenge_row ON challenge_row.id = flag_row.challenge_id
+               WHERE challenge_row.game_id = $1 AND flag_row.is_occupied = FALSE
+          ), ''))"#;
+
 fn expanded_flag_template_bytes(template: &str) -> Option<usize> {
     [("[GUID]", 36_usize), ("[UUID]", 36), ("[TEAM_HASH]", 16)]
         .into_iter()
@@ -215,14 +228,11 @@ pub async fn clone_game(
         .map_err(|error| AppError::internal(error.to_string()))?;
     let source =
         super::update_support::load_game_locked(source_control.transaction_mut(), id, true).await?;
-    let game_revision: String = sqlx::query_scalar(
-        r#"SELECT md5(row_to_json(source)::text)
-             FROM "Games" source WHERE source.id = $1"#,
-    )
-    .bind(id)
-    .fetch_one(&mut **source_control.transaction_mut())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    let game_revision: String = sqlx::query_scalar(GAME_REVISION_SQL)
+        .bind(id)
+        .fetch_one(&mut **source_control.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     validate_source_revisions(
         &model,
         source.configuration_revision,
@@ -323,22 +333,12 @@ pub async fn clone_game(
             )));
         }
 
-        let revision: String = sqlx::query_scalar(
-            r#"SELECT md5($2 || COALESCE((
-                          SELECT string_agg(md5(row_to_json(challenge)::text), '' ORDER BY challenge.id)
-                            FROM "GameChallenges" challenge WHERE challenge.game_id = $1
-                      ), '') || COALESCE((
-                          SELECT string_agg(md5(row_to_json(flag)::text), '' ORDER BY flag.id)
-                            FROM "FlagContexts" flag
-                            JOIN "GameChallenges" challenge ON challenge.id = flag.challenge_id
-                           WHERE challenge.game_id = $1 AND flag.is_occupied = FALSE
-                      ), ''))"#,
-        )
-        .bind(id)
-        .bind(&game_revision)
-        .fetch_one(&mut **source_control.transaction_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+        let revision: String = sqlx::query_scalar(CHALLENGE_REVISION_SQL)
+            .bind(id)
+            .bind(&game_revision)
+            .fetch_one(&mut **source_control.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         (counts.0, counts.1, revision)
     } else {
         (0, 0, game_revision)
@@ -574,6 +574,61 @@ mod clone_contract_tests {
         model.expected_challenge_revision -= 1;
         model.expected_source_revision += 1;
         assert_ne!(first, clone_request_digest(1, &model, "Clone target"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn revision_row_aliases_do_not_collide_with_scalar_columns() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to PostgreSQL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::raw_sql(
+            r#"CREATE TEMP TABLE "Games" (
+                   id INTEGER PRIMARY KEY,
+                   source VARCHAR(32) NOT NULL
+               );
+               INSERT INTO "Games" (id, source) VALUES (7, 'repository');"#,
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        let revision: String = sqlx::query_scalar(GAME_REVISION_SQL)
+            .bind(7_i32)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(revision.len(), 32);
+        sqlx::raw_sql(
+            r#"CREATE TEMP TABLE "GameChallenges" (
+                   id INTEGER PRIMARY KEY,
+                   game_id INTEGER NOT NULL
+               );
+               CREATE TEMP TABLE "FlagContexts" (
+                   id INTEGER PRIMARY KEY,
+                   challenge_id INTEGER NOT NULL,
+                   flag VARCHAR(128) NOT NULL,
+                   is_occupied BOOLEAN NOT NULL
+               );
+               INSERT INTO "GameChallenges" (id, game_id) VALUES (70, 7);
+               INSERT INTO "FlagContexts" (id, challenge_id, flag, is_occupied)
+               VALUES (700, 70, 'flag{test}', FALSE);"#,
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        let challenge_revision: String = sqlx::query_scalar(CHALLENGE_REVISION_SQL)
+            .bind(7_i32)
+            .bind(&revision)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(challenge_revision.len(), 32);
+        tx.rollback().await.unwrap();
     }
 
     #[test]
