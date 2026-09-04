@@ -96,7 +96,7 @@ kube = { version = "0.95", default-features = false, features = ["client", "rust
 k8s-openapi = { version = "0.23", features = ["latest"] }
 pcap-file = "2"
 pcap = "2"
-defguard_wireguard_rs = "0.10.0"
+defguard_wireguard_rs = "0.11.1"
 russh = { version = "0.62.2", default-features = false, features = ["aws-lc-rs", "flate2"] }
 yamux = "0.14.0"
 tokio-util = { version = "0.7.18", features = ["compat", "io"] }
