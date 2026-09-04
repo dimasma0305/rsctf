@@ -51,6 +51,57 @@ struct RosterRow {
     division: Option<String>,
 }
 
+const LATEST_CONTROL_SQL: &str = r#"SELECT challenge.id AS challenge_id,
+                  latest.status,
+                  latest.round_number,
+                  confirmed.id AS confirmed_participation_id,
+                  confirmed_team.name AS confirmed_team_name
+             FROM "GameChallenges" challenge
+             JOIN LATERAL (
+                  SELECT result.status, round.number AS round_number,
+                         result.confirmed_participation_id
+                    FROM "KothControlResults" result
+                    JOIN "AdRounds" round
+                      ON round.id = result.ad_round_id
+                     AND round.game_id = result.game_id
+                    JOIN "KothCrownCycles" cycle
+                      ON cycle.id = result.cycle_id
+                     AND cycle.game_id = result.game_id
+                     AND cycle.challenge_id = result.challenge_id
+                     AND $6 BETWEEN cycle.planned_start_round AND cycle.planned_end_round
+                    JOIN LATERAL (
+                         SELECT audit.attempt
+                           FROM "KothCycleAuditReceipts" audit
+                          WHERE audit.cycle_id = cycle.id
+                            AND ($3::timestamptz IS NULL OR audit.created_at <= $3)
+                          ORDER BY audit.attempt DESC, audit.created_at DESC, audit.id DESC
+                          LIMIT 1
+                    ) capability_window
+                      ON capability_window.attempt = result.token_window_attempt
+                    JOIN "KothCycleAuditReceipts" activation
+                      ON activation.cycle_id = cycle.id
+                     AND activation.phase = 'FirewallPending'
+                     AND activation.attempt = capability_window.attempt
+                     AND ($3::timestamptz IS NULL OR activation.created_at <= $3)
+                   WHERE result.game_id = $1
+                     AND result.challenge_id = challenge.id
+                     AND ($2::timestamptz IS NULL OR result.is_scorable = TRUE)
+                     AND ($2::timestamptz IS NULL
+                          OR (NOT $4 AND round.start_time_utc <= $2)
+                          OR ($4 AND round.start_time_utc < $2))
+                     AND ($3::timestamptz IS NULL OR result.checked_at <= $3)
+                   ORDER BY result.checked_at DESC, result.id DESC
+                   LIMIT 1
+             ) latest ON TRUE
+        LEFT JOIN "Participations" confirmed
+               ON confirmed.id = latest.confirmed_participation_id
+              AND confirmed.game_id = challenge.game_id
+              AND confirmed.status = $5
+        LEFT JOIN "Teams" confirmed_team ON confirmed_team.id = confirmed.team_id
+            WHERE challenge.game_id = $1 AND challenge."Type" = $7
+              AND ($8 OR challenge.review_status = $9)
+            ORDER BY challenge.id"#;
+
 fn challenge_category(value: i16) -> AppResult<ChallengeCategory> {
     <ChallengeCategory as sea_orm::ActiveEnum>::try_from_value(&value)
         .map_err(|error| AppError::internal(error.to_string()))
@@ -139,70 +190,19 @@ async fn compute_koth_board_inner(
     .map_err(|error| AppError::internal(error.to_string()))?;
     let latest_round = round_clock.as_ref().map_or(0, |round| round.number);
     let current_round_ends_at = round_clock.as_ref().map(|round| round.end_time_utc);
-    let latest_controls = sqlx::query_as::<_, LatestControlRow>(
-        r#"SELECT challenge.id AS challenge_id,
-                  latest.status,
-                  latest.round_number,
-                  confirmed.id AS confirmed_participation_id,
-                  confirmed_team.name AS confirmed_team_name
-             FROM "GameChallenges" challenge
-             JOIN LATERAL (
-                  SELECT result.status, round.number AS round_number,
-                         result.confirmed_participation_id
-                    FROM "KothControlResults" result
-                    JOIN "AdRounds" round
-                      ON round.id = result.ad_round_id
-                     AND round.game_id = result.game_id
-                    JOIN "KothCrownCycles" cycle
-                      ON cycle.id = result.cycle_id
-                     AND cycle.game_id = result.game_id
-                     AND cycle.challenge_id = result.challenge_id
-                     AND $6 BETWEEN cycle.planned_start_round AND cycle.planned_end_round
-                    JOIN LATERAL (
-                         SELECT audit.attempt
-                           FROM "KothCycleAuditReceipts" audit
-                          WHERE audit.cycle_id = cycle.id
-                            AND ($3::timestamptz IS NULL OR audit.created_at <= $3)
-                          ORDER BY audit.attempt DESC, audit.created_at DESC, audit.id DESC
-                          LIMIT 1
-                    ) capability_window
-                      ON capability_window.attempt = result.token_window_attempt
-                    JOIN "KothCycleAuditReceipts" activation
-                      ON activation.cycle_id = cycle.id
-                     AND activation.phase = 'FirewallPending'
-                     AND activation.attempt = capability_window.attempt
-                     AND ($3::timestamptz IS NULL OR activation.created_at <= $3)
-                   WHERE result.game_id = $1
-                     AND result.challenge_id = challenge.id
-                     AND result.is_scorable = TRUE
-                     AND ($2::timestamptz IS NULL
-                          OR (NOT $4 AND round.start_time_utc <= $2)
-                          OR ($4 AND round.start_time_utc < $2))
-                     AND ($3::timestamptz IS NULL OR result.checked_at <= $3)
-                   ORDER BY result.checked_at DESC, result.id DESC
-                   LIMIT 1
-             ) latest ON TRUE
-        LEFT JOIN "Participations" confirmed
-               ON confirmed.id = latest.confirmed_participation_id
-              AND confirmed.game_id = challenge.game_id
-              AND confirmed.status = $5
-        LEFT JOIN "Teams" confirmed_team ON confirmed_team.id = confirmed.team_id
-            WHERE challenge.game_id = $1 AND challenge."Type" = $7
-              AND ($8 OR challenge.review_status = $9)
-            ORDER BY challenge.id"#,
-    )
-    .bind(game_id)
-    .bind(cutoff)
-    .bind(checker_cutoff)
-    .bind(event_ended)
-    .bind(ParticipationStatus::Accepted as i16)
-    .bind(latest_round)
-    .bind(ChallengeType::KingOfTheHill as i16)
-    .bind(include_unreviewed)
-    .bind(ChallengeReviewStatus::Active as i16)
-    .fetch_all(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    let latest_controls = sqlx::query_as::<_, LatestControlRow>(LATEST_CONTROL_SQL)
+        .bind(game_id)
+        .bind(cutoff)
+        .bind(checker_cutoff)
+        .bind(event_ended)
+        .bind(ParticipationStatus::Accepted as i16)
+        .bind(latest_round)
+        .bind(ChallengeType::KingOfTheHill as i16)
+        .bind(include_unreviewed)
+        .bind(ChallengeReviewStatus::Active as i16)
+        .fetch_all(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     let latest_control_by_challenge: HashMap<i32, (String, i32)> = latest_controls
         .iter()
         .map(|row| {
@@ -568,6 +568,26 @@ pub(super) struct KothBoard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::{Connection, PgConnection};
+
+    async fn load_latest_controls(
+        connection: &mut PgConnection,
+        cutoff: Option<DateTime<Utc>>,
+    ) -> Vec<LatestControlRow> {
+        sqlx::query_as::<_, LatestControlRow>(LATEST_CONTROL_SQL)
+            .bind(41_i32)
+            .bind(cutoff)
+            .bind(cutoff)
+            .bind(false)
+            .bind(ParticipationStatus::Accepted as i16)
+            .bind(2_i32)
+            .bind(ChallengeType::KingOfTheHill as i16)
+            .bind(false)
+            .bind(ChallengeReviewStatus::Active as i16)
+            .fetch_all(connection)
+            .await
+            .unwrap()
+    }
 
     #[test]
     fn raw_challenge_categories_keep_the_domain_enum() {
@@ -575,6 +595,89 @@ mod tests {
         assert_eq!(challenge_category(9).unwrap(), ChallengeCategory::Ppc);
         assert_eq!(challenge_category(12).unwrap(), ChallengeCategory::Osint);
         assert!(challenge_category(13).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn live_status_uses_functional_checks_without_freezing_unscorable_evidence() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let mut connection = PgConnection::connect(&database_url).await.unwrap();
+        sqlx::raw_sql(
+            r#"CREATE TEMP TABLE "GameChallenges" (
+                 id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
+                 "Type" SMALLINT NOT NULL, review_status SMALLINT NOT NULL
+               );
+               CREATE TEMP TABLE "AdRounds" (
+                 id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
+                 number INTEGER NOT NULL, start_time_utc TIMESTAMPTZ NOT NULL
+               );
+               CREATE TEMP TABLE "KothCrownCycles" (
+                 id BIGINT PRIMARY KEY, game_id INTEGER NOT NULL,
+                 challenge_id INTEGER NOT NULL,
+                 planned_start_round INTEGER NOT NULL,
+                 planned_end_round INTEGER NOT NULL
+               );
+               CREATE TEMP TABLE "KothCycleAuditReceipts" (
+                 id BIGINT PRIMARY KEY, cycle_id BIGINT NOT NULL,
+                 attempt INTEGER NOT NULL, phase TEXT NOT NULL,
+                 created_at TIMESTAMPTZ NOT NULL
+               );
+               CREATE TEMP TABLE "KothControlResults" (
+                 id BIGINT PRIMARY KEY, game_id INTEGER NOT NULL,
+                 challenge_id INTEGER NOT NULL, ad_round_id INTEGER NOT NULL,
+                 cycle_id BIGINT NOT NULL, status SMALLINT NOT NULL,
+                 confirmed_participation_id INTEGER,
+                 token_window_attempt INTEGER NOT NULL,
+                 is_scorable BOOLEAN NOT NULL,
+                 checked_at TIMESTAMPTZ NOT NULL
+               );
+               CREATE TEMP TABLE "Participations" (
+                 id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
+                 status SMALLINT NOT NULL, team_id INTEGER NOT NULL
+               );
+               CREATE TEMP TABLE "Teams" (
+                 id INTEGER PRIMARY KEY, name TEXT NOT NULL
+               );"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        sqlx::query(r#"INSERT INTO "GameChallenges" VALUES ($1, 41, $2, $3)"#)
+            .bind(5_i32)
+            .bind(ChallengeType::KingOfTheHill as i16)
+            .bind(ChallengeReviewStatus::Active as i16)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"INSERT INTO "AdRounds" VALUES
+                 (1, 41, 1, NOW() - INTERVAL '120 seconds'),
+                 (2, 41, 2, NOW() - INTERVAL '60 seconds');
+               INSERT INTO "KothCrownCycles" VALUES (7, 41, 5, 1, 2);
+               INSERT INTO "KothCycleAuditReceipts" VALUES
+                 (8, 7, 0, 'FirewallPending', NOW() - INTERVAL '180 seconds');
+               INSERT INTO "KothControlResults" VALUES
+                 (9, 41, 5, 1, 7, 2, NULL, 0, TRUE, NOW() - INTERVAL '50 seconds'),
+                 (10, 41, 5, 2, 7, 0, NULL, 0, FALSE, NOW() - INTERVAL '40 seconds');"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+
+        let live = load_latest_controls(&mut connection, None).await;
+        assert_eq!(live.len(), 1);
+        assert_eq!((live[0].status, live[0].round_number), (0, 2));
+
+        let frozen = load_latest_controls(&mut connection, Some(now)).await;
+        assert_eq!(frozen.len(), 1);
+        assert_eq!((frozen[0].status, frozen[0].round_number), (2, 1));
     }
 
     fn team_row(

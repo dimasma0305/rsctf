@@ -56,7 +56,12 @@ spec:
     - name: ${legacy_name}
       image: ${retry_image}
       ports:
-        - containerPort: 8080
+        - name: challenge-tcp
+          containerPort: 8080
+          protocol: TCP
+        - name: challenge-udp
+          containerPort: 8080
+          protocol: UDP
       resources:
         limits:
           cpu: 100m
@@ -101,8 +106,14 @@ spec:
   selector:
     app: rsctf-${legacy_uid}
   ports:
-    - port: 8080
+    - name: challenge-tcp
+      port: 8080
       targetPort: 8080
+      protocol: TCP
+    - name: challenge-udp
+      port: 8080
+      targetPort: 8080
+      protocol: UDP
 YAML
 kubectl apply --namespace rsctf-rejection -f - <<'YAML'
 apiVersion: v1
