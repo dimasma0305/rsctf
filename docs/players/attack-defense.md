@@ -292,8 +292,9 @@ includes:
 ### 3.2 Connect to the VPN
 
 1. Download the WireGuard configuration from the game.
-2. Store it privately. A gated event profile identifies you personally; an
-   ungated legacy profile grants shared team network access.
+2. Store it privately. Each player's profile is personal, even when the event
+   does not require a VPN for its website/API. Do not share it with teammates
+   or activate the same profile on multiple devices at once.
 3. Import it into the official WireGuard client or a compatible client.
 4. Activate the tunnel.
 5. Test one address from the current target list.
@@ -304,7 +305,14 @@ organizer.
 
 When the organizer requires an event VPN, the game-page download and the A&D or
 KotH Toolkit download are the same personal profile. Import either one, not
-both. Events without that gate retain the team-scoped Toolkit profile.
+both. The Toolkit also issues personal profiles when that gate is off. Only
+the BYOC setup bundle retains a team hosting profile; do not import that
+hosting profile onto players' computers.
+
+If you used an older team-shared Toolkit profile, download a fresh personal
+profile and deactivate the old tunnel before importing it. Teammates need to
+download their own profiles from their own accounts. Existing BYOC hosts do
+not need their hosting configuration replaced for this change.
 
 ### 3.3 Access your service
 

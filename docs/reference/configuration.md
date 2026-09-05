@@ -183,16 +183,16 @@ uses S3.
 | --- | --- | --- |
 | `RSCTF_AD_VPN_ENABLED` | `false` | Enable integrated VPN policy coordination; an `all`/`control`/`network` role owns the WireGuard hub |
 | `RSCTF_AD_VPN_REQUIRED` | `false` | Fail startup if VPN initialization fails; requires VPN enabled |
-| `RSCTF_AD_VPN_CLIENT_CIDR` | `10.13.37.0/24` in code | Address pool for team peers; deployment templates may choose a larger non-overlapping range |
+| `RSCTF_AD_VPN_CLIENT_CIDR` | `10.13.37.0/24` in code | Shared address pool for personal player and BYOC hosting peers, including reserved historical personal addresses; size for players, not only teams |
 | `RSCTF_AD_VPN_SERVICES_CIDR` | `10.13.40.0/24` | Docker A&D service network |
 | `RSCTF_AD_VPN_SERVICES_NETWORK` | `<Compose project>-ad` (`rsctf-ad` outside Compose) | Docker A&D service network name; keep it unique per installation sharing a daemon |
 | `RSCTF_AD_VPN_EGRESS_NETWORK` | `rsctf-ad-egress` | Legacy Docker bridge name; competitive Docker egress now fails closed and never joins this shared bridge |
 | `RSCTF_AD_VPN_LISTEN_PORT` | `51820` | WireGuard UDP listen port |
 | `RSCTF_AD_VPN_SERVER_ENDPOINT` | Derived | Public `host:port` placed in player configurations |
-| `RSCTF_AD_VPN_DNS` | `1.1.1.1` | DNS server placed in generated WireGuard profiles |
-| `RSCTF_AD_VPN_ALLOWED_IPS` | Derived routes | Optional explicit routes in player profiles |
+| `RSCTF_AD_VPN_DNS` | `1.1.1.1` | DNS server placed in BYOC hosting profiles; personal profiles use the same-origin VPN DNS hub when configured |
+| `RSCTF_AD_VPN_ALLOWED_IPS` | Derived routes | Optional additional routes in BYOC hosting profiles; personal profiles use `RSCTF_EVENT_VPN_ALLOWED_IPS` |
 | `RSCTF_KOTH_REPORTER_BASE_URL` | Unset | Private absolute HTTP(S) origin, without a path/query/credentials, that managed Leaderboard targets use for capability exchange, context reads, and evidence submission. Configure the same value on the lifecycle-owning role and web roles that serve organizer status; web roles treat it only as a capability flag. Kubernetes requires a cross-namespace Service origin such as `http://rsctf-network.rsctf-system.svc:8080`; callback policy allows that Service port and rsctf's configured bind/target port to cover Service translation. Leaving it unset keeps legacy external reporting only. |
-| `RSCTF_EVENT_VPN_CREDENTIAL_KEY` | Unset | Independent 32+ character key for event peer private-key encryption and short-lived proof signing |
+| `RSCTF_EVENT_VPN_CREDENTIAL_KEY` | Unset | Independent persistent 32+ character key for personal peer encryption and short-lived proof signing; required for player Toolkit downloads even with the API VPN gate off |
 | `RSCTF_EVENT_VPN_PROOF_URL` | Unset | Public HTTPS rsctf browser origin used after a live WireGuard handshake; required before an event can enable its VPN gate |
 | `RSCTF_EVENT_VPN_ALLOWED_IPS` | VPN client CIDR plus service routes | Additional narrow event-service routes; never include the WireGuard endpoint address, and default routes are rejected |
 | `RSCTF_EVENT_SENSOR_TOKEN` | Unset | Independent 32+ character bearer credential shared only by the network owner and optional sensor sidecar |

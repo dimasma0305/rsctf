@@ -408,13 +408,12 @@ async fn load_peers(
     service_networks: &[Ipv4Net],
 ) -> AppResult<Vec<DesiredPeer>> {
     let team_peers = load_team_peers(db, client_network, service_networks).await?;
-    let event_peers = sqlx::query_as::<_, EventPeerIntent>(
+    let eligibility = crate::services::event_security::PERSONAL_PEER_GAME_ELIGIBLE_SQL;
+    let event_peers = sqlx::query_as::<_, EventPeerIntent>(&format!(
         r#"SELECT peer.id, peer.game_id, peer.participation_id,
                   peer.public_key, peer.address,
                   (
-                      game.vpn_access_required = TRUE
-                      AND game.deletion_pending = FALSE
-                      AND clock_timestamp() < game.end_time_utc
+                      ({eligibility})
                       AND participation.status = 1
                       AND team.deletion_pending = FALSE
                       AND account.email_confirmed = TRUE
@@ -441,7 +440,7 @@ async fn load_peers(
                ON member.team_id = team.id AND member.user_id = peer.user_id
             WHERE peer.revoked_at_utc IS NULL
             ORDER BY peer.id"#,
-    )
+    ))
     .fetch_all(db.get_postgres_connection_pool())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;

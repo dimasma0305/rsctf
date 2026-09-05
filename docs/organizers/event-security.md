@@ -45,6 +45,31 @@ silently converted into an automatic certainty percentage.
 
 ## Enable an event safely
 
+Player transport and the website/API VPN gate are independent. A&D/KotH Toolkit
+downloads always use separate player keys and addresses. Turning the gate off
+does not turn these profiles into shared team credentials or revoke transport
+for an unended event with an enabled, approved A&D/KotH challenge. Membership,
+account, event expiry, and exact target firewall checks still apply.
+
+For Toolkit-only transport, configure `RSCTF_EVENT_VPN_CREDENTIAL_KEY` (an
+independent, persistent 32+ character secret) and `RSCTF_AD_VPN_SERVER_ENDPOINT`
+on the serving replicas as well as the managed VPN owner. The proof URL and
+sensor secrets are not required unless their corresponding features are used.
+Do not fall back to a shared player profile when the encryption key is missing.
+The installer generates a missing key and preserves an existing one; an
+explicit empty or invalid key needs an operator correction before VPN startup.
+On upgrade, have players replace old Toolkit profiles; keep BYOC hosting
+profiles separate and unchanged.
+
+Size `RSCTF_AD_VPN_CLIENT_CIDR` for individual players, BYOC hosting peers, and
+reserved historical addresses, not just the number of teams. Revoked personal
+addresses remain reserved to avoid assigning an old identity to another user.
+A `/24` has only 253 allocatable peer addresses after the network, hub and
+broadcast addresses are excluded. Choose a larger non-overlapping pool before
+the event if necessary, and update ingress return routes and player profiles
+when changing the pool. Split tunneling does not carry players' ordinary video
+streaming or other Internet traffic through the VPS.
+
 1. Deploy the managed WireGuard owner and configure three independent 32+
    character secrets: `RSCTF_EVENT_VPN_CREDENTIAL_KEY`,
    `RSCTF_EVENT_SENSOR_TOKEN`, and `RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN`.

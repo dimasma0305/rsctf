@@ -146,6 +146,14 @@ grep -Fxq 'RSCTF_EVENT_VPN_HUB_ADDRESS=10.13.0.1' "$vpn_checkout/deploy/.env"
 grep -Fxq 'RSCTF_EVENT_VPN_BACKEND_IP=10.13.40.2' "$vpn_checkout/deploy/.env"
 grep -Fxq 'RSCTF_EVENT_VPN_INGRESS_IP=10.13.40.253' "$vpn_checkout/deploy/.env"
 test -f "$vpn_checkout/deploy/event-vpn/Corefile"
+vpn_credential_key="$(sed -n 's/^RSCTF_EVENT_VPN_CREDENTIAL_KEY=//p' "$vpn_checkout/deploy/.env")"
+test "${#vpn_credential_key}" -eq 64
+test "$vpn_credential_key" != "$(sed -n 's/^RSCTF_JWT_SECRET=//p' "$vpn_checkout/deploy/.env")"
+! grep -Fq -- "$vpn_credential_key" "$TEMP_DIRECTORY/vpn.out"
+
+# Simulate a legacy install without personal VPN credentials. Upgrades must
+# generate a missing key once, then preserve it on every subsequent invocation.
+sed -i '/^RSCTF_EVENT_VPN_CREDENTIAL_KEY=/d' "$local_checkout/deploy/.env"
 
 sed -i \
   -e 's/^RSCTF_DB_MAX_CONNECTIONS=50$/RSCTF_DB_MAX_CONNECTIONS=33/' \
@@ -169,6 +177,10 @@ grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=50' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_CONTROL_DB_MAX_CONNECTIONS=38' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_WEB_DB_MAX_CONNECTIONS=27' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_PROVISIONING_CONCURRENCY=7' "$local_checkout/deploy/.env"
+upgraded_vpn_key="$(sed -n 's/^RSCTF_EVENT_VPN_CREDENTIAL_KEY=//p' "$local_checkout/deploy/.env")"
+test "${#upgraded_vpn_key}" -eq 64
+test "$upgraded_vpn_key" != "$local_jwt"
+! grep -Fq -- "$upgraded_vpn_key" "$TEMP_DIRECTORY/local-upgrade.out"
 
 sed -i \
   -e 's/^RSCTF_DB_MAX_CONNECTIONS=50$/RSCTF_DB_MAX_CONNECTIONS=51/' \
@@ -188,6 +200,7 @@ env \
     --configure-only \
     >"$TEMP_DIRECTORY/local-custom.out" 2>&1
 grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=51' "$local_checkout/deploy/.env"
+test "$(sed -n 's/^RSCTF_EVENT_VPN_CREDENTIAL_KEY=//p' "$local_checkout/deploy/.env")" = "$upgraded_vpn_key"
 grep -Fxq 'RSCTF_CONTROL_DB_MAX_CONNECTIONS=39' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_WEB_DB_MAX_CONNECTIONS=28' "$local_checkout/deploy/.env"
 

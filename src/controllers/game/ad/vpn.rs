@@ -1,12 +1,10 @@
 //! `Ad/Vpn/Config` endpoint — download a WireGuard `.conf` for the caller's A&D
 //! participation. Ported from RSCTF's `AdGameController.DownloadVpnConfig`.
 //!
-//! A gated event returns the caller's personal event peer from both download
-//! locations. An ungated event preserves the established shared-participation
-//! peer used by A&D/BYOC automation.
+//! Player downloads always use a personal event peer, independently of the API
+//! VPN gate. Only BYOC hosting bundles use the shared participation peer.
 
-use axum::http::header;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 
 use super::*;
 use crate::services::ad_vpn;
@@ -111,15 +109,6 @@ fn wireguard_comment(value: &str) -> String {
 /// the downloaded config's keys match the live `wg0` interface and the handshake
 /// succeeds. `AllowedIPs` routes the A&D services subnet + the client subnet
 /// (other teams' BYOC) over the tunnel. Shared with the BYOC bundle (`byoc.rs`).
-pub(super) async fn render_wg_config(
-    st: &SharedState,
-    game: &game::Model,
-    user_name: &str,
-    participation_id: i32,
-) -> AppResult<String> {
-    render_wg_config_for_game(st, game.id, user_name, participation_id).await
-}
-
 pub(super) async fn render_wg_config_for_game(
     st: &SharedState,
     game_id: i32,
@@ -177,20 +166,6 @@ pub(super) async fn render_wg_config_for_game(
     ))
 }
 
-/// A filesystem-safe token from a user's display name, for `.conf` filenames.
-/// Falls back to `player` when nothing survives the filter.
-pub(super) fn safe_user_slug(name: &str) -> String {
-    let s: String = name
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-    if s.is_empty() {
-        "player".to_string()
-    } else {
-        s
-    }
-}
-
 /// `GET /api/Game/{id}/Ad/Vpn/Config` — download the caller's WireGuard `.conf`.
 ///
 /// Gated on the caller being an **accepted** participant of the game (via
@@ -206,63 +181,28 @@ pub async fn download_vpn_config(
     let part = resolve_participation(&st, &user, id).await?;
 
     // Game must have at least one A&D or KotH challenge (mirrors RSCTF's hasAd).
-    let has_ad = game_challenge::Entity::find()
-        .filter(game_challenge::Column::GameId.eq(id))
-        .filter(game_challenge::Column::IsEnabled.eq(true))
-        .filter(
-            game_challenge::Column::ReviewStatus
-                .eq(crate::utils::enums::ChallengeReviewStatus::Active),
-        )
-        .filter(
-            game_challenge::Column::ChallengeType
-                .eq(ChallengeType::AttackDefense)
-                .or(game_challenge::Column::ChallengeType.eq(ChallengeType::KingOfTheHill)),
-        )
-        .one(&st.db)
-        .await?
-        .is_some();
+    let has_ad: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(SELECT 1 FROM "GameChallenges"
+             WHERE game_id = $1 AND is_enabled = TRUE AND review_status = 0
+               AND "Type" IN (4, 5))"#,
+    )
+    .bind(id)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     if !has_ad {
         return Err(AppError::not_found(
             "This game has no A&D or KotH challenges",
         ));
     }
 
-    let game = game::Entity::find_by_id(id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Game not found"))?;
-
-    // A mandatory event VPN is a personal, session-bound credential. Returning
-    // the legacy team-shared peer here would preserve a non-attributable player
-    // path and would leave the Toolkit download trapped behind the very gate it
-    // is meant to unlock.
-    if game.vpn_access_required {
-        let conf = crate::services::event_security::render_user_config(&st, &user, &part).await?;
-        return Ok(crate::controllers::game::event_vpn_config_response(
-            id, conf,
-        ));
-    }
-
-    // Keep shared team credentials only for events that have not enabled the
-    // personal VPN gate. BYOC bundles deliberately continue to use this peer.
-    let roster_access = acquire_roster_access(&st, &user, &part).await?;
-    let conf = render_wg_config(&st, &game, &user.name, part.id).await?;
-    let safe_user_name = safe_user_slug(&user.name);
-    roster_access.release().await?;
-
-    Ok((
-        [
-            (header::CONTENT_TYPE, "text/plain".to_string()),
-            (header::CACHE_CONTROL, "private, no-store".to_string()),
-            (header::PRAGMA, "no-cache".to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"ad-game-{id}-{safe_user_name}.conf\""),
-            ),
-        ],
-        conf.into_bytes(),
-    )
-        .into_response())
+    // Sharing one WireGuard key makes teammates roam the same kernel endpoint,
+    // interrupting each other's TCP/UDP traffic. API access policy must not
+    // choose a shared transport identity. BYOC keeps its separate hosting peer.
+    let conf = crate::services::event_security::render_user_config(&st, &user, &part).await?;
+    Ok(crate::controllers::game::event_vpn_config_response(
+        id, conf,
+    ))
 }
 
 #[cfg(test)]

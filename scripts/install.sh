@@ -603,6 +603,7 @@ write_new_environment() {
     printf 'POSTGRES_PASSWORD=%s\n' "$postgres_password"
     printf 'RSCTF_JWT_SECRET=%s\n' "$jwt_secret"
     printf 'RSCTF_IDENTITY_HASH_KEY=%s\n' "$(random_hex 32)"
+    printf 'RSCTF_EVENT_VPN_CREDENTIAL_KEY=%s\n' "$(random_hex 32)"
     printf 'RSCTF_BOOTSTRAP_TOKEN=%s\n' "$(random_hex 32)"
     printf 'RSCTF_DOCKER_SCOPE=%s\n' "$(random_hex 16)"
     printf '\nRSCTF_PUBLIC_URL=%s\n' "$PUBLIC_URL"
@@ -679,6 +680,7 @@ complete_existing_environment() {
   append_env_if_missing POSTGRES_PASSWORD "$(random_hex 24)"
   append_env_if_missing RSCTF_JWT_SECRET "$(random_hex 32)"
   append_env_if_missing RSCTF_IDENTITY_HASH_KEY "$(random_hex 32)"
+  append_env_if_missing RSCTF_EVENT_VPN_CREDENTIAL_KEY "$(random_hex 32)"
   append_env_if_missing RSCTF_BOOTSTRAP_TOKEN "$(random_hex 32)"
   append_env_if_missing RSCTF_DOCKER_SCOPE "$(random_hex 16)"
   append_env_if_missing RSCTF_PUBLIC_URL "$PUBLIC_URL"
@@ -733,7 +735,7 @@ guard_missing_environment_with_existing_data() {
 
 check_environment_values() {
   local jwt identity_hash_key bootstrap_token password public_url files
-  local proxy_bind proxy_subnet proxy_bridge
+  local proxy_bind proxy_subnet proxy_bridge vpn_credential_key
   jwt=$(env_get RSCTF_JWT_SECRET)
   identity_hash_key=$(env_get RSCTF_IDENTITY_HASH_KEY)
   bootstrap_token=$(env_get RSCTF_BOOTSTRAP_TOKEN)
@@ -775,6 +777,11 @@ check_environment_values() {
       || die "RSCTF_CHALLENGE_PROXY_BRIDGE must be a Linux interface name of at most 15 characters"
   fi
   if [[ "$files" == *compose.ad-vpn.yml* ]]; then
+    vpn_credential_key=$(env_get RSCTF_EVENT_VPN_CREDENTIAL_KEY)
+    [[ ${#vpn_credential_key} -ge 32 && ! "$vpn_credential_key" =~ [[:space:]] ]] \
+      || die "A&D/KotH player VPN requires a persistent RSCTF_EVENT_VPN_CREDENTIAL_KEY with at least 32 non-whitespace characters"
+    [[ "$vpn_credential_key" != "$jwt" && "$vpn_credential_key" != "$identity_hash_key" ]] \
+      || die "RSCTF_EVENT_VPN_CREDENTIAL_KEY must be independent from the JWT and identity keys"
     [[ -n "$(env_get RSCTF_AD_VPN_SERVER_ENDPOINT)" ]] \
       || die "the A&D VPN requires RSCTF_AD_VPN_SERVER_ENDPOINT"
   fi
