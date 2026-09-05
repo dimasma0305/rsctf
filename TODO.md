@@ -1,5 +1,108 @@
 # TODO
 
+## Docker runtime scalability
+
+The platform already applies per-container CPU, memory, PID, writable-layer, and
+log-size limits; briefly caches and bounds admin runtime-stat sampling; and performs
+bounded orphan cleanup. The work below covers the remaining daemon-level scaling
+risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
+
+### P0 — Protect the Docker daemon
+
+- [ ] Replace `json-file` with Docker's `local` logging driver for core services,
+  locally managed challenges, trusted-worker workloads, and variant generators.
+  - Retain the existing bounded policy: 5 MiB per file and three files for challenge
+    workloads, with separately bounded core-service logs.
+  - Recreate existing containers during a planned rollout because Docker does not
+    apply a changed logging driver to an existing container.
+  - Add configuration and runtime tests covering both the local Docker manager and
+    trusted-worker Docker runtime.
+  - Relevant code: `docker-compose.yml`, `compose.dev.yml`,
+    `src/services/container/logging.rs`,
+    `agents/worker-agent/src/runtime/docker/support.rs`, and
+    `src/services/event_security/variants.rs`.
+
+- [ ] Put all short-lived Docker API work behind bounded admission and deadlines.
+  - Use separate limits for read operations (`inspect`, one-shot `stats`, `list`, and
+    bounded logs) and lifecycle operations (`create`, `start`, `remove`, and pull).
+  - Do not place interactive exec sessions behind a short-lived request deadline;
+    give long-lived streams their own admission and cancellation owner.
+  - Record in-flight operations, queue time, daemon latency, cancellations, and
+    timeouts so Docker saturation is visible before it delays gameplay.
+  - Drop/cancel every response stream on timeout and add a regression that proves a
+    cancelled or deleted-container log read cannot remain active or busy-loop.
+  - Relevant code: `src/services/container.rs`, `src/services/container/docker.rs`,
+    `src/hubs/container/`, and `agents/worker-agent/src/runtime/docker/`.
+
+- [ ] Reduce steady-state Docker health-check process churn.
+  - Keep fast startup detection with `start_interval: 2s`, but use approximately
+    15 seconds for PostgreSQL, Redis, and the firewall helper and 30 seconds for
+    rsctf after the startup period.
+  - Separate the firewall's two-second internal reconciliation cadence from its
+    Docker health-check cadence.
+  - Clamp inherited challenge-image health checks to a safe minimum steady interval
+    while preserving the image's check command, startup grace, timeout, and health
+    visibility.
+  - Prefer a small native health-check subcommand over starting Python or Node on
+    every sample.
+  - Add synchronized 100-container health-check load coverage and verify Docker-daemon
+    CPU, exec rate, readiness latency, and failure detection.
+  - Relevant code: `docker-compose.yml`, `deploy/compose*.yml`, `compose.dev.yml`,
+    `src/services/container.rs`, and
+    `agents/worker-agent/src/runtime/docker/support.rs`.
+
+### P1 — Bound workload growth and startup bursts
+
+- [ ] Enforce aggregate container capacity, not only per-container limits.
+  - Account for requested CPU, memory, replica count, and running container slots
+    atomically before accepting a workload.
+  - Reserve explicit capacity for Docker, rsctf, PostgreSQL, Redis, networking, and
+    maintenance work; queue or reject excess provisioning with a retryable response.
+  - Keep this admission replica-safe. Prefer the existing trusted-worker scheduler for
+    larger events instead of introducing an in-process-only local semaphore.
+  - Reconcile reservations against the labeled runtime inventory after crashes and
+    test concurrent provisioning from multiple control replicas.
+  - Relevant code: `src/services/container/`, `src/services/worker/`,
+    `src/services/worker_store/`, and `agents/worker-agent/src/runtime/`.
+
+- [ ] Add an operator preflight that pre-pulls and smoke-starts every enabled immutable
+  challenge image before an event.
+  - Report required CPU, memory, storage, replica, and container-slot totals against
+    available worker capacity.
+  - Start and remove one bounded temporary instance per distinct image, verify its
+    readiness contract, and ensure cleanup completes even after timeout or failure.
+  - Bound pull/start concurrency so preflight cannot become its own daemon overload.
+  - Surface an actionable per-challenge result in the admin event readiness view.
+
+- [ ] Set `init: true` for Linux challenge containers created by the local Docker and
+  trusted-worker backends so challenge processes cannot accumulate zombie children.
+  - Preserve Windows behavior and add runtime inspection tests for both backends.
+
+### P2 — Reduce per-instance networking overhead
+
+- [ ] Remove per-container host-port and `docker-proxy` requirements where the
+  authenticated platform proxy can safely reach a workload on an isolated internal
+  network.
+  - Preserve workload-to-workload isolation, VPN-only A&D reachability, callback
+    authentication, and the existing private PlatformProxy trust boundary.
+  - Do not reuse a bridge across mutually untrusted challenges merely to reduce the
+    network count.
+  - Compare Docker-daemon CPU, process count, connection tracking, startup latency,
+    and cleanup integrity at a fixed workload before changing the default.
+
+### Incident follow-up
+
+- [ ] Add an operator runbook and alert for abandoned Docker API clients.
+  - The 2026-09-02 host incident reached roughly 93% aggregate CPU while rsctf used
+    about 2%; `dockerd` used approximately 3.7 to 6.6 cores and repeatedly read JSON
+    logs at EOF for seven abandoned `docker logs` clients, including deleted-container
+    log descriptors.
+  - Alert on sustained Docker-daemon CPU, Docker API latency, stale client duration,
+    and deleted log descriptors. Diagnostic commands must use explicit `--tail` or
+    `--since` bounds and an outer timeout.
+  - Do not let rsctf kill unrelated host Docker clients automatically. Recovery is an
+    authenticated operator action; restarting Docker is a disruptive fallback.
+
 ## Event smoothness and live reliability
 
 Findings from the ongoing event-smoothness and client request-amplification review
@@ -3345,6 +3448,14 @@ on 2026-08-25.
   - Route native `fetch` calls through the same proof-aware wrapper as Axios. Solver
     and rating requests currently omit the proof and silently render empty data for
     ordinary players in VPN-required events.
+  - Make protected challenge-attachment downloads participate in the same proof flow.
+    The challenge modal currently renders local `/assets/{hash}/{filename}` URLs as
+    normal anchors, so the browser cannot attach `x-rsctf-vpn-proof`; an authenticated,
+    accepted participant can load a VPN-required challenge but receives HTTP 401 when
+    downloading its attachment. Keep anonymous, non-member, rejected, wrong-division,
+    and revoked users denied, preserve resumable/range downloads without putting a
+    proof or session token in the URL, and add browser plus backend regressions for
+    connected, disconnected, expired-proof, policy-change, and monitor-bypass cases.
   - Distinguish Event-VPN 401 responses from expired authentication; a proof-mint or
     VPN disconnect must not redirect a still-authenticated player to login.
   - Add browser tests for connected, disconnected, expired-proof, monitor-bypass, and
