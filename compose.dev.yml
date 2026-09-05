@@ -128,6 +128,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+        restart: true
     command: ["-conf", "/etc/coredns/Corefile"]
     environment:
       RSCTF_DOMAIN: ${RSCTF_DEV_DOMAIN:-intechfest.1pc.tf}

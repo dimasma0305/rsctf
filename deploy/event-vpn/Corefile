@@ -5,7 +5,9 @@
 		{$RSCTF_EVENT_VPN_INGRESS_IP} {$RSCTF_DOMAIN}
 		fallthrough
 	}
-	forward . 1.1.1.1 1.0.0.1
+	forward . 1.1.1.1 1.0.0.1 {
+		max_concurrent 256
+	}
 	cache 30
 	reload 30s
 }

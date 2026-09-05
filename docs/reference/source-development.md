@@ -127,7 +127,22 @@ After a Rust edit, rebuild and restart only the backend:
 ```sh
 scripts/bounded-cargo.sh build --locked
 docker compose -f compose.dev.yml restart backend
+node scripts/check-event-vpn.mjs rsctf-source-dev-backend-1 rsctf-source-dev-event-vpn-dns-1
 ```
+
+VPN DNS shares the backend's network namespace. After **replacing** the backend
+container (including a backend-only `up --no-deps`), recreate its DNS companion
+and run the check above:
+
+```sh
+docker compose -f compose.dev.yml up -d --no-deps --force-recreate --pull never event-vpn-dns
+```
+
+The check requires host `nsenter` and `dig`; it verifies namespace identity and
+private/public-name answers over UDP and TCP. A running DNS process in an old
+namespace is not healthy. The VPN profile sets the system DNS server, so this
+failure can affect ordinary browsing even though internet traffic is split-tunneled.
+Do not publish port 53 or remove VPN firewall rules to work around it.
 
 The stack keeps `rsctf-koth-reporter` on a stable private address and proxies
 managed KotH callbacks to the backend over the Compose default network. This

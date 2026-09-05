@@ -41,6 +41,7 @@ services:
     depends_on:
       rsctf:
         condition: service_healthy
+        restart: true
     command: ["-conf", "/etc/coredns/Corefile"]
     environment:
       RSCTF_DOMAIN: ${RSCTF_DOMAIN:?Set RSCTF_DOMAIN in deploy/.env}

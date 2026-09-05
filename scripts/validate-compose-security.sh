@@ -231,6 +231,8 @@ if actual_image != expected_image:
     raise SystemExit(f"event VPN DNS image is not pinned: {actual_image}")
 if dns.get("network_mode") != "service:rsctf" or dns.get("ports"):
     raise SystemExit("event VPN DNS must share only the backend network namespace")
+if dns.get("depends_on", {}).get("rsctf", {}).get("restart") is not True:
+    raise SystemExit("event VPN DNS must follow explicit backend updates")
 if set(dns.get("cap_drop") or []) != {"ALL"}:
     raise SystemExit("event VPN DNS must drop all inherited capabilities")
 if set(dns.get("cap_add") or []) != {"NET_BIND_SERVICE"}:
