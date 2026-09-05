@@ -30,6 +30,41 @@ fn challenge_publication_barrier_key(challenge_id: i32) -> String {
     format!("ad-service-publication-challenge:{challenge_id}")
 }
 
+/// Materialize the immutable A&D scoring identities before a round freezes its
+/// roster. A team does not need to enroll a BYOC endpoint first: the empty
+/// endpoint is participant-owned Offline evidence, and later managed/BYOC
+/// publication updates this same unique row in place.
+pub(crate) async fn ensure_scoring_placeholders<'e, E>(executor: E, game_id: i32) -> AppResult<u64>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    sqlx::query(
+        r#"INSERT INTO "AdTeamServices"
+              (game_id, participation_id, challenge_id, host, port, status,
+               container_id, last_reset_at)
+           SELECT participation.game_id, participation.id, challenge.id,
+                  '', 0, $2, NULL, NULL
+             FROM "Participations" participation
+             JOIN "GameChallenges" challenge
+               ON challenge.game_id = participation.game_id
+            WHERE participation.game_id = $1
+              AND participation.status = $3
+              AND challenge.is_enabled = TRUE
+              AND challenge.review_status = $4
+              AND challenge."Type" = $5
+           ON CONFLICT (participation_id, challenge_id) DO NOTHING"#,
+    )
+    .bind(game_id)
+    .bind(AdCheckStatus::Offline as i16)
+    .bind(ParticipationStatus::Accepted as i16)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .bind(ChallengeType::AttackDefense as i16)
+    .execute(executor)
+    .await
+    .map(|result| result.rows_affected())
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
 /// Take shared game/challenge publication parents before the established
 /// per-pair writer lock, all on one PostgreSQL transaction. Publishers for
 /// distinct pairs remain concurrent; rare eligibility transitions take an

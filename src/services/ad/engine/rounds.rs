@@ -177,8 +177,6 @@ struct GameSettings {
 #[derive(Debug, sqlx::FromRow)]
 struct RoundServiceRow {
     id: i32,
-    participation_id: i32,
-    challenge_id: i32,
     checker_dir: Option<String>,
     service_weight: f64,
 }
@@ -197,18 +195,12 @@ fn scoring_roster_size_ready(accepted_participations: &[i32], practice_mode: boo
 fn complete_ad_scoring_roster(
     accepted_participations: &[i32],
     ad_challenges: &[i32],
-    service_pairs: &HashSet<(i32, i32)>,
     checkers_ready: bool,
     practice_mode: bool,
 ) -> bool {
     checkers_ready
         && scoring_roster_size_ready(accepted_participations, practice_mode)
         && !ad_challenges.is_empty()
-        && accepted_participations.iter().all(|participation_id| {
-            ad_challenges
-                .iter()
-                .all(|challenge_id| service_pairs.contains(&(*participation_id, *challenge_id)))
-        })
 }
 
 /// Find the first round containing flags for every service in the roster that
@@ -713,9 +705,13 @@ async fn prepare_round_transaction(
         .map_err(|error| AppError::internal(error.to_string()))?,
     };
 
+    // Enrollment is not a scoring prerequisite. Freeze one durable Offline
+    // identity for every accepted team/challenge pair; service publication can
+    // fill that row before or after this transaction without changing identity.
+    super::super::service_lifecycle::ensure_scoring_placeholders(&mut **tx, game_id).await?;
+
     let services = sqlx::query_as::<_, RoundServiceRow>(
-        r#"SELECT service.id, service.participation_id, service.challenge_id,
-                  challenge.ad_checker_image AS checker_dir,
+        r#"SELECT service.id, challenge.ad_checker_image AS checker_dir,
                   LEAST(1.2, GREATEST(0.8, challenge.ad_scoring_weight))
                     AS service_weight
              FROM "AdTeamServices" service
@@ -787,13 +783,6 @@ async fn prepare_round_transaction(
     let koth_targets_ready = koth_challenge_ids
         .iter()
         .all(|challenge_id| koth_target_ids.contains(challenge_id));
-    // A durable service row freezes roster membership. Its endpoint is runtime
-    // evidence: an empty BYOC host must score Offline/zero, not delay the whole
-    // event or remove that participant from the scoreboard.
-    let service_pairs: HashSet<(i32, i32)> = services
-        .iter()
-        .map(|service| (service.participation_id, service.challenge_id))
-        .collect();
     let crown_shape_ready = super::koth_cycle::valid_crown_shape(
         crown_settings.0,
         crown_settings.1,
@@ -810,7 +799,6 @@ async fn prepare_round_transaction(
     let ad_scoring_ready = complete_ad_scoring_roster(
         &accepted_participation_ids,
         &ad_challenge_ids,
-        &service_pairs,
         ad_checkers_ready,
         game_settings.practice_mode,
     );
@@ -825,9 +813,9 @@ async fn prepare_round_transaction(
 
     // A&D and KotH freeze independent scoring boundaries. An unavailable BYOC
     // service is a scored Offline service and must not suppress A&D or a healthy
-    // shared hill. An unavailable hill must not suppress a complete durable A&D
-    // roster. Practice events may freeze one accepted team; competitive events
-    // retain the two-team minimum.
+    // shared hill. An unavailable hill must not suppress a prepared A&D checker.
+    // Practice events may freeze one accepted team; competitive events retain
+    // the two-team minimum.
     if ad_scoring_ready && game_settings.ad_scoring_start_round.is_none() {
         let service_ids: Vec<i32> = services.iter().map(|service| service.id).collect();
         let scoring_start_round =

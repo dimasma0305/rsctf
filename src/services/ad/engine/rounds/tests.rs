@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use super::{
     authoritative_round_window, classify_round_target, complete_ad_scoring_roster,
     complete_koth_scoring_roster, earliest_complete_ad_roster_round, koth_scoring_lifecycle_ready,
@@ -28,42 +26,19 @@ fn checker_readiness_requires_prepared_files() {
 }
 
 #[test]
-fn scoring_roster_requires_durable_rows_but_not_live_endpoints() {
+fn ad_scoring_start_does_not_wait_for_service_enrollment() {
     let challenges = [10, 11];
-    let complete = HashSet::from([(1, 10), (1, 11), (2, 10), (2, 11)]);
     assert!(complete_ad_scoring_roster(
         &[1, 2],
         &challenges,
-        &complete,
         true,
-        false,
+        false
     ));
-    assert!(!complete_ad_scoring_roster(
-        &[1],
-        &challenges,
-        &complete,
-        true,
-        false,
-    ));
-    let partial = HashSet::from([(1, 10), (1, 11), (2, 10)]);
+    assert!(!complete_ad_scoring_roster(&[1], &challenges, true, false));
+    assert!(!complete_ad_scoring_roster(&[1, 2], &[], true, false));
     assert!(!complete_ad_scoring_roster(
         &[1, 2],
         &challenges,
-        &partial,
-        true,
-        false,
-    ));
-    assert!(!complete_ad_scoring_roster(
-        &[1, 2],
-        &[],
-        &complete,
-        true,
-        false,
-    ));
-    assert!(!complete_ad_scoring_roster(
-        &[1, 2],
-        &challenges,
-        &complete,
         false,
         false,
     ));
@@ -121,7 +96,7 @@ async fn delayed_scoring_recovers_the_first_round_with_the_complete_roster() {
 }
 
 #[test]
-fn practice_koth_starts_independently_from_incomplete_ad_services() {
+fn practice_scoring_can_start_with_one_team() {
     assert!(complete_koth_scoring_roster(
         &[1],
         true,
@@ -139,14 +114,7 @@ fn practice_koth_starts_independently_from_incomplete_ad_services() {
         false,
     ));
 
-    let missing_ad_services = HashSet::new();
-    assert!(!complete_ad_scoring_roster(
-        &[1],
-        &[58],
-        &missing_ad_services,
-        true,
-        true,
-    ));
+    assert!(complete_ad_scoring_roster(&[1], &[58], true, true));
 }
 
 #[test]
