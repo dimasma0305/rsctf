@@ -1,30 +1,44 @@
 .root {
+  --card-category: light-dark(var(--card-category-light), var(--card-category-dark));
   position: relative;
+  isolation: isolate;
   min-width: 0;
+  min-height: 11.5rem;
   width: 100%;
   padding: 1rem;
-  gap: 0.85rem;
+  gap: 0.7rem;
+  overflow: hidden;
   border: 1px solid var(--app-border);
-  border-radius: var(--mantine-radius-lg);
+  border-radius: var(--mantine-radius-md);
   background: var(--app-raised-surface);
   color: var(--app-text-primary);
-  transition:
-    border-color 120ms ease,
-    background-color 120ms ease;
+  transition: border-color 140ms ease;
 }
 .root:hover {
-  border-color: var(--app-accent-border);
+  border-color: var(--card-category);
 }
-.root[data-solved] {
-  border-inline-start: 3px solid var(--app-accent-border);
+.watermark {
+  position: absolute;
+  z-index: -1;
+  inset-inline-end: -1.2rem;
+  bottom: -1.4rem;
+  width: 8.5rem;
+  height: 8.5rem;
+  color: var(--card-category-art);
+  opacity: 0.09;
+  pointer-events: none;
 }
-.category {
-  display: inline-flex;
-  gap: 0.35rem;
-  align-items: center;
+.header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid var(--card-category);
 }
-.category svg {
+.categoryIcon {
   flex-shrink: 0;
+  margin-top: 0.05rem;
+  color: var(--card-category);
 }
 .openButton {
   padding: 0;
@@ -32,18 +46,19 @@
   background: none;
   color: inherit;
   font: inherit;
-  font-size: 1.05rem;
+  font-size: 1.1rem;
   font-weight: 650;
   line-height: 1.4;
   text-align: start;
   cursor: pointer;
   overflow-wrap: anywhere;
+  min-width: 0;
 }
 .openButton::after {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: var(--mantine-radius-lg);
+  border-radius: var(--mantine-radius-md);
 }
 .openButton:focus-visible {
   outline: none;
@@ -52,26 +67,86 @@
   outline: 3px solid var(--app-focus-ring);
   outline-offset: 3px;
 }
+.metadata {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+}
+.kind {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.65rem;
+  min-width: 0;
+}
+.category {
+  color: var(--card-category);
+  font-weight: 650;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+.mode {
+  color: var(--app-text-muted);
+  padding-inline-start: 0.65rem;
+  border-inline-start: 1px solid var(--app-border);
+}
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--app-text-secondary);
+}
+.status svg {
+  flex-shrink: 0;
+}
+.root[data-solved] .status svg {
+  color: var(--app-accent-text);
+}
 .context {
   overflow-wrap: anywhere;
 }
-.scoreRow {
-  margin-top: auto;
-  padding-block: 0.25rem;
-}
-.score {
-  font-family: var(--mantine-font-family-monospace);
-  font-size: 1.3rem;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-}
-.footer {
+.metrics {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  align-items: baseline;
   justify-content: space-between;
-  padding-top: 0.7rem;
-  border-top: 1px solid var(--app-border-subtle);
+  gap: 0.5rem 1rem;
+  margin: auto 0 0;
+  padding-top: 1rem;
+}
+.metrics > div {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  min-width: 0;
+}
+.metrics dt {
+  order: 2;
+  color: var(--app-text-secondary);
+  font-size: 0.8rem;
+}
+.metrics dd {
+  margin: 0;
+  font-size: 1.1rem;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.metrics .points dd {
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 1.45rem;
+  font-weight: 650;
+}
+.liveScore {
+  margin-top: auto;
+  padding-top: 1rem;
+}
+.rating {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
 }
 .bloods {
   position: relative;
@@ -83,16 +158,26 @@
   gap: 0.25rem;
   min-height: 24px;
   max-width: 100%;
-  font-size: 0.7rem;
-  color: var(--app-text-muted);
+  font-size: 0.75rem;
+  color: var(--app-text-secondary);
   border-radius: 4px;
 }
-.blood span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 8rem;
+.blood:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: 2px;
+}
+.blood > svg {
+  flex-shrink: 0;
+}
+.blood > span {
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 .blood[data-own] {
   color: var(--app-accent-text);
+}
+@media (prefers-reduced-motion: reduce) {
+  .root {
+    transition: none;
+  }
 }

@@ -1,4 +1,8 @@
 {
+  "cards": {
+    "points_short": "pts",
+    "solves": "solves"
+  },
   "workspace": {
     "player": "Player workspace",
     "admin": "Administration",

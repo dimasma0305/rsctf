@@ -1,4 +1,8 @@
 {
+  "cards": {
+    "points_short": "poin",
+    "solves": "penyelesaian"
+  },
   "workspace": {
     "player": "Area pemain",
     "admin": "Administrasi",
