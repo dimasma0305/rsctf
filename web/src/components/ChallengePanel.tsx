@@ -12,9 +12,8 @@ import {
   Switch,
   Tabs,
   Text,
+  TextInput,
   Title,
-  Tooltip,
-  VisuallyHidden,
 } from '@mantine/core'
 import { useLocalStorage } from '@mantine/hooks'
 import {
@@ -60,6 +59,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
 
   const categories = Object.keys(challenges ?? {}).sort()
   const [activeTab, setActiveTab] = useState<ChallengeCategory | 'All'>('All')
+  const [search, setSearch] = useState('')
 
   const revealFocusedCategory = (event: FocusEvent<HTMLDivElement>) => {
     if (!isCompact) return
@@ -104,6 +104,13 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
     defaultValue: 'all',
     getInitialValueInEffect: false,
   })
+
+  const resetFilters = () => {
+    setSearch('')
+    setHideSolved(false)
+    setActiveTab('All')
+    setChallengeKind('all')
+  }
 
   const kindOf = (c: ChallengeInfo): 'jeopardy' | 'ad' | 'koth' =>
     c.type === ChallengeType.AttackDefense ? 'ad' : c.type === ChallengeType.KingOfTheHill ? 'koth' : 'jeopardy'
@@ -170,6 +177,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
       const filtered = list.filter(
         (chal) =>
           matchesKind(chal) &&
+          `${chal.title ?? ''} ${chal.id}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()) &&
           (!hideSolved || (teamInfo && teamInfo.rank?.solvedChallenges?.find((c) => c.id === chal.id)) === undefined)
       )
       // Ensure base order is stable (by ID) before shuffling
@@ -189,7 +197,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
       }
     })
     return result
-  }, [challenges, activeTab, allChallenges, hideSolved, teamInfo, categories, challengeKind])
+  }, [challenges, activeTab, allChallenges, hideSolved, teamInfo, categories, challengeKind, search])
 
   // When the user is viewing "All" on a mixed game, split the rendered list
   // into kind-segregated sections (Jeopardy / A&D / KotH) with a visual
@@ -257,23 +265,13 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
     const content = (
       <Center className={classes.kindOption}>
         <Icon path={path} size={isCompact ? 0.72 : 0.7} color={color} aria-hidden="true" />
-        {isCompact ? (
-          <Text component="span" className={classes.kindOptionText}>
-            {label}
-          </Text>
-        ) : (
-          <VisuallyHidden>{label}</VisuallyHidden>
-        )}
+        <Text component="span" className={classes.kindOptionText}>
+          {label}
+        </Text>
       </Center>
     )
 
-    return isCompact ? (
-      content
-    ) : (
-      <Tooltip label={label} withArrow openDelay={200}>
-        {content}
-      </Tooltip>
-    )
+    return content
   }
 
   const ownedHashChallengeId = useMemo(
@@ -291,6 +289,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
 
   useEffect(() => {
     setActiveTab('All')
+    setSearch('')
     setSelection(null)
     setDetailOpened(false)
     setWriteupSubmitOpened(false)
@@ -420,6 +419,23 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
     <>
       <div className={classes.panel}>
         <Stack className={classes.filters}>
+          <TextInput
+            label={t('common.workspace.search_challenges', 'Find a challenge')}
+            placeholder={t('common.workspace.challenge_placeholder', 'Name or ID')}
+            value={search}
+            onChange={(event) => setSearch(event.currentTarget.value)}
+          />
+          <Text size="xs" c="dimmed" role="status">
+            {t('common.workspace.challenge_count', '{{shown}} of {{total}} challenges', {
+              shown: currentChallenges.length,
+              total: allChallenges.length,
+            })}
+          </Text>
+          {(search || hideSolved || activeTab !== 'All' || challengeKind !== 'all') && (
+            <Button variant="subtle" size="xs" onClick={resetFilters}>
+              {t('common.workspace.reset_filters', 'Reset filters')}
+            </Button>
+          )}
           {game?.writeupRequired && (
             <>
               <Button
@@ -438,9 +454,8 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
               <Text component="span" className={classes.mobileFilterLabel}>
                 {t('game.label.challenge_type', { defaultValue: 'Challenge type' })}
               </Text>
-              {/* The desktop sidebar stays icon-only to fit its compact rail. On
-                  touch layouts, the same options expose their labels directly. */}
               <SegmentedControl
+                orientation={isCompact ? 'horizontal' : 'vertical'}
                 size={isCompact ? 'sm' : 'xs'}
                 w="100%"
                 aria-label={t('game.label.challenge_kind', { defaultValue: 'Filter challenges by type' })}
@@ -542,7 +557,6 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
           </Tabs>
         </Stack>
         <ScrollArea
-          h={isCompact ? undefined : 'calc(100vh - 6.67rem)'}
           pos="relative"
           offsetScrollbars
           scrollbarSize={4}
@@ -630,10 +644,17 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
               })}
             </Stack>
           ) : (
-            <Center h="calc(100vh - 10rem)">
-              <Stack gap={0}>
-                <Title order={2}>{t('game.content.all_solved.title')}</Title>
-                <Text>{t('game.content.all_solved.comment')}</Text>
+            <Center mih={240} p="lg">
+              <Stack gap="xs" align="center">
+                <Title order={2} size="h3">
+                  {t('common.workspace.no_challenges', 'No matching challenges')}
+                </Title>
+                <Text size="sm" c="dimmed" ta="center">
+                  {t('common.workspace.challenge_filter_hint', 'Try another search or clear your filters.')}
+                </Text>
+                <Button variant="default" onClick={resetFilters}>
+                  {t('common.workspace.reset_filters', 'Reset filters')}
+                </Button>
               </Stack>
             </Center>
           )}

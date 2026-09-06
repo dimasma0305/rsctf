@@ -1,4 +1,4 @@
-import { Button, Flex, Group, GroupProps, LoadingOverlay, NavLink, Stack } from '@mantine/core'
+import { Button, Flex, Group, GroupProps, LoadingOverlay, NavLink, Select, Stack, Text } from '@mantine/core'
 import {
   mdiAccountGroupOutline,
   mdiBullhornOutline,
@@ -15,7 +15,6 @@ import { Icon } from '@mdi/react'
 import React, { FC, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, Link, useNavigate, useParams } from 'react-router'
-import { IconTabs } from '@Components/IconTabs'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { ChallengeConsoleTabs } from '@Components/admin/ChallengeConsoleTabs'
 import { DEFAULT_LOADING_OVERLAY } from '@Utils/Shared'
@@ -49,7 +48,6 @@ export const WithGameEditTab: FC<GameEditTabProps> = ({
   const isCompact = useIsMobile(1100)
 
   const pages = [
-    { icon: mdiAccountKey, title: t('admin.tab.games.managers', 'Managers'), path: 'managers', adminOnly: true },
     { icon: mdiTextBoxOutline, title: t('admin.tab.games.info'), path: 'info' },
     { icon: mdiBullhornOutline, title: t('admin.tab.games.notices'), path: 'notices' },
     // 'pending' must precede 'challenges' so the fuzzy path.includes match
@@ -60,6 +58,7 @@ export const WithGameEditTab: FC<GameEditTabProps> = ({
     { icon: mdiAccountGroupOutline, title: t('admin.tab.games.review'), path: 'review' },
     { icon: mdiFileDocumentCheckOutline, title: t('admin.tab.games.writeups'), path: 'writeups' },
     { icon: mdiFlagVariantOutline, title: t('admin.tab.games.flag_egress', 'Flag Egress'), path: 'flagegress' },
+    { icon: mdiAccountKey, title: t('admin.tab.games.managers', 'Managers'), path: 'managers', adminOnly: true },
   ].filter((p) => isAdmin || !p.adminOnly)
 
   // `challengereviews` + `adops` folded into the Challenges console (a sub-nav),
@@ -88,6 +87,7 @@ export const WithGameEditTab: FC<GameEditTabProps> = ({
       head={
         <>
           <Button
+            variant="default"
             w={isCompact ? 'auto' : '10rem'}
             component={Link}
             classNames={{ inner: misc.justifyBetween }}
@@ -96,7 +96,7 @@ export const WithGameEditTab: FC<GameEditTabProps> = ({
           >
             {t('admin.button.back')}
           </Button>
-          <Group wrap="wrap" justify={contentPos ?? 'space-between'} w={isCompact ? '100%' : 'calc(100% - 11rem)'}>
+          <Group wrap="wrap" justify={contentPos ?? 'space-between'} miw={0} style={{ flex: 1 }}>
             {head}
           </Group>
         </>
@@ -111,19 +111,14 @@ export const WithGameEditTab: FC<GameEditTabProps> = ({
         pb="xl"
       >
         {isCompact ? (
-          <IconTabs
-            mode="navigation"
-            ariaLabel={t('admin.tab.games.navigation', 'Game administration sections')}
-            active={Math.max(
-              0,
-              pages.findIndex((page) => page.path === activeTab)
-            )}
-            tabs={pages.map((page) => ({
-              tabKey: page.path,
-              to: `/admin/games/${id}/${page.path}`,
-              label: page.title,
-              icon: <Icon path={page.icon} size={1} />,
-            }))}
+          <Select
+            w="100%"
+            label={t('admin.tab.games.navigation', 'Game administration sections')}
+            value={activeTab}
+            allowDeselect={false}
+            searchable
+            data={pages.map((page) => ({ value: page.path, label: page.title }))}
+            onChange={(path) => path && navigate(`/admin/games/${id}/${path}`)}
           />
         ) : (
           <Stack
@@ -131,7 +126,14 @@ export const WithGameEditTab: FC<GameEditTabProps> = ({
             aria-label={t('admin.tab.games.navigation', 'Game administration sections')}
             gap={4}
             w="11rem"
+            style={{ flexShrink: 0 }}
           >
+            <Text size="xs" fw={650} c="dimmed" px="sm" mb="xs">
+              {t('common.workspace.event_id', 'Event #{{id}}', { id })}
+            </Text>
+            <Button component={Link} to={`/games/${id}`} variant="default" size="xs" mb="sm">
+              {t('common.workspace.view_event', 'View event as player')}
+            </Button>
             {pages.map((page) => (
               <NavLink
                 key={page.path}
@@ -147,7 +149,7 @@ export const WithGameEditTab: FC<GameEditTabProps> = ({
             ))}
           </Stack>
         )}
-        <Stack w={isCompact ? '100%' : 'calc(100% - 11rem)'} pos="relative">
+        <Stack w="100%" miw={0} style={{ flex: 1 }} pos="relative">
           <LoadingOverlay visible={isLoading ?? false} overlayProps={DEFAULT_LOADING_OVERLAY} />
           {/* One challenge console for the three folded views (list / reviews / A&D
               ops) — shown only on their landing routes, not challenge detail pages. */}

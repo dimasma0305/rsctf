@@ -28,6 +28,9 @@ test('semantic accents remain contrast-safe for arbitrary configured colors', ()
     const semantic = buildSemanticAccentColors(color)
 
     assert.ok(contrastRatio(semantic[0], LIGHT_SURFACE) >= 4.5, `${color} light text`)
+    for (const surface of ['#f5f7fb', '#eef2f7', '#f8fafc']) {
+      assert.ok(contrastRatio(semantic[0], surface) >= 4.5, `${color} text on ${surface}`)
+    }
     assert.ok(contrastRatio(semantic[1], DARK_SURFACE) >= 4.5, `${color} dark text`)
     assert.ok(contrastRatio(semantic[2], LIGHT_SURFACE) >= 3, `${color} light border`)
     assert.ok(contrastRatio(semantic[3], DARK_SURFACE) >= 3, `${color} dark border`)
@@ -73,12 +76,21 @@ test('active accent-surface text stays AA-safe for arbitrary configured colors',
 })
 
 test('active admin navigation consumes the contrast-safe surface text token', () => {
-  const css = readFileSync('src/styles/components/AdminTabs.module.css', 'utf8')
-  const activeRule = css.match(/\.navigationLink\[data-active\]\s*\{([\s\S]*?)\n\}/)?.[1]
+  const css = readFileSync('src/styles/components/AppNavbar.module.css', 'utf8')
+  const activeRule = css.match(/\.link\[data-active\]\s*\{([\s\S]*?)\n\}/)?.[1]
 
   assert.ok(activeRule, 'active admin navigation rule exists')
   assert.match(activeRule, /color:\s*var\(--app-accent-surface-text\);/)
   assert.doesNotMatch(activeRule, /color:\s*var\(--app-accent-text\);/)
+})
+
+test('light status badges retain readable text on their tinted backgrounds', () => {
+  const css = readFileSync('src/styles/App.css', 'utf8')
+  assert.match(css, /\.mantine-Badge-root\[data-variant='light'\]\s*\{\s*color:\s*var\(--app-text-primary\);/)
+  for (const tint of ['#0d9488', '#ffff00', '#ff8800', '#ff00ff', '#ffffff', '#000000']) {
+    assert.ok(contrastRatio('#0f172a', mixHex(tint, '#ffffff', 0.1)) >= 4.5)
+    assert.ok(contrastRatio('#f1f5f9', mixHex(tint, DARK_SURFACE, 0.2)) >= 4.5)
+  }
 })
 
 test('filled buttons, badges, and chips automatically choose contrast-safe text', () => {
@@ -137,11 +149,11 @@ test('active tabs and notification controls retain accessible defaults', () => {
   assert.match(notificationDefaults, /'aria-label':\s*'Dismiss notification'/)
 })
 
-test('decorative surfaces are borderless and semantic accent variables resolve', () => {
+test('workspace surfaces have visible boundaries and semantic accent variables resolve', () => {
   const css = readFileSync('src/styles/App.css', 'utf8')
   const typographyCss = readFileSync('src/styles/shared/Typography.module.css', 'utf8')
 
-  assert.equal((css.match(/--app-surface-border:\s*transparent;/g) ?? []).length, 2)
+  assert.equal((css.match(/--app-surface-border:\s*#[0-9a-f]+;/g) ?? []).length, 2)
   assert.match(css, /\.mantine-Card-root,[\s\S]*?border-color:\s*var\(--app-surface-border\);/)
   assert.match(css, /\.mantine-Modal-content,[\s\S]*?border:\s*1px solid var\(--app-surface-border\);/)
   assert.match(css, /--app-accent-text:\s*var\(--mantine-color-semanticAccent-[01]\)/)

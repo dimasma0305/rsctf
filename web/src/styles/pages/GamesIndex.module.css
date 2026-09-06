@@ -1,24 +1,7 @@
-.totalBadge {
-  min-height: 2.75rem;
-  padding-inline: 1rem;
-  color: var(--app-accent-text);
-  border: 1px solid var(--app-accent-border);
-  text-transform: none;
-}
-
 .catalog {
-  padding: clamp(1.75rem, 4vw, 3rem) 0 2.5rem;
+  padding: 1.25rem 0 2.5rem;
 }
 
-.eyebrow {
-  color: var(--app-accent-text);
-  font-size: 0.65rem;
-  font-weight: 780;
-  letter-spacing: 0.11em;
-  text-transform: uppercase;
-}
-
-.catalogTitle,
 .sectionTitle {
   color: var(--app-text-primary);
   letter-spacing: -0.025em;

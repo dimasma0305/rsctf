@@ -1,13 +1,8 @@
 .card {
   position: relative;
   overflow: hidden;
-  background:
-    radial-gradient(
-      circle at 100% 0,
-      color-mix(in srgb, var(--mantine-primary-color-5) 9%, transparent),
-      transparent 18rem
-    ),
-    var(--app-raised-surface);
+  background: var(--app-raised-surface);
+  border: 1px solid var(--app-border-subtle);
   transition:
     border-color 160ms ease,
     box-shadow 160ms ease,
@@ -16,8 +11,7 @@
 
 .card:hover {
   border-color: var(--app-surface-border);
-  box-shadow: var(--mantine-shadow-md);
-  transform: translateY(-2px);
+  box-shadow: var(--mantine-shadow-xs);
 }
 
 .accent {
@@ -46,6 +40,7 @@
   color: var(--app-accent-surface-text);
   border: 1px solid var(--app-accent-border);
   background: var(--app-accent-surface);
+  display: none;
 }
 
 .title {

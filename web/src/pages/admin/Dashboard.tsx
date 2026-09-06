@@ -26,6 +26,9 @@ import {
   mdiArrowLeftBold,
   mdiArrowRightBold,
   mdiRefresh,
+  mdiFlagOutline,
+  mdiHammerWrench,
+  mdiAccountCogOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import type { EChartsOption } from 'echarts'
@@ -35,6 +38,7 @@ import { Link } from 'react-router'
 import useSWR from 'swr'
 import { Empty } from '@Components/Empty'
 import { ScrollingText } from '@Components/ScrollingText'
+import { WorkspaceLinks } from '@Components/WorkspaceLinks'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { EchartsContainer } from '@Components/charts/EchartsContainer'
 import { startAdminDashboardRefresh } from '@Utils/AdminDashboardRefresh'
@@ -260,6 +264,29 @@ const Dashboard: FC = () => {
   return (
     <AdminPage isLoading={isLoading && !dashboard}>
       <Stack gap="md">
+        <WorkspaceLinks
+          label={t('common.workspace.admin_actions', 'Admin shortcuts')}
+          items={[
+            {
+              to: '/admin/games',
+              icon: mdiFlagOutline,
+              title: t('common.workspace.manage_events', 'Manage events'),
+              description: t('common.workspace.manage_events_hint', 'Challenges, schedule, access, and submissions.'),
+            },
+            {
+              to: '/admin/users',
+              icon: mdiAccountCogOutline,
+              title: t('common.workspace.manage_people', 'Manage participants'),
+              description: t('common.workspace.manage_people_hint', 'Accounts, CSV imports, and credential delivery.'),
+            },
+            {
+              to: '/admin/builds',
+              icon: mdiHammerWrench,
+              title: t('common.workspace.check_operations', 'Check operations'),
+              description: t('common.workspace.check_operations_hint', 'Inspect build progress and failed jobs.'),
+            },
+          ]}
+        />
         <Group justify="flex-end">
           <ActionIcon
             variant="subtle"

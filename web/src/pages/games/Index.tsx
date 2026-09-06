@@ -137,32 +137,21 @@ const Games: FC = () => {
     <WithNavBar withFooter withHeader stickyHeader>
       <PageHeader
         eyebrow={t('game.content.workspace', 'Competition')}
-        title={t('game.title.index')}
-        description={t('game.content.index_description', 'Browse upcoming, live, and completed competitions.')}
-        actions={
-          games && (
-            <Badge size="lg" variant="light" className={classes.totalBadge}>
-              {t('game.content.events_total', '{{count}} events', { count: games.total })}
-            </Badge>
-          )
+        title={
+          <>
+            {t('game.title.index')}
+            {games && (
+              <Badge ml="sm" variant="light" size="lg">
+                {t('game.content.events_total', '{{count}} events', { count: games.total })}
+              </Badge>
+            )}
+          </>
         }
+        description={t('game.content.index_description', 'Browse upcoming, live, and completed competitions.')}
       />
 
       <Stack gap="xl" className={classes.catalog}>
-        <Group component="header" justify="space-between" align="flex-end" gap="lg" wrap="wrap">
-          <Stack gap={3}>
-            <Text className={classes.eyebrow}>{t('game.content.event_discovery', 'Event discovery')}</Text>
-            <Title order={2} size="h3" className={classes.catalogTitle}>
-              {t('game.content.choose_event', 'Choose your next challenge')}
-            </Title>
-            <Text size="sm" c="dimmed">
-              {t(
-                'game.content.page_grouping_hint',
-                'Events on this page are organized by where they are in their lifecycle.'
-              )}
-            </Text>
-          </Stack>
-
+        <Group justify="space-between" gap="sm" wrap="wrap">
           {games && games.data.length > 0 && (
             <nav
               className={classes.lifecycleOverview}
@@ -346,7 +335,7 @@ const Games: FC = () => {
                         </span>
                         <div>
                           <Title
-                            order={3}
+                            order={2}
                             size="h4"
                             id={`lifecycle-${section.status}`}
                             className={classes.sectionTitle}

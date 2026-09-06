@@ -114,7 +114,7 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
 
         <div className={classes.content}>
           <Stack gap={7} className={classes.copy}>
-            <Title order={4} size="h4" lineClamp={2} className={classes.title} title={eventTitle}>
+            <Title order={3} size="h4" className={classes.title}>
               {eventTitle}
             </Title>
             <Text

@@ -17,6 +17,7 @@ import {
   Title,
   Tooltip,
   VisuallyHidden,
+  UnstyledButton,
 } from '@mantine/core'
 import { Dropzone } from '@mantine/dropzone'
 import { notifications, showNotification, updateNotification } from '@mantine/notifications'
@@ -286,24 +287,15 @@ const Profile: FC = () => {
         {/* Shared header */}
         <Group wrap="nowrap" w="100%">
           <Tooltip label={avatarModalTitle} withArrow>
-            <Avatar
-              src={user?.avatar}
-              size={56}
-              radius="md"
-              color="brand"
-              role="button"
-              tabIndex={0}
-              style={{ cursor: 'pointer' }}
+            <UnstyledButton
+              aria-label={avatarModalTitle}
               onClick={() => setDropzoneOpened(true)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault()
-                  setDropzoneOpened(true)
-                }
-              }}
+              style={{ borderRadius: 'var(--mantine-radius-md)' }}
             >
-              {user?.userName?.[0]?.toUpperCase()}
-            </Avatar>
+              <Avatar src={user?.avatar} size={56} radius="md" color="brand">
+                {user?.userName?.[0]?.toUpperCase()}
+              </Avatar>
+            </UnstyledButton>
           </Tooltip>
           <Box miw={0} style={{ flex: 1 }}>
             <Title order={1} size="h3" lineClamp={1} title={user?.userName ?? undefined}>

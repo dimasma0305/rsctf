@@ -34,6 +34,20 @@ export const AccountView: FC<AccountViewProps> = ({ title, description, onSubmit
               'Sign in to join your team, solve challenges, and follow the competition in real time.'
             )}
           </Text>
+          <ol className={classes.steps}>
+            <li>
+              <span>01</span>
+              {t('common.workspace.account_step_team', 'Get your team together')}
+            </li>
+            <li>
+              <span>02</span>
+              {t('common.workspace.account_step_event', 'Join an event')}
+            </li>
+            <li>
+              <span>03</span>
+              {t('common.workspace.account_step_play', 'Solve, compete, and follow your progress')}
+            </li>
+          </ol>
         </Stack>
         <Text size="xs" className={classes.contextFooter}>
           {config?.title?.trim() || 'RS::CTF'}

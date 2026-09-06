@@ -23,12 +23,18 @@ import {
   mdiWeatherSunny,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, Fragment, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useLocation } from 'react-router'
 import { LogoHeader } from '@Components/LogoHeader'
 import { AppControlProps } from '@Components/WithNavbar'
-import { PRIMARY_NAVIGATION, canAccessNavigationItem, isNavigationItemActive } from '@Components/navigation'
+import {
+  PRIMARY_NAVIGATION,
+  canAccessNavigationItem,
+  getWorkspaceNavigation,
+  isNavigationItemActive,
+  navigationGroup,
+} from '@Components/navigation'
 import { clearLocalCache } from '@Utils/Cache'
 import { LanguageMap, SupportedLanguages, useLanguage } from '@Utils/I18n'
 import { useConfig } from '@Hooks/useConfig'
@@ -47,8 +53,12 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
   const loggedIn = Boolean(user && !error)
 
   const close = () => setOpened(false)
-  const navItems = PRIMARY_NAVIGATION.filter((item) => canAccessNavigationItem(item, user, config.donationsEnabled))
-  const dockItems = navItems.filter((item) => !item.admin).slice(0, 4)
+  const navItems = getWorkspaceNavigation(location.pathname, user, config.donationsEnabled)
+  const dockItems = PRIMARY_NAVIGATION.filter(
+    (item) => !item.admin && canAccessNavigationItem(item, user, config.donationsEnabled)
+  )
+    .filter((item) => ['/games', '/challenges', '/teams', '/'].includes(item.link))
+    .slice(0, 4)
 
   return (
     <>
@@ -101,34 +111,46 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
             <Stack gap="lg">
               <nav aria-label={t('common.tab.navigation', 'Primary navigation')}>
                 <Stack gap={4}>
-                  {navItems.map((item) => (
-                    <UnstyledButton
-                      key={item.label}
-                      component={Link}
-                      to={item.link}
-                      onClick={close}
-                      aria-current={isNavigationItemActive(item, location.pathname) ? 'page' : undefined}
-                      data-active={isNavigationItemActive(item, location.pathname) || undefined}
-                      data-guide={
-                        item.link === '/games'
-                          ? 'games-navigation'
-                          : item.link === '/challenges'
-                            ? 'challenge-navigation'
-                            : item.link === '/teams'
-                              ? 'team-navigation'
-                              : item.link === '/guide'
-                                ? 'guide-navigation'
-                                : undefined
-                      }
-                      className={classes.navLink}
-                    >
-                      <span className={classes.navIcon} aria-hidden="true">
-                        <Icon path={item.icon} size={0.95} />
-                      </span>
-                      <Text component="span" fw={650}>
-                        {t(item.label)}
-                      </Text>
+                  {location.pathname.startsWith('/admin/') && (
+                    <UnstyledButton component={Link} to="/games" onClick={close} className={classes.navLink}>
+                      {t('common.workspace.back_to_player', 'Back to player workspace')}
                     </UnstyledButton>
+                  )}
+                  {navItems.map((item, index) => (
+                    <Fragment key={item.link}>
+                      {(index === 0 || navigationGroup(item) !== navigationGroup(navItems[index - 1])) && (
+                        <Text size="xs" fw={650} c="dimmed" mt="md" px="sm">
+                          {t(`common.workspace.groups.${navigationGroup(item)}`, navigationGroup(item))}
+                        </Text>
+                      )}
+                      <UnstyledButton
+                        key={item.label}
+                        component={Link}
+                        to={item.link}
+                        onClick={close}
+                        aria-current={isNavigationItemActive(item, location.pathname) ? 'page' : undefined}
+                        data-active={isNavigationItemActive(item, location.pathname) || undefined}
+                        data-guide={
+                          item.link === '/games'
+                            ? 'games-navigation'
+                            : item.link === '/challenges'
+                              ? 'challenge-navigation'
+                              : item.link === '/teams'
+                                ? 'team-navigation'
+                                : item.link === '/guide'
+                                  ? 'guide-navigation'
+                                  : undefined
+                        }
+                        className={classes.navLink}
+                      >
+                        <span className={classes.navIcon} aria-hidden="true">
+                          <Icon path={item.icon} size={0.95} />
+                        </span>
+                        <Text component="span" fw={650}>
+                          {t(item.label)}
+                        </Text>
+                      </UnstyledButton>
+                    </Fragment>
                   ))}
                 </Stack>
               </nav>
@@ -242,6 +264,7 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
 
       <nav
         className={classes.dock}
+        style={{ gridTemplateColumns: `repeat(${dockItems.length + 1}, minmax(0, 1fr))` }}
         aria-label={t('common.tab.mobile_navigation', 'Mobile navigation')}
         data-guide-boundary="mobile-dock"
       >

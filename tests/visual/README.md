@@ -52,3 +52,26 @@ server-5xx, screenshot truncation, and route-rendering failures. Review
 `report.md`, `report.json`, and `gallery.html` together: automated checks catch
 structural regressions while the paired viewport/full-content gallery is the
 operator's visual review surface.
+
+## Local workspace rework fixtures
+
+`workspace-rework.mjs` exercises the shared player/admin shell without accounts
+or event mutations. Start a separate frontend preview on `127.0.0.1:63017`, then
+run from the repository root:
+
+```sh
+scripts/bounded-frontend.sh exec node ../tests/visual/workspace-rework.mjs
+```
+
+`RSCTF_WORKSPACE_PREVIEW` can select another loopback preview URL. The harness
+intercepts API requests in Chromium, serves invented event/team data, and blocks
+mutations. It is a layout and interaction test, **not** backend authorization,
+scoring, upload delivery, or realtime integration evidence.
+
+Coverage includes dashboard, event administration, users, settings, teams,
+profile, challenge browsing, and scoreboard layouts; quick-navigation search
+and focus restoration; settings keyboard navigation; challenge search/reset;
+and the writeup dialog. It checks 320px through 1920px layouts, Indonesian copy,
+light mode, and reduced motion. Screenshots and Axe/overflow/runtime findings
+are saved under `visual-audit-output/rework-workspaces/`. The public-route audit
+above remains necessary against the same candidate.

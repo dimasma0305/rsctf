@@ -1,0 +1,29 @@
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0;
+}
+.title {
+  font-size: clamp(1.4rem, 2.2vw, 2rem);
+  line-height: 1.25;
+  letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
+}
+.header > :first-child {
+  flex: 1 1 22rem;
+}
+.header > [role='timer'] {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 36em) {
+  .header {
+    gap: 0.65rem;
+  }
+  .header > [role='timer'] {
+    width: 100%;
+  }
+}

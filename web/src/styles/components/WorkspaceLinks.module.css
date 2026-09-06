@@ -1,0 +1,40 @@
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
+  gap: 0.75rem;
+}
+.link {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--app-border);
+  border-radius: var(--mantine-radius-lg);
+  color: var(--app-text-primary);
+  text-decoration: none;
+  background: var(--app-raised-surface);
+}
+.link:hover {
+  background: var(--app-hover-surface);
+  border-color: var(--app-accent-border);
+}
+.copy {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.copy p + p {
+  margin-top: 0.25rem;
+  line-height: 1.5;
+}
+.icon {
+  flex-shrink: 0;
+  color: var(--app-accent-text);
+  margin-top: 2px;
+}
+.arrow {
+  flex-shrink: 0;
+  color: var(--app-text-muted);
+  margin-top: 3px;
+}

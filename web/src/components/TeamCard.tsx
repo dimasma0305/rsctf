@@ -1,13 +1,10 @@
-import { Avatar, Card, Center, Group, Stack, Text, Tooltip } from '@mantine/core'
-import { mdiLockOutline, mdiCrown } from '@mdi/js'
+import { Avatar, Badge, Button, Card, Group, Stack, Text, Title, Tooltip } from '@mantine/core'
+import { mdiLockOutline, mdiCrown, mdiArrowRight } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ScrollingText } from '@Components/ScrollingText'
-import { useIsMobile } from '@Utils/ThemeOverride'
 import { TeamInfoModel } from '@Api'
-import misc from '@Styles/Misc.module.css'
-import teamCardClasses from '@Styles/TeamCard.module.css'
+import classes from '@Styles/TeamCard.module.css'
 
 interface TeamCardProps {
   team: TeamInfoModel
@@ -15,76 +12,80 @@ interface TeamCardProps {
   onEdit: () => void
 }
 
-export const TeamCard: FC<TeamCardProps> = (props) => {
-  const { team, isCaptain, onEdit } = props
-
+export const TeamCard: FC<TeamCardProps> = ({ team, isCaptain, onEdit }) => {
   const { t } = useTranslation()
-  const isMobile = useIsMobile()
-  const teamName = team.name ?? t('team.label.name', { defaultValue: 'Team' })
-  const editTeamLabel = `${t('team.button.edit', { defaultValue: 'Team details' })}: ${teamName}`
-  const captainLabel = t('team.content.role.captain', { defaultValue: 'Captain' })
-
+  const name = team.name ?? t('team.label.name', 'Team')
+  const action = isCaptain
+    ? t('common.workspace.manage_team', 'Manage team')
+    : t('common.workspace.view_team', 'View team')
   return (
-    <Card
-      shadow="md"
-      radius="lg"
-      role="button"
-      tabIndex={0}
-      aria-label={isCaptain ? `${editTeamLabel}. ${captainLabel}` : editTeamLabel}
-      onClick={onEdit}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onEdit()
-        }
-      }}
-      className={isMobile ? teamCardClasses.cardMobile : teamCardClasses.card}
-      classNames={{ root: misc.hoverCard }}
-    >
-      <Group className={isMobile ? teamCardClasses.contentGroupMobile : teamCardClasses.contentGroup}>
-        <Avatar imageProps={{ loading: 'lazy' }} alt={team.name ?? ''} size="xl" radius="xl" src={team.avatar}>
-          {team.name?.slice(0, 1) ?? 'T'}
+    <Card component="article" withBorder radius="lg" className={classes.card}>
+      <Group wrap="nowrap" align="flex-start">
+        <Avatar imageProps={{ loading: 'lazy' }} alt="" size={48} radius="md" src={team.avatar}>
+          {name.slice(0, 1)}
         </Avatar>
-        <Stack gap={4} className={misc.flexGrow}>
-          <Group justify="space-between" align="center" wrap="nowrap">
-            <ScrollingText text={team.name ?? ''} size="xl" fw="bold" maw={480} />
+        <Stack gap={5} miw={0} style={{ flex: 1 }}>
+          <Title order={2} size="h4" className={classes.name}>
+            {name}
+          </Title>
+          <Group gap={5}>
             {isCaptain && (
-              <Tooltip label={captainLabel} withArrow>
-                <span role="img" aria-label={captainLabel} style={{ display: 'inline-flex' }}>
-                  <Icon path={mdiCrown} size={1} className={teamCardClasses.captainIcon} aria-hidden="true" />
-                </span>
-              </Tooltip>
+              <Badge
+                variant="light"
+                color="yellow"
+                leftSection={<Icon path={mdiCrown} size={0.65} aria-hidden="true" />}
+              >
+                {t('team.content.role.captain', 'Captain')}
+              </Badge>
             )}
-          </Group>
-          <ScrollingText text={team.bio || t('team.placeholder.bio')} size="sm" c="dimmed" maw={520} />
-          <Group justify="space-between" align="center">
-            <Text size="sm" c="dimmed" tt="uppercase" fw="bold">
-              {t('team.label.members')} ({team.members?.length || 0})
-            </Text>
-            <Avatar.Group className={teamCardClasses.avatarGroup}>
-              {team.members?.slice(0, 6).map((m) => (
-                <Tooltip key={m.id} label={m.userName} withArrow>
-                  <Avatar imageProps={{ loading: 'lazy' }} alt={m.userName ?? ''} radius="xl" size="md" src={m.avatar}>
-                    {m.userName?.slice(0, 1) ?? 'U'}
-                  </Avatar>
-                </Tooltip>
-              ))}
-              {team.members && team.members.length > 6 && (
-                <Avatar aria-label={`${team.members.length - 6} more members`} radius="xl" size="lg">
-                  +{team.members.length - 6}
-                </Avatar>
-              )}
-            </Avatar.Group>
+            {team.locked && (
+              <Badge
+                variant="light"
+                color="gray"
+                leftSection={<Icon path={mdiLockOutline} size={0.65} aria-hidden="true" />}
+              >
+                {t('team.label.locked', 'Locked')}
+              </Badge>
+            )}
           </Group>
         </Stack>
       </Group>
-      {team.locked && (
-        <Tooltip label={t('team.label.locked', 'Locked')} withArrow>
-          <Center className={teamCardClasses.lockBadge} role="img" aria-label={t('team.label.locked', 'Locked')}>
-            <Icon path={mdiLockOutline} size={0.8} color="white" />
-          </Center>
-        </Tooltip>
-      )}
+      <Text size="sm" c="dimmed" lineClamp={2}>
+        {team.bio || t('team.placeholder.bio')}
+      </Text>
+      <Group justify="space-between" wrap="wrap">
+        <Text size="xs" c="dimmed">
+          {t('team.label.members')} · {team.members?.length ?? 0}
+        </Text>
+        <Avatar.Group className={classes.avatarGroup}>
+          {team.members?.slice(0, 6).map((member) => (
+            <Tooltip key={member.id} label={member.userName}>
+              <Avatar
+                imageProps={{ loading: 'lazy' }}
+                alt={member.userName ?? ''}
+                size={30}
+                radius="xl"
+                src={member.avatar}
+              >
+                {member.userName?.slice(0, 1)}
+              </Avatar>
+            </Tooltip>
+          ))}
+          {(team.members?.length ?? 0) > 6 && (
+            <Avatar size={30} radius="xl">
+              +{team.members!.length - 6}
+            </Avatar>
+          )}
+        </Avatar.Group>
+      </Group>
+      <Button
+        variant="default"
+        onClick={onEdit}
+        aria-label={`${action}: ${name}`}
+        rightSection={<Icon path={mdiArrowRight} size={0.75} aria-hidden="true" />}
+      >
+        {action}
+      </Button>
     </Card>
   )
 }

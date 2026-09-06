@@ -1,6 +1,38 @@
 .saveAffix {
-  z-index: 220;
+  z-index: 90;
   max-width: calc(100vw - 32px);
+}
+
+.formContent {
+  display: grid;
+  grid-template-columns: 13rem minmax(0, 1fr);
+  align-items: start;
+  gap: 1.5rem;
+}
+.formContent > :first-child {
+  position: sticky;
+  top: 1rem;
+}
+.formContent > [role='tabpanel'] {
+  padding: 1.25rem;
+  border: 1px solid var(--app-border-subtle);
+  border-radius: var(--mantine-radius-lg);
+  background: var(--app-raised-surface);
+}
+@media (max-width: 62em) {
+  .formContent {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .formContent > :first-child {
+    position: static;
+  }
+  .formContent :global([role='tablist']) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .formContent > [role='tabpanel'] {
+    padding: 1rem;
+  }
 }
 
 .saveBar {
@@ -38,6 +70,10 @@
 }
 
 @media (max-width: $mantine-breakpoint-sm) {
+  .formContent :global([role='tab']) svg {
+    display: none;
+  }
+
   .formContent :global(.mantine-NumberInput-wrapper) {
     --input-height: 44px !important;
     --input-right-section-width: 88px !important;

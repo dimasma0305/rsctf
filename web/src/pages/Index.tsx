@@ -1,5 +1,11 @@
 import { Anchor, Badge, Button, Group, Paper, Skeleton, Stack, Text, ThemeIcon, Title } from '@mantine/core'
-import { mdiArrowRight, mdiFlagCheckered, mdiNewspaperVariantOutline } from '@mdi/js'
+import {
+  mdiArrowRight,
+  mdiFlagCheckered,
+  mdiNewspaperVariantOutline,
+  mdiAccountGroupOutline,
+  mdiBookOpenPageVariantOutline,
+} from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -11,6 +17,7 @@ import { PageHeader } from '@Components/PageHeader'
 import { PostCard } from '@Components/PostCard'
 import { RecentGame } from '@Components/RecentGame'
 import { WithNavBar } from '@Components/WithNavbar'
+import { WorkspaceLinks } from '@Components/WorkspaceLinks'
 import { MobilePostCard } from '@Components/mobile/PostCard'
 import { RecentGameCarousel } from '@Components/mobile/RecentGameCarousel'
 import { invalidatePostPageCaches, postFeedSWRConfig } from '@Utils/PostFeed'
@@ -54,11 +61,11 @@ const Home: FC = () => {
     <WithNavBar withFooter withHeader stickyHeader>
       <Stack gap="lg" className={classes.home}>
         <PageHeader
-          eyebrow={t('common.content.home.eyebrow', 'Command center')}
-          title={t('common.content.home.title', 'Latest updates')}
+          eyebrow={t('common.content.home.eyebrow', 'Player workspace')}
+          title={t('common.content.home.title', 'Overview')}
           description={t(
             'common.content.home.description',
-            'Catch up on platform news and jump back into your recent competitions.'
+            'Find your event, get your team ready, and catch up on announcements.'
           )}
           actions={
             <Stack gap="sm" align={isMobile ? 'stretch' : 'flex-end'}>
@@ -77,6 +84,33 @@ const Home: FC = () => {
               </Button>
             </Stack>
           }
+        />
+
+        <WorkspaceLinks
+          label={t('common.workspace.start_here', 'Start here')}
+          items={[
+            {
+              to: '/games',
+              icon: mdiFlagCheckered,
+              title: t('common.workspace.find_event', 'Find your next event'),
+              description: t('common.workspace.find_event_hint', 'Browse live, upcoming, and completed competitions.'),
+            },
+            {
+              to: '/teams',
+              icon: mdiAccountGroupOutline,
+              title: t('common.workspace.your_team', 'Get your team ready'),
+              description: t('common.workspace.your_team_hint', 'Join your teammates and manage invitations.'),
+            },
+            {
+              to: '/guide',
+              icon: mdiBookOpenPageVariantOutline,
+              title: t('common.workspace.player_guide', 'Know how to play'),
+              description: t(
+                'common.workspace.player_guide_hint',
+                'Learn about flags, scoring, and challenge connections.'
+              ),
+            },
+          ]}
         />
 
         {isMobile && (

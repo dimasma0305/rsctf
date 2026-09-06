@@ -29,7 +29,7 @@
   --app-icon-surface: #eef2f7;
   --app-border: #d7dee8;
   --app-border-subtle: #e2e8f0;
-  --app-surface-border: transparent;
+  --app-surface-border: #dce3eb;
   --app-control-border: #7c899b;
   --app-text-primary: #0f172a;
   --app-text-secondary: #334155;
@@ -55,7 +55,7 @@
   --app-icon-surface: #1a2638;
   --app-border: #29364a;
   --app-border-subtle: #202d40;
-  --app-surface-border: transparent;
+  --app-surface-border: #29364a;
   --app-control-border: #66758d;
   --app-text-primary: #f1f5f9;
   --app-text-secondary: #d7dee8;
@@ -88,19 +88,7 @@ body {
   margin: 0;
   color: var(--app-text-primary);
   background-color: var(--app-background);
-  background-image:
-    radial-gradient(
-      circle at 12% -8%,
-      color-mix(in srgb, var(--mantine-primary-color-7) 10%, transparent) 0,
-      transparent 30rem
-    ),
-    linear-gradient(var(--app-grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--app-grid-line) 1px, transparent 1px);
-  background-attachment: fixed;
-  background-size:
-    auto,
-    32px 32px,
-    32px 32px;
+  background-image: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -239,7 +227,7 @@ body {
 .mantine-Table-th {
   color: var(--app-text-secondary);
   background: var(--app-subtle-surface);
-  font-size: var(--mantine-font-size-xs);
+  font-size: 0.75rem;
   font-weight: 720;
   letter-spacing: 0.025em;
 }
@@ -252,6 +240,40 @@ body {
 .mantine-Table-td,
 .mantine-Table-th {
   border-color: var(--app-border-subtle);
+  vertical-align: middle;
+}
+
+.mantine-Table-td {
+  font-variant-numeric: tabular-nums;
+}
+/* Mantine autoContrast covers filled badges, not translucent light variants.
+ * Keep their status-colored background with readable, non-color-only text. */
+.mantine-Badge-root[data-variant='light'] {
+  color: var(--app-text-primary);
+}
+.mantine-Table-tbody .mantine-Table-tr:focus-within {
+  background: var(--app-hover-surface);
+}
+.mantine-Alert-message,
+.mantine-Modal-title,
+.mantine-Notification-description {
+  overflow-wrap: anywhere;
+}
+.mantine-Modal-title {
+  line-height: 1.35;
+}
+.mantine-Modal-header {
+  border-bottom: 1px solid var(--app-border-subtle);
+  margin-bottom: var(--mantine-spacing-md);
+}
+.mantine-Modal-body {
+  padding-top: var(--mantine-spacing-xs);
+}
+.mantine-Tabs-tab {
+  min-height: 42px;
+}
+.mantine-InputWrapper-root {
+  min-width: 0;
 }
 
 .mantine-Tabs-list {

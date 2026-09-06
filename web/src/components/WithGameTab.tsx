@@ -17,6 +17,7 @@ import { useGameAccess, useGameStatus } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useUserRole } from '@Hooks/useUser'
 import { DetailedGameInfoModel, ParticipationStatus, Role } from '@Api'
+import classes from '@Styles/GameWorkspace.module.css'
 import misc from '@Styles/Misc.module.css'
 
 dayjs.extend(duration)
@@ -38,6 +39,9 @@ const GameCountdown: FC<{ game?: DetailedGameInfoModel }> = ({ game }) => {
       aria-label={t('game.content.time_remaining', 'Game time remaining')}
       className={misc.overflowVisible}
     >
+      <Text size="xs" c="dimmed">
+        {t('game.content.time_remaining', 'Time remaining')}
+      </Text>
       <Text fw="bold" lineClamp={1}>
         {countdown.asHours() > 999
           ? t('game.content.game_lasts_long')
@@ -195,19 +199,23 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
   return (
     <Stack pos="relative" mt="md" style={{ containerType: 'inline-size' }}>
       <LoadingOverlay visible={!game} overlayProps={DEFAULT_LOADING_OVERLAY} />
+      {game && (
+        <header className={classes.header}>
+          <Stack gap={4} miw={0}>
+            <Text size="xs" c="dimmed">
+              {t('common.workspace.event_id', 'Event #{{id}}', { id: numId })}
+            </Text>
+            <Title className={classes.title}>{game.title}</Title>
+          </Stack>
+          <GameCountdown game={game} />
+        </header>
+      )}
       <IconTabs
         mode="navigation"
+        position="flex-start"
         ariaLabel={t('game.tab.navigation', 'Game sections')}
         active={activeTab}
         tabs={tabs}
-        aside={
-          game && (
-            <>
-              <Title title={game?.title}>{game?.title}</Title>
-              <GameCountdown game={game} />
-            </>
-          )
-        }
       />
       {children}
     </Stack>

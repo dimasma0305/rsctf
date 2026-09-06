@@ -85,6 +85,27 @@
   background: var(--app-accent-surface);
 }
 
+.root[data-orientation='vertical'] {
+  align-self: start;
+}
+.root[data-orientation='vertical'] .panes {
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+}
+.root[data-orientation='vertical'] .default {
+  min-width: 0;
+  width: 100%;
+  text-align: left;
+}
+.root[data-orientation='vertical'] .inner {
+  justify-content: flex-start;
+  line-height: 1.4;
+}
+.root[data-orientation='vertical'] .scroller {
+  overflow: visible;
+}
+
 .inner {
   display: flex;
   align-items: center;

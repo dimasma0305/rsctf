@@ -32,7 +32,7 @@ import { Link, useLocation } from 'react-router'
 import { LogoBox } from '@Components/LogoBox'
 import { LogoHeader } from '@Components/LogoHeader'
 import { WsrxManager } from '@Components/WsrxManager'
-import { PRIMARY_NAVIGATION, canAccessNavigationItem, isNavigationItemActive } from '@Components/navigation'
+import { getWorkspaceNavigation, isNavigationItemActive, navigationGroup } from '@Components/navigation'
 import { clearLocalCache } from '@Utils/Cache'
 import { LanguageMap, SupportedLanguages, useLanguage } from '@Utils/I18n'
 import { useConfig } from '@Hooks/useConfig'
@@ -58,7 +58,7 @@ const NavbarLink: FC<NavbarLinkProps> = ({ icon, label, link, onClick, isActive,
         <Icon path={icon} size={0.92} />
       </span>
       {!compact && (
-        <Text component="span" size="sm" fw={650} truncate>
+        <Text component="span" size="sm" fw={650} style={{ lineHeight: 1.35, overflowWrap: 'anywhere' }}>
           {translatedLabel}
         </Text>
       )}
@@ -121,16 +121,9 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
   const { t } = useTranslation()
   const { language, setLanguage, supportedLanguages } = useLanguage()
 
-  const links = PRIMARY_NAVIGATION.filter((item) => canAccessNavigationItem(item, user, config.donationsEnabled)).map(
-    (item) => (
-      <NavbarLink
-        key={item.label}
-        {...item}
-        compact={compact}
-        isActive={isNavigationItemActive(item, location.pathname)}
-      />
-    )
-  )
+  const items = getWorkspaceNavigation(location.pathname, user, config.donationsEnabled)
+  const groups = [...new Set(items.map(navigationGroup))]
+  const adminWorkspace = location.pathname.startsWith('/admin/')
   const loggedIn = Boolean(user && !error)
   const toggleLabel = compact
     ? t('common.button.expand_navigation', 'Expand navigation')
@@ -181,12 +174,33 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
       <Divider />
 
       <AppShell.Section grow className={classes.navigationSection}>
-        {!compact && (
-          <Text className={classes.sectionLabel} component="span">
-            {t('common.tab.navigation', 'Navigate')}
-          </Text>
+        {adminWorkspace && (
+          <NavbarLink
+            icon={mdiChevronDoubleLeft}
+            label="common.workspace.back_to_player"
+            link="/games"
+            compact={compact}
+          />
         )}
-        <Stack gap={4}>{links}</Stack>
+        {groups.map((group) => (
+          <Stack key={group} gap={4} className={classes.navigationGroup}>
+            {!compact && (
+              <Text className={classes.sectionLabel} component="span">
+                {t(`common.workspace.groups.${group}`, group)}
+              </Text>
+            )}
+            {items
+              .filter((item) => navigationGroup(item) === group)
+              .map((item) => (
+                <NavbarLink
+                  key={item.link}
+                  {...item}
+                  compact={compact}
+                  isActive={isNavigationItemActive(item, location.pathname)}
+                />
+              ))}
+          </Stack>
+        ))}
       </AppShell.Section>
 
       <AppShell.Section className={classes.utilitySection}>

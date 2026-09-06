@@ -1,7 +1,9 @@
 import { darken, lighten, luminance } from '@mantine/core'
 import type { MantineColorsTuple } from '@mantine/core'
 
-const LIGHT_ACCENT_BACKGROUND = '#ffffff'
+// Accents also appear on the page and tinted panels, not only white cards.
+// Use the darkest neutral light surface so all of them retain AA contrast.
+const LIGHT_ACCENT_BACKGROUND = '#eef2f7'
 const DARK_ACCENT_BACKGROUND = '#111a29'
 
 export const contrastRatio = (foreground: string, background: string) => {

@@ -7,16 +7,15 @@
   border: 1px solid var(--app-surface-border);
   border-radius: var(--mantine-radius-lg);
   background: var(--app-raised-surface);
-  box-shadow: 0 8px 28px rgba(8, 15, 30, 0.06);
+  box-shadow: none;
   transition:
     transform 160ms ease,
     border-color 160ms ease,
     box-shadow 160ms ease;
 
   @mixin hover {
-    transform: translateY(-3px);
-    border-color: var(--app-surface-border);
-    box-shadow: 0 16px 38px rgba(8, 15, 30, 0.12);
+    border-color: var(--app-accent-border);
+    box-shadow: var(--mantine-shadow-sm);
   }
 }
 
@@ -27,7 +26,7 @@
 
 .link {
   display: grid;
-  grid-template-columns: clamp(6.5rem, 31%, 8rem) minmax(0, 1fr);
+  grid-template-columns: clamp(5rem, 24%, 6.5rem) minmax(0, 1fr);
   min-height: 13.25rem;
   color: inherit;
   text-decoration: none;

@@ -6,7 +6,7 @@ import { AppFooter } from '@Components/AppFooter'
 import { AppHeader } from '@Components/AppHeader'
 import { AppNavbar } from '@Components/AppNavbar'
 import { CustomColorModal } from '@Components/CustomColorModal'
-import { IconHeader } from '@Components/IconHeader'
+import { WorkspaceBar } from '@Components/WorkspaceBar'
 import {
   deserializeNavigationRailPreference,
   getNavigationRailWidth,
@@ -36,14 +36,7 @@ export interface AppControlProps {
   openColorModal: () => void
 }
 
-export const WithNavBar: FC<WithNavBarProps> = ({
-  children,
-  width,
-  isLoading,
-  withFooter = false,
-  withHeader,
-  stickyHeader = false,
-}) => {
+export const WithNavBar: FC<WithNavBarProps> = ({ children, width, isLoading, withFooter = false }) => {
   const isMobile = useIsMobile()
   const { t } = useTranslation()
   const [colorModalOpened, setColorModalOpened] = useState(false)
@@ -90,7 +83,6 @@ export const WithNavBar: FC<WithNavBarProps> = ({
         >
           <Stack data-mobile={isMobile || undefined} data-pb={withFooter || undefined} className={classes.main}>
             <LoadingOverlay visible={isLoading ?? false} overlayProps={DEFAULT_LOADING_OVERLAY} />
-            {withHeader && <IconHeader px={isMobile ? '2%' : '10%'} sticky={stickyHeader} />}
             <Box
               data-page-content
               className={classes.content}
@@ -101,6 +93,7 @@ export const WithNavBar: FC<WithNavBarProps> = ({
                 } as React.CSSProperties
               }
             >
+              <WorkspaceBar />
               {children}
             </Box>
             <CustomColorModal opened={colorModalOpened} onClose={() => setColorModalOpened(false)} />

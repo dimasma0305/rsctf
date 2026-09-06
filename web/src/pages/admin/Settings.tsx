@@ -450,18 +450,19 @@ const Configs: FC = () => {
       <Stack gap="md" w="100%" pb={100} className={classes.formContent}>
         <IconTabs
           idPrefix="settings"
+          orientation="vertical"
           active={navItems.findIndex((i) => i.key === activeSection)}
           onTabChange={(_, tabKey) => setActiveSection(tabKey as SectionKey)}
           tabs={navItems.map((item) => ({
             tabKey: item.key,
             icon: <Icon path={item.icon} size={1} />,
             label: (
-              <Group gap={6} wrap="nowrap" align="center" justify="center">
+              <Stack gap={3} align="flex-start">
                 <Text size="sm" fw={500}>
                   {t(`admin.content.settings.nav.${item.key}`)}
                 </Text>
                 <StatusDot status={statuses[item.key]} />
-              </Group>
+              </Stack>
             ),
           }))}
         />
@@ -1604,7 +1605,7 @@ const Configs: FC = () => {
       {/* Sticky save bar — only fires the save flow; dirty
          tracking lights the indicator when any field diverges
          from the snapshot captured at first load. */}
-      <Affix position={{ bottom: 12, right: 16 }} className={classes.saveAffix}>
+      <Affix position={{ bottom: 12, right: 16 }} className={classes.saveAffix} hidden={!dirty && saved}>
         <Paper shadow="lg" radius="lg" p="xs" withBorder className={classes.saveBar}>
           <Group gap="md" align="center" wrap="nowrap">
             <Group gap={6} wrap="nowrap" role="status" aria-live="polite">

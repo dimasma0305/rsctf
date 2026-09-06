@@ -1,6 +1,6 @@
 .shell {
   display: grid;
-  grid-template-columns: minmax(320px, 0.85fr) minmax(480px, 1.15fr);
+  grid-template-columns: minmax(320px, 1fr) minmax(480px, 1fr);
   min-height: 100dvh;
   background: var(--app-background);
 }
@@ -85,7 +85,7 @@
 .statement {
   max-width: 13ch;
   color: #f8fafc;
-  font-size: clamp(2.25rem, 5vw, 4.75rem);
+  font-size: clamp(2rem, 3.5vw, 3.5rem);
   font-weight: 760;
   line-height: 1.02;
   letter-spacing: -0.045em;
@@ -110,6 +110,33 @@
   min-width: 0;
   padding: clamp(1rem, 4vw, 4rem);
   place-items: center;
+}
+
+.steps {
+  list-style: none;
+  padding: 0;
+  margin: 1.5rem 0 0;
+  display: grid;
+  gap: 1rem;
+}
+.steps li {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  font-size: 0.875rem;
+  color: #d7dee8;
+}
+.steps span {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  border: 1px solid #556278;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-family: var(--mantine-font-family-monospace);
+  color: #99f6e4;
 }
 
 .card {

@@ -48,13 +48,13 @@
 .heroGrid {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(17rem, 0.75fr);
-  min-height: 34rem;
+  min-height: 25rem;
 }
 
 .heroCopy {
   min-width: 0;
   justify-content: center;
-  padding: clamp(1.5rem, 4vw, 3.5rem);
+  padding: clamp(1.25rem, 3vw, 2rem);
 }
 
 .eyebrow {
@@ -90,12 +90,12 @@
 }
 
 .title {
-  max-width: 16ch;
+  max-width: 24ch;
   color: var(--app-text-primary);
-  font-size: clamp(2.25rem, 5vw, 4.6rem);
+  font-size: clamp(1.8rem, 3vw, 3rem);
   font-weight: 860;
-  line-height: 0.98;
-  letter-spacing: -0.06em;
+  line-height: 1.12;
+  letter-spacing: -0.035em;
   text-wrap: balance;
 }
 
@@ -167,7 +167,7 @@
 
 .actions :global(.mantine-Button-root) {
   min-height: 44px;
-  border-radius: 999px;
+  border-radius: var(--mantine-radius-md);
 }
 
 .visual {
