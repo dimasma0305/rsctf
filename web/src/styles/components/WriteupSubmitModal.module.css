@@ -1,0 +1,35 @@
+.modalTitle {
+  color: var(--app-text-primary);
+  font-weight: 700;
+}
+
+.summary {
+  background: var(--app-subtle-surface);
+  border-color: var(--app-surface-border);
+}
+
+.status {
+  max-width: 100%;
+  height: auto;
+  padding-block: 0.35rem;
+  white-space: normal;
+  text-align: center;
+}
+
+.fileIcon {
+  flex-shrink: 0;
+  color: var(--app-accent-text);
+}
+
+.fileName,
+.deadline {
+  overflow-wrap: anywhere;
+}
+
+.fileInput {
+  height: auto;
+  min-height: var(--input-height);
+  padding-block: 0.5rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

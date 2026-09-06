@@ -1,7 +1,9 @@
 import {
   ActionIcon,
+  Alert,
   Anchor,
   Badge,
+  Button,
   Group,
   Pagination,
   SegmentedControl,
@@ -16,7 +18,7 @@ import {
   useMantineTheme,
 } from '@mantine/core'
 import { useDebouncedValue } from '@mantine/hooks'
-import { mdiClose, mdiMagnify } from '@mdi/js'
+import { mdiAlertCircleOutline, mdiClose, mdiMagnify } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -52,7 +54,13 @@ const Games: FC = () => {
   const { user } = useUser()
   const timingConfig = useGameTimingSWRConfig()
 
-  const { data: games, isLoading } = api.game.useGameGames(
+  const {
+    data: games,
+    error: gamesError,
+    isLoading,
+    isValidating,
+    mutate,
+  } = api.game.useGameGames(
     {
       count: ITEM_PER_PAGE,
       skip: (activePage - 1) * ITEM_PER_PAGE,
@@ -253,13 +261,51 @@ const Games: FC = () => {
           </VisuallyHidden>
         </form>
 
-        <div id="event-catalog-results" aria-busy={games === undefined || isLoading ? true : undefined}>
+        {gamesError && (
+          <Alert
+            color="red"
+            role="alert"
+            icon={<Icon path={mdiAlertCircleOutline} size={0.9} aria-hidden="true" />}
+            title={
+              games
+                ? t('game.content.refresh_failed', 'Events could not be refreshed')
+                : t('game.content.load_failed', 'Events could not be loaded')
+            }
+          >
+            <Text size="sm">
+              {games
+                ? t(
+                    'game.content.stale_results',
+                    'Showing the last loaded events. Check your connection and try again.'
+                  )
+                : t(
+                    'game.content.load_failed_hint',
+                    'Check your connection and try again. Your search and filters are kept.'
+                  )}
+            </Text>
+            <Button
+              mt="sm"
+              variant="outline"
+              loading={isValidating}
+              onClick={() => void mutate().catch(() => undefined)}
+            >
+              {t('common.button.retry', 'Retry')}
+            </Button>
+          </Alert>
+        )}
+
+        <div
+          id="event-catalog-results"
+          aria-busy={isLoading || (games === undefined && !gamesError) ? true : undefined}
+        >
           {games === undefined ? (
-            <SimpleGrid cols={{ base: 1, md: 2, xl: 3, w24: 4 }} spacing="lg" verticalSpacing="lg">
-              {Array.from({ length: ITEM_PER_PAGE }).map((_, index) => (
-                <Skeleton key={index} h="13.25rem" radius="lg" />
-              ))}
-            </SimpleGrid>
+            !gamesError && (
+              <SimpleGrid cols={{ base: 1, md: 2, xl: 3, w24: 4 }} spacing="lg" verticalSpacing="lg">
+                {Array.from({ length: ITEM_PER_PAGE }).map((_, index) => (
+                  <Skeleton key={index} h="13.25rem" radius="lg" />
+                ))}
+              </SimpleGrid>
+            )
           ) : games.data.length === 0 ? (
             <Empty
               description={
@@ -268,6 +314,19 @@ const Games: FC = () => {
                       query: debouncedSearch,
                     })
                   : t('game.content.no_game', 'No games available')
+              }
+              action={
+                (debouncedSearch || membership !== GameMembershipFilter.All) && (
+                  <Button
+                    variant="light"
+                    onClick={() => {
+                      setMembership(GameMembershipFilter.All)
+                      clearSearch()
+                    }}
+                  >
+                    {t('game.content.reset_filters', 'Clear search and filters')}
+                  </Button>
+                )
               }
             />
           ) : (

@@ -20,10 +20,18 @@ export const ErrorFallback: FC<FallbackProps> = ({ error, resetErrorBoundary }: 
   const isMobile = useIsMobile()
 
   return (
-    <Center component="main" id="main-content" tabIndex={-1} mih="100dvh" p="md" className={classes.shell}>
+    <Center
+      component="main"
+      id="main-content"
+      data-error-fallback
+      tabIndex={-1}
+      mih="100dvh"
+      p="md"
+      className={classes.shell}
+    >
       <Paper
         p={{ base: 'lg', sm: 'xl' }}
-        maw="60rem"
+        maw="38rem"
         miw={isMobile ? 'auto' : '30rem'}
         w="100%"
         className={classes.card}
@@ -32,35 +40,41 @@ export const ErrorFallback: FC<FallbackProps> = ({ error, resetErrorBoundary }: 
           <Title fw="bold" order={1} c={theme.primaryColor}>
             {t('common.error.encountered')}
           </Title>
-          <Text fz="lg" fw={500} role="alert">
-            {getErrorMessage(error)}
+          <Text role="alert" c="dimmed">
+            {t(
+              'common.content.page_error_help',
+              'This page could not be displayed. Try again, or return to the event list.'
+            )}
           </Text>
-          <Textarea
-            label={t('common.content.diagnostic_details', 'Diagnostic details')}
-            value={getErrorStack(error)}
-            readOnly
-            autosize
-            minRows={12}
-            maxRows={20}
-            tabIndex={-1}
-            styles={{
-              input: {
-                fontFamily: theme.fontFamilyMonospace,
-                fontSize: theme.fontSizes.sm,
-              },
-            }}
-          />
-          <Text ta="center" size="sm" fw="bold" c="dimmed">
-            &gt;&gt;&gt; {t('common.content.report_error')}&lt;&lt;&lt;
-          </Text>
-          <Group grow>
-            <Button variant="outline" onClick={resetErrorBoundary}>
-              {t('common.button.try_again')}
-            </Button>
-            <Button variant="outline" onClick={clearLocalCache}>
-              {t('common.tab.account.clean_cache')}
+          <Group className={classes.actions}>
+            <Button onClick={resetErrorBoundary}>{t('common.button.try_again')}</Button>
+            <Button component="a" href="/games" variant="default">
+              {t('common.button.browse_events', 'Browse events')}
             </Button>
           </Group>
+          <details className={classes.details}>
+            <summary>{t('common.content.diagnostic_details', 'Diagnostic details')}</summary>
+            <Stack gap="sm" mt="sm">
+              <Text size="sm" c="dimmed">
+                {t(
+                  'common.content.report_error_help',
+                  'If this keeps happening, share these details with the organizer.'
+                )}
+              </Text>
+              <Textarea
+                label={t('common.content.error_message', 'Error message')}
+                value={getErrorStack(error)}
+                readOnly
+                autosize
+                minRows={4}
+                maxRows={8}
+                styles={{ input: { fontFamily: theme.fontFamilyMonospace, fontSize: theme.fontSizes.sm } }}
+              />
+              <Button variant="outline" onClick={clearLocalCache}>
+                {t('common.tab.account.clean_cache')}
+              </Button>
+            </Stack>
+          </details>
         </Stack>
       </Paper>
     </Center>

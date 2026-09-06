@@ -7,6 +7,16 @@ const card = readFileSync('src/components/GameCard.tsx', 'utf8')
 const cardStyles = readFileSync('src/styles/components/GameCard.module.css', 'utf8')
 const api = readFileSync('src/Api.ts', 'utf8')
 
+test('event discovery provides retry and filter reset instead of indefinite loading on errors', () => {
+  assert.match(page, /error: gamesError/)
+  assert.match(page, /gamesError &&/)
+  assert.match(page, /role="alert"/)
+  assert.match(page, /!gamesError &&/)
+  assert.match(page, /mutate\(\)\.catch/)
+  assert.match(page, /game\.content\.reset_filters/)
+  assert.match(page, /setMembership\(GameMembershipFilter\.All\)/)
+})
+
 test('event discovery searches the complete server-side catalog accessibly', () => {
   assert.match(page, /role="search"/)
   assert.match(page, /label=\{t\('game\.content\.search_label'/)
@@ -52,10 +62,7 @@ test('global challenge discovery remains authenticated and event-membership scop
 })
 
 test('event cards remain whole-card links without a redundant view-event footer', () => {
-  assert.match(
-    card,
-    /<Link to=\{`\/games\/\$\{game\.id\}`\} className=\{classes\.link\} data-guide="event-card">/
-  )
+  assert.match(card, /<Link to=\{`\/games\/\$\{game\.id\}`\} className=\{classes\.link\} data-guide="event-card">/)
   assert.doesNotMatch(card, /view_event|mdiArrowRight|classes\.action/)
   assert.doesNotMatch(cardStyles, /\.action/)
 })

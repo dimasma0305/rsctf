@@ -6,6 +6,7 @@
     "uploading": "Mengunggah avatar"
   },
   "button": {
+    "browse_events": "Lihat daftar event",
     "add": "Tambah",
     "copy": "Salin ke Papan Klip",
     "reset": "Reset",
@@ -15,6 +16,9 @@
     "uploading": "Mengunggah"
   },
   "content": {
+    "page_error_help": "Halaman ini tidak dapat ditampilkan. Coba lagi, atau kembali ke daftar event.",
+    "report_error_help": "Jika masalah berulang, kirim detail ini kepada panitia.",
+    "error_message": "Pesan kesalahan",
     "404": {
       "text": "Sebuah kehampaan, mengapa ini ada di sini",
       "title": "Halaman tidak ada"

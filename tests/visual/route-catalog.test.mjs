@@ -187,3 +187,10 @@ test('visual audit artifacts are excluded from source control and Docker context
   assert.match(gitIgnore, /^\/visual-audit-output\/?$/m)
   assert.match(dockerIgnore, /^\/visual-audit-output\/?$/m)
 })
+
+test('visual audit detects error recovery independently of translated copy and collapsed details', () => {
+  const fallback = readFileSync(join(repositoryRoot, 'web/src/components/ErrorFallback.tsx'), 'utf8')
+  const audit = readFileSync(join(repositoryRoot, 'tests/visual/audit.mjs'), 'utf8')
+  assert.match(fallback, /data-error-fallback/)
+  assert.match(audit, /Boolean\(document\.querySelector\('\[data-error-fallback\]'\)\)/)
+})

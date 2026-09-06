@@ -6,6 +6,7 @@
     "uploading": "Uploading avatar"
   },
   "button": {
+    "browse_events": "Browse events",
     "add": "Add",
     "cancel": "Cancel",
     "copy": "Copy to Clipboard",
@@ -16,6 +17,9 @@
     "uploading": "Uploading"
   },
   "content": {
+    "page_error_help": "This page could not be displayed. Try again, or return to the event list.",
+    "report_error_help": "If this keeps happening, share these details with the organizer.",
+    "error_message": "Error message",
     "404": {
       "text": "A desolation, why is it here",
       "title": "Page does not exist"

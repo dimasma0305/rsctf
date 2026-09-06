@@ -311,9 +311,10 @@ function accessibleDocumentAnalysis() {
     }))
 
   const errorFallback =
-    [...document.querySelectorAll('textarea')].some((textarea) =>
+    Boolean(document.querySelector('[data-error-fallback]')) ||
+    ([...document.querySelectorAll('textarea')].some((textarea) =>
       textarea.labels?.[0]?.textContent?.includes('Diagnostic details')
-    ) && document.body.innerText.includes('Try again')
+    ) && document.body.innerText.toLowerCase().includes('try again'))
   const html = document.documentElement
   const mainText = `${main?.innerText ?? ''} ${main?.shadowRoot?.textContent ?? ''}`.trim()
   const pageContentElement = document.querySelector('[data-page-content]')
