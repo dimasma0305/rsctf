@@ -78,8 +78,9 @@ try {
     await cdp.send('Fetch.fulfillRequest', { requestId, responseCode: status, responseHeaders: [{ name: 'Content-Type', value: 'application/json' }], body: Buffer.from(JSON.stringify(value)).toString('base64') })
   })
 
-  for (const [name, width, height, scheme, language, reduced] of [
+  for (const [name, width, height, scheme, language, reduced, view = 'list'] of [
     ['desktop', 1600, 1000, 'dark', 'en-US', false],
+    ['desktop-cards', 1600, 1000, 'dark', 'en-US', false, 'cards'],
     ['compact', 320, 568, 'dark', 'en-US', false],
     ['mobile-light-id', 390, 844, 'light', 'id-ID', false],
     ['tablet-reduced', 768, 1024, 'dark', 'en-US', true],
@@ -87,17 +88,34 @@ try {
   ]) {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false })
     await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: reduced ? 'reduce' : 'no-preference' }] })
-    const { identifier } = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('language', JSON.stringify('${language}')); localStorage.setItem('mantine-color-scheme-value', '${scheme}');` })
+    const { identifier } = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('language', JSON.stringify('${language}')); localStorage.setItem('mantine-color-scheme-value', '${scheme}'); localStorage.setItem('challenge-explorer-view', JSON.stringify('${view}'));` })
     for (const [kind, result] of [['wrong', 'WrongAnswer'], ['success', 'Accepted']]) {
       answer = name === 'desktop' && kind === 'wrong' ? 'FlagSubmitted' : result
       const previousSubmissions = submissions
       const previousReads = statusReads
       await cdp.send('Page.navigate', { url: `${target}/games/901/challenges` })
-      await waitFor(`document.querySelector('[data-challenge-row="9001"]')`)
-      await evaluate(`document.querySelector('[data-challenge-row="9001"]').click()`)
+      await waitFor(`document.querySelector('[data-challenge-row="9001"], [data-guide="challenge-card"] button')`)
+      await evaluate(`document.querySelector('[data-challenge-row="9001"], [data-guide="challenge-card"] button').click()`)
       await waitFor(`document.querySelector('form[data-guide="flag-submit"] input')`)
       await evaluate(`document.querySelector('form[data-guide="flag-submit"] input').focus()`)
       await cdp.send('Input.insertText', { text: 'fixture-only-not-a-real-flag' })
+      await evaluate(`Promise.all(document.getAnimations().filter(a => a.effect?.getComputedTiming().endTime !== Infinity).map(a => a.finished.catch(() => {})))`)
+      await evaluate(`window.retainedChallenge = {
+        form: document.querySelector('form[data-guide="flag-submit"]'),
+        material: document.querySelector('[data-guide="challenge-material"]'),
+        panel: document.querySelector('[data-challenge-detail]') ?? document.querySelector('[role="dialog"]'),
+        row: document.querySelector('[data-challenge-row="9001"], [data-guide="challenge-card"]'),
+      }; window.retainedBounds = retainedChallenge.panel.getBoundingClientRect().toJSON();
+      window.transitionFrames = []; window.trackVerdictFrames = true;
+      requestAnimationFrame(function sample() {
+        if (!window.trackVerdictFrames) return;
+        const panel = retainedChallenge.panel, r = panel.getBoundingClientRect();
+        const result = document.querySelector('[data-flag-verdict]')?.closest('[role="dialog"]');
+        transitionFrames.push({ connected: panel.isConnected && retainedChallenge.form.isConnected && retainedChallenge.material.isConnected && retainedChallenge.row.isConnected,
+          x: r.x, width: r.width, visible: getComputedStyle(panel).display !== 'none' && getComputedStyle(panel).visibility !== 'hidden',
+          result: result ? { height: result.getBoundingClientRect().height, opacity: Number(getComputedStyle(result).opacity), exiting: window.verdictDismissing === true } : null });
+        requestAnimationFrame(sample);
+      });`)
       await evaluate(`document.querySelector('form[data-guide="flag-submit"]').requestSubmit()`)
       if (answer === 'FlagSubmitted') {
         for (let attempt = 0; attempt < 100 && statusReads === previousReads; attempt++) await new Promise((resolve) => setTimeout(resolve, 100))
@@ -106,6 +124,7 @@ try {
         answer = result
       }
       await waitFor(`document.querySelector('[data-flag-verdict][data-kind="${kind}"]')`)
+      assert.equal(await evaluate(`retainedChallenge.form.isConnected && retainedChallenge.material.isConnected && retainedChallenge.panel.isConnected && retainedChallenge.row.isConnected`), true, 'verdict must not remove the challenge or selected card')
       assert.equal(submissions, previousSubmissions + 1)
       assert.equal(await evaluate(`document.activeElement === document.querySelector('[data-flag-verdict] [data-autofocus]')`), true)
       assert.equal(await evaluate(`getComputedStyle(document.activeElement).opacity === '1' && !document.activeElement.disabled`), true, 'actions are usable during the animation')
@@ -135,9 +154,26 @@ try {
       assert.equal(await evaluate(`document.activeElement === document.querySelector('[data-flag-verdict] button')`), true, 'focus stays trapped in the result')
       await press('Tab')
       assert.equal(await evaluate(`document.activeElement.matches('[data-autofocus]')`), true)
+      await evaluate('window.verdictDismissing = true')
       if (kind === 'wrong') await press('Escape')
       else await press('Enter')
       await waitFor(`!document.querySelector('[data-flag-verdict]')`)
+      const continuity = await evaluate(`(() => {
+        window.trackVerdictFrames = false;
+        const resultFrames = transitionFrames.map(f => f.result).filter(Boolean);
+        return { frames: transitionFrames.length,
+          before: retainedBounds,
+          deviations: transitionFrames.filter(f => !f.connected || !f.visible || Math.abs(f.x - retainedBounds.x) > 1 || Math.abs(f.width - retainedBounds.width) > 1).slice(0, 4),
+          stable: transitionFrames.every(f => f.connected && f.visible && Math.abs(f.x - retainedBounds.x) <= 1 && Math.abs(f.width - retainedBounds.width) <= 1),
+          resultStable: resultFrames.length > 0 && Math.max(...resultFrames.map(f => f.height)) - Math.min(...resultFrames.map(f => f.height)) <= 1,
+          enters: resultFrames.some(f => !f.exiting && f.opacity > 0 && f.opacity < 1),
+          exits: resultFrames.some(f => f.exiting && f.opacity > 0 && f.opacity < 1),
+          retained: retainedChallenge.form === document.querySelector('form[data-guide="flag-submit"]') && retainedChallenge.material === document.querySelector('[data-guide="challenge-material"]') };
+      })()`)
+      reports.at(-1).continuity = continuity
+      assert.ok(continuity.frames > 0 && continuity.stable && continuity.retained, `${name}-${kind}: challenge must stay visible and retain its geometry throughout both transitions`)
+      assert.ok(continuity.resultStable, 'result content must not collapse during dismissal')
+      if (!reduced) assert.ok(continuity.enters && continuity.exits, 'result must animate both its entrance and exit')
       if (kind === 'wrong') await waitFor(`document.activeElement === document.querySelector('form[data-guide="flag-submit"] input')`)
       else await waitFor(`document.activeElement !== document.body && (document.querySelector('[data-challenge-detail]') ?? document.querySelector('[role="dialog"]'))?.contains(document.activeElement)`)
       assert.equal(submissions, previousSubmissions + 1, 'dismissal must not resubmit the flag')
@@ -148,7 +184,7 @@ try {
   writeFileSync(`${output}/report.json`, JSON.stringify({ reports, unknown: [...unknown], errors, submissions, requests }, null, 2))
   await browser.close()
 }
-assert.equal(reports.length, 10)
+assert.equal(reports.length, 12)
 assert.deepEqual([...unknown], [])
 assert.deepEqual(errors, [])
 assert.deepEqual(reports.filter(r => r.overflow || !r.dialogFits || r.violations.length), [])

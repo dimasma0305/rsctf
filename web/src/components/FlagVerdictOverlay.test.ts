@@ -106,6 +106,8 @@ test('verdict decoration is finite, opt-in motion and never delays text or actio
   const source = readFileSync('src/components/FlagVerdictOverlay.tsx', 'utf8')
   const css = readFileSync('src/styles/components/FlagVerdictOverlay.module.css', 'utf8')
   assert.doesNotMatch(source, /setTimeout|setInterval|requestAnimationFrame|Math.random|Audio\(/)
+  assert.match(source, /removeScrollProps=\{\{ removeScrollBar: false \}\}/)
+  assert.doesNotMatch(source, /lockScroll=\{false\}/)
   assert.match(css, /prefers-reduced-motion: no-preference/)
   assert.match(css, /prefers-reduced-motion: reduce/)
   assert.doesNotMatch(css, /infinite|filter: blur|height: 100dvh/)
@@ -133,7 +135,7 @@ test('verdict light and dark accents keep text and actions contrast-safe', () =>
   }
 })
 
-test('retry and success focus targets survive a replacement drawer focus trap', () => {
+test('retry and success focus targets agree with the reactivated drawer focus trap', () => {
   const source = readFileSync('src/components/ChallengeModal.tsx', 'utf8')
   assert.match(source, /data-autofocus=\{\(focusAfterVerdict === 'wrong' && !inputDisabled\) \|\| undefined\}/)
   assert.match(source, /data-autofocus=\{focusAfterVerdict === 'success' \|\| undefined\}/)

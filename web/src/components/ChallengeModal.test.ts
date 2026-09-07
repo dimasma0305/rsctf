@@ -8,6 +8,7 @@ import { act, createElement, Profiler, type FC, useState } from 'react'
 import { I18nextProvider } from 'react-i18next'
 import { ChallengeCategory, ChallengeType, SolveReceiptMode, type ChallengeDetailModel } from '../Api'
 import { installTestDom } from '../test/installDom'
+import type { FlagVerdictState } from '../utils/FlagVerdict'
 import { LanguageProvider } from '../utils/I18n'
 import type { ChallengeCategoryItemProps } from '../utils/Shared'
 import { ChallengeModal } from './ChallengeModal'
@@ -117,9 +118,7 @@ test('challenge modal ticks only while an open deadline needs updates', async (c
 
     await act(async () => context.mock.timers.tick(2_500))
     assert.ok(commits > deadlineCommits, 'an open deadline must remain reactive')
-    const expiredFlagInput = browser.document.querySelector<HTMLInputElement>(
-      'form[data-guide="flag-submit"] input'
-    )
+    const expiredFlagInput = browser.document.querySelector<HTMLInputElement>('form[data-guide="flag-submit"] input')
     assert.ok(expiredFlagInput)
     assert.equal(expiredFlagInput.disabled, true)
   } finally {
@@ -253,18 +252,28 @@ test('form edits and verdict polling preserve animated Markdown until challenge 
   let replaceContent: (() => void) | undefined
   let switchChallenge: (() => void) | undefined
   let setVerdictPolling: ((value: boolean) => void) | undefined
+  let setResult: ((value: FlagVerdictState | null) => void) | undefined
+  let setPresentation: ((value: 'modal' | 'drawer' | 'embedded') => void) | undefined
 
   const Harness: FC = () => {
     const [flag, setFlag] = useState('')
     const [receipt, setReceipt] = useState('')
     const [challengeId, setChallengeId] = useState(557)
     const [verdictPolling, setPolling] = useState(false)
+    const [result, updateResult] = useState<FlagVerdictState | null>(null)
+    const [presentation, updatePresentation] = useState('modal')
     const [content, setContent] = useState('<span class="tower-animation" data-frame="initial">animated tower</span>')
     replaceContent = () => setContent('<span class="tower-animation">new animation</span>')
     switchChallenge = () => setChallengeId(558)
     setVerdictPolling = setPolling
+    setResult = updateResult
+    setPresentation = updatePresentation
     return createElement(ChallengeModal, {
       opened: true,
+      embedded: presentation === 'embedded',
+      drawer: presentation === 'drawer',
+      flagVerdict: result,
+      onDismissFlagVerdict: () => updateResult(null),
       onClose: () => undefined,
       transitionProps: { duration: 0 },
       challenge: {
@@ -303,7 +312,7 @@ test('form edits and verdict polling preserve animated Markdown until challenge 
       root.render(
         createElement(
           HeadlessMantineProvider,
-          null,
+          { env: 'test' },
           createElement(I18nextProvider, { i18n }, createElement(LanguageProvider, null, createElement(Harness)))
         )
       )
@@ -352,6 +361,33 @@ test('form edits and verdict polling preserve animated Markdown until challenge 
     })
     assert.equal(submissions, 1)
     assert.equal(browser.document.querySelector('.tower-animation'), initialAnimation)
+
+    for (const presentation of ['modal', 'drawer', 'embedded'] as const) {
+      await act(async () => setPresentation?.(presentation))
+      const material = browser.document.querySelector<HTMLElement>('.tower-animation')
+      const retainedForm = browser.document.querySelector('form[data-guide="flag-submit"]')
+      assert.ok(material)
+      material.dataset.frame = 'still-running'
+      for (const [sequence, kind] of ['wrong', 'success', 'wrong'].entries()) {
+        await act(async () => setResult?.({ kind: kind as FlagVerdictState['kind'], sequence }))
+        assert.ok(browser.document.querySelector('[data-flag-verdict]'))
+        assert.ok(
+          browser.document.querySelector('.tower-animation') === material,
+          `${presentation}: result must not unmount challenge content`
+        )
+        assert.ok(browser.document.querySelector('form[data-guide="flag-submit"]') === retainedForm)
+        assert.equal(material.dataset.frame, 'still-running')
+        assert.ok(material.closest('[inert]'), 'only the result accepts input while it is open')
+        await act(async () =>
+          browser.document.querySelector<HTMLButtonElement>('[data-flag-verdict] [data-autofocus]')?.click()
+        )
+        assert.ok(
+          browser.document.querySelector('.tower-animation') === material,
+          `${presentation}: dismissal must not rebuild the challenge`
+        )
+        assert.equal(material.closest('[inert]'), null)
+      }
+    }
 
     await act(async () => switchChallenge?.())
     const identityReplacement = browser.document.querySelector<HTMLElement>('.tower-animation')

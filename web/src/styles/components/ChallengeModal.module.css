@@ -30,15 +30,6 @@
   max-height: calc(50vh + 300px);
 }
 
-.content.verdictContent {
-  flex: 0 1 auto;
-  width: min(36rem, calc(100vw - 1.5rem));
-  max-height: calc(100dvh - 1.5rem);
-  overflow: auto;
-  border: 1px solid var(--app-border);
-  border-radius: var(--mantine-radius-xl);
-}
-
 .footer {
   display: flex;
   justify-content: space-between;

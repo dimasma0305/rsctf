@@ -1,5 +1,5 @@
 import { Modal } from '@mantine/core'
-import { CSSProperties, FC, KeyboardEvent, useLayoutEffect, useRef } from 'react'
+import { CSSProperties, FC, KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { FlagVerdictState } from '@Utils/FlagVerdict'
 import classes from '@Styles/FlagVerdictOverlay.module.css'
@@ -9,6 +9,52 @@ interface FlagVerdictOverlayProps {
   challengeTitle: string
   score?: number
   onDismiss: () => void
+}
+
+export const FlagVerdictDialog: FC<Omit<FlagVerdictOverlayProps, 'verdict'> & { verdict: FlagVerdictState | null }> = ({
+  verdict,
+  ...props
+}) => {
+  // Retain one result through the exit transition; removing its children on
+  // dismissal makes the dialog collapse before it has finished fading out.
+  const [lastVerdict, setLastVerdict] = useState(verdict)
+  useEffect(() => {
+    if (verdict) setLastVerdict(verdict)
+  }, [verdict])
+  const displayedVerdict = verdict ?? lastVerdict
+  return (
+    <Modal.Root
+      opened={!!verdict}
+      onClose={props.onDismiss}
+      closeOnEscape={false}
+      closeOnClickOutside={false}
+      returnFocus={false}
+      // The app already reserves a stable scrollbar gutter. A second gap
+      // compensation shifts the cards when the accepted-review form appears.
+      removeScrollProps={{ removeScrollBar: false }}
+      centered
+      zIndex={6000}
+      size="min(36rem, calc(100vw - 1.5rem))"
+      transitionProps={{
+        transition: {
+          in: { opacity: 1, transform: 'translateY(0)' },
+          out: { opacity: 0, transform: 'translateY(8px)' },
+          common: {},
+          transitionProperty: 'opacity, transform',
+        },
+        duration: 180,
+        exitDuration: 140,
+        timingFunction: 'cubic-bezier(0.2, 0, 0, 1)',
+      }}
+    >
+      <Modal.Overlay backgroundOpacity={0.35} />
+      <Modal.Content className={classes.dialog} inert={!verdict}>
+        {displayedVerdict && (
+          <FlagVerdictOverlay key={displayedVerdict.sequence} verdict={displayedVerdict} {...props} />
+        )}
+      </Modal.Content>
+    </Modal.Root>
+  )
 }
 
 export const FlagVerdictOverlay: FC<FlagVerdictOverlayProps> = ({ verdict, challengeTitle, score, onDismiss }) => {

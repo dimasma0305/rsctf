@@ -49,7 +49,7 @@ import { useTranslation } from 'react-i18next'
 import { AdChallengePanel } from '@Components/AdChallengePanel'
 import type { AdStateOwner } from '@Components/AdChallengePanel'
 import { ChallengeDeadlineNotice } from '@Components/ChallengeDeadlineNotice'
-import { FlagVerdictOverlay } from '@Components/FlagVerdictOverlay'
+import { FlagVerdictDialog } from '@Components/FlagVerdictOverlay'
 import { InstanceEntry } from '@Components/InstanceEntry'
 import { KothChallengePanel } from '@Components/KothChallengePanel'
 import { ContentPlaceholder, InlineMarkdown, Markdown } from '@Components/MarkdownRenderer'
@@ -226,8 +226,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     reviewChallengeIdRef.current = (challenge as any)?.id
     if (flagVerdict || !focusAfterVerdict) return
 
-    // Keep the current opening's autofocus target in the rendered DOM too:
-    // a replacement Drawer's focus trap can initialize after this frame.
+    // The underlying dialog reactivates its focus trap after the result closes.
+    // Its autofocus target and explicit focus restoration must agree.
     const frame = window.requestAnimationFrame(() => {
       const preferredTarget = focusAfterVerdict === 'success' ? reviewStartRef.current : flagInputRef.current
       const target = preferredTarget && !preferredTarget.disabled ? preferredTarget : closeButtonRef.current
@@ -869,8 +869,11 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
       </Stack>
     )
 
-  if (drawer && !flagVerdict) {
-    return (
+  // A verdict is a separate layer, never a replacement for the challenge tree.
+  // Keep Markdown, form state, scroll position and workspace geometry intact.
+  let presentation
+  if (drawer) {
+    presentation = (
       <Drawer
         opened={modalProps.opened}
         onClose={handleClose}
@@ -878,18 +881,23 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
         size="min(38rem, 100vw)"
         title={title}
         closeButtonProps={{ 'aria-label': t('common.button.close', 'Close'), ref: closeButtonRef }}
-        closeOnEscape={modalProps.closeOnEscape}
-        closeOnClickOutside={modalProps.closeOnClickOutside}
+        trapFocus={!flagVerdict}
+        closeOnEscape={flagVerdict ? false : modalProps.closeOnEscape}
+        closeOnClickOutside={flagVerdict ? false : modalProps.closeOnClickOutside}
+        inert={!!flagVerdict}
       >
         {content}
         {footer}
       </Drawer>
     )
-  }
-
-  if (embedded && !flagVerdict) {
-    return modalProps.opened ? (
-      <section className={classes.inlinePanel} aria-labelledby="competition-challenge-title" data-challenge-detail>
+  } else if (embedded) {
+    presentation = modalProps.opened ? (
+      <section
+        className={classes.inlinePanel}
+        aria-labelledby="competition-challenge-title"
+        data-challenge-detail
+        inert={!!flagVerdict}
+      >
         <header className={classes.inlineHeader}>
           <div className={classes.orbitArt} aria-hidden="true">
             <i />
@@ -950,46 +958,47 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
         {footer}
       </section>
     ) : null
+  } else {
+    presentation = (
+      <Modal.Root
+        size="min(46rem, calc(100vw - 1.5rem))"
+        {...modalProps}
+        onClose={handleClose}
+        closeOnEscape={flagVerdict ? false : modalProps.closeOnEscape}
+        closeOnClickOutside={flagVerdict ? false : modalProps.closeOnClickOutside}
+        trapFocus={flagVerdict ? false : modalProps.trapFocus}
+        centered
+        classNames={classes}
+      >
+        {withOverlay && <Modal.Overlay {...overlayProps} />}
+        <Modal.Content inert={!!flagVerdict}>
+          <div className={classes.header}>
+            <Modal.Title>{title}</Modal.Title>
+            {withCloseButton && (
+              <Modal.CloseButton
+                {...closeButtonProps}
+                ref={closeButtonRef}
+                aria-label={closeButtonProps?.['aria-label'] ?? t('common.button.close', 'Close')}
+              />
+            )}
+          </div>
+          <Modal.Body>{content}</Modal.Body>
+          {footer}
+        </Modal.Content>
+      </Modal.Root>
+    )
   }
 
   return (
-    <Modal.Root
-      size="min(46rem, calc(100vw - 1.5rem))"
-      {...modalProps}
-      onClose={handleClose}
-      closeOnEscape={flagVerdict ? false : modalProps.closeOnEscape}
-      closeOnClickOutside={flagVerdict ? false : modalProps.closeOnClickOutside}
-      zIndex={flagVerdict ? 6000 : modalProps.zIndex}
-      centered
-      classNames={classes}
-    >
-      {withOverlay && <Modal.Overlay {...overlayProps} />}
-      <Modal.Content className={flagVerdict ? classes.verdictContent : undefined}>
-        {flagVerdict ? (
-          <FlagVerdictOverlay
-            key={flagVerdict.sequence}
-            verdict={flagVerdict}
-            challengeTitle={challenge?.title ?? ''}
-            score={flagVerdict.kind === 'success' && !gameEnded ? challenge?.score : undefined}
-            onDismiss={dismissFlagVerdict}
-          />
-        ) : (
-          <>
-            <div className={classes.header}>
-              <Modal.Title>{title}</Modal.Title>
-              {withCloseButton && (
-                <Modal.CloseButton
-                  {...closeButtonProps}
-                  ref={closeButtonRef}
-                  aria-label={closeButtonProps?.['aria-label'] ?? t('common.button.close', 'Close')}
-                />
-              )}
-            </div>
-            <Modal.Body>{content}</Modal.Body>
-            {footer}
-          </>
-        )}
-      </Modal.Content>
-    </Modal.Root>
+    <>
+      {presentation}
+      <FlagVerdictDialog
+        key={challenge?.id}
+        verdict={modalProps.opened ? (flagVerdict ?? null) : null}
+        challengeTitle={challenge?.title ?? ''}
+        score={!gameEnded ? challenge?.score : undefined}
+        onDismiss={dismissFlagVerdict}
+      />
+    </>
   )
 }

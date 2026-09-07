@@ -1,3 +1,10 @@
+.dialog {
+  max-height: calc(100dvh - 1.5rem);
+  overflow: auto;
+  border: 1px solid var(--app-border);
+  border-radius: var(--mantine-radius-xl);
+}
+
 .scene {
   --verdict-accent: light-dark(#087f5b, #5eead4);
   --verdict-on-accent: light-dark(#ffffff, #092721);
