@@ -46,13 +46,13 @@
 
 [data-mantine-color-scheme='dark'] {
   color-scheme: dark;
-  --app-background: #080d17;
-  --app-background-strong: #060a12;
-  --app-shell-surface: #0d1421;
-  --app-shell-surface-translucent: rgba(13, 20, 33, 0.91);
-  --app-raised-surface: #111a29;
-  --app-subtle-surface: #0e1726;
-  --app-hover-surface: #172235;
+  --app-background: #0b111c;
+  --app-background-strong: #080d17;
+  --app-shell-surface: #0f1724;
+  --app-shell-surface-translucent: rgba(15, 23, 36, 0.94);
+  --app-raised-surface: #151f2e;
+  --app-subtle-surface: #111b29;
+  --app-hover-surface: #1b283b;
   --app-icon-surface: #1a2638;
   --app-border: #29364a;
   --app-border-subtle: #202d40;
@@ -193,7 +193,7 @@ body {
 .mantine-InputWrapper-label {
   margin-bottom: 5px;
   color: var(--app-text-secondary);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .mantine-InputWrapper-description {
@@ -229,7 +229,7 @@ body {
   color: var(--app-text-secondary);
   background: var(--app-subtle-surface);
   font-size: 0.75rem;
-  font-weight: 720;
+  font-weight: 600;
   letter-spacing: 0.025em;
 }
 

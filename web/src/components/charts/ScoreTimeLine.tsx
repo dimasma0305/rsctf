@@ -4,6 +4,7 @@ import type { EChartsOption, SeriesOption } from 'echarts'
 import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
+import { Empty } from '@Components/Empty'
 import { EchartsContainer } from '@Components/charts/EchartsContainer'
 import { normalizeLanguage, useLanguage } from '@Utils/I18n'
 import { getGameStatus, useGame, useGameStatus } from '@Hooks/useGame'
@@ -275,6 +276,13 @@ export const ScoreTimeLine: FC<TimeLineProps> = ({ divisionId, scoreboard }) => 
     }),
     [chartData, staticOption]
   )
+
+  // The table owns loading/error feedback. Do not show a blank chart or imply
+  // that an unavailable response means the event has no scores.
+  if (!scoreboard) return null
+  if (!activeTeams?.length) {
+    return <Empty title={t('game.timeline.empty_title')} description={t('game.timeline.empty_description')} />
+  }
 
   return (
     <EchartsContainer

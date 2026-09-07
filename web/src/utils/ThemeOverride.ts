@@ -117,17 +117,17 @@ const CustomTheme: MantineThemeOverride = {
   respectReducedMotion: true,
   defaultRadius: 'md',
   fontFamily:
-    'Lexend, -apple-system, BlinkMacSystemFont, Helvetica Neue, PingFang SC, Microsoft YaHei, Source Han Sans SC, Noto Sans CJK SC, sans-serif',
+    '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica Neue, PingFang SC, Microsoft YaHei, Source Han Sans SC, Noto Sans CJK SC, sans-serif',
   fontFamilyMonospace:
     'JetBrains Mono, ui-monospace, SFMono-Regular, Monaco, Consolas, Courier New, monospace, sans-serif',
   headings: {
     fontFamily: 'Lexend, sans-serif',
-    fontWeight: '720',
+    fontWeight: '650',
     textWrap: 'balance',
     sizes: {
       h1: { fontSize: 'clamp(1.75rem, 3vw, 2.5rem)', lineHeight: '1.15' },
-      h2: { fontSize: 'clamp(1.4rem, 2vw, 1.9rem)', lineHeight: '1.2' },
-      h3: { fontSize: 'clamp(1.15rem, 1.5vw, 1.45rem)', lineHeight: '1.25' },
+      h2: { fontSize: 'clamp(1.25rem, 1.7vw, 1.6rem)', lineHeight: '1.3' },
+      h3: { fontSize: 'clamp(1.1rem, 1.4vw, 1.3rem)', lineHeight: '1.35' },
     },
   },
   radius: {
@@ -229,7 +229,7 @@ const CustomTheme: MantineThemeOverride = {
       },
       styles: {
         root: {
-          fontWeight: 680,
+          fontWeight: 600,
         },
       },
     }),

@@ -16,7 +16,9 @@ export function WorkspaceLinks({ label, items }: { label: string; items: Workspa
     <nav className={classes.grid} aria-label={label}>
       {items.map((item) => (
         <Link key={item.to} to={item.to} className={classes.link}>
-          <Icon className={classes.icon} path={item.icon} size={1} aria-hidden="true" />
+          <span className={classes.icon} aria-hidden="true">
+            <Icon path={item.icon} size={0.85} />
+          </span>
           <div className={classes.copy}>
             <Text fw={600} size="sm">
               {item.title}

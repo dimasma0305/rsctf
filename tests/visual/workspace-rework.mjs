@@ -27,7 +27,7 @@ if (cardsOnly) {
 const categories = Object.groupBy(challenges, (challenge) => challenge.category)
 const ranks = ['Null Pointers', 'Stacked Together', 'A very long team name that remains usable on small screens'].map((name, index) => ({ id: index + 1, name, divisionId: 1, divisionRank: index + 1, rank: index + 1, score: 1200 - index * 150, lastSubmissionTime: now - 60000, solvedCount: index === 0 ? 1 : 0, solvedChallenges: index === 0 ? [{ id: 9002, score: 460, type: 'Normal', time: now - 60000 }] : [] }))
 const teams = ranks.map((rank) => ({ id: rank.id, name: rank.name, bio: 'Ready for the next challenge.', locked: false, members: [{ id: profile.userId, userName: 'Morgan', captain: true }, { id: '22222222-2222-4222-8222-222222222222', userName: 'Alex', captain: false }] }))
-const config = { title: 'Signal', slogan: 'A place to play. A reason to learn.', portMapping: 'Default', allowRegister: true, allowPasswordRegistration: true, allowTeamCreation: true, emailConfirmationRequired: false, enableBrowserFingerprint: false, defaultLifetime: 120, extensionDuration: 120, renewalWindow: 10 }
+const config = { title: 'INTECHFEST', slogan: 'A place to play. A reason to learn.', portMapping: 'Default', allowRegister: true, allowPasswordRegistration: true, allowTeamCreation: true, emailConfirmationRequired: false, enableBrowserFingerprint: false, defaultLifetime: 120, extensionDuration: 120, renewalWindow: 10 }
 const settings = { revision: 1, globalConfig: { ...config }, accountPolicy: { allowRegister: true, allowPasswordRegistration: true, allowTeamCreation: true }, containerPolicy: { portMapping: 'Default', defaultLifetime: 120, extensionDuration: 120, renewalWindow: 10 }, containerProvider: { type: 'Docker', name: 'Docker', available: true }, buildRegistry: {}, email: {}, captcha: { provider: 'None' }, oAuth: {}, registry: {}, donations: { enabled: false }, proxyTrust: { enabled: false, trustedNetworksCsv: '' } }
 
 const responses = {
@@ -100,6 +100,16 @@ const visit = async (path, name) => {
     if (path.endsWith('/challenges')) await waitFor(`document.querySelectorAll('[data-guide="challenge-card"]').length === 6`)
   } catch (error) { runtimeErrors.push(error.message) }
   await new Promise((r) => setTimeout(r, 600))
+  if (path === '/admin/settings') {
+    assert.equal(await evaluate(`(() => {
+      const panel = document.querySelector('[role="tabpanel"]');
+      const inputs = [...panel.querySelectorAll('input:not([type="file"]), textarea')].filter(input => input.getBoundingClientRect().width > 0);
+      return inputs.length > 0 && inputs.every(input => input.getBoundingClientRect().width >= Math.min(220, panel.clientWidth - 40));
+    })()`), true, 'settings fields must respond to available panel width, not the browser width')
+  }
+  if (path.endsWith('/scoreboard') && await evaluate('innerWidth > 800')) {
+    assert.equal(await evaluate(`document.body.innerText.includes('No score history yet')`), true, 'loaded empty timelines need an explanation, not a blank chart')
+  }
   if (cardsOnly) await evaluate(`document.querySelector('[data-guide="challenge-card"]')?.scrollIntoView({ block: 'center', behavior: 'instant' })`)
   await inspect(name)
   if (cardsOnly) {

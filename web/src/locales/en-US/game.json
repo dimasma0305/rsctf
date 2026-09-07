@@ -1,4 +1,8 @@
 {
+  "timeline": {
+    "empty_title": "No score history yet",
+    "empty_description": "Score history will appear here when it is available. Current standings are listed below."
+  },
   "arena": {
     "scoring_status": "Scoring status",
     "awaiting_round_update": "Awaiting round update",
@@ -41,6 +45,7 @@
     "your_team": "Your team"
   },
   "button": {
+    "export_scoreboard": "Export scoreboard",
     "ad": {
       "reset": "Reset",
       "submit": "Submit attack",
@@ -82,6 +87,8 @@
     "find_my_team": "Find My Team"
   },
   "content": {
+    "events_empty_title": "No matching events",
+    "events_empty_description": "There are no events on this page with the current filters. Try another search, filter, or page.",
     "load_failed": "Events could not be loaded",
     "load_failed_hint": "Check your connection and try again. Your search and filters are kept.",
     "refresh_failed": "Events could not be refreshed",

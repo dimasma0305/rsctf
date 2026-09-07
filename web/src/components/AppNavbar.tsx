@@ -58,7 +58,7 @@ const NavbarLink: FC<NavbarLinkProps> = ({ icon, label, link, onClick, isActive,
         <Icon path={icon} size={0.92} />
       </span>
       {!compact && (
-        <Text component="span" size="sm" fw={650} style={{ lineHeight: 1.35, overflowWrap: 'anywhere' }}>
+        <Text component="span" size="sm" fw={550} style={{ lineHeight: 1.35, overflowWrap: 'anywhere' }}>
           {translatedLabel}
         </Text>
       )}
@@ -146,7 +146,7 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
             disabled={!compact}
           >
             <Link to="/" className={classes.brandLink} aria-label={t('common.tab.home', 'Home')}>
-              {compact ? <LogoBox size="40px" /> : <LogoHeader />}
+              {compact ? <LogoBox size="36px" /> : <LogoHeader logoSize="36px" />}
             </Link>
           </Tooltip>
           <Tooltip label={toggleLabel} position={compact ? 'right' : 'bottom'} withinPortal openDelay={350}>

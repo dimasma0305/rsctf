@@ -14,10 +14,14 @@
   top: 1rem;
 }
 .formContent > [role='tabpanel'] {
+  min-width: 0;
   padding: 1.25rem;
   border: 1px solid var(--app-border-subtle);
   border-radius: var(--mantine-radius-lg);
   background: var(--app-raised-surface);
+}
+.formContent > [role='tabpanel'] > :global(.mantine-Title-root) {
+  margin-bottom: 1.25rem;
 }
 @media (max-width: 62em) {
   .formContent {

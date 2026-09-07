@@ -92,6 +92,10 @@ try {
     document.querySelector('[data-event-workspace-header] a[href="/games/901/${destination}"]').click();
    })`)
    await waitFor(`location.pathname.endsWith('/${destination}') && document.querySelector('[data-event-workspace-header] nav')`)
+   if(destination === 'monitor/events') {
+    await waitFor(`document.body.innerText.includes('No matching events')`)
+    assert.equal(await evaluate(`document.querySelector('[role="tablist"][aria-label="Monitoring"]').getAttribute('aria-orientation')`),'horizontal')
+   }
    transitions.push({name,destination,baseline,frames})
    for(const frame of frames) {
     assert.ok(frame.header && frame.nav,`${name}: shared event header disappeared during navigation to ${destination}`)

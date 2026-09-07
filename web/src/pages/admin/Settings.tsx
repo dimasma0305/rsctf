@@ -481,7 +481,12 @@ const Configs: FC = () => {
                 <SectionHelp description={t('admin.content.settings.platform.api_encryption.description')} />
               </Group>
               <Divider />
-              <Grid columns={4} align="center">
+              <Grid
+                type="container"
+                breakpoints={{ xs: '24em', sm: '32em', md: '48em', lg: '68em', xl: '80em' }}
+                columns={4}
+                align="end"
+              >
                 <Grid.Col span={{ base: 4, sm: 2, lg: 1 }}>
                   <TextInput
                     label={t('admin.content.settings.platform.name.label')}
@@ -630,7 +635,7 @@ const Configs: FC = () => {
                 <SectionHelp description={t('admin.content.settings.account.unique_ip_per_team_user.description')} />
               </Group>
               <Divider />
-              <SimpleGrid cols={{ base: 1, sm: 2, md: 3, lg: 4 }}>
+              <SimpleGrid type="container" cols={{ base: 1, '32em': 2, '52em': 3, '68em': 4 }}>
                 <Switch
                   checked={accountPolicy?.allowRegister ?? true}
                   disabled={disabled}
@@ -944,7 +949,11 @@ const Configs: FC = () => {
                     </Paper>
                   )
                 })()}
-              <SimpleGrid cols={{ base: 1, sm: 2, md: 3, lg: 4 }} className={misc.alignCenter}>
+              <SimpleGrid
+                type="container"
+                cols={{ base: 1, '32em': 2, '52em': 3, '68em': 4 }}
+                className={misc.alignCenter}
+              >
                 <NumberInput
                   label={t('admin.content.settings.container.default_lifetime.label')}
                   description={t('admin.content.settings.container.default_lifetime.description')}
@@ -1128,7 +1137,7 @@ const Configs: FC = () => {
                 onChange={(e) => setBuildRegistry({ ...buildRegistry, pushOnBuild: e.currentTarget.checked })}
               />
               {buildRegistry?.pushOnBuild && (
-                <SimpleGrid cols={{ base: 1, sm: 2 }}>
+                <SimpleGrid type="container" cols={{ base: 1, '32em': 2 }}>
                   <TextInput
                     label={t('admin.content.settings.build_registry.server.label')}
                     description={t('admin.content.settings.build_registry.server.description')}
@@ -1176,7 +1185,7 @@ const Configs: FC = () => {
                 {t('admin.content.settings.email.description')}
               </Text>
               <Divider />
-              <SimpleGrid cols={{ base: 1, sm: 2 }}>
+              <SimpleGrid type="container" cols={{ base: 1, '32em': 2 }}>
                 <TextInput
                   label={t('admin.content.settings.email.smtp_host.label')}
                   description={t('admin.content.settings.email.smtp_host.description')}
@@ -1287,7 +1296,7 @@ const Configs: FC = () => {
                 onChange={(v) => setCaptcha({ ...captcha, provider: (v ?? 'None') as CaptchaProvider })}
               />
               {captcha?.provider === 'CloudflareTurnstile' && (
-                <SimpleGrid cols={{ base: 1, sm: 2 }}>
+                <SimpleGrid type="container" cols={{ base: 1, '32em': 2 }}>
                   <TextInput
                     label={t('admin.content.settings.captcha.site_key.label')}
                     description={t('admin.content.settings.captcha.site_key.description')}
@@ -1362,7 +1371,7 @@ const Configs: FC = () => {
               <Text size="xs" c="dimmed" ff="monospace">
                 {window.location.origin}/api/oauth/google/callback
               </Text>
-              <SimpleGrid cols={{ base: 1, sm: 2 }}>
+              <SimpleGrid type="container" cols={{ base: 1, '32em': 2 }}>
                 <TextInput
                   label={t('admin.content.settings.oauth.google_client_id.label', 'Google client ID')}
                   disabled={disabled}
@@ -1385,7 +1394,7 @@ const Configs: FC = () => {
               <Text size="xs" c="dimmed" ff="monospace">
                 {window.location.origin}/api/oauth/discord/callback
               </Text>
-              <SimpleGrid cols={{ base: 1, sm: 2 }}>
+              <SimpleGrid type="container" cols={{ base: 1, '32em': 2 }}>
                 <TextInput
                   label={t('admin.content.settings.oauth.discord_client_id.label', 'Discord client ID')}
                   disabled={disabled}
@@ -1416,7 +1425,7 @@ const Configs: FC = () => {
                 {t('admin.content.settings.registry_pull.description')}
               </Text>
               <Divider />
-              <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }}>
+              <SimpleGrid type="container" cols={{ base: 1, '32em': 2, '52em': 3 }}>
                 <TextInput
                   label={t('admin.content.settings.registry_pull.server.label')}
                   description={t('admin.content.settings.registry_pull.server.description')}
@@ -1473,7 +1482,7 @@ const Configs: FC = () => {
                 disabled={disabled}
                 onChange={(event) => setDonations({ ...donations, enabled: event.currentTarget.checked })}
               />
-              <SimpleGrid cols={{ base: 1, sm: 2 }}>
+              <SimpleGrid type="container" cols={{ base: 1, '32em': 2 }}>
                 <Select
                   label={t('admin.content.settings.donations.provider.label', 'Provider')}
                   description={t(

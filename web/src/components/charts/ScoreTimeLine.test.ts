@@ -11,3 +11,14 @@ test('score timeline updates its chart only at minute or lifecycle boundaries', 
   assert.doesNotMatch(source, /option=\{\{/)
   assert.doesNotMatch(source, /\[activeTeams, game, endTime, colorScheme/)
 })
+
+test('score timeline distinguishes unavailable data from a loaded empty history', () => {
+  const source = readFileSync('src/components/charts/ScoreTimeLine.tsx', 'utf8')
+  const unavailable = source.indexOf('if (!scoreboard) return null')
+  const empty = source.indexOf('if (!activeTeams?.length)')
+  const chart = source.indexOf('<EchartsContainer')
+
+  assert.ok(unavailable > 0 && empty > unavailable && chart > empty)
+  assert.match(source, /<Empty title=\{t\('game.timeline.empty_title'\)\}/)
+  assert.doesNotMatch(source, /if \(!activeTeams\?\.some/, 'zero-score teams still get their timeline')
+})

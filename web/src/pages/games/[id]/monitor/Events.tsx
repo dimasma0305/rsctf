@@ -36,6 +36,7 @@ import dayjs from 'dayjs'
 import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
+import { Empty } from '@Components/Empty'
 import { ScrollingText } from '@Components/ScrollingText'
 import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
@@ -378,7 +379,7 @@ const Events: FC = () => {
       <ScrollArea
         viewportRef={viewport}
         offsetScrollbars
-        h="calc(100vh - 160px)"
+        h={events && visibleEvents.length === 0 ? 'auto' : 'calc(100vh - 160px)'}
         viewportProps={{
           role: 'region',
           tabIndex: 0,
@@ -386,6 +387,14 @@ const Events: FC = () => {
         }}
       >
         <Stack gap="xs" pr={10} w="100%">
+          {events && visibleEvents.length === 0 && (
+            <Empty
+              bordered
+              mdiPath={mdiLightningBolt}
+              title={t('game.content.events_empty_title')}
+              description={t('game.content.events_empty_description')}
+            />
+          )}
           {visibleEvents.map((event, i) => (
             <Card
               shadow="sm"

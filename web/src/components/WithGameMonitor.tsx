@@ -1,4 +1,4 @@
-import { Button, Flex, LoadingOverlay, Stack, Tabs } from '@mantine/core'
+import { Button, LoadingOverlay, Stack, Tabs } from '@mantine/core'
 import { mdiFlag, mdiLightningBolt, mdiPackageVariant, mdiTableArrowDown, mdiGhost } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import React, { FC, useEffect, useLayoutEffect, useRef, useState } from 'react'
@@ -9,9 +9,8 @@ import { GAME_PAGE_CONTENT_WIDTH, WithNavBar } from '@Components/WithNavbar'
 import { WithRole } from '@Components/WithRole'
 import { downloadBlob } from '@Utils/ApiHelper'
 import { DEFAULT_LOADING_OVERLAY } from '@Utils/Shared'
-import { useIsMobile } from '@Utils/ThemeOverride'
 import api, { Role } from '@Api'
-import misc from '@Styles/Misc.module.css'
+import classes from '@Styles/WithGameMonitor.module.css'
 
 interface WithGameMonitorProps extends React.PropsWithChildren {
   isLoading?: boolean
@@ -24,7 +23,6 @@ export const WithGameMonitor: FC<WithGameMonitorProps> = ({ children, isLoading 
   const navigate = useNavigate()
   const location = useLocation()
   const { t } = useTranslation()
-  const isCompact = useIsMobile(1100)
 
   const pages = [
     { icon: mdiLightningBolt, title: t('game.tab.monitor.events'), path: 'events' },
@@ -49,8 +47,6 @@ export const WithGameMonitor: FC<WithGameMonitorProps> = ({ children, isLoading 
   }, [id, location.pathname, navigate])
 
   useLayoutEffect(() => {
-    if (!isCompact) return
-
     const scroller = monitorTabsRef.current
     const activeItem = scroller?.querySelector<HTMLElement>('[role="tab"][data-active]')
     if (!scroller || !activeItem) return
@@ -64,7 +60,7 @@ export const WithGameMonitor: FC<WithGameMonitorProps> = ({ children, isLoading 
           ? item.right - viewport.right
           : 0
     if (overflow !== 0) scroller.scrollTo({ left: Math.max(0, scroller.scrollLeft + overflow), behavior: 'auto' })
-  }, [activeTab, isCompact])
+  }, [activeTab])
 
   const onDownloadScoreboardSheet = () =>
     downloadBlob(
@@ -79,46 +75,41 @@ export const WithGameMonitor: FC<WithGameMonitorProps> = ({ children, isLoading 
     <WithNavBar width={GAME_PAGE_CONTENT_WIDTH} competition>
       <WithRole requiredRole={Role.Monitor}>
         <WithGameTab>
-          <Flex direction={isCompact ? 'column' : 'row'} gap="md" justify="space-between" align="flex-start" w="100%">
-            <Stack w={isCompact ? '100%' : undefined}>
-              <Button
-                disabled={disabled}
-                w={isCompact ? '100%' : '10rem'}
-                classNames={{ inner: misc.justifyBetween }}
-                leftSection={<Icon path={mdiTableArrowDown} size={1} />}
-                onClick={onDownloadScoreboardSheet}
-              >
-                {t('game.button.download.scoreboard')}
-              </Button>
+          <Stack gap="md" w="100%">
+            <div className={classes.toolbar}>
               <Tabs
                 ref={monitorTabsRef}
-                orientation={isCompact ? 'horizontal' : 'vertical'}
                 value={activeTab}
                 onChange={(value) => value && navigate(`/games/${id}/monitor/${value}`)}
-                classNames={isCompact ? undefined : { root: misc.w10rem, list: misc.w10rem }}
-                w={isCompact ? '100%' : undefined}
-                style={isCompact ? { overflowX: 'auto' } : undefined}
+                classNames={{ root: classes.tabs, list: classes.tabList }}
               >
-                <Tabs.List
-                  style={isCompact ? { flexWrap: 'nowrap', width: 'max-content', minWidth: '100%' } : undefined}
-                >
+                <Tabs.List aria-label={t('game.tab.monitor.index')}>
                   {pages.map((page) => (
-                    <Tabs.Tab key={page.path} leftSection={<Icon path={page.icon} size={1} />} value={page.path}>
+                    <Tabs.Tab
+                      key={page.path}
+                      leftSection={<Icon path={page.icon} size={0.85} aria-hidden="true" />}
+                      value={page.path}
+                    >
                       {page.title}
                     </Tabs.Tab>
                   ))}
                 </Tabs.List>
               </Tabs>
-            </Stack>
-            <Stack
-              w={isCompact ? '100%' : 'calc(100% - 11rem)'}
-              pos="relative"
-              style={{ containerType: 'inline-size' }}
-            >
+              <Button
+                disabled={disabled}
+                variant="default"
+                className={classes.exportButton}
+                leftSection={<Icon path={mdiTableArrowDown} size={0.85} aria-hidden="true" />}
+                onClick={onDownloadScoreboardSheet}
+              >
+                {t('game.button.export_scoreboard')}
+              </Button>
+            </div>
+            <Stack w="100%" pos="relative" style={{ containerType: 'inline-size' }}>
               <LoadingOverlay visible={isLoading ?? false} overlayProps={DEFAULT_LOADING_OVERLAY} />
               {children}
             </Stack>
-          </Flex>
+          </Stack>
         </WithGameTab>
       </WithRole>
     </WithNavBar>

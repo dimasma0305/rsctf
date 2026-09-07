@@ -1,4 +1,8 @@
 {
+  "timeline": {
+    "empty_title": "Belum ada riwayat skor",
+    "empty_description": "Riwayat skor akan ditampilkan di sini saat tersedia. Peringkat saat ini ada di bawah."
+  },
   "arena": {
     "scoring_status": "Status penilaian",
     "awaiting_round_update": "Menunggu pembaruan ronde",
@@ -41,6 +45,7 @@
     "your_team": "Tim Anda"
   },
   "button": {
+    "export_scoreboard": "Ekspor papan skor",
     "challenges": "Challenges",
     "delete": {
       "all_traffic": "Hapus semua traffic yang ada di list"
@@ -65,6 +70,8 @@
     "find_my_team": "Cari Tim Saya"
   },
   "content": {
+    "events_empty_title": "Tidak ada aktivitas yang cocok",
+    "events_empty_description": "Tidak ada aktivitas di halaman ini dengan filter yang dipilih. Coba pencarian, filter, atau halaman lain.",
     "load_failed": "Daftar event tidak dapat dimuat",
     "load_failed_hint": "Periksa koneksi lalu coba lagi. Pencarian dan filter kamu tetap tersimpan.",
     "refresh_failed": "Daftar event tidak dapat diperbarui",

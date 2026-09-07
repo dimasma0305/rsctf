@@ -39,17 +39,16 @@ test('semantic accents remain contrast-safe for arbitrary configured colors', ()
 
 test('light and dark control borders keep at least 3:1 contrast', () => {
   const css = readFileSync('src/styles/App.css', 'utf8')
-  const schemes = [
-    { name: 'light', surface: '#f8fafc' },
-    { name: 'dark', surface: '#0e1726' },
-  ]
+  const schemes = [{ name: 'light' }, { name: 'dark' }]
 
   for (const scheme of schemes) {
     const block = css.match(new RegExp(`\\[data-mantine-color-scheme='${scheme.name}'\\] \\{([\\s\\S]*?)\\n\\}`))?.[1]
     const border = block?.match(/--app-control-border:\s*(#[0-9a-f]{6})/i)?.[1]
+    const surface = block?.match(/--app-subtle-surface:\s*(#[0-9a-f]{6})/i)?.[1]
 
     assert.ok(border, `${scheme.name} control border token exists`)
-    assert.ok(contrastRatio(border, scheme.surface) >= 3, `${scheme.name} control border`)
+    assert.ok(surface, `${scheme.name} control surface token exists`)
+    assert.ok(contrastRatio(border, surface) >= 3, `${scheme.name} control border`)
   }
 })
 
