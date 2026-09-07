@@ -14,15 +14,16 @@ export const ChallengeList = memo(
     solvedIds,
     selectedId,
     onSelect,
+    sort,
   }: {
     challenges: ChallengeInfo[]
     solvedIds: ReadonlySet<number>
     selectedId?: number
     onSelect: (challenge: ChallengeInfo) => void
+    sort: ChallengeSort
   }) => {
     const { t } = useTranslation()
     const categories = useChallengeCategoryLabelMap()
-    const [sort, setSort] = useState<ChallengeSort>('name')
     const [page, setPage] = useState(1)
     const [pageSize, setPageSize] = useState(10)
     const sorted = useMemo(() => sortChallenges(challenges, sort), [challenges, sort])
@@ -34,27 +35,18 @@ export const ChallengeList = memo(
 
     return (
       <section aria-label={t('game.arena.list', 'List')} data-challenge-list>
-        <Group justify="flex-end" mb="sm">
-          <Select
-            label={t('game.arena.sort', 'Sort by')}
-            value={sort}
-            allowDeselect={false}
-            onChange={(value) => setSort(value as ChallengeSort)}
-            data={[
-              { value: 'name', label: t('game.arena.name', 'Name') },
-              { value: 'score', label: t('game.arena.points', 'Points') },
-              { value: 'solves', label: t('game.arena.solves', 'Solves') },
-            ]}
-          />
-        </Group>
         <div className={classes.listFrame}>
           <table className={classes.table}>
             <caption className={classes.srOnly}>{t('game.label.challenge_results', 'Challenge list')}</caption>
             <thead>
               <tr>
                 <th scope="col">{t('game.arena.challenge', 'Challenge')}</th>
-                <th scope="col">{t('game.arena.points', 'Points')}</th>
-                <th scope="col">{t('game.arena.solves', 'Solves')}</th>
+                <th scope="col" className={classes.number}>
+                  {t('game.arena.points', 'Points')}
+                </th>
+                <th scope="col" className={classes.number}>
+                  {t('game.arena.solves', 'Solves')}
+                </th>
                 <th scope="col">{t('game.arena.status', 'Status')}</th>
               </tr>
             </thead>
@@ -81,6 +73,12 @@ export const ChallengeList = memo(
                         <span>{challenge.title}</span>
                         <small>
                           {category?.name ?? challenge.category} · {mode}
+                          {!isLiveChallenge(challenge) && (
+                            <span className={classes.mobileSolves}>
+                              {' '}
+                              · {t('game.arena.solve_count', '{{count}} solves', { count: challenge.solved })}
+                            </span>
+                          )}
                         </small>
                       </button>
                     </th>

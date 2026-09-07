@@ -1,11 +1,15 @@
 .globe {
   min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--app-border);
+  border-radius: 0.65rem;
+  background: radial-gradient(ellipse at center, light-dark(#4179b209, #4179b210), transparent 70%);
 }
 .globeStage {
   position: relative;
   width: 100%;
-  max-width: 54rem;
-  height: clamp(22rem, 49vh, 35rem);
+  max-width: 44rem;
+  height: clamp(20rem, 42vh, 27rem);
   margin: auto;
   cursor: grab;
 }
@@ -156,6 +160,9 @@
   color: var(--app-text-secondary);
   font-weight: 400;
 }
+.listName .mobileSolves {
+  display: none;
+}
 .table .number {
   text-align: end;
   font-variant-numeric: tabular-nums;
@@ -217,5 +224,21 @@
     flex-direction: column;
     align-items: flex-start;
     gap: 0.15rem;
+  }
+}
+@container (max-width: 28rem) {
+  .table th:nth-child(3),
+  .table td:nth-child(3) {
+    display: none;
+  }
+  .table th:first-child {
+    width: 50%;
+  }
+  .table th:last-child {
+    width: 27%;
+  }
+  .listName .mobileSolves {
+    display: inline;
+    font-weight: 400;
   }
 }

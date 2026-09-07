@@ -6,6 +6,7 @@ import {
   Button,
   CopyButton,
   Divider,
+  Drawer,
   Group,
   Modal,
   ModalProps,
@@ -75,6 +76,7 @@ export interface SolverInfo {
 export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stackId' | 'title'> {
   /** Same content/actions in the desktop competition workspace; mobile keeps the modal. */
   embedded?: boolean
+  drawer?: boolean
   challenge?: ChallengeDetailModel
   loading?: boolean
   loadError?: string
@@ -128,6 +130,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const {
     challenge,
     embedded = false,
+    drawer = false,
     loading,
     loadError,
     eventVpnDisconnected,
@@ -315,7 +318,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
 
   const content = (
     <ScrollAreaAutosize
-      mah={embedded ? undefined : '52vh'}
+      mah={embedded || drawer ? undefined : '52vh'}
       maw="100%"
       scrollbars="y"
       scrollbarSize={6}
@@ -860,6 +863,24 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
         {eventAction}
       </Stack>
     )
+
+  if (drawer && !flagVerdict) {
+    return (
+      <Drawer
+        opened={modalProps.opened}
+        onClose={handleClose}
+        position="right"
+        size="min(38rem, 100vw)"
+        title={title}
+        closeButtonProps={{ 'aria-label': t('common.button.close', 'Close'), ref: closeButtonRef }}
+        closeOnEscape={modalProps.closeOnEscape}
+        closeOnClickOutside={modalProps.closeOnClickOutside}
+      >
+        {content}
+        {footer}
+      </Drawer>
+    )
+  }
 
   if (embedded && !flagVerdict) {
     return modalProps.opened ? (

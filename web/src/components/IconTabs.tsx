@@ -25,6 +25,7 @@ interface IconTabsProps extends GroupProps {
   mode?: 'tabs' | 'navigation'
   idPrefix?: string
   orientation?: 'horizontal' | 'vertical'
+  appearance?: 'surface' | 'underline'
   onTabChange?: (tabIndex: number, tabKey: string) => void
 }
 
@@ -114,6 +115,7 @@ export const IconTabs: FC<IconTabsProps> = (props) => {
     position,
     grow,
     orientation = 'horizontal',
+    appearance = 'surface',
     ...others
   } = props
   const [activeTab, setActiveTab] = useState(active ?? 0)
@@ -163,7 +165,7 @@ export const IconTabs: FC<IconTabsProps> = (props) => {
   }
 
   return (
-    <div className={classes.root} data-orientation={orientation}>
+    <div className={classes.root} data-orientation={orientation} data-appearance={appearance}>
       {(withIcon || aside) && (
         <div className={classes.context}>
           {withIcon && <LogoHeader className={classes.hidable} />}

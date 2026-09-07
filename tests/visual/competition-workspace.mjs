@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { launchBrowser } from './cdp.mjs'
+import { auditChallengeCategoryScroller } from './audit.mjs'
 
 const target = process.env.RSCTF_WORKSPACE_PREVIEW || 'http://127.0.0.1:63017'
 assert.equal(new URL(target).hostname, '127.0.0.1')
@@ -84,6 +85,15 @@ try {
   assert.equal(await evaluate(`document.querySelector('[data-competition-workspace]').getBoundingClientRect().left >= document.querySelector('#primary-navigation-rail').getBoundingClientRect().right`), true)
   assert.equal(await evaluate(`getComputedStyle(document.querySelector('[data-competition-workspace]')).gridTemplateColumns.split(' ').length`), 1)
   await inspect('desktop-globe-categories')
+  await evaluate(`document.querySelector('[data-team-summary] button').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelector('input[type="password"]')`)
+  assert.equal(await evaluate(`document.querySelector('input[type="password"]').readOnly`), true)
+  await inspect('desktop-team-options')
+  await press('Escape')
+  await waitFor(`!document.querySelector('input[type="password"]')`)
+  await waitFor(`document.activeElement === document.querySelector('[data-team-summary] button')`)
+  assert.ok(await evaluate(`document.querySelector('[data-game-activity]').getBoundingClientRect().height < 240`), 'one notice must not reserve an empty tall panel')
   await evaluate(`document.querySelector('#navigation-rail-toggle').focus()`)
   await press('Enter')
   await waitFor(`document.querySelector('#primary-navigation-rail').getBoundingClientRect().width < 80`)
@@ -123,18 +133,33 @@ try {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false })
     await selectView('list')
     await waitFor(width <= 768 ? `!document.querySelector('#primary-navigation-rail') && document.querySelector('header[data-guide-boundary="top-shell"]')` : `document.querySelector('#primary-navigation-rail') && !document.querySelector('header[data-guide-boundary="top-shell"]')`)
+    await evaluate(`window.scrollTo({ top: 0, behavior: 'instant' })`)
     await inspect(`${name}-list`)
+    if (width < 400) {
+      assert.ok(await evaluate(`document.querySelector('[data-challenge-list] tbody tr').getBoundingClientRect().bottom < innerHeight - 64`), 'a complete challenge should be visible without scrolling past the controls')
+      const filters = await auditChallengeCategoryScroller(cdp, { path: '/games/901/challenges' }, { width, mobile: true })
+      assert.equal(filters.mode, 'popover')
+      assert.equal(filters.keyboardReachedLast && filters.touchOpened && filters.focusRestored && filters.bounded, true)
+      await evaluate(`document.querySelector('[data-challenge-filters]').focus()`)
+      await press('Enter')
+      await waitFor(`document.querySelector('#challenge-category-filter')`)
+      await inspect(`${name}-filters`)
+      await press('Escape')
+      await waitFor(`!document.querySelector('#challenge-category-filter')`)
+    }
     if (width < 400) {
       await evaluate(`document.querySelector('[data-challenge-list]').scrollIntoView({ block: 'start', behavior: 'instant' })`)
       await inspect(`${name}-list-content`)
     }
     await evaluate(`(document.querySelector('[data-challenge-row="9001"]') ?? document.querySelector('[data-challenge-row]')).click()`)
-    await waitFor(width >= 1100 ? `document.querySelector('[data-challenge-detail] input')` : `document.querySelector('[role="dialog"] input')`)
-    if (width >= 1100) {
+    const inline = await evaluate(`document.querySelector('[data-competition-workspace]').getBoundingClientRect().width >= 1200`)
+    await waitFor(inline ? `document.querySelector('[data-challenge-detail] input')` : `document.querySelector('[role="dialog"] input')`)
+    if (inline) {
+      assert.ok(await evaluate(`document.querySelector('[data-challenge-list]').getBoundingClientRect().width >= 740`), 'persistent inspector must leave a readable results column')
       assert.equal(await evaluate(`(() => { const label = document.querySelector('[data-challenge-list] tbody tr:first-child td:last-child > span > span'); const range = document.createRange(); range.selectNodeContents(label); return range.getClientRects().length; })()`), 1, 'status words remain readable beside the detail panel')
     }
     await inspect(`${name}-detail`)
-    if (width < 1100) { await press('Escape'); await waitFor(`!document.querySelector('[role="dialog"]')`) }
+    if (!inline) { await press('Escape'); await waitFor(`!document.querySelector('[role="dialog"]')`) }
     else { await evaluate(`document.querySelector('[data-challenge-detail] button[aria-label="Close"]').click()`) }
   }
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })

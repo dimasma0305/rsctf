@@ -70,7 +70,7 @@ const Challenges: FC = () => {
   return (
     <WithNavBar width={GAME_PAGE_CONTENT_WIDTH} competition>
       <WithRole requiredRole={Role.User}>
-        <WithGameTab>
+        <WithGameTab summary={<TeamRank teamState={teamState} compact />}>
           {archived && (
             <Alert
               mb="md"
@@ -85,7 +85,6 @@ const Challenges: FC = () => {
               )}
             </Alert>
           )}
-          <TeamRank teamState={teamState} compact />
           <Flex direction="column" gap="sm" w="100%">
             {!archived && hasAdEngine && (
               <Group gap="sm" w="100%" align="center">

@@ -1,5 +1,7 @@
 {
   "arena": {
+    "team_options": "Team details and token",
+    "globe_hint": "Choose a node to explore",
     "available": "Available",
     "cards": "Cards",
     "challenge": "Challenge",

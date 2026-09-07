@@ -181,7 +181,7 @@ export const GameNoticePanel: FC<{ compact?: boolean }> = ({ compact = false }) 
   const visibleNotices = filteredNotices.slice(0, MAX_GAME_NOTICE_ROWS)
 
   return (
-    <Card shadow="sm" w="100%">
+    <Card shadow={compact ? undefined : 'sm'} w="100%" withBorder={compact} data-game-activity>
       <Stack gap="xs">
         {compact && (
           <Text component="h2" size="sm" fw={650} m={0}>
@@ -204,10 +204,11 @@ export const GameNoticePanel: FC<{ compact?: boolean }> = ({ compact = false }) 
           ]}
         />
         {visibleNotices.length ? (
-          <ScrollArea
+          <ScrollArea.Autosize
             offsetScrollbars
             scrollbarSize={0}
-            h={compact ? '12rem' : PANEL_HEIGHT}
+            h={compact ? undefined : PANEL_HEIGHT}
+            mah={compact ? '12rem' : undefined}
             viewportProps={{
               tabIndex: 0,
               'aria-label': t('game.label.notices', 'Game notices'),
@@ -231,9 +232,9 @@ export const GameNoticePanel: FC<{ compact?: boolean }> = ({ compact = false }) 
                 </List.Item>
               ))}
             </List>
-          </ScrollArea>
+          </ScrollArea.Autosize>
         ) : (
-          <Center h={PANEL_HEIGHT}>
+          <Center h={compact ? '4rem' : PANEL_HEIGHT}>
             <Empty description={t('game.content.no_notice')} />
           </Center>
         )}

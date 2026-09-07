@@ -22,7 +22,7 @@ import misc from '@Styles/Misc.module.css'
 
 dayjs.extend(duration)
 
-const GameCountdown: FC<{ game?: DetailedGameInfoModel }> = ({ game }) => {
+const GameCountdown: FC<{ game?: DetailedGameInfoModel; compact?: boolean }> = ({ game, compact }) => {
   const { endTime, progress, started, finished, now } = useGameStatus(game)
 
   const { t } = useTranslation()
@@ -37,7 +37,7 @@ const GameCountdown: FC<{ game?: DetailedGameInfoModel }> = ({ game }) => {
       role="timer"
       aria-live="off"
       aria-label={t('game.content.time_remaining', 'Game time remaining')}
-      className={misc.overflowVisible}
+      className={compact ? classes.countdown : misc.overflowVisible}
     >
       <Text size="xs" c="dimmed">
         {t('game.content.time_remaining', 'Time remaining')}
@@ -61,7 +61,7 @@ const GameCountdown: FC<{ game?: DetailedGameInfoModel }> = ({ game }) => {
   )
 }
 
-export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
+export const WithGameTab: FC<React.PropsWithChildren<{ summary?: React.ReactNode }>> = ({ children, summary }) => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const location = useLocation()
@@ -197,12 +197,18 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
   }, [clockReady, finished, game, liveReadReady, location, navigate, numId, role, started, status, t])
 
   return (
-    <Stack pos="relative" mt="md" style={{ containerType: 'inline-size' }}>
+    <Stack
+      className={summary ? classes.competitionStack : undefined}
+      pos="relative"
+      mt={summary ? 0 : 'md'}
+      gap={summary ? 'sm' : 'md'}
+      style={{ containerType: 'inline-size' }}
+    >
       <LoadingOverlay visible={!game} overlayProps={DEFAULT_LOADING_OVERLAY} />
       {game && (
-        <header className={classes.header}>
+        <header className={classes.header} data-competition={summary ? true : undefined}>
           <Stack gap={4} miw={0}>
-            <Text size="xs" c="dimmed">
+            <Text size="xs" c="dimmed" className={classes.eventId}>
               {t('common.workspace.event_id', 'Event #{{id}}', { id: numId })}
             </Text>
             <Group gap="sm" align="center">
@@ -216,11 +222,13 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
               </Badge>
             </Group>
           </Stack>
-          <GameCountdown game={game} />
+          <GameCountdown game={game} compact={!!summary} />
         </header>
       )}
+      {summary}
       <IconTabs
         mode="navigation"
+        appearance={summary ? 'underline' : 'surface'}
         position="flex-start"
         ariaLabel={t('game.tab.navigation', 'Game sections')}
         active={activeTab}

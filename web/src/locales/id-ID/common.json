@@ -31,6 +31,7 @@
     "challenge_placeholder": "Nama atau ID",
     "challenge_count": "{{shown}} dari {{total}} challenge",
     "reset_filters": "Hapus filter",
+    "filters": "Filter",
     "no_challenges": "Tidak ada challenge yang cocok",
     "challenge_filter_hint": "Coba pencarian lain atau hapus filter.",
     "solved": "Selesai",

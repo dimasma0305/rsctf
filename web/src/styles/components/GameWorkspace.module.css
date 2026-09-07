@@ -19,83 +19,121 @@
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
-.teamStrip {
-  padding: 0.8rem 1rem;
+.countdown {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
   box-shadow: none;
+  overflow: visible;
+}
+.teamStrip {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  min-width: 0;
+  padding: 0.25rem 0;
 }
 .teamIdentity {
-  flex: 1 1 12rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  min-height: 44px;
+  max-width: 40%;
+  border-radius: 0.3rem;
+}
+.teamIdentity > :not(.teamName) {
+  flex-shrink: 0;
 }
 .teamName {
-  overflow-wrap: anywhere;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .teamMetrics {
   display: flex;
-  flex: 2 1 18rem;
+  flex: 1;
   flex-wrap: wrap;
-  gap: 0.75rem 2rem;
+  gap: 0.5rem 1.5rem;
   margin: 0;
 }
 .teamMetrics > div {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
   border-inline-start: 1px solid var(--app-border);
-  padding-inline-start: 1rem;
+  padding-inline-start: 1.5rem;
 }
 .teamMetrics dt {
   color: var(--app-text-secondary);
   font-size: 0.75rem;
 }
 .teamMetrics dd {
-  margin: 0.2rem 0 0;
+  margin: 0;
   font-weight: 700;
-  font-size: 1.1rem;
+  font-size: 1rem;
   font-variant-numeric: tabular-nums;
 }
-.teamToken {
-  flex: 1;
-  min-width: 0;
-  font-size: 0.75rem;
-  color: var(--app-text-secondary);
-}
-.teamActions {
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-end;
-  gap: 1rem;
-  margin-top: 0.4rem;
-}
-.teamActions > a {
-  flex-shrink: 0;
-}
-.teamToken summary {
-  width: max-content;
-  max-width: 100%;
-  padding: 0.3rem 0;
-  cursor: pointer;
-}
-@media (max-width: 36em) {
-  .teamOverview {
-    gap: 0.6rem;
+@media (max-width: 40rem) {
+  .competitionStack {
+    gap: 4px;
   }
-  .teamIdentity {
+}
+@container (max-width: 40rem) {
+  .header[data-competition] {
+    gap: 0.5rem;
+    padding: 0;
+  }
+  .header[data-competition] .eventId {
+    display: none;
+  }
+  .header[data-competition] > :first-child {
     flex-basis: 100%;
   }
-  .teamMetrics {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    flex-basis: 100%;
+  .header[data-competition] .title {
+    font-size: 1.25rem;
+  }
+  .header[data-competition] .countdown {
+    width: 100%;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 24px;
     gap: 0.5rem;
   }
+  .countdown > :global(.mantine-Card-section) {
+    display: none;
+  }
+  .countdown > :global(.mantine-Text-root) {
+    font-size: 0.75rem;
+  }
+  .teamStrip {
+    gap: 0.6rem;
+    padding: 0;
+  }
+  .teamIdentity {
+    max-width: 36%;
+    gap: 0.25rem;
+  }
+  .teamIdentity > :global(.mantine-Avatar-root) {
+    display: none;
+  }
+  .teamMetrics {
+    justify-content: flex-end;
+    gap: 0.6rem;
+  }
   .teamMetrics > div {
+    flex-direction: column;
+    gap: 0;
     padding-inline-start: 0.6rem;
   }
   .teamMetrics dt {
-    font-size: 0.7rem;
-    overflow-wrap: anywhere;
+    font-size: 0.65rem;
   }
-  .header {
-    gap: 0.65rem;
-  }
-  .header > [role='timer'] {
-    width: 100%;
+  .teamMetrics dd {
+    font-size: 0.85rem;
   }
 }

@@ -31,6 +31,7 @@
     "challenge_placeholder": "Name or ID",
     "challenge_count": "{{shown}} of {{total}} challenges",
     "reset_filters": "Reset filters",
+    "filters": "Filters",
     "no_challenges": "No matching challenges",
     "challenge_filter_hint": "Try another search or clear your filters.",
     "solved": "Solved",

@@ -64,7 +64,9 @@ test('settings tabs expose orientation and respect reduced-motion preferences', 
 
 test('challenge browsing has resettable search and uses natural page height', () => {
   const panel = readFileSync('src/components/ChallengePanel.tsx', 'utf8')
-  assert.match(panel, /search_challenges/)
+  const toolbar = readFileSync('src/components/competition/ChallengeToolbar.tsx', 'utf8')
+  assert.match(panel, /<ChallengeToolbar/)
+  assert.match(toolbar, /search_challenges/)
   assert.match(panel, /reset_filters/)
   assert.doesNotMatch(panel, /h=\{isCompact \? undefined : 'calc\(100vh - 6\.67rem\)'\}/)
   const card = readFileSync('src/components/ChallengeCard.tsx', 'utf8')

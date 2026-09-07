@@ -119,6 +119,14 @@ export const ChallengeGlobe = memo(
 
     return (
       <section className={classes.globe} aria-label={t('game.arena.globe', 'Challenge globe')} data-challenge-globe>
+        <Group justify="space-between" gap="xs">
+          <Text component="h2" size="sm" fw={650} m={0}>
+            {t('game.arena.globe', 'Challenge globe')}
+          </Text>
+          <Text size="xs" c="dimmed">
+            {t('game.arena.globe_hint', 'Choose a node to explore')}
+          </Text>
+        </Group>
         <div
           className={classes.globeStage}
           onPointerDown={(event) => {

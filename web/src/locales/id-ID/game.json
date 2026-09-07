@@ -1,5 +1,7 @@
 {
   "arena": {
+    "team_options": "Detail dan token tim",
+    "globe_hint": "Pilih simpul untuk menjelajah",
     "available": "Tersedia",
     "cards": "Kartu",
     "challenge": "Tantangan",

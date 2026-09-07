@@ -1,197 +1,144 @@
+.explorer {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  width: 100%;
+  container-type: inline-size;
+}
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 1.5rem;
+  gap: 1.25rem;
   width: 100%;
   align-items: start;
 }
 .workspace[data-detail-open] {
-  grid-template-columns: minmax(0, 1fr) minmax(23rem, 26rem);
+  grid-template-columns: minmax(0, 1fr) 26rem;
 }
 .panel {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  flex: 1;
   width: 100%;
   min-width: 0;
-  gap: var(--mantine-spacing-lg);
+  gap: 1rem;
+  container-type: inline-size;
 }
-
 .filters {
   min-width: 0;
-  align-self: start;
+}
+.toolbar {
+  min-width: 0;
+}
+.toolbarMain {
   display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
   align-items: flex-end;
-  gap: 0.65rem;
+  flex-wrap: wrap;
+  gap: 0.6rem;
 }
-.filters > :global(.mantine-TextInput-root) {
+.search {
   flex: 1 1 12rem;
+  max-width: 28rem;
 }
-.filters > :global(.mantine-Text-root)[role='status'] {
-  padding-bottom: 0.5rem;
+.desktopSort {
+  flex: 0 1 8rem;
+}
+.mobileSort {
+  display: none;
 }
 .viewControl {
   margin-inline-start: auto;
   flex-shrink: 0;
 }
-.kindFilterGroup {
-  flex: 1 1 18rem;
+.filterButton {
+  flex-shrink: 0;
 }
-.filters > .mobileFilterLabel {
-  display: none;
+.toolbarSecondary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin-top: 0.6rem;
 }
-
-.kindFilterGroup,
-.kindControlRoot {
-  width: 100%;
-}
-
-.kindOption {
-  min-width: 0;
-  height: 1.2rem;
-  gap: 0.35rem;
-}
-
-.kindOptionText,
-.mobileFilterLabel {
-  display: inline;
-  font-size: 0.75rem;
-}
-
 .tabRoot {
   min-width: 0;
-  width: 100%;
 }
-
 .tabList {
-  width: 100%;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  padding: 5px;
-  max-width: 100%;
-  scrollbar-width: thin;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+  padding: 3px;
 }
-
-.tabLabel {
-  width: 100%;
-}
-
 .tab {
-  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid transparent;
+  color: var(--app-text-secondary);
   &[data-active='true'] {
     background: var(--app-accent-surface);
     color: var(--app-accent-surface-text);
-    box-shadow: inset 0 0 0 1px var(--app-accent-border);
-  }
-  &:not([data-active='true']) {
-    span[data-position='left'] {
-      color: var(--tabs-color);
-      filter: saturate(0.8);
-    }
+    border-color: var(--app-accent-border);
   }
 }
-
-@media (max-width: 68.75em) {
-  .workspace[data-detail-open] {
-    grid-template-columns: minmax(0, 1fr);
-  }
+.categoryCount {
+  margin-inline-start: 0.25rem;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
 }
-
-.switch {
-  justify-content: space-between;
+.resultCount {
+  min-height: 28px;
 }
-
 .scrollArea {
   min-width: 0;
-  flex-grow: 1;
 }
-
 .challengeGrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr));
   width: 100%;
   gap: var(--mantine-spacing-md);
 }
-
 .skeletonGrid {
   position: relative;
   padding: 0 var(--mantine-spacing-xs) var(--mantine-spacing-xs);
 }
-
-@media (max-width: $mantine-breakpoint-sm) {
-  .panel {
-    grid-template-columns: minmax(0, 1fr);
+@container (max-width: 40rem) {
+  .toolbarMain {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.5rem;
   }
-
-  .filters {
-    padding: var(--mantine-spacing-xs);
-    border: 1px solid var(--app-surface-border);
-    border-radius: var(--mantine-radius-lg);
-    background: var(--app-raised-surface);
-  }
-
-  .mobileFilterLabel {
-    display: block;
-    color: var(--app-text-muted);
-    font-size: 0.6875rem;
-    font-weight: 750;
-    letter-spacing: 0.08em;
-    line-height: 1.2;
-    text-transform: uppercase;
-  }
-
-  .kindControl {
+  .search {
+    flex-basis: calc(100% - 7rem);
+    max-width: none;
     min-width: 0;
-    min-height: 44px;
   }
-
-  .kindControlLabel {
-    min-height: 44px;
-    padding-inline: 0.4rem;
-  }
-
-  .kindOption {
-    height: 100%;
-    gap: 0.25rem;
-  }
-
-  .kindOptionText {
-    display: inline;
-    overflow: hidden;
-    font-size: 0.75rem;
-    font-weight: 720;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .switch {
-    min-height: 44px;
-  }
-
-  .tabList {
-    box-sizing: border-box;
-    flex-wrap: nowrap;
+  .viewControl {
+    grid-column: 1 / -1;
+    order: 2;
     width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    /* Keep the global 3px focus ring and its 2px offset inside the clipped scroller. */
-    padding: 5px;
-    overflow-x: auto;
-    overflow-y: hidden;
-    overscroll-behavior-inline: contain;
-    scrollbar-width: thin;
+    margin: 0;
   }
-
-  .tabLabel {
-    width: auto;
-    min-width: max-content;
+  .viewControl :global(.mantine-SegmentedControl-label) {
+    min-height: 36px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
   }
-
-  .tab {
-    flex: 0 0 auto;
-    min-height: 44px;
-    padding-inline: var(--mantine-spacing-sm);
+  .writeupButton {
+    grid-column: 1 / -1;
+    order: 3;
+    width: 100%;
+  }
+  .desktopSort,
+  .tabRoot {
+    display: none;
+  }
+  .mobileSort {
+    display: block;
+  }
+  .toolbarSecondary {
+    margin-top: 0.3rem;
+  }
+  .resultCount {
+    min-height: 20px;
   }
 }

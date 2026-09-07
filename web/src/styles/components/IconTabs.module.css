@@ -16,6 +16,33 @@
   grid-template-columns: minmax(0, auto) minmax(0, 1fr);
 }
 
+.root[data-appearance='underline'] {
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--app-border);
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.root[data-appearance='underline'] .default {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding-inline: 0.8rem;
+}
+.root[data-appearance='underline'] .default[data-active] {
+  border-bottom-color: var(--mantine-primary-color-filled);
+  background: none;
+  color: var(--app-text-primary);
+}
+.root[data-appearance='underline'] .default:focus-visible {
+  outline-offset: -4px;
+}
+.root[data-appearance='underline'] .scroller {
+  scrollbar-width: none;
+}
+
 .context {
   display: flex;
   align-items: center;

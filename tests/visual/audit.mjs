@@ -578,8 +578,63 @@ async function restoreChallengeCategoryViewport(cdp) {
   return true
 }
 
+async function auditCompactChallengeFilters(cdp) {
+  const optionsExpression = `Array.from(document.getElementById(document.querySelector('#challenge-category-filter')?.getAttribute('aria-controls'))?.querySelectorAll('[role="option"]') ?? [])`
+  const key = async (key) => {
+    const code = { Enter: 13, Escape: 27, ArrowDown: 40 }[key]
+    for (const type of ['keyDown', 'keyUp']) {
+      await cdp.send('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode: code, ...(type === 'keyDown' && key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) })
+    }
+  }
+  const wait = async (expression) => {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      if (await evaluate(cdp, `Boolean(${expression})`)) return
+      await sleep(50)
+    }
+    throw new Error(`Compact filter audit timed out: ${expression}`)
+  }
+  const scroll = await evaluate(cdp, `({ x: scrollX, y: scrollY })`)
+  await evaluate(cdp, `document.querySelector('[data-challenge-filters]').scrollIntoView({ block: 'center', behavior: 'instant' })`)
+  const point = await evaluate(cdp, `(() => { const rect = document.querySelector('[data-challenge-filters]').getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; })()`)
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] })
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+  await wait(`document.querySelector('#challenge-category-filter')`)
+  const initial = await evaluate(cdp, `document.querySelector('#challenge-category-filter').value`)
+  await key('Escape')
+  await wait(`!document.querySelector('#challenge-category-filter')`)
+  await evaluate(cdp, `document.querySelector('[data-challenge-filters]').focus()`)
+  await key('Enter')
+  await wait(`document.querySelector('#challenge-category-filter')`)
+  await evaluate(cdp, `document.querySelector('#challenge-category-filter').focus()`)
+  await key('ArrowDown')
+  await wait(`${optionsExpression}.length`)
+  const options = await evaluate(cdp, `${optionsExpression}.map(el => ({ id: el.id, label: el.textContent }))`)
+  const last = options.at(-1)
+  for (let attempt = 0; attempt <= options.length; attempt++) {
+    if (await evaluate(cdp, `document.querySelector('#challenge-category-filter').getAttribute('aria-activedescendant') === ${JSON.stringify(last.id)}`)) break
+    await key('ArrowDown')
+  }
+  await key('Enter')
+  await wait(`document.querySelector('#challenge-category-filter').value === ${JSON.stringify(last.label)}`)
+  const bounded = await evaluate(cdp, `(() => { const rect = document.querySelector('#challenge-category-filter').getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth; })()`)
+  // Restore the caller's filter; only browser-local state is changed by this audit.
+  await key('ArrowDown')
+  await wait(`${optionsExpression}.length`)
+  await evaluate(cdp, `${optionsExpression}.find(el => el.textContent === ${JSON.stringify(initial)}).click()`)
+  await wait(`document.querySelector('#challenge-category-filter').value === ${JSON.stringify(initial)}`)
+  await key('Escape')
+  await wait(`!document.querySelector('#challenge-category-filter')`)
+  await wait(`document.activeElement.matches('[data-challenge-filters]')`)
+  await evaluate(cdp, `window.scrollTo({ left: ${scroll.x}, top: ${scroll.y}, behavior: 'instant' })`)
+  return { present: true, mode: 'popover', bounded, touchOpened: true, keyboardReachedLast: true, initialRestored: true, focusRestored: true }
+}
+
 async function auditChallengeCategoryScroller(cdp, route, viewport) {
   if (!viewport.mobile || viewport.width > 390 || !/^\/games\/\d+\/challenges$/.test(route.path)) return null
+
+  if (await evaluate(cdp, `!!document.querySelector('[data-challenge-filters]') && !document.querySelector('[data-challenge-category-tabs]')?.getBoundingClientRect().width`)) {
+    return auditCompactChallengeFilters(cdp)
+  }
 
   const present = await evaluate(cdp, `Boolean(document.querySelector('[data-challenge-category-tabs]'))`)
   if (!present) return { present: false }
@@ -814,6 +869,10 @@ function failuresFor(result, expectedPath) {
     const tabs = result.challengeCategoryTabs
     if (!tabs.present) {
       failures.push('challenge category tabs are absent, so compact reachability was not exercised')
+    } else if (tabs.mode === 'popover') {
+      if (!tabs.bounded || !tabs.touchOpened || !tabs.keyboardReachedLast || !tabs.initialRestored || !tabs.focusRestored) {
+        failures.push('compact challenge filters are not fully reachable or do not restore focus/state')
+      }
     } else {
       if (!tabs.bounded) failures.push('challenge category tabs escape the compact viewport')
       if (result.width.viewport <= 320 && !tabs.overflowRequired) {
