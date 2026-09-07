@@ -183,17 +183,20 @@
   },
   "verdict": {
     "close": "Close result",
+    "label": "Submission result",
+    "points": "pts",
     "success": {
-      "title_start": "Challenge",
-      "title_accent": "Conquered",
-      "description": "{{challenge}} solved. Nice work.",
+      "title_start": "Flag",
+      "title_accent": "Accepted",
+      "description": "Flag verified. Nicely done.",
+      "value": "Challenge value",
       "score": "Score",
-      "continue": "Continue"
+      "continue": "Back to challenge"
     },
     "wrong": {
-      "title_start": "Signal",
-      "title_accent": "Rejected",
-      "description": "No match. Check the flag and try again.",
+      "title_start": "Flag",
+      "title_accent": "Denied",
+      "description": "That flag did not match. Check your answer and try again.",
       "status": "Status",
       "result": "Wrong flag",
       "retry": "Try again"

@@ -175,15 +175,18 @@
   },
   "verdict": {
     "close": "Tutup hasil",
+    "label": "Hasil pengiriman",
+    "points": "poin",
     "success": {
-      "title_start": "Tantangan",
-      "title_accent": "Ditaklukkan",
-      "description": "{{challenge}} berhasil diselesaikan. Kerja bagus.",
+      "title_start": "Flag",
+      "title_accent": "Diterima",
+      "description": "Flag terverifikasi. Kerja bagus.",
+      "value": "Nilai tantangan",
       "score": "Skor",
-      "continue": "Lanjutkan"
+      "continue": "Kembali ke tantangan"
     },
     "wrong": {
-      "title_start": "Sinyal",
+      "title_start": "Flag",
       "title_accent": "Ditolak",
       "description": "Tidak cocok. Periksa flag dan coba lagi.",
       "status": "Status",

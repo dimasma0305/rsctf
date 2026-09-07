@@ -208,31 +208,34 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const reviewCommentRef = useRef<HTMLTextAreaElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const panelHeadingRef = useRef<HTMLHeadingElement>(null)
-  const focusAfterVerdictRef = useRef<FlagVerdictKind | null>(null)
+  const [focusAfterVerdict, setFocusAfterVerdict] = useState<FlagVerdictKind | null>(null)
+  useEffect(() => {
+    setFocusAfterVerdict(null)
+  }, [challenge?.id, modalProps.opened])
   useEffect(() => {
     if (embedded && modalProps.opened) panelHeadingRef.current?.focus({ preventScroll: true })
   }, [embedded, modalProps.opened, challenge?.id])
 
   const dismissFlagVerdict = () => {
     if (!flagVerdict || !onDismissFlagVerdict) return
-    focusAfterVerdictRef.current = flagVerdict.kind
+    setFocusAfterVerdict(flagVerdict.kind)
     onDismissFlagVerdict()
   }
 
   useEffect(() => {
     reviewChallengeIdRef.current = (challenge as any)?.id
-    if (flagVerdict || !focusAfterVerdictRef.current) return
+    if (flagVerdict || !focusAfterVerdict) return
 
-    const kind = focusAfterVerdictRef.current
-    focusAfterVerdictRef.current = null
+    // Keep the current opening's autofocus target in the rendered DOM too:
+    // a replacement Drawer's focus trap can initialize after this frame.
     const frame = window.requestAnimationFrame(() => {
-      const preferredTarget = kind === 'success' ? reviewStartRef.current : flagInputRef.current
+      const preferredTarget = focusAfterVerdict === 'success' ? reviewStartRef.current : flagInputRef.current
       const target = preferredTarget && !preferredTarget.disabled ? preferredTarget : closeButtonRef.current
       target?.focus({ preventScroll: true })
     })
 
     return () => window.cancelAnimationFrame(frame)
-  }, [flagVerdict])
+  }, [flagVerdict, focusAfterVerdict])
 
   // Reset review state only when a fresh in-session solve occurs
   useEffect(() => {
@@ -641,6 +644,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
       <Group grow>
         <Button
           ref={reviewStartRef}
+          data-autofocus={focusAfterVerdict === 'success' || undefined}
           variant={rating === ReviewRating.Like ? 'filled' : 'default'}
           color="teal"
           radius="md"
@@ -844,6 +848,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
                 >
                   <TextInput
                     ref={flagInputRef}
+                    data-autofocus={(focusAfterVerdict === 'wrong' && !inputDisabled) || undefined}
                     label={t('challenge.label.flag', 'Flag')}
                     placeholder={placeholder}
                     value={inputValue}

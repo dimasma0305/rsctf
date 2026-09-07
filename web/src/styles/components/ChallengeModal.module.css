@@ -31,18 +31,12 @@
 }
 
 .content.verdictContent {
-  position: fixed;
-  inset: 0;
-  flex: none;
-  width: 100vw;
-  max-width: none;
-  height: 100dvh;
-  max-height: none;
-  margin: 0;
-  overflow: hidden;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
+  flex: 0 1 auto;
+  width: min(36rem, calc(100vw - 1.5rem));
+  max-height: calc(100dvh - 1.5rem);
+  overflow: auto;
+  border: 1px solid var(--app-border);
+  border-radius: var(--mantine-radius-xl);
 }
 
 .footer {
