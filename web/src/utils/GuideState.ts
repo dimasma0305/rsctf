@@ -129,8 +129,8 @@ export const guideTourTargetSelector = ({
         : GAMES_NAVIGATION_TARGETS
     case 'challenges':
       if (isChallengePage) {
-        // Wait for the actual challenge controls. A navigation fallback can
-        // become the spotlight's stable target before async challenges arrive.
+        // Highlight controls on this page, not navigation back to it, while
+        // waiting for the challenge list to load.
         return '[data-guide="challenge-card"], [data-guide="challenge-category"]'
       }
       return signedIn ? CHALLENGE_NAVIGATION_TARGETS : `[data-guide="event-card"], ${GAMES_NAVIGATION_TARGETS}`

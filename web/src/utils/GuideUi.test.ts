@@ -74,13 +74,16 @@ test('interactive guide spotlights real controls and provides a reduced-motion g
   assert.match(spotlight, /scrollParent\.scrollBy\(\{ top: scrollDelta/)
   assert.match(spotlight, /targetVisibleRatio\(element\) >= 0\.75/)
   assert.match(spotlight, /document\.elementsFromPoint/)
-  assert.match(spotlight, /renderedTargets\(selector\)\?\.find\(isUsableTarget\)/)
+  assert.match(spotlight, /resolveGuideTarget\(selector, selectedTarget\)/)
   assert.match(spotlight, /let selectedTarget: HTMLElement \| null = null/)
+  assert.match(spotlight, /candidates\.includes\(previous\) && isUsableTarget\(previous\)/)
+  assert.match(spotlight, /elements\.filter\(targetIsElevated\)/)
+  assert.match(spotlight, /current\.element === element && sameRect/)
   assert.match(
     spotlight,
-    /selectedTarget && \(!selectedTarget\.isConnected \|\| !targets\.includes\(selectedTarget\)\)/
+    /isEligibleTarget\(targetElement\) && isUsableTarget\(targetElement\) \? targetElement : null/
   )
-  assert.match(spotlight, /targetIsElevated\(usableTarget\)[\s\S]*!targetIsElevated\(selectedTarget\)/)
+  assert.doesNotMatch(spotlight, /visibleTarget\(/, 'activation must not independently select a different target')
   assert.match(spotlight, /const preferredTarget = stableTarget\(\)/)
   assert.match(spotlight, /prefers-reduced-motion: reduce/)
   assert.match(spotlight, /mdiCursorDefaultClickOutline/)

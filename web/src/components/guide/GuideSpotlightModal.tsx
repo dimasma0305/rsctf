@@ -76,15 +76,13 @@ export const guideTargetMatchesActivation = (element: HTMLElement, eventTarget: 
   return control instanceof view.HTMLInputElement && control.value === requiredValue
 }
 
-const renderedTargets = (selector?: string) => {
-  if (!selector) return null
-  const elements = selector
-    .split(',')
-    .map((candidate) => candidate.trim())
-    .filter(Boolean)
-    .flatMap((candidate) => Array.from(document.querySelectorAll<HTMLElement>(candidate)))
-  return [...new Set(elements)].filter(isRenderedElement)
-}
+const isEligibleTarget = (element: HTMLElement) =>
+  element.isConnected &&
+  !element.matches(':disabled') &&
+  !element.closest(
+    '[hidden], [inert], [aria-hidden="true"], [aria-disabled="true"], [data-guide-surface], [data-guide-layer]'
+  ) &&
+  isRenderedElement(element)
 
 const externalSurfaceIsOpen = () =>
   Array.from(document.querySelectorAll<HTMLElement>(APPLICATION_SURFACE_SELECTOR)).some(
@@ -115,11 +113,27 @@ const targetCenterIsUsable = (element: HTMLElement) => {
 
 const isUsableTarget = (element: HTMLElement) => targetVisibleRatio(element) >= 0.75 && targetCenterIsUsable(element)
 
-const visibleTarget = (selector?: string) => {
-  return renderedTargets(selector)?.find(isUsableTarget) ?? null
-}
-
 const targetIsElevated = (element: HTMLElement) => Boolean(element.closest(APPLICATION_SURFACE_SELECTOR))
+
+export const resolveGuideTarget = (selector?: string, previous: HTMLElement | null = null): HTMLElement | null => {
+  if (!selector) return null
+  const groups = selector
+    .split(',')
+    .map((candidate) => candidate.trim())
+    .filter(Boolean)
+    .map((candidate) => Array.from(document.querySelectorAll<HTMLElement>(candidate)).filter(isEligibleTarget))
+  // An application dialog owns interaction while it is open. Within that scope,
+  // selector order is semantic priority, including controls that load later.
+  const elevatedGroups = groups.map((elements) => elements.filter(targetIsElevated))
+  const candidates = (elevatedGroups.some((elements) => elements.length) ? elevatedGroups : groups).find(
+    (elements) => elements.length
+  )
+  if (!candidates) return null
+  // Keep the same card among equivalent matches, but never retain a fallback
+  // after the intended control appears, or a control that has become covered.
+  if (previous && candidates.includes(previous) && isUsableTarget(previous)) return previous
+  return candidates.find(isUsableTarget) ?? candidates[0]
+}
 
 const scrollableAncestor = (element: HTMLElement) => {
   for (let parent = element.parentElement; parent; parent = parent.parentElement) {
@@ -156,12 +170,12 @@ const useGuideTarget = (opened: boolean, selector?: string) => {
   const [measurement, setMeasurement] = useState<{
     selector?: string
     target: GuideTargetRect | null
-  }>({ selector, target: null })
-  const target = measurement.selector === selector ? measurement.target : null
+    element: HTMLElement | null
+  }>({ selector, target: null, element: null })
 
   useLayoutEffect(() => {
     if (!opened) {
-      setMeasurement({ selector, target: null })
+      setMeasurement({ selector, target: null, element: null })
       return
     }
 
@@ -169,35 +183,21 @@ const useGuideTarget = (opened: boolean, selector?: string) => {
     let selectedTarget: HTMLElement | null = null
     let lastScrolledTarget: HTMLElement | null = null
     let lastScrolledAt = 0
-    const commit = (next: GuideTargetRect | null) => {
+    const commit = (element: HTMLElement | null) => {
+      const next = element ? measureTarget(element) : null
       setMeasurement((current) => {
-        if (current.selector === selector && sameRect(current.target, next)) return current
-        return { selector, target: next }
+        if (current.selector === selector && current.element === element && sameRect(current.target, next))
+          return current
+        return { selector, target: next, element }
       })
     }
     const stableTarget = () => {
-      const targets = renderedTargets(selector) ?? []
-      if (selectedTarget && (!selectedTarget.isConnected || !targets.includes(selectedTarget))) {
-        selectedTarget = null
-      }
-
-      const usableTarget = targets.find(isUsableTarget) ?? null
-      if (!selectedTarget) {
-        selectedTarget = usableTarget ?? targets[0] ?? null
-      } else if (
-        usableTarget &&
-        usableTarget !== selectedTarget &&
-        targetIsElevated(usableTarget) &&
-        !targetIsElevated(selectedTarget)
-      ) {
-        // A newly opened drawer, menu, or dialog owns the next real action.
-        selectedTarget = usableTarget
-      }
+      selectedTarget = resolveGuideTarget(selector, selectedTarget)
       return selectedTarget
     }
     const measureStableTarget = () => {
       const element = stableTarget()
-      return element && isUsableTarget(element) ? measureTarget(element) : null
+      return element && isUsableTarget(element) ? element : null
     }
     const scrollPreferredTarget = () => {
       const preferredTarget = stableTarget()
@@ -242,7 +242,20 @@ const useGuideTarget = (opened: boolean, selector?: string) => {
     update()
     const refresh = window.setInterval(update, 300)
     const observer = new MutationObserver(update)
-    observer.observe(document.body, { childList: true, subtree: true })
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: [
+        'disabled',
+        'aria-disabled',
+        'aria-hidden',
+        'hidden',
+        'inert',
+        'data-guide',
+        'data-guide-stage',
+      ],
+    })
     window.addEventListener('resize', update)
     window.addEventListener('scroll', update, true)
     return () => {
@@ -254,7 +267,7 @@ const useGuideTarget = (opened: boolean, selector?: string) => {
     }
   }, [opened, selector])
 
-  return target
+  return opened && measurement.selector === selector ? measurement : { target: null, element: null }
 }
 
 const useExternalSurface = (opened: boolean) => {
@@ -300,19 +313,17 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
   progress,
   children,
 }) => {
-  const target = useGuideTarget(opened, targetSelector)
+  const { target, element: targetElement } = useGuideTarget(opened, targetSelector)
   const externalSurface = useExternalSurface(opened)
   const [animationKey, setAnimationKey] = useState(0)
   const contentRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const focusedForOpening = useRef(false)
-  const separationAttempt = useRef<string | null>(null)
+  const separationAttempt = useRef<{ element: HTMLElement; key: string } | null>(null)
   const coachmark = coachmarkPlacement(target)
   const guideZIndex = guideLayerZIndex(target)
   const yielding = externalSurface && !target?.elevated
-  const surroundingInteractionAllowed = Boolean(
-    target && visibleTarget(targetSelector)?.closest('[data-guide-interaction-scope]')
-  )
+  const surroundingInteractionAllowed = Boolean(target && targetElement?.closest('[data-guide-interaction-scope]'))
 
   useEffect(() => {
     if (opened) setAnimationKey((current) => current + 1)
@@ -360,11 +371,11 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
       if (targetArea <= 0 || (overlapWidth * overlapHeight) / targetArea <= 0.1) return
 
       const attemptKey = `${targetSelector ?? ''}:${target.guideTarget ?? ''}:${coachmark.placement}`
-      if (separationAttempt.current === attemptKey) return
-      const element = visibleTarget(targetSelector)
-      if (!element) return
+      const element = targetElement
+      if (!element || !isEligibleTarget(element) || !isUsableTarget(element)) return
+      if (separationAttempt.current?.element === element && separationAttempt.current.key === attemptKey) return
 
-      separationAttempt.current = attemptKey
+      separationAttempt.current = { element, key: attemptKey }
       const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
       const scrollParent = scrollableAncestor(element)
       if (!scrollParent) return
@@ -389,13 +400,18 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
     separateTarget()
     const settledCheck = window.setTimeout(separateTarget, 250)
     return () => window.clearTimeout(settledCheck)
-  }, [coachmark.placement, opened, target, targetSelector, yielding])
+  }, [coachmark.placement, opened, target, targetSelector, targetElement, yielding])
 
   useEffect(() => {
-    if (!opened || !targetSelector || !onTargetActivate) return
+    if (!opened || !targetElement || !onTargetActivate) return
+
+    // Click, focus, outline and interaction scope must share one DOM identity.
+    // Re-querying here can advance a different card than the one highlighted.
+    const currentTarget = () =>
+      isEligibleTarget(targetElement) && isUsableTarget(targetElement) ? targetElement : null
 
     const activatedTarget = (eventTarget: EventTarget | null) => {
-      const element = visibleTarget(targetSelector)
+      const element = currentTarget()
       if (!element || !guideTargetMatchesActivation(element, eventTarget)) return null
 
       return element
@@ -410,15 +426,16 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
     }
 
     const handleTargetFocus = (event: FocusEvent) => {
-      const element = visibleTarget(targetSelector)
+      const element = currentTarget()
       if (!element) return
 
-      onTargetActivate(guideTargetKeyboardActivation(element, event.target instanceof Element ? event.target : null))
+      const activation = guideTargetKeyboardActivation(element, event.target instanceof Element ? event.target : null)
+      if (activation) onTargetActivate(activation)
     }
 
     document.addEventListener('click', handleTargetClick, true)
     document.addEventListener('focusin', handleTargetFocus, true)
-    const focusedElement = visibleTarget(targetSelector)
+    const focusedElement = currentTarget()
     const focusedActivation = focusedElement
       ? guideTargetKeyboardActivation(focusedElement, document.activeElement)
       : undefined
@@ -429,7 +446,7 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
       document.removeEventListener('click', handleTargetClick, true)
       document.removeEventListener('focusin', handleTargetFocus, true)
     }
-  }, [onTargetActivate, opened, target?.guideTarget, targetSelector])
+  }, [onTargetActivate, opened, targetElement, target?.guideTarget])
 
   const targetStyle = target
     ? ({
