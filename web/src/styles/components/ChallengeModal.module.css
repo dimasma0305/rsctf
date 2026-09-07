@@ -56,3 +56,96 @@
   padding: var(--mantine-spacing-md);
   padding-top: var(--mantine-spacing-xs);
 }
+
+.inlinePanel {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid var(--app-border);
+  border-top: 2px solid light-dark(#9a661b, #e9af53);
+  border-radius: 0.8rem;
+  background: var(--app-raised-surface);
+  overflow: hidden;
+}
+.inlineHeader {
+  position: relative;
+  isolation: isolate;
+  padding: 1.1rem 1.3rem 1.25rem;
+  border-bottom: 1px solid var(--app-border);
+  overflow: hidden;
+}
+.inlineTitle {
+  position: relative;
+  margin-top: 0.9rem;
+  font-size: clamp(1.5rem, 2vw, 2rem);
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+.inlineTitle:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 4px;
+}
+.orbitArt {
+  position: absolute;
+  width: 14rem;
+  height: 14rem;
+  border-radius: 50%;
+  right: -4rem;
+  top: -4rem;
+  z-index: -1;
+  pointer-events: none;
+  border: 1px solid light-dark(#94b3d76b, #5988c173);
+  background: radial-gradient(ellipse at 40% 45%, light-dark(#dce8f9, #233f5f), transparent 70%);
+}
+.orbitArt::after {
+  content: '';
+  position: absolute;
+  width: 0.45rem;
+  height: 0.45rem;
+  top: 65%;
+  left: 30%;
+  border-radius: 50%;
+  background: #e2a748;
+  box-shadow: 0 0 18px #e2a748;
+}
+.orbitArt i {
+  position: absolute;
+  inset: 0 25%;
+  border: 1px solid light-dark(#94b3d76b, #5988c173);
+  border-radius: 50%;
+  transform: rotate(-30deg);
+}
+.orbitArt i:nth-child(2) {
+  transform: rotate(35deg);
+}
+.orbitArt i:nth-child(3) {
+  transform: rotate(85deg);
+}
+.inlineBody {
+  padding: 1.2rem 1.3rem 0.5rem;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.inlinePanel .footer {
+  position: static;
+  z-index: auto;
+  padding: 0.8rem 1.3rem 1.3rem;
+  background: transparent;
+}
+.inlinePanel .attachment {
+  padding: 0.8rem;
+  background: var(--app-shell-surface);
+}
+.inlinePanel .attachment > :global(.mantine-Group-root) > :global(.mantine-Stack-root) {
+  flex-basis: 9rem !important;
+}
+.inlineSubmit {
+  flex-direction: column;
+  align-items: stretch;
+}
+.inlineSubmit > * {
+  width: 100%;
+}
+.inlineSubmit > button {
+  min-height: 44px;
+}

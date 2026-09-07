@@ -131,7 +131,7 @@ try {
   await cdp.send('Page.enable')
   await cdp.send('Runtime.enable')
   cdp.on('Runtime.exceptionThrown', ({ exceptionDetails }) => runtimeErrors.push(exceptionDetails.exception?.description ?? exceptionDetails.text))
-  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('rsctf-player-guide:${profile.userId}', JSON.stringify({ interactiveEnabled:false, completedVersion:1, seenFeatures:[] })); localStorage.setItem('rsctf-player-guide:guest', JSON.stringify({ interactiveEnabled:false, completedVersion:1, seenFeatures:[] }));` })
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('challenge-explorer-view', JSON.stringify('cards')); localStorage.setItem('rsctf-player-guide:${profile.userId}', JSON.stringify({ interactiveEnabled:false, completedVersion:1, seenFeatures:[] })); localStorage.setItem('rsctf-player-guide:guest', JSON.stringify({ interactiveEnabled:false, completedVersion:1, seenFeatures:[] }));` })
   await cdp.send('Fetch.enable', { patterns: [{ urlPattern: `${target}/api/*` }, { urlPattern: `${target}/hub*` }] })
   cdp.on('Fetch.requestPaused', async ({ requestId, request }) => {
     const path = new URL(request.url).pathname.toLowerCase()

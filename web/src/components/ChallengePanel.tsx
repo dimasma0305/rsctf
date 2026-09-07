@@ -21,12 +21,15 @@ import {
   mdiCrown,
   mdiFileUploadOutline,
   mdiFlagOutline,
+  mdiEarth,
+  mdiFormatListBulleted,
+  mdiViewGridOutline,
   mdiPuzzle,
   mdiSwordCross,
   mdiVpn,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useState, useMemo, type FocusEvent } from 'react'
+import { FC, useCallback, useEffect, useState, useMemo, useRef, type FocusEvent, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useParams } from 'react-router'
 import type { AdStateOwner } from '@Components/AdChallengePanel'
@@ -34,6 +37,9 @@ import { ChallengeCard } from '@Components/ChallengeCard'
 import { Empty } from '@Components/Empty'
 import { GameChallengeModal } from '@Components/GameChallengeModal'
 import { WriteupSubmitModal } from '@Components/WriteupSubmitModal'
+import { ChallengeGlobe, type GlobeNode } from '@Components/competition/ChallengeGlobe'
+import { ChallengeList } from '@Components/competition/ChallengeList'
+import { isAcceptedSolve, resolveChallengeView, type ChallengeView } from '@Components/competition/model'
 import { downloadEventVpnConfig } from '@Utils/EventVpnDownload'
 import { allowEventVpnReconnectRetry, isEventVpnAccessError } from '@Utils/EventVpnProof'
 import { showErrorMsg, SubmissionTypeIconMap, useChallengeCategoryLabelMap } from '@Utils/Shared'
@@ -45,9 +51,10 @@ import classes from '@Styles/ChallengePanel.module.css'
 type ChallengePanelProps = {
   teamState: ReturnType<typeof useGameTeamInfo>
   adStateOwner?: AdStateOwner
+  activity?: ReactNode
 }
 
-export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwner }) => {
+export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwner, activity }) => {
   const { hash } = useLocation()
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
@@ -56,8 +63,15 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
   const challenges = teamInfo?.challenges
   const { finished } = useGameStatus(game)
   const isCompact = useIsMobile()
+  const inlineDetail = !useIsMobile(1100)
+  const [viewPreference, setViewPreference] = useLocalStorage<ChallengeView | null>({
+    key: 'challenge-explorer-view',
+    defaultValue: null,
+    getInitialValueInEffect: false,
+  })
+  const view = resolveChallengeView(viewPreference, isCompact)
 
-  const categories = Object.keys(challenges ?? {}).sort()
+  const categories = useMemo(() => Object.keys(challenges ?? {}).sort(), [challenges])
   const [activeTab, setActiveTab] = useState<ChallengeCategory | 'All'>('All')
   const [search, setSearch] = useState('')
 
@@ -228,6 +242,20 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
 
   const [selection, setSelection] = useState<{ gameId: number; challengeId: number } | null>(null)
   const [detailOpened, setDetailOpened] = useState(false)
+  const openerRef = useRef<HTMLElement | null>(null)
+  const openChallenge = useCallback(
+    (chal: ChallengeInfo) => {
+      openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      setSelection({ gameId: numId, challengeId: chal.id })
+      setDetailOpened(true)
+      window.location.hash = `#${chal.id}-${encodeURIComponent(chal.title?.replace(/ /g, '-') ?? '')}`
+    },
+    [numId]
+  )
+  const solvedIds = useMemo(
+    () => new Set((teamInfo?.rank?.solvedChallenges ?? []).filter(isAcceptedSolve).map((item) => item.id)),
+    [teamInfo?.rank?.solvedChallenges]
+  )
   const { iconMap, colorMap } = SubmissionTypeIconMap(0.8)
   const [writeupSubmitOpened, setWriteupSubmitOpened] = useState(false)
   const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
@@ -286,6 +314,40 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
     selection?.gameId === numId && selection.challengeId === ownedHashChallengeId
       ? (allChallenges.find((item) => item.id === selection.challengeId) ?? null)
       : null
+
+  const globeNodes = useMemo((): GlobeNode[] => {
+    if (activeTab === 'All' && !search.trim() && currentChallenges.length > 8 && categories.length > 1) {
+      return categories.flatMap((category) => {
+        const count = currentChallenges.filter((item) => item.category === category).length
+        return count
+          ? [
+              {
+                id: `category-${category}`,
+                label: challengeCategoryLabelMap.get(category as ChallengeCategory)?.name ?? category,
+                count,
+                onSelect: () => setActiveTab(category as ChallengeCategory),
+              },
+            ]
+          : []
+      })
+    }
+    return currentChallenges.map((item) => ({
+      id: String(item.id),
+      label: item.title,
+      solved: solvedIds.has(item.id),
+      selected: item.id === challenge?.id,
+      onSelect: () => openChallenge(item),
+    }))
+  }, [
+    activeTab,
+    search,
+    currentChallenges,
+    categories,
+    challengeCategoryLabelMap,
+    solvedIds,
+    challenge?.id,
+    openChallenge,
+  ])
 
   useEffect(() => {
     setActiveTab('All')
@@ -417,284 +479,357 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
 
   return (
     <>
-      <div className={classes.panel}>
-        <Stack className={classes.filters}>
-          <TextInput
-            label={t('common.workspace.search_challenges', 'Find a challenge')}
-            placeholder={t('common.workspace.challenge_placeholder', 'Name or ID')}
-            value={search}
-            onChange={(event) => setSearch(event.currentTarget.value)}
-          />
-          <Text size="xs" c="dimmed" role="status">
-            {t('common.workspace.challenge_count', '{{shown}} of {{total}} challenges', {
-              shown: currentChallenges.length,
-              total: allChallenges.length,
-            })}
-          </Text>
-          {(search || hideSolved || activeTab !== 'All' || challengeKind !== 'all') && (
-            <Button variant="subtle" size="xs" onClick={resetFilters}>
-              {t('common.workspace.reset_filters', 'Reset filters')}
-            </Button>
-          )}
-          {game?.writeupRequired && (
-            <>
-              <Button
-                px="xs"
-                justify="space-between"
-                leftSection={<Icon path={mdiFileUploadOutline} size={1} />}
-                onClick={() => setWriteupSubmitOpened(true)}
-              >
-                {t('game.button.submit_writeup')}
+      <div className={classes.workspace} data-competition-workspace data-detail-open={detailOpened || undefined}>
+        <div className={classes.panel}>
+          <Stack className={classes.filters}>
+            <TextInput
+              label={t('common.workspace.search_challenges', 'Find a challenge')}
+              placeholder={t('common.workspace.challenge_placeholder', 'Name or ID')}
+              value={search}
+              onChange={(event) => setSearch(event.currentTarget.value)}
+            />
+            <Text size="xs" c="dimmed" role="status">
+              {t('common.workspace.challenge_count', '{{shown}} of {{total}} challenges', {
+                shown: currentChallenges.length,
+                total: allChallenges.length,
+              })}
+            </Text>
+            <SegmentedControl
+              aria-label={t('game.arena.view', 'Challenge view')}
+              value={view}
+              onChange={(value) => setViewPreference(value as ChallengeView)}
+              className={classes.viewControl}
+              data={[
+                {
+                  value: 'globe',
+                  label: (
+                    <Group gap={4} wrap="nowrap">
+                      <Icon path={mdiEarth} size={0.8} aria-hidden="true" />
+                      {t('game.arena.globe_short', 'Globe')}
+                    </Group>
+                  ),
+                },
+                {
+                  value: 'list',
+                  label: (
+                    <Group gap={4} wrap="nowrap">
+                      <Icon path={mdiFormatListBulleted} size={0.8} aria-hidden="true" />
+                      {t('game.arena.list', 'List')}
+                    </Group>
+                  ),
+                },
+                {
+                  value: 'cards',
+                  label: (
+                    <Group gap={4} wrap="nowrap">
+                      <Icon path={mdiViewGridOutline} size={0.8} aria-hidden="true" />
+                      {t('game.arena.cards', 'Cards')}
+                    </Group>
+                  ),
+                },
+              ]}
+            />
+            {(search || hideSolved || activeTab !== 'All' || challengeKind !== 'all') && (
+              <Button variant="subtle" size="xs" onClick={resetFilters}>
+                {t('common.workspace.reset_filters', 'Reset filters')}
               </Button>
-              <Divider />
-            </>
-          )}
-          {kindsPresent >= 2 && (
-            <Stack gap={6} className={classes.kindFilterGroup}>
-              <Text component="span" className={classes.mobileFilterLabel}>
-                {t('game.label.challenge_type', { defaultValue: 'Challenge type' })}
-              </Text>
-              <SegmentedControl
-                orientation={isCompact ? 'horizontal' : 'vertical'}
-                size={isCompact ? 'sm' : 'xs'}
-                w="100%"
-                aria-label={t('game.label.challenge_kind', { defaultValue: 'Filter challenges by type' })}
-                value={challengeKind}
-                onChange={(v) => setChallengeKind(v as 'all' | 'jeopardy' | 'ad' | 'koth')}
-                classNames={{
-                  root: classes.kindControlRoot,
-                  control: classes.kindControl,
-                  label: classes.kindControlLabel,
-                }}
-                data={[
-                  { value: 'all', label: renderKindLabel('all', mdiPuzzle) },
-                  ...(hasJeopardy
-                    ? [
-                        {
-                          value: 'jeopardy',
-                          label: renderKindLabel('jeopardy', mdiFlagOutline, 'var(--mantine-color-blue-6)'),
-                        },
-                      ]
-                    : []),
-                  ...(hasAd
-                    ? [
-                        {
-                          value: 'ad',
-                          label: renderKindLabel('ad', mdiSwordCross, 'var(--mantine-color-red-6)'),
-                        },
-                      ]
-                    : []),
-                  ...(hasKoth
-                    ? [
-                        {
-                          value: 'koth',
-                          label: renderKindLabel('koth', mdiCrown, 'var(--mantine-color-violet-6)'),
-                        },
-                      ]
-                    : []),
-                ]}
-              />
-            </Stack>
-          )}
-          <Switch
-            w="100%"
-            checked={hideSolved}
-            onChange={(e) => setHideSolved(e.target.checked)}
-            classNames={{ body: classes.switch }}
-            label={
-              <Text fz="md" fw="bold" ta="right">
-                {t('game.button.hide_solved')}
-              </Text>
-            }
-          />
-          <Text component="span" className={classes.mobileFilterLabel}>
-            {t('game.label.challenge_category', { defaultValue: 'Category' })}
-          </Text>
-          <Tabs
-            autoContrast
-            orientation={isCompact ? 'horizontal' : 'vertical'}
-            variant="pills"
-            value={activeTab}
-            onChange={(value) => setActiveTab(value as ChallengeCategory)}
-            classNames={{
-              root: classes.tabRoot,
-              list: classes.tabList,
-              tabLabel: classes.tabLabel,
-              tab: classes.tab,
+            )}
+            {game?.writeupRequired && (
+              <>
+                <Button
+                  px="xs"
+                  justify="space-between"
+                  leftSection={<Icon path={mdiFileUploadOutline} size={1} />}
+                  onClick={() => setWriteupSubmitOpened(true)}
+                >
+                  {t('game.button.submit_writeup')}
+                </Button>
+                <Divider />
+              </>
+            )}
+            {kindsPresent >= 2 && (
+              <Stack gap={6} className={classes.kindFilterGroup}>
+                <Text component="span" className={classes.mobileFilterLabel}>
+                  {t('game.label.challenge_type', { defaultValue: 'Challenge type' })}
+                </Text>
+                <SegmentedControl
+                  orientation="horizontal"
+                  size={isCompact ? 'sm' : 'xs'}
+                  w="100%"
+                  aria-label={t('game.label.challenge_kind', { defaultValue: 'Filter challenges by type' })}
+                  value={challengeKind}
+                  onChange={(v) => setChallengeKind(v as 'all' | 'jeopardy' | 'ad' | 'koth')}
+                  classNames={{
+                    root: classes.kindControlRoot,
+                    control: classes.kindControl,
+                    label: classes.kindControlLabel,
+                  }}
+                  data={[
+                    { value: 'all', label: renderKindLabel('all', mdiPuzzle) },
+                    ...(hasJeopardy
+                      ? [
+                          {
+                            value: 'jeopardy',
+                            label: renderKindLabel('jeopardy', mdiFlagOutline, 'var(--mantine-color-blue-6)'),
+                          },
+                        ]
+                      : []),
+                    ...(hasAd
+                      ? [
+                          {
+                            value: 'ad',
+                            label: renderKindLabel('ad', mdiSwordCross, 'var(--mantine-color-red-6)'),
+                          },
+                        ]
+                      : []),
+                    ...(hasKoth
+                      ? [
+                          {
+                            value: 'koth',
+                            label: renderKindLabel('koth', mdiCrown, 'var(--mantine-color-violet-6)'),
+                          },
+                        ]
+                      : []),
+                  ]}
+                />
+              </Stack>
+            )}
+            <Switch
+              w="auto"
+              checked={hideSolved}
+              onChange={(e) => setHideSolved(e.target.checked)}
+              classNames={{ body: classes.switch }}
+              label={
+                <Text fz="sm" fw={500} ta="right">
+                  {t('game.button.hide_solved')}
+                </Text>
+              }
+            />
+            <Text component="span" className={classes.mobileFilterLabel}>
+              {t('game.label.challenge_category', { defaultValue: 'Category' })}
+            </Text>
+            <Tabs
+              autoContrast
+              orientation="horizontal"
+              variant="pills"
+              value={activeTab}
+              onChange={(value) => setActiveTab(value as ChallengeCategory)}
+              classNames={{
+                root: classes.tabRoot,
+                list: classes.tabList,
+                tabLabel: classes.tabLabel,
+                tab: classes.tab,
+              }}
+            >
+              <Tabs.List
+                data-challenge-category-tabs
+                onFocus={revealFocusedCategory}
+                aria-label={t('game.label.challenge_category', { defaultValue: 'Filter by category' })}
+              >
+                <Tabs.Tab value={'All'} leftSection={<Icon path={mdiPuzzle} size={1} />}>
+                  <Group justify="space-between" wrap="nowrap" gap={6}>
+                    <Text fz="sm" fw="bold" c="inherit">
+                      {challengeKindLabels.all}
+                    </Text>
+                    <Text fz="sm" fw="bold" c="inherit">
+                      {allChallenges.length}
+                    </Text>
+                  </Group>
+                </Tabs.Tab>
+                {categories.map((tab) => {
+                  const data = challengeCategoryLabelMap.get(tab as ChallengeCategory)!
+                  return (
+                    <Tabs.Tab
+                      key={tab}
+                      value={tab}
+                      leftSection={<Icon path={data?.icon} size={1} />}
+                      color={data?.color}
+                    >
+                      <Group justify="space-between" wrap="nowrap" gap={6}>
+                        <Text fz="sm" fw="bold" c="inherit">
+                          {data?.name}
+                        </Text>
+                        <Text fz="sm" fw="bold" c="inherit">
+                          {challenges && challenges[tab].length}
+                        </Text>
+                      </Group>
+                    </Tabs.Tab>
+                  )
+                })}
+              </Tabs.List>
+            </Tabs>
+          </Stack>
+          <ScrollArea
+            pos="relative"
+            offsetScrollbars
+            scrollbarSize={4}
+            classNames={{ root: classes.scrollArea }}
+            viewportProps={{
+              tabIndex: 0,
+              'aria-label': t('game.label.challenge_results', 'Challenge list'),
             }}
           >
-            <Tabs.List
-              data-challenge-category-tabs
-              onFocus={revealFocusedCategory}
-              aria-label={t('game.label.challenge_category', { defaultValue: 'Filter by category' })}
-            >
-              <Tabs.Tab value={'All'} leftSection={<Icon path={mdiPuzzle} size={1} />}>
-                <Group justify="space-between" wrap="nowrap" gap={6}>
-                  <Text fz="sm" fw="bold" c="inherit">
-                    {challengeKindLabels.all}
-                  </Text>
-                  <Text fz="sm" fw="bold" c="inherit">
-                    {allChallenges.length}
-                  </Text>
-                </Group>
-              </Tabs.Tab>
-              {categories.map((tab) => {
-                const data = challengeCategoryLabelMap.get(tab as ChallengeCategory)!
-                return (
-                  <Tabs.Tab key={tab} value={tab} leftSection={<Icon path={data?.icon} size={1} />} color={data?.color}>
-                    <Group justify="space-between" wrap="nowrap" gap={6}>
-                      <Text fz="sm" fw="bold" c="inherit">
-                        {data?.name}
-                      </Text>
-                      <Text fz="sm" fw="bold" c="inherit">
-                        {challenges && challenges[tab].length}
-                      </Text>
-                    </Group>
-                  </Tabs.Tab>
-                )
-              })}
-            </Tabs.List>
-          </Tabs>
-        </Stack>
-        <ScrollArea
-          pos="relative"
-          offsetScrollbars
-          scrollbarSize={4}
-          classNames={{ root: classes.scrollArea }}
-          viewportProps={{
-            tabIndex: 0,
-            'aria-label': t('game.label.challenge_results', 'Challenge list'),
-          }}
-        >
-          {/* if rank is 0, and have no division, means scoreboard not ready yet */}
-          {!teamInfo.rank?.divisionId && !teamInfo?.rank?.rank ? (
-            <Center h="calc(100vh - 10rem)">
-              <Stack gap={0}>
-                <Title order={2}>{t('game.content.scoreboard_not_ready.title')}</Title>
-                <Text>{t('game.content.scoreboard_not_ready.comment')}</Text>
-              </Stack>
-            </Center>
-          ) : currentChallenges && currentChallenges.length ? (
-            <Stack gap="sm" p="xs" pt={0}>
-              {groupedSections.map((section, idx) => {
-                const sectionHeader = section.kind ? (
-                  <Group gap="xs" align="center" wrap="nowrap" mt={idx === 0 ? 0 : 'sm'}>
-                    <Icon
-                      path={
-                        section.kind === 'jeopardy' ? mdiFlagOutline : section.kind === 'ad' ? mdiSwordCross : mdiCrown
-                      }
-                      size={0.8}
-                      color={
-                        section.kind === 'jeopardy'
-                          ? 'var(--mantine-color-blue-6)'
+            {/* if rank is 0, and have no division, means scoreboard not ready yet */}
+            {!teamInfo.rank?.divisionId && !teamInfo?.rank?.rank ? (
+              <Center h="calc(100vh - 10rem)">
+                <Stack gap={0}>
+                  <Title order={2}>{t('game.content.scoreboard_not_ready.title')}</Title>
+                  <Text>{t('game.content.scoreboard_not_ready.comment')}</Text>
+                </Stack>
+              </Center>
+            ) : currentChallenges.length && view === 'globe' ? (
+              <ChallengeGlobe
+                nodes={globeNodes}
+                scope={`${numId}:${activeTab}:${challengeKind}:${search}:${hideSolved}`}
+                onList={() => setViewPreference('list')}
+              />
+            ) : currentChallenges.length && view === 'list' ? (
+              <ChallengeList
+                challenges={currentChallenges}
+                solvedIds={solvedIds}
+                selectedId={challenge?.id}
+                onSelect={openChallenge}
+              />
+            ) : currentChallenges && currentChallenges.length ? (
+              <Stack gap="sm" p="xs" pt={0}>
+                {groupedSections.map((section, idx) => {
+                  const sectionHeader = section.kind ? (
+                    <Group gap="xs" align="center" wrap="nowrap" mt={idx === 0 ? 0 : 'sm'}>
+                      <Icon
+                        path={
+                          section.kind === 'jeopardy'
+                            ? mdiFlagOutline
+                            : section.kind === 'ad'
+                              ? mdiSwordCross
+                              : mdiCrown
+                        }
+                        size={0.8}
+                        color={
+                          section.kind === 'jeopardy'
+                            ? 'var(--mantine-color-blue-6)'
+                            : section.kind === 'ad'
+                              ? 'var(--mantine-color-red-6)'
+                              : 'var(--mantine-color-violet-6)'
+                        }
+                      />
+                      <Title
+                        order={2}
+                        c={section.kind === 'jeopardy' ? 'blue' : section.kind === 'ad' ? 'red' : 'violet'}
+                      >
+                        {section.kind === 'jeopardy'
+                          ? t('game.content.section.jeopardy', 'Jeopardy challenges')
                           : section.kind === 'ad'
-                            ? 'var(--mantine-color-red-6)'
-                            : 'var(--mantine-color-violet-6)'
-                      }
-                    />
-                    <Title
-                      order={2}
-                      c={section.kind === 'jeopardy' ? 'blue' : section.kind === 'ad' ? 'red' : 'violet'}
-                    >
-                      {section.kind === 'jeopardy'
-                        ? t('game.content.section.jeopardy', 'Jeopardy challenges')
-                        : section.kind === 'ad'
-                          ? t('game.content.section.ad', 'Attack & Defense')
-                          : t('game.content.section.koth', 'King of the Hill')}
-                    </Title>
-                    <Text size="xs" c="dimmed">
-                      ({section.items.length})
-                    </Text>
-                    <Divider
-                      flex={1}
-                      ml="xs"
-                      color={section.kind === 'jeopardy' ? 'blue' : section.kind === 'ad' ? 'red' : 'violet'}
-                      opacity={0.4}
-                    />
-                  </Group>
-                ) : null
-                return (
-                  <Stack key={section.kind ?? 'all'} gap="xs">
-                    {sectionHeader}
-                    <div className={classes.challengeGrid}>
-                      {section.items.map((chal) => {
-                        const status = teamInfo?.rank?.solvedChallenges?.find((c) => c.id === chal.id)?.type
-                        const solved = status !== SubmissionType.Unaccepted && status !== undefined
+                            ? t('game.content.section.ad', 'Attack & Defense')
+                            : t('game.content.section.koth', 'King of the Hill')}
+                      </Title>
+                      <Text size="xs" c="dimmed">
+                        ({section.items.length})
+                      </Text>
+                      <Divider
+                        flex={1}
+                        ml="xs"
+                        color={section.kind === 'jeopardy' ? 'blue' : section.kind === 'ad' ? 'red' : 'violet'}
+                        opacity={0.4}
+                      />
+                    </Group>
+                  ) : null
+                  return (
+                    <Stack key={section.kind ?? 'all'} gap="xs">
+                      {sectionHeader}
+                      <div className={classes.challengeGrid}>
+                        {section.items.map((chal) => {
+                          const status = teamInfo?.rank?.solvedChallenges?.find((c) => c.id === chal.id)?.type
+                          const solved = status !== SubmissionType.Unaccepted && status !== undefined
 
-                        return (
-                          <ChallengeCard
-                            key={chal.id}
-                            challenge={chal}
-                            iconMap={iconMap}
-                            colorMap={colorMap}
-                            onClick={() => {
-                              setSelection({ gameId: numId, challengeId: chal.id })
-                              setDetailOpened(true)
-                              // update hash after modal opened, so don't trigger useEffect
-                              window.location.hash = `#${chal.id}-${encodeURIComponent(chal.title?.replace(/ /g, '-') ?? '')}`
-                            }}
-                            solved={solved}
-                            teamId={teamInfo?.rank?.id}
-                          />
-                        )
-                      })}
-                    </div>
-                  </Stack>
-                )
-              })}
-            </Stack>
-          ) : (
-            <Center mih={240} p="lg">
-              <Stack gap="xs" align="center">
-                <Title order={2} size="h3">
-                  {t('common.workspace.no_challenges', 'No matching challenges')}
-                </Title>
-                <Text size="sm" c="dimmed" ta="center">
-                  {t('common.workspace.challenge_filter_hint', 'Try another search or clear your filters.')}
-                </Text>
-                <Button variant="default" onClick={resetFilters}>
-                  {t('common.workspace.reset_filters', 'Reset filters')}
-                </Button>
+                          return (
+                            <ChallengeCard
+                              key={chal.id}
+                              challenge={chal}
+                              iconMap={iconMap}
+                              colorMap={colorMap}
+                              onClick={() => openChallenge(chal)}
+                              solved={solved}
+                              teamId={teamInfo?.rank?.id}
+                            />
+                          )
+                        })}
+                      </div>
+                    </Stack>
+                  )
+                })}
               </Stack>
-            </Center>
-          )}
-        </ScrollArea>
+            ) : (
+              <Center mih={240} p="lg">
+                <Stack gap="xs" align="center">
+                  <Title order={2} size="h3">
+                    {t('common.workspace.no_challenges', 'No matching challenges')}
+                  </Title>
+                  <Text size="sm" c="dimmed" ta="center">
+                    {t('common.workspace.challenge_filter_hint', 'Try another search or clear your filters.')}
+                  </Text>
+                  <Button variant="default" onClick={resetFilters}>
+                    {t('common.workspace.reset_filters', 'Reset filters')}
+                  </Button>
+                </Stack>
+              </Center>
+            )}
+          </ScrollArea>
+          {activity}
+        </div>
+        {inlineDetail && !detailOpened && (
+          <aside className={classes.emptyDetail}>
+            <Icon path={mdiEarth} size={3} aria-hidden="true" />
+            <Title order={2} size="h3">
+              {t('game.arena.select_challenge', 'Select a challenge')}
+            </Title>
+            <Text size="sm" c="dimmed">
+              {t(
+                'game.arena.select_description',
+                'Explore the globe or browse the list. Challenge details, files, and actions will appear here.'
+              )}
+            </Text>
+          </aside>
+        )}
+        {game?.writeupRequired && (
+          <WriteupSubmitModal
+            opened={writeupSubmitOpened}
+            onClose={() => setWriteupSubmitOpened(false)}
+            withCloseButton
+            size="min(32rem, calc(100vw - 1.5rem))"
+            gameId={numId}
+            writeupDeadline={teamInfo.writeupDeadline}
+          />
+        )}
+        {detailOpened && challenge?.id && (
+          <GameChallengeModal
+            embedded={inlineDetail}
+            gameId={numId}
+            gameTitle={game?.title ?? ''}
+            opened={detailOpened}
+            challengeOwned={selection?.gameId === numId && selection.challengeId === challenge.id}
+            withCloseButton
+            onClose={() => {
+              window.location.hash = ''
+              setDetailOpened(false)
+              setSelection(null)
+              requestAnimationFrame(() => {
+                if (openerRef.current?.isConnected) openerRef.current.focus({ preventScroll: true })
+              })
+            }}
+            gameEnded={finished}
+            practiceMode={game?.practiceMode}
+            eventVpnRequired={game?.vpnAccessRequired}
+            status={teamInfo?.rank?.solvedChallenges?.find((c) => c.id === challenge?.id)?.type}
+            cateData={challengeCategoryLabelMap.get(
+              (challenge?.category as ChallengeCategory) ?? ChallengeCategory.Misc
+            )!}
+            title={challenge?.title ?? ''}
+            score={challenge?.score ?? 0}
+            challengeId={challenge.id}
+            adStateOwner={adStateOwner}
+          />
+        )}
       </div>
-      {game?.writeupRequired && (
-        <WriteupSubmitModal
-          opened={writeupSubmitOpened}
-          onClose={() => setWriteupSubmitOpened(false)}
-          withCloseButton
-          size="min(32rem, calc(100vw - 1.5rem))"
-          gameId={numId}
-          writeupDeadline={teamInfo.writeupDeadline}
-        />
-      )}
-      {detailOpened && challenge?.id && (
-        <GameChallengeModal
-          gameId={numId}
-          gameTitle={game?.title ?? ''}
-          opened={detailOpened}
-          challengeOwned={selection?.gameId === numId && selection.challengeId === challenge.id}
-          withCloseButton
-          onClose={() => {
-            window.location.hash = ''
-            setDetailOpened(false)
-            setSelection(null)
-          }}
-          gameEnded={finished}
-          practiceMode={game?.practiceMode}
-          eventVpnRequired={game?.vpnAccessRequired}
-          status={teamInfo?.rank?.solvedChallenges?.find((c) => c.id === challenge?.id)?.type}
-          cateData={challengeCategoryLabelMap.get(
-            (challenge?.category as ChallengeCategory) ?? ChallengeCategory.Misc
-          )!}
-          title={challenge?.title ?? ''}
-          score={challenge?.score ?? 0}
-          challengeId={challenge.id}
-          adStateOwner={adStateOwner}
-        />
-      )}
     </>
   )
 }

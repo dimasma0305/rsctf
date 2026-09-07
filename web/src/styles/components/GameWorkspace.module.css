@@ -19,6 +19,47 @@
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
+.teamStrip {
+  padding: 0.8rem 1rem;
+  box-shadow: none;
+}
+.teamIdentity {
+  flex: 1 1 12rem;
+}
+.teamName {
+  overflow-wrap: anywhere;
+}
+.teamMetrics {
+  display: flex;
+  flex: 2 1 23rem;
+  flex-wrap: wrap;
+  gap: 0.75rem 2rem;
+  margin: 0;
+}
+.teamMetrics > div {
+  border-inline-start: 1px solid var(--app-border);
+  padding-inline-start: 1rem;
+}
+.teamMetrics dt {
+  color: var(--app-text-secondary);
+  font-size: 0.75rem;
+}
+.teamMetrics dd {
+  margin: 0.2rem 0 0;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.teamToken {
+  margin-top: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--app-text-secondary);
+}
+.teamToken summary {
+  width: max-content;
+  max-width: 100%;
+  padding: 0.3rem 0;
+  cursor: pointer;
+}
 @media (max-width: 36em) {
   .header {
     gap: 0.65rem;

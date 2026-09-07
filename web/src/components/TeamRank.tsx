@@ -1,6 +1,7 @@
 import {
   Avatar,
   Badge,
+  Button,
   Card,
   CardProps,
   Group,
@@ -19,17 +20,20 @@ import cx from 'clsx'
 import { FC, useEffect, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router'
+import { isLiveChallenge } from '@Components/competition/model'
 import { ErrorCodes } from '@Utils/Shared'
 import { visibleChallengeSolveProgress } from '@Utils/challengeProgress'
 import { isReadOnlyGameArchive } from '@Utils/gameArchive'
 import { useGameStatus, useGameTeamInfo } from '@Hooks/useGame'
+import classes from '@Styles/GameWorkspace.module.css'
 import misc from '@Styles/Misc.module.css'
 
 type TeamRankProps = CardProps & {
   teamState: ReturnType<typeof useGameTeamInfo>
+  compact?: boolean
 }
 
-export const TeamRank: FC<TeamRankProps> = ({ teamState, ...props }) => {
+export const TeamRank: FC<TeamRankProps> = ({ teamState, compact = false, ...props }) => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const navigate = useNavigate()
@@ -85,6 +89,69 @@ export const TeamRank: FC<TeamRankProps> = ({ teamState, ...props }) => {
       </Text>
     </Stack>
   )
+
+  if (compact) {
+    const challenges = Object.values(teamInfo?.challenges ?? {}).flat()
+    const hasLive = challenges.some(isLiveChallenge)
+    const hasJeopardy = challenges.some((challenge) => !isLiveChallenge(challenge))
+    return (
+      <Card {...props} withBorder className={classes.teamStrip} data-team-summary>
+        <Group justify="space-between" gap="md" wrap="wrap">
+          <Group gap="sm" wrap="nowrap" miw={0} className={classes.teamIdentity}>
+            <Avatar src={rank?.avatar} alt="" size={38} radius="md">
+              {rank?.name?.slice(0, 1) ?? 'T'}
+            </Avatar>
+            <Stack gap={0} miw={0}>
+              <Text fw={700} className={classes.teamName}>
+                {rank?.name ?? '—'}
+              </Text>
+              <Text size="xs" c="dimmed">
+                {division ?? t('game.arena.your_team', 'Your team')}
+              </Text>
+            </Stack>
+          </Group>
+          {hasJeopardy && (
+            <dl className={classes.teamMetrics}>
+              <div>
+                <dt>
+                  {hasLive ? t('game.arena.jeopardy_rank', 'Jeopardy rank') : t('game.label.score_table.rank_total')}
+                </dt>
+                <dd>{rank?.rank ? `#${rank.rank}` : '—'}</dd>
+              </div>
+              <div>
+                <dt>
+                  {hasLive ? t('game.arena.jeopardy_score', 'Jeopardy score') : t('game.label.score_table.score')}
+                </dt>
+                <dd>{rank?.score?.toLocaleString() ?? '—'}</dd>
+              </div>
+              <div>
+                <dt>{t('game.arena.jeopardy_solves', 'Jeopardy solves')}</dt>
+                <dd>{rank?.solvedCount ?? '—'}</dd>
+              </div>
+            </dl>
+          )}
+          <Button component="a" href={`/games/${numId}/scoreboard`} variant="subtle" size="compact-sm">
+            {t('game.tab.scoreboard')}
+          </Button>
+        </Group>
+        {!archived && teamInfo?.teamToken && (
+          <details className={classes.teamToken}>
+            <summary>{t('team.label.token', 'Team token')}</summary>
+            <PasswordInput
+              mt="xs"
+              label={t('team.label.token', 'Team token')}
+              value={teamInfo.teamToken}
+              readOnly
+              onClick={copyTeamToken}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') copyTeamToken()
+              }}
+            />
+          </details>
+        )}
+      </Card>
+    )
+  }
 
   return (
     <Card {...props} shadow="sm">

@@ -75,3 +75,21 @@ and the writeup dialog. It checks 320px through 1920px layouts, Indonesian copy,
 light mode, and reduced motion. Screenshots and Axe/overflow/runtime findings
 are saved under `visual-audit-output/rework-workspaces/`. The public-route audit
 above remains necessary against the same candidate.
+
+## Competition globe and list fixtures
+
+`competition-workspace.mjs` uses the same isolated loopback preview and intercepts
+all API calls. Its 100-challenge fixture covers category clustering, bounded globe
+pages, keyboard selection, search/reset, persistent Globe/List/Cards preferences,
+the desktop detail panel, and mobile dialogs. It also checks that an inaccessible
+event and an unowned URL hash cannot issue a challenge-detail read. These are
+client behavior checks, not a replacement for backend authorization tests.
+
+```sh
+scripts/bounded-frontend.sh exec node ../tests/visual/competition-workspace.mjs
+```
+
+Screenshots and the request/Axe/overflow report are written to
+`visual-audit-output/competition/`. The globe draws only after interaction or a
+theme change; it does not own a poll, idle animation loop, or score calculation.
+Both desktop views reuse the existing challenge actions and their access gates.

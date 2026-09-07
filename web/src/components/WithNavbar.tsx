@@ -28,6 +28,7 @@ interface WithNavBarProps extends React.PropsWithChildren {
   withFooter?: boolean
   withHeader?: boolean
   stickyHeader?: boolean
+  competition?: boolean
 }
 
 export const GAME_PAGE_CONTENT_WIDTH = '1800px'
@@ -36,7 +37,13 @@ export interface AppControlProps {
   openColorModal: () => void
 }
 
-export const WithNavBar: FC<WithNavBarProps> = ({ children, width, isLoading, withFooter = false }) => {
+export const WithNavBar: FC<WithNavBarProps> = ({
+  children,
+  width,
+  isLoading,
+  withFooter = false,
+  competition = false,
+}) => {
   const isMobile = useIsMobile()
   const { t } = useTranslation()
   const [colorModalOpened, setColorModalOpened] = useState(false)
@@ -62,17 +69,20 @@ export const WithNavBar: FC<WithNavBarProps> = ({ children, width, isLoading, wi
       </a>
       <AppShell
         p={0}
-        header={{ height: 68, collapsed: !isMobile }}
+        header={{ height: 68, collapsed: !isMobile && !competition }}
         navbar={{
           width: getNavigationRailWidth(navigationCompact),
           breakpoint: NAVIGATION_MOBILE_BREAKPOINT,
           collapsed: {
             mobile: true,
+            desktop: competition,
           },
         }}
       >
-        <AppHeader openColorModal={openColorModal} />
-        <AppNavbar openColorModal={openColorModal} compact={navigationCompact} onToggleCompact={toggleNavigation} />
+        <AppHeader openColorModal={openColorModal} competition={competition} />
+        {!competition && (
+          <AppNavbar openColorModal={openColorModal} compact={navigationCompact} onToggleCompact={toggleNavigation} />
+        )}
         <AppShell.Main
           component="main"
           id="main-content"
@@ -93,7 +103,7 @@ export const WithNavBar: FC<WithNavBarProps> = ({ children, width, isLoading, wi
                 } as React.CSSProperties
               }
             >
-              <WorkspaceBar />
+              {!competition && <WorkspaceBar />}
               {children}
             </Box>
             <CustomColorModal opened={colorModalOpened} onClose={() => setColorModalOpened(false)} />

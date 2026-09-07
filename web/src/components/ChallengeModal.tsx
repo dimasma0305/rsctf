@@ -26,6 +26,8 @@ import {
   mdiAlertCircleOutline,
   mdiArrowRight,
   mdiCheck,
+  mdiClose,
+  mdiCircleOutline,
   mdiContentCopy,
   mdiDownload,
   mdiFlag,
@@ -71,6 +73,8 @@ export interface SolverInfo {
 }
 
 export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stackId' | 'title'> {
+  /** Same content/actions in the desktop competition workspace; mobile keeps the modal. */
+  embedded?: boolean
   challenge?: ChallengeDetailModel
   loading?: boolean
   loadError?: string
@@ -123,6 +127,7 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
 export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const {
     challenge,
+    embedded = false,
     loading,
     loadError,
     eventVpnDisconnected,
@@ -199,7 +204,11 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const reviewStartRef = useRef<HTMLButtonElement>(null)
   const reviewCommentRef = useRef<HTMLTextAreaElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const panelHeadingRef = useRef<HTMLHeadingElement>(null)
   const focusAfterVerdictRef = useRef<FlagVerdictKind | null>(null)
+  useEffect(() => {
+    if (embedded && modalProps.opened) panelHeadingRef.current?.focus({ preventScroll: true })
+  }, [embedded, modalProps.opened, challenge?.id])
 
   const dismissFlagVerdict = () => {
     if (!flagVerdict || !onDismissFlagVerdict) return
@@ -306,7 +315,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
 
   const content = (
     <ScrollAreaAutosize
-      mah="52vh"
+      mah={embedded ? undefined : '52vh'}
       maw="100%"
       scrollbars="y"
       scrollbarSize={6}
@@ -824,7 +833,12 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
                     styles={{ input: { fontFamily: 'monospace', fontSize: 'var(--mantine-font-size-xs)' } }}
                   />
                 )}
-                <Group justify="space-between" gap="sm" align="flex-end">
+                <Group
+                  justify="space-between"
+                  gap="sm"
+                  align="flex-end"
+                  className={embedded ? classes.inlineSubmit : undefined}
+                >
                   <TextInput
                     ref={flagInputRef}
                     label={t('challenge.label.flag', 'Flag')}
@@ -846,6 +860,71 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
         {eventAction}
       </Stack>
     )
+
+  if (embedded && !flagVerdict) {
+    return modalProps.opened ? (
+      <section className={classes.inlinePanel} aria-labelledby="competition-challenge-title" data-challenge-detail>
+        <header className={classes.inlineHeader}>
+          <div className={classes.orbitArt} aria-hidden="true">
+            <i />
+            <i />
+            <i />
+          </div>
+          <Group justify="space-between" wrap="nowrap" pos="relative">
+            <Group gap="xs" wrap="nowrap">
+              {cateData && <Icon path={cateData.icon} size={1.1} aria-hidden="true" />}
+              <Text size="sm">
+                {cateData?.name} · {isKoth ? 'KoTH' : isAd ? 'A&D' : 'Jeopardy'}
+              </Text>
+            </Group>
+            <ActionIcon
+              variant="subtle"
+              color="gray"
+              size="lg"
+              onClick={handleClose}
+              ref={closeButtonRef}
+              aria-label={t('common.button.close', 'Close')}
+            >
+              <Icon path={mdiClose} size={1} />
+            </ActionIcon>
+          </Group>
+          <Title
+            ref={panelHeadingRef}
+            tabIndex={-1}
+            id="competition-challenge-title"
+            order={2}
+            className={classes.inlineTitle}
+          >
+            {challenge?.title ?? ''}
+          </Title>
+          <Group gap="lg" mt="sm" pos="relative">
+            <Text fw={650}>
+              {readOnlyArchive
+                ? t('challenge.content.archived', 'ARCHIVED')
+                : isAd
+                  ? t('common.workspace.live_scoring', 'Live scoring')
+                  : t('game.arena.point_count', '{{count}} points', { count: challenge?.score ?? 0 })}
+            </Text>
+            {!isAd && typeof solverTotal === 'number' && (
+              <Text size="sm" c="dimmed">
+                {t('game.arena.solve_count', '{{count}} solves', { count: solverTotal })}
+              </Text>
+            )}
+          </Group>
+          {!isAd && (
+            <Group gap={5} mt="xs" pos="relative">
+              <Icon path={solved ? mdiCheck : mdiCircleOutline} size={0.8} aria-hidden="true" />
+              <Text size="sm">
+                {solved ? t('common.workspace.solved', 'Solved') : t('game.arena.unsolved', 'Unsolved')}
+              </Text>
+            </Group>
+          )}
+        </header>
+        <div className={classes.inlineBody}>{content}</div>
+        {footer}
+      </section>
+    ) : null
+  }
 
   return (
     <Modal.Root

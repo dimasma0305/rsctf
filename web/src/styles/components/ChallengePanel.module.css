@@ -1,6 +1,30 @@
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(23rem, 29rem);
+  gap: 1.5rem;
+  width: 100%;
+  align-items: start;
+}
+.emptyDetail {
+  padding: 3rem 1.5rem;
+  min-height: 28rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 1rem;
+  border: 1px solid var(--app-border);
+  border-radius: 0.8rem;
+  background:
+    radial-gradient(ellipse at top right, light-dark(#dce9fa, #172a40), transparent 70%), var(--app-raised-surface);
+}
+.emptyDetail > svg {
+  color: light-dark(#375f91, #88b6ed);
+}
 .panel {
   display: grid;
-  grid-template-columns: 12rem minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   flex: 1;
   width: 100%;
   min-width: 0;
@@ -10,10 +34,27 @@
 .filters {
   min-width: 0;
   align-self: start;
-  padding: 0.75rem;
-  border: 1px solid var(--app-border-subtle);
-  border-radius: var(--mantine-radius-md);
-  background: var(--app-raised-surface);
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.65rem;
+}
+.filters > :global(.mantine-TextInput-root) {
+  flex: 1 1 12rem;
+}
+.filters > :global(.mantine-Text-root)[role='status'] {
+  padding-bottom: 0.5rem;
+}
+.viewControl {
+  margin-inline-start: auto;
+  flex-shrink: 0;
+}
+.kindFilterGroup {
+  flex: 1 1 18rem;
+}
+.filters > .mobileFilterLabel {
+  display: none;
 }
 
 .kindFilterGroup,
@@ -40,6 +81,11 @@
 
 .tabList {
   width: 100%;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding: 5px;
+  max-width: 100%;
+  scrollbar-width: thin;
 }
 
 .tabLabel {
@@ -47,11 +93,23 @@
 }
 
 .tab {
+  flex: 0 0 auto;
+  &[data-active='true'] {
+    background: var(--app-accent-surface);
+    color: var(--app-accent-surface-text);
+    box-shadow: inset 0 0 0 1px var(--app-accent-border);
+  }
   &:not([data-active='true']) {
     span[data-position='left'] {
       color: var(--tabs-color);
       filter: saturate(0.8);
     }
+  }
+}
+
+@media (max-width: 68.75em) {
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

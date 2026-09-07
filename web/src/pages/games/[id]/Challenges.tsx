@@ -22,7 +22,6 @@ import { TeamRank } from '@Components/TeamRank'
 import { WithGameTab } from '@Components/WithGameTab'
 import { GAME_PAGE_CONTENT_WIDTH, WithNavBar } from '@Components/WithNavbar'
 import { WithRole } from '@Components/WithRole'
-import { useIsMobile } from '@Utils/ThemeOverride'
 import { adRoundSecondsRemaining } from '@Utils/adState'
 import { epochProgress } from '@Utils/epochProgress'
 import { isReadOnlyGameArchive } from '@Utils/gameArchive'
@@ -33,7 +32,6 @@ const Challenges: FC = () => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const { t } = useTranslation()
-  const isCompact = useIsMobile(1200)
 
   const teamState = useGameTeamInfo(numId)
   const { teamInfo, game } = teamState
@@ -78,7 +76,7 @@ const Challenges: FC = () => {
     ? epochProgress(adState.currentRound, adState.startRound, adState.epochTicks)
     : null
   return (
-    <WithNavBar width={GAME_PAGE_CONTENT_WIDTH}>
+    <WithNavBar width={GAME_PAGE_CONTENT_WIDTH} competition>
       <WithRole requiredRole={Role.User}>
         <WithGameTab>
           {archived && (
@@ -95,9 +93,9 @@ const Challenges: FC = () => {
               )}
             </Alert>
           )}
-          <Flex direction={isCompact ? 'column' : 'row'} gap="sm" justify="space-between" align="flex-start" w="100%">
-            <ChallengePanel teamState={teamState} adStateOwner={hasAdEngine && !archived ? adStateOwner : undefined} />
-            <Stack gap="sm" w={isCompact ? '100%' : '22rem'} miw={isCompact ? 0 : '22rem'}>
+          <TeamRank teamState={teamState} compact />
+          <Flex direction="column" gap="sm" w="100%">
+            <Group gap="sm" w="100%" align="center">
               {!archived && adState?.scoringPaused && (
                 <Alert
                   color="orange"
@@ -117,7 +115,6 @@ const Challenges: FC = () => {
                 target="_blank"
                 rel="noreferrer"
                 variant="light"
-                fullWidth
                 leftSection={<Icon path={mdiSword} size={1} />}
                 rightSection={<Icon path={mdiOpenInNew} size={0.8} />}
               >
@@ -185,7 +182,6 @@ const Challenges: FC = () => {
               {!archived && hasAdChallenges && (
                 <Button
                   variant="default"
-                  fullWidth
                   leftSection={<Icon path={mdiToolboxOutline} size={1} />}
                   rightSection={<Icon path={mdiSwordCross} size={0.8} color="var(--mantine-color-red-6)" />}
                   onClick={adGuideHandlers.open}
@@ -196,7 +192,6 @@ const Challenges: FC = () => {
               {!archived && hasKothChallenges && (
                 <Button
                   variant="default"
-                  fullWidth
                   leftSection={<Icon path={mdiToolboxOutline} size={1} />}
                   rightSection={<Icon path={mdiCrown} size={0.8} color="var(--mantine-color-violet-6)" />}
                   onClick={kothGuideHandlers.open}
@@ -204,9 +199,12 @@ const Challenges: FC = () => {
                   {t('game.button.koth.open_toolkit', 'KotH Toolkit')}
                 </Button>
               )}
-              <TeamRank teamState={teamState} />
-              <GameNoticePanel />
-            </Stack>
+            </Group>
+            <ChallengePanel
+              teamState={teamState}
+              adStateOwner={hasAdEngine && !archived ? adStateOwner : undefined}
+              activity={<GameNoticePanel compact />}
+            />
           </Flex>
 
           {hasAdChallenges && (

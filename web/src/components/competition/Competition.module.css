@@ -1,0 +1,215 @@
+.globe {
+  min-width: 0;
+}
+.globeStage {
+  position: relative;
+  width: 100%;
+  max-width: 54rem;
+  height: clamp(22rem, 49vh, 35rem);
+  margin: auto;
+  cursor: grab;
+}
+.globeStage:active {
+  cursor: grabbing;
+}
+.sphere {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+.nodes {
+  position: absolute;
+  inset: 0;
+}
+.node {
+  position: absolute;
+  left: var(--node-x);
+  top: var(--node-y);
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 44%;
+  min-height: 44px;
+  padding: 0.35rem;
+  border: 1px solid transparent;
+  border-radius: 0.6rem;
+  background: none;
+  color: var(--mantine-color-text);
+  cursor: pointer;
+  text-align: start;
+}
+.node:focus-visible,
+.listName:focus-visible {
+  outline: 3px solid var(--mantine-primary-color-filled);
+  outline-offset: 3px;
+}
+.node[hidden] {
+  display: none;
+}
+.nodeDot {
+  flex: 0 0 2rem;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  border: 1px solid var(--mantine-color-blue-4);
+  background: var(--mantine-color-body);
+  color: light-dark(var(--mantine-color-blue-8), var(--mantine-color-blue-3));
+  box-shadow: 0 0 0 5px light-dark(#34588818, #73b6ff18);
+}
+.nodeLabel {
+  padding: 0.4rem 0.6rem;
+  min-width: 0;
+  border: 1px solid var(--app-border);
+  border-radius: 0.35rem;
+  background: var(--mantine-color-body);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  box-shadow: 0 2px 8px #0002;
+}
+.node[data-selected] .nodeDot {
+  color: light-dark(#714800, #ffc66c);
+  border-color: #d99529;
+  box-shadow:
+    0 0 0 7px #eaa33222,
+    0 0 22px #eaa33244;
+}
+.node[data-selected] .nodeLabel {
+  border-color: #bb832c;
+}
+.node[data-solved] .nodeDot {
+  color: light-dark(#166744, #75dcaa);
+  border-color: #3eac7d;
+}
+.globeControls {
+  margin-top: 0.25rem;
+}
+.legend {
+  font-size: 0.75rem;
+  color: var(--app-text-secondary);
+}
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.listFrame {
+  border: 1px solid var(--app-border);
+  border-radius: 0.65rem;
+  overflow: hidden;
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  table-layout: fixed;
+}
+.table th,
+.table td {
+  text-align: start;
+  padding: 0.65rem;
+  border-bottom: 1px solid var(--app-border-subtle);
+  overflow-wrap: anywhere;
+}
+.table thead th {
+  font-weight: 500;
+  color: var(--app-text-secondary);
+  background: var(--app-raised-surface);
+}
+.table th:first-child {
+  width: 47%;
+}
+.table tr:last-child > * {
+  border-bottom: 0;
+}
+.table tr[data-selected] {
+  background: var(--app-hover-surface);
+  box-shadow: inset 3px 0 #d99a33;
+}
+.listName {
+  display: block;
+  width: 100%;
+  padding: 0.2rem;
+  border: 0;
+  border-radius: 0.2rem;
+  background: none;
+  text-align: start;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  min-height: 44px;
+}
+.listName span {
+  display: block;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.listName small {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--app-text-secondary);
+  font-weight: 400;
+}
+.table .number {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+.status {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+}
+.status svg {
+  flex-shrink: 0;
+}
+.status[data-solved] {
+  color: light-dark(#176442, #77d9a9);
+}
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+@media (max-width: 36em) {
+  .globeStage {
+    min-height: 22rem;
+  }
+  .node {
+    gap: 0.15rem;
+    flex-direction: column;
+    text-align: center;
+  }
+  .nodeLabel {
+    font-size: 0.7rem;
+    padding: 0.2rem;
+  }
+  .nodeDot {
+    flex-basis: 1.6rem;
+    width: 1.6rem;
+    height: 1.6rem;
+  }
+  .table th,
+  .table td {
+    padding: 0.45rem 0.3rem;
+  }
+  .table th:first-child {
+    width: 43%;
+  }
+  .status {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+  }
+}

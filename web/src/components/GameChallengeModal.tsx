@@ -51,6 +51,7 @@ import api, {
 } from '@Api'
 
 interface GameChallengeModalProps extends ModalProps {
+  embedded?: boolean
   gameId: number
   gameTitle: string
   gameEnded: boolean

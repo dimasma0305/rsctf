@@ -21,7 +21,7 @@ test('the live team poll uses the compact conditional participant projection', (
 
 test('challenge and scoreboard children reuse their route-owned team snapshot', () => {
   assert.equal((challengeRoute.match(/useGameTeamInfo\(numId\)/g) ?? []).length, 1)
-  assert.match(challengeRoute, /<ChallengePanel teamState=\{teamState\}/)
+  assert.match(challengeRoute, /<ChallengePanel\s+teamState=\{teamState\}/)
   assert.match(challengeRoute, /<TeamRank teamState=\{teamState\}/)
   assert.doesNotMatch(challengePanel, /useGameTeamInfo\(numId/)
   assert.doesNotMatch(teamRank, /useGameTeamInfo\(numId/)

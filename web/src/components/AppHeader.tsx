@@ -28,6 +28,7 @@ import { useTranslation } from 'react-i18next'
 import { Link, useLocation } from 'react-router'
 import { LogoHeader } from '@Components/LogoHeader'
 import { AppControlProps } from '@Components/WithNavbar'
+import { WsrxManager } from '@Components/WsrxManager'
 import {
   PRIMARY_NAVIGATION,
   canAccessNavigationItem,
@@ -39,9 +40,10 @@ import { clearLocalCache } from '@Utils/Cache'
 import { LanguageMap, SupportedLanguages, useLanguage } from '@Utils/I18n'
 import { useConfig } from '@Hooks/useConfig'
 import { useLogOut, useUser } from '@Hooks/useUser'
+import { ContainerPortMappingType } from '@Api'
 import classes from '@Styles/AppHeader.module.css'
 
-export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
+export const AppHeader: FC<AppControlProps & { competition?: boolean }> = ({ openColorModal, competition = false }) => {
   const [opened, setOpened] = useState(false)
   const location = useLocation()
   const { colorScheme, toggleColorScheme } = useMantineColorScheme()
@@ -62,12 +64,39 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
 
   return (
     <>
-      <AppShell.Header className={classes.header} data-guide-boundary="top-shell">
+      <AppShell.Header
+        className={classes.header}
+        data-competition={competition || undefined}
+        data-guide-boundary="top-shell"
+      >
         <Group h="100%" px="md" justify="space-between" wrap="nowrap">
           <Link to="/" className={classes.brandLink}>
             <LogoHeader />
           </Link>
+          {competition && (
+            <nav className={classes.competitionNav} aria-label={t('common.tab.navigation', 'Primary navigation')}>
+              {dockItems
+                .filter((item) => item.link !== '/')
+                .map((item) => (
+                  <Link key={item.link} to={item.link}>
+                    <Icon path={item.icon} size={0.9} aria-hidden="true" />
+                    {t(item.label)}
+                  </Link>
+                ))}
+            </nav>
+          )}
           <Group justify="flex-end" wrap="nowrap" gap="xs">
+            {competition && loggedIn && (
+              <Link
+                to="/account/profile"
+                className={classes.competitionProfile}
+                aria-label={t('common.tab.account.profile')}
+              >
+                <Avatar src={user?.avatar} size={34} radius="xl">
+                  {user?.userName?.slice(0, 1)}
+                </Avatar>
+              </Link>
+            )}
             <Menu position="bottom-end" offset={14} width={190}>
               <Menu.Target>
                 <ActionIcon size={44} className={classes.button} aria-label={t('common.tab.language', 'Language')}>
@@ -212,6 +241,7 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
               </Stack>
 
               <Divider label={t('common.tab.preferences', 'Preferences')} labelPosition="left" />
+              {competition && config.portMapping === ContainerPortMappingType.PlatformProxy && <WsrxManager />}
               <Stack gap={4}>
                 <UnstyledButton className={classes.navLink} onClick={() => toggleColorScheme()}>
                   <span className={classes.navIcon} aria-hidden="true">

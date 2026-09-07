@@ -6,6 +6,30 @@
   box-shadow: 0 8px 32px rgba(8, 15, 30, 0.08);
   backdrop-filter: blur(18px) saturate(1.25);
 }
+.competitionNav {
+  display: flex;
+  gap: 1.75rem;
+}
+.competitionNav a {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--app-text-secondary);
+  text-decoration: none;
+  min-height: 44px;
+}
+.competitionNav a:hover {
+  color: var(--app-text-primary);
+}
+.competitionProfile {
+  text-decoration: none;
+}
+@media (max-width: 62em) {
+  .competitionNav,
+  .competitionProfile {
+    display: none;
+  }
+}
 
 .brandLink {
   min-width: 0;
@@ -165,7 +189,7 @@
 }
 
 @media (min-width: calc($mantine-breakpoint-sm + 0.01em)) {
-  .header,
+  .header:not([data-competition]),
   .dock {
     display: none;
   }

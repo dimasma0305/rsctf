@@ -1,4 +1,4 @@
-import { Card, LoadingOverlay, Stack, Text, Title } from '@mantine/core'
+import { Badge, Card, Group, LoadingOverlay, Stack, Text, Title } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import { mdiChartLine, mdiExclamationThick, mdiFlagOutline, mdiMonitorEye, mdiUpload } from '@mdi/js'
 import { Icon } from '@mdi/react'
@@ -205,7 +205,16 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
             <Text size="xs" c="dimmed">
               {t('common.workspace.event_id', 'Event #{{id}}', { id: numId })}
             </Text>
-            <Title className={classes.title}>{game.title}</Title>
+            <Group gap="sm" align="center">
+              <Title className={classes.title}>{game.title}</Title>
+              <Badge variant="light" color={finished ? 'gray' : started ? 'green' : 'blue'}>
+                {finished
+                  ? t('game.arena.ended', 'Ended')
+                  : started
+                    ? t('game.arena.live', 'Live')
+                    : t('game.arena.upcoming', 'Upcoming')}
+              </Badge>
+            </Group>
           </Stack>
           <GameCountdown game={game} />
         </header>

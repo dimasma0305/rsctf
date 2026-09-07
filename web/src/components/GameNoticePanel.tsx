@@ -84,7 +84,7 @@ const formatNotice = (t: TFunction, notice: GameNotice) => {
 
 const PANEL_HEIGHT = 'clamp(12rem, calc(100dvh - 25rem), 48rem)'
 
-export const GameNoticePanel: FC = () => {
+export const GameNoticePanel: FC<{ compact?: boolean }> = ({ compact = false }) => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const feedActive = Boolean(id) && Number.isInteger(numId) && numId > 0
@@ -183,6 +183,11 @@ export const GameNoticePanel: FC = () => {
   return (
     <Card shadow="sm" w="100%">
       <Stack gap="xs">
+        {compact && (
+          <Text component="h2" size="sm" fw={650} m={0}>
+            {t('game.arena.recent_activity', 'Recent activity')}
+          </Text>
+        )}
         <SegmentedControl
           value={filter}
           aria-label={t('game.label.notice_type.filter', 'Filter notices by type')}
@@ -202,7 +207,7 @@ export const GameNoticePanel: FC = () => {
           <ScrollArea
             offsetScrollbars
             scrollbarSize={0}
-            h={PANEL_HEIGHT}
+            h={compact ? '12rem' : PANEL_HEIGHT}
             viewportProps={{
               tabIndex: 0,
               'aria-label': t('game.label.notices', 'Game notices'),
