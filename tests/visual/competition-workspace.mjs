@@ -66,7 +66,7 @@ const selectView = async (view) => {
 try {
   await cdp.send('Page.enable'); await cdp.send('Runtime.enable')
   cdp.on('Runtime.exceptionThrown', ({ exceptionDetails }) => errors.push(exceptionDetails.exception?.description ?? exceptionDetails.text))
-  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('language', JSON.stringify('en-US')); localStorage.setItem('mantine-color-scheme-value', 'dark'); localStorage.setItem('rsctf-player-guide:${profile.userId}', JSON.stringify({ interactiveEnabled:false, completedVersion:1, seenFeatures:[] }));` })
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `if (location.origin === ${JSON.stringify(new URL(target).origin)}) { localStorage.setItem('language', JSON.stringify('en-US')); localStorage.setItem('mantine-color-scheme-value', 'dark'); localStorage.setItem('rsctf-player-guide:${profile.userId}', JSON.stringify({ interactiveEnabled:false, completedVersion:1, seenFeatures:[] })); }` })
   await cdp.send('Fetch.enable', { patterns: [{ urlPattern: `${target}/api/*` }, { urlPattern: `${target}/hub*` }] })
   cdp.on('Fetch.requestPaused', async ({ requestId, request }) => {
     const path = new URL(request.url).pathname.toLowerCase()
@@ -127,7 +127,7 @@ try {
   }
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
   await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] })
-  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('language', JSON.stringify('id-ID')); localStorage.setItem('mantine-color-scheme-value', 'light');` })
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `if (location.origin === ${JSON.stringify(new URL(target).origin)}) { localStorage.setItem('language', JSON.stringify('id-ID')); localStorage.setItem('mantine-color-scheme-value', 'light'); }` })
   await cdp.send('Page.navigate', { url: `${target}/games/901/challenges` })
   await waitFor(`document.querySelector('[data-challenge-list]')`)
   await inspect('light-indonesian-list')
