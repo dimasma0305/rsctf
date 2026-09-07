@@ -140,7 +140,7 @@
 }
 
 .errorText {
-  color: light-dark(var(--mantine-color-red-8), var(--mantine-color-red-3));
+  color: light-dark(var(--mantine-color-red-9), var(--mantine-color-red-3));
   line-height: 1.5;
 }
 
