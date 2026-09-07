@@ -1,8 +1,7 @@
 import { Button, Flex, LoadingOverlay, Stack, Tabs } from '@mantine/core'
-import { useReducedMotion } from '@mantine/hooks'
 import { mdiFlag, mdiLightningBolt, mdiPackageVariant, mdiTableArrowDown, mdiGhost } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import React, { FC, useEffect, useRef, useState } from 'react'
+import React, { FC, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
 import { WithGameTab } from '@Components/WithGameTab'
@@ -26,7 +25,6 @@ export const WithGameMonitor: FC<WithGameMonitorProps> = ({ children, isLoading 
   const location = useLocation()
   const { t } = useTranslation()
   const isCompact = useIsMobile(1100)
-  const reducedMotion = useReducedMotion()
 
   const pages = [
     { icon: mdiLightningBolt, title: t('game.tab.monitor.events'), path: 'events' },
@@ -50,16 +48,23 @@ export const WithGameMonitor: FC<WithGameMonitorProps> = ({ children, isLoading 
     }
   }, [id, location.pathname, navigate])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isCompact) return
 
     const scroller = monitorTabsRef.current
     const activeItem = scroller?.querySelector<HTMLElement>('[role="tab"][data-active]')
     if (!scroller || !activeItem) return
 
-    const target = activeItem.offsetLeft - (scroller.clientWidth - activeItem.offsetWidth) / 2
-    scroller.scrollTo({ left: Math.max(0, target), behavior: reducedMotion ? 'auto' : 'smooth' })
-  }, [activeTab, isCompact, reducedMotion])
+    const viewport = scroller.getBoundingClientRect()
+    const item = activeItem.getBoundingClientRect()
+    const overflow =
+      item.left < viewport.left
+        ? item.left - viewport.left
+        : item.right > viewport.right
+          ? item.right - viewport.right
+          : 0
+    if (overflow !== 0) scroller.scrollTo({ left: Math.max(0, scroller.scrollLeft + overflow), behavior: 'auto' })
+  }, [activeTab, isCompact])
 
   const onDownloadScoreboardSheet = () =>
     downloadBlob(
@@ -71,7 +76,7 @@ export const WithGameMonitor: FC<WithGameMonitorProps> = ({ children, isLoading 
     )
 
   return (
-    <WithNavBar width={GAME_PAGE_CONTENT_WIDTH}>
+    <WithNavBar width={GAME_PAGE_CONTENT_WIDTH} competition>
       <WithRole requiredRole={Role.Monitor}>
         <WithGameTab>
           <Flex direction={isCompact ? 'column' : 'row'} gap="md" justify="space-between" align="flex-start" w="100%">

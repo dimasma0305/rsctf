@@ -67,10 +67,14 @@ test('game workspace uses one bounded width and container-sized challenge cards'
   for (const source of sources) {
     const contents = readFileSync(join(repositoryRoot, source), 'utf8')
     assert.match(contents, /width=\{GAME_PAGE_CONTENT_WIDTH\}/, source)
+    assert.match(contents, /width=\{GAME_PAGE_CONTENT_WIDTH\} competition/, source)
   }
 
   const navbar = readFileSync(join(repositoryRoot, 'web/src/components/WithNavbar.tsx'), 'utf8')
-  assert.match(navbar, /GAME_PAGE_CONTENT_WIDTH = '1800px'/)
+  assert.match(navbar, /GAME_PAGE_CONTENT_WIDTH = '1440px'/)
+  assert.match(navbar, /transitionDuration=\{0\}/)
+  const viewport = readFileSync(join(repositoryRoot, 'web/src/utils/ThemeOverride.ts'), 'utf8')
+  assert.match(viewport.slice(viewport.indexOf('export const useIsMobile')), /getInitialValueInEffect: false/)
   assert.match(navbar, /data-page-content/)
 
   const challengeGrid = readFileSync(

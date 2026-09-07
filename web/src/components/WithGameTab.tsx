@@ -202,20 +202,11 @@ export const WithGameTab: FC<React.PropsWithChildren<{ summary?: React.ReactNode
   }, [clockReady, finished, game, liveReadReady, location, navigate, numId, role, started, status, t])
 
   return (
-    <Stack
-      className={summary ? classes.competitionStack : undefined}
-      pos="relative"
-      mt={summary ? 0 : 'md'}
-      gap={summary ? 'sm' : 'md'}
-      style={{ containerType: 'inline-size' }}
-    >
+    <Stack className={classes.competitionStack} pos="relative" mt={0} gap="sm" style={{ containerType: 'inline-size' }}>
       <LoadingOverlay visible={!game} overlayProps={DEFAULT_LOADING_OVERLAY} />
-      <div
-        className={summary ? classes.masthead : classes.standardHeading}
-        data-event-workspace-header={summary ? true : undefined}
-      >
+      <div className={classes.masthead} data-event-workspace-header>
         {game && (
-          <header className={classes.header} data-competition={summary ? true : undefined}>
+          <header className={classes.header}>
             <Stack gap={4} miw={0}>
               <Group gap="xs" className={classes.eventIdentity}>
                 <Text size="xs" c="dimmed" className={classes.eventId}>
@@ -231,14 +222,13 @@ export const WithGameTab: FC<React.PropsWithChildren<{ summary?: React.ReactNode
               </Group>
               <Title className={classes.title}>{game.title}</Title>
             </Stack>
-            <GameCountdown game={game} compact={!!summary} />
+            <GameCountdown game={game} compact />
           </header>
         )}
-        {summary && <div className={classes.summary}>{summary}</div>}
-        <div className={summary ? classes.eventNavigation : undefined}>
+        <div className={classes.eventNavigation} data-event-tabs>
           <IconTabs
             mode="navigation"
-            appearance={summary ? 'underline' : 'surface'}
+            appearance="underline"
             position="flex-start"
             ariaLabel={t('game.tab.navigation', 'Game sections')}
             active={activeTab}
@@ -246,6 +236,7 @@ export const WithGameTab: FC<React.PropsWithChildren<{ summary?: React.ReactNode
           />
         </div>
       </div>
+      {summary && <div className={classes.summary}>{summary}</div>}
       {children}
     </Stack>
   )

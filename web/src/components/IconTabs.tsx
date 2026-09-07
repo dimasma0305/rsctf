@@ -1,6 +1,6 @@
 import { Group, GroupProps, MantineColor, useMantineColorScheme, useMantineTheme } from '@mantine/core'
 import { clamp, useReducedMotion } from '@mantine/hooks'
-import React, { FC, useEffect, useRef, useState } from 'react'
+import React, { FC, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { LogoHeader } from '@Components/LogoHeader'
 import classes from '@Styles/IconTabs.module.css'
@@ -132,14 +132,27 @@ export const IconTabs: FC<IconTabsProps> = (props) => {
     setActiveTab(active ?? 0)
   }, [active])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const scroller = scrollerRef.current
     if (orientation === 'vertical') return
     const activeItem = scroller?.querySelector<HTMLElement>('[data-active]')
     if (!scroller || !activeItem) return
 
-    const target = activeItem.offsetLeft - (scroller.clientWidth - activeItem.offsetWidth) / 2
-    scroller.scrollTo({ left: Math.max(0, target), behavior: reducedMotion ? 'auto' : 'smooth' })
+    const viewport = scroller.getBoundingClientRect()
+    const item = activeItem.getBoundingClientRect()
+    const overflow =
+      item.left < viewport.left
+        ? item.left - viewport.left
+        : item.right > viewport.right
+          ? item.right - viewport.right
+          : 0
+    // Do not recenter an already-visible tab every time a route mounts. Only
+    // reveal a clipped item, before paint, without panning the navigation bar.
+    if (overflow !== 0)
+      scroller.scrollTo({
+        left: Math.max(0, scroller.scrollLeft + overflow),
+        behavior: mode === 'navigation' || reducedMotion ? 'auto' : 'smooth',
+      })
   }, [current, mode, tabs.length, orientation, reducedMotion])
 
   const selectTab = (index: number, focus = false) => {

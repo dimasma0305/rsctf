@@ -283,6 +283,7 @@
     min-height: 0 !important;
     overflow-x: clip;
     overflow-y: auto;
+    scrollbar-gutter: stable;
     overscroll-behavior-y: contain;
   }
 

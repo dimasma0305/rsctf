@@ -85,7 +85,7 @@ try {
   assert.equal(await evaluate(`document.querySelector('[data-competition-workspace]').getBoundingClientRect().left >= document.querySelector('#primary-navigation-rail').getBoundingClientRect().right`), true)
   assert.equal(await evaluate(`getComputedStyle(document.querySelector('[data-competition-workspace]')).gridTemplateColumns.split(' ').length`), 1)
   assert.ok(await evaluate(`document.querySelector('[data-event-workspace-header]').getBoundingClientRect().height < 190`), 'event information and team stats form one compact masthead')
-  assert.ok(await evaluate(`parseFloat(getComputedStyle(document.querySelector('[data-team-summary] dd')).fontSize) >= 20`), 'desktop team values stay readable beside the event title')
+  assert.ok(await evaluate(`parseFloat(getComputedStyle(document.querySelector('[data-team-summary] dd')).fontSize) >= 16`), 'compact desktop team values stay readable below the event header')
   assert.equal(await evaluate(`document.querySelectorAll('[data-globe-choice]').length`), 5)
   await inspect('desktop-globe-categories')
   await evaluate(`document.querySelector('[data-team-summary] button').focus()`)

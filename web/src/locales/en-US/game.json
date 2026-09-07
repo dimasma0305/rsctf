@@ -1,5 +1,9 @@
 {
   "arena": {
+    "scoring_status": "Scoring status",
+    "awaiting_round_update": "Awaiting round update",
+    "epoch": "Epoch",
+    "tick": "Tick",
     "team_options": "Team details and token",
     "globe_hint": "Choose a node to explore",
     "globe_navigation": "Globe navigation",

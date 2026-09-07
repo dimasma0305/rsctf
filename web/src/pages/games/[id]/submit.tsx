@@ -153,7 +153,7 @@ const Submit: FC = () => {
   }
 
   return (
-    <WithNavBar width={GAME_PAGE_CONTENT_WIDTH}>
+    <WithNavBar width={GAME_PAGE_CONTENT_WIDTH} competition>
       <WithRole requiredRole={Role.User}>
         <WithGameTab>
           <Stack gap="lg" maw="48rem" mx="auto" w="100%">

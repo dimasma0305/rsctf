@@ -1,5 +1,9 @@
 {
   "arena": {
+    "scoring_status": "Status penilaian",
+    "awaiting_round_update": "Menunggu pembaruan ronde",
+    "epoch": "Epoch",
+    "tick": "Tick",
     "team_options": "Detail dan token tim",
     "globe_hint": "Pilih simpul untuk menjelajah",
     "globe_navigation": "Navigasi globe",

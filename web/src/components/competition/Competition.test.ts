@@ -72,7 +72,15 @@ test('competition header groups event, team and navigation without an ended coun
   const tabs = readFileSync('src/components/WithGameTab.tsx', 'utf8')
   assert.match(tabs, /data-event-workspace-header/)
   assert.match(tabs, /if \(compact && finished\) return null/)
-  assert.match(tabs, /classes.standardHeading/, 'other game pages retain their normal heading spacing')
+  assert.doesNotMatch(
+    tabs,
+    /summary \? classes.masthead|summary \? 'underline'/,
+    'the event header does not change between sections'
+  )
+  assert.ok(
+    tabs.indexOf('{summary &&') > tabs.indexOf('<IconTabs'),
+    'route-specific team data stays below the stable navigation frame'
+  )
 })
 
 test('competition panels reuse owned challenge reads and keep archives and mobile dialogs', () => {

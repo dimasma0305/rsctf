@@ -435,7 +435,11 @@ export const useCustomTheme = () => {
 
 export const useIsMobile = (limit?: number) => {
   const theme = useMantineTheme()
-  const isMobile = useMediaQuery(`(max-width: ${limit ? `${limit}px` : theme.breakpoints.sm})`)
+  // Resolve the actual viewport on the first render, including route remounts.
+  // Starting with the desktop shell and correcting it in an effect shifts every page.
+  const isMobile = useMediaQuery(`(max-width: ${limit ? `${limit}px` : theme.breakpoints.sm})`, undefined, {
+    getInitialValueInEffect: false,
+  })
   return isMobile
 }
 

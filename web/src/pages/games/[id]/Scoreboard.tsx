@@ -225,7 +225,7 @@ const Scoreboard: FC = () => {
           {
             value: 'overall',
             label: (
-              <Center style={{ gap: 4 }} aria-label={t('game.content.scoreboard.tab.overall', 'Overall')}>
+              <Center style={{ gap: 4 }}>
                 <Icon path={mdiScaleBalance} size={0.8} color="var(--mantine-color-yellow-7)" aria-hidden="true" />
                 <span>{t('game.content.scoreboard.tab.overall', 'Overall')}</span>
               </Center>
@@ -236,7 +236,7 @@ const Scoreboard: FC = () => {
                 {
                   value: 'jeopardy',
                   label: (
-                    <Center style={{ gap: 4 }} aria-label={t('game.content.scoreboard.tab.jeopardy', 'Jeopardy')}>
+                    <Center style={{ gap: 4 }}>
                       <Icon path={mdiFlagOutline} size={0.8} color="var(--mantine-color-blue-6)" aria-hidden="true" />
                       <span>{t('game.content.scoreboard.tab.jeopardy', 'Jeopardy')}</span>
                     </Center>
@@ -249,7 +249,7 @@ const Scoreboard: FC = () => {
                 {
                   value: 'ad',
                   label: (
-                    <Center style={{ gap: 4 }} aria-label={t('game.content.scoreboard.tab.ad', 'Attack & Defense')}>
+                    <Center style={{ gap: 4 }}>
                       <Icon path={mdiSwordCross} size={0.8} color="var(--mantine-color-red-6)" aria-hidden="true" />
                       <span className={classes.fullBoardLabel}>
                         {t('game.content.scoreboard.tab.ad', 'Attack & Defense')}
@@ -267,7 +267,7 @@ const Scoreboard: FC = () => {
                 {
                   value: 'koth',
                   label: (
-                    <Center style={{ gap: 4 }} aria-label={t('game.content.scoreboard.tab.koth', 'King of the Hill')}>
+                    <Center style={{ gap: 4 }}>
                       <Icon path={mdiCrown} size={0.8} color="var(--mantine-color-violet-6)" aria-hidden="true" />
                       <span className={classes.fullBoardLabel}>
                         {t('game.content.scoreboard.tab.koth', 'King of the Hill')}
@@ -291,12 +291,11 @@ const Scoreboard: FC = () => {
   const showOverall = effectiveTab === 'overall' && showTabs
 
   return (
-    <WithNavBar width={GAME_PAGE_CONTENT_WIDTH}>
-      <WithGameTab>
+    <WithNavBar width={GAME_PAGE_CONTENT_WIDTH} competition>
+      <WithGameTab summary={teamInfo && !teamInfoError ? <TeamRank teamState={teamState} compact /> : undefined}>
         {isMobile ? (
-          <Stack pt="md">
+          <Stack>
             {freezeBanner}
-            {teamInfo && !teamInfoError && showJeopardy && <TeamRank teamState={teamState} />}
             {tabNavbar}
             {showOverall ? (
               <CombinedScoreboardTable numId={numId} scoreboard={combinedScoreboard} error={combinedScoreboardError} />

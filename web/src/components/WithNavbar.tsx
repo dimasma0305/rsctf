@@ -31,7 +31,7 @@ interface WithNavBarProps extends React.PropsWithChildren {
   competition?: boolean
 }
 
-export const GAME_PAGE_CONTENT_WIDTH = '1800px'
+export const GAME_PAGE_CONTENT_WIDTH = '1440px'
 
 export interface AppControlProps {
   openColorModal: () => void
@@ -69,6 +69,7 @@ export const WithNavBar: FC<WithNavBarProps> = ({
       </a>
       <AppShell
         p={0}
+        transitionDuration={0}
         header={{ height: 68, collapsed: !isMobile }}
         navbar={{
           width: getNavigationRailWidth(navigationCompact),
@@ -97,7 +98,7 @@ export const WithNavBar: FC<WithNavBarProps> = ({
               className={classes.content}
               style={
                 {
-                  '--page-content-width': competition ? '1440px' : (width ?? '1440px'),
+                  '--page-content-width': width ?? '1440px',
                   zIndex: 20,
                 } as React.CSSProperties
               }

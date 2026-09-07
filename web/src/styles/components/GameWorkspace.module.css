@@ -1,7 +1,3 @@
-.standardHeading {
-  display: grid;
-  gap: var(--mantine-spacing-md);
-}
 .competitionStack {
   padding-top: 1rem;
 }
@@ -29,11 +25,10 @@
 
 .masthead {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(18rem, 25rem);
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
-  column-gap: 2rem;
-  row-gap: 0.8rem;
-  padding: 1rem 1.25rem 0;
+  row-gap: 0.4rem;
+  padding: 0.75rem 1rem 0;
   border: 1px solid var(--app-border);
   border-radius: 0.8rem;
   background:
@@ -41,8 +36,8 @@
   box-shadow: inset 0 1px 0 light-dark(#ffffff, #ffffff05);
 }
 .masthead .header {
-  display: grid;
-  justify-content: start;
+  display: flex;
+  justify-content: space-between;
   gap: 0.55rem;
   min-width: 0;
   padding: 0;
@@ -78,11 +73,13 @@
 }
 .summary {
   min-width: 0;
+  padding: 0.25rem 0.2rem;
 }
 .teamStrip {
-  display: grid;
+  display: flex;
+  align-items: center;
   min-width: 0;
-  gap: 0.3rem;
+  gap: 1.25rem;
 }
 .teamIdentity {
   display: flex;
@@ -91,7 +88,7 @@
   min-width: 0;
   min-height: 36px;
   width: fit-content;
-  max-width: 100%;
+  max-width: 36%;
   border-radius: 0.3rem;
 }
 .teamIdentity > :not(.teamName) {
@@ -107,7 +104,9 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.5rem;
-  margin: 0;
+  margin: 0 0 0 auto;
+  flex: 1;
+  max-width: 28rem;
 }
 .teamMetrics > div {
   display: flex;
@@ -125,7 +124,7 @@
   order: -1;
   margin: 0;
   font-weight: 700;
-  font-size: 1.4rem;
+  font-size: 1.1rem;
   font-variant-numeric: tabular-nums;
 }
 .eventNavigation {
@@ -151,6 +150,9 @@
   .teamStrip[data-mixed-score] .teamIdentity {
     max-width: 100%;
   }
+  .teamStrip[data-mixed-score] .teamMetrics {
+    width: 100%;
+  }
 }
 @container (max-width: 52rem) {
   .masthead {
@@ -160,6 +162,9 @@
   }
   .masthead .header {
     gap: 0.25rem;
+  }
+  .header > :first-child {
+    flex-basis: 100%;
   }
   .masthead .title {
     font-size: 1.2rem;
@@ -180,6 +185,7 @@
   .teamMetrics {
     flex: 1;
     gap: 0.4rem;
+    margin: 0;
   }
   .teamMetrics > div {
     padding-inline-start: 0.5rem;
