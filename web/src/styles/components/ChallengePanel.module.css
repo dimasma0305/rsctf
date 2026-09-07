@@ -1,26 +1,12 @@
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(23rem, 29rem);
+  grid-template-columns: minmax(0, 1fr);
   gap: 1.5rem;
   width: 100%;
   align-items: start;
 }
-.emptyDetail {
-  padding: 3rem 1.5rem;
-  min-height: 28rem;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  gap: 1rem;
-  border: 1px solid var(--app-border);
-  border-radius: 0.8rem;
-  background:
-    radial-gradient(ellipse at top right, light-dark(#dce9fa, #172a40), transparent 70%), var(--app-raised-surface);
-}
-.emptyDetail > svg {
-  color: light-dark(#375f91, #88b6ed);
+.workspace[data-detail-open] {
+  grid-template-columns: minmax(0, 1fr) minmax(23rem, 26rem);
 }
 .panel {
   display: grid;
@@ -108,7 +94,7 @@
 }
 
 @media (max-width: 68.75em) {
-  .workspace {
+  .workspace[data-detail-open] {
     grid-template-columns: minmax(0, 1fr);
   }
 }

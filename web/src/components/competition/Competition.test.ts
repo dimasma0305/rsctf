@@ -72,7 +72,10 @@ test('competition panels reuse owned challenge reads and keep archives and mobil
   assert.match(shell, /<Modal.Root/)
   assert.match(
     navigation,
-    /!competition && \(\s*<AppNavbar/,
-    'the hidden rail must not duplicate the drawer connection manager'
+    /!isMobile && \(\s*<AppNavbar/,
+    'desktop competition pages retain the shared sidebar without duplicating mobile connection controls'
   )
+  assert.match(navigation, /isMobile && <AppHeader/)
+  assert.doesNotMatch(navigation, /desktop: competition/)
+  assert.doesNotMatch(panel, /classes\.emptyDetail/)
 })

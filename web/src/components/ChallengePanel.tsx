@@ -776,20 +776,6 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
           </ScrollArea>
           {activity}
         </div>
-        {inlineDetail && !detailOpened && (
-          <aside className={classes.emptyDetail}>
-            <Icon path={mdiEarth} size={3} aria-hidden="true" />
-            <Title order={2} size="h3">
-              {t('game.arena.select_challenge', 'Select a challenge')}
-            </Title>
-            <Text size="sm" c="dimmed">
-              {t(
-                'game.arena.select_description',
-                'Explore the globe or browse the list. Challenge details, files, and actions will appear here.'
-              )}
-            </Text>
-          </aside>
-        )}
         {game?.writeupRequired && (
           <WriteupSubmitModal
             opened={writeupSubmitOpened}

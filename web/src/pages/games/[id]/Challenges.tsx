@@ -1,14 +1,6 @@
 import { Alert, Badge, Button, Flex, Group, Paper, Stack, Text } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
-import {
-  mdiArchiveOutline,
-  mdiCrown,
-  mdiOpenInNew,
-  mdiPauseCircleOutline,
-  mdiSword,
-  mdiSwordCross,
-  mdiToolboxOutline,
-} from '@mdi/js'
+import { mdiArchiveOutline, mdiCrown, mdiPauseCircleOutline, mdiSwordCross, mdiToolboxOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -95,111 +87,102 @@ const Challenges: FC = () => {
           )}
           <TeamRank teamState={teamState} compact />
           <Flex direction="column" gap="sm" w="100%">
-            <Group gap="sm" w="100%" align="center">
-              {!archived && adState?.scoringPaused && (
-                <Alert
-                  color="orange"
-                  variant="light"
-                  icon={<Icon path={mdiPauseCircleOutline} size={1} />}
-                  title={t('game.content.ad.scoring_paused', 'Scoring paused')}
-                >
-                  {t(
-                    'game.content.ad.scoring_paused_description',
-                    'Round progression, checker scoring, and captured-flag submissions are paused by the event operator.'
-                  )}
-                </Alert>
-              )}
-              <Button
-                component="a"
-                href={`/games/${numId}/attack`}
-                target="_blank"
-                rel="noreferrer"
-                variant="light"
-                leftSection={<Icon path={mdiSword} size={1} />}
-                rightSection={<Icon path={mdiOpenInNew} size={0.8} />}
-              >
-                {t('game.button.attack')}
-              </Button>
-              {!archived && hasAdEngine && (
-                <Paper p="sm" withBorder>
-                  <Group justify="space-between" wrap="nowrap" align="center">
-                    <Stack gap={0}>
-                      <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
-                        {t('game.content.ad.round', 'Round')}
-                      </Text>
-                      <Text fw="bold" size="lg">
-                        {adState?.currentRound ?? '—'}
-                      </Text>
-                    </Stack>
-                    <Stack gap={0} align="flex-end">
-                      <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
-                        {t('game.content.ad.round_ends', 'Round ends')}
-                      </Text>
-                      <Text fw="bold" size="lg">
-                        {roundEndsIn === null
-                          ? t('game.content.ad.no_round_yet', 'No round yet — warmup')
-                          : `${roundEndsIn}s`}
-                      </Text>
-                    </Stack>
-                  </Group>
-                  {hasAdChallenges && currentEpochProgress && (
-                    <Group gap={6} mt="xs" wrap="wrap">
-                      <Badge color="violet" variant="light" size="sm">
-                        {t('game.content.ad.epoch_number', {
-                          epoch: currentEpochProgress.epoch,
-                          defaultValue: 'Epoch {{epoch}}',
-                        })}
-                      </Badge>
-                      <Badge color="blue" variant="light" size="sm">
-                        {t('game.content.ad.epoch_tick', {
-                          tick: currentEpochProgress.tick,
-                          total: currentEpochProgress.totalTicks,
-                          defaultValue: 'Tick {{tick}}/{{total}}',
-                        })}
-                      </Badge>
+            {!archived && hasAdEngine && (
+              <Group gap="sm" w="100%" align="center">
+                {!archived && adState?.scoringPaused && (
+                  <Alert
+                    color="orange"
+                    variant="light"
+                    icon={<Icon path={mdiPauseCircleOutline} size={1} />}
+                    title={t('game.content.ad.scoring_paused', 'Scoring paused')}
+                  >
+                    {t(
+                      'game.content.ad.scoring_paused_description',
+                      'Round progression, checker scoring, and captured-flag submissions are paused by the event operator.'
+                    )}
+                  </Alert>
+                )}
+                {!archived && hasAdEngine && (
+                  <Paper p="sm" withBorder>
+                    <Group justify="space-between" wrap="nowrap" align="center">
+                      <Stack gap={0}>
+                        <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
+                          {t('game.content.ad.round', 'Round')}
+                        </Text>
+                        <Text fw="bold" size="lg">
+                          {adState?.currentRound ?? '—'}
+                        </Text>
+                      </Stack>
+                      <Stack gap={0} align="flex-end">
+                        <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
+                          {t('game.content.ad.round_ends', 'Round ends')}
+                        </Text>
+                        <Text fw="bold" size="lg">
+                          {roundEndsIn === null
+                            ? t('game.content.ad.no_round_yet', 'No round yet — warmup')
+                            : `${roundEndsIn}s`}
+                        </Text>
+                      </Stack>
                     </Group>
-                  )}
-                  {adState?.currentRound === 0 && (
-                    <Badge color="blue" variant="light" size="sm" mt="xs" w="100%">
-                      {t('game.content.ad.warmup_pill', 'Warmup — scoring not yet active')}
-                    </Badge>
-                  )}
-                  {hasAdChallenges && adState && adState.currentRound > 0 && !adState.flagsReady && (
-                    <Badge color="yellow" variant="light" size="sm" mt="xs" w="100%">
-                      {t('game.content.ad.flags_syncing.label', 'Flags syncing — wait before attacking')}
-                    </Badge>
-                  )}
-                  {hasAdChallenges && adState && adState.flagDeliveryFailures > 0 && (
-                    <Badge color="orange" variant="light" size="sm" mt="xs" w="100%">
-                      {t('game.content.ad.flag_delivery_failed.label', {
-                        count: adState.flagDeliveryFailures,
-                        defaultValue: '{{count}} flag deliveries need attention',
-                      })}
-                    </Badge>
-                  )}
-                </Paper>
-              )}
-              {!archived && hasAdChallenges && (
-                <Button
-                  variant="default"
-                  leftSection={<Icon path={mdiToolboxOutline} size={1} />}
-                  rightSection={<Icon path={mdiSwordCross} size={0.8} color="var(--mantine-color-red-6)" />}
-                  onClick={adGuideHandlers.open}
-                >
-                  {t('game.button.ad.open_toolkit', 'A&D Toolkit')}
-                </Button>
-              )}
-              {!archived && hasKothChallenges && (
-                <Button
-                  variant="default"
-                  leftSection={<Icon path={mdiToolboxOutline} size={1} />}
-                  rightSection={<Icon path={mdiCrown} size={0.8} color="var(--mantine-color-violet-6)" />}
-                  onClick={kothGuideHandlers.open}
-                >
-                  {t('game.button.koth.open_toolkit', 'KotH Toolkit')}
-                </Button>
-              )}
-            </Group>
+                    {hasAdChallenges && currentEpochProgress && (
+                      <Group gap={6} mt="xs" wrap="wrap">
+                        <Badge color="violet" variant="light" size="sm">
+                          {t('game.content.ad.epoch_number', {
+                            epoch: currentEpochProgress.epoch,
+                            defaultValue: 'Epoch {{epoch}}',
+                          })}
+                        </Badge>
+                        <Badge color="blue" variant="light" size="sm">
+                          {t('game.content.ad.epoch_tick', {
+                            tick: currentEpochProgress.tick,
+                            total: currentEpochProgress.totalTicks,
+                            defaultValue: 'Tick {{tick}}/{{total}}',
+                          })}
+                        </Badge>
+                      </Group>
+                    )}
+                    {adState?.currentRound === 0 && (
+                      <Badge color="blue" variant="light" size="sm" mt="xs" w="100%">
+                        {t('game.content.ad.warmup_pill', 'Warmup — scoring not yet active')}
+                      </Badge>
+                    )}
+                    {hasAdChallenges && adState && adState.currentRound > 0 && !adState.flagsReady && (
+                      <Badge color="yellow" variant="light" size="sm" mt="xs" w="100%">
+                        {t('game.content.ad.flags_syncing.label', 'Flags syncing — wait before attacking')}
+                      </Badge>
+                    )}
+                    {hasAdChallenges && adState && adState.flagDeliveryFailures > 0 && (
+                      <Badge color="orange" variant="light" size="sm" mt="xs" w="100%">
+                        {t('game.content.ad.flag_delivery_failed.label', {
+                          count: adState.flagDeliveryFailures,
+                          defaultValue: '{{count}} flag deliveries need attention',
+                        })}
+                      </Badge>
+                    )}
+                  </Paper>
+                )}
+                {!archived && hasAdChallenges && (
+                  <Button
+                    variant="default"
+                    leftSection={<Icon path={mdiToolboxOutline} size={1} />}
+                    rightSection={<Icon path={mdiSwordCross} size={0.8} color="var(--mantine-color-red-6)" />}
+                    onClick={adGuideHandlers.open}
+                  >
+                    {t('game.button.ad.open_toolkit', 'A&D Toolkit')}
+                  </Button>
+                )}
+                {!archived && hasKothChallenges && (
+                  <Button
+                    variant="default"
+                    leftSection={<Icon path={mdiToolboxOutline} size={1} />}
+                    rightSection={<Icon path={mdiCrown} size={0.8} color="var(--mantine-color-violet-6)" />}
+                    onClick={kothGuideHandlers.open}
+                  >
+                    {t('game.button.koth.open_toolkit', 'KotH Toolkit')}
+                  </Button>
+                )}
+              </Group>
+            )}
             <ChallengePanel
               teamState={teamState}
               adStateOwner={hasAdEngine && !archived ? adStateOwner : undefined}

@@ -80,8 +80,16 @@ try {
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1200, deviceScaleFactor: 1, mobile: false })
   await cdp.send('Page.navigate', { url: `${target}/games/901/challenges` })
   await waitFor(`document.querySelectorAll('[data-globe-node]').length === 5`)
-  assert.equal(await evaluate(`getComputedStyle(document.querySelector('header[data-competition]')).display !== 'none'`), true)
+  assert.equal(await evaluate(`!!document.querySelector('#primary-navigation-rail') && !document.querySelector('header[data-guide-boundary="top-shell"]')`), true)
+  assert.equal(await evaluate(`document.querySelector('[data-competition-workspace]').getBoundingClientRect().left >= document.querySelector('#primary-navigation-rail').getBoundingClientRect().right`), true)
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('[data-competition-workspace]')).gridTemplateColumns.split(' ').length`), 1)
   await inspect('desktop-globe-categories')
+  await evaluate(`document.querySelector('#navigation-rail-toggle').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelector('#primary-navigation-rail').getBoundingClientRect().width < 80`)
+  await inspect('desktop-collapsed-sidebar')
+  await press('Enter')
+  await waitFor(`document.querySelector('#primary-navigation-rail').getBoundingClientRect().width >= 260`)
   const before = requests.length
   await evaluate(`document.querySelector('[aria-label="Rotate globe right"]').click()`)
   await evaluate(`document.querySelector('[aria-label="Reset globe view"]').click()`)
@@ -111,9 +119,10 @@ try {
   await inspect('empty-search')
   await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.innerText === 'Reset filters').click()`)
   await waitFor(`document.querySelectorAll('[data-challenge-row]').length === 10`)
-  for (const [name, width, height] of [['compact', 320, 568], ['mobile', 390, 844], ['tablet', 768, 1024], ['wide', 1920, 1080]]) {
+  for (const [name, width, height] of [['compact', 320, 568], ['mobile', 390, 844], ['tablet', 768, 1024], ['laptop', 1024, 768], ['small-desktop', 1200, 900], ['notebook', 1366, 768], ['wide', 1920, 1080]]) {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false })
     await selectView('list')
+    await waitFor(width <= 768 ? `!document.querySelector('#primary-navigation-rail') && document.querySelector('header[data-guide-boundary="top-shell"]')` : `document.querySelector('#primary-navigation-rail') && !document.querySelector('header[data-guide-boundary="top-shell"]')`)
     await inspect(`${name}-list`)
     if (width < 400) {
       await evaluate(`document.querySelector('[data-challenge-list]').scrollIntoView({ block: 'start', behavior: 'instant' })`)
@@ -121,6 +130,9 @@ try {
     }
     await evaluate(`(document.querySelector('[data-challenge-row="9001"]') ?? document.querySelector('[data-challenge-row]')).click()`)
     await waitFor(width >= 1100 ? `document.querySelector('[data-challenge-detail] input')` : `document.querySelector('[role="dialog"] input')`)
+    if (width >= 1100) {
+      assert.equal(await evaluate(`(() => { const label = document.querySelector('[data-challenge-list] tbody tr:first-child td:last-child > span > span'); const range = document.createRange(); range.selectNodeContents(label); return range.getClientRects().length; })()`), 1, 'status words remain readable beside the detail panel')
+    }
     await inspect(`${name}-detail`)
     if (width < 1100) { await press('Escape'); await waitFor(`!document.querySelector('[role="dialog"]')`) }
     else { await evaluate(`document.querySelector('[data-challenge-detail] button[aria-label="Close"]').click()`) }

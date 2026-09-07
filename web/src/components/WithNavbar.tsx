@@ -69,18 +69,17 @@ export const WithNavBar: FC<WithNavBarProps> = ({
       </a>
       <AppShell
         p={0}
-        header={{ height: 68, collapsed: !isMobile && !competition }}
+        header={{ height: 68, collapsed: !isMobile }}
         navbar={{
           width: getNavigationRailWidth(navigationCompact),
           breakpoint: NAVIGATION_MOBILE_BREAKPOINT,
           collapsed: {
             mobile: true,
-            desktop: competition,
           },
         }}
       >
-        <AppHeader openColorModal={openColorModal} competition={competition} />
-        {!competition && (
+        {isMobile && <AppHeader openColorModal={openColorModal} />}
+        {!isMobile && (
           <AppNavbar openColorModal={openColorModal} compact={navigationCompact} onToggleCompact={toggleNavigation} />
         )}
         <AppShell.Main

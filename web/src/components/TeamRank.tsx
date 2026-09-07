@@ -14,7 +14,7 @@ import {
 } from '@mantine/core'
 import { useClipboard } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
-import { mdiCheck, mdiExclamationThick, mdiKey } from '@mdi/js'
+import { mdiCheck, mdiExclamationThick, mdiKey, mdiOpenInNew, mdiSword } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import cx from 'clsx'
 import { FC, useEffect, useMemo } from 'react'
@@ -96,7 +96,7 @@ export const TeamRank: FC<TeamRankProps> = ({ teamState, compact = false, ...pro
     const hasJeopardy = challenges.some((challenge) => !isLiveChallenge(challenge))
     return (
       <Card {...props} withBorder className={classes.teamStrip} data-team-summary>
-        <Group justify="space-between" gap="md" wrap="wrap">
+        <Group justify="space-between" gap="md" wrap="wrap" className={classes.teamOverview}>
           <Group gap="sm" wrap="nowrap" miw={0} className={classes.teamIdentity}>
             <Avatar src={rank?.avatar} alt="" size={38} radius="md">
               {rank?.name?.slice(0, 1) ?? 'T'}
@@ -113,9 +113,7 @@ export const TeamRank: FC<TeamRankProps> = ({ teamState, compact = false, ...pro
           {hasJeopardy && (
             <dl className={classes.teamMetrics}>
               <div>
-                <dt>
-                  {hasLive ? t('game.arena.jeopardy_rank', 'Jeopardy rank') : t('game.label.score_table.rank_total')}
-                </dt>
+                <dt>{hasLive ? t('game.arena.jeopardy_rank', 'Jeopardy rank') : t('game.arena.rank', 'Rank')}</dt>
                 <dd>{rank?.rank ? `#${rank.rank}` : '—'}</dd>
               </div>
               <div>
@@ -125,7 +123,9 @@ export const TeamRank: FC<TeamRankProps> = ({ teamState, compact = false, ...pro
                 <dd>{rank?.score?.toLocaleString() ?? '—'}</dd>
               </div>
               <div>
-                <dt>{t('game.arena.jeopardy_solves', 'Jeopardy solves')}</dt>
+                <dt>
+                  {hasLive ? t('game.arena.jeopardy_solves', 'Jeopardy solves') : t('game.arena.solves', 'Solves')}
+                </dt>
                 <dd>{rank?.solvedCount ?? '—'}</dd>
               </div>
             </dl>
@@ -134,21 +134,35 @@ export const TeamRank: FC<TeamRankProps> = ({ teamState, compact = false, ...pro
             {t('game.tab.scoreboard')}
           </Button>
         </Group>
-        {!archived && teamInfo?.teamToken && (
-          <details className={classes.teamToken}>
-            <summary>{t('team.label.token', 'Team token')}</summary>
-            <PasswordInput
-              mt="xs"
-              label={t('team.label.token', 'Team token')}
-              value={teamInfo.teamToken}
-              readOnly
-              onClick={copyTeamToken}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') copyTeamToken()
-              }}
-            />
-          </details>
-        )}
+        <div className={classes.teamActions}>
+          {!archived && teamInfo?.teamToken && (
+            <details className={classes.teamToken}>
+              <summary>{t('team.label.token', 'Team token')}</summary>
+              <PasswordInput
+                mt="xs"
+                label={t('team.label.token', 'Team token')}
+                value={teamInfo.teamToken}
+                readOnly
+                onClick={copyTeamToken}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') copyTeamToken()
+                }}
+              />
+            </details>
+          )}
+          <Button
+            component="a"
+            href={`/games/${numId}/attack`}
+            target="_blank"
+            rel="noreferrer"
+            variant="subtle"
+            size="compact-sm"
+            leftSection={<Icon path={mdiSword} size={0.8} aria-hidden="true" />}
+            rightSection={<Icon path={mdiOpenInNew} size={0.7} aria-hidden="true" />}
+          >
+            {t('game.button.attack')}
+          </Button>
+        </div>
       </Card>
     )
   }
