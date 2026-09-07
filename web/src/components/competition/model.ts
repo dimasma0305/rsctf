@@ -43,16 +43,20 @@ export const projectSpherePoint = (x: number, y: number, z: number, yaw: number,
   }
 }
 
-export const normalizeGlobeYaw = (yaw: number) => {
+export const normalizeGlobeAngle = (angle: number) => {
   const turn = Math.PI * 2
-  return ((yaw % turn) + turn) % turn
+  return ((angle % turn) + turn) % turn
 }
 
-// Pins occupy the visible upper hemisphere. The navigator retains every action
+// Pins start on the visible upper hemisphere. The navigator retains every action
 // when rotation carries a pin behind the horizon or too close to a clipped edge.
-export const projectHorizonNode = (index: number, yaw: number) => {
+export const projectHorizonNode = (index: number, yaw: number, pitch = 0) => {
   const x = index % 2 === 0 ? -0.45 : 0.45
   const y = -0.76 + Math.floor(index / 2) * 0.2
-  const point = projectSpherePoint(x, y, Math.sqrt(Math.max(0, 1 - x * x - y * y)), yaw, 0)
-  return { x: 50 + point.x * 43, y: 50 + point.y * 43, visible: point.z >= 0 && Math.abs(point.x) <= 0.72 }
+  const point = projectSpherePoint(x, y, Math.sqrt(Math.max(0, 1 - x * x - y * y)), yaw, pitch)
+  return {
+    x: 50 + point.x * 43,
+    y: 50 + point.y * 43,
+    visible: point.z >= 0 && Math.abs(point.x) <= 0.72 && point.y >= -0.82 && point.y <= -0.12,
+  }
 }

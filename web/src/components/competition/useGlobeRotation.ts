@@ -1,26 +1,30 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
-import { normalizeGlobeYaw } from './model'
+import { normalizeGlobeAngle } from './model'
 
 // Input-driven only: coalesce each burst into one frame and retain its latest position.
 // There is no auto-spin or inertia, including when reduced motion is enabled.
 export const useGlobeRotation = (scope: string) => {
   const stage = useRef<HTMLDivElement>(null)
-  const [yaw, setYaw] = useState(0)
-  const currentYaw = useRef(0)
+  const [rotation, setRotation] = useState({ yaw: 0, pitch: 0 })
+  const currentRotation = useRef(rotation)
   const pendingFrame = useRef<number | null>(null)
-  const drag = useRef<{ id: number; x: number; yaw: number; width: number } | null>(null)
-  const update = useCallback((next: number) => {
-    currentYaw.current = normalizeGlobeYaw(next)
+  const drag = useRef<{ id: number; x: number; y: number; yaw: number; pitch: number; width: number } | null>(null)
+  const update = useCallback((yaw: number, pitch: number) => {
+    currentRotation.current = { yaw: normalizeGlobeAngle(yaw), pitch: normalizeGlobeAngle(pitch) }
     if (pendingFrame.current !== null) return
     pendingFrame.current = requestAnimationFrame(() => {
       pendingFrame.current = null
-      setYaw(currentYaw.current)
+      setRotation(currentRotation.current)
     })
   }, [])
-  const rotate = useCallback((delta: number) => update(currentYaw.current + delta), [update])
+  const rotate = useCallback(
+    (yawDelta: number, pitchDelta = 0) =>
+      update(currentRotation.current.yaw + yawDelta, currentRotation.current.pitch + pitchDelta),
+    [update]
+  )
   const reset = useCallback(() => {
     drag.current = null
-    update(0)
+    update(0, 0)
   }, [update])
 
   useEffect(() => {
@@ -61,8 +65,14 @@ export const useGlobeRotation = (scope: string) => {
     }
   }
 
+  const moveDrag = (event: PointerEvent<HTMLDivElement>) => {
+    if (drag.current?.id !== event.pointerId) return
+    const { x, y, yaw, pitch, width } = drag.current
+    update(yaw + ((event.clientX - x) * Math.PI) / width, pitch - ((event.clientY - y) * Math.PI) / width)
+  }
+
   return {
-    yaw,
+    ...rotation,
     rotate,
     reset,
     stageProps: {
@@ -73,19 +83,17 @@ export const useGlobeRotation = (scope: string) => {
         drag.current = {
           id: event.pointerId,
           x: event.clientX,
-          yaw: currentYaw.current,
+          y: event.clientY,
+          ...currentRotation.current,
           width: Math.max(240, event.currentTarget.clientWidth),
         }
         event.currentTarget.focus({ preventScroll: true })
         event.currentTarget.setPointerCapture(event.pointerId)
       },
-      onPointerMove: (event: PointerEvent<HTMLDivElement>) => {
-        if (drag.current?.id !== event.pointerId) return
-        update(drag.current.yaw + ((event.clientX - drag.current.x) * Math.PI) / drag.current.width)
-      },
+      onPointerMove: moveDrag,
       onPointerUp: (event: PointerEvent<HTMLDivElement>) => {
         if (drag.current?.id !== event.pointerId) return
-        update(drag.current.yaw + ((event.clientX - drag.current.x) * Math.PI) / drag.current.width)
+        moveDrag(event)
         endDrag(event)
       },
       onPointerCancel: endDrag,
@@ -95,6 +103,9 @@ export const useGlobeRotation = (scope: string) => {
         if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
           event.preventDefault()
           rotate((event.key === 'ArrowRight' ? 1 : -1) * (Math.PI / 12))
+        } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+          event.preventDefault()
+          rotate(0, (event.key === 'ArrowUp' ? 1 : -1) * (Math.PI / 12))
         } else if (event.key === 'Home') {
           event.preventDefault()
           reset()

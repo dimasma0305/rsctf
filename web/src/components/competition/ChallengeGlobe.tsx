@@ -1,7 +1,9 @@
 import { ActionIcon, Button, Group, Pagination, Text, useComputedColorScheme } from '@mantine/core'
 import {
+  mdiArrowDown,
   mdiArrowLeft,
   mdiArrowRight,
+  mdiArrowUp,
   mdiCheck,
   mdiCircleOutline,
   mdiFormatListBulleted,
@@ -32,7 +34,7 @@ const particles = Array.from({ length: 700 }, (_, index) => {
   return [Math.cos(angle) * r, y, Math.sin(angle) * r] as const
 })
 
-const GlobeSurface = memo(({ yaw }: { yaw: number }) => {
+const GlobeSurface = memo(({ yaw, pitch }: { yaw: number; pitch: number }) => {
   const canvas = useRef<HTMLCanvasElement>(null)
   const scheme = useComputedColorScheme('dark')
   useEffect(() => {
@@ -63,7 +65,7 @@ const GlobeSurface = memo(({ yaw }: { yaw: number }) => {
       context.beginPath()
       let connected = false
       points.forEach(([x, y, z]) => {
-        const point = projectSpherePoint(x, y, z, yaw, -0.22)
+        const point = projectSpherePoint(x, y, z, yaw, pitch)
         if (point.z < 0) {
           connected = false
           return
@@ -98,14 +100,14 @@ const GlobeSurface = memo(({ yaw }: { yaw: number }) => {
       )
     }
     for (const [x, y, z] of particles) {
-      const point = projectSpherePoint(x, y, z, yaw, -0.22)
+      const point = projectSpherePoint(x, y, z, yaw, pitch)
       if (point.z < 0) continue
       context.fillStyle = `rgba(${color},0.72)`
       context.beginPath()
       context.arc(400 + point.x * radius, 400 + point.y * radius, 1.5, 0, Math.PI * 2)
       context.fill()
     }
-  }, [yaw, scheme])
+  }, [yaw, pitch, scheme])
   return <canvas ref={canvas} className={classes.sphere} aria-hidden="true" />
 })
 
@@ -113,7 +115,7 @@ export const ChallengeGlobe = memo(
   ({ nodes, scope, onList }: { nodes: GlobeNode[]; scope: string; onList: () => void }) => {
     const { t } = useTranslation()
     const [page, setPage] = useState(1)
-    const { yaw, rotate, reset, stageProps } = useGlobeRotation(scope)
+    const { yaw, pitch, rotate, reset, stageProps } = useGlobeRotation(scope)
     const controlsHint = useId()
     const pageData = useMemo(() => challengePage(nodes, page, 8), [nodes, page])
     useEffect(() => {
@@ -132,7 +134,7 @@ export const ChallengeGlobe = memo(
             {t('game.arena.globe', 'Challenge globe')}
           </Text>
           <Text size="xs" c="dimmed">
-            {t('game.arena.globe_hint', 'Drag, swipe or scroll to rotate 360°')}
+            {t('game.arena.globe_hint', 'Drag in any direction to rotate 360°')}
           </Text>
         </Group>
         <div className={classes.globeExplorer}>
@@ -141,6 +143,7 @@ export const ChallengeGlobe = memo(
             className={classes.globeStage}
             data-globe-stage
             data-globe-yaw={yaw}
+            data-globe-pitch={pitch}
             role="group"
             tabIndex={0}
             aria-label={t('game.arena.globe_navigation', 'Globe navigation')}
@@ -149,13 +152,13 @@ export const ChallengeGlobe = memo(
             <span id={controlsHint} className={classes.srOnly}>
               {t(
                 'game.arena.globe_controls',
-                'Drag or swipe horizontally, or scroll to rotate. Use Left and Right arrow keys to rotate, and Home to reset. Swipe vertically to scroll the page.'
+                'Drag or swipe in any direction to rotate. Use all four arrow keys to rotate, and Home to reset. Swipe outside the globe to scroll the page.'
               )}
             </span>
-            <GlobeSurface yaw={yaw} />
+            <GlobeSurface yaw={yaw} pitch={pitch} />
             <div className={classes.nodes}>
               {pageData.items.map((node, index) => {
-                const point = projectHorizonNode(index, yaw)
+                const point = projectHorizonNode(index, yaw, pitch)
                 return (
                   <button
                     key={node.id}
@@ -237,6 +240,14 @@ export const ChallengeGlobe = memo(
             <ActionIcon
               size="lg"
               variant="default"
+              aria-label={t('game.arena.rotate_up', 'Rotate globe up')}
+              onClick={() => rotate(0, Math.PI / 12)}
+            >
+              <Icon path={mdiArrowUp} size={0.8} />
+            </ActionIcon>
+            <ActionIcon
+              size="lg"
+              variant="default"
               aria-label={t('game.arena.rotate_left', 'Rotate globe left')}
               onClick={() => rotate(-Math.PI / 12)}
             >
@@ -257,6 +268,14 @@ export const ChallengeGlobe = memo(
               onClick={() => rotate(Math.PI / 12)}
             >
               <Icon path={mdiArrowRight} size={0.8} />
+            </ActionIcon>
+            <ActionIcon
+              size="lg"
+              variant="default"
+              aria-label={t('game.arena.rotate_down', 'Rotate globe down')}
+              onClick={() => rotate(0, -Math.PI / 12)}
+            >
+              <Icon path={mdiArrowDown} size={0.8} />
             </ActionIcon>
           </Group>
         </Group>

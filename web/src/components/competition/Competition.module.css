@@ -24,7 +24,7 @@
   container-type: inline-size;
   overflow: clip;
   cursor: grab;
-  touch-action: pan-y pinch-zoom;
+  touch-action: pinch-zoom;
   user-select: none;
   border-radius: 0.5rem;
   background: radial-gradient(ellipse at 50% 100%, light-dark(#b8d9f32b, #245b8b20), transparent 80%);

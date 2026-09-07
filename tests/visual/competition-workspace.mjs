@@ -96,7 +96,7 @@ try {
   assert.equal(await evaluate(`document.querySelector('[data-globe-stage] canvas').width`), 1200, 'larger globe has a bounded high-resolution bitmap')
   await inspect('desktop-globe-categories')
   const rotationRequests = requests.length
-  await auditGlobeRotation(cdp, evaluate, waitFor)
+  await auditGlobeRotation(cdp, evaluate, waitFor, { onTilt: () => inspect('desktop-globe-tilted') })
   assert.equal(requests.slice(rotationRequests).filter(request => request.path.includes('/challenges/')).length, 0, 'rotation has no challenge reads or writes')
   await inspect('desktop-globe-rotation')
   await evaluate(`document.querySelector('[data-team-summary] button').focus()`)
@@ -182,7 +182,7 @@ try {
     assert.ok(await evaluate(`(() => { const stage = document.querySelector('[data-globe-stage]').getBoundingClientRect(); const planet = document.querySelector('[data-globe-stage] canvas').getBoundingClientRect(); return Math.abs(stage.width - stage.height * 2) < 1 && Math.abs(planet.width - planet.height) < 1 && Math.abs(planet.top + planet.height / 2 - stage.bottom) < 1 && stage.left >= 0 && stage.right <= innerWidth; })()`), 'horizon clips half of a round planet without horizontal page overflow')
     assert.ok(await evaluate(`[...document.querySelectorAll('[data-globe-choice]')].every(node => node.getBoundingClientRect().height >= 44)`), 'navigator retains full-size targets when small horizons hide pins')
     await inspect(`${name}-globe`)
-    if (width === 320 || width === 390) await auditGlobeRotation(cdp, evaluate, waitFor, { touch: true })
+    if (width === 320 || width === 390) await auditGlobeRotation(cdp, evaluate, waitFor, { touch: true, onTilt: () => inspect(`${name}-globe-tilted`) })
     await selectView('list')
   }
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
@@ -195,7 +195,7 @@ try {
   await inspect('light-indonesian-globe')
   await evaluate(`document.querySelector('[data-challenge-globe]').scrollIntoView({ block: 'center', behavior: 'instant' })`)
   await inspect('light-indonesian-globe-content')
-  await auditGlobeRotation(cdp, evaluate, waitFor, { touch: true })
+  await auditGlobeRotation(cdp, evaluate, waitFor, { touch: true, onTilt: () => inspect('light-indonesian-globe-tilted') })
 
   // Reproduce the longer header and extra archive content of the ended, mixed-mode
   // main event without using live participant data or bypassing authentication.

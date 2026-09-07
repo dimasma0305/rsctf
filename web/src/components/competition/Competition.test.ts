@@ -5,7 +5,7 @@ import { ChallengeCategory, ChallengeType, SubmissionType, type ChallengeInfo } 
 import {
   challengePage,
   isAcceptedSolve,
-  normalizeGlobeYaw,
+  normalizeGlobeAngle,
   projectHorizonNode,
   projectSpherePoint,
   resolveChallengeView,
@@ -81,7 +81,7 @@ test('competition sphere rotation preserves radius and has no idle animation loo
 
 test('globe rotation wraps full turns in both directions without changing pin positions', () => {
   for (const turns of [-100, -2, -1, 0, 1, 2, 100]) {
-    const yaw = normalizeGlobeYaw(turns * Math.PI * 2 + 0.42)
+    const yaw = normalizeGlobeAngle(turns * Math.PI * 2 + 0.42)
     assert.ok(yaw >= 0 && yaw < Math.PI * 2)
     assert.ok(Math.abs(yaw - 0.42) < 1e-10)
     const point = projectHorizonNode(0, yaw)
@@ -90,12 +90,33 @@ test('globe rotation wraps full turns in both directions without changing pin po
     assert.equal(point.visible, original.visible)
   }
   const rotation = readFileSync('src/components/competition/useGlobeRotation.ts', 'utf8')
-  assert.match(rotation, /setYaw\(currentYaw.current\)/, 'each frame uses the latest input, not the first move')
+  assert.match(rotation, /setRotation\(currentRotation.current\)/, 'both axes use the latest input in the same frame')
   assert.match(rotation, /passive: false/)
   assert.match(rotation, /removeEventListener\('wheel', wheel\)/)
   const css = readFileSync('src/components/competition/Competition.module.css', 'utf8')
-  assert.match(css, /touch-action: pan-y pinch-zoom/)
+  assert.match(css, /touch-action: pinch-zoom/)
   assert.match(css, /\.globeStage:focus-visible/)
+})
+
+test('vertical globe rotation moves pins with the surface and hides pins beyond the cropped horizon', () => {
+  const initial = projectHorizonNode(0, 0, 0)
+  const up = projectHorizonNode(0, 0, 0.1)
+  const down = projectHorizonNode(0, 0, -0.1)
+  assert.ok(up.y < initial.y)
+  assert.ok(down.y > initial.y)
+  for (let index = 0; index < 8; index++) {
+    for (let step = -32; step <= 32; step++) {
+      const pitch = (step * Math.PI) / 16
+      const point = projectHorizonNode(index, 0.3, pitch)
+      const wrapped = projectHorizonNode(index, 0.3, normalizeGlobeAngle(pitch))
+      assert.ok(Math.abs(point.y - wrapped.y) < 1e-10)
+      if (point.visible) assert.ok(point.y >= 14.7 && point.y <= 44.9, 'visible labels stay inside the half-globe crop')
+    }
+    assert.equal(projectHorizonNode(index, 0, Math.PI).visible, false)
+  }
+  const globe = readFileSync('src/components/competition/ChallengeGlobe.tsx', 'utf8')
+  assert.match(globe, /projectHorizonNode\(index, yaw, pitch\)/)
+  assert.equal((globe.match(/projectSpherePoint\(x, y, z, yaw, pitch\)/g) ?? []).length, 2)
 })
 
 test('horizon keeps eight pins above the equator and hides back-facing or edge-clipped pins', () => {
