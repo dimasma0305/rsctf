@@ -1,5 +1,5 @@
-import { ActionIcon, Anchor, Avatar, Badge, Card, Group, Stack, Text, ThemeIcon, Title, Tooltip } from '@mantine/core'
-import { mdiArrowRight, mdiFormatQuoteOpen, mdiPencilOutline, mdiPinOffOutline, mdiPinOutline } from '@mdi/js'
+import { ActionIcon, Anchor, Avatar, Badge, Card, Group, Stack, Text, Title } from '@mantine/core'
+import { mdiArrowRight, mdiPencilOutline, mdiPinOffOutline, mdiPinOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import { FC, useState } from 'react'
@@ -14,37 +14,58 @@ import classes from '@Styles/PostCard.module.css'
 
 export interface PostCardProps {
   post: PostInfoModel
+  headingOrder?: 2 | 3
   onTogglePinned?: (post: PostInfoModel, setDisabled: (value: boolean) => void) => void
 }
 
-export const PostCard: FC<PostCardProps> = ({ post, onTogglePinned }) => {
+export const PostCard: FC<PostCardProps> = ({ post, onTogglePinned, headingOrder = 2 }) => {
   const { role } = useUserRole()
   const { t } = useTranslation()
   const [disabled, setDisabled] = useState(false)
 
   const { locale } = useLanguage()
-  const metadata = t('post.content.metadata', {
-    author: post.authorName ?? t('common.content.anonymous', 'Anonymous'),
-    date: dayjs(post.time).locale(locale).format('LLL'),
-  })
+  const author = post.authorName ?? t('common.content.anonymous', 'Anonymous')
+  const published = dayjs(post.time).locale(locale)
 
   return (
-    <Card component="article" p={0} className={classes.card}>
+    <Card
+      component="article"
+      p={0}
+      className={classes.card}
+      data-post-card={post.id}
+      data-pinned={post.isPinned || undefined}
+    >
       <span className={classes.accent} aria-hidden="true" />
       <Stack gap="md" p={{ base: 'md', sm: 'lg' }} className={classes.content}>
         <Group justify="space-between" align="flex-start" wrap="nowrap" gap="md">
           <Group gap="sm" wrap="nowrap" align="flex-start" className={classes.headingGroup}>
-            <ThemeIcon variant="light" radius="lg" size={44} className={classes.quote}>
-              <Icon path={mdiFormatQuoteOpen} size={1.05} aria-hidden="true" />
-            </ThemeIcon>
             <Stack gap={6} className={classes.headingCopy}>
-              {post.isPinned && (
-                <Badge variant="light" size="sm" className={classes.pinnedBadge}>
-                  {t('post.content.pinned')}
-                </Badge>
-              )}
-              <Title order={2} className={classes.title}>
-                {post.title}
+              <Group gap="sm" mb={4}>
+                {post.isPinned && (
+                  <Badge
+                    variant="light"
+                    size="sm"
+                    className={classes.pinnedBadge}
+                    leftSection={<Icon path={mdiPinOutline} size={0.6} aria-hidden="true" />}
+                  >
+                    {t('post.content.pinned_label', 'Pinned')}
+                  </Badge>
+                )}
+                <Text
+                  component="time"
+                  dateTime={published.isValid() ? published.toISOString() : undefined}
+                  title={published.isValid() ? published.format('LLL') : undefined}
+                  className={classes.date}
+                >
+                  {published.isValid()
+                    ? published.format('LL')
+                    : t('post.content.date_unavailable', 'Publication date unavailable')}
+                </Text>
+              </Group>
+              <Title order={headingOrder} className={classes.title}>
+                <Link to={`/posts/${post.id}`} className={classes.titleLink}>
+                  {post.title}
+                </Link>
               </Title>
             </Stack>
           </Group>
@@ -75,9 +96,11 @@ export const PostCard: FC<PostCardProps> = ({ post, onTogglePinned }) => {
           )}
         </Group>
 
-        <div className={classes.summary}>
-          <Markdown source={post.summary} />
-        </div>
+        {post.summary.trim() && (
+          <div className={classes.summary}>
+            <Markdown source={post.summary} />
+          </div>
+        )}
 
         {!!post.tags?.length && (
           <Group gap={6} className={classes.tags}>
@@ -91,14 +114,12 @@ export const PostCard: FC<PostCardProps> = ({ post, onTogglePinned }) => {
 
         <Group justify="space-between" align="center" wrap="wrap" gap="sm" className={classes.footer}>
           <Group gap="xs" wrap="nowrap" miw={0} className={classes.author}>
-            <Avatar imageProps={{ loading: 'lazy' }} alt={post.authorName ?? ''} src={post.authorAvatar} size={32}>
+            <Avatar imageProps={{ loading: 'lazy' }} alt="" src={post.authorAvatar} size={28} aria-hidden="true">
               {post.authorName?.slice(0, 1) ?? 'A'}
             </Avatar>
-            <Tooltip label={post.authorName} disabled={!post.authorName}>
-              <Text size="sm" fw={650} c="dimmed" truncate title={metadata}>
-                {metadata}
-              </Text>
-            </Tooltip>
+            <Text size="sm" fw={600} className={classes.authorName}>
+              {author}
+            </Text>
           </Group>
           <Anchor
             component={Link}
@@ -106,9 +127,9 @@ export const PostCard: FC<PostCardProps> = ({ post, onTogglePinned }) => {
             fw={700}
             size="sm"
             className={classes.details}
-            aria-label={`${t('post.content.details')} — ${post.title}`}
+            aria-label={`${t('post.content.read_post', 'Read post')} — ${post.title}`}
           >
-            {t('post.content.details')}
+            {t('post.content.read_post', 'Read post')}
             <Icon path={mdiArrowRight} size={0.72} aria-hidden="true" />
           </Anchor>
         </Group>

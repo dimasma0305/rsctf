@@ -3,10 +3,10 @@
   overflow: hidden;
   background: var(--app-raised-surface);
   border: 1px solid var(--app-border-subtle);
+  border-radius: 0.8rem;
   transition:
     border-color 160ms ease,
-    box-shadow 160ms ease,
-    transform 160ms ease;
+    box-shadow 160ms ease;
 }
 
 .card:hover {
@@ -19,6 +19,15 @@
   inset: 0 auto 0 0;
   width: 3px;
   background: linear-gradient(180deg, var(--mantine-primary-color-4), var(--mantine-primary-color-8));
+  opacity: 0;
+}
+
+.card[data-pinned] {
+  border-color: var(--app-accent-border);
+  background: linear-gradient(115deg, var(--app-accent-surface), transparent 75%), var(--app-raised-surface);
+}
+.card[data-pinned] .accent {
+  opacity: 1;
 }
 
 .content {
@@ -35,19 +44,36 @@
   flex: 1;
 }
 
-.quote {
-  flex: 0 0 auto;
-  color: var(--app-accent-surface-text);
-  border: 1px solid var(--app-accent-border);
-  background: var(--app-accent-surface);
-  display: none;
-}
-
 .title {
   color: var(--app-text-primary);
   font-size: clamp(1.1rem, 1.5vw, 1.35rem);
   line-height: 1.25;
   letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
+}
+.titleLink {
+  color: inherit;
+  text-decoration: none;
+}
+.titleLink:hover {
+  color: var(--app-accent-text);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.titleLink:focus-visible,
+.details:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+.date {
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--app-text-secondary);
+}
+.authorName {
+  color: var(--app-text-secondary);
+  overflow-wrap: anywhere;
 }
 
 .pinnedBadge,
@@ -59,6 +85,8 @@
 .summary {
   color: var(--app-text-secondary);
   line-height: 1.65;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
 }
 
 .summary > :first-child {
@@ -69,18 +97,23 @@
   margin-bottom: 0;
 }
 
+.card .summary a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .footer {
   padding-top: var(--mantine-spacing-sm);
   border-top: 1px solid var(--app-border-subtle);
 }
 
 .author {
-  flex: 1 1 18rem;
+  flex: 1 1 10rem;
 }
 
 .details {
   display: inline-flex;
-  min-height: 40px;
+  min-height: 44px;
   align-items: center;
   gap: 0.4rem;
   padding-inline: 0.35rem;
@@ -99,15 +132,14 @@
 .adminActions {
   flex: 0 0 auto;
 }
+.adminActions :global(.mantine-ActionIcon-root) {
+  min-width: 44px;
+  min-height: 44px;
+}
 
 @media (max-width: $mantine-breakpoint-xs) {
   .card:hover {
     transform: none;
-  }
-
-  .quote {
-    width: 40px;
-    height: 40px;
   }
 
   .footer {

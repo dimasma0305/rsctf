@@ -1,22 +1,21 @@
+import { Avatar, Badge, Button, Group, Text, Title } from '@mantine/core'
 import {
-  Anchor,
-  Center,
-  Group,
-  Stack,
-  Text,
-  Title,
-  useMantineTheme,
-  Flex,
-  Badge,
-  Avatar,
-  Container,
-} from '@mantine/core'
-import { mdiScaleBalance, mdiFileDocumentOutline, mdiGithub, mdiTag, mdiAccountGroup, mdiLink } from '@mdi/js'
+  mdiArrowRight,
+  mdiBookOpenPageVariantOutline,
+  mdiCodeBraces,
+  mdiFileDocumentOutline,
+  mdiFlagOutline,
+  mdiGithub,
+  mdiOpenInNew,
+  mdiScaleBalance,
+} from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Link } from 'react-router'
 import contributorsData from 'virtual:contributors'
 import { Copyright } from '@Components/Copyright'
+import { PageHeader } from '@Components/PageHeader'
 import { WithNavBar } from '@Components/WithNavbar'
 import { MainIcon } from '@Components/icon/MainIcon'
 import { useIsMobile } from '@Utils/ThemeOverride'
@@ -28,204 +27,249 @@ import logoClasses from '@Styles/LogoHeader.module.css'
 const About: FC = () => {
   const { repo, valid, rawTag: tag, sha, buildTime } = ValidatedRepoMeta()
   const { t } = useTranslation()
-  const theme = useMantineTheme()
-  const shortSha = `#${sha.substring(0, 8)}`
-
   const isMobile = useIsMobile()
-
-  const numRows = isMobile ? 4 : 3
-  const groups = Array.from({ length: numRows }, (_, i) =>
-    contributorsData.slice(
-      i * Math.ceil(contributorsData.length / numRows),
-      (i + 1) * Math.ceil(contributorsData.length / numRows)
-    )
-  ).filter((group) => group.length > 0)
-
   usePageTitle(t('common.title.about'))
+
+  const modes = [
+    {
+      name: 'Jeopardy',
+      number: '01',
+      description: t('common.content.about.jeopardy', 'Find the flag. Solve the challenge.'),
+    },
+    {
+      name: 'Attack & Defense',
+      number: '02',
+      description: t('common.content.about.ad', 'Defend your service. Challenge the others.'),
+    },
+    {
+      name: 'King of the Hill',
+      number: '03',
+      description: t('common.content.about.koth', 'Take the lead. Hold your ground.'),
+    },
+  ]
+  const resources = [
+    {
+      href: '/guide',
+      internal: true,
+      icon: mdiBookOpenPageVariantOutline,
+      title: t('common.content.about.player_guide', 'Player guide'),
+      description: t('common.content.about.guide_description', 'From joining a team to submitting your first flag.'),
+    },
+    {
+      href: RSCTF_DOCUMENTATION,
+      icon: mdiFileDocumentOutline,
+      title: t('common.content.about.documentation'),
+      description: t(
+        'common.content.about.docs_description',
+        'Run the platform, build challenges, and understand the rules.'
+      ),
+    },
+    {
+      href: repo,
+      icon: mdiGithub,
+      title: t('common.content.about.repository'),
+      description: t(
+        'common.content.about.repo_description',
+        'Explore the code, report an issue, or contribute a change.'
+      ),
+    },
+  ]
 
   return (
     <WithNavBar>
-      <Stack justify="center" align="center" gap="xl" className={classes.container} data-mobile={isMobile || undefined}>
-        <Center>
-          <Stack align="center" gap={0}>
-            <MainIcon size="5rem" className={classes.mainIcon} />
-            <Title order={1} size="3.5rem" fw={800} ta="center" className={classes.mainTitle}>
-              RS<span className={logoClasses.brand}>::</span>CTF
-            </Title>
-            <Text size="xl" fw={500} ta="center" c="dimmed" ff="monospace" mt="xs" className={classes.slogan}>
-              &gt;&nbsp;{t('common.content.about.slogan')}
-              <Text span className={classes.blink}>
-                _
-              </Text>
+      <div className={classes.page} data-about-page>
+        <section className={classes.hero} aria-label={t('common.title.about')}>
+          <div className={classes.heroCopy}>
+            <PageHeader
+              eyebrow={t('common.content.about.eyebrow', 'The competition platform')}
+              title={
+                <>
+                  RS<span className={logoClasses.brand}>::</span>CTF
+                </>
+              }
+              description={t('common.content.about.slogan')}
+            />
+            <Text className={classes.intro}>
+              {t(
+                'common.content.about.intro',
+                'A home for capture-the-flag competitions. Built with Rust and React, for the people who create challenges and the teams who solve them.'
+              )}
             </Text>
-          </Stack>
-        </Center>
-
-        <Flex
-          gap={isMobile ? 'md' : 'xl'}
-          direction="column"
-          wrap="wrap"
-          justify="center"
-          align="center"
-          className={classes.contentFlex}
-        >
-          <Stack align="center" gap="md" className={classes.contentStack}>
-            <Group gap="xs" justify="center">
-              <Icon path={mdiLink} size={1} />
-              <Title order={2} fw={600} ta="center">
-                {t('common.content.about.resources')}
-              </Title>
+            <Group gap="sm" className={classes.heroActions}>
+              <Button
+                component={Link}
+                to="/games"
+                leftSection={<Icon path={mdiFlagOutline} size={0.8} aria-hidden="true" />}
+              >
+                {t('common.content.about.explore_events', 'Explore events')}
+              </Button>
+              <Button
+                component={Link}
+                to="/guide"
+                variant="default"
+                rightSection={<Icon path={mdiArrowRight} size={0.8} aria-hidden="true" />}
+              >
+                {t('common.content.about.player_guide', 'Player guide')}
+              </Button>
             </Group>
-            <Stack gap="xs" align="center">
-              <Group gap="sm" justify="center" align="center">
-                <Icon path={mdiFileDocumentOutline} size={0.8} />
-                <Anchor
-                  href={RSCTF_DOCUMENTATION}
+          </div>
+          <div className={classes.emblem} aria-hidden="true">
+            <div className={classes.orbit} />
+            <div className={classes.orbitInner} />
+            <div className={classes.emblemCore}>
+              <MainIcon size="8rem" />
+            </div>
+            <span className={classes.coordinates}>CAPTURE / COMPETE / CONQUER</span>
+          </div>
+        </section>
+
+        <section className={classes.modes} aria-label={t('common.content.about.formats', 'Competition formats')}>
+          {modes.map((mode) => (
+            <div className={classes.mode} key={mode.name}>
+              <span className={classes.modeNumber} aria-hidden="true">
+                {mode.number}
+              </span>
+              <div>
+                <Title order={2}>{mode.name}</Title>
+                <Text>{mode.description}</Text>
+              </div>
+            </div>
+          ))}
+        </section>
+
+        <section aria-labelledby="about-resources-title" className={classes.section}>
+          <div className={classes.sectionHeading}>
+            <Text className={classes.kicker}>{t('common.content.about.get_started', 'Take the next step')}</Text>
+            <Title order={2} id="about-resources-title">
+              {t('common.content.about.resources')}
+            </Title>
+          </div>
+          <div className={classes.resources}>
+            {resources.map((resource) => {
+              const content = (
+                <>
+                  <Icon path={resource.icon} size={1.35} aria-hidden="true" />
+                  <Title order={3}>{resource.title}</Title>
+                  <Text>{resource.description}</Text>
+                  <span className={classes.resourceArrow}>
+                    <Icon path={resource.internal ? mdiArrowRight : mdiOpenInNew} size={0.85} aria-hidden="true" />
+                  </span>
+                </>
+              )
+              return resource.internal ? (
+                <Link key={resource.href} to={resource.href} className={classes.resourceCard}>
+                  {content}
+                </Link>
+              ) : (
+                <a
+                  key={resource.href}
+                  href={resource.href}
                   target="_blank"
                   rel="noreferrer"
-                  c={theme.primaryColor}
-                  size="md"
-                  fw={500}
-                  underline="hover"
-                  className={classes.resourceLink}
+                  className={classes.resourceCard}
                 >
-                  {t('common.content.about.documentation')}
-                </Anchor>
-              </Group>
-              <Group gap="sm" justify="center" align="center">
-                <Icon path={mdiGithub} size={0.8} />
-                <Anchor
-                  href={repo}
-                  target="_blank"
-                  rel="noreferrer"
-                  c={theme.primaryColor}
-                  size="md"
-                  fw={500}
-                  underline="hover"
-                  className={classes.resourceLink}
-                >
-                  {t('common.content.about.repository')}
-                </Anchor>
-              </Group>
-              <Group gap="sm" justify="center" align="center">
-                <Icon path={mdiScaleBalance} size={0.8} />
-                <Text size="sm" fw={400} c="dimmed" ta="center" className={classes.licenseText}>
-                  {t('common.content.about.license_scope', 'Licensing varies by component. Review the')}
-                  &nbsp;
-                  <Anchor
-                    href="/legal/LICENSING.md"
-                    target="_blank"
-                    rel="noreferrer"
-                    c={theme.primaryColor}
-                    size="md"
-                    fw={500}
-                    underline="hover"
-                    className={classes.licenseLink}
-                  >
-                    {t('common.content.about.licensing_guide', 'licensing guide')}
-                  </Anchor>
-                </Text>
-              </Group>
-              <Group gap="sm" justify="center" align="center">
-                <Icon path={mdiScaleBalance} size={0.8} />
-                <Text size="sm" fw={400} c="dimmed" ta="center" className={classes.licenseText}>
-                  {t('common.content.about.review_notices', 'Review')}
-                  &nbsp;
-                  <Anchor
-                    href="/legal/third-party/CreepJS-LICENSE.txt"
-                    target="_blank"
-                    rel="noreferrer"
-                    c={theme.primaryColor}
-                    size="sm"
-                    fw={500}
-                    underline="hover"
-                    className={classes.resourceLink}
-                  >
-                    {t('common.content.about.creepjs_license', 'CreepJS license')}
-                  </Anchor>
-                </Text>
-              </Group>
-            </Stack>
-          </Stack>
+                  {content}
+                </a>
+              )
+            })}
+          </div>
+        </section>
 
-          <Stack align="center" gap="md" className={classes.contentStack}>
-            <Group gap="xs" justify="center">
-              <Icon path={mdiAccountGroup} size={1} />
-              <Title order={2} fw={600} ta="center">
-                {t('common.content.about.contributors')}
-              </Title>
-            </Group>
-            <Container size="md" px={0}>
-              <Stack gap={0} align="center">
-                {groups.map((group, index) => (
-                  <div
-                    key={index}
-                    className={classes.scrollContainer}
-                    data-static={group.length === 1 ? '' : undefined}
-                  >
-                    <Group
-                      gap={0}
-                      wrap="nowrap"
-                      w="max-content"
-                      className={classes.scrollGroup}
-                      data-static={group.length === 1 ? '' : undefined}
+        <div className={classes.projectGrid}>
+          <section className={classes.projectPanel} aria-labelledby="about-contributors-title">
+            <Text className={classes.kicker}>{t('common.content.about.people', 'Made by people')}</Text>
+            <Title order={2} id="about-contributors-title">
+              {t('common.content.about.contributors')}
+            </Title>
+            <Text className={classes.panelDescription}>
+              {t('common.content.about.contributors_description', 'The people helping build and improve RSCTF.')}
+            </Text>
+            <ul className={classes.contributors}>
+              {contributorsData.map((contributor) => (
+                <li key={contributor.login}>
+                  <a href={contributor.html_url} target="_blank" rel="noreferrer" className={classes.contributorLink}>
+                    <Avatar
+                      src={contributor.avatar_url}
+                      alt=""
+                      aria-hidden="true"
+                      size={36}
+                      imageProps={{ loading: 'lazy' }}
                     >
-                      {(group.length > 1 ? group.concat(group, group) : group).map((contributor, i) => (
-                        <Group key={`${contributor.login}-${i}`} gap={2} align="center" justify="center" mr="md">
-                          <Avatar
-                            className={classes.contributorAvatar}
-                            src={`https://github.com/${contributor.login}.png`}
-                            size="sm"
-                            alt=""
-                            aria-hidden="true"
-                          />
-                          <Anchor
-                            href={contributor.html_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            c={theme.primaryColor}
-                            size="sm"
-                            fw={500}
-                            underline="hover"
-                            className={classes.contributorLink}
-                          >
-                            @{contributor.login}
-                          </Anchor>
-                        </Group>
-                      ))}
-                    </Group>
-                  </div>
-                ))}
-              </Stack>
-            </Container>
-          </Stack>
-        </Flex>
-
-        <Stack align="center" gap="md">
-          <Group gap="xs" justify="center">
-            <Icon path={mdiTag} size={1} />
-            <Title order={2} fw={600} ta="center">
+                      {contributor.login.slice(0, 1)}
+                    </Avatar>
+                    <span>@{contributor.login}</span>
+                    <Icon path={mdiOpenInNew} size={0.75} aria-hidden="true" />
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </section>
+          <section className={classes.projectPanel} aria-labelledby="about-build-title">
+            <Text className={classes.kicker}>{t('common.content.about.under_hood', 'Under the hood')}</Text>
+            <Title order={2} id="about-build-title">
               {t('common.content.about.version')}
             </Title>
-          </Group>
-          <Flex direction="column" align="center" gap="sm">
-            <Badge size="lg" variant="dot" color={valid ? 'green' : 'blue'} className={classes.versionBadge}>
-              {valid ? `${tag}${shortSha}` : 'RSCTF'}
-            </Badge>
-            <Text size="xs" fw={400} c="gray" ta="center" ff="monospace">
-              {valid
-                ? t('common.content.about.built_at', 'Built at {{time}}', {
-                    time: buildTime.format('YYYY-MM-DDTHH:mm:ssZ'),
-                  })
-                : t('common.content.about.source_build', 'Source build · revision metadata unavailable')}
-            </Text>
-          </Flex>
-        </Stack>
+            <div className={classes.buildRow}>
+              <Icon path={mdiCodeBraces} size={1.1} aria-hidden="true" />
+              <Badge variant="light" className={classes.versionBadge}>
+                {valid ? tag : t('common.content.about.local_build', 'Source build')}
+              </Badge>
+            </div>
+            {valid ? (
+              <dl className={classes.buildDetails}>
+                <div>
+                  <dt>{t('common.content.about.revision', 'Revision')}</dt>
+                  <dd>
+                    <code className={classes.revision} title={sha}>
+                      {sha.slice(0, 8)}
+                    </code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t('common.content.about.built', 'Built')}</dt>
+                  <dd>
+                    <time dateTime={buildTime.toISOString()}>{buildTime.format('YYYY-MM-DD HH:mm [UTC]Z')}</time>
+                  </dd>
+                </div>
+              </dl>
+            ) : (
+              <Text className={classes.panelDescription}>
+                {t('common.content.about.source_build', 'Source build · revision metadata unavailable')}
+              </Text>
+            )}
+          </section>
+        </div>
 
-        <Center className={classes.copyright}>
+        <section className={classes.legal} aria-labelledby="about-legal-title">
+          <div className={classes.legalCopy}>
+            <Icon path={mdiScaleBalance} size={1.15} aria-hidden="true" />
+            <div>
+              <Title order={2} id="about-legal-title">
+                {t('common.content.about.legal_title', 'Licensing & acknowledgements')}
+              </Title>
+              <Text>
+                {t(
+                  'common.content.about.legal_description',
+                  'Licensing varies by component. See the guide and third-party notices for details.'
+                )}
+              </Text>
+            </div>
+          </div>
+          <div className={classes.legalLinks}>
+            <a href="/legal/LICENSING.md" target="_blank" rel="noreferrer">
+              {t('common.content.about.licensing_guide', 'Licensing guide')}
+              <Icon path={mdiOpenInNew} size={0.7} aria-hidden="true" />
+            </a>
+            <a href="/legal/third-party/CreepJS-LICENSE.txt" target="_blank" rel="noreferrer">
+              {t('common.content.about.creepjs_license', 'CreepJS license')}
+              <Icon path={mdiOpenInNew} size={0.7} aria-hidden="true" />
+            </a>
+          </div>
+        </section>
+        <footer className={classes.copyright}>
           <Copyright isMobile={isMobile} />
-        </Center>
-      </Stack>
+        </footer>
+      </div>
     </WithNavBar>
   )
 }
