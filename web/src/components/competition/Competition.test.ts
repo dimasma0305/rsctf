@@ -68,6 +68,18 @@ test('competition sphere rotation preserves radius and has no idle animation loo
   assert.match(css, /\.globeStage\s*\{[^}]*aspect-ratio: 1;/, 'sphere and node projection share a square stage')
 })
 
+test('globe dominates its panel without changing the shared event shell or adding animated effects', () => {
+  const css = readFileSync('src/components/competition/Competition.module.css', 'utf8')
+  const globe = readFileSync('src/components/competition/ChallengeGlobe.tsx', 'utf8')
+  assert.match(css, /\.globeStage\s*\{[^}]*max-width: 58rem;/)
+  assert.match(css, /grid-template-columns: minmax\(0, 1fr\) minmax\(14rem, 18rem\)/)
+  assert.match(css, /@container \(max-width: 48rem\)/)
+  assert.doesNotMatch(css, /animation:|backdrop-filter:/)
+  assert.match(globe, /data-globe-stage/)
+  assert.match(globe, /element.width = size \* 1.5/)
+  assert.match(globe, /element.height = size \* 1.5/)
+})
+
 test('competition header groups event, team and navigation without an ended countdown', () => {
   const tabs = readFileSync('src/components/WithGameTab.tsx', 'utf8')
   assert.match(tabs, /data-event-workspace-header/)

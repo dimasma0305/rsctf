@@ -5,19 +5,20 @@
   border-radius: 0.65rem;
   container-type: inline-size;
   background:
-    radial-gradient(ellipse at 25% 50%, light-dark(#4179b20d, #4179b21c), transparent 65%), var(--app-raised-surface);
+    radial-gradient(ellipse at 30% 45%, light-dark(#4179b218, #4179b236), transparent 68%),
+    radial-gradient(ellipse at 85% 0, light-dark(#4983ae0b, #27799918), transparent 55%), var(--app-raised-surface);
 }
 .globeExplorer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(14rem, 0.65fr);
-  gap: 1.5rem;
+  grid-template-columns: minmax(0, 1fr) minmax(14rem, 18rem);
+  gap: 1rem;
   align-items: center;
   padding-block: 0.75rem;
 }
 .globeStage {
   position: relative;
   width: 100%;
-  max-width: 27rem;
+  max-width: 58rem;
   aspect-ratio: 1;
   margin: auto;
   cursor: grab;
@@ -26,6 +27,16 @@
     linear-gradient(90deg, light-dark(#4169900b, #76b9ff07) 1px, transparent 1px);
   background-size: 2rem 2rem;
   border-radius: 50%;
+}
+.globeStage::before {
+  content: '';
+  position: absolute;
+  inset: 7%;
+  border-radius: 50%;
+  box-shadow:
+    0 0 3rem light-dark(#4a88c51c, #52a4f53b),
+    0 0 7rem light-dark(#4a88c511, #3085e52b);
+  pointer-events: none;
 }
 .globeStage:active {
   cursor: grabbing;
@@ -108,6 +119,11 @@
 }
 .globeNavigator {
   min-width: 0;
+  padding: 0.9rem;
+  border: 1px solid var(--app-border);
+  border-radius: 0.7rem;
+  background: var(--app-raised-surface);
+  box-shadow: 0 0.75rem 2.5rem #0001;
 }
 .navigatorTitle {
   margin-bottom: 0.75rem;
@@ -286,7 +302,7 @@
     gap: 0.5rem;
   }
   .globeStage {
-    max-width: 24rem;
+    max-width: 42rem;
   }
   .globeChoices {
     grid-template-columns: repeat(2, minmax(0, 1fr));

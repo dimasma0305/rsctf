@@ -90,6 +90,9 @@ try {
   assert.ok(await evaluate(`document.querySelector('[data-event-workspace-header]').getBoundingClientRect().height < 190`), 'event information and team stats form one compact masthead')
   assert.ok(await evaluate(`parseFloat(getComputedStyle(document.querySelector('[data-team-summary] dd')).fontSize) >= 16`), 'compact desktop team values stay readable below the event header')
   assert.equal(await evaluate(`document.querySelectorAll('[data-globe-choice]').length`), 5)
+  assert.ok(await evaluate(`document.querySelector('[data-globe-stage]').getBoundingClientRect().width >= 800`), 'desktop globe is the dominant visual, not a small illustration')
+  assert.ok(await evaluate(`document.querySelector('[data-challenge-globe] nav').getBoundingClientRect().width < document.querySelector('[data-globe-stage]').getBoundingClientRect().width * 0.4`), 'category navigator stays secondary to the globe')
+  assert.equal(await evaluate(`document.querySelector('[data-globe-stage] canvas').width`), 1200, 'larger globe has a bounded high-resolution bitmap')
   await inspect('desktop-globe-categories')
   await evaluate(`document.querySelector('[data-team-summary] button').focus()`)
   await press('Enter')
@@ -167,6 +170,11 @@ try {
     await inspect(`${name}-detail`)
     if (!inline) { await press('Escape'); await waitFor(`!document.querySelector('[role="dialog"]')`) }
     else { await evaluate(`document.querySelector('[data-challenge-detail] button[aria-label="Close"]').click()`) }
+    await selectView('globe')
+    await evaluate(`document.querySelector('[data-challenge-globe]').scrollIntoView({ block: 'start', behavior: 'instant' })`)
+    assert.ok(await evaluate(`(() => { const stage = document.querySelector('[data-globe-stage]').getBoundingClientRect(); return Math.abs(stage.width - stage.height) < 1 && stage.left >= 0 && stage.right <= innerWidth; })()`), 'large globe retains a square, viewport-bounded interaction surface')
+    await inspect(`${name}-globe`)
+    await selectView('list')
   }
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
   await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] })

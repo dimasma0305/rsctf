@@ -42,8 +42,10 @@ const GlobeSurface = memo(({ yaw }: { yaw: number }) => {
     // Fixed, bounded bitmap. No perpetual animation, timers, network or WebGL context.
     const size = 800
     const radius = 348
-    element.width = size
-    element.height = size
+    // Keep the larger stage crisp with one bounded, 1200px bitmap at every viewport.
+    element.width = size * 1.5
+    element.height = size * 1.5
+    context.scale(1.5, 1.5)
     context.clearRect(0, 0, size, size)
     const dark = scheme === 'dark'
     const color = dark ? '115,166,225' : '40,87,147'
@@ -130,6 +132,7 @@ export const ChallengeGlobe = memo(
         <div className={classes.globeExplorer}>
           <div
             className={classes.globeStage}
+            data-globe-stage
             onPointerDown={(event) => {
               if ((event.target as HTMLElement).closest('button')) return
               if (event.pointerType !== 'mouse') return // Preserve normal touch scrolling; use the rotation buttons.
