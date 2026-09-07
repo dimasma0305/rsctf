@@ -185,7 +185,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const { t } = useTranslation()
   const theme = useMantineTheme()
   const colorScheme = useComputedColorScheme('dark')
-  const reviewOutlineShade = colorScheme === 'dark' ? 4 : 8
+  const reviewOutlineShade = colorScheme === 'dark' ? 4 : 9
   const { locale } = useLanguage()
 
   const placeholders = t('challenge.content.flag_placeholders', {

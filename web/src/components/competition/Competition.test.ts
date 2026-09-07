@@ -72,7 +72,7 @@ test('competition sphere rotation preserves radius and has no idle animation loo
   assert.doesNotMatch(rotation, /pointerType !== 'mouse'/)
   assert.match(globe, /data-globe-choice=\{node.id\}/)
   assert.equal(
-    (globe.match(/onClick=\{node.onSelect\}/g) ?? []).length,
+    (globe.match(/onClick=\{\(\) => selectTarget\(node\)\}/g) ?? []).length,
     2,
     'globe and navigator use the same action owner'
   )
@@ -145,6 +145,20 @@ test('globe focus follows the shortest turn across zero and finishes at the exac
   const initial = interpolateGlobeRotation(from, to, -1)
   assert.ok(Math.abs(initial.yaw - from.yaw) < 1e-10)
   assert.ok(Math.abs(initial.pitch - from.pitch) < 1e-10)
+})
+
+test('selecting a globe target opens its card immediately through the existing selection owner', () => {
+  const globe = readFileSync('src/components/competition/ChallengeGlobe.tsx', 'utf8')
+  assert.match(
+    globe,
+    /const selectTarget = \(node: GlobeNode\) => \{\s*setFocusedTarget\(\{ scope, id: node.id \}\)[\s\S]*?node.onSelect\(\)\s*\}/
+  )
+  assert.doesNotMatch(
+    globe,
+    /data-globe-open|focus_target/,
+    'the target name and arrow are one action, not separate focus and open buttons'
+  )
+  assert.match(globe, /aria-pressed=\{node.selected \?\? false\}/, 'pressed state tracks the actual selected card')
 })
 
 test('horizon keeps eight pins above the equator and hides back-facing or edge-clipped pins', () => {

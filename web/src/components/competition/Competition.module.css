@@ -93,7 +93,6 @@
 }
 .node:focus-visible,
 .globeChoice:focus-visible,
-.globeOpen:focus-visible,
 .listName:focus-visible {
   outline: 3px solid var(--mantine-primary-color-filled);
   outline-offset: 3px;
@@ -159,55 +158,31 @@
   display: grid;
   gap: 0.4rem;
 }
-.globeChoiceRow {
-  display: flex;
-  min-width: 0;
-  border: 1px solid var(--app-border);
-  border-radius: 0.45rem;
-  background: var(--mantine-color-body);
-}
 .globeChoice {
   display: flex;
-  flex: 1;
   align-items: center;
   gap: 0.65rem;
   min-width: 0;
   min-height: 44px;
   padding: 0.65rem 0.75rem;
-  border: 0;
+  border: 1px solid var(--app-border);
   border-radius: 0.45rem;
-  background: transparent;
+  background: var(--mantine-color-body);
   color: var(--mantine-color-text);
   text-align: start;
   font: inherit;
   font-size: 0.8rem;
   cursor: pointer;
 }
-.globeChoiceRow:hover,
+.globeChoice:hover,
 .node:hover .nodeLabel {
   border-color: var(--mantine-primary-color-filled);
   background: var(--app-hover-surface);
 }
-.globeChoiceRow[data-selected],
-.globeChoiceRow[data-focused] {
+.globeChoice[data-selected],
+.globeChoice[data-focused] {
   border-color: #bb832c;
   box-shadow: inset 3px 0 #d99a33;
-}
-.globeOpen {
-  display: grid;
-  place-items: center;
-  flex: 0 0 44px;
-  min-height: 44px;
-  padding: 0;
-  border: 0;
-  border-inline-start: 1px solid var(--app-border);
-  border-radius: 0 0.45rem 0.45rem 0;
-  background: transparent;
-  color: var(--mantine-color-text);
-  cursor: pointer;
-}
-.globeOpen:hover {
-  background: var(--app-hover-surface);
 }
 .choiceIndex {
   flex: 0 0 1.4rem;

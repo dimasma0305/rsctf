@@ -135,6 +135,12 @@ export const ChallengeGlobe = memo(
       }
     }, [focusedTarget, focusedId, focusedIndex, focus, reset])
 
+    const selectTarget = (node: GlobeNode) => {
+      setFocusedTarget({ scope, id: node.id })
+      // Selection stays with the parent; opening details never waits for the camera.
+      node.onSelect()
+    }
+
     return (
       <section
         className={classes.globe}
@@ -186,7 +192,7 @@ export const ChallengeGlobe = memo(
                     aria-pressed={node.selected ?? false}
                     hidden={!point.visible}
                     title={node.label}
-                    onClick={node.onSelect}
+                    onClick={() => selectTarget(node)}
                     style={
                       {
                         '--node-x': `${point.x}%`,
@@ -212,49 +218,36 @@ export const ChallengeGlobe = memo(
           </div>
           <nav className={classes.globeNavigator} aria-label={t('game.arena.globe_navigation', 'Globe navigation')}>
             <Text size="xs" c="dimmed" className={classes.navigatorTitle}>
-              {t('game.arena.explore_help', 'Select a target to focus the globe. Use its arrow or pin to open it.')}
+              {t(
+                'game.arena.explore_help',
+                'Select a category to explore, or a challenge to focus the globe and open its details.'
+              )}
             </Text>
             <div className={classes.globeChoices}>
               {pageData.items.map((node, index) => (
-                <div
+                <button
                   key={node.id}
-                  className={classes.globeChoiceRow}
+                  type="button"
+                  className={classes.globeChoice}
                   data-selected={node.selected || undefined}
                   data-focused={node.id === focusedId || undefined}
+                  data-globe-choice={node.id}
+                  aria-label={t('game.arena.select_target', { defaultValue: 'Select {{target}}', target: node.label })}
+                  aria-pressed={node.selected ?? false}
+                  onClick={() => selectTarget(node)}
                 >
-                  <button
-                    type="button"
-                    className={classes.globeChoice}
-                    data-globe-choice={node.id}
-                    aria-label={t('game.arena.focus_target', {
-                      defaultValue: 'Focus {{target}} on globe',
-                      target: node.label,
-                    })}
-                    aria-pressed={node.id === focusedId}
-                    onClick={() => setFocusedTarget({ scope, id: node.id })}
-                  >
-                    <span className={classes.choiceIndex} aria-hidden="true">
-                      {node.solved ? (
-                        <Icon path={mdiCheck} size={0.8} />
-                      ) : (
-                        String((pageData.current - 1) * 8 + index + 1).padStart(2, '0')
-                      )}
-                    </span>
-                    <span className={classes.choiceLabel}>{node.label}</span>
-                    {node.solved && <span className={classes.srOnly}>{t('common.workspace.solved', 'Solved')}</span>}
-                    {node.count !== undefined && <span className={classes.choiceCount}>{node.count}</span>}
-                  </button>
-                  <button
-                    type="button"
-                    className={classes.globeOpen}
-                    data-globe-open={node.id}
-                    aria-label={t('game.arena.open_target', { defaultValue: 'Open {{target}}', target: node.label })}
-                    title={t('game.arena.open_target', { defaultValue: 'Open {{target}}', target: node.label })}
-                    onClick={node.onSelect}
-                  >
-                    <Icon path={mdiArrowRight} size={0.75} aria-hidden="true" />
-                  </button>
-                </div>
+                  <span className={classes.choiceIndex} aria-hidden="true">
+                    {node.solved ? (
+                      <Icon path={mdiCheck} size={0.8} />
+                    ) : (
+                      String((pageData.current - 1) * 8 + index + 1).padStart(2, '0')
+                    )}
+                  </span>
+                  <span className={classes.choiceLabel}>{node.label}</span>
+                  {node.solved && <span className={classes.srOnly}>{t('common.workspace.solved', 'Solved')}</span>}
+                  {node.count !== undefined && <span className={classes.choiceCount}>{node.count}</span>}
+                  <Icon path={mdiArrowRight} size={0.75} aria-hidden="true" />
+                </button>
               ))}
             </div>
           </nav>

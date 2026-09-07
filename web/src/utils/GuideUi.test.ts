@@ -158,7 +158,7 @@ test('guide content follows the effective platform and event connection settings
   assert.match(challengeModal, /ChallengeType\.StaticAttachment/)
   assert.match(challengeModal, /resolveChallengeDeliveryGuide/)
   assert.match(challengeModalShell, /useComputedColorScheme\('dark'\)/)
-  assert.match(challengeModalShell, /reviewOutlineShade = colorScheme === 'dark' \? 4 : 8/)
+  assert.match(challengeModalShell, /reviewOutlineShade = colorScheme === 'dark' \? 4 : 9/)
   assert.match(challengeModal, /useFeatureGuide\(deliveryFeature/)
   assert.match(eventPage, /useFeatureGuide\([\s\S]*'event-vpn'/)
 })

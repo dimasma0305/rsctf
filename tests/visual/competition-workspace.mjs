@@ -28,7 +28,7 @@ const responses = {
   '/api/game/901/notices': [{ id: 1, type: 'FirstBlood', time: now - 30000, publishTimeUtc: now - 30000, values: ['TCP1P', 'Cipher Garden'] }],
 }
 for (const challenge of challenges) {
-  responses[`/api/game/901/challenges/${challenge.id}`] = { ...challenge, content: 'Download the challenge files and submit your flag.', context: { url: `/assets/${'a'.repeat(64)}/ret2win.zip`, fileSize: 2048 }, attempts: 0, hints: [] }
+  responses[`/api/game/901/challenges/${challenge.id}`] = { ...challenge, content: `Challenge files: ${challenge.title}. Download the challenge files and submit your flag.`, context: { url: `/assets/${'a'.repeat(64)}/ret2win.zip`, fileSize: 2048 }, attempts: 0, hints: [] }
   responses[`/api/game/901/challenges/${challenge.id}/solvers/page`] = { data: [], total: challenge.solved }
 }
 const browser = await launchBrowser()
@@ -100,9 +100,6 @@ try {
   await auditGlobeRotation(cdp, evaluate, waitFor, { onTilt: () => inspect('desktop-globe-tilted') })
   assert.equal(requests.slice(rotationRequests).filter(request => request.path.includes('/challenges/')).length, 0, 'rotation has no challenge reads or writes')
   await inspect('desktop-globe-rotation')
-  const focusRequests = requests.length
-  await auditGlobeFocus(cdp, evaluate, waitFor, inspect, 'desktop-category')
-  assert.equal(requests.slice(focusRequests).filter(request => request.path.includes('/challenges/')).length, 0, 'camera focus does not fetch challenge details')
   await evaluate(`document.querySelector('[data-team-summary] button').focus()`)
   await press('Enter')
   await waitFor(`document.querySelector('input[type="password"]')`)
@@ -122,9 +119,11 @@ try {
   await evaluate(`document.querySelector('[aria-label="Rotate globe right"]').click()`)
   await evaluate(`document.querySelector('[aria-label="Reset globe view"]').click()`)
   assert.equal(requests.slice(before).filter((request) => request.path.includes('/challenges/')).length, 0)
-  await evaluate(`document.querySelector('[data-globe-open="category-Pwn"]').focus()`)
+  const categoryRequests = requests.length
+  await evaluate(`document.querySelector('[data-globe-choice="category-Pwn"]').focus()`)
   await press('Enter')
   await waitFor(`document.querySelectorAll('[data-globe-node]').length === 8`)
+  assert.equal(requests.slice(categoryRequests).filter(request => request.path.includes('/challenges/')).length, 0, 'category selection filters without fetching arbitrary challenge details')
   assert.ok(await evaluate(`(() => { const stage = document.querySelector('[data-globe-stage]').getBoundingClientRect(); return [...document.querySelectorAll('[data-globe-node]:not([hidden])')].every(node => { const r = node.getBoundingClientRect(); return r.left >= stage.left + 3 && r.right <= stage.right - 3 && r.top >= stage.top + 3 && r.bottom <= stage.bottom - 3; }); })()`), 'all eight visible pins and their focus outlines fit above the cropped equator')
   await inspect('desktop-horizon-eight-pins')
   await auditGlobeFocus(cdp, evaluate, waitFor, inspect, 'desktop-challenge')
@@ -136,7 +135,7 @@ try {
   await evaluate(`document.querySelector('input[placeholder="Name or ID"]').focus()`)
   await cdp.send('Input.insertText', { text: 'Ret2win' })
   await waitFor(`document.querySelectorAll('[data-globe-node]').length === 1`)
-  await evaluate(`document.querySelector('[data-globe-open="9001"]').focus()`)
+  await evaluate(`document.querySelector('[data-globe-choice="9001"]').focus()`)
   await press('Enter')
   await waitFor(`document.querySelector('[data-challenge-detail] input')`)
   await inspect('desktop-globe-open-action')
