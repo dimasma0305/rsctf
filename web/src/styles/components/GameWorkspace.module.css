@@ -205,8 +205,11 @@
 }
 @media (max-width: 40rem) {
   .competitionStack {
-    gap: 0.5rem;
+    gap: 0.25rem;
     padding-top: 0;
+  }
+  .summary {
+    padding-block: 0;
   }
   .masthead {
     row-gap: 0;
