@@ -1,4 +1,30 @@
 {
+  "operations": {
+    "images_error": "Daftar image belum dapat dimuat ulang",
+    "storage_error": "Status penyimpanan belum dapat dimuat ulang",
+    "repo_scope": "Kelola sinkronisasi repositori dan buka acara yang terhubung. Angka di bawah hanya untuk halaman ini.",
+    "repo_overview": "Ringkasan repositori pada halaman ini",
+    "repositories": "Repositori",
+    "active": "Aktif",
+    "paused": "Dijeda",
+    "scanning": "Sedang dipindai",
+    "connected_repositories": "Repositori terhubung",
+    "latest_result": "Hasil pemindaian terakhir",
+    "refresh": "Muat ulang",
+    "retry": "Coba lagi",
+    "loading": "Memuat…",
+    "build_scope": "Cari dan filter 200 riwayat build terbaru. Pekerjaan aktif ditampilkan terpisah.",
+    "build_sections": "Tampilan build",
+    "build_overview": "Filter status build",
+    "search_builds": "Cari build",
+    "search_placeholder": "Challenge, ID acara, image, atau pemicu",
+    "activity_error": "Status build aktif belum dapat dimuat ulang",
+    "build_history": "Riwayat build",
+    "matches": "{{count}} cocok / {{total}} dimuat",
+    "history_error": "Riwayat build belum dapat dimuat ulang",
+    "stale_history": "Menampilkan data terakhir. Coba lagi untuk mendapatkan status terbaru.",
+    "retry_hint": "Periksa koneksi dan coba lagi. Halaman admin lain tetap dapat diakses."
+  },
   "button": {
     "back": "Kembali",
     "challenges": {
@@ -70,6 +96,18 @@
     }
   },
   "content": {
+    "builds": {
+      "confirm_prune_failed": "Hapus semua riwayat berstatus Failed, termasuk riwayat lama di luar tampilan ini? Saat ini {{count}} dimuat. Riwayat tanpa Dockerfile, build berhasil, build aktif, image, dan challenge tidak dihapus.",
+      "status": {
+        "None": "Belum dibangun",
+        "Success": "Berhasil",
+        "Failed": "Gagal",
+        "Building": "Membangun",
+        "Queued": "Antrean",
+        "MissingDockerfile": "Tanpa Dockerfile",
+        "NotApplicable": "Tidak diperlukan"
+      }
+    },
     "games": {
       "challenges": {
         "attachment": {

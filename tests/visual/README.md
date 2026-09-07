@@ -93,3 +93,38 @@ Screenshots and the request/Axe/overflow report are written to
 `visual-audit-output/competition/`. The globe draws only after interaction or a
 theme change; it does not own a poll, idle animation loop, or score calculation.
 Both desktop views reuse the existing challenge actions and their access gates.
+
+## Repository and build administration fixtures
+
+With a frontend preview on `127.0.0.1:63017`, run:
+
+```sh
+scripts/bounded-frontend.sh exec node ../tests/visual/admin-operations.mjs
+```
+
+This checks repository cards, pagination, add/history dialogs, build search and
+status filters, build details without a log, image inventory, and loading/error/
+empty/active states. It covers 320px through 1920px, Indonesian copy, light mode,
+reduced motion, keyboard controls, Axe, overflow, and browser exceptions. All API
+requests are intercepted; repository scans, builds, upstream pushes, and deletes
+are blocked. This is UI evidence, not backend or build-worker integration evidence.
+
+Artifacts go to `visual-audit-output/admin-ops-local/`. `RSCTF_ADMIN_OPS_OUTPUT`
+overrides that path. `RSCTF_ADMIN_OPS_TARGET=https://intechfest.1pc.tf` checks the
+deployed preview's assets with the same isolated API fixtures.
+
+For the standard full-content audit, run
+`node tests/visual/admin-operations-fixtures.mjs --serve` in a separate terminal.
+It binds only to `127.0.0.1:63018`, serves invented read-only admin data, and forwards
+static asset reads to port 63017. Then run:
+
+```sh
+RSCTF_VISUAL_TARGET=http://127.0.0.1:63018 \
+RSCTF_VISUAL_ADMIN_JWT=local-fixture-not-a-credential \
+scripts/bounded-frontend.sh exec node ../tests/visual/audit.mjs \
+  --page =admin--repo-bindings --page =admin--builds \
+  --viewport desktop --viewport tablet --viewport mobile --viewport compact
+```
+
+Stop the fixture server and preview when finished. Never use a real credential
+for the fixture server.

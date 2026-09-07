@@ -1,4 +1,30 @@
 {
+  "operations": {
+    "images_error": "Image inventory could not be refreshed",
+    "storage_error": "Storage status could not be refreshed",
+    "repo_scope": "Manage repository syncs and open their linked events. Counts below cover this page.",
+    "repo_overview": "Repository overview for this page",
+    "repositories": "Repositories",
+    "active": "Active",
+    "paused": "Paused",
+    "scanning": "Scanning now",
+    "connected_repositories": "Connected repositories",
+    "latest_result": "Latest scan result",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "loading": "Loading…",
+    "build_scope": "Search and filter the latest 200 build records. Active jobs are tracked separately.",
+    "build_sections": "Build views",
+    "build_overview": "Build status filters",
+    "search_builds": "Find a build",
+    "search_placeholder": "Challenge, event ID, image, or trigger",
+    "activity_error": "Active build status could not be refreshed",
+    "build_history": "Build history",
+    "matches": "{{count}} matching / {{total}} loaded",
+    "history_error": "Build history could not be refreshed",
+    "stale_history": "Showing the last loaded records. Retry to get the latest status.",
+    "retry_hint": "Check your connection and retry. Other admin pages remain available."
+  },
   "button": {
     "back": "Go Back",
     "ad_ops": {
@@ -973,9 +999,18 @@
       "attempt": "attempt {{n}}",
       "log_modal_title": "Build log",
       "no_log": "No log captured for this attempt.",
+      "status": {
+        "None": "No build",
+        "Success": "Built",
+        "Failed": "Failed",
+        "Building": "Building",
+        "Queued": "Queued",
+        "MissingDockerfile": "No Dockerfile",
+        "NotApplicable": "Not required"
+      },
       "confirm_delete": "Delete the audit row for {{challenge}}? The challenge itself and its built image are not affected.",
       "confirm_bulk_delete": "Delete the {{count}} selected audit row(s)? The challenges and their built images are not affected.",
-      "confirm_prune_failed": "Delete {{count}} Failed audit row(s)? Successful builds, in-progress builds, and the challenges themselves are preserved.",
+      "confirm_prune_failed": "Delete all Failed audit records, including older records outside this view? {{count}} are currently loaded. Missing-Dockerfile records, successful builds, active builds, images, and challenges are preserved.",
       "select_all": "Select all rows on this page",
       "confirm_prune_images": {
         "line1": "Untag every rsctf/* image on the local Docker daemon that no current challenge references.",

@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Alert,
   Badge,
   Button,
   Center,
@@ -188,7 +189,9 @@ export const BuildImagesPanel: FC = () => {
       <Group justify="space-between" align="flex-end" wrap="wrap">
         <Group gap="xs">
           <Icon path={mdiDatabaseOutline} size={0.9} />
-          <Title order={5}>{t('admin.content.builds.images.title', 'Images on disk')}</Title>
+          <Title order={2} size="h4">
+            {t('admin.content.builds.images.title', 'Images on disk')}
+          </Title>
           {images && (
             <Badge variant="light" color="gray" ff="monospace">
               {t('admin.content.builds.images.summary', {
@@ -254,17 +257,33 @@ export const BuildImagesPanel: FC = () => {
         </Paper>
       )}
 
+      {imageError && (
+        <Alert color="red" role="alert" title={t('admin.operations.images_error')}>
+          <Button size="xs" variant="default" onClick={() => void mutate()}>
+            {t('admin.operations.retry')}
+          </Button>
+        </Alert>
+      )}
+      {storageQuery.error && (
+        <Alert color="orange" role="alert" title={t('admin.operations.storage_error')}>
+          <Button size="xs" variant="default" onClick={() => void mutateStorage()}>
+            {t('admin.operations.retry')}
+          </Button>
+        </Alert>
+      )}
       {isLoading && !images ? (
         <Center py="sm">
           <Loader size="xs" />
         </Center>
-      ) : !images || images.length === 0 ? (
+      ) : imageError && !images ? null : !images || images.length === 0 ? (
         <Text size="sm" c="dimmed">
           {t('admin.content.builds.images.empty', 'No build images on disk.')}
         </Text>
       ) : (
         <Paper p="xs" withBorder>
-          <ScrollArea>
+          <ScrollArea
+            viewportProps={{ tabIndex: 0, 'aria-label': t('admin.content.builds.images.title', 'Images on disk') }}
+          >
             <Table
               withTableBorder
               striped

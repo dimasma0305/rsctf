@@ -1,5 +1,9 @@
 import {
   ActionIcon,
+  Alert,
+  Skeleton,
+  TextInput,
+  UnstyledButton,
   Anchor,
   Badge,
   Box,
@@ -11,7 +15,6 @@ import {
   CopyButton,
   Group,
   Loader,
-  Modal,
   Pagination,
   Paper,
   ScrollArea,
@@ -31,7 +34,7 @@ import {
   mdiContentCopy,
   mdiDatabaseOutline,
   mdiDeleteOutline,
-  mdiHammerWrench,
+  mdiMagnify,
   mdiImageBrokenVariant,
   mdiRefresh,
   mdiTextBoxOutline,
@@ -45,6 +48,7 @@ import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { useSWRConfig } from 'swr'
+import { AccessibleModal } from '@Components/AccessibleModal'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { BuildImagesPanel } from '@Components/admin/BuildImagesPanel'
 import { BuildHistoryCard } from '@Components/admin/builds/BuildHistoryCard'
@@ -52,14 +56,16 @@ import {
   BUILD_STATUS_COLOR,
   BUILD_STATUS_VARIANT,
   formatBuildDuration,
+  matchesBuildQuery,
 } from '@Components/admin/builds/buildPresentation'
 import { refreshAdminBuildImageViews } from '@Utils/AdminBuildImages'
-import { showErrorMsg } from '@Utils/Shared'
 import { createOperationId, startControlJob, waitForControlJob } from '@Utils/ControlJobs'
-import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
+import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
+import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import api, { ChallengeBuildAuditModel, ChallengeBuildStatus } from '@Api'
 import classes from '@Styles/AdminBuilds.module.css'
+import ops from '@Styles/AdminOperations.module.css'
 import tableClasses from '@Styles/Table.module.css'
 
 dayjs.extend(relativeTime)
@@ -94,6 +100,7 @@ const Builds: FC = () => {
   const { mutate: mutateCache } = useSWRConfig()
   const [statusFilter, setStatusFilterRaw] = useState<ChallengeBuildStatus | ''>('')
   const [page, setPage] = useState(1)
+  const [search, setSearch] = useState('')
   const [busy, setBusy] = useState(false)
   const [logRow, setLogRow] = useState<ChallengeBuildAuditModel | null>(null)
 
@@ -120,10 +127,11 @@ const Builds: FC = () => {
   // is applied in-memory so the summary chips always reflect true totals — if we
   // pushed `status` to the server, selecting a chip would refetch only that one
   // status and every chip's count (computed from the loaded set) would collapse to 0.
-  const { data: history, mutate: mutateHistory } = api.admin.useAdminListBuilds(
-    { count: 200 },
-    CompletionPollSWRConfig
-  )
+  const {
+    data: history,
+    error: historyError,
+    mutate: mutateHistory,
+  } = api.admin.useAdminListBuilds({ count: 200 }, CompletionPollSWRConfig)
   const livePolling = (inProgress?.length ?? 0) > 0
   useCompletionPolling({
     key: livePolling ? '/api/admin/builds/inprogress' : '',
@@ -150,12 +158,10 @@ const Builds: FC = () => {
   const statusOptions = useMemo(
     () => [
       { value: '', label: t('admin.content.builds.filter.all') },
-      { value: 'Queued', label: 'Queued' },
-      { value: 'Building', label: 'Building' },
-      { value: 'Success', label: 'Success' },
-      { value: 'Failed', label: 'Failed' },
-      { value: 'MissingDockerfile', label: 'MissingDockerfile' },
-      { value: 'NotApplicable', label: 'NotApplicable' },
+      ...(['Queued', 'Building', 'Success', 'Failed', 'MissingDockerfile', 'NotApplicable'] as const).map((value) => ({
+        value,
+        label: t(`admin.content.builds.status.${value}`, value),
+      })),
     ],
     [t]
   )
@@ -180,8 +186,8 @@ const Builds: FC = () => {
   // chip/dropdown. Summary + failedCount above stay on the FULL history so the chips
   // keep their real counts even while a filter is applied.
   const shownHistory = useMemo(
-    () => (history ?? []).filter((b) => matchesFilter(b.status, statusFilter)),
-    [history, statusFilter]
+    () => (history ?? []).filter((b) => matchesFilter(b.status, statusFilter) && matchesBuildQuery(b, search)),
+    [history, statusFilter, search]
   )
 
   // Client-side pagination of the filtered rows. Clamp the page so deletes / filter
@@ -228,6 +234,7 @@ const Builds: FC = () => {
     const ids = Array.from(selected)
     modals.openConfirmModal({
       title: t('admin.button.builds.delete_selected'),
+      closeButtonProps: { 'aria-label': t('common.button.close', 'Close') },
       children: <Text size="sm">{t('admin.content.builds.confirm_bulk_delete', { count: ids.length })}</Text>,
       confirmProps: { color: 'red' },
       onConfirm: async () => {
@@ -253,6 +260,7 @@ const Builds: FC = () => {
   const onDelete = (row: ChallengeBuildAuditModel) => {
     modals.openConfirmModal({
       title: t('admin.button.builds.delete'),
+      closeButtonProps: { 'aria-label': t('common.button.close', 'Close') },
       children: <Text size="sm">{t('admin.content.builds.confirm_delete', { challenge: row.challengeTitle })}</Text>,
       confirmProps: { color: 'red' },
       onConfirm: async () => {
@@ -305,6 +313,7 @@ const Builds: FC = () => {
     if (failedCount === 0) return
     modals.openConfirmModal({
       title: t('admin.button.builds.prune_failed'),
+      closeButtonProps: { 'aria-label': t('common.button.close', 'Close') },
       children: <Text size="sm">{t('admin.content.builds.confirm_prune_failed', { count: failedCount })}</Text>,
       confirmProps: { color: 'red' },
       onConfirm: async () => {
@@ -329,6 +338,7 @@ const Builds: FC = () => {
   const onPruneImages = () => {
     modals.openConfirmModal({
       title: t('admin.button.builds.prune_images'),
+      closeButtonProps: { 'aria-label': t('common.button.close', 'Close') },
       children: (
         <Stack gap={4}>
           <Text size="sm">{t('admin.content.builds.confirm_prune_images.line1')}</Text>
@@ -358,19 +368,28 @@ const Builds: FC = () => {
   }
 
   return (
-    <AdminPage isLoading={!history}>
-      <Container size="xl" mt="md" w="100%" className={classes.pageContainer}>
+    <AdminPage>
+      <Container fluid px={0} w="100%" className={classes.pageContainer} data-build-workspace>
         <Stack gap="lg" className={classes.pageContent}>
-          <Stack gap={0}>
-            <Group gap="xs">
-              <Icon path={mdiHammerWrench} size={1} />
-              <Title order={2}>{t('admin.content.builds.title')}</Title>
+          <Group justify="space-between" className={ops.toolbar}>
+            <Text className={ops.scopeNote}>{t('admin.operations.build_scope')}</Text>
+            <Group gap="sm">
+              <Button component={Link} to="/admin/repo-bindings" variant="default">
+                {t('admin.content.repo_binding.title')}
+              </Button>
+              <Button
+                variant="default"
+                disabled={busy}
+                onClick={() => void Promise.all([mutateHistory(), mutateInProgress()])}
+                leftSection={<Icon path={mdiRefresh} size={0.8} aria-hidden="true" />}
+              >
+                {t('admin.operations.refresh')}
+              </Button>
             </Group>
-            <Text c="dimmed">{t('admin.content.builds.subtitle')}</Text>
-          </Stack>
+          </Group>
 
           <Tabs defaultValue="log" keepMounted={false} className={classes.tabs}>
-            <Tabs.List>
+            <Tabs.List aria-label={t('admin.operations.build_sections')}>
               <Tabs.Tab value="log" leftSection={<Icon path={mdiTextBoxOutline} size={0.7} />}>
                 {t('admin.content.builds.tab.log', 'Build log')}
               </Tabs.Tab>
@@ -381,7 +400,18 @@ const Builds: FC = () => {
 
             <Tabs.Panel value="log" pt="md" className={classes.panel}>
               <Stack gap="lg">
-                <Group justify="flex-end" gap="xs" wrap="wrap">
+                <Group justify="space-between" gap="sm" wrap="wrap" className={ops.toolbar}>
+                  <TextInput
+                    className={ops.search}
+                    label={t('admin.operations.search_builds')}
+                    placeholder={t('admin.operations.search_placeholder')}
+                    leftSection={<Icon path={mdiMagnify} size={0.8} aria-hidden="true" />}
+                    value={search}
+                    onChange={(event) => {
+                      setSearch(event.currentTarget.value)
+                      setPage(1)
+                    }}
+                  />
                   {selected.size > 0 && (
                     <Button
                       size="sm"
@@ -402,12 +432,12 @@ const Builds: FC = () => {
                     onClick={onPruneFailed}
                     disabled={busy || failedCount === 0}
                   >
-                    {t('admin.button.builds.prune_failed')} ({failedCount})
+                    {t('admin.button.builds.prune_failed')}
                   </Button>
                   <Select
                     size="sm"
                     w="min(100%, 14rem)"
-                    aria-label={t('admin.content.builds.filter.label', 'Filter builds by status')}
+                    label={t('admin.content.builds.filter.label', 'Filter builds by status')}
                     data={statusOptions}
                     value={statusFilter}
                     onChange={(v) => setStatusFilter((v ?? '') as ChallengeBuildStatus | '')}
@@ -417,7 +447,7 @@ const Builds: FC = () => {
                 </Group>
 
                 {/* Status summary — click a chip to filter the table to that group. */}
-                <Group gap="xs" wrap="wrap">
+                <div className={ops.overview} aria-label={t('admin.operations.build_overview')}>
                   {(
                     [
                       ['Success', 'teal', summary.Success, t('admin.content.builds.summary.built', 'built')],
@@ -433,33 +463,37 @@ const Builds: FC = () => {
                   ).map(([key, color, n, label]) => {
                     const active = statusFilter === key
                     return (
-                      <Badge
-                        component="button"
+                      <UnstyledButton
                         type="button"
                         key={key}
-                        size="lg"
-                        color={color}
-                        variant="light"
-                        autoContrast
                         aria-pressed={active}
                         data-active={active || undefined}
-                        className={classes.summaryButton}
+                        className={`${ops.metric} ${classes.summaryButton}`}
                         onClick={() => setStatusFilter(active ? '' : (key as ChallengeBuildStatus))}
                       >
-                        {n} {label}
-                      </Badge>
+                        <Text className={ops.metricLabel}>
+                          <Badge color={color} variant="light" size="xs">
+                            {label}
+                          </Badge>
+                        </Text>
+                        <Text className={ops.metricValue}>{history ? n : '—'}</Text>
+                      </UnstyledButton>
                     )
                   })}
-                </Group>
+                </div>
 
-                <Stack gap={6}>
-                  <Title order={3} size="h5">
+                <Stack gap="sm" className={ops.activity}>
+                  <Title order={2} size="h4">
                     {t('admin.content.builds.in_progress_title')}
                   </Title>
-                  {!inProgress ? (
-                    <Center py="sm">
-                      <Loader size="xs" />
-                    </Center>
+                  {inProgressQuery.error ? (
+                    <Alert color="orange" role="alert" title={t('admin.operations.activity_error')}>
+                      <Button size="xs" variant="default" onClick={() => void mutateInProgress()}>
+                        {t('admin.operations.retry')}
+                      </Button>
+                    </Alert>
+                  ) : !inProgress ? (
+                    <Skeleton h={48} animate={false} role="status" aria-label={t('admin.operations.loading')} />
                   ) : inProgress.length === 0 ? (
                     <Text size="sm" c="dimmed">
                       {t('admin.content.builds.no_in_progress')}
@@ -468,8 +502,8 @@ const Builds: FC = () => {
                     <Paper p="xs" withBorder>
                       <Stack gap={4}>
                         {inProgress.map((b) => (
-                          <Group key={b.auditId} gap="sm" justify="space-between" wrap="nowrap">
-                            <Group gap="xs" wrap="nowrap" miw={0}>
+                          <Group key={b.auditId} gap="sm" justify="space-between" wrap="wrap" className={ops.activeRow}>
+                            <Group gap="xs" wrap="wrap" miw={0}>
                               <Loader size="xs" />
                               <Anchor
                                 component={Link}
@@ -502,20 +536,58 @@ const Builds: FC = () => {
                   )}
                 </Stack>
 
-                {!history || history.length === 0 ? (
-                  <Center h="30vh">
+                <Group justify="space-between" gap="sm">
+                  <Title order={2} size="h4">
+                    {t('admin.operations.build_history')}
+                  </Title>
+                  <Text size="xs" c="dimmed" role="status">
+                    {history
+                      ? t('admin.operations.matches', { count: shownHistory.length, total: history.length })
+                      : t('admin.operations.loading')}
+                  </Text>
+                </Group>
+                {historyError && (
+                  <Alert color={history ? 'orange' : 'red'} role="alert" title={t('admin.operations.history_error')}>
+                    <Text size="sm" mb="sm">
+                      {t(history ? 'admin.operations.stale_history' : 'admin.operations.retry_hint')}
+                    </Text>
+                    <Button size="xs" variant="default" onClick={() => void mutateHistory()}>
+                      {t('admin.operations.retry')}
+                    </Button>
+                  </Alert>
+                )}
+                {!history ? (
+                  !historyError && (
+                    <Stack role="status" aria-label={t('admin.operations.loading')} data-build-loading>
+                      <Skeleton h={80} animate={false} />
+                      <Skeleton h={160} animate={false} />
+                    </Stack>
+                  )
+                ) : history.length === 0 ? (
+                  <Center className={ops.empty}>
                     <Stack gap={0} align="center">
-                      <Title order={4}>{t('admin.content.builds.empty_title')}</Title>
+                      <Title order={3} size="h4">
+                        {t('admin.content.builds.empty_title')}
+                      </Title>
                       <Text c="dimmed">{t('admin.content.builds.empty')}</Text>
                     </Stack>
                   </Center>
                 ) : shownHistory.length === 0 ? (
                   // History HAS rows, but none match the active filter — don't say "no history".
-                  <Center h="30vh">
+                  <Center className={ops.empty}>
                     <Stack gap={6} align="center">
-                      <Title order={4}>{t('admin.content.builds.no_match_title', 'No matching builds')}</Title>
+                      <Title order={3} size="h4">
+                        {t('admin.content.builds.no_match_title', 'No matching builds')}
+                      </Title>
                       <Text c="dimmed">{t('admin.content.builds.no_match', 'No builds match this filter.')}</Text>
-                      <Button size="sm" variant="default" onClick={() => setStatusFilter('')}>
+                      <Button
+                        size="sm"
+                        variant="default"
+                        onClick={() => {
+                          setStatusFilter('')
+                          setSearch('')
+                        }}
+                      >
                         {t('admin.content.builds.clear_filter', 'Clear filter')}
                       </Button>
                     </Stack>
@@ -536,16 +608,14 @@ const Builds: FC = () => {
                             ),
                           }}
                         >
-                          {/* Fixed layout + explicit column widths so one long cell (an image ref or
-                    a sha-laden error) can't stretch the table and squeeze the rest. The
-                    Detail column is the flexible one (w=100%); miw keeps columns usable on
-                    narrow screens — the ScrollArea scrolls horizontally instead of crushing. */}
+                          {/* Fixed columns contain long references; the result column takes remaining
+                              space and the ScrollArea keeps horizontal scrolling inside the table. */}
                           <Table
                             withTableBorder
                             striped
                             highlightOnHover
                             w="100%"
-                            miw={1200}
+                            miw={980}
                             className={cx(tableClasses.table, tableClasses.fixed)}
                           >
                             <Table.Caption>
@@ -568,24 +638,15 @@ const Builds: FC = () => {
                                 <Table.Th scope="col" w="13rem">
                                   {t('admin.content.builds.column.challenge')}
                                 </Table.Th>
-                                <Table.Th scope="col" w="6rem">
-                                  {t('admin.content.builds.column.trigger')}
-                                </Table.Th>
-                                <Table.Th scope="col" w="4.5rem">
-                                  {t('admin.content.builds.column.attempt')}
-                                </Table.Th>
+
                                 <Table.Th scope="col" w="8.5rem">
                                   {t('admin.content.builds.column.status')}
                                 </Table.Th>
-                                <Table.Th scope="col" w="13rem">
-                                  {t('admin.content.builds.column.image', 'Image')}
-                                </Table.Th>
+
                                 <Table.Th scope="col" w="6rem">
                                   {t('admin.content.builds.column.duration')}
                                 </Table.Th>
-                                <Table.Th scope="col" w="100%">
-                                  {t('admin.content.builds.column.detail')}
-                                </Table.Th>
+                                <Table.Th scope="col">{t('admin.content.builds.column.detail')}</Table.Th>
                                 <Table.Th scope="col" w="7rem">
                                   <span className="app-sr-only">{t('common.label.action', 'Actions')}</span>
                                 </Table.Th>
@@ -602,7 +663,10 @@ const Builds: FC = () => {
                                       size="md"
                                       checked={selected.has(b.id)}
                                       onChange={() => toggleOne(b.id)}
-                                      aria-label={`select ${b.challengeTitle || b.challengeId}`}
+                                      aria-label={t('admin.content.builds.select_one', {
+                                        defaultValue: 'Select build for {{challenge}}',
+                                        challenge: b.challengeTitle || b.challengeId,
+                                      })}
                                     />
                                   </Table.Td>
                                   <Table.Td>
@@ -614,16 +678,15 @@ const Builds: FC = () => {
                                     </Stack>
                                   </Table.Td>
                                   <Table.Td>
-                                    <Group gap={6} wrap="nowrap" miw={0}>
+                                    <Group gap={6} wrap="wrap" miw={0}>
                                       <Anchor
                                         component={Link}
                                         to={`/admin/games/${b.gameId}/challenges`}
                                         size="sm"
                                         fw="bold"
-                                        truncate
                                         title={b.challengeTitle || `#${b.challengeId}`}
                                         c="var(--app-text-primary)"
-                                        className={classes.challengeLink}
+                                        className={`${classes.challengeLink} ${classes.tableChallenge}`}
                                       >
                                         {b.challengeTitle || `#${b.challengeId}`}
                                       </Anchor>
@@ -651,75 +714,23 @@ const Builds: FC = () => {
                                         </Badge>
                                       </Tooltip>
                                     </Group>
-                                  </Table.Td>
-                                  <Table.Td>
-                                    <Badge size="xs" color="gray" variant="light">
-                                      {b.trigger}
-                                    </Badge>
-                                  </Table.Td>
-                                  <Table.Td>
-                                    <Text size="sm" ff="monospace">
-                                      {b.attempt}
+                                    <Text size="xs" c="dimmed" mt={4}>
+                                      {b.trigger} · {t('admin.content.builds.attempt', { n: b.attempt })}
                                     </Text>
                                   </Table.Td>
+
                                   <Table.Td>
                                     <Badge
                                       size="sm"
                                       color={BUILD_STATUS_COLOR[b.status]}
                                       variant={BUILD_STATUS_VARIANT}
                                       autoContrast
+                                      className={classes.statusBadge}
                                     >
-                                      {b.status}
+                                      {t(`admin.content.builds.status.${b.status}`, b.status)}
                                     </Badge>
                                   </Table.Td>
-                                  <Table.Td>
-                                    {b.imageRef ? (
-                                      <Group gap={4} wrap="nowrap" miw={0}>
-                                        <Tooltip label={b.imageRef} multiline w={400}>
-                                          <Code
-                                            title={b.imageRef}
-                                            style={{
-                                              display: 'block',
-                                              flex: 1,
-                                              minWidth: 0,
-                                              overflow: 'hidden',
-                                              textOverflow: 'ellipsis',
-                                              whiteSpace: 'nowrap',
-                                            }}
-                                          >
-                                            {b.imageRef}
-                                          </Code>
-                                        </Tooltip>
-                                        <CopyButton value={b.imageRef} timeout={1500}>
-                                          {({ copied, copy }) => (
-                                            <Tooltip
-                                              label={
-                                                copied ? t('admin.button.builds.copied') : t('admin.button.builds.copy')
-                                              }
-                                            >
-                                              <ActionIcon
-                                                variant="subtle"
-                                                size="md"
-                                                color={copied ? 'teal' : 'gray'}
-                                                aria-label={
-                                                  copied
-                                                    ? t('admin.button.builds.copied')
-                                                    : t('admin.button.builds.copy')
-                                                }
-                                                onClick={copy}
-                                              >
-                                                <Icon path={copied ? mdiCheck : mdiContentCopy} size={0.7} />
-                                              </ActionIcon>
-                                            </Tooltip>
-                                          )}
-                                        </CopyButton>
-                                      </Group>
-                                    ) : (
-                                      <Text size="xs" c="dimmed">
-                                        —
-                                      </Text>
-                                    )}
-                                  </Table.Td>
+
                                   <Table.Td>
                                     <Text size="sm" ff="monospace">
                                       {formatBuildDuration(b.durationMs)}
@@ -730,9 +741,9 @@ const Builds: FC = () => {
                                       // Single-line truncation within the flex column: build errors can
                                       // be long, unbroken strings (sha256 layer ids). Full text in the
                                       // tooltip + log modal.
-                                      <Tooltip label={b.errorMessage} multiline w={400}>
+                                      <Tooltip label={b.errorMessage} multiline w="min(400px, calc(100vw - 2rem))">
                                         <Code
-                                          c="red"
+                                          className={classes.errorText}
                                           title={b.errorMessage}
                                           style={{
                                             display: 'block',
@@ -752,13 +763,18 @@ const Builds: FC = () => {
                                         —
                                       </Text>
                                     )}
+                                    {b.imageRef && (
+                                      <Code className={classes.tableReference} title={b.imageRef}>
+                                        {b.imageRef}
+                                      </Code>
+                                    )}
                                   </Table.Td>
                                   <Table.Td>
                                     <Group gap={4} wrap="nowrap" justify="flex-end">
                                       <Tooltip label={t('admin.button.builds.view_log')}>
                                         <ActionIcon
                                           variant="subtle"
-                                          disabled={!b.logTail}
+                                          disabled={!b.logTail && !b.errorMessage && !b.imageRef}
                                           aria-label={t('admin.button.builds.view_log')}
                                           onClick={() => setLogRow(b)}
                                         >
@@ -884,7 +900,7 @@ const Builds: FC = () => {
         </Stack>
       </Container>
 
-      <Modal
+      <AccessibleModal
         size="xl"
         opened={logRow !== null}
         onClose={() => setLogRow(null)}
@@ -904,7 +920,7 @@ const Builds: FC = () => {
           <Stack gap="xs">
             <Group gap="xs">
               <Badge color={BUILD_STATUS_COLOR[logRow.status]} variant={BUILD_STATUS_VARIANT} autoContrast>
-                {logRow.status}
+                {t(`admin.content.builds.status.${logRow.status}`, logRow.status)}
               </Badge>
               <Badge variant="light" color="gray">
                 {logRow.trigger}
@@ -931,7 +947,9 @@ const Builds: FC = () => {
                 <Text size="xs" c="dimmed">
                   {t('admin.content.builds.column.image', 'Image')}:
                 </Text>
-                <Code style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <Code
+                  style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                >
                   {logRow.imageRef}
                 </Code>
                 <CopyButton value={logRow.imageRef} timeout={1500}>
@@ -950,12 +968,19 @@ const Builds: FC = () => {
               </Group>
             )}
             {logRow.errorMessage && (
-              <Code c="red" block style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>
+              <Code
+                block
+                className={`${ops.wrapCode} ${classes.errorText}`}
+                style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}
+              >
                 {logRow.errorMessage}
               </Code>
             )}
             <Code
               block
+              tabIndex={0}
+              aria-label={t('admin.content.builds.log_modal_title')}
+              className={ops.log}
               style={{
                 whiteSpace: 'pre-wrap',
                 maxHeight: '60vh',
@@ -967,7 +992,7 @@ const Builds: FC = () => {
             </Code>
           </Stack>
         )}
-      </Modal>
+      </AccessibleModal>
     </AdminPage>
   )
 }

@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Skeleton,
   Alert,
   Anchor,
   Badge,
@@ -46,6 +47,7 @@ import { AdminPage } from '@Components/admin/AdminPage'
 import { apiCollectionPageCount, apiCollectionView, decodeApiCollection } from '@Utils/ApiCollection'
 import { showErrorMsg } from '@Utils/Shared'
 import api, { RepoBindingInfoModel, RepoBindingScanHistoryModel, RepoBindingScanResultModel } from '@Api'
+import classes from '@Styles/AdminOperations.module.css'
 
 dayjs.extend(relativeTime)
 
@@ -138,6 +140,8 @@ const RepoBindings: FC = () => {
     setBindingKnownPageCount(bindingPageCount)
   }, [bindingCollection.status, bindingPageCount])
 
+  const [addOpened, setAddOpened] = useState(false)
+  const addInFlight = useRef(false)
   const [repoUrl, setRepoUrl] = useState('')
   const [refValue, setRefValue] = useState('')
   const [githubToken, setGithubToken] = useState('')
@@ -182,7 +186,8 @@ const RepoBindings: FC = () => {
   }
 
   const onAdd = async () => {
-    if (!repoUrl) return
+    if (!repoUrl.trim() || busy || addInFlight.current) return
+    addInFlight.current = true
     setBusy(true)
     setLastResult(null)
     try {
@@ -197,10 +202,12 @@ const RepoBindings: FC = () => {
       setRepoUrl('')
       setRefValue('')
       setGithubToken('')
+      setAddOpened(false)
       mutate()
     } catch (e) {
       showErrorMsg(e, t)
     } finally {
+      addInFlight.current = false
       setBusy(false)
     }
   }
@@ -319,79 +326,54 @@ const RepoBindings: FC = () => {
   }
 
   return (
-    <AdminPage isLoading={bindingView === 'loading'}>
-      <Container size="xl" mt="md" px={0} w="100%" maw="100%">
-        <Stack gap="lg" pb={48}>
-          <Stack gap={0}>
-            <Group gap="xs">
-              <Icon path={mdiSourceBranch} size={1} />
-              <Title order={2}>{t('admin.content.repo_binding.title')}</Title>
+    <AdminPage>
+      <Container fluid px={0} w="100%" className={classes.workspace} data-repo-workspace>
+        <Stack gap="lg" pb={32}>
+          <Group justify="space-between" align="center" className={classes.toolbar}>
+            <Text className={classes.scopeNote}>{t('admin.operations.repo_scope')}</Text>
+            <Group gap="sm">
+              <Button component={Link} to="/admin/builds" variant="default">
+                {t('admin.content.builds.title')}
+              </Button>
+              <Button
+                variant="default"
+                disabled={busy}
+                onClick={() => void mutate()}
+                leftSection={<Icon path={mdiRefresh} size={0.8} aria-hidden="true" />}
+              >
+                {t('admin.operations.refresh')}
+              </Button>
+              <Button
+                onClick={() => setAddOpened(true)}
+                leftSection={<Icon path={mdiPlus} size={0.8} aria-hidden="true" />}
+              >
+                {t('admin.content.repo_binding.add')}
+              </Button>
             </Group>
-            <Text c="dimmed">{t('admin.content.repo_binding.subtitle')}</Text>
-          </Stack>
-
-          <Paper p="md" withBorder>
-            <Stack gap="sm">
-              <Group gap="xs">
-                <Icon path={mdiPlus} size={0.9} />
-                <Title order={3} size="h5">
-                  {t('admin.content.repo_binding.add')}
-                </Title>
-              </Group>
-              <TextInput
-                label={t('admin.content.repo_binding.repo_url')}
-                placeholder="https://github.com/TCP1P/findit-ctf-2026"
-                value={repoUrl}
-                onChange={(e) => setRepoUrl(e.currentTarget.value)}
-              />
-              <SimpleGrid cols={{ base: 1, sm: 2 }}>
-                <TextInput
-                  label={t('admin.content.repo_binding.ref')}
-                  placeholder="main"
-                  value={refValue}
-                  onChange={(e) => setRefValue(e.currentTarget.value)}
-                />
-                <TextInput
-                  label={t('admin.content.repo_binding.token')}
-                  description={t('admin.content.repo_binding.token_help')}
-                  type="password"
-                  placeholder="github_pat_…"
-                  value={githubToken}
-                  onChange={(e) => setGithubToken(e.currentTarget.value)}
-                />
-              </SimpleGrid>
-              <SimpleGrid cols={{ base: 1, sm: 2 }}>
-                <NumberInput
-                  label={t('admin.content.repo_binding.interval')}
-                  description={t('admin.content.repo_binding.interval_help')}
-                  min={60}
-                  max={86400}
-                  step={60}
-                  value={intervalSeconds}
-                  onChange={setIntervalSeconds}
-                />
-                <Switch
-                  label={t('admin.content.repo_binding.run_immediately')}
-                  checked={runImmediately}
-                  onChange={(e) => setRunImmediately(e.currentTarget.checked)}
-                />
-              </SimpleGrid>
-              <Group justify="flex-end">
-                <Button
-                  leftSection={<Icon path={mdiPlus} size={1} />}
-                  loading={busy}
-                  disabled={!repoUrl}
-                  onClick={onAdd}
-                >
-                  {t('admin.button.repo_binding.add')}
-                </Button>
-              </Group>
-            </Stack>
-          </Paper>
+          </Group>
+          {bindings && (
+            <div className={classes.overview} aria-label={t('admin.operations.repo_overview')}>
+              {[
+                [t('admin.operations.repositories'), bindings.length],
+                [t('admin.operations.active'), bindings.filter((b) => b.status === 'Active').length],
+                [t('admin.operations.paused'), bindings.filter((b) => b.status === 'Paused').length],
+                [t('admin.operations.scanning'), bindings.filter((b) => b.currentActivity).length],
+              ].map(([label, count]) => (
+                <div key={label} className={classes.metric}>
+                  <Text className={classes.metricLabel}>{label}</Text>
+                  <Text className={classes.metricValue}>{count}</Text>
+                </div>
+              ))}
+            </div>
+          )}
+          <Title order={2} size="h4">
+            {t('admin.operations.connected_repositories')}
+          </Title>
 
           {lastResult && (
-            <Paper p="sm" withBorder>
+            <Paper p="md" withBorder className={classes.result} role="status">
               <Stack gap="xs">
+                <Text fw={650}>{t('admin.operations.latest_result')}</Text>
                 <Group gap="md">
                   <Badge color="teal" variant="light">
                     {t('admin.content.repo_binding.summary.games_created', {
@@ -469,7 +451,12 @@ const RepoBindings: FC = () => {
             </Alert>
           )}
 
-          {bindingView === 'failed' ? (
+          {bindingView === 'loading' ? (
+            <Stack role="status" aria-label={t('admin.operations.loading')} data-repo-loading>
+              <Skeleton h={200} animate={false} radius="md" />
+              <Skeleton h={200} animate={false} radius="md" />
+            </Stack>
+          ) : bindingView === 'failed' ? (
             <Alert
               color="red"
               icon={<Icon path={mdiAlertCircleOutline} size={1} />}
@@ -489,7 +476,7 @@ const RepoBindings: FC = () => {
               </Stack>
             </Alert>
           ) : !bindings || bindings.length === 0 ? (
-            <Center h="30vh">
+            <Center className={classes.empty}>
               <Stack gap={0} align="center">
                 <Title order={3} size="h4">
                   {t('admin.content.repo_binding.empty_title')}
@@ -500,16 +487,16 @@ const RepoBindings: FC = () => {
           ) : (
             <Stack gap="md">
               {bindings.map((b) => (
-                <Paper key={b.id} p="md" withBorder>
+                <Paper key={b.id} p="lg" withBorder className={classes.repoCard} data-repo-binding={b.id}>
                   <Stack gap="sm">
                     {/* Header: repo URL + PAT chip on the left; status + interval + actions on the right */}
                     <Group justify="space-between" wrap="wrap" align="flex-start">
                       <Group gap="xs" wrap="wrap" miw={0} style={{ flex: '1 1 20rem' }}>
                         <Icon path={mdiSourceBranch} size={1} />
                         <Tooltip label={b.repoUrl}>
-                          <Text size="sm" ff="monospace" truncate fw="bold">
+                          <Title order={3} size="h4" className={classes.repoName}>
                             {b.repoUrl.replace('https://github.com/', '')}
-                          </Text>
+                          </Title>
                         </Tooltip>
                         {b.hasGitHubToken &&
                           (b.tokenStatus === 'DecryptFailed' ? (
@@ -534,23 +521,25 @@ const RepoBindings: FC = () => {
                           {b.intervalSeconds}s
                         </Badge>
                         <Tooltip label={t('admin.button.repo_binding.scan')}>
-                          <ActionIcon
-                            variant="subtle"
+                          <Button
+                            variant="default"
+                            size="sm"
                             disabled={busy}
-                            aria-label={t('admin.button.repo_binding.scan')}
                             onClick={() => onScan(b)}
+                            leftSection={<Icon path={mdiRefresh} size={0.8} aria-hidden="true" />}
                           >
-                            <Icon path={mdiRefresh} size={1} />
-                          </ActionIcon>
+                            {t('admin.button.repo_binding.scan')}
+                          </Button>
                         </Tooltip>
                         <Tooltip label={t('admin.button.repo_binding.history')}>
-                          <ActionIcon
-                            variant="subtle"
-                            aria-label={t('admin.button.repo_binding.history')}
+                          <Button
+                            variant="default"
+                            size="sm"
                             onClick={() => onOpenHistory(b)}
+                            leftSection={<Icon path={mdiClockOutline} size={0.8} aria-hidden="true" />}
                           >
-                            <Icon path={mdiClockOutline} size={1} />
-                          </ActionIcon>
+                            {t('admin.button.repo_binding.history')}
+                          </Button>
                         </Tooltip>
                         <Tooltip
                           label={t(
@@ -615,26 +604,20 @@ const RepoBindings: FC = () => {
                         {t('admin.content.repo_binding.no_games')}
                       </Text>
                     ) : (
-                      <Stack gap={4}>
+                      <Stack gap={8} className={classes.linkedEvents}>
                         {b.games.map((g) => (
                           <Group key={g.id} gap="xs" wrap="wrap">
                             <Anchor component={Link} to={`/admin/games/${g.id}/challenges`} size="sm">
                               {g.title}
                             </Anchor>
-                            {g.eventManifestPath && (
-                              <Badge size="xs" variant="outline" color="gray">
-                                <Text size="xs" ff="monospace">
-                                  {g.eventManifestPath}
-                                </Text>
-                              </Badge>
-                            )}
+                            {g.eventManifestPath && <Code className={classes.wrapCode}>{g.eventManifestPath}</Code>}
                           </Group>
                         ))}
                       </Stack>
                     )}
 
                     {/* Footer: timing + commit */}
-                    <Group gap="md" wrap="wrap">
+                    <Group gap="md" wrap="wrap" className={classes.repoFooter}>
                       <Text size="xs" c="dimmed">
                         {b.lastScanUtc
                           ? `${t('admin.content.repo_binding.card.last_scan')} ${dayjs(b.lastScanUtc).fromNow()}`
@@ -672,7 +655,7 @@ const RepoBindings: FC = () => {
                           })}
                         </Badge>
                         {b.pushLastError && (
-                          <Text size="xs" c="orange" lineClamp={2} title={b.pushLastError}>
+                          <Text size="xs" className={classes.warningText} lineClamp={2} title={b.pushLastError}>
                             {b.pushLastError}
                           </Text>
                         )}
@@ -680,7 +663,14 @@ const RepoBindings: FC = () => {
                     )}
 
                     {b.lastScanMessage && (
-                      <Text size="xs" c="dimmed" lineClamp={2} ff="monospace" title={b.lastScanMessage}>
+                      <Text
+                        size="xs"
+                        c="dimmed"
+                        lineClamp={2}
+                        ff="monospace"
+                        title={b.lastScanMessage}
+                        className={classes.scanMessage}
+                      >
                         {b.lastScanMessage}
                       </Text>
                     )}
@@ -701,6 +691,90 @@ const RepoBindings: FC = () => {
       </Container>
 
       <AccessibleModal
+        opened={addOpened}
+        onClose={() => {
+          if (!busy) {
+            setAddOpened(false)
+            setGithubToken('')
+          }
+        }}
+        title={t('admin.content.repo_binding.add')}
+        size="lg"
+        closeOnEscape={!busy}
+        closeOnClickOutside={!busy}
+        withCloseButton={!busy}
+      >
+        <Text size="sm" c="dimmed" mb="lg">
+          {t('admin.content.repo_binding.subtitle')}
+        </Text>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault()
+            void onAdd()
+          }}
+        >
+          <Stack gap="sm">
+            <TextInput
+              label={t('admin.content.repo_binding.repo_url')}
+              placeholder="https://github.com/your-team/challenges"
+              required
+              disabled={busy}
+              autoComplete="off"
+              value={repoUrl}
+              onChange={(e) => setRepoUrl(e.currentTarget.value)}
+            />
+            <SimpleGrid cols={{ base: 1, sm: 2 }}>
+              <TextInput
+                label={t('admin.content.repo_binding.ref')}
+                disabled={busy}
+                placeholder="main"
+                value={refValue}
+                onChange={(e) => setRefValue(e.currentTarget.value)}
+              />
+              <TextInput
+                label={t('admin.content.repo_binding.token')}
+                disabled={busy}
+                description={t('admin.content.repo_binding.token_help')}
+                type="password"
+                autoComplete="new-password"
+                placeholder="github_pat_…"
+                value={githubToken}
+                onChange={(e) => setGithubToken(e.currentTarget.value)}
+              />
+            </SimpleGrid>
+            <SimpleGrid cols={{ base: 1, sm: 2 }}>
+              <NumberInput
+                label={t('admin.content.repo_binding.interval')}
+                disabled={busy}
+                description={t('admin.content.repo_binding.interval_help')}
+                min={60}
+                max={86400}
+                step={60}
+                value={intervalSeconds}
+                onChange={setIntervalSeconds}
+              />
+              <Switch
+                label={t('admin.content.repo_binding.run_immediately')}
+                disabled={busy}
+                checked={runImmediately}
+                onChange={(e) => setRunImmediately(e.currentTarget.checked)}
+              />
+            </SimpleGrid>
+            <Group justify="flex-end">
+              <Button
+                leftSection={<Icon path={mdiPlus} size={1} />}
+                loading={busy}
+                disabled={busy || !repoUrl.trim()}
+                type="submit"
+              >
+                {t('admin.button.repo_binding.add')}
+              </Button>
+            </Group>
+          </Stack>
+        </form>
+      </AccessibleModal>
+
+      <AccessibleModal
         size="min(64rem, calc(100vw - 2rem))"
         opened={historyTarget != null}
         onClose={() => {
@@ -718,9 +792,7 @@ const RepoBindings: FC = () => {
         }}
         title={
           <Stack gap={0}>
-            <Title order={2} size="h5">
-              {t('admin.content.repo_binding.history_title')}
-            </Title>
+            <Text fw={700}>{t('admin.content.repo_binding.history_title')}</Text>
             {historyTarget && (
               <Text size="xs" c="dimmed" ff="monospace">
                 {historyTarget.repoUrl.replace('https://github.com/', '')}
@@ -822,6 +894,10 @@ const RepoBindings: FC = () => {
                     {row.messages && (
                       <Code
                         block
+                        role="region"
+                        tabIndex={0}
+                        aria-label={t('admin.content.repo_binding.history_title')}
+                        className={classes.wrapCode}
                         style={{ whiteSpace: 'pre-wrap', fontSize: 11, maxHeight: '20vh', overflowY: 'auto' }}
                       >
                         {row.messages}

@@ -31,7 +31,7 @@ test('dense operational history uses responsive cards and named controls', () =>
   assert.match(logs, /hiddenFrom="md"/)
   assert.doesNotMatch(logs, /tableClasses\.overflow/)
   assert.equal((logs.match(/closeButtonProps:/g) ?? []).length, 2)
-  assert.equal((bindings.match(/<AccessibleModal/g) ?? []).length, 2)
+  assert.equal((bindings.match(/<AccessibleModal/g) ?? []).length, 3)
 })
 
 test('repository binding pagination stays compact and mounted while history pages load', () => {
@@ -128,7 +128,7 @@ test('intentionally shortened operational values expose their full text', () => 
   assert.doesNotMatch(gameCards, /<Title[^>]*lineClamp/)
   assert.match(buildCards, /className=\{classes\.cardReference\} title=\{build\.imageRef\}/)
   assert.match(bindings, /lineClamp=\{1\} title=\{b\.currentActivity\}/)
-  assert.match(bindings, /lineClamp=\{2\} ff="monospace" title=\{b\.lastScanMessage\}/)
+  assert.match(bindings, /lineClamp=\{2\}\s+ff="monospace"\s+title=\{b\.lastScanMessage\}/)
   assert.match(cheatInfo, /className=\{classes\.truncate\} title=\{teamName\}/)
 })
 

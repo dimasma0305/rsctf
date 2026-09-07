@@ -18,6 +18,18 @@
 
 .tableFrame {
   overflow: hidden;
+  border-color: var(--app-border);
+  border-radius: 0.8rem;
+  background: var(--app-raised-surface);
+}
+
+.tableReference {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  margin-top: 0.3rem;
+  font-size: 0.7rem;
 }
 
 .tableScroll :global(.mantine-ScrollArea-viewport) {
@@ -25,19 +37,39 @@
 }
 
 .summaryButton {
-  min-height: 2rem;
+  min-height: 6rem;
   cursor: pointer;
 }
 
 .summaryButton[data-active] {
-  box-shadow: 0 0 0 2px var(--app-control-border);
+  box-shadow: inset 0 2px 0 var(--app-accent-text);
 }
 
 .challengeLink {
   min-width: 0;
 }
+.tableChallenge {
+  white-space: normal;
+  text-wrap: wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.statusBadge {
+  height: auto;
+  min-height: 20px;
+  padding-block: 3px;
+  white-space: normal;
+}
+.statusBadge :global(.mantine-Badge-label) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 
 .historyCard {
+  border-radius: 0.8rem;
   border-color: var(--app-border-subtle);
   background: var(--app-raised-surface);
   transition:
@@ -57,20 +89,17 @@
 }
 
 .cardTitle {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .cardTitle a {
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .cardStatus {
   flex: 0 0 auto;
+  max-width: 100%;
 }
 
 .cardMetadata {
@@ -141,5 +170,11 @@
 
   .cardActions {
     align-items: stretch;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .historyCard {
+    transition: none;
   }
 }
