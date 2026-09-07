@@ -6,7 +6,6 @@ import {
   Code,
   CopyButton,
   Group,
-  Modal,
   ScrollArea,
   Stack,
   Switch,
@@ -34,6 +33,7 @@ import {
 import { Icon } from '@mdi/react'
 import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { AccessibleModal } from '@Components/AccessibleModal'
 import {
   type KothObserverOperationKind,
   type KothObserverOperationOwner,
@@ -50,6 +50,7 @@ import {
   type AdminKothStateModel,
 } from '@Hooks/useGame'
 import api, { ContentType } from '@Api'
+import ops from '@Styles/AdOperations.module.css'
 import tableClasses from '@Styles/AdOpsTable.module.css'
 import misc from '@Styles/Misc.module.css'
 
@@ -356,19 +357,16 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({
     if (observerHillRef.current && !challengeIds.has(observerHillRef.current.challengeId)) closeObserver()
   }, [closeObserver, closeReceipts, gameId, koth.hills])
 
-  useEffect(
-    () => {
-      closeReceipts()
-      closeObserver()
-      return () => {
-        auditGenerationRef.current += 1
-        observerViewGenerationRef.current += 1
-        auditAbortRef.current?.abort()
-        observerAbortRef.current?.abort()
-      }
-    },
-    [closeObserver, closeReceipts, gameId]
-  )
+  useEffect(() => {
+    closeReceipts()
+    closeObserver()
+    return () => {
+      auditGenerationRef.current += 1
+      observerViewGenerationRef.current += 1
+      auditAbortRef.current?.abort()
+      observerAbortRef.current?.abort()
+    }
+  }, [closeObserver, closeReceipts, gameId])
 
   const observerOperationPath = (operation: KothObserverOperationOwner) =>
     `${observerPath({ challengeId: operation.challengeId })}/operations/${operation.operationId}`
@@ -540,8 +538,15 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({
 
   return (
     <Stack gap="lg">
-      <ScrollArea type="auto">
-        <Table verticalSpacing="xs" highlightOnHover>
+      <Text className={ops.scope}>{t('admin.ad_console.hill_scope')}</Text>
+      <ScrollArea
+        type="auto"
+        viewportProps={{
+          tabIndex: 0,
+          'aria-label': t('admin.content.ad_ops.koth.table_caption', 'King of the Hill operations'),
+        }}
+      >
+        <Table verticalSpacing="xs" highlightOnHover className={ops.kothTable}>
           <Table.Caption>{t('admin.content.ad_ops.koth.table_caption', 'King of the Hill operations')}</Table.Caption>
           <Table.Thead className={tableClasses.thead}>
             <Table.Tr>
@@ -649,7 +654,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({
                       )}
                       {hill.readinessFailureCount > 0 && (
                         <Tooltip label={hill.lastReadinessError ?? ''} disabled={!hill.lastReadinessError} withArrow>
-                          <Text size="xs" c="red">
+                          <Text size="xs" className={ops.error}>
                             {t('admin.content.ad_ops.koth.readiness_failures', {
                               count: hill.readinessFailureCount,
                               defaultValue: '{{count}} readiness failure(s)',
@@ -843,7 +848,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({
                         <Button
                           size="compact-xs"
                           color="orange"
-                          variant="light"
+                          variant="default"
                           leftSection={<Icon path={mdiRestart} size={0.7} />}
                           loading={retryingHill === hill.challengeId}
                           disabled={!hill.canRetry || (retryingHill != null && retryingHill !== hill.challengeId)}
@@ -883,7 +888,14 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({
             {t('admin.content.ad_ops.koth.no_scores', 'No official KotH score yet.')}
           </Text>
         ) : (
-          <ScrollArea h="40vh" type="auto">
+          <ScrollArea
+            h="40vh"
+            type="auto"
+            viewportProps={{
+              tabIndex: 0,
+              'aria-label': t('admin.content.ad_ops.koth.leaderboard', 'Official KotH leaderboard'),
+            }}
+          >
             <Table verticalSpacing="xs" striped highlightOnHover withColumnBorders>
               <Table.Caption>{t('admin.content.ad_ops.koth.leaderboard', 'Official KotH leaderboard')}</Table.Caption>
               <Table.Thead className={tableClasses.thead}>
@@ -923,7 +935,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({
                           {fmtPts(row.settledTotal)}
                         </Text>
                         {Math.abs(row.projectedTotal - row.settledTotal) > 0.05 && (
-                          <Text size="xs" c="orange">
+                          <Text size="xs" className={ops.warning}>
                             live {fmtPts(row.projectedTotal)}
                           </Text>
                         )}
@@ -950,7 +962,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({
         )}
       </Stack>
 
-      <Modal
+      <AccessibleModal
         opened={auditHill !== null}
         onClose={closeReceipts}
         size="xl"
@@ -989,9 +1001,9 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({
             {t('admin.content.ad_ops.koth.receipts_empty', 'No receipts have been recorded for this hill yet.')}
           </Text>
         )}
-      </Modal>
+      </AccessibleModal>
 
-      <Modal
+      <AccessibleModal
         opened={observerHill !== null}
         onClose={closeObserver}
         size="lg"
@@ -1188,7 +1200,7 @@ X-RSCTF-Signature: sha256=<HMAC-SHA256>
             </Group>
           </Stack>
         )}
-      </Modal>
+      </AccessibleModal>
     </Stack>
   )
 }

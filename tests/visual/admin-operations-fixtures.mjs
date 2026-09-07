@@ -1,4 +1,6 @@
 import http from 'node:http'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const uid = '11111111-1111-4111-8111-111111111111'
 const now = Date.UTC(2026, 8, 7, 12)
@@ -170,7 +172,7 @@ export function fixture(path, method = 'GET', scenario = 'normal', role = 'Admin
   return { status: 404, body: { title: 'Unknown fixture route' }, unknown: p }
 }
 
-if (process.argv.includes('--serve')) {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url) && process.argv.includes('--serve')) {
   http
     .createServer(async (request, response) => {
       try {

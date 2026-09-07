@@ -1,0 +1,166 @@
+.workspace {
+  min-width: 0;
+}
+.toolbar {
+  min-width: 0;
+}
+.toolbar :global(.mantine-Button-root) {
+  min-height: 42px;
+  max-width: 100%;
+}
+.toolbar :global(.mantine-Button-label) {
+  white-space: normal;
+}
+.surface {
+  border-color: var(--app-border);
+  background: var(--app-raised-surface);
+  border-radius: 0.8rem;
+}
+.summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 2fr);
+  gap: 1.25rem;
+}
+.summary > div {
+  min-width: 0;
+}
+.label {
+  color: var(--app-text-secondary);
+  font-size: 0.75rem;
+  margin-bottom: 0.4rem;
+}
+.value {
+  font: 650 1.5rem var(--mantine-font-family-monospace);
+  color: var(--app-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.health {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--app-border);
+  border-radius: 0.4rem;
+  background: var(--app-subtle-surface);
+}
+.help {
+  font-size: 0.8rem;
+  color: var(--app-text-secondary);
+  border-top: 1px solid var(--app-border);
+  padding-top: 0.8rem;
+}
+.help summary {
+  cursor: pointer;
+  min-height: 32px;
+  line-height: 2;
+}
+.help p {
+  margin-top: 0.5rem;
+  max-width: 85ch;
+  line-height: 1.65;
+}
+.filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+.scope {
+  font-size: 0.75rem;
+  color: var(--app-text-secondary);
+  line-height: 1.6;
+}
+.matrix :global(.mantine-Table-td),
+.matrix :global(.mantine-Table-th) {
+  min-width: 260px;
+  vertical-align: top;
+  padding: 0.85rem;
+  border-color: var(--app-border);
+}
+.matrix :global(.mantine-Table-td:first-child),
+.matrix :global(.mantine-Table-th:first-child) {
+  min-width: 165px;
+  width: 165px;
+  max-width: 165px;
+}
+.teamName {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.healthBadge {
+  height: auto;
+  min-height: 22px;
+  padding-block: 3px;
+  max-width: 100%;
+}
+.healthBadge :global(.mantine-Badge-label) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.empty {
+  min-height: 200px;
+  border: 1px dashed var(--app-border);
+  border-radius: 0.8rem;
+  padding: 1.25rem;
+}
+.kothTable {
+  min-width: 1350px;
+}
+.kothTable :global(.mantine-Table-td),
+.kothTable :global(.mantine-Table-th) {
+  vertical-align: top;
+  padding: 0.85rem;
+  border-color: var(--app-border);
+}
+.kothTable :global(.mantine-Table-td:first-child) {
+  min-width: 170px;
+}
+.kothTable :global(.mantine-Table-td:nth-child(2)) {
+  min-width: 190px;
+}
+.kothTable :global(.mantine-Table-td:nth-child(3)) {
+  min-width: 140px;
+}
+.kothTable :global(.mantine-Button-root),
+.kothTable :global(.mantine-ActionIcon-root) {
+  min-height: 36px;
+}
+.kothTable :global(.mantine-ActionIcon-root) {
+  min-width: 36px;
+}
+.kothTable :global(.mantine-Button-label) {
+  white-space: normal;
+}
+.kothTable :global(.mantine-Badge-root) {
+  height: auto;
+  min-height: 20px;
+  padding-block: 3px;
+}
+.kothTable :global(.mantine-Badge-label) {
+  white-space: normal;
+}
+.warning {
+  color: light-dark(#9a3412, var(--mantine-color-orange-3));
+}
+.error {
+  color: light-dark(var(--mantine-color-red-9), var(--mantine-color-red-3));
+}
+@media (max-width: 62em) {
+  .summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .summary > div:last-child {
+    grid-column: 1 / -1;
+  }
+}
+@media (max-width: 36em) {
+  .matrix :global(.mantine-Table-td:first-child),
+  .matrix :global(.mantine-Table-th:first-child) {
+    position: static;
+  }
+  .filters {
+    grid-template-columns: 1fr;
+  }
+  .toolbar > :global(.mantine-Button-root) {
+    flex: 1 1 auto;
+  }
+  .surface {
+    padding: 0.85rem;
+  }
+}

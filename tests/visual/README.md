@@ -128,3 +128,24 @@ scripts/bounded-frontend.sh exec node ../tests/visual/audit.mjs \
 
 Stop the fixture server and preview when finished. Never use a real credential
 for the fixture server.
+
+## A&D / KotH operator console
+
+`ad-operations.mjs` checks both modes of `/admin/games/19/adops` against invented,
+browser-intercepted data. It covers responsive/light/Indonesian views, local team
+and challenge/status filters, BYOC action visibility, hidden flags, keyboard grid
+scrolling, snapshot inspection, cancelled resets, and loading/error/event timing
+states. No reset, scoring change, shell session, verdict override, or credential
+mutation is allowed.
+
+```sh
+scripts/bounded-frontend.sh exec node ../tests/visual/ad-operations.mjs
+```
+
+Use the loopback preview on port 63017 as above. For the standard full-page audit,
+`node tests/visual/ad-operations-fixtures.mjs --serve` supplies the same read-only
+fixtures on port 63018; select `/admin/games/19/adops` with game ID 19. Stop the
+temporary servers afterward. `RSCTF_AD_OPS_TARGET=https://intechfest.1pc.tf` and
+`--screens-only` validate deployed assets without contacting the real admin API.
+`RSCTF_AD_OPS_OUTPUT` overrides the default `visual-audit-output/ad-ops-local/`.
+This does not replace backend authorization, checker, lifecycle, or load tests.
