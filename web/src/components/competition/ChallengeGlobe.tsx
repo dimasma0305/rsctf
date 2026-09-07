@@ -12,7 +12,7 @@ import { Icon } from '@mdi/react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import classes from './Competition.module.css'
-import { challengePage, projectSpherePoint } from './model'
+import { challengePage, projectHorizonNode, projectSpherePoint } from './model'
 
 export interface GlobeNode {
   id: string
@@ -52,19 +52,26 @@ const GlobeSurface = memo(({ yaw }: { yaw: number }) => {
     const gradient = context.createRadialGradient(325, 280, 0, 400, 400, radius)
     gradient.addColorStop(0, dark ? '#15273d' : '#eaf2fc')
     gradient.addColorStop(0.85, dark ? '#081522' : '#dce8f6')
-    gradient.addColorStop(1, dark ? '#142b45' : '#b3cbe9')
+    gradient.addColorStop(0.985, dark ? '#142b45' : '#b3cbe9')
+    gradient.addColorStop(1, dark ? '#6cafd0' : '#85add4')
     context.fillStyle = gradient
     context.beginPath()
     context.arc(400, 400, radius, 0, Math.PI * 2)
     context.fill()
     const drawLine = (points: readonly (readonly [number, number, number])[]) => {
       context.beginPath()
-      points.forEach(([x, y, z], i) => {
+      let connected = false
+      points.forEach(([x, y, z]) => {
         const point = projectSpherePoint(x, y, z, yaw, -0.22)
+        if (point.z < 0) {
+          connected = false
+          return
+        }
         const px = 400 + point.x * radius
         const py = 400 + point.y * radius
-        if (i === 0) context.moveTo(px, py)
+        if (!connected) context.moveTo(px, py)
         else context.lineTo(px, py)
+        connected = true
       })
       context.stroke()
     }
@@ -91,9 +98,10 @@ const GlobeSurface = memo(({ yaw }: { yaw: number }) => {
     }
     for (const [x, y, z] of particles) {
       const point = projectSpherePoint(x, y, z, yaw, -0.22)
-      context.fillStyle = `rgba(${color},${point.z > 0 ? 0.72 : 0.17})`
+      if (point.z < 0) continue
+      context.fillStyle = `rgba(${color},0.72)`
       context.beginPath()
-      context.arc(400 + point.x * radius, 400 + point.y * radius, point.z > 0 ? 1.5 : 0.9, 0, Math.PI * 2)
+      context.arc(400 + point.x * radius, 400 + point.y * radius, 1.5, 0, Math.PI * 2)
       context.fill()
     }
   }, [yaw, scheme])
@@ -160,9 +168,7 @@ export const ChallengeGlobe = memo(
             <GlobeSurface yaw={yaw} />
             <div className={classes.nodes}>
               {pageData.items.map((node, index) => {
-                const x = index % 2 === 0 ? -0.56 : 0.56
-                const y = -0.64 + Math.floor(index / 2) * 0.42
-                const point = projectSpherePoint(x, y, Math.sqrt(Math.max(0, 1 - x * x - y * y)), yaw, 0)
+                const point = projectHorizonNode(index, yaw)
                 return (
                   <button
                     key={node.id}
@@ -172,12 +178,13 @@ export const ChallengeGlobe = memo(
                     data-solved={node.solved || undefined}
                     data-globe-node={node.id}
                     aria-pressed={node.selected ?? false}
-                    hidden={point.z < 0}
+                    hidden={!point.visible}
+                    title={node.label}
                     onClick={node.onSelect}
                     style={
                       {
-                        '--node-x': `${50 + point.x * 43}%`,
-                        '--node-y': `${50 + point.y * 43}%`,
+                        '--node-x': `${point.x}%`,
+                        '--node-y': `${point.y}%`,
                       } as React.CSSProperties
                     }
                   >

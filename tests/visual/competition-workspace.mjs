@@ -116,6 +116,8 @@ try {
   await evaluate(`document.querySelector('[data-globe-choice="category-Pwn"]').focus()`)
   await press('Enter')
   await waitFor(`document.querySelectorAll('[data-globe-node]').length === 8`)
+  assert.ok(await evaluate(`(() => { const stage = document.querySelector('[data-globe-stage]').getBoundingClientRect(); return [...document.querySelectorAll('[data-globe-node]:not([hidden])')].every(node => { const r = node.getBoundingClientRect(); return r.left >= stage.left + 3 && r.right <= stage.right - 3 && r.top >= stage.top + 3 && r.bottom <= stage.bottom - 3; }); })()`), 'all eight visible pins and their focus outlines fit above the cropped equator')
+  await inspect('desktop-horizon-eight-pins')
   await evaluate(`document.querySelector('input[placeholder="Name or ID"]').focus()`)
   await cdp.send('Input.insertText', { text: 'Ret2win' })
   await waitFor(`document.querySelectorAll('[data-globe-node]').length === 1`)
@@ -172,7 +174,8 @@ try {
     else { await evaluate(`document.querySelector('[data-challenge-detail] button[aria-label="Close"]').click()`) }
     await selectView('globe')
     await evaluate(`document.querySelector('[data-challenge-globe]').scrollIntoView({ block: 'start', behavior: 'instant' })`)
-    assert.ok(await evaluate(`(() => { const stage = document.querySelector('[data-globe-stage]').getBoundingClientRect(); return Math.abs(stage.width - stage.height) < 1 && stage.left >= 0 && stage.right <= innerWidth; })()`), 'large globe retains a square, viewport-bounded interaction surface')
+    assert.ok(await evaluate(`(() => { const stage = document.querySelector('[data-globe-stage]').getBoundingClientRect(); const planet = document.querySelector('[data-globe-stage] canvas').getBoundingClientRect(); return Math.abs(stage.width - stage.height * 2) < 1 && Math.abs(planet.width - planet.height) < 1 && Math.abs(planet.top + planet.height / 2 - stage.bottom) < 1 && stage.left >= 0 && stage.right <= innerWidth; })()`), 'horizon clips half of a round planet without horizontal page overflow')
+    assert.ok(await evaluate(`[...document.querySelectorAll('[data-globe-choice]')].every(node => node.getBoundingClientRect().height >= 44)`), 'navigator retains full-size targets when small horizons hide pins')
     await inspect(`${name}-globe`)
     await selectView('list')
   }

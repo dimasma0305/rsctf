@@ -2,7 +2,14 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { ChallengeCategory, ChallengeType, SubmissionType, type ChallengeInfo } from '@Api'
-import { challengePage, isAcceptedSolve, projectSpherePoint, resolveChallengeView, sortChallenges } from './model'
+import {
+  challengePage,
+  isAcceptedSolve,
+  projectHorizonNode,
+  projectSpherePoint,
+  resolveChallengeView,
+  sortChallenges,
+} from './model'
 
 const challenge = (id: number, type = ChallengeType.StaticAttachment): ChallengeInfo => ({
   id,
@@ -65,7 +72,25 @@ test('competition sphere rotation preserves radius and has no idle animation loo
     'globe and navigator use the same action owner'
   )
   const css = readFileSync('src/components/competition/Competition.module.css', 'utf8')
-  assert.match(css, /\.globeStage\s*\{[^}]*aspect-ratio: 1;/, 'sphere and node projection share a square stage')
+  assert.match(css, /\.sphere\s*\{[^}]*aspect-ratio: 1;/, 'cropping never stretches the planet into an ellipse')
+  assert.match(css, /\.nodes\s*\{[^}]*aspect-ratio: 1;/, 'pins keep the same square projection as the planet')
+})
+
+test('horizon keeps eight pins above the equator and hides back-facing or edge-clipped pins', () => {
+  for (let index = 0; index < 8; index++) {
+    const initial = projectHorizonNode(index, 0)
+    assert.equal(initial.visible, true)
+    assert.ok(initial.y > 15 && initial.y < 44)
+    for (let step = -40; step <= 40; step++) {
+      const point = projectHorizonNode(index, step * 0.2)
+      assert.equal(point.y, initial.y)
+      if (point.visible) assert.ok(point.x > 19 && point.x < 81)
+    }
+    assert.equal(projectHorizonNode(index, Math.PI).visible, false)
+  }
+  const css = readFileSync('src/components/competition/Competition.module.css', 'utf8')
+  assert.match(css, /\.globeStage\s*\{[^}]*aspect-ratio: 2 \/ 1;[^}]*overflow: clip;/)
+  assert.match(css, /@container \(max-width: 40rem\)\s*\{[^}]*\.nodes\s*\{\s*display: none;/)
 })
 
 test('globe dominates its panel without changing the shared event shell or adding animated effects', () => {

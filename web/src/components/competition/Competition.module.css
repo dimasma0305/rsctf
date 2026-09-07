@@ -19,23 +19,32 @@
   position: relative;
   width: 100%;
   max-width: 58rem;
-  aspect-ratio: 1;
+  aspect-ratio: 2 / 1;
   margin: auto;
+  container-type: inline-size;
+  overflow: clip;
   cursor: grab;
-  background:
-    linear-gradient(light-dark(#4169900b, #76b9ff07) 1px, transparent 1px),
-    linear-gradient(90deg, light-dark(#4169900b, #76b9ff07) 1px, transparent 1px);
-  background-size: 2rem 2rem;
-  border-radius: 50%;
+  border-radius: 0.5rem;
+  background: radial-gradient(ellipse at 50% 100%, light-dark(#b8d9f32b, #245b8b20), transparent 80%);
 }
 .globeStage::before {
   content: '';
   position: absolute;
-  inset: 7%;
+  top: 13%;
+  left: 7%;
+  width: 86%;
+  aspect-ratio: 1;
   border-radius: 50%;
   box-shadow:
     0 0 3rem light-dark(#4a88c51c, #52a4f53b),
     0 0 7rem light-dark(#4a88c511, #3085e52b);
+  pointer-events: none;
+}
+.globeStage::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(transparent 78%, var(--app-raised-surface));
   pointer-events: none;
 }
 .globeStage:active {
@@ -44,13 +53,18 @@
 .sphere {
   position: absolute;
   width: 100%;
-  height: 100%;
+  height: auto;
+  aspect-ratio: 1;
   object-fit: contain;
   pointer-events: none;
 }
 .nodes {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  aspect-ratio: 1;
+  z-index: 1;
 }
 .node {
   position: absolute;
@@ -60,7 +74,7 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  max-width: 44%;
+  max-width: 32%;
   width: max-content;
   min-height: 44px;
   padding: 0.35rem;
@@ -93,6 +107,10 @@
   box-shadow: 0 0 0 5px light-dark(#34588818, #73b6ff18);
 }
 .nodeLabel {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
   padding: 0.4rem 0.6rem;
   min-width: 0;
   border: 1px solid var(--app-border);
@@ -314,6 +332,10 @@
   }
 }
 @container (max-width: 40rem) {
+  /* The full-label navigator remains the interaction surface on small horizons. */
+  .nodes {
+    display: none;
+  }
   .table th,
   .table td {
     padding: 0.45rem 0.3rem;
