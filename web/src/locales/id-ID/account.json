@@ -1,4 +1,28 @@
 {
+  "profile_ui": {
+    "close": "Tutup",
+    "eyebrow": "Akun kamu",
+    "description": "Kelola identitas pemain, detail akun, dan pengaturan masuk.",
+    "identity": "Identitas pemain",
+    "sections": "Bagian akun",
+    "details_title": "Detail profil",
+    "details_description": "Tentukan bagaimana pemain lain mengenalimu.",
+    "bio_placeholder": "Ceritakan sedikit tentang dirimu, minatmu, atau kategori CTF favoritmu.",
+    "contact_title": "Data pribadi",
+    "contact_description": "Isi data yang diminta penyelenggara acara. Kolom ini boleh dikosongkan.",
+    "optional": "Opsional",
+    "security_title": "Login & keamanan",
+    "security_description": "Perubahan email dan kata sandi disimpan terpisah dari profil.",
+    "email_note": "Masukkan email baru dan kata sandi saat ini. Jika verifikasi email diperlukan, periksa kotak masuk baru untuk menyelesaikan perubahan.",
+    "unsaved": "Ada perubahan yang belum disimpan",
+    "up_to_date": "Profil kamu sudah terbaru",
+    "saving": "Menyimpan perubahan…",
+    "discard": "Batalkan",
+    "save_failed": "Perubahan belum dapat disimpan",
+    "username_short": "Nama pengguna harus berisi setidaknya 3 karakter, tanpa menghitung spasi di awal dan akhir.",
+    "load_error": "Profil belum dapat dimuat",
+    "loading": "Memuat profil"
+  },
   "tos": {
     "title": "Ketentuan Layanan",
     "content": "Dengan mengakses atau menggunakan platform ini, Anda setuju untuk terikat oleh Ketentuan Layanan ini. Kami menggunakan data telemetri teknis, termasuk sidik jari perangkat, secara khusus untuk memastikan integritas lingkungan kompetitif dan mendeteksi gangguan otomatis. Data fingerprinting hanya digunakan selama kompetisi berlangsung untuk kebutuhan keamanan dan anti-cheat, dan tidak akan digunakan setelah kompetisi berakhir. Penggunaan tidak sah dari beberapa akun, skrip otomatis, atau upaya apa pun untuk menghindari langkah-langkah keamanan kami sangat dilarang dan dapat mengakibatkan penangguhan segera."
@@ -13,6 +37,7 @@
     "registration_unavailable": "Pendaftaran OAuth sedang tidak tersedia. Hubungi administrator."
   },
   "button": {
+    "change_avatar": "Ubah avatar",
     "accept_tos": "Setuju & Lanjutkan",
     "change_password": "Ubah Kata Sandi",
     "confirm_email": "Konfirmasi email",
@@ -118,6 +143,7 @@
     "computing": "Mohon tunggu sebentar sedang menghitung..."
   },
   "title": {
+    "stats": "Statistik saya",
     "confirm": "Verifikasi Email",
     "login": "Masuk",
     "profile": "Profil",

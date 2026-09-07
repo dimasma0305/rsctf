@@ -133,8 +133,17 @@ export const viewerIdentityMiddleware: Middleware = (useSWRNext) =>
     })
   }
 
-export const routeLifecycleKey = (pathname: string, search: string, scope: string | null) =>
-  `${scope ?? 'unscoped'}\u0000${pathname}\u0000${search}`
+export const routeLifecycleKey = (pathname: string, search: string, scope: string | null) => {
+  // Profile tabs are presentation state, not a different account or data scope.
+  // Keep the form draft when opening stats; all other query/path/viewer changes
+  // retain the hard lifecycle boundary below.
+  if (pathname === '/account/profile') {
+    const query = new URLSearchParams(search)
+    query.delete('tab')
+    search = query.size ? `?${query}` : ''
+  }
+  return `${scope ?? 'unscoped'}\u0000${pathname}\u0000${search}`
+}
 
 export const RouteLifecycleBoundary: FC<PropsWithChildren> = ({ children }) => {
   const location = useLocation()

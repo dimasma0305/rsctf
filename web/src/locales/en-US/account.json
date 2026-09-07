@@ -1,4 +1,28 @@
 {
+  "profile_ui": {
+    "close": "Close",
+    "eyebrow": "Your account",
+    "description": "Manage your player identity, account details, and sign-in settings.",
+    "identity": "Player identity",
+    "sections": "Account sections",
+    "details_title": "Profile details",
+    "details_description": "Choose how other players recognize you.",
+    "bio_placeholder": "A little about you, your interests, or your favorite CTF category.",
+    "contact_title": "Personal details",
+    "contact_description": "Add the details your event organizers ask for. You can leave these fields empty.",
+    "optional": "Optional",
+    "security_title": "Sign-in & security",
+    "security_description": "Email and password changes are handled separately from your profile.",
+    "email_note": "Enter your new email and current password. If email verification is required, check the new inbox to finish the change.",
+    "unsaved": "You have unsaved changes",
+    "up_to_date": "Your profile is up to date",
+    "saving": "Saving your changes…",
+    "discard": "Discard",
+    "save_failed": "Your changes could not be saved",
+    "username_short": "Use at least 3 characters for your username, excluding spaces at the beginning and end.",
+    "load_error": "Your profile could not be loaded",
+    "loading": "Loading your profile"
+  },
   "tos": {
     "title": "Terms of Service",
     "content": "By accessing or using this platform, you agree to be bound by these Terms of Service. We utilize technical telemetry data, including device fingerprints, specifically to ensure the integrity of the competitive environment and detect automated interference. Fingerprinting data is only used during the competition for security and anti-cheat purposes, and will not be used after the competition ends. Unauthorized use of multiple accounts, automated scripting, or any attempt to circumvent our security measures is strictly prohibited and may result in immediate suspension."
@@ -15,6 +39,7 @@
     "registration_unavailable": "OAuth registration is temporarily unavailable. Contact an administrator."
   },
   "button": {
+    "change_avatar": "Change avatar",
     "accept_tos": "Accept & Continue",
     "change_password": "Change Password",
     "confirm_email": "Confirm Email",
@@ -120,6 +145,7 @@
     "computing": "Please wait a moment while computing..."
   },
   "title": {
+    "stats": "My stats",
     "confirm": "Email Verification",
     "login": "Login",
     "profile": "Profile",

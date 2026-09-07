@@ -165,9 +165,12 @@ test('visual audit enforces compact and usable interactive guide budgets', () =>
 
 test('profile identity header shrinks without escaping compact viewports', () => {
   const profile = readFileSync(join(repositoryRoot, 'web/src/pages/account/Profile.tsx'), 'utf8')
-  assert.match(profile, /<Group wrap="nowrap" w="100%">/)
-  assert.match(profile, /<Box miw=\{0\} style=\{\{ flex: 1 \}\}>/)
-  assert.match(profile, /<Text size="sm" c="dimmed" truncate title=\{user\?\.email \?\? undefined\}>/)
+  const styles = readFileSync(join(repositoryRoot, 'web/src/styles/pages/Profile.module.css'), 'utf8')
+  assert.match(profile, /className=\{classes.identityCopy\}/)
+  assert.match(profile, /className=\{classes.email\}/)
+  assert.match(styles, /\.identityCopy\s*\{\s*min-width: 0/)
+  assert.match(styles, /\.email\s*\{[^}]*overflow-wrap: anywhere/)
+  assert.match(styles, /grid-template-areas: 'identity' 'editor' 'security'/)
 })
 
 test('visual audit artifacts are excluded from source control and Docker contexts', () => {
