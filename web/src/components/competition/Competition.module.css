@@ -93,6 +93,7 @@
 }
 .node:focus-visible,
 .globeChoice:focus-visible,
+.globeOpen:focus-visible,
 .listName:focus-visible {
   outline: 3px solid var(--mantine-primary-color-filled);
   outline-offset: 3px;
@@ -127,14 +128,16 @@
   overflow-wrap: anywhere;
   box-shadow: 0 2px 8px #0002;
 }
-.node[data-selected] .nodeDot {
+.node[data-selected] .nodeDot,
+.node[data-focused] .nodeDot {
   color: light-dark(#714800, #ffc66c);
   border-color: #d99529;
   box-shadow:
     0 0 0 7px #eaa33222,
     0 0 22px #eaa33244;
 }
-.node[data-selected] .nodeLabel {
+.node[data-selected] .nodeLabel,
+.node[data-focused] .nodeLabel {
   border-color: #bb832c;
 }
 .node[data-solved] .nodeDot {
@@ -156,30 +159,55 @@
   display: grid;
   gap: 0.4rem;
 }
+.globeChoiceRow {
+  display: flex;
+  min-width: 0;
+  border: 1px solid var(--app-border);
+  border-radius: 0.45rem;
+  background: var(--mantine-color-body);
+}
 .globeChoice {
   display: flex;
+  flex: 1;
   align-items: center;
   gap: 0.65rem;
   min-width: 0;
   min-height: 44px;
   padding: 0.65rem 0.75rem;
-  border: 1px solid var(--app-border);
+  border: 0;
   border-radius: 0.45rem;
-  background: var(--mantine-color-body);
+  background: transparent;
   color: var(--mantine-color-text);
   text-align: start;
   font: inherit;
   font-size: 0.8rem;
   cursor: pointer;
 }
-.globeChoice:hover,
+.globeChoiceRow:hover,
 .node:hover .nodeLabel {
   border-color: var(--mantine-primary-color-filled);
   background: var(--app-hover-surface);
 }
-.globeChoice[data-selected] {
+.globeChoiceRow[data-selected],
+.globeChoiceRow[data-focused] {
   border-color: #bb832c;
   box-shadow: inset 3px 0 #d99a33;
+}
+.globeOpen {
+  display: grid;
+  place-items: center;
+  flex: 0 0 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-inline-start: 1px solid var(--app-border);
+  border-radius: 0 0.45rem 0.45rem 0;
+  background: transparent;
+  color: var(--mantine-color-text);
+  cursor: pointer;
+}
+.globeOpen:hover {
+  background: var(--app-hover-surface);
 }
 .choiceIndex {
   flex: 0 0 1.4rem;
@@ -338,9 +366,14 @@
   }
 }
 @container (max-width: 40rem) {
-  /* The full-label navigator remains the interaction surface on small horizons. */
-  .nodes {
+  /* Show one readable target on compact horizons, once it reaches the center. */
+  .node:not([data-focused][data-centered]) {
     display: none;
+  }
+  .node[data-focused][data-centered] {
+    flex-direction: row;
+    max-width: 80%;
+    text-align: start;
   }
   .table th,
   .table td {

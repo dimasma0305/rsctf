@@ -4,6 +4,8 @@ import test from 'node:test'
 import { ChallengeCategory, ChallengeType, SubmissionType, type ChallengeInfo } from '@Api'
 import {
   challengePage,
+  focusHorizonNode,
+  interpolateGlobeRotation,
   isAcceptedSolve,
   normalizeGlobeAngle,
   projectHorizonNode,
@@ -119,6 +121,32 @@ test('vertical globe rotation moves pins with the surface and hides pins beyond 
   assert.equal((globe.match(/projectSpherePoint\(x, y, z, yaw, pitch\)/g) ?? []).length, 2)
 })
 
+test('every globe page target can be centered in front of the visible horizon', () => {
+  for (let index = 0; index < 8; index++) {
+    const target = focusHorizonNode(index)
+    const point = projectHorizonNode(index, target.yaw, target.pitch)
+    assert.equal(point.visible, true)
+    assert.ok(Math.abs(point.x - 50) < 1e-10)
+    assert.ok(Math.abs(point.y - 29.36) < 1e-10)
+    assert.ok(target.yaw >= 0 && target.yaw < Math.PI * 2)
+    assert.ok(target.pitch >= 0 && target.pitch < Math.PI * 2)
+  }
+})
+
+test('globe focus follows the shortest turn across zero and finishes at the exact target', () => {
+  const from = { yaw: Math.PI * 2 - 0.1, pitch: 0.1 }
+  const to = { yaw: 0.1, pitch: Math.PI * 2 - 0.1 }
+  const halfway = interpolateGlobeRotation(from, to, 0.5)
+  assert.ok(halfway.yaw < 0.1)
+  assert.ok(halfway.pitch > Math.PI * 2 - 0.1)
+  const complete = interpolateGlobeRotation(from, to, 10)
+  assert.ok(Math.abs(complete.yaw - to.yaw) < 1e-10)
+  assert.ok(Math.abs(complete.pitch - to.pitch) < 1e-10)
+  const initial = interpolateGlobeRotation(from, to, -1)
+  assert.ok(Math.abs(initial.yaw - from.yaw) < 1e-10)
+  assert.ok(Math.abs(initial.pitch - from.pitch) < 1e-10)
+})
+
 test('horizon keeps eight pins above the equator and hides back-facing or edge-clipped pins', () => {
   for (let index = 0; index < 8; index++) {
     const initial = projectHorizonNode(index, 0)
@@ -133,7 +161,7 @@ test('horizon keeps eight pins above the equator and hides back-facing or edge-c
   }
   const css = readFileSync('src/components/competition/Competition.module.css', 'utf8')
   assert.match(css, /\.globeStage\s*\{[^}]*aspect-ratio: 2 \/ 1;[^}]*overflow: clip;/)
-  assert.match(css, /@container \(max-width: 40rem\)\s*\{[^}]*\.nodes\s*\{\s*display: none;/)
+  assert.match(css, /\.node:not\(\[data-focused\]\[data-centered\]\)\s*\{\s*display: none;/)
 })
 
 test('globe dominates its panel without changing the shared event shell or adding animated effects', () => {

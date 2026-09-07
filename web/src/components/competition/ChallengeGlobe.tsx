@@ -115,18 +115,32 @@ export const ChallengeGlobe = memo(
   ({ nodes, scope, onList }: { nodes: GlobeNode[]; scope: string; onList: () => void }) => {
     const { t } = useTranslation()
     const [page, setPage] = useState(1)
-    const { yaw, pitch, rotate, reset, stageProps } = useGlobeRotation(scope)
+    const { yaw, pitch, rotate, reset, focus, stageProps } = useGlobeRotation(scope)
+    const [focusedTarget, setFocusedTarget] = useState<{ scope: string; id: string } | null>(null)
+    const focusedId = focusedTarget?.scope === scope ? focusedTarget.id : null
     const controlsHint = useId()
     const pageData = useMemo(() => challengePage(nodes, page, 8), [nodes, page])
+    const focusedIndex = pageData.items.findIndex((node) => node.id === focusedId)
     useEffect(() => {
       setPage(1)
+      setFocusedTarget(null)
     }, [scope])
+    useEffect(() => {
+      if (!focusedId) return
+      if (focusedIndex < 0) {
+        setFocusedTarget(null)
+        reset()
+      } else {
+        focus(focusedIndex)
+      }
+    }, [focusedTarget, focusedId, focusedIndex, focus, reset])
 
     return (
       <section
         className={classes.globe}
         aria-label={t('game.arena.globe', 'Challenge globe')}
         data-challenge-globe
+        data-globe-focus={focusedId ?? undefined}
         data-motion="page"
       >
         <Group justify="space-between" gap="xs">
@@ -165,6 +179,8 @@ export const ChallengeGlobe = memo(
                     type="button"
                     className={classes.node}
                     data-selected={node.selected || undefined}
+                    data-focused={node.id === focusedId || undefined}
+                    data-centered={(Math.abs(point.x - 50) < 0.5 && Math.abs(point.y - 29.36) < 0.5) || undefined}
                     data-solved={node.solved || undefined}
                     data-globe-node={node.id}
                     aria-pressed={node.selected ?? false}
@@ -196,31 +212,49 @@ export const ChallengeGlobe = memo(
           </div>
           <nav className={classes.globeNavigator} aria-label={t('game.arena.globe_navigation', 'Globe navigation')}>
             <Text size="xs" c="dimmed" className={classes.navigatorTitle}>
-              {t('game.arena.explore_help', 'Select a category or challenge to explore.')}
+              {t('game.arena.explore_help', 'Select a target to focus the globe. Use its arrow or pin to open it.')}
             </Text>
             <div className={classes.globeChoices}>
               {pageData.items.map((node, index) => (
-                <button
+                <div
                   key={node.id}
-                  type="button"
-                  className={classes.globeChoice}
-                  data-globe-choice={node.id}
+                  className={classes.globeChoiceRow}
                   data-selected={node.selected || undefined}
-                  aria-pressed={node.selected ?? false}
-                  onClick={node.onSelect}
+                  data-focused={node.id === focusedId || undefined}
                 >
-                  <span className={classes.choiceIndex} aria-hidden="true">
-                    {node.solved ? (
-                      <Icon path={mdiCheck} size={0.8} />
-                    ) : (
-                      String((pageData.current - 1) * 8 + index + 1).padStart(2, '0')
-                    )}
-                  </span>
-                  <span className={classes.choiceLabel}>{node.label}</span>
-                  {node.solved && <span className={classes.srOnly}>{t('common.workspace.solved', 'Solved')}</span>}
-                  {node.count !== undefined && <span className={classes.choiceCount}>{node.count}</span>}
-                  <Icon path={mdiArrowRight} size={0.75} aria-hidden="true" />
-                </button>
+                  <button
+                    type="button"
+                    className={classes.globeChoice}
+                    data-globe-choice={node.id}
+                    aria-label={t('game.arena.focus_target', {
+                      defaultValue: 'Focus {{target}} on globe',
+                      target: node.label,
+                    })}
+                    aria-pressed={node.id === focusedId}
+                    onClick={() => setFocusedTarget({ scope, id: node.id })}
+                  >
+                    <span className={classes.choiceIndex} aria-hidden="true">
+                      {node.solved ? (
+                        <Icon path={mdiCheck} size={0.8} />
+                      ) : (
+                        String((pageData.current - 1) * 8 + index + 1).padStart(2, '0')
+                      )}
+                    </span>
+                    <span className={classes.choiceLabel}>{node.label}</span>
+                    {node.solved && <span className={classes.srOnly}>{t('common.workspace.solved', 'Solved')}</span>}
+                    {node.count !== undefined && <span className={classes.choiceCount}>{node.count}</span>}
+                  </button>
+                  <button
+                    type="button"
+                    className={classes.globeOpen}
+                    data-globe-open={node.id}
+                    aria-label={t('game.arena.open_target', { defaultValue: 'Open {{target}}', target: node.label })}
+                    title={t('game.arena.open_target', { defaultValue: 'Open {{target}}', target: node.label })}
+                    onClick={node.onSelect}
+                  >
+                    <Icon path={mdiArrowRight} size={0.75} aria-hidden="true" />
+                  </button>
+                </div>
               ))}
             </div>
           </nav>
@@ -288,7 +322,11 @@ export const ChallengeGlobe = memo(
               size="sm"
               total={pageData.pages}
               value={pageData.current}
-              onChange={setPage}
+              onChange={(next) => {
+                setFocusedTarget(null)
+                reset()
+                setPage(next)
+              }}
               siblings={0}
               boundaries={1}
             />

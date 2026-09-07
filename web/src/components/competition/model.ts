@@ -48,12 +48,41 @@ export const normalizeGlobeAngle = (angle: number) => {
   return ((angle % turn) + turn) % turn
 }
 
+export interface GlobeRotation {
+  yaw: number
+  pitch: number
+}
+
+const horizonPosition = (index: number) => {
+  const x = index % 2 === 0 ? -0.45 : 0.45
+  const y = -0.76 + Math.floor(index / 2) * 0.2
+  return { x, y, z: Math.sqrt(Math.max(0, 1 - x * x - y * y)) }
+}
+
+// Center the target in the visible half of the planet, not below its cropped equator.
+export const focusHorizonNode = (index: number): GlobeRotation => {
+  const { x, y, z } = horizonPosition(index)
+  return {
+    yaw: normalizeGlobeAngle(-Math.atan2(x, z)),
+    pitch: normalizeGlobeAngle(Math.asin(y) - Math.asin(-0.48)),
+  }
+}
+
+export const interpolateGlobeRotation = (from: GlobeRotation, to: GlobeRotation, progress: number): GlobeRotation => {
+  const t = Math.min(1, Math.max(0, progress))
+  const eased = 1 - (1 - t) ** 3
+  const angle = (start: number, end: number) => {
+    const shortest = normalizeGlobeAngle(end - start + Math.PI) - Math.PI
+    return normalizeGlobeAngle(start + shortest * eased)
+  }
+  return { yaw: angle(from.yaw, to.yaw), pitch: angle(from.pitch, to.pitch) }
+}
+
 // Pins start on the visible upper hemisphere. The navigator retains every action
 // when rotation carries a pin behind the horizon or too close to a clipped edge.
 export const projectHorizonNode = (index: number, yaw: number, pitch = 0) => {
-  const x = index % 2 === 0 ? -0.45 : 0.45
-  const y = -0.76 + Math.floor(index / 2) * 0.2
-  const point = projectSpherePoint(x, y, Math.sqrt(Math.max(0, 1 - x * x - y * y)), yaw, pitch)
+  const { x, y, z } = horizonPosition(index)
+  const point = projectSpherePoint(x, y, z, yaw, pitch)
   return {
     x: 50 + point.x * 43,
     y: 50 + point.y * 43,

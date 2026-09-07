@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 import { launchBrowser } from './cdp.mjs'
 import { auditChallengeCategoryScroller } from './audit.mjs'
 import { auditGlobeRotation } from './globe-rotation.mjs'
+import { auditGlobeFocus } from './globe-focus.mjs'
 
 const target = process.env.RSCTF_WORKSPACE_PREVIEW || 'http://127.0.0.1:63017'
 assert.equal(new URL(target).hostname, '127.0.0.1')
@@ -99,6 +100,9 @@ try {
   await auditGlobeRotation(cdp, evaluate, waitFor, { onTilt: () => inspect('desktop-globe-tilted') })
   assert.equal(requests.slice(rotationRequests).filter(request => request.path.includes('/challenges/')).length, 0, 'rotation has no challenge reads or writes')
   await inspect('desktop-globe-rotation')
+  const focusRequests = requests.length
+  await auditGlobeFocus(cdp, evaluate, waitFor, inspect, 'desktop-category')
+  assert.equal(requests.slice(focusRequests).filter(request => request.path.includes('/challenges/')).length, 0, 'camera focus does not fetch challenge details')
   await evaluate(`document.querySelector('[data-team-summary] button').focus()`)
   await press('Enter')
   await waitFor(`document.querySelector('input[type="password"]')`)
@@ -118,14 +122,26 @@ try {
   await evaluate(`document.querySelector('[aria-label="Rotate globe right"]').click()`)
   await evaluate(`document.querySelector('[aria-label="Reset globe view"]').click()`)
   assert.equal(requests.slice(before).filter((request) => request.path.includes('/challenges/')).length, 0)
-  await evaluate(`document.querySelector('[data-globe-choice="category-Pwn"]').focus()`)
+  await evaluate(`document.querySelector('[data-globe-open="category-Pwn"]').focus()`)
   await press('Enter')
   await waitFor(`document.querySelectorAll('[data-globe-node]').length === 8`)
   assert.ok(await evaluate(`(() => { const stage = document.querySelector('[data-globe-stage]').getBoundingClientRect(); return [...document.querySelectorAll('[data-globe-node]:not([hidden])')].every(node => { const r = node.getBoundingClientRect(); return r.left >= stage.left + 3 && r.right <= stage.right - 3 && r.top >= stage.top + 3 && r.bottom <= stage.bottom - 3; }); })()`), 'all eight visible pins and their focus outlines fit above the cropped equator')
   await inspect('desktop-horizon-eight-pins')
+  await auditGlobeFocus(cdp, evaluate, waitFor, inspect, 'desktop-challenge')
+  await evaluate(`[...document.querySelectorAll('.mantine-Pagination-root button')].find(button => button.textContent.trim() === '2').click()`)
+  await waitFor(`!document.querySelector('[data-challenge-globe]').dataset.globeFocus`)
+  await auditGlobeFocus(cdp, evaluate, waitFor, inspect, 'desktop-page-two')
+  await evaluate(`[...document.querySelectorAll('.mantine-Pagination-root button')].find(button => button.textContent.trim() === '1').click()`)
+  await waitFor(`!document.querySelector('[data-challenge-globe]').dataset.globeFocus`)
   await evaluate(`document.querySelector('input[placeholder="Name or ID"]').focus()`)
   await cdp.send('Input.insertText', { text: 'Ret2win' })
   await waitFor(`document.querySelectorAll('[data-globe-node]').length === 1`)
+  await evaluate(`document.querySelector('[data-globe-open="9001"]').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelector('[data-challenge-detail] input')`)
+  await inspect('desktop-globe-open-action')
+  await evaluate(`document.querySelector('[data-challenge-detail] button[aria-label="Close"]').click()`)
+  await waitFor(`!document.querySelector('[data-challenge-detail]')`)
   await selectView('list')
   await evaluate(`document.querySelector('[data-challenge-row="9001"]').focus()`)
   await press('Enter')
@@ -183,6 +199,7 @@ try {
     assert.ok(await evaluate(`[...document.querySelectorAll('[data-globe-choice]')].every(node => node.getBoundingClientRect().height >= 44)`), 'navigator retains full-size targets when small horizons hide pins')
     await inspect(`${name}-globe`)
     if (width === 320 || width === 390) await auditGlobeRotation(cdp, evaluate, waitFor, { touch: true, onTilt: () => inspect(`${name}-globe-tilted`) })
+    if (width === 320 || width === 390) await auditGlobeFocus(cdp, evaluate, waitFor, inspect, name)
     await selectView('list')
   }
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
@@ -196,6 +213,7 @@ try {
   await evaluate(`document.querySelector('[data-challenge-globe]').scrollIntoView({ block: 'center', behavior: 'instant' })`)
   await inspect('light-indonesian-globe-content')
   await auditGlobeRotation(cdp, evaluate, waitFor, { touch: true, onTilt: () => inspect('light-indonesian-globe-tilted') })
+  await auditGlobeFocus(cdp, evaluate, waitFor, inspect, 'light-indonesian-reduced')
 
   // Reproduce the longer header and extra archive content of the ended, mixed-mode
   // main event without using live participant data or bypassing authentication.
