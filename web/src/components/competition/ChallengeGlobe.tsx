@@ -9,10 +9,11 @@ import {
   mdiViewGridOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import classes from './Competition.module.css'
 import { challengePage, projectHorizonNode, projectSpherePoint } from './model'
+import { useGlobeRotation } from './useGlobeRotation'
 
 export interface GlobeNode {
   id: string
@@ -112,20 +113,12 @@ export const ChallengeGlobe = memo(
   ({ nodes, scope, onList }: { nodes: GlobeNode[]; scope: string; onList: () => void }) => {
     const { t } = useTranslation()
     const [page, setPage] = useState(1)
-    const [yaw, setYaw] = useState(0)
-    const drag = useRef<{ id: number; x: number; yaw: number } | null>(null)
-    const pendingFrame = useRef<number | null>(null)
+    const { yaw, rotate, reset, stageProps } = useGlobeRotation(scope)
+    const controlsHint = useId()
     const pageData = useMemo(() => challengePage(nodes, page, 8), [nodes, page])
     useEffect(() => {
       setPage(1)
-      setYaw(0)
     }, [scope])
-    useEffect(
-      () => () => {
-        if (pendingFrame.current !== null) cancelAnimationFrame(pendingFrame.current)
-      },
-      []
-    )
 
     return (
       <section
@@ -139,37 +132,26 @@ export const ChallengeGlobe = memo(
             {t('game.arena.globe', 'Challenge globe')}
           </Text>
           <Text size="xs" c="dimmed">
-            {t('game.arena.globe_hint', 'Choose a node to explore')}
+            {t('game.arena.globe_hint', 'Drag, swipe or scroll to rotate 360°')}
           </Text>
         </Group>
         <div className={classes.globeExplorer}>
           <div
+            {...stageProps}
             className={classes.globeStage}
             data-globe-stage
-            onPointerDown={(event) => {
-              if ((event.target as HTMLElement).closest('button')) return
-              if (event.pointerType !== 'mouse') return // Preserve normal touch scrolling; use the rotation buttons.
-              drag.current = { id: event.pointerId, x: event.clientX, yaw }
-              event.currentTarget.setPointerCapture(event.pointerId)
-            }}
-            onPointerMove={(event) => {
-              if (!drag.current || event.pointerId !== drag.current.id || pendingFrame.current !== null) return
-              const next = drag.current.yaw + (event.clientX - drag.current.x) / 180
-              pendingFrame.current = requestAnimationFrame(() => {
-                setYaw(next)
-                pendingFrame.current = null
-              })
-            }}
-            onPointerUp={() => {
-              drag.current = null
-            }}
-            onPointerCancel={() => {
-              drag.current = null
-            }}
-            onLostPointerCapture={() => {
-              drag.current = null
-            }}
+            data-globe-yaw={yaw}
+            role="group"
+            tabIndex={0}
+            aria-label={t('game.arena.globe_navigation', 'Globe navigation')}
+            aria-describedby={controlsHint}
           >
+            <span id={controlsHint} className={classes.srOnly}>
+              {t(
+                'game.arena.globe_controls',
+                'Drag or swipe horizontally, or scroll to rotate. Use Left and Right arrow keys to rotate, and Home to reset. Swipe vertically to scroll the page.'
+              )}
+            </span>
             <GlobeSurface yaw={yaw} />
             <div className={classes.nodes}>
               {pageData.items.map((node, index) => {
@@ -256,7 +238,7 @@ export const ChallengeGlobe = memo(
               size="lg"
               variant="default"
               aria-label={t('game.arena.rotate_left', 'Rotate globe left')}
-              onClick={() => setYaw(yaw - 0.3)}
+              onClick={() => rotate(-Math.PI / 12)}
             >
               <Icon path={mdiArrowLeft} size={0.8} />
             </ActionIcon>
@@ -264,7 +246,7 @@ export const ChallengeGlobe = memo(
               size="lg"
               variant="default"
               aria-label={t('game.arena.reset_view', 'Reset globe view')}
-              onClick={() => setYaw(0)}
+              onClick={reset}
             >
               <Icon path={mdiRestore} size={0.8} />
             </ActionIcon>
@@ -272,7 +254,7 @@ export const ChallengeGlobe = memo(
               size="lg"
               variant="default"
               aria-label={t('game.arena.rotate_right', 'Rotate globe right')}
-              onClick={() => setYaw(yaw + 0.3)}
+              onClick={() => rotate(Math.PI / 12)}
             >
               <Icon path={mdiArrowRight} size={0.8} />
             </ActionIcon>

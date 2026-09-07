@@ -5,6 +5,7 @@ import { ChallengeCategory, ChallengeType, SubmissionType, type ChallengeInfo } 
 import {
   challengePage,
   isAcceptedSolve,
+  normalizeGlobeYaw,
   projectHorizonNode,
   projectSpherePoint,
   resolveChallengeView,
@@ -62,9 +63,11 @@ test('competition sphere rotation preserves radius and has no idle animation loo
   assert.ok(Math.abs(p.x ** 2 + p.y ** 2 + p.z ** 2 - 1) < 1e-10)
   const globe = readFileSync('src/components/competition/ChallengeGlobe.tsx', 'utf8')
   assert.doesNotMatch(globe, /setInterval|setTimeout|fetch\(|useSWR/)
-  assert.match(globe, /cancelAnimationFrame\(pendingFrame.current\)/)
+  const rotation = readFileSync('src/components/competition/useGlobeRotation.ts', 'utf8')
+  assert.match(rotation, /cancelAnimationFrame\(pendingFrame.current\)/)
+  assert.doesNotMatch(rotation, /setInterval|setTimeout|fetch\(|useSWR/)
   assert.match(globe, /type="button"/)
-  assert.match(globe, /event.pointerType !== 'mouse'/)
+  assert.doesNotMatch(rotation, /pointerType !== 'mouse'/)
   assert.match(globe, /data-globe-choice=\{node.id\}/)
   assert.equal(
     (globe.match(/onClick=\{node.onSelect\}/g) ?? []).length,
@@ -74,6 +77,25 @@ test('competition sphere rotation preserves radius and has no idle animation loo
   const css = readFileSync('src/components/competition/Competition.module.css', 'utf8')
   assert.match(css, /\.sphere\s*\{[^}]*aspect-ratio: 1;/, 'cropping never stretches the planet into an ellipse')
   assert.match(css, /\.nodes\s*\{[^}]*aspect-ratio: 1;/, 'pins keep the same square projection as the planet')
+})
+
+test('globe rotation wraps full turns in both directions without changing pin positions', () => {
+  for (const turns of [-100, -2, -1, 0, 1, 2, 100]) {
+    const yaw = normalizeGlobeYaw(turns * Math.PI * 2 + 0.42)
+    assert.ok(yaw >= 0 && yaw < Math.PI * 2)
+    assert.ok(Math.abs(yaw - 0.42) < 1e-10)
+    const point = projectHorizonNode(0, yaw)
+    const original = projectHorizonNode(0, 0.42)
+    assert.ok(Math.abs(point.x - original.x) < 1e-10)
+    assert.equal(point.visible, original.visible)
+  }
+  const rotation = readFileSync('src/components/competition/useGlobeRotation.ts', 'utf8')
+  assert.match(rotation, /setYaw\(currentYaw.current\)/, 'each frame uses the latest input, not the first move')
+  assert.match(rotation, /passive: false/)
+  assert.match(rotation, /removeEventListener\('wheel', wheel\)/)
+  const css = readFileSync('src/components/competition/Competition.module.css', 'utf8')
+  assert.match(css, /touch-action: pan-y pinch-zoom/)
+  assert.match(css, /\.globeStage:focus-visible/)
 })
 
 test('horizon keeps eight pins above the equator and hides back-facing or edge-clipped pins', () => {

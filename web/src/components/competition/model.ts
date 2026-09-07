@@ -43,6 +43,11 @@ export const projectSpherePoint = (x: number, y: number, z: number, yaw: number,
   }
 }
 
+export const normalizeGlobeYaw = (yaw: number) => {
+  const turn = Math.PI * 2
+  return ((yaw % turn) + turn) % turn
+}
+
 // Pins occupy the visible upper hemisphere. The navigator retains every action
 // when rotation carries a pin behind the horizon or too close to a clipped edge.
 export const projectHorizonNode = (index: number, yaw: number) => {
