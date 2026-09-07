@@ -528,7 +528,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
                   return (
                     <Stack key={section.kind ?? 'all'} gap="xs">
                       {sectionHeader}
-                      <div className={classes.challengeGrid}>
+                      <div className={classes.challengeGrid} data-motion="page">
                         {section.items.map((chal) => {
                           const status = teamInfo?.rank?.solvedChallenges?.find((c) => c.id === chal.id)?.type
                           const solved = status !== SubmissionType.Unaccepted && status !== undefined

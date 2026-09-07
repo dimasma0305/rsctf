@@ -26,6 +26,7 @@ import '@mantine/dates/styles.css'
 import '@mantine/dropzone/styles.css'
 import '@mantine/notifications/styles.css'
 import './styles/App.css'
+import './styles/Motion.css'
 
 /**
  * Wraps the generated swagger fetcher so any 401 globally redirects

@@ -100,6 +100,7 @@ test('challenge modal ticks only while an open deadline needs updates', async (c
 
   try {
     await act(async () => root.render(renderModal(false, startedAt + 1_250)))
+    await act(async () => new Promise<void>((resolve) => browser.requestAnimationFrame(() => resolve())))
     const closedCommits = commits
     await act(async () => context.mock.timers.tick(3_000))
     assert.equal(commits, closedCommits, 'a retained closed modal must not subscribe to the ticker')
@@ -190,6 +191,7 @@ test('a disconnected event VPN presents setup before challenge material', async 
       )
     })
 
+    await act(async () => new Promise<void>((resolve) => browser.requestAnimationFrame(() => resolve())))
     const alert = browser.document.querySelector('[role="alert"]')
     assert.ok(alert)
     assert.match(alert.textContent ?? '', /Connect to the event VPN first/)
@@ -317,6 +319,7 @@ test('form edits and verdict polling preserve animated Markdown until challenge 
         )
       )
     })
+    await act(async () => new Promise<void>((resolve) => browser.requestAnimationFrame(() => resolve())))
     const form = browser.document.querySelector<HTMLFormElement>('form[data-guide="flag-submit"]')
     const input = form?.querySelector<HTMLInputElement>('input')
     const receipt = form?.querySelector<HTMLTextAreaElement>('textarea')

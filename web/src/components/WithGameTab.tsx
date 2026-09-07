@@ -237,7 +237,9 @@ export const WithGameTab: FC<React.PropsWithChildren<{ summary?: React.ReactNode
         </div>
       </div>
       {summary && <div className={classes.summary}>{summary}</div>}
-      {children}
+      <Stack gap="sm" miw={0} data-motion="page">
+        {children}
+      </Stack>
     </Stack>
   )
 }

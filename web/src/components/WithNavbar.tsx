@@ -95,6 +95,7 @@ export const WithNavBar: FC<WithNavBarProps> = ({
             <LoadingOverlay visible={isLoading ?? false} overlayProps={DEFAULT_LOADING_OVERLAY} />
             <Box
               data-page-content
+              data-motion={competition ? undefined : 'page'}
               className={classes.content}
               style={
                 {

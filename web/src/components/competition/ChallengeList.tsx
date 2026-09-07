@@ -34,7 +34,7 @@ export const ChallengeList = memo(
     }, [identity, sort, pageSize])
 
     return (
-      <section aria-label={t('game.arena.list', 'List')} data-challenge-list>
+      <section aria-label={t('game.arena.list', 'List')} data-challenge-list data-motion="page">
         <div className={classes.listFrame}>
           <table className={classes.table}>
             <caption className={classes.srOnly}>{t('game.label.challenge_results', 'Challenge list')}</caption>

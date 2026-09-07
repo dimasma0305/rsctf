@@ -209,6 +209,14 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const panelHeadingRef = useRef<HTMLHeadingElement>(null)
   const [focusAfterVerdict, setFocusAfterVerdict] = useState<FlagVerdictKind | null>(null)
+  // This component is also mounted already-open from a challenge card. Give
+  // Mantine's portal a closed first frame so its entrance can run in that case.
+  // Only presentation waits; the caller's data/request ownership is unchanged.
+  const [presentationMounted, setPresentationMounted] = useState(false)
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setPresentationMounted(true))
+    return () => window.cancelAnimationFrame(frame)
+  }, [])
   useEffect(() => {
     setFocusAfterVerdict(null)
   }, [challenge?.id, modalProps.opened])
@@ -875,7 +883,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   if (drawer) {
     presentation = (
       <Drawer
-        opened={modalProps.opened}
+        opened={modalProps.opened && presentationMounted}
         onClose={handleClose}
         position="right"
         size="min(38rem, 100vw)"
@@ -896,6 +904,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
         className={classes.inlinePanel}
         aria-labelledby="competition-challenge-title"
         data-challenge-detail
+        data-motion="surface"
         inert={!!flagVerdict}
       >
         <header className={classes.inlineHeader}>
@@ -963,6 +972,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
       <Modal.Root
         size="min(46rem, calc(100vw - 1.5rem))"
         {...modalProps}
+        opened={modalProps.opened && presentationMounted}
         onClose={handleClose}
         closeOnEscape={flagVerdict ? false : modalProps.closeOnEscape}
         closeOnClickOutside={flagVerdict ? false : modalProps.closeOnClickOutside}

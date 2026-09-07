@@ -39,6 +39,7 @@ import { useLocalStorage, useMediaQuery } from '@mantine/hooks'
 import { useEffect, useState } from 'react'
 import { useConfig } from '@Hooks/useConfig'
 import tooltipClasses from '@Styles/Tooltip.module.css'
+import { DIALOG_TRANSITION, DRAWER_TRANSITION, POPOVER_TRANSITION } from './Motion'
 import { buildSemanticAccentColors } from './ThemeContrast'
 
 const CustomTheme: MantineThemeOverride = {
@@ -180,7 +181,8 @@ const CustomTheme: MantineThemeOverride = {
       defaultProps: {
         centered: true,
         radius: 'lg',
-        overlayProps: { backgroundOpacity: 0.62, blur: 6 },
+        overlayProps: { backgroundOpacity: 0.62 },
+        transitionProps: DIALOG_TRANSITION,
         styles: {
           title: {
             fontWeight: 'bold',
@@ -188,13 +190,18 @@ const CustomTheme: MantineThemeOverride = {
         },
       },
     }),
+    ModalRoot: Modal.Root.extend({
+      defaultProps: { transitionProps: DIALOG_TRANSITION },
+    }),
     Drawer: Drawer.extend({
       defaultProps: {
-        overlayProps: { backgroundOpacity: 0.62, blur: 6 },
+        overlayProps: { backgroundOpacity: 0.62 },
+        transitionProps: DRAWER_TRANSITION,
       },
     }),
     Popover: Popover.extend({
       defaultProps: {
+        transitionProps: POPOVER_TRANSITION,
         withinPortal: true,
         shadow: 'lg',
       },
@@ -253,6 +260,7 @@ const CustomTheme: MantineThemeOverride = {
     }),
     Accordion: Accordion.extend({
       defaultProps: {
+        transitionDuration: 180,
         radius: 'md',
         variant: 'separated',
       },
@@ -306,6 +314,7 @@ const CustomTheme: MantineThemeOverride = {
     }),
     Menu: Menu.extend({
       defaultProps: {
+        transitionProps: POPOVER_TRANSITION,
         radius: 'md',
         shadow: 'lg',
       },
@@ -324,6 +333,7 @@ const CustomTheme: MantineThemeOverride = {
     }),
     Tooltip: Tooltip.extend({
       defaultProps: {
+        transitionProps: POPOVER_TRANSITION,
         withArrow: true,
       },
       classNames: tooltipClasses,

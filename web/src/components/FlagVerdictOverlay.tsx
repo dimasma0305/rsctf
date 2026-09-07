@@ -2,6 +2,7 @@ import { Modal } from '@mantine/core'
 import { CSSProperties, FC, KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { FlagVerdictState } from '@Utils/FlagVerdict'
+import { DIALOG_TRANSITION } from '@Utils/Motion'
 import classes from '@Styles/FlagVerdictOverlay.module.css'
 
 interface FlagVerdictOverlayProps {
@@ -35,17 +36,7 @@ export const FlagVerdictDialog: FC<Omit<FlagVerdictOverlayProps, 'verdict'> & { 
       centered
       zIndex={6000}
       size="min(36rem, calc(100vw - 1.5rem))"
-      transitionProps={{
-        transition: {
-          in: { opacity: 1, transform: 'translateY(0)' },
-          out: { opacity: 0, transform: 'translateY(8px)' },
-          common: {},
-          transitionProperty: 'opacity, transform',
-        },
-        duration: 180,
-        exitDuration: 140,
-        timingFunction: 'cubic-bezier(0.2, 0, 0, 1)',
-      }}
+      transitionProps={DIALOG_TRANSITION}
     >
       <Modal.Overlay backgroundOpacity={0.35} />
       <Modal.Content className={classes.dialog} inert={!verdict}>

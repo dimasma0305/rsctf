@@ -95,7 +95,23 @@ try {
       const previousReads = statusReads
       await cdp.send('Page.navigate', { url: `${target}/games/901/challenges` })
       await waitFor(`document.querySelector('[data-challenge-row="9001"], [data-guide="challenge-card"] button')`)
-      await evaluate(`document.querySelector('[data-challenge-row="9001"], [data-guide="challenge-card"] button').click()`)
+      const entrance = await evaluate(`new Promise(resolve => {
+        const frames = [], deadline = performance.now() + 5000;
+        let firstPanelAt;
+        const sample = () => {
+          const panel = document.querySelector('[data-challenge-detail]') ?? document.querySelector('[role="dialog"]');
+          if (panel) {
+            firstPanelAt ??= performance.now();
+            frames.push({ opacity: Number(getComputedStyle(panel).opacity), animations: panel.getAnimations().length });
+          }
+          if (performance.now() < deadline && (firstPanelAt === undefined || performance.now() - firstPanelAt < 500)) requestAnimationFrame(sample); else resolve(frames);
+        };
+        requestAnimationFrame(sample);
+        document.querySelector('[data-challenge-row="9001"], [data-guide="challenge-card"] button').click();
+      })`)
+      assert.ok(entrance.length > 0 && entrance.at(-1).opacity === 1, 'new challenge becomes fully visible')
+      if (reduced) assert.ok(entrance.every(f => f.animations === 0), 'reduced motion skips the challenge entrance')
+      else assert.ok(entrance.some(f => f.opacity > 0 && f.opacity < 1 && f.animations > 0), 'a newly mounted challenge must animate its entrance')
       await waitFor(`document.querySelector('form[data-guide="flag-submit"] input')`)
       await evaluate(`document.querySelector('form[data-guide="flag-submit"] input').focus()`)
       await cdp.send('Input.insertText', { text: 'fixture-only-not-a-real-flag' })
@@ -147,7 +163,7 @@ try {
         violations: (await axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } })).violations.map(v => ({ id: v.id, nodes: v.nodes.map(n => ({ target: n.target, summary: n.failureSummary })) }))
       }))()`)
       await shot(`${name}-${kind}`)
-      reports.push({ name: `${name}-${kind}`, ...issues, animation })
+      reports.push({ name: `${name}-${kind}`, ...issues, animation, entrance })
       console.log(`${name}-${kind}: ${JSON.stringify(issues)}`)
       assert.equal(await evaluate(`document.querySelectorAll('[data-flag-verdict] i').length`), kind === 'success' ? 12 : 0)
       await press('Tab')

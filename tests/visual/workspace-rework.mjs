@@ -80,6 +80,10 @@ const screenshot = async (name) => {
   writeFileSync(`${output}/${name}.png`, Buffer.from(shot.data, 'base64'))
 }
 const inspect = async (name) => {
+  // Audit the settled surface rather than transient alpha mid-dialog fade.
+  // Separate frame-level harnesses exercise the actual motion and continuity.
+  await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
+  await evaluate(`Promise.all(document.getAnimations().filter(a => a.effect?.getComputedTiming().endTime !== Infinity).map(a => a.finished.catch(() => {})))`)
   await cdp.send('Runtime.evaluate', { expression: readFileSync('node_modules/axe-core/axe.min.js', 'utf8') })
   const issues = await evaluate(`(async () => ({ overflow: document.documentElement.scrollWidth > innerWidth + 1, fallback: !!document.querySelector('[data-error-fallback]'), violations: (await axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } })).violations.map(v => ({ id: v.id, nodes: v.nodes.map(n => n.target) })) }))()`)
   await screenshot(name)
