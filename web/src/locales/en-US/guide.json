@@ -65,9 +65,22 @@
     }
   },
   "tour": {
+    "navigation_body": "Continue on the page below.",
+    "choose_step": "Choose a walkthrough step", "more_detail": "More detail", "pause_short": "Pause", "back": "Back",
+    "destination_ready": "Your turn — use the highlighted control.", "open_destination": "Open the page to continue here.", "target_optional": "Try it, or continue when you’re ready.",
     "skip": "Skip step",
-    "welcome": {"title": "Your competition workspace", "body": "Follow the highlighted controls. You can pause at any time and resume from Guide.", "note": "Nothing is submitted or started for you."},
-    "challenges": {"body": "Choose a category, then a challenge on the globe—or open a row or card. Read its material before starting.", "note": "Globe, List and Cards open the same challenge details."},
-    "submit": {"body": "Paste the exact flag into the highlighted field and wait for the verdict.", "note": "Points depend on the event’s time and scoring rules. Keep tokens and VPN profiles private."}
+    "welcome": {"title": "Let’s find your way around", "body": "Follow the highlighted controls. Use the step menu to jump ahead, or Pause and return later.", "note": "Nothing is submitted or started for you. You can resume from Guide, and turn off contextual tips in Guide preferences."},
+    "account": {"title": "Your player account", "signed_in": "Signed in as {{name}}. Continue to your team, or open your profile to check your account.", "action": "Use your usual sign-in method.", "ready": "After signing in, the walkthrough continues with your account. Keep your password and API tokens private."},
+    "team": {"destination_body": "Choose Create or Join, then fill in the highlighted field.", "form_action": "You enter the details and confirm.", "form_note": "The walkthrough advances after the platform confirms your team. Already in a team? Skip this step.", "select_create_name": "Select Team name.", "type_create_name": "Type your team name.", "select_join_code": "Select Invite code.", "paste_join_code": "Paste your team’s invitation code."},
+    "events": {"title": "Choose your event", "body": "Open an event, then check its schedule and rules.", "detail_body": "Read the briefing, then join with your team. Already approved? Open Challenges.", "detail_note": "Joining a team and joining an event are separate actions. The organizer may need to approve your entry."},
+    "challenges": {"title": "Pick a challenge", "body": "Choose a category, then a challenge. You can also open a row in List or a card in Cards.", "note": "The globe focuses the selected target and opens its details. Choosing a category only narrows the results."},
+    "connection": {"title": "Get connected", "static_title": "Work from the material", "static_body": "There’s no instance to start here. Read the material, then use the flag field when you’re ready.", "note": "Follow this challenge’s connection mode. Personal containers, shared hills, BYOC and attachment-only challenges have different setup steps."},
+    "submit": {"title": "Check your verdict", "body": "Paste only the exact flag and select Submit. Wait for the platform’s verdict.", "note": "Finishing this walkthrough does not submit a flag or award points. Scoring follows the event’s time and rules."}
+  },
+  "feature": {
+    "use_highlight": "Your turn — use the highlighted control.", "try_highlight": "Try it, or continue when you’re ready.", "full_guide": "Read the guide",
+    "vpn": {"title": "Connect your event VPN", "body": "Download your profile, import it into WireGuard, then activate the tunnel.", "note": "Use your own profile and keep it private. The VPN gives access to private challenge addresses, not permission to join an event."},
+    "static": {"material_title": "Start with the material", "material_body": "Read the description and hints. This challenge has no instance to start.", "attachment_title": "Get the challenge file", "attachment_body": "Use Download. Check the filename, size and checksum when available.", "submit_title": "Ready to submit?", "submit_body": "Paste only the flag, select Submit, and wait for the verdict."},
+    "container": {"start_title": "Start your instance", "start_body": "Select Start instance once, then wait until it is ready.", "vpn_start_title": "VPN first, then instance", "vpn_start_body": "Activate your event VPN, then select Start instance and wait for readiness."}
   }
 }

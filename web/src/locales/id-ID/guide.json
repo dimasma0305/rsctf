@@ -65,9 +65,22 @@
     }
   },
   "tour": {
+    "navigation_body": "Lanjutkan di halaman berikut.",
+    "choose_step": "Pilih langkah tur", "more_detail": "Penjelasan", "pause_short": "Jeda", "back": "Kembali",
+    "destination_ready": "Giliran Anda — gunakan kontrol yang disorot.", "open_destination": "Buka halaman untuk melanjutkan.", "target_optional": "Coba, atau lanjut jika sudah siap.",
     "skip": "Lewati langkah",
-    "welcome": {"title": "Ruang kompetisi Anda", "body": "Ikuti kontrol yang disorot. Anda bisa menjeda kapan saja dan melanjutkan dari Panduan.", "note": "Tidak ada pengiriman atau layanan yang dimulai untuk Anda."},
-    "challenges": {"body": "Pilih kategori lalu tantangan di globe—atau buka baris/kartu. Baca materinya sebelum mulai.", "note": "Globe, Daftar, dan Kartu membuka detail yang sama."},
-    "submit": {"body": "Tempel flag yang tepat ke kolom yang disorot dan tunggu verdict.", "note": "Poin mengikuti waktu dan aturan event. Jaga kerahasiaan token dan profil VPN."}
+    "welcome": {"title": "Mari kenali platformnya", "body": "Ikuti kontrol yang disorot. Pilih langkah lewat menu, atau Jeda dan lanjutkan nanti.", "note": "Tidak ada pengiriman atau layanan yang dimulai untuk Anda. Lanjutkan dari Panduan, atau matikan tips di preferensi Panduan."},
+    "account": {"title": "Akun pemain Anda", "signed_in": "Masuk sebagai {{name}}. Lanjut ke tim, atau buka profil untuk memeriksa akun.", "action": "Gunakan metode masuk Anda seperti biasa.", "ready": "Setelah masuk, tur dilanjutkan dengan akun Anda. Jaga kerahasiaan kata sandi dan token API."},
+    "team": {"destination_body": "Pilih Buat atau Gabung, lalu isi kolom yang disorot.", "form_action": "Anda sendiri yang mengisi dan mengonfirmasi.", "form_note": "Tur dilanjutkan setelah platform mengonfirmasi tim Anda. Sudah punya tim? Lewati langkah ini.", "select_create_name": "Pilih Nama tim.", "type_create_name": "Ketik nama tim Anda.", "select_join_code": "Pilih Kode undangan.", "paste_join_code": "Tempel kode undangan tim Anda."},
+    "events": {"title": "Pilih event Anda", "body": "Buka event, lalu periksa jadwal dan aturannya.", "detail_body": "Baca informasi event, lalu gabung bersama tim. Sudah disetujui? Buka Tantangan.", "detail_note": "Bergabung ke tim dan ke event adalah dua tindakan berbeda. Panitia mungkin perlu menyetujui pendaftaran Anda."},
+    "challenges": {"title": "Pilih tantangan", "body": "Pilih kategori, lalu tantangan. Anda juga bisa membuka baris di Daftar atau kartu di Kartu.", "note": "Globe memusatkan target yang dipilih dan membuka detailnya. Memilih kategori hanya mempersempit hasil."},
+    "connection": {"title": "Siapkan koneksi", "static_title": "Mulai dari materi", "static_body": "Tidak ada instance yang perlu dimulai. Baca materi, lalu gunakan kolom flag jika sudah siap.", "note": "Ikuti mode koneksi tantangan ini. Container pribadi, hill bersama, BYOC, dan lampiran memiliki langkah berbeda."},
+    "submit": {"title": "Periksa verdict", "body": "Tempel flag yang tepat, lalu pilih Kirim. Tunggu verdict dari platform.", "note": "Menyelesaikan tur tidak mengirim flag atau memberi poin. Penilaian mengikuti waktu dan aturan event."}
+  },
+  "feature": {
+    "use_highlight": "Giliran Anda — gunakan kontrol yang disorot.", "try_highlight": "Coba, atau lanjut jika sudah siap.", "full_guide": "Baca panduan",
+    "vpn": {"title": "Aktifkan VPN event", "body": "Unduh profil Anda, impor ke WireGuard, lalu aktifkan tunnel.", "note": "Gunakan profil sendiri dan jaga kerahasiaannya. VPN memberi akses ke alamat privat tantangan, bukan izin bergabung ke event."},
+    "static": {"material_title": "Mulai dari materi", "material_body": "Baca deskripsi dan petunjuk. Tantangan ini tidak memiliki instance yang perlu dimulai.", "attachment_title": "Unduh berkas tantangan", "attachment_body": "Pilih Unduh. Periksa nama berkas, ukuran, dan checksum jika tersedia.", "submit_title": "Siap mengirim flag?", "submit_body": "Tempel flag saja, pilih Kirim, lalu tunggu verdict."},
+    "container": {"start_title": "Mulai instance Anda", "start_body": "Pilih Mulai instance sekali, lalu tunggu hingga siap.", "vpn_start_title": "VPN dulu, lalu instance", "vpn_start_body": "Aktifkan VPN event, lalu pilih Mulai instance dan tunggu hingga siap."}
   }
 }

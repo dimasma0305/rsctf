@@ -110,6 +110,45 @@ try {
     await wait(`!document.querySelector('[data-guide-surface="coachmark"]')`)
     assert.equal(await evaluate(`JSON.parse(localStorage.getItem(${JSON.stringify(key)})).tourPaused`),true)
   }
+  // All seven tour steps, optional detail, native keyboard selection and pause/resume.
+  const tourSteps = ['welcome','account','team','events','challenges','connection','submit']
+  for (const [name,width,height,language,scheme] of [['desktop',1600,1100,'en-US','dark'],['compact',320,568,'en-US','dark'],['tablet',768,1024,'en-US','dark'],['mobile-id',390,844,'id-ID','light']]) {
+    await cdp.send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false})
+    await cdp.send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:name==='mobile-id'?'reduce':'no-preference'}]})
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('language',JSON.stringify(${JSON.stringify(language)}));localStorage.setItem('mantine-color-scheme-value',${JSON.stringify(scheme)});`})
+    await setPreferences(paused)
+    await cdp.send('Page.navigate',{url:`${target}/guide?interactive=${name}`})
+    await wait(`document.querySelector('[data-guide-start]') && !document.querySelector('[data-guide-start]').disabled`)
+    await evaluate(`document.querySelector('[data-guide-start]').click()`)
+    await wait(`document.querySelector('[data-guide-step-picker]')?.options.length===7`)
+    const writesBefore = requests.filter(request=>request.method!=='GET').length
+    for (let index=0; index<tourSteps.length; index++) {
+      await evaluate(`(()=>{const picker=document.querySelector('[data-guide-step-picker]');picker.value='${index}';picker.dispatchEvent(new Event('change',{bubbles:true}));})()`)
+      await wait(`JSON.parse(localStorage.getItem(${JSON.stringify(key)})).activeTourStep==='${tourSteps[index]}'`)
+      assert.equal(await evaluate(`document.querySelector('[data-guide-step-details]').open`),false)
+      assert.equal(await evaluate(`(()=>{const action=document.querySelector('[data-guide-destination]');if(!action)return true;const rect=action.getBoundingClientRect();const surface=action.closest('[data-guide-surface]').getBoundingClientRect();return rect.top>=surface.top && rect.bottom<=surface.bottom && rect.bottom<=innerHeight;})()`),true,'the destination action must not be hidden inside scrollable instructions')
+      assert.equal(await evaluate(`(()=>{if(!document.querySelector('[data-guide-destination]'))return true;const copy=document.querySelector('[data-guide-step-content] [role="status"]');return copy.getBoundingClientRect().bottom<=copy.closest('[role="region"]').getBoundingClientRect().bottom+1;})()`),true,'the navigation instruction is readable without scrolling')
+      await audit(`${name}-step-${tourSteps[index]}`)
+    }
+    assert.equal(requests.filter(request=>request.method!=='GET').length,writesBefore,'selecting tour steps never performs platform actions')
+    await evaluate(`document.querySelector('[data-guide-step-picker]').focus()`)
+    await press('Home',36)
+    await wait(`JSON.parse(localStorage.getItem(${JSON.stringify(key)})).activeTourStep==='welcome'`)
+    await evaluate(`document.querySelector('[data-guide-step-details] summary').focus()`)
+    await press('Enter',13)
+    await wait(`document.querySelector('[data-guide-step-details]').open`)
+    await audit(`${name}-step-detail`)
+    await evaluate(`[...document.querySelectorAll('[data-guide-surface="coachmark"] button')].find(button=>['Pause','Jeda'].includes(button.textContent.trim())).click()`)
+    await wait(`!document.querySelector('[data-guide-surface="coachmark"]')`)
+    const saved = await evaluate(`JSON.parse(localStorage.getItem(${JSON.stringify(key)}))`)
+    assert.equal(saved.activeTourStep,'welcome')
+    assert.equal(saved.tourPaused,true)
+    assert.equal(saved.interactiveEnabled,true,'pause preserves the player’s tips preference')
+    await evaluate(`document.querySelector('[data-guide-start]').click()`)
+    await wait(`document.querySelector('[data-guide-step-picker]')?.value==='0'`)
+    await press('Escape',27)
+    await wait(`!document.querySelector('[data-guide-surface="coachmark"]')`)
+  }
   for (const [name,width,view] of [['desktop',1600,'globe'],['compact',320,'globe'],['mobile-list',390,'list']]) {
     await cdp.send('Emulation.setDeviceMetricsOverride',{width,height:width===320?568:1100,deviceScaleFactor:1,mobile:false})
     await setPreferences({...paused,interactiveEnabled:true,tourPaused:false},view)
@@ -128,6 +167,22 @@ try {
     // An attachment-only task can skip connection setup without starting or submitting anything.
     await evaluate(`[...document.querySelectorAll('[data-guide-surface="coachmark"] button')].find(button=>['Skip step','Lewati langkah'].includes(button.textContent.trim())).click()`)
     await wait(`JSON.parse(localStorage.getItem(${JSON.stringify(key)})).activeTourStep==='submit'`)
+  }
+  for (const [name,width] of [['desktop',1600],['compact',320]]) {
+    await cdp.send('Emulation.setDeviceMetricsOverride',{width,height:width===320?568:1100,deviceScaleFactor:1,mobile:false})
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('language',JSON.stringify('en-US'));localStorage.setItem('mantine-color-scheme-value','dark');`})
+    await setPreferences({...paused,interactiveEnabled:true,completedVersion:5,activeTourStep:null,tourPaused:false},'list')
+    await cdp.send('Page.navigate',{url:`${target}/games/901/challenges?tip=${name}`})
+    await wait(`document.querySelector('[data-guide="challenge-card"]')`)
+    await evaluate(`document.querySelector('[data-guide="challenge-card"]').click()`)
+    await wait(`document.querySelector('[data-guide-surface="coachmark"]') && !document.querySelector('[data-guide-step-picker]')`)
+    await audit(`${name}-contextual-tip`)
+    await evaluate(`[...document.querySelectorAll('[data-guide-surface="coachmark"] button')].find(button=>button.textContent.trim()==='Skip step').click()`)
+    await wait(`[...document.querySelectorAll('[data-guide-surface="coachmark"] button')].some(button=>button.textContent.trim()==='Got it')`)
+    await audit(`${name}-contextual-tip-submit`)
+    await evaluate(`[...document.querySelectorAll('[data-guide-surface="coachmark"] button')].find(button=>button.textContent.trim()==='Got it').click()`)
+    await wait(`!document.querySelector('[data-guide-surface="coachmark"]')`)
+    assert.equal(await evaluate(`JSON.parse(localStorage.getItem(${JSON.stringify(key)})).seenFeatures.includes('static-challenge')`),true)
   }
   assert.deepEqual([...unknown],[])
   assert.equal(requests.filter(r=>r.path.includes('/challenges/')&&r.method!=='GET').length,0)

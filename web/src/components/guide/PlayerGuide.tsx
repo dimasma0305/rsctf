@@ -22,6 +22,7 @@ import {
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router'
 import { GuideSpotlightModal } from '@Components/guide/GuideSpotlightModal'
+import { GuideStepContent } from '@Components/guide/GuideStepContent'
 import {
   GUIDE_VERSION,
   GUIDE_TOUR_STEPS,
@@ -130,6 +131,9 @@ interface AccessibleGuideModalProps extends PropsWithChildren {
     current: number
     total: number
     label: string
+    steps?: string[]
+    onStepChange?: (index: number) => void
+    selectionLabel?: string
   }
 }
 
@@ -910,7 +914,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         title={step.title}
         size="min(21rem, calc(100vw - 1rem))"
         closeLabel={t('guide.tour.pause', 'Pause guide')}
-        overlayOpacity={0.58}
+        overlayOpacity={0.38}
         targetSelector={step.targetSelector}
         onTargetActivate={onTourTargetActivate}
         onTargetChange={setActiveTourTarget}
@@ -918,6 +922,9 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         progress={{
           current: stepIndex + 1,
           total: steps.length,
+          steps: steps.map((item) => item.title),
+          onStepChange: moveToStep,
+          selectionLabel: t('guide.tour.choose_step', 'Choose a walkthrough step'),
           label: t('guide.tour.progress', 'Step {{current}} of {{total}}', {
             current: stepIndex + 1,
             total: steps.length,
@@ -932,42 +939,43 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
             tabIndex={0}
             aria-label={t('guide.tour.instructions', 'Guide instructions')}
           >
-            <Stack gap="xs" role="status" aria-live="polite" aria-atomic="true">
-              <Text size="sm">{step.body}</Text>
-              <Text size="sm" c="dimmed" className={classes.note}>
-                {step.note}
-              </Text>
-            </Stack>
-            {needsNavigation && (
-              <Button
-                variant="light"
-                leftSection={<Icon path={mdiOpenInNew} size={0.72} aria-hidden="true" />}
-                onClick={() => navigate(step.path!)}
-                className={classes.guideAction}
-              >
-                {step.pathLabel}
-              </Button>
-            )}
+            <GuideStepContent
+              stepId={step.id}
+              body={needsNavigation ? t('guide.tour.navigation_body', 'Continue on the page below.') : step.body}
+              note={needsNavigation ? `${step.body} ${step.note}` : step.note}
+            />
           </Stack>
-          <GuideTargetPrompt keyboardEntry={teamGuideKeyboardActive}>
-            {step.id === 'team' && user && isTeamPage && !needsNavigation
-              ? teamGuidePrompt
-              : step.targetPrompt && !needsNavigation
-                ? step.targetPrompt
-                : needsNavigation
-                  ? t('guide.tour.open_destination', 'Open the page above. This step continues there.')
-                  : needsTargetActivation
-                    ? t('guide.tour.destination_ready', 'Select the highlighted control to continue.')
-                    : t('guide.tour.target_optional', 'Use the highlighted control, or choose Next.')}
-          </GuideTargetPrompt>
+          {needsNavigation ? (
+            <Button
+              variant="light"
+              leftSection={<Icon path={mdiOpenInNew} size={0.72} aria-hidden="true" />}
+              onClick={() => navigate(step.path!)}
+              className={classes.guideAction}
+              data-guide-destination
+            >
+              {step.pathLabel}
+            </Button>
+          ) : (
+            <GuideTargetPrompt keyboardEntry={teamGuideKeyboardActive}>
+              {step.id === 'team' && user && isTeamPage && !needsNavigation
+                ? teamGuidePrompt
+                : step.targetPrompt && !needsNavigation
+                  ? step.targetPrompt
+                  : needsNavigation
+                    ? t('guide.tour.open_destination', 'Open the page above. This step continues there.')
+                    : needsTargetActivation
+                      ? t('guide.tour.destination_ready', 'Select the highlighted control to continue.')
+                      : t('guide.tour.target_optional', 'Use the highlighted control, or choose Next.')}
+            </GuideTargetPrompt>
+          )}
           <Group justify="space-between" gap="xs" wrap="nowrap" className={classes.tourFooter}>
             <Button
               variant="subtle"
               color="gray"
-              aria-label={t('guide.tour.disable', 'Stop guide')}
-              onClick={() => setInteractiveEnabled(false)}
+              aria-label={t('guide.tour.pause', 'Pause guide')}
+              onClick={() => updatePreferences(pauseGuide)}
             >
-              {t('guide.tour.stop_short', 'Stop')}
+              {t('guide.tour.pause_short', 'Pause')}
             </Button>
             <Group gap={4} wrap="nowrap">
               <Button
@@ -976,7 +984,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
                 leftSection={<Icon path={mdiArrowLeft} size={0.7} aria-hidden="true" />}
                 onClick={() => moveToStep(stepIndex - 1)}
               >
-                {t('common.pagination.previous', 'Previous')}
+                {t('guide.tour.back', 'Back')}
               </Button>
               {stepIndex === steps.length - 1 ? (
                 <Button leftSection={<Icon path={mdiCheck} size={0.7} aria-hidden="true" />} onClick={completeTour}>
@@ -1005,7 +1013,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         title={featureStep?.title ?? t('guide.feature.title', 'Challenge guide')}
         size="min(21rem, calc(100vw - 1rem))"
         closeLabel={t('guide.feature.dismiss', 'Dismiss this tip')}
-        overlayOpacity={0.58}
+        overlayOpacity={0.38}
         targetSelector={featureStep?.targetSelector}
         onTargetActivate={onFeatureTargetActivate}
         progress={
@@ -1030,21 +1038,15 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
               tabIndex={0}
               aria-label={t('guide.feature.instructions', 'Challenge guide instructions')}
             >
-              <Stack gap="xs" role="status" aria-live="polite" aria-atomic="true">
-                <Text size="sm">{featureStep.body}</Text>
-                {featureStep.command && (
-                  <Text component="code" size="sm" className={classes.command}>
-                    {featureStep.command}
-                  </Text>
-                )}
-                {featureStep.note && (
-                  <Text size="sm" c="dimmed" className={classes.note}>
-                    {featureStep.note}
-                  </Text>
-                )}
-              </Stack>
+              <GuideStepContent
+                stepId={`${pendingFeature.feature}:${featureStep.id}`}
+                body={featureStep.body}
+                note={featureStep.note}
+                command={featureStep.command}
+              />
               <Button
-                variant="default"
+                variant="subtle"
+                size="compact-sm"
                 onClick={() => {
                   dismissFeature()
                   navigate('/guide#play-challenge')
@@ -1074,7 +1076,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
                   leftSection={<Icon path={mdiArrowLeft} size={0.7} aria-hidden="true" />}
                   onClick={() => moveFeatureStep(boundedFeatureStepIndex - 1)}
                 >
-                  {t('common.pagination.previous', 'Previous')}
+                  {t('guide.tour.back', 'Back')}
                 </Button>
                 {boundedFeatureStepIndex === featureSteps.length - 1 ? (
                   <Button leftSection={<Icon path={mdiCheck} size={0.7} aria-hidden="true" />} onClick={dismissFeature}>
@@ -1087,7 +1089,11 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
                   >
                     {t('common.pagination.next', 'Next')}
                   </Button>
-                ) : null}
+                ) : (
+                  <Button variant="light" onClick={() => moveFeatureStep(boundedFeatureStepIndex + 1)}>
+                    {t('guide.tour.skip', 'Skip step')}
+                  </Button>
+                )}
               </Group>
             </Group>
           </Stack>

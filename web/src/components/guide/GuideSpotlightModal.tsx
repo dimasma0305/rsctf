@@ -1,5 +1,5 @@
 import { Badge, Modal, Progress } from '@mantine/core'
-import { mdiCursorDefaultClickOutline } from '@mdi/js'
+import { mdiChevronDown, mdiCursorDefaultClickOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { CSSProperties, FC, PropsWithChildren, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { coachmarkPlacement, guideLayerZIndex } from '@Utils/GuideLayout'
@@ -24,6 +24,9 @@ interface GuideSpotlightModalProps extends PropsWithChildren {
     current: number
     total: number
     label: string
+    steps?: string[]
+    onStepChange?: (index: number) => void
+    selectionLabel?: string
   }
 }
 
@@ -550,10 +553,36 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
         <Modal.Header role="presentation" className={classes.modalHeader}>
           <div className={classes.modalHeading}>
             <Modal.Title>{title}</Modal.Title>
-            {progress && (
-              <Badge variant="light" size="sm" className={classes.stepBadge}>
-                {progress.current} / {progress.total}
-              </Badge>
+            {progress?.steps && progress.onStepChange ? (
+              <label className={classes.stepPicker}>
+                <span aria-hidden="true">
+                  {progress.current} / {progress.total}
+                  <Icon path={mdiChevronDown} size={0.65} />
+                </span>
+                <select
+                  data-guide-step-picker
+                  aria-label={progress.selectionLabel ?? progress.label}
+                  value={progress.current - 1}
+                  onChange={(event) => {
+                    const index = Number(event.currentTarget.value)
+                    if (Number.isInteger(index) && index >= 0 && index < progress.steps!.length) {
+                      progress.onStepChange?.(index)
+                    }
+                  }}
+                >
+                  {progress.steps.map((label, index) => (
+                    <option key={index} value={index}>
+                      {index + 1}. {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              progress && (
+                <Badge variant="light" size="sm" className={classes.stepBadge}>
+                  {progress.current} / {progress.total}
+                </Badge>
+              )
             )}
           </div>
           <Modal.CloseButton aria-label={closeLabel} />

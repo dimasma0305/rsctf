@@ -39,7 +39,7 @@ test('interactive guide is account-scoped, restartable, dismissible, and storage
   assert.match(provider, /updatePreferences\(pauseGuide\)/)
   assert.match(provider, /setGuideTourStep/)
   assert.doesNotMatch(provider, /setTourOpen/)
-  assert.match(provider, /Stop guide/)
+  assert.match(provider, /Pause guide/)
   assert.match(provider, /preferencesRef\.current/)
   assert.match(provider, /persistGuidePreferenceUpdate\(preferencesRef\.current/)
   assert.match(guideState, /try \{[\s\S]*persist\(JSON\.stringify\(next\)\)[\s\S]*\} catch/)
@@ -124,7 +124,11 @@ test('interactive guide spotlights real controls and provides a reduced-motion g
   assert.match(spotlightStyles, /max-height: min\(18rem, calc\(100dvh - 10rem\)\)/)
   assert.match(spotlightStyles, /\.modalProgress/)
   assert.match(spotlightStyles, /\.targetPrompt/)
-  assert.match(spotlightStyles, /@media \(max-height: 40em\)[\s\S]*\.note/)
+  assert.doesNotMatch(
+    spotlightStyles,
+    /\.note\s*\{\s*display: none/,
+    'important detail remains available on short screens'
+  )
   assert.match(provider, /size="min\(21rem, calc\(100vw - 1rem\)\)"/)
   assert.doesNotMatch(provider, /size="min\(36rem/)
   assert.match(guideLayout, /target\.viewportHeight \* 0\.42/)
@@ -205,6 +209,12 @@ test('guide handbook has searchable linked topics, progress and explicit walkthr
   assert.match(pageStyles, /min-height: 44px/)
   assert.doesNotMatch(spotlightStyles, /infinite/, 'the guide highlights once instead of pulsing throughout play')
   assert.match(provider, /guide.tour.skip/)
+  assert.match(spotlight, /<select[\s\S]*data-guide-step-picker[\s\S]*aria-label=/)
+  assert.match(spotlight, /Number\.isInteger\(index\) && index >= 0 && index < progress.steps!.length/)
+  assert.match(provider, /onStepChange: moveToStep/)
+  assert.match(provider, /guide.tour.pause_short/)
+  assert.match(provider, /<GuideStepContent\s+stepId=\{step.id\}/)
+  assert.match(provider, /body=\{needsNavigation \? t\('guide.tour.navigation_body'/)
   assert.match(provider, /setGuideTourStep\(openGuide\(current\), step\)/)
   assert.match(
     readFileSync('src/components/competition/ChallengeGlobe.tsx', 'utf8'),

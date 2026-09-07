@@ -8,7 +8,7 @@
   overflow: hidden;
   border: 1px solid var(--app-border);
   border-top: 2px solid var(--mantine-primary-color-filled);
-  border-radius: 0.7rem;
+  border-radius: 1rem;
   background: var(--app-raised-surface);
   box-shadow: 0 1rem 3rem rgb(0 0 0 / 28%);
 }
@@ -29,11 +29,11 @@
 .tutorialSpotlight {
   position: fixed;
   pointer-events: none;
-  border: 3px solid var(--mantine-primary-color-filled);
-  border-radius: var(--mantine-radius-md);
+  border: 2px solid var(--mantine-primary-color-filled);
+  border-radius: 0.65rem;
   box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--mantine-primary-color-filled) 30%, transparent),
-    0 0 2rem color-mix(in srgb, var(--mantine-primary-color-filled) 55%, transparent);
+    0 0 0 4px color-mix(in srgb, var(--mantine-primary-color-filled) 18%, transparent),
+    0 0 1rem color-mix(in srgb, var(--mantine-primary-color-filled) 25%, transparent);
   animation: tutorial-spotlight 0.8s ease-out 1;
 }
 
@@ -47,6 +47,11 @@
   pointer-events: none;
   filter: drop-shadow(0 2px 1px rgb(0 0 0 / 95%)) drop-shadow(0 0 8px var(--mantine-primary-color-filled));
   animation: tutorial-cursor 0.8s cubic-bezier(0.22, 0.8, 0.25, 1) 1;
+}
+
+.tutorialCursor svg {
+  width: 1.6rem !important;
+  height: 1.6rem !important;
 }
 
 @keyframes tutorial-spotlight {
@@ -94,9 +99,9 @@
   align-items: center;
   justify-content: space-between;
   min-height: 2.75rem;
-  padding: 0.35rem 0.55rem 0.45rem 0.75rem;
-  border-bottom: 1px solid var(--mantine-color-default-border);
-  background: var(--app-hover-surface);
+  padding: 0.4rem 0.45rem 0.4rem 0.85rem;
+  border-bottom: 1px solid var(--app-border);
+  background: linear-gradient(100deg, var(--mantine-primary-color-light), transparent);
 }
 
 .modalHeading {
@@ -154,6 +159,69 @@
   flex: 0 0 auto;
 }
 
+.stepPicker {
+  position: relative;
+  flex-shrink: 0;
+  min-height: 44px;
+  min-width: 60px;
+  display: grid;
+  place-items: center;
+  color: var(--mantine-primary-color-light-color);
+  border-radius: 0.4rem;
+}
+.stepPicker span {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.stepPicker select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.stepPicker:hover {
+  background: var(--app-hover-surface);
+}
+.stepPicker:focus-within,
+.stepDetails summary:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 2px;
+}
+.stepContent {
+  display: grid;
+  gap: 0.35rem;
+}
+.stepCopy {
+  animation: guide-step-in 140ms ease-out both;
+  line-height: 1.5;
+}
+.stepDetails summary {
+  min-height: 32px;
+  padding-block: 0.4rem;
+  color: var(--app-text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.stepDetails[open] summary {
+  color: var(--mantine-primary-color-light-color);
+}
+@keyframes guide-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .note {
   padding-inline-start: 0.55rem;
   border-inline-start: 2px solid var(--mantine-primary-color-light-color);
@@ -162,11 +230,9 @@
 .targetPrompt {
   display: flex;
   align-items: center;
-  min-height: 2.25rem;
-  padding: 0.35rem 0.5rem;
-  border: 1px solid color-mix(in srgb, var(--mantine-primary-color-filled) 35%, var(--mantine-color-default-border));
-  border-radius: var(--mantine-radius-md);
-  background: color-mix(in srgb, var(--mantine-primary-color-filled) 8%, var(--mantine-color-body));
+  min-height: 1.25rem;
+  padding: 0;
+  color: var(--app-text-secondary);
 }
 
 .targetPromptIcon {
@@ -177,6 +243,10 @@
 .guideAction,
 .tourFooter button {
   min-height: 2.75rem;
+}
+
+.guideAction {
+  flex-shrink: 0;
 }
 
 .tourFooter > button {
@@ -218,12 +288,6 @@
 
   .tourFooter button {
     font-size: var(--mantine-font-size-xs);
-  }
-}
-
-@media (max-height: 40em) {
-  .note {
-    display: none;
   }
 }
 
