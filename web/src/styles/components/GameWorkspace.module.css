@@ -1,3 +1,10 @@
+.standardHeading {
+  display: grid;
+  gap: var(--mantine-spacing-md);
+}
+.competitionStack {
+  padding-top: 1rem;
+}
 .header {
   display: flex;
   justify-content: space-between;
@@ -19,28 +26,72 @@
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
-.countdown {
+
+.masthead {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 25rem);
+  align-items: center;
+  column-gap: 2rem;
+  row-gap: 0.8rem;
+  padding: 1rem 1.25rem 0;
+  border: 1px solid var(--app-border);
+  border-radius: 0.8rem;
+  background:
+    radial-gradient(ellipse at 0 0, light-dark(#169caa0b, #169caa16), transparent 65%), var(--app-raised-surface);
+  box-shadow: inset 0 1px 0 light-dark(#ffffff, #ffffff05);
+}
+.masthead .header {
+  display: grid;
+  justify-content: start;
+  gap: 0.55rem;
+  min-width: 0;
   padding: 0;
+}
+.masthead .title {
+  font-size: clamp(1.25rem, 1.7vw, 1.65rem);
+}
+.eventIdentity {
+  min-height: 20px;
+}
+.eventId {
+  letter-spacing: 0.04em;
+}
+.countdown {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 0.6rem;
   border: 0;
   border-radius: 0;
   background: none;
   box-shadow: none;
   overflow: visible;
+  text-align: start;
+}
+.countdown > :global(.mantine-Text-root):nth-child(2) {
+  font-size: 1rem;
+  font-family: var(--mantine-font-family-monospace);
+  letter-spacing: 0.04em;
+}
+.countdown > :global(.mantine-Card-section) {
+  display: none;
+}
+.summary {
+  min-width: 0;
 }
 .teamStrip {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
+  display: grid;
   min-width: 0;
-  padding: 0.25rem 0;
+  gap: 0.3rem;
 }
 .teamIdentity {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   min-width: 0;
-  min-height: 44px;
-  max-width: 40%;
+  min-height: 36px;
+  width: fit-content;
+  max-width: 100%;
   border-radius: 0.3rem;
 }
 .teamIdentity > :not(.teamName) {
@@ -53,87 +104,117 @@
   text-overflow: ellipsis;
 }
 .teamMetrics {
-  display: flex;
-  flex: 1;
-  flex-wrap: wrap;
-  gap: 0.5rem 1.5rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
   margin: 0;
 }
 .teamMetrics > div {
   display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
+  flex-direction: column;
+  min-width: 0;
   border-inline-start: 1px solid var(--app-border);
-  padding-inline-start: 1.5rem;
+  padding-inline-start: 0.8rem;
 }
 .teamMetrics dt {
   color: var(--app-text-secondary);
-  font-size: 0.75rem;
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
 }
 .teamMetrics dd {
+  order: -1;
   margin: 0;
   font-weight: 700;
-  font-size: 1rem;
+  font-size: 1.4rem;
   font-variant-numeric: tabular-nums;
 }
-@media (max-width: 40rem) {
-  .competitionStack {
-    gap: 4px;
+.eventNavigation {
+  grid-column: 1 / -1;
+  margin-inline: -0.4rem;
+}
+.archiveNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.25rem 0.15rem;
+  color: var(--app-text-secondary);
+}
+.archiveNotice > svg {
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+@container (max-width: 28rem) {
+  .teamStrip[data-mixed-score] {
+    display: grid;
+    gap: 0;
+  }
+  .teamStrip[data-mixed-score] .teamIdentity {
+    max-width: 100%;
   }
 }
-@container (max-width: 40rem) {
-  .header[data-competition] {
-    gap: 0.5rem;
-    padding: 0;
+@container (max-width: 52rem) {
+  .masthead {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.45rem;
+    padding: 0.7rem 0.85rem 0;
   }
-  .header[data-competition] .eventId {
-    display: none;
+  .masthead .header {
+    gap: 0.25rem;
   }
-  .header[data-competition] > :first-child {
-    flex-basis: 100%;
-  }
-  .header[data-competition] .title {
-    font-size: 1.25rem;
-  }
-  .header[data-competition] .countdown {
-    width: 100%;
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-    min-height: 24px;
-    gap: 0.5rem;
-  }
-  .countdown > :global(.mantine-Card-section) {
-    display: none;
-  }
-  .countdown > :global(.mantine-Text-root) {
-    font-size: 0.75rem;
+  .masthead .title {
+    font-size: 1.2rem;
   }
   .teamStrip {
+    display: flex;
+    align-items: center;
     gap: 0.6rem;
-    padding: 0;
   }
   .teamIdentity {
     max-width: 36%;
+    min-height: 44px;
     gap: 0.25rem;
   }
   .teamIdentity > :global(.mantine-Avatar-root) {
     display: none;
   }
   .teamMetrics {
-    justify-content: flex-end;
-    gap: 0.6rem;
+    flex: 1;
+    gap: 0.4rem;
   }
   .teamMetrics > div {
-    flex-direction: column;
-    gap: 0;
-    padding-inline-start: 0.6rem;
+    padding-inline-start: 0.5rem;
   }
   .teamMetrics dt {
     font-size: 0.65rem;
   }
   .teamMetrics dd {
-    font-size: 0.85rem;
+    font-size: 0.9rem;
+  }
+  .countdown > :global(.mantine-Text-root):nth-child(2) {
+    font-size: 0.75rem;
+  }
+  .eventNavigation {
+    margin-inline: -0.4rem;
+  }
+}
+@media (max-width: 40rem) {
+  .competitionStack {
+    gap: 0.5rem;
+    padding-top: 0;
+  }
+  .masthead {
+    row-gap: 0;
+  }
+  .masthead .eventId {
+    display: none;
+  }
+  .masthead .header > :first-child {
+    flex-direction: row-reverse;
+    align-items: start;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .masthead .eventIdentity {
+    flex-shrink: 0;
   }
 }

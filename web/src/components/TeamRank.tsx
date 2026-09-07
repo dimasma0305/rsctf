@@ -97,7 +97,7 @@ export const TeamRank: FC<TeamRankProps> = ({ teamState, compact = false, ...pro
     const hasLive = challenges.some(isLiveChallenge)
     const hasJeopardy = challenges.some((challenge) => !isLiveChallenge(challenge))
     return (
-      <div className={classes.teamStrip} data-team-summary>
+      <div className={classes.teamStrip} data-team-summary data-mixed-score={(hasLive && hasJeopardy) || undefined}>
         <Popover position="bottom-start" width="min(22rem, calc(100vw - 2rem))" trapFocus returnFocus withArrow>
           <Popover.Target>
             <UnstyledButton

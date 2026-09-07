@@ -58,6 +58,21 @@ test('competition sphere rotation preserves radius and has no idle animation loo
   assert.match(globe, /cancelAnimationFrame\(pendingFrame.current\)/)
   assert.match(globe, /type="button"/)
   assert.match(globe, /event.pointerType !== 'mouse'/)
+  assert.match(globe, /data-globe-choice=\{node.id\}/)
+  assert.equal(
+    (globe.match(/onClick=\{node.onSelect\}/g) ?? []).length,
+    2,
+    'globe and navigator use the same action owner'
+  )
+  const css = readFileSync('src/components/competition/Competition.module.css', 'utf8')
+  assert.match(css, /\.globeStage\s*\{[^}]*aspect-ratio: 1;/, 'sphere and node projection share a square stage')
+})
+
+test('competition header groups event, team and navigation without an ended countdown', () => {
+  const tabs = readFileSync('src/components/WithGameTab.tsx', 'utf8')
+  assert.match(tabs, /data-event-workspace-header/)
+  assert.match(tabs, /if \(compact && finished\) return null/)
+  assert.match(tabs, /classes.standardHeading/, 'other game pages retain their normal heading spacing')
 })
 
 test('competition panels reuse owned challenge reads and keep archives and mobile dialogs', () => {

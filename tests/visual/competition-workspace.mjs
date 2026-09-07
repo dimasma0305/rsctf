@@ -84,6 +84,9 @@ try {
   assert.equal(await evaluate(`!!document.querySelector('#primary-navigation-rail') && !document.querySelector('header[data-guide-boundary="top-shell"]')`), true)
   assert.equal(await evaluate(`document.querySelector('[data-competition-workspace]').getBoundingClientRect().left >= document.querySelector('#primary-navigation-rail').getBoundingClientRect().right`), true)
   assert.equal(await evaluate(`getComputedStyle(document.querySelector('[data-competition-workspace]')).gridTemplateColumns.split(' ').length`), 1)
+  assert.ok(await evaluate(`document.querySelector('[data-event-workspace-header]').getBoundingClientRect().height < 190`), 'event information and team stats form one compact masthead')
+  assert.ok(await evaluate(`parseFloat(getComputedStyle(document.querySelector('[data-team-summary] dd')).fontSize) >= 20`), 'desktop team values stay readable beside the event title')
+  assert.equal(await evaluate(`document.querySelectorAll('[data-globe-choice]').length`), 5)
   await inspect('desktop-globe-categories')
   await evaluate(`document.querySelector('[data-team-summary] button').focus()`)
   await press('Enter')
@@ -104,7 +107,7 @@ try {
   await evaluate(`document.querySelector('[aria-label="Rotate globe right"]').click()`)
   await evaluate(`document.querySelector('[aria-label="Reset globe view"]').click()`)
   assert.equal(requests.slice(before).filter((request) => request.path.includes('/challenges/')).length, 0)
-  await evaluate(`document.querySelector('[data-globe-node="category-Pwn"]').focus()`)
+  await evaluate(`document.querySelector('[data-globe-choice="category-Pwn"]').focus()`)
   await press('Enter')
   await waitFor(`document.querySelectorAll('[data-globe-node]').length === 8`)
   await evaluate(`document.querySelector('input[placeholder="Name or ID"]').focus()`)
@@ -172,6 +175,30 @@ try {
   await inspect('light-indonesian-globe')
   await evaluate(`document.querySelector('[data-challenge-globe]').scrollIntoView({ block: 'center', behavior: 'instant' })`)
   await inspect('light-indonesian-globe-content')
+
+  // Reproduce the longer header and extra archive content of the ended, mixed-mode
+  // main event without using live participant data or bypassing authentication.
+  game.title = 'INTECHFEST 2026 Main Event'
+  game.end = now - 60000
+  game.writeupRequired = true
+  rank.name = 'HIB — Stargazers'
+  config.title = 'INTECHFEST'
+  challenges[3].type = 'KingOfTheHill'
+  challenges[4].type = 'AttackDefense'
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `if (location.origin === ${JSON.stringify(new URL(target).origin)}) { localStorage.setItem('language', JSON.stringify('en-US')); localStorage.setItem('mantine-color-scheme-value', 'dark'); localStorage.setItem('challenge-explorer-view', JSON.stringify('globe')); }` })
+  for (const [name, width, height] of [['archived-main-desktop', 1600, 1000], ['archived-main-compact', 320, 568], ['archived-main-mobile', 390, 844]]) {
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false })
+    await cdp.send('Page.navigate', { url: `${target}/games/901/challenges` })
+    await waitFor(`document.querySelector('[data-event-archive]') && document.querySelector('[data-challenge-globe]')`)
+    assert.equal(await evaluate(`!!document.querySelector('[data-event-workspace-header] [role="timer"]')`), false)
+    if (width < 400) {
+      assert.ok(await evaluate(`document.querySelector('[data-team-summary] dl').getBoundingClientRect().top >= document.querySelector('[data-team-summary] button').getBoundingClientRect().bottom - 1`), 'mixed-mode labels have a full-width row on narrow screens')
+    }
+    assert.ok(await evaluate(`document.querySelector('[data-event-workspace-header]').getBoundingClientRect().height < ${width < 400 ? 230 : 190}`), 'full event title and mixed-mode summary must not dominate the page')
+    await inspect(name)
+    await selectView('cards')
+    await inspect(`${name}-cards`)
+  }
   forbidden = true
   await cdp.send('Page.navigate', { url: `${target}/games/902/challenges#999999-hidden` })
   await waitFor(`document.querySelector('[role="alert"]')`)

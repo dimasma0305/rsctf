@@ -3,15 +3,29 @@
   padding: 1rem;
   border: 1px solid var(--app-border);
   border-radius: 0.65rem;
-  background: radial-gradient(ellipse at center, light-dark(#4179b209, #4179b210), transparent 70%);
+  container-type: inline-size;
+  background:
+    radial-gradient(ellipse at 25% 50%, light-dark(#4179b20d, #4179b21c), transparent 65%), var(--app-raised-surface);
+}
+.globeExplorer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(14rem, 0.65fr);
+  gap: 1.5rem;
+  align-items: center;
+  padding-block: 0.75rem;
 }
 .globeStage {
   position: relative;
   width: 100%;
-  max-width: 44rem;
-  height: clamp(20rem, 42vh, 27rem);
+  max-width: 27rem;
+  aspect-ratio: 1;
   margin: auto;
   cursor: grab;
+  background:
+    linear-gradient(light-dark(#4169900b, #76b9ff07) 1px, transparent 1px),
+    linear-gradient(90deg, light-dark(#4169900b, #76b9ff07) 1px, transparent 1px);
+  background-size: 2rem 2rem;
+  border-radius: 50%;
 }
 .globeStage:active {
   cursor: grabbing;
@@ -36,6 +50,7 @@
   align-items: center;
   gap: 0.5rem;
   max-width: 44%;
+  width: max-content;
   min-height: 44px;
   padding: 0.35rem;
   border: 1px solid transparent;
@@ -46,6 +61,7 @@
   text-align: start;
 }
 .node:focus-visible,
+.globeChoice:focus-visible,
 .listName:focus-visible {
   outline: 3px solid var(--mantine-primary-color-filled);
   outline-offset: 3px;
@@ -89,6 +105,61 @@
 .node[data-solved] .nodeDot {
   color: light-dark(#166744, #75dcaa);
   border-color: #3eac7d;
+}
+.globeNavigator {
+  min-width: 0;
+}
+.navigatorTitle {
+  margin-bottom: 0.75rem;
+}
+.globeChoices {
+  display: grid;
+  gap: 0.4rem;
+}
+.globeChoice {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--app-border);
+  border-radius: 0.45rem;
+  background: var(--mantine-color-body);
+  color: var(--mantine-color-text);
+  text-align: start;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.globeChoice:hover,
+.node:hover .nodeLabel {
+  border-color: var(--mantine-primary-color-filled);
+  background: var(--app-hover-surface);
+}
+.globeChoice[data-selected] {
+  border-color: #bb832c;
+  box-shadow: inset 3px 0 #d99a33;
+}
+.choiceIndex {
+  flex: 0 0 1.4rem;
+  display: flex;
+  color: var(--app-text-secondary);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 0.75rem;
+}
+.choiceLabel {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+.choiceCount {
+  color: var(--app-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.globeChoice > svg {
+  flex-shrink: 0;
 }
 .globeControls {
   margin-top: 0.25rem;
@@ -135,6 +206,9 @@
 .table tr[data-selected] {
   background: var(--app-hover-surface);
   box-shadow: inset 3px 0 #d99a33;
+}
+.table tbody tr:hover {
+  background: var(--app-hover-surface);
 }
 .listName {
   display: block;
@@ -191,9 +265,6 @@
   border: 0;
 }
 @media (max-width: 36em) {
-  .globeStage {
-    min-height: 22rem;
-  }
   .node {
     gap: 0.15rem;
     flex-direction: column;
@@ -207,6 +278,23 @@
     flex-basis: 1.6rem;
     width: 1.6rem;
     height: 1.6rem;
+  }
+}
+@container (max-width: 48rem) {
+  .globeExplorer {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.5rem;
+  }
+  .globeStage {
+    max-width: 24rem;
+  }
+  .globeChoices {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container (max-width: 28rem) {
+  .globeChoices {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 @container (max-width: 40rem) {

@@ -29,11 +29,16 @@ const GameCountdown: FC<{ game?: DetailedGameInfoModel; compact?: boolean }> = (
 
   const countdown = dayjs.duration(endTime.diff(now))
 
+  // An ended event already has a status badge. Do not leave a "time remaining"
+  // instrument showing a redundant end message in the competition header.
+  if (compact && finished) return null
+
   return (
     <Card
       miw="9rem"
       ta="center"
-      pt={4}
+      p={compact ? 0 : undefined}
+      pt={compact ? 0 : 4}
       role="timer"
       aria-live="off"
       aria-label={t('game.content.time_remaining', 'Game time remaining')}
@@ -205,35 +210,42 @@ export const WithGameTab: FC<React.PropsWithChildren<{ summary?: React.ReactNode
       style={{ containerType: 'inline-size' }}
     >
       <LoadingOverlay visible={!game} overlayProps={DEFAULT_LOADING_OVERLAY} />
-      {game && (
-        <header className={classes.header} data-competition={summary ? true : undefined}>
-          <Stack gap={4} miw={0}>
-            <Text size="xs" c="dimmed" className={classes.eventId}>
-              {t('common.workspace.event_id', 'Event #{{id}}', { id: numId })}
-            </Text>
-            <Group gap="sm" align="center">
+      <div
+        className={summary ? classes.masthead : classes.standardHeading}
+        data-event-workspace-header={summary ? true : undefined}
+      >
+        {game && (
+          <header className={classes.header} data-competition={summary ? true : undefined}>
+            <Stack gap={4} miw={0}>
+              <Group gap="xs" className={classes.eventIdentity}>
+                <Text size="xs" c="dimmed" className={classes.eventId}>
+                  {t('common.workspace.event_id', 'Event #{{id}}', { id: numId })}
+                </Text>
+                <Badge variant="light" color={finished ? 'gray' : started ? 'green' : 'blue'}>
+                  {finished
+                    ? t('game.arena.ended', 'Ended')
+                    : started
+                      ? t('game.arena.live', 'Live')
+                      : t('game.arena.upcoming', 'Upcoming')}
+                </Badge>
+              </Group>
               <Title className={classes.title}>{game.title}</Title>
-              <Badge variant="light" color={finished ? 'gray' : started ? 'green' : 'blue'}>
-                {finished
-                  ? t('game.arena.ended', 'Ended')
-                  : started
-                    ? t('game.arena.live', 'Live')
-                    : t('game.arena.upcoming', 'Upcoming')}
-              </Badge>
-            </Group>
-          </Stack>
-          <GameCountdown game={game} compact={!!summary} />
-        </header>
-      )}
-      {summary}
-      <IconTabs
-        mode="navigation"
-        appearance={summary ? 'underline' : 'surface'}
-        position="flex-start"
-        ariaLabel={t('game.tab.navigation', 'Game sections')}
-        active={activeTab}
-        tabs={tabs}
-      />
+            </Stack>
+            <GameCountdown game={game} compact={!!summary} />
+          </header>
+        )}
+        {summary && <div className={classes.summary}>{summary}</div>}
+        <div className={summary ? classes.eventNavigation : undefined}>
+          <IconTabs
+            mode="navigation"
+            appearance={summary ? 'underline' : 'surface'}
+            position="flex-start"
+            ariaLabel={t('game.tab.navigation', 'Game sections')}
+            active={activeTab}
+            tabs={tabs}
+          />
+        </div>
+      </div>
       {children}
     </Stack>
   )

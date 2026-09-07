@@ -19,6 +19,7 @@ import { epochProgress } from '@Utils/epochProgress'
 import { isReadOnlyGameArchive } from '@Utils/gameArchive'
 import { useAdState, useGameStatus, useGameTeamInfo } from '@Hooks/useGame'
 import { ChallengeType, Role } from '@Api'
+import classes from '@Styles/GameWorkspace.module.css'
 
 const Challenges: FC = () => {
   const { id } = useParams()
@@ -72,18 +73,22 @@ const Challenges: FC = () => {
       <WithRole requiredRole={Role.User}>
         <WithGameTab summary={<TeamRank teamState={teamState} compact />}>
           {archived && (
-            <Alert
-              mb="md"
-              color="blue"
-              variant="light"
-              icon={<Icon path={mdiArchiveOutline} size={1} />}
-              title={t('game.content.archive.title', 'Event archive')}
+            <aside
+              className={classes.archiveNotice}
+              aria-label={t('game.content.archive.title', 'Event archive')}
+              data-event-archive
             >
-              {t(
-                'game.content.archive.description',
-                'Challenges and final results remain available for review. Submissions and challenge workloads are closed.'
-              )}
-            </Alert>
+              <Icon path={mdiArchiveOutline} size={0.85} aria-hidden="true" />
+              <Text size="sm" c="dimmed">
+                <Text span inherit fw={600}>
+                  {t('game.content.archive.title', 'Event archive')}.{' '}
+                </Text>
+                {t(
+                  'game.content.archive.description',
+                  'Challenges and final results remain available for review. Submissions and challenge workloads are closed.'
+                )}
+              </Text>
+            </aside>
           )}
           <Flex direction="column" gap="sm" w="100%">
             {!archived && hasAdEngine && (

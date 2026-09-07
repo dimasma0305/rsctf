@@ -507,10 +507,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
                               : 'var(--mantine-color-violet-6)'
                         }
                       />
-                      <Title
-                        order={2}
-                        c={section.kind === 'jeopardy' ? 'blue' : section.kind === 'ad' ? 'red' : 'violet'}
-                      >
+                      <Title order={2} size="h4">
                         {section.kind === 'jeopardy'
                           ? t('game.content.section.jeopardy', 'Jeopardy challenges')
                           : section.kind === 'ad'

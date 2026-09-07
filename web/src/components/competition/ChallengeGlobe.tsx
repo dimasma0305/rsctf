@@ -127,73 +127,115 @@ export const ChallengeGlobe = memo(
             {t('game.arena.globe_hint', 'Choose a node to explore')}
           </Text>
         </Group>
-        <div
-          className={classes.globeStage}
-          onPointerDown={(event) => {
-            if ((event.target as HTMLElement).closest('button')) return
-            if (event.pointerType !== 'mouse') return // Preserve normal touch scrolling; use the rotation buttons.
-            drag.current = { id: event.pointerId, x: event.clientX, yaw }
-            event.currentTarget.setPointerCapture(event.pointerId)
-          }}
-          onPointerMove={(event) => {
-            if (!drag.current || event.pointerId !== drag.current.id || pendingFrame.current !== null) return
-            const next = drag.current.yaw + (event.clientX - drag.current.x) / 180
-            pendingFrame.current = requestAnimationFrame(() => {
-              setYaw(next)
-              pendingFrame.current = null
-            })
-          }}
-          onPointerUp={() => {
-            drag.current = null
-          }}
-          onPointerCancel={() => {
-            drag.current = null
-          }}
-          onLostPointerCapture={() => {
-            drag.current = null
-          }}
-        >
-          <GlobeSurface yaw={yaw} />
-          <div className={classes.nodes}>
-            {pageData.items.map((node, index) => {
-              const x = index % 2 === 0 ? -0.56 : 0.56
-              const y = -0.64 + Math.floor(index / 2) * 0.42
-              const point = projectSpherePoint(x, y, Math.sqrt(Math.max(0, 1 - x * x - y * y)), yaw, 0)
-              return (
+        <div className={classes.globeExplorer}>
+          <div
+            className={classes.globeStage}
+            onPointerDown={(event) => {
+              if ((event.target as HTMLElement).closest('button')) return
+              if (event.pointerType !== 'mouse') return // Preserve normal touch scrolling; use the rotation buttons.
+              drag.current = { id: event.pointerId, x: event.clientX, yaw }
+              event.currentTarget.setPointerCapture(event.pointerId)
+            }}
+            onPointerMove={(event) => {
+              if (!drag.current || event.pointerId !== drag.current.id || pendingFrame.current !== null) return
+              const next = drag.current.yaw + (event.clientX - drag.current.x) / 180
+              pendingFrame.current = requestAnimationFrame(() => {
+                setYaw(next)
+                pendingFrame.current = null
+              })
+            }}
+            onPointerUp={() => {
+              drag.current = null
+            }}
+            onPointerCancel={() => {
+              drag.current = null
+            }}
+            onLostPointerCapture={() => {
+              drag.current = null
+            }}
+          >
+            <GlobeSurface yaw={yaw} />
+            <div className={classes.nodes}>
+              {pageData.items.map((node, index) => {
+                const x = index % 2 === 0 ? -0.56 : 0.56
+                const y = -0.64 + Math.floor(index / 2) * 0.42
+                const point = projectSpherePoint(x, y, Math.sqrt(Math.max(0, 1 - x * x - y * y)), yaw, 0)
+                return (
+                  <button
+                    key={node.id}
+                    type="button"
+                    className={classes.node}
+                    data-selected={node.selected || undefined}
+                    data-solved={node.solved || undefined}
+                    data-globe-node={node.id}
+                    aria-pressed={node.selected ?? false}
+                    hidden={point.z < 0}
+                    onClick={node.onSelect}
+                    style={
+                      {
+                        '--node-x': `${50 + point.x * 43}%`,
+                        '--node-y': `${50 + point.y * 43}%`,
+                      } as React.CSSProperties
+                    }
+                  >
+                    <span className={classes.nodeDot} aria-hidden="true">
+                      <Icon
+                        path={node.count !== undefined ? mdiViewGridOutline : node.solved ? mdiCheck : mdiCircleOutline}
+                        size={0.8}
+                      />
+                    </span>
+                    <span className={classes.nodeLabel}>
+                      {node.label}
+                      {node.count !== undefined && <span> · {node.count}</span>}
+                    </span>
+                    {node.solved && <span className={classes.srOnly}>{t('common.workspace.solved', 'Solved')}</span>}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <nav className={classes.globeNavigator} aria-label={t('game.arena.globe_navigation', 'Globe navigation')}>
+            <Text size="xs" c="dimmed" className={classes.navigatorTitle}>
+              {t('game.arena.explore_help', 'Select a category or challenge to explore.')}
+            </Text>
+            <div className={classes.globeChoices}>
+              {pageData.items.map((node, index) => (
                 <button
                   key={node.id}
                   type="button"
-                  className={classes.node}
+                  className={classes.globeChoice}
+                  data-globe-choice={node.id}
                   data-selected={node.selected || undefined}
-                  data-solved={node.solved || undefined}
-                  data-globe-node={node.id}
                   aria-pressed={node.selected ?? false}
-                  hidden={point.z < 0}
                   onClick={node.onSelect}
-                  style={
-                    { '--node-x': `${50 + point.x * 36}%`, '--node-y': `${50 + point.y * 43}%` } as React.CSSProperties
-                  }
                 >
-                  <span className={classes.nodeDot} aria-hidden="true">
-                    <Icon
-                      path={node.count !== undefined ? mdiViewGridOutline : node.solved ? mdiCheck : mdiCircleOutline}
-                      size={0.8}
-                    />
+                  <span className={classes.choiceIndex} aria-hidden="true">
+                    {node.solved ? (
+                      <Icon path={mdiCheck} size={0.8} />
+                    ) : (
+                      String((pageData.current - 1) * 8 + index + 1).padStart(2, '0')
+                    )}
                   </span>
-                  <span className={classes.nodeLabel}>
-                    {node.label}
-                    {node.count !== undefined && <span> · {node.count}</span>}
-                  </span>
+                  <span className={classes.choiceLabel}>{node.label}</span>
                   {node.solved && <span className={classes.srOnly}>{t('common.workspace.solved', 'Solved')}</span>}
+                  {node.count !== undefined && <span className={classes.choiceCount}>{node.count}</span>}
+                  <Icon path={mdiArrowRight} size={0.75} aria-hidden="true" />
                 </button>
-              )
-            })}
-          </div>
+              ))}
+            </div>
+          </nav>
         </div>
         <Group justify="space-between" gap="xs" className={classes.globeControls}>
-          <Text size="xs" c="dimmed">
-            {t('game.arena.explore_help', 'Select a category or challenge to explore.')}
-          </Text>
+          <Group gap="sm" className={classes.legend}>
+            <span>
+              <Icon path={mdiCircleOutline} size={0.65} />
+              {t('game.arena.available', 'Available')}
+            </span>
+            <span>
+              <Icon path={mdiCheck} size={0.65} />
+              {t('common.workspace.solved', 'Solved')}
+            </span>
+          </Group>
           <Group gap={4}>
             <ActionIcon
               size="lg"
@@ -222,16 +264,6 @@ export const ChallengeGlobe = memo(
           </Group>
         </Group>
         <Group justify="space-between" gap="xs" mt="xs">
-          <Group gap="sm" className={classes.legend}>
-            <span>
-              <Icon path={mdiCircleOutline} size={0.65} />
-              {t('game.arena.available', 'Available')}
-            </span>
-            <span>
-              <Icon path={mdiCheck} size={0.65} />
-              {t('common.workspace.solved', 'Solved')}
-            </span>
-          </Group>
           {pageData.pages > 1 && (
             <Pagination
               autoContrast
