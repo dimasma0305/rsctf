@@ -1,0 +1,73 @@
+{
+  "hub": {
+    "eyebrow": "PANDUAN PEMAIN", "title": "Temukan langkah berikutnya.",
+    "description": "Pilih topik atau ikuti tur langsung di aplikasi.",
+    "tour_title": "Belajar sambil mencoba", "tour_body": "Tur singkat platform. Setiap tindakan tetap Anda yang menentukan.",
+    "start": "Mulai tur", "resume": "Lanjutkan tur", "replay": "Ulangi tur",
+    "progress": "Tur · langkah {{current}} dari {{total}}", "complete": "Tur selesai",
+    "settings": "Preferensi panduan", "tips": "Tampilkan tips kontekstual",
+    "tips_help": "Bantuan satu kali untuk lampiran, instance, dan VPN event. Panduan ini tetap tersedia saat tips dimatikan.",
+    "reset": "Mulai tur dari awal", "search": "Cari bantuan", "placeholder": "Coba VPN, tim, flag…", "topics": "Topik panduan",
+    "results": "{{count}} topik ditemukan", "empty": "Tidak ada topik yang cocok. Coba “VPN”, “tim”, atau “skor”.", "clear": "Hapus pencarian",
+    "chapter": "TOPIK {{current}} / {{total}}", "steps": "Langkah-langkah", "details": "Perlu diketahui",
+    "previous": "Topik sebelumnya", "next": "Topik berikutnya", "practice": "Tunjukkan di aplikasi",
+    "policy": "Aturan event menentukan kelayakan, koneksi, dan penilaian. Panduan tidak mendaftarkan tim, memulai layanan, atau mengirim flag untuk Anda.",
+    "account": "Buka akun", "login": "Masuk", "games": "Jelajahi event", "teams": "Buka tim", "challenges": "Tantangan saya",
+    "registration_closed": "Pendaftaran ditutup. Gunakan akun yang sudah ada atau minta akses kepada panitia.",
+    "registration_oauth": "Masuk dengan {{providers}}. Gunakan metode masuk yang sama berikutnya.",
+    "registration_password": "Gunakan email dan kata sandi, atau penyedia login yang tersedia.",
+    "provider_fallback": "penyedia login yang dikonfigurasi", "confirm_email": "Konfirmasikan email jika diminta platform sebelum bergabung ke event.",
+    "assigned_team": "Pembuatan tim dinonaktifkan di sini. Gunakan tim yang ditetapkan atau minta undangan kepada panitia.",
+    "create_team": "Buat tim atau bergabung dengan kode undangannya. Bergabung ke tim dan mendaftar event adalah dua langkah berbeda.",
+    "proxy_default": "Default platform: Platform Proxy. Ikuti panel instance jika event menggunakan mode koneksi lain.",
+    "direct_default": "Default platform: host dan port langsung. Ikuti panel instance jika event mewajibkan VPN."
+  },
+  "topics": {
+    "account-access": {
+      "title": "Akun & tim Anda", "summary": "Siapkan akun dan rekan satu tim sebelum mengikuti event.",
+      "steps": ["Masuk dengan akun dari panitia, atau daftar jika pendaftaran tersedia.", "Buka Tim dan pastikan anggotanya sudah benar.", "Jaga kerahasiaan kata sandi, profil VPN pribadi, dan token API."],
+      "details": [{"title": "Sudah mendapat tim?", "body": "Gunakan tim tersebut, jangan membuat duplikat. Jika tim tidak terlihat, hubungi panitia dengan menyertakan nama pengguna. Jangan kirim kata sandi atau token."}]
+    },
+    "find-event": {
+      "title": "Temukan event", "summary": "Pilih kompetisi yang tepat dan baca pengarahannya sebelum bergabung.",
+      "steps": ["Buka Games dan cari nama atau ID event.", "Periksa waktu mulai/selesai, zona waktu, format, dan aturan peserta.", "Baca pengumuman untuk pembaruan, unduhan klien, dan petunjuk panitia."],
+      "details": [{"title": "Event tidak terlihat?", "body": "Event tersembunyi atau terbatas mungkin tidak muncul di katalog. Gunakan tautan panitia dan akun yang benar; tautan langsung tidak melewati aturan akses."}]
+    },
+    "join-event": {
+      "title": "Bergabung bersama tim", "summary": "Menjadi anggota tim belum berarti terdaftar pada event. Pastikan keduanya.",
+      "steps": ["Buka halaman pengarahan event dan pilih Gabung.", "Baca konfirmasi, pilih tim, dan isi divisi atau kode undangan jika diwajibkan.", "Periksa status peserta. Pending perlu persetujuan panitia; tim yang diterima bisa masuk saat akses dibuka."],
+      "details": [{"title": "Terlambat bergabung atau mengganti anggota?", "body": "Ikuti aturan roster dan penguncian tim event. Jika ditolak, kirim pesan kesalahan lengkap dan ID event kepada panitia; jangan membuat akun lain untuk melewati pembatasan."}]
+    },
+    "play-challenge": {
+      "title": "Jelajahi ruang tantangan", "summary": "Gunakan globe untuk menjelajah, atau daftar untuk menelusuri event besar dengan cepat.",
+      "steps": ["Cari nama atau ID tantangan. Gunakan filter kategori dan format untuk mempersempit hasil.", "Pada globe, pilih kategori lalu target. Memilih namanya memusatkan globe sekaligus membuka kartu tantangan.", "Seret ke segala arah untuk memutar globe. Pengguna keyboard dapat memakai tombol panah dan Home. Daftar dan Kartu membuka detail tantangan yang sama.", "Baca deskripsi, petunjuk, lampiran, dan instruksi koneksi sebelum mulai. Pada layar kecil, detail dibuka dalam dialog."],
+      "details": [{"title": "Lampiran dan klien game", "body": "Gunakan tombol unduh dalam kartu tantangan. Periksa nama, ukuran, dan SHA-256 jika tersedia. Jika panitia mengumumkan klien baru, unduh versi itu sebelum terhubung kembali."}, {"title": "Instance masih dibangun", "body": "Start pertama bisa membangun atau menarik image. Tunggu kesiapan, jangan menekan start berulang kali. Jika gagal, simpan pesan kesalahan dan ID tantangan untuk panitia."}]
+    },
+    "connections": {
+      "title": "Koneksi: langsung, VPN, proxy", "summary": "Gunakan mode koneksi yang ditampilkan tantangan. Tantangan lampiran saja mungkin tidak memerlukan layanan aktif.",
+      "steps": ["Untuk container pribadi, mulai instance dan tunggu sampai siap. Hill bersama dan layanan BYOC mengikuti petunjuk tantangannya sendiri.", "Salin endpoint terbaru dari platform; jangan gunakan alamat lama atau hard-coded.", "Gunakan protokol dalam deskripsi. Biarkan VPN atau klien proxy yang diperlukan tetap terhubung saat bermain."],
+      "details": [{"title": "Host dan port langsung", "body": "Gunakan alamat yang ditampilkan dengan klien tantangan, browser, atau alat TCP. Mode langsung tidak memerlukan tunnel WSRX lokal."}, {"title": "VPN event", "body": "Unduh profil WireGuard event Anda, impor, lalu aktifkan tunnel. Setiap pemain harus memakai profilnya sendiri. Layanan privat bisa memerlukan VPN meskipun situs dapat dibuka tanpanya."}, {"title": "Platform Proxy / WSRX", "body": "Untuk klien TCP biasa, jalankan WebSocketReflectorX, pilih Local WSRX, dan tunggu Tunnel ready. Gunakan endpoint 127.0.0.1 yang ditampilkan. URL wss:// hanya untuk klien WebSocket; jangan masukkan ke netcat."}, {"title": "Lampiran statis", "body": "Tidak ada layanan yang perlu dimulai untuk tantangan lampiran saja. Unduh file dan kerjakan secara lokal. Event tetap bisa mewajibkan VPN untuk mengakses halaman atau unduhan."}]
+    },
+    "submit-flag": {
+      "title": "Kirim flag & writeup", "summary": "Periksa verdict, bukan hanya klik tombolnya.",
+      "steps": ["Tempel hanya flag yang tepat ke kolom Flag—tanpa tanda kutip, spasi tambahan, atau keluaran terminal.", "Pilih Kirim sekali dan tunggu Accepted atau Wrong answer. Timeout atau kesalahan koneksi bukan verdict.", "Periksa status tantangan dan papan skor. Waktu kompetisi, mode latihan, dan aturan event menentukan apakah pengiriman mendapat nilai.", "Jika writeup diwajibkan, gunakan aksi writeup event sebelum tenggat dan tunggu konfirmasi tersimpan."],
+      "details": [{"title": "Penilaian A&D dan KoTH berbeda", "body": "Jangan menganggap pengiriman flag biasa memberi poin di semua mode. A&D memakai alur pengiriman event; tantangan KoTH dapat melaporkan objektif atau hasil pertandingan secara otomatis. Baca petunjuk tantangan."}, {"title": "Unggahan gagal?", "body": "Simpan salinan lokal. Periksa batas file dan tenggat, lalu coba lagi setelah koneksi pulih. Hanya konfirmasi berhasil yang memastikan writeup tersimpan."}]
+    },
+    "scoring": {
+      "title": "Baca skor & status layanan", "summary": "Kesehatan layanan, objektif yang selesai, dan poin adalah sinyal yang berbeda.",
+      "steps": ["Pilih tab papan skor Jeopardy, A&D, atau KoTH yang sesuai.", "Periksa timer event dan pesan finalisasi ronde atau status penilaian.", "Jika hasil tampak salah, sertakan tim, ID tantangan, perkiraan waktu, dan status yang terlihat saat melapor."],
+      "details": [{"title": "Jeopardy", "body": "Solve kompetitif yang diterima dapat memberi poin sesuai aturan event. Nilainya bisa berubah mengikuti jumlah solve. Pengiriman latihan atau di luar waktu bukan solve kompetitif."}, {"title": "Attack & Defense / BYOC", "body": "Ikuti petunjuk setup BYOC dan periksa status layanan/checker. Health check OK berarti layanan dapat dijangkau dan berperilaku sesuai harapan; itu sendiri belum membuktikan tim memperoleh poin serangan."}, {"title": "King of the Hill", "body": "Baca objektif dan mode penilaiannya. Hill berbasis crown dan pertandingan/leaderboard dapat memberi skor dengan cara berbeda. Terhubung, status OK, atau selesai bermain tidak menjamin skor tertentu; periksa hasil final dan papan skor."}, {"title": "Reset atau kesiapan", "body": "Hill mungkin sedang menyiapkan siklus yang bisa dimainkan. Ikuti pesan kesiapan, jangan berulang kali terhubung atau meminta reset. Laporkan status yang terus macet kepada panitia."}]
+    },
+    "troubleshooting": {
+      "title": "Atasi kendala", "summary": "Mulai dari pesan yang terlihat. Jangan sertakan kredensial dalam screenshot atau permintaan bantuan.",
+      "steps": ["Baca pengumuman terbaru dan pastikan akun, event, serta tantangannya benar.", "Periksa bagian yang sesuai di bawah sebelum mencoba lagi.", "Jika masih bermasalah, kirim pesan lengkap, ID event/tantangan, waktu, dan screenshot yang sudah disensor kepada panitia."],
+      "details": [{"title": "401 / sesi kedaluwarsa", "body": "Masuk lagi dengan akun yang sama. Untuk skrip, pastikan token masih aktif, milik event ini, dan memakai header otorisasi yang diperlukan. Jangan unggah token ke publik."}, {"title": "403 / akses atau VPN diperlukan", "body": "Periksa keanggotaan event, persetujuan peserta, dan jadwal. Jika halaman meminta VPN, aktifkan profil event pribadi lalu coba lagi. VPN tidak memberi keanggotaan pada event yang belum Anda ikuti."}, {"title": "Koneksi gagal atau tidak stabil", "body": "Salin endpoint terbaru, periksa kesehatan tantangan dan tunnel yang diperlukan. Gunakan profil VPN sendiri dan hindari memakai profil sama di banyak perangkat. Jangan berulang kali merestart layanan bersama."}, {"title": "Tidak ada skor setelah bermain", "body": "Periksa objektif, hasil pertandingan, siklus penilaian, dan waktu selesai event. Laporkan hasil yang belum muncul setelah finalisasi; jangan kirim token pribadi sebagai bukti."}]
+    }
+  },
+  "tour": {
+    "skip": "Lewati langkah",
+    "welcome": {"title": "Ruang kompetisi Anda", "body": "Ikuti kontrol yang disorot. Anda bisa menjeda kapan saja dan melanjutkan dari Panduan.", "note": "Tidak ada pengiriman atau layanan yang dimulai untuk Anda."},
+    "challenges": {"body": "Pilih kategori lalu tantangan di globe—atau buka baris/kartu. Baca materinya sebelum mulai.", "note": "Globe, Daftar, dan Kartu membuka detail yang sama."},
+    "submit": {"body": "Tempel flag yang tepat ke kolom yang disorot dan tunggu verdict.", "note": "Poin mengikuti waktu dan aturan event. Jaga kerahasiaan token dan profil VPN."}
+  }
+}

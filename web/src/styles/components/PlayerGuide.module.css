@@ -6,9 +6,11 @@
   height: auto;
   max-height: min(20rem, calc(100dvh - 1rem));
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--mantine-primary-color-filled) 28%, var(--mantine-color-dark-4));
-  border-radius: var(--mantine-radius-lg);
-  box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 45%);
+  border: 1px solid var(--app-border);
+  border-top: 2px solid var(--mantine-primary-color-filled);
+  border-radius: 0.7rem;
+  background: var(--app-raised-surface);
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 28%);
 }
 
 .tutorialShade {
@@ -32,7 +34,7 @@
   box-shadow:
     0 0 0 3px color-mix(in srgb, var(--mantine-primary-color-filled) 30%, transparent),
     0 0 2rem color-mix(in srgb, var(--mantine-primary-color-filled) 55%, transparent);
-  animation: tutorial-spotlight 1.8s ease-in-out infinite;
+  animation: tutorial-spotlight 0.8s ease-out 1;
 }
 
 .tutorialCursor {
@@ -44,7 +46,7 @@
   color: white;
   pointer-events: none;
   filter: drop-shadow(0 2px 1px rgb(0 0 0 / 95%)) drop-shadow(0 0 8px var(--mantine-primary-color-filled));
-  animation: tutorial-cursor 1.8s cubic-bezier(0.22, 0.8, 0.25, 1) infinite;
+  animation: tutorial-cursor 0.8s cubic-bezier(0.22, 0.8, 0.25, 1) 1;
 }
 
 @keyframes tutorial-spotlight {
@@ -94,6 +96,7 @@
   min-height: 2.75rem;
   padding: 0.35rem 0.55rem 0.45rem 0.75rem;
   border-bottom: 1px solid var(--mantine-color-default-border);
+  background: var(--app-hover-surface);
 }
 
 .modalHeading {

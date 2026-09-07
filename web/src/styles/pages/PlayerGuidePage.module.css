@@ -1,207 +1,251 @@
 .page {
-  padding-block: clamp(1rem, 2vw, 2rem) 3rem;
+  padding-block: 1.5rem 2rem;
 }
-
-.guideControl {
-  padding: clamp(1rem, 2vw, 1.4rem);
-  background:
-    linear-gradient(125deg, color-mix(in srgb, var(--mantine-primary-color-filled) 10%, transparent), transparent 55%),
-    var(--mantine-color-body);
-}
-
-.contents {
+.tourCard {
   display: flex;
-  gap: 0.55rem;
-  flex-wrap: wrap;
-}
-
-.contentsLink {
-  display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
-  min-height: 2.4rem;
-  padding: 0.35rem 0.75rem;
-  color: var(--mantine-color-text);
-  text-decoration: none;
-  border: 1px solid var(--mantine-color-default-border);
-  border-radius: 999px;
+  gap: 1.25rem;
+  padding: 1.4rem;
+  border: 1px solid var(--app-border);
+  border-radius: 0.8rem;
+  background:
+    linear-gradient(110deg, color-mix(in srgb, var(--mantine-primary-color-filled) 12%, transparent), transparent 65%),
+    var(--app-raised-surface);
+}
+.tourIcon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 3rem;
+  width: 3rem;
+  height: 3rem;
+  border: 1px solid var(--app-border);
+  border-radius: 0.8rem;
+  color: var(--mantine-primary-color-light-color);
   background: var(--mantine-color-body);
 }
-
-.contentsLink > svg {
-  flex: 0 0 auto;
-  color: var(--mantine-primary-color-filled);
+.tourCopy {
+  flex: 1;
+  min-width: 0;
 }
-
-.contentsLink:hover,
-.contentsLink:focus-visible {
+.tourCopy h2 {
+  margin-bottom: 0.25rem;
+}
+.progress {
+  display: grid;
+  gap: 0.5rem;
+  max-width: 22rem;
+  margin-top: 0.65rem;
+}
+.workspace {
+  display: grid;
+  grid-template-columns: 16rem minmax(0, 1fr);
+  align-items: start;
+  gap: 1.75rem;
+  margin-top: 1.75rem;
+}
+.sidebar {
+  display: grid;
+  gap: 0.8rem;
+  min-width: 0;
+  position: sticky;
+  top: 1rem;
+}
+.contents {
+  display: grid;
+  gap: 0.25rem;
+}
+.topicLink {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 44px;
+  padding: 0.7rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: 0.45rem;
+  color: var(--app-text-secondary);
+  text-decoration: none;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+.topicLink span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.topicLink svg {
+  flex-shrink: 0;
+}
+.topicLink:hover {
+  color: var(--mantine-color-text);
+  background: var(--app-hover-surface);
+}
+.topicLink[aria-current] {
+  color: var(--mantine-primary-color-light-color);
+  background: var(--mantine-primary-color-light);
   border-color: var(--mantine-primary-color-filled);
 }
-
-.section {
+.topicLink:focus-visible,
+.topicFooter a:focus-visible,
+.topicHeader h2:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 3px;
+}
+.preferences {
+  border-top: 1px solid var(--app-border);
+  font-size: 0.8rem;
+}
+.article {
+  min-width: 0;
+  border: 1px solid var(--app-border);
+  border-radius: 0.8rem;
+  background: var(--app-raised-surface);
+  overflow-wrap: anywhere;
+}
+.topicHeader {
+  padding: clamp(1rem, 3vw, 2rem);
+  border-bottom: 1px solid var(--app-border);
+  background: linear-gradient(
+    140deg,
+    color-mix(in srgb, var(--mantine-primary-color-filled) 6%, transparent),
+    transparent 70%
+  );
+  border-radius: 0.8rem 0.8rem 0 0;
+}
+.kicker {
+  font-family: var(--mantine-font-family-monospace);
+  color: var(--app-text-secondary);
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  margin-bottom: 0.75rem;
+}
+.topicHeader h2 {
+  font-size: clamp(1.2rem, 2.5vw, 1.7rem);
+  margin-bottom: 0.65rem;
+  line-height: 1.25;
+  scroll-margin-block: 6rem;
+}
+.topicBody {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(19rem, 0.9fr);
-  gap: clamp(1.5rem, 5vw, 4rem);
-  align-items: center;
-  padding-block: clamp(1.5rem, 4vw, 3.5rem);
-  scroll-margin-top: 6rem;
-  border-top: 1px solid var(--mantine-color-default-border);
+  gap: 1.5rem;
+  padding: clamp(1rem, 3vw, 2rem);
 }
-
-.section:nth-of-type(even) .sectionCopy {
-  order: 2;
-}
-
-.section:nth-of-type(even) .screenshot {
-  order: 1;
-}
-
-.sectionFull {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.sectionCopy {
-  display: flex;
-  flex-direction: column;
+.steps {
+  list-style: none;
+  display: grid;
   gap: 1rem;
-  min-width: 0;
-}
-
-.summary {
-  line-height: 1.6;
-}
-
-.list {
-  line-height: 1.55;
-}
-
-.screenshot {
-  min-width: 0;
-  margin: 0;
-  overflow: hidden;
-  border: 1px solid var(--mantine-color-default-border);
-  border-radius: var(--mantine-radius-lg);
-  background: var(--mantine-color-dark-9);
-  box-shadow: 0 1.2rem 3.5rem rgb(0 0 0 / 22%);
-}
-
-.screenshot img {
-  display: block;
-  width: 100%;
-  height: auto;
-  aspect-ratio: 16 / 10;
-  object-fit: cover;
-  object-position: top;
-}
-
-.browserBar {
-  display: flex;
-  gap: 0.35rem;
-  align-items: center;
-  height: 2rem;
-  padding-inline: 0.75rem;
-  border-bottom: 1px solid rgb(255 255 255 / 8%);
-  background: var(--mantine-color-dark-7);
-}
-
-.browserBar span {
-  width: 0.55rem;
-  height: 0.55rem;
-  border-radius: 50%;
-  background: var(--mantine-color-dark-3);
-}
-
-.browserBar span:first-child {
-  background: var(--mantine-color-red-6);
-}
-
-.browserBar span:nth-child(2) {
-  background: var(--mantine-color-yellow-6);
-}
-
-.browserBar span:nth-child(3) {
-  background: var(--mantine-color-green-6);
-}
-
-.instructionGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: clamp(1rem, 2vw, 1.5rem);
   padding: 0;
   margin: 0;
-  list-style: none;
 }
-
-.instructionStep {
-  min-width: 0;
+.steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
 }
-
-.instructionFigure {
-  height: 100%;
-  margin: 0;
-  overflow: hidden;
-  border: 1px solid var(--mantine-color-default-border);
-  border-radius: var(--mantine-radius-lg);
-  background: var(--mantine-color-body);
-  box-shadow: 0 0.8rem 2.4rem rgb(0 0 0 / 16%);
-}
-
-.instructionFigure img {
-  display: block;
-  width: 100%;
-  height: auto;
-  aspect-ratio: 16 / 10;
-  object-fit: cover;
-  object-position: top;
-  border-bottom: 1px solid var(--mantine-color-default-border);
-}
-
-.instructionCaption {
+.steps li > span {
+  flex: 0 0 1.6rem;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 0.75rem;
-  align-items: start;
-  padding: 1rem;
+  place-items: center;
+  height: 1.6rem;
+  border: 1px solid var(--app-border);
+  border-radius: 0.4rem;
+  color: var(--mantine-primary-color-light-color);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 0.75rem;
 }
-
-.instructionCursor {
-  margin-top: 0.1rem;
-  color: var(--mantine-primary-color-filled);
-  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 35%));
+.steps p {
+  margin: 0;
+  min-width: 0;
+  font-size: 0.9rem;
+  line-height: 1.65;
 }
-
-@media (max-width: 62em) {
-  .section {
-    grid-template-columns: 1fr;
-  }
-
-  .section:nth-of-type(even) .sectionCopy,
-  .section:nth-of-type(even) .screenshot {
-    order: initial;
-  }
-
-  .screenshot {
-    max-width: 46rem;
+.actions button,
+.actions a,
+.tourCard button {
+  min-height: 44px;
+}
+.policy {
+  border-inline-start: 2px solid var(--app-border);
+  padding-inline-start: 0.8rem;
+  line-height: 1.6;
+}
+.topicFooter {
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 1rem clamp(1rem, 3vw, 2rem);
+  border-top: 1px solid var(--app-border);
+}
+.topicFooter a {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 44px;
+  max-width: 48%;
+  color: var(--mantine-color-text);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+.topicFooter a:last-child {
+  text-align: end;
+}
+.topicFooter svg {
+  flex-shrink: 0;
+}
+.topicFooter small {
+  display: block;
+  color: var(--app-text-secondary);
+  margin-bottom: 0.25rem;
+}
+@media (max-width: 70em) {
+  .workspace {
+    grid-template-columns: 13rem minmax(0, 1fr);
+    gap: 1rem;
   }
 }
-
-@media (max-width: 36em) {
+@media (max-width: 48em) {
+  .page {
+    padding-top: 1rem;
+  }
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+    margin-top: 1.25rem;
+  }
+  .sidebar {
+    position: static;
+  }
   .contents {
-    display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
-  .contentsLink {
-    border-radius: var(--mantine-radius-md);
+  .topicLink {
+    font-size: 0.8rem;
+    gap: 0.4rem;
+    padding: 0.6rem;
+    border-color: var(--app-border);
   }
-
-  .instructionGrid {
-    grid-template-columns: 1fr;
+  .topicLink > svg:last-child {
+    display: none;
+  }
+  .tourCard {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.75rem;
+  }
+  .tourIcon,
+  .tourCopy > p {
+    display: none;
+  }
+  .tourCopy {
+    flex-basis: 100%;
+  }
+  .tourCopy h2 {
+    font-size: 1rem;
+  }
+  .tourCard > button {
+    width: 100%;
   }
 }
-
 @media (prefers-reduced-motion: reduce) {
-  .contentsLink {
-    transition: none;
+  .page * {
+    scroll-behavior: auto;
   }
 }

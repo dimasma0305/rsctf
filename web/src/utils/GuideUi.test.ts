@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const provider = readFileSync('src/components/guide/PlayerGuide.tsx', 'utf8')
@@ -186,36 +186,31 @@ test('delivery tutorials follow the real static, direct, VPN, and WSRX controls'
   assert.match(challengeModalShell, /withOverlay && <Modal\.Overlay/)
 })
 
-test('permanent guide uses real, described screenshots and remains directly navigable', () => {
+test('guide handbook has searchable linked topics, progress and explicit walkthrough controls', () => {
   assert.match(navigation, /common\.tab\.guide[\s\S]*\/guide/)
   assert.match(page, /<PageHeader/)
-  assert.match(page, /<section[\s\S]*id=\{id\}/)
-  assert.match(page, /<img src=\{image\} alt=\{imageAlt \?\? ''\}/)
-  assert.match(page, /<ol className=\{classes\.instructionGrid\}/)
-  assert.match(page, /<figcaption className=\{classes\.instructionCaption\}/)
-  assert.match(page, /<img src=\{step\.image\} alt=\{step\.imageAlt\}/)
-  assert.match(page, /mdiCursorDefaultClickOutline/)
-  assert.match(page, /className=\{classes\.instructionCursor\}/)
-  assert.match(page, /Static challenge/)
-  assert.match(page, /Direct host and port/)
-  assert.match(page, /Platform Proxy/)
-  assert.match(page, /WSS default/)
-  assert.match(page, /instance panel starts in WSS mode/)
-  assert.match(page, /Event VPN host and port/)
-  assert.match(page, /WebSocketReflectorX\/releases/)
-  assert.doesNotMatch(page, /<Badge[^>]*circle/)
+  assert.match(page, /filterGuideTopics\(topics, search\)/)
+  assert.match(page, /selectedGuideTopic\(topics, hash\)/)
+  assert.match(page, /data-guide-topic=\{item.id\}/)
+  assert.match(page, /aria-current=\{item.id === topic.id \? 'page' : undefined\}/)
+  assert.match(page, /aria-labelledby="guide-topic-title"/)
+  assert.match(page, /<ol className=\{classes.steps\}/)
+  assert.match(page, /guide.startGuideAt\(topic.tourStep!\)/)
+  assert.match(page, /guide.preferences.activeTourStep/)
+  assert.match(page, /onClick=\{guide.resetGuide\}/)
+  assert.match(page, /maxLength=\{160\}/)
+  assert.match(page, /search: routeSearch/, 'chapter navigation preserves the route scope and keyboard focus')
+  assert.doesNotMatch(page, /static\/guide\/|dangerouslySetInnerHTML/)
   assert.match(pageStyles, /prefers-reduced-motion/)
-  for (const name of [
-    'login.webp',
-    'games.webp',
-    'challenge.webp',
-    'join-event.webp',
-    'join-confirm.webp',
-    'join-team.webp',
-    'join-status.webp',
-  ]) {
-    assert.ok(existsSync(`public/static/guide/${name}`), name)
-  }
+  assert.match(pageStyles, /min-height: 44px/)
+  assert.doesNotMatch(spotlightStyles, /infinite/, 'the guide highlights once instead of pulsing throughout play')
+  assert.match(provider, /guide.tour.skip/)
+  assert.match(provider, /setGuideTourStep\(openGuide\(current\), step\)/)
+  assert.match(
+    readFileSync('src/components/competition/ChallengeGlobe.tsx', 'utf8'),
+    /data-guide=\{node.count !== undefined \? 'challenge-category' : 'challenge-card'\}/
+  )
+  assert.match(readFileSync('src/components/competition/ChallengeList.tsx', 'utf8'), /data-guide="challenge-card"/)
 })
 
 test('the event tutorial resumes with destination-specific instructions after a game-card navigation', () => {
@@ -267,7 +262,10 @@ test('the novice path teaches every action on the real player controls', () => {
     teamJoinModal,
     /onAccepted:[\s\S]*onTeamReady\?\.\(\)[\s\S]*mutate\(\)[\s\S]*onCodeChange\(''\)[\s\S]*modalProps\.onClose\(\)/
   )
-  assert.match(teamJoinModal, /onRejected: \(error\) => \{[\s\S]*!controller\.signal\.aborted[\s\S]*showErrorMsg\(error, t\)/)
+  assert.match(
+    teamJoinModal,
+    /onRejected: \(error\) => \{[\s\S]*!controller\.signal\.aborted[\s\S]*showErrorMsg\(error, t\)/
+  )
   assert.doesNotMatch(teamJoinModal, /finally[\s\S]*onCodeChange\(''\)/)
   assert.match(teamsPage, /mutate=\{mutateTeams\}/)
   assert.match(teamJoinModal, /<AccessibleModal/)

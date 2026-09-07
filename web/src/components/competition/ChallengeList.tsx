@@ -68,6 +68,7 @@ export const ChallengeList = memo(
                         className={classes.listName}
                         onClick={() => onSelect(challenge)}
                         data-challenge-row={challenge.id}
+                        data-guide="challenge-card"
                         aria-pressed={challenge.id === selectedId}
                       >
                         <span>{challenge.title}</span>

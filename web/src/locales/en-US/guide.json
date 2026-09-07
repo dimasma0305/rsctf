@@ -1,0 +1,73 @@
+{
+  "hub": {
+    "eyebrow": "PLAYER FIELD GUIDE", "title": "Find your next step.",
+    "description": "Choose a topic or follow a walkthrough in the app.",
+    "tour_title": "Learn by doing", "tour_body": "A short walkthrough of the platform. You stay in control of every action.",
+    "start": "Start walkthrough", "resume": "Resume walkthrough", "replay": "Replay walkthrough",
+    "progress": "Walkthrough · step {{current}} of {{total}}", "complete": "Walkthrough completed",
+    "settings": "Guide preferences", "tips": "Show contextual tips",
+    "tips_help": "One-time help for attachments, instances and event VPN. Turning tips off does not restrict access to this handbook.",
+    "reset": "Restart walkthrough", "search": "Find help", "placeholder": "Try VPN, team, flag…", "topics": "Guide topics",
+    "results": "{{count}} topics found", "empty": "No matching topics. Try “VPN”, “team” or “score”.", "clear": "Clear search",
+    "chapter": "TOPIC {{current}} / {{total}}", "steps": "What to do", "details": "Good to know",
+    "previous": "Previous topic", "next": "Next topic", "practice": "Show me in the app",
+    "policy": "Event rules decide eligibility, connections and scoring. The guide does not join an event, start a service or submit a flag for you.",
+    "account": "Open account", "login": "Sign in", "games": "Browse events", "teams": "Open teams", "challenges": "My challenges",
+    "registration_closed": "Registration is closed. Use an existing account or ask your organizer for access.",
+    "registration_oauth": "Sign in with {{providers}}. Use the same sign-in method next time.",
+    "registration_password": "Use your email and password, or an available sign-in provider.",
+    "provider_fallback": "the configured sign-in provider", "confirm_email": "Confirm your email if the platform requests it before joining an event.",
+    "assigned_team": "Team creation is disabled here. Use your assigned team or ask the organizer for an invitation.",
+    "create_team": "Create a team, or join one using its invitation code. Joining a team and joining an event are separate steps.",
+    "proxy_default": "Platform default: Platform Proxy. Follow the instance panel if this event uses a different connection mode.",
+    "direct_default": "Platform default: direct host and port. Follow the instance panel if this event requires its VPN."
+  },
+  "topics": {
+    "account-access": {
+      "title": "Your account & team", "summary": "Get your identity and teammates ready before entering an event.",
+      "steps": ["Sign in with the account supplied by your organizer, or register if registration is available.", "Open Teams and check that the correct people are in your team.", "Keep your password, personal VPN profile and API tokens private."],
+      "details": [{"title": "Already assigned a team?", "body": "Use that team instead of creating a duplicate. If it is missing, contact the organizer with your username. Never send your password or token."}]
+    },
+    "find-event": {
+      "title": "Find an event", "summary": "Choose the right competition and check the briefing before joining.",
+      "steps": ["Open Games and search by name or event ID.", "Check the start/end time, timezone, format and participation rules.", "Read the notices for updates, downloadable clients and organizer instructions."],
+      "details": [{"title": "Can’t see an event?", "body": "Hidden or restricted events may not appear in the catalog. Use the organizer’s link and the correct account; a direct link does not override access rules."}]
+    },
+    "join-event": {
+      "title": "Join with your team", "summary": "A team membership is not an event entry. Confirm both.",
+      "steps": ["Open the event briefing and select Join.", "Read the confirmation, select your team and fill in any required division or invitation code.", "Check the participation status. Pending needs organizer approval; an accepted team can enter when access opens."],
+      "details": [{"title": "Joined late or changed teammates?", "body": "Follow this event’s roster and team-lock rules. If joining is rejected, send the exact message and event ID to the organizer; do not create another account to work around the restriction."}]
+    },
+    "play-challenge": {
+      "title": "Explore the challenge workspace", "summary": "Use the globe for exploration, or the list for a fast scan of a large event.",
+      "steps": ["Search by challenge name or ID. Use category and format filters to narrow the results.", "On the globe, choose a category, then a target. Selecting its name focuses the globe and opens its challenge card together.", "Drag in any direction to rotate the globe. Keyboard users can use the arrow keys and Home. List and Cards open the same challenge details.", "Read the description, hints, attachments and connection instructions before starting. On smaller screens, details open in a dialog."],
+      "details": [{"title": "Attachments and game clients", "body": "Use the download button inside the challenge card. Check the filename, size and SHA-256 when provided. If organizers announce an updated client, download that version before reconnecting."}, {"title": "An instance is still building", "body": "The first start can build or pull an image. Wait for readiness instead of repeatedly starting it. If it fails, keep the error message and challenge ID for the organizer."}]
+    },
+    "connections": {
+      "title": "Connect: direct, VPN or proxy", "summary": "Use the connection mode shown by your challenge. An attachment-only task may not need a running service.",
+      "steps": ["For a personal container, start the instance and wait until it is ready. Shared hills and BYOC services follow their own challenge instructions.", "Copy the current endpoint from the platform; don’t reuse an old or hard-coded address.", "Use the protocol named in the description. Keep the required VPN or proxy client connected while playing."],
+      "details": [{"title": "Direct host and port", "body": "Use the displayed address with the challenge’s client, browser or TCP tool. Direct mode does not need a local WSRX tunnel."}, {"title": "Event VPN", "body": "Download your event WireGuard profile, import it and activate the tunnel. Each player should use their own profile. A private service can require VPN even when the website itself opens without it."}, {"title": "Platform Proxy / WSRX", "body": "For a normal TCP client, run WebSocketReflectorX, select Local WSRX and wait for Tunnel ready. Use the displayed 127.0.0.1 endpoint. A raw wss:// URL only works with a WebSocket-compatible client; don’t pass it to netcat."}, {"title": "Static attachments", "body": "There is no service to start for an attachment-only challenge. Download the file and work locally. The event may still require VPN to access its pages or downloads."}]
+    },
+    "submit-flag": {
+      "title": "Submit a flag & writeup", "summary": "Check the verdict, not just the button click.",
+      "steps": ["Paste only the exact flag into the Flag field—no quotes, spaces or terminal output.", "Select Submit once and wait for Accepted or Wrong answer. A timeout or connection error is not a verdict.", "Check the challenge status and scoreboard. Competition time, practice mode and event rules determine whether a submission scores.", "If a writeup is required, use the event’s writeup action before its deadline and wait for a saved confirmation."],
+      "details": [{"title": "A&D and KoTH use different scoring", "body": "Do not assume that entering a normal flag awards points in every mode. A&D uses its event submission workflow; a KoTH challenge may report objectives or match results automatically. Read the challenge instructions."}, {"title": "Upload failed?", "body": "Keep a local copy. Check the file limit and deadline, then retry after the connection recovers. Only a successful acknowledgement confirms that the platform saved the writeup."}]
+    },
+    "scoring": {
+      "title": "Read scores & service status", "summary": "Service health, completed objectives and awarded points are different signals.",
+      "steps": ["Select the appropriate Jeopardy, A&D or KoTH scoreboard tab.", "Check the event timer and any finalized-round or scoring-status message.", "If a result looks wrong, include your team, challenge ID, approximate time and the visible status when reporting it."],
+      "details": [{"title": "Jeopardy", "body": "An accepted competitive solve can award points under the event rules. Values may change with solves. Practice or out-of-time submissions are not the same as competitive solves."}, {"title": "Attack & Defense / BYOC", "body": "Follow the BYOC setup instructions and check the service/checker status. An OK health check means the service is reachable and behaving as expected; it does not by itself prove that your team has earned attack points."}, {"title": "King of the Hill", "body": "Read the objective and scoring mode. Crown-based hills and match/leaderboard hills can score differently. Connecting, an OK health status or finishing a match does not guarantee a particular score; check the finalized result and scoreboard."}, {"title": "Reset or readiness", "body": "The hill may be preparing a playable cycle. Follow its readiness message rather than repeatedly reconnecting or requesting resets. Report a status that remains stuck to the organizer."}]
+    },
+    "troubleshooting": {
+      "title": "Get unstuck", "summary": "Start with the visible message. Keep credentials out of screenshots and support requests.",
+      "steps": ["Read the latest event notices and confirm you are using the right account, event and challenge.", "Check the relevant item below before retrying.", "If the problem persists, send the exact error, event/challenge ID, time and a redacted screenshot to the organizer."],
+      "details": [{"title": "401 / session expired", "body": "Sign in again using the same account. For scripts, check that the token is current, belongs to this event and uses the required authorization header. Never post the token publicly."}, {"title": "403 / access or VPN required", "body": "Check event membership, participation approval and the schedule. If the page requests VPN, activate your personal event profile and retry. A VPN cannot grant membership to an event you have not joined."}, {"title": "Connection failed or unstable", "body": "Copy a fresh endpoint, check the challenge’s health and verify the required tunnel is connected. Use your own VPN profile and avoid running the same profile on multiple devices. Do not repeatedly restart a shared service."}, {"title": "No score after playing", "body": "Check the challenge’s objective, match result, scoring cycle and event end time. Report the result if it is missing after finalization; do not send a private token as proof."}]
+    }
+  },
+  "tour": {
+    "skip": "Skip step",
+    "welcome": {"title": "Your competition workspace", "body": "Follow the highlighted controls. You can pause at any time and resume from Guide.", "note": "Nothing is submitted or started for you."},
+    "challenges": {"body": "Choose a category, then a challenge on the globe—or open a row or card. Read its material before starting.", "note": "Globe, List and Cards open the same challenge details."},
+    "submit": {"body": "Paste the exact flag into the highlighted field and wait for the verdict.", "note": "Points depend on the event’s time and scoring rules. Keep tokens and VPN profiles private."}
+  }
+}

@@ -232,6 +232,7 @@ export const ChallengeGlobe = memo(
                   data-selected={node.selected || undefined}
                   data-focused={node.id === focusedId || undefined}
                   data-globe-choice={node.id}
+                  data-guide={node.count !== undefined ? 'challenge-category' : 'challenge-card'}
                   aria-label={t('game.arena.select_target', { defaultValue: 'Select {{target}}', target: node.label })}
                   aria-pressed={node.selected ?? false}
                   onClick={() => selectTarget(node)}

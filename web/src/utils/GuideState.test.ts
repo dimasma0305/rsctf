@@ -208,6 +208,7 @@ test('real tutorial actions advance only when they complete the current task', (
   assert.equal(nextGuideStepForTarget('events', 'event-card'), null)
   assert.equal(nextGuideStepForTarget('events', 'event-challenges'), 'challenges')
   assert.equal(nextGuideStepForTarget('challenges', 'challenge-card'), 'connection')
+  assert.equal(nextGuideStepForTarget('challenges', 'challenge-category'), null)
   assert.equal(nextGuideStepForTarget('connection', 'instance-start'), null)
   assert.equal(nextGuideStepForTarget('connection', 'instance-entry'), 'submit')
   assert.equal(nextGuideStepForTarget('connection', 'instance-copy'), 'submit')
@@ -248,6 +249,8 @@ test('every novice checkpoint resolves a page target before and after navigation
   assert.match(selector('events', '/games/23'), /event-challenges/)
   assert.match(selector('challenges', '/games/23'), /challenge-navigation/)
   assert.match(selector('challenges', '/games/23/challenges'), /challenge-card/)
+  assert.match(selector('challenges', '/games/23/challenges'), /challenge-category/)
+  assert.doesNotMatch(selector('challenges', '/games/23/challenges'), /challenge-navigation|more-navigation/)
   assert.match(selector('connection', '/games/23/challenges'), /instance-start/)
   assert.match(selector('submit', '/games/23/challenges'), /flag-submit/)
 

@@ -67,6 +67,7 @@ interface PlayerGuideContextValue {
   preferences: GuidePreferences
   ready: boolean
   startGuide: () => void
+  startGuideAt: (step: GuideTourStep) => void
   setInteractiveEnabled: (enabled: boolean) => void
   resetGuide: () => void
   completeTeamSetup: () => void
@@ -275,7 +276,17 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
 
   const startGuide = useCallback(() => {
     updatePreferences(openGuide)
+    setPendingFeature(null)
   }, [updatePreferences])
+
+  const startGuideAt = useCallback(
+    (step: GuideTourStep) => {
+      updatePreferences((current) => setGuideTourStep(openGuide(current), step))
+      setPendingFeature(null)
+      setFeatureStepIndex(0)
+    },
+    [updatePreferences]
+  )
 
   const resetGuide = useCallback(() => {
     updatePreferences(resetGuideProgress)
@@ -493,7 +504,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         title: t('guide.tour.challenges.title', 'Open a challenge'),
         body: t(
           'guide.tour.challenges.body',
-          'Open a challenge card. Read its description and download any attachment before solving.'
+          'Choose a category, then a challenge on the globe—or open a row or card. Read its material before starting.'
         ),
         note: t('guide.tour.challenges.note', 'My challenges only contains events your team joined.'),
         path: isChallengePage ? undefined : user ? '/challenges' : '/games',
@@ -517,6 +528,10 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
               )
             : connectionBody,
         note: t('guide.tour.connection.note', 'VPN-only events use their event VPN instead of the platform proxy.'),
+        path: !isChallengePage ? (user ? '/challenges' : '/games') : undefined,
+        pathLabel: user
+          ? t('guide.tour.challenges.open', 'Open my challenges')
+          : t('guide.tour.challenges.login_first', 'Browse events first'),
         targetSelector: tourTarget('connection'),
         requiresTargetActivation: true,
       },
@@ -867,12 +882,22 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
       preferences,
       ready,
       startGuide,
+      startGuideAt,
       setInteractiveEnabled,
       resetGuide,
       completeTeamSetup,
       introduceFeature,
     }),
-    [completeTeamSetup, introduceFeature, preferences, ready, resetGuide, setInteractiveEnabled, startGuide]
+    [
+      completeTeamSetup,
+      introduceFeature,
+      preferences,
+      ready,
+      resetGuide,
+      setInteractiveEnabled,
+      startGuide,
+      startGuideAt,
+    ]
   )
 
   return (
@@ -964,7 +989,11 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
                 >
                   {t('common.pagination.next', 'Next')}
                 </Button>
-              ) : null}
+              ) : (
+                <Button variant="light" onClick={moveToNextStep}>
+                  {t('guide.tour.skip', 'Skip step')}
+                </Button>
+              )}
             </Group>
           </Group>
         </Stack>
