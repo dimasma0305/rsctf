@@ -12,6 +12,7 @@ mod flag_egress;
 #[path = "participation.rs"]
 mod participation_review;
 pub(crate) mod users_manager_autocomplete;
+mod writeup_grading;
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -144,6 +145,15 @@ pub fn router() -> Router<SharedState> {
         .route(
             "/api/admin/writeups/{id}/all",
             limited(Policy::Query, get(download_all_writeups)),
+        )
+        .route(
+            "/api/admin/writeups/{id}/grading",
+            limited(Policy::Query, get(writeup_grading::get_grading)),
+        )
+        .route(
+            "/api/admin/writeups/{id}/grading/{participation_id}/{challenge_id}",
+            limited(Policy::Query, put(writeup_grading::save_grade))
+                .layer(DefaultBodyLimit::max(2048)),
         )
         // --- Users ---
         .route("/api/admin/users", get(users).post(add_users))

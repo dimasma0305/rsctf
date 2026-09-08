@@ -1056,6 +1056,40 @@ export interface WriteupInfoModel {
   total?: number;
 }
 
+export type WriteupGradeMode = 'Jeopardy' | 'AttackDefense' | 'KingOfTheHill';
+export interface WriteupGradeChallenge {
+  challengeId: number;
+  title: string;
+  mode: WriteupGradeMode;
+  earnedPoints: number;
+  overallPoints: number;
+  percentage: number | null;
+  revision: number;
+}
+export interface WriteupGradeTeam {
+  participationId: number;
+  teamId: number;
+  name: string;
+  divisionId: number | null;
+  division: string | null;
+  writeupUrl: string | null;
+  originalScore: number;
+  overallEligible: boolean;
+  divisionEligible: boolean;
+  challenges: WriteupGradeChallenge[];
+}
+export interface WriteupGradingBoard {
+  generatedAt: number;
+  fullySettled: boolean;
+  teams: WriteupGradeTeam[];
+}
+export interface WriteupGradeResult {
+  participationId: number;
+  challengeId: number;
+  percentage: number | null;
+  revision: number;
+}
+
 export interface WriteupInfo {
   /**
    * Participation ID
@@ -6441,6 +6475,14 @@ export class Api<
         query: query,
         format: "json",
         ...params,
+      }),
+    useWriteupGrading: (id: number, options?: SWRConfiguration) =>
+      useSWR<WriteupGradingBoard, RequestResponse>(`/api/admin/writeups/${id}/grading`, options),
+    saveWriteupGrade: (id: number, participationId: number, challengeId: number,
+      body: { percentage: number | null; expectedRevision: number; operationId: string }) =>
+      this.request<WriteupGradeResult, RequestResponse>({
+        path: `/api/admin/writeups/${id}/grading/${participationId}/${challengeId}`,
+        method: 'PUT', body, type: ContentType.Json, format: 'json',
       }),
     /**
      * @description Use this API to get Writeup basic information, requires Admin permission

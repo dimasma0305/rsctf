@@ -2,7 +2,7 @@ use sea_orm::SqlxPostgresConnector;
 use sea_orm_migration::MigratorTrait;
 use sqlx::postgres::PgPoolOptions;
 
-pub(super) struct AdScoringFixture {
+pub(crate) struct AdScoringFixture {
     pub pool: sqlx::PgPool,
     pub game_id: i32,
     admin_pool: sqlx::PgPool,
@@ -10,7 +10,7 @@ pub(super) struct AdScoringFixture {
 }
 
 impl AdScoringFixture {
-    pub(super) async fn cleanup(self) {
+    pub(crate) async fn cleanup(self) {
         self.pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{}" CASCADE"#, self.schema))
             .execute(&self.admin_pool)
@@ -24,7 +24,7 @@ impl AdScoringFixture {
 /// regressions without relying on a developer's pre-provisioned game. Each
 /// Tokio test owns its pool because a pool cannot outlive the runtime that
 /// created it.
-pub(super) async fn ad_scoring_fixture() -> AdScoringFixture {
+pub(crate) async fn ad_scoring_fixture() -> AdScoringFixture {
     let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
         .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
     let admin_options = crate::migrations::test_pg_connect_options(&database_url);

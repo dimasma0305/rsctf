@@ -517,7 +517,7 @@ fn combine_scoreboards(
     }
 }
 
-async fn build_combined_scoreboard(
+pub(crate) async fn build_combined_scoreboard(
     st: &SharedState,
     game: &game::Model,
     is_monitor: bool,

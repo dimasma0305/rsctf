@@ -200,6 +200,7 @@ mod m0343_event_history_purge_trigger_authorization;
 mod m0344_admin_user_import_history;
 mod m0345_flag_import_lease_repair;
 mod m0346_clone_destination_deletion;
+pub(crate) mod m0347_writeup_grades;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -424,6 +425,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0344_admin_user_import_history::Migration),
             Box::new(m0345_flag_import_lease_repair::Migration),
             Box::new(m0346_clone_destination_deletion::Migration),
+            Box::new(m0347_writeup_grades::Migration),
         ]
     }
 }
@@ -647,6 +649,7 @@ mod tests {
                 "m0344_admin_user_import_history",
                 "m0345_flag_import_lease_repair",
                 "m0346_clone_destination_deletion",
+                "m0347_writeup_grades",
             ]
         );
     }
