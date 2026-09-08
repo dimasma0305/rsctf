@@ -25,6 +25,13 @@ import { Role, type ProfileUserInfoModel } from '@Api'
 // Shared navigation hints only; each event and operation remains server-authorized.
 export const EVENT_ADMIN_SECTIONS = [
   { path: 'info', label: 'admin.tab.games.info', fallback: 'Information', icon: mdiTextBoxOutline, group: 'setup' },
+  {
+    path: 'readiness',
+    label: 'admin.readiness.title',
+    fallback: 'Readiness',
+    icon: mdiShieldCheckOutline,
+    group: 'setup',
+  },
   { path: 'divisions', label: 'admin.tab.games.divisions', fallback: 'Divisions', icon: mdiTagOutline, group: 'setup' },
   {
     path: 'managers',

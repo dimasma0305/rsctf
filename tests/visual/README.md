@@ -12,6 +12,26 @@ exceptions and HTTP 5xx responses.
 Generated artifacts live in `/visual-audit-output` and are excluded from Git and
 the Docker build context.
 
+## Event readiness fixtures
+
+Start a frontend preview on `127.0.0.1:63017`, then run from the repository root:
+
+```sh
+scripts/bounded-frontend.sh exec node ../tests/visual/event-readiness.mjs
+```
+
+The harness checks the saved-configuration checklist, attention-first ordering,
+manual refresh, cached-data warnings, permission revocation, empty events, and
+action links. It covers desktop, 320px, Indonesian/light mode, reduced motion,
+keyboard activation, touch targets, Axe, and browser errors. Every API/hub request
+is intercepted; all writes are rejected by the fixtures. This does not test real
+checker health, team acceptance, backend authorization, or network connectivity.
+
+Use `RSCTF_READINESS_TARGET=https://tcp.1pc.tf` or
+`https://intechfest.1pc.tf` to check released frontend assets against the same
+isolated fixtures. Reports and screenshots go to
+`visual-audit-output/event-readiness/`; `RSCTF_READINESS_OUTPUT` overrides it.
+
 ## Required context
 
 Dynamic routes need one existing game, challenge, and post. Protected routes

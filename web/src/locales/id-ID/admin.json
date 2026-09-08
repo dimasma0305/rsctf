@@ -1,4 +1,58 @@
 {
+  "readiness": {
+    "title": "Kesiapan",
+    "intro": "Periksa konfigurasi event yang tersimpan dan buka tautan terkait untuk menyelesaikan masalah sebelum peserta masuk.",
+    "refresh": "Perbarui pemeriksaan",
+    "refreshing": "Memperbarui konfigurasi tersimpan…",
+    "loading": "Memuat konfigurasi event yang tersimpan…",
+    "load_failed": "Pemeriksaan kesiapan tidak dapat diperbarui",
+    "stale": "Menampilkan data sebelumnya. Kesiapan saat ini belum terverifikasi.",
+    "sign_in": "Masuk kembali",
+    "hidden": "Event tersembunyi",
+    "public": "Event publik",
+    "practice": "Mode latihan",
+    "competition": "Mode kompetisi",
+    "summary_one": "{{count}} pemeriksaan konfigurasi memerlukan perhatian. Pemeriksaan layanan tetap diperlukan.",
+    "summary_other": "{{count}} pemeriksaan konfigurasi memerlukan perhatian. Pemeriksaan layanan tetap diperlukan.",
+    "snapshot_note": "Ini adalah pemeriksaan manual atas pengaturan tersimpan dan metadata challenge, bukan jaminan event siap dijalankan. Perbarui setelah melakukan perubahan. Event tersembunyi dapat digunakan untuk latihan pengujian.",
+    "open_check": "Periksa pengaturan {{check}}",
+    "runtime_title": "Masih perlu diverifikasi",
+    "runtime_note": "Belum diuji oleh halaman ini. Pemeriksaan ini tidak memulai layanan, mengubah skor, atau menyimpan pengaturan.",
+    "states": { "checked": "Sudah diperiksa", "attention": "Perlu perhatian", "unverified": "Belum terverifikasi", "info": "Informasi" },
+    "checks": { "schedule": "Jadwal event", "freeze": "Pembekuan scoreboard", "writeup": "Batas waktu writeup", "challenges": "Challenge yang diaktifkan", "builds": "Hasil build terakhir" },
+    "reasons": {
+      "schedule_ok": "Waktu mulai tersimpan mendahului waktu selesai. Pastikan tanggal dan zona waktu yang diinginkan di Informasi.",
+      "schedule_invalid": "Atur waktu mulai yang valid dan waktu selesai setelahnya.",
+      "freeze_off": "Pembekuan scoreboard tidak dikonfigurasi.",
+      "freeze_ok": "Waktu pembekuan tersimpan berada dalam rentang waktu event.",
+      "freeze_invalid": "Atur waktu pembekuan setelah waktu mulai dan sebelum waktu selesai, atau hapus pengaturannya.",
+      "writeup_off": "Writeup tidak diwajibkan untuk event ini.",
+      "writeup_ok": "Writeup diwajibkan dengan batas waktu saat atau setelah event selesai.",
+      "writeup_review": "Writeup diwajibkan. Periksa batas waktunya: belum diatur, tidak valid, atau sebelum event selesai.",
+      "challenges_review": "{{count}} challenge yang diaktifkan belum dikonfirmasi telah disetujui. Periksa statusnya sebelum memastikan akses peserta.",
+      "challenges_empty": "Belum ada challenge yang aktif dan disetujui. Aktifkan challenge yang telah disetujui saat siap ditampilkan.",
+      "challenges_ok": "{{count}} challenge aktif dan disetujui. Akses peserta tetap mengikuti aturan event, divisi, dan partisipasi.",
+      "builds_failed": "{{count}} challenge aktif dan disetujui memiliki build terakhir gagal atau Dockerfile tidak ditemukan. Periksa log build; ini tidak membuktikan instance yang ada sedang mati.",
+      "builds_running": "{{count}} challenge aktif dan disetujui memiliki build dalam antrean atau sedang berjalan. Perbarui setelah selesai, lalu verifikasi layanan yang dijalankan.",
+      "builds_unknown": "{{count}} challenge aktif dan disetujui belum memiliki hasil build yang pasti. Image siap pakai mungkin sudah dikonfigurasi; periksa challenge sebelum memulai build.",
+      "builds_recorded": "Tidak ada build gagal atau tertunda yang tercatat untuk challenge aktif dan disetujui. Build berhasil dan tugas tanpa build tidak membuktikan kesehatan layanan."
+    },
+    "manual": {
+      "teams": "Partisipasi: pastikan tim yang dituju telah diterima dan ditempatkan pada divisi yang tepat.",
+      "attachments": "Pengalaman peserta: uji deskripsi challenge, unduhan, flag, dan akses container menggunakan akun peserta uji yang berwenang.",
+      "services": "A&D / KoTH: periksa roster penilaian, status checker, kesiapan instance, dan reset yang sedang berjalan di konsol operator.",
+      "vpn": "Akses VPN diwajibkan: verifikasi unduhan konfigurasi dan koneksi challenge melalui koneksi VPN peserta yang sebenarnya."
+    },
+    "actions": { "info": "Buka informasi", "challenges": "Buka challenge", "teams": "Periksa tim", "attachments": "Periksa challenge", "services": "Buka konsol operator", "vpn": "Periksa pengaturan VPN" },
+    "errors": {
+      "session": "Sesi Anda mungkin telah berakhir. Masuk kembali, lalu buka event ini.",
+      "permission": "Anda tidak memiliki akses administrasi event ini. Minta administrator memeriksa penugasan Anda sebagai pengelola event.",
+      "missing": "Event ini tidak ditemukan. Kembali ke Semua event dan pastikan event masih ada.",
+      "busy": "Terlalu banyak permintaan sedang diproses. Tunggu sebentar, lalu gunakan Perbarui pemeriksaan.",
+      "service": "Server tidak dapat menyelesaikan pembacaan kesiapan. Coba Perbarui pemeriksaan; jika berlanjut, periksa log platform dan kesehatan layanan.",
+      "request": "Permintaan tidak selesai. Periksa koneksi, lalu gunakan Perbarui pemeriksaan. Jika berlanjut, minta operator platform memeriksa permintaan tersebut."
+    }
+  },
   "grading": {
     "title": "Penilaian writeup & peringkat privat",
     "private": "Khusus admin",

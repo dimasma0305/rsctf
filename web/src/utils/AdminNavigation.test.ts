@@ -10,7 +10,7 @@ import {
 } from '../components/admin/navigation'
 
 test('event navigation matches complete segments and distinguishes reviews, pending and flags', () => {
-  for (const path of ['info', 'adops', 'review', 'challengereviews', 'pending'])
+  for (const path of ['info', 'readiness', 'adops', 'review', 'challengereviews', 'pending'])
     assert.equal(getAdminEventContext(`/admin/games/19/${path}`)?.section?.path, path)
   assert.equal(getAdminEventContext('/admin/games/19/challenges/pending')?.section?.path, 'pending')
   assert.equal(getAdminEventContext('/admin/games/19/challenges/74/flags')?.challengeId, '74')
@@ -25,6 +25,7 @@ test('event navigation and section shortcuts retain administrator visibility bou
   assert.deepEqual(getEventAdminSections({ role: Role.User } as ProfileUserInfoModel), [])
   const manager = getEventAdminSections({ role: Role.User, hasManagedGames: true } as ProfileUserInfoModel)
   assert.ok(manager.some((item) => item.path === 'adops'))
+  assert.ok(manager.some((item) => item.path === 'readiness'))
   assert.ok(!manager.some((item) => item.path === 'managers'))
   assert.ok(
     getEventAdminSections({ role: Role.Admin } as ProfileUserInfoModel).some((item) => item.path === 'managers')

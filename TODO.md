@@ -1,5 +1,9 @@
 # TODO
 
+The approved UI/UX and backend rollout is tracked step by step in
+[IMPROVEMENTS.md](IMPROVEMENTS.md). Unchecked historical items below must be verified
+against the current implementation before being treated as confirmed gaps.
+
 ## Docker runtime scalability
 
 The platform already applies per-container CPU, memory, PID, writable-layer, and

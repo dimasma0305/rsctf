@@ -1,4 +1,58 @@
 {
+  "readiness": {
+    "title": "Readiness",
+    "intro": "Review saved event configuration and follow the links to resolve issues before players arrive.",
+    "refresh": "Refresh checks",
+    "refreshing": "Refreshing saved configuration…",
+    "loading": "Loading saved event configuration…",
+    "load_failed": "Readiness could not be refreshed",
+    "stale": "Showing previous data. Current readiness is unverified.",
+    "sign_in": "Sign in again",
+    "hidden": "Hidden event",
+    "public": "Public event",
+    "practice": "Practice mode",
+    "competition": "Competition mode",
+    "summary_one": "{{count}} configuration check needs attention. Runtime checks are still required.",
+    "summary_other": "{{count}} configuration checks need attention. Runtime checks are still required.",
+    "snapshot_note": "This is a manual snapshot of saved settings and challenge metadata, not a launch guarantee. Refresh after making changes. Hidden events are valid for rehearsals.",
+    "open_check": "Review {{check}} settings",
+    "runtime_title": "Still to verify",
+    "runtime_note": "Not tested by this page. No services are started, scores changed, or settings saved by these checks.",
+    "states": { "checked": "Checked", "attention": "Needs attention", "unverified": "Unverified", "info": "Information" },
+    "checks": { "schedule": "Event schedule", "freeze": "Scoreboard freeze", "writeup": "Writeup deadline", "challenges": "Enabled challenges", "builds": "Latest build results" },
+    "reasons": {
+      "schedule_ok": "The saved start time is before the end time. Confirm the intended date and timezone in Information.",
+      "schedule_invalid": "Set a valid start time and an end time after it.",
+      "freeze_off": "No scoreboard freeze is configured.",
+      "freeze_ok": "The saved freeze time falls inside the event window.",
+      "freeze_invalid": "Set the freeze time strictly between the start and end times, or clear it.",
+      "writeup_off": "Writeups are not required for this event.",
+      "writeup_ok": "Writeups are required, with a deadline at or after the event ends.",
+      "writeup_review": "Writeups are required. Review the deadline: it is missing, invalid, or before the event ends.",
+      "challenges_review": "Enabled challenges awaiting confirmed approval: {{count}}. Review their status before relying on player visibility.",
+      "challenges_empty": "No enabled, approved challenges were found. Enable approved challenges when you are ready to make them available.",
+      "challenges_ok": "Enabled and approved challenges: {{count}}. Player access still depends on the event, division, and participation rules.",
+      "builds_failed": "Enabled, approved challenges with a failed latest build or missing Dockerfile: {{count}}. Review the build logs; this does not prove that an existing instance is down.",
+      "builds_running": "Enabled, approved challenges with queued or running builds: {{count}}. Refresh after they finish, then verify the deployed service.",
+      "builds_unknown": "Enabled, approved challenges without a conclusive build result: {{count}}. A prebuilt image may already be configured; inspect the challenge before starting a build.",
+      "builds_recorded": "No failed or pending builds are recorded for enabled, approved challenges. Successful builds and tasks that need no build do not prove runtime health."
+    },
+    "manual": {
+      "teams": "Participation: confirm that the intended teams are accepted and assigned to the correct divisions.",
+      "attachments": "Player experience: check challenge descriptions, downloads, flags, and container access using an authorized test player.",
+      "services": "A&D / KoTH: verify the scoring roster, checker status, instance readiness, and any reset in progress in the operator console.",
+      "vpn": "VPN access is required: verify configuration download and challenge connectivity from a real player VPN connection."
+    },
+    "actions": { "info": "Open information", "challenges": "Open challenges", "teams": "Review teams", "attachments": "Review challenges", "services": "Open operator console", "vpn": "Review VPN settings" },
+    "errors": {
+      "session": "Your session may have expired. Sign in again, then return to this event.",
+      "permission": "You do not have access to this event’s administration. Ask an administrator to check your event-manager assignment.",
+      "missing": "This event could not be found. Return to All events and check that it still exists.",
+      "busy": "Too many requests are in progress. Wait briefly, then use Refresh checks.",
+      "service": "The server could not complete a readiness read. Try Refresh checks; if it continues, check the platform logs and service health.",
+      "request": "The request did not complete. Check your connection, then use Refresh checks. If it continues, ask the platform operator to inspect the request."
+    }
+  },
   "grading": {
     "title": "Writeup review & private ranking",
     "private": "Admin only",
