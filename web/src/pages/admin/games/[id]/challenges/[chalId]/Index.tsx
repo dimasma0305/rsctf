@@ -622,7 +622,7 @@ const GameChallengeEdit: FC = () => {
       backUrl={`/admin/games/${id}/challenges`}
       head={
         <>
-          <Title order={2} lineClamp={1} className={misc.wordBreakAll}>
+          <Title order={2} className={misc.wordBreakAll}>
             # {challengeInfo?.title}
           </Title>
           <Group wrap="wrap" justify="right" w={{ base: '100%', lg: 'auto' }}>
