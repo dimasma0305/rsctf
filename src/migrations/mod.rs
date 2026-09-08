@@ -570,10 +570,10 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 176);
+        assert_eq!(names.len(), 177);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
-            &names[names.len() - 74..],
+            &names[names.len() - 75..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
