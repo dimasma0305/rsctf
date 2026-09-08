@@ -715,6 +715,8 @@ function materializeCatalogPath(template, fixture) {
     game_id: fixture.gameId,
     userid: fixture.userId,
     challengeid: fixture.challengeId,
+    challenge_id: fixture.challengeId,
+    participation_id: fixture.participationId,
     auditid: fixture.auditId,
     operationid: fixture.operationId,
     operation_id: fixture.operationId,
@@ -2014,6 +2016,33 @@ async function observabilityAndRuntime() {
       archive.bytes[1] === 0x4b,
     "writeup archive is not a ZIP payload",
   );
+
+  const gradingPath = `/api/admin/writeups/${fixtureGame}/grading`;
+  const grading = await call("GET", "/api/admin/writeups/{id}/grading", gradingPath);
+  const originalTeam = grading.json.teams.find(team => team.participationId === fixtureParticipation);
+  requireCondition(
+    originalTeam?.challenges.some(challenge => challenge.challengeId === fixtureChallenge),
+    "writeup grading omitted the fixture's solved challenge",
+  );
+  const gradePath = `${gradingPath}/${fixtureParticipation}/${fixtureChallenge}`;
+  const gradeTemplate = "/api/admin/writeups/{id}/grading/{participation_id}/{challenge_id}";
+  const gradeBody = { percentage: 50, expectedRevision: 0, operationId: randomUUID() };
+  const saved = await call("PUT", gradeTemplate, gradePath, { body: gradeBody });
+  const replay = await call("PUT", gradeTemplate, gradePath, { body: gradeBody });
+  requireCondition(saved.json.revision === 1 && replay.json.revision === 1,
+    "replaying a writeup grade advanced its revision");
+  const stale = await adminApi("PUT", gradePath, {
+    body: { ...gradeBody, percentage: 0, operationId: randomUUID() }, expected: 409,
+  });
+  expectStatus(stale, 409, "stale writeup grade");
+  const after = await call("GET", "/api/admin/writeups/{id}/grading", gradingPath);
+  requireCondition(after.json.teams.find(team => team.participationId === fixtureParticipation)
+    ?.originalScore === originalTeam.originalScore, "private grading changed the official score");
+  const cleared = await call("PUT", gradeTemplate, gradePath, {
+    body: { percentage: null, expectedRevision: 1, operationId: randomUUID() },
+  });
+  requireCondition(cleared.json.percentage === null && cleared.json.revision === 2,
+    "clearing a writeup grade did not restore the ungraded state");
 
   const logs = await call(
     "GET",

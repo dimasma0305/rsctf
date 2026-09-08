@@ -499,6 +499,10 @@ function sampleBody(kind, status) {
       };
     case "game-writeups":
       return { divisions: {}, writeups: [] };
+    case "writeup-grading":
+      return { generatedAt: Date.now(), fullySettled: true, teams: [] };
+    case "writeup-grade":
+      return { participationId: 1, challengeId: 2, percentage: 50, revision: 1 };
     case "zip":
       return new Uint8Array([0x50, 0x4b]);
     case "import":
@@ -649,21 +653,23 @@ function sampleResponse(operation) {
             "worker-created",
             "enrollment-token",
             "enrollment",
+            "writeup-grading",
+            "writeup-grade",
           ].includes(operation.responseKind)
         ? privateHeaders()
         : {};
   return { status, body: sampleBody(operation.responseKind, status), headers };
 }
 
-test("catalog covers all 81 HTTP operations and keeps SignalR as separate surfaces", () => {
-  assert.equal(ADMIN_OPERATIONS.length, 81);
-  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 81);
+test("catalog covers all 83 HTTP operations and keeps SignalR as separate surfaces", () => {
+  assert.equal(ADMIN_OPERATIONS.length, 83);
+  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 83);
   assert.deepEqual(
     ADMIN_OPERATIONS.reduce((counts, operation) => {
       counts[operation.method] = (counts[operation.method] || 0) + 1;
       return counts;
     }, {}),
-    { GET: 37, PUT: 6, POST: 28, DELETE: 10 },
+    { GET: 38, PUT: 7, POST: 28, DELETE: 10 },
   );
   const enroll = ADMIN_OPERATIONS.find(({ id }) => id === "worker_enroll");
   assert.deepEqual(
@@ -732,7 +738,7 @@ test("fixed-rate admin load uses one bounded instance batch and never a per-row 
 test("authorization classes keep Admin, manager, and enrollment-token surfaces explicit", () => {
   assert.equal(
     ADMIN_OPERATIONS.filter(({ auth }) => auth === "admin").length,
-    79,
+    81,
   );
   assert.deepEqual(
     ADMIN_OPERATIONS.filter(({ auth }) => auth !== "admin").map(
@@ -964,11 +970,11 @@ test("read-origin matrix covers every live read on every eligible replica exactl
 test("repository router source and lifecycle catalog have exact bidirectional coverage", () => {
   const sources = repositoryRouterSources();
   assert.deepEqual(assertRouterCoverage(sources), {
-    operations: 81,
+    operations: 83,
     signalR: 2,
   });
   const parsed = parseAdminRouterOperations(sources);
-  assert.equal(parsed.operations.length, 81);
+  assert.equal(parsed.operations.length, 83);
   assert.equal(parsed.signalR.length, 2);
 });
 
@@ -1013,8 +1019,8 @@ test("router parser ignores route-like text in Rust comments and strings", () =>
 
 test("coverage accounting rejects omissions, duplicates, and unknown operations", () => {
   assert.deepEqual(assertCompleteCoverage(ADMIN_OPERATION_IDS), {
-    covered: 81,
-    required: 81,
+    covered: 83,
+    required: 83,
     missing: [],
     extra: [],
   });
@@ -1039,8 +1045,8 @@ test("coverage accounting rejects omissions, duplicates, and unknown operations"
   assert.deepEqual(
     assertCompleteCoverage(allSurfaces, { includeSignalR: true }),
     {
-      covered: 83,
-      required: 83,
+      covered: 85,
+      required: 85,
       missing: [],
       extra: [],
     },
@@ -1398,6 +1404,24 @@ test("every catalog operation has a passing status/body/header response contract
       true,
       `${operation.id} (${operation.responseKind}) lacks a complete validator fixture`,
     );
+  }
+});
+
+test("writeup grading contracts are private, on-demand, and bind exact fixture IDs", () => {
+  assert.equal(resolveOperationPath("admin_writeup_grade_save", {
+    gameId: 12, participationId: 34, challengeId: 56,
+  }), "/api/admin/writeups/12/grading/34/56");
+  assert.ok(!ADMIN_READ_OPERATIONS.some(({ id }) => id === "admin_writeup_grading_get"));
+  for (const id of ["admin_writeup_grading_get", "admin_writeup_grade_save"]) {
+    const response = sampleResponse(ADMIN_OPERATIONS.find(operation => operation.id === id));
+    assert.equal(validateAdminResponse(id, { ...response, headers: {} }), false);
+    assert.equal(validateAdminResponse(id, { ...response, body: { data: response.body } }), false);
+  }
+  for (const percentage of [-1, 101, 0.5, "50"]) {
+    assert.equal(validateAdminResponse("admin_writeup_grade_save", {
+      status: 200, headers: privateHeaders(),
+      body: { ...sampleBody("writeup-grade"), percentage },
+    }), false);
   }
 });
 

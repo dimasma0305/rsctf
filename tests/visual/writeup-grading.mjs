@@ -5,7 +5,7 @@ import { gradingFixture, pdfFixture } from './writeup-grading-fixtures.mjs'
 import { launchBrowser } from './cdp.mjs'
 
 const target = process.env.RSCTF_WRITEUP_TARGET || 'http://127.0.0.1:63017'
-assert.ok(['http://127.0.0.1:63017', 'https://intechfest.1pc.tf'].includes(target))
+assert.ok(['http://127.0.0.1:63017', 'https://intechfest.1pc.tf', 'https://tcp.1pc.tf'].includes(target))
 const output = resolve(process.env.RSCTF_WRITEUP_OUTPUT || '../visual-audit-output/writeup-local')
 mkdirSync(output, { recursive: true })
 const fixture = gradingFixture(), reports = [], writes = [], unknown = [], errors = []

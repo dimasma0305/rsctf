@@ -137,6 +137,21 @@ export const ADMIN_OPERATIONS = Object.freeze([
     responseKind: "zip",
     params: { id: "gameId" },
   }),
+  // Review projections are on-demand, not part of the periodic read workload.
+  operation("admin_writeup_grading_get", "GET", "/api/admin/writeups/{id}/grading", {
+    responseKind: "writeup-grading",
+    params: { id: "gameId" },
+  }),
+  operation(
+    "admin_writeup_grade_save",
+    "PUT",
+    "/api/admin/writeups/{id}/grading/{participation_id}/{challenge_id}",
+    {
+      mutation: true,
+      responseKind: "writeup-grade",
+      params: { id: "gameId", participation_id: "participationId", challenge_id: "challengeId" },
+    },
+  ),
   operation("admin_users_get", "GET", "/api/admin/users", {
     poll: true,
     responseKind: "page",
@@ -1486,6 +1501,22 @@ export function validateAdminResponse(operationId, response) {
     case "game-writeups":
       return (
         object(body) && object(body.divisions) && Array.isArray(body.writeups)
+      );
+    case "writeup-grading":
+      return (
+        object(body) && Number.isSafeInteger(body.generatedAt) &&
+        typeof body.fullySettled === "boolean" && Array.isArray(body.teams) &&
+        body.teams.every(team => object(team) && Number.isSafeInteger(team.participationId) &&
+          Number.isFinite(team.originalScore) && Array.isArray(team.challenges)) &&
+        privateNoStore(headers)
+      );
+    case "writeup-grade":
+      return (
+        object(body) && Number.isSafeInteger(body.participationId) &&
+        Number.isSafeInteger(body.challengeId) && Number.isSafeInteger(body.revision) &&
+        body.revision > 0 && (body.percentage === null ||
+          (Number.isInteger(body.percentage) && body.percentage >= 0 && body.percentage <= 100)) &&
+        privateNoStore(headers)
       );
     case "zip": {
       const archive = body ?? response.bytes ?? response.text;

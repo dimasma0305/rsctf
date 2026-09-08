@@ -7,7 +7,7 @@ import { gradingFixture, pdfFixture } from './writeup-grading-fixtures.mjs'
 // Fixed workload: 60 portrait pages, 2x display, 12 tab changes at 750 ms intervals.
 // API calls are synthetic even on the deployed origin; never modifies real grades.
 const target = process.env.RSCTF_WRITEUP_TARGET || 'http://127.0.0.1:63017'
-assert.ok(['http://127.0.0.1:63017', 'https://intechfest.1pc.tf'].includes(target))
+assert.ok(['http://127.0.0.1:63017', 'https://intechfest.1pc.tf', 'https://tcp.1pc.tf'].includes(target))
 const output = resolve(process.env.RSCTF_WRITEUP_OUTPUT || '../visual-audit-output/writeup-pdf-performance')
 mkdirSync(output, { recursive: true })
 const baseline = process.argv.includes('--baseline')
