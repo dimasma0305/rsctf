@@ -9,7 +9,7 @@ assert.ok(['http://127.0.0.1:63017', 'https://intechfest.1pc.tf'].includes(targe
 const output = resolve(process.env.RSCTF_WRITEUP_OUTPUT || '../visual-audit-output/writeup-local')
 mkdirSync(output, { recursive: true })
 const fixture = gradingFixture(), reports = [], writes = [], unknown = [], errors = []
-let failSave = false, failLoad = false
+let failSave = false, failLoad = false, pdfRequests = 0
 const { cdp, close } = await launchBrowser()
 const evaluate = async (expression) => {
   const r = await cdp.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
@@ -24,12 +24,13 @@ const wait = async (expression) => {
   throw new Error('Timed out: ' + expression + '; ' + await evaluate('document.body.innerText.slice(-1500)'))
 }
 const clickText = (text) => evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent===${JSON.stringify(text)}).click()`)
+const waitForPdf = () => wait(`Array.from(document.querySelectorAll('.react-pdf__Page__canvas')).filter(c=>c.width>0 && c.height>0 && c.getClientRects().length).length===3 && Array.from(document.querySelectorAll('.react-pdf__Page__textContent')).filter(p=>p.textContent.includes('Writeup review fixture - page')).length===3`)
 const visit = async () => {
   await evaluate('window.__writeupOldDocument=true')
   await cdp.send('Page.navigate', { url: target + '/admin/games/19/writeups' })
   await wait(`!window.__writeupOldDocument && document.querySelector('[data-writeup-grading]') && document.body.innerText.includes('Scored challenges')`)
   if (await evaluate(`!!document.querySelector('a[href="/assets/writeup-fixture.pdf"]')`)) {
-    await wait(`document.querySelector('.react-pdf__Page__canvas')`)
+    await waitForPdf()
   }
 }
 const audit = async (name) => {
@@ -43,10 +44,18 @@ const audit = async (name) => {
 try {
   await cdp.send('Page.enable'); await cdp.send('Runtime.enable')
   cdp.on('Runtime.exceptionThrown', ({ exceptionDetails }) => errors.push(exceptionDetails.exception?.description || exceptionDetails.text))
+  // PDF load failures are caught and shown as notifications, not uncaught exceptions.
+  cdp.on('Runtime.consoleAPICalled', ({ type, args }) => {
+    const message = args.map(a=>a.description || a.value || '').join(' ')
+    if (['error','warning'].includes(type) && /sendWithPromise|sendWithStream|TypeError/.test(message)) errors.push(message)
+  })
   await cdp.send('Fetch.enable', { patterns: [{urlPattern:target+'/api/*'}, {urlPattern:target+'/hub*'}, {urlPattern:target+'/assets/writeup-fixture.pdf'}] })
   cdp.on('Fetch.requestPaused', async ({requestId,request}) => {
     const path = new URL(request.url).pathname
-    if(path==='/assets/writeup-fixture.pdf') return cdp.send('Fetch.fulfillRequest',{requestId,responseCode:200,responseHeaders:[{name:'Content-Type',value:'application/pdf'}],body:pdfFixture().toString('base64')})
+    if(path==='/assets/writeup-fixture.pdf') {
+      pdfRequests++
+      return cdp.send('Fetch.fulfillRequest',{requestId,responseCode:200,responseHeaders:[{name:'Content-Type',value:'application/pdf'}],body:pdfFixture().toString('base64')})
+    }
     if(!['GET','HEAD'].includes(request.method)) writes.push({path,method:request.method,body:JSON.parse(request.postData || '{}')})
     const r = failSave && request.method==='PUT' ? {status:409,body:{title:'Grade changed'}} : failLoad && path.endsWith('/grading') ? {status:503,body:{title:'Unavailable'}} : fixture(path,request.method,request.postData)
     if(r.unknown) unknown.push(r.unknown)
@@ -58,6 +67,27 @@ try {
     await cdp.send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:name==='light'?'reduce':'no-preference'}]})
     await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('mantine-color-scheme-value',${JSON.stringify(scheme)})`})
     await visit(); await audit(name+'-review')
+    const gradeInput = `document.querySelector('input[aria-label^="Writeup grade (%) for"]')`
+    await evaluate(`${gradeInput}.focus();${gradeInput}.select()`)
+    await cdp.send('Input.insertText',{text:'37'})
+    const loadedPdfRequests = pdfRequests
+    for (let cycle=0; cycle<3; cycle++) {
+      await clickText('Projected scoreboard')
+      await wait(`document.querySelector('[role="tab"][aria-selected="true"]').textContent==='Projected scoreboard'`)
+      if (cycle===1) await clickText('Stargazers')
+      else {
+        // Exercise the native tab keyboard interaction as well as pointer navigation.
+        await evaluate(`document.querySelector('[role="tab"][aria-selected="true"]').focus()`)
+        await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'ArrowLeft',code:'ArrowLeft',windowsVirtualKeyCode:37})
+        await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'ArrowLeft',code:'ArrowLeft',windowsVirtualKeyCode:37})
+      }
+      await waitForPdf()
+      assert.equal(await evaluate(`${gradeInput}.value`),'37','Tab navigation must preserve the unsaved grade')
+      assert.deepEqual(errors,[],'Returning to a loaded PDF must not reuse a destroyed worker')
+      assert.equal(await evaluate(`/sendWithPromise|sendWithStream/.test(document.body.innerText)`),false)
+    }
+    assert.equal(pdfRequests,loadedPdfRequests,'Tab switches must not download the same PDF again')
+    await audit(name+'-returned-review')
     await clickText('Projected scoreboard'); await audit(name+'-ranking')
   }
   await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false})
@@ -95,6 +125,6 @@ try {
   assert.ok(writes.every(w=>w.method==='PUT' && /^\/api\/admin\/writeups\/19\/grading\/\d+\/\d+$/.test(w.path)))
   assert.deepEqual(reports.filter(r=>r.overflow || r.h1!==1 || r.violations.length),[])
 } finally {
-  writeFileSync(output+'/report.json',JSON.stringify({target,fixtures:true,reports,writes,unknown,errors},null,2))
+  writeFileSync(output+'/report.json',JSON.stringify({target,fixtures:true,reports,writes,pdfRequests,unknown,errors},null,2))
   await close()
 }

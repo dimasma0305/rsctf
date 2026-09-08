@@ -161,7 +161,8 @@ export default function GameWriteups() {
                 }}
               />
             </Group>
-            <Tabs value={tab} onChange={setTab}>
+            {/* Activity cleanup destroys PDF.js workers and resets grade drafts on reveal. */}
+            <Tabs value={tab} onChange={setTab} keepMountedMode="display-none">
               <Tabs.List>
                 <Tabs.Tab value="review">{t('admin.grading.review', 'Review a team')}</Tabs.Tab>
                 <Tabs.Tab value="ranking">{t('admin.grading.ranking', 'Projected scoreboard')}</Tabs.Tab>
