@@ -24,7 +24,7 @@ const wait = async (expression) => {
   throw new Error('Timed out: ' + expression + '; ' + await evaluate('document.body.innerText.slice(-1500)'))
 }
 const clickText = (text) => evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent===${JSON.stringify(text)}).click()`)
-const waitForPdf = () => wait(`Array.from(document.querySelectorAll('.react-pdf__Page__canvas')).filter(c=>c.width>0 && c.height>0 && c.getClientRects().length).length===3 && Array.from(document.querySelectorAll('.react-pdf__Page__textContent')).filter(p=>p.textContent.includes('Writeup review fixture - page')).length===3`)
+const waitForPdf = (page=1) => wait(`Array.from(document.querySelectorAll('.react-pdf__Page__canvas')).filter(c=>c.width>0 && c.height>0 && c.getClientRects().length).length===1 && document.querySelector('.react-pdf__Page[data-page-number="${page}"] .react-pdf__Page__textContent')?.textContent.includes('Writeup review fixture - page ${page}')`)
 const visit = async () => {
   await evaluate('window.__writeupOldDocument=true')
   await cdp.send('Page.navigate', { url: target + '/admin/games/19/writeups' })
@@ -67,6 +67,13 @@ try {
     await cdp.send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:name==='light'?'reduce':'no-preference'}]})
     await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('mantine-color-scheme-value',${JSON.stringify(scheme)})`})
     await visit(); await audit(name+'-review')
+    await evaluate(`document.querySelector('[data-pdf-viewer] button[aria-label="Next writeup page"]').focus()`)
+    await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r',unmodifiedText:'\r'})
+    await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
+    await waitForPdf(2)
+    await evaluate(`document.querySelector('[data-pdf-viewer] button[aria-label="Page 3"]').click()`)
+    await waitForPdf(3)
+    assert.equal(await evaluate(`document.querySelector('[data-pdf-viewer] button[aria-label="Next writeup page"]').disabled`),true)
     const gradeInput = `document.querySelector('input[aria-label^="Writeup grade (%) for"]')`
     await evaluate(`${gradeInput}.focus();${gradeInput}.select()`)
     await cdp.send('Input.insertText',{text:'37'})
@@ -74,6 +81,7 @@ try {
     for (let cycle=0; cycle<3; cycle++) {
       await clickText('Projected scoreboard')
       await wait(`document.querySelector('[role="tab"][aria-selected="true"]').textContent==='Projected scoreboard'`)
+      await wait(`document.querySelectorAll('.react-pdf__Page__canvas').length===0`)
       if (cycle===1) await clickText('Stargazers')
       else {
         // Exercise the native tab keyboard interaction as well as pointer navigation.
@@ -81,7 +89,7 @@ try {
         await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'ArrowLeft',code:'ArrowLeft',windowsVirtualKeyCode:37})
         await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'ArrowLeft',code:'ArrowLeft',windowsVirtualKeyCode:37})
       }
-      await waitForPdf()
+      await waitForPdf(3)
       assert.equal(await evaluate(`${gradeInput}.value`),'37','Tab navigation must preserve the unsaved grade')
       assert.deepEqual(errors,[],'Returning to a loaded PDF must not reuse a destroyed worker')
       assert.equal(await evaluate(`/sendWithPromise|sendWithStream/.test(document.body.innerText)`),false)
@@ -105,6 +113,7 @@ try {
   await clickText('Projected scoreboard')
   await clickText('Stargazers')
   await wait(`document.body.innerText.includes('Saved grade: 50%')`)
+  await waitForPdf(1)
   await setGrade(101)
   assert.ok(await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Save grade').disabled`))
   await setGrade(0); failSave=true; await clickText('Save grade')

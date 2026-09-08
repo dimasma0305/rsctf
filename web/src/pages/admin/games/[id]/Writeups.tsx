@@ -278,7 +278,12 @@ export default function GameWriteups() {
                               >
                                 {t('admin.grading.open', 'Open / download writeup')}
                               </Button>
-                              <PDFViewer key={selected.team.writeupUrl} url={selected.team.writeupUrl} height="65vh" />
+                              <PDFViewer
+                                key={selected.team.writeupUrl}
+                                url={selected.team.writeupUrl}
+                                height="65vh"
+                                active={tab === 'review'}
+                              />
                             </>
                           ) : (
                             <Paper withBorder p="md">

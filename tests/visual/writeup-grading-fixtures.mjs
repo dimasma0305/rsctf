@@ -29,15 +29,16 @@ export function gradingFixture() {
   }
 }
 
-export function pdfFixture() {
+export function pdfFixture({ pages = 3, height = 220 } = {}) {
+  if (!Number.isInteger(pages) || pages < 1 || pages > 100) throw new Error('Fixture requires 1–100 pages')
   const objects = [
-    '<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [4 0 R 6 0 R 8 0 R] /Count 3 >>',
+    '<< /Type /Catalog /Pages 2 0 R >>', `<< /Type /Pages /Kids [${Array.from({ length: pages }, (_, i) => `${4 + i * 2} 0 R`).join(' ')}] /Count ${pages} >>`,
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
   ]
-  for (let page = 1; page <= 3; page++) {
+  for (let page = 1; page <= pages; page++) {
     const stream = `BT /F1 18 Tf 30 160 Td (Writeup review fixture - page ${page}) Tj ET`
     objects.push(
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 220] /Resources << /Font << /F1 3 0 R >> >> /Contents ${objects.length + 2} 0 R >>`,
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 ${height}] /Resources << /Font << /F1 3 0 R >> >> /Contents ${objects.length + 2} 0 R >>`,
       `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
     )
   }
