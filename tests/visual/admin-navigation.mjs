@@ -26,8 +26,9 @@ const wait = async (expression) => {
 }
 const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).focus();document.querySelector(${JSON.stringify(selector)}).click()`)
 const visit = async (path, expected) => {
+  await evaluate('window.__rsctfOldNavigationDocument = true')
   await cdp.send('Page.navigate', { url: target + path })
-  await wait(`document.querySelector('h1') && document.body.innerText.includes(${JSON.stringify(expected)})`)
+  await wait(`!window.__rsctfOldNavigationDocument && document.querySelector('h1') && document.body.innerText.includes(${JSON.stringify(expected)})`)
 }
 const audit = async (name) => {
   await evaluate('Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().endTime!==Infinity).map(a=>a.finished.catch(()=>{})))')
@@ -110,12 +111,14 @@ try {
     assert.equal(await evaluate('document.activeElement.getAttribute("href")'),'/admin/settings?section=email')
     await keyboard('Enter',13)
     await wait(`location.search==='?section=email' && document.querySelector('#settings-tab-email[aria-selected=true]')`)
+    await evaluate('window.__rsctfOldNavigationDocument = true')
     await cdp.send('Page.reload')
-    await wait(`document.querySelector('#settings-tab-email[aria-selected=true]')`)
+    await wait(`!window.__rsctfOldNavigationDocument && document.querySelector('#settings-tab-email[aria-selected=true]')`)
     await click('#settings-tab-platform')
     await wait(`document.querySelector('#settings-panel input[placeholder=RS]')?.value==='RSCTF'`)
     await evaluate(`document.querySelector('#settings-panel input[placeholder=RS]').focus();document.querySelector('#settings-panel input[placeholder=RS]').select()`)
     await cdp.send('Input.insertText',{text:'Unsaved fixture title'})
+    await wait(`document.querySelector('#settings-panel input[placeholder=RS]')?.value==='Unsaved fixture title'`)
     const readCount = reads.filter((p)=>p==='/api/admin/config').length
     await click('#settings-tab-email')
     await wait(`location.search==='?section=email'`)
