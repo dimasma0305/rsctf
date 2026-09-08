@@ -1,4 +1,15 @@
 {
+  "navigation": {
+    "player_view": "Player view",
+    "all_events": "All events",
+    "all_challenges": "All challenges",
+    "challenge_settings": "Challenge settings",
+    "challenge_reviews": "Challenge reviews",
+    "flags_files": "Flags & files",
+    "challenge_id": "Challenge #{{id}}",
+    "switch_challenge": "Jump to challenge",
+    "groups": { "setup": "Event setup", "competition": "Competition", "people": "Teams & communication" }
+  },
   "ad_console": {
     "title": "Live operations",
     "ended": "Event ended",

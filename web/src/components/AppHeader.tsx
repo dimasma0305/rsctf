@@ -56,11 +56,15 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
 
   const close = () => setOpened(false)
   const navItems = getWorkspaceNavigation(location.pathname, user, config.donationsEnabled)
-  const dockItems = PRIMARY_NAVIGATION.filter(
-    (item) => !item.admin && canAccessNavigationItem(item, user, config.donationsEnabled)
-  )
-    .filter((item) => ['/games', '/challenges', '/teams', '/'].includes(item.link))
-    .slice(0, 4)
+  const adminWorkspace =
+    location.pathname.startsWith('/admin/') && navItems.some((item) => item.link.startsWith('/admin/'))
+  const dockItems = adminWorkspace
+    ? navItems.filter((item) =>
+        ['/admin/dashboard', '/admin/games', '/admin/users', '/admin/builds'].includes(item.link)
+      )
+    : PRIMARY_NAVIGATION.filter((item) => !item.admin && canAccessNavigationItem(item, user, config.donationsEnabled))
+        .filter((item) => ['/games', '/challenges', '/teams', '/'].includes(item.link))
+        .slice(0, 4)
 
   return (
     <>
@@ -309,7 +313,7 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
           aria-haspopup="dialog"
           data-guide="more-navigation"
           data-active={
-            opened || location.pathname.startsWith('/admin') || location.pathname.startsWith('/about') || undefined
+            opened || !dockItems.some((item) => isNavigationItemActive(item, location.pathname)) || undefined
           }
           onClick={() => setOpened(true)}
         >

@@ -632,6 +632,7 @@ const GameChallengeEdit: FC = () => {
               color="red"
               leftSection={<Icon path={mdiDeleteOutline} size={1} />}
               variant="outline"
+              style={{ color: 'light-dark(var(--mantine-color-red-8), var(--mantine-color-red-3))' }}
               onClick={() =>
                 modals.openConfirmModal({
                   title: t('admin.button.challenges.delete'),

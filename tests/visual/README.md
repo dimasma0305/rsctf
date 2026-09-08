@@ -149,3 +149,25 @@ temporary servers afterward. `RSCTF_AD_OPS_TARGET=https://intechfest.1pc.tf` and
 `--screens-only` validate deployed assets without contacting the real admin API.
 `RSCTF_AD_OPS_OUTPUT` overrides the default `visual-audit-output/ad-ops-local/`.
 This does not replace backend authorization, checker, lifecycle, or load tests.
+
+## Administration navigation
+
+`admin-navigation.mjs` exercises the shared admin shell, grouped event sections,
+challenge/flags switching, settings deep links, browser Back, retained settings
+drafts, keyboard page search, manager navigation, and the admin mobile dock.
+All API traffic is intercepted with invented read-only fixtures, including when
+the target is the deployed Intechfest preview. No admin mutation is allowed.
+
+```sh
+scripts/bounded-frontend.sh exec node ../tests/visual/admin-navigation.mjs
+```
+
+Use the loopback preview on port 63017. For the standard full-page audit,
+`node tests/visual/admin-navigation-fixtures.mjs --serve` provides a read-only
+proxy on port 63018. Stop both temporary services after testing. Never supply a
+real credential to the fixture proxy.
+
+`--interactions-only` shortens the local feedback loop; the final run must include
+all layouts. `RSCTF_ADMIN_NAV_TARGET=https://intechfest.1pc.tf` with `--screens-only`
+checks deployed rendering. Set `RSCTF_ADMIN_NAV_OUTPUT` for a separate output
+directory. These checks do not certify backend authorization or admin operations.

@@ -1,4 +1,15 @@
 {
+  "navigation": {
+    "player_view": "Tampilan pemain",
+    "all_events": "Semua event",
+    "all_challenges": "Semua tantangan",
+    "challenge_settings": "Pengaturan tantangan",
+    "challenge_reviews": "Ulasan tantangan",
+    "flags_files": "Flag & berkas",
+    "challenge_id": "Tantangan #{{id}}",
+    "switch_challenge": "Pindah ke tantangan",
+    "groups": { "setup": "Pengaturan event", "competition": "Kompetisi", "people": "Tim & komunikasi" }
+  },
   "ad_console": {
     "title": "Operasi langsung",
     "ended": "Acara berakhir",

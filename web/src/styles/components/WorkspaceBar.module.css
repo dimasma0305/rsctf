@@ -3,6 +3,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  flex-wrap: wrap;
   min-height: 58px;
   border-bottom: 1px solid var(--app-border-subtle);
 }
@@ -22,6 +23,7 @@
   color: var(--app-text-muted);
 }
 .trigger {
+  margin-inline-start: auto;
   flex-shrink: 0;
   font-weight: 500;
   min-height: 36px;
@@ -68,6 +70,16 @@
   }
   .breadcrumbs > :not(:first-child) {
     display: none;
+  }
+  .breadcrumbs[data-admin] > * {
+    display: none;
+  }
+  .breadcrumbs[data-admin] > :nth-last-child(-n + 3) {
+    display: block;
+  }
+  .breadcrumbs[data-admin] {
+    overflow-wrap: anywhere;
+    flex: 1 1 10rem;
   }
   .trigger {
     min-height: 40px;

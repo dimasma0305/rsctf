@@ -16,6 +16,49 @@
   min-width: 0;
   max-width: 100%;
 }
+.eventLayout {
+  display: grid;
+  grid-template-columns: 12rem minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+.eventNav {
+  position: sticky;
+  top: 1rem;
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+  padding: 3px;
+}
+.eventMobile {
+  display: none;
+}
+.eventLink {
+  border-radius: 0.5rem;
+  min-height: 40px;
+}
+.eventLink :global(.mantine-NavLink-label) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.eventContent {
+  width: 100%;
+}
+.challengeSwitcher {
+  min-width: 0;
+  flex: 1 1 16rem;
+}
+@media (max-width: 68.75em) {
+  .eventLayout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+  .eventNav {
+    display: none;
+  }
+  .eventMobile {
+    display: block;
+  }
+}
 @media (max-width: 48em) {
   .toolbar {
     padding: 0.65rem;

@@ -29,32 +29,26 @@ import {
 } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import {
-  mdiAccountGroupOutline,
   mdiAlert,
   mdiCheck,
   mdiContentSaveOutline,
-  mdiCubeOutline,
   mdiDocker,
   mdiDotsHorizontal,
-  mdiEmailOutline,
-  mdiHammerWrench,
-  mdiHandHeart,
-  mdiHeartPulse,
   mdiInformationOutline,
   mdiKeyChainVariant,
   mdiKubernetes,
-  mdiPackageVariantClosed,
   mdiRestore,
   mdiShieldCheckOutline,
-  mdiViewDashboardOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useSearchParams } from 'react-router'
 import { ColorPreview } from '@Components/ColorPreview'
 import { IconTabs } from '@Components/IconTabs'
 import { LogoBox } from '@Components/LogoBox'
 import { AdminPage } from '@Components/admin/AdminPage'
+import { getSettingsSection, SETTINGS_SECTIONS, type SettingsSectionKey } from '@Components/admin/navigation'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { webCryptoAvailable } from '@Utils/Crypto'
 import {
@@ -123,18 +117,16 @@ const Configs: FC = () => {
   // Sidebar nav + dirty tracking. The snapshot captured on initial
   // load is the comparison baseline — when any field diverges from
   // that snapshot, the sticky save bar lights up.
-  type SectionKey =
-    | 'platform'
-    | 'account'
-    | 'container'
-    | 'build_registry'
-    | 'email'
-    | 'captcha'
-    | 'oauth'
-    | 'registry_pull'
-    | 'donations'
-    | 'diagnostics'
-  const [activeSection, setActiveSection] = useState<SectionKey>('platform')
+  type SectionKey = SettingsSectionKey
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeSection = getSettingsSection(searchParams.toString())
+  const setActiveSection = (section: SectionKey) => {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous)
+      next.set('section', section)
+      return next
+    }, { preventScrollReset: true })
+  }
   const initialSnapshotRef = useRef<ConfigEditModel | null>(null)
   const saveOwnerRef = useRef(false)
   const operationRef = useRef<SettingsOperationOwner | null>(loadSettingsOperation())
@@ -270,18 +262,7 @@ const Configs: FC = () => {
     donations,
   ])
 
-  const navItems: { key: SectionKey; icon: string }[] = [
-    { key: 'platform', icon: mdiViewDashboardOutline },
-    { key: 'account', icon: mdiAccountGroupOutline },
-    { key: 'container', icon: mdiCubeOutline },
-    { key: 'email', icon: mdiEmailOutline },
-    { key: 'captcha', icon: mdiShieldCheckOutline },
-    { key: 'oauth', icon: mdiKeyChainVariant },
-    { key: 'registry_pull', icon: mdiPackageVariantClosed },
-    { key: 'build_registry', icon: mdiHammerWrench },
-    { key: 'donations', icon: mdiHandHeart },
-    { key: 'diagnostics', icon: mdiHeartPulse },
-  ]
+  const navItems = SETTINGS_SECTIONS
 
   const STATUS_COLORS: Record<SectionStatus, string> = {
     configured: 'teal',
