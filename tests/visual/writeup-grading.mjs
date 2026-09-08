@@ -33,6 +33,7 @@ const visit = async () => {
   }
 }
 const audit = async (name) => {
+  await evaluate('Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().endTime!==Infinity).map(a=>a.finished.catch(()=>{})))')
   await evaluate(readFileSync('node_modules/axe-core/axe.min.js', 'utf8'))
   const r = await evaluate(`(async()=>({overflow:document.documentElement.scrollWidth>innerWidth+1,h1:document.querySelectorAll('h1').length,violations:(await axe.run(document,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}})).violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>({target:n.target,summary:n.failureSummary}))}))}))()`)
   const shot = await cdp.send('Page.captureScreenshot', { format:'png',captureBeyondViewport:false })
