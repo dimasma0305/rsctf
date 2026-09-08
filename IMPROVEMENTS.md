@@ -4,16 +4,18 @@ Approved scope: the September 8, 2026 UI/UX and backend review. Work proceeds in
 small, locally verified releases. Existing functionality is reviewed before adding
 anything; a historical bug report or unchecked TODO is not proof a bug remains.
 
-Status: **step 1 in progress**. The rest is queued, not completed. This plan does
+Status: **the saved-configuration slice of step 1 is shipped**. Runtime preflight
+and the remaining steps are queued, not completed. This plan does
 not authorize changes to live competition scores, participants, or event settings.
 
 ## 1. Event readiness and actionable failures
 
-- [ ] Saved-configuration readiness page: schedule, freeze, writeup deadline,
+- [x] Saved-configuration readiness page: schedule, freeze, writeup deadline,
   enabled/approved challenges, latest build outcomes, and links to the owning UI.
-- [ ] Explicitly separate configuration checks, stale data, and unverified runtime
+- [x] Explicitly separate configuration checks, stale data, and unverified runtime
   readiness. Hidden rehearsals and prebuilt images must not produce false failures.
-- [ ] Actionable initial-load, denied-access, refresh, and service-failure states.
+- [x] Actionable initial-load, denied-access, refresh, and service-failure states
+  on the readiness page.
 - [ ] Follow-up: inspect real roster, checker, worker, capacity, VPN, and instance
   readiness through bounded existing service owners; avoid per-challenge fan-out.
 - [ ] Extend useful failure messages to event setup, player access/downloads,
@@ -128,7 +130,29 @@ audit. Rust formatting, a warning-free all-target build and 1,703 tests passed;
 410 infrastructure-dependent tests were ignored by the standard suite. The initial
 two-job build exceeded its 12 GB cgroup cap; the single-job retry passed without
 raising that cap. Real existing API reads returned 200 for the administrator, 401
-anonymously and 403 for a non-manager. Release/digest verification is still pending.
+anonymously and 403 for a non-manager.
+
+Shipped September 8, 2026:
+
+- Code commit: `2b6ffab68414ab1a7c427fe84c443cde1e51f7da`, pushed to `main`.
+- Package version: `0.1.118`.
+- Image: `ghcr.io/dimasma0305/rsctf@sha256:cf89f69dce496ae583bd9925406b39477d9dcd540fc89aed934bab97ed583ab5`.
+- [Release pipeline](https://github.com/dimasma0305/rsctf/actions/runs/34207046816)
+  passed, including platform/label verification and attestation.
+- TCP: two web replicas, control, and firewall helper are healthy on that digest
+  with zero restarts at verification. `/healthz` returned exactly `ok`; recent
+  application logs contained no warnings, errors or unexpected 5xx.
+- Intechfest: the frontend is extracted from that same image; the existing backend
+  was not replaced or restarted by the rollout. `/healthz` returned exactly `ok`.
+- Both domains passed 12 live-origin browser fixture states. TCP's HTML (including
+  its documented anti-autofill injection) and 24 referenced assets matched the image;
+  Intechfest's HTML and 24 referenced assets matched the extracted image frontend.
+- Databases and Redis retained their container IDs and start times. No competition
+  data, scores, users, or challenge containers were changed by this rollout.
+
+Host evidence: `/root/rsctf-production/releases/sha-2b6ffab6/DEPLOYMENT.md` and
+`visual-audit-output/event-readiness-{tcp,intechfest}/`. This release does **not**
+complete runtime preflight, writeup draft protection, or the remaining roadmap.
 
 ### Reliability findings queued for investigation
 
