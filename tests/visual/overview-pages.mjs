@@ -80,6 +80,7 @@ try {
     await inspect(name + '-games')
     assert.equal(await evaluate(`document.querySelectorAll('[data-event-catalog] h2').length`), 3)
     assert.ok(await evaluate(`Array.from(document.querySelectorAll('#event-catalog-results [data-status], #event-catalog-results [data-membership]')).every(label => getComputedStyle(label).position !== 'absolute' && label.scrollWidth <= label.clientWidth + 1 && label.scrollHeight <= label.clientHeight + 1)`), 'Event status and membership labels must wrap without clipping in the narrow poster column')
+    assert.ok(await evaluate(`(() => { const labels = Array.from(document.querySelectorAll('[data-guide="event-card"] [aria-hidden="true"] > span')).filter(label => label.textContent.startsWith('#')); return labels.length === 3 && labels.every(label => getComputedStyle(label).opacity === '1'); })()`), 'Placeholder IDs must not dilute the theme text contrast')
     if (width >= 1440) assert.ok(await evaluate(`document.querySelector('#event-catalog-results [data-guide="event-card"]').getBoundingClientRect().top < 410`), 'Event cards must not be pushed below decorative chrome')
     await visit('/admin/dashboard', `document.querySelector('[data-dashboard-stats]') && !document.querySelector('.mantine-LoadingOverlay-root')`)
     await inspect(name + '-dashboard')

@@ -76,3 +76,11 @@ test('event status and membership use wrapping content instead of clipped poster
   assert.doesNotMatch(stateStyles, /position: absolute|overflow: hidden|white-space: nowrap/)
   assert.match(cardStyles, /\.stateRow \{[\s\S]*?flex-wrap: wrap/)
 })
+
+test('placeholder IDs retain the contrast-safe theme text without alpha blending', () => {
+  const placeholder = cardStyles.match(/\.posterFallback \{([\s\S]*?)\n\}/)?.[1]
+  const code = cardStyles.match(/\.posterCode \{([\s\S]*?)\n\}/)?.[1]
+  assert.ok(placeholder && code)
+  assert.match(placeholder, /color: var\(--app-text-muted\)/)
+  assert.doesNotMatch(placeholder + code, /opacity:|filter:/)
+})
