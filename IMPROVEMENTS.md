@@ -287,6 +287,30 @@ color and personality when removing generic decoration.
 Evidence and rollback: `/root/rsctf-production/releases/sha-af212f21/DEPLOYMENT.md`.
 Real catalog screenshot: `visual-audit-output/event-colors-live/tcp-public/desktop--games--index--viewport.png`.
 
+### September 9: soften event-card color with patterned fades
+
+Follow-up to the color restoration: the full-height gradients were too bold.
+Posterless cards now use subtle diagonal/circular motifs and translucent color
+fading into a neutral base. Layout, wrapping labels, readable IDs/icons, stable
+event hues, uploaded posters, keyboard focus, and reduced motion are preserved.
+
+- Released `36e94c24686110778162e55c1177a9b0c16bf283`, package `0.1.118`.
+- Immutable image: `ghcr.io/dimasma0305/rsctf@sha256:fbf3d83cc0e586f4c8b24d3a19678e76189d82221020e23214205a7cd990ed4f`.
+- [Full release gate](https://github.com/dimasma0305/rsctf/actions/runs/34315893119)
+  passed after local check/lint/build, 634 client tests, 21 fixture tests, and
+  1,703 Rust tests. No build warnings; 410 infrastructure tests ignored locally.
+- Local and packaged 27-state browser checks, 54 live-origin states, and real
+  public desktop/320px audits passed. No reported Axe violations, overflow, or
+  runtime errors. Existing narrow schedule-label ellipses were reviewed.
+- Four TCP replicas are healthy on the exact digest with zero restarts; both
+  origins return exact `ok` and matching assets. Recent logs show no new errors.
+  Intechfest uses the same image's frontend without restarting its backend.
+  No competition data or challenge containers changed. Temporary previews stopped.
+
+Evidence and rollback: `/root/rsctf-production/releases/sha-36e94c24/DEPLOYMENT.md`.
+Screenshot: `visual-audit-output/event-motif-live/tcp-public/desktop--games--index--viewport.png`.
+This follow-up record is documentation-only and does not require another image.
+
 ### Reliability findings queued for investigation
 
 During pre-release inspection on September 8, TCP control and the Intechfest source
