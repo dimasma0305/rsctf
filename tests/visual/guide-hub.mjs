@@ -76,6 +76,8 @@ try {
     await cdp.send('Page.navigate',{url:`${target}/guide?audit=${name}`})
     await wait(`document.querySelectorAll('[data-guide-topic]').length===8 && !document.querySelector('[data-guide-start]').disabled`)
     assert.equal(await evaluate(`document.querySelectorAll('h1').length`),1)
+    assert.equal(await evaluate(`getComputedStyle(document.querySelector('[data-guide-article]')).borderRadius`),'0px')
+    if (width >= 1200) assert.ok(await evaluate(`document.querySelector('[data-guide-start]').closest('section').getBoundingClientRect().height < 110`),'walkthrough must not become an oversized hero')
     await audit(`${name}-hub`)
     for (const id of ['play-challenge','connections','scoring','troubleshooting']) {
       await evaluate(`document.querySelector('[data-guide-topic="${id}"]').focus()`)

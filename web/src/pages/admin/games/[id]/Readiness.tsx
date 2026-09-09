@@ -1,4 +1,4 @@
-import { Alert, Badge, Button, Group, Paper, Skeleton, Stack, Text, Title } from '@mantine/core'
+import { Alert, Button, Group, Skeleton, Stack, Text, Title } from '@mantine/core'
 import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useParams } from 'react-router'
@@ -6,13 +6,8 @@ import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
 import { canShowReadinessCache, eventReadiness, readinessError, type ReadinessState } from '@Utils/EventReadiness'
 import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { ChallengeType } from '@Api'
+import classes from '@Styles/EventReadiness.module.css'
 
-const colors: Record<ReadinessState, string> = {
-  checked: 'teal',
-  attention: 'orange',
-  unverified: 'gray',
-  info: 'blue',
-}
 const priority: Record<ReadinessState, number> = { attention: 0, unverified: 1, checked: 2, info: 3 }
 
 export default function EventReadiness() {
@@ -55,9 +50,9 @@ export default function EventReadiness() {
   }
 
   return (
-    <WithGameEditTab
-      head={
-        <>
+    <WithGameEditTab>
+      <Stack gap="lg" data-event-readiness>
+        <Group justify="space-between" align="center" gap="sm">
           <Text size="sm" c="dimmed" maw="42rem">
             {t('admin.readiness.intro')}
           </Text>
@@ -71,10 +66,7 @@ export default function EventReadiness() {
           >
             {t('admin.readiness.refresh')}
           </Button>
-        </>
-      }
-    >
-      <Stack gap="md" data-event-readiness>
+        </Group>
         {errorKind && (
           <Alert color="orange" role="alert" title={t('admin.readiness.load_failed')} data-readiness-error>
             <Stack gap="xs">
@@ -107,16 +99,18 @@ export default function EventReadiness() {
         )}
         {hasSnapshot && (
           <>
-            <Paper withBorder p="md" radius="md" data-readiness-snapshot>
+            <div className={classes.snapshot} data-readiness-snapshot>
               <Stack gap="xs">
                 <Text fw={650} style={{ overflowWrap: 'anywhere' }}>
                   {game.title}
                 </Text>
                 <Group gap="xs">
-                  <Badge variant="light">{t(game.hidden ? 'admin.readiness.hidden' : 'admin.readiness.public')}</Badge>
-                  <Badge variant="light">
+                  <Text size="xs" c="dimmed">
+                    {t(game.hidden ? 'admin.readiness.hidden' : 'admin.readiness.public')}
+                  </Text>
+                  <Text size="xs" c="dimmed">
                     {t(game.practiceMode ? 'admin.readiness.practice' : 'admin.readiness.competition')}
-                  </Badge>
+                  </Text>
                 </Group>
                 <Text size="sm" role="status" aria-live="polite">
                   {refreshing
@@ -129,43 +123,40 @@ export default function EventReadiness() {
                   {t('admin.readiness.snapshot_note')}
                 </Text>
               </Stack>
-            </Paper>
-            {checks.map((check) => (
-              <Paper
-                component="section"
-                key={check.key}
-                withBorder
-                p="md"
-                radius="md"
-                aria-labelledby={`readiness-${check.key}`}
-                data-readiness-check={check.key}
-              >
-                <Stack gap="xs">
-                  <Group justify="space-between" gap="xs">
-                    <Title order={2} size="h5" id={`readiness-${check.key}`}>
-                      {t(`admin.readiness.checks.${check.key}`)}
-                    </Title>
-                    <Badge color={colors[check.state]} variant="light">
-                      {t(`admin.readiness.states.${check.state}`)}
-                    </Badge>
-                  </Group>
-                  <Text size="sm">{t(`admin.readiness.reasons.${check.reason}`, { count: check.count })}</Text>
-                  <div>
-                    <Button
-                      component={Link}
-                      to={`${root}/${check.section}`}
-                      variant="default"
-                      size="compact-sm"
-                      mih={44}
-                      aria-label={t('admin.readiness.open_check', { check: t(`admin.readiness.checks.${check.key}`) })}
-                    >
-                      {t(`admin.readiness.actions.${check.section}`)}
-                    </Button>
-                  </div>
-                </Stack>
-              </Paper>
-            ))}
-            <Paper component="section" withBorder p="md" radius="md" aria-labelledby="readiness-runtime">
+            </div>
+            <div className={classes.checks}>
+              {checks.map((check) => (
+                <section
+                  key={check.key}
+                  className={classes.check}
+                  aria-labelledby={`readiness-${check.key}`}
+                  data-readiness-check={check.key}
+                >
+                  <Stack gap={6} className={classes.checkCopy}>
+                    <Group justify="space-between" gap="xs">
+                      <Title order={2} size="h5" id={`readiness-${check.key}`}>
+                        {t(`admin.readiness.checks.${check.key}`)}
+                      </Title>
+                      <Text component="span" size="xs" className={classes.status} data-state={check.state}>
+                        {t(`admin.readiness.states.${check.state}`)}
+                      </Text>
+                    </Group>
+                    <Text size="sm">{t(`admin.readiness.reasons.${check.reason}`, { count: check.count })}</Text>
+                  </Stack>
+                  <Button
+                    component={Link}
+                    to={`${root}/${check.section}`}
+                    variant="subtle"
+                    size="compact-sm"
+                    mih={44}
+                    aria-label={t('admin.readiness.open_check', { check: t(`admin.readiness.checks.${check.key}`) })}
+                  >
+                    {t(`admin.readiness.actions.${check.section}`)}
+                  </Button>
+                </section>
+              ))}
+            </div>
+            <section className={classes.manual} aria-labelledby="readiness-runtime">
               <Stack gap="sm">
                 <Title order={2} size="h5" id="readiness-runtime">
                   {t('admin.readiness.runtime_title')}
@@ -179,23 +170,23 @@ export default function EventReadiness() {
                   ...(hasCompetitiveServices ? [{ key: 'services', section: 'adops' }] : []),
                   ...(game.vpnAccessRequired ? [{ key: 'vpn', section: 'info' }] : []),
                 ].map((item) => (
-                  <Stack key={item.key} gap={4}>
+                  <div key={item.key} className={classes.manualRow}>
                     <Text size="sm">{t(`admin.readiness.manual.${item.key}`)}</Text>
                     <div>
                       <Button
                         component={Link}
                         to={`${root}/${item.section}`}
-                        variant="default"
+                        variant="subtle"
                         size="compact-sm"
                         mih={44}
                       >
                         {t(`admin.readiness.actions.${item.key}`)}
                       </Button>
                     </div>
-                  </Stack>
+                  </div>
                 ))}
               </Stack>
-            </Paper>
+            </section>
           </>
         )}
       </Stack>

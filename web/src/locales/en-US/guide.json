@@ -2,7 +2,7 @@
   "hub": {
     "eyebrow": "PLAYER FIELD GUIDE", "title": "Find your next step.",
     "description": "Choose a topic or follow a walkthrough in the app.",
-    "tour_title": "Learn by doing", "tour_body": "A short walkthrough of the platform. You stay in control of every action.",
+    "tour_title": "Interactive walkthrough", "tour_body": "Follow the steps on the platform’s controls.",
     "start": "Start walkthrough", "resume": "Resume walkthrough", "replay": "Replay walkthrough",
     "progress": "Walkthrough · step {{current}} of {{total}}", "complete": "Walkthrough completed",
     "settings": "Guide preferences", "tips": "Show contextual tips",

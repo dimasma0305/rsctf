@@ -144,9 +144,14 @@ try {
     assert.equal(await evaluate(`document.querySelectorAll('[data-post-card][data-pinned]').length`), 1)
     assert.equal(await evaluate(`!!document.querySelector('a[href="/posts/new/edit"]')`), false)
     assert.equal(await evaluate(`document.querySelectorAll('[data-post-card] time[datetime]').length`), 10)
+    assert.equal(await evaluate(`document.querySelectorAll('[data-post-card][data-layout="feed"]').length`), 10)
+    assert.equal(await evaluate(`!!document.querySelector('[data-posts-workspace] aside')`), false)
+    assert.ok(await evaluate(`Array.from(document.querySelectorAll('[data-post-card]')).every(card => getComputedStyle(card).borderRadius === '0px')`))
     await audit(name + '-posts')
     await navigate('/about', name)
     await wait(`document.querySelector('[data-about-page]')`)
+    assert.ok(await evaluate(`parseFloat(getComputedStyle(document.querySelector('[data-about-page] h1')).fontSize) <= 36`))
+    assert.ok(await evaluate(`Array.from(document.querySelectorAll('[data-about-page] h3')).every(heading => heading.closest('a').getBoundingClientRect().height >= 44)`))
     assert.equal(
       await evaluate(
         `(()=>{const links=[...document.querySelectorAll('[data-about-page] li a')].map(a=>a.href);return links.length>0&&new Set(links).size===links.length})()`

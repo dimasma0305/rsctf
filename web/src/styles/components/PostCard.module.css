@@ -137,6 +137,36 @@
   min-height: 44px;
 }
 
+/* The news index is a reading list; the home page keeps its existing cards. */
+.card[data-layout='feed'] {
+  border: 0;
+  border-bottom: 1px solid var(--app-border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+.card[data-layout='feed'] .content {
+  padding: 1.25rem 0.25rem;
+  gap: 0.5rem;
+}
+.card[data-layout='feed'] .accent {
+  display: none;
+}
+.card[data-layout='feed'] .title {
+  font-size: 1.15rem;
+  line-height: 1.5;
+}
+.card[data-layout='feed'] .titleLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
+.card[data-layout='feed'] .footer {
+  border: 0;
+  padding-top: 0;
+}
+
 @media (max-width: $mantine-breakpoint-xs) {
   .card:hover {
     transform: none;

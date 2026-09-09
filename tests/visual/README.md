@@ -12,6 +12,29 @@ exceptions and HTTP 5xx responses.
 Generated artifacts live in `/visual-audit-output` and are excluded from Git and
 the Docker build context.
 
+## Refined content pages
+
+The About, Posts, Guide, and event Readiness pages share a compact, content-first
+layout. Their existing browser harnesses include regressions against oversized
+headings, decorative feed cards, and an oversized walkthrough banner.
+
+For the full-content audit, start the preview on `127.0.0.1:63017` and run
+`node tests/visual/refined-pages-fixtures.mjs --serve` in a separate terminal.
+This loopback fixture server blocks writes and never forwards API or hub calls.
+
+```sh
+RSCTF_VISUAL_TARGET=http://127.0.0.1:63018 \
+RSCTF_VISUAL_ADMIN_JWT=local-fixture-not-a-credential \
+RSCTF_VISUAL_GAME_ID=19 \
+scripts/bounded-frontend.sh exec node ../tests/visual/audit.mjs \
+  --page =about --page =posts--index --page =guide--index \
+  --page =admin--games--game--readiness \
+  --viewport desktop --viewport tablet --viewport mobile --viewport compact
+```
+
+These are rendering/interaction fixtures, not evidence of backend permissions or
+runtime health. Stop the fixture server and preview when finished.
+
 ## Event readiness fixtures
 
 Start a frontend preview on `127.0.0.1:63017`, then run from the repository root:

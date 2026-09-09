@@ -95,7 +95,7 @@
       "formats": "Competition formats",
       "get_started": "Take the next step",
       "guide_description": "From joining a team to submitting your first flag.",
-      "intro": "A home for capture-the-flag competitions. Built with Rust and React, for the people who create challenges and the teams who solve them.",
+      "intro": "An open-source capture-the-flag platform built with Rust and React.",
       "jeopardy": "Find the flag. Solve the challenge.",
       "koth": "Take the lead. Hold your ground.",
       "legal_description": "Licensing varies by component. See the guide and third-party notices for details.",

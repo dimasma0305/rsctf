@@ -1,117 +1,46 @@
 .page {
+  max-width: 72rem;
   padding-block: 1.5rem 1rem;
 }
 .hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(220px, 1fr);
-  align-items: center;
-  gap: 2rem;
-  overflow: hidden;
-  position: relative;
-  padding: clamp(1.5rem, 4vw, 3rem);
-  border: 1px solid var(--app-border);
-  border-radius: 1rem;
-  background:
-    radial-gradient(ellipse at 95% 15%, var(--app-accent-surface), transparent 65%), var(--app-raised-surface);
-}
-.heroCopy {
-  min-width: 0;
-  position: relative;
-  z-index: 1;
+  padding-block: 0 1.75rem;
+  border-bottom: 1px solid var(--app-border);
 }
 .heroCopy > header {
   margin-top: 0;
 }
 .heroCopy h1 {
-  font-size: clamp(2.8rem, 5vw, 4.5rem);
-  letter-spacing: -0.065em;
+  display: flex;
+  align-items: center;
+  font-size: 2rem;
+  letter-spacing: -0.04em;
 }
-.heroCopy > header p:last-child {
-  font-size: 1.1rem;
-  color: var(--app-text-primary);
+.heroCopy h1 > svg {
+  flex-shrink: 0;
+  margin-inline-end: 0.75rem;
 }
 .intro {
-  max-width: 53ch;
-  margin-top: 1rem;
+  max-width: 65ch;
+  margin-top: 0.75rem;
   color: var(--app-text-secondary);
-  font-size: 0.925rem;
-  line-height: 1.8;
+  font-size: 0.95rem;
+  line-height: 1.7;
 }
 .heroActions {
-  margin-top: 1.5rem;
+  margin-top: 1.25rem;
 }
 .heroActions a {
   min-height: 44px;
 }
-.emblem {
-  display: grid;
-  place-items: center;
-  position: relative;
-  min-height: 280px;
-  isolation: isolate;
-}
-.emblem::before {
-  content: '';
-  position: absolute;
-  width: 270px;
-  height: 270px;
-  border-radius: 50%;
-  background: radial-gradient(circle, var(--app-accent-surface), transparent 70%);
-}
-.orbit,
-.orbitInner {
-  position: absolute;
-  width: 255px;
-  height: 255px;
-  border: 1px solid var(--app-accent-border);
-  border-radius: 50%;
-  transform: rotate(-28deg) scaleY(0.7);
-  box-shadow: 0 0 0 26px color-mix(in srgb, var(--app-border) 30%, transparent);
-}
-.orbitInner {
-  width: 255px;
-  height: 255px;
-  transform: rotate(38deg) scaleY(0.7);
-  box-shadow: none;
-  border-style: dashed;
-}
-.emblemCore {
-  display: grid;
-  place-items: center;
-  width: 150px;
-  height: 150px;
-  border-radius: 30%;
-  border: 1px solid var(--app-accent-border);
-  background: var(--app-raised-surface);
-  box-shadow: 12px 18px 0 color-mix(in srgb, var(--app-border) 35%, transparent);
-  transform: rotate(-8deg);
-}
-.emblemCore svg {
-  transform: rotate(8deg);
-}
-.coordinates {
-  position: absolute;
-  bottom: 0;
-  font: 0.6rem var(--mantine-font-family-monospace);
-  letter-spacing: 0.14em;
-  color: var(--app-text-secondary);
-}
 .modes {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.5rem;
+  padding-block: 1.5rem;
   border-bottom: 1px solid var(--app-border);
-  margin-bottom: 2rem;
 }
 .mode {
-  display: flex;
-  gap: 0.85rem;
-  padding: 1.5rem 1rem;
   min-width: 0;
-}
-.modeNumber {
-  font: 0.7rem var(--mantine-font-family-monospace);
-  color: var(--app-accent-text);
-  padding-top: 0.2rem;
 }
 .mode h2 {
   font-size: 0.9rem;
@@ -119,92 +48,74 @@
   line-height: 1.5;
 }
 .mode p {
-  font-size: 0.8rem;
+  font-size: 0.85rem;
   color: var(--app-text-secondary);
   margin-top: 0.3rem;
   line-height: 1.6;
 }
-.sectionHeading {
-  margin-bottom: 1.15rem;
+.section {
+  margin-top: 1.75rem;
 }
 .sectionHeading h2,
 .projectPanel h2 {
-  font-size: 1.3rem;
-  letter-spacing: -0.025em;
+  font-size: 1.1rem;
   line-height: 1.4;
-  margin-top: 0.25rem;
-}
-.kicker {
-  font-size: 0.65rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--app-text-secondary);
 }
 .resources {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1rem;
+  margin-top: 0.75rem;
 }
 .resourceCard {
-  position: relative;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.75rem;
-  padding: 1.5rem;
-  min-width: 0;
-  border: 1px solid var(--app-border);
-  border-radius: 0.8rem;
-  background: var(--app-raised-surface);
+  align-items: center;
+  gap: 1rem;
+  min-height: 72px;
+  padding: 1rem 0.5rem;
+  border-bottom: 1px solid var(--app-border-subtle);
   text-decoration: none;
   color: var(--app-text-primary);
-  transition:
-    border-color 140ms ease,
-    background 140ms ease;
+  transition: background 140ms ease;
 }
-.resourceCard > svg {
-  color: var(--app-accent-text);
-  margin-bottom: 0.4rem;
+.resourceCard > svg,
+.resourceArrow {
+  flex-shrink: 0;
+  color: var(--app-text-secondary);
+}
+.resourceCopy {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .resourceCard h3 {
-  font-size: 1rem;
-  line-height: 1.4;
+  font-size: 0.95rem;
+  line-height: 1.5;
   font-weight: 650;
 }
 .resourceCard p {
   color: var(--app-text-secondary);
   font-size: 0.85rem;
-  line-height: 1.65;
-  max-width: 36ch;
+  line-height: 1.6;
+  margin-top: 0.2rem;
 }
 .resourceCard:hover {
-  border-color: var(--app-accent-border);
   background: var(--app-hover-surface);
 }
 .resourceArrow {
-  display: block;
-  margin-top: auto;
-  padding-top: 0.25rem;
-  color: var(--app-accent-text);
+  display: flex;
 }
 .resourceCard:focus-visible,
 .contributorLink:focus-visible,
-.legalLinks a:focus-visible,
-.revision:focus-visible {
+.legalLinks a:focus-visible {
   outline: 2px solid var(--mantine-primary-color-filled);
   outline-offset: 3px;
 }
 .projectGrid {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
-  gap: 1rem;
-  margin-top: 1.5rem;
+  gap: 2rem;
+  margin-top: 2rem;
 }
 .projectPanel {
   min-width: 0;
-  padding: 1.5rem;
-  border: 1px solid var(--app-border);
-  border-radius: 0.8rem;
 }
 .panelDescription {
   color: var(--app-text-secondary);
@@ -218,7 +129,7 @@
   list-style: none;
   gap: 0.6rem;
   padding: 0;
-  margin: 1.25rem 0 0;
+  margin: 1rem 0 0;
 }
 .contributors li {
   min-width: 0;
@@ -228,10 +139,8 @@
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  min-height: 52px;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid var(--app-border-subtle);
-  border-radius: 0.6rem;
+  min-height: 44px;
+  padding: 0.25rem;
   text-decoration: none;
   color: var(--app-text-primary);
   font-size: 0.85rem;
@@ -250,8 +159,8 @@
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  margin-block: 1rem;
-  color: var(--app-accent-text);
+  margin-block: 0.75rem;
+  color: var(--app-text-secondary);
 }
 .versionBadge {
   max-width: 100%;
@@ -286,11 +195,7 @@
   font-size: 0.75rem;
 }
 .revision {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-height: 44px;
-  color: var(--app-accent-text);
+  color: var(--app-text-primary);
 }
 .legal {
   display: flex;
@@ -340,66 +245,17 @@
 .copyright {
   padding-block: 1.5rem 0.5rem;
 }
-@media (max-width: 64em) {
-  .hero {
-    gap: 0.5rem;
-    grid-template-columns: minmax(0, 1fr) 220px;
-  }
-  .emblem {
-    transform: scale(0.85);
-  }
-  .resources {
-    gap: 0.75rem;
-  }
-  .resourceCard {
-    padding: 1.1rem;
-  }
-}
 @media (max-width: 48em) {
-  .hero {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .emblem {
-    display: none;
-  }
-  .modes {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0;
-  }
-  .mode {
-    padding: 1rem 0.5rem;
-  }
-  .mode + .mode {
-    border-top: 1px solid var(--app-border-subtle);
-  }
-  .resources,
+  .modes,
   .projectGrid {
     grid-template-columns: minmax(0, 1fr);
-  }
-  .resourceCard {
-    padding: 1.25rem;
-  }
-  .resourceCard > svg {
-    margin: 0;
-  }
-  .resourceArrow {
-    position: absolute;
-    right: 1.25rem;
-    top: 1.25rem;
-    padding: 0;
+    gap: 1rem;
   }
   .heroActions {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .heroActions a {
-    width: 100%;
+    gap: 0.5rem;
   }
   .page {
     padding-top: 1rem;
-  }
-  .projectPanel {
-    padding: 1.25rem;
   }
 }
 @media (prefers-reduced-motion: reduce) {

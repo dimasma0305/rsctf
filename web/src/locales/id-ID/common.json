@@ -94,7 +94,7 @@
       "formats": "Format kompetisi",
       "get_started": "Langkah berikutnya",
       "guide_description": "Dari bergabung dengan tim hingga mengirim flag pertama.",
-      "intro": "Tempat untuk kompetisi capture-the-flag. Dibangun dengan Rust dan React, untuk pembuat tantangan dan tim yang memecahkannya.",
+      "intro": "Platform capture-the-flag sumber terbuka yang dibangun dengan Rust dan React.",
       "jeopardy": "Temukan flag. Pecahkan tantangannya.",
       "koth": "Raih posisi teratas. Pertahankan keunggulanmu.",
       "legal_description": "Lisensi berbeda untuk setiap komponen. Lihat panduan dan pemberitahuan pihak ketiga untuk rinciannya.",

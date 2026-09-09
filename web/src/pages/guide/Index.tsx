@@ -1,12 +1,5 @@
 import { Accordion, Alert, Button, Group, Progress, Stack, Switch, Text, TextInput, Title } from '@mantine/core'
-import {
-  mdiArrowLeft,
-  mdiArrowRight,
-  mdiCheckCircleOutline,
-  mdiInformationOutline,
-  mdiPlayCircleOutline,
-  mdiMagnify,
-} from '@mdi/js'
+import { mdiArrowLeft, mdiArrowRight, mdiInformationOutline, mdiMagnify } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -55,18 +48,14 @@ const Guide = () => {
   return (
     <WithNavBar withFooter withHeader stickyHeader>
       <PageHeader
-        eyebrow={t('guide.hub.eyebrow', 'PLAYER FIELD GUIDE')}
-        title={t('guide.hub.title', 'Find your next step.')}
+        title={t('common.content.about.player_guide', 'Player guide')}
         description={t('guide.hub.description', 'Pick a topic, or follow the walkthrough on the real controls.')}
       />
       <div className={classes.page} data-guide-hub>
         <section className={classes.tourCard} aria-labelledby="guide-tour-title">
-          <div className={classes.tourIcon} aria-hidden="true">
-            <Icon path={completed ? mdiCheckCircleOutline : mdiPlayCircleOutline} size={1.5} />
-          </div>
           <div className={classes.tourCopy}>
-            <Title order={2} size="h3" id="guide-tour-title">
-              {t('guide.hub.tour_title', 'Learn by doing')}
+            <Title order={2} size="sm" id="guide-tour-title">
+              {t('guide.hub.tour_title', 'Interactive walkthrough')}
             </Title>
             <Text size="sm" c="dimmed">
               {t('guide.hub.tour_body', 'A short walkthrough of the platform. You stay in control of every action.')}
@@ -163,9 +152,6 @@ const Guide = () => {
             data-guide-article={topic.id}
           >
             <header className={classes.topicHeader}>
-              <Text className={classes.kicker}>
-                {t('guide.hub.chapter', { current: String(index + 1).padStart(2, '0'), total: topics.length })}
-              </Text>
               <Title order={2} ref={heading} tabIndex={-1} id="guide-topic-title">
                 {topic.title}
               </Title>
@@ -192,7 +178,7 @@ const Guide = () => {
                 <Title order={3} size="sm" id="guide-details-title" mb="xs">
                   {t('guide.hub.details', 'Good to know')}
                 </Title>
-                <Accordion variant="separated" multiple>
+                <Accordion variant="default" multiple>
                   {topic.details.map((detail, detailIndex) => (
                     <Accordion.Item key={detailIndex} value={String(detailIndex)}>
                       <Accordion.Control>{detail.title}</Accordion.Control>

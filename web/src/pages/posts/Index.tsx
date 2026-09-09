@@ -1,12 +1,5 @@
 import { Alert, Badge, Button, Group, Pagination, Skeleton, Stack, Text, Title } from '@mantine/core'
-import {
-  mdiAlertCircleOutline,
-  mdiArrowRight,
-  mdiBookOpenPageVariantOutline,
-  mdiFlagOutline,
-  mdiNewspaperVariantOutline,
-  mdiPlus,
-} from '@mdi/js'
+import { mdiAlertCircleOutline, mdiNewspaperVariantOutline, mdiPlus } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -74,7 +67,6 @@ const Posts: FC = () => {
   return (
     <WithNavBar withFooter>
       <PageHeader
-        eyebrow={t('post.content.news', 'News & updates')}
         title={t('post.title.index')}
         description={t('post.content.index_description', 'Announcements, guides, and updates from the organizers.')}
         actions={
@@ -145,9 +137,9 @@ const Posts: FC = () => {
               }
             />
           ) : (
-            <Stack gap="md">
+            <Stack gap={0}>
               {posts?.map((post) => (
-                <PostCard key={post.id} post={post} headingOrder={3} onTogglePinned={onTogglePinned} />
+                <PostCard key={post.id} post={post} headingOrder={3} layout="feed" onTogglePinned={onTogglePinned} />
               ))}
             </Stack>
           )}
@@ -165,39 +157,6 @@ const Posts: FC = () => {
             </nav>
           )}
         </section>
-        <aside className={classes.sidebar} aria-labelledby="post-resources-title">
-          <div className={classes.boardNote}>
-            <Icon path={mdiNewspaperVariantOutline} size={1.6} aria-hidden="true" />
-            <Text className={classes.kicker}>{t('post.content.notice_board', 'Notice board')}</Text>
-            <Title order={2} id="post-resources-title" className={classes.sidebarTitle}>
-              {t('post.content.stay_in_loop', 'Before your next challenge.')}
-            </Title>
-            <Text size="sm" c="dimmed">
-              {t(
-                'post.content.board_description',
-                'Check here for organizer announcements, event updates, and things worth knowing before you play.'
-              )}
-            </Text>
-          </div>
-          <nav aria-label={t('post.content.explore', 'Explore the platform')} className={classes.links}>
-            <Link to="/games" className={classes.resourceLink}>
-              <Icon path={mdiFlagOutline} size={0.95} aria-hidden="true" />
-              <span>
-                <strong>{t('post.content.browse_events', 'Browse events')}</strong>
-                <small>{t('post.content.events_hint', 'Find your next competition')}</small>
-              </span>
-              <Icon path={mdiArrowRight} size={0.8} aria-hidden="true" />
-            </Link>
-            <Link to="/guide" className={classes.resourceLink}>
-              <Icon path={mdiBookOpenPageVariantOutline} size={0.95} aria-hidden="true" />
-              <span>
-                <strong>{t('post.content.player_guide', 'Player guide')}</strong>
-                <small>{t('post.content.guide_hint', 'Get ready to play')}</small>
-              </span>
-              <Icon path={mdiArrowRight} size={0.8} aria-hidden="true" />
-            </Link>
-          </nav>
-        </aside>
       </div>
     </WithNavBar>
   )

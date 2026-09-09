@@ -1,0 +1,65 @@
+.snapshot {
+  border-inline-start: 3px solid var(--app-border);
+  padding-inline-start: 1rem;
+}
+.checks {
+  border-top: 1px solid var(--app-border);
+}
+.check {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding-block: 1rem;
+  border-bottom: 1px solid var(--app-border);
+}
+.checkCopy {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.checkCopy h2 {
+  font-size: 0.95rem;
+}
+.checkCopy p {
+  color: var(--app-text-secondary);
+  line-height: 1.65;
+}
+.check > a {
+  flex-shrink: 0;
+}
+.status {
+  color: var(--app-text-secondary);
+  font-weight: 600;
+}
+.status[data-state='attention'] {
+  color: var(--app-text-primary);
+}
+.manual {
+  padding-top: 0.5rem;
+}
+.manualRow {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding-block: 0.5rem;
+  border-bottom: 1px solid var(--app-border-subtle);
+}
+.manualRow > p {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.65;
+}
+.manualRow > div {
+  flex-shrink: 0;
+}
+@media (max-width: 64em) {
+  .check,
+  .manualRow {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+  .check > a {
+    align-self: flex-start;
+  }
+}

@@ -15,10 +15,11 @@ import classes from '@Styles/PostCard.module.css'
 export interface PostCardProps {
   post: PostInfoModel
   headingOrder?: 2 | 3
+  layout?: 'card' | 'feed'
   onTogglePinned?: (post: PostInfoModel, setDisabled: (value: boolean) => void) => void
 }
 
-export const PostCard: FC<PostCardProps> = ({ post, onTogglePinned, headingOrder = 2 }) => {
+export const PostCard: FC<PostCardProps> = ({ post, onTogglePinned, headingOrder = 2, layout = 'card' }) => {
   const { role } = useUserRole()
   const { t } = useTranslation()
   const [disabled, setDisabled] = useState(false)
@@ -33,6 +34,7 @@ export const PostCard: FC<PostCardProps> = ({ post, onTogglePinned, headingOrder
       p={0}
       className={classes.card}
       data-post-card={post.id}
+      data-layout={layout}
       data-pinned={post.isPinned || undefined}
     >
       <span className={classes.accent} aria-hidden="true" />

@@ -5,23 +5,8 @@
   display: flex;
   align-items: center;
   gap: 1.25rem;
-  padding: 1.4rem;
-  border: 1px solid var(--app-border);
-  border-radius: 0.8rem;
-  background:
-    linear-gradient(110deg, color-mix(in srgb, var(--mantine-primary-color-filled) 12%, transparent), transparent 65%),
-    var(--app-raised-surface);
-}
-.tourIcon {
-  display: grid;
-  place-items: center;
-  flex: 0 0 3rem;
-  width: 3rem;
-  height: 3rem;
-  border: 1px solid var(--app-border);
-  border-radius: 0.8rem;
-  color: var(--mantine-primary-color-light-color);
-  background: var(--mantine-color-body);
+  padding-block: 0 1rem;
+  border-bottom: 1px solid var(--app-border);
 }
 .tourCopy {
   flex: 1;
@@ -96,27 +81,11 @@
 }
 .article {
   min-width: 0;
-  border: 1px solid var(--app-border);
-  border-radius: 0.8rem;
-  background: var(--app-raised-surface);
+  border-inline-start: 1px solid var(--app-border);
   overflow-wrap: anywhere;
 }
 .topicHeader {
-  padding: clamp(1rem, 3vw, 2rem);
-  border-bottom: 1px solid var(--app-border);
-  background: linear-gradient(
-    140deg,
-    color-mix(in srgb, var(--mantine-primary-color-filled) 6%, transparent),
-    transparent 70%
-  );
-  border-radius: 0.8rem 0.8rem 0 0;
-}
-.kicker {
-  font-family: var(--mantine-font-family-monospace);
-  color: var(--app-text-secondary);
-  font-size: 0.7rem;
-  letter-spacing: 0.12em;
-  margin-bottom: 0.75rem;
+  padding: 0 clamp(1rem, 3vw, 2rem);
 }
 .topicHeader h2 {
   font-size: clamp(1.2rem, 2.5vw, 1.7rem);
@@ -146,9 +115,7 @@
   display: grid;
   place-items: center;
   height: 1.6rem;
-  border: 1px solid var(--app-border);
-  border-radius: 0.4rem;
-  color: var(--mantine-primary-color-light-color);
+  color: var(--app-text-secondary);
   font-family: var(--mantine-font-family-monospace);
   font-size: 0.75rem;
 }
@@ -213,6 +180,16 @@
   .sidebar {
     position: static;
   }
+  .article {
+    border-inline-start: 0;
+    border-top: 1px solid var(--app-border);
+    padding-top: 1.25rem;
+  }
+  .topicHeader,
+  .topicBody,
+  .topicFooter {
+    padding-inline: 0;
+  }
   .contents {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -230,7 +207,6 @@
     gap: 0.5rem;
     padding: 0.75rem;
   }
-  .tourIcon,
   .tourCopy > p {
     display: none;
   }

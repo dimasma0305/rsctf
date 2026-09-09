@@ -71,6 +71,7 @@ try {
     await visit()
     await audit(name)
     assert.equal(await evaluate('document.querySelectorAll("[data-readiness-check]").length'), 5)
+    assert.ok(await evaluate(`Array.from(document.querySelectorAll('[data-readiness-check]')).every(check => getComputedStyle(check).borderRadius === '0px')`),'checks are compact rows, not separate cards')
     assert.equal(await evaluate('document.querySelector("[data-readiness-check]").dataset.readinessCheck'), 'challenges')
     if (name === 'compact') {
       await evaluate(`document.querySelector('[data-readiness-check="builds"]').scrollIntoView({block:'center'})`)

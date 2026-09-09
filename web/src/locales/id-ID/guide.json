@@ -2,7 +2,7 @@
   "hub": {
     "eyebrow": "PANDUAN PEMAIN", "title": "Temukan langkah berikutnya.",
     "description": "Pilih topik atau ikuti tur langsung di aplikasi.",
-    "tour_title": "Belajar sambil mencoba", "tour_body": "Tur singkat platform. Setiap tindakan tetap Anda yang menentukan.",
+    "tour_title": "Tur interaktif", "tour_body": "Ikuti langkah-langkah langsung pada kontrol platform.",
     "start": "Mulai tur", "resume": "Lanjutkan tur", "replay": "Ulangi tur",
     "progress": "Tur · langkah {{current}} dari {{total}}", "complete": "Tur selesai",
     "settings": "Preferensi panduan", "tips": "Tampilkan tips kontekstual",

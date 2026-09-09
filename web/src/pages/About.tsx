@@ -33,17 +33,14 @@ const About: FC = () => {
   const modes = [
     {
       name: 'Jeopardy',
-      number: '01',
       description: t('common.content.about.jeopardy', 'Find the flag. Solve the challenge.'),
     },
     {
       name: 'Attack & Defense',
-      number: '02',
       description: t('common.content.about.ad', 'Defend your service. Challenge the others.'),
     },
     {
       name: 'King of the Hill',
-      number: '03',
       description: t('common.content.about.koth', 'Take the lead. Hold your ground.'),
     },
   ]
@@ -81,19 +78,15 @@ const About: FC = () => {
         <section className={classes.hero} aria-label={t('common.title.about')}>
           <div className={classes.heroCopy}>
             <PageHeader
-              eyebrow={t('common.content.about.eyebrow', 'The competition platform')}
               title={
                 <>
+                  <MainIcon size="2.25rem" aria-hidden="true" />
                   RS<span className={logoClasses.brand}>::</span>CTF
                 </>
               }
-              description={t('common.content.about.slogan')}
             />
             <Text className={classes.intro}>
-              {t(
-                'common.content.about.intro',
-                'A home for capture-the-flag competitions. Built with Rust and React, for the people who create challenges and the teams who solve them.'
-              )}
+              {t('common.content.about.intro', 'An open-source capture-the-flag platform built with Rust and React.')}
             </Text>
             <Group gap="sm" className={classes.heroActions}>
               <Button
@@ -113,22 +106,11 @@ const About: FC = () => {
               </Button>
             </Group>
           </div>
-          <div className={classes.emblem} aria-hidden="true">
-            <div className={classes.orbit} />
-            <div className={classes.orbitInner} />
-            <div className={classes.emblemCore}>
-              <MainIcon size="8rem" />
-            </div>
-            <span className={classes.coordinates}>CAPTURE / COMPETE / CONQUER</span>
-          </div>
         </section>
 
         <section className={classes.modes} aria-label={t('common.content.about.formats', 'Competition formats')}>
           {modes.map((mode) => (
             <div className={classes.mode} key={mode.name}>
-              <span className={classes.modeNumber} aria-hidden="true">
-                {mode.number}
-              </span>
               <div>
                 <Title order={2}>{mode.name}</Title>
                 <Text>{mode.description}</Text>
@@ -139,7 +121,6 @@ const About: FC = () => {
 
         <section aria-labelledby="about-resources-title" className={classes.section}>
           <div className={classes.sectionHeading}>
-            <Text className={classes.kicker}>{t('common.content.about.get_started', 'Take the next step')}</Text>
             <Title order={2} id="about-resources-title">
               {t('common.content.about.resources')}
             </Title>
@@ -148,9 +129,11 @@ const About: FC = () => {
             {resources.map((resource) => {
               const content = (
                 <>
-                  <Icon path={resource.icon} size={1.35} aria-hidden="true" />
-                  <Title order={3}>{resource.title}</Title>
-                  <Text>{resource.description}</Text>
+                  <Icon path={resource.icon} size={1} aria-hidden="true" />
+                  <div className={classes.resourceCopy}>
+                    <Title order={3}>{resource.title}</Title>
+                    <Text>{resource.description}</Text>
+                  </div>
                   <span className={classes.resourceArrow}>
                     <Icon path={resource.internal ? mdiArrowRight : mdiOpenInNew} size={0.85} aria-hidden="true" />
                   </span>
@@ -177,7 +160,6 @@ const About: FC = () => {
 
         <div className={classes.projectGrid}>
           <section className={classes.projectPanel} aria-labelledby="about-contributors-title">
-            <Text className={classes.kicker}>{t('common.content.about.people', 'Made by people')}</Text>
             <Title order={2} id="about-contributors-title">
               {t('common.content.about.contributors')}
             </Title>
@@ -205,7 +187,6 @@ const About: FC = () => {
             </ul>
           </section>
           <section className={classes.projectPanel} aria-labelledby="about-build-title">
-            <Text className={classes.kicker}>{t('common.content.about.under_hood', 'Under the hood')}</Text>
             <Title order={2} id="about-build-title">
               {t('common.content.about.version')}
             </Title>
