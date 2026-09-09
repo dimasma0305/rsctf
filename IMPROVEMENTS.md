@@ -12,6 +12,8 @@ Visual direction: keep the platform attractive and recognizable. Removing generi
 "AI slop" means cutting filler, repetitive panels, and distracting decoration—not
 removing color, artwork, or personality. Preserve distinct event colors, the
 competition visuals, readable labels, and the established classic/refined theme.
+For posterless event cards, use subtle motifs and translucent color fades into a
+neutral base, not bold, full-height color bands.
 
 ## 1. Event readiness and actionable failures
 

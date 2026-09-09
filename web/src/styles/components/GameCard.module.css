@@ -65,7 +65,39 @@
   align-items: center;
   justify-content: center;
   color: #f8fafc;
-  background: linear-gradient(145deg, hsl(var(--event-hue) 62% 35%), hsl(calc(var(--event-hue) + 28deg) 58% 17%));
+  background-color: #0b1220;
+  background-image:
+    linear-gradient(135deg, transparent 0 45%, hsl(var(--event-hue) 82% 62% / 0.08) 45% 55%, transparent 55%),
+    radial-gradient(circle at 70% 24%, hsl(var(--event-hue) 82% 58% / 0.3), transparent 62%);
+  background-size:
+    1rem 1rem,
+    auto;
+}
+
+.posterFallback::before,
+.posterFallback::after {
+  position: absolute;
+  pointer-events: none;
+  content: '';
+  border: 1px solid hsl(var(--event-hue) 86% 72% / 0.18);
+  border-radius: 50%;
+}
+
+.posterFallback::before {
+  top: -2rem;
+  right: -2.8rem;
+  width: 7.5rem;
+  height: 7.5rem;
+  box-shadow:
+    0 0 0 1.1rem hsl(var(--event-hue) 76% 56% / 0.05),
+    0 0 0 2.2rem hsl(var(--event-hue) 76% 56% / 0.035);
+}
+
+.posterFallback::after {
+  bottom: -1.8rem;
+  left: -2.4rem;
+  width: 5.2rem;
+  height: 5.2rem;
 }
 
 .posterCode {
@@ -83,11 +115,13 @@
 }
 
 .posterSignal {
+  position: relative;
+  z-index: 1;
   display: grid;
   width: 3rem;
   height: 3rem;
   place-items: center;
-  border: 1px solid rgb(248 250 252 / 0.3);
+  border: 1px solid hsl(var(--event-hue) 82% 74% / 0.3);
   border-radius: 0.75rem;
   background: #0b1220;
 }

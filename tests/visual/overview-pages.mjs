@@ -83,7 +83,19 @@ try {
     assert.equal(await evaluate(`document.querySelectorAll('[data-event-catalog] h2').length`), 3)
     assert.ok(await evaluate(`Array.from(document.querySelectorAll('#event-catalog-results [data-status], #event-catalog-results [data-membership]')).every(label => getComputedStyle(label).position !== 'absolute' && label.scrollWidth <= label.clientWidth + 1 && label.scrollHeight <= label.clientHeight + 1)`), 'Event status and membership labels must wrap without clipping in the narrow poster column')
     assert.ok(await evaluate(`(() => { const labels = Array.from(document.querySelectorAll('[data-guide="event-card"] [aria-hidden="true"] > span')).filter(label => label.textContent.startsWith('#')); return labels.length === 3 && labels.every(label => getComputedStyle(label).opacity === '1'); })()`), 'Placeholder IDs must not dilute the theme text contrast')
-    assert.ok(await evaluate(`(() => { const cards = [...document.querySelectorAll('#event-catalog-results [data-guide="event-card"]')]; const gradients = cards.map(card => getComputedStyle(card.querySelector('[aria-hidden="true"]')).backgroundImage); return gradients.length === 3 && gradients.every(value => value.startsWith('linear-gradient(')) && new Set(gradients).size === 3; })()`), 'Posterless event cards must retain distinct color in both themes')
+    assert.ok(await evaluate(`(() => {
+      const posters = [...document.querySelectorAll('#event-catalog-results [data-guide="event-card"]')].map(card => card.querySelector('[aria-hidden="true"]'));
+      const styles = posters.map(poster => getComputedStyle(poster));
+      return posters.length === 3 && new Set(styles.map(style => style.backgroundImage)).size === 3 && styles.every(style =>
+        style.backgroundColor === 'rgb(11, 18, 32)' &&
+        style.backgroundImage.startsWith('linear-gradient(') && style.backgroundImage.includes('radial-gradient(') &&
+        style.backgroundImage.includes('0.08)') && style.backgroundImage.includes('0.3)') &&
+        style.backgroundImage.includes('rgba(0, 0, 0, 0) 62%') && style.backgroundSize === '16px 16px, auto'
+      ) && posters.every(poster => ['::before', '::after'].every(pseudo => {
+        const motif = getComputedStyle(poster, pseudo);
+        return motif.content !== 'none' && motif.pointerEvents === 'none' && motif.borderRadius === '50%';
+      }));
+    })()`), 'Posterless cards must keep distinct, translucent patterned fades in both themes')
     if (width >= 1440) assert.ok(await evaluate(`document.querySelector('#event-catalog-results [data-guide="event-card"]').getBoundingClientRect().top < 410`), 'Event cards must not be pushed below decorative chrome')
     await visit('/admin/dashboard', `document.querySelector('[data-dashboard-stats]') && !document.querySelector('.mantine-LoadingOverlay-root')`)
     await inspect(name + '-dashboard')
