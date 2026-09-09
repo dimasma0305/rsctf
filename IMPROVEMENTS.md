@@ -4,7 +4,7 @@ Approved scope: the September 8, 2026 UI/UX and backend review. Work proceeds in
 small, locally verified releases. Existing functionality is reviewed before adding
 anything; a historical bug report or unchecked TODO is not proof a bug remains.
 
-Status: **the saved-configuration slice of step 1 and a four-page visual refinement
+Status: **the saved-configuration slice of step 1 and two visual-refinement passes
 are shipped**. Runtime preflight and the remaining steps are queued, not completed. This plan does
 not authorize changes to live competition scores, participants, or event settings.
 
@@ -80,7 +80,9 @@ regressions, Axe checks and an explicit statement of manual accessibility limits
 - [x] First visual refinement: About, Posts, Guide, and event Readiness. Remove
   oversized decorative introductions and repeated cards; retain working controls,
   competition visuals, permissions, and explicit readiness limits.
-- [ ] Home and event discovery; event overview and preparation.
+- [x] Home and event discovery visual refinement: compact shortcuts, reading feed,
+  simpler catalog controls, and wrapping event/membership labels.
+- [ ] Event overview and preparation.
 - [ ] Login, recovery, teams, participation and account/profile statistics.
 - [ ] Challenge cards/list, globe, details, flag submission and feedback.
 - [ ] Scoreboard explanations; A&D/BYOC tools, KoTH status and VPN diagnostics.
@@ -91,7 +93,9 @@ before/after evidence, rather than redesigning every page without a clear benefi
 
 ## 7. Remaining admin sections
 
-- [ ] Dashboard, event/challenge editors, imports, teams and bulk operations.
+- [x] Dashboard visual refinement: compact totals, one refresh action, flatter
+  chart/activity sections, and no duplicate shortcut panel.
+- [ ] Event/challenge editors, imports, teams and bulk operations.
 - [ ] Repository bindings, builds, instances, workers and operator timelines.
 - [ ] Monitoring/anti-cheat, logs/audit, settings, notices and content management.
 
@@ -193,6 +197,56 @@ Evidence and rollback: `/root/rsctf-production/releases/sha-3c75474c/DEPLOYMENT.
 Screenshots: `visual-audit-output/refined-{local,candidate,live}/`. Final results
 include documented transient browser rechecks; they are not a claim that every
 page or the broader roadmap is complete.
+
+### September 9: Home, Games, and Dashboard refinement
+
+Reused the existing theme, PostCard feed layout, navigation, and AdminPage header
+actions. Removed oversized introductions, decorative placeholder rings/stripes,
+redundant shortcut panels, and nested section cards. Event state and membership
+labels now wrap in the content column instead of clipping inside narrow posters.
+Home leads with announcements; the Dashboard's three totals fit above the mobile
+dock. No scoring, authorization, API, polling, or database behavior changed.
+
+- UI commit: `7af71cb8c854e572a03ef556fbc9bec27c3b82ca`.
+- Released commit: `fda113656f58af503f7c127913049ec802c49706`, package `0.1.118`.
+- Image: `ghcr.io/dimasma0305/rsctf@sha256:b5fc21b796945966f3c94859ef5a9065c871a26db6bc44d3fa179339f1646e4d`.
+- [Release pipeline](https://github.com/dimasma0305/rsctf/actions/runs/34306533857)
+  passed, including image verification/attestation and Kubernetes isolation.
+- Local strict frontend check, lint, build, 632 client tests, and 20 fixture tests
+  passed. The dependency audit has one low finding; its high-severity gate passed.
+  Rust fmt/build passed without warnings; 1,703 tests passed, with 410
+  environment-dependent tests ignored locally.
+- All 27 final-source and 27 packaged-image browser states passed, including
+  320px–1920px, light/Indonesian, reduced motion, keyboard navigation, filtering,
+  refresh/tabs, and loading/error/empty states. The 12-render full-page audit passed;
+  nine reviewed warnings describe intentional schedule-label ellipses. Full titles
+  remain available in event cards and schedule link names/title attributes.
+- The initial rollout exposed low contrast on placeholder event IDs in light mode.
+  The corrective commit removes the residual text opacity and adds source/browser
+  regressions. The complete packaged theme matrix passed before the second rollout.
+- TCP's two web replicas, control, and firewall helper are healthy on the exact
+  image with zero restarts. Both sites return exact `ok` from `/healthz`; their
+  three changed route HTML documents and 24 entry assets match the release.
+- Intechfest serves the frontend extracted from the same image; its backend was
+  not replaced or restarted. Databases, Redis, competition data, and challenge
+  containers were not changed. Anonymous admin reads still return 401.
+
+- Final live-origin suites passed 27 states per domain. One initial TCP chart-state
+  contrast report was not reproduced in three focused loads/six checks or the
+  complete unchanged rerun; its cause is unconfirmed and the failed evidence is
+  retained. No application styles or assertions were altered for that recheck.
+- Eight real public Home/Games renders passed with no Axe violations, overflow,
+  or runtime errors. Two Intechfest warnings are intentional narrow schedule-label
+  ellipses, not clipped card statuses. Post-start logs show no errors, panics,
+  heartbeat failures, or unexpected 5xx; final replica checks still pass.
+
+Automated checks are not a formal accessibility certification; manual NVDA or
+VoiceOver testing was unavailable. No performance or network-stability claim is
+made. The remaining pages and broader roadmap are not marked complete.
+
+Evidence and rollback: `/root/rsctf-production/releases/sha-fda11365/DEPLOYMENT.md`.
+Screenshots and reports: `visual-audit-output/refined2-contrast-{local,full,candidate}/`
+and `visual-audit-output/refined2-final-live/`.
 
 ### Reliability findings queued for investigation
 
