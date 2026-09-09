@@ -37,6 +37,8 @@
 }
 
 .visual {
+  --event-hue: 206deg;
+
   position: relative;
   min-width: 0;
   overflow: hidden;
@@ -62,8 +64,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--app-text-muted);
-  background: var(--app-subtle-surface);
+  color: #f8fafc;
+  background: linear-gradient(145deg, hsl(var(--event-hue) 62% 35%), hsl(calc(var(--event-hue) + 28deg) 58% 17%));
 }
 
 .posterCode {
@@ -71,6 +73,9 @@
   top: 0.7rem;
   right: 0.55rem;
   z-index: 1;
+  padding: 0.15rem 0.3rem;
+  border-radius: 0.25rem;
+  background: #0b1220;
   font-family: var(--mantine-font-family-monospace);
   font-size: 0.6rem;
   font-weight: 760;
@@ -82,6 +87,9 @@
   width: 3rem;
   height: 3rem;
   place-items: center;
+  border: 1px solid rgb(248 250 252 / 0.3);
+  border-radius: 0.75rem;
+  background: #0b1220;
 }
 
 .stateRow {

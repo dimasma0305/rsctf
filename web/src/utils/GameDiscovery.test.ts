@@ -77,10 +77,24 @@ test('event status and membership use wrapping content instead of clipped poster
   assert.match(cardStyles, /\.stateRow \{[\s\S]*?flex-wrap: wrap/)
 })
 
-test('placeholder IDs retain the contrast-safe theme text without alpha blending', () => {
+test('placeholder text stays high contrast independently of its event gradient', () => {
   const placeholder = cardStyles.match(/\.posterFallback \{([\s\S]*?)\n\}/)?.[1]
   const code = cardStyles.match(/\.posterCode \{([\s\S]*?)\n\}/)?.[1]
   assert.ok(placeholder && code)
-  assert.match(placeholder, /color: var\(--app-text-muted\)/)
+  const signal = cardStyles.match(/\.posterSignal \{([\s\S]*?)\n\}/)?.[1]
+  assert.ok(signal)
+  assert.match(placeholder, /color: #f8fafc/)
+  assert.match(code, /background: #0b1220/)
+  assert.match(signal, /background: #0b1220/)
   assert.doesNotMatch(placeholder + code, /opacity:|filter:/)
+})
+
+test('events without posters retain distinct stable color without tinting uploaded artwork', () => {
+  assert.match(card, /const eventHue = \(game\.id \* 47 \+ 186\) % 360/)
+  assert.match(card, /'--event-hue': `\$\{eventHue\}deg`/)
+  assert.match(cardStyles, /\.posterFallback \{[^}]*background: linear-gradient\(145deg, hsl\(var\(--event-hue\)/)
+  assert.doesNotMatch(cardStyles, /\.visual::after/)
+  const artwork = cardStyles.match(/\.visual img \{([\s\S]*?)\n\}/)?.[1]
+  assert.ok(artwork)
+  assert.doesNotMatch(artwork, /filter:|opacity:|mix-blend-mode:/)
 })

@@ -8,6 +8,11 @@ Status: **the saved-configuration slice of step 1 and two visual-refinement pass
 are shipped**. Runtime preflight and the remaining steps are queued, not completed. This plan does
 not authorize changes to live competition scores, participants, or event settings.
 
+Visual direction: keep the platform attractive and recognizable. Removing generic
+"AI slop" means cutting filler, repetitive panels, and distracting decoration—not
+removing color, artwork, or personality. Preserve distinct event colors, the
+competition visuals, readable labels, and the established classic/refined theme.
+
 ## 1. Event readiness and actionable failures
 
 - [x] Saved-configuration readiness page: schedule, freeze, writeup deadline,

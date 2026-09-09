@@ -11,7 +11,7 @@ import {
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { TFunction } from 'i18next'
-import { FC } from 'react'
+import { CSSProperties, FC } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { useLanguage } from '@Utils/I18n'
@@ -69,6 +69,7 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
   const color = GameColorMap.get(status) ?? 'gray'
   const statusLabel = getGameStatusLabel(t, status)
   const eventTitle = title || t('game.content.untitled', 'Untitled event')
+  const eventHue = (game.id * 47 + 186) % 360
   const membership = (() => {
     switch (game.participationStatus) {
       case ParticipationStatus.Accepted:
@@ -87,7 +88,7 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
   return (
     <Card {...others} component="article" className={classes.root}>
       <Link to={`/games/${game.id}`} className={classes.link} data-guide="event-card">
-        <div className={classes.visual}>
+        <div className={classes.visual} style={{ '--event-hue': `${eventHue}deg` } as CSSProperties}>
           {poster ? (
             <Image src={poster} alt="" />
           ) : (

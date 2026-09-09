@@ -48,6 +48,8 @@ It covers 320px through 1920px, Indonesian/light mode, reduced motion, keyboard
 navigation, search/clear/membership filters, dashboard refresh and activity tabs,
 empty/loading/error/retry states, charts, and guest controls. Layout regressions
 require useful content near the top and mobile totals above the bottom dock.
+Posterless event cards must retain distinct colors in both themes, preserve their
+color after filtering, and keep opaque high-contrast ID labels.
 All API/hub traffic is intercepted, and every mutation is blocked. This is not a
 backend authorization test. The onboarding guide is disabled in these fixtures;
 its dedicated guide harness tests onboarding separately.
