@@ -4,8 +4,8 @@ Approved scope: the September 8, 2026 UI/UX and backend review. Work proceeds in
 small, locally verified releases. Existing functionality is reviewed before adding
 anything; a historical bug report or unchecked TODO is not proof a bug remains.
 
-Status: **the saved-configuration slice of step 1 is shipped**. Runtime preflight
-and the remaining steps are queued, not completed. This plan does
+Status: **the saved-configuration slice of step 1 and a four-page visual refinement
+are shipped**. Runtime preflight and the remaining steps are queued, not completed. This plan does
 not authorize changes to live competition scores, participants, or event settings.
 
 ## 1. Event readiness and actionable failures
@@ -77,6 +77,9 @@ regressions, Axe checks and an explicit statement of manual accessibility limits
 
 ## 6. Player sections
 
+- [x] First visual refinement: About, Posts, Guide, and event Readiness. Remove
+  oversized decorative introductions and repeated cards; retain working controls,
+  competition visuals, permissions, and explicit readiness limits.
 - [ ] Home and event discovery; event overview and preparation.
 - [ ] Login, recovery, teams, participation and account/profile statistics.
 - [ ] Challenge cards/list, globe, details, flag submission and feedback.
@@ -153,6 +156,43 @@ Shipped September 8, 2026:
 Host evidence: `/root/rsctf-production/releases/sha-2b6ffab6/DEPLOYMENT.md` and
 `visual-audit-output/event-readiness-{tcp,intechfest}/`. This release does **not**
 complete runtime preflight, writeup draft protection, or the remaining roadmap.
+
+### September 9: content-first visual refinement
+
+Reviewed rendered About, Posts, Guide, Readiness, Builds, and Profile screens.
+Changed the first four: compact branding and resource rows on About; a reading
+list on Posts; a smaller walkthrough and unboxed Guide article; attention-first
+Readiness rows with contextual links. Builds and Profile were not redesigned in
+this pass. The competition globe and official scoring behavior are unchanged.
+
+- UI commit: `e50164c2213fba6ca71dc54fb79fa375c2694f7a`.
+- Released commit: `3c75474c6133212ecde04927f79677cc9bdc639f`, package `0.1.118`.
+- Image: `ghcr.io/dimasma0305/rsctf@sha256:4abe2e11985fea535511f03fe7c792258f1d4ff0fec1bc953e5e84fd841d80d2`.
+- [Release pipeline](https://github.com/dimasma0305/rsctf/actions/runs/34300821117)
+  passed. Its initial predecessor was blocked by dependency advisories; narrow
+  updates to xmldom 0.8.15 and js-yaml 4.3.2 cleared the high-severity audit gate.
+- Local strict check, lint, build, 630 client tests, and 18 fixture tests passed.
+  Rust build/fmt passed without warnings; 1,703 tests passed, 410 environment-only
+  cases remained ignored locally. No Rust files exceeded the size limit.
+- Browser coverage included 17 community states, 12 readiness states, 72 guide
+  states, 58 competition views, 12 verdict flows, and full-content responsive
+  audits. The final image audit passed desktop and 320px checks.
+- Both live origins passed 12 readiness fixture states and six public page
+  renders. Final audits had no Axe violations, overflow, or browser errors.
+  Tests include keyboard, Indonesian, light mode, and reduced motion; a manual
+  assistive-technology audit was not performed.
+- TCP's two web replicas, control, and firewall helper are healthy on the exact
+  image, with zero restarts. Both origins return exact `ok` from `/healthz` and
+  serve the matching 24 entry assets. Real TCP readiness reads return 200 for
+  admin, 401 for anonymous, and 403 for a non-manager.
+- Intechfest serves the frontend extracted from the same image. Its backend,
+  databases, Redis, events, scores, and challenge containers were not changed.
+  Post-start application logs show no errors, panics, or unexpected 5xx.
+
+Evidence and rollback: `/root/rsctf-production/releases/sha-3c75474c/DEPLOYMENT.md`.
+Screenshots: `visual-audit-output/refined-{local,candidate,live}/`. Final results
+include documented transient browser rechecks; they are not a claim that every
+page or the broader roadmap is complete.
 
 ### Reliability findings queued for investigation
 
