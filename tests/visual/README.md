@@ -35,6 +35,41 @@ scripts/bounded-frontend.sh exec node ../tests/visual/audit.mjs \
 These are rendering/interaction fixtures, not evidence of backend permissions or
 runtime health. Stop the fixture server and preview when finished.
 
+## Home, event catalog, and admin dashboard
+
+`overview-pages.mjs` checks the content-first Home feed, compact event filters,
+and Dashboard totals. Start the loopback preview on port 63017, then run:
+
+```sh
+scripts/bounded-frontend.sh exec node ../tests/visual/overview-pages.mjs
+```
+
+It covers 320px through 1920px, Indonesian/light mode, reduced motion, keyboard
+navigation, search/clear/membership filters, dashboard refresh and activity tabs,
+empty/loading/error/retry states, charts, and guest controls. Layout regressions
+require useful content near the top and mobile totals above the bottom dock.
+All API/hub traffic is intercepted, and every mutation is blocked. This is not a
+backend authorization test. The onboarding guide is disabled in these fixtures;
+its dedicated guide harness tests onboarding separately.
+
+`RSCTF_OVERVIEW_TARGET=https://intechfest.1pc.tf` or `https://tcp.1pc.tf` tests
+released frontend assets with the same isolated data. `RSCTF_OVERVIEW_OUTPUT`
+sets the evidence directory (default `visual-audit-output/overview-local/`).
+
+For full-content screenshots and layout checks, run
+`node tests/visual/overview-pages-fixtures.mjs --serve` on loopback port 63018:
+
+```sh
+RSCTF_VISUAL_TARGET=http://127.0.0.1:63018 \
+RSCTF_VISUAL_ADMIN_JWT=local-fixture-not-a-credential \
+scripts/bounded-frontend.sh exec node ../tests/visual/audit.mjs \
+  --page =index --page =games--index --page =admin--dashboard \
+  --viewport desktop --viewport tablet --viewport mobile --viewport compact
+```
+
+Stop the fixture server and preview afterward. Never supply a real credential
+to the fixture server.
+
 ## Event readiness fixtures
 
 Start a frontend preview on `127.0.0.1:63017`, then run from the repository root:

@@ -2,7 +2,6 @@ import {
   ActionIcon,
   Alert,
   Anchor,
-  Badge,
   Button,
   Group,
   Pagination,
@@ -114,17 +113,14 @@ const Games: FC = () => {
     {
       status: GameStatus.OnGoing,
       title: getGameStatusLabel(t, GameStatus.OnGoing),
-      description: t('game.content.lifecycle.live_description', 'Open now — jump in while scoring is active.'),
     },
     {
       status: GameStatus.Coming,
       title: getGameStatusLabel(t, GameStatus.Coming),
-      description: t('game.content.lifecycle.upcoming_description', 'Plan ahead and get your team ready.'),
     },
     {
       status: GameStatus.Ended,
       title: getGameStatusLabel(t, GameStatus.Ended),
-      description: t('game.content.lifecycle.past_description', 'Revisit completed events and their results.'),
     },
   ].map((section) => ({
     ...section,
@@ -136,21 +132,17 @@ const Games: FC = () => {
   return (
     <WithNavBar withFooter withHeader stickyHeader>
       <PageHeader
-        eyebrow={t('game.content.workspace', 'Competition')}
-        title={
-          <>
-            {t('game.title.index')}
-            {games && (
-              <Badge ml="sm" variant="light" size="lg">
-                {t('game.content.events_total', '{{count}} events', { count: games.total })}
-              </Badge>
-            )}
-          </>
+        title={t('game.title.index')}
+        actions={
+          games && (
+            <Text size="sm" c="dimmed">
+              {t('game.content.events_total', '{{count}} events', { count: games.total })}
+            </Text>
+          )
         }
-        description={t('game.content.index_description', 'Browse upcoming, live, and completed competitions.')}
       />
 
-      <Stack gap="xl" className={classes.catalog}>
+      <Stack gap="md" className={classes.catalog} data-event-catalog>
         <Group justify="space-between" gap="sm" wrap="wrap">
           {games && games.data.length > 0 && (
             <nav
@@ -329,27 +321,12 @@ const Games: FC = () => {
                     className={classes.lifecycleSection}
                   >
                     <Group justify="space-between" align="center" gap="md" className={classes.sectionHeader}>
-                      <Group wrap="nowrap" gap="sm">
-                        <span className={classes.sectionMarker} data-status={section.status} aria-hidden="true">
-                          <span />
-                        </span>
-                        <div>
-                          <Title
-                            order={2}
-                            size="h4"
-                            id={`lifecycle-${section.status}`}
-                            className={classes.sectionTitle}
-                          >
-                            {section.title}
-                          </Title>
-                          <Text size="sm" c="dimmed">
-                            {section.description}
-                          </Text>
-                        </div>
-                      </Group>
-                      <Badge color={GameColorMap.get(section.status)} variant="light" size="lg">
+                      <Title order={2} size="h4" id={`lifecycle-${section.status}`} className={classes.sectionTitle}>
+                        {section.title}
+                      </Title>
+                      <Text size="sm" c="dimmed">
                         {section.events.length}
-                      </Badge>
+                      </Text>
                     </Group>
 
                     <SimpleGrid cols={{ base: 1, md: 2, xl: 3, w24: 4 }} spacing="lg" verticalSpacing="lg">

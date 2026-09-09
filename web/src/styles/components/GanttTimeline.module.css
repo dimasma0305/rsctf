@@ -2,30 +2,14 @@
   width: 100%;
   overflow: hidden;
   border: 1px solid var(--app-surface-border);
-  border-radius: var(--mantine-radius-lg);
+  border-radius: var(--mantine-radius-sm);
   background: var(--app-raised-surface);
-  box-shadow: 0 10px 34px rgba(8, 15, 30, 0.07);
 }
 
 .header {
-  min-height: 5.25rem;
-  padding: 1rem 1.15rem;
+  min-height: 3.5rem;
+  padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--app-border);
-  background:
-    radial-gradient(
-      circle at 100% 0,
-      color-mix(in srgb, var(--mantine-primary-color-5) 12%, transparent),
-      transparent 18rem
-    ),
-    var(--app-raised-surface);
-}
-
-.eyebrow {
-  color: var(--app-accent-text);
-  font-size: 0.65rem;
-  font-weight: 780;
-  letter-spacing: 0.11em;
-  text-transform: uppercase;
 }
 
 .heading {

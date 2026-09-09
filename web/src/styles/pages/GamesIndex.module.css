@@ -1,5 +1,5 @@
 .catalog {
-  padding: 1.25rem 0 2.5rem;
+  padding: 0.5rem 0 2rem;
 }
 
 .sectionTitle {
@@ -12,10 +12,7 @@
   width: 100%;
   align-items: flex-end;
   gap: 0.75rem;
-  padding: 0.7rem;
-  border: 1px solid var(--app-surface-border);
-  border-radius: var(--mantine-radius-lg);
-  background: var(--app-subtle-surface);
+  flex-wrap: wrap;
 }
 
 .searchInput {
@@ -38,24 +35,17 @@
   display: flex;
   max-width: 100%;
   flex-wrap: wrap;
-  gap: 0.4rem;
-  padding: 0.35rem;
-  border: 1px solid var(--app-surface-border);
-  border-radius: 999px;
-  background: var(--app-subtle-surface);
+  gap: 0.25rem 1rem;
 }
 
 .lifecycleCount {
   display: inline-flex;
-  min-height: 2.2rem;
+  min-height: 44px;
   align-items: center;
   gap: 0.42rem;
-  padding: 0.35rem 0.65rem;
+  padding: 0.35rem 0.25rem;
   color: var(--app-text-secondary);
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: var(--app-raised-surface);
-  font-size: 0.72rem;
+  font-size: 0.8125rem;
   font-weight: 650;
   text-decoration: none;
   white-space: nowrap;
@@ -67,20 +57,14 @@
 
 .lifecycleCount:hover {
   color: var(--app-text-primary);
-  border-color: var(--app-accent-border);
-  background: var(--app-hover-surface);
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
 }
 
 .lifecycleCount strong {
-  display: inline-flex;
-  min-width: 1.3rem;
-  height: 1.3rem;
-  align-items: center;
-  justify-content: center;
   color: var(--app-text-primary);
-  border-radius: 999px;
-  background: var(--app-hover-surface);
-  font-size: 0.68rem;
+  font-size: inherit;
+  font-variant-numeric: tabular-nums;
 }
 
 .lifecycleDot {
@@ -107,49 +91,9 @@
 }
 
 .sectionHeader {
-  min-height: 3.75rem;
-  padding-bottom: 0.75rem;
+  min-height: 2.75rem;
+  padding-bottom: 0.5rem;
   border-bottom: 1px solid var(--app-border);
-}
-
-.sectionMarker {
-  display: inline-flex;
-  width: 2.5rem;
-  height: 2.5rem;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid color-mix(in srgb, var(--mantine-color-blue-6) 35%, var(--app-border));
-  border-radius: var(--mantine-radius-md);
-  background: color-mix(in srgb, var(--mantine-color-blue-6) 10%, var(--app-raised-surface));
-}
-
-.sectionMarker > span {
-  width: 0.65rem;
-  height: 0.65rem;
-  border-radius: 50%;
-  background: var(--mantine-color-blue-6);
-  box-shadow: 0 0 0 5px color-mix(in srgb, var(--mantine-color-blue-6) 16%, transparent);
-}
-
-.sectionMarker[data-status='ongoing'] {
-  border-color: color-mix(in srgb, var(--mantine-color-green-6) 35%, var(--app-border));
-  background: color-mix(in srgb, var(--mantine-color-green-6) 10%, var(--app-raised-surface));
-}
-
-.sectionMarker[data-status='ongoing'] > span {
-  background: var(--mantine-color-green-6);
-  box-shadow: 0 0 0 5px color-mix(in srgb, var(--mantine-color-green-6) 16%, transparent);
-}
-
-.sectionMarker[data-status='coming'] {
-  border-color: color-mix(in srgb, var(--mantine-color-yellow-6) 35%, var(--app-border));
-  background: color-mix(in srgb, var(--mantine-color-yellow-6) 10%, var(--app-raised-surface));
-}
-
-.sectionMarker[data-status='coming'] > span {
-  background: var(--mantine-color-yellow-6);
-  box-shadow: 0 0 0 5px color-mix(in srgb, var(--mantine-color-yellow-6) 16%, transparent);
 }
 
 .paginationNav {
@@ -181,7 +125,6 @@
 
   .lifecycleOverview {
     width: 100%;
-    border-radius: var(--mantine-radius-lg);
   }
 
   .lifecycleCount {
@@ -191,11 +134,6 @@
 
   .sectionHeader {
     align-items: flex-start;
-  }
-
-  .sectionMarker {
-    width: 2.25rem;
-    height: 2.25rem;
   }
 
   .paginationNav :global(.mantine-Group-root) {

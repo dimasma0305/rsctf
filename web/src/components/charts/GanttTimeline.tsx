@@ -1,4 +1,4 @@
-import { Badge, Box, Group, ScrollArea, Stack, Text, Title } from '@mantine/core'
+import { Badge, Box, Group, ScrollArea, Text, Title } from '@mantine/core'
 import { mdiCalendarBlankOutline, mdiGestureSwipeHorizontal } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs, { type Dayjs } from 'dayjs'
@@ -126,12 +126,9 @@ export const GanttTimeLine: FC<GanttTimeLineProps> = ({ items }) => {
         wrap="wrap"
         className={classes.header}
       >
-        <Stack gap={2}>
-          <Text className={classes.eyebrow}>{t('game.content.schedule_window', 'Schedule window')}</Text>
-          <Title order={2} size="h3" id="event-schedule-title" className={classes.heading}>
-            {t('game.content.schedule_title', 'Competition schedule')}
-          </Title>
-        </Stack>
+        <Title order={2} size="h4" id="event-schedule-title" className={classes.heading}>
+          {t('game.content.schedule_title', 'Competition schedule')}
+        </Title>
         <Group gap="xs" wrap="wrap" className={classes.range}>
           <Icon path={mdiCalendarBlankOutline} size={0.78} aria-hidden="true" />
           <Text size="sm">

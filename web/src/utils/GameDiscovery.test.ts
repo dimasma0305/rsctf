@@ -66,3 +66,13 @@ test('event cards remain whole-card links without a redundant view-event footer'
   assert.doesNotMatch(card, /view_event|mdiArrowRight|classes\.action/)
   assert.doesNotMatch(cardStyles, /\.action/)
 })
+
+test('event status and membership use wrapping content instead of clipped poster overlays', () => {
+  assert.match(card, /classes\.content[\s\S]*classes\.stateRow[\s\S]*data-status=\{status\}/)
+  assert.match(card, /classes\.stateRow[\s\S]*data-membership=\{membership\.status\}/)
+  const stateStyles = cardStyles.match(/\.status,\s*\.membership \{([\s\S]*?)\n\}/)?.[1]
+  assert.ok(stateStyles)
+  assert.match(stateStyles, /overflow-wrap: anywhere/)
+  assert.doesNotMatch(stateStyles, /position: absolute|overflow: hidden|white-space: nowrap/)
+  assert.match(cardStyles, /\.stateRow \{[\s\S]*?flex-wrap: wrap/)
+})

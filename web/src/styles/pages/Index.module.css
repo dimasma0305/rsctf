@@ -1,24 +1,18 @@
 .home {
-  container-type: inline-size;
+  min-width: 0;
 }
 
 .dashboard {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(340px, 410px);
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 370px);
   align-items: start;
-  gap: var(--mantine-spacing-lg);
+  gap: clamp(1.25rem, 3vw, 3rem);
   padding-bottom: var(--mantine-spacing-xl);
 }
 
 .feed,
 .games {
   min-width: 0;
-  border-radius: var(--mantine-radius-lg);
-  background: color-mix(in srgb, var(--app-raised-surface) 94%, transparent);
-}
-
-.feed {
-  min-height: 0;
 }
 
 .games {
@@ -26,44 +20,20 @@
   top: 72px;
 }
 
-.posts {
-  width: 100%;
-}
-
-.sectionEyebrow {
-  letter-spacing: 0.08em;
+.sectionHeader {
+  min-height: 44px;
+  border-bottom: 1px solid var(--app-border);
 }
 
 .viewAllLink {
   display: inline-flex;
-  min-height: 2.75rem;
+  min-height: 44px;
   align-items: center;
-  padding-inline: 0.35rem;
+  padding-inline: 0.25rem;
 }
 
-@media (max-width: 74em) {
-  .dashboard {
-    grid-template-columns: minmax(0, 1fr) minmax(310px, 360px);
-  }
-}
-
-@container (max-width: 58em) {
+@media (max-width: 900px) {
   .dashboard {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .feed {
-    min-height: 0;
-  }
-}
-
-@media (max-width: $mantine-breakpoint-xs) {
-  .dashboard {
-    gap: var(--mantine-spacing-md);
-  }
-
-  .feed {
-    border-right: 0;
-    border-left: 0;
   }
 }

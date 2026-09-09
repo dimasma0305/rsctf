@@ -137,7 +137,7 @@
   min-height: 44px;
 }
 
-/* The news index is a reading list; the home page keeps its existing cards. */
+/* News feeds use separators; standalone cards keep their existing surface. */
 .card[data-layout='feed'] {
   border: 0;
   border-bottom: 1px solid var(--app-border);

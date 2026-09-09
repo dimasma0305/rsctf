@@ -1,45 +1,36 @@
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
-  gap: 0.75rem;
-}
-.link {
+.links {
   display: flex;
-  align-items: flex-start;
-  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 1rem;
   min-width: 0;
-  padding: 1rem;
-  border: 1px solid var(--app-border-subtle);
-  border-radius: var(--mantine-radius-lg);
-  color: var(--app-text-primary);
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0.35rem 0.25rem;
+  color: var(--app-text-secondary);
   text-decoration: none;
-  background: var(--app-raised-surface);
-}
-.link:hover {
-  background: var(--app-hover-surface);
-  border-color: var(--app-accent-border);
-}
-.copy {
-  min-width: 0;
-  flex: 1;
   overflow-wrap: anywhere;
 }
-.copy p + p {
-  margin-top: 0.25rem;
-  line-height: 1.5;
-}
-.icon {
-  flex-shrink: 0;
-  display: grid;
-  place-items: center;
-  width: 2rem;
-  height: 2rem;
-  border-radius: var(--mantine-radius-sm);
-  background: var(--app-accent-icon-surface);
+
+.link:hover {
   color: var(--app-accent-text);
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
 }
-.arrow {
+
+.link:focus-visible {
+  outline: 2px solid var(--app-accent-text);
+  outline-offset: 2px;
+}
+
+.icon {
+  display: flex;
   flex-shrink: 0;
   color: var(--app-text-muted);
-  margin-top: 3px;
 }

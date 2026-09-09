@@ -11,7 +11,7 @@ import {
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { TFunction } from 'i18next'
-import { CSSProperties, FC } from 'react'
+import { FC } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { useLanguage } from '@Utils/I18n'
@@ -69,7 +69,6 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
   const color = GameColorMap.get(status) ?? 'gray'
   const statusLabel = getGameStatusLabel(t, status)
   const eventTitle = title || t('game.content.untitled', 'Untitled event')
-  const eventHue = (game.id * 47 + 186) % 360
   const membership = (() => {
     switch (game.participationStatus) {
       case ParticipationStatus.Accepted:
@@ -88,7 +87,7 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
   return (
     <Card {...others} component="article" className={classes.root}>
       <Link to={`/games/${game.id}`} className={classes.link} data-guide="event-card">
-        <div className={classes.visual} style={{ '--event-hue': `${eventHue}deg` } as CSSProperties}>
+        <div className={classes.visual}>
           {poster ? (
             <Image src={poster} alt="" />
           ) : (
@@ -97,22 +96,23 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
               <span className={classes.posterSignal}>
                 <Icon path={mdiFlagOutline} size={1.35} />
               </span>
-              <span className={classes.posterMark}>RS::CTF</span>
             </div>
-          )}
-          <span className={classes.status} data-status={status}>
-            <span className={classes.statusDot} aria-hidden="true" />
-            {statusLabel}
-          </span>
-          {showMembership && (
-            <span className={classes.membership} data-membership={membership.status}>
-              <Icon path={membership.icon} size={0.62} aria-hidden="true" />
-              {membership.label}
-            </span>
           )}
         </div>
 
         <div className={classes.content}>
+          <div className={classes.stateRow}>
+            <span className={classes.status} data-status={status}>
+              <span className={classes.statusDot} aria-hidden="true" />
+              {statusLabel}
+            </span>
+            {showMembership && (
+              <span className={classes.membership} data-membership={membership.status}>
+                <Icon path={membership.icon} size={0.62} aria-hidden="true" />
+                {membership.label}
+              </span>
+            )}
+          </div>
           <Stack gap={7} className={classes.copy}>
             <Title order={3} size="h4" className={classes.title}>
               {eventTitle}

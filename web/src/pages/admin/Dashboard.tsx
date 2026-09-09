@@ -7,7 +7,6 @@ import {
   Table,
   Tabs,
   Text,
-  ThemeIcon,
   Title,
   Skeleton,
   Badge,
@@ -26,9 +25,6 @@ import {
   mdiArrowLeftBold,
   mdiArrowRightBold,
   mdiRefresh,
-  mdiFlagOutline,
-  mdiHammerWrench,
-  mdiAccountCogOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import type { EChartsOption } from 'echarts'
@@ -36,9 +32,7 @@ import { FC, useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import useSWR from 'swr'
-import { Empty } from '@Components/Empty'
 import { ScrollingText } from '@Components/ScrollingText'
-import { WorkspaceLinks } from '@Components/WorkspaceLinks'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { EchartsContainer } from '@Components/charts/EchartsContainer'
 import { startAdminDashboardRefresh } from '@Utils/AdminDashboardRefresh'
@@ -52,7 +46,6 @@ import api, {
 } from '@Api'
 import classes from '@Styles/AdminDashboard.module.css'
 
-const STATS_ICON_SIZE = 1.5
 const TABLE_PAGE_SIZE = 10
 const DASHBOARD_SWR_CONFIG = {
   refreshInterval: 0,
@@ -61,42 +54,33 @@ const DASHBOARD_SWR_CONFIG = {
 } as const
 type ActivityTab = 'reviews' | 'writeups' | 'cheats'
 
-const StatCard: FC<{
+const StatLink: FC<{
   title: string
   value?: number
   icon: string
-  color: string
   to: string
   loading?: boolean
-}> = ({ title, value, icon, color, to, loading }) => (
-  <Card
-    component={Link}
+}> = ({ title, value, icon, to, loading }) => (
+  <Link
     to={to}
-    withBorder
-    padding="lg"
-    radius="lg"
-    className={classes.statCard}
+    className={classes.statLink}
     aria-label={loading ? title : `${title}: ${value ?? 0}`}
     aria-busy={loading || undefined}
   >
-    <Group justify="space-between">
-      <Stack gap={0}>
-        <Text size="xs" c="dimmed" fw={700} tt="uppercase">
-          {title}
-        </Text>
-        {loading ? (
-          <Skeleton height={28} width={50} mt={5} radius="sm" />
-        ) : (
-          <Text fw={760} size="xl" className={classes.statValue}>
-            {value ?? 0}
-          </Text>
-        )}
-      </Stack>
-      <ThemeIcon radius="md" size="lg" variant="light" color={color}>
-        <Icon path={icon} size={STATS_ICON_SIZE} />
-      </ThemeIcon>
+    <Group gap="xs">
+      <Icon path={icon} size={0.85} aria-hidden="true" />
+      <Text component="span" size="sm" c="dimmed">
+        {title}
+      </Text>
     </Group>
-  </Card>
+    {loading ? (
+      <Skeleton height={28} width={50} mt={5} radius="sm" />
+    ) : (
+      <Text component="span" fw={700} className={classes.statValue}>
+        {value ?? 0}
+      </Text>
+    )}
+  </Link>
 )
 
 const Dashboard: FC = () => {
@@ -262,80 +246,51 @@ const Dashboard: FC = () => {
   )
 
   return (
-    <AdminPage isLoading={isLoading && !dashboard}>
-      <Stack gap="md">
-        <WorkspaceLinks
-          label={t('common.workspace.admin_actions', 'Admin shortcuts')}
-          items={[
-            {
-              to: '/admin/games',
-              icon: mdiFlagOutline,
-              title: t('common.workspace.manage_events', 'Manage events'),
-              description: t('common.workspace.manage_events_hint', 'Challenges, schedule, access, and submissions.'),
-            },
-            {
-              to: '/admin/users',
-              icon: mdiAccountCogOutline,
-              title: t('common.workspace.manage_people', 'Manage participants'),
-              description: t('common.workspace.manage_people_hint', 'Accounts, CSV imports, and credential delivery.'),
-            },
-            {
-              to: '/admin/builds',
-              icon: mdiHammerWrench,
-              title: t('common.workspace.check_operations', 'Check operations'),
-              description: t('common.workspace.check_operations_hint', 'Inspect build progress and failed jobs.'),
-            },
-          ]}
-        />
-        <Group justify="flex-end">
-          <ActionIcon
-            variant="subtle"
-            size="lg"
-            loading={isDashboardValidating || isTrendValidating}
-            aria-label={t('admin.dashboard.refresh', 'Refresh dashboard')}
-            onClick={() => void refreshVisibleDashboard().catch((error) => showErrorMsg(error, t))}
-          >
-            <Icon path={mdiRefresh} size={1} aria-hidden />
-          </ActionIcon>
-        </Group>
-        {/* Stats Row */}
-        <Grid>
-          <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
-            <StatCard
-              title={t('admin.dashboard.users', 'Users')}
-              value={dashboard?.systemStats.userCount}
-              icon={mdiAccountMultiple}
-              color="blue"
-              to="/admin/users"
-              loading={isLoading}
-            />
-          </Grid.Col>
-          <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
-            <StatCard
-              title={t('admin.dashboard.teams', 'Teams')}
-              value={dashboard?.systemStats.teamCount}
-              icon={mdiAccountGroup}
-              color="cyan"
-              to="/admin/teams"
-              loading={isLoading}
-            />
-          </Grid.Col>
-          <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
-            <StatCard
-              title={t('admin.dashboard.containers', 'Containers')}
-              value={dashboard?.systemStats.activeContainerCount}
-              icon={mdiDocker}
-              color="indigo"
-              to="/admin/instances"
-              loading={isLoading}
-            />
-          </Grid.Col>
-        </Grid>
+    <AdminPage
+      isLoading={isLoading && !dashboard}
+      headerActions={
+        <ActionIcon
+          variant="subtle"
+          size="lg"
+          loading={isDashboardValidating || isTrendValidating}
+          aria-label={t('admin.dashboard.refresh', 'Refresh dashboard')}
+          onClick={() => void refreshVisibleDashboard().catch((error) => showErrorMsg(error, t))}
+        >
+          <Icon path={mdiRefresh} size={1} aria-hidden />
+        </ActionIcon>
+      }
+    >
+      <Stack gap="lg" data-admin-overview>
+        <div className={classes.stats} data-dashboard-stats>
+          <StatLink
+            title={t('admin.dashboard.users', 'Users')}
+            value={dashboard?.systemStats.userCount}
+            icon={mdiAccountMultiple}
+            to="/admin/users"
+            loading={isLoading}
+          />
+
+          <StatLink
+            title={t('admin.dashboard.teams', 'Teams')}
+            value={dashboard?.systemStats.teamCount}
+            icon={mdiAccountGroup}
+            to="/admin/teams"
+            loading={isLoading}
+          />
+
+          <StatLink
+            title={t('admin.dashboard.containers', 'Containers')}
+            value={dashboard?.systemStats.activeContainerCount}
+            icon={mdiDocker}
+            to="/admin/instances"
+            loading={isLoading}
+          />
+        </div>
 
         <Grid>
           {/* Trend Chart */}
           <Grid.Col span={{ base: 12, lg: 7 }}>
-            <Card withBorder radius="lg" p="lg">
+            <section className={classes.section}>
               <Group justify="space-between" mb="md">
                 <Title order={2} size="h4">
                   {t('admin.dashboard.submission_trend', 'Submission Trend')}
@@ -362,21 +317,24 @@ const Dashboard: FC = () => {
                   style={{ height: 300, width: '100%' }}
                 />
               ) : (
-                <Empty
-                  bordered
-                  title={t('admin.dashboard.no_submission_activity', 'No submission activity')}
-                  description={t(
-                    'admin.dashboard.no_submission_activity_description',
-                    'Submissions will appear here when competitors begin solving challenges in this time range.'
-                  )}
-                />
+                <Stack gap="xs" className={classes.emptyTrend}>
+                  <Text size="sm" fw={600}>
+                    {t('admin.dashboard.no_submission_activity', 'No submission activity')}
+                  </Text>
+                  <Text size="sm" c="dimmed">
+                    {t(
+                      'admin.dashboard.no_submission_activity_description',
+                      'Submissions will appear here when competitors begin solving challenges in this time range.'
+                    )}
+                  </Text>
+                </Stack>
               )}
-            </Card>
+            </section>
           </Grid.Col>
 
           {/* Popular Games */}
           <Grid.Col span={{ base: 12, lg: 5 }}>
-            <Card withBorder radius="lg" p="lg" h="100%" className={classes.popularGamesCard}>
+            <section className={classes.section}>
               <Title order={2} size="h4" mb="md">
                 {t('admin.dashboard.popular_games', 'Popular Games')}
               </Title>
@@ -527,12 +485,12 @@ const Dashboard: FC = () => {
                   </Table.Tbody>
                 </Table>
               </ScrollArea>
-            </Card>
+            </section>
           </Grid.Col>
         </Grid>
 
         {/* Recent Activity Tabs */}
-        <Card withBorder radius="lg" p="lg">
+        <section className={classes.activity}>
           <Tabs value={activityTab} onChange={(value) => value && setActivityTab(value as ActivityTab)}>
             <Tabs.List>
               <Tabs.Tab value="reviews">{t('admin.dashboard.recent_reviews', 'Recent Reviews')}</Tabs.Tab>
@@ -706,7 +664,7 @@ const Dashboard: FC = () => {
               </ScrollArea>
             </Tabs.Panel>
           </Tabs>
-        </Card>
+        </section>
       </Stack>
     </AdminPage>
   )
