@@ -53,6 +53,9 @@ color after filtering, and keep opaque high-contrast ID labels.
 All API/hub traffic is intercepted, and every mutation is blocked. This is not a
 backend authorization test. The onboarding guide is disabled in these fixtures;
 its dedicated guide harness tests onboarding separately.
+Theme and guide setup run only in the selected origin's top-level document, never
+inside child or opaque sandbox frames. Font loading and keyboard focus must settle
+before inspection; application runtime exceptions still fail the audit.
 
 `RSCTF_OVERVIEW_TARGET=https://intechfest.1pc.tf` or `https://tcp.1pc.tf` tests
 released frontend assets with the same isolated data. `RSCTF_OVERVIEW_OUTPUT`

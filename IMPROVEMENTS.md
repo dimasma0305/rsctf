@@ -253,6 +253,38 @@ Evidence and rollback: `/root/rsctf-production/releases/sha-fda11365/DEPLOYMENT.
 Screenshots and reports: `visual-audit-output/refined2-contrast-{local,full,candidate}/`
 and `visual-audit-output/refined2-final-live/`.
 
+### September 9: restore event-card color
+
+The visual cleanup went too far for cards without posters. Restored their stable
+per-event gradients while preserving the simpler layout and wrapping status labels.
+Uploaded artwork is untouched; opaque icon/ID backgrounds protect contrast in both
+themes. The design direction near the top of this plan now explicitly preserves
+color and personality when removing generic decoration.
+
+- Released code: `af212f21a31b144c402454c10fc9cbe085313678`, package `0.1.118`.
+- Image: `ghcr.io/dimasma0305/rsctf@sha256:b4a7213bd22ba7d61a930b50fa17f2c3ade88ac160b3e98c12c1e99c1d651623`.
+- [Release pipeline](https://github.com/dimasma0305/rsctf/actions/runs/34310159913)
+  passed. Local strict check/lint/build, 633 client tests, and 1,703 Rust tests passed
+  without build warnings; 410 infrastructure-dependent tests were ignored locally.
+  The dependency audit has one low finding and passed the high-severity gate.
+- Local and packaged 27-state browser runs and a 12-render full-page audit passed.
+  Final live runs passed 27 states per origin plus eight real public page renders,
+  without reported Axe violations, overflow, or browser errors. Reviewed narrow
+  schedule-label warnings and initial harness failures are retained in the evidence.
+- Follow-up test-only corrections scope injected setup to the intended top-level
+  origin and await fonts/focus rendering before assertions. All 21 harness unit
+  tests pass; application error/contrast assertions remain enabled. Tests are
+  excluded from the image, so this follow-up does not require another deployment.
+- TCP's two web replicas, control, and firewall helper are healthy on the exact
+  image with zero restarts. Both origins return exact `ok` and serve matching HTML
+  and 24 entry assets. Post-start logs show no errors, panics, or unexpected 5xx.
+- Intechfest uses that image's frontend without a backend restart. No databases,
+  competition data, or challenge containers were changed. Automated accessibility
+  checks are not a formal certification; manual NVDA/VoiceOver testing was unavailable.
+
+Evidence and rollback: `/root/rsctf-production/releases/sha-af212f21/DEPLOYMENT.md`.
+Real catalog screenshot: `visual-audit-output/event-colors-live/tcp-public/desktop--games--index--viewport.png`.
+
 ### Reliability findings queued for investigation
 
 During pre-release inspection on September 8, TCP control and the Intechfest source

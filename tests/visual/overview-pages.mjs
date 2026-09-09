@@ -3,13 +3,14 @@ import assert from 'node:assert/strict'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { launchBrowser } from './cdp.mjs'
-import { fixture, guideSetup } from './overview-pages-fixtures.mjs'
+import { fixture, guideSetup, topDocumentScript } from './overview-pages-fixtures.mjs'
 
 const target = process.env.RSCTF_OVERVIEW_TARGET || 'http://127.0.0.1:63017'
 assert.ok(['http://127.0.0.1:63017', 'https://tcp.1pc.tf', 'https://intechfest.1pc.tf'].includes(target))
 const output = resolve(process.env.RSCTF_OVERVIEW_OUTPUT || '../visual-audit-output/overview-local')
 mkdirSync(output, { recursive: true })
 const { cdp, close } = await launchBrowser()
+const seedDocument = source => cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: topDocumentScript(source, target) })
 const reports = [], errors = [], mutations = [], requests = []
 let scenario = 'normal', role = 'Admin'
 const evaluate = async expression => {
@@ -31,6 +32,7 @@ const press = async key => {
   })
 }
 const inspect = async name => {
+  await evaluate(`document.fonts.ready`)
   await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
   await evaluate(`Promise.all(document.getAnimations().filter(a => a.effect?.getComputedTiming().endTime !== Infinity).map(a => a.finished.catch(() => {})))`)
   await evaluate(readFileSync('node_modules/axe-core/axe.min.js', 'utf8'))
@@ -50,7 +52,7 @@ try {
   await cdp.send('Page.enable')
   await cdp.send('Runtime.enable')
   cdp.on('Runtime.exceptionThrown', ({ exceptionDetails }) => errors.push(exceptionDetails.exception?.description || exceptionDetails.text))
-  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: guideSetup })
+  await seedDocument(guideSetup)
   await cdp.send('Fetch.enable', { patterns: [{ urlPattern: target + '/api/*' }, { urlPattern: target + '/hub*' }] })
   cdp.on('Fetch.requestPaused', async ({ requestId, request }) => {
     const url = new URL(request.url)
@@ -70,7 +72,7 @@ try {
   ]) {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false })
     await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: name === 'light-id' ? 'reduce' : 'no-preference' }] })
-    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('language', JSON.stringify('${language}')); localStorage.setItem('mantine-color-scheme-value', '${scheme}');` })
+    await seedDocument(`localStorage.setItem('language', JSON.stringify('${language}')); localStorage.setItem('mantine-color-scheme-value', '${scheme}');`)
     await visit('/', `document.querySelectorAll('[data-post-card]').length === 2`)
     await inspect(name + '-home')
     assert.equal(await evaluate(`document.querySelectorAll('[data-home-overview] [data-post-card][data-layout="feed"] h3').length`), 2)
@@ -89,7 +91,7 @@ try {
     if (width >= 1440) assert.ok(await evaluate(`document.querySelector('[data-dashboard-stats]').getBoundingClientRect().top < 300`), 'Dashboard totals must precede decorative panels')
     if (width === 320) assert.ok(await evaluate(`document.querySelector('[data-dashboard-stats]').getBoundingClientRect().bottom < innerHeight - 80`), 'Dashboard totals must be visible above the mobile dock')
   }
-  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('language', JSON.stringify('en-US')); localStorage.setItem('mantine-color-scheme-value', 'dark');` })
+  await seedDocument(`localStorage.setItem('language', JSON.stringify('en-US')); localStorage.setItem('mantine-color-scheme-value', 'dark');`)
   await visit('/', `document.querySelector('[data-workspace-links] a[href="/games"]')`)
   await evaluate(`document.querySelector('[data-workspace-links] a[href="/games"]').focus()`)
   await press('Tab')

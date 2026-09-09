@@ -22,6 +22,10 @@ export const posts = [
 
 export const guideSetup = `for (const id of ['guest', '${commonFixture('/api/account/profile').body.userId}']) localStorage.setItem('rsctf-player-guide:' + id, JSON.stringify({ interactiveEnabled: false, completedVersion: 5, seenFeatures: [], activeTourStep: null, tourPaused: true }));`
 
+// CDP document scripts also run in child frames, including opaque sandbox origins.
+export const topDocumentScript = (source, origin) =>
+  `if (window === window.top && location.origin === ${JSON.stringify(origin)}) { ${source} }`
+
 export function fixture(path, method = 'GET', scenario = 'normal', role = 'Admin') {
   if (!['GET', 'HEAD'].includes(method)) return { status: 405, body: { title: 'Fixture write blocked' } }
   const url = new URL(path, 'http://127.0.0.1')

@@ -1,6 +1,28 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { fixture } from './overview-pages-fixtures.mjs'
+import { runInNewContext } from 'node:vm'
+import { fixture, topDocumentScript } from './overview-pages-fixtures.mjs'
+
+test('overview browser setup touches storage only in the expected top-level document', () => {
+  const origin = 'https://tcp.1pc.tf'
+  const source = `localStorage.setItem('fixture', 'ready');`
+  const top = {}; top.top = top
+  for (const blockedOrigin of ['null', 'https://example.invalid']) {
+    let storageReads = 0
+    const context = { window: top, location: { origin: blockedOrigin }, get localStorage() { storageReads++; throw new Error('Storage denied') } }
+    assert.throws(() => runInNewContext(source, context))
+    assert.ok(storageReads > 0)
+    storageReads = 0
+    assert.doesNotThrow(() => runInNewContext(topDocumentScript(source, origin), context))
+    assert.equal(storageReads, 0)
+  }
+  let writes = 0
+  const storage = { setItem: () => writes++ }
+  runInNewContext(topDocumentScript(source, origin), { window: { top }, location: { origin }, localStorage: storage })
+  assert.equal(writes, 0, 'same-origin child frames must also be left alone')
+  runInNewContext(topDocumentScript(source, origin), { window: top, location: { origin }, localStorage: storage })
+  assert.equal(writes, 1)
+})
 
 test('overview fixtures block writes and do not expose admin data to guests or players', () => {
   for (const path of ['/api/game', '/api/posts/latest', '/api/admin/dashboard', '/hub', '/api/unknown']) {
