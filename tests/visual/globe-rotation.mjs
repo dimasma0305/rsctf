@@ -80,7 +80,7 @@ export const auditGlobeRotation = async (cdp, evaluate, waitFor, { touch = false
       }
       await cdp.send('Input.dispatchMouseEvent', { type:'mouseReleased', x:startX + dx, y:startY + dy, button:'left', clickCount:1 })
       await settle()
-      if (Math.abs(Math.sin(await yaw() - previousYaw - dx * Math.PI / width)) > 0.025) console.log('gesture diagnostics', await evaluate('window.__globeInputTrace'))
+      if (Math.abs(Math.sin(await yaw() - previousYaw - dx * Math.PI / width)) > 0.025 || Math.abs(Math.sin(await pitch() - previousPitch + dy * Math.PI / width)) > 0.025) console.log('gesture diagnostics', await evaluate('window.__globeInputTrace'))
       closeTo(await yaw(), previousYaw + dx * Math.PI / width, 'diagonal mouse drag rotates horizontally')
       closeTo(await pitch(), previousPitch - dy * Math.PI / width, 'mouse drag rotates up and down')
       assert.equal(await evaluate(surfaceTop), scroll, 'vertical dragging does not scroll the page')
