@@ -386,6 +386,7 @@ async fn docker_workload_lifecycle_when_image_is_configured() {
                 writable_layer_bytes: 512 * 1024 * 1024,
                 minimum_free_bytes: 1024 * 1024 * 1024,
                 allow_unbounded_storage: true,
+                docker_admission: crate::runtime::DockerAdmissionLimits::default(),
             },
         )
         .await?;

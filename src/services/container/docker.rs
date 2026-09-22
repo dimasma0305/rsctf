@@ -13,8 +13,11 @@ use super::{
     ContainerLiveness, ContainerManager, ContainerSpec, DockerContainerManager,
     NoopContainerManager, MAX_EXEC_OUTPUT_BYTES,
 };
+use crate::services::docker_admission::docker_admission;
 use crate::utils::error::{AppError, AppResult};
 
+mod image;
+pub(super) mod network;
 mod retry;
 pub(crate) use retry::launch_spec_fingerprint;
 #[cfg(test)]
@@ -125,21 +128,30 @@ impl DockerContainerManager {
         let archive_limit = limit
             .checked_add(MAX_FILE_ARCHIVE_METADATA_BYTES)
             .ok_or_else(|| AppError::bad_request("file preview size overflow"))?;
-        let mut archive = Vec::new();
-        let mut stream = docker
-            .download_from_container(canonical_id, Some(DownloadFromContainerOptions { path }));
-        while let Some(chunk) = stream.next().await {
-            let bytes = chunk.map_err(|error| {
-                if is_not_found(&error) {
-                    AppError::not_found(format!("file not found in container: {path}"))
-                } else {
-                    AppError::internal(format!("failed to read container file archive: {error}"))
+        let archive = docker_admission()
+            .read("download_from_container", async {
+                let mut archive = Vec::new();
+                let mut stream = docker.download_from_container(
+                    canonical_id,
+                    Some(DownloadFromContainerOptions { path }),
+                );
+                while let Some(chunk) = stream.next().await {
+                    let bytes = chunk.map_err(|error| {
+                        if is_not_found(&error) {
+                            AppError::not_found(format!("file not found in container: {path}"))
+                        } else {
+                            AppError::internal(format!(
+                                "failed to read container file archive: {error}"
+                            ))
+                        }
+                    })?;
+                    if append_file_archive_chunk(&mut archive, &bytes, archive_limit)? {
+                        break;
+                    }
                 }
-            })?;
-            if append_file_archive_chunk(&mut archive, &bytes, archive_limit)? {
-                break;
-            }
-        }
+                Ok::<_, AppError>(archive)
+            })
+            .await??;
         tokio::task::spawn_blocking(move || parse_file_archive(&archive, limit))
             .await
             .map_err(|error| AppError::internal(format!("file preview task failed: {error}")))?
@@ -444,7 +456,11 @@ impl DockerContainerManager {
         admission: ContainerExecAdmission,
     ) -> Result<String, ContainerExecError> {
         let docker = self.client().map_err(ContainerExecError::Platform)?;
-        let info = match docker.inspect_container(id, None).await {
+        let inspected = docker_admission()
+            .read("inspect_container", docker.inspect_container(id, None))
+            .await
+            .map_err(|error| ContainerExecError::Platform(error.into()))?;
+        let info = match inspected {
             Ok(info) => info,
             Err(error) if is_not_found(&error) => {
                 return Err(ContainerExecError::Participant(AppError::not_found(
@@ -576,7 +592,10 @@ impl DockerContainerManager {
         docker: &Docker,
         id: &str,
     ) -> AppResult<Option<ContainerInspectResponse>> {
-        match docker.inspect_container(id, None).await {
+        let inspected = docker_admission()
+            .read("inspect_container", docker.inspect_container(id, None))
+            .await?;
+        match inspected {
             Ok(info) => {
                 verify_container_scope(&info, &self.scope)?;
                 Ok(Some(info))
@@ -596,18 +615,22 @@ impl DockerContainerManager {
         adopted: bool,
     ) -> AppResult<()> {
         let already_running = adopted
-            && docker
-                .inspect_container(id, None)
+            && docker_admission()
+                .read("inspect_container", docker.inspect_container(id, None))
                 .await
                 .ok()
+                .and_then(Result::ok)
                 .as_ref()
                 .is_some_and(container_is_running);
         if already_running {
             return Ok(());
         }
-        let Err(error) = docker
-            .start_container(id, None::<StartContainerOptions<String>>)
-            .await
+        let Err(error) = docker_admission()
+            .lifecycle(
+                "start_container",
+                docker.start_container(id, None::<StartContainerOptions<String>>),
+            )
+            .await?
         else {
             return Ok(());
         };
@@ -633,16 +656,19 @@ impl DockerContainerManager {
                             "failed to start container and cleanup identity was unavailable: {error}"
                         ))
                     })?;
-                match docker
-                    .remove_container(
-                        canonical_id,
-                        Some(RemoveContainerOptions {
-                            v: false,
-                            force: true,
-                            link: false,
-                        }),
+                match docker_admission()
+                    .lifecycle(
+                        "remove_container",
+                        docker.remove_container(
+                            canonical_id,
+                            Some(RemoveContainerOptions {
+                                v: false,
+                                force: true,
+                                link: false,
+                            }),
+                        ),
                     )
-                    .await
+                    .await?
                 {
                     Ok(())
                     | Err(bollard::errors::Error::DockerResponseServerError {
@@ -675,21 +701,32 @@ impl DockerContainerManager {
             return (None, None);
         };
 
-        let mut stream = docker.stats(
-            id,
-            Some(StatsOptions {
-                stream: false,
-                one_shot: true,
-            }),
-        );
+        let sample = docker_admission()
+            .read("stats", async {
+                docker
+                    .stats(
+                        id,
+                        Some(StatsOptions {
+                            stream: false,
+                            one_shot: true,
+                        }),
+                    )
+                    .next()
+                    .await
+            })
+            .await;
 
-        let stats = match stream.next().await {
-            Some(Ok(stats)) => stats,
-            Some(Err(e)) => {
+        let stats = match sample {
+            Ok(Some(Ok(stats))) => stats,
+            Ok(Some(Err(e))) => {
                 tracing::debug!(id = %id, error = %e, "container stats sample failed");
                 return (None, None);
             }
-            None => return (None, None),
+            Ok(None) => return (None, None),
+            Err(e) => {
+                tracing::debug!(id = %id, error = %e, "container stats sample was not admitted");
+                return (None, None);
+            }
         };
 
         let memory_bytes = stats.memory_stats.usage;

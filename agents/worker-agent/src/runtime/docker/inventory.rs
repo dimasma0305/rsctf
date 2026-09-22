@@ -26,13 +26,16 @@ impl DockerRuntime {
             ],
         );
         let containers = self
-            .docker
-            .list_containers(Some(ListContainersOptions {
-                all: true,
-                filters,
-                ..Default::default()
-            }))
-            .await
+            .admission
+            .read(
+                "list_containers",
+                self.docker.list_containers(Some(ListContainersOptions {
+                    all: true,
+                    filters,
+                    ..Default::default()
+                })),
+            )
+            .await?
             .map_err(|error| docker_error("inventory workload containers", error))?;
         let active_workloads = containers
             .iter()

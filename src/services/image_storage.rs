@@ -151,9 +151,14 @@ pub(super) async fn storage_status_with(
     deadline: tokio::time::Instant,
 ) -> AppResult<ImageStorageStatus> {
     let (filesystem_total_bytes, filesystem_available_bytes) = filesystem_space(Path::new("/"))?;
-    let usage = tokio::time::timeout_at(deadline, docker.df())
+    let usage = crate::services::docker_admission::docker_admission()
+        .read_within(
+            "df",
+            deadline.saturating_duration_since(tokio::time::Instant::now()),
+            docker.df(),
+        )
         .await
-        .map_err(|_| AppError::unavailable("Docker disk usage timed out"))?
+        .map_err(|error| AppError::unavailable(format!("Docker disk usage: {error}")))?
         .map_err(|error| AppError::unavailable(format!("Docker disk usage failed: {error}")))?;
     let caches = usage.build_cache.unwrap_or_default();
     let (build_cache_bytes, reclaimable_build_cache_bytes) = build_cache_space(

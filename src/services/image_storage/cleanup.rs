@@ -25,6 +25,7 @@ use super::{
 };
 use crate::app_state::SharedState;
 use crate::services::container_policy::ContainerPolicy;
+use crate::services::docker_admission::{docker_admission, DockerOperationClass};
 use crate::utils::enums::{ChallengeBuildStatus, ChallengeType};
 use crate::utils::error::{AppError, AppResult};
 
@@ -209,7 +210,36 @@ impl ReferenceSnapshot {
     }
 }
 
+/// Remaining per-call budget: the sweep's own deadline capped by the fixed
+/// per-operation budget. The admission class deadline caps it again.
+fn docker_budget(deadline: tokio::time::Instant) -> Duration {
+    deadline
+        .saturating_duration_since(tokio::time::Instant::now())
+        .min(DOCKER_OPERATION_BUDGET)
+}
+
+/// Admitted Docker call for the sweep. Admission and deadline failures map to
+/// the same retryable unavailable shape the sweep already reports.
+async fn admitted_docker_call<F: Future>(
+    class: DockerOperationClass,
+    deadline: tokio::time::Instant,
+    label: &'static str,
+    future: F,
+) -> AppResult<F::Output> {
+    let budget = docker_budget(deadline);
+    let admitted = match class {
+        DockerOperationClass::Read => docker_admission().read_within(label, budget, future).await,
+        DockerOperationClass::Lifecycle => {
+            docker_admission()
+                .lifecycle_within(label, budget, future)
+                .await
+        }
+    };
+    admitted.map_err(|error| AppError::unavailable(format!("Docker {label}: {error}")))
+}
+
 async fn docker_call<T, E, F>(
+    class: DockerOperationClass,
     deadline: tokio::time::Instant,
     label: &'static str,
     future: F,
@@ -218,10 +248,8 @@ where
     E: std::fmt::Display,
     F: Future<Output = Result<T, E>>,
 {
-    let operation_deadline = deadline.min(tokio::time::Instant::now() + DOCKER_OPERATION_BUDGET);
-    tokio::time::timeout_at(operation_deadline, future)
-        .await
-        .map_err(|_| AppError::unavailable(format!("Docker {label} timed out")))?
+    admitted_docker_call(class, deadline, label, future)
+        .await?
         .map_err(|error| AppError::unavailable(format!("Docker {label} failed: {error}")))
 }
 
@@ -304,6 +332,7 @@ async fn prune_build_cache(
         .build()
         .map_err(|error| AppError::internal(error.to_string()))?;
     let response = docker_call(
+        DockerOperationClass::Lifecycle,
         deadline,
         "build-cache prune",
         client
@@ -562,9 +591,10 @@ async fn evict_candidate(
         return CandidateOutcome::default();
     }
 
-    let inspect_deadline = deadline.min(tokio::time::Instant::now() + DOCKER_OPERATION_BUDGET);
-    let inspected = match tokio::time::timeout_at(
-        inspect_deadline,
+    let inspected = match admitted_docker_call(
+        DockerOperationClass::Read,
+        deadline,
+        "image inspection",
         docker.inspect_image(&candidate.canonical_ref),
     )
     .await
@@ -649,6 +679,7 @@ async fn evict_candidate(
         .and_then(|size| u64::try_from(size).ok())
         .unwrap_or_default();
     if let Err(error) = docker_call(
+        DockerOperationClass::Lifecycle,
         deadline,
         "image removal",
         docker.remove_image(
@@ -669,8 +700,10 @@ async fn evict_candidate(
             ))
         };
     }
-    match tokio::time::timeout_at(
-        deadline.min(tokio::time::Instant::now() + DOCKER_OPERATION_BUDGET),
+    match admitted_docker_call(
+        DockerOperationClass::Read,
+        deadline,
+        "image removal verification",
         docker.inspect_image(&candidate.image_id),
     )
     .await
@@ -770,6 +803,7 @@ pub(crate) async fn cleanup_with_deadline(
     if before.low_storage {
         let filters = HashMap::from([("dangling".to_string(), vec!["true".to_string()])]);
         match docker_call(
+            DockerOperationClass::Lifecycle,
             deadline,
             "dangling-image prune",
             docker.prune_images(Some(PruneImagesOptions { filters })),
@@ -790,6 +824,7 @@ pub(crate) async fn cleanup_with_deadline(
 
     let references = Arc::new(load_references(st).await?);
     let containers = docker_call(
+        DockerOperationClass::Read,
         deadline,
         "container inventory",
         docker.list_containers(Some(ListContainersOptions::<String> {

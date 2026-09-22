@@ -9,6 +9,7 @@ use super::{STORAGE_QUOTA_FALLBACK, STORAGE_QUOTA_LABEL};
 use crate::services::container::{
     labels_match_scope, ContainerSpec, MANAGED_LABEL, OPERATION_LABEL, SCOPE_LABEL,
 };
+use crate::services::docker_admission::docker_admission;
 use crate::utils::error::{AppError, AppResult};
 
 #[derive(serde::Serialize)]
@@ -207,16 +208,19 @@ pub(in crate::services::container) async fn adopt_operation_container(
         return Ok(id);
     }
 
-    match docker
-        .remove_container(
-            &id,
-            Some(RemoveContainerOptions {
-                v: false,
-                force: true,
-                link: false,
-            }),
+    match docker_admission()
+        .lifecycle(
+            "remove_container",
+            docker.remove_container(
+                &id,
+                Some(RemoveContainerOptions {
+                    v: false,
+                    force: true,
+                    link: false,
+                }),
+            ),
         )
-        .await
+        .await?
     {
         Ok(())
         | Err(bollard::errors::Error::DockerResponseServerError {
@@ -244,14 +248,17 @@ pub(in crate::services::container) async fn discover_operation_container(
     let Some(operation_id) = spec.operation_id.as_deref() else {
         return Ok(None);
     };
-    let candidates = docker
-        .list_containers(Some(ListContainersOptions {
-            all: true,
-            limit: Some(2),
-            filters: operation_container_filters(scope, operation_id),
-            ..Default::default()
-        }))
-        .await
+    let candidates = docker_admission()
+        .read(
+            "list_containers",
+            docker.list_containers(Some(ListContainersOptions {
+                all: true,
+                limit: Some(2),
+                filters: operation_container_filters(scope, operation_id),
+                ..Default::default()
+            })),
+        )
+        .await?
         .map_err(|error| {
             AppError::internal(format!(
                 "failed to discover an existing container operation: {error}"
@@ -269,11 +276,14 @@ pub(in crate::services::container) async fn discover_operation_container(
     else {
         return Ok(None);
     };
-    let existing = docker.inspect_container(&id, None).await.map_err(|error| {
-        AppError::internal(format!(
-            "container operation {id} was discovered but could not be inspected: {error}"
-        ))
-    })?;
+    let existing = docker_admission()
+        .read("inspect_container", docker.inspect_container(&id, None))
+        .await?
+        .map_err(|error| {
+            AppError::internal(format!(
+                "container operation {id} was discovered but could not be inspected: {error}"
+            ))
+        })?;
     adopt_operation_container(
         docker,
         &existing,

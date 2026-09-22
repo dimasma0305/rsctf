@@ -34,16 +34,14 @@ use bollard::container::NetworkingConfig;
 use bollard::container::{
     Config, CreateContainerOptions, ListContainersOptions, RemoveContainerOptions,
 };
-use bollard::image::CreateImageOptions;
-use bollard::models::{EndpointSettings, HostConfig, Ipam, IpamConfig, Network, PortBinding};
-use bollard::network::CreateNetworkOptions;
+use bollard::models::{EndpointSettings, HostConfig, PortBinding};
 use bollard::Docker;
 use futures::StreamExt;
-use ipnet::Ipv4Net;
 use rsctf_worker_protocol::GameKind;
 use std::collections::HashMap;
 use std::time::Duration;
 
+use crate::services::docker_admission::docker_admission;
 use crate::utils::enums::{ChallengeType, NetworkMode};
 use crate::utils::error::{AppError, AppResult};
 mod backend;
@@ -58,6 +56,8 @@ mod real_docker_tests;
 #[cfg(test)]
 mod tests;
 pub(crate) use self::docker::launch_spec_fingerprint;
+#[cfg(test)]
+use self::docker::network::{bridge_network_matches, network_scope_matches};
 use self::docker::{
     adopt_operation_container, append_snapshot_chunk, discover_operation_container,
     docker_network_mode, image_requests_restricted_profile, is_conflict, is_not_found,
@@ -155,55 +155,6 @@ fn labels_match_scope(labels: Option<&HashMap<String, String>>, scope: &str) -> 
         labels.get(MANAGED_LABEL).map(String::as_str) == Some(scope)
             && labels.get(SCOPE_LABEL).map(String::as_str) == Some(scope)
     })
-}
-
-/// Legacy Compose-created bridges did not carry an rsctf scope label. Continue
-/// to accept those after checking their exact name/subnet/internal shape, but a
-/// bridge that declares ownership must belong to this installation.
-fn network_scope_matches(existing: &Network, scope: &str) -> bool {
-    existing
-        .labels
-        .as_ref()
-        .and_then(|labels| labels.get(SCOPE_LABEL))
-        .is_none_or(|actual| actual == scope)
-}
-
-fn bridge_network_matches(
-    existing: &Network,
-    subnet: Option<&str>,
-    internal: bool,
-    disable_icc: bool,
-) -> bool {
-    let managed = existing
-        .labels
-        .as_ref()
-        .and_then(|labels| labels.get(MANAGED_LABEL))
-        .is_some();
-    let subnet_matches = subnet.is_none_or(|expected| {
-        let Ok(expected) = expected.parse::<Ipv4Net>() else {
-            return false;
-        };
-        let actual: Vec<Ipv4Net> = existing
-            .ipam
-            .as_ref()
-            .and_then(|ipam| ipam.config.as_ref())
-            .into_iter()
-            .flatten()
-            .filter_map(|config| config.subnet.as_deref()?.parse::<Ipv4Net>().ok())
-            .collect();
-        actual.len() == 1 && actual[0] == expected
-    });
-    let icc_matches = !disable_icc
-        || existing.options.as_ref().is_some_and(|options| {
-            options
-                .get("com.docker.network.bridge.enable_icc")
-                .is_some_and(|value| value.eq_ignore_ascii_case("false"))
-        });
-    existing.driver.as_deref() == Some("bridge")
-        && existing.internal == Some(internal)
-        && (internal || managed)
-        && subnet_matches
-        && icc_matches
 }
 
 /// Requested container configuration.
@@ -407,11 +358,14 @@ impl DockerContainerManager {
         if let Some(enforced) = self.storage_quota_enforced.get() {
             return Ok(*enforced);
         }
-        let daemon_info = self.client()?.info().await.map_err(|error| {
-            AppError::unavailable(format!(
-                "could not inspect Docker writable-layer quota support: {error}"
-            ))
-        })?;
+        let daemon_info = docker_admission()
+            .read("info", self.client()?.info())
+            .await?
+            .map_err(|error| {
+                AppError::unavailable(format!(
+                    "could not inspect Docker writable-layer quota support: {error}"
+                ))
+            })?;
         let enforced = writable_layer_quota_supported(&daemon_info);
         if self.storage_quota_enforced.set(enforced).is_ok() && !enforced {
             let backing_filesystem = daemon_info
@@ -434,84 +388,6 @@ impl DockerContainerManager {
         }
         Ok(*self.storage_quota_enforced.get().unwrap_or(&enforced))
     }
-
-    async fn ensure_bridge_network(
-        &self,
-        name: &str,
-        subnet: Option<&str>,
-        internal: bool,
-        disable_icc: bool,
-    ) -> AppResult<()> {
-        let docker = self.client()?;
-        if let Ok(existing) = docker
-            .inspect_network(
-                name,
-                None::<bollard::network::InspectNetworkOptions<String>>,
-            )
-            .await
-        {
-            if bridge_network_matches(&existing, subnet, internal, disable_icc)
-                && network_scope_matches(&existing, &self.scope)
-            {
-                return Ok(());
-            }
-            return Err(AppError::internal(format!(
-                "Docker network {name} does not match the required bridge/Internal={internal}/subnet={subnet:?} configuration; recreate it before launching A&D services",
-            )));
-        }
-
-        let ipam = match subnet {
-            Some(subnet) => Ipam {
-                config: Some(vec![IpamConfig {
-                    subnet: Some(subnet.to_string()),
-                    ..Default::default()
-                }]),
-                ..Default::default()
-            },
-            None => Ipam::default(),
-        };
-        let options = if disable_icc {
-            HashMap::from([(
-                "com.docker.network.bridge.enable_icc".to_string(),
-                "false".to_string(),
-            )])
-        } else {
-            HashMap::new()
-        };
-        let opts = CreateNetworkOptions {
-            name: name.to_string(),
-            check_duplicate: true,
-            driver: "bridge".to_string(),
-            internal,
-            ipam,
-            labels: scoped_managed_labels(&self.scope),
-            options,
-            ..Default::default()
-        };
-        match docker.create_network(opts).await {
-            Ok(_) => Ok(()),
-            Err(create_error) => {
-                // A concurrent provision may have won the create race.
-                match docker
-                    .inspect_network(
-                        name,
-                        None::<bollard::network::InspectNetworkOptions<String>>,
-                    )
-                    .await
-                {
-                    Ok(existing)
-                        if bridge_network_matches(&existing, subnet, internal, disable_icc)
-                            && network_scope_matches(&existing, &self.scope) =>
-                    {
-                        Ok(())
-                    }
-                    _ => Err(AppError::internal(format!(
-                        "failed to create Docker network {name}: {create_error}"
-                    ))),
-                }
-            }
-        }
-    }
 }
 
 #[async_trait]
@@ -526,7 +402,10 @@ impl ContainerManager for DockerContainerManager {
 
     async fn image_exists(&self, image: &str) -> bool {
         match self.client() {
-            Ok(docker) => docker.inspect_image(image).await.is_ok(),
+            Ok(docker) => docker_admission()
+                .read("inspect_image", docker.inspect_image(image))
+                .await
+                .is_ok_and(|inspected| inspected.is_ok()),
             Err(_) => false,
         }
     }
@@ -540,10 +419,17 @@ impl ContainerManager for DockerContainerManager {
             filters: managed_container_filters(&self.scope),
             ..Default::default()
         };
-        match docker.list_containers(Some(opts)).await {
-            Ok(list) => list.into_iter().filter_map(|c| c.id).collect(),
-            Err(e) => {
+        match docker_admission()
+            .read("list_containers", docker.list_containers(Some(opts)))
+            .await
+        {
+            Ok(Ok(list)) => list.into_iter().filter_map(|c| c.id).collect(),
+            Ok(Err(e)) => {
                 tracing::warn!(error = %e, "list_managed: docker list_containers failed");
+                Vec::new()
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "list_managed: docker admission rejected the list");
                 Vec::new()
             }
         }
@@ -564,21 +450,11 @@ impl ContainerManager for DockerContainerManager {
         // vanished daemon-local ID must have been repaired from its trusted
         // archive before this boundary; surface a retryable infrastructure
         // response if a prune races the final create instead of leaking a 500.
-        let inspected_image = match docker.inspect_image(&spec.image).await {
+        let inspected_image = match self.inspect_image(&spec.image).await? {
             Ok(image) => image,
             Err(_) if crate::services::challenge_images::is_repository_digest(&spec.image) => {
-                let options = CreateImageOptions {
-                    from_image: spec.image.clone(),
-                    ..Default::default()
-                };
-                let mut pull = docker.create_image(Some(options), None, None);
-                while let Some(item) = pull.next().await {
-                    if let Err(error) = item {
-                        tracing::warn!(image = %spec.image, %error, "immutable image pull failed");
-                        break;
-                    }
-                }
-                docker.inspect_image(&spec.image).await.map_err(|error| {
+                self.pull_repository_digest(&spec.image).await?;
+                self.inspect_image(&spec.image).await?.map_err(|error| {
                     tracing::error!(image = %spec.image, %error, "immutable repository image remains unavailable after pull");
                     AppError::unavailable(
                         "The challenge image could not be pulled by the container host. Retry later or ask an administrator to rebuild it.",
@@ -694,21 +570,24 @@ impl ContainerManager for DockerContainerManager {
         let (id, adopted) = if let Some(id) = discovered {
             (id, true)
         } else {
-            match docker
-                .create_container(
-                    Some(CreateContainerOptions::<String> {
-                        name: name.clone(),
-                        ..Default::default()
-                    }),
-                    config.clone(),
+            match docker_admission()
+                .lifecycle(
+                    "create_container",
+                    docker.create_container(
+                        Some(CreateContainerOptions::<String> {
+                            name: name.clone(),
+                            ..Default::default()
+                        }),
+                        config.clone(),
+                    ),
                 )
-                .await
+                .await?
             {
                 Ok(created) => (created.id, false),
                 Err(e) if is_conflict(&e) && spec.operation_id.is_some() => {
-                    let existing = docker
-                        .inspect_container(&name, None)
-                        .await
+                    let existing = docker_admission()
+                        .read("inspect_container", docker.inspect_container(&name, None))
+                        .await?
                         .map_err(|inspect| {
                             AppError::internal(format!(
                                 "container operation {name} conflicted but could not be adopted: {inspect}"
@@ -728,15 +607,18 @@ impl ContainerManager for DockerContainerManager {
                 }
                 Err(e) if is_conflict(&e) => {
                     name = container_name(&spec.image, &spec.env, None);
-                    let created = docker
-                        .create_container(
-                            Some(CreateContainerOptions::<String> {
-                                name,
-                                ..Default::default()
-                            }),
-                            config,
+                    let created = docker_admission()
+                        .lifecycle(
+                            "create_container",
+                            docker.create_container(
+                                Some(CreateContainerOptions::<String> {
+                                    name,
+                                    ..Default::default()
+                                }),
+                                config,
+                            ),
                         )
-                        .await
+                        .await?
                         .map_err(|e| {
                             AppError::internal(format!("failed to create container: {e}"))
                         })?;
@@ -754,9 +636,9 @@ impl ContainerManager for DockerContainerManager {
             .await?;
 
         // 7. Inspect to read back state + the published host port.
-        let info = docker
-            .inspect_container(&id, None)
-            .await
+        let info = docker_admission()
+            .read("inspect_container", docker.inspect_container(&id, None))
+            .await?
             .map_err(|e| AppError::internal(format!("failed to inspect container: {e}")))?;
 
         let status = map_status(info.state.as_ref().and_then(|s| s.status));
@@ -827,16 +709,19 @@ impl ContainerManager for DockerContainerManager {
             .id
             .as_deref()
             .ok_or_else(|| AppError::internal("inspected container has no backend identity"))?;
-        match docker
-            .remove_container(
-                canonical_id,
-                Some(RemoveContainerOptions {
-                    v: false,
-                    force: true,
-                    link: false,
-                }),
+        match docker_admission()
+            .lifecycle(
+                "remove_container",
+                docker.remove_container(
+                    canonical_id,
+                    Some(RemoveContainerOptions {
+                        v: false,
+                        force: true,
+                        link: false,
+                    }),
+                ),
             )
-            .await
+            .await?
         {
             Ok(()) => Ok(()),
             // Already gone — that's the desired end state, treat as success.

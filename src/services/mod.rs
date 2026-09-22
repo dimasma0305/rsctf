@@ -19,6 +19,7 @@ pub mod control_jobs;
 pub mod credential_admission;
 pub mod cron;
 pub mod discord_webhook;
+pub mod docker_admission;
 pub mod donations;
 pub mod event_bus;
 pub mod event_security;

@@ -71,6 +71,62 @@ pub struct RunArgs {
     /// Maximum Docker reconciliation operations allowed concurrently.
     #[arg(long, env = "RSCTF_WORKER_RUNTIME_CONCURRENCY", default_value_t = 8)]
     pub runtime_concurrency: usize,
+    /// Concurrent short-lived Docker reads (inspect, list, ping, bounded downloads).
+    #[arg(
+        long,
+        env = "RSCTF_WORKER_DOCKER_READ_CONCURRENCY",
+        default_value_t = 16,
+        value_parser = clap::value_parser!(u64).range(1..=256)
+    )]
+    pub docker_read_concurrency: u64,
+    /// Deadline in seconds for one short-lived Docker read.
+    #[arg(
+        long,
+        env = "RSCTF_WORKER_DOCKER_READ_DEADLINE_SECS",
+        default_value_t = 10,
+        value_parser = clap::value_parser!(u64).range(1..=3600)
+    )]
+    pub docker_read_deadline_secs: u64,
+    /// Seconds a Docker read may wait for a free slot before it is rejected.
+    #[arg(
+        long,
+        env = "RSCTF_WORKER_DOCKER_READ_QUEUE_WAIT_SECS",
+        default_value_t = 5,
+        value_parser = clap::value_parser!(u64).range(1..=3600)
+    )]
+    pub docker_read_queue_wait_secs: u64,
+    /// Concurrent Docker lifecycle calls (create, start, stop, remove, upload, pull).
+    #[arg(
+        long,
+        env = "RSCTF_WORKER_DOCKER_LIFECYCLE_CONCURRENCY",
+        default_value_t = 4,
+        value_parser = clap::value_parser!(u64).range(1..=256)
+    )]
+    pub docker_lifecycle_concurrency: u64,
+    /// Deadline in seconds for one Docker lifecycle call other than a pull.
+    #[arg(
+        long,
+        env = "RSCTF_WORKER_DOCKER_LIFECYCLE_DEADLINE_SECS",
+        default_value_t = 60,
+        value_parser = clap::value_parser!(u64).range(1..=3600)
+    )]
+    pub docker_lifecycle_deadline_secs: u64,
+    /// Seconds a Docker lifecycle call may wait for a free slot before it is rejected.
+    #[arg(
+        long,
+        env = "RSCTF_WORKER_DOCKER_LIFECYCLE_QUEUE_WAIT_SECS",
+        default_value_t = 30,
+        value_parser = clap::value_parser!(u64).range(1..=3600)
+    )]
+    pub docker_lifecycle_queue_wait_secs: u64,
+    /// Deadline in seconds for one image pull.
+    #[arg(
+        long,
+        env = "RSCTF_WORKER_DOCKER_PULL_DEADLINE_SECS",
+        default_value_t = 600,
+        value_parser = clap::value_parser!(u64).range(1..=3600)
+    )]
+    pub docker_pull_deadline_secs: u64,
     /// Maximum writable container layer in bytes. Requires a quota-capable
     /// Docker storage driver (overlay2 on XFS with project quotas or windowsfilter).
     #[arg(
@@ -106,6 +162,24 @@ pub struct RunArgs {
     /// Placement label in `key=value` form. May be repeated.
     #[arg(long = "label", env = "RSCTF_WORKER_LABELS", value_delimiter = ',')]
     pub labels: Vec<String>,
+}
+
+impl RunArgs {
+    /// Validated Docker admission limits; clap already rejected out-of-range values.
+    pub fn docker_admission_limits(&self) -> crate::runtime::DockerAdmissionLimits {
+        let bounded = |value: u64| usize::try_from(value).unwrap_or(usize::MAX);
+        crate::runtime::DockerAdmissionLimits {
+            read_concurrency: bounded(self.docker_read_concurrency),
+            read_deadline: std::time::Duration::from_secs(self.docker_read_deadline_secs),
+            read_queue_wait: std::time::Duration::from_secs(self.docker_read_queue_wait_secs),
+            lifecycle_concurrency: bounded(self.docker_lifecycle_concurrency),
+            lifecycle_deadline: std::time::Duration::from_secs(self.docker_lifecycle_deadline_secs),
+            lifecycle_queue_wait: std::time::Duration::from_secs(
+                self.docker_lifecycle_queue_wait_secs,
+            ),
+            pull_deadline: std::time::Duration::from_secs(self.docker_pull_deadline_secs),
+        }
+    }
 }
 
 #[derive(Args)]
@@ -233,5 +307,40 @@ mod tests {
             labels: BTreeMap::new(),
         };
         assert!(matches!(config.validate(), Err(ConfigError::Invalid(_))));
+    }
+
+    #[derive(Parser)]
+    struct RunProbe {
+        #[command(flatten)]
+        run: RunArgs,
+    }
+
+    #[test]
+    fn docker_admission_defaults_match_the_runtime_defaults() {
+        let probe = RunProbe::try_parse_from(["probe"]).unwrap();
+        assert_eq!(
+            probe.run.docker_admission_limits(),
+            crate::runtime::DockerAdmissionLimits::default()
+        );
+    }
+
+    #[test]
+    fn docker_admission_overrides_are_range_validated() {
+        let probe = RunProbe::try_parse_from([
+            "probe",
+            "--docker-read-concurrency",
+            "32",
+            "--docker-pull-deadline-secs",
+            "900",
+        ])
+        .unwrap();
+        let limits = probe.run.docker_admission_limits();
+        assert_eq!(limits.read_concurrency, 32);
+        assert_eq!(limits.pull_deadline, std::time::Duration::from_secs(900));
+        assert!(RunProbe::try_parse_from(["probe", "--docker-read-concurrency", "0"]).is_err());
+        assert!(
+            RunProbe::try_parse_from(["probe", "--docker-lifecycle-deadline-secs", "99999"])
+                .is_err()
+        );
     }
 }

@@ -73,9 +73,13 @@ impl DockerRuntime {
         port_name: &str,
     ) -> Result<SocketAddr, RuntimeError> {
         let inspect = self
-            .docker
-            .inspect_container(container_id, None::<InspectContainerOptions>)
-            .await
+            .admission
+            .read(
+                "inspect_container",
+                self.docker
+                    .inspect_container(container_id, None::<InspectContainerOptions>),
+            )
+            .await?
             .map_err(|error| docker_error("inspect workload endpoint", error))?;
         let labels = inspect
             .config

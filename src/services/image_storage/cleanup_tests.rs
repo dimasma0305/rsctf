@@ -333,6 +333,7 @@ async fn cleanup_finalization_waits_for_a_live_durable_build_lease() {
 async fn absolute_deadline_cancels_a_hung_daemon_future() {
     let started = tokio::time::Instant::now();
     let result = docker_call::<(), std::io::Error, _>(
+        DockerOperationClass::Read,
         started + Duration::from_millis(20),
         "test operation",
         std::future::pending(),

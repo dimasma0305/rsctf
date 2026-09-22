@@ -27,8 +27,9 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
     `agents/worker-agent/src/runtime/docker/support.rs`, and
     `src/services/event_security/variants.rs`.
 
-- [ ] Put all short-lived Docker API work behind bounded admission and deadlines.
+- [x] Put all short-lived Docker API work behind bounded admission and deadlines.
   - Verified 2026-09-22 against the current tree: exec admission, snapshot export deadlines, and daemon ping deadlines exist; inspect/stats/list and create/start/remove/pull still have no admission class, deadline, or queue metrics.
+  - Done 2026-09-22: `services/docker_admission.rs` (server) and `runtime/docker/admission.rs` (worker) add read and lifecycle classes with separate concurrency, queue-wait, and per-call deadlines (`RSCTF_DOCKER_*` / `RSCTF_WORKER_DOCKER_*`), retryable overload/timeout mapping, once-per-window pressure logging, per-class metrics under `docker` in `GET /api/admin/realtime/metrics`, and a fake-daemon regression proving a timed-out bounded log read closes its stream. The local backend, image sweep, variant generator, and worker runtime call sites are wrapped; interactive exec, snapshot export, and the generator exit wait keep their existing owners. Admin build/image controllers keep their existing per-call `timeout_at` deadlines and are not yet class-admitted.
   - Use separate limits for read operations (`inspect`, one-shot `stats`, `list`, and
     bounded logs) and lifecycle operations (`create`, `start`, `remove`, and pull).
   - Do not place interactive exec sessions behind a short-lived request deadline;

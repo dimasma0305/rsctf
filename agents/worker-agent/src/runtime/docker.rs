@@ -10,7 +10,6 @@ use bollard::container::{
 };
 use bollard::image::CreateImageOptions;
 use bollard::models::EndpointSettings;
-use bollard::network::{CreateNetworkOptions, InspectNetworkOptions, ListNetworksOptions};
 use bollard::Docker;
 use dashmap::{DashMap, DashSet};
 use futures_util::{StreamExt, TryStreamExt};
@@ -25,17 +24,20 @@ use uuid::Uuid;
 
 use super::{RuntimeError, RuntimeOptions, WorkerRuntime};
 
+mod admission;
 mod endpoints;
 mod inventory;
+mod networks;
 mod preflight;
 mod support;
 mod tombstones;
 mod windows_acl;
+use admission::DockerAdmission;
+pub use admission::DockerAdmissionLimits;
 use endpoints::{EndpointCacheKey, EndpointTarget};
 pub(super) use preflight::run as preflight;
 use support::*;
 use tombstones::TombstoneStore;
-use windows_acl::{workload_network_driver, workload_network_options};
 
 #[cfg(test)]
 mod integration_tests;
@@ -57,6 +59,8 @@ const MAX_CONCURRENT_READINESS_PROBES: usize = 32;
 
 pub struct DockerRuntime {
     docker: Docker,
+    /// Bounded admission and deadlines for every short-lived daemon call.
+    admission: DockerAdmission,
     worker_id: Uuid,
     descriptor: RuntimeDescriptor,
     platform: Platform,
@@ -125,6 +129,7 @@ impl DockerRuntime {
         };
         let runtime = Self {
             docker,
+            admission: DockerAdmission::new(options.docker_admission),
             worker_id,
             descriptor,
             platform,
@@ -162,7 +167,11 @@ impl DockerRuntime {
             }
         };
 
-        match self.docker.inspect_image(&image_name).await {
+        match self
+            .admission
+            .read("inspect_image", self.docker.inspect_image(&image_name))
+            .await?
+        {
             Ok(_) => return Ok(image_name),
             Err(error) if is_not_found(&error) => {}
             Err(error) => return Err(docker_error("inspect image", error)),
@@ -178,75 +187,17 @@ impl DockerRuntime {
             from_image: image_name.clone(),
             ..Default::default()
         };
-        self.docker
-            .create_image(Some(options), None, None)
-            .try_collect::<Vec<_>>()
-            .await
+        // Progress frames are drained and discarded so a slow registry cannot
+        // grow memory; the pull deadline drops the stream on expiry.
+        self.admission
+            .pull("create_image", async {
+                let mut progress = self.docker.create_image(Some(options), None, None);
+                while progress.try_next().await?.is_some() {}
+                Ok::<(), bollard::errors::Error>(())
+            })
+            .await?
             .map_err(|error| docker_error("pull image", error))?;
         Ok(image_name)
-    }
-
-    async fn ensure_network(
-        &self,
-        fence: WorkloadFence,
-        spec_hash: &str,
-        operating_system: OperatingSystem,
-    ) -> Result<String, RuntimeError> {
-        let name = network_name(fence);
-        let mut filters = HashMap::new();
-        filters.insert("name".to_string(), vec![name.clone()]);
-        let networks = self
-            .docker
-            .list_networks(Some(ListNetworksOptions { filters }))
-            .await
-            .map_err(|error| docker_error("list workload networks", error))?;
-        if networks
-            .iter()
-            .any(|network| network.name.as_deref() == Some(name.as_str()))
-        {
-            let inspected = self
-                .docker
-                .inspect_network(&name, None::<InspectNetworkOptions<String>>)
-                .await
-                .map_err(|error| docker_error("inspect workload network", error))?;
-            validate_workload_network(
-                &inspected,
-                self.worker_id,
-                fence,
-                spec_hash,
-                operating_system,
-            )?;
-            return Ok(name);
-        }
-
-        self.docker
-            .create_network(CreateNetworkOptions {
-                name: name.clone(),
-                check_duplicate: true,
-                driver: workload_network_driver(operating_system).to_string(),
-                // The agent joins no external network and dials the container's
-                // private address directly. This keeps challenge egress denied
-                // without publishing host ports or mutating the host firewall.
-                internal: operating_system == OperatingSystem::Linux,
-                options: workload_network_options(operating_system),
-                labels: base_labels(self.worker_id, fence, spec_hash),
-                ..Default::default()
-            })
-            .await
-            .map_err(|error| docker_error("create workload network", error))?;
-        let inspected = self
-            .docker
-            .inspect_network(&name, None::<InspectNetworkOptions<String>>)
-            .await
-            .map_err(|error| docker_error("inspect created workload network", error))?;
-        validate_workload_network(
-            &inspected,
-            self.worker_id,
-            fence,
-            spec_hash,
-            operating_system,
-        )?;
-        Ok(name)
     }
 
     async fn existing_containers(
@@ -262,13 +213,16 @@ impl DockerRuntime {
                 format!("{LABEL_WORKLOAD}={workload_id}"),
             ],
         );
-        self.docker
-            .list_containers(Some(ListContainersOptions {
-                all: true,
-                filters,
-                ..Default::default()
-            }))
-            .await
+        self.admission
+            .read(
+                "list_containers",
+                self.docker.list_containers(Some(ListContainersOptions {
+                    all: true,
+                    filters,
+                    ..Default::default()
+                })),
+            )
+            .await?
             .map_err(|error| docker_error("list workload containers", error))
     }
 
@@ -282,18 +236,21 @@ impl DockerRuntime {
                 continue;
             };
             self.ready_containers.remove(id);
-            if let Err(error) = self
-                .docker
-                .remove_container(
-                    id,
-                    Some(RemoveContainerOptions {
-                        force: true,
-                        v: true,
-                        ..Default::default()
-                    }),
+            let removed = self
+                .admission
+                .lifecycle(
+                    "remove_container",
+                    self.docker.remove_container(
+                        id,
+                        Some(RemoveContainerOptions {
+                            force: true,
+                            v: true,
+                            ..Default::default()
+                        }),
+                    ),
                 )
-                .await
-            {
+                .await?;
+            if let Err(error) = removed {
                 if !is_not_found(&error) {
                     failed.push(id.to_string());
                 }
@@ -308,33 +265,6 @@ impl DockerRuntime {
             )
             .with_failed_replicas(failed))
         }
-    }
-
-    async fn remove_assignment_networks(&self, assignment_id: Uuid) -> Result<(), RuntimeError> {
-        let mut filters = HashMap::new();
-        filters.insert(
-            "label".to_string(),
-            vec![
-                format!("{LABEL_MANAGED}=true"),
-                format!("{LABEL_WORKER}={}", self.worker_id),
-                format!("{LABEL_ASSIGNMENT}={assignment_id}"),
-            ],
-        );
-        for network in self
-            .docker
-            .list_networks(Some(ListNetworksOptions { filters }))
-            .await
-            .map_err(|error| docker_error("list workload networks for removal", error))?
-        {
-            if let Some(id) = network.id {
-                if let Err(error) = self.docker.remove_network(&id).await {
-                    if !is_not_found(&error) {
-                        return Err(docker_error("remove workload network", error));
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 
     async fn create_container(
@@ -416,23 +346,30 @@ impl DockerRuntime {
             ..Default::default()
         };
         let created = self
-            .docker
-            .create_container(
-                Some(CreateContainerOptions {
-                    name,
-                    platform: None,
-                }),
-                config,
+            .admission
+            .lifecycle(
+                "create_container",
+                self.docker.create_container(
+                    Some(CreateContainerOptions {
+                        name,
+                        platform: None,
+                    }),
+                    config,
+                ),
             )
-            .await
+            .await?
             .map_err(|error| docker_error("create workload container", error))?;
         if operating_system == OperatingSystem::Windows {
             self.secure_new_windows_container(&created.id, network)
                 .await?;
         }
-        self.docker
-            .start_container(&created.id, None::<StartContainerOptions<String>>)
-            .await
+        self.admission
+            .lifecycle(
+                "start_container",
+                self.docker
+                    .start_container(&created.id, None::<StartContainerOptions<String>>),
+            )
+            .await?
             .map_err(|error| docker_error("start workload container", error))?;
         if operating_system == OperatingSystem::Windows {
             self.verify_started_windows_container(&created.id, network)
@@ -482,17 +419,24 @@ impl DockerRuntime {
             ],
         );
         let containers = match self
-            .docker
-            .list_containers(Some(ListContainersOptions {
-                all: false,
-                filters,
-                ..Default::default()
-            }))
+            .admission
+            .read(
+                "list_containers",
+                self.docker.list_containers(Some(ListContainersOptions {
+                    all: false,
+                    filters,
+                    ..Default::default()
+                })),
+            )
             .await
         {
-            Ok(containers) => containers,
-            Err(error) => {
+            Ok(Ok(containers)) => containers,
+            Ok(Err(error)) => {
                 tracing::error!(%error, "low-disk watchdog could not list managed containers");
+                return;
+            }
+            Err(error) => {
+                tracing::error!(%error, "low-disk watchdog list was not admitted");
                 return;
             }
         };
@@ -500,12 +444,25 @@ impl DockerRuntime {
             let Some(id) = container.id else {
                 continue;
             };
-            if let Err(error) = self
-                .docker
-                .stop_container(&id, Some(StopContainerOptions { t: 5 }))
+            match self
+                .admission
+                .lifecycle(
+                    "stop_container",
+                    self.docker
+                        .stop_container(&id, Some(StopContainerOptions { t: 5 })),
+                )
                 .await
             {
-                tracing::error!(container_id = %id, %error, "low-disk watchdog could not stop managed container");
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::error!(container_id = %id, %error, "low-disk watchdog could not stop managed container");
+                }
+                Err(error) => {
+                    tracing::error!(container_id = %id, %error, "low-disk watchdog stop was not admitted");
+                    // The remaining containers would hit the same saturated
+                    // daemon; the next probe retries the whole sweep.
+                    return;
+                }
             }
         }
     }
@@ -521,9 +478,13 @@ impl DockerRuntime {
             RuntimeError::new(CommandErrorCode::Internal, "Docker omitted container ID")
         })?;
         self.ready_containers.remove(id);
-        self.docker
-            .start_container(id, None::<StartContainerOptions<String>>)
-            .await
+        self.admission
+            .lifecycle(
+                "start_container",
+                self.docker
+                    .start_container(id, None::<StartContainerOptions<String>>),
+            )
+            .await?
             .map_err(|error| docker_error("start adopted workload container", error))
     }
 
@@ -573,32 +534,38 @@ impl DockerRuntime {
         path: &str,
         expected: &[u8],
     ) -> Result<bool, RuntimeError> {
-        let mut download = self.docker.download_from_container(
-            container_id,
-            Some(DownloadFromContainerOptions {
-                path: path.to_string(),
-            }),
-        );
-        let mut archive = Vec::new();
-        while let Some(chunk) = download
-            .try_next()
-            .await
-            .map_err(|error| docker_error("read back flag file", error))?
-        {
-            let next = archive.len().checked_add(chunk.len()).ok_or_else(|| {
-                RuntimeError::new(
-                    CommandErrorCode::Internal,
-                    "flag verification archive length overflowed",
-                )
-            })?;
-            if next > MAX_FLAG_ARCHIVE_BYTES {
-                return Err(RuntimeError::new(
-                    CommandErrorCode::InvalidSpec,
-                    "flag verification archive exceeds the 1 MiB safety limit",
-                ));
-            }
-            archive.extend_from_slice(&chunk);
-        }
+        let archive = self
+            .admission
+            .read("download_from_container", async {
+                let mut download = self.docker.download_from_container(
+                    container_id,
+                    Some(DownloadFromContainerOptions {
+                        path: path.to_string(),
+                    }),
+                );
+                let mut archive = Vec::new();
+                while let Some(chunk) = download
+                    .try_next()
+                    .await
+                    .map_err(|error| docker_error("read back flag file", error))?
+                {
+                    let next = archive.len().checked_add(chunk.len()).ok_or_else(|| {
+                        RuntimeError::new(
+                            CommandErrorCode::Internal,
+                            "flag verification archive length overflowed",
+                        )
+                    })?;
+                    if next > MAX_FLAG_ARCHIVE_BYTES {
+                        return Err(RuntimeError::new(
+                            CommandErrorCode::InvalidSpec,
+                            "flag verification archive exceeds the 1 MiB safety limit",
+                        ));
+                    }
+                    archive.extend_from_slice(&chunk);
+                }
+                Ok(archive)
+            })
+            .await??;
         archive_contains_contents(archive, expected.to_vec()).await
     }
 
@@ -643,10 +610,16 @@ impl WorkerRuntime for DockerRuntime {
     }
 
     async fn probe(&self) -> Result<(), RuntimeError> {
-        self.docker
-            .ping()
-            .await
+        self.admission
+            .read("ping", self.docker.ping())
+            .await?
             .map_err(|error| docker_error("probe Docker", error))?;
+        // The wire protocol carries no metrics; the periodic probe is the
+        // operator-visible place to sample daemon admission pressure.
+        tracing::debug!(
+            metrics = ?self.admission.metrics(),
+            "Docker admission snapshot"
+        );
         if let Err(error) = self.check_free_space().await {
             self.stop_managed_containers().await;
             return Err(error);
@@ -669,13 +642,16 @@ impl WorkerRuntime for DockerRuntime {
             vec![format!("{LABEL_WORKER}={}", self.worker_id)],
         );
         let containers = self
-            .docker
-            .list_containers(Some(ListContainersOptions {
-                all: true,
-                filters,
-                ..Default::default()
-            }))
-            .await
+            .admission
+            .read(
+                "list_containers",
+                self.docker.list_containers(Some(ListContainersOptions {
+                    all: true,
+                    filters,
+                    ..Default::default()
+                })),
+            )
+            .await?
             .map_err(|error| docker_error("calculate runtime usage", error))?;
         let mut workloads = std::collections::HashSet::new();
         let mut cpu = 0_u64;
@@ -936,17 +912,20 @@ impl WorkerRuntime for DockerRuntime {
         let mut failed = Vec::new();
         for (replica, container_id) in &containers {
             let written = self
-                .docker
-                .upload_to_container(
-                    container_id,
-                    Some(UploadToContainerOptions {
-                        path: parent.clone(),
-                        no_overwrite_dir_non_dir: String::new(),
-                    }),
-                    archive.clone(),
+                .admission
+                .lifecycle(
+                    "upload_to_container",
+                    self.docker.upload_to_container(
+                        container_id,
+                        Some(UploadToContainerOptions {
+                            path: parent.clone(),
+                            no_overwrite_dir_non_dir: String::new(),
+                        }),
+                        archive.clone(),
+                    ),
                 )
                 .await
-                .is_ok();
+                .is_ok_and(|uploaded| uploaded.is_ok());
             let verified = if written {
                 self.verify_guest_file(container_id, &command.target.path, &expected)
                     .await
