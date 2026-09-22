@@ -235,10 +235,9 @@ pub(super) fn clamped_image_health_config(image: &ImageInspect) -> Option<Health
     if test.is_empty() || test.first().is_some_and(|command| command == "NONE") {
         return None;
     }
-    let interval = health
+    health
         .interval
         .filter(|interval| *interval > 0 && *interval < MIN_HEALTH_INTERVAL_NANOS)?;
-    debug_assert!(interval < MIN_HEALTH_INTERVAL_NANOS);
     Some(HealthConfig {
         interval: Some(MIN_HEALTH_INTERVAL_NANOS),
         ..health.clone()

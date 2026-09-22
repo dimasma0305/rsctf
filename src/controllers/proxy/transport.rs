@@ -161,6 +161,7 @@ pub(super) async fn proxy_pump<S>(
             .and_then(|scan| RollingFlagMatcher::new(&scan.flag));
         loop {
             buf.reserve(BUFFER_SIZE);
+            let mut window = (&mut buf).limit(BUFFER_SIZE);
             let read = tokio::select! {
                 result = &mut budget_exceeded => {
                     if result.is_ok() {
@@ -169,7 +170,7 @@ pub(super) async fn proxy_pump<S>(
                     }
                     std::future::pending::<std::io::Result<usize>>().await
                 }
-                read = tcp_rd.read_buf(&mut (&mut buf).limit(BUFFER_SIZE)) => read,
+                read = tcp_rd.read_buf(&mut window) => read,
             };
             match read {
                 Ok(0) => {
