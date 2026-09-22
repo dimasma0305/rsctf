@@ -99,6 +99,34 @@ async fn failed_mail_commit_restores_the_previous_ticket_without_overwriting_new
 }
 
 #[test]
+fn cache_only_email_change_consumes_the_link_only_after_the_update_commits() {
+    let source = include_str!("recovery.rs");
+    let branch = source
+        .split_once("// Compatibility for cache-only links issued before the durable migrations.")
+        .unwrap()
+        .1
+        .split_once("#[cfg(test)]")
+        .unwrap()
+        .0;
+    let update = branch.find("update_email_serialized(").unwrap();
+    let updated = branch.find("EmailUpdateOutcome::Updated => {}").unwrap();
+    let pointer_removal = branch
+        .find("compare_and_remove(&pointer_key, model.token.as_bytes())")
+        .unwrap();
+    let ticket_removal = branch
+        .find("compare_and_remove(&key, &ticket_bytes)")
+        .unwrap();
+    assert!(update < updated);
+    assert!(updated < pointer_removal);
+    assert!(updated < ticket_removal);
+    // The pre-update checks only read: a failed or lost update leaves the
+    // pointer and ticket in place for an exact retry.
+    assert!(!branch.contains("get_and_remove"));
+    assert!(!branch[..update].contains("compare_and_remove"));
+    assert!(!branch[..update].contains(".remove("));
+}
+
+#[test]
 fn unknown_login_uses_a_valid_dummy_argon2_hash() {
     assert!(argon2::PasswordHash::new(DUMMY_PASSWORD_HASH).is_ok());
     assert!(!crate::utils::crypto_utils::verify_password(

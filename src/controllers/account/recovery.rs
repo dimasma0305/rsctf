@@ -875,6 +875,13 @@ pub async fn mail_change_confirm(
     }
 
     // Compatibility for cache-only links issued before the durable migrations.
+    // The cached pointer and ticket are the only record of such a link, so
+    // they must outlive a failed account update: a pool error, uniqueness
+    // race, or lost commit leaves the link usable for a retry. They are
+    // consumed only after `update_email_serialized` reports `Updated`. The
+    // stamp-guarded UPDATE serializes concurrent submissions of one link; the
+    // loser observes a stamp mismatch, and any later replay finds the ticket
+    // gone, which matches the prior "invalid or expired" outcome.
     let key = format!("emailchange:{}", model.token);
     let ticket_bytes = st
         .cache
@@ -892,15 +899,9 @@ pub async fn mail_change_confirm(
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::bad_request("Invalid or expired email-change token"))?;
+    let pointer_key = format!("emailchange-current:{}", ticket.user_id);
     if current.security_stamp.as_deref() != Some(ticket.security_stamp.as_str())
-        || !st
-            .cache
-            .compare_and_remove(
-                &format!("emailchange-current:{}", ticket.user_id),
-                model.token.as_bytes(),
-            )
-            .await
-        || st.cache.get_and_remove(&key).await.as_deref() != Some(ticket_bytes.as_ref())
+        || st.cache.get(&pointer_key).await.as_deref() != Some(model.token.as_bytes())
     {
         return Err(AppError::bad_request(
             "Invalid or expired email-change token",
@@ -929,6 +930,12 @@ pub async fn mail_change_confirm(
             ));
         }
     }
+    // Committed: retire the pointer and ticket so an exact replay is rejected
+    // instead of reaching the stamp check with a stale expectation.
+    st.cache
+        .compare_and_remove(&pointer_key, model.token.as_bytes())
+        .await;
+    st.cache.compare_and_remove(&key, &ticket_bytes).await;
     crate::services::audit::info(
         &st,
         "AccountController",
