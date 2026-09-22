@@ -117,6 +117,15 @@ pub(crate) fn validate_container_spec(spec: &ContainerSpec) -> AppResult<()> {
     Ok(())
 }
 
+/// Competition semantics a challenge type participates in.
+pub fn game_kind_for_challenge(challenge_type: ChallengeType) -> GameKind {
+    match challenge_type {
+        ChallengeType::AttackDefense => GameKind::AttackDefense,
+        ChallengeType::KingOfTheHill => GameKind::KingOfTheHill,
+        _ => GameKind::Jeopardy,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,13 +135,5 @@ mod tests {
         assert_eq!(storage_limit_or_default_with_maximum(None, 128), 128);
         assert_eq!(storage_limit_or_default_with_maximum(None, 1024), 512);
         assert_eq!(storage_limit_or_default_with_maximum(Some(768), 128), 768);
-    }
-}
-
-pub fn game_kind_for_challenge(challenge_type: ChallengeType) -> GameKind {
-    match challenge_type {
-        ChallengeType::AttackDefense => GameKind::AttackDefense,
-        ChallengeType::KingOfTheHill => GameKind::KingOfTheHill,
-        _ => GameKind::Jeopardy,
     }
 }
