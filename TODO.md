@@ -15,6 +15,7 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
 
 - [ ] Replace `json-file` with Docker's `local` logging driver for core services,
   locally managed challenges, trusted-worker workloads, and variant generators.
+  - Verified 2026-09-22 against the current tree: still open in full; every core service, challenge workload, trusted worker, and variant generator still declares `json-file` (bounded at 5 MiB x 3).
   - Retain the existing bounded policy: 5 MiB per file and three files for challenge
     workloads, with separately bounded core-service logs.
   - Recreate existing containers during a planned rollout because Docker does not
@@ -27,6 +28,7 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
     `src/services/event_security/variants.rs`.
 
 - [ ] Put all short-lived Docker API work behind bounded admission and deadlines.
+  - Verified 2026-09-22 against the current tree: exec admission, snapshot export deadlines, and daemon ping deadlines exist; inspect/stats/list and create/start/remove/pull still have no admission class, deadline, or queue metrics.
   - Use separate limits for read operations (`inspect`, one-shot `stats`, `list`, and
     bounded logs) and lifecycle operations (`create`, `start`, `remove`, and pull).
   - Do not place interactive exec sessions behind a short-lived request deadline;
@@ -39,6 +41,7 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
     `src/hubs/container/`, and `agents/worker-agent/src/runtime/docker/`.
 
 - [ ] Reduce steady-state Docker health-check process churn.
+  - Verified 2026-09-22 against the current tree: core cadences are 30 s with fast startup, native probes replaced Python/Node, and firewall reconciliation is separate; inherited challenge-image health checks are still not clamped and the 100-container load coverage is missing.
   - Keep fast startup detection with `start_interval: 2s`, but use approximately
     15 seconds for PostgreSQL, Redis, and the firewall helper and 30 seconds for
     rsctf after the startup period.
@@ -114,7 +117,8 @@ on 2026-08-25.
 
 ### P0 — Fix before the next live event
 
-- [ ] Diagnose and remove repeated transient challenge-detail load failures.
+- [x] Diagnose and remove repeated transient challenge-detail load failures.
+  - Verified 2026-09-22 against the current tree: failure causes are captured per kind, last-known-good data survives a refresh failure, one shared recovery owner spans detail and solver reads, and the abort race is handled (`useChallengePolling.ts`, `GameChallengeModal.tsx`). Shipped in the September 9 and 22 releases.
   - This is the first implementation priority because it frequently blocks normal
     challenge access with "Challenge could not be loaded" and "Challenge data could
     not be loaded. Automatic retries are bounded."
@@ -135,7 +139,8 @@ on 2026-08-25.
     challenge 50 hash-open flow now loads detail and solvers with HTTP 200 and no
     load-error surface. Immutable production release remains pending.
 
-- [ ] Verify and release the BYOC-specific empty/recovery state.
+- [x] Verify and release the BYOC-specific empty/recovery state.
+  - Verified 2026-09-22 against the current tree: the empty state derives from the authoritative delivery mode and shows self-hosted `setup.sh` guidance before any heartbeat (`AdChallengePanel.tsx`). Shipped in the September 9 and 22 releases.
   - This is the second implementation priority. In particular, game 13 challenge 50
     must explain how to enroll or reconnect the team's own BYOC agent instead of
     showing the managed-service "No service for your team yet" / "Ensure containers"
@@ -488,8 +493,9 @@ on 2026-08-25.
     `src/controllers/game/koth/admin.rs`, and
     `src/controllers/game/koth/board.rs`.
 
-- [ ] Make trusted KotH referee reads and submissions retry-safe before they become a
+- [x] Make trusted KotH referee reads and submissions retry-safe before they become a
   positive-feedback load incident.
+  - Verified 2026-09-22 against the current tree: submissions are keyed by canonical body digest with reserve-then-replay and coalesced duplicates, context reads are cached, single-flighted, and conditional, and both routes have named admission (`koth/api/submission.rs`, `koth/api/mod.rs`). The referenced observer example no longer exists in the tracked repository.
   - The example referee fetches the complete public context every five seconds. Each
     context request reloads and hashes as many as 2,000 eligible team capabilities and
     returns the full hash roster; the route has no versioned cache, conditional response,
@@ -557,7 +563,8 @@ on 2026-08-25.
     `src/controllers/game/koth/api/admin.rs`, `src/controllers/game/koth/mod.rs`, and a
     new registered idempotent forward migration for observer operations/revisions.
 
-- [ ] Make one-time player credential generation safe to retry and order.
+- [x] Make one-time player credential generation safe to retry and order.
+  - Verified 2026-09-22 against the current tree: every credential mutation carries an operation ID, expected revision, and durable recovery record; stale operations conflict; the KotH score clear happens once per committed transition; one token owner per game (`ad/token.rs`, `ad/ssh.rs`, `koth/tokens.rs`, `AdToolkitSections.tsx`).
   - A&D API-token rotation and server-generated SSH keys use only component-local
     busy state and have no request identity or expected credential revision. The A&D
     and KotH toolkits also mount separate `useAdToken` owners for the same team token.
@@ -1735,7 +1742,8 @@ on 2026-08-25.
     `src/services/blob_refs/challenges.rs`, and
     `src/controllers/team/revocation.rs`.
 
-- [ ] Renew platform-proxy capabilities without tearing down live player tunnels.
+- [x] Renew platform-proxy capabilities without tearing down live player tunnels.
+  - Verified 2026-09-22 against the current tree: renewal is prepare/commit with one abortable generation, keeps the still-valid old path on failure, retries only transient statuses within the validity window, and honors `Retry-After` (`InstanceEntry.tsx`).
   - Proxy capabilities last two hours, but five minutes before expiry
     `InstanceEntry` immediately blanks the usable endpoint and deletes the local
     WSRX tunnel before it has requested a replacement. Every scheduled renewal can
@@ -1762,6 +1770,7 @@ on 2026-08-25.
 
 - [ ] Coalesce live-session authorization leases before normal tunnels become a
   PostgreSQL polling flood.
+  - Verified 2026-09-22 against the current tree: identical leases share one poll owner with a 64-permit budget, 3 s deadlines, and jittered sleeps; only the durable authorization generation with invalidation fan-out is not implemented.
   - Every established platform-proxy session starts its own five-second loop. A game
     lease repeatedly opens the participation advisory/row-lock transaction, rechecks
     account, membership, team, game, challenge, division, container, and Event-VPN
@@ -1800,8 +1809,9 @@ on 2026-08-25.
     `src/services/byoc_tunnel/authorization.rs`, and
     `src/services/byoc_tunnel/control.rs`.
 
-- [ ] Bound and batch proxy flag-egress telemetry so reconnect churn cannot
+- [x] Bound and batch proxy flag-egress telemetry so reconnect churn cannot
   enqueue one PostgreSQL writer per session.
+  - Verified 2026-09-22 against the current tree: open budgets run before target resolution, the capability subject feeds the limiter, egress scan metadata is cached and single-flighted, and hits enqueue onto one supervised aggregating writer (`proxy/mod.rs`, `proxy/egress.rs`, `flag_egress_observations.rs`).
   - A game proxy resolves its target and live identity before the process-local
     session permit is acquired, and `build_egress_scan` then performs two more ORM
     reads for every admitted open. If the container returns its own flag, the
@@ -1847,6 +1857,7 @@ on 2026-08-25.
     `web/src/components/WsrxProvider.tsx`.
 
 - [ ] Put every proxy tunnel behind revocable connection and byte-work admission.
+  - Verified 2026-09-22 against the current tree: preview sockets are admitted, leased, revalidated, and byte/idle bounded; only the per-read frame allocation in `proxy/transport.rs` remains as throughput work.
   - Player/exercise tunnels retain a process-local `ProxyPermit` and a live-identity
     lease, but `/api/proxy/noinst/{id}` passes neither into `run_or_close`. One admin
     session or reusable two-hour preview capability can therefore open an unbounded
@@ -1898,8 +1909,9 @@ on 2026-08-25.
     `web/src/components/WsrxProvider.tsx`, and
     `web/src/components/InstanceEntry.tsx`.
 
-- [ ] Isolate and bound scheduled Docker image cleanup from event-critical
+- [x] Isolate and bound scheduled Docker image cleanup from event-critical
   maintenance.
+  - Verified 2026-09-22 against the current tree: image cleanup is its own supervised task with a durable cross-replica cadence, per-operation daemon budgets, one snapshot per pass, and bounded candidate claims (`cron/image_cleanup.rs`, `image_storage/cleanup.rs`).
   - The process-local cleanup timestamp starts at zero, so every new maintenance
     leader runs a full cleanup on its first pass and a restart/failover forgets the
     deployment-wide cadence. This job runs serially before expired-container reaping,
@@ -1928,8 +1940,9 @@ on 2026-08-25.
     `src/services/image_storage.rs`, and
     `src/controllers/admin/builds/images.rs`.
 
-- [ ] Make live anti-cheat reconciliation incremental instead of rescanning complete
+- [x] Make live anti-cheat reconciliation incremental instead of rescanning complete
   event histories every 30 seconds.
+  - Verified 2026-09-22 against the current tree: reconciliation is a dirty-generation queue with leases, per-source watermarks, and a bounded per-pass deadline; the manual trigger routes through the same control job (`suspicion/reconciliation.rs`, `admin/anti_cheat.rs`).
   - Every eligible control/engine replica selects every active game. The advisory
     lock prevents simultaneous work for one game, but contenders still query and open
     transactions, and the winner holds an otherwise idle transaction, pooled
@@ -1968,8 +1981,9 @@ on 2026-08-25.
     `web/src/pages/admin/games/[id]/Info.tsx`, and
     `src/controllers/admin/anti_cheat.rs`.
 
-- [ ] Repair the traffic-flow inspector contract and stop stale filters from
+- [x] Repair the traffic-flow inspector contract and stop stale filters from
   repeatedly parsing whole PCAPs.
+  - Verified 2026-09-22 against the current tree: the inspector has a typed query, a validated filter, cached snapshots with single-flight and weighted admission, abortable client generations, and real detail chunks (`game/traffic.rs`, `traffic/inspector.rs`, `useTrafficInspector.ts`).
   - The browser sends payload-regex and peer-IP filters after a 300 ms debounce and
     direction/flag filters on each toggle, but the Rust handler accepts no query
     object and ignores all of them. It returns `{src,dst,packetCount,bytes}` while
@@ -2001,8 +2015,9 @@ on 2026-08-25.
     `src/controllers/game/traffic.rs`, `src/controllers/game/mod.rs`, and
     `src/services/traffic.rs`.
 
-- [ ] Meter and aggregate honeypot telemetry before it becomes an unthrottled
+- [x] Meter and aggregate honeypot telemetry before it becomes an unthrottled
   database and connection-flood endpoint.
+  - Verified 2026-09-22 against the current tree: decoy hits are admitted before authentication, aggregated into fixed buckets with atomic upserts and retention sweeps, and TCP accepts are permitted and paced (`honeypot.rs`, `honeypot_telemetry.rs`, `honeypot_listener.rs`).
   - Every public decoy GET/POST synchronously inserts a new `HoneypotHits` row. The
     bait paths are outside `/api`, so the global limiter deliberately bypasses them;
     an unauthenticated client can issue unlimited writes and grow the table/indexes
@@ -2029,7 +2044,8 @@ on 2026-08-25.
     `src/services/suspicion/honeypot.rs`, `src/middlewares/rate_limiter.rs`,
     `src/server.rs`, and `src/migrations/m0018_honeypot_hit.rs`.
 
-- [ ] Repair the game-clone route contract and make cloning bounded and replayable.
+- [x] Repair the game-clone route contract and make cloning bounded and replayable.
+  - Verified 2026-09-22 against the current tree: both route spellings are registered, unmatched `/api` paths get typed fallbacks, clones carry an operation ID with reserve-then-replay, and copies are set-based under challenge/flag caps (`edit/mod.rs`, `edit/games/cloning.rs`, `CloneGameModal.tsx`).
   - `CloneGameModal` posts to lowercase `/api/edit/games/{id}/clone`, while Axum
     registers only case-sensitive `/api/edit/games/{id}/Clone`. The organizer action
     therefore never reaches `clone_game`; depending on fallback routing it receives
@@ -2061,7 +2077,8 @@ on 2026-08-25.
     `src/controllers/edit/mod.rs`, `src/controllers/edit/games/cloning.rs`,
     `src/server.rs`, and a new registered idempotent forward migration for clone jobs.
 
-- [ ] Bound and idempotently recover admin user imports and password issuance.
+- [x] Bound and idempotently recover admin user imports and password issuance.
+  - Verified 2026-09-22 against the current tree: imports are capped at 200 rows and 1 MiB, credential work has its own fail-fast admission class, and both bulk import and single reset replay an encrypted expiring result per operation (`users_import_results.rs`, `users_mutate.rs`).
   - `UserImportModal` parses every CSV row into React state and sends the complete list;
     neither it nor `ImportRequest` enforces a row count. The default JSON byte limit is
     not a work limit: many minimal rows still cause one serial Argon2 hash, provisioning
@@ -2097,7 +2114,8 @@ on 2026-08-25.
     `src/utils/crypto_utils.rs`, and a new registered idempotent forward migration for
     credential jobs/results.
 
-- [ ] Fail fast on duplicate credential mutations before they queue Argon2 work.
+- [x] Fail fast on duplicate credential mutations before they queue Argon2 work.
+  - Verified 2026-09-22 against the current tree: password, reset, and email-change flows have ref-backed owners and operation IDs, the reset lease is claimed before hashing, and credential admission is fail-fast with `Retry-After` (`account/recovery.rs`, `credential_admission.rs`).
   - `PasswordChangeModal` has no pending state or synchronous in-flight guard, so rapid
     click/Enter activation can dispatch several `PUT /api/account/changepassword`
     requests. Every concurrent request can load the same security stamp and password
@@ -2166,7 +2184,8 @@ on 2026-08-25.
     `src/middlewares/rate_limiter.rs`, plus a new registered idempotent forward
     migration for durable recovery attempts.
 
-- [ ] Coalesce account-mail intent and deliver it through a bounded durable outbox.
+- [x] Coalesce account-mail intent and deliver it through a bounded durable outbox.
+  - Verified 2026-09-22 against the current tree: mail is enqueued in the request transaction and delivered by one bounded reconciler with leases, dead-letter, and retention; senders resolve database-first; clients hold one mail-operation owner (`mail_outbox.rs`, `email_change_support.rs`).
   - Password recovery mints a new token, invalidates the prior link, and starts one
     detached `tokio::spawn` per matching request. Each task constructs a new
     environment-backed `MailSender`, may occupy SMTP for 15 seconds, and then writes an
@@ -2222,7 +2241,8 @@ on 2026-08-25.
     `src/controllers/account/email_confirmation.rs`, `src/services/mail.rs`, and a new
     registered idempotent forward migration for mail intents/outbox delivery.
 
-- [ ] Make the platform-settings save one bounded, revisioned operation.
+- [x] Make the platform-settings save one bounded, revisioned operation.
+  - Verified 2026-09-22 against the current tree: the save is one transaction with a required operation ID, expected revision, digest replay, revision CAS, staged branding, and per-field byte budgets (`admin/settings/mutation.rs`).
   - The settings page sends every configuration section even when one field changed.
     `update_config` commits the account/captcha/OAuth group first, then applies global,
     container, email, registry, build-registry, and provider keys through many
@@ -2270,7 +2290,8 @@ on 2026-08-25.
     `src/services/blob_refs.rs`, and a new registered idempotent forward migration for
     settings revisions/operations and staged branding.
 
-- [ ] Make temporary Event-VPN bypass grants exactly-once and bounded.
+- [x] Make temporary Event-VPN bypass grants exactly-once and bounded.
+  - Verified 2026-09-22 against the current tree: overrides require an operation ID and expected policy revision, replay by `(game_id, operation_id)`, cap active grants at 16, expose the policy revision, and prune history under a budget (`admin/anti_cheat.rs`).
   - Creating an override always inserts a fresh UUID and has no client operation ID or
     expected policy revision. A second tab/operator or a retry after a committed but
     lost response creates another independently active bypass and invalidates policy
@@ -2300,7 +2321,8 @@ on 2026-08-25.
     `src/services/event_security/policy.rs`, and a new registered idempotent forward
     migration for override operations/revisions and retention indexes.
 
-- [ ] Replace per-challenge browser fan-out with one bounded bulk mutation.
+- [x] Replace per-challenge browser fan-out with one bounded bulk mutation.
+  - Verified 2026-09-22 against the current tree: enable/disable/delete use one bounded bulk request with an idempotent claim and a resumable desired-state job (`edit/challenges/bulk.rs`, admin challenges `Index.tsx`).
   - “Select all” enable, disable, and delete use `Promise.allSettled` over every visible
     challenge, so one click immediately creates one HTTP request per selected row with
     no client concurrency bound. Selection spans the whole filtered challenge list, not
@@ -2331,7 +2353,8 @@ on 2026-08-25.
     `src/services/challenge_workloads.rs`, and a new registered idempotent forward
     migration for bulk mutation jobs/results.
 
-- [ ] Bound division-policy replacement and skip event-wide work for metadata-only saves.
+- [x] Bound division-policy replacement and skip event-wide work for metadata-only saves.
+  - Verified 2026-09-22 against the current tree: division input is bounded and validated, replacement is set-based, invalidation runs only on policy or name changes, and the drawer sends diffs under an operation ID (`edit/divisions.rs`, `DivisionEditDrawer.tsx`).
   - `DivisionEditDrawer` sends the complete `defaultPermissions` and
     `challengeConfigs` set on every edit, including a name or invite-code-only change.
     During live scoring, an unchanged policy passes the equality guard but is still
@@ -2369,7 +2392,8 @@ on 2026-08-25.
     `src/controllers/edit/divisions.rs`, `src/controllers/edit/mod.rs`, and a new
     registered idempotent forward migration for division revisions/operations.
 
-- [ ] Make team invite rotation one credential transition and one BYOC reconciliation.
+- [x] Make team invite rotation one credential transition and one BYOC reconciliation.
+  - Verified 2026-09-22 against the current tree: rotation is one revisioned transition with operation replay, the roster fence is released before external work, reconciliation is slot-bounded with durable retry, and the modal has one mutation owner (`team/invite.rs`, `TeamEditModal.tsx`).
   - The captain's invite-code Refresh action never enters a busy state, so rapid clicks
     can issue concurrent PUTs; another tab or a retry after a lost response does the
     same. Every serialized request succeeds with a different random token, and an older
@@ -2406,7 +2430,8 @@ on 2026-08-25.
     `src/services/byoc_tunnel/mod.rs`, and a new registered idempotent forward migration
     for team credential revisions/operations.
 
-- [ ] Bound bulk flag edits and remove their challenge-detail amplification loop.
+- [x] Bound bulk flag edits and remove their challenge-detail amplification loop.
+  - Verified 2026-09-22 against the current tree: flag imports are capped, deduplicated, staged under an operation lease with replay, inserted set-based, read as bounded pages, and the detail screen polls only compact build status (`edit/flags.rs`, `edit/flags/read.rs`).
   - Both flag-entry dialogs turn every nonempty input line into one `FlagCreateModel`,
     and `add_flags` accepts the complete JSON vector without row, flag-byte, URL-byte,
     or duplicate limits. It builds optional attachments serially before admission, then
@@ -2440,7 +2465,8 @@ on 2026-08-25.
     `src/controllers/edit/challenges/mod.rs`, and a new registered idempotent forward
     migration for flag identity/import operations.
 
-- [ ] Enforce compatible canonical flag-byte invariants from authoring through grading.
+- [x] Enforce compatible canonical flag-byte invariants from authoring through grading.
+  - Verified 2026-09-22 against the current tree: one flag-policy family bounds normal flags at 127 bytes and A&D at the 38-byte grammar across editor, Git, archive, clone, generation, delivery, proxy matching, and submission; legacy rows are audited and consumers fail closed (`utils/flag_policy.rs`, `m0309`, `submit_flag_policy.rs`).
   - Normal submission rejects an answer over 127 UTF-8 bytes, but direct static-flag
     creation has no value bound, pending Git manifests allow 4 KiB flags, trusted Git
     imports skip that policy entirely, and game archive imports store flags verbatim.
@@ -2494,7 +2520,8 @@ on 2026-08-25.
     `src/controllers/proxy/egress.rs`, `src/services/event_security/variants.rs`,
     and a new registered idempotent forward migration.
 
-- [ ] Bound the legacy exercise API so practice traffic cannot consume the event pool.
+- [x] Bound the legacy exercise API so practice traffic cannot consume the event pool.
+  - Verified 2026-09-22 against the current tree: the exercise API is behind the Submit policy and body limit, validates answers first, checks eligibility with `EXISTS`, keeps every statement on the lock owner, and paginates reads (`controllers/exercise.rs`).
   - `POST /api/exercise/{id}` is not decorated with the existing Submit policy and
     accepts `FlagSubmit.flag` without the normal 127-byte invariant. Each request trims
     and copies the caller's generic JSON-body-sized string, opens a transaction-backed
@@ -2539,6 +2566,7 @@ on 2026-08-25.
   and indexes, and the generated exercise client contract in `web/src/Api.ts`.
 
 - [ ] Claim player container operations durably before launching runtime work.
+  - Verified 2026-09-22 against the current tree: operations are claimed durably before runtime work with replay and follower joins; shared-container callers still serialize on the exclusive lock to refresh an already reusable lease (short transaction, no external I/O held).
   - Per-team and shared-container creation acquire a transaction-scoped PostgreSQL
     advisory lock and retain that pooled connection while checking runtime health,
     destroying stale workloads, pulling/starting Docker or worker workloads, and
@@ -2590,6 +2618,7 @@ on 2026-08-25.
 
 - [ ] Put anonymous asset authorization, cache fills, and conditional reads behind
   bounded work admission.
+  - Verified 2026-09-22 against the current tree: `/assets/` is globally limited, admission precedes authorization, leaders and misses are capped, and public 304s open no transaction; the Redis gate namespace is rate-bounded rather than cardinality-bounded.
   - Both download routes are under `/assets/...`, while `global_middleware` explicitly
     skips every path outside `/api`. An unauthenticated client can therefore send an
     unlimited sequence of syntactically valid 64-hex hashes without consuming any
@@ -2634,7 +2663,8 @@ on 2026-08-25.
     `src/utils/single_flight.rs`, the asset URL consumers in `web/src`, and the cache/
     download admission services.
 
-- [ ] Make generic asset upload ownership atomic with the attachment that consumes it.
+- [x] Make generic asset upload ownership atomic with the attachment that consumes it.
+  - Verified 2026-09-22 against the current tree: generic uploads only stage blobs under a lease with `reference_count = 0`; the consuming attachment or flag binds the stage, and file counts are capped on both sides (`assets.rs`, `blob_refs/staging.rs`).
   - All three local-attachment flows first call `POST /api/assets`, which stores every
     body and increments `Files.reference_count`, and only afterward call either
     `editUpdateAttachment` or `editAddFlags` with the returned hash. If the second call
@@ -2679,8 +2709,9 @@ on 2026-08-25.
     `src/utils/upload.rs`, and a new registered idempotent forward migration for upload
     leases/operations.
 
-- [ ] Stop holding PostgreSQL transactions and event-control locks across blob-store
+- [x] Stop holding PostgreSQL transactions and event-control locks across blob-store
   writes.
+  - Verified 2026-09-22 against the current tree: blob storage is staged under a semaphore and deadline with no transaction or domain lock held; writeups, posters, avatars, branding, and archives stage first and lock second (`blob_refs/staging.rs`).
   - `store_and_acquire_in_transaction` takes a transaction-scoped content-hash lock and
     then awaits `storage.store`. Account/team avatars, game posters, and branding call
     it after locking their owner rows; team avatars additionally retain the live-roster
@@ -2725,7 +2756,8 @@ on 2026-08-25.
     upload admission services, and a new registered idempotent forward migration for
     staged blobs/operations.
 
-- [ ] Keep traffic-capture archive admission alive until the last response byte.
+- [x] Keep traffic-capture archive admission alive until the last response byte.
+  - Verified 2026-09-22 against the current tree: the archive streams through a bounded channel whose permit lives in the response body, with a deployment-wide byte/job lease, and the client owns one abortable download (`game/traffic_archive.rs`, monitor `Traffic.tsx`).
   - “Download all” opens a fresh archive request on every click with no browser request
     owner. The server correctly caps an archive at 256 files/128 MiB and admits only two
     ZIP builders, but it materializes each ZIP as a `Vec<u8>` and drops the semaphore
@@ -2756,6 +2788,7 @@ on 2026-08-25.
 
 - [ ] Stop game-control mutations from reserving the PostgreSQL pool while waiting for
   nested checkouts.
+  - Verified 2026-09-22 against the current tree: game-control mutations take a 4-slot aggregate permit before the first checkout and run bound SQL on the control transaction; `koth_auth.rs` still documents legacy paths under conversion.
   - `GameControlLock` owns a transaction-scoped advisory lock and therefore one pooled
     connection. Its local coalescer protects one game key, but there is no aggregate
     admission across distinct games. Several handlers then call SeaORM or helpers on
@@ -2797,8 +2830,9 @@ on 2026-08-25.
     `src/controllers/edit/ad/mod.rs`, `src/controllers/team/revocation.rs`,
     `src/controllers/team/mod.rs`, and `src/extensions/database.rs`.
 
-- [ ] Make event-settings saves revisioned, no-op aware, and independent of VPN
+- [x] Make event-settings saves revisioned, no-op aware, and independent of VPN
   reconciliation success.
+  - Verified 2026-09-22 against the current tree: saves require a revision and operation ID, reject stale intent with 409, replay exact retries, short-circuit true no-ops, validate VPN only on a real policy change, and run effects as a durable generation (`edit/games.rs`).
   - `PUT /api/edit/games/{id}` accepts a complete mutable game model without an
     expected configuration revision. Two open editors can therefore overwrite each
     other's title, schedule, writeup, scoring, or Event-VPN fields with stale snapshots;
@@ -2842,8 +2876,9 @@ on 2026-08-25.
     registered idempotent forward migration for game configuration revisions and
     operation results.
 
-- [ ] Enforce the live-team mutation freeze on the server and bound scoreboard
+- [x] Enforce the live-team mutation freeze on the server and bound scoreboard
   invalidation from profile churn.
+  - Verified 2026-09-22 against the current tree: profile, avatar, and invite mutations enforce the locked-and-active predicate under the roster and game fences, carry a profile revision and mutation budget, and invalidate boards through a coalesced generation that avatar changes also trigger (`team/profile.rs`, `team/avatar.rs`, `team/invite.rs`).
   - `TeamEditModal` disables name, bio, avatar, and Save while `team.locked`, but the
     authority does not match the UI. `PUT /api/team/{id}` checks only the deletion
     fence and captaincy, while the avatar route rechecks only captaincy and
