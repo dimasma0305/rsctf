@@ -2,6 +2,8 @@
 
 use bollard::container::ListContainersOptions;
 
+use crate::services::docker_admission::docker_admission;
+
 use super::{
     managed_container_filters, AppError, AppResult, DockerContainerManager, MANAGED_LABEL,
     OPERATION_LABEL, SCOPE_LABEL,
@@ -26,13 +28,16 @@ pub(super) async fn find_operation_runtime(
             format!("{OPERATION_LABEL}={operation_id}"),
         ],
     );
-    let rows = docker
-        .list_containers(Some(ListContainersOptions {
-            all: true,
-            filters,
-            ..Default::default()
-        }))
-        .await
+    let rows = docker_admission()
+        .read(
+            "list_containers",
+            docker.list_containers(Some(ListContainersOptions {
+                all: true,
+                filters,
+                ..Default::default()
+            })),
+        )
+        .await?
         .map_err(|error| {
             AppError::internal(format!(
                 "failed to discover container operation runtime: {error}"

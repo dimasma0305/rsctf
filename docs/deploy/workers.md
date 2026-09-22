@@ -731,6 +731,29 @@ detected safe CPU, memory, or slot capacity. Do not point the agent at an
 unauthenticated TCP Docker API. `--slots` counts isolated workload networks,
 not containers or replicas.
 
+The agent also bounds its own short-lived Docker Engine API calls. Reads
+(`inspect`, `list`, `ping`, bounded file downloads) and lifecycle calls
+(`create`, `start`, `stop`, `remove`, uploads, network changes, pulls) use
+separate concurrency slots, queue waits, and per-call deadlines, and a call that
+exceeds its deadline drops its daemon response stream. A rejected or timed-out
+call fails the current command with a retryable `runtimeUnavailable` or
+`timeout` error so the server's next reconciliation retries it; the wire
+protocol is unchanged. Saturation is logged at most once per class every 30
+seconds. The defaults are wider than the server's because Windows images and
+Hyper-V starts are slower. Override them with these run flags or variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RSCTF_WORKER_DOCKER_READ_CONCURRENCY` | `16` | Concurrent short-lived Docker reads (`1..256`) |
+| `RSCTF_WORKER_DOCKER_READ_DEADLINE_SECS` | `10` | Deadline for one Docker read (`1..3600`) |
+| `RSCTF_WORKER_DOCKER_READ_QUEUE_WAIT_SECS` | `5` | Longest a read waits for a slot before it is rejected (`1..3600`) |
+| `RSCTF_WORKER_DOCKER_LIFECYCLE_CONCURRENCY` | `4` | Concurrent lifecycle calls including pulls (`1..256`) |
+| `RSCTF_WORKER_DOCKER_LIFECYCLE_DEADLINE_SECS` | `60` | Deadline for one lifecycle call other than a pull (`1..3600`) |
+| `RSCTF_WORKER_DOCKER_LIFECYCLE_QUEUE_WAIT_SECS` | `30` | Longest a lifecycle call waits for a slot before it is rejected (`1..3600`) |
+| `RSCTF_WORKER_DOCKER_PULL_DEADLINE_SECS` | `600` | Deadline for one image pull (`1..3600`) |
+
+An out-of-range value is rejected at startup.
+
 ## Images
 
 Portable workloads use an immutable repository digest:

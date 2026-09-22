@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::app_state::SharedState;
+use crate::services::docker_admission::docker_admission;
 use crate::utils::enums::ChallengeVariantMode;
 use crate::utils::error::{AppError, AppResult};
 
@@ -161,11 +162,14 @@ async fn run_generator_once(
     input: &GeneratorInput,
 ) -> AppResult<Vec<u8>> {
     let runtime_image = generator_runtime_image(st, target)?;
-    let inspected = docker.inspect_image(&runtime_image).await.map_err(|_| {
-        AppError::unavailable(
-            "Variant generator image is not present on the trusted generator host",
-        )
-    })?;
+    let inspected = docker_admission()
+        .read("inspect_image", docker.inspect_image(&runtime_image))
+        .await?
+        .map_err(|_| {
+            AppError::unavailable(
+                "Variant generator image is not present on the trusted generator host",
+            )
+        })?;
     if !crate::services::challenge_images::inspect_matches_immutable_reference(
         &inspected,
         &runtime_image,
@@ -214,22 +218,30 @@ async fn run_generator_once(
         }),
         ..Default::default()
     };
-    let created = docker
-        .create_container(
-            Some(CreateContainerOptions {
-                name,
-                platform: None,
-            }),
-            config,
+    let created = docker_admission()
+        .lifecycle(
+            "create_container",
+            docker.create_container(
+                Some(CreateContainerOptions {
+                    name,
+                    platform: None,
+                }),
+                config,
+            ),
         )
-        .await
+        .await?
         .map_err(|error| AppError::internal(format!("create variant generator: {error}")))?;
     let container_id = created.id;
     let run = async {
-        docker
-            .start_container::<String>(&container_id, None)
-            .await
+        docker_admission()
+            .lifecycle(
+                "start_container",
+                docker.start_container::<String>(&container_id, None),
+            )
+            .await?
             .map_err(|error| AppError::internal(format!("start variant generator: {error}")))?;
+        // The exit wait is a long-lived stream owned by GENERATOR_TIMEOUT
+        // below, so it deliberately stays outside the short-lived classes.
         let mut wait = docker.wait_container::<String>(&container_id, None);
         let result = wait
             .next()
@@ -242,37 +254,51 @@ async fn run_generator_once(
                 result.status_code
             )));
         }
-        let mut output = Vec::new();
-        let mut logs = docker.logs::<String>(
-            &container_id,
-            Some(LogsOptions {
-                stdout: true,
-                stderr: false,
-                ..Default::default()
-            }),
-        );
-        while let Some(chunk) = logs.next().await {
-            let chunk = chunk
-                .map_err(|error| AppError::internal(format!("read variant output: {error}")))?;
-            bounded_append(&mut output, chunk.as_ref())?;
-        }
-        Ok(output)
+        docker_admission()
+            .read("logs", async {
+                let mut output = Vec::new();
+                let mut logs = docker.logs::<String>(
+                    &container_id,
+                    Some(LogsOptions {
+                        stdout: true,
+                        stderr: false,
+                        ..Default::default()
+                    }),
+                );
+                while let Some(chunk) = logs.next().await {
+                    let chunk = chunk.map_err(|error| {
+                        AppError::internal(format!("read variant output: {error}"))
+                    })?;
+                    bounded_append(&mut output, chunk.as_ref())?;
+                }
+                Ok(output)
+            })
+            .await?
     };
     let result = match tokio::time::timeout(GENERATOR_TIMEOUT, run).await {
         Ok(result) => result,
         Err(_) => Err(AppError::unavailable("Variant generator timed out")),
     };
-    let cleanup = docker
-        .remove_container(
-            &container_id,
-            Some(RemoveContainerOptions {
-                force: true,
-                ..Default::default()
-            }),
+    let cleanup = docker_admission()
+        .lifecycle(
+            "remove_container",
+            docker.remove_container(
+                &container_id,
+                Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            ),
         )
         .await;
-    if let Err(error) = cleanup {
-        tracing::warn!(%error, %container_id, "could not remove variant generator container");
+    match cleanup {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%error, %container_id, "could not remove variant generator container");
+        }
+        Err(error) => {
+            tracing::warn!(%error, %container_id, "variant generator cleanup was not admitted");
+        }
     }
     result
 }

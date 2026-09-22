@@ -6,6 +6,7 @@ use serde::Serialize;
 use crate::app_state::SharedState;
 use crate::hubs::admission::WebSocketOperationalMetrics;
 use crate::middlewares::privilege_authentication::AdminUser;
+use crate::services::docker_admission::DockerAdmissionMetrics;
 use crate::services::event_bus::EventBusOperationalMetrics;
 use crate::utils::shared::RequestResponse;
 
@@ -14,6 +15,7 @@ use crate::utils::shared::RequestResponse;
 pub(super) struct RealtimeOperationalMetrics {
     websocket: WebSocketOperationalMetrics,
     fanout: EventBusOperationalMetrics,
+    docker: DockerAdmissionMetrics,
 }
 
 pub(super) async fn realtime_metrics(
@@ -23,5 +25,6 @@ pub(super) async fn realtime_metrics(
     RequestResponse::ok(RealtimeOperationalMetrics {
         websocket: crate::hubs::admission::operational_metrics(),
         fanout: st.events.operational_metrics(),
+        docker: crate::services::docker_admission::docker_admission().metrics(),
     })
 }

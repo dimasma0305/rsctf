@@ -126,6 +126,13 @@ active account policy in the Admin UI and test it with a normal account.
 | `RSCTF_DOCKER_SCOPE` | Hash of `RSCTF_JWT_SECRET` | Stable installation identity for Docker workload labels and recovery names; use one value across replicas and a different value for every installation sharing a daemon |
 | `RSCTF_K8S_NETWORK_POLICY_ENFORCED` | Required `true` for Kubernetes backend | Operator acknowledgement that a cross-Pod probe proved the cluster CNI enforces `networking.k8s.io/v1` NetworkPolicy; startup fails without it |
 | `RSCTF_PROVISIONING_CONCURRENCY` | `4` | Concurrent provisioning operations |
+| `RSCTF_DOCKER_READ_CONCURRENCY` | `16` | Concurrent short-lived Docker read calls (`inspect`, one-shot `stats`, `list`, bounded `logs`/file downloads, `df`, `info`) per process (`1..256`) |
+| `RSCTF_DOCKER_READ_DEADLINE_SECS` | `5` | Deadline for one Docker read call; the response stream is dropped on expiry (`1..3600`) |
+| `RSCTF_DOCKER_READ_QUEUE_WAIT_SECS` | `2` | Longest a Docker read waits for a free slot before the request receives a retryable `503` with `Retry-After` (`1..3600`) |
+| `RSCTF_DOCKER_LIFECYCLE_CONCURRENCY` | `4` | Concurrent Docker lifecycle calls (`create`, `start`, `remove`, network create, image remove/prune, pull) per process (`1..256`) |
+| `RSCTF_DOCKER_LIFECYCLE_DEADLINE_SECS` | `30` | Deadline for one Docker lifecycle call other than a pull (`1..3600`) |
+| `RSCTF_DOCKER_LIFECYCLE_QUEUE_WAIT_SECS` | `15` | Longest a Docker lifecycle call waits for a free slot before it is rejected as retryable overload (`1..3600`) |
+| `RSCTF_DOCKER_PULL_DEADLINE_SECS` | `120` | Deadline for one immutable image pull; the pull holds a lifecycle slot (`1..3600`) |
 | `RSCTF_REPO_SCAN_CONCURRENCY` | `1` | Concurrent long-lived shared checkout scans per process (`1..4`) |
 | `RSCTF_TRAFFIC_CAPTURE_ENABLED` | `false` | Allow the singleton `all`/`control`/`network` worker to collect packet captures for challenges that enable it; Compose deployments must also select the matching capture overlay that grants `NET_RAW` |
 | `RSCTF_CAPTURE_DEVICE` | `any` | libpcap device used by the singleton capture owner |
@@ -159,6 +166,20 @@ bytes, image leases, and container use. **Clean storage now** runs the same
 bounded sweep and returns the actual reclaimed-byte report. These controls
 require the Docker backend and a local Unix Docker socket; Kubernetes and
 remote-daemon installations must use their registry/runtime retention policy.
+
+Short-lived Docker Engine API work runs behind two admission classes with the
+bounds above. Reads and lifecycle calls have separate concurrency slots, queue
+waits, and per-call deadlines; an invalid or out-of-range override is logged
+once and replaced by the default. A request that cannot obtain a slot in time
+receives the platform's retryable overload response (`503` with `Retry-After`),
+and a call that exceeds its deadline drops its daemon response stream before
+returning the same retryable shape. Background sweeps log one warning per class
+per 30-second window instead of retrying immediately. Interactive exec sessions,
+A&D snapshot exports, and variant-generator exit waits keep their own admission
+and cancellation owners and are not subject to these deadlines. Per-class
+in-flight, queued, admitted, completed, overloaded, timeout, cancellation,
+queue-wait, and daemon-latency counters are exposed under `docker` in
+`GET /api/admin/realtime/metrics`.
 
 If the selected explicit backend is unavailable, startup fails. `auto` can fall back to no container manager and is prohibited when the integrated VPN is enabled. rsctf hashes the Docker scope before writing it to labels. Set an explicit scope before rotating the JWT secret so already-running workloads remain discoverable; all replicas and the control owner must use the same scope.
 

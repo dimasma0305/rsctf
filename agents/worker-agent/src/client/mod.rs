@@ -76,6 +76,7 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
                 writable_layer_bytes: arguments.writable_layer_bytes,
                 minimum_free_bytes: arguments.minimum_free_bytes,
                 allow_unbounded_storage: arguments.allow_unbounded_storage,
+                docker_admission: arguments.docker_admission_limits(),
             },
         )
         .await
