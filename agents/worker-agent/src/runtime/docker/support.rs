@@ -724,7 +724,7 @@ mod tests {
     #[test]
     fn workload_logs_use_the_bounded_local_driver() {
         let config = bounded_log_config();
-        let options = config.config.expect("local driver options");
+        let options = config.config.clone().expect("local driver options");
         assert_eq!(config.typ.as_deref(), Some("local"));
         assert_eq!(options.get("max-size").map(String::as_str), Some("5m"));
         assert_eq!(options.get("max-file").map(String::as_str), Some("3"));
