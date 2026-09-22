@@ -123,7 +123,9 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
         }
     };
     backoff.reset();
-    let configured_capacity = config.capacity.unwrap_or(detected_capacity);
+    let configured_capacity = config
+        .capacity
+        .unwrap_or_else(|| reserved_default(detected_capacity));
     let capacity = select_capacity(
         detected_capacity,
         configured_capacity,
@@ -209,6 +211,35 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
             Err(error) => tracing::warn!(%error, ?delay, "worker control session failed"),
         }
         tokio::time::sleep(delay).await;
+    }
+}
+
+/// Share of the detected host kept back for Docker, the agent, networking,
+/// and maintenance when no operator override is configured.
+const RESERVE_DIVISOR: u64 = 10;
+/// Absolute reserve floors applied when the fractional share is smaller.
+const RESERVE_CPU_MILLIS: u64 = 1_000;
+const RESERVE_MEMORY_BYTES: u64 = 1024 * 1024 * 1024;
+/// A host at or below its reserve still advertises this much so a small
+/// development worker remains usable.
+const MINIMUM_CPU_MILLIS: u64 = 1_000;
+const MINIMUM_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Detected capacity minus the documented reserve: the larger of one tenth
+/// and the absolute floor for CPU and memory, never below the minimum.
+fn reserved_default(detected: WorkerCapacity) -> WorkerCapacity {
+    let cpu_reserve = (detected.cpu_millis / RESERVE_DIVISOR).max(RESERVE_CPU_MILLIS);
+    let memory_reserve = (detected.memory_bytes / RESERVE_DIVISOR).max(RESERVE_MEMORY_BYTES);
+    WorkerCapacity {
+        cpu_millis: detected
+            .cpu_millis
+            .saturating_sub(cpu_reserve)
+            .max(MINIMUM_CPU_MILLIS),
+        memory_bytes: detected
+            .memory_bytes
+            .saturating_sub(memory_reserve)
+            .max(MINIMUM_MEMORY_BYTES),
+        slots: detected.slots,
     }
 }
 
@@ -328,6 +359,49 @@ mod tests {
                 memory_bytes: configured.memory_bytes,
                 slots: 48,
             }
+        );
+    }
+
+    #[test]
+    fn auto_detected_capacity_subtracts_the_documented_reserve() {
+        assert_eq!(
+            reserved_default(DETECTED),
+            WorkerCapacity {
+                cpu_millis: 7_000,
+                memory_bytes: DETECTED.memory_bytes - DETECTED.memory_bytes / 10,
+                slots: 64,
+            }
+        );
+        let large = WorkerCapacity {
+            cpu_millis: 64_000,
+            memory_bytes: 256 * 1024 * 1024 * 1024,
+            slots: 64,
+        };
+        assert_eq!(reserved_default(large).cpu_millis, 57_600);
+        let tiny = WorkerCapacity {
+            cpu_millis: 1_000,
+            memory_bytes: 1024 * 1024 * 1024,
+            slots: 4,
+        };
+        assert_eq!(
+            reserved_default(tiny),
+            WorkerCapacity {
+                cpu_millis: MINIMUM_CPU_MILLIS,
+                memory_bytes: MINIMUM_MEMORY_BYTES,
+                slots: 4,
+            }
+        );
+        // An explicit override may use the whole detected host.
+        assert_eq!(
+            select_capacity(
+                DETECTED,
+                reserved_default(DETECTED),
+                Some(DETECTED.cpu_millis),
+                Some(DETECTED.memory_bytes),
+                None
+            )
+            .unwrap(),
+            DETECTED
         );
     }
 

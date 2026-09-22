@@ -269,11 +269,23 @@ async fn async_main() -> anyhow::Result<()> {
             "RSCTF_CONTAINER_BACKEND=docker or kubernetes is required when RSCTF_AD_VPN_ENABLED=true"
         ));
     }
+    // Kubernetes wins an automatic choice; local Docker creates are admitted
+    // against a durable host ceiling.
+    let local_backend = |docker_required: bool| {
+        let pool = db.get_postgres_connection_pool().clone();
+        if docker_required {
+            rsctf::services::container::from_env_required_gated(pool)
+        } else if let Some(kubernetes) = rsctf::services::k8s::from_env() {
+            Ok(kubernetes)
+        } else {
+            rsctf::services::container::from_env_gated(pool)
+        }
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
+    };
     let containers: Arc<dyn rsctf::services::container::ContainerManager> = match backend_mode
         .as_str()
     {
-        "docker" => rsctf::services::container::from_env_required()
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+        "docker" => local_backend(true)?,
         "kubernetes" => rsctf::services::k8s::from_env().ok_or_else(|| {
             anyhow::anyhow!(
                 "RSCTF_CONTAINER_BACKEND=kubernetes but the Kubernetes API is unreachable"
@@ -289,18 +301,14 @@ async fn async_main() -> anyhow::Result<()> {
                 Arc<dyn rsctf::services::container::ContainerManager>,
             > = match local_mode.as_str() {
                 "none" => None,
-                "docker" => Some(
-                    rsctf::services::container::from_env_required()
-                        .map_err(|error| anyhow::anyhow!(error.to_string()))?,
-                ),
+                "docker" => Some(local_backend(true)?),
                 "kubernetes" => Some(rsctf::services::k8s::from_env().ok_or_else(|| {
                     anyhow::anyhow!(
                         "RSCTF_WORKER_LOCAL_BACKEND=kubernetes but the Kubernetes API is unreachable"
                     )
                 })?),
                 "auto" => {
-                    let candidate = rsctf::services::k8s::from_env()
-                        .unwrap_or_else(rsctf::services::container::from_env);
+                    let candidate = local_backend(false)?;
                     (candidate.backend_kind()
                         != rsctf::services::container::ContainerBackendKind::None)
                         .then_some(candidate)
@@ -320,9 +328,7 @@ async fn async_main() -> anyhow::Result<()> {
             }
         }
         "none" => Arc::new(rsctf::services::container::NoopContainerManager),
-        "auto" => {
-            rsctf::services::k8s::from_env().unwrap_or_else(rsctf::services::container::from_env)
-        }
+        "auto" => local_backend(false)?,
         value => {
             return Err(anyhow::anyhow!(
                 "invalid RSCTF_CONTAINER_BACKEND {value:?}; expected auto, docker, kubernetes, worker, or none"

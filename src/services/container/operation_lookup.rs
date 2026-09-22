@@ -1,11 +1,45 @@
-//! Exact Docker operation lookup used by crash recovery.
+//! Exact Docker operation lookup used by crash recovery, plus the labeled
+//! inventory that capacity reconciliation shares with the orphan sweep.
 
 use bollard::container::ListContainersOptions;
 
+use super::capacity::ManagedRuntime;
 use super::{
     managed_container_filters, AppError, AppResult, DockerContainerManager, MANAGED_LABEL,
     OPERATION_LABEL, SCOPE_LABEL,
 };
+
+impl DockerContainerManager {
+    /// Every container of this installation scope with its operation label.
+    pub(super) async fn managed_inventory(&self) -> AppResult<Vec<ManagedRuntime>> {
+        let docker = self.client()?;
+        let rows = docker
+            .list_containers(Some(ListContainersOptions {
+                all: true,
+                filters: managed_container_filters(&self.scope),
+                ..Default::default()
+            }))
+            .await
+            .map_err(|error| {
+                AppError::internal(format!("docker list_containers failed: {error}"))
+            })?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let backend_id = row.id?;
+                let operation_id = row
+                    .labels
+                    .as_ref()
+                    .and_then(|labels| labels.get(OPERATION_LABEL))
+                    .cloned();
+                Some(ManagedRuntime {
+                    backend_id,
+                    operation_id,
+                })
+            })
+            .collect())
+    }
+}
 
 pub(super) async fn find_operation_runtime(
     manager: &DockerContainerManager,

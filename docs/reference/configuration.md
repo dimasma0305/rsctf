@@ -126,11 +126,38 @@ active account policy in the Admin UI and test it with a normal account.
 | `RSCTF_DOCKER_SCOPE` | Hash of `RSCTF_JWT_SECRET` | Stable installation identity for Docker workload labels and recovery names; use one value across replicas and a different value for every installation sharing a daemon |
 | `RSCTF_K8S_NETWORK_POLICY_ENFORCED` | Required `true` for Kubernetes backend | Operator acknowledgement that a cross-Pod probe proved the cluster CNI enforces `networking.k8s.io/v1` NetworkPolicy; startup fails without it |
 | `RSCTF_PROVISIONING_CONCURRENCY` | `4` | Concurrent provisioning operations |
+| `RSCTF_LOCAL_CONTAINER_CPU_MILLIS` | Host CPUs minus the reserve | Aggregate millicores every local Docker challenge container counts against; an explicit value is used verbatim (`1..4096000`) |
+| `RSCTF_LOCAL_CONTAINER_MEMORY_BYTES` | Host memory minus the reserve | Aggregate memory ceiling in bytes for local Docker challenge containers; an explicit value is used verbatim |
+| `RSCTF_LOCAL_CONTAINER_SLOTS` | 8 per admitted CPU (`8..2048`) | Maximum simultaneously reserved local Docker containers (`1..65535`) |
+| `RSCTF_LOCAL_CONTAINER_RESERVE_FRACTION` | `0.25` | Share of the Docker host kept back for Docker, rsctf, PostgreSQL, Redis, networking, and maintenance when the ceiling is derived (`0..0.9`) |
+| `RSCTF_LOCAL_CONTAINER_RESERVE_CPU_MILLIS` | `1000` | Absolute CPU reserve floor used when the fractional reserve is smaller |
+| `RSCTF_LOCAL_CONTAINER_RESERVE_MEMORY_BYTES` | `2147483648` | Absolute memory reserve floor (2 GiB) used when the fractional reserve is smaller |
 | `RSCTF_REPO_SCAN_CONCURRENCY` | `1` | Concurrent long-lived shared checkout scans per process (`1..4`) |
 | `RSCTF_TRAFFIC_CAPTURE_ENABLED` | `false` | Allow the singleton `all`/`control`/`network` worker to collect packet captures for challenges that enable it; Compose deployments must also select the matching capture overlay that grants `NET_RAW` |
 | `RSCTF_CAPTURE_DEVICE` | `any` | libpcap device used by the singleton capture owner |
 | `RSCTF_CAPTURE_RECONCILE_SECONDS` | `2` | Durable capture desired-state recovery interval (`1..60` seconds) |
 | `DOCKER_HOST` | Local socket | Docker daemon endpoint used by the Docker backend |
+
+### Local Docker aggregate capacity
+
+The local Docker backend admits every challenge container (player, exercise,
+shared, A&D/KotH services, and admin tests) against one durable per-host
+ceiling before the workload is created. Each admission reserves the requested
+CPU, memory, and one running-container slot in PostgreSQL under the host's
+capacity row lock, keyed by the container operation identity, so control
+replicas that share one daemon (`RSCTF_DOCKER_SCOPE`) can never both admit the
+last slot and an exact retry never double counts. Exhausted capacity returns
+the same retryable `503` with `Retry-After` that busy provisioning already
+uses; a request larger than the whole ceiling returns a non-retryable `503`.
+
+Derived defaults subtract the larger of the fractional and absolute reserve,
+and a small development host always keeps at least 1 CPU, 1 GiB, and 8 slots.
+Explicit ceilings are validated at startup and are not reduced by the reserve.
+Reservations are released when the container is removed or its launch fails;
+the periodic orphan sweep reconciles the rest against the labeled runtime
+inventory (a launch that crashed before recording its container id is adopted
+by operation label, vanished containers are released after a five-minute grace,
+and abandoned pre-launch rows age out). Startup fails on an invalid value.
 
 ### On-demand image builds and bounded cleanup
 

@@ -60,8 +60,8 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
 
 ### P1 — Bound workload growth and startup bursts
 
-- [ ] Enforce aggregate container capacity, not only per-container limits.
-  - Verified 2026-09-22 against the current tree: the trusted-worker scheduler admits atomically on cpu/memory/slots, but it reserves no headroom for Docker/rsctf/PostgreSQL/Redis and the local Docker backend has no aggregate bound at all (only `MAX_LOCAL_OPERATIONS = 4` concurrent provisioning).
+- [x] Enforce aggregate container capacity, not only per-container limits.
+  - Done 2026-09-22: the local Docker backend is wrapped by `CapacityGatedDockerManager` (`services/container/capacity/`), which reserves CPU/memory/slot rows in PostgreSQL under a per-host row lock (`m0348`), keyed by the container operation id, releases on failure/removal, and reconciles against the labeled inventory from the orphan sweep. Defaults derive from the daemon host minus a documented reserve (`RSCTF_LOCAL_CONTAINER_*`). The worker agent now subtracts a documented reserve from auto-detected capacity unless an override is set.
   - Account for requested CPU, memory, replica count, and running container slots
     atomically before accepting a workload.
   - Reserve explicit capacity for Docker, rsctf, PostgreSQL, Redis, networking, and
