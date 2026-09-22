@@ -75,7 +75,10 @@ fn host_resources_blocking(docker: Docker) -> AppResult<HostResources> {
     })
     .join()
     .map_err(|_| AppError::internal("Docker info probe thread panicked"))??;
-    let cpu_millis = i64::from(info.ncpu.unwrap_or(0).max(0))
+    let cpu_millis = info
+        .ncpu
+        .unwrap_or(0)
+        .max(0)
         .saturating_mul(1_000)
         .max(config::MINIMUM_CPU_MILLIS);
     let memory_bytes = info
