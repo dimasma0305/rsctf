@@ -84,7 +84,7 @@ async-trait = "0.1"
 # subsystems: email, outbound HTTP (webhooks/captcha), Docker orchestration
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "hostname"] }
-ed25519-dalek = "2"
+ed25519-dalek = "3"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 rust_xlsxwriter = "0.96"
 bollard = { version = "0.17", features = ["buildkit"] }
