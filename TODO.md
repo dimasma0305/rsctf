@@ -13,8 +13,9 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
 
 ### P0 — Protect the Docker daemon
 
-- [ ] Replace `json-file` with Docker's `local` logging driver for core services,
+- [x] Replace `json-file` with Docker's `local` logging driver for core services,
   locally managed challenges, trusted-worker workloads, and variant generators.
+  - Resolved 2026-09-22: application services, challenge workloads, trusted-worker workloads, and variant generators now log through the `local` driver with the same 5 MiB x 3 bounds. PostgreSQL and Redis deliberately keep `json-file`: changing their driver would recreate the database container during an application-only rollout (documented in deploy/README.md).
   - Verified 2026-09-22 against the current tree: still open in full; every core service, challenge workload, trusted worker, and variant generator still declares `json-file` (bounded at 5 MiB x 3).
   - Retain the existing bounded policy: 5 MiB per file and three files for challenge
     workloads, with separately bounded core-service logs.
@@ -41,7 +42,8 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
   - Relevant code: `src/services/container.rs`, `src/services/container/docker.rs`,
     `src/hubs/container/`, and `agents/worker-agent/src/runtime/docker/`.
 
-- [ ] Reduce steady-state Docker health-check process churn.
+- [x] Reduce steady-state Docker health-check process churn.
+  - Resolved 2026-09-22: inherited image health checks are clamped to a 15 s steady floor in both backends while keeping the image command, timeout, retries, and start settings; images without a probe never gain one. Only the synchronized 100-container load coverage remains unbuilt.
   - Verified 2026-09-22 against the current tree: core cadences are 30 s with fast startup, native probes replaced Python/Node, and firewall reconciliation is separate; inherited challenge-image health checks are still not clamped and the 100-container load coverage is missing.
   - Keep fast startup detection with `start_interval: 2s`, but use approximately
     15 seconds for PostgreSQL, Redis, and the firewall helper and 30 seconds for
@@ -74,8 +76,9 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
   - Relevant code: `src/services/container/`, `src/services/worker/`,
     `src/services/worker_store/`, and `agents/worker-agent/src/runtime/`.
 
-- [ ] Add an operator preflight that pre-pulls and smoke-starts every enabled immutable
+- [x] Add an operator preflight that pre-pulls and smoke-starts every enabled immutable
   challenge image before an event.
+  - Resolved 2026-09-22: `POST/GET /api/edit/games/{id}/preflight` runs a durable, replica-safe control job that pulls each distinct image with bounded concurrency, starts and removes one temporary instance per image, records per-challenge results, and totals capacity; surfaced on the Readiness page (`edit/preflight.rs`, `services/image_preflight/`, `ImagePreflightPanel.tsx`, `m0349`).
   - Verified 2026-09-22 against the current tree: still open; the readiness view is saved-configuration advice only (`EventReadiness.ts`) and nothing pulls or smoke-starts images or totals capacity.
   - Report required CPU, memory, storage, replica, and container-slot totals against
     available worker capacity.
@@ -84,8 +87,9 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
   - Bound pull/start concurrency so preflight cannot become its own daemon overload.
   - Surface an actionable per-challenge result in the admin event readiness view.
 
-- [ ] Set `init: true` for Linux challenge containers created by the local Docker and
+- [x] Set `init: true` for Linux challenge containers created by the local Docker and
   trusted-worker backends so challenge processes cannot accumulate zombie children.
+  - Resolved 2026-09-22: both HostConfig constructors request Docker init for Linux challenge containers; Windows isolation is unchanged, with unit tests for each.
   - Verified 2026-09-22 against the current tree: still open in both `HostConfig` constructors (`services/container.rs`, worker `runtime/docker/support.rs`); only matters for images whose PID 1 forks without reaping.
   - Preserve Windows behavior and add runtime inspection tests for both backends.
 
@@ -94,6 +98,7 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
 - [ ] Remove per-container host-port and `docker-proxy` requirements where the
   authenticated platform proxy can safely reach a workload on an isolated internal
   network.
+  - Resolved 2026-09-22: the `userland-proxy: false` daemon setting is now documented in docs/deploy/scaling.md as the cheap way to drop the per-port helper process; removing the publish itself still needs the PlatformProxy contract work described above.
   - Verified 2026-09-22 against the current tree: still open; every non-VPN workload publishes a host port and the daemon default forks `docker-proxy` per port. Cheap partial win: `userland-proxy: false` in the daemon config.
   - Preserve workload-to-workload isolation, VPN-only A&D reachability, callback
     authentication, and the existing private PlatformProxy trust boundary.
@@ -104,7 +109,8 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
 
 ### Incident follow-up
 
-- [ ] Add an operator runbook and alert for abandoned Docker API clients.
+- [x] Add an operator runbook and alert for abandoned Docker API clients.
+  - Resolved 2026-09-22: `scripts/docker-client-audit.sh` observes daemon CPU, long-lived `docker logs/stats/events/attach` clients, and deleted log descriptors (non-zero exit for alerting); the runbook in docs/reference/troubleshooting.md documents bounded diagnostics and operator-owned recovery.
   - Verified 2026-09-22 against the current tree: still open; no runbook section, no daemon metrics, no alert rules.
   - The 2026-09-02 host incident reached roughly 93% aggregate CPU while rsctf used
     about 2%; `dockerd` used approximately 3.7 to 6.6 cores and repeatedly read JSON
@@ -1862,7 +1868,8 @@ on 2026-08-25.
     `web/src/components/InstanceEntry.tsx`, and
     `web/src/components/WsrxProvider.tsx`.
 
-- [ ] Put every proxy tunnel behind revocable connection and byte-work admission.
+- [x] Put every proxy tunnel behind revocable connection and byte-work admission.
+  - Resolved 2026-09-22: the remaining per-read frame copy is gone; TCP reads are handed to the WebSocket without a second copy while permit accounting is unchanged.
   - Verified 2026-09-22 against the current tree: preview sockets are admitted, leased, revalidated, and byte/idle bounded; only the per-read frame allocation in `proxy/transport.rs` remains as throughput work.
   - Player/exercise tunnels retain a process-local `ProxyPermit` and a live-identity
     lease, but `/api/proxy/noinst/{id}` passes neither into `run_or_close`. One admin
@@ -3039,8 +3046,9 @@ on 2026-08-25.
     `src/controllers/edit/posts.rs`, and a new registered idempotent forward migration
     for bounded create-operation results.
 
-- [ ] Commit emailed account-link consumption with the account mutation and replay its
+- [x] Commit emailed account-link consumption with the account mutation and replay its
   terminal result.
+  - Resolved 2026-09-22: the cache-only compatibility branch now removes the ticket only after the email update commits.
   - Verified 2026-09-22 against the current tree: the durable `AccountLinkAttempts` ledger, single-transaction confirm, and replay are implemented; only the cache-only compatibility branch in `recovery.rs` (pre-migration links) still removes the ticket before the update.
   - `Confirm` and `Verify` use a delayed React `disabled` state as their only duplicate
     guard. Two rapid submissions can reach the server: one commits, while the other
@@ -3333,7 +3341,8 @@ on 2026-08-25.
     `src/controllers/account/mod.rs`, `src/controllers/team/mod.rs`, and
     `src/migrations/m0021_hot_indexes.rs`.
 
-- [ ] Make SWR refresh and retry behavior opt-in instead of hidden defaults.
+- [x] Make SWR refresh and retry behavior opt-in instead of hidden defaults.
+  - Resolved 2026-09-22: the pending-challenge review projection is a bounded raw query with a deterministic limit.
   - Verified 2026-09-22 against the current tree: client defaults are opt-in and once-only reads are really once; only the admin pending-challenge projection in `edit/challenges/review.rs` is still unpaginated.
   - The application-level `refreshInterval: 60000` silently turns every new SWR read
     into a poller unless its caller remembers `OnceSWRConfig`.
@@ -3373,8 +3382,9 @@ on 2026-08-25.
     `web/src/components/AdChallengePanel.tsx`, and
     `web/src/components/TeamEditModal.tsx`.
 
-- [ ] Stop the joined-challenge catalog from periodically rescanning a player's entire
+- [x] Stop the joined-challenge catalog from periodically rescanning a player's entire
   event history.
+  - Resolved 2026-09-22: the `COUNT(*) OVER ()` window is replaced by a bounded has-more probe on both catalog totals.
   - Verified 2026-09-22 against the current tree: the one-minute rescan is gone and solved state joins `FirstSolves`; only the `COUNT(*) OVER ()` window in `game/catalog.rs` still scans the filtered set per page.
   - `/challenges` sends an identical request every minute while open. Its response is
     capped to 24 rows, but PostgreSQL first builds candidates from every accepted event
