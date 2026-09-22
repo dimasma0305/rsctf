@@ -174,8 +174,7 @@ pub async fn games(
     MaybeUser(user): MaybeUser,
     Query(query): Query<GameListQuery>,
 ) -> AppResult<ArrayResponse<BasicGameInfoModel>> {
-    let (data, total) =
-        load_game_list(st.pg(), user.as_ref().map(|user| user.id), &query).await?;
+    let (data, total) = load_game_list(st.pg(), user.as_ref().map(|user| user.id), &query).await?;
     Ok(ArrayResponse::new(data, total))
 }
 

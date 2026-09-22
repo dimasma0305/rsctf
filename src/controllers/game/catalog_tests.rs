@@ -321,12 +321,18 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_deletion_or_divis
         .await
         .unwrap();
     assert_eq!(total, 6);
-    assert_eq!(first.iter().map(|item| item.id).collect::<Vec<_>>(), [701, 102]);
+    assert_eq!(
+        first.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [701, 102]
+    );
     let (last, total) = load_challenge_catalog(&pool, player, &page(4))
         .await
         .unwrap();
     assert_eq!(total, 6);
-    assert_eq!(last.iter().map(|item| item.id).collect::<Vec<_>>(), [105, 101]);
+    assert_eq!(
+        last.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [105, 101]
+    );
     let (beyond, total) = load_challenge_catalog(&pool, player, &page(6))
         .await
         .unwrap();
@@ -340,11 +346,18 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_deletion_or_divis
         search: None,
         membership: GameMembershipFilter::All,
     };
-    let (first, total) = load_game_list(&pool, Some(player), &games(0)).await.unwrap();
-    assert_eq!(total, 9, "hidden events are excluded from the visible total");
+    let (first, total) = load_game_list(&pool, Some(player), &games(0))
+        .await
+        .unwrap();
+    assert_eq!(
+        total, 9,
+        "hidden events are excluded from the visible total"
+    );
     assert_eq!(first.len(), 4);
     assert!(first.iter().all(|game| game.id != 5));
-    let (last, total) = load_game_list(&pool, Some(player), &games(8)).await.unwrap();
+    let (last, total) = load_game_list(&pool, Some(player), &games(8))
+        .await
+        .unwrap();
     assert_eq!(total, 9);
     assert_eq!(last.len(), 1);
     let joined = GameListQuery {
@@ -353,9 +366,7 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_deletion_or_divis
         search: None,
         membership: GameMembershipFilter::Joined,
     };
-    let (joined_games, joined_total) = load_game_list(&pool, Some(player), &joined)
-        .await
-        .unwrap();
+    let (joined_games, joined_total) = load_game_list(&pool, Some(player), &joined).await.unwrap();
     assert_eq!(joined_total, 7);
     assert!(joined_games.iter().all(|game| game.joined));
     let (anonymous, anonymous_total) = load_game_list(&pool, None, &joined).await.unwrap();
@@ -379,15 +390,16 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_deletion_or_divis
         .await
         .unwrap();
     assert_eq!(total, MAX_COUNTED_CATALOG_ROWS);
-    assert_eq!(capped.iter().map(|item| item.id).collect::<Vec<_>>(), [701, 102]);
+    assert_eq!(
+        capped.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [701, 102]
+    );
     let bulk = ChallengeCatalogQuery {
         count: 100,
         skip: 900,
         ..Default::default()
     };
-    let (bulk_page, total) = load_challenge_catalog(&pool, player, &bulk)
-        .await
-        .unwrap();
+    let (bulk_page, total) = load_challenge_catalog(&pool, player, &bulk).await.unwrap();
     assert_eq!(total, MAX_COUNTED_CATALOG_ROWS);
     assert_eq!(bulk_page.len(), 100);
 

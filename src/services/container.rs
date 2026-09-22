@@ -62,9 +62,8 @@ use self::docker::{
     adopt_operation_container, append_snapshot_chunk, discover_operation_container,
     image_requests_restricted_profile, is_conflict, is_not_found, snapshot_export_slots,
     stamp_restricted_profile, stamp_storage_quota_policy, validate_docker_container_spec,
-    writable_layer_quota_supported,
-    writable_layer_storage_option, LAUNCH_SPEC_LABEL, MAX_SNAPSHOT_EXPORT_BYTES,
-    SNAPSHOT_EXPORT_ADMISSION_TIMEOUT, SNAPSHOT_EXPORT_MAX_DURATION,
+    writable_layer_quota_supported, writable_layer_storage_option, LAUNCH_SPEC_LABEL,
+    MAX_SNAPSHOT_EXPORT_BYTES, SNAPSHOT_EXPORT_ADMISSION_TIMEOUT, SNAPSHOT_EXPORT_MAX_DURATION,
 };
 pub use backend::{
     should_use_platform_proxy, ContainerBackendKind, ContainerExecAdmission, ContainerExecError,
