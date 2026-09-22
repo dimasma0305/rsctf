@@ -168,7 +168,7 @@ fn apply_field_best_normalization(
         .iter()
         .map(|challenge| challenge.service_weight)
         .sum();
-    if !(total_weight > 0.0) {
+    if !total_weight.is_finite() || total_weight <= 0.0 {
         return;
     }
     for challenge in challenges.iter_mut() {
