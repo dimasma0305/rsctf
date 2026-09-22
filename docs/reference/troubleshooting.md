@@ -90,6 +90,39 @@ The platform-only profile intentionally sets `RSCTF_CONTAINER_BACKEND=none`. Re-
 
 Check that `/var/run/docker.sock` exists on the host, the correct override is selected, and the socket is mounted into rsctf. Rootless or remote Docker needs an explicit, tested `DOCKER_HOST` and is not supported by the standard VPN profile.
 
+### Docker daemon busy with abandoned clients
+
+Symptom: the host is near 100% CPU while rsctf itself uses a few percent,
+`dockerd` holds several cores, and every event page slows down. On
+2026-09-02 the cause was seven abandoned `docker logs` clients, some attached
+to already deleted containers, that made the daemon re-read JSON logs at EOF.
+
+Diagnose with the bounded audit, which only observes:
+
+```sh
+scripts/docker-client-audit.sh --cpu-warn 150 --client-warn 600
+```
+
+It reports the daemon CPU sampled over two seconds, `docker logs`, `stats`,
+`events`, `attach`, and `wait` clients older than the threshold, deleted log
+files the daemon still holds open, and the socket connection count. Exit 1
+means at least one warning. Run it from cron or your monitoring agent and alert
+on a non-zero exit, on sustained daemon CPU above your threshold, or on any
+deleted log descriptor.
+
+Rules for diagnostic commands during an event: always bound `docker logs` with
+`--tail` or `--since`, wrap it in `timeout`, and never leave `docker stats`
+or `docker events` streaming in a detached terminal.
+
+Recovery is an operator decision, never automatic:
+
+1. Identify the owner of each long-lived client and stop the client process
+   (`kill <pid>`). rsctf never kills unrelated host Docker clients.
+2. Re-run the audit; daemon CPU should fall within a minute.
+3. Only if the daemon stays saturated with no clients attached, restart Docker
+   during a planned window. That stops every challenge container, so announce
+   it and use the maintenance procedure in `docs/deploy/operations.md`.
+
 ### Challenge starts but players cannot connect
 
 Verify `RSCTF_DOCKER_PUBLIC_ENTRY` or `RSCTF_K8S_PUBLIC_ENTRY`, the displayed port, host/cloud firewall rules, and NAT. Normal Docker challenges publish a random host port; normal Kubernetes challenges use a random NodePort.

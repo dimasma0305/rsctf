@@ -154,6 +154,18 @@ repository digest are adopted without rewriting that identity. Complete this
 upgrade and rebuild pass before official KotH scoring starts, because its hill
 image snapshot is intentionally immutable for the event.
 
+### Host-port publishing cost
+
+Every non-VPN Docker challenge publishes one random host port, and the Docker
+daemon's default userland proxy forks one `docker-proxy` process per published
+port. At a few hundred concurrent containers that becomes daemon CPU,
+ephemeral-port, and iptables pressure. The platform proxy still needs the
+published address, so the publish itself cannot be removed yet, but the
+per-port process can: set `"userland-proxy": false` in
+`/etc/docker/daemon.json` on challenge hosts and restart Docker in a planned
+window. Kernel NAT then serves the published ports without a helper process.
+Do not share one bridge across mutually untrusted challenges to save networks.
+
 ## Migration ownership
 
 The `all` role can migrate an empty or already-quiesced installation at startup;
