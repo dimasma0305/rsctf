@@ -2,8 +2,8 @@ use bollard::container::{
     DownloadFromContainerOptions, RemoveContainerOptions, StartContainerOptions, StatsOptions,
 };
 use bollard::models::{
-    ContainerInspectResponse, ContainerStateStatusEnum, HostConfig, ImageInspect, PortBinding,
-    SystemInfo,
+    ContainerInspectResponse, ContainerStateStatusEnum, HealthConfig, HostConfig, ImageInspect,
+    PortBinding, SystemInfo,
 };
 use bollard::Docker;
 use futures::StreamExt;
@@ -213,6 +213,36 @@ pub(super) fn challenge_host_config(
         network_mode: docker_network_mode(spec),
         ..Default::default()
     }
+}
+
+/// Steady-state floor for an inherited image health check. Docker runs each
+/// probe as a container exec, so a fleet of images polling every second or two
+/// turns into daemon CPU and process churn at event scale.
+pub(super) const MIN_HEALTH_INTERVAL_NANOS: i64 = 15_000_000_000;
+
+/// Inherit the image's health check but never poll faster than
+/// [`MIN_HEALTH_INTERVAL_NANOS`] once the start period has elapsed.
+///
+/// Returns `None` whenever the container should simply inherit the image
+/// definition: no health check, an explicitly disabled one (`NONE`), or an
+/// interval that is already at or above the floor. A container-level
+/// `Healthcheck` replaces the image's whole block rather than merging into it,
+/// so the clamp clones every field (command, timeout, retries, start period,
+/// start interval) and changes only the steady interval.
+pub(super) fn clamped_image_health_config(image: &ImageInspect) -> Option<HealthConfig> {
+    let health = image.config.as_ref()?.healthcheck.as_ref()?;
+    let test = health.test.as_ref()?;
+    if test.is_empty() || test.first().is_some_and(|command| command == "NONE") {
+        return None;
+    }
+    let interval = health
+        .interval
+        .filter(|interval| *interval > 0 && *interval < MIN_HEALTH_INTERVAL_NANOS)?;
+    debug_assert!(interval < MIN_HEALTH_INTERVAL_NANOS);
+    Some(HealthConfig {
+        interval: Some(MIN_HEALTH_INTERVAL_NANOS),
+        ..health.clone()
+    })
 }
 
 pub(super) fn image_requests_restricted_profile(image: &ImageInspect) -> bool {

@@ -664,6 +664,10 @@ impl ContainerManager for DockerContainerManager {
             labels: Some(labels),
             host_config: Some(host_config),
             networking_config,
+            // Only an image that already defines a health check gets one, and
+            // only to slow it down: a container never gains a probe its image
+            // did not ship.
+            healthcheck: docker::clamped_image_health_config(&inspected_image),
             ..Default::default()
         };
 

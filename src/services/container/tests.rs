@@ -2,19 +2,19 @@ use std::collections::HashMap;
 
 use bollard::models::{
     ContainerConfig, ContainerInspectResponse, ContainerState, ContainerStateStatusEnum,
-    HostConfig, ImageInspect, Ipam, IpamConfig, Network, SystemInfo,
+    HealthConfig, HostConfig, ImageInspect, Ipam, IpamConfig, Network, SystemInfo,
 };
 
 use super::docker::{
-    advertised_endpoint_ip, challenge_host_config, docker_liveness, docker_network_mode,
-    failed_start_action,
+    advertised_endpoint_ip, challenge_host_config, clamped_image_health_config, docker_liveness,
+    docker_network_mode, failed_start_action,
     image_requests_restricted_profile, launch_spec_fingerprint, launch_spec_matches,
     parse_proxy_bind, published_bind_ip, restricted_profile_matches, restricted_tmpfs_mounts,
     stamp_restricted_profile, stamp_storage_quota_policy, storage_quota_policy_matches,
     validate_docker_container_spec, verify_container_scope, writable_layer_quota_supported,
     writable_layer_storage_opt, writable_layer_storage_option, FailedStartAction,
-    LAUNCH_SPEC_LABEL, RESTRICTED_IMAGE_PROFILE, RESTRICTED_IMAGE_PROFILE_LABEL,
-    RESTRICTED_TMPFS_OPTIONS, RESTRICTED_TMPFS_PATH,
+    LAUNCH_SPEC_LABEL, MIN_HEALTH_INTERVAL_NANOS, RESTRICTED_IMAGE_PROFILE,
+    RESTRICTED_IMAGE_PROFILE_LABEL, RESTRICTED_TMPFS_OPTIONS, RESTRICTED_TMPFS_PATH,
 };
 use super::{
     append_snapshot_chunk, bounded_log_config, bridge_network_matches, container_name,
@@ -861,6 +861,65 @@ fn linux_challenge_containers_run_under_init_with_bounded_pids() {
     assert_eq!(restricted.cap_drop, Some(vec!["ALL".to_string()]));
     assert_eq!(restricted.readonly_rootfs, Some(true));
     assert_eq!(restricted.tmpfs, Some(restricted_tmpfs_mounts()));
+}
+
+#[test]
+fn inherited_image_health_checks_are_clamped_to_the_steady_floor() {
+    let second = 1_000_000_000_i64;
+    let image = |healthcheck: Option<HealthConfig>| ImageInspect {
+        config: Some(ContainerConfig {
+            healthcheck,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let fast = HealthConfig {
+        test: Some(vec!["CMD-SHELL".to_string(), "curl -f localhost".to_string()]),
+        interval: Some(2 * second),
+        timeout: Some(3 * second),
+        retries: Some(7),
+        start_period: Some(40 * second),
+        start_interval: Some(second),
+    };
+
+    // Below the floor: only the steady interval changes.
+    let clamped = clamped_image_health_config(&image(Some(fast.clone()))).expect("clamped");
+    assert_eq!(clamped.interval, Some(MIN_HEALTH_INTERVAL_NANOS));
+    assert_eq!(MIN_HEALTH_INTERVAL_NANOS, 15 * second);
+    assert_eq!(clamped.test, fast.test);
+    assert_eq!(clamped.timeout, fast.timeout);
+    assert_eq!(clamped.retries, fast.retries);
+    assert_eq!(clamped.start_period, fast.start_period);
+    assert_eq!(clamped.start_interval, fast.start_interval);
+
+    // At or above the floor, or left to Docker's 30 s default: inherit as is.
+    for interval in [Some(15 * second), Some(60 * second), Some(0), None] {
+        let slow = HealthConfig {
+            interval,
+            ..fast.clone()
+        };
+        assert_eq!(clamped_image_health_config(&image(Some(slow))), None);
+    }
+
+    // No health check, an explicitly disabled one, or an empty command never
+    // gains a probe.
+    assert_eq!(clamped_image_health_config(&image(None)), None);
+    assert_eq!(clamped_image_health_config(&ImageInspect::default()), None);
+    let disabled = HealthConfig {
+        test: Some(vec!["NONE".to_string()]),
+        ..fast.clone()
+    };
+    assert_eq!(clamped_image_health_config(&image(Some(disabled))), None);
+    let inherit_only = HealthConfig {
+        test: Some(Vec::new()),
+        ..fast.clone()
+    };
+    assert_eq!(clamped_image_health_config(&image(Some(inherit_only))), None);
+    let no_command = HealthConfig {
+        test: None,
+        ..fast
+    };
+    assert_eq!(clamped_image_health_config(&image(Some(no_command))), None);
 }
 
 #[test]
