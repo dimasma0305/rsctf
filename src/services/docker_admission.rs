@@ -35,7 +35,7 @@ const DEFAULT_READ_QUEUE_WAIT: Duration = Duration::from_secs(2);
 const DEFAULT_LIFECYCLE_CONCURRENCY: usize = 4;
 const DEFAULT_LIFECYCLE_DEADLINE: Duration = Duration::from_secs(30);
 const DEFAULT_LIFECYCLE_QUEUE_WAIT: Duration = Duration::from_secs(15);
-const DEFAULT_PULL_DEADLINE: Duration = Duration::from_secs(120);
+const DEFAULT_PULL_DEADLINE: Duration = Duration::from_secs(600);
 const MAX_CONCURRENCY: usize = 256;
 const MAX_SECONDS: u64 = 3_600;
 /// Background sweeps and pollers share one warning per class per window so a

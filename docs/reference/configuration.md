@@ -132,7 +132,7 @@ active account policy in the Admin UI and test it with a normal account.
 | `RSCTF_DOCKER_LIFECYCLE_CONCURRENCY` | `4` | Concurrent Docker lifecycle calls (`create`, `start`, `remove`, network create, image remove/prune, pull) per process (`1..256`) |
 | `RSCTF_DOCKER_LIFECYCLE_DEADLINE_SECS` | `30` | Deadline for one Docker lifecycle call other than a pull (`1..3600`) |
 | `RSCTF_DOCKER_LIFECYCLE_QUEUE_WAIT_SECS` | `15` | Longest a Docker lifecycle call waits for a free slot before it is rejected as retryable overload (`1..3600`) |
-| `RSCTF_DOCKER_PULL_DEADLINE_SECS` | `120` | Deadline for one immutable image pull; the pull holds a lifecycle slot (`1..3600`) |
+| `RSCTF_DOCKER_PULL_DEADLINE_SECS` | `600` | Deadline for one immutable image pull; the pull holds a lifecycle slot (`1..3600`) |
 | `RSCTF_REPO_SCAN_CONCURRENCY` | `1` | Concurrent long-lived shared checkout scans per process (`1..4`) |
 | `RSCTF_TRAFFIC_CAPTURE_ENABLED` | `false` | Allow the singleton `all`/`control`/`network` worker to collect packet captures for challenges that enable it; Compose deployments must also select the matching capture overlay that grants `NET_RAW` |
 | `RSCTF_CAPTURE_DEVICE` | `any` | libpcap device used by the singleton capture owner |

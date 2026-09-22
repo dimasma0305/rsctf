@@ -229,7 +229,7 @@ fn metrics_snapshot_serializes_camel_case_for_the_admin_surface() {
     assert_eq!(json["read"]["deadlineMs"], 5_000);
     assert_eq!(json["lifecycle"]["concurrencyLimit"], 4);
     assert_eq!(json["lifecycle"]["deadlineMs"], 30_000);
-    assert_eq!(json["pullDeadlineMs"], 120_000);
+    assert_eq!(json["pullDeadlineMs"], 600_000);
     assert_eq!(json["read"]["daemonLatencyMaxMs"], 0);
 }
 
