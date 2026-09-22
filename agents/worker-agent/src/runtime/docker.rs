@@ -26,6 +26,7 @@ use super::{RuntimeError, RuntimeOptions, WorkerRuntime};
 
 mod admission;
 mod endpoints;
+mod health;
 mod inventory;
 mod networks;
 mod preflight;
@@ -35,6 +36,7 @@ mod windows_acl;
 use admission::DockerAdmission;
 pub use admission::DockerAdmissionLimits;
 use endpoints::{EndpointCacheKey, EndpointTarget};
+use health::{clamped_health_config, image_health_config};
 pub(super) use preflight::run as preflight;
 use support::*;
 use tombstones::TombstoneStore;

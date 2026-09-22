@@ -48,6 +48,8 @@ mod backend;
 pub mod capacity;
 mod docker;
 mod docker_change_api;
+#[cfg(test)]
+mod host_config_tests;
 mod logging;
 mod naming;
 mod operation_lookup;
