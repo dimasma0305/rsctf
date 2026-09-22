@@ -72,7 +72,9 @@ pub use backend::{
     NoopContainerManager,
 };
 pub use capacity::CapacityGatedDockerManager;
-pub use docker::{from_env, from_env_gated, from_env_required, from_env_required_gated};
+pub use docker::{
+    from_env, from_env_gated, from_env_required, from_env_required_gated, select_local_backend,
+};
 use logging::bounded_log_config;
 use naming::{container_name, map_status};
 pub(crate) use policy::validate_container_spec;

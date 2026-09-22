@@ -862,6 +862,23 @@ pub fn from_env_gated(pool: sqlx::PgPool) -> AppResult<std::sync::Arc<dyn Contai
 }
 
 /// Explicit Docker selection with the durable local capacity gate.
+/// Choose the local backend for `RSCTF_CONTAINER_BACKEND=docker` (Docker is
+/// required) or `auto` (Kubernetes wins when reachable, otherwise Docker or
+/// the no-op backend). Local Docker creates are admitted against the durable
+/// host ceiling in either case.
+pub fn select_local_backend(
+    pool: sqlx::PgPool,
+    docker_required: bool,
+) -> AppResult<std::sync::Arc<dyn ContainerManager>> {
+    if docker_required {
+        from_env_required_gated(pool)
+    } else if let Some(kubernetes) = crate::services::k8s::from_env() {
+        Ok(kubernetes)
+    } else {
+        from_env_gated(pool)
+    }
+}
+
 pub fn from_env_required_gated(
     pool: sqlx::PgPool,
 ) -> AppResult<std::sync::Arc<dyn ContainerManager>> {

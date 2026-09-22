@@ -269,18 +269,10 @@ async fn async_main() -> anyhow::Result<()> {
             "RSCTF_CONTAINER_BACKEND=docker or kubernetes is required when RSCTF_AD_VPN_ENABLED=true"
         ));
     }
-    // Kubernetes wins an automatic choice; local Docker creates are admitted
-    // against a durable host ceiling.
     let local_backend = |docker_required: bool| {
         let pool = db.get_postgres_connection_pool().clone();
-        if docker_required {
-            rsctf::services::container::from_env_required_gated(pool)
-        } else if let Some(kubernetes) = rsctf::services::k8s::from_env() {
-            Ok(kubernetes)
-        } else {
-            rsctf::services::container::from_env_gated(pool)
-        }
-        .map_err(|error| anyhow::anyhow!(error.to_string()))
+        rsctf::services::container::select_local_backend(pool, docker_required)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
     };
     let containers: Arc<dyn rsctf::services::container::ContainerManager> = match backend_mode
         .as_str()
