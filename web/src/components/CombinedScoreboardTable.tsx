@@ -174,7 +174,7 @@ const MobileTeamCard: FC<{
           <Badge size="lg" variant="light" color="yellow" className={misc.ffmono}>
             #{rank || '-'}
           </Badge>
-          <Avatar src={row.avatar} radius="xl" color="blue">
+          <Avatar src={row.avatar} alt="" aria-hidden="true" radius="xl" color="blue">
             {row.name.slice(0, 1) || 'T'}
           </Avatar>
           <Stack gap={0} style={{ minWidth: 0 }}>
@@ -454,7 +454,7 @@ export const CombinedScoreboardTable: FC<{
                       </Table.Td>
                       <Table.Th scope="row">
                         <Group gap="xs" wrap="nowrap" maw={240}>
-                          <Avatar src={row.avatar} radius="xl" size={34} color="blue">
+                          <Avatar src={row.avatar} alt="" aria-hidden="true" radius="xl" size={34} color="blue">
                             {row.name.slice(0, 1) || 'T'}
                           </Avatar>
                           <Stack gap={0} style={{ minWidth: 0, flex: 1 }}>
