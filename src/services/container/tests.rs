@@ -7,14 +7,14 @@ use bollard::models::{
 
 use super::docker::{
     advertised_endpoint_ip, challenge_host_config, clamped_image_health_config, docker_liveness,
-    docker_network_mode, failed_start_action,
-    image_requests_restricted_profile, launch_spec_fingerprint, launch_spec_matches,
-    parse_proxy_bind, published_bind_ip, restricted_profile_matches, restricted_tmpfs_mounts,
-    stamp_restricted_profile, stamp_storage_quota_policy, storage_quota_policy_matches,
-    validate_docker_container_spec, verify_container_scope, writable_layer_quota_supported,
-    writable_layer_storage_opt, writable_layer_storage_option, FailedStartAction,
-    LAUNCH_SPEC_LABEL, MIN_HEALTH_INTERVAL_NANOS, RESTRICTED_IMAGE_PROFILE,
-    RESTRICTED_IMAGE_PROFILE_LABEL, RESTRICTED_TMPFS_OPTIONS, RESTRICTED_TMPFS_PATH,
+    docker_network_mode, failed_start_action, image_requests_restricted_profile,
+    launch_spec_fingerprint, launch_spec_matches, parse_proxy_bind, published_bind_ip,
+    restricted_profile_matches, restricted_tmpfs_mounts, stamp_restricted_profile,
+    stamp_storage_quota_policy, storage_quota_policy_matches, validate_docker_container_spec,
+    verify_container_scope, writable_layer_quota_supported, writable_layer_storage_opt,
+    writable_layer_storage_option, FailedStartAction, LAUNCH_SPEC_LABEL, MIN_HEALTH_INTERVAL_NANOS,
+    RESTRICTED_IMAGE_PROFILE, RESTRICTED_IMAGE_PROFILE_LABEL, RESTRICTED_TMPFS_OPTIONS,
+    RESTRICTED_TMPFS_PATH,
 };
 use super::{
     append_snapshot_chunk, bounded_log_config, bridge_network_matches, container_name,
@@ -874,7 +874,10 @@ fn inherited_image_health_checks_are_clamped_to_the_steady_floor() {
         ..Default::default()
     };
     let fast = HealthConfig {
-        test: Some(vec!["CMD-SHELL".to_string(), "curl -f localhost".to_string()]),
+        test: Some(vec![
+            "CMD-SHELL".to_string(),
+            "curl -f localhost".to_string(),
+        ]),
         interval: Some(2 * second),
         timeout: Some(3 * second),
         retries: Some(7),
@@ -914,20 +917,20 @@ fn inherited_image_health_checks_are_clamped_to_the_steady_floor() {
         test: Some(Vec::new()),
         ..fast.clone()
     };
-    assert_eq!(clamped_image_health_config(&image(Some(inherit_only))), None);
-    let no_command = HealthConfig {
-        test: None,
-        ..fast
-    };
+    assert_eq!(
+        clamped_image_health_config(&image(Some(inherit_only))),
+        None
+    );
+    let no_command = HealthConfig { test: None, ..fast };
     assert_eq!(clamped_image_health_config(&image(Some(no_command))), None);
 }
 
 #[test]
 fn challenge_container_logs_are_bounded() {
     let log_config = bounded_log_config();
-    let options = log_config.config.expect("json-file options");
+    let options = log_config.config.expect("local driver options");
 
-    assert_eq!(log_config.typ.as_deref(), Some("json-file"));
+    assert_eq!(log_config.typ.as_deref(), Some("local"));
     assert_eq!(options.get("max-size").map(String::as_str), Some("5m"));
     assert_eq!(options.get("max-file").map(String::as_str), Some("3"));
 }

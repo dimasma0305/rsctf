@@ -48,7 +48,7 @@ services:
     image: ${RSCTF_IMAGE:?Set RSCTF_IMAGE to one immutable rsctf image digest}
     restart: unless-stopped
     logging:
-      driver: json-file
+      driver: local
       options:
         max-size: ${RSCTF_DOCKER_LOG_MAX_SIZE:-20m}
         max-file: "${RSCTF_DOCKER_LOG_MAX_FILES:-5}"

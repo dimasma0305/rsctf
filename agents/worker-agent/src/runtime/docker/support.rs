@@ -430,9 +430,12 @@ pub(super) fn docker_port(port: u16) -> String {
     format!("{port}/tcp")
 }
 
+/// Workloads use Docker's `local` driver: bounded, compressed files the
+/// daemon never re-parses as JSON for a log client. Bounds match the local
+/// backend (5 MiB x 3).
 pub(super) fn bounded_log_config() -> HostConfigLogConfig {
     HostConfigLogConfig {
-        typ: Some("json-file".to_string()),
+        typ: Some("local".to_string()),
         config: Some(HashMap::from([
             ("max-size".to_string(), "5m".to_string()),
             ("max-file".to_string(), "3".to_string()),
@@ -719,6 +722,24 @@ mod tests {
     }
 
     #[test]
+    fn workload_logs_use_the_bounded_local_driver() {
+        let config = bounded_log_config();
+        let options = config.config.expect("local driver options");
+        assert_eq!(config.typ.as_deref(), Some("local"));
+        assert_eq!(options.get("max-size").map(String::as_str), Some("5m"));
+        assert_eq!(options.get("max-file").map(String::as_str), Some("3"));
+
+        let host = workload_host_config(
+            OperatingSystem::Linux,
+            "rsctf-test-network",
+            500,
+            256 * 1024 * 1024,
+            None,
+        );
+        assert_eq!(host.log_config, Some(config));
+    }
+
+    #[test]
     fn linux_workloads_replace_defaults_with_only_bind_service() {
         let config = workload_host_config(
             OperatingSystem::Linux,
@@ -804,10 +825,7 @@ mod tests {
             ..fast.clone()
         };
         assert_eq!(clamped_health_config(Some(&disabled)), None);
-        let no_command = HealthConfig {
-            test: None,
-            ..fast
-        };
+        let no_command = HealthConfig { test: None, ..fast };
         assert_eq!(clamped_health_config(Some(&no_command)), None);
 
         let image = ImageInspect {

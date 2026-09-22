@@ -34,7 +34,7 @@ services:
       start_interval: 2s
     stop_grace_period: 10s
     logging:
-      driver: json-file
+      driver: local
       options:
         max-size: ${RSCTF_DOCKER_LOG_MAX_SIZE:-20m}
         max-file: "${RSCTF_DOCKER_LOG_MAX_FILES:-5}"
