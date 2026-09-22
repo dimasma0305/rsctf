@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { abbreviatedSha256, attachmentDownloadInfo } from './AttachmentDownload'
+import { abbreviatedSha256, attachmentDownloadInfo, attachmentDownloadMode } from './AttachmentDownload'
 
 const HASH = 'c5a573e275a0fca6cf6929d324dcc0a6d20882bc922009f1ca0ca022d8e5709d'
 
@@ -32,4 +32,22 @@ test('prefers a valid API hash and never treats external links as local assets',
 
 test('abbreviates hashes without hiding their distinguishing suffix', () => {
   assert.equal(abbreviatedSha256(HASH), 'c5a573e275a0…d8e5709d')
+})
+
+test('local attachments mint a grant only for VPN-required events with a known hash and event', () => {
+  const local = attachmentDownloadInfo(`/assets/${HASH}/challenge.zip`)
+  const external = attachmentDownloadInfo('https://cdn.example/challenge.zip')
+  assert.equal(attachmentDownloadMode(local, {}), 'direct')
+  assert.equal(attachmentDownloadMode(local, { eventVpnRequired: false, gameId: 19 }), 'direct')
+  assert.equal(attachmentDownloadMode(local, { eventVpnRequired: true, gameId: 19 }), 'granted')
+  // The catalog and editor previews have no event or supply their own download.
+  assert.equal(attachmentDownloadMode(local, { eventVpnRequired: true }), 'direct')
+  assert.equal(attachmentDownloadMode(local, { eventVpnRequired: true, gameId: 0 }), 'direct')
+  assert.equal(attachmentDownloadMode(local, { eventVpnRequired: true, gameId: 19, hasCustomDownload: true }), 'custom')
+  // Off-origin links never carry a grant; nothing about them changes.
+  assert.equal(attachmentDownloadMode(external, { eventVpnRequired: true, gameId: 19 }), 'external')
+  assert.equal(
+    attachmentDownloadMode(attachmentDownloadInfo('/assets/not-a-hash/file.zip'), { eventVpnRequired: true, gameId: 19 }),
+    'direct'
+  )
 })

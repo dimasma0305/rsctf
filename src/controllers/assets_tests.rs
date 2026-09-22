@@ -11,6 +11,9 @@ use super::authorization::{
 use crate::middlewares::privilege_authentication::CurrentUser;
 use crate::utils::enums::{GamePermission, Role};
 
+#[path = "assets_vpn_tests.rs"]
+mod event_vpn;
+
 const TEST_SECURITY_STAMP: &str = "asset-authorization-test-stamp";
 
 fn current_user(id: Uuid) -> CurrentUser {
@@ -58,10 +61,27 @@ impl AssetAuthorizationHarness {
               poster_hash TEXT,
               deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
               vpn_access_required BOOLEAN NOT NULL DEFAULT FALSE,
+              vpn_policy_revision BIGINT NOT NULL DEFAULT 1,
               start_time_utc TIMESTAMPTZ NOT NULL DEFAULT
                   (CURRENT_TIMESTAMP + interval '1 hour'),
               end_time_utc TIMESTAMPTZ NOT NULL DEFAULT
                   (CURRENT_TIMESTAMP + interval '2 hours')
+            );
+            CREATE TABLE "EventVpnUserPeers" (
+              id UUID PRIMARY KEY,
+              game_id INTEGER NOT NULL,
+              user_id UUID NOT NULL,
+              participation_id INTEGER NOT NULL,
+              public_key TEXT NOT NULL DEFAULT 'public-key',
+              address TEXT NOT NULL,
+              generation INTEGER NOT NULL DEFAULT 1,
+              revoked_at_utc TIMESTAMPTZ
+            );
+            CREATE TABLE "EventVpnGateOverrides" (
+              game_id INTEGER NOT NULL,
+              created_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+              expires_at_utc TIMESTAMPTZ NOT NULL,
+              revoked_at_utc TIMESTAMPTZ
             );
             CREATE TABLE "GameChallenges" (
               id INTEGER PRIMARY KEY,

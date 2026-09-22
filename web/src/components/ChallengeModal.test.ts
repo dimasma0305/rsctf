@@ -6,8 +6,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { act, createElement, Profiler, type FC, useState } from 'react'
 import { I18nextProvider } from 'react-i18next'
-import { ChallengeCategory, ChallengeType, SolveReceiptMode, type ChallengeDetailModel } from '../Api'
+import api, { ChallengeCategory, ChallengeType, SolveReceiptMode, type ChallengeDetailModel } from '../Api'
 import { installTestDom } from '../test/installDom'
+import { EventVpnAccessError } from '../utils/EventVpnProof'
 import type { FlagVerdictState } from '../utils/FlagVerdict'
 import { LanguageProvider } from '../utils/I18n'
 import type { ChallengeCategoryItemProps } from '../utils/Shared'
@@ -403,6 +404,139 @@ test('form edits and verdict polling preserve animated Markdown until challenge 
     assert.notEqual(replacedAnimation, identityReplacement)
     assert.equal(replacedAnimation?.textContent, 'new animation')
   } finally {
+    await act(async () => root.unmount())
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('a VPN-required event mints a download grant before the native attachment download', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/games/19/challenges' })
+  const restoreDom = installTestDom(browser)
+  const i18n = i18next.createInstance()
+  await i18n.init({ lng: 'en-US', fallbackLng: 'en-US' })
+  const category: ChallengeCategoryItemProps = {
+    name: ChallengeCategory.Misc,
+    desrc: 'Miscellaneous',
+    icon: mdiHelpCircleOutline,
+    color: 'gray',
+    colors: Array(10).fill('#868e96') as ChallengeCategoryItemProps['colors'],
+  }
+  const hash = 'c5a573e275a0fca6cf6929d324dcc0a6d20882bc922009f1ca0ca022d8e5709d'
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const { createRoot } = await import('react-dom/client')
+  const root = createRoot(container)
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+  const originalGrant = api.eventSecurity.gameAssetGrant
+  const grants: string[] = []
+  let grantFailure: unknown
+  api.eventSecurity.gameAssetGrant = (async (gameId: number, asset: string) => {
+    grants.push(`${gameId}:${asset}`)
+    if (grantFailure) throw grantFailure
+    return { data: { hash: asset, granted: true, expiresAtUtc: Date.now() + 300_000 } }
+  }) as typeof originalGrant
+  // Programmatic anchor clicks are the download itself; record them instead of
+  // letting happy-dom navigate.
+  const originalClick = browser.HTMLAnchorElement.prototype.click
+  const navigations: string[] = []
+  browser.HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) {
+    navigations.push(`${this.getAttribute('href')}|${this.getAttribute('download')}`)
+  }
+
+  const render = (eventVpnRequired: boolean) =>
+    createElement(
+      HeadlessMantineProvider,
+      null,
+      createElement(
+        I18nextProvider,
+        { i18n },
+        createElement(
+          LanguageProvider,
+          null,
+          createElement(ChallengeModal, {
+            opened: true,
+            onClose: () => undefined,
+            transitionProps: { duration: 0 },
+            gameId: 19,
+            eventVpnRequired,
+            challenge: {
+              id: 7,
+              title: 'Tunnel-only attachment',
+              content: 'Download the archive.',
+              category: ChallengeCategory.Misc,
+              type: ChallengeType.StaticAttachment,
+              score: 100,
+              attempts: 0,
+              context: { url: `/assets/${hash}/challenge.zip`, sha256: hash, fileSize: 512 },
+            },
+            cateData: category,
+            flag: '',
+            setFlag: () => undefined,
+            receiptProof: '',
+            setReceiptProof: () => undefined,
+            onCreate: () => undefined,
+            onDestroy: () => undefined,
+            onSubmitFlag: () => undefined,
+          })
+        )
+      )
+    )
+  const flush = async () => {
+    await act(async () => new Promise<void>((resolve) => browser.requestAnimationFrame(() => resolve())))
+    await act(async () => new Promise<void>((resolve) => setTimeout(resolve, 0)))
+  }
+  const downloadButton = () =>
+    browser.document.querySelector<HTMLAnchorElement>('[data-guide="challenge-attachment-download"]')
+  const click = (element: Element) => {
+    const event = new browser.MouseEvent('click', { bubbles: true, cancelable: true })
+    element.dispatchEvent(event)
+    return event.defaultPrevented
+  }
+
+  try {
+    // Without the VPN gate the plain resumable anchor is untouched.
+    await act(async () => root.render(render(false)))
+    await flush()
+    const plain = downloadButton()
+    assert.ok(plain)
+    assert.equal(plain.dataset.downloadMode, 'direct')
+    assert.equal(plain.getAttribute('href'), `/assets/${hash}/challenge.zip`)
+    assert.equal(plain.getAttribute('download'), 'challenge.zip')
+    assert.equal(click(plain), false)
+    assert.deepEqual(grants, [])
+
+    await act(async () => root.render(render(true)))
+    await flush()
+    const granted = downloadButton()
+    assert.ok(granted)
+    assert.equal(granted.dataset.downloadMode, 'granted')
+    assert.equal(granted.getAttribute('href'), `/assets/${hash}/challenge.zip`, 'the asset URL never carries the grant')
+    assert.equal(granted.getAttribute('download'), 'challenge.zip')
+    await act(async () => {
+      assert.equal(click(granted), true, 'the native navigation waits for the grant')
+    })
+    await flush()
+    assert.deepEqual(grants, [`19:${hash}`])
+    assert.deepEqual(navigations, [`/assets/${hash}/challenge.zip|challenge.zip`])
+    assert.equal(browser.document.querySelector('[data-guide="challenge-attachment-error"]'), null)
+
+    // A disconnected tunnel shows the shared Event-VPN copy and starts nothing.
+    grantFailure = new EventVpnAccessError('disconnected', 'Connect to the event VPN, then retry this request.', 0)
+    await act(async () => {
+      click(downloadButton()!)
+    })
+    await flush()
+    assert.equal(navigations.length, 1)
+    const error = browser.document.querySelector('[data-guide="challenge-attachment-error"]')
+    assert.ok(error)
+    assert.equal(error.getAttribute('role'), 'alert')
+    assert.match(error.textContent ?? '', /Connect to the event VPN/)
+    assert.equal(downloadButton()?.getAttribute('aria-describedby'), error.id)
+  } finally {
+    api.eventSecurity.gameAssetGrant = originalGrant
+    browser.HTMLAnchorElement.prototype.click = originalClick
     await act(async () => root.unmount())
     delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
     await browser.happyDOM.close()

@@ -283,7 +283,7 @@ async fn try_acquire_game_proxy_open_fence_within_deadline(
             caller.game_id,
             caller.user_id,
             caller.participation_id,
-            source,
+            crate::services::event_security::EventVpnEvidence::source(source),
         )
         .await
         .is_err()
@@ -365,7 +365,7 @@ async fn game_proxy_session_is_valid_authoritative(
             caller.game_id,
             caller.user_id,
             caller.participation_id,
-            source,
+            crate::services::event_security::EventVpnEvidence::source(source),
         )
         .await
         .is_err()

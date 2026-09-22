@@ -12,7 +12,7 @@ use crate::utils::error::{AppError, AppResult};
 
 mod finalization;
 
-pub(super) use finalization::finalize_asset_download;
+pub(super) use finalization::{finalize_asset_download, DownloadTransport};
 #[cfg(test)]
 use finalization::{finalize_asset_download_on, PUBLIC_ASSET_FINAL_SQL};
 #[cfg(test)]
@@ -865,6 +865,24 @@ pub(super) async fn finalize_grant_for_test(
     token: Option<&str>,
     record_download: bool,
 ) -> AppResult<()> {
+    finalize_grant_with_transport_for_test(
+        pool,
+        grant,
+        &DownloadTransport::default(),
+        token,
+        record_download,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(super) async fn finalize_grant_with_transport_for_test(
+    pool: &sqlx::PgPool,
+    grant: &ProtectedAssetGrant,
+    transport: &DownloadTransport,
+    token: Option<&str>,
+    record_download: bool,
+) -> AppResult<()> {
     finalize_asset_download_on(
         pool,
         &AuthorizedAsset {
@@ -873,7 +891,7 @@ pub(super) async fn finalize_grant_for_test(
             signed_delivery_allowed: false,
             final_grant: AssetFinalGrant::Protected(grant.clone()),
         },
-        None,
+        transport,
         token,
         record_download,
     )

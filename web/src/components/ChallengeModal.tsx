@@ -44,7 +44,7 @@ import {
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
-import { FC, MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { FC, MouseEvent as ReactMouseEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AdChallengePanel } from '@Components/AdChallengePanel'
 import type { AdStateOwner } from '@Components/AdChallengePanel'
@@ -54,7 +54,8 @@ import { InstanceEntry } from '@Components/InstanceEntry'
 import { KothChallengePanel } from '@Components/KothChallengePanel'
 import { ContentPlaceholder, InlineMarkdown, Markdown } from '@Components/MarkdownRenderer'
 import { ScrollingText } from '@Components/ScrollingText'
-import { abbreviatedSha256, attachmentDownloadInfo } from '@Utils/AttachmentDownload'
+import { abbreviatedSha256, attachmentDownloadInfo, attachmentDownloadMode } from '@Utils/AttachmentDownload'
+import { attachmentGrantErrorMessage, downloadGrantedAttachment } from '@Utils/AttachmentGrant'
 import { FlagVerdictKind, FlagVerdictState } from '@Utils/FlagVerdict'
 import { useLanguage } from '@Utils/I18n'
 import { getServerNowMilliseconds, useServerClockTimeout } from '@Utils/ServerClock'
@@ -85,6 +86,10 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
   eventVpnDisconnected?: boolean
   eventVpnDownloading?: boolean
   onDownloadEventVpn?: () => void | Promise<void>
+  /** The event requires VPN proof. Local attachment downloads then mint a
+   * short-lived grant through the proof-aware client before navigating,
+   * because a browser download cannot carry the proof header itself. */
+  eventVpnRequired?: boolean
   /** A failed refresh after usable challenge material was already loaded. */
   refreshError?: string
   onRetryLoad?: () => void
@@ -136,6 +141,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     eventVpnDisconnected,
     eventVpnDownloading,
     onDownloadEventVpn,
+    eventVpnRequired,
     refreshError,
     onRetryLoad,
     cateData,
@@ -509,6 +515,43 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const downloadInfo = attachmentDownloadInfo(link, challenge?.context?.sha256)
   const local = downloadInfo.isLocal
   const attachmentSize = challenge?.context?.fileSize
+  const downloadMode = attachmentDownloadMode(downloadInfo, {
+    hasCustomDownload: Boolean(onDownload),
+    eventVpnRequired,
+    gameId,
+  })
+  const [attachmentGranting, setAttachmentGranting] = useState(false)
+  const [attachmentError, setAttachmentError] = useState<string>()
+  const attachmentErrorId = useId()
+  useEffect(() => {
+    setAttachmentError(undefined)
+  }, [challenge?.id, link])
+
+  const onGrantedDownload = async () => {
+    if (attachmentGranting || !link || !gameId || !downloadInfo.sha256) return
+    setAttachmentGranting(true)
+    setAttachmentError(undefined)
+    try {
+      await downloadGrantedAttachment(gameId, downloadInfo.sha256, link, downloadInfo.filename)
+    } catch (error) {
+      setAttachmentError(attachmentGrantErrorMessage(error, t))
+    } finally {
+      setAttachmentGranting(false)
+    }
+  }
+
+  const onAttachmentClick =
+    downloadMode === 'custom'
+      ? (e: ReactMouseEvent<HTMLAnchorElement>) => {
+          e.preventDefault()
+          onDownload?.()
+        }
+      : downloadMode === 'granted'
+        ? (e: ReactMouseEvent<HTMLAnchorElement>) => {
+            e.preventDefault()
+            void onGrantedDownload()
+          }
+        : undefined
 
   const attachment = withAttachment && (
     <Stack className={classes.attachment} gap={6} data-guide="challenge-attachment">
@@ -527,23 +570,34 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           component="a"
           href={link ?? '#'}
           data-guide="challenge-attachment-download"
+          data-download-mode={downloadMode}
           variant="light"
           size="compact-sm"
-          target={local || onDownload ? undefined : '_blank'}
-          rel={local || onDownload ? undefined : 'noreferrer'}
+          target={downloadMode === 'external' ? '_blank' : undefined}
+          rel={downloadMode === 'external' ? 'noreferrer' : undefined}
           download={local ? (downloadInfo.filename ?? true) : undefined}
           leftSection={<Icon path={local ? mdiDownload : mdiOpenInNew} size={0.8} />}
-          onClick={
-            onDownload &&
-            ((e: ReactMouseEvent<HTMLAnchorElement>) => {
-              e.preventDefault()
-              onDownload()
-            })
-          }
+          loading={attachmentGranting}
+          aria-busy={attachmentGranting || undefined}
+          aria-describedby={attachmentError ? attachmentErrorId : undefined}
+          onClick={onAttachmentClick}
         >
           {local ? t('challenge.button.download.now', 'Download now') : t('common.content.external_link')}
         </Button>
       </Group>
+
+      {attachmentError && (
+        <Alert
+          id={attachmentErrorId}
+          color="cyan"
+          variant="light"
+          icon={<Icon path={mdiVpn} size={0.8} aria-hidden="true" />}
+          role="alert"
+          data-guide="challenge-attachment-error"
+        >
+          <Text size="sm">{attachmentError}</Text>
+        </Alert>
+      )}
 
       {local && (
         <Group gap={6} align="center" wrap="wrap">

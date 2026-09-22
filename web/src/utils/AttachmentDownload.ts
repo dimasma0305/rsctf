@@ -40,3 +40,27 @@ export const attachmentDownloadInfo = (url?: string | null, apiSha256?: string |
 }
 
 export const abbreviatedSha256 = (sha256: string) => `${sha256.slice(0, 12)}…${sha256.slice(-8)}`
+
+/**
+ * How the attachment button must behave.
+ * - `custom`: the host supplies the download (editor preview).
+ * - `external`: an off-origin link opens in a new tab.
+ * - `direct`: a plain resumable `<a download>` to the local asset route.
+ * - `granted`: same URL, but the event requires VPN proof, so a short-lived
+ *   download grant is minted through the proof-aware client first. The grant
+ *   travels as a path-scoped HttpOnly cookie; the URL itself never changes.
+ */
+export type AttachmentDownloadMode = 'custom' | 'external' | 'direct' | 'granted'
+
+export const attachmentDownloadMode = (
+  info: AttachmentDownloadInfo,
+  options: { hasCustomDownload?: boolean; eventVpnRequired?: boolean; gameId?: number }
+): AttachmentDownloadMode => {
+  if (options.hasCustomDownload) return 'custom'
+  if (!info.isLocal) return 'external'
+  const gameId = options.gameId
+  if (options.eventVpnRequired && info.sha256 && typeof gameId === 'number' && Number.isSafeInteger(gameId) && gameId > 0) {
+    return 'granted'
+  }
+  return 'direct'
+}

@@ -4466,6 +4466,15 @@ export interface EventVpnProofModel {
   expiresAtUtc: number;
 }
 
+/** A short-lived attachment download grant set as an HttpOnly cookie. */
+export interface EventVpnAssetGrantModel {
+  hash: string;
+  /** False when no grant is needed (inactive gate or monitor bypass). */
+  granted: boolean;
+  /** @format uint64 */
+  expiresAtUtc?: number | null;
+}
+
 export interface VariantSummary {
   challengeId: number;
   participationId: number;
@@ -11974,6 +11983,21 @@ export class Api<
         path: `/api/game/${gameId}/vpn/config`,
         method: "GET",
         format: "text",
+        ...params,
+      }),
+
+    /**
+     * @description Re-scope the live event VPN proof into a short-lived download grant cookie for one attachment hash.
+     *
+     * @tags EventSecurity
+     * @name GameAssetGrant
+     * @request POST:/api/game/{gameId}/assets/{hash}/grant
+     */
+    gameAssetGrant: (gameId: number, hash: string, params: RequestParams = {}) =>
+      this.request<EventVpnAssetGrantModel, RequestResponse>({
+        path: `/api/game/${gameId}/assets/${hash}/grant`,
+        method: "POST",
+        format: "json",
         ...params,
       }),
 

@@ -54,6 +54,21 @@ export class EventVpnAccessError extends Error {
 export const isEventVpnAccessError = (error: unknown): error is EventVpnAccessError =>
   error instanceof EventVpnAccessError
 
+/** The one user-facing copy for each Event-VPN failure kind, shared by every
+ * surface (challenge polling, attachment downloads) so failures read alike. */
+export const eventVpnAccessErrorMessage = (
+  error: EventVpnAccessError,
+  t: (key: string, fallback: string) => string
+) => {
+  if (error.kind === 'disconnected') {
+    return t('challenge.error.vpn_disconnected', 'Connect to the event VPN, then retry the challenge.')
+  }
+  if (error.kind === 'rate-limited') {
+    return t('challenge.error.vpn_rate_limited', 'Event VPN verification is rate limited. Retry after the indicated delay.')
+  }
+  return t('challenge.error.vpn_unavailable', 'Event VPN verification is temporarily unavailable. Retry shortly.')
+}
+
 /** Allow one explicit user-initiated reconnect attempt without weakening the
  * backoff for rate limits or infrastructure failures. Failed retries retain
  * their attempt count and therefore continue the bounded backoff sequence. */

@@ -5,10 +5,51 @@ use uuid::Uuid;
 use crate::app_state::SharedState;
 #[cfg(test)]
 use crate::middlewares::privilege_authentication::CurrentUser;
+use crate::services::event_security::{
+    stamp_hash, EventVpnEvidence, EventVpnPeerSubject, VpnAssetGrantClaims,
+};
 use crate::utils::enums::Role;
 use crate::utils::error::{AppError, AppResult};
 
-use super::{load_authorized_target_on, AssetFinalGrant, AuthorizedAsset, DownloadEventTarget};
+use super::{
+    load_authorized_target_on, AssetFinalGrant, AuthorizedAsset, DownloadEventTarget,
+    ProtectedAssetGrant,
+};
+
+/// Transport evidence one download request presented. The grant, if any, was
+/// signature- and expiry-verified by the handler; it becomes VPN evidence only
+/// after matching the exact protected grant selected for this request.
+#[derive(Debug, Clone, Default)]
+pub(in crate::controllers::assets) struct DownloadTransport {
+    pub(in crate::controllers::assets) source: Option<Ipv4Addr>,
+    pub(in crate::controllers::assets) grant: Option<VpnAssetGrantClaims>,
+}
+
+fn grant_names_download(claims: &VpnAssetGrantClaims, grant: &ProtectedAssetGrant) -> bool {
+    claims.user_id == grant.user_id
+        && claims.game_id == grant.game_id
+        && claims.participation_id == grant.participation_id
+        && claims.content_hash == grant.content_hash
+        && claims.security_stamp_hash == stamp_hash(&grant.expected_security_stamp)
+}
+
+fn event_vpn_evidence(
+    transport: &DownloadTransport,
+    grant: &ProtectedAssetGrant,
+) -> EventVpnEvidence {
+    EventVpnEvidence {
+        source: transport.source,
+        peer: transport
+            .grant
+            .as_ref()
+            .filter(|claims| grant_names_download(claims, grant))
+            .map(|claims| EventVpnPeerSubject {
+                peer_id: claims.peer_id,
+                generation: claims.peer_generation,
+                policy_revision: claims.policy_revision,
+            }),
+    }
+}
 
 fn download_event_lock_key(target: &DownloadEventTarget) -> String {
     format!(
@@ -165,7 +206,7 @@ pub(super) struct FinalizedAssetDownload {
 pub(super) async fn finalize_asset_download_on(
     pool: &sqlx::PgPool,
     authorization: &AuthorizedAsset,
-    source: Option<Ipv4Addr>,
+    transport: &DownloadTransport,
     token: Option<&str>,
     record_download: bool,
 ) -> AppResult<FinalizedAssetDownload> {
@@ -203,7 +244,7 @@ pub(super) async fn finalize_asset_download_on(
         grant.game_id,
         grant.user_id,
         grant.participation_id,
-        source,
+        event_vpn_evidence(transport, grant),
     )
     .await?;
 
@@ -259,12 +300,13 @@ pub(super) async fn finalize_asset_download_on(
 pub(in crate::controllers::assets) async fn finalize_asset_download(
     st: &SharedState,
     authorization: &AuthorizedAsset,
-    source: Option<Ipv4Addr>,
+    transport: &DownloadTransport,
     token: Option<&str>,
     record_download: bool,
 ) -> AppResult<bool> {
     let outcome =
-        finalize_asset_download_on(st.pg(), authorization, source, token, record_download).await?;
+        finalize_asset_download_on(st.pg(), authorization, transport, token, record_download)
+            .await?;
     if let Some(event_id) = outcome.event_id {
         if let Err(error) =
             crate::services::game_event_feed::publish_committed(st, &[event_id]).await

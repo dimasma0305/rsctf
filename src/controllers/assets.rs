@@ -26,7 +26,9 @@ use crate::utils::shared::MessageResponse;
 mod authorization;
 
 pub(crate) use authorization::invalidate_asset_gate;
-use authorization::{authorize_asset_download, finalize_asset_download, AssetCachePolicy};
+use authorization::{
+    authorize_asset_download, finalize_asset_download, AssetCachePolicy, DownloadTransport,
+};
 
 /// Response row for an uploaded blob (mirrors RSCTF `LocalFile`).
 #[derive(Debug, Serialize)]
@@ -392,6 +394,36 @@ pub async fn download_with_token(
     .await
 }
 
+/// Transport evidence for the event-VPN gate. The source address satisfies it
+/// from inside the tunnel; a browser download from the public origin instead
+/// presents the short-lived grant cookie minted through its live proof. Only a
+/// signature-valid, unexpired grant for exactly this hash is retained here;
+/// finalization still matches it against the selected protected grant.
+fn download_transport(
+    st: &SharedState,
+    headers: &HeaderMap,
+    source: &str,
+    hash: &str,
+) -> DownloadTransport {
+    let grant = headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|cookies| {
+            crate::services::event_security::asset_grant_cookie_values(cookies).find_map(|token| {
+                crate::services::event_security::verify_asset_grant(
+                    &st.config.event_vpn_credential_key,
+                    token,
+                )
+                .ok()
+                .filter(|claims| claims.content_hash.eq_ignore_ascii_case(hash))
+            })
+        });
+    DownloadTransport {
+        source: source.parse::<std::net::Ipv4Addr>().ok(),
+        grant,
+    }
+}
+
 /// Shared body for both download routes: authorize, load the blob, emit the
 /// download GameEvent, and stream it back.
 async fn serve_asset(
@@ -419,7 +451,7 @@ async fn serve_asset(
         })?;
     let authorization = authorize_asset_download(st, hash, user).await?;
     let cache_policy = authorization.cache_policy;
-    let event_vpn_source = source.parse::<std::net::Ipv4Addr>().ok();
+    let transport = download_transport(st, headers, &source, hash);
 
     // Conditional caching (RSCTF `AssetsController`): a content-hash blob is
     // immutable, so an `ETag` of hash[8..16] lets the browser skip re-downloading.
@@ -430,8 +462,7 @@ async fn serve_asset(
         .is_some_and(|v| v.split(',').any(|t| t.trim() == etag))
     {
         if authorization.requires_conditional_revalidation() {
-            let _ =
-                finalize_asset_download(st, &authorization, event_vpn_source, token, false).await?;
+            let _ = finalize_asset_download(st, &authorization, &transport, token, false).await?;
         }
         return Ok((
             StatusCode::NOT_MODIFIED,
@@ -486,9 +517,8 @@ async fn serve_asset(
             {
                 Ok(range) => Some(range),
                 Err(()) => {
-                    let _ =
-                        finalize_asset_download(st, &authorization, event_vpn_source, token, false)
-                            .await?;
+                    let _ = finalize_asset_download(st, &authorization, &transport, token, false)
+                        .await?;
                     return Ok(range_not_satisfiable(size, &etag, cache_policy));
                 }
             },
@@ -520,14 +550,9 @@ async fn serve_asset(
             {
                 Ok(Some(location)) => match signed_download_response(&location) {
                     Ok(response) => {
-                        let vpn_gate_active = finalize_asset_download(
-                            st,
-                            &authorization,
-                            event_vpn_source,
-                            token,
-                            true,
-                        )
-                        .await?;
+                        let vpn_gate_active =
+                            finalize_asset_download(st, &authorization, &transport, token, true)
+                                .await?;
                         if vpn_gate_active {
                             return Err(AppError::unavailable(
                                 "Event VPN policy changed; retry the platform download",
@@ -579,7 +604,7 @@ async fn serve_asset(
     // Storage preparation can be slow. Revalidate the exact roster, stamp,
     // challenge, and division now; commit the precisely timed Download event
     // under that fence, then release it before Axum begins streaming the body.
-    let _ = finalize_asset_download(st, &authorization, event_vpn_source, token, true).await?;
+    let _ = finalize_asset_download(st, &authorization, &transport, token, true).await?;
 
     let body = permitted_request_body(body, request_permit);
 

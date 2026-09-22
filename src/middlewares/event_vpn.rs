@@ -154,13 +154,19 @@ fn team_token_matches_game(
     token.participation.game_id == game_id
 }
 
+/// The principal this boundary resolved, plus the verified proof claims when
+/// a player proof (rather than the monitor bypass) admitted the request.
+/// Handlers that re-scope the proof, such as attachment grants, read the
+/// claims from the request extensions instead of verifying the header twice.
+type EventVpnPrincipal = (CurrentUser, Option<VpnProofClaims>);
+
 async fn authorize_request(
     st: &SharedState,
     headers: &HeaderMap,
     team_token: Option<crate::services::ad::api_token::VerifiedTeamToken>,
     rejected_team_token: bool,
     game_id: i32,
-) -> AppResult<Option<CurrentUser>> {
+) -> AppResult<Option<EventVpnPrincipal>> {
     let policy = load_policy(st, game_id).await?;
     if !policy.gate_active_at(chrono::Utc::now()) {
         return Ok(None);
@@ -184,7 +190,7 @@ async fn authorize_request(
     let token = session_token(headers).ok_or(AppError::Unauthorized)?;
     let user = authenticate_token(st, &token).await?;
     if user.is_monitor() {
-        return Ok(Some(user));
+        return Ok(Some((user, None)));
     }
     let proof = headers
         .get(VPN_PROOF_HEADER)
@@ -199,7 +205,7 @@ async fn authorize_request(
     {
         return Err(AppError::Unauthorized);
     }
-    Ok(Some(user))
+    Ok(Some((user, Some(claims))))
 }
 
 pub async fn middleware(
@@ -220,9 +226,12 @@ pub async fn middleware(
         .get::<crate::services::ad::api_token::RejectedTeamToken>()
         .is_some();
     match authorize_request(&st, &headers, team_token, rejected_team_token, game_id).await {
-        Ok(user) => {
-            if let Some(user) = user {
+        Ok(principal) => {
+            if let Some((user, claims)) = principal {
                 request.extensions_mut().insert(user);
+                if let Some(claims) = claims {
+                    request.extensions_mut().insert(claims);
+                }
             }
             next.run(request).await
         }
@@ -243,6 +252,11 @@ mod tests {
         assert_eq!(protected_game_path("/api/game/7/scoreboard"), Some(7));
         assert_eq!(protected_game_path("/api/Game/7/Ad/Targets"), Some(7));
         assert_eq!(protected_game_path("/API/gAmE/7/kOtH/hills"), Some(7));
+        // Attachment grants are minted only from a proof-bearing request.
+        assert_eq!(
+            protected_game_path(&format!("/api/game/7/assets/{}/grant", "a".repeat(64))),
+            Some(7)
+        );
         assert_eq!(protected_game_path("/api/game/7"), None);
         assert_eq!(protected_game_path("/api/game/7/check"), None);
         assert_eq!(protected_game_path("/api/game/7/vpn/config"), None);

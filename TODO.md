@@ -3496,8 +3496,8 @@ on 2026-08-25.
   - Relevant code: `web/src/pages/games/[id]/Attack.tsx` and
     `src/controllers/edit/helpers.rs`.
 
-- [ ] Make Event-VPN failures visible and consistent across every HTTP client.
-  - Verified 2026-09-22 against the current tree: proof-aware fetch, distinct VPN vs session errors, client coalescing/backoff, and a mint budget are in place. Still open: protected attachment downloads are a plain anchor with no proof header and the asset gate accepts only the tunnel-internal source, so in a VPN-required event on a deployment without `compose.event-vpn-ingress.yml` every attachment download returns 401 (`ChallengeModal.tsx`, `assets/authorization/finalization.rs`, `event_security/policy.rs`). Fix by accepting the proof on the asset route or by refusing `vpnAccessRequired` without a same-origin ingress.
+- [x] Make Event-VPN failures visible and consistent across every HTTP client.
+  - Verified 2026-09-22 against the current tree: proof-aware fetch, distinct VPN vs session errors, client coalescing/backoff, and a mint budget are in place. The remaining gap (protected attachment downloads were a plain anchor with no proof header while the asset gate accepted only the tunnel-internal source, so a VPN-required event without `compose.event-vpn-ingress.yml` returned 401 for every attachment) is closed: `POST /api/game/{id}/assets/{hash}/grant` re-scopes the middleware-verified proof into a five-minute HMAC grant delivered as a `/assets/{hash}`-scoped `HttpOnly` cookie, and `require_event_vpn_source_on` accepts either the tunnel source or that grant's live peer subject (`vpn_access.rs`, `event_security/proof.rs`, `event_security/policy.rs`, `assets/authorization/finalization.rs`, `AttachmentGrant.ts`, `ChallengeModal.tsx`). Every other asset rule is unchanged; regressions cover tunnel/grant/mismatch/revocation/override/pre-start/monitor cases and the modal flow.
   - Route native `fetch` calls through the same proof-aware wrapper as Axios. Solver
     and rating requests currently omit the proof and silently render empty data for
     ordinary players in VPN-required events.

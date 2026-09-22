@@ -20,7 +20,7 @@ import {
 } from '@Utils/ChallengePolling'
 import { encryptApiData } from '@Utils/Crypto'
 import { downloadEventVpnConfig } from '@Utils/EventVpnDownload'
-import { allowEventVpnReconnectRetry, isEventVpnAccessError } from '@Utils/EventVpnProof'
+import { allowEventVpnReconnectRetry, eventVpnAccessErrorMessage, isEventVpnAccessError } from '@Utils/EventVpnProof'
 import { FlagSubmitAttemptOwner } from '@Utils/FlagSubmitAttempt'
 import { flagVerdictReducer } from '@Utils/FlagVerdict'
 import { createFlagVerdictPoller, sameFlagVerdictIdentity, type FlagVerdictIdentity } from '@Utils/FlagVerdictPolling'
@@ -234,20 +234,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       : ''
     const message = (value: string) => `${value}${reference}`
     if (isEventVpnAccessError(error)) {
-      if (error.kind === 'disconnected') {
-        return message(t('challenge.error.vpn_disconnected', 'Connect to the event VPN, then retry the challenge.'))
-      }
-      if (error.kind === 'rate-limited') {
-        return message(
-          t(
-            'challenge.error.vpn_rate_limited',
-            'Event VPN verification is rate limited. Retry after the indicated delay.'
-          )
-        )
-      }
-      return message(
-        t('challenge.error.vpn_unavailable', 'Event VPN verification is temporarily unavailable. Retry shortly.')
-      )
+      return message(eventVpnAccessErrorMessage(error, t))
     }
     if (error instanceof NonJsonResponseError) {
       return message(
@@ -807,6 +794,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       eventVpnDisconnected={eventVpnDisconnected}
       eventVpnDownloading={eventVpnDownloading}
       onDownloadEventVpn={eventVpnDisconnected ? onDownloadEventVpn : undefined}
+      eventVpnRequired={eventVpnRequired}
       refreshError={challenge !== undefined && !eventVpnDisconnected ? challengePollError : undefined}
       solverError={challenge !== undefined ? pollErrorMessage(solverError, 'solvers') : undefined}
       flag={flag}
