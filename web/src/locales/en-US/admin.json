@@ -51,6 +51,63 @@
       "busy": "Too many requests are in progress. Wait briefly, then use Refresh checks.",
       "service": "The server could not complete a readiness read. Try Refresh checks; if it continues, check the platform logs and service health.",
       "request": "The request did not complete. Check your connection, then use Refresh checks. If it continues, ask the platform operator to inspect the request."
+    },
+    "preflight": {
+      "title": "Image preflight",
+      "intro": "Pull every enabled, approved challenge image and smoke-start one temporary instance per distinct image, then remove it. Runs on the server as a durable job; nothing is exposed to players.",
+      "run": "Run image preflight",
+      "running": "Preflight running…",
+      "loading": "Loading the latest preflight…",
+      "none": "No preflight has run for this event yet.",
+      "empty": "No enabled, approved challenge with a container image was found.",
+      "progress": "{{state}}: {{current}} of {{total}} images finished.",
+      "summary": "{{succeeded}} succeeded, {{failed}} failed, {{skipped}} skipped across {{images}} distinct images and {{challenges}} challenges.",
+      "started": "Started {{time}}",
+      "finished": "finished {{time}}",
+      "load_failed": "The preflight status could not be loaded",
+      "load_failed_note": "Use Refresh checks or reload the page. The job itself keeps running on the server.",
+      "job_failed": "The preflight job did not complete",
+      "list_label": "Per-challenge preflight results",
+      "no_image": "No immutable image",
+      "error_label": "Detail:",
+      "job": {
+        "Queued": "Queued",
+        "Running": "Running",
+        "Succeeded": "Completed",
+        "Failed": "Failed",
+        "Cancelled": "Cancelled"
+      },
+      "states": {
+        "pending": "Pending",
+        "running": "Running",
+        "succeeded": "Ready",
+        "failed": "Failed",
+        "skipped": "Skipped"
+      },
+      "step": {
+        "Pending": "pending",
+        "Running": "running",
+        "Succeeded": "ok",
+        "Failed": "failed",
+        "Skipped": "skipped"
+      },
+      "steps": {
+        "pull": "Pull",
+        "start": "Start"
+      },
+      "capacity": {
+        "title": "Requested capacity",
+        "basis": "Totals assume {{teams}} accepted team(s) and {{instances}} simultaneous instance(s) at the saved limits.",
+        "requested": "requested {{value}}",
+        "available": "free {{value}}",
+        "cpu": "CPU",
+        "memory": "Memory",
+        "storage": "Storage",
+        "replicas": "Replicas",
+        "instances": "Instances",
+        "worker_note": "Free capacity is summed over {{workers}} connected worker(s); the worker plane would schedule {{cpu}} and {{memory}} of the total.",
+        "unavailable": "No capacity comparison is available: the local Docker or Kubernetes backend does not report aggregate capacity."
+      }
     }
   },
   "grading": {

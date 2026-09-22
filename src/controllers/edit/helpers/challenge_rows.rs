@@ -14,6 +14,18 @@ pub(crate) async fn load_challenge_locked(
         .ok_or_else(|| AppError::not_found("Challenge not found"))
 }
 
+/// Load every challenge of one game through the pool for read-only planning.
+pub(crate) async fn load_game_challenges(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+) -> AppResult<Vec<game_challenge::Model>> {
+    let mut connection = pool
+        .acquire()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    load_challenge_rows_locked(&mut connection, game_id, None).await
+}
+
 async fn load_challenge_rows_locked(
     connection: &mut sqlx::PgConnection,
     game_id: i32,

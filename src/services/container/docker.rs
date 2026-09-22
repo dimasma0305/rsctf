@@ -187,6 +187,38 @@ pub(super) fn validate_docker_container_spec(spec: &ContainerSpec) -> AppResult<
     super::validate_container_spec(spec)
 }
 
+/// Eager pull for an operator preflight. A repository digest is fetched when
+/// absent; a daemon-local image id cannot be pulled and must already exist.
+pub(super) async fn pull_immutable_image(docker: &Docker, image: &str) -> AppResult<()> {
+    if docker.inspect_image(image).await.is_ok() {
+        return Ok(());
+    }
+    if !crate::services::challenge_images::is_repository_digest(image) {
+        return Err(AppError::unavailable(
+            "The daemon-local image id is absent from this container host; rebuild the challenge.",
+        ));
+    }
+    let options = bollard::image::CreateImageOptions {
+        from_image: image.to_string(),
+        ..Default::default()
+    };
+    let mut pull = docker.create_image(Some(options), None, None);
+    let mut last_error = None;
+    while let Some(item) = pull.next().await {
+        if let Err(error) = item {
+            last_error = Some(error.to_string());
+            break;
+        }
+    }
+    docker.inspect_image(image).await.map_err(|error| {
+        AppError::unavailable(format!(
+            "The image could not be pulled: {}",
+            last_error.unwrap_or_else(|| error.to_string())
+        ))
+    })?;
+    Ok(())
+}
+
 pub(super) fn image_requests_restricted_profile(image: &ImageInspect) -> bool {
     image
         .config

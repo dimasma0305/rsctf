@@ -147,9 +147,9 @@ mod m0250_team_signature_key_index;
 mod m0251_koth_referee_retry;
 mod m0252_player_credential_operations;
 mod m0260_ad_control_revisions;
-mod m0261_control_plane_jobs;
+pub(crate) mod m0261_control_plane_jobs;
 mod m0262_challenge_import_jobs;
-mod m0263_control_job_cancellation;
+pub(crate) mod m0263_control_job_cancellation;
 mod m0264_blob_staging_operations;
 mod m0265_game_notice_delivery;
 mod m0270_worker_workload_quarantine;
@@ -201,6 +201,7 @@ mod m0344_admin_user_import_history;
 mod m0345_flag_import_lease_repair;
 mod m0346_clone_destination_deletion;
 pub(crate) mod m0347_writeup_grades;
+pub(crate) mod m0348_image_preflight_results;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -426,6 +427,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0345_flag_import_lease_repair::Migration),
             Box::new(m0346_clone_destination_deletion::Migration),
             Box::new(m0347_writeup_grades::Migration),
+            Box::new(m0348_image_preflight_results::Migration),
         ]
     }
 }
@@ -650,6 +652,7 @@ mod tests {
                 "m0345_flag_import_lease_repair",
                 "m0346_clone_destination_deletion",
                 "m0347_writeup_grades",
+                "m0348_image_preflight_results",
             ]
         );
     }

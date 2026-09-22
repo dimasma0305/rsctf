@@ -50,6 +50,7 @@ pub(super) async fn execute_claimed(
                 .map_err(|error| AppError::internal(format!("rollout result failed: {error}")))
         }
         "AdReset" => crate::services::ad::reset::execute_job(state, job).await,
+        "ImagePreflight" => crate::services::image_preflight::execute_job(state, job).await,
         _ => Err(AppError::internal("unsupported claimed control-job kind")),
     }
 }

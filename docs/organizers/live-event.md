@@ -9,9 +9,31 @@ Use a shared runbook and one decision-maker for platform changes. A quiet, predi
 - Confirm disk space and the most recent backup.
 - Verify event times, visibility, notices, divisions, and accepted teams.
 - Test one flag submission and one scoreboard refresh.
-- For dynamic challenges, create and destroy one instance.
+- Run the image preflight from the event's Readiness page (see below), then create
+  and destroy one instance as a real player for at least one dynamic challenge.
 - For A&D/KotH, verify the current round, checker, VPN route, and targets. For KotH, also verify the active crown cycle, exact container identity, readiness state, per-hill capability issuance, provisional confirmation, and champion cooldown enforcement.
 - Open the private organizer and player-support channels.
+
+## Image preflight
+
+The Readiness page's **Run image preflight** action starts one durable server-side
+job per event. It pulls the immutable image of every enabled, approved challenge
+that has a container image, then starts **one temporary instance per distinct
+image** through the same backend the challenge would use (local Docker/Kubernetes
+or a trusted worker), waits for the backend's readiness contract, and removes the
+instance. Pull and start work is bounded to two images at a time with per-image
+deadlines, and the whole job stays inside the control-plane budget; a temporary
+instance that outlives its cleanup is labelled and reclaimed by the existing orphan
+sweep. Only platform admins and the event's organizers may start or read it, an
+exact retry returns the same job, and a second start while a job is active is
+rejected until it finishes.
+
+Each challenge row reports the image, pull and start outcome, duration, and the
+error text to act on. The summary totals requested CPU, memory, storage, replicas,
+and simultaneous instances for the accepted teams and, when a trusted worker plane
+exists, compares them with its free capacity; local backends report totals only.
+A green preflight proves images pull and start today, not that flags, networking,
+or checkers are correct: still test one challenge end to end as a player.
 
 ## What to monitor
 

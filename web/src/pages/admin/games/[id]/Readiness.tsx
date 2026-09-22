@@ -2,6 +2,7 @@ import { Alert, Button, Group, Skeleton, Stack, Text, Title } from '@mantine/cor
 import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useParams } from 'react-router'
+import { ImagePreflightPanel } from '@Components/admin/ImagePreflightPanel'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
 import { canShowReadinessCache, eventReadiness, readinessError, type ReadinessState } from '@Utils/EventReadiness'
 import { OnceSWRConfig } from '@Hooks/useConfig'
@@ -187,6 +188,7 @@ export default function EventReadiness() {
                 ))}
               </Stack>
             </section>
+            <ImagePreflightPanel eventId={eventId} enabled={validId} />
           </>
         )}
       </Stack>
