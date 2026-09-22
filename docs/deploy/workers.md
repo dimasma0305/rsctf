@@ -726,10 +726,16 @@ sudo -u rsctf-worker /usr/local/bin/rsctf-worker-agent run \
 The corresponding variables are `RSCTF_WORKER_CPU_MILLIS`,
 `RSCTF_WORKER_MEMORY_BYTES`, `RSCTF_WORKER_SLOTS`, and the comma-separated
 `RSCTF_WORKER_LABELS`. `RSCTF_WORKER_DOCKER_ENDPOINT` overrides `local` with a
-Unix socket path. Capacity overrides may reserve headroom but cannot exceed the
-detected safe CPU, memory, or slot capacity. Do not point the agent at an
-unauthenticated TCP Docker API. `--slots` counts isolated workload networks,
-not containers or replicas.
+Unix socket path.
+
+Without an override the agent advertises the detected host minus a reserve for
+Docker, the agent, networking, and maintenance: the larger of one tenth and
+1 CPU for CPU, and the larger of one tenth and 1 GiB for memory, never below
+1 CPU and 512 MiB so a small development worker stays usable. An explicit
+override replaces that default and may use the whole detected host, but it
+cannot exceed the detected CPU, memory, or slot capacity. Do not point the
+agent at an unauthenticated TCP Docker API. `--slots` counts isolated workload
+networks, not containers or replicas.
 
 The agent also bounds its own short-lived Docker Engine API calls. Reads
 (`inspect`, `list`, `ping`, bounded file downloads) and lifecycle calls

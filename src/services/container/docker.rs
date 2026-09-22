@@ -846,6 +846,38 @@ pub fn from_env() -> std::sync::Arc<dyn ContainerManager> {
 }
 
 /// Select Docker without silently degrading to the no-op backend.
+/// Docker-or-Noop selection whose Docker manager admits creates against the
+/// durable local capacity ceiling. Configuration errors fail startup.
+pub fn from_env_gated(pool: sqlx::PgPool) -> AppResult<std::sync::Arc<dyn ContainerManager>> {
+    match DockerContainerManager::connect() {
+        Ok(manager) if manager.reachable_blocking() => {
+            tracing::info!(
+                endpoint = ?manager.endpoint,
+                "docker daemon reachable; using DockerContainerManager"
+            );
+            super::capacity::gate(manager, pool)
+        }
+        _ => Ok(from_env()),
+    }
+}
+
+/// Explicit Docker selection with the durable local capacity gate.
+pub fn from_env_required_gated(
+    pool: sqlx::PgPool,
+) -> AppResult<std::sync::Arc<dyn ContainerManager>> {
+    let manager = DockerContainerManager::connect()?;
+    if !manager.reachable_blocking() {
+        return Err(AppError::internal(
+            "RSCTF_CONTAINER_BACKEND=docker but the Docker daemon is unreachable",
+        ));
+    }
+    tracing::info!(
+        endpoint = ?manager.endpoint,
+        "docker daemon reachable; using explicitly selected DockerContainerManager"
+    );
+    super::capacity::gate(manager, pool)
+}
+
 pub fn from_env_required() -> AppResult<std::sync::Arc<dyn ContainerManager>> {
     let manager = DockerContainerManager::connect()?;
     if !manager.reachable_blocking() {

@@ -87,6 +87,37 @@ The gateway publishes no host port; Traefik is the only public entry point.
 Use the actual address assigned to the `traefik` bridge on the development
 host. Never use `0.0.0.0` or point this stack at production secrets/services.
 
+### Upload deadlines at the public proxy
+
+Configure the external Traefik HTTPS entry point with this static argument:
+
+```text
+--entrypoints.websecure.transport.respondingtimeouts.readtimeout=330s
+```
+
+Traefik's default 60-second request-body deadline can cut off a valid writeup
+upload before RSCTF's 300-second body deadline, producing a 502 through the
+development gateway. The 330-second ingress deadline lets RSCTF enforce its
+own bound and return an application error first. Keep the 20 MiB writeup limit,
+shared upload-memory admission, authentication, and event deadline checks;
+do not disable timeouts or add whole-body buffering at the proxy.
+
+This is a static entry-point setting, not a router label. Validate the external
+proxy's Compose configuration and recreate only that proxy using its existing
+immutable image digest. A shared-proxy restart can briefly interrupt connections
+on its other hostnames; do not restart the API, databases, VPN, or challenges.
+
+Run the opt-in Linux/Docker regression with a locally available Traefik digest:
+
+```sh
+RSCTF_TEST_TRAEFIK_IMAGE='traefik@sha256:<installed-digest>' \
+  node --test tests/load/test/ingress-upload-timeout.test.mjs
+```
+
+It sends two paced 5.3 MB uploads to isolated loopback fixture ports: the default
+deadline must fail at about 60 seconds, while the configured deadline must accept
+the complete body after 70 seconds. It does not submit a player's writeup.
+
 The standard source runner intentionally disables container provisioning. A
 Docker backend applies the configured writable-layer limit when the daemon and
 backing filesystem support it. On an incompatible host (for example overlay2

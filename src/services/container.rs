@@ -45,6 +45,7 @@ use crate::services::docker_admission::docker_admission;
 use crate::utils::enums::{ChallengeType, NetworkMode};
 use crate::utils::error::{AppError, AppResult};
 mod backend;
+pub mod capacity;
 mod docker;
 mod docker_change_api;
 mod logging;
@@ -70,7 +71,8 @@ pub use backend::{
     ContainerFile, ContainerLiveness, ContainerManager, ContainerStatus, FileChange,
     NoopContainerManager,
 };
-pub use docker::{from_env, from_env_required};
+pub use capacity::CapacityGatedDockerManager;
+pub use docker::{from_env, from_env_gated, from_env_required, from_env_required_gated};
 use logging::bounded_log_config;
 use naming::{container_name, map_status};
 pub(crate) use policy::validate_container_spec;

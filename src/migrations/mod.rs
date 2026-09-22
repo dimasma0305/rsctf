@@ -201,6 +201,7 @@ mod m0344_admin_user_import_history;
 mod m0345_flag_import_lease_repair;
 mod m0346_clone_destination_deletion;
 pub(crate) mod m0347_writeup_grades;
+mod m0348_local_container_capacity;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -236,6 +237,8 @@ pub(crate) use m0318_player_container_operation_recovery::UP_SQL as PLAYER_OPERA
 pub(crate) use m0319_exercise_container_operation_recovery::UP_SQL as EXERCISE_OPERATION_RECOVERY_SQL;
 #[cfg(test)]
 pub(crate) use m0332_repository_manifest_lookup::UP_SQL as REPOSITORY_MANIFEST_LOOKUP_INDEX_SQL;
+#[cfg(test)]
+pub(crate) use m0348_local_container_capacity::UP_SQL as LOCAL_CONTAINER_CAPACITY_SQL;
 
 pub struct Migrator;
 
@@ -426,6 +429,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0345_flag_import_lease_repair::Migration),
             Box::new(m0346_clone_destination_deletion::Migration),
             Box::new(m0347_writeup_grades::Migration),
+            Box::new(m0348_local_container_capacity::Migration),
         ]
     }
 }
@@ -570,10 +574,10 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 177);
+        assert_eq!(names.len(), 178);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
-            &names[names.len() - 75..],
+            &names[names.len() - 76..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -650,6 +654,7 @@ mod tests {
                 "m0345_flag_import_lease_repair",
                 "m0346_clone_destination_deletion",
                 "m0347_writeup_grades",
+                "m0348_local_container_capacity",
             ]
         );
     }

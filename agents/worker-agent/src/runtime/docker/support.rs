@@ -141,13 +141,14 @@ pub(super) fn daemon_platform(info: &SystemInfo) -> Result<Platform, RuntimeErro
     })
 }
 
+/// Raw daemon host capacity. The client subtracts the documented reserve
+/// before advertising unless an operator override is set.
 pub(super) fn daemon_capacity(info: &SystemInfo, network_slots: u32) -> WorkerCapacity {
     let cpus = info.ncpu.unwrap_or(1).max(1) as u64;
     let memory = info.mem_total.unwrap_or(512 * 1024 * 1024).max(1) as u64;
     WorkerCapacity {
-        // Auto-detection leaves host headroom. Dedicated workers can lower it.
-        cpu_millis: cpus.saturating_mul(900),
-        memory_bytes: memory.saturating_mul(9) / 10,
+        cpu_millis: cpus.saturating_mul(1_000),
+        memory_bytes: memory,
         slots: network_slots,
     }
 }
