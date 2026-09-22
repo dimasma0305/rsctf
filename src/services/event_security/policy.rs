@@ -107,23 +107,50 @@ pub async fn invalidate_policy(st: &SharedState, game_id: i32) {
     st.cache.remove(&cache_key(game_id)).await;
 }
 
+/// The live peer subject a verified download grant names. It is accepted
+/// only while that exact peer row is unrevoked at the same generation and the
+/// event policy revision the proof was minted under is still current.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventVpnPeerSubject {
+    pub peer_id: uuid::Uuid,
+    pub generation: i32,
+    pub policy_revision: i64,
+}
+
+/// Transport evidence a protected request may present while the event gate is
+/// active: the request source (accepted only as the peer's tunnel-internal
+/// address) and/or a verified download grant naming the live peer subject.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EventVpnEvidence {
+    pub source: Option<Ipv4Addr>,
+    pub peer: Option<EventVpnPeerSubject>,
+}
+
+impl EventVpnEvidence {
+    pub fn source(source: Option<Ipv4Addr>) -> Self {
+        Self { source, peer: None }
+    }
+}
+
 /// Recheck the transport boundary on a transaction which already owns the
 /// caller's final roster/scope fence. The game row is locked before peer state,
 /// so an organizer policy change linearizes wholly before or after this check.
 ///
 /// `Ok(false)` means the event gate is not active. `Ok(true)` means it is active
-/// and the exact source address belongs to this user/participation's live peer.
+/// and either the exact source address or the granted peer subject belongs to
+/// this user/participation's live peer.
 pub async fn require_event_vpn_source_on(
     connection: &mut sqlx::PgConnection,
     game_id: i32,
     user_id: uuid::Uuid,
     participation_id: i32,
-    source: Option<Ipv4Addr>,
+    evidence: EventVpnEvidence,
 ) -> AppResult<bool> {
-    let gate_active = sqlx::query_scalar::<_, bool>(
+    let (gate_active, policy_revision) = sqlx::query_as::<_, (bool, i64)>(
         r#"SELECT vpn_access_required
                   AND start_time_utc <= clock_timestamp()
-                  AND clock_timestamp() < end_time_utc
+                  AND clock_timestamp() < end_time_utc,
+                  vpn_policy_revision
              FROM "Games"
             WHERE id = $1 AND deletion_pending = FALSE
             FOR SHARE"#,
@@ -154,22 +181,34 @@ pub async fn require_event_vpn_source_on(
         return Ok(false);
     }
 
-    let source = source.ok_or(AppError::Unauthorized)?;
+    // A grant minted under an older policy revision is stale evidence even
+    // while its peer row still exists; only the tunnel source may then apply.
+    let peer_subject = evidence
+        .peer
+        .filter(|subject| subject.policy_revision == policy_revision);
+    if evidence.source.is_none() && peer_subject.is_none() {
+        return Err(AppError::Unauthorized);
+    }
     let peer = sqlx::query_scalar::<_, uuid::Uuid>(
         r#"SELECT peer.id
              FROM "EventVpnUserPeers" peer
             WHERE peer.game_id = $1
               AND peer.user_id = $2
               AND peer.participation_id = $3
-              AND peer.address = $4
               AND peer.revoked_at_utc IS NULL
+              AND (
+                    peer.address = $4
+                    OR (peer.id = $5 AND peer.generation = $6)
+              )
             LIMIT 1
             FOR SHARE OF peer"#,
     )
     .bind(game_id)
     .bind(user_id)
     .bind(participation_id)
-    .bind(source.to_string())
+    .bind(evidence.source.map(|source| source.to_string()))
+    .bind(peer_subject.map(|subject| subject.peer_id))
+    .bind(peer_subject.map(|subject| subject.generation))
     .fetch_optional(&mut *connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;

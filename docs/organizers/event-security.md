@@ -51,6 +51,15 @@ does not turn these profiles into shared team credentials or revoke transport
 for an unended event with an enabled, approved A&D/KotH challenge. Membership,
 account, event expiry, and exact target firewall checks still apply.
 
+While the gate is active, a challenge attachment download from the ordinary
+browser origin re-scopes the player's live proof into a five-minute download
+grant for that one content hash, delivered as an `HttpOnly` cookie bound to the
+`/assets/{hash}` path. A deployment without the same-origin tunnel ingress
+therefore still serves attachments; the grant is rejected as soon as the peer is
+revoked or re-issued, the session stamp rotates, the policy revision changes, or
+the roster or division no longer authorizes the file. Monitors and events with
+an active gate override never need a grant.
+
 For Toolkit-only transport, configure `RSCTF_EVENT_VPN_CREDENTIAL_KEY` (an
 independent, persistent 32+ character secret) and `RSCTF_AD_VPN_SERVER_ENDPOINT`
 on the serving replicas as well as the managed VPN owner. The proof URL and

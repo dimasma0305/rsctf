@@ -112,6 +112,13 @@ driver only in a planned maintenance window that already recreates them.
   usable address of `RSCTF_AD_VPN_CLIENT_CIDR`; the backend and ingress IPs must
   be unused hosts in `RSCTF_AD_VPN_SERVICES_CIDR`. Existing participants must
   download the refreshed VPN profile once to receive the private resolver.
+  The overlay is optional for browser use of a VPN-gated event: API reads carry
+  the short-lived proof header, and challenge attachment downloads first mint a
+  path-scoped, `HttpOnly` download grant cookie from that proof
+  (`POST /api/game/{id}/assets/{hash}/grant`), so they no longer require the
+  request to arrive from the tunnel-internal address. The asset route still
+  enforces membership, division, challenge state, and the live peer, generation,
+  and policy revision named by the grant.
 - `compose.roles.yml` changes the public service to the `web` role and adds one
   checker-owning `control` owner. `web` keeps no Linux capabilities; `control`
   receives the same narrow checker/network set as `all`; the A&D VPN or capture

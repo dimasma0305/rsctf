@@ -93,6 +93,13 @@ fn router_with_domains(
         )
         .route("/api/game/{id}/vpn/config", get(vpn_config))
         .route(
+            "/api/game/{id}/assets/{hash}/grant",
+            limited(
+                Policy::EventVpnMintGlobal,
+                limited(Policy::EventVpnMint, post(vpn_asset_grant)),
+            ),
+        )
+        .route(
             "/api/game/{id}/cheatinfo",
             limited(Policy::Query, get(cheat_info)),
         )

@@ -3,7 +3,7 @@
 use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{header, HeaderMap};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
+use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -286,6 +286,106 @@ async fn mint_proof(
     Ok(model)
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventVpnAssetGrantModel {
+    pub hash: String,
+    /// False when this caller needs no grant: the event gate is inactive or
+    /// the caller is a monitor, whose downloads never consult the gate.
+    pub granted: bool,
+    #[serde(with = "crate::utils::datetime::millis_opt")]
+    pub expires_at_utc: Option<DateTime<Utc>>,
+}
+
+fn valid_content_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Decide whether a download grant is needed and, if so, which verified proof
+/// subject it re-scopes. The event-VPN middleware already admitted this
+/// request; a player reaches it only with a live proof, whose claims must still
+/// name exactly this caller, event, and policy revision.
+fn asset_grant_subject<'a>(
+    policy: &crate::services::event_security::EventVpnPolicy,
+    user: &CurrentUser,
+    proof: Option<&'a crate::services::event_security::VpnProofClaims>,
+    game_id: i32,
+    now: DateTime<Utc>,
+) -> AppResult<Option<&'a crate::services::event_security::VpnProofClaims>> {
+    if user.is_monitor() || !policy.gate_active_at(now) {
+        return Ok(None);
+    }
+    let proof = proof.ok_or(AppError::Unauthorized)?;
+    if proof.game_id != game_id
+        || proof.user_id != user.id
+        || proof.policy_revision != policy.revision
+        || proof.security_stamp_hash
+            != crate::services::event_security::stamp_hash(&user.security_stamp)
+    {
+        return Err(AppError::Unauthorized);
+    }
+    Ok(Some(proof))
+}
+
+/// `POST /api/game/{id}/assets/{hash}/grant` — re-scope the caller's live
+/// VPN proof into a short-lived download grant cookie for one attachment. A
+/// browser-native download cannot carry the proof header, and the request
+/// only reaches the asset route from the public origin when the deployment
+/// has no same-origin tunnel ingress. The asset route keeps every ownership,
+/// roster, division, and monitor rule; the grant replaces only the
+/// tunnel-source evidence.
+pub async fn vpn_asset_grant(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+    proof: Option<Extension<crate::services::event_security::VpnProofClaims>>,
+    Path((game_id, hash)): Path<(i32, String)>,
+) -> AppResult<Response> {
+    let hash = hash.to_ascii_lowercase();
+    if !valid_content_hash(&hash) {
+        return Err(AppError::bad_request("Invalid attachment hash"));
+    }
+    let policy = crate::services::event_security::load_policy(&st, game_id).await?;
+    if !policy.access_required {
+        return Err(AppError::bad_request(
+            "This event does not require VPN access",
+        ));
+    }
+    let proof = proof.as_ref().map(|Extension(claims)| claims);
+    let Some(proof) = asset_grant_subject(&policy, &user, proof, game_id, Utc::now())? else {
+        return Ok(Json(EventVpnAssetGrantModel {
+            hash,
+            granted: false,
+            expires_at_utc: None,
+        })
+        .into_response());
+    };
+    let (token, claims) = crate::services::event_security::issue_asset_grant(
+        &st.config.event_vpn_credential_key,
+        proof,
+        &hash,
+    )?;
+    let expires_at_utc = DateTime::from_timestamp(claims.expires_at, 0)
+        .ok_or_else(|| AppError::internal("invalid asset grant expiry"))?;
+    let cookie =
+        crate::services::event_security::asset_grant_cookie(&token, &hash, st.config.cookie_secure);
+    let mut response = Json(EventVpnAssetGrantModel {
+        hash,
+        granted: true,
+        expires_at_utc: Some(expires_at_utc),
+    })
+    .into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        header::HeaderValue::from_str(&cookie)
+            .map_err(|_| AppError::internal("invalid asset grant cookie"))?,
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("private, no-store"),
+    );
+    Ok(response)
+}
+
 fn live_session_matches_source(
     source: IpAddr,
     session: crate::services::ad_vpn::LivePeerSession,
@@ -431,6 +531,115 @@ mod tests {
         ));
         drop(permits);
         assert!(mint_permit().is_ok());
+    }
+
+    fn grant_policy(
+        revision: i64,
+        active: bool,
+    ) -> crate::services::event_security::EventVpnPolicy {
+        let start = Utc::now() - chrono::Duration::hours(1);
+        crate::services::event_security::EventVpnPolicy {
+            game_id: 19,
+            access_required: true,
+            behavior_telemetry_enabled: false,
+            flag_scan_enabled: false,
+            provider_dns_telemetry_enabled: false,
+            source_asn_telemetry_enabled: false,
+            device_sharing_telemetry_enabled: false,
+            revision,
+            start_time_utc: if active {
+                start
+            } else {
+                start + chrono::Duration::hours(2)
+            },
+            end_time_utc: start + chrono::Duration::hours(3),
+            override_active: false,
+        }
+    }
+
+    fn grant_user(role: crate::utils::enums::Role) -> CurrentUser {
+        CurrentUser {
+            id: uuid::Uuid::new_v4(),
+            role,
+            name: "player".to_string(),
+            security_stamp: "stamp".to_string(),
+        }
+    }
+
+    fn grant_proof(user: &CurrentUser) -> crate::services::event_security::VpnProofClaims {
+        let now = Utc::now().timestamp();
+        crate::services::event_security::VpnProofClaims {
+            purpose: "proof".to_string(),
+            user_id: user.id,
+            game_id: 19,
+            participation_id: 29,
+            peer_id: uuid::Uuid::new_v4(),
+            peer_generation: 1,
+            policy_revision: 3,
+            security_stamp_hash: crate::services::event_security::stamp_hash(&user.security_stamp),
+            issued_at: now,
+            expires_at: now + crate::services::event_security::PROOF_TTL_SECONDS,
+        }
+    }
+
+    #[test]
+    fn asset_grants_rescope_only_the_callers_live_proof() {
+        let now = Utc::now();
+        let user = grant_user(crate::utils::enums::Role::User);
+        let proof = grant_proof(&user);
+        let policy = grant_policy(3, true);
+
+        let subject = asset_grant_subject(&policy, &user, Some(&proof), 19, now)
+            .unwrap()
+            .expect("live proof re-scoped");
+        assert_eq!(subject.peer_id, proof.peer_id);
+
+        // Monitor bypass and an inactive gate need no grant at all.
+        let monitor = grant_user(crate::utils::enums::Role::Monitor);
+        assert!(asset_grant_subject(&policy, &monitor, None, 19, now)
+            .unwrap()
+            .is_none());
+        assert!(
+            asset_grant_subject(&grant_policy(3, false), &user, Some(&proof), 19, now)
+                .unwrap()
+                .is_none()
+        );
+
+        // Without the middleware-verified proof, or with claims that name a
+        // different caller, event, or revision, a player is refused.
+        assert!(matches!(
+            asset_grant_subject(&policy, &user, None, 19, now),
+            Err(AppError::Unauthorized)
+        ));
+        assert!(matches!(
+            asset_grant_subject(&policy, &user, Some(&proof), 20, now),
+            Err(AppError::Unauthorized)
+        ));
+        assert!(matches!(
+            asset_grant_subject(&grant_policy(4, true), &user, Some(&proof), 19, now),
+            Err(AppError::Unauthorized)
+        ));
+        let other = grant_user(crate::utils::enums::Role::User);
+        assert!(matches!(
+            asset_grant_subject(&policy, &other, Some(&proof), 19, now),
+            Err(AppError::Unauthorized)
+        ));
+        let rotated = CurrentUser {
+            security_stamp: "rotated".to_string(),
+            ..user.clone()
+        };
+        assert!(matches!(
+            asset_grant_subject(&policy, &rotated, Some(&proof), 19, now),
+            Err(AppError::Unauthorized)
+        ));
+    }
+
+    #[test]
+    fn asset_grant_hashes_must_be_content_hashes() {
+        assert!(valid_content_hash(&"a".repeat(64)));
+        assert!(!valid_content_hash(&"g".repeat(64)));
+        assert!(!valid_content_hash("../etc/passwd"));
+        assert!(!valid_content_hash(&"a".repeat(63)));
     }
 
     #[test]

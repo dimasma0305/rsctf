@@ -8,6 +8,8 @@ const shell = readFileSync('src/components/ChallengeModal.tsx', 'utf8')
 const hook = readFileSync('src/hooks/useChallengePolling.ts', 'utf8')
 const apiContract = readFileSync('src/Api.ts', 'utf8')
 const vpnDownload = readFileSync('src/utils/EventVpnDownload.ts', 'utf8')
+const vpnProof = readFileSync('src/utils/EventVpnProof.ts', 'utf8')
+const attachmentGrant = readFileSync('src/utils/AttachmentGrant.ts', 'utf8')
 
 test('closed challenge modals own no detail, solver, A&D, or KotH polling key', () => {
   assert.match(
@@ -69,8 +71,12 @@ test('detail and solver diagnostics share one recovery owner and carry safe requ
 
 test('solver-only failure remains secondary and typed failures do not collapse into one message', () => {
   assert.match(shell, /solverError[\s\S]*color="yellow"/)
-  assert.match(modal, /error\.kind === 'disconnected'/)
-  assert.match(modal, /error\.kind === 'rate-limited'/)
+  // The typed Event-VPN copy lives in one shared helper so challenge polling
+  // and attachment grants cannot drift apart.
+  assert.match(modal, /isEventVpnAccessError\(error\)[\s\S]*eventVpnAccessErrorMessage\(error, t\)/)
+  assert.match(attachmentGrant, /isEventVpnAccessError\(error\)\) return eventVpnAccessErrorMessage\(error, t\)/)
+  assert.match(vpnProof, /error\.kind === 'disconnected'/)
+  assert.match(vpnProof, /error\.kind === 'rate-limited'/)
   assert.match(modal, /status === 401/)
   assert.match(modal, /status === 403/)
   assert.match(modal, /status === 429/)
