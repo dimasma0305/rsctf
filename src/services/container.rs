@@ -35,7 +35,7 @@ use bollard::container::{
     Config, CreateContainerOptions, ListContainersOptions, RemoveContainerOptions,
 };
 use bollard::image::CreateImageOptions;
-use bollard::models::{EndpointSettings, HostConfig, Ipam, IpamConfig, Network, PortBinding};
+use bollard::models::{EndpointSettings, Ipam, IpamConfig, Network, PortBinding};
 use bollard::network::CreateNetworkOptions;
 use bollard::Docker;
 use futures::StreamExt;
@@ -60,9 +60,9 @@ mod tests;
 pub(crate) use self::docker::launch_spec_fingerprint;
 use self::docker::{
     adopt_operation_container, append_snapshot_chunk, discover_operation_container,
-    docker_network_mode, image_requests_restricted_profile, is_conflict, is_not_found,
-    restricted_tmpfs_mounts, snapshot_export_slots, stamp_restricted_profile,
-    stamp_storage_quota_policy, validate_docker_container_spec, writable_layer_quota_supported,
+    image_requests_restricted_profile, is_conflict, is_not_found, snapshot_export_slots,
+    stamp_restricted_profile, stamp_storage_quota_policy, validate_docker_container_spec,
+    writable_layer_quota_supported,
     writable_layer_storage_option, LAUNCH_SPEC_LABEL, MAX_SNAPSHOT_EXPORT_BYTES,
     SNAPSHOT_EXPORT_ADMISSION_TIMEOUT, SNAPSHOT_EXPORT_MAX_DURATION,
 };
@@ -623,21 +623,10 @@ impl ContainerManager for DockerContainerManager {
             });
 
         // 4. Resource limits: memory (MB → bytes), CPU quota (whole cores →
-        // nano-cpus), and a pids cap to blunt fork bombs.
-        let host_config = HostConfig {
-            memory: Some(i64::from(spec.memory_limit) * 1024 * 1024),
-            nano_cpus: Some(i64::from(spec.cpu_count) * 1_000_000_000),
-            pids_limit: Some(512),
-            storage_opt,
-            cap_drop: restricted_profile.then(|| vec!["ALL".to_string()]),
-            readonly_rootfs: restricted_profile.then_some(true),
-            security_opt: restricted_profile.then(|| vec!["no-new-privileges:true".to_string()]),
-            tmpfs: restricted_profile.then(restricted_tmpfs_mounts),
-            log_config: Some(bounded_log_config()),
-            port_bindings,
-            network_mode: docker_network_mode(&spec),
-            ..Default::default()
-        };
+        // nano-cpus), a pids cap to blunt fork bombs, and an init process so a
+        // forking PID 1 cannot accumulate zombies.
+        let host_config =
+            docker::challenge_host_config(&spec, restricted_profile, storage_opt, port_bindings);
 
         let mut labels = scoped_managed_labels(&self.scope);
         labels.insert(LAUNCH_SPEC_LABEL.to_string(), launch_fingerprint.clone());

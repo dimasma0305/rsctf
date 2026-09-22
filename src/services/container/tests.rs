@@ -6,7 +6,8 @@ use bollard::models::{
 };
 
 use super::docker::{
-    advertised_endpoint_ip, docker_liveness, docker_network_mode, failed_start_action,
+    advertised_endpoint_ip, challenge_host_config, docker_liveness, docker_network_mode,
+    failed_start_action,
     image_requests_restricted_profile, launch_spec_fingerprint, launch_spec_matches,
     parse_proxy_bind, published_bind_ip, restricted_profile_matches, restricted_tmpfs_mounts,
     stamp_restricted_profile, stamp_storage_quota_policy, storage_quota_policy_matches,
@@ -831,6 +832,35 @@ fn container_resource_limits_reject_invalid_values() {
     assert!(validate_container_spec(&spec).is_err());
     spec.network_mode = crate::utils::enums::NetworkMode::Isolated;
     assert!(validate_container_spec(&spec).is_err());
+}
+
+#[test]
+fn linux_challenge_containers_run_under_init_with_bounded_pids() {
+    // The local backend never creates Windows containers (the worker agent owns
+    // that path), so every HostConfig it builds is a Linux one.
+    let spec = fingerprint_spec();
+    let config = challenge_host_config(&spec, false, None, None);
+
+    assert_eq!(config.init, Some(true));
+    assert_eq!(config.pids_limit, Some(512));
+    assert_eq!(
+        config.memory,
+        Some(i64::from(spec.memory_limit) * 1024 * 1024)
+    );
+    assert_eq!(
+        config.nano_cpus,
+        Some(i64::from(spec.cpu_count) * 1_000_000_000)
+    );
+    assert_eq!(config.network_mode, docker_network_mode(&spec));
+    assert_eq!(config.cap_drop, None);
+    assert_eq!(config.readonly_rootfs, None);
+    assert!(config.log_config.is_some());
+
+    let restricted = challenge_host_config(&spec, true, None, None);
+    assert_eq!(restricted.init, Some(true));
+    assert_eq!(restricted.cap_drop, Some(vec!["ALL".to_string()]));
+    assert_eq!(restricted.readonly_rootfs, Some(true));
+    assert_eq!(restricted.tmpfs, Some(restricted_tmpfs_mounts()));
 }
 
 #[test]

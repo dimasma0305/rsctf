@@ -2,7 +2,8 @@ use bollard::container::{
     DownloadFromContainerOptions, RemoveContainerOptions, StartContainerOptions, StatsOptions,
 };
 use bollard::models::{
-    ContainerInspectResponse, ContainerStateStatusEnum, ImageInspect, SystemInfo,
+    ContainerInspectResponse, ContainerStateStatusEnum, HostConfig, ImageInspect, PortBinding,
+    SystemInfo,
 };
 use bollard::Docker;
 use futures::StreamExt;
@@ -185,6 +186,33 @@ pub(super) fn validate_docker_container_spec(spec: &ContainerSpec) -> AppResult<
         return Err(AppError::bad_request(COMPETITIVE_EGRESS_ERROR));
     }
     super::validate_container_spec(spec)
+}
+
+/// Resource limits and hardening shared by every local Docker challenge
+/// container. The local backend only creates Linux containers, so `init` is
+/// always requested: a challenge PID 1 that forks without reaping must not
+/// accumulate zombie children for the lifetime of the workload.
+pub(super) fn challenge_host_config(
+    spec: &ContainerSpec,
+    restricted_profile: bool,
+    storage_opt: Option<std::collections::HashMap<String, String>>,
+    port_bindings: Option<std::collections::HashMap<String, Option<Vec<PortBinding>>>>,
+) -> HostConfig {
+    HostConfig {
+        memory: Some(i64::from(spec.memory_limit) * 1024 * 1024),
+        nano_cpus: Some(i64::from(spec.cpu_count) * 1_000_000_000),
+        pids_limit: Some(512),
+        init: Some(true),
+        storage_opt,
+        cap_drop: restricted_profile.then(|| vec!["ALL".to_string()]),
+        readonly_rootfs: restricted_profile.then_some(true),
+        security_opt: restricted_profile.then(|| vec!["no-new-privileges:true".to_string()]),
+        tmpfs: restricted_profile.then(restricted_tmpfs_mounts),
+        log_config: Some(super::bounded_log_config()),
+        port_bindings,
+        network_mode: docker_network_mode(spec),
+        ..Default::default()
+    }
 }
 
 pub(super) fn image_requests_restricted_profile(image: &ImageInspect) -> bool {

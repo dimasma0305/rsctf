@@ -456,6 +456,9 @@ pub(super) fn workload_host_config(
         memory_swap: (operating_system == OperatingSystem::Linux).then_some(memory_limit),
         nano_cpus: Some(i64::from(cpu_millis) * 1_000_000),
         pids_limit: (operating_system == OperatingSystem::Linux).then_some(512),
+        // A challenge PID 1 that forks without reaping must not accumulate
+        // zombies for the workload lifetime. Windows isolation rejects `Init`.
+        init: (operating_system == OperatingSystem::Linux).then_some(true),
         log_config: Some(bounded_log_config()),
         network_mode: Some(network.to_string()),
         // A challenge image must not inherit Docker's default capability set.
@@ -694,6 +697,8 @@ mod tests {
 
         assert_eq!(config.cap_drop, Some(vec!["ALL".to_string()]));
         assert_eq!(config.cap_add, Some(vec!["NET_BIND_SERVICE".to_string()]));
+        assert_eq!(config.init, Some(true));
+        assert_eq!(config.pids_limit, Some(512));
         assert_eq!(config.memory_swap, config.memory);
         assert_eq!(
             config.security_opt,
@@ -715,6 +720,8 @@ mod tests {
         assert_eq!(config.cap_add, None);
         assert_eq!(config.security_opt, None);
         assert_eq!(config.memory_swap, None);
+        assert_eq!(config.init, None);
+        assert_eq!(config.pids_limit, None);
         assert_eq!(config.isolation, Some(HostConfigIsolationEnum::HYPERV));
         assert_eq!(
             config.storage_opt,
