@@ -311,7 +311,55 @@ Evidence and rollback: `/root/rsctf-production/releases/sha-36e94c24/DEPLOYMENT.
 Screenshot: `visual-audit-output/event-motif-live/tcp-public/desktop--games--index--viewport.png`.
 This follow-up record is documentation-only and does not require another image.
 
+### September 22: capped field-best scoring for A&D services and KotH hills
+
+INTECHFEST 2026 showed the easiest hill deciding the KotH board while winning a
+hard hill was worth a few overall points, because every engine challenge scored
+an absolute time share with weight 1.0. Each service's and hill's event-average
+local score is now scaled so the field's best event average on that challenge
+counts 100, capped at 4x; frozen weights combine the normalized scores and
+contributions still add up. Scoreboard headers, challenge panels, and detail
+modals show the multiplier, and the KotH, A&D, and Overall handbooks document
+the contract. The lockfiles also pin rustls 0.23.45 for RUSTSEC-2026-0285, and
+two pre-existing Overall-tab accessibility gaps found by the live audit were
+fixed (decorative avatar alt text, contrast-safe component score shades).
+
+- Released `e19b985fffa25171d47375cfdcbcbc8d03e072d1` (scoring change
+  `c25ab8fe`, gate fixes `b5828e22`, accessibility `7dfb52d8`/`e19b985f`),
+  package `0.1.118`.
+- Immutable image: `ghcr.io/dimasma0305/rsctf@sha256:16196cb5d0f0017f9b0d743d9bb239e301b30b671670346ced3e0b2b33dbf1f3`.
+- [Full release gate](https://github.com/dimasma0305/rsctf/actions/runs/35691098308)
+  passed with 26 successful jobs (the first run of the change failed on a
+  Clippy lint and the rustls advisory, both fixed). Locally: zero-warning build,
+  Clippy with CI flags, 1,710 Rust tests, 10 database-backed scoring
+  regressions on disposable PostgreSQL 18, strict frontend check/lint/tests/
+  build, and 470 load-harness contract tests.
+- Four TCP replicas are healthy on the exact digest with zero restarts; both
+  origins return exact `ok`; smoke reads 200 and anonymous admin 401; logs are
+  clean. TCP hosts no A&D/KotH challenges, so its boards are unchanged.
+- Intechfest runs the same Rust code (debug binary) and the image's frontend.
+  Game 19 shows KotH multipliers x1.32/x4.00/x4.00 and A&D x1.23; HIB 62.62
+  KotH, 100.00 A&D, 71.96 overall, matching the offline projection. Retroactive
+  by design: there is no per-game scoring version.
+- Live scoreboard audit (desktop and 320px) reports zero Axe violations and no
+  overflow after the follow-ups.
+- The managed KotH fixed-rate gate passed both k6 phases (0 failed checks and
+  requests) and then failed on a pre-existing harness step: the revocation
+  scenario calls `ScoringPause` without retrying the bounded 503
+  "Game configuration capacity is busy". The workflow has failed on every
+  recorded run since August 31, including four before this change; queued
+  below.
+
+Evidence and rollback: `/root/rsctf-production/releases/sha-e19b985f/DEPLOYMENT.md`.
+
 ### Reliability findings queued for investigation
+
+The managed KotH load gate (`managed-koth-load.yml`) fails after its k6 phases
+because `tests/load/managed-koth.mjs` calls `setAdScoringPaused` without
+retrying the engine's bounded 503 (`koth_auth.rs` "Game configuration capacity
+is busy"), unlike the multi-domain harness's `attempt` wrapper. Retry the
+operator call in the harness and confirm the admission bound is not tripping
+under the harness's own cadence.
 
 During pre-release inspection on September 8, TCP control and the Intechfest source
 backend had restarted after `traffic capture owner heartbeat timed out`, including
