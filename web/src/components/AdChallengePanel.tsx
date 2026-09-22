@@ -4,7 +4,7 @@ import { mdiAlertCircleOutline, mdiConsole, mdiDownload, mdiRefresh, mdiRestart,
 import { Icon } from '@mdi/react'
 import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { KeyedMutator } from 'swr'
+import useSWR, { type KeyedMutator } from 'swr'
 import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
 import { downloadBlob } from '@Utils/ApiHelper'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
@@ -12,7 +12,13 @@ import { createOperationId, waitForControlJob } from '@Utils/ControlJobs'
 import { httpErrorStatus } from '@Utils/ProfileRetry'
 import { showErrorMsg } from '@Utils/Shared'
 import { useChallengePolling } from '@Hooks/useChallengePolling'
-import api, { AdServiceDeliveryState, AdSshKeyInfoModel, AdStateModel, AdTeamServiceStateModel } from '@Api'
+import api, {
+  AdScoreboardModel,
+  AdServiceDeliveryState,
+  AdSshKeyInfoModel,
+  AdStateModel,
+  AdTeamServiceStateModel,
+} from '@Api'
 import misc from '@Styles/Misc.module.css'
 
 const statusColor = (s?: string | null) => {
@@ -225,6 +231,13 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
   useEffect(() => () => resetAbortRef.current?.abort(), [])
 
   const service: AdTeamServiceStateModel | undefined = adState?.services.find((s) => s.challengeId === challengeId)
+  // One bounded read of the shared board (deduped with the scoreboard page) so the
+  // panel can show this service's current field-best scoring multiplier.
+  const { data: adScoreboard } = useSWR<AdScoreboardModel>(
+    active && gameId > 0 ? `/api/game/${gameId}/ad/scoreboard` : null,
+    { revalidateOnFocus: false, dedupingInterval: 60_000 }
+  )
+  const serviceNormalization = adScoreboard?.challenges.find((c) => c.challengeId === challengeId)
   const isSelfHosted = selfHosted || service?.selfHosted === true
 
   // The team's post-game service backup (the defended container, as a loadable
@@ -462,6 +475,33 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({
           >
             {service.lastCheckStatus ?? t('game.content.ad.no_checks_yet', 'no checks yet')}
           </Badge>
+          {serviceNormalization && (
+            <Tooltip
+              withinPortal
+              multiline
+              maw={320}
+              label={t('game.content.ad.multiplier_tooltip', {
+                defaultValue:
+                  'Scoring multiplier: the field’s best local score on this challenge is {{best}}, so every team’s local score is scaled ×{{multiplier}} (cap ×{{cap}}) before the {{weight}} challenge weight applies. It changes as the field improves.',
+                best: (serviceNormalization.settledFieldBest ?? 0).toFixed(1),
+                multiplier: (serviceNormalization.settledMultiplier ?? 1).toFixed(2),
+                cap: adScoreboard?.maxFieldBestMultiplier ?? 4,
+                weight: (serviceNormalization.serviceWeight ?? 1).toFixed(2),
+              })}
+            >
+              <Badge
+                size="sm"
+                color="grape"
+                variant={(serviceNormalization.settledMultiplier ?? 1) > 1.005 ? 'filled' : 'light'}
+                style={{ fontFamily: 'var(--mantine-font-family-monospace)' }}
+              >
+                {t('game.content.ad.multiplier_badge', {
+                  defaultValue: 'Score ×{{multiplier}}',
+                  multiplier: (serviceNormalization.settledMultiplier ?? 1).toFixed(2),
+                })}
+              </Badge>
+            </Tooltip>
+          )}
         </Group>
         {/* Reset rebuilds an RSCTF-hosted container. For self-hosted (BYOC) the
             real container lives on the team's machine — they reset it there — so

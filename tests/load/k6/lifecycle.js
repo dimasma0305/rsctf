@@ -250,7 +250,7 @@ function validKothScores(model) {
       Number.isFinite(team.projectedTotal) &&
       team.projectedTotal >= 0 &&
       team.projectedTotal <= 100 &&
-      validKothEventScoreBasis(team) &&
+      validKothEventScoreBasis(team, model.hills) &&
       ratesAreBounded(team.acquisitionRate) &&
       ratesAreBounded(team.controlRate) &&
       ratesAreBounded(team.reliabilityRate) &&

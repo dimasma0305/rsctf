@@ -424,6 +424,10 @@ pub(super) fn build_team_rows(board: &KothBoard, hills: &[&KothHillInfo]) -> Vec
                         challenge_id: h.challenge_id,
                         settled_points: cell.map_or(0.0, |cell| cell.settled_points),
                         projected_points: cell.map_or(0.0, |cell| cell.projected_points),
+                        settled_normalized_points: cell
+                            .map_or(0.0, |cell| cell.settled_normalized_points),
+                        projected_normalized_points: cell
+                            .map_or(0.0, |cell| cell.projected_normalized_points),
                         acquisition_rate: cell.map_or(0.0, |cell| cell.acquisition_rate),
                         control_rate: cell.map_or(0.0, |cell| cell.control_rate),
                         reliability_rate: cell.map_or(0.0, |cell| cell.reliability_rate),
@@ -459,14 +463,6 @@ pub(super) fn build_team_rows(board: &KothBoard, hills: &[&KothHillInfo]) -> Vec
                 division: m.division.clone(),
                 settled_total: aggregate.map_or(0.0, |aggregate| aggregate.settled_total),
                 projected_total: aggregate.map_or(0.0, |aggregate| aggregate.projected_total),
-                settled_epoch_points: aggregate
-                    .map_or(0.0, |aggregate| aggregate.settled_epoch_points),
-                settled_epoch_weight: aggregate
-                    .map_or(0.0, |aggregate| aggregate.settled_epoch_weight),
-                projected_epoch_points: aggregate
-                    .map_or(0.0, |aggregate| aggregate.projected_epoch_points),
-                projected_epoch_weight: aggregate
-                    .map_or(0.0, |aggregate| aggregate.projected_epoch_weight),
                 acquisition_rate: aggregate.map_or(0.0, |aggregate| aggregate.acquisition_rate),
                 control_rate: aggregate.map_or(0.0, |aggregate| aggregate.control_rate),
                 reliability_rate: aggregate.map_or(0.0, |aggregate| aggregate.reliability_rate),
@@ -696,10 +692,6 @@ mod tests {
             division: None,
             settled_total: settled,
             projected_total: projected,
-            settled_epoch_points: settled,
-            settled_epoch_weight: 1.0,
-            projected_epoch_points: projected,
-            projected_epoch_weight: 1.0,
             acquisition_rate: 0.0,
             control_rate: control,
             reliability_rate: reliability,
@@ -707,6 +699,8 @@ mod tests {
                 challenge_id: 1,
                 settled_points: settled,
                 projected_points: projected,
+                settled_normalized_points: settled,
+                projected_normalized_points: projected,
                 acquisition_rate: 0.0,
                 control_rate: control,
                 reliability_rate: reliability,
@@ -743,19 +737,21 @@ mod tests {
     }
 
     #[test]
-    fn team_score_wire_exposes_the_event_average_basis() {
-        let mut row = team_row(7, 0.9259259259259259, 0.9237875288683602, 0.5, 0.5, 5);
-        row.settled_epoch_points = 25.0;
-        row.settled_epoch_weight = 27.0;
-        row.projected_epoch_points = 25.0;
-        row.projected_epoch_weight = 27.0625;
+    fn team_score_wire_exposes_normalized_hill_points_not_an_epoch_basis() {
+        let mut row = team_row(7, 70.0, 72.5, 0.5, 0.5, 5);
+        row.hills[0].settled_points = 56.0;
+        row.hills[0].settled_normalized_points = 70.0;
+        row.hills[0].projected_points = 58.0;
+        row.hills[0].projected_normalized_points = 72.5;
 
         let value = serde_json::to_value(row).unwrap();
-        assert_eq!(value["settledEpochPoints"], 25.0);
-        assert_eq!(value["settledEpochWeight"], 27.0);
-        assert_eq!(value["projectedEpochPoints"], 25.0);
-        assert_eq!(value["projectedEpochWeight"], 27.0625);
-        assert!(value.get("settled_epoch_points").is_none());
+        assert_eq!(value["settledTotal"], 70.0);
+        assert_eq!(value["hills"][0]["settledPoints"], 56.0);
+        assert_eq!(value["hills"][0]["settledNormalizedPoints"], 70.0);
+        assert_eq!(value["hills"][0]["projectedNormalizedPoints"], 72.5);
+        assert!(value.get("settledEpochPoints").is_none());
+        assert!(value.get("settled_normalized_points").is_none());
+        assert!(value["hills"][0].get("settled_normalized_points").is_none());
     }
 
     #[test]

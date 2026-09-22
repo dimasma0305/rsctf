@@ -28,7 +28,7 @@ import {
   visibleKothControlStatus,
 } from '@Utils/kothLifecycle'
 import { CompletionPollSWRConfig, jitterPollingDelay, useCompletionPolling } from '@Hooks/useCompletionPolling'
-import type { KothLifecycleFields } from '@Hooks/useGame'
+import type { KothLifecycleFields, KothScoreboardModel } from '@Hooks/useGame'
 import api, { ContentType } from '@Api'
 import misc from '@Styles/Misc.module.css'
 
@@ -159,6 +159,14 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
     isValidating: stateValidating,
     mutate: mutateState,
   } = useSWR<KothHillStateModel>(stateKey, stateFetcher, CompletionPollSWRConfig)
+  // One bounded read of the shared board (deduped with the scoreboard page) so the
+  // panel can show the hill's current field-best scoring multiplier.
+  const scoreboardKey = enabled ? `/api/game/${gameId}/ad/koth/scoreboard` : null
+  const { data: scoreboardData } = useSWR<KothScoreboardModel>(scoreboardKey, {
+    revalidateOnFocus: false,
+    dedupingInterval: 60_000,
+  })
+  const hillNormalization = scoreboardData?.hills.find((hill) => hill.challengeId === challengeId)
 
   useEffect(() => {
     if (typeof window === 'undefined' || !enabled) return
@@ -350,6 +358,32 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
           <Badge size="sm" color={statusColor(displayedStatus)} variant={displayedStatus ? 'filled' : 'light'}>
             {displayedStatus ?? t('game.content.ad.no_checks_yet', 'no checks yet')}
           </Badge>
+          {hillNormalization && (
+            <Tooltip
+              withinPortal
+              multiline
+              maw={320}
+              label={t('game.content.koth.multiplier_tooltip', {
+                defaultValue:
+                  'Scoring multiplier: the field’s best local average on this hill is {{best}}, so every team’s hill score is scaled ×{{multiplier}} (cap ×{{cap}}) before hill weights combine the hills. It changes as the field improves.',
+                best: (hillNormalization.settledFieldBest ?? 0).toFixed(1),
+                multiplier: (hillNormalization.settledMultiplier ?? 1).toFixed(2),
+                cap: scoreboardData?.maxFieldBestMultiplier ?? 4,
+              })}
+            >
+              <Badge
+                size="sm"
+                color="grape"
+                variant={(hillNormalization.settledMultiplier ?? 1) > 1.005 ? 'filled' : 'light'}
+                style={{ fontFamily: 'var(--mantine-font-family-monospace)' }}
+              >
+                {t('game.content.koth.multiplier_badge', {
+                  defaultValue: 'Score ×{{multiplier}}',
+                  multiplier: (hillNormalization.settledMultiplier ?? 1).toFixed(2),
+                })}
+              </Badge>
+            </Tooltip>
+          )}
         </Group>
         {!isApiArena && stateData?.holderTeamName && (
           <Badge size="sm" color={stateData.isYou ? 'violet' : 'gray'} variant={stateData.isYou ? 'filled' : 'light'}>
@@ -531,8 +565,8 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
             {isResetting
               ? t('game.content.koth.token_preparing', 'Preparing the capability for this crown cycle…')
               : isApiArena
-              ? t('game.content.koth.no_api_token', 'No arena capability has been issued yet')
-              : t('game.content.koth.no_token', 'No capability was issued for this crown cycle')}
+                ? t('game.content.koth.no_api_token', 'No arena capability has been issued yet')
+                : t('game.content.koth.no_token', 'No capability was issued for this crown cycle')}
           </Text>
         )}
         {tokenData?.status === 'ready' && tokenData.token && (

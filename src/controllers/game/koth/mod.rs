@@ -132,6 +132,30 @@ pub struct KothScoreboardHill {
     pub cooldown_participants: Vec<KothCooldownParticipant>,
     /// Latest checker verdict for the hill (from the KothControlResult history).
     pub last_check_status: Option<String>,
+    /// Best settled event-average local score any roster team reached on this hill.
+    #[serde(default)]
+    pub settled_field_best: f64,
+    /// Same field best including open epochs.
+    #[serde(default)]
+    pub projected_field_best: f64,
+    /// Capped factor that maps `settled_field_best` onto 100 points.
+    #[serde(default = "neutral_multiplier")]
+    pub settled_multiplier: f64,
+    #[serde(default = "neutral_multiplier")]
+    pub projected_multiplier: f64,
+    /// This hill's weight share of the settled event score, in `[0, 1]`.
+    #[serde(default)]
+    pub settled_share: f64,
+    #[serde(default)]
+    pub projected_share: f64,
+}
+
+fn neutral_multiplier() -> f64 {
+    1.0
+}
+
+fn max_field_best_multiplier() -> f64 {
+    crate::utils::scoring::MAX_FIELD_BEST_MULTIPLIER
 }
 
 /// One team's score on one hill (`KothHillScore` in useGame.ts).
@@ -139,8 +163,16 @@ pub struct KothScoreboardHill {
 #[serde(rename_all = "camelCase")]
 pub struct KothHillScore {
     pub challenge_id: i32,
+    /// Event-average local hill score from finalized epochs (before normalization).
     pub settled_points: f64,
+    /// Event-average local hill score including open epochs.
     pub projected_points: f64,
+    /// `settled_points` scaled by the hill's capped field-best multiplier; the
+    /// share-weighted sum of these values is the team's settled event score.
+    #[serde(default)]
+    pub settled_normalized_points: f64,
+    #[serde(default)]
+    pub projected_normalized_points: f64,
     pub acquisition_rate: f64,
     pub control_rate: f64,
     pub reliability_rate: f64,
@@ -170,16 +202,10 @@ pub struct KothTeamScoreRow {
     pub team_id: i32,
     pub team_name: String,
     pub division: Option<String>,
+    /// Share-weighted mean of every hill's field-best normalized settled score.
     pub settled_total: f64,
+    /// Same aggregate including open epochs.
     pub projected_total: f64,
-    /// Weighted point numerator behind `settled_total`.
-    pub settled_epoch_points: f64,
-    /// Finalized epoch weight behind `settled_total`.
-    pub settled_epoch_weight: f64,
-    /// Weighted point numerator behind `projected_total`.
-    pub projected_epoch_points: f64,
-    /// Finalized plus live epoch weight behind `projected_total`.
-    pub projected_epoch_weight: f64,
     pub acquisition_rate: f64,
     pub control_rate: f64,
     pub reliability_rate: f64,
@@ -220,6 +246,9 @@ pub struct KothScoreboardModel {
     pub is_frozen_view: bool,
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub freeze: Option<DateTime<Utc>>,
+    /// Largest factor the field-best normalization may apply to one hill.
+    #[serde(default = "max_field_best_multiplier")]
+    pub max_field_best_multiplier: f64,
     pub hills: Vec<KothScoreboardHill>,
     pub teams: Vec<KothTeamScoreRow>,
 }

@@ -787,7 +787,7 @@ function validKothScoreboard(model) {
       team.settledTotal >= 0 &&
       Number.isFinite(team.projectedTotal) &&
       team.projectedTotal >= 0 &&
-      validKothEventScoreBasis(team) &&
+      validKothEventScoreBasis(team, model.hills) &&
       boundedRate(team.acquisitionRate) &&
       boundedRate(team.controlRate) &&
       boundedRate(team.reliabilityRate) &&

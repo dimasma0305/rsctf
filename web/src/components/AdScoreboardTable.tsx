@@ -62,6 +62,8 @@ const SUBCOL = { score: 76, offense: 58, defense: 58, sla: 54 }
 const GROUP_W = SUBCOL.score + SUBCOL.offense + SUBCOL.defense + SUBCOL.sla
 
 const formatPercent = (rate: number) => `${(Math.max(0, Math.min(1, rate)) * 100).toFixed(1)}%`
+const formatMultiplier = (value: number | undefined) =>
+  `×${(Number.isFinite(value) ? (value as number) : 1).toFixed(2)}`
 const hasProjection = (settled: number, projected: number) => Math.abs(settled - projected) > 0.05
 const readableMetricColor = (color: string, dark: boolean) => `${color}.${dark ? 4 : 9}`
 const servicesFor = (team: AdTeamScoreModel) => team.services ?? []
@@ -165,6 +167,14 @@ const ServiceCard: FC<ServiceCardProps> = ({ challenge, service }) => {
                 </Text>
               )}
             </Group>
+            <Text size="xs" c="dimmed" className={misc.ffmono}>
+              {t('game.content.scoreboard.ad.epoch.local_value', {
+                defaultValue: 'Local score {{local}} {{multiplier}} field-best factor · weight {{weight}}',
+                local: fmtPts(service.settledLocalPoints ?? 0),
+                multiplier: formatMultiplier(challenge.settledMultiplier),
+                weight: (Number.isFinite(challenge.serviceWeight) ? challenge.serviceWeight : 1).toFixed(2),
+              })}
+            </Text>
           </>
         ) : (
           <Text size="sm" c="dimmed">
@@ -301,6 +311,7 @@ interface ScoringInfoModalProps {
   tickSeconds: number
   currentEpoch: number
   startRound: number | null
+  maxFieldBestMultiplier: number
 }
 
 const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
@@ -310,6 +321,7 @@ const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
   tickSeconds,
   currentEpoch,
   startRound,
+  maxFieldBestMultiplier,
 }) => {
   const { t } = useTranslation()
   const currentEpochRange =
@@ -397,10 +409,11 @@ const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
         <Divider />
 
         <Text size="sm">
-          {t(
-            'game.content.scoreboard.ad.epoch.score_info.intro',
-            'Challenge contributions add up to the team total and already include challenge and epoch weighting.'
-          )}
+          {t('game.content.scoreboard.ad.epoch.score_info.intro', {
+            defaultValue:
+              'Challenge contributions add up to the team total and already include challenge and epoch weighting. Each challenge’s local score is first scaled so the field’s best event average on that challenge counts 100, capped at {{cap}}×; every other team scales by the same factor.',
+            cap: Number.isFinite(maxFieldBestMultiplier) ? maxFieldBestMultiplier : 4,
+          })}
         </Text>
         <Group gap="xs" align="flex-start" wrap="nowrap">
           <Icon path={mdiSwordCross} size={0.75} color="var(--mantine-color-teal-6)" />
@@ -643,11 +656,40 @@ export const AdScoreboardTable: FC<AdScoreboardTableProps> = ({ numId, scoreboar
                         colSpan={4}
                         className={cx(classes.mono, classes.groupStart)}
                       >
-                        <Tooltip label={challenge.title} withinPortal>
-                          <Text size="xs" fw={700} truncate maw={GROUP_W} mx="auto">
-                            {challenge.title}
-                          </Text>
-                        </Tooltip>
+                        <Stack gap={3} align="center">
+                          <Tooltip label={challenge.title} withinPortal>
+                            <Text size="xs" fw={700} truncate maw={GROUP_W} mx="auto">
+                              {challenge.title}
+                            </Text>
+                          </Tooltip>
+                          <Tooltip
+                            withinPortal
+                            multiline
+                            maw={300}
+                            label={t('game.content.scoreboard.ad.multiplier_tooltip', {
+                              defaultValue:
+                                'Scoring multiplier: the field’s best local score on this challenge is {{best}}, so every local score is scaled {{multiplier}} (cap ×{{cap}}) before the {{weight}} challenge weight applies.',
+                              best: fmtPts(challenge.settledFieldBest ?? 0),
+                              multiplier: formatMultiplier(challenge.settledMultiplier),
+                              cap: Number.isFinite(scoreboard.maxFieldBestMultiplier)
+                                ? scoreboard.maxFieldBestMultiplier
+                                : 4,
+                              weight: (Number.isFinite(challenge.serviceWeight) ? challenge.serviceWeight : 1).toFixed(
+                                2
+                              ),
+                            })}
+                          >
+                            <Badge
+                              size="xs"
+                              variant={(challenge.settledMultiplier ?? 1) > 1.005 ? 'filled' : 'light'}
+                              color="grape"
+                              className={misc.ffmono}
+                              aria-label={`${challenge.title} scoring multiplier ${formatMultiplier(challenge.settledMultiplier)}`}
+                            >
+                              {formatMultiplier(challenge.settledMultiplier)}
+                            </Badge>
+                          </Tooltip>
+                        </Stack>
                       </Table.Th>
                     ))}
                   </Table.Tr>
@@ -959,6 +1001,7 @@ export const AdScoreboardTable: FC<AdScoreboardTableProps> = ({ numId, scoreboar
         tickSeconds={scoreboard.tickSeconds}
         currentEpoch={scoreboard.currentEpoch}
         startRound={scoreboard.startRound}
+        maxFieldBestMultiplier={scoreboard.maxFieldBestMultiplier ?? 4}
       />
     </Paper>
   )

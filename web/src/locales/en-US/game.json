@@ -140,7 +140,7 @@
             "epoch_current_body": "Current Epoch {{epoch}} covers scoring rounds {{start}}-{{end}}. It appears in Live while open and joins Settled only after its checks finish and flag submission windows close.",
             "epoch_body": "An epoch groups {{count}} scoring rounds. It appears in Live while open and joins Settled only after its checks finish and flag submission windows close.",
             "epoch_weight": "Old flags may remain valid in later rounds; a capture counts in the epoch where its flag was planted. Complete epochs have equal weight, while a shortened final epoch is weighted by rounds completed.",
-            "intro": "Challenge contributions add up to the team total and already include challenge and epoch weighting.",
+            "intro": "Challenge contributions add up to the team total and already include challenge and epoch weighting. Each challenge’s local score is first scaled so the field’s best event average on that challenge counts 100, capped at {{cap}}×; every other team scales by the same factor.",
             "offense": "Offense measures accepted capture coverage, with a small bounded rarity bonus for uncommon captures.",
             "defense": "Defense measures the share of eligible opponent-flag pairs that remain uncaptured.",
             "sla": "SLA is checker-measured reliability and multiplies the whole local score.",
@@ -158,7 +158,7 @@
           "detail": {
             "current_warning": "Epoch {{epoch}} is still live. Orange values are provisional; the team Live total is the first tie-break when Settled scores are exactly equal.",
             "recent_only": "Latest {{limit}} epochs; totals include every epoch.",
-            "settled_hint": "Finalized challenge contribution. Challenge contributions add up to the team total; orange text is the live projection."
+            "settled_hint": "Finalized challenge contribution after field-best normalization. Challenge contributions add up to the team total; orange text is the live projection."
           },
           "evidence": {
             "sparse": "No eligible flag evidence is available yet. Live values remain provisional.",

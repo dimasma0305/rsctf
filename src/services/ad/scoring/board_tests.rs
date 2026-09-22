@@ -187,6 +187,8 @@ fn five_hundred_team_ten_service_payload_stays_bounded() {
                     challenge_id,
                     settled_points: 50.0 / f64::from(SERVICE_COUNT),
                     projected_points: 55.0 / f64::from(SERVICE_COUNT),
+                    settled_local_points: 50.0,
+                    projected_local_points: 55.0,
                     offense_rate: 0.5,
                     defense_rate: 0.6,
                     sla_rate: 0.9,
@@ -220,9 +222,15 @@ fn five_hundred_team_ten_service_payload_stays_bounded() {
                 challenge_id,
                 title: format!("Service {challenge_id}"),
                 category: ChallengeCategory::Web,
+                service_weight: 1.0,
+                settled_field_best: 50.0,
+                projected_field_best: 55.0,
+                settled_multiplier: 2.0,
+                projected_multiplier: 100.0 / 55.0,
             })
             .collect(),
         detail_epoch_limit: TEAM_DETAIL_EPOCH_LIMIT,
+        max_field_best_multiplier: crate::utils::scoring::MAX_FIELD_BEST_MULTIPLIER,
         evidence: AdEvidenceStatus::default(),
         teams,
         generated_at: Utc::now(),
@@ -322,4 +330,112 @@ async fn database_board_is_finite_bounded_and_serializable() {
         .await
         .expect("monitor builds a private A&D board");
     fixture.cleanup().await;
+}
+
+fn normalized_service(
+    challenge_id: i32,
+    settled_local: f64,
+    projected_local: f64,
+    weight: f64,
+) -> AdServiceScore {
+    AdServiceScore {
+        challenge_id,
+        // Contributions as the rollups store them: local × w / Σw with Σw = 2.
+        settled_points: settled_local * weight / 2.0,
+        projected_points: projected_local * weight / 2.0,
+        settled_local_points: 0.0,
+        projected_local_points: 0.0,
+        offense_rate: 0.5,
+        defense_rate: 0.5,
+        sla_rate: 1.0,
+        capture_count: 1,
+        last_check_status: None,
+    }
+}
+
+fn board_challenge(challenge_id: i32, weight: f64) -> AdScoreboardChallenge {
+    AdScoreboardChallenge {
+        challenge_id,
+        title: format!("Service {challenge_id}"),
+        category: ChallengeCategory::Web,
+        service_weight: weight,
+        settled_field_best: 0.0,
+        projected_field_best: 0.0,
+        settled_multiplier: 1.0,
+        projected_multiplier: 1.0,
+    }
+}
+
+fn close(left: f64, right: f64) {
+    assert!(
+        (left - right).abs() < 1e-9,
+        "expected {left} to equal {right}"
+    );
+}
+
+#[test]
+fn field_best_normalization_rescales_contributions_and_totals() {
+    let mut teams = vec![
+        AdTeamScore {
+            services: vec![
+                normalized_service(1, 80.0, 80.0, 1.2),
+                normalized_service(2, 10.0, 20.0, 0.8),
+            ],
+            ..rank_row(1, 0.0, 0.0, 0.5, 0.5, 1.0)
+        },
+        AdTeamScore {
+            services: vec![
+                normalized_service(1, 40.0, 40.0, 1.2),
+                normalized_service(2, 5.0, 5.0, 0.8),
+            ],
+            ..rank_row(2, 0.0, 0.0, 0.5, 0.5, 1.0)
+        },
+    ];
+    let mut challenges = vec![board_challenge(1, 1.2), board_challenge(2, 0.8)];
+
+    apply_field_best_normalization(&mut teams, &mut challenges);
+
+    // Service 1: field best 80 -> x1.25. Service 2: settled best 10 and
+    // projected best 20 are both held at the 4x cap.
+    close(challenges[0].settled_field_best, 80.0);
+    close(challenges[0].settled_multiplier, 1.25);
+    close(challenges[1].settled_field_best, 10.0);
+    close(challenges[1].settled_multiplier, 4.0);
+    close(challenges[1].projected_field_best, 20.0);
+    close(challenges[1].projected_multiplier, 4.0);
+
+    let leader = &teams[0];
+    close(leader.services[0].settled_local_points, 80.0);
+    close(leader.services[0].settled_points, 100.0 * 1.2 / 2.0);
+    close(leader.services[1].settled_local_points, 10.0);
+    close(leader.services[1].settled_points, 40.0 * 0.8 / 2.0);
+    close(leader.settled_total, 60.0 + 16.0);
+    close(leader.projected_total, 60.0 + 80.0 * 0.8 / 2.0);
+
+    let runner_up = &teams[1];
+    close(runner_up.services[0].settled_points, 50.0 * 1.2 / 2.0);
+    close(runner_up.services[1].settled_points, 20.0 * 0.8 / 2.0);
+    close(runner_up.settled_total, 30.0 + 8.0);
+    let contribution_sum: f64 = runner_up
+        .services
+        .iter()
+        .map(|service| service.settled_points)
+        .sum();
+    close(contribution_sum, runner_up.settled_total);
+}
+
+#[test]
+fn field_best_normalization_leaves_an_empty_field_untouched() {
+    let mut teams = vec![AdTeamScore {
+        services: vec![normalized_service(1, 0.0, 0.0, 1.0)],
+        ..rank_row(1, 0.0, 0.0, 0.0, 0.0, 0.0)
+    }];
+    let mut challenges = vec![board_challenge(1, 1.0), board_challenge(2, 1.0)];
+
+    apply_field_best_normalization(&mut teams, &mut challenges);
+
+    close(challenges[0].settled_multiplier, 1.0);
+    close(challenges[1].settled_multiplier, 1.0);
+    close(teams[0].settled_total, 0.0);
+    close(teams[0].projected_total, 0.0);
 }

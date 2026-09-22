@@ -2716,10 +2716,13 @@ export interface AdEpochScoreModel {
 /** Per-challenge contribution to a team's official A&D epoch score. */
 export interface AdServiceScoreModel {
   challengeId: number;
-  /** Weighted average from finalized epochs; this is the ranked value. */
+  /** Normalized additive contribution from finalized epochs; contributions add up to the team total. */
   settledPoints: number;
-  /** Weighted average including the current, non-final epoch. */
+  /** Same contribution including the current, non-final epoch. */
   projectedPoints: number;
+  /** Event-average local service score (0-100) before field-best normalization. */
+  settledLocalPoints: number;
+  projectedLocalPoints: number;
   offenseRate: number;
   defenseRate: number;
   slaRate: number;
@@ -2756,6 +2759,14 @@ export interface AdScoreboardChallenge {
   challengeId: number;
   title: string;
   category: ChallengeCategory;
+  /** Frozen service weight in [0.8, 1.2]. */
+  serviceWeight: number;
+  /** Best settled event-average local score any team reached on this service. */
+  settledFieldBest: number;
+  projectedFieldBest: number;
+  /** Capped factor (1 to maxFieldBestMultiplier) that maps the field best onto 100. */
+  settledMultiplier: number;
+  projectedMultiplier: number;
 }
 
 /** Official A&D epoch scoreboard used for ranking and awards. */
@@ -2776,6 +2787,8 @@ export interface AdScoreboardModel {
   challenges: AdScoreboardChallenge[];
   /** Maximum recent epoch detail rows returned per team; totals still use all epochs. */
   detailEpochLimit: number;
+  /** Largest factor the field-best normalization may apply to one service. */
+  maxFieldBestMultiplier: number;
   evidence: AdEvidenceStatusModel;
   teams: AdTeamScoreModel[];
   /** Unix milliseconds. */

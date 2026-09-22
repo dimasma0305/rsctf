@@ -18,7 +18,7 @@ pageClass: ad-handbook
 ## Abstract
 
 <div class="journal-abstract">
-<p>In an Attack & Defense (A&D) competition, every team attacks opponents' services while keeping its own service copies operational. An automated checker tests whether each service still works. rsctf's <code>EpochBalanced</code> model measures three outcomes: offense from submitted opponent flags, pairwise defense from opponent-flag pairs that remain uncaptured, and service-level agreement (SLA) from checker results. An epoch is a fixed group of rounds. For each service in each epoch, the model combines 40% offense, 40% defense, and a 20% geometric balance term that rewards doing both. SLA then multiplies that complete result. A bounded scarcity term adds limited offense credit when few teams capture the same flag. Every complete epoch has equal weight; a shortened final epoch receives weight <code>r/n</code>, where <code>r</code> is its played-round count and <code>n</code> is the configured full length. Settled is the primary ranking value. Exact Settled ties use Live, offense, defense, SLA, and participation ID, in that order; unfinished evidence therefore affects ranking only through the Live tie-break. AI-assisted tools can accelerate exploit and patch work, but rsctf records outcomes rather than authorship. Appendix C maps the equations, timing, fault rules, and settlement process to the release commit that contains this handbook. Section 5 verifies the arithmetic with a deterministic five-team example. The repository contains no live-event behavioral dataset, so this report does not claim that the model causes sustained engagement, behavioral fairness, or any other player behavior.</p>
+<p>In an Attack & Defense (A&D) competition, every team attacks opponents' services while keeping its own service copies operational. An automated checker tests whether each service still works. rsctf's <code>EpochBalanced</code> model measures three outcomes: offense from submitted opponent flags, pairwise defense from opponent-flag pairs that remain uncaptured, and service-level agreement (SLA) from checker results. An epoch is a fixed group of rounds. For each service in each epoch, the model combines 40% offense, 40% defense, and a 20% geometric balance term that rewards doing both. SLA then multiplies that complete result. A bounded scarcity term adds limited offense credit when few teams capture the same flag. Before services are combined, each service's event-average local score is scaled so the field's best event average on that service counts 100, with the factor capped at 4, so a hard service is worth as much as an easy one. Every complete epoch has equal weight; a shortened final epoch receives weight <code>r/n</code>, where <code>r</code> is its played-round count and <code>n</code> is the configured full length. Settled is the primary ranking value. Exact Settled ties use Live, offense, defense, SLA, and participation ID, in that order; unfinished evidence therefore affects ranking only through the Live tie-break. AI-assisted tools can accelerate exploit and patch work, but rsctf records outcomes rather than authorship. Appendix C maps the equations, timing, fault rules, and settlement process to the release commit that contains this handbook. Section 5 verifies the arithmetic with a deterministic five-team example. The repository contains no live-event behavioral dataset, so this report does not claim that the model causes sustained engagement, behavioral fairness, or any other player behavior.</p>
 </div>
 
 <p class="journal-keywords"><strong>Keywords:</strong> attack-defense CTF; cybersecurity competition; epoch scoring; service-level agreement; adversarial robustness; human-AI teaming; competitive fairness; rsctf</p>
@@ -628,6 +628,33 @@ $\lvert\Delta T\rvert\le 100q/(W+q)$. A later complete epoch still has weight
 epochs. This arithmetic does not prove that scores converge or that players
 remain engaged.
 
+#### 4.4.1 Field-best normalization of the published totals
+
+Equation (9) is an absolute time-share score. Left alone, a service that every
+team can exploit and keep online would decide the event while a hard service
+solved late adds almost nothing. Before the Live and Settled totals are
+published, rsctf therefore rescales each service against the field. Let
+$L_{is}$ be team $i$'s event-average local score on service $s$, recovered from
+its contribution through the frozen weights as $L_{is}=c_{is}\sum_j w_j/w_s$,
+and let $B_s=\max_i L_{is}$ be the best event average any team reached:
+
+$$
+m_s=\min\!\left(4,\frac{100}{B_s}\right),\qquad
+c'_{is}=\frac{\min(100,\,m_sL_{is})\,w_s}{\sum_j w_j},\qquad
+T'_i=\sum_s c'_{is}
+$$
+
+The best team on a service earns that service's full weighted share unless the
+cap applies; every other team scales by the same factor, and contributions
+still add up to the team total. The cap keeps a service that nobody
+meaningfully exploited from handing its whole share to the first team that
+scores: a field best below 25 points is worth at most four times its absolute
+value, and a service without any positive score keeps $m_s=1$. Because $B_s$ is
+a field property, a Settled total can fall when a rival improves, as a Jeopardy
+dynamic value falls with later solves. The scoreboard publishes $B_s$, $m_s$,
+and each service's local score so the arithmetic can be checked. Epoch rows
+show raw epoch results before this normalization.
+
 The first round with a complete registered team-service roster and prepared
 custom-checker files becomes the published `startRound`. Flags, captures,
 protected pairs, and checker credit from earlier rounds do not enter the ranked
@@ -766,6 +793,14 @@ Live is lower than Settled here. That is valid: Live is the current weighted
 projection including unfinished evidence, not a promise that the final score
 will rise.
 
+Field-best normalization (Section 4.4.1) then rescales the published totals.
+Suppose the best event-average local score any team reached is `80.00` on the
+first service and `40.00` on the second. The first multiplier is
+`100/80 = 1.25`; the second is `2.5`, which stays under the cap of `4`. A team
+whose settled event-average local scores are `51.94` and `70.00` therefore
+publishes `min(100, 64.92)·1.2/2 + min(100, 175.00)·0.8/2 = 38.95 + 40.00 =
+78.95` instead of the unnormalized `59.16`.
+
 ### 5.2 Balance-term sensitivity
 
 The geometric term is positive only when both `A` and `D` are positive. Table 5
@@ -807,13 +842,15 @@ defense, and SLA rates that produced that result.
   within that group. The information button shows the configured tick length,
   epoch size, and current epoch round range.
 - **Round countdown:** the current operational cycle and its intended end time.
-- **Settled total:** weighted average of finalized epochs only.
+- **Settled total:** weighted average of finalized epochs only, after each
+  service is scaled to its capped field best (Section 4.4.1).
 - **Live total:** weighted average using all current evidence, including every
   not-yet-finalized full epoch and the open partial tail at weight `r/n`. It can
   rise or fall until settlement.
-- **Per-challenge contribution:** the challenge's additive share after challenge
-  and epoch weighting. Settled challenge contributions sum to Settled; projected
-  challenge contributions sum to Live.
+- **Per-challenge contribution:** the challenge's additive share after
+  field-best normalization, challenge weighting, and epoch weighting. Settled
+  challenge contributions sum to Settled; projected challenge contributions sum
+  to Live. The card also shows the raw local score and the field-best factor.
 - **Offense, defense, and SLA rates:** projected diagnostics aggregated from
   current evidence. They explain direction but, after older rollups and
   nonlinear epoch scoring, cannot reconstruct the Settled contribution by
@@ -842,7 +879,8 @@ review.
 | --- | --- |
 | The epoch's last round ended, but Settled did not move. | Flags issued near the end can still be submitted. The epoch remains Live until those windows and checker results close. |
 | Live is below Settled. | A weak current partial epoch is included in Live at fractional weight but is not yet included in Settled. |
-| A challenge local formula looks high, but its displayed contribution is lower. | The displayed value is normalized against all challenge weights so contributions add to one 0-100 team total. |
+| A challenge local formula looks high, but its displayed contribution is lower. | The displayed value is scaled by the challenge's field-best factor and normalized against all challenge weights so contributions add to one 0-100 team total. |
+| A team's Settled total fell although its own evidence did not change. | Another team raised the field best on a service, which lowers that service's multiplier for everyone (Section 4.4.1). |
 | A healthy service has no defense rate yet. | Defense eligibility needs an `Ok` result from a prepared flag-aware custom checker and qualified pair evidence. |
 | A successful capture did not create a large rarity jump. | A flag submitted by few teams can contribute only a limited scarcity increment, subject to the `M >= 4` threshold and offense clamping. |
 | The public board differs from a monitor view. | An organizer can freeze the player-facing view at the configured cutoff while authorized monitors continue to observe live evidence. |
@@ -1239,6 +1277,7 @@ relative to the rsctf repository.
 | Challenge and epoch aggregation | `src/services/ad/scoring/aggregate.rs` |
 | Durable epoch materialization | `src/services/ad/scoring/rollup.rs` |
 | Live/Settled board construction and rank sorting | `src/services/ad/scoring/board.rs` |
+| Capped field-best service normalization | `src/utils/scoring.rs`, `src/services/ad/scoring/board.rs` |
 | Player scoreboard presentation | `web/src/components/AdScoreboardTable.tsx` |
 | Deterministic scoring sensitivity simulator | `tools/ad-scoring-sim/` |
 

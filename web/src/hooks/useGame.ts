@@ -653,6 +653,15 @@ export interface KothScoreboardHill extends KothLifecycleFields {
   currentHolderTeamName: string | null
   currentHolderParticipationId: number | null
   lastCheckStatus: string | null
+  /** Best settled event-average local score any roster team reached on this hill. */
+  settledFieldBest: number
+  projectedFieldBest: number
+  /** Capped factor (1 to maxFieldBestMultiplier) that maps the field best onto 100. */
+  settledMultiplier: number
+  projectedMultiplier: number
+  /** This hill's weight share of the event score, in [0, 1]; 0 for a wholly void hill. */
+  settledShare: number
+  projectedShare: number
 }
 
 export type KothResetPhase =
@@ -675,10 +684,13 @@ export interface KothCooldownParticipant {
 
 export interface KothHillScore {
   challengeId: number
-  /** Weighted average from finalized epochs; this is the ranked value. */
+  /** Local event average from finalized epochs, before field-best normalization. */
   settledPoints: number
-  /** Weighted average including the current, unfinished epoch. */
+  /** Local event average including the current, unfinished epoch. */
   projectedPoints: number
+  /** settledPoints scaled by the hill's capped field-best multiplier; share-weighted, these sum to the event score. */
+  settledNormalizedPoints: number
+  projectedNormalizedPoints: number
   /** Marker acquisition, or Leaderboard verified activity. */
   acquisitionRate: number
   /** Marker control, or Leaderboard normalized objective performance. */
@@ -703,16 +715,9 @@ export interface KothTeamScoreRow {
   teamId: number
   teamName: string
   division?: string | null
+  /** Share-weighted mean of every hill's field-best normalized settled score. */
   settledTotal: number
   projectedTotal: number
-  /** Weighted point numerator behind the finalized event average. */
-  settledEpochPoints: number
-  /** Finalized epoch weight behind the finalized event average. */
-  settledEpochWeight: number
-  /** Weighted point numerator including the open epoch projection. */
-  projectedEpochPoints: number
-  /** Finalized plus open epoch weight behind the projection. */
-  projectedEpochWeight: number
   acquisitionRate: number
   controlRate: number
   reliabilityRate: number
@@ -738,6 +743,8 @@ export interface KothScoreboardModel {
   isFrozenView: boolean
   /** Unix milliseconds. */
   freeze: number | null
+  /** Largest factor the field-best normalization may apply to one hill. */
+  maxFieldBestMultiplier: number
   hills: KothScoreboardHill[]
   teams: KothTeamScoreRow[]
 }

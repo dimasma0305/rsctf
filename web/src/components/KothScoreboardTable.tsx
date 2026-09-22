@@ -68,9 +68,14 @@ const GROUP_W = SUBCOL.score + SUBCOL.acquisition + SUBCOL.control + SUBCOL.sla
 
 const clampRate = (rate: number) => Math.max(0, Math.min(1, rate))
 const formatPercent = (rate: number) => `${(clampRate(rate) * 100).toFixed(1)}%`
-const formatFormulaNumber = (value: number) => (Number.isFinite(value) ? value.toFixed(2).replace(/0$/, '') : '—')
-const hasEpochBasis = (points: number, weight: number) =>
-  Number.isFinite(points) && Number.isFinite(weight) && weight > 0
+const formatMultiplier = (value: number | undefined) =>
+  `×${(Number.isFinite(value) ? (value as number) : 1).toFixed(2)}`
+const formatCap = (value: number | undefined) => (Number.isFinite(value) ? (value as number) : 4).toString()
+// Older cached payloads may omit the normalized fields; fall back to the local average.
+const normalizedSettled = (score: KothHillScore) =>
+  Number.isFinite(score.settledNormalizedPoints) ? score.settledNormalizedPoints : score.settledPoints
+const normalizedProjected = (score: KothHillScore) =>
+  Number.isFinite(score.projectedNormalizedPoints) ? score.projectedNormalizedPoints : score.projectedPoints
 const hasProjection = (settled: number, projected: number) => Math.abs(settled - projected) > 0.05
 const readableMetricColor = (color: string, dark: boolean) => `${color}.${dark ? 4 : 9}`
 const acquisitionWindowCount = (team: KothTeamScoreRow) =>
@@ -265,8 +270,8 @@ const HillCard: FC<HillCardProps> = ({ hill, score, cycleTicks, confirmationTick
           <>
             <SimpleGrid cols={{ base: 2, xs: 4 }} spacing="xs">
               <CompactMetric
-                label={t('game.content.scoreboard.koth.epoch.column.performance', 'Hill performance')}
-                value={fmtPts(score.settledPoints)}
+                label={t('game.content.scoreboard.koth.epoch.column.hill_score', 'Hill score')}
+                value={fmtPts(normalizedSettled(score))}
                 color="cyan"
               />
               <CompactMetric label={firstMetric} value={formatPercent(score.acquisitionRate)} color="teal" />
@@ -291,15 +296,22 @@ const HillCard: FC<HillCardProps> = ({ hill, score, cycleTicks, confirmationTick
                       responsible: score.responsibleTicks,
                     })}
               </Text>
-              {hasProjection(score.settledPoints, score.projectedPoints) && (
+              {hasProjection(normalizedSettled(score), normalizedProjected(score)) && (
                 <Text size="xs" c={readableMetricColor('orange', dark)} className={misc.ffmono}>
                   {t('game.content.scoreboard.koth.epoch.live_value', {
                     defaultValue: 'Live {{score}}',
-                    score: fmtPts(score.projectedPoints),
+                    score: fmtPts(normalizedProjected(score)),
                   })}
                 </Text>
               )}
             </Group>
+            <Text size="xs" c="dimmed" className={misc.ffmono}>
+              {t('game.content.scoreboard.koth.epoch.local_value', {
+                defaultValue: 'Local performance {{local}} {{multiplier}} field-best factor',
+                local: fmtPts(score.settledPoints),
+                multiplier: formatMultiplier(hill.settledMultiplier),
+              })}
+            </Text>
           </>
         ) : (
           <Text size="sm" c="dimmed">
@@ -317,6 +329,7 @@ interface KothScoreDetailModalProps {
   detailEpochLimit: number
   cycleTicks: number
   confirmationTicks: number
+  maxFieldBestMultiplier: number
   onClose: () => void
 }
 
@@ -326,10 +339,17 @@ const KothScoreDetailModal: FC<KothScoreDetailModalProps> = ({
   detailEpochLimit,
   cycleTicks,
   confirmationTicks,
+  maxFieldBestMultiplier,
   onClose,
 }) => {
   const { t } = useTranslation()
   const latestEpoch = team?.epochs.at(-1)
+  const scoredHills = team
+    ? hills.flatMap((hill) => {
+        const score = team.hills.find((item) => item.challengeId === hill.challengeId)
+        return score && (hill.settledShare ?? 0) > 0 ? [{ hill, score }] : []
+      })
+    : []
   const onlyApi = hills.length > 0 && hills.every((hill) => hill.claimSource === 'Api')
   const mixed = !onlyApi && hills.some((hill) => hill.claimSource === 'Api')
   const firstMetric = onlyApi
@@ -396,16 +416,28 @@ const KothScoreDetailModal: FC<KothScoreDetailModalProps> = ({
                   score: fmtPts(team.settledTotal),
                 })}
               </Text>
-              {hasEpochBasis(team.settledEpochPoints, team.settledEpochWeight) ? (
-                <Text size="sm" className={cx(misc.ffmono, classes.scoringFormula)}>
-                  {t('game.content.scoreboard.koth.epoch.detail.event_formula', {
-                    defaultValue:
-                      '{{points}} weighted epoch-points ÷ {{weight}} finalized epoch weight = {{score}} event score',
-                    points: formatFormulaNumber(team.settledEpochPoints),
-                    weight: formatFormulaNumber(team.settledEpochWeight),
-                    score: fmtPts(team.settledTotal),
-                  })}
-                </Text>
+              {scoredHills.length > 0 ? (
+                <>
+                  {scoredHills.map(({ hill, score }) => (
+                    <Text key={hill.challengeId} size="sm" className={cx(misc.ffmono, classes.scoringFormula)}>
+                      {t('game.content.scoreboard.koth.epoch.detail.hill_formula', {
+                        defaultValue:
+                          '{{title}}: {{local}} local {{multiplier}} field best = {{normalized}} × {{share}} hill share',
+                        title: hill.title,
+                        local: fmtPts(score.settledPoints),
+                        multiplier: formatMultiplier(hill.settledMultiplier),
+                        normalized: fmtPts(normalizedSettled(score)),
+                        share: formatPercent(hill.settledShare),
+                      })}
+                    </Text>
+                  ))}
+                  <Text size="sm" className={cx(misc.ffmono, classes.scoringFormula)}>
+                    {t('game.content.scoreboard.koth.epoch.detail.event_formula', {
+                      defaultValue: 'Σ(hill share × normalized hill score) = {{score}} event score',
+                      score: fmtPts(team.settledTotal),
+                    })}
+                  </Text>
+                </>
               ) : (
                 <Text size="sm">
                   {t(
@@ -415,22 +447,20 @@ const KothScoreDetailModal: FC<KothScoreDetailModalProps> = ({
                 </Text>
               )}
               <Text size="xs">
-                {t(
-                  'game.content.scoreboard.koth.epoch.detail.scope_explanation',
-                  'Hill performance is a local average over that hill’s scorable evidence. It is not added directly to the event score: hills first form each epoch score, then the event score averages every finalized epoch.'
-                )}
+                {t('game.content.scoreboard.koth.epoch.detail.scope_explanation', {
+                  defaultValue:
+                    'Hill performance is a local average over that hill’s scorable evidence. It is not added directly to the event score: each hill is first scaled so the field’s best event average on that hill counts 100, capped at {{cap}}×, then hill weights combine the normalized hill scores into the event score.',
+                  cap: formatCap(maxFieldBestMultiplier),
+                })}
               </Text>
-              {hasProjection(team.settledTotal, team.projectedTotal) &&
-                hasEpochBasis(team.projectedEpochPoints, team.projectedEpochWeight) && (
-                  <Text size="xs" c="orange" className={cx(misc.ffmono, classes.scoringFormula)}>
-                    {t('game.content.scoreboard.koth.epoch.detail.live_event_formula', {
-                      defaultValue: 'Live: {{points}} ÷ {{weight}} = {{score}}',
-                      points: formatFormulaNumber(team.projectedEpochPoints),
-                      weight: formatFormulaNumber(team.projectedEpochWeight),
-                      score: fmtPts(team.projectedTotal),
-                    })}
-                  </Text>
-                )}
+              {hasProjection(team.settledTotal, team.projectedTotal) && (
+                <Text size="xs" c="orange" className={cx(misc.ffmono, classes.scoringFormula)}>
+                  {t('game.content.scoreboard.koth.epoch.detail.live_event_formula', {
+                    defaultValue: 'Live: the same aggregate including open epochs = {{score}}',
+                    score: fmtPts(team.projectedTotal),
+                  })}
+                </Text>
+              )}
             </Stack>
           </Alert>
 
@@ -466,7 +496,8 @@ const KothScoreDetailModal: FC<KothScoreDetailModalProps> = ({
             <Stack gap={4}>
               <Text size="xs" c="dimmed">
                 {t('game.content.scoreboard.koth.epoch.detail.recent_only', {
-                  defaultValue: 'Latest {{limit}} epochs; totals include every epoch.',
+                  defaultValue:
+                    'Latest {{limit}} epochs as raw hill averages; the event score uses every epoch after field-best normalization.',
                   limit: detailEpochLimit,
                 })}
               </Text>
@@ -501,6 +532,7 @@ interface ScoringInfoModalProps {
   cycleTicks: number
   championCooldownTicks: number
   claimConfirmationTicks: number
+  maxFieldBestMultiplier: number
   hasApiArena: boolean
   hasMarkerHill: boolean
 }
@@ -515,6 +547,7 @@ const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
   cycleTicks,
   championCooldownTicks,
   claimConfirmationTicks,
+  maxFieldBestMultiplier,
   hasApiArena,
   hasMarkerHill,
 }) => {
@@ -605,14 +638,15 @@ const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
             <Text size="xs" fw={700} className={cx(misc.ffmono, classes.scoringFormula)}>
               {t(
                 'game.content.scoreboard.koth.score_info.event_formula',
-                'Event score = Σ(epoch score × epoch weight) ÷ Σ(epoch weight)'
+                'Event score = Σ(hill share × normalized hill score)'
               )}
             </Text>
             <Text size="xs" c="dimmed">
-              {t(
-                'game.content.scoreboard.koth.score_info.scope',
-                'Each hill column is a hill-local performance average. Hills combine into an epoch score first; the official event score then averages every finalized epoch, so one strong wave does not become the whole event score.'
-              )}
+              {t('game.content.scoreboard.koth.score_info.scope', {
+                defaultValue:
+                  'Each hill column is that hill’s local performance average scaled to the field: the best event average on that hill counts 100, capped at {{cap}}×, and every other team scales by the same factor. Hill weights set the shares, so a hard hill is worth as much as an easy one and the epoch list shows raw averages.',
+                cap: formatCap(maxFieldBestMultiplier),
+              })}
             </Text>
           </Stack>
         </Paper>
@@ -871,11 +905,11 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId, score
                 {hasApiArena
                   ? t(
                       'game.content.scoreboard.koth.api.compact_description',
-                      'Event score averages every finalized epoch and determines rank. Hill columns show local performance, not points added directly to the event score.'
+                      'Event score combines every hill after scaling it to the field’s best team, and determines rank. Hill columns show each hill score with its current multiplier in the header.'
                     )
                   : t(
                       'game.content.scoreboard.koth.epoch.compact_description',
-                      'Event score averages every finalized epoch and determines rank. Hill columns show local performance, not points added directly to the event score.'
+                      'Event score combines every hill after scaling it to the field’s best team, and determines rank. Hill columns show each hill score with its current multiplier in the header.'
                     )}
               </Text>
             </Stack>
@@ -990,6 +1024,29 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId, score
                                   {t('game.content.scoreboard.koth.api.badge', 'Leaderboard')}
                                 </Badge>
                               )}
+                              <Tooltip
+                                withinPortal
+                                multiline
+                                maw={300}
+                                label={t('game.content.scoreboard.koth.multiplier_tooltip', {
+                                  defaultValue:
+                                    'Scoring multiplier: the field’s best local average on this hill is {{best}}, so every hill score is scaled {{multiplier}} (cap ×{{cap}}). Hill share of the event score: {{share}}.',
+                                  best: fmtPts(hill.settledFieldBest ?? 0),
+                                  multiplier: formatMultiplier(hill.settledMultiplier),
+                                  cap: formatCap(scoreboard.maxFieldBestMultiplier),
+                                  share: formatPercent(hill.settledShare ?? 0),
+                                })}
+                              >
+                                <Badge
+                                  size="xs"
+                                  variant={(hill.settledMultiplier ?? 1) > 1.005 ? 'filled' : 'light'}
+                                  color="grape"
+                                  className={misc.ffmono}
+                                  aria-label={`${hill.title} scoring multiplier ${formatMultiplier(hill.settledMultiplier)}`}
+                                >
+                                  {formatMultiplier(hill.settledMultiplier)}
+                                </Badge>
+                              </Tooltip>
                               {hill.currentHolderTeamName && (
                                 <Tooltip
                                   label={t('game.content.scoreboard.koth.held_by', {
@@ -1044,7 +1101,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId, score
                           key={`${hill.challengeId}-score`}
                           className={cx(classes.mono, classes.groupStart)}
                           style={{ width: SUBCOL.score }}
-                          aria-label={t('game.content.scoreboard.koth.epoch.column.performance', 'Hill performance')}
+                          aria-label={t('game.content.scoreboard.koth.epoch.column.hill_score', 'Hill score')}
                         >
                           <Tooltip
                             label={t(
@@ -1113,20 +1170,10 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId, score
                         allRank={allRank}
                         tableRank={divisionRanks.get(team.participationId) ?? team.rank}
                         countValue={acquisitionWindowCount(team)}
-                        totalTooltip={
-                          hasEpochBasis(team.settledEpochPoints, team.settledEpochWeight)
-                            ? t('game.content.scoreboard.koth.epoch.detail.event_formula', {
-                                defaultValue:
-                                  '{{points}} weighted epoch-points ÷ {{weight}} finalized epoch weight = {{score}} event score',
-                                points: formatFormulaNumber(team.settledEpochPoints),
-                                weight: formatFormulaNumber(team.settledEpochWeight),
-                                score: fmtPts(team.settledTotal),
-                              })
-                            : t(
-                                'game.content.scoreboard.koth.epoch.detail.no_finalized_basis',
-                                'No finalized epoch evidence is available yet.'
-                              )
-                        }
+                        totalTooltip={t('game.content.scoreboard.koth.epoch.detail.event_formula', {
+                          defaultValue: 'Σ(hill share × normalized hill score) = {{score}} event score',
+                          score: fmtPts(team.settledTotal),
+                        })}
                         onOpenDetail={() => openDetail(team)}
                       />
 
@@ -1167,7 +1214,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId, score
                             key={`${hill.challengeId}-score`}
                             className={cx(classes.mono, classes.groupStart)}
                             style={{ backgroundColor: cellBg, boxShadow: holderAccent }}
-                            aria-label={`${hill.title} hill performance ${fmtPts(score.settledPoints)}${hasProjection(score.settledPoints, score.projectedPoints) ? `, live projection ${fmtPts(score.projectedPoints)}` : ''}, ${status}${score.isCurrentHolder ? ', current holder' : ''}`}
+                            aria-label={`${hill.title} hill score ${fmtPts(normalizedSettled(score))}, local performance ${fmtPts(score.settledPoints)}${hasProjection(normalizedSettled(score), normalizedProjected(score)) ? `, live projection ${fmtPts(normalizedProjected(score))}` : ''}, ${status}${score.isCurrentHolder ? ', current holder' : ''}`}
                           >
                             <Stack gap={0} align="center">
                               <Group gap={3} wrap="nowrap">
@@ -1175,14 +1222,14 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId, score
                                   <Icon path={mdiCrown} size={0.42} color={theme.colors.violet[dark ? 4 : 7]} />
                                 )}
                                 <Text size="xs" c={readableMetricColor('cyan', dark)} className={misc.ffmono} fw={800}>
-                                  {fmtPts(score.settledPoints)}
+                                  {fmtPts(normalizedSettled(score))}
                                 </Text>
                               </Group>
-                              {hasProjection(score.settledPoints, score.projectedPoints) && (
+                              {hasProjection(normalizedSettled(score), normalizedProjected(score)) && (
                                 <Text fz={9} c={readableMetricColor('orange', dark)} className={misc.ffmono}>
                                   {t('game.content.scoreboard.koth.epoch.live_value', {
                                     defaultValue: 'Live {{score}}',
-                                    score: fmtPts(score.projectedPoints),
+                                    score: fmtPts(normalizedProjected(score)),
                                   })}
                                 </Text>
                               )}
@@ -1327,7 +1374,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId, score
               <Group gap={4}>
                 <Icon path={mdiTrophyOutline} size={0.65} color={theme.colors.cyan[6]} />
                 <Text size="xs" c={readableMetricColor('cyan', dark)}>
-                  {t('game.content.scoreboard.koth.epoch.column.performance', 'Hill performance')}
+                  {t('game.content.scoreboard.koth.epoch.column.hill_score', 'Hill score')}
                 </Text>
               </Group>
               <Group gap={4}>
@@ -1373,6 +1420,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId, score
 
       <KothScoreDetailModal
         team={selectedTeam}
+        maxFieldBestMultiplier={scoreboard.maxFieldBestMultiplier ?? 4}
         hills={scoreboard.hills}
         detailEpochLimit={scoreboard.detailEpochLimit}
         cycleTicks={scoreboard.cycleTicks}
@@ -1389,6 +1437,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId, score
         cycleTicks={scoreboard.cycleTicks}
         championCooldownTicks={scoreboard.championCooldownTicks}
         claimConfirmationTicks={scoreboard.claimConfirmationTicks}
+        maxFieldBestMultiplier={scoreboard.maxFieldBestMultiplier ?? 4}
         hasApiArena={hasApiArena}
         hasMarkerHill={!onlyApiArena}
       />

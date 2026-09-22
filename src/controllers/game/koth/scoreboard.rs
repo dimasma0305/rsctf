@@ -74,6 +74,7 @@ async fn build_koth_scoreboard(
         .iter()
         .map(|h| {
             let view = lifecycle.remove(&h.challenge_id).unwrap_or_default();
+            let normalization = board.scoring.hills.get(&h.challenge_id).copied();
             KothScoreboardHill {
                 challenge_id: h.challenge_id,
                 title: h.title.clone(),
@@ -100,6 +101,12 @@ async fn build_koth_scoreboard(
                     .latest_control_by_challenge
                     .get(&h.challenge_id)
                     .map(|(s, _)| s.clone()),
+                settled_field_best: normalization.map_or(0.0, |n| n.settled_field_best),
+                projected_field_best: normalization.map_or(0.0, |n| n.projected_field_best),
+                settled_multiplier: normalization.map_or(1.0, |n| n.settled_multiplier),
+                projected_multiplier: normalization.map_or(1.0, |n| n.projected_multiplier),
+                settled_share: normalization.map_or(0.0, |n| n.settled_share),
+                projected_share: normalization.map_or(0.0, |n| n.projected_share),
             }
         })
         .collect();
@@ -126,6 +133,7 @@ async fn build_koth_scoreboard(
         generated_at: Utc::now(),
         is_frozen_view,
         freeze: board.freeze,
+        max_field_best_multiplier: crate::utils::scoring::MAX_FIELD_BEST_MULTIPLIER,
         hills,
         teams,
     })

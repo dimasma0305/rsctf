@@ -14,6 +14,7 @@ use super::{score_epoch_service, EpochServiceEvidence};
 use crate::utils::database::begin_read_only_repeatable_read;
 use crate::utils::enums::ChallengeCategory;
 use crate::utils::error::{AppError, AppResult};
+use crate::utils::scoring::{field_best_multiplier, normalize_to_field_best};
 
 const TEAM_DETAIL_EPOCH_LIMIT: usize = 3;
 const FLAG_LIFETIME_TICKS_DEFAULT: i32 = 5;
@@ -43,6 +44,7 @@ struct AdScoreboardChallengeRow {
     challenge_id: i32,
     title: String,
     category: i16,
+    service_weight: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -92,8 +94,16 @@ pub struct AdTeamScore {
 #[serde(rename_all = "camelCase")]
 pub struct AdServiceScore {
     pub challenge_id: i32,
+    /// Normalized additive contribution to the settled team total
+    /// (`normalized local score × w / Σw`); contributions add up to the total.
     pub settled_points: f64,
     pub projected_points: f64,
+    /// Event-average local service score from finalized epochs, in `[0, 100]`,
+    /// before the field-best normalization.
+    #[serde(default)]
+    pub settled_local_points: f64,
+    #[serde(default)]
+    pub projected_local_points: f64,
     pub offense_rate: f64,
     pub defense_rate: f64,
     pub sla_rate: f64,
@@ -117,6 +127,98 @@ pub struct AdScoreboardChallenge {
     pub challenge_id: i32,
     pub title: String,
     pub category: ChallengeCategory,
+    /// Frozen service weight in `[0.8, 1.2]`.
+    #[serde(default = "neutral_weight")]
+    pub service_weight: f64,
+    /// Best settled event-average local score any team reached on this service.
+    #[serde(default)]
+    pub settled_field_best: f64,
+    #[serde(default)]
+    pub projected_field_best: f64,
+    /// Capped factor that maps the settled field best onto 100 points.
+    #[serde(default = "neutral_weight")]
+    pub settled_multiplier: f64,
+    #[serde(default = "neutral_weight")]
+    pub projected_multiplier: f64,
+}
+
+fn neutral_weight() -> f64 {
+    1.0
+}
+
+fn max_field_best_multiplier() -> f64 {
+    crate::utils::scoring::MAX_FIELD_BEST_MULTIPLIER
+}
+
+/// Normalize every service's event-average local score to the field best and
+/// rebuild each team's contributions and totals from the normalized values.
+///
+/// Rollups keep only contribution numerators (`local × w / Σw`), so the local
+/// event average is recovered through the frozen challenge weights before teams
+/// are compared. The best team on a service maps to 100 unless
+/// [`crate::utils::scoring::MAX_FIELD_BEST_MULTIPLIER`] caps the factor, every
+/// other team scales by the same factor, and contributions still add up to the
+/// team total. Services outside the enabled, approved challenge set are not
+/// part of the board and do not enter the total.
+fn apply_field_best_normalization(
+    teams: &mut [AdTeamScore],
+    challenges: &mut [AdScoreboardChallenge],
+) {
+    let total_weight: f64 = challenges
+        .iter()
+        .map(|challenge| challenge.service_weight)
+        .sum();
+    if !(total_weight > 0.0) {
+        return;
+    }
+    for challenge in challenges.iter_mut() {
+        let weight = challenge.service_weight;
+        let mut settled_best = 0.0_f64;
+        let mut projected_best = 0.0_f64;
+        for team in teams.iter() {
+            let Some(service) = team
+                .services
+                .iter()
+                .find(|service| service.challenge_id == challenge.challenge_id)
+            else {
+                continue;
+            };
+            settled_best = settled_best.max(service.settled_points * total_weight / weight);
+            projected_best = projected_best.max(service.projected_points * total_weight / weight);
+        }
+        challenge.settled_field_best = settled_best.clamp(0.0, 100.0);
+        challenge.projected_field_best = projected_best.clamp(0.0, 100.0);
+        challenge.settled_multiplier = field_best_multiplier(challenge.settled_field_best);
+        challenge.projected_multiplier = field_best_multiplier(challenge.projected_field_best);
+    }
+    for team in teams.iter_mut() {
+        let mut settled_total = 0.0;
+        let mut projected_total = 0.0;
+        for service in team.services.iter_mut() {
+            let Some(challenge) = challenges
+                .iter()
+                .find(|challenge| challenge.challenge_id == service.challenge_id)
+            else {
+                continue;
+            };
+            let weight = challenge.service_weight;
+            let settled_local = (service.settled_points * total_weight / weight).clamp(0.0, 100.0);
+            let projected_local =
+                (service.projected_points * total_weight / weight).clamp(0.0, 100.0);
+            service.settled_local_points = settled_local;
+            service.projected_local_points = projected_local;
+            service.settled_points =
+                normalize_to_field_best(settled_local, challenge.settled_field_best) * weight
+                    / total_weight;
+            service.projected_points =
+                normalize_to_field_best(projected_local, challenge.projected_field_best) * weight
+                    / total_weight;
+            settled_total += service.settled_points;
+            projected_total += service.projected_points;
+        }
+        team.settled_total = settled_total.clamp(0.0, 100.0);
+        team.projected_total = projected_total.clamp(0.0, 100.0);
+    }
 }
 
 /// Apply the public A&D ranking policy. Settled points remain the primary key;
@@ -178,6 +280,9 @@ pub struct AdScoreboard {
     pub freeze: Option<DateTime<Utc>>,
     pub challenges: Vec<AdScoreboardChallenge>,
     pub detail_epoch_limit: usize,
+    /// Largest factor the field-best normalization may apply to one service.
+    #[serde(default = "max_field_best_multiplier")]
+    pub max_field_best_multiplier: f64,
     pub evidence: AdEvidenceStatus,
     pub teams: Vec<AdTeamScore>,
     #[serde(with = "crate::utils::datetime::millis")]
@@ -329,6 +434,8 @@ fn merge_service_detail(
         challenge_id,
         settled_points: ratio(settled_points_numerator, settled_weight),
         projected_points: ratio(projected_points_numerator, projected_weight),
+        settled_local_points: 0.0,
+        projected_local_points: 0.0,
         offense_rate: ratio(offense_numerator, projected_weight),
         defense_rate: ratio(defense_numerator, projected_weight),
         sla_rate: ratio(sla_numerator, projected_weight),
@@ -459,7 +566,8 @@ pub async fn build_ad_scoreboard(
     .map_err(|error| AppError::internal(error.to_string()))?;
 
     let challenge_rows = sqlx::query_as::<_, AdScoreboardChallengeRow>(
-        r#"SELECT id AS challenge_id, title, category
+        r#"SELECT id AS challenge_id, title, category,
+                  LEAST(1.2, GREATEST(0.8, ad_scoring_weight)) AS service_weight
              FROM "GameChallenges"
             WHERE game_id = $1
               AND is_enabled = TRUE
@@ -566,7 +674,7 @@ pub async fn build_ad_scoreboard(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
-    let challenges = challenge_rows
+    let mut challenges = challenge_rows
         .into_iter()
         .map(|row| {
             let category =
@@ -576,6 +684,11 @@ pub async fn build_ad_scoreboard(
                 challenge_id: row.challenge_id,
                 title: row.title,
                 category,
+                service_weight: row.service_weight,
+                settled_field_best: 0.0,
+                projected_field_best: 0.0,
+                settled_multiplier: 1.0,
+                projected_multiplier: 1.0,
             })
         })
         .collect::<AppResult<Vec<_>>>()?;
@@ -816,6 +929,7 @@ pub async fn build_ad_scoreboard(
         });
     }
 
+    apply_field_best_normalization(&mut team_rows, &mut challenges);
     sort_and_rank_team_rows(&mut team_rows);
 
     Ok(AdScoreboard {
@@ -843,6 +957,7 @@ pub async fn build_ad_scoreboard(
         freeze: game.freeze_time_utc,
         challenges,
         detail_epoch_limit: TEAM_DETAIL_EPOCH_LIMIT,
+        max_field_best_multiplier: crate::utils::scoring::MAX_FIELD_BEST_MULTIPLIER,
         evidence: status,
         teams: team_rows,
         generated_at: now,

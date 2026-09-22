@@ -26,6 +26,12 @@ fn maximum_load_profile_board() -> KothScoreboardModel {
             next_reset_ticks: Some(7),
             cooldown_participants: Vec::new(),
             last_check_status: Some("Ok".to_owned()),
+            settled_field_best: 90.0,
+            projected_field_best: 92.0,
+            settled_multiplier: 100.0 / 90.0,
+            projected_multiplier: 100.0 / 92.0,
+            settled_share: 1.0 / f64::from(LOAD_PROFILE_HILLS),
+            projected_share: 1.0 / f64::from(LOAD_PROFILE_HILLS),
         })
         .collect::<Vec<_>>();
     let teams = (1..=LOAD_PROFILE_TEAMS)
@@ -39,10 +45,6 @@ fn maximum_load_profile_board() -> KothScoreboardModel {
                 division: Some(if team_id % 2 == 0 { "Open" } else { "Student" }.to_owned()),
                 settled_total: 40.0 + f64::from(team_band) / 2.0,
                 projected_total: 42.0 + f64::from(team_band) / 2.0,
-                settled_epoch_points: 120.0 + f64::from(team_band) * 2.0,
-                settled_epoch_weight: 3.0,
-                projected_epoch_points: 150.0 + f64::from(team_band) * 2.0,
-                projected_epoch_weight: 4.0,
                 acquisition_rate: f64::from(40 + team_band % 51) / 100.0,
                 control_rate: f64::from(35 + team_band % 56) / 100.0,
                 reliability_rate: f64::from(50 + team_band % 50) / 100.0,
@@ -53,6 +55,8 @@ fn maximum_load_profile_board() -> KothScoreboardModel {
                             challenge_id,
                             settled_points: f64::from(200 + mix * 7) / 10.0,
                             projected_points: f64::from(220 + mix * 7) / 10.0,
+                            settled_normalized_points: f64::from(200 + mix * 7) / 9.0,
+                            projected_normalized_points: f64::from(220 + mix * 7) / 9.2,
                             acquisition_rate: f64::from(25 + mix % 71) / 100.0,
                             control_rate: f64::from(20 + mix % 76) / 100.0,
                             reliability_rate: f64::from(45 + mix % 55) / 100.0,
@@ -93,6 +97,7 @@ fn maximum_load_profile_board() -> KothScoreboardModel {
         generated_at: Utc::now(),
         is_frozen_view: false,
         freeze: None,
+        max_field_best_multiplier: crate::utils::scoring::MAX_FIELD_BEST_MULTIPLIER,
         hills,
         teams,
     }

@@ -522,7 +522,7 @@ write_to_hill "/koth/king" "$TOKEN"`,
                     <Text size="sm">
                       {t(
                         'game.content.koth.guide.epoch_scoring.total',
-                        'Hill scores are normalized by service weight into one fixed-ceiling epoch score. Official rank uses finalized epochs; the unfinished epoch is shown only as a live projection. There are no flat hold credits or negative point penalties.'
+                        'Each hill’s event-average score is scaled so the field’s best team on that hill counts 100, capped at 4×, and hill weights then combine the hills into one fixed-ceiling event score. Official rank uses finalized epochs; the unfinished epoch is shown only as a live projection. There are no flat hold credits or negative point penalties.'
                       )}
                     </Text>
                   </Stack>

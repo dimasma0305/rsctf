@@ -349,17 +349,10 @@ pub fn average_equal_epochs(epoch_points: &[f64]) -> Result<f64, KothScoringErro
 ///
 /// Complete epochs use weight `1`; a tail containing `r` of `n` expected ticks
 /// uses `r/n`. This prevents a short event tail from carrying a full epoch's
-/// influence while keeping every complete epoch equally important.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct WeightedEpochAverage {
-    pub(super) points_numerator: f64,
-    pub(super) epoch_weight: f64,
-    pub(super) average: f64,
-}
-
-pub(super) fn weighted_epoch_average(
-    epoch_points: &[(f64, f64)],
-) -> Result<WeightedEpochAverage, KothScoringError> {
+/// influence while keeping every complete epoch equally important. The result
+/// is the raw epoch running average; the official event score additionally
+/// applies the per-hill field-best normalization in `scoring.rs`.
+pub(super) fn weighted_epoch_average(epoch_points: &[(f64, f64)]) -> Result<f64, KothScoringError> {
     let mut weighted_total = 0.0;
     let mut total_weight = 0.0;
 
@@ -370,22 +363,16 @@ pub(super) fn weighted_epoch_average(
         total_weight += weight;
     }
 
-    let average = if total_weight == 0.0 {
-        0.0
+    if total_weight == 0.0 {
+        Ok(0.0)
     } else {
-        (weighted_total / total_weight).clamp(0.0, 100.0)
-    };
-
-    Ok(WeightedEpochAverage {
-        points_numerator: weighted_total,
-        epoch_weight: total_weight,
-        average,
-    })
+        Ok((weighted_total / total_weight).clamp(0.0, 100.0))
+    }
 }
 
 #[cfg(test)]
 fn average_weighted_epochs(epoch_points: &[(f64, f64)]) -> Result<f64, KothScoringError> {
-    Ok(weighted_epoch_average(epoch_points)?.average)
+    weighted_epoch_average(epoch_points)
 }
 
 #[cfg(test)]
@@ -718,10 +705,10 @@ mod tests {
     fn complete_epochs_are_equal_and_tail_epoch_is_fractional() {
         close(average_equal_epochs(&[20.0, 60.0, 100.0]).unwrap(), 60.0);
         close(average_equal_epochs(&[]).unwrap(), 0.0);
-        let weighted = weighted_epoch_average(&[(80.0, 1.0), (0.0, 0.25)]).unwrap();
-        close(weighted.points_numerator, 80.0);
-        close(weighted.epoch_weight, 1.25);
-        close(weighted.average, 64.0);
+        close(
+            weighted_epoch_average(&[(80.0, 1.0), (0.0, 0.25)]).unwrap(),
+            64.0,
+        );
         close(average_weighted_epochs(&[]).unwrap(), 0.0);
     }
 

@@ -18,7 +18,7 @@ pageClass: koth-handbook
 ## Abstract
 
 <div class="journal-abstract">
-<p>RSCTF defines two King of the Hill (KotH) formats with different competitive meanings. <strong>Boot2Root KotH</strong> is an exclusive-control contest over one shared machine: teams acquire the hill, retain control, and accept responsibility for service health. <strong>Leaderboard KotH</strong> is a concurrent application or protocol contest: every eligible team may complete each challenge-native wave, and RSCTF compares every completed result with the best result from that same wave. Boot2Root uses the constant score 100R(0.25A + 0.55C + 0.20√AC). Leaderboard uses the constant wave score 100[0.95(S/S*)^(3/4) + 0.05K], where K is the unique Crown. An exact top-score tie gives every tied team full relative-performance credit and gives no team the Crown premium. Missing or incomplete teams receive zero for that wave. Points are not divided by field size, there is no separate winner or streak multiplier, and failed hacking attempts are not negative points. The managed arena reports bounded native evidence with a credential tied to its exact target lifecycle; RSCTF retains normalization and point authority. Authenticity, replay protection, exact runtime identity, independent checking, and challenge-level proof design determine whether evidence is admitted. Boot2Root capabilities rotate with scheduled pristine crown cycles. A Leaderboard arena remains persistent across rounds and epochs; its event token changes only through explicit security rotation, while a stopped runtime or repeated functional failure invokes health recovery. Both formats use scoped capabilities, bounded hill aggregation, and finalized epoch settlement. This paper is the canonical deployed scoring and operations contract.</p>
+<p>RSCTF defines two King of the Hill (KotH) formats with different competitive meanings. <strong>Boot2Root KotH</strong> is an exclusive-control contest over one shared machine: teams acquire the hill, retain control, and accept responsibility for service health. <strong>Leaderboard KotH</strong> is a concurrent application or protocol contest: every eligible team may complete each challenge-native wave, and RSCTF compares every completed result with the best result from that same wave. Boot2Root uses the constant score 100R(0.25A + 0.55C + 0.20√AC). Leaderboard uses the constant wave score 100[0.95(S/S*)^(3/4) + 0.05K], where K is the unique Crown. An exact top-score tie gives every tied team full relative-performance credit and gives no team the Crown premium. Missing or incomplete teams receive zero for that wave. Points are not divided by field size, there is no separate winner or streak multiplier, and failed hacking attempts are not negative points. Before hills are combined, each hill's event-average score is scaled so the field's best event average on that hill counts 100, with the factor capped at 4; frozen hill weights then combine the normalized hill scores into the event score, so a hard hill is worth as much as an easy one. The managed arena reports bounded native evidence with a credential tied to its exact target lifecycle; RSCTF retains normalization and point authority. Authenticity, replay protection, exact runtime identity, independent checking, and challenge-level proof design determine whether evidence is admitted. Boot2Root capabilities rotate with scheduled pristine crown cycles. A Leaderboard arena remains persistent across rounds and epochs; its event token changes only through explicit security rotation, while a stopped runtime or repeated functional failure invokes health recovery. Both formats use scoped capabilities, bounded hill aggregation, and finalized epoch settlement. This paper is the canonical deployed scoring and operations contract.</p>
 </div>
 
 <p class="journal-keywords"><strong>Keywords:</strong> King of the Hill; Boot2Root; Leaderboard KotH; relative scoring; Crown; anti-cheat; crown cycle; RSCTF</p>
@@ -111,7 +111,8 @@ surface may be HTTP, a binary protocol, a simulator, or a game server.
 Both formats preserve these requirements:
 
 1. **Constant policy.** Each format has one formula and fixed coefficients.
-2. **Bounded result.** A hill-epoch and aggregate epoch remain in `[0,100]`.
+2. **Bounded result.** A hill-epoch, a normalized hill event score, and the
+   event score remain in `[0,100]`.
 3. **Current identity.** Evidence belongs to the exact game, hill, round,
    lifecycle record, runtime attempt, target, and container. Boot2Root also
    binds the scheduled cycle capability; Leaderboard binds the current
@@ -411,22 +412,43 @@ defines the challenge-design obligations that make a completion meaningful.
 
 Before scoring, each hill receives a frozen weight `w_h` in `[0.8,1.2]`. Let
 `z_he = 1` when hill `h` has field-wide scorable evidence in epoch `e`, and
-zero otherwise. The team epoch result is:
+zero otherwise. A complete epoch has weight `q_e = 1`. If the event ends after
+`r` of `n` configured ticks in the final epoch, then `q_e = r/n`. Each team's
+hill event score is the evidence-weighted average of its hill-epoch scores:
 
-$$E_{ie}=\frac{\sum_h z_{he}w_hH_{ihe}}
-                 {\sum_h z_{he}w_h}.$$
+$$S_{ih}=\frac{\sum_e q_ez_{he}H_{ihe}}{\sum_e q_ez_{he}}.$$
 
 A wholly void hill contributes no numerator or denominator. Once a
 Leaderboard hill has field evidence, an omitted team retains its explicit zero
 rather than removing the hill from its personal calculation.
 
-A complete epoch has weight `q_e = 1`. If the event ends after `r` of `n`
-configured ticks in the final epoch, then `q_e = r/n`. The event score is:
+Hills differ in difficulty, and an absolute time-share score would let the hill
+every team can run continuously decide the event while a hill solved late adds
+almost nothing. RSCTF therefore scales each hill to its field best before
+combining hills. Let `B_h = max_i S_ih` be the best hill event score any roster
+team reached. The hill multiplier and the normalized hill score are:
 
-$$T_i=\frac{\sum_e q_eE_{ie}}{\sum_e q_e}.$$
+$$m_h=\min\left(4,\frac{100}{B_h}\right),\qquad
+N_{ih}=\min\left(100,m_hS_{ih}\right).$$
 
-There is no late-epoch multiplier. Projected includes open epochs; Settled uses
-only finalized epochs.
+The best team on a hill therefore scores 100 on that hill unless the cap
+applies, and every other team scales by the same factor. The cap keeps a hill
+that nobody meaningfully played from handing its whole budget to the first team
+that completes one wave: a field best below 25 points is worth at most four
+times its absolute value. A hill without any positive score keeps `m_h = 1`.
+
+The event score combines the normalized hill scores by hill weight and
+evidence weight, with `W_h = w_h * sum_e q_e z_he`:
+
+$$T_i=\frac{\sum_h W_hN_{ih}}{\sum_h W_h}.$$
+
+There is no late-epoch multiplier. Projected includes open epochs in `S_ih`,
+`B_h`, and `W_h`; Settled uses only finalized epochs. Because `B_h` is a field
+property, a team's Settled score can fall when a rival improves on a hill,
+exactly as a Jeopardy dynamic value falls with later solves. The scoreboard
+publishes `B_h`, `m_h`, and each hill's share `W_h / sum W` so the arithmetic
+can be checked from the wire model. The per-epoch list and the timeline
+endpoint show raw epoch averages before this normalization.
 
 Official KotH rank sorts by:
 
@@ -619,8 +641,9 @@ cadence.
 
 A randomized checker sample cannot prove continuous state between observations.
 Capability hashing cannot repair low-entropy tokens. HMAC cannot prove arena
-correctness. Equal normalization cannot prove equal objective difficulty. The
-formula cannot detect off-protocol collusion. A field-wide outage is void, so
+correctness. Field-best normalization rewards relative achievement on each hill,
+but it cannot prove equal objective difficulty, and its cap is a policy constant
+rather than a measurement. The formula cannot detect off-protocol collusion. A field-wide outage is void, so
 weak resource isolation could let one participant manufacture a veto. These
 remain challenge-design and operational responsibilities.
 
@@ -710,6 +733,7 @@ guessing whether a participant is human or automated.
 <tr><td><i>K<sub>it</sub></i></td><td>unique Crown indicator in wave <code>t</code></td><td><strong>Projected</strong></td><td>information that also includes open evidence</td></tr>
 <tr><td><i>H<sup>M</sup>, H<sup>L</sup></i></td><td>local Boot2Root and Leaderboard scores in <code>[0,100]</code></td><td><strong>Field void</strong></td><td>sample excluded from every team's denominator</td></tr>
 <tr><td><i>w<sub>h</sub></i></td><td>frozen hill weight in <code>[0.8,1.2]</code></td><td><strong>Explicit zero</strong></td><td>omitted or incomplete Leaderboard team in a valid wave</td></tr>
+<tr><td><i>S<sub>ih</sub>, B<sub>h</sub></i></td><td>team hill event score and the field best on hill <code>h</code></td><td><i>m<sub>h</sub>, N<sub>ih</sub></i></td><td>capped field-best multiplier and normalized hill score</td></tr>
 </tbody>
 </table>
 </div>
@@ -732,6 +756,7 @@ Paths are relative to the repository revision containing this paper.
 | Stable finalized-wave snapshot read and relative curve | `src/services/ad/engine/koth_api.rs` |
 | Checker persistence, dense zeros, and Crown validation | `src/services/ad/engine/checker/koth_api.rs` |
 | Constant pure formulas | `src/controllers/game/koth/scoring_formula.rs` |
+| Capped field-best hill normalization and event aggregate | `src/utils/scoring.rs`, `src/controllers/game/koth/scoring.rs` |
 | Equal-wave SQL epoch aggregation | `src/controllers/game/koth/scoring/evidence.rs` |
 | Final rollups | `src/controllers/game/koth/scoring/rollup/` |
 | Board labels and rank | `src/controllers/game/koth/board.rs`, `web/src/components/KothScoreboardTable.tsx` |
@@ -750,7 +775,7 @@ Paths are relative to the repository revision containing this paper.
 | `POST /api/v1/koth/capability/authenticate` | exchange one scoped event capability for the authoritative arena identity |
 | `GET /api/game/{id}/ad/koth/{challengeId}/state` | lifecycle and Boot2Root holder state |
 | `GET /api/game/{id}/ad/koth/scoreboard` | source-aware metrics, Projected, Settled, rank |
-| `GET /api/game/{id}/ad/koth/timeline` | finalized/projected cumulative history |
+| `GET /api/game/{id}/ad/koth/timeline` | raw epoch running-average history before field-best normalization |
 | `GET /api/edit/games/{id}/ad/koth/state` | operator lifecycle and evidence view |
 | `POST /api/edit/games/{id}/ad/koth/{challengeId}/recover` | idempotent lifecycle recovery |
 | `GET/POST/DELETE /api/edit/games/{id}/ad/koth/{challengeId}/observer` | inspect or enable Leaderboard reporting; manage the legacy external credential |

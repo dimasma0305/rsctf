@@ -118,6 +118,73 @@ pub fn validate_challenge_scoring(
     Ok(())
 }
 
+/// Largest factor the field-best normalization may apply to one Attack & Defense
+/// service or King of the Hill hill. A challenge whose best event-average score is
+/// below `100 / MAX_FIELD_BEST_MULTIPLIER` points is not inflated to a full 100,
+/// so a hill or service nobody meaningfully played cannot hand its whole budget to
+/// the first team that touches it.
+pub const MAX_FIELD_BEST_MULTIPLIER: f64 = 4.0;
+
+/// Multiplier that maps the field's best event-average score on one engine
+/// challenge onto the fixed 100-point ceiling, capped at
+/// [`MAX_FIELD_BEST_MULTIPLIER`]. A field with no positive score keeps the
+/// neutral factor `1`, and a best above 100 (float noise) is never scaled down.
+pub fn field_best_multiplier(field_best: f64) -> f64 {
+    if !field_best.is_finite() || field_best <= 0.0 {
+        return 1.0;
+    }
+    (100.0 / field_best).clamp(1.0, MAX_FIELD_BEST_MULTIPLIER)
+}
+
+/// Scale one team's event-average challenge score by the field-best multiplier
+/// and keep the result inside `[0, 100]`.
+pub fn normalize_to_field_best(points: f64, field_best: f64) -> f64 {
+    if !points.is_finite() {
+        return 0.0;
+    }
+    (points * field_best_multiplier(field_best)).clamp(0.0, 100.0)
+}
+
+#[cfg(test)]
+mod field_best_tests {
+    use super::{field_best_multiplier, normalize_to_field_best, MAX_FIELD_BEST_MULTIPLIER};
+
+    fn close(left: f64, right: f64) {
+        assert!(
+            (left - right).abs() < 1e-12,
+            "expected {left} to equal {right}"
+        );
+    }
+
+    #[test]
+    fn field_best_maps_to_the_full_ceiling() {
+        close(field_best_multiplier(80.0), 1.25);
+        close(normalize_to_field_best(80.0, 80.0), 100.0);
+        close(normalize_to_field_best(40.0, 80.0), 50.0);
+    }
+
+    #[test]
+    fn low_field_best_is_capped_not_inflated_to_full_credit() {
+        close(field_best_multiplier(25.0), MAX_FIELD_BEST_MULTIPLIER);
+        close(field_best_multiplier(7.8), MAX_FIELD_BEST_MULTIPLIER);
+        close(normalize_to_field_best(7.8, 7.8), 31.2);
+        close(normalize_to_field_best(1.0, 7.8), 4.0);
+    }
+
+    #[test]
+    fn empty_or_saturated_fields_stay_neutral_and_bounded() {
+        close(field_best_multiplier(0.0), 1.0);
+        close(field_best_multiplier(-3.0), 1.0);
+        close(field_best_multiplier(f64::NAN), 1.0);
+        close(field_best_multiplier(100.0), 1.0);
+        close(field_best_multiplier(120.0), 1.0);
+        close(normalize_to_field_best(0.0, 0.0), 0.0);
+        close(normalize_to_field_best(f64::NAN, 50.0), 0.0);
+        close(normalize_to_field_best(150.0, 50.0), 100.0);
+        close(normalize_to_field_best(-1.0, 50.0), 0.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

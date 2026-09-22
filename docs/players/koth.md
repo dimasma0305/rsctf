@@ -94,10 +94,12 @@ transient sessions and unsettled snapshots.
 
 Provisioning, recovery, readiness, incomplete capability issuance, and
 platform-attributed failures are void rather than charged to teams. Several
-ticks form an epoch. Complete evidence-bearing epochs have equal weight. A
-shortened final epoch has proportional weight, and a wholly field-void hill is
-omitted from hill normalization. Bounded hill weights never raise the epoch
-ceiling above 100.
+ticks form an epoch. Complete evidence-bearing epochs have equal weight, and a
+shortened final epoch has proportional weight. Each hill's event-average score
+is then scaled so the field's best team on that hill counts 100, capped at four
+times the absolute value, before bounded hill weights combine the hills. A
+wholly field-void hill is omitted from that aggregate, and the event score
+never exceeds 100.
 
 ## Get and protect your capability
 
