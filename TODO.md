@@ -61,6 +61,7 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
 ### P1 — Bound workload growth and startup bursts
 
 - [ ] Enforce aggregate container capacity, not only per-container limits.
+  - Verified 2026-09-22 against the current tree: the trusted-worker scheduler admits atomically on cpu/memory/slots, but it reserves no headroom for Docker/rsctf/PostgreSQL/Redis and the local Docker backend has no aggregate bound at all (only `MAX_LOCAL_OPERATIONS = 4` concurrent provisioning).
   - Account for requested CPU, memory, replica count, and running container slots
     atomically before accepting a workload.
   - Reserve explicit capacity for Docker, rsctf, PostgreSQL, Redis, networking, and
@@ -74,6 +75,7 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
 
 - [ ] Add an operator preflight that pre-pulls and smoke-starts every enabled immutable
   challenge image before an event.
+  - Verified 2026-09-22 against the current tree: still open; the readiness view is saved-configuration advice only (`EventReadiness.ts`) and nothing pulls or smoke-starts images or totals capacity.
   - Report required CPU, memory, storage, replica, and container-slot totals against
     available worker capacity.
   - Start and remove one bounded temporary instance per distinct image, verify its
@@ -83,6 +85,7 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
 
 - [ ] Set `init: true` for Linux challenge containers created by the local Docker and
   trusted-worker backends so challenge processes cannot accumulate zombie children.
+  - Verified 2026-09-22 against the current tree: still open in both `HostConfig` constructors (`services/container.rs`, worker `runtime/docker/support.rs`); only matters for images whose PID 1 forks without reaping.
   - Preserve Windows behavior and add runtime inspection tests for both backends.
 
 ### P2 — Reduce per-instance networking overhead
@@ -90,6 +93,7 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
 - [ ] Remove per-container host-port and `docker-proxy` requirements where the
   authenticated platform proxy can safely reach a workload on an isolated internal
   network.
+  - Verified 2026-09-22 against the current tree: still open; every non-VPN workload publishes a host port and the daemon default forks `docker-proxy` per port. Cheap partial win: `userland-proxy: false` in the daemon config.
   - Preserve workload-to-workload isolation, VPN-only A&D reachability, callback
     authentication, and the existing private PlatformProxy trust boundary.
   - Do not reuse a bridge across mutually untrusted challenges merely to reduce the
@@ -100,6 +104,7 @@ risks observed while rehearsing the INTECHFEST Warmup with 50 teams.
 ### Incident follow-up
 
 - [ ] Add an operator runbook and alert for abandoned Docker API clients.
+  - Verified 2026-09-22 against the current tree: still open; no runbook section, no daemon metrics, no alert rules.
   - The 2026-09-02 host incident reached roughly 93% aggregate CPU while rsctf used
     about 2%; `dockerd` used approximately 3.7 to 6.6 cores and repeatedly read JSON
     logs at EOF for seven abandoned `docker logs` clients, including deleted-container
@@ -2952,7 +2957,8 @@ on 2026-08-25.
 
 ### P1 — Recovery and lifecycle correctness
 
-- [ ] Make challenge creation and ordinary edits atomic, revisioned, and safe to retry.
+- [x] Make challenge creation and ordinary edits atomic, revisioned, and safe to retry.
+  - Verified 2026-09-22 against the current tree: create and update run on the control transaction with a required expected revision, operation replay, 409 on stale intent, and durable drained revision effects (`edit/challenges/mod.rs`, `revision_effects.rs`, `m0320`).
   - `add_challenge` holds the per-game control transaction, but inserts the
     `GameChallenges` row through the separate SeaORM pool connection and only then
     seeds `DivisionChallengeConfigs` through the control transaction. A seed/commit
@@ -2995,8 +3001,9 @@ on 2026-08-25.
     `src/utils/single_flight.rs`, and a new registered idempotent forward migration for
     challenge revisions/create operations.
 
-- [ ] Make team, game, and post creation recover the original result instead of
+- [x] Make team, game, and post creation recover the original result instead of
   duplicating records.
+  - Verified 2026-09-22 against the current tree: all three creations require an `Idempotency-Key`, claim and complete the operation in one transaction, and replay the original result; clients hold a `RetryableMutationOwner` (`team/mod.rs`, `edit/games/creation.rs`, `edit/posts.rs`).
   - `TeamCreateModal`, `GameCreateModal`, and the new-post editor use component state as
     their only in-flight guard. A second activation before React commits that render,
     another tab, or a retry after an ambiguous response sends an indistinguishable new
@@ -3033,6 +3040,7 @@ on 2026-08-25.
 
 - [ ] Commit emailed account-link consumption with the account mutation and replay its
   terminal result.
+  - Verified 2026-09-22 against the current tree: the durable `AccountLinkAttempts` ledger, single-transaction confirm, and replay are implemented; only the cache-only compatibility branch in `recovery.rs` (pre-migration links) still removes the ticket before the update.
   - `Confirm` and `Verify` use a delayed React `disabled` state as their only duplicate
     guard. Two rapid submissions can reach the server: one commits, while the other
     observes the now-consumed/invalidated credential and reports failure. The user can
@@ -3069,8 +3077,9 @@ on 2026-08-25.
     `src/controllers/account/email_confirmation.rs`, and a new registered idempotent
     forward migration for hashed account-link attempts/results.
 
-- [ ] Either authenticate managed API tokens end to end or remove the misleading
+- [x] Either authenticate managed API tokens end to end or remove the misleading
   credential surface.
+  - Verified 2026-09-22 against the current tree: `rsctf_pat_v1_` tokens are authenticated in the global middleware with digest, audience, revocation, expiry, and security-stamp fences, scope-checked per request, throttled `last_used_at`, and legacy rows revoked (`managed_api_token.rs`, `m0322`).
   - `/api/tokens` generates and stores opaque bearer secrets advertised for
     programmatic access, including expiry, revocation, and `last_used_at` metadata.
     No authentication path ever reads `ApiTokens`: global middleware recognizes only
@@ -3106,8 +3115,9 @@ on 2026-08-25.
     `src/models/data/content.rs`, `src/server.rs`, the generated `web/src/Api.ts`
     contract, and a new registered idempotent forward migration.
 
-- [ ] Implement the promised Repo Bindings scheduler and remove the useless idle
+- [x] Implement the promised Repo Bindings scheduler and remove the useless idle
   poll/N+1 query.
+  - Verified 2026-09-22 against the current tree: a leased `SKIP LOCKED` scheduler claims due bindings in bounded batches with per-host concurrency and jittered backoff, writes `currentActivity`, and push-on-edit uses a coalescing durable queue (`repo_binding_scheduler.rs`, `repo_push.rs`, `m0323`).
   - The UI says active bindings rescan on the configured cadence and displays
     `nextScanUtc`, but no runtime service reads `status`, `interval_seconds`, or
     `next_scan_utc` to claim due bindings. Only create-with-`runImmediately` and the
@@ -3287,8 +3297,9 @@ on 2026-08-25.
     banned users, unmount, and account replacement while a retry is pending.
   - Relevant code: `web/src/hooks/useUser.tsx`.
 
-- [ ] Stop passive account-stat and team-roster refreshes from rebuilding unbounded
+- [x] Stop passive account-stat and team-roster refreshes from rebuilding unbounded
   user histories.
+  - Verified 2026-09-22 against the current tree: stats and team reads are once-only and mutation-driven, the roster is one bounded join, a compact `/api/team/selector` exists, and dialog timers are gone (`account/stats.rs`, `team/reads.rs`, `useUser.tsx`, `m0340`).
   - The stats panel's raw SWR hook inherits the global one-minute interval and default
     error retry. Each tick loads every accepted submission model for the account
     (including the answer) through a filter with no `(user_id,status)` index, expands
@@ -3322,6 +3333,7 @@ on 2026-08-25.
     `src/migrations/m0021_hot_indexes.rs`.
 
 - [ ] Make SWR refresh and retry behavior opt-in instead of hidden defaults.
+  - Verified 2026-09-22 against the current tree: client defaults are opt-in and once-only reads are really once; only the admin pending-challenge projection in `edit/challenges/review.rs` is still unpaginated.
   - The application-level `refreshInterval: 60000` silently turns every new SWR read
     into a poller unless its caller remembers `OnceSWRConfig`.
   - Gate modal-owned reads on `opened`; for example, the always-mounted A&D toolkit
@@ -3362,6 +3374,7 @@ on 2026-08-25.
 
 - [ ] Stop the joined-challenge catalog from periodically rescanning a player's entire
   event history.
+  - Verified 2026-09-22 against the current tree: the one-minute rescan is gone and solved state joins `FirstSolves`; only the `COUNT(*) OVER ()` window in `game/catalog.rs` still scans the filtered set per page.
   - `/challenges` sends an identical request every minute while open. Its response is
     capped to 24 rows, but PostgreSQL first builds candidates from every accepted event
     the player has joined, every visible challenge in those started events, and a
@@ -3484,6 +3497,7 @@ on 2026-08-25.
     `src/controllers/edit/helpers.rs`.
 
 - [ ] Make Event-VPN failures visible and consistent across every HTTP client.
+  - Verified 2026-09-22 against the current tree: proof-aware fetch, distinct VPN vs session errors, client coalescing/backoff, and a mint budget are in place. Still open: protected attachment downloads are a plain anchor with no proof header and the asset gate accepts only the tunnel-internal source, so in a VPN-required event on a deployment without `compose.event-vpn-ingress.yml` every attachment download returns 401 (`ChallengeModal.tsx`, `assets/authorization/finalization.rs`, `event_security/policy.rs`). Fix by accepting the proof on the asset route or by refusing `vpnAccessRequired` without a same-origin ingress.
   - Route native `fetch` calls through the same proof-aware wrapper as Axios. Solver
     and rating requests currently omit the proof and silently render empty data for
     ordinary players in VPN-required events.
@@ -3663,7 +3677,8 @@ on 2026-08-25.
     `src/controllers/game/scoreboard_board.rs`, and
     `web/src/components/TeamRank.tsx`.
 
-- [ ] Keep custom challenge Markdown animations alive while the player edits the flag form.
+- [x] Keep custom challenge Markdown animations alive while the player edits the flag form.
+  - Verified 2026-09-22 against the current tree: `MarkdownRenderer` is memoized on source, the content boundary is keyed on challenge identity, and a DOM-identity regression covers typing, polling, and submission (`MarkdownRenderer.tsx`, `ChallengeModal.test.ts`).
   - Typing, receipt-proof input, verdict polling, and unrelated modal state must not
     replace the sanitized Markdown DOM or restart embedded SVG/CSS animations when the
     challenge content itself is unchanged.
