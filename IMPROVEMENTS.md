@@ -352,6 +352,42 @@ fixed (decorative avatar alt text, contrast-safe component score shades).
 
 Evidence and rollback: `/root/rsctf-production/releases/sha-e19b985f/DEPLOYMENT.md`.
 
+### September 22: hardening batch from the verified TODO residuals
+
+Every TODO item that still described a real gap after the verification pass
+was implemented in isolated worktrees and integrated as one release: bounded
+admission classes and deadlines for short-lived Docker API work (server and
+worker) with metrics on the admin realtime surface; replica-safe aggregate
+capacity for the local Docker backend with durable reservations and a worker
+headroom reserve; a durable operator image preflight job with a Readiness
+panel; event-VPN download grants so protected attachments work without the
+same-origin ingress overlay; Docker `init` for Linux challenge containers;
+inherited health-check clamping; the `local` log driver for application
+services and workloads (PostgreSQL and Redis deliberately unchanged); the
+proxy read-path allocation, bounded pending-challenge and catalog projections,
+email-change ticket ordering; and the Docker client audit runbook and script.
+
+- Released `8d830b6dbf7dacd79c7c59862620272fa723cfb7`, package `0.1.118`.
+- Immutable image: `ghcr.io/dimasma0305/rsctf@sha256:da35c159a0122b7c92140c8a3744d43703ebaaf6f3873d4d9061a97d5d7a14ce`.
+- [Full release gate](https://github.com/dimasma0305/rsctf/actions/runs/35747537262)
+  passed with 26 successful jobs. Locally: zero-warning check and Clippy with
+  CI flags in both crates, 1,814 Rust tests plus 64 worker tests, database
+  regressions for capacity admission, preflight authorization/replay, both
+  migrations, and the VPN asset gate, the full frontend gate, and 471
+  load-harness contract tests.
+- Migrations `m0348_local_container_capacity` and `m0349_image_preflight_results`
+  were applied by the cutover's migrate role on TCP and by an explicit
+  `RSCTF_ROLE=migrate` run on the intechfest source-dev stack, where the first
+  backend restart refused to start without it (about three minutes down).
+- Four TCP replicas are healthy on the exact digest with zero restarts, both
+  origins return exact `ok`, smoke reads 200, every new surface rejects
+  anonymous callers, and logs are clean. Intechfest serves the same image's
+  frontend and a debug binary of the same Rust sources.
+- Not exercised live: preflight against real images and the attachment grant
+  in a VPN-required event, since no such event is running.
+
+Evidence and rollback: `/root/rsctf-production/releases/sha-8d830b6d/DEPLOYMENT.md`.
+
 ### Reliability findings queued for investigation
 
 The managed KotH load gate (`managed-koth-load.yml`) fails after its k6 phases
