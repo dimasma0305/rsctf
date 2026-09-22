@@ -19,6 +19,7 @@ import {
   Text,
   TextInput,
   Tooltip,
+  useMantineColorScheme,
   useMantineTheme,
 } from '@mantine/core'
 import {
@@ -59,6 +60,10 @@ const ComponentValue: FC<{
   definition: ModeDefinition
 }> = ({ component, definition }) => {
   const { t } = useTranslation()
+  const { colorScheme } = useMantineColorScheme()
+  // Bold 14px text needs 4.5:1; the palette's default text shade misses that on
+  // the dark row surface, so pick the same readable shades the format boards use.
+  const valueColor = `${definition.color}.${colorScheme === 'dark' ? 3 : 9}`
   const raw =
     component.earnedPoints !== undefined && component.attainablePoints !== undefined
       ? t('game.content.scoreboard.combined.jeopardy_raw', {
@@ -69,7 +74,7 @@ const ComponentValue: FC<{
       : null
   return (
     <Stack gap={0} align="center">
-      <Text fw={800} size="sm" c={definition.color} className={misc.ffmono}>
+      <Text fw={800} size="sm" c={valueColor} className={misc.ffmono}>
         {fmtPts(component.score)}
       </Text>
       {Math.abs(component.score - component.projectedScore) > 0.005 && (
