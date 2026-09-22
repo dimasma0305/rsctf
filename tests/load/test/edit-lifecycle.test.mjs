@@ -352,6 +352,8 @@ function objectBody(kind) {
       return { title: "Manual round advance is disabled", status: 400 };
     case "variant-generation":
       return { generated: 0 };
+    case "image-preflight":
+      return { job: null, summary: null, results: [] };
     default:
       throw new Error(`missing sample body for ${kind}`);
   }
@@ -382,34 +384,34 @@ function sampleResponse(operation) {
   };
 }
 
-test("catalog has exactly all 83 edit method/path operations", () => {
-  assert.equal(EDIT_OPERATIONS.length, 83);
-  assert.equal(new Set(EDIT_OPERATION_IDS).size, 83);
+test("catalog has exactly all 85 edit method/path operations", () => {
+  assert.equal(EDIT_OPERATIONS.length, 85);
+  assert.equal(new Set(EDIT_OPERATION_IDS).size, 85);
   assert.equal(
     new Set(EDIT_OPERATIONS.map(({ method, path }) => `${method} ${path}`))
       .size,
-    83,
+    85,
   );
   assert.deepEqual(
     EDIT_OPERATIONS.reduce((counts, operation) => {
       counts[operation.method] = (counts[operation.method] || 0) + 1;
       return counts;
     }, {}),
-    { GET: 32, POST: 34, PUT: 6, DELETE: 11 },
+    { GET: 33, POST: 35, PUT: 6, DELETE: 11 },
   );
   assert.deepEqual(
     EDIT_OPERATIONS.reduce((counts, operation) => {
       counts[operation.auth] = (counts[operation.auth] || 0) + 1;
       return counts;
     }, {}),
-    { manager: 66, admin: 15, "managed-list": 1, "user-submit": 1 },
+    { manager: 68, admin: 15, "managed-list": 1, "user-submit": 1 },
   );
 });
 
 test("catalog and every production controller source have exact bidirectional coverage", () => {
   const sources = controllerSources();
-  assert.deepEqual(assertEditRouterCoverage(sources), { operations: 83 });
-  assert.equal(parseEditRouterOperations(sources).length, 83);
+  assert.deepEqual(assertEditRouterCoverage(sources), { operations: 85 });
+  assert.equal(parseEditRouterOperations(sources).length, 85);
 });
 
 test("control-plane edit routes retain exact production paths and distinct fixture parameters", () => {
@@ -597,8 +599,8 @@ test("every declared response contract has an accepting and rejecting unit sampl
 
 test("coverage accounting rejects missing, duplicate, and unknown operation ids", () => {
   assert.deepEqual(assertCompleteEditCoverage(EDIT_OPERATION_IDS), {
-    covered: 83,
-    required: 83,
+    covered: 85,
+    required: 85,
   });
   assert.throws(
     () => assertCompleteEditCoverage(EDIT_OPERATION_IDS.slice(1)),
@@ -624,7 +626,7 @@ test("the disposable orchestrator has one explicit positive call for every catal
     "utf8",
   );
   const invoked = positiveCallExpressions(source).map(({ id }) => id);
-  assert.equal(invoked.length, 83);
+  assert.equal(invoked.length, 85);
   assert.deepEqual(new Set(invoked), new Set(EDIT_OPERATION_IDS));
   assert.equal(
     new Set(invoked).size,
@@ -634,10 +636,9 @@ test("the disposable orchestrator has one explicit positive call for every catal
 });
 
 test("pending challenge fixtures obey the one-manifest public submission boundary", () => {
-  const source = withQuoteVariants(readFileSync(
-    join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
-    "utf8",
-  ));
+  const source = withQuoteVariants(
+    readFileSync(join(REPOSITORY, "tests/load/edit-lifecycle.mjs"), "utf8"),
+  );
   assert.match(
     source,
     /const pendingApproveArchive = challengeArchive\(\[\s*\{\s*name: `Pending Approve/,
@@ -658,10 +659,9 @@ test("pending challenge fixtures obey the one-manifest public submission boundar
 });
 
 test("every manager-class positive uses the delegated manager token", () => {
-  const source = withQuoteVariants(readFileSync(
-    join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
-    "utf8",
-  ));
+  const source = withQuoteVariants(
+    readFileSync(join(REPOSITORY, "tests/load/edit-lifecycle.mjs"), "utf8"),
+  );
   const calls = new Map(
     positiveCallExpressions(source).map((call) => [call.id, call.source]),
   );
@@ -846,14 +846,18 @@ test("identity admission is isolated from the public game-delete success fixture
     join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
     "utf8",
   );
-  const prepare = withQuoteVariants(source.slice(
-    source.indexOf("async function prepareFutureFixture()"),
-    source.indexOf("async function prepareAdFixture()"),
-  ));
-  const cleanup = withQuoteVariants(source.slice(
-    source.indexOf("async function deleteFutureGame("),
-    source.indexOf("async function removeOwnedImages()"),
-  ));
+  const prepare = withQuoteVariants(
+    source.slice(
+      source.indexOf("async function prepareFutureFixture()"),
+      source.indexOf("async function prepareAdFixture()"),
+    ),
+  );
+  const cleanup = withQuoteVariants(
+    source.slice(
+      source.indexOf("async function deleteFutureGame("),
+      source.indexOf("async function removeOwnedImages()"),
+    ),
+  );
   assert.match(prepare, /title: titleFor\(tags\.auth\)/);
   assert.match(prepare, /A\.seedCohort\(authorizationGameId, 3\)/);
   assert.doesNotMatch(prepare, /A\.seedCohort\(context\.gameId, 3\)/);
@@ -878,10 +882,9 @@ test("edit acceptance awaits the shared orchestration lease with the canonical p
 });
 
 test("GitHub import defaults to the challenge repository rather than its parent gitlink", () => {
-  const source = withQuoteVariants(readFileSync(
-    join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
-    "utf8",
-  ));
+  const source = withQuoteVariants(
+    readFileSync(join(REPOSITORY, "tests/load/edit-lifecycle.mjs"), "utf8"),
+  );
   assert.match(
     source,
     /https:\/\/github\.com\/dimasma0305\/rsctf-challenges\.git/,
@@ -895,10 +898,12 @@ test("inspector acceptance keeps challenge eligibility while simulating an offli
     join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
     "utf8",
   );
-  const prepare = withQuoteVariants(source.slice(
-    source.indexOf("async function prepareAdFixture()"),
-    source.indexOf("async function prepareKothFixture()"),
-  ));
+  const prepare = withQuoteVariants(
+    source.slice(
+      source.indexOf("async function prepareAdFixture()"),
+      source.indexOf("async function prepareKothFixture()"),
+    ),
+  );
   assert.match(prepare, /isEnabled === true/);
   assert.match(
     prepare,
@@ -934,14 +939,18 @@ test("A&D and KotH create fixtures immediately prove every supplied engine setti
   ]) {
     assert.match(source, new RegExp(`\\b${field}:`), field);
   }
-  const adPrepare = withQuoteVariants(source.slice(
-    source.indexOf("async function prepareAdFixture()"),
-    source.indexOf("async function prepareKothFixture()"),
-  ));
-  const kothPrepare = withQuoteVariants(source.slice(
-    source.indexOf("async function prepareKothFixture()"),
-    source.indexOf("async function exerciseInspector()"),
-  ));
+  const adPrepare = withQuoteVariants(
+    source.slice(
+      source.indexOf("async function prepareAdFixture()"),
+      source.indexOf("async function prepareKothFixture()"),
+    ),
+  );
+  const kothPrepare = withQuoteVariants(
+    source.slice(
+      source.indexOf("async function prepareKothFixture()"),
+      source.indexOf("async function exerciseInspector()"),
+    ),
+  );
   assert.match(
     adPrepare,
     /assertPersistedGameSettings\(\s*context\.adGameId,\s*AD_CREATION_SETTINGS/,
@@ -1055,14 +1064,18 @@ test("KotH fixture uses public provisioning and proves exact durable and Docker 
     join(REPOSITORY, "tests/load/edit-lifecycle-fixtures.mjs"),
     "utf8",
   );
-  const prepare = withQuoteVariants(orchestrator.slice(
-    orchestrator.indexOf("async function prepareKothFixture()"),
-    orchestrator.indexOf("async function exerciseInspector()"),
-  ));
-  const cleanup = withQuoteVariants(orchestrator.slice(
-    orchestrator.indexOf("async function cleanup()"),
-    orchestrator.indexOf("async function main()"),
-  ));
+  const prepare = withQuoteVariants(
+    orchestrator.slice(
+      orchestrator.indexOf("async function prepareKothFixture()"),
+      orchestrator.indexOf("async function exerciseInspector()"),
+    ),
+  );
+  const cleanup = withQuoteVariants(
+    orchestrator.slice(
+      orchestrator.indexOf("async function cleanup()"),
+      orchestrator.indexOf("async function main()"),
+    ),
+  );
   assert.match(
     prepare,
     /\/api\/edit\/games\/\$\{context\.kothGameId\}\/ad\/EnsureContainers/,
@@ -1155,10 +1168,12 @@ test("A&D override acceptance changes authoritative evidence and proves both inv
     join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
     "utf8",
   );
-  const positives = withQuoteVariants(source.slice(
-    source.indexOf("async function positiveReadAndMutationSurface()"),
-    source.indexOf("async function runReadSimulation()"),
-  ));
+  const positives = withQuoteVariants(
+    source.slice(
+      source.indexOf("async function positiveReadAndMutationSurface()"),
+      source.indexOf("async function runReadSimulation()"),
+    ),
+  );
   assert.match(positives, /FROM \"AdEpochRollups\" rollup/);
   assert.match(positives, /result\.sla_credit IS NOT NULL/);
   assert.match(positives, /overrideTarget\.status !== overrideBefore\.status/);
@@ -1203,14 +1218,15 @@ test("A&D override acceptance changes authoritative evidence and proves both inv
 });
 
 test("KotH recovery acceptance faults a scoped durable phase and proves receipt/runtime convergence", () => {
-  const source = withQuoteVariants(readFileSync(
-    join(REPOSITORY, "tests/load/edit-lifecycle.mjs"),
-    "utf8",
-  ));
-  const positives = withQuoteVariants(source.slice(
-    source.indexOf("async function positiveReadAndMutationSurface()"),
-    source.indexOf("async function runReadSimulation()"),
-  ));
+  const source = withQuoteVariants(
+    readFileSync(join(REPOSITORY, "tests/load/edit-lifecycle.mjs"), "utf8"),
+  );
+  const positives = withQuoteVariants(
+    source.slice(
+      source.indexOf("async function positiveReadAndMutationSurface()"),
+      source.indexOf("async function runReadSimulation()"),
+    ),
+  );
   assert.match(positives, /setAdScoringPaused\(context\.kothGameId, true\)/);
   assert.match(positives, /phase='ReadinessPending'/);
   assert.match(positives, /cycle\.phase='Active'/);

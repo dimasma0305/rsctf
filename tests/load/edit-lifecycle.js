@@ -182,6 +182,26 @@ export const EDIT_OPERATIONS = Object.freeze([
       responseKind: "variant-generation",
     },
   ),
+  operation(
+    "edit_image_preflight_get",
+    "GET",
+    "/api/edit/games/{id}/preflight",
+    {
+      params: game,
+      responseKind: "image-preflight",
+    },
+  ),
+  operation(
+    "edit_image_preflight_start",
+    "POST",
+    "/api/edit/games/{id}/preflight",
+    {
+      params: game,
+      mutation: true,
+      expectedStatuses: [202],
+      responseKind: "control-job",
+    },
+  ),
 
   operation("edit_game_admins_get", "GET", "/api/edit/games/{id}/admins", {
     auth: "admin",
@@ -1046,6 +1066,19 @@ export function validateEditResponse(operationOrId, response) {
       object();
       if (!Number.isSafeInteger(body.generated) || body.generated < 0) {
         throw new Error(`${item.id} invalid variant generation result`);
+      }
+      break;
+    case "image-preflight":
+      object();
+      if (
+        !(
+          body.job === null ||
+          (typeof body.job === "object" && typeof body.job.state === "string")
+        ) ||
+        !(body.summary === null || typeof body.summary === "object") ||
+        !Array.isArray(body.results)
+      ) {
+        throw new Error(`${item.id} invalid image preflight projection`);
       }
       break;
     case "snapshot-changes":

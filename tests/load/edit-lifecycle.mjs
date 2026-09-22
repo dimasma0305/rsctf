@@ -1423,6 +1423,48 @@ async function positiveReadAndMutationSurface() {
     generatedVariants.model.generated === 0,
     "fixture with no configured generators unexpectedly created variants",
   );
+  // Image preflight: one durable job per game. The fixture has no container
+  // challenges, so the plan is empty and the job settles as Succeeded quickly.
+  const preflightStart = await call("edit_image_preflight_start", {
+    jwt: identities.managerJwt,
+    headers: { "Idempotency-Key": randomUUID() },
+  });
+  requireCondition(
+    typeof preflightStart.model.state === "string",
+    "image preflight start returned no job state",
+  );
+  let preflight = await call("edit_image_preflight_get", {
+    jwt: identities.managerJwt,
+  });
+  const preflightSettled = (model) =>
+    model.job !== null &&
+    ["Succeeded", "Failed", "Cancelled"].includes(model.job.state);
+  for (
+    let attempt = 0;
+    !preflightSettled(preflight.model) && attempt < 120;
+    attempt += 1
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const response = await uncatalogued(
+      "GET",
+      `/api/edit/games/${context.gameId}/preflight`,
+      { jwt: identities.managerJwt },
+    );
+    const model = responseBody(
+      response,
+      operationById.get("edit_image_preflight_get"),
+    );
+    validateEditResponse("edit_image_preflight_get", {
+      status: response.status,
+      body: model,
+      headers: response.headers,
+    });
+    preflight = { model, response };
+  }
+  requireCondition(
+    preflight.model.job?.state === "Succeeded",
+    `image preflight settled as ${preflight.model.job?.state ?? "missing"}`,
+  );
   const bulkOperation = {
     operationId: randomUUID(),
     expectedRevision: primaryGameModel.configurationRevision,
@@ -1433,14 +1475,21 @@ async function positiveReadAndMutationSurface() {
     jwt: identities.managerJwt,
     body: bulkOperation,
   });
-  for (let attempt = 0; bulkEnable.model.state === "Pending" && attempt < 120; attempt += 1) {
+  for (
+    let attempt = 0;
+    bulkEnable.model.state === "Pending" && attempt < 120;
+    attempt += 1
+  ) {
     await new Promise((resolve) => setTimeout(resolve, 250));
     const response = await uncatalogued(
       "POST",
       `/api/edit/games/${context.gameId}/challenges/bulk`,
       { jwt: identities.managerJwt, body: bulkOperation },
     );
-    const model = responseBody(response, operationById.get("edit_challenges_bulk"));
+    const model = responseBody(
+      response,
+      operationById.get("edit_challenges_bulk"),
+    );
     validateEditResponse("edit_challenges_bulk", {
       status: response.status,
       body: model,
