@@ -379,7 +379,7 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_deletion_or_divis
         r#"INSERT INTO "GameChallenges"
              (id, game_id, title, category, "Type", original_score, min_score_rate,
               difficulty, accepted_count, score_curve, is_enabled, review_status)
-           SELECT 10000 + n, 1, 'Bulk ' || n, 0, 0, 1000, 0.01, 5, 0, 0, TRUE, 0
+           SELECT 10000 + n, 1, 'Bulk ' || n, 3, 0, 1000, 0.01, 5, 0, 0, TRUE, 0
              FROM generate_series(1, $1) AS n"#,
     )
     .bind(MAX_COUNTED_CATALOG_ROWS)
