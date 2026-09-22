@@ -42,7 +42,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::services::docker_admission::docker_admission;
-use crate::utils::enums::{ChallengeType, NetworkMode};
+use crate::utils::enums::NetworkMode;
 use crate::utils::error::{AppError, AppResult};
 mod backend;
 pub mod capacity;
@@ -81,7 +81,8 @@ use logging::bounded_log_config;
 use naming::{container_name, map_status};
 pub(crate) use policy::validate_container_spec;
 pub use policy::{
-    storage_limit_or_default, validate_network_mode_value, validate_storage_limit_value,
+    game_kind_for_challenge, storage_limit_or_default, validate_network_mode_value,
+    validate_storage_limit_value,
 };
 
 /// Label stamped on every rsctf-managed container so orphans left behind by a
@@ -219,14 +220,6 @@ pub struct ContainerResourceLimits {
     pub memory_limit: i32,
     pub cpu_count: i32,
     pub storage_limit: i32,
-}
-
-pub fn game_kind_for_challenge(challenge_type: ChallengeType) -> GameKind {
-    match challenge_type {
-        ChallengeType::AttackDefense => GameKind::AttackDefense,
-        ChallengeType::KingOfTheHill => GameKind::KingOfTheHill,
-        _ => GameKind::Jeopardy,
-    }
 }
 
 impl ContainerSpec {
@@ -413,6 +406,10 @@ impl ContainerManager for DockerContainerManager {
                 .is_ok_and(|inspected| inspected.is_ok()),
             Err(_) => false,
         }
+    }
+
+    async fn pull_image(&self, image: &str) -> AppResult<()> {
+        docker::pull_immutable_image(self.client()?, image).await
     }
 
     async fn list_managed(&self) -> Vec<String> {

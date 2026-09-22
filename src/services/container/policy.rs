@@ -128,3 +128,11 @@ mod tests {
         assert_eq!(storage_limit_or_default_with_maximum(Some(768), 128), 768);
     }
 }
+
+pub fn game_kind_for_challenge(challenge_type: ChallengeType) -> GameKind {
+    match challenge_type {
+        ChallengeType::AttackDefense => GameKind::AttackDefense,
+        ChallengeType::KingOfTheHill => GameKind::KingOfTheHill,
+        _ => GameKind::Jeopardy,
+    }
+}

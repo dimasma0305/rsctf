@@ -3139,6 +3139,61 @@ export interface ControlJobModel {
   finishedAtUtc?: number | null;
 }
 
+/** Per-step outcome of an image preflight */
+export type ImagePreflightStepStatus = "Pending" | "Running" | "Succeeded" | "Failed" | "Skipped";
+
+export interface ImagePreflightResultModel {
+  challengeId: number;
+  challengeTitle: string;
+  image: string;
+  backend: string;
+  pullStatus: ImagePreflightStepStatus;
+  startStatus: ImagePreflightStepStatus;
+  durationMs: number;
+  error?: string | null;
+  /** @format uint64 */
+  updatedAtUtc: number;
+}
+
+export interface ImagePreflightResourceTotals {
+  cpuMillis: number;
+  memoryBytes: number;
+  storageBytes: number;
+  replicas: number;
+  slots: number;
+}
+
+export interface ImagePreflightWorkerCapacity {
+  workers: number;
+  cpuMillis: number;
+  memoryBytes: number;
+  slots: number;
+}
+
+export interface ImagePreflightCapacity {
+  requested: ImagePreflightResourceTotals;
+  workerRequested: ImagePreflightResourceTotals;
+  /** Free trusted-worker capacity; null when no worker plane exists */
+  available?: ImagePreflightWorkerCapacity | null;
+  acceptedTeams: number;
+  instances: number;
+}
+
+export interface ImagePreflightSummary {
+  challenges: number;
+  images: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  capacity: ImagePreflightCapacity;
+}
+
+export interface ImagePreflightModel {
+  job?: ControlJobModel | null;
+  summary?: ImagePreflightSummary | null;
+  results: ImagePreflightResultModel[];
+}
+
 /** New attachment information (Edit) */
 export interface AttachmentCreateModel {
   /** Attachment type */
@@ -11974,6 +12029,23 @@ export class Api<
         path: `/api/game/${gameId}/vpn/config`,
         method: "GET",
         format: "text",
+        ...params,
+      }),
+
+    getImagePreflight: (gameId: number, params: RequestParams = {}) =>
+      this.request<ImagePreflightModel, RequestResponse>({
+        path: `/api/edit/games/${gameId}/preflight`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    startImagePreflight: (gameId: number, operationId: string, params: RequestParams = {}) =>
+      this.request<ControlJobModel, RequestResponse>({
+        path: `/api/edit/games/${gameId}/preflight`,
+        method: "POST",
+        headers: { "Idempotency-Key": operationId },
+        format: "json",
         ...params,
       }),
 

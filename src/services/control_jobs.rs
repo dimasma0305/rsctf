@@ -22,6 +22,9 @@ pub(crate) use cancellation::{finish as finish_cancellation, requested as cancel
 mod admission;
 #[path = "control_jobs/execution.rs"]
 mod execution;
+#[path = "control_jobs/lookup.rs"]
+mod lookup;
+pub use lookup::{get_ad_reset_for_participation, latest_for_game};
 #[path = "control_jobs/security_derivation.rs"]
 mod security_derivation;
 pub use security_derivation::request as request_security_derivation;
@@ -59,6 +62,7 @@ pub enum ControlJobKind {
     WorkloadRollout,
     AdReconcile,
     AdReset,
+    ImagePreflight,
 }
 
 impl ControlJobKind {
@@ -71,6 +75,7 @@ impl ControlJobKind {
             Self::WorkloadRollout => "WorkloadRollout",
             Self::AdReconcile => "AdReconcile",
             Self::AdReset => "AdReset",
+            Self::ImagePreflight => "ImagePreflight",
         }
     }
 }
@@ -468,37 +473,6 @@ pub async fn get_by_operation(
             WHERE operation.operation_id = $1 LIMIT 1"#
     );
     sqlx::query_as::<_, JobRow>(&sql)
-        .bind(operation_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(database_error)?
-        .map(TryInto::try_into)
-        .transpose()
-}
-
-pub async fn get_ad_reset_for_participation(
-    pool: &sqlx::PgPool,
-    game_id: i32,
-    participation_id: i32,
-    id: Option<Uuid>,
-    operation_id: Option<Uuid>,
-) -> AppResult<Option<ControlJobModel>> {
-    let sql = format!(
-        r#"SELECT {JOB_COLUMNS_QUALIFIED} FROM "ControlPlaneJobs" job
-            WHERE job.kind = 'AdReset' AND job.game_id = $1
-              AND (job.input->>'participationId')::integer = $2
-              AND ($3::uuid IS NULL OR job.id = $3)
-              AND ($4::uuid IS NULL OR EXISTS (
-                  SELECT 1 FROM "ControlPlaneJobOperations" operation
-                   WHERE operation.job_id = job.id
-                     AND operation.operation_id = $4
-              ))
-            ORDER BY job.created_at_utc DESC, job.id DESC LIMIT 1"#
-    );
-    sqlx::query_as::<_, JobRow>(&sql)
-        .bind(game_id)
-        .bind(participation_id)
-        .bind(id)
         .bind(operation_id)
         .fetch_optional(pool)
         .await
@@ -926,7 +900,7 @@ pub fn kick(state: SharedState) {
 }
 
 pub async fn drain_bounded(state: &StateHandle, limit: usize) -> AppResult<usize> {
-    const KINDS: [ControlJobKind; 7] = [
+    const KINDS: [ControlJobKind; 8] = [
         ControlJobKind::AdReconcile,
         ControlJobKind::AdReset,
         ControlJobKind::ChallengeBuild,
@@ -934,6 +908,7 @@ pub async fn drain_bounded(state: &StateHandle, limit: usize) -> AppResult<usize
         ControlJobKind::WorkloadRollout,
         ControlJobKind::VariantGeneration,
         ControlJobKind::SecurityDerivation,
+        ControlJobKind::ImagePreflight,
     ];
     let mut processed = 0;
     while processed < limit {

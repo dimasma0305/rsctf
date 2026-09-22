@@ -49,6 +49,8 @@ use crate::utils::shared::{ArrayResponse, MessageResponse, PageParams, RequestRe
 
 pub(crate) mod control_jobs;
 use control_jobs::{cancel_control_job, get_control_job, get_control_job_by_operation};
+mod preflight;
+use preflight::{get_image_preflight, start_image_preflight};
 mod defaults;
 use defaults::{
     blood_bonus_from_value, default_blood_bonus, default_container_limit, default_true, epoch,
@@ -683,6 +685,11 @@ pub fn router() -> Router<SharedState> {
             get(get_game).put(update_game).delete(delete_game),
         )
         .route("/api/edit/games/{id}/purge", post(purge_game))
+        .route(
+            "/api/edit/games/{id}/preflight",
+            get(get_image_preflight)
+                .merge(limited(Policy::Concurrency, post(start_image_preflight))),
+        )
         .route("/api/edit/games/{id}/HashSalt", get(get_hash_salt))
         .route(GAME_CLONE_COMPAT_ROUTE, post(clone_game))
         .route(GAME_CLONE_CANONICAL_ROUTE, post(clone_game))

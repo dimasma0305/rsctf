@@ -32,6 +32,7 @@ pub mod git_sync;
 pub mod health;
 pub mod honeypot_listener;
 pub mod honeypot_telemetry;
+pub mod image_preflight;
 pub mod image_storage;
 pub mod k8s;
 pub(crate) mod live_roster;

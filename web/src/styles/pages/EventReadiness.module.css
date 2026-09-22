@@ -52,6 +52,43 @@
 .manualRow > div {
   flex-shrink: 0;
 }
+.preflightList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--app-border);
+}
+.preflightRow {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-block: 0.75rem;
+  border-bottom: 1px solid var(--app-border-subtle);
+  min-width: 0;
+}
+.preflightImage {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--app-text-secondary);
+}
+.preflightCapacity {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.5rem 1rem;
+  margin: 0;
+}
+.preflightCapacity > div {
+  min-width: 0;
+}
+.preflightCapacity dt {
+  font-size: 0.75rem;
+  color: var(--app-text-secondary);
+}
+.preflightCapacity dd {
+  margin: 0;
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
 @media (max-width: 64em) {
   .check,
   .manualRow {

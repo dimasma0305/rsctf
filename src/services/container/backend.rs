@@ -161,6 +161,13 @@ pub trait ContainerManager: Send + Sync {
         true
     }
 
+    /// Make an immutable image available ahead of a launch. Backends whose
+    /// runtime pulls during creation (trusted workers, Kubernetes) succeed
+    /// without doing anything; only a local daemon pulls eagerly.
+    async fn pull_image(&self, _image: &str) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn list_managed(&self) -> Vec<String> {
         Vec::new()
     }

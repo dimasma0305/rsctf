@@ -259,6 +259,52 @@ pub(super) fn clamped_image_health_config(image: &ImageInspect) -> Option<Health
     })
 }
 
+/// Eager pull for an operator preflight. A repository digest is fetched when
+/// absent; a daemon-local image id cannot be pulled and must already exist.
+/// Both the inspect and the pull go through Docker admission so a preflight
+/// cannot starve live provisioning of daemon slots.
+pub(super) async fn pull_immutable_image(docker: &Docker, image: &str) -> AppResult<()> {
+    if docker_admission()
+        .read("inspect_image", docker.inspect_image(image))
+        .await?
+        .is_ok()
+    {
+        return Ok(());
+    }
+    if !crate::services::challenge_images::is_repository_digest(image) {
+        return Err(AppError::unavailable(
+            "The daemon-local image id is absent from this container host; rebuild the challenge.",
+        ));
+    }
+    let options = bollard::image::CreateImageOptions {
+        from_image: image.to_string(),
+        ..Default::default()
+    };
+    let last_error = docker_admission()
+        .pull("create_image", async {
+            let mut pull = docker.create_image(Some(options), None, None);
+            let mut last_error = None;
+            while let Some(item) = pull.next().await {
+                if let Err(error) = item {
+                    last_error = Some(error.to_string());
+                    break;
+                }
+            }
+            last_error
+        })
+        .await?;
+    docker_admission()
+        .read("inspect_image", docker.inspect_image(image))
+        .await?
+        .map_err(|error| {
+            AppError::unavailable(format!(
+                "The image could not be pulled: {}",
+                last_error.unwrap_or_else(|| error.to_string())
+            ))
+        })?;
+    Ok(())
+}
+
 pub(super) fn image_requests_restricted_profile(image: &ImageInspect) -> bool {
     image
         .config
@@ -846,6 +892,7 @@ mod exec_admission_tests {
 
 #[cfg(test)]
 mod file_archive_tests {
+    use super::super::ContainerManager;
     use super::*;
 
     fn archive_header(entry_type: tar::EntryType, size: u64) -> Vec<u8> {

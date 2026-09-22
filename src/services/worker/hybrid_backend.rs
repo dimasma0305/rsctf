@@ -139,6 +139,10 @@ impl ContainerManager for HybridWorkerContainerManager {
         self.local.image_exists(image).await
     }
 
+    async fn pull_image(&self, image: &str) -> AppResult<()> {
+        self.local.pull_image(image).await
+    }
+
     async fn list_managed(&self) -> Vec<String> {
         self.local.list_managed().await
     }

@@ -51,6 +51,63 @@
       "busy": "Terlalu banyak permintaan sedang diproses. Tunggu sebentar, lalu gunakan Perbarui pemeriksaan.",
       "service": "Server tidak dapat menyelesaikan pembacaan kesiapan. Coba Perbarui pemeriksaan; jika berlanjut, periksa log platform dan kesehatan layanan.",
       "request": "Permintaan tidak selesai. Periksa koneksi, lalu gunakan Perbarui pemeriksaan. Jika berlanjut, minta operator platform memeriksa permintaan tersebut."
+    },
+    "preflight": {
+      "title": "Preflight image",
+      "intro": "Tarik setiap image challenge yang aktif dan disetujui, jalankan satu instance sementara per image unik untuk uji nyala, lalu hapus. Berjalan di server sebagai job tahan lama; tidak ada yang terlihat oleh peserta.",
+      "run": "Jalankan preflight image",
+      "running": "Preflight sedang berjalan…",
+      "loading": "Memuat preflight terakhir…",
+      "none": "Belum ada preflight yang dijalankan untuk event ini.",
+      "empty": "Tidak ditemukan challenge aktif dan disetujui yang memiliki image container.",
+      "progress": "{{state}}: {{current}} dari {{total}} image selesai.",
+      "summary": "{{succeeded}} berhasil, {{failed}} gagal, {{skipped}} dilewati dari {{images}} image unik dan {{challenges}} challenge.",
+      "started": "Dimulai {{time}}",
+      "finished": "selesai {{time}}",
+      "load_failed": "Status preflight tidak dapat dimuat",
+      "load_failed_note": "Gunakan Perbarui pemeriksaan atau muat ulang halaman. Job tetap berjalan di server.",
+      "job_failed": "Job preflight tidak selesai",
+      "list_label": "Hasil preflight per challenge",
+      "no_image": "Tidak ada image immutable",
+      "error_label": "Detail:",
+      "job": {
+        "Queued": "Antre",
+        "Running": "Berjalan",
+        "Succeeded": "Selesai",
+        "Failed": "Gagal",
+        "Cancelled": "Dibatalkan"
+      },
+      "states": {
+        "pending": "Menunggu",
+        "running": "Berjalan",
+        "succeeded": "Siap",
+        "failed": "Gagal",
+        "skipped": "Dilewati"
+      },
+      "step": {
+        "Pending": "menunggu",
+        "Running": "berjalan",
+        "Succeeded": "ok",
+        "Failed": "gagal",
+        "Skipped": "dilewati"
+      },
+      "steps": {
+        "pull": "Tarik",
+        "start": "Nyalakan"
+      },
+      "capacity": {
+        "title": "Kapasitas yang diminta",
+        "basis": "Total mengasumsikan {{teams}} tim diterima dan {{instances}} instance berjalan bersamaan pada batas yang tersimpan.",
+        "requested": "diminta {{value}}",
+        "available": "tersedia {{value}}",
+        "cpu": "CPU",
+        "memory": "Memori",
+        "storage": "Penyimpanan",
+        "replicas": "Replika",
+        "instances": "Instance",
+        "worker_note": "Kapasitas tersedia dijumlahkan dari {{workers}} worker yang terhubung; worker akan menjadwalkan {{cpu}} dan {{memory}} dari total.",
+        "unavailable": "Perbandingan kapasitas tidak tersedia: backend Docker atau Kubernetes lokal tidak melaporkan kapasitas agregat."
+      }
     }
   },
   "grading": {
