@@ -203,7 +203,7 @@ async fn run_generator_once(
             cap_drop: Some(vec!["ALL".to_string()]),
             security_opt: Some(vec!["no-new-privileges:true".to_string()]),
             log_config: Some(HostConfigLogConfig {
-                typ: Some("json-file".to_string()),
+                typ: Some("local".to_string()),
                 config: Some(HashMap::from([
                     ("max-size".to_string(), GENERATOR_LOG_MAX_SIZE.to_string()),
                     ("max-file".to_string(), "1".to_string()),

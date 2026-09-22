@@ -1,5 +1,16 @@
+# PostgreSQL and Redis keep json-file on purpose: Docker cannot change the
+# logging driver of an existing container, so switching them would force the
+# database container to be recreated during an application-only rollout.
 x-core-logging: &core-logging
   driver: json-file
+  options:
+    max-size: "${RSCTF_CORE_LOG_MAX_SIZE:-10m}"
+    max-file: "${RSCTF_CORE_LOG_MAX_FILES:-5}"
+
+# rsctf application services use the `local` driver: bounded, compressed
+# files the daemon never re-parses as JSON when a client streams logs.
+x-app-logging: &app-logging
+  driver: local
   options:
     max-size: "${RSCTF_CORE_LOG_MAX_SIZE:-10m}"
     max-file: "${RSCTF_CORE_LOG_MAX_FILES:-5}"
@@ -93,7 +104,7 @@ services:
       start_period: 10s
       start_interval: 2s
     stop_grace_period: 10s
-    logging: *core-logging
+    logging: *app-logging
 
   rsctf:
     build: .
@@ -101,7 +112,7 @@ services:
     cpus: "${RSCTF_APP_CPUS:-4.0}"
     mem_limit: "${RSCTF_APP_MEMORY_LIMIT:-2g}"
     pids_limit: "${RSCTF_APP_PIDS_LIMIT:-1024}"
-    logging: *core-logging
+    logging: *app-logging
     depends_on:
       db:
         condition: service_healthy

@@ -67,6 +67,16 @@ containers stopped and preserves replica counts for a safe retry. Do not start
 an old image against the migrated database; restoring the pre-cutover database
 and files together is the rollback path.
 
+Container logs are bounded by `RSCTF_DOCKER_LOG_MAX_SIZE` (default `20m`) and
+`RSCTF_DOCKER_LOG_MAX_FILES` (default `5`). The rsctf application services,
+the proxy firewall, Caddy, and the event DNS forwarder use Docker's `local`
+logging driver, which keeps compressed bounded files that the daemon never has
+to re-parse as JSON for a `docker logs` client. PostgreSQL and Redis
+deliberately keep the `json-file` driver: Docker cannot change the logging
+driver of an existing container, so switching them would force the database
+container to be recreated during an application-only rollout. Change their
+driver only in a planned maintenance window that already recreates them.
+
 `COMPOSE_FILE` in `.env` automatically selects the requested features:
 
 - `compose.yml` is the safe base: rsctf, PostgreSQL 18, and bounded Redis.

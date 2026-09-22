@@ -3,8 +3,8 @@ use std::io::{Cursor, Read};
 
 use bollard::errors::Error as BollardError;
 use bollard::models::{
-    HostConfig, HostConfigIsolationEnum, HostConfigLogConfig, Network, SystemInfo,
-    SystemInfoDefaultAddressPools,
+    HealthConfig, HostConfig, HostConfigIsolationEnum, HostConfigLogConfig, ImageInspect, Network,
+    SystemInfo, SystemInfoDefaultAddressPools,
 };
 use bollard::volume::CreateVolumeOptions;
 use bollard::{Docker, API_DEFAULT_VERSION};
@@ -430,14 +430,50 @@ pub(super) fn docker_port(port: u16) -> String {
     format!("{port}/tcp")
 }
 
+/// Workloads use Docker's `local` driver: bounded, compressed files the
+/// daemon never re-parses as JSON for a log client. Bounds match the local
+/// backend (5 MiB x 3).
 pub(super) fn bounded_log_config() -> HostConfigLogConfig {
     HostConfigLogConfig {
-        typ: Some("json-file".to_string()),
+        typ: Some("local".to_string()),
         config: Some(HashMap::from([
             ("max-size".to_string(), "5m".to_string()),
             ("max-file".to_string(), "3".to_string()),
         ])),
     }
+}
+
+/// Steady-state floor for an inherited image health check. Docker runs each
+/// probe as a container exec, so a fleet of images polling every second or two
+/// turns into daemon CPU and process churn at event scale.
+pub(super) const MIN_HEALTH_INTERVAL_NANOS: i64 = 15_000_000_000;
+
+pub(super) fn image_health_config(image: &ImageInspect) -> Option<HealthConfig> {
+    image.config.as_ref()?.healthcheck.clone()
+}
+
+/// Inherit the image's health check but never poll faster than
+/// [`MIN_HEALTH_INTERVAL_NANOS`] once the start period has elapsed.
+///
+/// Returns `None` whenever the container should simply inherit the image
+/// definition: no health check, an explicitly disabled one (`NONE`), or an
+/// interval that is already at or above the floor. A container-level
+/// `Healthcheck` replaces the image's whole block rather than merging into it,
+/// so the clamp clones every field (command, timeout, retries, start period,
+/// start interval) and changes only the steady interval.
+pub(super) fn clamped_health_config(health: Option<&HealthConfig>) -> Option<HealthConfig> {
+    let health = health?;
+    let test = health.test.as_ref()?;
+    if test.is_empty() || test.first().is_some_and(|command| command == "NONE") {
+        return None;
+    }
+    health
+        .interval
+        .filter(|interval| *interval > 0 && *interval < MIN_HEALTH_INTERVAL_NANOS)?;
+    Some(HealthConfig {
+        interval: Some(MIN_HEALTH_INTERVAL_NANOS),
+        ..health.clone()
+    })
 }
 
 pub(super) fn workload_host_config(
@@ -456,6 +492,9 @@ pub(super) fn workload_host_config(
         memory_swap: (operating_system == OperatingSystem::Linux).then_some(memory_limit),
         nano_cpus: Some(i64::from(cpu_millis) * 1_000_000),
         pids_limit: (operating_system == OperatingSystem::Linux).then_some(512),
+        // A challenge PID 1 that forks without reaping must not accumulate
+        // zombies for the workload lifetime. Windows isolation rejects `Init`.
+        init: (operating_system == OperatingSystem::Linux).then_some(true),
         log_config: Some(bounded_log_config()),
         network_mode: Some(network.to_string()),
         // A challenge image must not inherit Docker's default capability set.
@@ -683,6 +722,24 @@ mod tests {
     }
 
     #[test]
+    fn workload_logs_use_the_bounded_local_driver() {
+        let config = bounded_log_config();
+        let options = config.config.clone().expect("local driver options");
+        assert_eq!(config.typ.as_deref(), Some("local"));
+        assert_eq!(options.get("max-size").map(String::as_str), Some("5m"));
+        assert_eq!(options.get("max-file").map(String::as_str), Some("3"));
+
+        let host = workload_host_config(
+            OperatingSystem::Linux,
+            "rsctf-test-network",
+            500,
+            256 * 1024 * 1024,
+            None,
+        );
+        assert_eq!(host.log_config, Some(config));
+    }
+
+    #[test]
     fn linux_workloads_replace_defaults_with_only_bind_service() {
         let config = workload_host_config(
             OperatingSystem::Linux,
@@ -694,6 +751,8 @@ mod tests {
 
         assert_eq!(config.cap_drop, Some(vec!["ALL".to_string()]));
         assert_eq!(config.cap_add, Some(vec!["NET_BIND_SERVICE".to_string()]));
+        assert_eq!(config.init, Some(true));
+        assert_eq!(config.pids_limit, Some(512));
         assert_eq!(config.memory_swap, config.memory);
         assert_eq!(
             config.security_opt,
@@ -715,6 +774,8 @@ mod tests {
         assert_eq!(config.cap_add, None);
         assert_eq!(config.security_opt, None);
         assert_eq!(config.memory_swap, None);
+        assert_eq!(config.init, None);
+        assert_eq!(config.pids_limit, None);
         assert_eq!(config.isolation, Some(HostConfigIsolationEnum::HYPERV));
         assert_eq!(
             config.storage_opt,
@@ -723,6 +784,59 @@ mod tests {
                 "67108864".to_string()
             )]))
         );
+    }
+
+    #[test]
+    fn inherited_image_health_checks_are_clamped_to_the_steady_floor() {
+        let second = 1_000_000_000_i64;
+        let fast = HealthConfig {
+            test: Some(vec!["CMD".to_string(), "/probe".to_string()]),
+            interval: Some(2 * second),
+            timeout: Some(3 * second),
+            retries: Some(7),
+            start_period: Some(40 * second),
+            start_interval: Some(second),
+        };
+
+        // Below the floor: only the steady interval changes.
+        let clamped = clamped_health_config(Some(&fast)).expect("clamped");
+        assert_eq!(clamped.interval, Some(MIN_HEALTH_INTERVAL_NANOS));
+        assert_eq!(MIN_HEALTH_INTERVAL_NANOS, 15 * second);
+        assert_eq!(clamped.test, fast.test);
+        assert_eq!(clamped.timeout, fast.timeout);
+        assert_eq!(clamped.retries, fast.retries);
+        assert_eq!(clamped.start_period, fast.start_period);
+        assert_eq!(clamped.start_interval, fast.start_interval);
+
+        // At or above the floor, or left to Docker's 30 s default: inherit.
+        for interval in [Some(15 * second), Some(60 * second), Some(0), None] {
+            let slow = HealthConfig {
+                interval,
+                ..fast.clone()
+            };
+            assert_eq!(clamped_health_config(Some(&slow)), None);
+        }
+
+        // No health check, a disabled one, or an empty command never gains a
+        // probe.
+        assert_eq!(clamped_health_config(None), None);
+        let disabled = HealthConfig {
+            test: Some(vec!["NONE".to_string()]),
+            ..fast.clone()
+        };
+        assert_eq!(clamped_health_config(Some(&disabled)), None);
+        let no_command = HealthConfig { test: None, ..fast };
+        assert_eq!(clamped_health_config(Some(&no_command)), None);
+
+        let image = ImageInspect {
+            config: Some(bollard::models::ContainerConfig {
+                healthcheck: Some(no_command.clone()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(image_health_config(&image), Some(no_command));
+        assert_eq!(image_health_config(&ImageInspect::default()), None);
     }
 
     #[test]

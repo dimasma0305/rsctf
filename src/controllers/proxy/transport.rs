@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket};
+use bytes::{BufMut, BytesMut};
 use futures::{SinkExt, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -149,12 +150,18 @@ pub(super) async fn proxy_pump<S>(
     let egress_activity = Arc::clone(&last_activity);
     let egress_traffic = traffic;
     let tcp_to_ws = async {
-        let mut buf = vec![0u8; BUFFER_SIZE];
+        // One TCP read becomes one binary frame of at most BUFFER_SIZE bytes.
+        // The read lands directly in the frame's own storage: `split` hands
+        // the filled prefix to the WebSocket sink without a second copy, and
+        // `reserve` reclaims the region once the sink has released it.
+        let mut buf = BytesMut::with_capacity(BUFFER_SIZE);
         let mut egress_recorded = false;
         let mut egress_matcher = scan
             .as_ref()
             .and_then(|scan| RollingFlagMatcher::new(&scan.flag));
         loop {
+            buf.reserve(BUFFER_SIZE);
+            let mut window = (&mut buf).limit(BUFFER_SIZE);
             let read = tokio::select! {
                 result = &mut budget_exceeded => {
                     if result.is_ok() {
@@ -163,7 +170,7 @@ pub(super) async fn proxy_pump<S>(
                     }
                     std::future::pending::<std::io::Result<usize>>().await
                 }
-                read = tcp_rd.read(&mut buf) => read,
+                read = tcp_rd.read_buf(&mut window) => read,
             };
             match read {
                 Ok(0) => {
@@ -180,18 +187,20 @@ pub(super) async fn proxy_pump<S>(
                         break;
                     }
                     egress_activity.store(now_millis(), Ordering::Release);
+                    let frame = buf.split().freeze();
+                    debug_assert_eq!(frame.len(), n);
                     if !egress_recorded {
                         if let Some(scan) = &scan {
                             let matched = egress_matcher
                                 .as_mut()
-                                .is_some_and(|matcher| matcher.contains(&scan.flag, &buf[..n]));
+                                .is_some_and(|matcher| matcher.contains(&scan.flag, &frame));
                             if matched {
                                 egress_recorded = true;
                                 record_flag_egress(scan);
                             }
                         }
                     }
-                    if ws_tx.send(Message::from(buf[..n].to_vec())).await.is_err() {
+                    if ws_tx.send(Message::Binary(frame)).await.is_err() {
                         break;
                     }
                 }

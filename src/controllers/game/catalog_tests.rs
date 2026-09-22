@@ -118,7 +118,9 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_deletion_or_divis
         CREATE TABLE "Games" (
           id INTEGER PRIMARY KEY, title TEXT NOT NULL, hidden BOOLEAN NOT NULL,
           start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL,
-          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
+          summary TEXT NOT NULL DEFAULT '', poster_hash TEXT,
+          team_member_count_limit INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE "GameChallenges" (
           id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, title TEXT NOT NULL,
@@ -307,6 +309,99 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_deletion_or_divis
         .unwrap();
     assert_eq!(total, 1);
     assert_eq!(unsolved_items[0].id, 701);
+
+    // Pages share one exact total and never overlap; a page past the end is
+    // empty and reports no total, exactly as the window-count version did.
+    let page = |skip| ChallengeCatalogQuery {
+        count: 2,
+        skip,
+        ..Default::default()
+    };
+    let (first, total) = load_challenge_catalog(&pool, player, &page(0))
+        .await
+        .unwrap();
+    assert_eq!(total, 6);
+    assert_eq!(
+        first.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [701, 102]
+    );
+    let (last, total) = load_challenge_catalog(&pool, player, &page(4))
+        .await
+        .unwrap();
+    assert_eq!(total, 6);
+    assert_eq!(
+        last.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [105, 101]
+    );
+    let (beyond, total) = load_challenge_catalog(&pool, player, &page(6))
+        .await
+        .unwrap();
+    assert!(beyond.is_empty());
+    assert_eq!(total, 0);
+
+    // The event catalog pages the same way over every visible event.
+    let games = |skip| GameListQuery {
+        count: 4,
+        skip,
+        search: None,
+        membership: GameMembershipFilter::All,
+    };
+    let (first, total) = load_game_list(&pool, Some(player), &games(0))
+        .await
+        .unwrap();
+    assert_eq!(
+        total, 9,
+        "hidden events are excluded from the visible total"
+    );
+    assert_eq!(first.len(), 4);
+    assert!(first.iter().all(|game| game.id != 5));
+    let (last, total) = load_game_list(&pool, Some(player), &games(8))
+        .await
+        .unwrap();
+    assert_eq!(total, 9);
+    assert_eq!(last.len(), 1);
+    let joined = GameListQuery {
+        count: 50,
+        skip: 0,
+        search: None,
+        membership: GameMembershipFilter::Joined,
+    };
+    let (joined_games, joined_total) = load_game_list(&pool, Some(player), &joined).await.unwrap();
+    assert_eq!(joined_total, 7);
+    assert!(joined_games.iter().all(|game| game.joined));
+    let (anonymous, anonymous_total) = load_game_list(&pool, None, &joined).await.unwrap();
+    assert!(anonymous.is_empty());
+    assert_eq!(anonymous_total, 0);
+
+    // Totals are exact up to the counting bound and clamp beyond it, so one
+    // page request never materializes an unbounded history.
+    sqlx::query(
+        r#"INSERT INTO "GameChallenges"
+             (id, game_id, title, category, "Type", original_score, min_score_rate,
+              difficulty, accepted_count, score_curve, is_enabled, review_status)
+           SELECT 10000 + n, 1, 'Bulk ' || n, 3, 0, 1000, 0.01, 5, 0, 0, TRUE, 0
+             FROM generate_series(1, $1) AS n"#,
+    )
+    .bind(MAX_COUNTED_CATALOG_ROWS)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (capped, total) = load_challenge_catalog(&pool, player, &page(0))
+        .await
+        .unwrap();
+    assert_eq!(total, MAX_COUNTED_CATALOG_ROWS);
+    assert_eq!(
+        capped.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [701, 102]
+    );
+    let bulk = ChallengeCatalogQuery {
+        count: 100,
+        skip: 900,
+        ..Default::default()
+    };
+    let (bulk_page, total) = load_challenge_catalog(&pool, player, &bulk).await.unwrap();
+    assert_eq!(total, MAX_COUNTED_CATALOG_ROWS);
+    assert_eq!(bulk_page.len(), 100);
 
     pool.close().await;
     assert!(schema.starts_with("challenge_catalog_"));

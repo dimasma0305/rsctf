@@ -8,6 +8,14 @@ use super::*;
 
 const MAX_CATALOG_SEARCH_CHARS: usize = 100;
 
+/// Upper bound on the filtered rows one catalog request materializes to report
+/// its total. Totals are exact up to this bound; a longer filtered set reports
+/// the bound instead, so a player with a long event history never makes a
+/// single page request count their entire catalog. The client only needs the
+/// total for page arithmetic and a badge, and a bounded page count still
+/// reaches every row a bounded UI could show.
+pub(super) const MAX_COUNTED_CATALOG_ROWS: i64 = 1000;
+
 fn normalized_catalog_search(search: Option<&str>) -> AppResult<Option<String>> {
     let Some(search) = search.map(str::trim).filter(|search| !search.is_empty()) else {
         return Ok(None);
@@ -80,37 +88,44 @@ struct GameListRow {
     total_count: i64,
 }
 
-pub async fn games(
-    State(st): State<SharedState>,
-    MaybeUser(user): MaybeUser,
-    Query(query): Query<GameListQuery>,
-) -> AppResult<ArrayResponse<BasicGameInfoModel>> {
+async fn load_game_list(
+    pool: &sqlx::PgPool,
+    user_id: Option<Uuid>,
+    query: &GameListQuery,
+) -> AppResult<(Vec<BasicGameInfoModel>, i64)> {
     let search = normalized_catalog_search(query.search.as_deref())?;
     let page = query.page();
+    // The filtered set is sorted once and cut at the counting bound before
+    // the page is taken, so the total never walks an unbounded history.
     let rows = sqlx::query_as::<_, GameListRow>(
-        r#"SELECT game.id, game.title, game.summary, game.poster_hash,
-                  game.team_member_count_limit, game.start_time_utc,
-                  game.end_time_utc, participation.status AS participation_status,
-                  COALESCE(participation.status IN ($2, $3, $4), FALSE) AS joined,
-                  COUNT(*) OVER () AS total_count
-             FROM "Games" game
-             LEFT JOIN "UserParticipations" membership
-               ON membership.user_id = $1 AND membership.game_id = game.id
-             LEFT JOIN "Participations" participation
-               ON participation.id = membership.participation_id
-              AND participation.game_id = membership.game_id
-              AND participation.team_id = membership.team_id
-            WHERE game.hidden = FALSE
-              AND ($5::text IS NULL
-                   OR STRPOS(LOWER(CONCAT_WS(' ', game.title, game.summary)), LOWER($5)) > 0
-                   OR game.id::text = $5)
-              AND ($6 = 0
-                   OR ($6 = 1 AND participation.status IN ($2, $3, $4))
-                   OR ($6 = 2 AND (participation.status IS NULL OR participation.status = $7)))
-            ORDER BY game.start_time_utc DESC, game.id DESC
+        r#"WITH filtered AS MATERIALIZED (
+                SELECT game.id, game.title, game.summary, game.poster_hash,
+                       game.team_member_count_limit, game.start_time_utc,
+                       game.end_time_utc, participation.status AS participation_status,
+                       COALESCE(participation.status IN ($2, $3, $4), FALSE) AS joined
+                  FROM "Games" game
+                  LEFT JOIN "UserParticipations" membership
+                    ON membership.user_id = $1 AND membership.game_id = game.id
+                  LEFT JOIN "Participations" participation
+                    ON participation.id = membership.participation_id
+                   AND participation.game_id = membership.game_id
+                   AND participation.team_id = membership.team_id
+                 WHERE game.hidden = FALSE
+                   AND ($5::text IS NULL
+                        OR STRPOS(LOWER(CONCAT_WS(' ', game.title, game.summary)), LOWER($5)) > 0
+                        OR game.id::text = $5)
+                   AND ($6 = 0
+                        OR ($6 = 1 AND participation.status IN ($2, $3, $4))
+                        OR ($6 = 2 AND (participation.status IS NULL OR participation.status = $7)))
+                 ORDER BY game.start_time_utc DESC, game.id DESC
+                 LIMIT $10
+            )
+            SELECT filtered.*, (SELECT COUNT(*) FROM filtered) AS total_count
+              FROM filtered
+             ORDER BY filtered.start_time_utc DESC, filtered.id DESC
             OFFSET $8 LIMIT $9"#,
     )
-    .bind(user.as_ref().map(|user| user.id))
+    .bind(user_id)
     .bind(ParticipationStatus::Pending as i16)
     .bind(ParticipationStatus::Accepted as i16)
     .bind(ParticipationStatus::Suspended as i16)
@@ -119,7 +134,8 @@ pub async fn games(
     .bind(ParticipationStatus::Rejected as i16)
     .bind(page.skip.min(i64::MAX as u64) as i64)
     .bind(page.limit().min(100) as i64)
-    .fetch_all(st.pg())
+    .bind(MAX_COUNTED_CATALOG_ROWS)
+    .fetch_all(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
 
@@ -150,6 +166,15 @@ pub async fn games(
             })
         })
         .collect::<AppResult<Vec<_>>>()?;
+    Ok((data, total))
+}
+
+pub async fn games(
+    State(st): State<SharedState>,
+    MaybeUser(user): MaybeUser,
+    Query(query): Query<GameListQuery>,
+) -> AppResult<ArrayResponse<BasicGameInfoModel>> {
+    let (data, total) = load_game_list(st.pg(), user.as_ref().map(|user| user.id), &query).await?;
     Ok(ArrayResponse::new(data, total))
 }
 
@@ -315,25 +340,31 @@ async fn load_challenge_catalog(
                            AND (COALESCE(permission.permissions, division.default_permissions, 0) & $4) = $4
                        )
                    )
+            ), filtered AS MATERIALIZED (
+                SELECT catalog.*
+                  FROM catalog
+                 WHERE ($5::text IS NULL
+                        OR STRPOS(LOWER(CONCAT_WS(' ', catalog.title, catalog.game_title)), LOWER($5)) > 0
+                        OR catalog.id::text = $5
+                        OR catalog.game_id::text = $5)
+                   AND ($6::int IS NULL OR catalog.game_id = $6)
+                   AND ($7::smallint IS NULL OR catalog.category = $7)
+                   AND (
+                        $8::text IS NULL
+                        OR ($8 = 'jeopardy' AND catalog.challenge_type NOT IN ($9, $10))
+                        OR ($8 = 'attackDefense' AND catalog.challenge_type = $9)
+                        OR ($8 = 'koth' AND catalog.challenge_type = $10)
+                   )
+                   AND ($11::smallint IS NULL OR catalog.challenge_type = $11)
+                   AND ($12::boolean IS NULL OR catalog.solved = $12)
+                 ORDER BY catalog.solved, catalog.game_start DESC,
+                          catalog.game_id DESC, catalog.category, catalog.id
+                 LIMIT $15
             )
-            SELECT catalog.*, COUNT(*) OVER () AS total_count
-              FROM catalog
-             WHERE ($5::text IS NULL
-                    OR STRPOS(LOWER(CONCAT_WS(' ', catalog.title, catalog.game_title)), LOWER($5)) > 0
-                    OR catalog.id::text = $5
-                    OR catalog.game_id::text = $5)
-               AND ($6::int IS NULL OR catalog.game_id = $6)
-               AND ($7::smallint IS NULL OR catalog.category = $7)
-               AND (
-                    $8::text IS NULL
-                    OR ($8 = 'jeopardy' AND catalog.challenge_type NOT IN ($9, $10))
-                    OR ($8 = 'attackDefense' AND catalog.challenge_type = $9)
-                    OR ($8 = 'koth' AND catalog.challenge_type = $10)
-               )
-               AND ($11::smallint IS NULL OR catalog.challenge_type = $11)
-               AND ($12::boolean IS NULL OR catalog.solved = $12)
-             ORDER BY catalog.solved, catalog.game_start DESC,
-                      catalog.game_id DESC, catalog.category, catalog.id
+            SELECT filtered.*, (SELECT COUNT(*) FROM filtered) AS total_count
+              FROM filtered
+             ORDER BY filtered.solved, filtered.game_start DESC,
+                      filtered.game_id DESC, filtered.category, filtered.id
              OFFSET $13 LIMIT $14"#,
     )
     .bind(user_id)
@@ -350,6 +381,7 @@ async fn load_challenge_catalog(
     .bind(query.solved)
     .bind(query.skip.min(i64::MAX as u64) as i64)
     .bind(query.count.clamp(1, 100) as i64)
+    .bind(MAX_COUNTED_CATALOG_ROWS)
     .fetch_all(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;

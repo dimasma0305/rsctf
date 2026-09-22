@@ -172,19 +172,23 @@ if "rsctf-koth-reporter" not in aliases:
 '
 }
 
+# Application services use the `local` driver. PostgreSQL and Redis keep
+# `json-file` because Docker cannot change an existing container's driver and
+# an application-only rollout must not recreate the database container.
 assert_bounded_logs() {
   local service="$1"
+  local driver="${2:-local}"
   python3 -c '
 import json
 import sys
 
 document = json.load(sys.stdin)
-name = sys.argv[1]
+name, driver = sys.argv[1:]
 logging = document["services"][name].get("logging") or {}
-expected = {"driver": "json-file", "options": {"max-file": "5", "max-size": "20m"}}
+expected = {"driver": driver, "options": {"max-file": "5", "max-size": "20m"}}
 if logging != expected:
     raise SystemExit(f"{name} log bounds mismatch: expected {expected}, got {logging}")
-' "$service"
+' "$service" "$driver"
 }
 
 assert_same_origin_event_ingress() {
@@ -326,9 +330,9 @@ if condition != "service_healthy":
 "${compose[@]}" -f deploy/compose.yml config --format json \
   | assert_private_challenge_proxy rsctf
 "${compose[@]}" -f deploy/compose.yml config --format json \
-  | assert_bounded_logs db
+  | assert_bounded_logs db json-file
 "${compose[@]}" -f deploy/compose.yml config --format json \
-  | assert_bounded_logs redis
+  | assert_bounded_logs redis json-file
 "${compose[@]}" -f deploy/compose.yml config --format json \
   | assert_bounded_logs rsctf
 "${compose[@]}" -f deploy/compose.yml config --format json \

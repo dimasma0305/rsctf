@@ -646,25 +646,8 @@ pub struct PendingChallengeModel {
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub reviewed_at_utc: Option<DateTime<Utc>>,
     pub submitted_by_user_id: Option<Uuid>,
-    /// Resolved via a join on `user` (see `list_pending_challenges`).
+    /// Resolved by the `"AspNetUsers"` join in `list_pending_challenges`.
     pub submitted_by_user_name: Option<String>,
-}
-
-impl PendingChallengeModel {
-    fn from_challenge(c: &game_challenge::Model) -> Self {
-        Self {
-            id: c.id,
-            title: c.title.clone(),
-            category: c.category,
-            challenge_type: c.challenge_type,
-            review_status: c.review_status,
-            review_note: c.review_note.clone(),
-            submitted_at_utc: c.submitted_at_utc,
-            reviewed_at_utc: c.reviewed_at_utc,
-            submitted_by_user_id: c.submitted_by_user_id,
-            submitted_by_user_name: None,
-        }
-    }
 }
 
 // ============================================================================

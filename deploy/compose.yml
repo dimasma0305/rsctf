@@ -6,6 +6,9 @@ services:
     # major requires dump/restore or pg_upgrade plus a fresh data directory.
     image: ${POSTGRES_IMAGE:-postgres:18.4-alpine3.24}
     restart: unless-stopped
+    # json-file stays on purpose: Docker cannot change the logging driver of
+    # an existing container, so switching it would force this database
+    # container to be recreated during an application-only rollout.
     logging:
       driver: json-file
       options:
@@ -42,6 +45,7 @@ services:
   redis:
     image: ${REDIS_IMAGE:-redis:7-alpine}
     restart: unless-stopped
+    # json-file stays on purpose, for the same reason as PostgreSQL above.
     logging:
       driver: json-file
       options:
@@ -73,7 +77,7 @@ services:
     image: ${RSCTF_IMAGE:?Set RSCTF_IMAGE to an immutable ghcr.io/dimasma0305/rsctf@sha256 digest}
     restart: unless-stopped
     logging:
-      driver: json-file
+      driver: local
       options:
         max-size: ${RSCTF_DOCKER_LOG_MAX_SIZE:-20m}
         max-file: "${RSCTF_DOCKER_LOG_MAX_FILES:-5}"

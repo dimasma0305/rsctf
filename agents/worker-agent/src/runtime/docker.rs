@@ -9,7 +9,7 @@ use bollard::container::{
     UploadToContainerOptions,
 };
 use bollard::image::CreateImageOptions;
-use bollard::models::EndpointSettings;
+use bollard::models::{EndpointSettings, HealthConfig};
 use bollard::Docker;
 use dashmap::{DashMap, DashSet};
 use futures_util::{StreamExt, TryStreamExt};
@@ -148,7 +148,12 @@ impl DockerRuntime {
         Ok(runtime)
     }
 
-    async fn ensure_image(&self, image: &ImageIdentity) -> Result<String, RuntimeError> {
+    /// Resolve the runnable image name and the health check it ships, pulling
+    /// a registry digest that is not yet present.
+    async fn ensure_image(
+        &self,
+        image: &ImageIdentity,
+    ) -> Result<(String, Option<HealthConfig>), RuntimeError> {
         let image_name = match image {
             ImageIdentity::RegistryDigest { repository, digest } => {
                 format!("{repository}@{digest}")
@@ -172,7 +177,7 @@ impl DockerRuntime {
             .read("inspect_image", self.docker.inspect_image(&image_name))
             .await?
         {
-            Ok(_) => return Ok(image_name),
+            Ok(inspected) => return Ok((image_name, image_health_config(&inspected))),
             Err(error) if is_not_found(&error) => {}
             Err(error) => return Err(docker_error("inspect image", error)),
         }
@@ -197,7 +202,12 @@ impl DockerRuntime {
             })
             .await?
             .map_err(|error| docker_error("pull image", error))?;
-        Ok(image_name)
+        let inspected = self
+            .docker
+            .inspect_image(&image_name)
+            .await
+            .map_err(|error| docker_error("inspect pulled image", error))?;
+        Ok((image_name, image_health_config(&inspected)))
     }
 
     async fn existing_containers(
@@ -281,7 +291,7 @@ impl DockerRuntime {
             expected_replicas,
             operating_system,
         } = plan;
-        let image = self.ensure_image(&service.image).await?;
+        let (image, image_health) = self.ensure_image(&service.image).await?;
         let name = container_name(fence, &service.name, replica);
         let mut labels = base_labels(self.worker_id, fence, spec_hash);
         labels.insert(LABEL_SERVICE.to_string(), service.name.clone());
@@ -343,6 +353,10 @@ impl DockerRuntime {
             networking_config: Some(NetworkingConfig {
                 endpoints_config: HashMap::from([(network.to_string(), endpoint)]),
             }),
+            // Only an image that already defines a health check gets one, and
+            // only to slow it down: a workload never gains a probe its image
+            // did not ship.
+            healthcheck: clamped_health_config(image_health.as_ref()),
             ..Default::default()
         };
         let created = self

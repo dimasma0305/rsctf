@@ -7,8 +7,11 @@ name: rsctf-source-dev
 include:
   - path: deploy/compose.development.yml
 
+# Application services only; the included PostgreSQL and Redis definitions
+# keep their own json-file policy so a changed driver never forces the
+# database container to be recreated.
 x-development-logging: &development-logging
-  driver: json-file
+  driver: local
   options:
     max-size: 5m
     max-file: "2"

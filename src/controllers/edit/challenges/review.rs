@@ -1,6 +1,80 @@
 use super::*;
 use crate::services::ad::koth_capability_cache::finish_game_epoch_mutation_if_any;
 
+/// Newest review rows one read returns. The review page is mutation-driven
+/// (approve, reject, and delete each `mutate`), so an organizer never needs
+/// every historical rejection in one response.
+pub(super) const PENDING_CHALLENGE_LIMIT: i64 = 200;
+
+/// Pending rows first, then rejected; newest submission first within each
+/// status, with the row id as the deterministic tie-break.
+pub(super) const PENDING_CHALLENGES_SQL: &str = r#"SELECT challenge.id, challenge.title, challenge.category,
+              challenge."Type" AS challenge_type, challenge.review_status,
+              challenge.review_note, challenge.submitted_at_utc,
+              challenge.reviewed_at_utc, challenge.submitted_by_user_id,
+              submitter.user_name AS submitted_by_user_name
+         FROM "GameChallenges" challenge
+         LEFT JOIN "AspNetUsers" submitter
+           ON submitter.id = challenge.submitted_by_user_id
+        WHERE challenge.game_id = $1
+          AND challenge.review_status <> $2
+        ORDER BY challenge.review_status ASC, challenge.submitted_at_utc DESC,
+                 challenge.id DESC
+        LIMIT $3"#;
+
+#[derive(sqlx::FromRow)]
+struct PendingChallengeRow {
+    id: i32,
+    title: String,
+    category: i16,
+    challenge_type: i16,
+    review_status: i16,
+    review_note: Option<String>,
+    submitted_at_utc: Option<DateTime<Utc>>,
+    reviewed_at_utc: Option<DateTime<Utc>>,
+    submitted_by_user_id: Option<Uuid>,
+    submitted_by_user_name: Option<String>,
+}
+
+fn decode_enum<T: sea_orm::ActiveEnum<Value = i16>>(value: i16) -> AppResult<T> {
+    T::try_from_value(&value).map_err(|error| AppError::internal(error.to_string()))
+}
+
+impl TryFrom<PendingChallengeRow> for PendingChallengeModel {
+    type Error = AppError;
+
+    fn try_from(row: PendingChallengeRow) -> AppResult<Self> {
+        Ok(Self {
+            id: row.id,
+            title: row.title,
+            category: decode_enum(row.category)?,
+            challenge_type: decode_enum(row.challenge_type)?,
+            review_status: decode_enum(row.review_status)?,
+            review_note: row.review_note,
+            submitted_at_utc: row.submitted_at_utc,
+            reviewed_at_utc: row.reviewed_at_utc,
+            submitted_by_user_id: row.submitted_by_user_id,
+            submitted_by_user_name: row.submitted_by_user_name,
+        })
+    }
+}
+
+pub(super) async fn load_pending_challenges(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+) -> AppResult<Vec<PendingChallengeModel>> {
+    sqlx::query_as::<_, PendingChallengeRow>(PENDING_CHALLENGES_SQL)
+        .bind(game_id)
+        .bind(ChallengeReviewStatus::Active as i16)
+        .bind(PENDING_CHALLENGE_LIMIT)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .into_iter()
+        .map(PendingChallengeModel::try_from)
+        .collect()
+}
+
 /// `GET /api/edit/games/{id}/pendingchallenges` — Pending + Rejected rows.
 pub async fn list_pending_challenges(
     State(st): State<SharedState>,
@@ -9,30 +83,9 @@ pub async fn list_pending_challenges(
 ) -> AppResult<RequestResponse<Vec<PendingChallengeModel>>> {
     manager_or_admin(&st, &user, id).await?;
     load_game(&st, id).await?;
-    let rows = game_challenge::Entity::find()
-        .filter(game_challenge::Column::GameId.eq(id))
-        .filter(game_challenge::Column::ReviewStatus.ne(ChallengeReviewStatus::Active))
-        // RSCTF orders by ReviewStatus ASC first, then SubmittedAtUtc DESC.
-        .order_by_asc(game_challenge::Column::ReviewStatus)
-        .order_by_desc(game_challenge::Column::SubmittedAtUtc)
-        .all(&st.db)
-        .await?;
-
-    // Resolve submittedByUserName via a single batched join on `user`.
-    let user_ids: Vec<Uuid> = rows.iter().filter_map(|c| c.submitted_by_user_id).collect();
-    let user_names = load_user_names(&st, user_ids).await?;
-
-    let data = rows
-        .iter()
-        .map(|c| {
-            let mut m = PendingChallengeModel::from_challenge(c);
-            m.submitted_by_user_name = c
-                .submitted_by_user_id
-                .and_then(|uid| user_names.get(&uid).cloned());
-            m
-        })
-        .collect();
-    Ok(RequestResponse::ok(data))
+    Ok(RequestResponse::ok(
+        load_pending_challenges(st.pg(), id).await?,
+    ))
 }
 
 /// `POST /api/edit/games/{id}/challenges/{cId}/approve` — void.
@@ -423,3 +476,7 @@ pub async fn reject_challenge(
         .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(MessageResponse::ok(""))
 }
+
+#[cfg(test)]
+#[path = "review_tests.rs"]
+mod tests;
