@@ -1008,6 +1008,19 @@ const GameInfoEdit: FC = () => {
                   )}
                   onChange={(e) => game && setGame({ ...game, aiChatLinksRequired: e.target.checked })}
                 />
+                <Switch
+                  disabled={disabled}
+                  checked={game?.solverUploadsEnabled ?? false}
+                  classNames={{ root: misc.switchVerticalMiddle }}
+                  label={SwitchLabel(
+                    t('admin.content.games.info.solver_uploads.label', 'Solver uploads'),
+                    t(
+                      'admin.content.games.info.solver_uploads.description',
+                      'Let teams upload the solver they used for a solved challenge so organizers can verify it. Optional for teams; off by default.'
+                    )
+                  )}
+                  onChange={(e) => game && setGame({ ...game, solverUploadsEnabled: e.target.checked })}
+                />
               </SimpleGrid>
               {isAdmin && config.allowCompetitionHistoryPurge && (
                 <Paper withBorder p="md" radius="md">

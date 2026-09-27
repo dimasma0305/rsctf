@@ -27,7 +27,7 @@ export function aiChatFixture(now = Date.now()) {
   const game = {
     id: 901, title: 'RSCTF Demo Finals', start: now - 3600000, end: now + 8000000, serverTime: now,
     status: 'Accepted', joined: true, teamCount: 48, userCount: 142, practiceMode: false, divisions: [],
-    writeupRequired: false, aiChatLinksEnabled: true, aiChatLinksRequired: true,
+    writeupRequired: false, aiChatLinksEnabled: true, aiChatLinksRequired: true, solverUploadsEnabled: true,
   }
   const titles = ['Heap Symphony', 'Cookie Jar', 'Cipher Garden', 'Minions', 'Signal Lost', 'Crown Hill']
   const categories = ['Pwn', 'Web', 'Crypto', 'Reverse', 'Misc', 'Misc']
@@ -110,6 +110,40 @@ export function aiChatFixture(now = Date.now()) {
     occurredAt: history.solvedAt + at * 1000, ...event,
   }))
   const eventsPath = `/api/game/901/ai-chats/${history.participationId}/${history.challengeId}/events`
+  // Solver uploads: Cookie Jar (9002) has two versions; every record keeps all versions.
+  const sha = (seed) => seed.repeat(64 / seed.length)
+  const solverVersion = (id, version, fileName, sizeBytes, uploadedBy, secondsSinceSolve, seed) => ({
+    id, version, fileName, sizeBytes, sha256: sha(seed), uploadedBy, secondsSinceSolve,
+    uploadedAt: solvedAt + secondsSinceSolve * 1000,
+  })
+  const solverStates = {
+    9002: {
+      editable: true, solved: true, editableUntil: now + 8000000, maxFileBytes: 1048576, maxVersions: 10,
+      teamBytesUsed: 5530, teamBytesLimit: 16777216,
+      versions: [
+        solverVersion(802, 2, 'solve.py', 3412, 'bima', 1500, '7c1e'),
+        solverVersion(801, 1, 'solve.py', 2118, 'aria', 320, 'a94f'),
+      ],
+    },
+  }
+  const solverStateFor = (id) =>
+    solverStates[id] ?? {
+      editable: id <= 9003, solved: id <= 9003, editableUntil: now + 8000000, maxFileBytes: 1048576, maxVersions: 10,
+      teamBytesUsed: 5530, teamBytesLimit: 16777216, versions: [],
+    }
+  const solverRecords = [
+    { team: 0, challenge: 1, versions: solverStates[9002].versions },
+    { team: 1, challenge: 0, versions: [solverVersion(811, 1, 'exploit.py', 4096, 'bima', 210, 'e03b')] },
+    { team: 2, challenge: 2, versions: [
+      solverVersion(823, 3, 'solve.sage', 1880, 'citra', 7300, '51d2'),
+      solverVersion(822, 2, 'solve.sage', 1792, 'citra', 6100, '0f8c'),
+      solverVersion(821, 1, 'notes.md', 944, 'citra', 5500, 'b6a7'),
+    ] },
+  ].map((record) => ({
+    participationId: 70 + record.team, teamId: 7 + record.team, teamName: teams[record.team],
+    challengeId: challenges[record.challenge].id, challengeTitle: challenges[record.challenge].title,
+    category: challenges[record.challenge].category, solvedAt, versions: record.versions,
+  }))
   const config = {
     title: 'RSCTF', slogan: 'Capture the flag', portMapping: 'Default', allowRegister: true, allowPasswordRegistration: true,
     allowTeamCreation: true, emailConfirmationRequired: false, enableBrowserFingerprint: false,
@@ -143,12 +177,15 @@ export function aiChatFixture(now = Date.now()) {
   }
   const pendingIds = () => Object.entries(states).filter(([, value]) => value.pending).map(([id]) => Number(id))
   const aiChatState = /^\/api\/game\/901\/challenges\/(\d+)\/ai-chats$/
+  const solverState = /^\/api\/game\/901\/challenges\/(\d+)\/solver-uploads$/
   const writes = []
   const handle = (path, method = 'GET', body = '') => {
     const url = new URL(path, 'http://localhost')
     const p = url.pathname.toLowerCase()
     if (['GET', 'HEAD'].includes(method)) {
       if (aiChatState.test(p)) return { body: stateFor(Number(p.match(aiChatState)[1])) }
+      if (solverState.test(p)) return { body: solverStateFor(Number(p.match(solverState)[1])) }
+      if (p === '/api/game/901/solver-uploads') return { body: { total: solverRecords.length, items: solverRecords } }
       if (p === '/api/game/901/ai-chats/pending') return { body: { required: true, challengeIds: pendingIds() } }
       if (p === '/api/game/901/ai-chats') {
         const status = url.searchParams.get('status')
@@ -184,5 +221,5 @@ export function aiChatFixture(now = Date.now()) {
     }
     return { status: 405, body: { title: 'Fixture mutation blocked', status: 405 } }
   }
-  return { profile, builtins, providerModels, state, states, records, events, eventsPath, handle, writes }
+  return { profile, builtins, providerModels, state, states, records, events, eventsPath, solverRecords, handle, writes }
 }

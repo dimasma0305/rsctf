@@ -290,5 +290,30 @@
   },
   "review": {
     "submit_and_continue": "提交并继续"
+  },
+  "solver": {
+    "title": "解题脚本",
+    "loading": "加载中…",
+    "load_failed": "无法加载解题脚本。",
+    "none": "可选",
+    "count": "{{count}} / {{max}} 个版本",
+    "hide": "收起",
+    "manage": "上传",
+    "show": "查看",
+    "description": "可选：上传队伍解出本题所用的脚本或笔记，便于主办方核实。每次上传都会保存为新版本，主办方可以看到所有版本及上传时间。",
+    "unsolved": "解出本题后才能上传解题脚本。",
+    "full": "队伍已达到版本数量上限。",
+    "closed": "上传解题脚本的时间已结束。",
+    "select_label": "解题脚本文件",
+    "select_placeholder": "选择文件",
+    "limits": "单个文件最大 {{size}}。队伍在本赛事已使用 {{used}} / {{limit}}。",
+    "clear_file": "移除所选文件",
+    "upload": "上传解题脚本",
+    "uploaded": "解题脚本已上传",
+    "too_large": "文件不能超过 {{size}}。",
+    "empty": "文件为空。",
+    "empty_list": "尚未上传解题脚本。",
+    "version": "v{{version}}",
+    "uploaded_by": "由 {{user}} 于 {{time}} 上传"
   }
 }

@@ -593,7 +593,8 @@
       "index": "Monitoring",
       "submissions": "Submissions",
       "traffic": "Traffic",
-      "ai_chats": "AI chats"
+      "ai_chats": "AI chats",
+      "solvers": "Solvers"
     },
     "scoreboard": "Scoreboard",
     "submit": "Submit",
@@ -725,5 +726,25 @@
       "no_ai": "No AI used"
     },
     "status_filter": "Status"
+  },
+  "solver": {
+    "title": "Solver uploads",
+    "subtitle": "Solvers teams uploaded after solving, most recent first. Every version is kept; files download as attachments and are never opened in the browser.",
+    "challenge_filter": "Challenge",
+    "all_challenges": "All challenges",
+    "no_challenge_match": "No matching challenge",
+    "empty_title": "No solvers uploaded yet",
+    "empty_filtered": "No records match this filter.",
+    "empty_description": "Solvers appear here after teams upload them to solved challenges.",
+    "list_label": "Solver upload records",
+    "page_status": "Page {{page}} of {{pages}} · {{total}} records",
+    "version": "v{{version}}",
+    "uploaded_by": "by {{user}}",
+    "download": "Download",
+    "download_label": "Download {{file}} version {{version}}",
+    "team": "Team",
+    "version_count_one": "{{count}} version",
+    "version_count_other": "{{count}} versions",
+    "solved_at": "Solved {{time}}"
   }
 }

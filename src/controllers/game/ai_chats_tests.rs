@@ -27,24 +27,24 @@ const CHATGPT: &str = "https://chatgpt.com/share/6708d9f0-5b7c-8008-a2d4-3f2e1c0
 const CLAUDE: &str = "https://claude.ai/share/2f1c9e4a-8b7d-4c3e-9f60-1a2b3c4d5e6f";
 const COPILOT: &str = "https://copilot.microsoft.com/shares/AbCdEf123456";
 
-struct Fixture {
-    st: SharedState,
-    pool: sqlx::PgPool,
-    admin_pool: sqlx::PgPool,
-    schema: String,
-    open_game: i32,
-    off_game: i32,
-    closed_game: i32,
-    solved: i32,
-    unsolved: i32,
-    attack_defense: i32,
-    closed_solved: i32,
-    off_solved: i32,
-    alice: CurrentUser,
-    bob: CurrentUser,
-    outsider: CurrentUser,
-    pending: CurrentUser,
-    admin: CurrentUser,
+pub(crate) struct Fixture {
+    pub(crate) st: SharedState,
+    pub(crate) pool: sqlx::PgPool,
+    pub(crate) admin_pool: sqlx::PgPool,
+    pub(crate) schema: String,
+    pub(crate) open_game: i32,
+    pub(crate) off_game: i32,
+    pub(crate) closed_game: i32,
+    pub(crate) solved: i32,
+    pub(crate) unsolved: i32,
+    pub(crate) attack_defense: i32,
+    pub(crate) closed_solved: i32,
+    pub(crate) off_solved: i32,
+    pub(crate) alice: CurrentUser,
+    pub(crate) bob: CurrentUser,
+    pub(crate) outsider: CurrentUser,
+    pub(crate) pending: CurrentUser,
+    pub(crate) admin: CurrentUser,
 }
 
 fn user(id: Uuid, name: &str, role: Role) -> CurrentUser {
@@ -221,7 +221,7 @@ async fn solve(
     .unwrap();
 }
 
-async fn fixture() -> Fixture {
+pub(crate) async fn fixture() -> Fixture {
     fixture_with(false).await
 }
 
@@ -268,6 +268,12 @@ async fn fixture_with(required: bool) -> Fixture {
 
     let mut tx = pool.begin().await.unwrap();
     sqlx::query("SELECT set_config('rsctf.identity_neutral_insert', '1', true)")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    // The process-wide game row cache is keyed by id: isolate each schema's ids.
+    sqlx::query("SELECT setval(pg_get_serial_sequence('\"Games\"', 'id'), $1)")
+        .bind(1_000_000 + i64::from(rand::random::<u32>() % 1_000_000_000))
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -375,21 +381,21 @@ async fn fixture_with(required: bool) -> Fixture {
     }
 }
 
-async fn body(response: Response) -> JsonValue {
+pub(crate) async fn body(response: Response) -> JsonValue {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
-fn status(result: AppResult<Response>) -> u16 {
+pub(crate) fn status(result: AppResult<Response>) -> u16 {
     match result {
         Ok(response) => response.status().as_u16(),
         Err(error) => error.into_response().status().as_u16(),
     }
 }
 
-async fn error_title(result: AppResult<Response>) -> String {
+pub(crate) async fn error_title(result: AppResult<Response>) -> String {
     let response = match result {
         Ok(response) => response,
         Err(error) => error.into_response(),
@@ -488,7 +494,7 @@ impl Fixture {
         .await
     }
 
-    async fn teardown(self) {
+    pub(crate) async fn teardown(self) {
         self.pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{}" CASCADE"#, self.schema))
             .execute(&self.admin_pool)

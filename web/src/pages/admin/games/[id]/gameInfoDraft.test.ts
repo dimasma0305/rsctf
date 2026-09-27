@@ -106,3 +106,13 @@ test('the required-disclosure switch round-trips independently of the AI chat li
   assert.equal(gameInfoDraftChanged(required, enabled), true)
   assert.equal(prepareGameInfoSave(required, null, () => 'operation').payload.aiChatLinksRequired, true)
 })
+
+test('the solver uploads switch round-trips through the save payload and dirties the form', () => {
+  const baseline = buildGameInfoUpdatePayload({ ...saved, solverUploadsEnabled: false }, schedule, false)
+  const enabled = buildGameInfoUpdatePayload({ ...saved, solverUploadsEnabled: true }, schedule, false)
+
+  assert.equal(baseline.solverUploadsEnabled, false)
+  assert.equal(enabled.solverUploadsEnabled, true)
+  assert.equal(gameInfoDraftChanged(enabled, baseline), true)
+  assert.equal(prepareGameInfoSave(enabled, null, () => 'operation').payload.solverUploadsEnabled, true)
+})

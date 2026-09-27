@@ -53,7 +53,7 @@ from it.
 The archive contains the game definition, its attachments and writeups, the
 roster (teams, members, participations), every Jeopardy record (submissions,
 first solves, events, notices, reviews, writeup grades, AI chat links in
-`aiChatLinks`, `aiChatLinkEvents`), every A&D and KotH
+`aiChatLinks`, `aiChatLinkEvents`, solver uploads in `solverUploads`), every A&D and KotH
 record and rollup (rounds, flags, attacks, checks, cycles, tokens), cheat and
 anti-cheat evidence, and telemetry. Each table is written as JSON Lines under
 `data/`. Rendered scoreboards are stored under `scoreboards/`, and
@@ -176,6 +176,38 @@ The server stores the links but never fetches them, so it does not verify
 that a chat exists or what it contains. A share link opens content chosen by a
 player; open it in a separate browser profile that is not signed in to rsctf
 or to your own AI accounts.
+
+## Solver uploads
+
+Turn on **Solver uploads** on the game's Info page to let teams upload the
+solver they used, so you can verify a solve. It is off by default, it applies
+to Jeopardy challenges only, and uploading is always optional for teams: it
+never blocks the challenge card or affects points.
+
+When it is on, a team that has solved a challenge sees a **Solver** section on
+the challenge card. Any member can upload a file until the later of the event
+end and the writeup deadline:
+
+- at most 1 MiB per file, any file type;
+- each upload is a new, immutable version; teams cannot delete or replace
+  earlier versions;
+- at most 10 versions per challenge and 16 MiB per team for the whole event.
+
+Each version records the uploader, the server time, the seconds since the
+team's solve, the SHA-256 of the file, and a keyed hash of the client network
+address. A retried upload with the same operation id is stored only once.
+
+Review uploads under **Monitoring → Solvers**, most recent first, optionally
+filtered by challenge. Each entry lists every version of one team's solver for
+one challenge; **Download** saves a version as an attachment. The server
+stores the bytes in PostgreSQL but never unpacks, opens, or runs them, and the
+download is always sent as `application/octet-stream` with `nosniff` and a
+sandbox policy. A solver is untrusted code from a player: read it before you
+run it, and run it only in a disposable environment. Uploads stay reviewable
+after the switch is turned off and are included in the competition data
+archive.
+
+![Monitor solver list with team, challenge, versions, timing, and download buttons](/screenshots/solver-uploads-monitor.png)
 
 ## A&D and KotH timing
 

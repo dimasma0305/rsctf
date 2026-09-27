@@ -93,3 +93,18 @@ test('disclosure fixtures cover pending, links, no-AI, missing, and a full histo
   assert.deepEqual(get('/api/game/901/ai-chats/pending').challengeIds, [])
   assert.equal(get('/api/game/901/challenges/9001/ai-chats').revision, 1)
 })
+
+test('solver fixtures keep versions newest first and every record reviewable', () => {
+  const fixture = aiChatFixture(1_790_000_000_000)
+  const state = fixture.handle('/api/game/901/challenges/9002/solver-uploads').body
+  assert.deepEqual(state.versions.map((version) => version.version), [2, 1])
+  assert.equal(state.teamBytesUsed, state.versions.reduce((sum, version) => sum + version.sizeBytes, 0))
+  assert.equal(fixture.handle('/api/game/901/challenges/9004/solver-uploads').body.solved, false)
+  const page = fixture.handle('/api/game/901/solver-uploads?count=50&skip=0').body
+  assert.equal(page.total, page.items.length)
+  for (const record of page.items) {
+    const versions = record.versions.map((version) => version.version)
+    assert.deepEqual(versions, [...versions].sort((a, b) => b - a))
+    for (const version of record.versions) assert.match(version.sha256, /^[0-9a-f]{64}$/)
+  }
+})

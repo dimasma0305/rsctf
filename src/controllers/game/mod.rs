@@ -137,6 +137,7 @@ pub struct DetailedGameInfoModel {
     pub writeup_required: bool,
     pub ai_chat_links_enabled: bool,
     pub ai_chat_links_required: bool,
+    pub solver_uploads_enabled: bool,
     pub poster: Option<String>,
     pub limit: i32,
     pub team_count: i64,
@@ -930,6 +931,8 @@ mod scoreboard;
 mod scoreboard_board;
 mod scoreboard_encoding;
 mod scoreboard_live;
+mod solver_uploads;
+mod solver_uploads_monitor;
 mod submission_backfill;
 mod submit;
 mod traffic;
@@ -953,6 +956,8 @@ pub use play::*;
 pub use scoreboard::*;
 pub(crate) use scoreboard_board::*;
 pub(crate) use scoreboard_live::*;
+pub use solver_uploads::*;
+pub use solver_uploads_monitor::*;
 pub use submission_backfill::*;
 pub use submit::*;
 pub use traffic::*;

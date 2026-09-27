@@ -36,6 +36,9 @@ pub struct GameInfoModel {
     /// Require a disclosure after every competitive solve; off by default.
     #[serde(default)]
     pub ai_chat_links_required: bool,
+    /// Opt-in solver uploads after a solve; off by default.
+    #[serde(default)]
+    pub solver_uploads_enabled: bool,
     #[serde(default)]
     pub invite_code: Option<String>,
     #[serde(default)]
@@ -144,6 +147,7 @@ impl GameInfoModel {
             writeup_required: g.writeup_required,
             ai_chat_links_enabled: g.ai_chat_links_enabled,
             ai_chat_links_required: g.ai_chat_links_required,
+            solver_uploads_enabled: g.solver_uploads_enabled,
             invite_code: g.invite_code.clone(),
             team_member_count_limit: g.team_member_count_limit,
             container_count_limit: g.container_count_limit,
@@ -744,6 +748,7 @@ pub async fn update_game(
                vpn_policy_revision = $40,
                ai_chat_links_enabled = $42,
                ai_chat_links_required = $43,
+               solver_uploads_enabled = $44,
                challenge_configuration_revision = challenge_configuration_revision + 1,
                configuration_revision = configuration_revision + 1
              WHERE id = $1 AND configuration_revision = $41"#,
@@ -791,6 +796,7 @@ pub async fn update_game(
     .bind(model.configuration_revision)
     .bind(model.ai_chat_links_enabled)
     .bind(model.ai_chat_links_required)
+    .bind(model.solver_uploads_enabled)
     .execute(&mut **tx)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;

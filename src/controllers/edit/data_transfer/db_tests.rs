@@ -253,6 +253,7 @@ async fn archive_round_trips_a_multi_format_event_through_the_real_schema() {
     assert_eq!(rows("kothOfficialConfigs"), 1);
     assert_eq!(rows("aiChatLinks"), 1);
     assert_eq!(rows("aiChatLinkEvents"), 1);
+    assert_eq!(rows("solverUploads"), 1);
     let mut users_text = String::new();
     archive
         .by_name("data/users.jsonl")
@@ -379,6 +380,7 @@ async fn archive_round_trips_a_multi_format_event_through_the_real_schema() {
         if name == "data/users.jsonl"
             || name == "data/aiChatLinks.jsonl"
             || name == "data/aiChatLinkEvents.jsonl"
+            || name == "data/solverUploads.jsonl"
             || name == "data/teamMembers.jsonl"
             || name == "data/userParticipations.jsonl"
             || name == "data/submissions.jsonl"

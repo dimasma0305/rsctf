@@ -338,6 +338,7 @@ pub async fn game_details(
         writeup_required: g.writeup_required,
         ai_chat_links_enabled: g.ai_chat_links_enabled,
         ai_chat_links_required: g.ai_chat_links_enabled && g.ai_chat_links_required,
+        solver_uploads_enabled: g.solver_uploads_enabled,
         poster: g.poster_url(),
         limit: g.team_member_count_limit,
         team_count,

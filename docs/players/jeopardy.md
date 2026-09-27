@@ -65,6 +65,22 @@ solves.
 
 Some games require a writeup after play. When enabled, upload it from the game writeup area before the deadline. The current server accepts a non-empty lowercase `.pdf` file with the `application/pdf` type, up to 20 MiB. Uploading again replaces your previous file.
 
+## Solver uploads
+
+Some events let teams upload the solver they used so organizers can verify a
+solve. When it is on, a challenge your team has solved shows a **Solver**
+section on its card. Uploading is optional.
+
+1. Open the section with **Upload** and choose the file in **Solver file**
+   (up to 1 MiB, any type; a script, notebook, or notes).
+2. Choose **Upload solver**.
+
+Every upload is kept as a new version; you cannot delete or replace an earlier
+one. Your team can upload up to 10 versions per challenge and 16 MiB in total
+for the event, until the later of the event end and the writeup deadline.
+Organizers see every version with its uploader, upload time, and how long after
+the solve it was uploaded. Do not include other teams' information.
+
 ## AI chat links
 
 Some events ask teams to disclose the AI chats they used. When the organizer

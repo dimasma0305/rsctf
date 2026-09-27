@@ -160,7 +160,7 @@ test('the player section is Jeopardy-only, caller-owned, and never gates the mod
   )
   // Keyed by challenge so an inline-pane switch cannot carry a draft across.
   assert.match(gameChallengeModal, /<AiChatLinksSection\s+key=\{`\$\{gameId\}:\$\{challengeId\}`\}/)
-  assert.match(gameChallengeModal, /solvedExtras=\{aiChatLinks\}/)
+  assert.match(gameChallengeModal, /solvedExtras=\{\s*aiChatLinks \|\| solverUpload \?/)
 
   // One non-polled read; the section must not take focus from the review flow.
   assert.match(section, /refreshInterval: 0/)

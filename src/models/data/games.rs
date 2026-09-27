@@ -32,6 +32,9 @@ pub mod game {
         /// an explicit "no AI used"). Effective only with `ai_chat_links_enabled`.
         #[sea_orm(default_value = false)]
         pub ai_chat_links_required: bool,
+        /// Opt-in solver uploads on solved Jeopardy challenges for review.
+        #[sea_orm(default_value = false)]
+        pub solver_uploads_enabled: bool,
         pub invite_code: Option<String>,
         pub team_member_count_limit: i32,
         pub discord_webhook: Option<String>,

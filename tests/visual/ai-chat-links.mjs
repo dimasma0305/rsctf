@@ -3,7 +3,8 @@
 //
 //   RSCTF_AI_CHAT_TARGET=http://127.0.0.1:63017 node tests/visual/ai-chat-links.mjs
 //   RSCTF_AI_CHAT_PUBLISH=1 ...   also refreshes docs/public/screenshots/ai-chat-links-*.png
-//                                 (player, providers, monitor, history)
+//                                 (player, providers, monitor, history) and
+//                                 solver-uploads-{player,monitor}.png
 import assert from 'node:assert/strict'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -159,11 +160,23 @@ try {
     await waitFor(`document.querySelector('${section} input').getAttribute('aria-invalid') === 'true'`)
     await audit(`${name}-player-rejected`)
 
-    // A King of the Hill challenge never offers the section.
+    // Optional solver section on the same solved card: every version, a file picker, no close gate.
+    const solver = '[data-solver-uploads]'
+    await cdp.send('Page.navigate', { url: `${target}/games/901/challenges#9002` })
+    await waitFor(`document.querySelector('${solver}')`)
+    await evaluate(`[...document.querySelectorAll('${solver} button')].find(b => b.getAttribute('aria-expanded') === 'false')?.click()`)
+    await waitFor(`document.querySelector('${solver}').innerText.includes('Solver file') && document.querySelector('${solver}').innerText.includes('v2')`)
+    assert.match(await evaluate(`document.querySelector('${solver}').innerText`), /Uploaded by bima/)
+    await evaluate(`document.querySelector('${solver}').scrollIntoView({ block: 'center' })`)
+    await audit(`${name}-player-solver`)
+    if (publish && name === 'desktop') await capture('solver-uploads-player.png', solver)
+
+    // A King of the Hill challenge never offers either section.
     await cdp.send('Page.navigate', { url: `${target}/games/901/challenges#9006` })
     await waitFor(`document.body.innerText.includes('Crown Hill')`)
     await new Promise((r) => setTimeout(r, 1200))
     assert.equal(await evaluate(`Boolean(document.querySelector('${section}'))`), false, 'KotH has no AI chat links')
+    assert.equal(await evaluate(`Boolean(document.querySelector('${solver}'))`), false, 'KotH has no solver uploads')
 
     // Admin provider registry with a disabled built-in and a custom regex.
     await cdp.send('Page.navigate', { url: `${target}/admin/settings?section=ai_links` })
@@ -182,6 +195,18 @@ try {
     assert.match(await evaluate('document.body.innerText'), /This event requires a disclosure after every solve/)
     await audit(`${name}-monitor`)
     if (publish && name === 'desktop') await capture('ai-chat-links-monitor.png')
+
+    // Monitor solver review: every version of every team, with download actions.
+    await cdp.send('Page.navigate', { url: `${target}/games/901/monitor/solvers` })
+    await waitFor(`document.querySelectorAll('[data-solver-record]').length === ${fixture.solverRecords.length} && document.body.innerText.includes('solve.sage')`)
+    assert.equal(
+      await evaluate(`document.querySelectorAll('[data-solver-record] button[aria-label^="Download "]').length`),
+      fixture.solverRecords.reduce((sum, record) => sum + record.versions.length, 0)
+    )
+    await audit(`${name}-monitor-solvers`)
+    if (publish && name === 'desktop') await capture('solver-uploads-monitor.png')
+    await cdp.send('Page.navigate', { url: `${target}/games/901/monitor/ai-chats` })
+    await waitFor(`document.body.innerText.includes('Provider now blocked') && document.body.innerText.includes('Byte Bandits')`)
 
     // Missing filter: team, challenge, solve time, and "No disclosure" without link actions.
     await click('[data-ai-chat-status-filter] label', 'Missing')

@@ -52,6 +52,16 @@ An event can ask teams to disclose the AI chats they used. After a team solves a
 
 The [organizer guide](docs/organizers/games.md#ai-chat-links) covers the event switch, monitor review, and provider settings.
 
+## Solver uploads for solve verification
+
+An event can also let teams upload the solver they used. After a team solves a Jeopardy challenge, any member can upload the script or notes from the challenge card (up to 1 MiB per file). Each upload is kept as a new version, with up to 10 versions per challenge and 16 MiB per team per event. Monitors see every version with its uploader, server time, delay since the solve and SHA-256, and download files as plain attachments. The server stores the bytes but never unpacks, opens or runs them. Uploading is optional for teams, and the switch is off by default for each event.
+
+<p align="center">
+  <img src="docs/public/screenshots/solver-uploads-player.png" alt="Solved Jeopardy challenge card with a Solver section listing two uploaded versions and a file picker" width="640">
+</p>
+
+The [organizer guide](docs/organizers/games.md#solver-uploads) covers the switch and monitor review.
+
 ## Feature overview
 
 | Area | Included capabilities |
@@ -62,6 +72,7 @@ The [organizer guide](docs/organizers/games.md#ai-chat-links) covers the event s
 | Networking | Direct host/port mappings, Platform Proxy with WSRX or copyable WSS URLs, integrated WireGuard, per-event VPN access gates, protected routes, and VPN-specific port behavior |
 | Scoring | Jeopardy dynamic scoring, divisions, optional blood bonuses, live scoreboards, A&D rounds/SLA/flag capture, and KotH crown-cycle scoring |
 | AI chat disclosure | Optional or required per-event AI chat disclosure on solved Jeopardy challenges (share links or "No AI used"), edit history with timing for cheat review, a monitor list with missing-disclosure filter, and an administrator-managed allowlist of built-in and custom providers |
+| Solver verification | Optional per-event solver uploads on solved Jeopardy challenges, immutable versions with solve-relative timing and SHA-256, and a monitor list with inert attachment downloads |
 | Organizer operations | Event and challenge editors, real instance previews, Git repository bindings and imports, team/user administration, build and image inventory, safe pruning, worker enrollment, logs, traffic views, and event monitoring |
 | Guidance and accessibility | Permanent screenshot-based player handbook, resumable interactive coach marks, contextual container/VPN tips, keyboard navigation, screen-reader semantics, reduced motion, and layouts audited down to 320 px |
 | Platform services | PostgreSQL and Redis, bounded background reconciliation, SMTP, optional Trakteer donations and donor leaderboard, Docker Compose, Helm/Kubernetes, role-separated replicas, health checks, and verified release installers |

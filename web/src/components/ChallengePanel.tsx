@@ -606,6 +606,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
             practiceMode={game?.practiceMode}
             eventVpnRequired={game?.vpnAccessRequired}
             aiChatLinksEnabled={game?.aiChatLinksEnabled === true}
+            solverUploadsEnabled={game?.solverUploadsEnabled === true}
             status={teamInfo?.rank?.solvedChallenges?.find((c) => c.id === challenge?.id)?.type}
             cateData={challengeCategoryLabelMap.get(
               (challenge?.category as ChallengeCategory) ?? ChallengeCategory.Misc

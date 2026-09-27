@@ -729,6 +729,10 @@
           "description": "Teams must add AI chat links or declare \"No AI used\" for each solved challenge. The challenge dialog stays open until they do; scoring is unaffected.",
           "needs_links": "Turn on AI chat links first; the requirement only applies while they are enabled."
         },
+        "solver_uploads": {
+          "label": "Solver uploads",
+          "description": "Let teams upload the solver they used for a solved challenge so organizers can verify it. Optional for teams; off by default."
+        },
         "start_date": "Start Date",
         "start_time": "Start Time",
         "summary": {

@@ -1640,6 +1640,8 @@ export interface GameInfoModel {
   aiChatLinksEnabled?: boolean;
   /** Require a disclosure (links or "No AI used") after every solve; effective only with aiChatLinksEnabled */
   aiChatLinksRequired?: boolean;
+  /** Let teams upload their solver to solved Jeopardy challenges for verification (off by default) */
+  solverUploadsEnabled?: boolean;
   /**
    * Game invitation code
    * @maxLength 32
@@ -3521,6 +3523,70 @@ export interface AiChatLinkState {
   editCount: number;
 }
 
+/** One immutable solver version (metadata only) */
+export interface SolverUploadVersion {
+  /** @format int64 */
+  id: number;
+  /** @format int32 */
+  version: number;
+  fileName: string;
+  /** @format int32 */
+  sizeBytes: number;
+  /** Lowercase hex SHA-256 of the file */
+  sha256: string;
+  /** Username of the uploader */
+  uploadedBy: string | null;
+  /**
+   * Server-measured seconds from the team's solve to this upload
+   * @format int64
+   */
+  secondsSinceSolve: number | null;
+  /** @format uint64 */
+  uploadedAt: number;
+}
+
+/** A team's solver versions for one solved Jeopardy challenge */
+export interface SolverUploadState {
+  /** Solved, the window is open, and the version cap is not reached */
+  editable: boolean;
+  solved: boolean;
+  /** @format uint64 */
+  editableUntil: number;
+  /** @format int32 */
+  maxFileBytes: number;
+  /** @format int32 */
+  maxVersions: number;
+  /** @format int64 */
+  teamBytesUsed: number;
+  /** @format int64 */
+  teamBytesLimit: number;
+  /** Newest first */
+  versions: SolverUploadVersion[];
+}
+
+/** Every solver version of one team and challenge */
+export interface SolverUploadRecord {
+  /** @format int32 */
+  participationId: number;
+  /** @format int32 */
+  teamId: number;
+  teamName: string;
+  /** @format int32 */
+  challengeId: number;
+  challengeTitle: string;
+  category: ChallengeCategory;
+  /** @format uint64 */
+  solvedAt: number | null;
+  /** Newest first */
+  versions: SolverUploadVersion[];
+}
+
+export interface SolverUploadRecordPage {
+  /** @format int64 */
+  total: number;
+  items: SolverUploadRecord[];
+}
+
 /** Replace a team's AI chat links; an empty list removes the record */
 export interface AiChatLinkUpdateModel {
   /** 0..maxLinks raw URLs; must be empty when noAiUsed is true */
@@ -3679,6 +3745,8 @@ export interface DetailedGameInfoModel {
   aiChatLinksEnabled?: boolean;
   /** Effective requirement (enabled && required): every solve needs a disclosure */
   aiChatLinksRequired?: boolean;
+  /** Whether teams may upload their solver to solved Jeopardy challenges */
+  solverUploadsEnabled?: boolean;
   /** Game poster URL */
   poster?: string | null;
   /**
@@ -10883,6 +10951,130 @@ export class Api<
         body: data,
         type: ContentType.Json,
         format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Gets the caller team's solver versions for a Jeopardy challenge
+     *
+     * @tags Game
+     * @name GameGetSolverUploads
+     * @summary Get solver uploads
+     * @request GET:/api/game/{id}/challenges/{challengeId}/solver-uploads
+     */
+    gameGetSolverUploads: (
+      id: number,
+      challengeId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<SolverUploadState, RequestResponse>({
+        path: `/api/game/${id}/challenges/${challengeId}/solver-uploads`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    useGameGetSolverUploads: (
+      id: number,
+      challengeId: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<SolverUploadState, RequestResponse>(
+        doFetch
+          ? `/api/game/${id}/challenges/${challengeId}/solver-uploads`
+          : null,
+        options,
+      ),
+
+    /**
+     * @description Appends a solver version for a solved Jeopardy challenge (multipart field `file`, at most 1 MiB)
+     *
+     * @tags Game
+     * @name GameSubmitSolverUpload
+     * @summary Upload a solver
+     * @request POST:/api/game/{id}/challenges/{challengeId}/solver-uploads
+     */
+    gameSubmitSolverUpload: (
+      id: number,
+      challengeId: number,
+      data: {
+        /** @format binary */
+        file?: File | null;
+      },
+      operationId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<SolverUploadState, RequestResponse>({
+        path: `/api/game/${id}/challenges/${challengeId}/solver-uploads`,
+        method: "POST",
+        body: data,
+        type: ContentType.FormData,
+        format: "json",
+        ...params,
+        headers: {
+          ...params.headers,
+          "X-RSCTF-Operation-Id": operationId,
+        },
+      }),
+
+    /**
+     * @description Lists solver uploads per team and challenge, most recent first; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameListSolverUploads
+     * @summary List solver uploads
+     * @request GET:/api/game/{id}/solver-uploads
+     */
+    gameListSolverUploads: (
+      id: number,
+      query?: {
+        /** @format int32 */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+        /** @format int32 */
+        challengeId?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<SolverUploadRecordPage, RequestResponse>({
+        path: `/api/game/${id}/solver-uploads`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    useGameListSolverUploads: (
+      id: number,
+      query?: {
+        count?: number;
+        skip?: number;
+        challengeId?: number;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<SolverUploadRecordPage, RequestResponse>(
+        doFetch ? [`/api/game/${id}/solver-uploads`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Downloads one solver version as an inert attachment; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameDownloadSolverUpload
+     * @summary Download a solver version
+     * @request GET:/api/game/{id}/solver-uploads/{uploadId}/file
+     */
+    gameDownloadSolverUpload: (
+      id: number,
+      uploadId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<File, RequestResponse>({
+        path: `/api/game/${id}/solver-uploads/${uploadId}/file`,
+        method: "GET",
         ...params,
       }),
 

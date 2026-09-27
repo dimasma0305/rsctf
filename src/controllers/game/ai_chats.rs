@@ -10,6 +10,7 @@ use super::*;
 use crate::services::ai_chat_links::{self, MatchedLink};
 
 pub(super) const DISABLED_MESSAGE: &str = "AI chat links are not enabled for this event";
+const NOT_JEOPARDY: &str = "AI chat links apply only to Jeopardy challenges";
 const MAX_PENDING_CHALLENGES: i64 = 500;
 
 #[derive(Debug, Serialize)]
@@ -121,10 +122,13 @@ fn jeopardy(challenge_type: ChallengeType) -> bool {
     !challenge_type.uses_ad_engine()
 }
 
-async fn challenge_type<'e, E>(
+/// An enabled Jeopardy challenge of the game; `not_jeopardy` is the 404
+/// message for an Attack-Defense or KotH challenge.
+pub(super) async fn jeopardy_challenge<'e, E>(
     executor: E,
     game_id: i32,
     challenge_id: i32,
+    not_jeopardy: &'static str,
 ) -> AppResult<ChallengeType>
 where
     E: sqlx::PgExecutor<'e>,
@@ -142,14 +146,16 @@ where
         .and_then(|value| ChallengeType::try_from_value(&value).ok())
         .ok_or_else(|| AppError::not_found("Challenge not found"))?;
     if !jeopardy(challenge_type) {
-        return Err(AppError::not_found(
-            "AI chat links apply only to Jeopardy challenges",
-        ));
+        return Err(AppError::not_found(not_jeopardy));
     }
     Ok(challenge_type)
 }
 
-async fn solved<'e, E>(executor: E, participation_id: i32, challenge_id: i32) -> AppResult<bool>
+pub(super) async fn solved<'e, E>(
+    executor: E,
+    participation_id: i32,
+    challenge_id: i32,
+) -> AppResult<bool>
 where
     E: sqlx::PgExecutor<'e>,
 {
@@ -280,7 +286,7 @@ pub async fn get_ai_chat_links(
     if !ctx.game.ai_chat_links_enabled {
         return Err(AppError::not_found(DISABLED_MESSAGE));
     }
-    challenge_type(st.pg(), id, challenge_id).await?;
+    jeopardy_challenge(st.pg(), id, challenge_id, NOT_JEOPARDY).await?;
     Ok(private_json(
         load_state(&st, &ctx.game, ctx.participation.id, challenge_id).await?,
     ))
@@ -475,7 +481,7 @@ pub async fn save_ai_chat_links(
     }
     // Re-check the challenge and the accepted solve inside the roster-fenced
     // transaction so a kick or challenge change cannot race the write.
-    challenge_type(&mut *transaction, id, challenge_id).await?;
+    jeopardy_challenge(&mut *transaction, id, challenge_id, NOT_JEOPARDY).await?;
     if !solved(&mut *transaction, ctx.participation.id, challenge_id).await? {
         return Err(AppError::bad_request(
             "Solve the challenge before attaching AI chat links",
@@ -575,4 +581,4 @@ pub async fn save_ai_chat_links(
 
 #[cfg(test)]
 #[path = "ai_chats_tests.rs"]
-mod tests;
+pub(super) mod tests;

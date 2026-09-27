@@ -505,7 +505,8 @@
       "index": "比赛监控",
       "submissions": "提交记录",
       "traffic": "流量捕获",
-      "ai_chats": "AI 对话"
+      "ai_chats": "AI 对话",
+      "solvers": "解题脚本"
     },
     "scoreboard": "积分总榜",
     "submit": "提交题目",
@@ -636,5 +637,24 @@
       "no_ai": "未使用 AI"
     },
     "status_filter": "状态"
+  },
+  "solver": {
+    "title": "解题脚本",
+    "subtitle": "各队伍解题后上传的脚本，按最近上传排序。所有版本均会保留；文件只以附件形式下载，不会在浏览器中打开。",
+    "challenge_filter": "题目",
+    "all_challenges": "全部题目",
+    "no_challenge_match": "没有匹配的题目",
+    "empty_title": "尚无解题脚本",
+    "empty_filtered": "没有符合筛选条件的记录。",
+    "empty_description": "队伍为已解出的题目上传脚本后会显示在这里。",
+    "list_label": "解题脚本记录",
+    "page_status": "第 {{page}} / {{pages}} 页 · 共 {{total}} 条记录",
+    "version": "v{{version}}",
+    "uploaded_by": "上传者 {{user}}",
+    "download": "下载",
+    "download_label": "下载 {{file}} 第 {{version}} 版",
+    "team": "队伍",
+    "version_count": "{{count}} 个版本",
+    "solved_at": "解出于 {{time}}"
   }
 }

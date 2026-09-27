@@ -262,6 +262,24 @@ pub(super) async fn seed_event(st: &SharedState, pool: &sqlx::PgPool, admin: Uui
     .await
     .unwrap();
     sqlx::query(
+        r#"INSERT INTO "SolverUploads"
+             (game_id, participation_id, challenge_id, version, file_name, size_bytes, sha256,
+              content, uploaded_by, operation_id, solved_at, seconds_since_solve,
+              remote_ip_hash, uploaded_at)
+           VALUES ($1, $2, $3, 1, 'solve.py', 5, sha256('print'::bytea), 'print'::bytea, $4,
+                   $5, $6, 120, decode(repeat('cd', 32), 'hex'), $7)"#,
+    )
+    .bind(game_id)
+    .bind(participation_id)
+    .bind(c1)
+    .bind(users[1])
+    .bind(Uuid::new_v4())
+    .bind(now - chrono::Duration::hours(4))
+    .bind(now - chrono::Duration::hours(3))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
         r#"INSERT INTO "WriteupGrades"
              (game_id, participation_id, challenge_id, percentage, revision, operation_id, graded_by, updated_at)
            VALUES ($1, $2, $3, 80, 1, $4, $5, $6)"#,

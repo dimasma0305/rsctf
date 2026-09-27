@@ -1,5 +1,13 @@
 import { Button, LoadingOverlay, Stack, Tabs } from '@mantine/core'
-import { mdiFlag, mdiLightningBolt, mdiPackageVariant, mdiTableArrowDown, mdiGhost, mdiRobotOutline } from '@mdi/js'
+import {
+  mdiCodeBraces,
+  mdiFlag,
+  mdiLightningBolt,
+  mdiPackageVariant,
+  mdiTableArrowDown,
+  mdiGhost,
+  mdiRobotOutline,
+} from '@mdi/js'
 import { Icon } from '@mdi/react'
 import React, { FC, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -31,10 +39,15 @@ export const WithGameMonitor: FC<WithGameMonitorProps> = ({ children, isLoading 
     { icon: mdiGhost, title: t('game.tab.monitor.cheat'), path: 'cheatcheck' },
     { icon: mdiPackageVariant, title: t('game.tab.monitor.traffic'), path: 'traffic' },
     { icon: mdiRobotOutline, title: t('game.tab.monitor.ai_chats', 'AI chats'), path: 'ai-chats' },
+    { icon: mdiCodeBraces, title: t('game.tab.monitor.solvers', 'Solvers'), path: 'solvers' },
   ]
-  // Shares WithGameTab's game read. The AI chats route stays reachable after
-  // the event switch is turned off so saved history remains readable.
+  // Shares WithGameTab's game read. Opt-in review routes stay reachable after
+  // their event switch is turned off so saved evidence remains readable.
   const { game } = useGame(numId)
+  const optInTabs: Record<string, boolean | undefined> = {
+    'ai-chats': game?.aiChatLinksEnabled,
+    solvers: game?.solverUploadsEnabled,
+  }
 
   const getTab = (path: string) => pages.find((page) => path.endsWith(page.path))
 
@@ -91,7 +104,7 @@ export const WithGameMonitor: FC<WithGameMonitorProps> = ({ children, isLoading 
                 <Tabs.List aria-label={t('game.tab.monitor.index')}>
                   {pages
                     .filter(
-                      (page) => page.path !== 'ai-chats' || game?.aiChatLinksEnabled === true || activeTab === page.path
+                      (page) => !(page.path in optInTabs) || optInTabs[page.path] === true || activeTab === page.path
                     )
                     .map((page) => (
                       <Tabs.Tab

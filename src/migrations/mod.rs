@@ -206,6 +206,7 @@ pub(crate) mod m0349_image_preflight_results;
 mod m0350_event_history_purge_outbox_delete;
 mod m0351_ai_chat_links;
 mod m0352_ai_chat_disclosure;
+mod m0353_solver_uploads;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -438,6 +439,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0350_event_history_purge_outbox_delete::Migration),
             Box::new(m0351_ai_chat_links::Migration),
             Box::new(m0352_ai_chat_disclosure::Migration),
+            Box::new(m0353_solver_uploads::Migration),
         ]
     }
 }
@@ -582,12 +584,11 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 182);
+        assert_eq!(names.len(), 183);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
             &names[names.len() - 80..],
             [
-                "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
                 "m0105_manager_autocomplete_indexes",
                 "m0106_submission_idempotency",
@@ -667,6 +668,7 @@ mod tests {
                 "m0350_event_history_purge_outbox_delete",
                 "m0351_ai_chat_links",
                 "m0352_ai_chat_disclosure",
+                "m0353_solver_uploads",
             ]
         );
     }

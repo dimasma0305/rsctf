@@ -80,6 +80,14 @@ fn router_with_domains(
             limited(Policy::Query, get(list_ai_chat_link_events)),
         )
         .route(
+            "/api/game/{id}/solver-uploads",
+            limited(Policy::Query, get(list_solver_uploads)),
+        )
+        .route(
+            "/api/game/{id}/solver-uploads/{uploadId}/file",
+            limited(Policy::Query, get(download_solver_upload)),
+        )
+        .route(
             "/api/game/{id}/submissions/page",
             limited(Policy::Query, get(monitor_history::submission_page)),
         )
@@ -169,6 +177,17 @@ fn router_with_domains(
                 get(get_ai_chat_links)
                     .put(save_ai_chat_links)
                     .layer(DefaultBodyLimit::max(16 * 1024)),
+            ),
+        )
+        .route(
+            "/api/game/{id}/challenges/{challengeId}/solver-uploads",
+            limited(
+                Policy::Query,
+                get(get_solver_uploads)
+                    .post(submit_solver_upload)
+                    .layer(DefaultBodyLimit::max(
+                        crate::utils::upload::SOLVER_BODY_BYTES,
+                    )),
             ),
         )
         .route(

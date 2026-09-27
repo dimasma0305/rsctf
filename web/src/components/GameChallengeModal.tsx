@@ -9,6 +9,7 @@ import { useSWRConfig } from 'swr'
 import type { AdStateOwner } from '@Components/AdChallengePanel'
 import { AiChatLinksSection } from '@Components/AiChatLinksSection'
 import { ChallengeModal, type ChallengeCloseRequirement, SolverInfo } from '@Components/ChallengeModal'
+import { SolverUploadSection } from '@Components/SolverUploadSection'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
 import { aiChatPendingPath } from '@Utils/AiChatLinks'
 import {
@@ -76,6 +77,8 @@ interface GameChallengeModalProps extends ModalProps {
   adStateOwner?: AdStateOwner
   /** Event switch from the player game DTO; the section is Jeopardy-only. */
   aiChatLinksEnabled?: boolean
+  /** Optional solver uploads; Jeopardy-only and never blocks closing. */
+  solverUploadsEnabled?: boolean
 }
 
 /** Challenge types that can carry AI chat links (Jeopardy only). */
@@ -150,6 +153,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     challengeOwned = true,
     adStateOwner,
     aiChatLinksEnabled = false,
+    solverUploadsEnabled = false,
     ...modalProps
   } = props
 
@@ -801,6 +805,10 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
         onPendingChange={setDisclosurePending}
       />
     ) : undefined
+  const solverUpload =
+    solverUploadsEnabled && readEnabled && challenge?.id === challengeId && AI_CHAT_LINK_TYPES.has(challenge.type) ? (
+      <SolverUploadSection key={`${gameId}:${challengeId}`} gameId={gameId} challengeId={challengeId} />
+    ) : undefined
   // The section reports a loaded, required, pending, still-possible disclosure.
   const disclosureRequirement = useMemo<ChallengeCloseRequirement | null>(
     () =>
@@ -859,7 +867,14 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
         if (flagVerdict) dispatchFlagVerdict({ type: 'dismiss', sequence: flagVerdict.sequence })
       }}
       adStateOwner={adStateOwner}
-      solvedExtras={aiChatLinks}
+      solvedExtras={
+        aiChatLinks || solverUpload ? (
+          <>
+            {aiChatLinks}
+            {solverUpload}
+          </>
+        ) : undefined
+      }
       closeRequirement={aiChatLinks ? disclosureRequirement : null}
     />
   )
