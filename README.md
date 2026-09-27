@@ -42,6 +42,16 @@ The monitoring workspace correlates hard evidence, network/device signals, abnor
   <img src="docs/public/screenshots/cheat-analysis-overview.png" alt="RSCTF cheat analysis workspace with detector coverage, evidence families, filters, and suspicion rankings" width="1200">
 </p>
 
+## AI chat links for solve review
+
+An event can ask teams to disclose the AI chats they used. After a team solves a Jeopardy challenge, its members can attach up to five public share links (ChatGPT, Claude, Gemini, and other accepted providers) to that challenge until the later of the event end and the writeup deadline. Monitors read every team's links in one list, and administrators decide which providers are accepted. The server validates each link against the provider list but never fetches it. The switch is off by default for each event.
+
+<p align="center">
+  <img src="docs/public/screenshots/ai-chat-links-player.png" alt="Solved Jeopardy challenge card listing ChatGPT and Claude share links, each with a provider validation badge" width="640">
+</p>
+
+The [organizer guide](docs/organizers/games.md#ai-chat-links) covers the event switch, monitor review, and provider settings.
+
 ## Feature overview
 
 | Area | Included capabilities |
@@ -51,6 +61,7 @@ The monitoring workspace correlates hard evidence, network/device signals, abnor
 | Challenge delivery | Static challenges, real attachments, dynamic Docker or Kubernetes workloads, immutable build/pull status, on-demand image builds, lifecycle limits, practice instances, BYOC, and Linux or Windows trusted workers |
 | Networking | Direct host/port mappings, Platform Proxy with WSRX or copyable WSS URLs, integrated WireGuard, per-event VPN access gates, protected routes, and VPN-specific port behavior |
 | Scoring | Jeopardy dynamic scoring, divisions, optional blood bonuses, live scoreboards, A&D rounds/SLA/flag capture, and KotH crown-cycle scoring |
+| AI chat disclosure | Optional per-event AI chat share links on solved Jeopardy challenges, a monitor review list, and an administrator-managed allowlist of built-in and custom providers |
 | Organizer operations | Event and challenge editors, real instance previews, Git repository bindings and imports, team/user administration, build and image inventory, safe pruning, worker enrollment, logs, traffic views, and event monitoring |
 | Guidance and accessibility | Permanent screenshot-based player handbook, resumable interactive coach marks, contextual container/VPN tips, keyboard navigation, screen-reader semantics, reduced motion, and layouts audited down to 320 px |
 | Platform services | PostgreSQL and Redis, bounded background reconciliation, SMTP, optional Trakteer donations and donor leaderboard, Docker Compose, Helm/Kubernetes, role-separated replicas, health checks, and verified release installers |

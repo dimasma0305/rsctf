@@ -44,7 +44,17 @@ import {
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
-import { FC, MouseEvent as ReactMouseEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import {
+  FC,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import { AdChallengePanel } from '@Components/AdChallengePanel'
 import type { AdStateOwner } from '@Components/AdChallengePanel'
@@ -129,6 +139,9 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
   flagVerdict?: FlagVerdictState | null
   onDismissFlagVerdict?: () => void
   adStateOwner?: AdStateOwner
+  /** Caller-owned content rendered below the review block once solved. It
+   * must not gate closing or take focus; the modal stays presentation-only. */
+  solvedExtras?: ReactNode
 }
 
 export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
@@ -171,6 +184,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     flagVerdict,
     onDismissFlagVerdict,
     adStateOwner,
+    solvedExtras,
     withOverlay = true,
     overlayProps,
     withCloseButton = true,
@@ -927,6 +941,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           </>
         )}
         {reviewSection}
+        {solved && solvedExtras}
         {eventAction}
       </Stack>
     )

@@ -119,6 +119,7 @@ const state = {
   containerIds: [],
   runtimeContainerIds: [],
   originalGlobalConfig: null,
+  aiChatProviders: null,
   evidence: {},
 };
 const covered = new Set();
@@ -720,6 +721,9 @@ function materializeCatalogPath(template, fixture) {
     auditid: fixture.auditId,
     operationid: fixture.operationId,
     operation_id: fixture.operationId,
+    // Authorization probes must never name a real provider: an accepted
+    // request would create or delete global registry state.
+    key: `lc-auth-probe-${tag}`,
   };
   let path = template.replace(/\{([^}]+)\}/g, (_, key) => {
     const normalized = key.toLowerCase();
@@ -1330,6 +1334,223 @@ async function configurationLifecycle() {
   requireCondition(
     /not sent|failed|smtp/i.test(email.text),
     "email diagnostic did not explain its rejected delivery",
+  );
+}
+
+const AI_CHAT_PROVIDERS_PATH = "/api/admin/ai-chat-providers";
+const AI_CHAT_PROVIDER_TEMPLATE = "/api/admin/ai-chat-providers/{key}";
+const AI_CHAT_LIFECYCLE_PATTERN = "https://example\\.test/share/[a-z0-9]{4,32}";
+
+function aiChatProviderPath(key) {
+  return `${AI_CHAT_PROVIDERS_PATH}/${encodeURIComponent(key)}`;
+}
+
+function aiChatProviderByKey(registry, key) {
+  requireCondition(
+    Array.isArray(registry?.providers),
+    "AI chat provider registry omitted providers",
+  );
+  return registry.providers.find((provider) => provider.key === key) || null;
+}
+
+async function readAiChatProviders(label, options = {}) {
+  const response = await adminApi("GET", AI_CHAT_PROVIDERS_PATH, options);
+  requireCondition(
+    validateAdminResponse("admin_ai_chat_providers_get", response),
+    `${label} returned a malformed AI chat provider registry`,
+  );
+  return exactJson(response, label);
+}
+
+// Built-in enable overrides are global state shared by every replica; poll
+// briefly so a replica-local registry cache cannot turn convergence into a flake.
+async function assertAiChatProviderConverged(key, enabled, label) {
+  for (const [index, baseUrl] of webTargets.entries()) {
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const registry = await readAiChatProviders(
+        `${label} on web replica ${index + 1}`,
+        { baseUrl, ip: `10.252.11.${index + 1}` },
+      );
+      if (aiChatProviderByKey(registry, key)?.enabled === enabled) break;
+      requireCondition(
+        Date.now() < deadline,
+        `web replica ${index + 1} did not converge on ${label}`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+}
+
+async function restoreAiChatBuiltin(builtin) {
+  const current = aiChatProviderByKey(
+    await readAiChatProviders("AI chat built-in restore read"),
+    builtin.key,
+  );
+  requireCondition(current?.builtin === true, `built-in ${builtin.key} vanished`);
+  if (current.enabled !== builtin.enabled) {
+    await adminApi("PUT", aiChatProviderPath(builtin.key), {
+      body: { enabled: builtin.enabled },
+    });
+  }
+  await assertAiChatProviderConverged(
+    builtin.key,
+    builtin.enabled,
+    `AI chat built-in ${builtin.key} restore`,
+  );
+}
+
+async function aiChatProviderLifecycle() {
+  console.log("\nAI chat provider registry…");
+  const customKey = `lc-${tag}`;
+  const invalidKey = `lc-${tag}-invalid`;
+  const initial = exactJson(
+    await call("GET", AI_CHAT_PROVIDERS_PATH, AI_CHAT_PROVIDERS_PATH),
+    "AI chat providers",
+  );
+  requireCondition(
+    !aiChatProviderByKey(initial, customKey) &&
+      !aiChatProviderByKey(initial, invalidKey),
+    "AI chat provider lifecycle namespace is not empty",
+  );
+  requireCondition(
+    aiChatProviderByKey(initial, "chatgpt")?.builtin === true,
+    "AI chat provider registry omitted the chatgpt built-in",
+  );
+  const builtinModel =
+    aiChatProviderByKey(initial, "huggingchat") ||
+    initial.providers.find((provider) => provider.builtin);
+  requireCondition(
+    builtinModel?.builtin === true,
+    "AI chat provider registry lists no built-in provider",
+  );
+  const builtin = { key: builtinModel.key, enabled: builtinModel.enabled };
+  // Persist exact restore values before the first registry mutation so a
+  // hard-killed run leaves an operator-recoverable manifest.
+  state.aiChatProviders = { customKeys: [customKey, invalidKey], builtin };
+  saveRecovery();
+
+  const created = exactJson(
+    await call("PUT", AI_CHAT_PROVIDER_TEMPLATE, aiChatProviderPath(customKey), {
+      body: {
+        enabled: true,
+        label: "Lifecycle",
+        pattern: AI_CHAT_LIFECYCLE_PATTERN,
+      },
+    }),
+    "custom AI chat provider",
+  );
+  const expectedCustom = {
+    key: customKey,
+    label: "Lifecycle",
+    pattern: AI_CHAT_LIFECYCLE_PATTERN,
+    builtin: false,
+    enabled: true,
+  };
+  const customProjection = (provider) =>
+    provider && {
+      key: provider.key,
+      label: provider.label,
+      pattern: provider.pattern,
+      builtin: provider.builtin,
+      enabled: provider.enabled,
+    };
+  requireCondition(
+    sameJson(customProjection(created), expectedCustom),
+    `custom AI chat provider did not persist exactly: ${JSON.stringify(created)}`,
+  );
+  requireCondition(
+    sameJson(
+      customProjection(
+        aiChatProviderByKey(
+          await readAiChatProviders("AI chat providers after create"),
+          customKey,
+        ),
+      ),
+      expectedCustom,
+    ),
+    "custom AI chat provider read-back differs from its write",
+  );
+
+  try {
+    const toggled = exactJson(
+      await adminApi("PUT", aiChatProviderPath(builtin.key), {
+        body: { enabled: !builtin.enabled },
+      }),
+      "AI chat built-in toggle",
+    );
+    requireCondition(
+      toggled.key === builtin.key &&
+        toggled.builtin === true &&
+        toggled.enabled === !builtin.enabled &&
+        toggled.pattern === builtinModel.pattern &&
+        toggled.label === builtinModel.label,
+      `AI chat built-in toggle changed more than its enabled flag: ${JSON.stringify(toggled)}`,
+    );
+    await assertAiChatProviderConverged(
+      builtin.key,
+      !builtin.enabled,
+      `AI chat built-in ${builtin.key} toggle`,
+    );
+  } finally {
+    await restoreAiChatBuiltin(builtin);
+  }
+
+  const invalidPattern = await adminApi("PUT", aiChatProviderPath(invalidKey), {
+    body: { enabled: true, label: "Lifecycle", pattern: "http://x" },
+    expected: 400,
+    label: "AI chat provider with a non-https pattern",
+  });
+  requireCondition(
+    typeof invalidPattern.json?.title === "string",
+    "rejected AI chat provider pattern did not explain itself",
+  );
+  const builtinDelete = await adminApi("DELETE", aiChatProviderPath("chatgpt"), {
+    expected: 400,
+    label: "AI chat built-in delete",
+  });
+  requireCondition(
+    typeof builtinDelete.json?.title === "string",
+    "rejected AI chat built-in delete did not explain itself",
+  );
+  const afterRejections = await readAiChatProviders(
+    "AI chat providers after rejected mutations",
+  );
+  requireCondition(
+    !aiChatProviderByKey(afterRejections, invalidKey),
+    "rejected AI chat provider pattern still created a provider",
+  );
+  requireCondition(
+    aiChatProviderByKey(afterRejections, "chatgpt")?.builtin === true,
+    "rejected AI chat built-in delete removed the provider",
+  );
+
+  const deleted = exactJson(
+    await call(
+      "DELETE",
+      AI_CHAT_PROVIDER_TEMPLATE,
+      aiChatProviderPath(customKey),
+    ),
+    "custom AI chat provider delete",
+  );
+  requireCondition(
+    deleted.key === customKey,
+    "AI chat provider delete named the wrong key",
+  );
+  await adminApi("DELETE", aiChatProviderPath(customKey), {
+    expected: 404,
+    label: "repeated AI chat provider delete",
+  });
+  requireCondition(
+    !aiChatProviderByKey(
+      await readAiChatProviders("AI chat providers after delete"),
+      customKey,
+    ),
+    "deleted AI chat provider is still listed",
+  );
+  console.log(
+    `  ✓ custom provider ${customKey} created, read back, and deleted; ` +
+      `built-in ${builtin.key} toggled and restored; invalid pattern and built-in delete rejected`,
   );
 }
 
@@ -3394,6 +3615,23 @@ function exactResidualSnapshot() {
         `/data/files/checkers/load/${positiveId(id, "checker game")}`,
       ),
     ).length,
+    aiChatCustomProviders: state.aiChatProviders?.customKeys?.length
+      ? Number(
+          sql(
+            `SELECT count(*) FROM "AiChatProviders" WHERE provider_key IN (` +
+              `${state.aiChatProviders.customKeys.map(sqlLiteral).join(",")})`,
+          ),
+        )
+      : 0,
+    aiChatBuiltinDrift: state.aiChatProviders?.builtin
+      ? Number(
+          sql(
+            `SELECT count(*) FROM "AiChatProviders" WHERE provider_key=` +
+              `${sqlLiteral(state.aiChatProviders.builtin.key)} AND builtin ` +
+              `AND enabled<>${state.aiChatProviders.builtin.enabled ? "TRUE" : "FALSE"}`,
+          ),
+        )
+      : 0,
     credentialRedisKeys: state.credentialCacheKeys.reduce(
       (count, key) => count + redisKeyExists(key),
       0,
@@ -4010,6 +4248,17 @@ async function cleanup() {
       });
     }
   });
+  await attempt("AI chat provider registry", async () => {
+    const registry = state.aiChatProviders;
+    if (!registry) return;
+    for (const key of registry.customKeys) {
+      await adminApi("DELETE", aiChatProviderPath(key), {
+        expected: [200, 404],
+        label: `AI chat provider ${key} cleanup`,
+      });
+    }
+    if (registry.builtin) await restoreAiChatBuiltin(registry.builtin);
+  });
   await attempt("remaining namespaced evidence", async () => {
     if (antiCheatBlockId)
       sql(`DELETE FROM "AntiCheatBlocks" WHERE id=${antiCheatBlockId}`);
@@ -4051,6 +4300,7 @@ async function main() {
   try {
     await identityLifecycle();
     await configurationLifecycle();
+    await aiChatProviderLifecycle();
     await eventFixture();
     await runtimeImageRepairLifecycle();
     await observabilityAndRuntime();

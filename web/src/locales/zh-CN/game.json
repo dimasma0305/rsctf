@@ -504,7 +504,8 @@
       "events": "事件监控",
       "index": "比赛监控",
       "submissions": "提交记录",
-      "traffic": "流量捕获"
+      "traffic": "流量捕获",
+      "ai_chats": "AI 对话"
     },
     "scoreboard": "积分总榜",
     "submit": "提交题目",
@@ -569,5 +570,23 @@
       "submitted": "已提交",
       "under_review": "等待管理员审核。"
     }
+  },
+  "ai_chat": {
+    "all_challenges": "全部题目",
+    "challenge_filter": "题目",
+    "copied": "链接已复制",
+    "copy": "复制链接",
+    "empty_description": "队伍为已解出的题目附加链接后，会显示在这里。",
+    "empty_filtered": "还没有队伍为该题附加链接。",
+    "empty_title": "暂无 AI 对话链接",
+    "list_label": "AI 对话链接记录",
+    "no_challenge_match": "没有匹配的题目",
+    "open": "在新标签页中打开链接",
+    "page_status": "第 {{page}} / {{pages}} 页 · 共 {{total}} 条记录",
+    "provider_blocked": "提供方现已屏蔽",
+    "submitted_by": "由 {{user}} 保存",
+    "subtitle": "队伍为已解出题目附加的分享链接，按最新排序。链接会在新标签页中打开。",
+    "team": "队伍",
+    "title": "AI 对话链接"
   }
 }

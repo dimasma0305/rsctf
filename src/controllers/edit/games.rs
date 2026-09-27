@@ -30,6 +30,9 @@ pub struct GameInfoModel {
     pub allow_user_submissions: bool,
     #[serde(default)]
     pub writeup_required: bool,
+    /// Opt-in AI chat link disclosure; off by default and editable any time.
+    #[serde(default)]
+    pub ai_chat_links_enabled: bool,
     #[serde(default)]
     pub invite_code: Option<String>,
     #[serde(default)]
@@ -136,6 +139,7 @@ impl GameInfoModel {
             accept_without_review: g.accept_without_review,
             allow_user_submissions: g.allow_user_submissions,
             writeup_required: g.writeup_required,
+            ai_chat_links_enabled: g.ai_chat_links_enabled,
             invite_code: g.invite_code.clone(),
             team_member_count_limit: g.team_member_count_limit,
             container_count_limit: g.container_count_limit,
@@ -734,6 +738,7 @@ pub async fn update_game(
                vpn_source_asn_telemetry_enabled = $38,
                vpn_device_sharing_telemetry_enabled = $39,
                vpn_policy_revision = $40,
+               ai_chat_links_enabled = $42,
                challenge_configuration_revision = challenge_configuration_revision + 1,
                configuration_revision = configuration_revision + 1
              WHERE id = $1 AND configuration_revision = $41"#,
@@ -779,6 +784,7 @@ pub async fn update_game(
     .bind(model.vpn_device_sharing_telemetry_enabled)
     .bind(requested_vpn_revision)
     .bind(model.configuration_revision)
+    .bind(model.ai_chat_links_enabled)
     .execute(&mut **tx)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;

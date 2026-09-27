@@ -204,6 +204,7 @@ pub(crate) mod m0347_writeup_grades;
 mod m0348_local_container_capacity;
 pub(crate) mod m0349_image_preflight_results;
 mod m0350_event_history_purge_outbox_delete;
+mod m0351_ai_chat_links;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -434,6 +435,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0348_local_container_capacity::Migration),
             Box::new(m0349_image_preflight_results::Migration),
             Box::new(m0350_event_history_purge_outbox_delete::Migration),
+            Box::new(m0351_ai_chat_links::Migration),
         ]
     }
 }
@@ -578,10 +580,10 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 180);
+        assert_eq!(names.len(), 181);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
-            &names[names.len() - 78..],
+            &names[names.len() - 79..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -661,6 +663,7 @@ mod tests {
                 "m0348_local_container_capacity",
                 "m0349_image_preflight_results",
                 "m0350_event_history_purge_outbox_delete",
+                "m0351_ai_chat_links",
             ]
         );
     }

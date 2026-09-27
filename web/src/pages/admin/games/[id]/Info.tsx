@@ -977,6 +977,19 @@ const GameInfoEdit: FC = () => {
                   )}
                   onChange={(e) => game && setGame({ ...game, allowUserSubmissions: e.target.checked })}
                 />
+                <Switch
+                  disabled={disabled}
+                  checked={game?.aiChatLinksEnabled ?? false}
+                  classNames={{ root: misc.switchVerticalMiddle }}
+                  label={SwitchLabel(
+                    t('admin.content.games.info.ai_chat_links.label', 'AI chat links'),
+                    t(
+                      'admin.content.games.info.ai_chat_links.description',
+                      'Let teams attach AI chat share links to solved challenges for organizer review. Off by default.'
+                    )
+                  )}
+                  onChange={(e) => game && setGame({ ...game, aiChatLinksEnabled: e.target.checked })}
+                />
               </SimpleGrid>
               {isAdmin && config.allowCompetitionHistoryPurge && (
                 <Paper withBorder p="md" radius="md">

@@ -7,6 +7,7 @@ import { FC, MutableRefObject, useCallback, useEffect, useMemo, useReducer, useR
 import { useTranslation } from 'react-i18next'
 import { useSWRConfig } from 'swr'
 import type { AdStateOwner } from '@Components/AdChallengePanel'
+import { AiChatLinksSection } from '@Components/AiChatLinksSection'
 import { ChallengeModal, SolverInfo } from '@Components/ChallengeModal'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
 import {
@@ -67,7 +68,17 @@ interface GameChallengeModalProps extends ModalProps {
   /** Proven by the current catalog/team response, not by a retained selection. */
   challengeOwned?: boolean
   adStateOwner?: AdStateOwner
+  /** Event switch from the player game DTO; the section is Jeopardy-only. */
+  aiChatLinksEnabled?: boolean
 }
+
+/** Challenge types that can carry AI chat links (Jeopardy only). */
+const AI_CHAT_LINK_TYPES: ReadonlySet<ChallengeType | undefined> = new Set([
+  ChallengeType.StaticAttachment,
+  ChallengeType.StaticContainer,
+  ChallengeType.DynamicAttachment,
+  ChallengeType.DynamicContainer,
+])
 
 interface PendingFlagVerdict extends FlagVerdictIdentity {
   attemptId: string
@@ -132,6 +143,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     score,
     challengeOwned = true,
     adStateOwner,
+    aiChatLinksEnabled = false,
     ...modalProps
   } = props
 
@@ -770,6 +782,10 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   }
 
   const challengePollError = pollErrorMessage(challengeError, 'challenge')
+  const aiChatLinks =
+    aiChatLinksEnabled && readEnabled && challenge?.id === challengeId && AI_CHAT_LINK_TYPES.has(challenge.type) ? (
+      <AiChatLinksSection key={`${gameId}:${challengeId}`} gameId={gameId} challengeId={challengeId} />
+    ) : undefined
 
   return (
     <ChallengeModal
@@ -817,6 +833,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
         if (flagVerdict) dispatchFlagVerdict({ type: 'dismiss', sequence: flagVerdict.sequence })
       }}
       adStateOwner={adStateOwner}
+      solvedExtras={aiChatLinks}
     />
   )
 }

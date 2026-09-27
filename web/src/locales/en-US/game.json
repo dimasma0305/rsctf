@@ -592,7 +592,8 @@
       "events": "Events",
       "index": "Monitoring",
       "submissions": "Submissions",
-      "traffic": "Traffic"
+      "traffic": "Traffic",
+      "ai_chats": "AI chats"
     },
     "scoreboard": "Scoreboard",
     "submit": "Submit",
@@ -657,5 +658,23 @@
       "submitted": "Submitted",
       "under_review": "Awaiting admin review."
     }
+  },
+  "ai_chat": {
+    "copied": "Link copied",
+    "team": "Team",
+    "submitted_by": "Saved by {{user}}",
+    "provider_blocked": "Provider now blocked",
+    "copy": "Copy link",
+    "open": "Open link in a new tab",
+    "title": "AI chat links",
+    "subtitle": "Share links teams attached to solved challenges, newest first. Links open in a new tab.",
+    "challenge_filter": "Challenge",
+    "all_challenges": "All challenges",
+    "no_challenge_match": "No matching challenge",
+    "empty_title": "No AI chat links yet",
+    "empty_filtered": "No team has attached links to this challenge.",
+    "empty_description": "Links appear here after teams attach them to solved challenges.",
+    "list_label": "AI chat link records",
+    "page_status": "Page {{page}} of {{pages}} · {{total}} records"
   }
 }

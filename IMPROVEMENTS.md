@@ -73,6 +73,11 @@ Do not promise flawless connections under arbitrary client network conditions.
   event as a new hidden game with identifier remapping, identity matching, and
   recomputed counters. Proven by a migrated-schema round trip that compares every
   restorable table and all three boards.
+- [x] AI chat links (September 27, 2026): an opt-in, off-by-default event switch lets
+  teams attach up to five public AI share links to each solved Jeopardy challenge
+  from the challenge card; monitors review them under Monitoring → AI chats; admins
+  toggle eight verified built-in matchers and add custom regex providers under
+  Settings → AI links. Links are validated against the registry and never fetched.
 
 Acceptance: real database/worker tests where needed, deterministic scoring fixtures,
 and explicit permission before retroactively changing live competition data/rules.

@@ -68,6 +68,10 @@ fn router_with_domains(
             limited(Policy::Query, get(submissions)),
         )
         .route(
+            "/api/game/{id}/ai-chats",
+            limited(Policy::Query, get(list_ai_chat_links)),
+        )
+        .route(
             "/api/game/{id}/submissions/page",
             limited(Policy::Query, get(monitor_history::submission_page)),
         )
@@ -149,6 +153,15 @@ fn router_with_domains(
         .route(
             "/api/game/{id}/challenges/{challengeId}/review",
             post(review_challenge),
+        )
+        .route(
+            "/api/game/{id}/challenges/{challengeId}/ai-chats",
+            limited(
+                Policy::Query,
+                get(get_ai_chat_links)
+                    .put(save_ai_chat_links)
+                    .layer(DefaultBodyLimit::max(16 * 1024)),
+            ),
         )
         .route(
             "/api/game/{id}/challenges/{challengeId}/status/{submitId}",

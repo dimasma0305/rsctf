@@ -227,5 +227,49 @@
       "desrc": "A shared competitive service. Boot2Root rotates pristine hills for exclusive control; Leaderboard arenas stay online while teams compete through challenge-native play.",
       "label": "King of the Hill"
     }
+  },
+  "ai_chat": {
+    "reason": {
+      "invalid": "Enter a full link that starts with https://",
+      "https_required": "Only https:// links are accepted",
+      "credentials": "Links that contain a username or password are not accepted",
+      "port": "Links with a custom port are not accepted",
+      "too_long": "This link is too long",
+      "unsupported": "This AI provider is not accepted",
+      "duplicate": "This link is already in the list",
+      "full": "You can attach up to {{count}} links"
+    },
+    "copied": "Link copied",
+    "saved": "AI chat links saved",
+    "conflict": {
+      "title": "Links changed",
+      "message": "A teammate changed these links. The latest list is shown; add your changes again."
+    },
+    "loading": "Loading…",
+    "load_failed": "AI chat links could not be loaded.",
+    "count": "{{count}} of {{max}} links",
+    "title": "AI chat links",
+    "hide": "Hide",
+    "manage": "Manage",
+    "show": "Show",
+    "description": "Share the public links of AI chats your team used for this challenge. Organizers may review them.",
+    "closed": "The window for changing AI chat links has closed.",
+    "unsolved": "Solve this challenge to attach AI chat links.",
+    "input_label": "Share link",
+    "add": "Add",
+    "matched": "Matches {{provider}}",
+    "supported": "Supported: {{providers}}",
+    "no_providers": "No AI providers are accepted right now.",
+    "empty": "No links attached yet.",
+    "unknown_provider": "Unknown provider",
+    "provider_blocked": "Provider no longer accepted",
+    "unsaved_link": "Not saved",
+    "copy": "Copy link",
+    "open": "Open link in a new tab",
+    "remove": "Remove link",
+    "unsaved": "Unsaved changes",
+    "last_saved_by": "Last saved by {{user}}",
+    "discard": "Discard",
+    "save": "Save links"
   }
 }

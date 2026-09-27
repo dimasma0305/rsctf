@@ -1636,6 +1636,8 @@ export interface GameInfoModel {
   allowUserSubmissions?: boolean;
   /** Is writeup required */
   writeupRequired?: boolean;
+  /** Let teams attach AI chat share links to solved Jeopardy challenges (off by default) */
+  aiChatLinksEnabled?: boolean;
   /**
    * Game invitation code
    * @maxLength 32
@@ -3454,6 +3456,123 @@ export interface ChallengeCatalogQuery {
   solved?: boolean;
 }
 
+/** An AI provider accepted for chat share links (enabled providers only). */
+export interface AiChatProviderRule {
+  /** Stable provider key */
+  key: string;
+  /** Display label */
+  label: string;
+  /** URL pattern matched as `^(?:pattern)$` against the normalized URL */
+  pattern: string;
+}
+
+/** One saved AI chat share link */
+export interface AiChatLink {
+  /** Normalized https URL */
+  url: string;
+  providerKey: string;
+  providerLabel: string;
+}
+
+/** A team's AI chat links for one solved Jeopardy challenge */
+export interface AiChatLinkState {
+  /** Solved, and the edit window is still open */
+  editable: boolean;
+  solved: boolean;
+  /**
+   * Edit window end: max(event end, writeup deadline)
+   * @format uint64
+   */
+  editableUntil: number;
+  /** @format int32 */
+  maxLinks: number;
+  /** Enabled providers only */
+  providers: AiChatProviderRule[];
+  /** This team's saved links for the challenge */
+  links: AiChatLink[];
+  /**
+   * Zero when nothing is saved
+   * @format int64
+   */
+  revision: number;
+  /** @format uint64 */
+  updatedAt: number | null;
+  /** Username of the last saver */
+  submittedBy: string | null;
+}
+
+/** Replace a team's AI chat links; an empty list removes the record */
+export interface AiChatLinkUpdateModel {
+  /** 0..maxLinks raw URLs */
+  links: string[];
+  /** @format int64 */
+  expectedRevision: number;
+}
+
+/** A saved link as seen by organizers */
+export interface AiChatLinkRecordLink extends AiChatLink {
+  /** False when the provider is now disabled or deleted */
+  providerActive: boolean;
+}
+
+/** One team's AI chat links for one challenge (monitor view) */
+export interface AiChatLinkRecord {
+  /** @format int32 */
+  participationId: number;
+  /** @format int32 */
+  teamId: number;
+  teamName: string;
+  /** @format int32 */
+  challengeId: number;
+  challengeTitle: string;
+  category: string;
+  links: AiChatLinkRecordLink[];
+  submittedBy: string | null;
+  /** @format uint64 */
+  updatedAt: number;
+  /** @format int64 */
+  revision: number;
+}
+
+/** Bounded, newest-first page of AI chat link records */
+export interface AiChatLinkRecordPage {
+  /** @format int32 */
+  total: number;
+  items: AiChatLinkRecord[];
+}
+
+/** An AI provider in the admin registry */
+export interface AiChatProviderModel {
+  key: string;
+  label: string;
+  pattern: string;
+  builtin: boolean;
+  enabled: boolean;
+  /** Sample matching URLs (built-ins only) */
+  examples: string[];
+  /** @format uint64 */
+  updatedAt: number | null;
+}
+
+/** Admin AI provider registry */
+export interface AiChatProviderListModel {
+  providers: AiChatProviderModel[];
+  /** @format int32 */
+  maxCustomProviders: number;
+}
+
+/** Create or update a provider; built-in keys accept only `enabled` */
+export interface AiChatProviderUpdateModel {
+  enabled: boolean;
+  label?: string;
+  pattern?: string;
+}
+
+/** Deleted provider key */
+export interface AiChatProviderDeleteResult {
+  key: string;
+}
+
 /** Player-facing challenge modes used by the joined-event catalog. */
 export type ChallengeCatalogMode = "jeopardy" | "koth" | "attackDefense";
 
@@ -3475,6 +3594,8 @@ export interface DetailedGameInfoModel {
   inviteCodeRequired?: boolean;
   /** Whether writeup submission is required */
   writeupRequired?: boolean;
+  /** Whether teams may attach AI chat share links to solved Jeopardy challenges */
+  aiChatLinksEnabled?: boolean;
   /** Game poster URL */
   poster?: string | null;
   /**
@@ -5696,6 +5817,94 @@ export class Api<
         data,
         options,
       ),
+
+    /**
+     * @description Lists built-in and custom AI chat providers; requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminGetAiChatProviders
+     * @summary Get AI chat providers
+     * @request GET:/api/admin/ai-chat-providers
+     */
+    adminGetAiChatProviders: (params: RequestParams = {}) =>
+      this.request<AiChatProviderListModel, RequestResponse>({
+        path: `/api/admin/ai-chat-providers`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Lists built-in and custom AI chat providers; requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminGetAiChatProviders
+     * @summary Get AI chat providers
+     * @request GET:/api/admin/ai-chat-providers
+     */
+    useAdminGetAiChatProviders: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<AiChatProviderListModel, RequestResponse>(
+        doFetch ? `/api/admin/ai-chat-providers` : null,
+        options,
+      ),
+
+    /**
+     * @description Lists built-in and custom AI chat providers; requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminGetAiChatProviders
+     * @summary Get AI chat providers
+     * @request GET:/api/admin/ai-chat-providers
+     */
+    mutateAdminGetAiChatProviders: (
+      data?: AiChatProviderListModel | Promise<AiChatProviderListModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<AiChatProviderListModel>(
+        `/api/admin/ai-chat-providers`,
+        data,
+        options,
+      ),
+
+    /**
+     * @description Toggles a provider, or creates/updates a custom provider; requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminSaveAiChatProvider
+     * @summary Save an AI chat provider
+     * @request PUT:/api/admin/ai-chat-providers/{key}
+     */
+    adminSaveAiChatProvider: (
+      key: string,
+      data: AiChatProviderUpdateModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<AiChatProviderModel, RequestResponse>({
+        path: `/api/admin/ai-chat-providers/${encodeURIComponent(key)}`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Deletes a custom AI chat provider; requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminDeleteAiChatProvider
+     * @summary Delete an AI chat provider
+     * @request DELETE:/api/admin/ai-chat-providers/{key}
+     */
+    adminDeleteAiChatProvider: (key: string, params: RequestParams = {}) =>
+      this.request<AiChatProviderDeleteResult, RequestResponse>({
+        path: `/api/admin/ai-chat-providers/${encodeURIComponent(key)}`,
+        method: "DELETE",
+        format: "json",
+        ...params,
+      }),
 
     /**
      * @description Use this API to get global settings, requires Admin permission
@@ -10512,6 +10721,134 @@ export class Api<
       options?: MutatorOptions,
     ) =>
       mutate<BasicGameInfoModel[]>([`/api/game/recent`, query], data, options),
+
+    /**
+     * @description Gets the caller team's AI chat links for a Jeopardy challenge
+     *
+     * @tags Game
+     * @name GameGetAiChatLinks
+     * @summary Get AI chat links
+     * @request GET:/api/game/{id}/challenges/{challengeId}/ai-chats
+     */
+    gameGetAiChatLinks: (
+      id: number,
+      challengeId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<AiChatLinkState, RequestResponse>({
+        path: `/api/game/${id}/challenges/${challengeId}/ai-chats`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Gets the caller team's AI chat links for a Jeopardy challenge
+     *
+     * @tags Game
+     * @name GameGetAiChatLinks
+     * @summary Get AI chat links
+     * @request GET:/api/game/{id}/challenges/{challengeId}/ai-chats
+     */
+    useGameGetAiChatLinks: (
+      id: number,
+      challengeId: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<AiChatLinkState, RequestResponse>(
+        doFetch ? `/api/game/${id}/challenges/${challengeId}/ai-chats` : null,
+        options,
+      ),
+
+    /**
+     * @description Gets the caller team's AI chat links for a Jeopardy challenge
+     *
+     * @tags Game
+     * @name GameGetAiChatLinks
+     * @summary Get AI chat links
+     * @request GET:/api/game/{id}/challenges/{challengeId}/ai-chats
+     */
+    mutateGameGetAiChatLinks: (
+      id: number,
+      challengeId: number,
+      data?: AiChatLinkState | Promise<AiChatLinkState>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<AiChatLinkState>(
+        `/api/game/${id}/challenges/${challengeId}/ai-chats`,
+        data,
+        options,
+      ),
+
+    /**
+     * @description Replaces the caller team's AI chat links for a solved Jeopardy challenge
+     *
+     * @tags Game
+     * @name GameSaveAiChatLinks
+     * @summary Save AI chat links
+     * @request PUT:/api/game/{id}/challenges/{challengeId}/ai-chats
+     */
+    gameSaveAiChatLinks: (
+      id: number,
+      challengeId: number,
+      data: AiChatLinkUpdateModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<AiChatLinkState, RequestResponse>({
+        path: `/api/game/${id}/challenges/${challengeId}/ai-chats`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Lists teams' AI chat links newest first; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameListAiChatLinks
+     * @summary List AI chat links
+     * @request GET:/api/game/{id}/ai-chats
+     */
+    gameListAiChatLinks: (
+      id: number,
+      query?: {
+        /**
+         * @format int32
+         * @min 1
+         * @max 100
+         * @default 50
+         */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+        /** @format int32 */
+        challengeId?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<AiChatLinkRecordPage, RequestResponse>({
+        path: `/api/game/${id}/ai-chats`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    useGameListAiChatLinks: (
+      id: number,
+      query?: {
+        count?: number;
+        skip?: number;
+        challengeId?: number;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<AiChatLinkRecordPage, RequestResponse>(
+        doFetch ? [`/api/game/${id}/ai-chats`, query] : null,
+        options,
+      ),
 
     /**
      * @description Submits a review (rating/comment) for a solved challenge

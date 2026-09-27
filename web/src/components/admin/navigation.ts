@@ -19,6 +19,7 @@ import {
   mdiHammerWrench,
   mdiHandHeart,
   mdiHeartPulse,
+  mdiRobotOutline,
 } from '@mdi/js'
 import { Role, type ProfileUserInfoModel } from '@Api'
 
@@ -112,6 +113,7 @@ export const SETTINGS_SECTIONS = [
   { key: 'registry_pull', icon: mdiPackageVariantClosed, keywords: 'docker registry pull credentials' },
   { key: 'build_registry', icon: mdiHammerWrench, keywords: 'images build push registry' },
   { key: 'donations', icon: mdiHandHeart, keywords: 'payments' },
+  { key: 'ai_links', icon: mdiRobotOutline, keywords: 'ai chat share links chatgpt claude gemini providers' },
   { key: 'diagnostics', icon: mdiHeartPulse, keywords: 'health proxy ip trust' },
 ] as const
 

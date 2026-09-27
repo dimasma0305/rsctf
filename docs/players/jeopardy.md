@@ -64,3 +64,29 @@ solves.
 ## Writeups
 
 Some games require a writeup after play. When enabled, upload it from the game writeup area before the deadline. The current server accepts a non-empty lowercase `.pdf` file with the `application/pdf` type, up to 20 MiB. Uploading again replaces your previous file.
+
+## AI chat links
+
+Some events ask teams to disclose the AI chats they used. When the organizer
+has turned this on, a challenge your team has solved shows an **AI chat links**
+section on its card.
+
+1. In the AI service, create a public share link for the chat and copy it.
+2. Open the section with **Manage**, paste the link into **Share link**, and
+   choose **Add**. The field shows at once which accepted provider the link
+   matches, or why it is rejected. The accepted providers are listed below it.
+3. Add up to five links for the challenge, then choose **Save links**. Links
+   are not stored until you save.
+
+Any member of the team can add, replace, or remove the team's links until the
+later of the event end and the writeup deadline. If a teammate saved changes
+while you were editing, reload the section and apply your change again. A link
+must use `https`, must not contain a username, password, or custom port, and is
+saved without its `#` fragment.
+
+Organizers with monitoring access can open and read every chat you link. Share
+only chats you are willing to disclose, and do not include flags or other
+teams' information. rsctf stores the link but never fetches the chat. To stop
+sharing a chat, remove the link here and also delete or unshare it in the AI
+service; removing it from rsctf does not revoke the public link, and anyone who
+already has it can still open it until you revoke it at the provider.

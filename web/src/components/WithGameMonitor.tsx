@@ -1,5 +1,5 @@
 import { Button, LoadingOverlay, Stack, Tabs } from '@mantine/core'
-import { mdiFlag, mdiLightningBolt, mdiPackageVariant, mdiTableArrowDown, mdiGhost } from '@mdi/js'
+import { mdiFlag, mdiLightningBolt, mdiPackageVariant, mdiTableArrowDown, mdiGhost, mdiRobotOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import React, { FC, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -9,6 +9,7 @@ import { GAME_PAGE_CONTENT_WIDTH, WithNavBar } from '@Components/WithNavbar'
 import { WithRole } from '@Components/WithRole'
 import { downloadBlob } from '@Utils/ApiHelper'
 import { DEFAULT_LOADING_OVERLAY } from '@Utils/Shared'
+import { useGame } from '@Hooks/useGame'
 import api, { Role } from '@Api'
 import classes from '@Styles/WithGameMonitor.module.css'
 
@@ -29,7 +30,11 @@ export const WithGameMonitor: FC<WithGameMonitorProps> = ({ children, isLoading 
     { icon: mdiFlag, title: t('game.tab.monitor.submissions'), path: 'submissions' },
     { icon: mdiGhost, title: t('game.tab.monitor.cheat'), path: 'cheatcheck' },
     { icon: mdiPackageVariant, title: t('game.tab.monitor.traffic'), path: 'traffic' },
+    { icon: mdiRobotOutline, title: t('game.tab.monitor.ai_chats', 'AI chats'), path: 'ai-chats' },
   ]
+  // Shares WithGameTab's game read. The AI chats route stays reachable after
+  // the event switch is turned off so saved history remains readable.
+  const { game } = useGame(numId)
 
   const getTab = (path: string) => pages.find((page) => path.endsWith(page.path))
 
@@ -84,15 +89,19 @@ export const WithGameMonitor: FC<WithGameMonitorProps> = ({ children, isLoading 
                 classNames={{ root: classes.tabs, list: classes.tabList }}
               >
                 <Tabs.List aria-label={t('game.tab.monitor.index')}>
-                  {pages.map((page) => (
-                    <Tabs.Tab
-                      key={page.path}
-                      leftSection={<Icon path={page.icon} size={0.85} aria-hidden="true" />}
-                      value={page.path}
-                    >
-                      {page.title}
-                    </Tabs.Tab>
-                  ))}
+                  {pages
+                    .filter(
+                      (page) => page.path !== 'ai-chats' || game?.aiChatLinksEnabled === true || activeTab === page.path
+                    )
+                    .map((page) => (
+                      <Tabs.Tab
+                        key={page.path}
+                        leftSection={<Icon path={page.icon} size={0.85} aria-hidden="true" />}
+                        value={page.path}
+                      >
+                        {page.title}
+                      </Tabs.Tab>
+                    ))}
                 </Tabs.List>
               </Tabs>
               <Button

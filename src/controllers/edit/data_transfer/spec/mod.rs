@@ -113,6 +113,8 @@ const USERS_SCOPE: &str = r#"t.id IN (
      WHERE w.game_id = $1 AND w.graded_by IS NOT NULL
     UNION SELECT f.reviewed_by_user_id FROM "AntiCheatFindingReviews" f
      WHERE f.game_id = $1
+    UNION SELECT a.submitted_by FROM "AiChatLinks" a
+     WHERE a.game_id = $1 AND a.submitted_by IS NOT NULL
   )"#;
 
 const fn rows(

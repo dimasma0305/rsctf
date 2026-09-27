@@ -73,6 +73,34 @@ export const ADMIN_OPERATIONS = Object.freeze([
     mutation: true,
     responseKind: "message",
   }),
+  operation(
+    "admin_ai_chat_providers_get",
+    "GET",
+    "/api/admin/ai-chat-providers",
+    {
+      responseKind: "ai-chat-providers",
+    },
+  ),
+  operation(
+    "admin_ai_chat_provider_put",
+    "PUT",
+    "/api/admin/ai-chat-providers/{key}",
+    {
+      mutation: true,
+      responseKind: "ai-chat-provider",
+      params: { key: "aiChatProviderKey" },
+    },
+  ),
+  operation(
+    "admin_ai_chat_provider_delete",
+    "DELETE",
+    "/api/admin/ai-chat-providers/{key}",
+    {
+      mutation: true,
+      responseKind: "ai-chat-provider-deleted",
+      params: { key: "aiChatProviderKey" },
+    },
+  ),
   operation("admin_dashboard_get", "GET", "/api/admin/dashboard", {
     poll: true,
     responseKind: "dashboard",
@@ -1432,6 +1460,38 @@ function validWorker(worker) {
   );
 }
 
+// Mirrors the AI chat provider wire contract: keys are lowercase slugs, and
+// every stored pattern must compile as an anchored JavaScript `u` regex because
+// the client evaluates the same pattern for live link feedback.
+const AI_CHAT_PROVIDER_KEY = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+function compilesAsAnchoredUnicodeRegex(pattern) {
+  if (typeof pattern !== "string" || pattern.length === 0) return false;
+  try {
+    new RegExp(`^(?:${pattern})$`, "u");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validAiChatProvider(provider) {
+  return (
+    object(provider) &&
+    typeof provider.key === "string" &&
+    AI_CHAT_PROVIDER_KEY.test(provider.key) &&
+    typeof provider.label === "string" &&
+    provider.label.length > 0 &&
+    compilesAsAnchoredUnicodeRegex(provider.pattern) &&
+    typeof provider.builtin === "boolean" &&
+    typeof provider.enabled === "boolean" &&
+    Array.isArray(provider.examples) &&
+    provider.examples.every((example) => typeof example === "string") &&
+    (provider.builtin || provider.examples.length === 0) &&
+    (provider.updatedAt === null || Number.isSafeInteger(provider.updatedAt))
+  );
+}
+
 export function validateAdminResponse(operationId, response) {
   const item = operationById.get(operationId);
   if (!item) throw new Error(`unknown admin operation ${operationId}`);
@@ -1498,6 +1558,24 @@ export function validateAdminResponse(operationId, response) {
       );
     case "realtime-metrics":
       return validRealtimeMetrics(body);
+    case "ai-chat-providers":
+      return (
+        object(body) &&
+        Array.isArray(body.providers) &&
+        body.providers.every(validAiChatProvider) &&
+        new Set(body.providers.map(({ key }) => key)).size ===
+          body.providers.length &&
+        Number.isSafeInteger(body.maxCustomProviders) &&
+        body.maxCustomProviders >= 0
+      );
+    case "ai-chat-provider":
+      return validAiChatProvider(body);
+    case "ai-chat-provider-deleted":
+      return (
+        hasExactKeys(body, ["key"]) &&
+        typeof body.key === "string" &&
+        AI_CHAT_PROVIDER_KEY.test(body.key)
+      );
     case "game-writeups":
       return (
         object(body) && object(body.divisions) && Array.isArray(body.writeups)

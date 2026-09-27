@@ -68,6 +68,8 @@ pub struct ExportGameModel {
     #[serde(default)]
     pub writeup_required: bool,
     #[serde(default)]
+    pub ai_chat_links_enabled: bool,
+    #[serde(default)]
     pub invite_code: Option<String>,
     #[serde(default)]
     pub team_member_count_limit: i32,
@@ -199,6 +201,7 @@ impl ExportGameModel {
             accept_without_review: g.accept_without_review,
             allow_user_submissions: g.allow_user_submissions,
             writeup_required: g.writeup_required,
+            ai_chat_links_enabled: g.ai_chat_links_enabled,
             invite_code: g.invite_code.clone(),
             team_member_count_limit: g.team_member_count_limit,
             container_count_limit: g.container_count_limit,

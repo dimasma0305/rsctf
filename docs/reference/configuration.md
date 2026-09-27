@@ -457,6 +457,97 @@ are neither requested nor exposed. Provider responses are capped at 256 KiB and
 copy for provider outages, so public traffic does not fan out into one Trakteer
 request per page view.
 
+## AI chat providers
+
+Events that turn on [AI chat links](../organizers/games#ai-chat-links) accept a
+share link only when it matches an enabled provider. Administrators manage the
+list under **Admin → Settings → AI links** (`/api/admin/ai-chat-providers`).
+The list is platform-wide and stored in PostgreSQL; changes apply to the next
+link a player saves.
+
+![AI chat providers settings with built-in switches, a custom provider, and its pattern](/screenshots/ai-chat-links-providers.png)
+
+### Link normalization
+
+Before matching, the server normalizes each submitted link:
+
+- Surrounding whitespace is trimmed and the link must be an absolute `https`
+  URL with a domain name as its host.
+- A username or password is rejected. An explicit port is rejected unless it is
+  the default `:443`, which the parser removes.
+- The host is lowercased and the fragment (`#...`) is removed. The path and
+  query string are kept as the URL parser serializes them.
+- The normalized link may be at most 2048 characters.
+
+A pattern is matched against the whole normalized link, as if it were written
+`^(?:pattern)$`. Built-in providers are checked first in the order below, then
+custom providers by key; the first enabled match records the provider key and
+label with the link.
+
+### Built-in providers
+
+Built-in patterns ship with the release and cannot be edited or deleted. Each
+ends with `(?:\?[!-~]*)?`, which also accepts an optional query string.
+
+- `chatgpt` (ChatGPT): `https://(?:chatgpt\.com|chat\.openai\.com)/share/[A-Za-z0-9-]{8,128}(?:\?[!-~]*)?`
+- `claude` (Claude): `https://claude\.ai/share/[A-Za-z0-9-]{8,128}(?:\?[!-~]*)?`
+- `gemini` (Gemini): `https://(?:gemini\.google\.com/share|g\.co/gemini/share)/[A-Za-z0-9_-]{6,128}(?:\?[!-~]*)?`
+- `grok` (Grok): `https://grok\.com/share/[A-Za-z0-9_-]{8,160}(?:\?[!-~]*)?`
+- `deepseek` (DeepSeek): `https://chat\.deepseek\.com/share/[A-Za-z0-9_-]{6,128}(?:\?[!-~]*)?`
+- `perplexity` (Perplexity): `https://(?:www\.)?perplexity\.ai/search/[A-Za-z0-9._~%-]{6,256}(?:\?[!-~]*)?`
+- `kimi` (Kimi): `https://(?:www\.)?kimi\.com/share/[A-Za-z0-9_-]{6,128}(?:\?[!-~]*)?`
+- `huggingchat` (HuggingChat): `https://(?:hf\.co|huggingface\.co)/chat/r/[A-Za-z0-9_-]{4,64}(?:\?[!-~]*)?`
+
+Every built-in is enabled until an administrator switches it off.
+
+### Enable and disable
+
+Switching a provider off rejects new links that match only that provider. Links
+already saved are kept: players and monitors still see them, marked as no
+longer accepted, and the monitor list keeps the provider label that was
+recorded when the link was saved. A team that edits its links must remove or
+replace a blocked link before it can save again. Switching the provider back on
+clears the marker. Deleting a custom provider has the same effect on saved
+links as switching it off.
+
+### Custom providers
+
+Add a provider when a service you want to accept is not built in. The rules are:
+
+- **Key:** 1 to 40 characters, lowercase letters, digits, and hyphens, starting
+  with a letter or digit. It cannot reuse a built-in key and cannot be changed
+  later; saving an existing key updates that provider.
+- **Label:** 1 to 64 characters, shown to players and monitors.
+- **Pattern:** 1 to 512 characters. It must start with the literal `https://`,
+  optionally followed by `(?:www\.)?`, then an escaped literal host such as
+  `chat\.example\.com` and a `/`. This ties each provider to one site and
+  rules out catch-all patterns. Do not add `^` or `$`; the server anchors the
+  pattern itself.
+- **Syntax:** use only syntax that both the Rust `regex` crate and a
+  JavaScript `u` regular expression accept, because the browser uses the same
+  pattern for live feedback. Lookaround and backreferences are rejected. Do not
+  use inline flags such as `(?i)`: the server accepts them, but the browser's
+  live check cannot compile them.
+- At most 32 custom providers can exist.
+
+Write the pattern against the normalized form: lowercase host, no fragment, no
+port. Add `(?:\?[!-~]*)?` at the end if links from that provider can carry a
+query string.
+
+The following patterns are ready to paste for providers whose share-link format
+could not be verified when this release shipped. Verify each one against a real
+share link before enabling it:
+
+| Label | Suggested key | Pattern |
+| --- | --- | --- |
+| Microsoft Copilot | `copilot` | `https://copilot\.microsoft\.com/shares/[A-Za-z0-9_-]{6,128}` |
+| Poe | `poe` | `https://poe\.com/s/[A-Za-z0-9_-]{6,64}` |
+| Qwen | `qwen` | `https://chat\.qwen\.ai/s/[A-Za-z0-9_-]{6,128}` |
+| Mistral | `mistral` | `https://chat\.mistral\.ai/chat/[A-Za-z0-9-]{8,64}` |
+
+The server never fetches a share link, so a matching pattern proves only the
+link's shape, not that the chat exists or is public.
+
 ## OAuth
 
 Set a client ID and secret for each enabled provider:

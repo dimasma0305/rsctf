@@ -504,6 +504,10 @@
           "label": "攻防快照保留（天）",
           "description": "终局 Docker 文件系统快照在赛后保留下载的天数。归档使用 gzip 压缩，每份上限为 128 MiB。留空即永久保留（默认）。",
           "placeholder": "∞（永久保留）"
+        },
+        "ai_chat_links": {
+          "description": "允许队伍为已解出的题目附加 AI 对话分享链接，供主办方审阅。默认关闭。",
+          "label": "AI 对话链接"
         }
       },
       "managers": {
@@ -569,7 +573,8 @@
         "captcha": "验证码",
         "registry_pull": "拉取凭证",
         "build_registry": "推送配置",
-        "diagnostics": "诊断"
+        "diagnostics": "诊断",
+        "ai_links": "AI 链接"
       },
       "account": {
         "allow_register": {
@@ -835,6 +840,56 @@
           "label": "平台标语"
         },
         "title": "平台设置"
+      },
+      "ai_links": {
+        "add": "添加提供方",
+        "add_title": "添加提供方",
+        "builtin_title": "内置提供方",
+        "created": "已添加提供方",
+        "custom_count": "{{count}} / {{max}}",
+        "custom_empty": "暂无自定义提供方。",
+        "custom_limit": "已达到自定义提供方数量上限。",
+        "custom_title": "自定义提供方",
+        "delete": "删除",
+        "delete_message": "队伍将无法再添加此提供方的链接。已保存的链接仍对主办方可见，并标记为已屏蔽。",
+        "delete_named": "删除 {{provider}}",
+        "delete_title": "删除 {{provider}}？",
+        "deleted": "已删除提供方",
+        "description": "选择队伍可以在已解出题目上附加哪些 AI 对话提供方的链接。各赛事需在其信息页中单独开启。",
+        "edit": "编辑",
+        "edit_named": "编辑 {{provider}}",
+        "edit_title": "编辑 {{key}}",
+        "enabled": "启用",
+        "enabled_for": "启用：{{provider}}",
+        "examples": "示例",
+        "key": "标识",
+        "key_builtin": "该标识属于内置提供方。",
+        "key_description": "小写字母，例如 copilot",
+        "key_duplicate": "已有自定义提供方使用此标识。",
+        "key_format": "请使用 1–40 个小写字母、数字或连字符，并以字母或数字开头。",
+        "label": "名称",
+        "label_description": "向选手和主办方显示",
+        "label_invalid": "请输入 1–64 个字符的名称。",
+        "pattern": "URL 匹配规则",
+        "pattern_description": "与完整规范化链接进行匹配的正则表达式，例如 https://copilot\\.microsoft\\.com/shares/[A-Za-z0-9]{8,64}",
+        "pattern_length": "请输入 1–512 个字符的规则。",
+        "pattern_prefix": "规则必须以 https:// 和转义后的主机名开头。",
+        "pattern_alternation": "请将多个备选项放入分组，例如 (?:a|b)；顶层的 | 会匹配其他网站。",
+        "pattern_syntax": "该规则不是有效的正则表达式。",
+        "save": "保存提供方",
+        "test_description": "在本浏览器中按服务器匹配顺序与已启用的提供方进行检查。",
+        "test_label": "测试链接",
+        "test_match": "匹配 {{provider}}（{{key}}）：{{url}}",
+        "test_no_match": "没有已启用的提供方匹配 {{url}}",
+        "test_reason": {
+          "credentials": "包含用户名或密码的链接会被拒绝。",
+          "https_required": "仅接受 https:// 链接。",
+          "invalid": "不是完整的 URL。",
+          "port": "带有自定义端口的链接会被拒绝。",
+          "too_long": "链接长度超过 2048 个字符。"
+        },
+        "title": "AI 对话链接",
+        "updated": "已更新提供方"
       }
     },
     "show_all": "显示全部",

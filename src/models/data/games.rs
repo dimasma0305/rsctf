@@ -23,6 +23,11 @@ pub mod game {
         pub accept_without_review: bool,
         pub allow_user_submissions: bool,
         pub writeup_required: bool,
+        /// Opt-in AI chat link disclosure on solved Jeopardy challenges.
+        /// The explicit default keeps entity-derived DDL (fresh installs and
+        /// historical migration tests) insert-compatible without this column.
+        #[sea_orm(default_value = false)]
+        pub ai_chat_links_enabled: bool,
         pub invite_code: Option<String>,
         pub team_member_count_limit: i32,
         pub discord_webhook: Option<String>,

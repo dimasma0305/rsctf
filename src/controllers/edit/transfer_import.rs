@@ -236,6 +236,7 @@ fn imported_game_model(
         accept_without_review: Set(source.accept_without_review),
         allow_user_submissions: Set(source.allow_user_submissions),
         writeup_required: Set(source.writeup_required),
+        ai_chat_links_enabled: Set(source.ai_chat_links_enabled),
         invite_code: Set(None),
         team_member_count_limit: Set(source.team_member_count_limit),
         // Webhooks are deployment-local outbound credentials. Old archives may

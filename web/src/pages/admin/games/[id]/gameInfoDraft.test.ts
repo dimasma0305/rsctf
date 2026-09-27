@@ -71,3 +71,13 @@ test('a settings save keeps its operation ID for retries and rotates it after an
   assert.equal(changed.payload.operationId, 'operation-2')
   assert.notEqual(changed.operation, first.operation)
 })
+
+test('the AI chat links switch round-trips through the save payload and dirties the form', () => {
+  const baseline = buildGameInfoUpdatePayload({ ...saved, aiChatLinksEnabled: false }, schedule, false)
+  const enabled = buildGameInfoUpdatePayload({ ...saved, aiChatLinksEnabled: true }, schedule, false)
+
+  assert.equal(baseline.aiChatLinksEnabled, false)
+  assert.equal(enabled.aiChatLinksEnabled, true)
+  assert.equal(gameInfoDraftChanged(enabled, baseline), true)
+  assert.equal(prepareGameInfoSave(enabled, null, () => 'operation').payload.aiChatLinksEnabled, true)
+})

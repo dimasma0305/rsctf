@@ -427,6 +427,26 @@ function withQuoteVariants(source) {
   return `${source}\n${source.replaceAll('"', "'")}`;
 }
 
+const builtinAiChatProvider = {
+  key: "chatgpt",
+  label: "ChatGPT",
+  pattern:
+    "https://(?:chatgpt\\.com|chat\\.openai\\.com)/share/[A-Za-z0-9-]{8,128}(?:\\?[!-~]*)?",
+  builtin: true,
+  enabled: true,
+  examples: ["https://chatgpt.com/share/0123abcd-4567-89ef"],
+  updatedAt: null,
+};
+const customAiChatProvider = {
+  key: "lc-adm1",
+  label: "Lifecycle",
+  pattern: "https://example\\.test/share/[a-z0-9]{4,32}",
+  builtin: false,
+  enabled: true,
+  examples: [],
+  updatedAt: 1_700_000_000_000,
+};
+
 const worker = {
   id: "018f3c6a-d79b-7cc0-8f68-8fdbad0f57bb",
   name: "admin-lifecycle-worker",
@@ -472,6 +492,15 @@ function sampleBody(kind, status) {
         systemStats: { userCount: 0, teamCount: 0, activeContainerCount: 0 },
         topGames: [],
       };
+    case "ai-chat-providers":
+      return {
+        providers: [builtinAiChatProvider, customAiChatProvider],
+        maxCustomProviders: 32,
+      };
+    case "ai-chat-provider":
+      return customAiChatProvider;
+    case "ai-chat-provider-deleted":
+      return { key: customAiChatProvider.key };
     case "realtime-metrics":
       return {
         websocket: {
@@ -661,15 +690,15 @@ function sampleResponse(operation) {
   return { status, body: sampleBody(operation.responseKind, status), headers };
 }
 
-test("catalog covers all 83 HTTP operations and keeps SignalR as separate surfaces", () => {
-  assert.equal(ADMIN_OPERATIONS.length, 83);
-  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 83);
+test("catalog covers all 86 HTTP operations and keeps SignalR as separate surfaces", () => {
+  assert.equal(ADMIN_OPERATIONS.length, 86);
+  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 86);
   assert.deepEqual(
     ADMIN_OPERATIONS.reduce((counts, operation) => {
       counts[operation.method] = (counts[operation.method] || 0) + 1;
       return counts;
     }, {}),
-    { GET: 38, PUT: 7, POST: 28, DELETE: 10 },
+    { GET: 39, PUT: 8, POST: 28, DELETE: 11 },
   );
   const enroll = ADMIN_OPERATIONS.find(({ id }) => id === "worker_enroll");
   assert.deepEqual(
@@ -738,7 +767,7 @@ test("fixed-rate admin load uses one bounded instance batch and never a per-row 
 test("authorization classes keep Admin, manager, and enrollment-token surfaces explicit", () => {
   assert.equal(
     ADMIN_OPERATIONS.filter(({ auth }) => auth === "admin").length,
-    81,
+    84,
   );
   assert.deepEqual(
     ADMIN_OPERATIONS.filter(({ auth }) => auth !== "admin").map(
@@ -970,11 +999,11 @@ test("read-origin matrix covers every live read on every eligible replica exactl
 test("repository router source and lifecycle catalog have exact bidirectional coverage", () => {
   const sources = repositoryRouterSources();
   assert.deepEqual(assertRouterCoverage(sources), {
-    operations: 83,
+    operations: 86,
     signalR: 2,
   });
   const parsed = parseAdminRouterOperations(sources);
-  assert.equal(parsed.operations.length, 83);
+  assert.equal(parsed.operations.length, 86);
   assert.equal(parsed.signalR.length, 2);
 });
 
@@ -1019,8 +1048,8 @@ test("router parser ignores route-like text in Rust comments and strings", () =>
 
 test("coverage accounting rejects omissions, duplicates, and unknown operations", () => {
   assert.deepEqual(assertCompleteCoverage(ADMIN_OPERATION_IDS), {
-    covered: 83,
-    required: 83,
+    covered: 86,
+    required: 86,
     missing: [],
     extra: [],
   });
@@ -1045,8 +1074,8 @@ test("coverage accounting rejects omissions, duplicates, and unknown operations"
   assert.deepEqual(
     assertCompleteCoverage(allSurfaces, { includeSignalR: true }),
     {
-      covered: 85,
-      required: 85,
+      covered: 88,
+      required: 88,
       missing: [],
       extra: [],
     },
@@ -1405,6 +1434,91 @@ test("every catalog operation has a passing status/body/header response contract
       `${operation.id} (${operation.responseKind}) lacks a complete validator fixture`,
     );
   }
+});
+
+test("AI chat provider contracts are admin-only, on-demand, and reject malformed registry bodies", () => {
+  assert.equal(
+    resolveOperationPath("admin_ai_chat_provider_put", {
+      aiChatProviderKey: "lc-adm1",
+    }),
+    "/api/admin/ai-chat-providers/lc-adm1",
+  );
+  assert.throws(
+    () => resolveOperationPath("admin_ai_chat_provider_delete", {}),
+    /requires admin context aiChatProviderKey/,
+  );
+  for (const id of [
+    "admin_ai_chat_providers_get",
+    "admin_ai_chat_provider_put",
+    "admin_ai_chat_provider_delete",
+  ]) {
+    const operation = ADMIN_OPERATIONS.find((item) => item.id === id);
+    assert.equal(operation.auth, "admin");
+    assert.equal(operation.poll, false);
+  }
+  const ok = (id, body) => validateAdminResponse(id, { status: 200, body });
+  assert.equal(
+    ok("admin_ai_chat_providers_get", {
+      providers: [builtinAiChatProvider, builtinAiChatProvider],
+      maxCustomProviders: 32,
+    }),
+    false,
+    "duplicate provider keys must fail",
+  );
+  assert.equal(
+    ok("admin_ai_chat_providers_get", { providers: [], maxCustomProviders: "32" }),
+    false,
+  );
+  for (const broken of [
+    { ...customAiChatProvider, pattern: "https://(?<=x)[" },
+    { ...customAiChatProvider, pattern: "" },
+    { ...customAiChatProvider, key: "Lifecycle" },
+    { ...customAiChatProvider, examples: ["https://example.test/share/abcd"] },
+    { ...customAiChatProvider, updatedAt: "2026-09-27" },
+    { ...customAiChatProvider, enabled: "true" },
+  ]) {
+    assert.equal(ok("admin_ai_chat_provider_put", broken), false, JSON.stringify(broken));
+  }
+  assert.equal(ok("admin_ai_chat_provider_put", builtinAiChatProvider), true);
+  assert.equal(
+    ok("admin_ai_chat_provider_delete", { key: "lc-adm1", deleted: true }),
+    false,
+  );
+  assert.equal(ok("admin_ai_chat_provider_delete", { key: "lc-adm1" }), true);
+});
+
+test("AI chat provider lifecycle persists restore state first and cleans up every registry mutation", () => {
+  const source = readFileSync(
+    join(REPOSITORY, "tests/load/admin-lifecycle.mjs"),
+    "utf8",
+  );
+  const lifecycle = source.slice(
+    source.indexOf("async function aiChatProviderLifecycle()"),
+    source.indexOf("async function eventFixture()"),
+  );
+  const persisted = lifecycle.indexOf("state.aiChatProviders = {");
+  const saved = lifecycle.indexOf("saveRecovery();", persisted);
+  const firstMutation = lifecycle.indexOf('"PUT"');
+  assert.ok(persisted >= 0 && saved > persisted && firstMutation > saved);
+  assert.match(lifecycle, /\} finally \{\s*await restoreAiChatBuiltin\(builtin\);/);
+  assert.match(lifecycle, /pattern: "http:\/\/x"[\s\S]*?expected: 400/);
+  assert.match(lifecycle, /aiChatProviderPath\("chatgpt"\)[\s\S]*?expected: 400/);
+  assert.match(lifecycle, /expected: 404/);
+  const cleanup = source.slice(
+    source.indexOf("async function cleanup()"),
+    source.indexOf("async function main()"),
+  );
+  assert.match(
+    cleanup,
+    /attempt\("AI chat provider registry"[\s\S]*?expected: \[200, 404\][\s\S]*?restoreAiChatBuiltin\(registry\.builtin\)/,
+  );
+  assert.match(source, /aiChatCustomProviders:[\s\S]*?"AiChatProviders"/);
+  assert.match(source, /aiChatBuiltinDrift:/);
+  assert.match(source, /key: `lc-auth-probe-\$\{tag\}`/);
+  assert.ok(
+    source.indexOf("await aiChatProviderLifecycle();") >
+      source.indexOf("await configurationLifecycle();"),
+  );
 });
 
 test("writeup grading contracts are private, on-demand, and bind exact fixture IDs", () => {

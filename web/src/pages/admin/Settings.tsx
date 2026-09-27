@@ -48,6 +48,7 @@ import { ColorPreview } from '@Components/ColorPreview'
 import { IconTabs } from '@Components/IconTabs'
 import { LogoBox } from '@Components/LogoBox'
 import { AdminPage } from '@Components/admin/AdminPage'
+import { AiChatProvidersSettings, useAiChatProviders } from '@Components/admin/AiChatProvidersSettings'
 import { getSettingsSection, SETTINGS_SECTIONS, type SettingsSectionKey } from '@Components/admin/navigation'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { webCryptoAvailable } from '@Utils/Crypto'
@@ -139,6 +140,8 @@ const Configs: FC = () => {
   const [saved, setSaved] = useState(true)
   const theme = useMantineTheme()
   const accountUniqueness = useMemo(() => getAccountUniquenessState(accountPolicy), [accountPolicy])
+  const { data: aiChatProviders } = useAiChatProviders()
+  const aiLinksConfigured = aiChatProviders?.providers.some((provider) => provider.enabled) ?? false
 
   useEffect(() => {
     if (configs) {
@@ -249,9 +252,11 @@ const Configs: FC = () => {
           ? 'configured'
           : 'attention'
         : 'inactive',
+      ai_links: aiLinksConfigured ? 'configured' : 'inactive',
       diagnostics: 'configured',
     }
   }, [
+    aiLinksConfigured,
     accountUniqueness,
     buildRegistry,
     email,
@@ -1519,6 +1524,7 @@ const Configs: FC = () => {
               </Alert>
             </Stack>
           )}
+          {activeSection === 'ai_links' && <AiChatProvidersSettings />}
           {activeSection === 'diagnostics' && (
             <Stack gap="sm">
               <Group justify="space-between">

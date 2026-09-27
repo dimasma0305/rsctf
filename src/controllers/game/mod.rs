@@ -135,6 +135,7 @@ pub struct DetailedGameInfoModel {
     pub divisions: Option<Vec<DivisionInfo>>,
     pub invite_code_required: bool,
     pub writeup_required: bool,
+    pub ai_chat_links_enabled: bool,
     pub poster: Option<String>,
     pub limit: i32,
     pub team_count: i64,
@@ -911,6 +912,7 @@ fn participation_token(g: &game::Model, team_id: i32) -> AppResult<String> {
     participation_token_from_key(&g.private_key, team_id)
 }
 
+mod ai_chats;
 mod catalog;
 pub(crate) mod cheat;
 mod cheat_compare;
@@ -932,6 +934,7 @@ mod traffic;
 mod vpn_access;
 mod writeup;
 
+pub use ai_chats::*;
 pub use catalog::*;
 pub use cheat::*;
 pub use cheat_compare::*;

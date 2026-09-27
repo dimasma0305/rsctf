@@ -59,11 +59,11 @@ pub async fn add_game(
                   koth_claim_confirmation_ticks, ad_scoring_start_round, ad_scoring_paused,
                   vpn_access_required, vpn_behavior_telemetry_enabled, vpn_flag_scan_enabled,
                   vpn_provider_dns_telemetry_enabled, vpn_source_asn_telemetry_enabled,
-                  vpn_device_sharing_telemetry_enabled)
+                  vpn_device_sharing_telemetry_enabled, ai_chat_links_enabled)
                VALUES
                  ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
                   $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,NULL,FALSE,$34,$35,$36,
-                  $37,$38,$39)
+                  $37,$38,$39,$40)
             RETURNING id"#,
         )
         .bind(&model.title)
@@ -107,6 +107,7 @@ pub async fn add_game(
         .bind(model.vpn_provider_dns_telemetry_enabled)
         .bind(model.vpn_source_asn_telemetry_enabled)
         .bind(model.vpn_device_sharing_telemetry_enabled)
+        .bind(model.ai_chat_links_enabled)
         .fetch_one(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;

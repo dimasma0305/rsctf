@@ -237,6 +237,24 @@ async fn seed_event(st: &SharedState, pool: &sqlx::PgPool, admin: Uuid) -> Seede
     .await
     .unwrap();
     sqlx::query(
+        r#"INSERT INTO "AiChatLinks"
+             (game_id, participation_id, challenge_id, links, revision, submitted_by, updated_at)
+           VALUES ($1, $2, $3, $4, 2, $5, $6)"#,
+    )
+    .bind(game_id)
+    .bind(participation_id)
+    .bind(c1)
+    .bind(json!([{
+        "url": "https://claude.ai/share/2f1c9e4a-8b7d-4c3e-9f60-1a2b3c4d5e6f",
+        "providerKey": "claude",
+        "providerLabel": "Claude"
+    }]))
+    .bind(users[1])
+    .bind(now - chrono::Duration::hours(2))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
         r#"INSERT INTO "WriteupGrades"
              (game_id, participation_id, challenge_id, percentage, revision, operation_id, graded_by, updated_at)
            VALUES ($1, $2, $3, 80, 1, $4, $5, $6)"#,
@@ -759,6 +777,7 @@ async fn archive_round_trips_a_multi_format_event_through_the_real_schema() {
     assert_eq!(rows("kothTokens"), 1);
     assert_eq!(rows("writeups"), 1);
     assert_eq!(rows("kothOfficialConfigs"), 1);
+    assert_eq!(rows("aiChatLinks"), 1);
     let mut users_text = String::new();
     archive
         .by_name("data/users.jsonl")
@@ -883,6 +902,7 @@ async fn archive_round_trips_a_multi_format_event_through_the_real_schema() {
     let stranger = Uuid::new_v4();
     let relocated = rewrite_archive(&bytes, |name, content| {
         if name == "data/users.jsonl"
+            || name == "data/aiChatLinks.jsonl"
             || name == "data/teamMembers.jsonl"
             || name == "data/userParticipations.jsonl"
             || name == "data/submissions.jsonl"

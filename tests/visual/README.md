@@ -254,3 +254,19 @@ real credential to the fixture proxy.
 all layouts. `RSCTF_ADMIN_NAV_TARGET=https://intechfest.1pc.tf` with `--screens-only`
 checks deployed rendering. Set `RSCTF_ADMIN_NAV_OUTPUT` for a separate output
 directory. These checks do not certify backend authorization or admin operations.
+
+## AI chat links
+
+`ai-chat-links.mjs` renders the solved-challenge AI chat section, the admin
+provider registry (**Settings → AI links**), and the monitor list against
+loopback fixtures at desktop, 320 px, and a light-theme phone layout. It
+requires zero Axe violations, overflow, and browser exceptions, proves a King of
+the Hill challenge never offers the section, and checks the save request body.
+Built-in provider patterns come from `src/services/ai_chat_links.rs`, so the
+browser matcher and the server cannot drift.
+
+```sh
+RSCTF_AI_CHAT_TARGET=http://127.0.0.1:63017 node tests/visual/ai-chat-links.mjs
+# also refresh the README/docs screenshots
+RSCTF_AI_CHAT_PUBLISH=1 node tests/visual/ai-chat-links.mjs
+```

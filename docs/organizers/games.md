@@ -52,7 +52,8 @@ from it.
 
 The archive contains the game definition, its attachments and writeups, the
 roster (teams, members, participations), every Jeopardy record (submissions,
-first solves, events, notices, reviews, writeup grades), every A&D and KotH
+first solves, events, notices, reviews, writeup grades, AI chat links in
+`aiChatLinks`), every A&D and KotH
 record and rollup (rounds, flags, attacks, checks, cycles, tokens), cheat and
 anti-cheat evidence, and telemetry. Each table is written as JSON Lines under
 `data/`. Rendered scoreboards are stored under `scoreboards/`, and
@@ -109,6 +110,34 @@ does not replay bloods that occurred before webhook delivery was enabled.
 ## Writeups
 
 If writeups are required, set the deadline and explain the accepted format to players. The current server accepts one lowercase `.pdf` per team, up to 20 MiB; a replacement upload overwrites the previous submission.
+
+## AI chat links
+
+Turn on **AI chat links** on the game's Info page to let teams disclose the AI
+chats they used. The switch is off for new games, applies only to Jeopardy
+challenges, and can be changed at any time because it does not affect scoring.
+
+When it is on, a team that has solved a challenge sees an **AI chat links**
+section on that challenge card. Any member can attach, replace, or remove up to
+five public share links per challenge until the later of the event end and the
+writeup deadline. Unsolved challenges, A&D, and KotH challenges do not accept
+links. The server normalizes each link and accepts it only when it matches an
+enabled provider; administrators manage that list under
+[AI chat providers](../reference/configuration#ai-chat-providers).
+
+Users with the Monitor or Admin platform role review the links under
+**Monitoring → AI chats**, newest first. Each entry names the team, challenge,
+member who last saved it, and time. A link whose provider has since been
+switched off or deleted stays visible and is marked as no longer accepted.
+Turning the event switch off hides the section from players but keeps the saved
+links readable in the monitor.
+
+![Monitor AI chats list with team, challenge, provider, and saved links](/screenshots/ai-chat-links-monitor.png)
+
+The server stores the links but never fetches them, so it does not verify
+that a chat exists or what it contains. A share link opens content chosen by a
+player; open it in a separate browser profile that is not signed in to rsctf
+or to your own AI accounts.
 
 ## A&D and KotH timing
 

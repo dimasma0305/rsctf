@@ -227,4 +227,24 @@ pub(super) const JEOPARDY: &[TableSpec] = &[
             ],
         ),
     },
+    TableSpec {
+        name: "aiChatLinks",
+        table: "AiChatLinks",
+        from: None,
+        scope: GAME,
+        order: "t.participation_id, t.challenge_id",
+        columns: &[
+            "participation_id",
+            "challenge_id",
+            "links",
+            "revision",
+            "submitted_by",
+            "updated_at",
+        ],
+        restore: rows(
+            None,
+            true,
+            &[PARTICIPATION, CHALLENGE, ("submitted_by", Map::User)],
+        ),
+    },
 ];

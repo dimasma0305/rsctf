@@ -8,6 +8,7 @@
 //! the router below preserves the existing React client paths and wire models.
 
 pub mod ad;
+pub(crate) mod ai_chat_providers;
 mod flag_egress;
 #[path = "participation.rs"]
 mod participation_review;
@@ -154,6 +155,18 @@ pub fn router() -> Router<SharedState> {
             "/api/admin/writeups/{id}/grading/{participation_id}/{challenge_id}",
             limited(Policy::Query, put(writeup_grading::save_grade))
                 .layer(DefaultBodyLimit::max(2048)),
+        )
+        .route(
+            "/api/admin/ai-chat-providers",
+            limited(Policy::Query, get(ai_chat_providers::list_providers)),
+        )
+        .route(
+            "/api/admin/ai-chat-providers/{key}",
+            limited(
+                Policy::Query,
+                put(ai_chat_providers::save_provider).delete(ai_chat_providers::delete_provider),
+            )
+            .layer(DefaultBodyLimit::max(4096)),
         )
         // --- Users ---
         .route("/api/admin/users", get(users).post(add_users))

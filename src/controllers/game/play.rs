@@ -336,6 +336,7 @@ pub async fn game_details(
         },
         invite_code_required: g.invite_code.as_deref().is_some_and(|c| !c.is_empty()),
         writeup_required: g.writeup_required,
+        ai_chat_links_enabled: g.ai_chat_links_enabled,
         poster: g.poster_url(),
         limit: g.team_member_count_limit,
         team_count,
