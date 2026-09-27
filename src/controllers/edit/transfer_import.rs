@@ -6,12 +6,52 @@ use sea_orm::DatabaseTransaction;
 
 use super::*;
 
+/// Identifiers created by one definition import, for callers that restore
+/// dependent rows inside the same transaction.
+pub(in crate::controllers::edit) struct ImportedDefinition {
+    pub(in crate::controllers::edit) game_id: i32,
+    pub(in crate::controllers::edit) private_key: String,
+    /// Source challenge id -> imported challenge id.
+    pub(in crate::controllers::edit) challenge_ids: BTreeMap<i32, i32>,
+    /// Imported division ids in the archive's `divisions` order.
+    pub(in crate::controllers::edit) division_ids: Vec<i32>,
+}
+
+/// A transaction-scoped continuation that runs after the definition rows exist
+/// and before the import commits.
+pub(in crate::controllers::edit) type DefinitionContinuation<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<T>> + Send + 'a>>;
+
 pub(super) async fn persist_game_import(
     st: &SharedState,
     entries: &BTreeMap<String, Vec<u8>>,
     export_game: &ExportGameModel,
     export_challenges: &[ExportChallengeModel],
 ) -> AppResult<i32> {
+    let (definition, ()) =
+        persist_game_import_with(st, entries, export_game, export_challenges, |_, _| {
+            Box::pin(async { Ok(()) })
+        })
+        .await?;
+    Ok(definition.game_id)
+}
+
+/// Persist a definition and run `continuation` on the same transaction. The
+/// whole import commits or rolls back as one unit; staged blobs are published
+/// only on commit.
+pub(in crate::controllers::edit) async fn persist_game_import_with<T, F>(
+    st: &SharedState,
+    entries: &BTreeMap<String, Vec<u8>>,
+    export_game: &ExportGameModel,
+    export_challenges: &[ExportChallengeModel],
+    continuation: F,
+) -> AppResult<(ImportedDefinition, T)>
+where
+    F: for<'a> FnOnce(
+        &'a DatabaseTransaction,
+        &'a ImportedDefinition,
+    ) -> DefinitionContinuation<'a, T>,
+{
     // Reject invalid domain data before writing any immutable bytes. The same
     // checks remain in the transaction as the authoritative publication gate.
     for challenge in export_challenges {
@@ -43,8 +83,15 @@ pub(super) async fn persist_game_import(
     )
     .await;
 
+    let result = match result {
+        Ok(definition) => match continuation(&transaction, &definition).await {
+            Ok(extra) => Ok((definition, extra)),
+            Err(error) => Err(error),
+        },
+        Err(error) => Err(error),
+    };
     match result {
-        Ok(game_id) => {
+        Ok(imported) => {
             if prepared_attachments.next().is_some() {
                 let _ = transaction.rollback().await;
                 return Err(AppError::internal(
@@ -55,7 +102,7 @@ pub(super) async fn persist_game_import(
             for hash in published_hashes {
                 crate::controllers::assets::invalidate_asset_gate(st, &hash).await;
             }
-            Ok(game_id)
+            Ok(imported)
         }
         Err(error) => {
             if let Err(rollback_error) = transaction.rollback().await {
@@ -71,11 +118,12 @@ async fn persist_game_import_locked(
     export_game: &ExportGameModel,
     export_challenges: &[ExportChallengeModel],
     prepared_attachments: &mut std::vec::IntoIter<PreparedImportAttachment>,
-) -> AppResult<i32> {
+) -> AppResult<ImportedDefinition> {
     let (public_key, private_key) = crate::utils::crypto_utils::generate_game_keypair();
-    let new_game = imported_game_model(export_game, public_key, private_key)
+    let new_game = imported_game_model(export_game, public_key, private_key.clone())
         .insert(transaction)
         .await?;
+    let mut division_ids = Vec::with_capacity(export_game.divisions.len());
     let mut challenge_id_map = BTreeMap::new();
 
     for src in export_challenges {
@@ -148,6 +196,7 @@ async fn persist_game_import_locked(
         }
         .insert(transaction)
         .await?;
+        division_ids.push(imported.id);
 
         for config in &source.challenge_configs {
             let Some(&challenge_id) = challenge_id_map.get(&config.challenge_id) else {
@@ -163,7 +212,12 @@ async fn persist_game_import_locked(
         }
     }
 
-    Ok(new_game.id)
+    Ok(ImportedDefinition {
+        game_id: new_game.id,
+        private_key,
+        challenge_ids: challenge_id_map,
+        division_ids,
+    })
 }
 
 fn imported_game_model(

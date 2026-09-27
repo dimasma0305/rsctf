@@ -29,6 +29,7 @@ import {
   mdiClipboard,
   mdiClose,
   mdiContentSaveOutline,
+  mdiDatabaseExportOutline,
   mdiDeleteOutline,
   mdiDiceMultiple,
   mdiDotsHorizontal,
@@ -40,6 +41,7 @@ import {
   mdiTextBoxOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
+import axios from 'axios'
 import dayjs from 'dayjs'
 import localizedFormat from 'dayjs/plugin/localizedFormat'
 import { FC, useEffect, useRef, useState } from 'react'
@@ -471,6 +473,43 @@ const GameInfoEdit: FC = () => {
     )
   }
 
+  const confirmExportWithoutAttachments = () =>
+    new Promise<boolean>((resolve) => {
+      modals.openConfirmModal({
+        title: t('admin.content.games.export_data.attachments_too_large.title'),
+        children: <Text size="sm">{t('admin.content.games.export_data.attachments_too_large.body')}</Text>,
+        labels: {
+          confirm: t('admin.content.games.export_data.attachments_too_large.confirm'),
+          cancel: t('common.modal.cancel', 'Cancel'),
+        },
+        onConfirm: () => resolve(true),
+        onCancel: () => resolve(false),
+        onClose: () => resolve(false),
+      })
+    })
+
+  const onExportGameData = async () => {
+    const gameId = game?.id
+    if (!gameId) return
+
+    await downloadBlob(
+      `admin:game-data-export:${gameId}`,
+      async () => {
+        try {
+          return await api.edit.editExportGameData(gameId, undefined, { format: 'blob' })
+        } catch (err) {
+          // The bundle cap (413) is recoverable: the organizer can keep every
+          // score and record and leave the attachment files out.
+          if (!axios.isAxiosError(err) || err.response?.status !== 413) throw err
+          if (!(await confirmExportWithoutAttachments())) throw err
+          return await api.edit.editExportGameData(gameId, { attachments: 'skip' }, { format: 'blob' })
+        }
+      },
+      setDisabled,
+      t
+    )
+  }
+
   useEffect(() => () => controlJobAbortRef.current.abort(), [])
 
   const onGenerateVariants = async () => {
@@ -763,6 +802,14 @@ const GameInfoEdit: FC = () => {
             variant="outline"
           >
             {t('admin.button.games.export')}
+          </Button>
+          <Button
+            leftSection={<Icon path={mdiDatabaseExportOutline} size={1} />}
+            disabled={disabled}
+            onClick={onExportGameData}
+            variant="outline"
+          >
+            {t('admin.button.games.export_data')}
           </Button>
           <Button leftSection={<Icon path={mdiClipboard} size={1} />} disabled={disabled} onClick={onCopyPublicKey}>
             {t('admin.button.games.copy_public_key')}

@@ -1811,6 +1811,56 @@ export interface GameCloneModel {
   includeChallenges: boolean;
 }
 
+/** One archived table restored from a competition data package. */
+export interface GameDataImportTable {
+  /** Archive table name (camelCase). */
+  name: string;
+  /**
+   * Rows recorded in the archive
+   * @format int64
+   */
+  rows: number;
+  /** Whether the rows were restored into the new game. */
+  restored: boolean;
+}
+
+/** Roster reconciliation for a competition data import. */
+export interface GameDataImportRoster {
+  /**
+   * Existing records matched
+   * @format int32
+   */
+  matched: number;
+  /**
+   * New records created
+   * @format int32
+   */
+  created: number;
+}
+
+/** Result of restoring a competition data package as a new hidden game. */
+export interface GameDataImportResult {
+  /**
+   * Newly created hidden game id
+   * @format int32
+   */
+  gameId: number;
+  title: string;
+  /**
+   * Game id inside the source deployment
+   * @format int32
+   */
+  sourceGameId: number;
+  /**
+   * Export time, Unix milliseconds
+   * @format int64
+   */
+  exportedAtUtc: number;
+  tables: GameDataImportTable[];
+  users: GameDataImportRoster;
+  teams: GameDataImportRoster;
+}
+
 export interface AdminUserImportRowResult {
   userId?: string;
   email: string;
@@ -7696,6 +7746,29 @@ export class Api<
       }),
 
     /**
+     * @description Export the full competition record (scoreboard, scores, submissions, and everything recorded during the event) as a ZIP file; requires Manager or Admin permission
+     *
+     * @tags Edit
+     * @name EditExportGameData
+     * @summary Export competition data package
+     * @request POST:/api/edit/games/{id}/export/data
+     */
+    editExportGameData: (
+      id: number,
+      query?: {
+        /** `skip` omits attachment blobs for events whose files exceed the bundle cap */
+        attachments?: "bundle" | "skip";
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/edit/games/${id}/export/data`,
+        method: "POST",
+        query: query,
+        ...params,
+      }),
+
+    /**
      * No description
      *
      * @tags Edit
@@ -8223,6 +8296,30 @@ export class Api<
     ) =>
       this.request<number, RequestResponse>({
         path: `/api/edit/games/import`,
+        method: "POST",
+        body: data,
+        type: ContentType.FormData,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Restore a competition data package as a new hidden game; the archived event must have ended. Requires Admin permission
+     *
+     * @tags Edit
+     * @name EditImportGameData
+     * @summary Import competition data package
+     * @request POST:/api/edit/games/import/data
+     */
+    editImportGameData: (
+      data: {
+        /** @format binary */
+        file?: File | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<GameDataImportResult, RequestResponse>({
+        path: `/api/edit/games/import/data`,
         method: "POST",
         body: data,
         type: ContentType.FormData,

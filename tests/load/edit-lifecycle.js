@@ -77,6 +77,12 @@ export const EDIT_OPERATIONS = Object.freeze([
     mutation: true,
     responseKind: "number",
   }),
+  operation("edit_game_data_import", "POST", "/api/edit/games/import/data", {
+    auth: "admin",
+    multipart: true,
+    mutation: true,
+    responseKind: "data-import",
+  }),
   operation("edit_game_get", "GET", "/api/edit/games/{id}", {
     params: game,
     responseKind: "game",
@@ -149,6 +155,15 @@ export const EDIT_OPERATIONS = Object.freeze([
     params: game,
     responseKind: "zip",
   }),
+  operation(
+    "edit_game_data_export",
+    "POST",
+    "/api/edit/games/{id}/export/data",
+    {
+      params: game,
+      responseKind: "zip",
+    },
+  ),
   operation(
     "edit_flags_get",
     "GET",
@@ -1019,6 +1034,29 @@ export function validateEditResponse(operationOrId, response) {
       }
       if (!Array.isArray(body.messages))
         throw new Error(`${item.id} invalid import messages`);
+      break;
+    case "data-import":
+      object();
+      if (
+        !Number.isSafeInteger(body.gameId) ||
+        body.gameId <= 0 ||
+        !Array.isArray(body.tables) ||
+        body.tables.some(
+          (table) =>
+            !isObject(table) ||
+            typeof table.name !== "string" ||
+            !Number.isSafeInteger(table.rows) ||
+            table.rows < 0 ||
+            typeof table.restored !== "boolean",
+        ) ||
+        ["users", "teams"].some(
+          (key) =>
+            !isObject(body[key]) ||
+            !Number.isSafeInteger(body[key].matched) ||
+            !Number.isSafeInteger(body[key].created),
+        )
+      )
+        throw new Error(`${item.id} invalid competition data import result`);
       break;
     case "flag-status":
       if (!["Success", "NotFound"].includes(body))

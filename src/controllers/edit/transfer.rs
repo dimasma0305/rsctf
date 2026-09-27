@@ -7,15 +7,16 @@ const MAX_GAME_IMPORT_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_GAME_IMPORT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_GAME_IMPORT_COMPRESSION_RATIO: u64 = 200;
 const MAX_GAME_IMPORT_PATH_COMPONENTS: usize = 32;
-static GAME_IMPORT_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+pub(in crate::controllers::edit) static GAME_IMPORT_SLOTS: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(2);
 
 #[derive(Clone, Copy)]
-struct GameImportLimits {
-    entries: usize,
-    file_bytes: u64,
-    total_bytes: u64,
-    compression_ratio: u64,
-    path_components: usize,
+pub(in crate::controllers::edit) struct GameImportLimits {
+    pub(in crate::controllers::edit) entries: usize,
+    pub(in crate::controllers::edit) file_bytes: u64,
+    pub(in crate::controllers::edit) total_bytes: u64,
+    pub(in crate::controllers::edit) compression_ratio: u64,
+    pub(in crate::controllers::edit) path_components: usize,
 }
 
 const GAME_IMPORT_LIMITS: GameImportLimits = GameImportLimits {
@@ -447,11 +448,31 @@ fn default_solve_receipt_mode() -> SolveReceiptMode {
 pub async fn import_game(
     State(st): State<SharedState>,
     _admin: AdminUser,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> AppResult<RequestResponse<i32>> {
+    let bytes = read_archive_upload(multipart).await?;
+    // Expand every entry once, under a shared actual-byte budget, before any
+    // untrusted JSON can cause database writes.
+    let _permit = GAME_IMPORT_SLOTS
+        .try_acquire()
+        .map_err(|_| AppError::unavailable("Game import capacity is busy; retry shortly"))?;
+    let entries = tokio::task::spawn_blocking(move || read_game_import_archive(&bytes))
+        .await
+        .map_err(|error| AppError::internal(format!("game import task failed: {error}")))??;
+    let (export_game, export_challenges) = parse_definition_entries(&entries)?;
+    let game_id =
+        import_persistence::persist_game_import(&st, &entries, &export_game, &export_challenges)
+            .await?;
+    Ok(RequestResponse::ok(game_id))
+}
+
+/// Buffer the multipart `file` field of an archive upload under the shared
+/// buffered-upload reservation and the archive size cap.
+pub(in crate::controllers::edit) async fn read_archive_upload(
+    mut multipart: Multipart,
+) -> AppResult<Vec<u8>> {
     let _upload_reservation =
         crate::utils::upload::reserve_buffered(crate::utils::upload::ARCHIVE_BODY_BYTES)?;
-    // Read the uploaded `file` field into memory.
     let mut data: Option<Vec<u8>> = None;
     while let Some(field) = multipart
         .next_field()
@@ -474,15 +495,15 @@ pub async fn import_game(
     if bytes.len() > crate::utils::upload::ARCHIVE_FILE_BYTES {
         return Err(AppError::bad_request("Game archive is too large"));
     }
-    // Expand every entry once, under a shared actual-byte budget, before any
-    // untrusted JSON can cause database writes.
-    let _permit = GAME_IMPORT_SLOTS
-        .try_acquire()
-        .map_err(|_| AppError::unavailable("Game import capacity is busy; retry shortly"))?;
-    let entries = tokio::task::spawn_blocking(move || read_game_import_archive(&bytes))
-        .await
-        .map_err(|error| AppError::internal(format!("game import task failed: {error}")))??;
-    let game_json = read_import_text(&entries, "game.json")?
+    Ok(bytes)
+}
+
+/// Parse and validate `game.json` plus every `challenges/*.json` entry of an
+/// expanded archive, sorted by source challenge id.
+pub(in crate::controllers::edit) fn parse_definition_entries(
+    entries: &BTreeMap<String, Vec<u8>>,
+) -> AppResult<(ExportGameModel, Vec<ExportChallengeModel>)> {
+    let game_json = read_import_text(entries, "game.json")?
         .ok_or_else(|| AppError::bad_request("Missing game.json in import package"))?;
     let export_game: ExportGameModel = serde_json::from_str(game_json)
         .map_err(|e| AppError::bad_request(format!("Invalid game.json: {e}")))?;
@@ -496,7 +517,7 @@ pub async fn import_game(
         .collect();
     let mut export_challenges: Vec<ExportChallengeModel> = Vec::new();
     for name in challenge_names {
-        let body = read_import_text(&entries, &name)?
+        let body = read_import_text(entries, &name)?
             .ok_or_else(|| AppError::bad_request(format!("Missing challenge file: {name}")))?;
         let challenge: ExportChallengeModel = serde_json::from_str(body)
             .map_err(|e| AppError::bad_request(format!("Invalid challenge file {name}: {e}")))?;
@@ -505,13 +526,12 @@ pub async fn import_game(
     // Deterministic order so the imported challenge ids follow the source ids.
     export_challenges.sort_by_key(|c| c.id);
     validate_import_challenges(&export_challenges)?;
-    let game_id =
-        import_persistence::persist_game_import(&st, &entries, &export_game, &export_challenges)
-            .await?;
-    Ok(RequestResponse::ok(game_id))
+    Ok((export_game, export_challenges))
 }
 
-fn validate_import_challenges(challenges: &[ExportChallengeModel]) -> AppResult<()> {
+pub(in crate::controllers::edit) fn validate_import_challenges(
+    challenges: &[ExportChallengeModel],
+) -> AppResult<()> {
     let mut source_challenge_ids = BTreeSet::new();
     for challenge in challenges {
         if !source_challenge_ids.insert(challenge.id) {
@@ -567,7 +587,7 @@ fn read_game_import_archive(bytes: &[u8]) -> AppResult<BTreeMap<String, Vec<u8>>
     read_game_import_archive_with_limits(bytes, GAME_IMPORT_LIMITS)
 }
 
-fn read_game_import_archive_with_limits(
+pub(in crate::controllers::edit) fn read_game_import_archive_with_limits(
     bytes: &[u8],
     limits: GameImportLimits,
 ) -> AppResult<BTreeMap<String, Vec<u8>>> {
@@ -669,7 +689,7 @@ fn read_game_import_archive_with_limits(
     Ok(entries)
 }
 
-fn read_import_text<'a>(
+pub(in crate::controllers::edit) fn read_import_text<'a>(
     entries: &'a BTreeMap<String, Vec<u8>>,
     name: &str,
 ) -> AppResult<Option<&'a str>> {
@@ -692,3 +712,10 @@ pub use export::export_game;
 
 #[path = "transfer_import.rs"]
 mod import_persistence;
+pub(in crate::controllers::edit) use export::{
+    forward_attachment_sources, project_game_definition_with_blobs, write_streamed_zip,
+    ArchiveInput, ArchiveSource, DefinitionProjection, GameZipChunk,
+};
+pub(in crate::controllers::edit) use import_persistence::{
+    persist_game_import_with, ImportedDefinition,
+};

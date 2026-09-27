@@ -681,6 +681,12 @@ pub fn router() -> Router<SharedState> {
             )),
         )
         .route(
+            "/api/edit/games/import/data",
+            post(import_game_data).layer(DefaultBodyLimit::max(
+                crate::utils::upload::ARCHIVE_BODY_BYTES,
+            )),
+        )
+        .route(
             "/api/edit/games/{id}",
             get(get_game).put(update_game).delete(delete_game),
         )
@@ -709,6 +715,7 @@ pub fn router() -> Router<SharedState> {
             )),
         )
         .route("/api/edit/games/{id}/export", post(export_game))
+        .route("/api/edit/games/{id}/export/data", post(export_game_data))
         .route(
             "/api/edit/games/{id}/scoreboard/flush",
             post(flush_scoreboard),
@@ -931,6 +938,7 @@ mod ad;
 mod builds;
 mod challenges;
 pub(crate) use challenges::recover_bulk_delete_jobs;
+mod data_transfer;
 mod deletion_locks;
 mod divisions;
 mod event_security;
@@ -950,6 +958,10 @@ pub use ad::*;
 pub use builds::backfill_build_records;
 pub(crate) use builds::*;
 pub use challenges::*;
+pub use data_transfer::{
+    export_game_data, import_game_data, DataArchiveManifest, DataArchiveTable,
+    GameDataImportResult, GameDataImportTable, RosterOutcome,
+};
 pub use divisions::*;
 pub use flags::*;
 pub use games::*;

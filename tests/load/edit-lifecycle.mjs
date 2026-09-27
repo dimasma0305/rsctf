@@ -69,6 +69,7 @@ const tags = Object.freeze({
   auth: `adm${runKey}u`,
   ad: `adm${runKey}a`,
   koth: `adm${runKey}k`,
+  archive: `adm${runKey}d`,
 });
 const titleFor = (tag) => `ADMIN-LIFECYCLE-${tag}`;
 const transferCheckerTitle = `edit-transfer-ad-${runKey}`;
@@ -204,6 +205,8 @@ let identities;
 let primaryGameModel;
 let cloneGameId;
 let importedGameId;
+let archiveGameId;
+let restoredGameId;
 let authorizationGameId;
 let adRuntimeBeforeRestart;
 
@@ -2408,6 +2411,116 @@ async function destructivePositiveSurface() {
       "and cleared poster/checker ownership",
   );
 
+  // Competition data archives restore only ended events. Use a dedicated idle
+  // fixture: prove the future-event rejection first, then move its schedule
+  // into the past (a wall-clock crossing stays reversible while the event has
+  // no competitive activity) and archive it. Both ended games return to a
+  // future schedule during teardown because the public hard delete refuses
+  // started events.
+  console.log("\ncompetition data archive…");
+  archiveGameId = await A.createGame({
+    ...futureGameBody(),
+    title: titleFor(tags.archive),
+    allowUserSubmissions: false,
+  });
+  state.gameIds.push(archiveGameId);
+  state.futureGameIds.push(archiveGameId);
+  saveRecovery();
+  await uncatalogued(
+    "POST",
+    `/api/edit/games/${archiveGameId}/admins/${identities.managerUserId}`,
+  );
+  const futureDataExport = await rawRequest(
+    "POST",
+    `/api/edit/games/${archiveGameId}/export/data`,
+    {
+      jwt: identities.managerJwt,
+      ip: `10.253.2.${(requestIndex++ % 240) + 1}`,
+      timeoutMs: 180_000,
+    },
+  );
+  expectStatus(futureDataExport, 200, "future competition data export");
+  const futureDataImport = await rawRequest(
+    "POST",
+    "/api/edit/games/import/data",
+    {
+      jwt: A.adminJwt(),
+      ip: `10.253.2.${(requestIndex++ % 240) + 1}`,
+      body: multipartBody({
+        filename: `${runKey}-future-game-data.zip`,
+        content: futureDataExport.bytes,
+        contentType: "application/zip",
+      }),
+      timeoutMs: 180_000,
+    },
+  );
+  expectStatus(futureDataImport, 400, "future competition data import");
+  requireCondition(
+    Number(
+      sql(
+        `SELECT count(*) FROM "Games" WHERE strpos(title, ${sqlLiteral(tags.archive)}) > 0`,
+      ),
+    ) === 1,
+    "rejected future competition data import still created a game",
+  );
+
+  const archiveNow = A.nowMs();
+  await A.setGameSchedule(
+    archiveGameId,
+    archiveNow - 7_200_000,
+    archiveNow - 3_600_000,
+  );
+  const dataExported = await call("edit_game_data_export", {
+    ctx: { ...context, gameId: archiveGameId },
+    jwt: identities.managerJwt,
+  });
+  requireCondition(
+    dataExported.response.headers.get("content-disposition") ===
+      `attachment; filename="game-${archiveGameId}-data.zip"`,
+    "competition data export did not name the archive after its game",
+  );
+  const dataImported = await call("edit_game_data_import", {
+    form: {
+      filename: `${runKey}-game-data.zip`,
+      content: dataExported.response.bytes,
+      contentType: "application/zip",
+    },
+  });
+  restoredGameId = dataImported.model.gameId;
+  state.gameIds.push(restoredGameId);
+  state.futureGameIds.push(restoredGameId);
+  saveRecovery();
+  requireCondition(
+    restoredGameId !== archiveGameId &&
+      dataImported.model.sourceGameId === archiveGameId &&
+      Number.isSafeInteger(dataImported.model.exportedAtUtc) &&
+      dataImported.model.exportedAtUtc > 0,
+    `competition data import did not describe its source archive: ${JSON.stringify(dataImported.model)}`,
+  );
+  const restoredGameRead = await uncatalogued(
+    "GET",
+    `/api/edit/games/${restoredGameId}`,
+  );
+  const restoredGameModel =
+    restoredGameRead.json?.data ?? restoredGameRead.json;
+  requireCondition(
+    restoredGameModel?.id === restoredGameId &&
+      restoredGameModel.hidden === true,
+    "restored competition data did not create a new hidden game",
+  );
+  state.dataTransfer = {
+    archiveGameId,
+    restoredGameId,
+    tables: dataImported.model.tables.length,
+    users: dataImported.model.users,
+    teams: dataImported.model.teams,
+  };
+  saveRecovery();
+  console.log(
+    `  ✓ competition data archive of game ${archiveGameId} restored as hidden game ${restoredGameId} ` +
+      `(${dataImported.model.tables.length} table(s))`,
+  );
+
   const rollbackProbe = transactionalFailureGameArchive(runKey, A.nowMs());
   state.importRollbackProbe = {
     title: rollbackProbe.title,
@@ -2477,6 +2590,24 @@ async function deleteFutureGame(gameId) {
     );
     return;
   }
+  // The competition data archive fixture and its restored copy end in the
+  // past. The public hard delete refuses started events, and an idle event may
+  // move its schedule back into the future, so restore that schedule first.
+  if (
+    Number(
+      sql(
+        `SELECT count(*) FROM "Games" WHERE id=${Number(gameId)} ` +
+          `AND start_time_utc <= clock_timestamp()`,
+      ),
+    ) > 0
+  ) {
+    const scheduleNow = A.nowMs();
+    await A.setGameSchedule(
+      gameId,
+      scheduleNow + 86_400_000,
+      scheduleNow + 90_000_000,
+    );
+  }
   const response = await A.deleteGame(gameId);
   expectStatus(response, 200, `cleanup future game ${gameId}`);
   requireCondition(
@@ -2539,6 +2670,8 @@ function trackedGameIds() {
         context.kothGameId,
         cloneGameId,
         importedGameId,
+        archiveGameId,
+        restoredGameId,
       ]
         .map(Number)
         .filter((id) => Number.isSafeInteger(id) && id > 0),

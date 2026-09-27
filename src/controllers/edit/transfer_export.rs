@@ -50,19 +50,22 @@ struct AttachmentMeta {
 }
 
 #[derive(Clone)]
-struct ArchiveSource {
-    hash: String,
-    size: usize,
+pub(in crate::controllers::edit) struct ArchiveSource {
+    pub(in crate::controllers::edit) hash: String,
+    pub(in crate::controllers::edit) size: usize,
 }
 
-enum ArchiveInput {
-    Start { entry: String, size: usize },
+/// One message of the response-owned archive stream. `size: None` opens an
+/// entry whose length is unknown until it ends (streamed JSON Lines tables);
+/// a sized entry is verified byte-for-byte against its declaration.
+pub(in crate::controllers::edit) enum ArchiveInput {
+    Start { entry: String, size: Option<usize> },
     Chunk(Bytes),
     End,
     Failed(String),
 }
 
-type GameZipChunk = Result<Bytes, std::io::Error>;
+pub(in crate::controllers::edit) type GameZipChunk = Result<Bytes, std::io::Error>;
 
 struct GameZipStreamWriter {
     output: tokio::sync::mpsc::Sender<GameZipChunk>,
@@ -213,6 +216,7 @@ async fn batched_flags(pool: &sqlx::PgPool, game_id: i32) -> AppResult<HashMap<i
 async fn batched_attachments(
     pool: &sqlx::PgPool,
     attachment_ids: &[i32],
+    bundle_blobs: bool,
 ) -> AppResult<(HashMap<i32, AttachmentMeta>, Vec<ArchiveSource>)> {
     if attachment_ids.len() > MAX_GAME_EXPORT_FILES {
         return Err(AppError::payload_too_large(format!(
@@ -255,7 +259,7 @@ async fn batched_attachments(
                     .map_err(|_| AppError::bad_request("Attachment has an invalid stored size"))
             })
             .transpose()?;
-        if file_type == FileType::Local {
+        if bundle_blobs && file_type == FileType::Local {
             if let (Some(hash), Some(size)) = (row.hash.as_deref(), file_size) {
                 if !valid_content_hash(hash) {
                     return Err(AppError::bad_request(
@@ -297,7 +301,7 @@ async fn batched_attachments(
     Ok((attachments, sources))
 }
 
-fn write_streamed_zip(
+pub(in crate::controllers::edit) fn write_streamed_zip(
     output: tokio::sync::mpsc::Sender<GameZipChunk>,
     mut input: tokio::sync::mpsc::Receiver<ArchiveInput>,
     export_game: ExportGameModel,
@@ -325,37 +329,44 @@ fn write_streamed_zip(
     zip.add_directory("files/", options)
         .map_err(|error| format!("zip directory: {error}"))?;
 
-    let mut remaining = None::<usize>;
+    // `Some(declared)` while an entry is open; `declared` is `None` for an
+    // unsized entry and the remaining byte budget for a sized one.
+    let mut open = None::<Option<usize>>;
     while let Some(message) = input.blocking_recv() {
         match message {
-            ArchiveInput::Start { entry, size } if remaining.is_none() => {
+            ArchiveInput::Start { entry, size } if open.is_none() => {
                 zip.start_file(entry, options)
                     .map_err(|error| format!("zip entry: {error}"))?;
-                remaining = Some(size);
+                open = Some(size);
             }
             ArchiveInput::Chunk(chunk) => {
-                let Some(left) = remaining.as_mut() else {
-                    return Err("attachment stream sent bytes outside an entry".to_string());
+                let Some(declared) = open.as_mut() else {
+                    return Err("archive stream sent bytes outside an entry".to_string());
                 };
-                if chunk.len() > *left {
-                    return Err("attachment stream exceeded its declared size".to_string());
+                if let Some(left) = declared.as_mut() {
+                    if chunk.len() > *left {
+                        return Err("archive stream exceeded its declared size".to_string());
+                    }
+                    *left -= chunk.len();
                 }
                 zip.write_all(&chunk)
                     .map_err(|error| format!("zip write: {error}"))?;
-                *left -= chunk.len();
             }
-            ArchiveInput::End if remaining == Some(0) => remaining = None,
-            ArchiveInput::End => {
-                return Err("attachment stream ended before its declared size".to_string())
-            }
+            ArchiveInput::End => match open.take() {
+                Some(None) | Some(Some(0)) => {}
+                Some(Some(_)) => {
+                    return Err("archive stream ended before its declared size".to_string())
+                }
+                None => return Err("archive stream ended outside an entry".to_string()),
+            },
             ArchiveInput::Failed(error) => return Err(error),
             ArchiveInput::Start { .. } => {
-                return Err("attachment stream overlapped entries".to_string())
+                return Err("archive stream overlapped entries".to_string())
             }
         }
     }
-    if remaining.is_some() {
-        return Err("attachment stream closed inside an entry".to_string());
+    if open.is_some() {
+        return Err("archive stream closed inside an entry".to_string());
     }
     zip.finish()
         .map_err(|error| format!("zip finish: {error}"))?
@@ -364,7 +375,7 @@ fn write_streamed_zip(
         .map_err(|error| format!("zip stream: {error}"))
 }
 
-async fn forward_attachment_sources(
+pub(in crate::controllers::edit) async fn forward_attachment_sources(
     storage: Arc<dyn crate::storage::BlobStorage>,
     sources: Vec<ArchiveSource>,
     sender: tokio::sync::mpsc::Sender<ArchiveInput>,
@@ -383,7 +394,7 @@ async fn forward_attachment_sources(
         if sender
             .send(ArchiveInput::Start {
                 entry: format!("files/{}", source.hash),
-                size: source.size,
+                size: Some(source.size),
             })
             .await
             .is_err()
@@ -413,26 +424,33 @@ async fn forward_attachment_sources(
     }
 }
 
-/// Export one game using a constant number of relational queries and a
-/// response-owned ZIP stream. No complete attachment set or completed archive
-/// is retained in memory.
-pub async fn export_game(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-    Path(id): Path<i32>,
-) -> AppResult<Response> {
-    manager_or_admin(&st, &user, id).await?;
-    let permit = match st
-        .bulk_export_admission
-        .try_acquire(Arc::clone(&st.cache), MAX_GAME_EXPORT_ATTACHMENT_BYTES)
-        .await
-    {
-        Ok(permit) => Arc::new(permit),
-        Err(_) => return Ok(crate::services::bulk_export::overload_response()),
-    };
-    let game = load_game(&st, id).await?;
+/// The portable definition of one game: its settings, divisions, challenges
+/// with static flags, and the deduplicated local attachment blobs to bundle.
+pub(in crate::controllers::edit) struct DefinitionProjection {
+    pub(in crate::controllers::edit) game: ExportGameModel,
+    pub(in crate::controllers::edit) challenges: Vec<ExportChallengeModel>,
+    pub(in crate::controllers::edit) sources: Vec<ArchiveSource>,
+}
+
+/// Project a game definition with a constant number of relational queries.
+/// Callers hold bulk-export admission before invoking this.
+pub(in crate::controllers::edit) async fn project_game_definition(
+    st: &SharedState,
+    game: &game::Model,
+) -> AppResult<DefinitionProjection> {
+    project_game_definition_with_blobs(st, game, true).await
+}
+
+/// [`project_game_definition`] with an explicit choice about bundling local
+/// attachment blobs. Without bundling, attachment metadata is still exported
+/// and no byte cap applies; an import then leaves those attachments empty.
+pub(in crate::controllers::edit) async fn project_game_definition_with_blobs(
+    st: &SharedState,
+    game: &game::Model,
+    bundle_blobs: bool,
+) -> AppResult<DefinitionProjection> {
     let challenges = game_challenge::Entity::find()
-        .filter(game_challenge::Column::GameId.eq(id))
+        .filter(game_challenge::Column::GameId.eq(game.id))
         .order_by_asc(game_challenge::Column::Id)
         .limit((MAX_GAME_EXPORT_CHALLENGES + 1) as u64)
         .all(&st.db)
@@ -443,7 +461,7 @@ pub async fn export_game(
         )));
     }
     let divisions = division::Entity::find()
-        .filter(division::Column::GameId.eq(id))
+        .filter(division::Column::GameId.eq(game.id))
         .order_by_asc(division::Column::Id)
         .limit((MAX_GAME_EXPORT_DIVISIONS + 1) as u64)
         .all(&st.db)
@@ -454,8 +472,8 @@ pub async fn export_game(
         )));
     }
 
-    let mut configs = batched_division_configs(st.pg(), id).await?;
-    let mut flags = batched_flags(st.pg(), id).await?;
+    let mut configs = batched_division_configs(st.pg(), game.id).await?;
+    let mut flags = batched_flags(st.pg(), game.id).await?;
     let mut attachment_ids = challenges
         .iter()
         .filter_map(|challenge| challenge.attachment_id)
@@ -468,9 +486,10 @@ pub async fn export_game(
     );
     attachment_ids.sort_unstable();
     attachment_ids.dedup();
-    let (attachments, sources) = batched_attachments(st.pg(), &attachment_ids).await?;
+    let (attachments, sources) =
+        batched_attachments(st.pg(), &attachment_ids, bundle_blobs).await?;
 
-    let mut export_game = ExportGameModel::from_game(&game);
+    let mut export_game = ExportGameModel::from_game(game);
     export_game.divisions = divisions
         .into_iter()
         .map(|division| ExportDivisionModel {
@@ -515,6 +534,37 @@ pub async fn export_game(
             )
         })
         .collect::<Vec<_>>();
+
+    Ok(DefinitionProjection {
+        game: export_game,
+        challenges: export_challenges,
+        sources,
+    })
+}
+
+/// Export one game using a constant number of relational queries and a
+/// response-owned ZIP stream. No complete attachment set or completed archive
+/// is retained in memory.
+pub async fn export_game(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+    Path(id): Path<i32>,
+) -> AppResult<Response> {
+    manager_or_admin(&st, &user, id).await?;
+    let permit = match st
+        .bulk_export_admission
+        .try_acquire(Arc::clone(&st.cache), MAX_GAME_EXPORT_ATTACHMENT_BYTES)
+        .await
+    {
+        Ok(permit) => Arc::new(permit),
+        Err(_) => return Ok(crate::services::bulk_export::overload_response()),
+    };
+    let game = load_game(&st, id).await?;
+    let DefinitionProjection {
+        game: export_game,
+        challenges: export_challenges,
+        sources,
+    } = project_game_definition(&st, &game).await?;
 
     // Re-prove authorization after the complete relational projection and
     // before any response bytes or storage reads can escape.
@@ -577,7 +627,7 @@ mod tests {
         input_sender
             .blocking_send(ArchiveInput::Start {
                 entry: format!("files/{}", "a".repeat(64)),
-                size: 10,
+                size: Some(10),
             })
             .unwrap();
         input_sender
@@ -681,7 +731,12 @@ mod tests {
 
         let configs = batched_division_configs(&pool, 1).await.unwrap();
         let flags = batched_flags(&pool, 1).await.unwrap();
-        let (attachments, sources) = batched_attachments(&pool, &[40]).await.unwrap();
+        let (attachments, sources) = batched_attachments(&pool, &[40], true).await.unwrap();
+        let (_, unbundled) = batched_attachments(&pool, &[40], false).await.unwrap();
+        assert!(
+            unbundled.is_empty(),
+            "metadata-only projection bundles nothing"
+        );
         assert_eq!(configs.len(), 2);
         assert_eq!(flags.get(&20).unwrap().len(), 2);
         assert_eq!(attachments.len(), 1);

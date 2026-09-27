@@ -196,13 +196,14 @@ mod m0334_flag_import_staging;
 mod m0340_player_read_indexes;
 mod m0341_account_link_delivery_activation;
 mod m0342_game_purge_operations;
-mod m0343_event_history_purge_trigger_authorization;
+pub(crate) mod m0343_event_history_purge_trigger_authorization;
 mod m0344_admin_user_import_history;
 mod m0345_flag_import_lease_repair;
 mod m0346_clone_destination_deletion;
 pub(crate) mod m0347_writeup_grades;
 mod m0348_local_container_capacity;
 pub(crate) mod m0349_image_preflight_results;
+mod m0350_event_history_purge_outbox_delete;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -432,6 +433,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0347_writeup_grades::Migration),
             Box::new(m0348_local_container_capacity::Migration),
             Box::new(m0349_image_preflight_results::Migration),
+            Box::new(m0350_event_history_purge_outbox_delete::Migration),
         ]
     }
 }
@@ -576,10 +578,10 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 179);
+        assert_eq!(names.len(), 180);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
-            &names[names.len() - 77..],
+            &names[names.len() - 78..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -658,6 +660,7 @@ mod tests {
                 "m0347_writeup_grades",
                 "m0348_local_container_capacity",
                 "m0349_image_preflight_results",
+                "m0350_event_history_purge_outbox_delete",
             ]
         );
     }

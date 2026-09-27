@@ -67,6 +67,12 @@ Do not promise flawless connections under arbitrary client network conditions.
 - [ ] Verify scoreboard freshness, A&D roster visibility, and solo/NPC behavior
   where challenge contracts explicitly support it.
 - [ ] Add missing lifecycle, retry/idempotency, revision, and authorization tests.
+- [x] Per-event competition data archive (September 27, 2026): `Export Data` streams
+  the definition, roster, every Jeopardy/A&D/KotH record and rollup, evidence,
+  telemetry, and rendered boards as JSON Lines; `Import Data` restores an ended
+  event as a new hidden game with identifier remapping, identity matching, and
+  recomputed counters. Proven by a migrated-schema round trip that compares every
+  restorable table and all three boards.
 
 Acceptance: real database/worker tests where needed, deterministic scoring fixtures,
 and explicit permission before retroactively changing live competition data/rules.

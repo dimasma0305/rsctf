@@ -42,6 +42,60 @@ selector or live scoring-policy override.
 
 When at least two challenge formats are active, the public scoreboard opens on an **Overall** tab. RSCTF normalizes each format to 0-100 and gives it one fixed budget unit per enabled, approved challenge. Jeopardy is divided by the attainable score allowed by the team's division, including blood-bonus headroom; A&D and KotH use their official settled epoch totals. Dynamic Jeopardy values stay inside the Jeopardy component and never alter its outer challenge count. Challenge eligibility and counts lock at the competition boundary, and the formula is absolute rather than leader-relative, so field composition cannot rescale a team's result. See the [Overall scoreboard guide](../players/overall-scoreboard).
 
+## Back up and restore competition data
+
+Two buttons move one event's results between installations: **Export Data**
+on the game's Info page (game managers and administrators), and **Import
+Data** on the admin games list (administrators only). Export produces
+`game-{id}-data.zip`; Import accepts that archive and creates a new hidden game
+from it.
+
+The archive contains the game definition, its attachments and writeups, the
+roster (teams, members, participations), every Jeopardy record (submissions,
+first solves, events, notices, reviews, writeup grades), every A&D and KotH
+record and rollup (rounds, flags, attacks, checks, cycles, tokens), cheat and
+anti-cheat evidence, and telemetry. Each table is written as JSON Lines under
+`data/`. Rendered scoreboards are stored under `scoreboards/`, and
+`manifest.json` records the row count of every table.
+
+The archive deliberately excludes password hashes, security stamps, VPN private
+keys, team and observer API tokens, lease tokens, and container references.
+An archive is therefore not a credential backup and cannot revive a running
+instance.
+
+Restore semantics:
+
+- Import always creates a **new hidden game**. It never overwrites an existing
+  game, so a restore can be inspected before anyone else sees it.
+- Import is only allowed for events whose end time has passed. An archive of
+  a running or future event is rejected.
+- Users are matched by id, then by email, then by username. Unmatched users are
+  created as placeholder accounts that keep their archived id and profile but
+  have no password; they regain access through password reset. Matched teams
+  gain any archived member they were missing.
+- Teams are matched by identical id and name; otherwise they are created.
+- Participation tokens are regenerated and solve counts are recomputed after
+  the rows are restored. Competitive admission timestamps are assigned by the
+  database and stay empty on the restored copy; the archive keeps the original
+  values for reference.
+- VPN telemetry, build records, challenge variants, solve-receipt audit rows,
+  and flag-delivery results are exported for reference but not restored.
+- Live hill indicators on the KotH board (current container, latest checker
+  verdict, reset phase) are not restored because container references are
+  never archived; every score, epoch, and rollup is.
+
+Bounds: at most 500,000 rows per table; the uploaded archive is limited to
+64 MiB and to 256 MiB when expanded; attachments plus writeups are limited to
+128 MiB. When the attachment files exceed that limit, Export Data offers to
+export without them (`?attachments=skip` on the API): every score and record is
+still included and the attachment metadata is kept, but the files are empty
+after a restore. Keep the challenge files in their repository or take a
+storage backup alongside.
+
+Use a PostgreSQL dump for full-platform disaster recovery (see
+[Back up and update](../deploy/operations)). Use this archive for per-event
+backups and for moving one event between installations.
+
 ## Discord blood announcements
 
 Set the game's Discord webhook to an official HTTPS `discord.com/api/webhooks/...`

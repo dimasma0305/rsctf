@@ -298,7 +298,9 @@
       "copy_public_key": "Copy Public Key",
       "delete": "Delete",
       "export": "Export Game",
+      "export_data": "Export Data",
       "import": "Import Game",
+      "import_data": "Import Data",
       "new": "New Game"
     },
     "notices": {
@@ -406,6 +408,13 @@
       }
     },
     "games": {
+      "export_data": {
+        "attachments_too_large": {
+          "title": "Attachments exceed the bundle limit",
+          "body": "The challenge attachment files of this game are larger than the 128 MiB bundle limit. Export the competition data without attachment files? Scores, submissions, rosters, and every record are still included; attachments will be empty after a restore.",
+          "confirm": "Export without attachments"
+        }
+      },
       "challenges": {
         "attachment": {
           "clear": {
@@ -1498,6 +1507,10 @@
       "import": {
         "imported": "Game imported successfully",
         "importing": "Importing game..."
+      },
+      "import_data": {
+        "importing": "Importing data...",
+        "success": "Restored {{rows}} rows into a new hidden game ({{teamsCreated}} teams created, {{teamsMatched}} matched; {{usersCreated}} users created, {{usersMatched}} matched)"
       },
       "info": {
         "deleted": "Game deleted",

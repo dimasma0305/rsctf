@@ -84,7 +84,9 @@
       "copy_public_key": "复制公钥",
       "delete": "删除比赛",
       "export": "导出比赛",
+      "export_data": "导出数据",
       "import": "导入比赛",
+      "import_data": "导入数据",
       "new": "新建比赛"
     },
     "notices": {
@@ -189,6 +191,13 @@
       }
     },
     "games": {
+      "export_data": {
+        "attachments_too_large": {
+          "title": "附件超过打包上限",
+          "body": "此比赛的题目附件文件超过 128 MiB 的打包上限。是否在不包含附件文件的情况下导出比赛数据？分数、提交、队伍名单和所有记录仍会包含；恢复后附件将为空。",
+          "confirm": "不含附件导出"
+        }
+      },
       "challenges": {
         "attachment": {
           "clear": {
@@ -1127,6 +1136,10 @@
       "import": {
         "imported": "比赛导入成功",
         "importing": "正在导入比赛..."
+      },
+      "import_data": {
+        "importing": "正在导入数据...",
+        "success": "已将 {{rows}} 行数据恢复为新的隐藏比赛（新建 {{teamsCreated}} 个队伍、匹配 {{teamsMatched}} 个；新建 {{usersCreated}} 个用户、匹配 {{usersMatched}} 个）"
       },
       "info": {
         "deleted": "比赛已删除",

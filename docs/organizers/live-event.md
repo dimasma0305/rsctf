@@ -82,7 +82,7 @@ During and after the event:
 1. Confirm the configured end time has passed.
 2. Stop or close late submissions according to policy.
 3. Reveal/unfreeze results when intended.
-4. Export the score/submission data needed by the organizers.
+4. Export the competition data with the **Export Data** button on the game's Info page (see [Back up and restore competition data](./games#back-up-and-restore-competition-data)); it captures the roster, submissions, A&D/KotH records, evidence, and rendered scoreboards in one archive.
 5. Preserve writeups and uploaded evidence.
 6. Take a final PostgreSQL and file-storage backup.
 7. Remove temporary admin/monitor access and rotate temporary credentials.

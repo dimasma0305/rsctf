@@ -21,10 +21,13 @@ import {
   alpha,
   useMantineTheme,
 } from '@mantine/core'
+import { showNotification } from '@mantine/notifications'
 import {
   mdiArrowLeftBold,
   mdiArrowRightBold,
+  mdiCheck,
   mdiContentDuplicate,
+  mdiDatabaseImportOutline,
   mdiOpenInNew,
   mdiPencilOutline,
   mdiPlus,
@@ -59,6 +62,7 @@ const Games: FC = () => {
   const [cloneTarget, setCloneTarget] = useState<GameInfoModel | null>(null)
   const [disabled, setDisabled] = useState(false)
   const [progress, setProgress] = useState(0)
+  const [dataProgress, setDataProgress] = useState(0)
   const visibilityOperations = useRef(new Map<number, GameInfoSaveOperation>())
   const { user } = useUser()
 
@@ -160,6 +164,52 @@ const Games: FC = () => {
     }
   }
 
+  const onImportGameData = async (file: File | null) => {
+    if (!file) return
+
+    setDataProgress(0)
+    setDisabled(true)
+
+    try {
+      const res = await api.edit.editImportGameData(
+        { file },
+        {
+          onUploadProgress: (e) => {
+            setDataProgress((e.loaded / (e.total ?? 1)) * 100)
+          },
+        }
+      )
+
+      setDataProgress(0)
+      setDisabled(false)
+
+      const result = res.data
+      if (result) {
+        await mutateGames()
+
+        showNotification({
+          color: 'teal',
+          title: result.title,
+          message: t('admin.notification.games.import_data.success', {
+            rows: result.tables.reduce((sum, table) => (table.restored ? sum + table.rows : sum), 0),
+            teamsCreated: result.teams.created,
+            teamsMatched: result.teams.matched,
+            usersCreated: result.users.created,
+            usersMatched: result.users.matched,
+          }),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+
+        // Navigate to the restored hidden game
+        navigate(`/admin/games/${result.gameId}/info`)
+      }
+    } catch (err) {
+      showErrorMsg(err, t)
+      setDataProgress(0)
+      setDisabled(false)
+    }
+  }
+
   return (
     <AdminPage
       isLoading={!gamePage && !gamesError}
@@ -199,6 +249,34 @@ const Games: FC = () => {
                     {progress !== 0 && (
                       <Progress
                         value={progress}
+                        className={uploadClasses.progress}
+                        color={alpha(theme.colors[theme.primaryColor][2], 0.35)}
+                        radius="sm"
+                      />
+                    )}
+                  </Button>
+                )}
+              </FileButton>
+              <FileButton onChange={onImportGameData} accept="application/zip">
+                {(props) => (
+                  <Button
+                    {...props}
+                    leftSection={<Icon path={mdiDatabaseImportOutline} size={1} />}
+                    className={uploadClasses.button}
+                    disabled={disabled}
+                    color={dataProgress !== 0 ? 'cyan' : theme.primaryColor}
+                    variant="outline"
+                    h={44}
+                    w={isNarrow ? '100%' : undefined}
+                  >
+                    <div className={uploadClasses.label}>
+                      {dataProgress !== 0
+                        ? t('admin.notification.games.import_data.importing')
+                        : t('admin.button.games.import_data')}
+                    </div>
+                    {dataProgress !== 0 && (
+                      <Progress
+                        value={dataProgress}
                         className={uploadClasses.progress}
                         color={alpha(theme.colors[theme.primaryColor][2], 0.35)}
                         radius="sm"
