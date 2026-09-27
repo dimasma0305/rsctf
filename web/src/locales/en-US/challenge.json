@@ -311,6 +311,7 @@
     "description": "Optionally upload the script or notes your team used to solve this challenge so organizers can verify the solve. Each upload is kept as a new version; organizers can see every version and when it was uploaded.",
     "unsolved": "Solve this challenge to upload a solver.",
     "full": "Your team has uploaded the maximum number of versions.",
+    "quota_full": "Your team has used all of its solver storage for this event.",
     "closed": "The window for uploading solvers has closed.",
     "select_label": "Solver file",
     "select_placeholder": "Choose a file",

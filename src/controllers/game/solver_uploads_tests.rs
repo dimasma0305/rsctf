@@ -337,6 +337,10 @@ async fn solver_uploads_are_switched_solve_gated_team_scoped_and_bounded() {
     )
     .await;
     assert_eq!(bob_state["teamBytesUsed"], MAX_TEAM_BYTES);
+    assert_eq!(
+        bob_state["editable"], false,
+        "a full quota closes the picker"
+    );
 
     f.teardown().await;
 }

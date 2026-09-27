@@ -807,7 +807,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     ) : undefined
   const solverUpload =
     solverUploadsEnabled && readEnabled && challenge?.id === challengeId && AI_CHAT_LINK_TYPES.has(challenge.type) ? (
-      <SolverUploadSection key={`${gameId}:${challengeId}`} gameId={gameId} challengeId={challengeId} />
+      <SolverUploadSection key={`solver:${gameId}:${challengeId}`} gameId={gameId} challengeId={challengeId} />
     ) : undefined
   // The section reports a loaded, required, pending, still-possible disclosure.
   const disclosureRequirement = useMemo<ChallengeCloseRequirement | null>(

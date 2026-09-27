@@ -142,7 +142,9 @@ export const SolverUploadSection: FC<SolverUploadSectionProps> = ({ gameId, chal
                   ? t('challenge.solver.unsolved', 'Solve this challenge to upload a solver.')
                   : versions.length >= state.maxVersions
                     ? t('challenge.solver.full', 'Your team has uploaded the maximum number of versions.')
-                    : t('challenge.solver.closed', 'The window for uploading solvers has closed.')}
+                    : state.teamBytesUsed >= state.teamBytesLimit
+                      ? t('challenge.solver.quota_full', 'Your team has used all of its solver storage for this event.')
+                      : t('challenge.solver.closed', 'The window for uploading solvers has closed.')}
               </Text>
             </Alert>
           )}

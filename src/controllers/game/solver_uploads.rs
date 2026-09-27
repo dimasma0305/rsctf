@@ -131,13 +131,17 @@ async fn load_state(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     let until = editable_until(game);
+    let team_bytes_used = team_bytes_used(st.pg(), participation_id).await?;
     Ok(SolverUploadState {
-        editable: solved && Utc::now() <= until && (versions.len() as i32) < MAX_VERSIONS,
+        editable: solved
+            && Utc::now() <= until
+            && (versions.len() as i32) < MAX_VERSIONS
+            && team_bytes_used < MAX_TEAM_BYTES,
         solved,
         editable_until: until,
         max_file_bytes: MAX_FILE_BYTES,
         max_versions: MAX_VERSIONS,
-        team_bytes_used: team_bytes_used(st.pg(), participation_id).await?,
+        team_bytes_used,
         team_bytes_limit: MAX_TEAM_BYTES,
         versions: versions.into_iter().map(Into::into).collect(),
     })
