@@ -57,7 +57,7 @@ serde_ignored = "0.1"
 
 # auth / crypto
 jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
-argon2 = "0.5"
+argon2 = "0.6"
 rand = "0.10"
 sha2 = "0.11"
 hmac = "0.13"
