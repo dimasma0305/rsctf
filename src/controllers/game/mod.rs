@@ -136,6 +136,7 @@ pub struct DetailedGameInfoModel {
     pub invite_code_required: bool,
     pub writeup_required: bool,
     pub ai_chat_links_enabled: bool,
+    pub ai_chat_links_required: bool,
     pub poster: Option<String>,
     pub limit: i32,
     pub team_count: i64,
@@ -913,6 +914,7 @@ fn participation_token(g: &game::Model, team_id: i32) -> AppResult<String> {
 }
 
 mod ai_chats;
+mod ai_chats_monitor;
 mod catalog;
 pub(crate) mod cheat;
 mod cheat_compare;
@@ -935,6 +937,7 @@ mod vpn_access;
 mod writeup;
 
 pub use ai_chats::*;
+pub use ai_chats_monitor::*;
 pub use catalog::*;
 pub use cheat::*;
 pub use cheat_compare::*;

@@ -53,7 +53,7 @@ from it.
 The archive contains the game definition, its attachments and writeups, the
 roster (teams, members, participations), every Jeopardy record (submissions,
 first solves, events, notices, reviews, writeup grades, AI chat links in
-`aiChatLinks`), every A&D and KotH
+`aiChatLinks`, `aiChatLinkEvents`), every A&D and KotH
 record and rollup (rounds, flags, attacks, checks, cycles, tokens), cheat and
 anti-cheat evidence, and telemetry. Each table is written as JSON Lines under
 `data/`. Rendered scoreboards are stored under `scoreboards/`, and
@@ -133,6 +133,44 @@ Turning the event switch off hides the section from players but keeps the saved
 links readable in the monitor.
 
 ![Monitor AI chats list with team, challenge, provider, and saved links](/screenshots/ai-chat-links-monitor.png)
+
+### Requiring a disclosure
+
+Turn on **Require disclosure after every solve** (below the AI chat links
+switch) to make disclosure mandatory. After each Jeopardy solve inside the
+competition window, the team must either attach at least one share link or
+declare **No AI used**. Until it does:
+
+- the solved challenge card cannot be closed right after the solve and opens
+  its AI chat section with a "Disclosure required" notice;
+- the challenge page shows a banner listing every solved challenge that still
+  needs a disclosure, and those challenges carry a "Disclosure needed" badge;
+- monitors see the solve with status **Missing**.
+
+The requirement never withholds points or blocks flag submission; it records
+and surfaces non-compliance so organizers can act on it under the event rules.
+Turning it on mid-event also applies to earlier solves. Removing every link
+(without declaring No AI used) makes the disclosure pending again.
+
+### Disclosure telemetry
+
+Every create, edit, and clear of a team's disclosure is recorded for cheat
+review in an append-only history. Each entry stores:
+
+- who made the change and the server time it happened;
+- the team's solve time and the seconds elapsed since that solve;
+- the links before and after the change, and which links were added or
+  removed, plus any change to the No AI used declaration;
+- a keyed hash of the client network address (the raw address is never
+  stored), shown to monitors as a 12-character network hint for correlation.
+
+An identical re-save is not recorded. In **Monitoring → AI chats**, filter by
+status (**Links**, **No AI**, **Missing**); each entry shows the solve time,
+the first disclosure time and the delay between them, and the number of edits.
+**History** opens the full change log for that team and challenge. The history
+is included in the competition data archive.
+
+![AI chat disclosure history with created, edited, and cleared entries](/screenshots/ai-chat-links-history.png)
 
 The server stores the links but never fetches them, so it does not verify
 that a chat exists or what it contains. A share link opens content chosen by a

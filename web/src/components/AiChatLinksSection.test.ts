@@ -27,6 +27,12 @@ const baseState: AiChatLinkState = {
   revision: 0,
   updatedAt: null,
   submittedBy: null,
+  required: false,
+  pending: false,
+  declaredNoAi: false,
+  solvedAt: 1_900_000_000_000,
+  firstDisclosedAt: null,
+  editCount: 0,
 }
 
 const flush = async () => {
@@ -48,20 +54,25 @@ test('AI chat links section validates, adds, saves, and reconciles conflicts', a
   let reads = 0
   const gameApi = api.game as typeof api.game & { gameSaveAiChatLinks: SaveFn }
   const originalSave = gameApi.gameSaveAiChatLinks
-  const saves: { links: string[]; expectedRevision: number }[] = []
+  const saves: { links: string[]; expectedRevision: number; noAiUsed?: boolean }[] = []
   let saveResult: 'ok' | 'conflict' = 'ok'
   gameApi.gameSaveAiChatLinks = (async (_id: number, _challengeId: number, body: (typeof saves)[number]) => {
     saves.push(body)
     if (saveResult === 'conflict') throw { response: { status: 409, data: { title: 'conflict' } } }
+    const disclosed = body.links.length > 0 || body.noAiUsed === true
     serverState = {
       ...serverState,
       links: body.links.map((url) => ({ url, providerKey: 'claude', providerLabel: 'Claude' })),
       revision: serverState.revision + 1,
       submittedBy: 'alice',
+      declaredNoAi: body.noAiUsed === true,
+      pending: serverState.required && !disclosed,
+      firstDisclosedAt: disclosed ? (serverState.firstDisclosedAt ?? 1_900_000_060_000) : serverState.firstDisclosedAt,
     }
     return { status: 200, data: serverState }
   }) as unknown as SaveFn
 
+  const pendingReports: boolean[] = []
   const mount = async (gameId = 3, challengeId = 9) => {
     const container = browser.document.createElement('div')
     browser.document.body.append(container)
@@ -87,7 +98,11 @@ test('AI chat links section validates, adds, saves, and reconciles conflicts', a
                   },
                 },
               },
-              createElement(AiChatLinksSection, { gameId, challengeId })
+              createElement(AiChatLinksSection, {
+                gameId,
+                challengeId,
+                onPendingChange: (pending: boolean) => pendingReports.push(pending),
+              })
             )
           )
         )
@@ -181,7 +196,11 @@ test('AI chat links section validates, adds, saves, and reconciles conflicts', a
     await click(buttonNamed(container, /^Remove link$/))
 
     await click(buttonNamed(container, /^Save links$/))
-    assert.deepEqual(saves.at(-1), { links: ['https://chatgpt.com/share/abcdefgh1234'], expectedRevision: 0 })
+    assert.deepEqual(saves.at(-1), {
+      links: ['https://chatgpt.com/share/abcdefgh1234'],
+      expectedRevision: 0,
+      noAiUsed: false,
+    })
     assert.doesNotMatch(container.textContent ?? '', /Not saved/)
     assert.match(container.textContent ?? '', /Last saved by alice/)
     assert.equal(buttonNamed(container, /^Save links$/)?.disabled, true, 'a saved list is not dirty')
@@ -214,11 +233,70 @@ test('AI chat links section validates, adds, saves, and reconciles conflicts', a
     assert.equal(buttonNamed(mounted.container, /^Remove link$/), undefined)
     assert.ok(mounted.container.querySelector('a[aria-label="Open link in a new tab"]'))
 
-    // A disabled event or a non-Jeopardy challenge renders nothing.
+    assert.equal(pendingReports.includes(true), false, 'an optional disclosure never gates closing')
+
+    // Required and pending: opens expanded with a text notice and gates closing
+    // until the "No AI used" declaration is confirmed.
     await act(async () => mounted.root.unmount())
+    pendingReports.length = 0
+    saveResult = 'ok'
+    serverState = { ...baseState, required: true, pending: true, revision: 0 }
+    mounted = await mount(3, 12)
+    const pendingNotice = mounted.container.querySelector('[data-ai-chat-pending]')
+    assert.match(pendingNotice?.textContent ?? '', /Disclosure required/)
+    assert.equal(pendingNotice?.getAttribute('tabindex'), '-1', 'a blocked close can focus the notice')
+    assert.equal(buttonNamed(mounted.container, /^Hide$/)?.getAttribute('aria-expanded'), 'true')
+    assert.match(mounted.container.textContent ?? '', /Solved at/)
+    assert.equal(pendingReports.at(-1), true)
+    await click(buttonNamed(mounted.container, /^We did not use AI$/))
+    assert.match(mounted.container.textContent ?? '', /Organizers can see this declaration/)
+    const confirm = buttonNamed(mounted.container, /^Confirm: no AI used$/)
+    assert.equal(browser.document.activeElement, confirm, 'the confirm step takes focus')
+    await click(confirm)
+    assert.deepEqual(saves.at(-1), { links: [], expectedRevision: 0, noAiUsed: true })
+    assert.equal(pendingReports.at(-1), false, 'the declaration releases the dialog')
+    assert.equal(mounted.container.querySelector('[data-ai-chat-pending]'), null)
+    assert.ok(mounted.container.querySelector('[data-ai-chat-declared]'), 'declared: ' + mounted.container.textContent)
+    assert.match(mounted.container.textContent ?? '', /Declared: no AI used/)
+    assert.equal(buttonNamed(mounted.container, /^We did not use AI$/), undefined)
+
+    // Adding a link while declared warns that it replaces the declaration.
+    const declaredInput = mounted.container.querySelector<HTMLInputElement>('input')
+    assert.ok(declaredInput, 'input: ' + mounted.container.textContent)
+    await typeInto(declaredInput, 'https://claude.ai/share/replace-declaration')
+    await click(buttonNamed(mounted.container, /^Add$/))
+    assert.match(
+      mounted.container.querySelector('[data-ai-chat-save-warning]')?.textContent ?? '',
+      /replaces the "No AI used" declaration/
+    )
+    await click(buttonNamed(mounted.container, /^Save links$/))
+    assert.deepEqual(saves.at(-1), {
+      links: ['https://claude.ai/share/replace-declaration'],
+      expectedRevision: 1,
+      noAiUsed: false,
+    })
+
+    // Clearing a required disclosure warns that the challenge becomes pending again.
+    await click(buttonNamed(mounted.container, /^Remove link$/))
+    assert.match(
+      mounted.container.querySelector('[data-ai-chat-save-warning]')?.textContent ?? '',
+      /will need a disclosure again/
+    )
+
+    // Pending after the edit window closed: shown read-only, never gating.
+    await act(async () => mounted.root.unmount())
+    pendingReports.length = 0
+    serverState = { ...baseState, required: true, pending: true, editable: false }
+    mounted = await mount(3, 13)
+    assert.equal(pendingReports.includes(true), false)
+
+    // A disabled event or a non-Jeopardy challenge renders nothing and never gates.
+    await act(async () => mounted.root.unmount())
+    pendingReports.length = 0
     readError = { response: { status: 404 }, status: 404 }
     mounted = await mount(3, 11)
     assert.equal(mounted.container.textContent, '')
+    assert.equal(pendingReports.includes(true), false)
   } finally {
     await act(async () => mounted.root.unmount())
     gameApi.gameSaveAiChatLinks = originalSave

@@ -78,6 +78,7 @@ pub(super) fn requested_game(
     requested.writeup_note.clone_from(&model.writeup_note);
     requested.writeup_required = model.writeup_required;
     requested.ai_chat_links_enabled = model.ai_chat_links_enabled;
+    requested.ai_chat_links_required = model.ai_chat_links_required;
     requested.writeup_deadline = model.writeup_deadline;
     requested.freeze_time_utc = model.freeze_time_utc;
     requested.blood_bonus_value = super::blood_bonus_from_value(model.blood_bonus_value);
@@ -157,6 +158,7 @@ fn editable_projection(game: &game::Model) -> [serde_json::Value; 3] {
             "vpnSourceAsnTelemetryEnabled": game.vpn_source_asn_telemetry_enabled,
             "vpnDeviceSharingTelemetryEnabled": game.vpn_device_sharing_telemetry_enabled,
             "aiChatLinksEnabled": game.ai_chat_links_enabled,
+            "aiChatLinksRequired": game.ai_chat_links_required,
         }),
     ]
 }
@@ -360,7 +362,7 @@ mod tests {
                 "id": 1, "title": "Event", "public_key": "public", "private_key": "private",
                 "hidden": false, "practice_mode": true, "poster_hash": null,
                 "summary": "old", "content": "old", "accept_without_review": false,
-                "allow_user_submissions": false, "writeup_required": false, "ai_chat_links_enabled": false, "invite_code": null,
+                "allow_user_submissions": false, "writeup_required": false, "ai_chat_links_enabled": false, "ai_chat_links_required": false, "invite_code": null,
                 "team_member_count_limit": 0, "discord_webhook": null, "container_count_limit": 0,
                 "start_time_utc": "2026-01-01T00:00:00Z", "end_time_utc": "2026-01-02T00:00:00Z",
                 "writeup_deadline": "2026-01-03T00:00:00Z", "freeze_time_utc": null,

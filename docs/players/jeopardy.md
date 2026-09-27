@@ -78,13 +78,26 @@ section on its card.
 3. Add up to five links for the challenge, then choose **Save links**. Links
    are not stored until you save.
 
+If your team did not use AI for the challenge, choose **No AI used** instead of
+adding links.
+
+Some events **require** a disclosure after every solve. The section then opens
+with a "Disclosure required" notice right after you solve, the challenge card
+stays open until you save links or declare No AI used, and the challenge page
+lists every solved challenge that still needs one. Your points are never
+withheld, but organizers see which solves have no disclosure.
+
 Any member of the team can add, replace, or remove the team's links until the
 later of the event end and the writeup deadline. If a teammate saved changes
 while you were editing, reload the section and apply your change again. A link
 must use `https`, must not contain a username, password, or custom port, and is
 saved without its `#` fragment.
 
-Organizers with monitoring access can open and read every chat you link. Share
+Every save, edit, and removal is recorded with the time, the member who made
+it, how long after the solve it happened, which links were added or removed,
+and a keyed hash of your network address; organizers review this history for
+cheat detection. Organizers with monitoring access can open and read every chat
+you link. Share
 only chats you are willing to disclose, and do not include flags or other
 teams' information. rsctf stores the link but never fetches the chat. To stop
 sharing a chat, remove the link here and also delete or unshare it in the AI

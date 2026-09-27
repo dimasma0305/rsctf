@@ -193,10 +193,11 @@ async fn solve(
     challenge: i32,
     user_id: Uuid,
 ) {
-    sqlx::query(
+    let submission: i32 = sqlx::query_scalar(
         r#"INSERT INTO "Submissions"
              (answer, status, submit_time_utc, user_id, team_id, participation_id, game_id, challenge_id)
-           VALUES ('flag{x}', 1, $1, $2, $3, $4, $5, $6)"#,
+           VALUES ('flag{x}', 1, $1, $2, $3, $4, $5, $6)
+        RETURNING id"#,
     )
     .bind(Utc::now() - chrono::Duration::minutes(90))
     .bind(user_id)
@@ -204,12 +205,27 @@ async fn solve(
     .bind(participation)
     .bind(game_id)
     .bind(challenge)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    // A real accepted solve always records its canonical first solve.
+    sqlx::query(
+        r#"INSERT INTO "FirstSolves" (participation_id, challenge_id, submission_id)
+           VALUES ($1, $2, $3)"#,
+    )
+    .bind(participation)
+    .bind(challenge)
+    .bind(submission)
     .execute(&mut *tx)
     .await
     .unwrap();
 }
 
 async fn fixture() -> Fixture {
+    fixture_with(false).await
+}
+
+async fn fixture_with(required: bool) -> Fixture {
     let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
         .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
     let application_name = test_process_application_name();
@@ -257,6 +273,12 @@ async fn fixture() -> Fixture {
         .unwrap();
     let now = Utc::now();
     let open_game = insert_game(&mut tx, "Open", true, now + chrono::Duration::hours(1)).await;
+    sqlx::query(r#"UPDATE "Games" SET ai_chat_links_required = $2 WHERE id = $1"#)
+        .bind(open_game)
+        .bind(required)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     let off_game = insert_game(&mut tx, "Off", false, now + chrono::Duration::hours(1)).await;
     let closed_game =
         insert_game(&mut tx, "Closed", true, now - chrono::Duration::minutes(30)).await;
@@ -396,13 +418,29 @@ impl Fixture {
         links: &[&str],
         revision: i32,
     ) -> AppResult<Response> {
-        let model: SaveAiChatLinks =
-            serde_json::from_value(json!({ "links": links, "expectedRevision": revision }))
-                .unwrap();
+        self.save(
+            user,
+            game,
+            challenge,
+            json!({ "links": links, "expectedRevision": revision }),
+        )
+        .await
+    }
+
+    async fn save(
+        &self,
+        user: &CurrentUser,
+        game: i32,
+        challenge: i32,
+        body: JsonValue,
+    ) -> AppResult<Response> {
+        let model: SaveAiChatLinks = serde_json::from_value(body).unwrap();
         save_ai_chat_links(
             State(self.st.clone()),
             user.clone(),
             Path((game, challenge)),
+            axum::http::HeaderMap::new(),
+            axum::extract::ConnectInfo(std::net::SocketAddr::from(([203, 0, 113, 7], 40000))),
             axum::Json(model),
         )
         .await
@@ -419,7 +457,12 @@ impl Fixture {
     }
 
     async fn monitor(&self) -> JsonValue {
-        let query: AiChatMonitorQuery = serde_json::from_value(json!({})).unwrap();
+        self.monitor_status(None).await
+    }
+
+    async fn monitor_status(&self, status: Option<&str>) -> JsonValue {
+        let query: AiChatMonitorQuery =
+            serde_json::from_value(json!({ "status": status })).unwrap();
         body(
             list_ai_chat_links(
                 State(self.st.clone()),
@@ -429,6 +472,18 @@ impl Fixture {
             )
             .await
             .unwrap(),
+        )
+        .await
+    }
+
+    async fn monitor_status_result(&self, status: Option<&str>) -> AppResult<Response> {
+        let query: AiChatMonitorQuery =
+            serde_json::from_value(json!({ "status": status })).unwrap();
+        list_ai_chat_links(
+            State(self.st.clone()),
+            MonitorUser(self.admin.clone()),
+            Path(self.open_game),
+            Query(query),
         )
         .await
     }
@@ -574,8 +629,13 @@ async fn team_links_are_solve_gated_team_scoped_and_provider_checked() {
     );
 
     // Monitors see the record with the provider marked active.
+    // Beta solved too but disclosed nothing, so it is listed as Missing.
     let page = f.monitor().await;
-    assert_eq!(page["total"], 1);
+    assert_eq!(page["total"], 2);
+    assert_eq!(page["required"], false);
+    assert_eq!(page["items"][0]["status"], "Links");
+    assert_eq!(page["items"][1]["status"], "Missing");
+    assert_eq!(page["items"][1]["teamName"], "Beta");
     assert_eq!(page["items"][0]["teamName"], "Alpha");
     assert_eq!(page["items"][0]["challengeTitle"], "Warmup");
     assert_eq!(page["items"][0]["category"], "Misc");
@@ -630,7 +690,12 @@ async fn team_links_are_solve_gated_team_scoped_and_provider_checked() {
     )
     .await;
     assert_eq!(cleared["revision"], 0);
-    assert_eq!(f.monitor().await["total"], 0);
+    assert_eq!(
+        cleared["pending"], false,
+        "nothing is pending when not required"
+    );
+    assert_eq!(f.monitor_status(Some("Links")).await["total"], 0);
+    assert_eq!(f.monitor_status(Some("Missing")).await["total"], 2);
 
     f.teardown().await;
 }
@@ -754,5 +819,178 @@ async fn provider_registry_protects_builtins_and_validates_custom_rules() {
         404
     );
     let _ = (&f.bob, f.off_game, f.closed_game);
+    f.teardown().await;
+}
+
+#[derive(sqlx::FromRow, Debug)]
+struct EventTelemetry {
+    action: String,
+    revision: i32,
+    added_urls: sqlx::types::Json<Vec<String>>,
+    removed_urls: sqlx::types::Json<Vec<String>>,
+    previous_declared_no_ai: bool,
+    declared_no_ai: bool,
+    seconds_since_solve: Option<i64>,
+    remote_ip_hash: Option<Vec<u8>>,
+    user_id: Option<Uuid>,
+}
+
+async fn telemetry(f: &Fixture) -> Vec<EventTelemetry> {
+    sqlx::query_as::<_, EventTelemetry>(
+        r#"SELECT action, revision, added_urls, removed_urls, previous_declared_no_ai,
+                  declared_no_ai, seconds_since_solve, remote_ip_hash, user_id
+             FROM "AiChatLinkEvents" WHERE game_id = $1 ORDER BY occurred_at, id"#,
+    )
+    .bind(f.open_game)
+    .fetch_all(&f.pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn required_disclosure_records_every_edit_with_server_timing() {
+    let f = fixture_with(true).await;
+
+    // A required event reports the solve as pending until something is disclosed.
+    let state = body(f.get(&f.alice, f.open_game, f.solved).await.unwrap()).await;
+    assert_eq!(state["required"], true);
+    assert_eq!(state["pending"], true);
+    assert!(state["solvedAt"].as_i64().is_some());
+    assert!(state["firstDisclosedAt"].is_null());
+    let pending = body(
+        pending_ai_chat_links(State(f.st.clone()), f.alice.clone(), Path(f.open_game))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(pending["required"], true);
+    assert_eq!(pending["challengeIds"], json!([f.solved]));
+
+    // Links and a "no AI" declaration are mutually exclusive.
+    let both = json!({ "links": [CHATGPT], "noAiUsed": true, "expectedRevision": 0 });
+    assert_eq!(
+        status(f.save(&f.alice, f.open_game, f.solved, both).await),
+        400
+    );
+    assert!(
+        telemetry(&f).await.is_empty(),
+        "rejected writes leave no telemetry"
+    );
+
+    // Declare no AI: disclosed, not pending, one Created event with timing.
+    let declared = json!({ "links": [], "noAiUsed": true, "expectedRevision": 0 });
+    let state = body(
+        f.save(&f.alice, f.open_game, f.solved, declared.clone())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(state["declaredNoAi"], true);
+    assert_eq!(state["pending"], false);
+    assert_eq!(state["revision"], 1);
+    assert!(state["firstDisclosedAt"].as_i64().is_some());
+    // An identical save is a no-op: no revision bump and no telemetry row.
+    let replay = json!({ "links": [], "noAiUsed": true, "expectedRevision": 1 });
+    let state = body(
+        f.save(&f.alice, f.open_game, f.solved, replay)
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(state["revision"], 1);
+    let events = telemetry(&f).await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].action, "Created");
+    assert!(events[0].declared_no_ai);
+    assert_eq!(events[0].user_id, Some(f.alice.id));
+    let delay = events[0].seconds_since_solve.unwrap();
+    assert!(
+        (5390..5460).contains(&delay),
+        "solved 90 minutes earlier, got {delay}"
+    );
+    assert_eq!(events[0].remote_ip_hash.as_ref().map(Vec::len), Some(32));
+
+    // Replace the declaration with a link, then swap the link: both are edits.
+    body(
+        f.put(&f.alice, f.open_game, f.solved, &[CHATGPT], 1)
+            .await
+            .unwrap(),
+    )
+    .await;
+    let state = body(
+        f.put(&f.alice, f.open_game, f.solved, &[CLAUDE], 2)
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(state["editCount"], 2);
+    assert_eq!(state["declaredNoAi"], false);
+    // Clearing makes the required disclosure pending again.
+    let state = body(
+        f.put(&f.alice, f.open_game, f.solved, &[], 3)
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(state["pending"], true);
+    assert_eq!(state["revision"], 0);
+
+    let events = telemetry(&f).await;
+    let actions = events
+        .iter()
+        .map(|event| event.action.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(actions, ["Created", "Edited", "Edited", "Cleared"]);
+    assert!(events[1].previous_declared_no_ai && !events[1].declared_no_ai);
+    assert_eq!(events[1].added_urls.0, [CHATGPT]);
+    assert!(events[1].removed_urls.0.is_empty());
+    assert_eq!(events[2].added_urls.0, [CLAUDE]);
+    assert_eq!(events[2].removed_urls.0, [CHATGPT]);
+    assert_eq!(events[3].removed_urls.0, [CLAUDE]);
+    assert_eq!(events[3].revision, 0);
+    assert!(events.iter().all(|event| event.remote_ip_hash.is_some()));
+
+    // Monitors see both teams as Missing, with Alpha's history and timing.
+    let page = f.monitor_status(Some("Missing")).await;
+    assert_eq!(page["required"], true);
+    assert_eq!(page["total"], 2);
+    let alpha = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["teamName"] == "Alpha")
+        .unwrap()
+        .clone();
+    assert_eq!(alpha["editCount"], 2);
+    assert_eq!(alpha["eventCount"], 4);
+    assert!(alpha["delaySeconds"].as_i64().unwrap() >= 5390);
+    assert!(alpha["updatedAt"].is_null());
+    let history = body(
+        list_ai_chat_link_events(
+            State(f.st.clone()),
+            MonitorUser(f.admin.clone()),
+            Path((
+                f.open_game,
+                alpha["participationId"].as_i64().unwrap() as i32,
+                f.solved,
+            )),
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(history["truncated"], false);
+    assert_eq!(history["items"].as_array().unwrap().len(), 4);
+    assert_eq!(history["items"][2]["added"], json!([CLAUDE]));
+    assert_eq!(history["items"][2]["removed"], json!([CHATGPT]));
+    assert_eq!(history["items"][2]["previousLinks"], json!([CHATGPT]));
+    assert_eq!(history["items"][0]["userName"], "alice");
+    assert_eq!(
+        history["items"][0]["networkHint"].as_str().unwrap().len(),
+        12
+    );
+    assert_eq!(status(f.monitor_status_result(Some("Bogus")).await), 400);
+
     f.teardown().await;
 }

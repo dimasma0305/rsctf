@@ -72,6 +72,14 @@ fn router_with_domains(
             limited(Policy::Query, get(list_ai_chat_links)),
         )
         .route(
+            "/api/game/{id}/ai-chats/pending",
+            limited(Policy::Query, get(pending_ai_chat_links)),
+        )
+        .route(
+            "/api/game/{id}/ai-chats/{participationId}/{challengeId}/events",
+            limited(Policy::Query, get(list_ai_chat_link_events)),
+        )
+        .route(
             "/api/game/{id}/submissions/page",
             limited(Policy::Query, get(monitor_history::submission_page)),
         )

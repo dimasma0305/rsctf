@@ -28,6 +28,10 @@ pub mod game {
         /// historical migration tests) insert-compatible without this column.
         #[sea_orm(default_value = false)]
         pub ai_chat_links_enabled: bool,
+        /// Every competitive solve must be followed by a disclosure (links or
+        /// an explicit "no AI used"). Effective only with `ai_chat_links_enabled`.
+        #[sea_orm(default_value = false)]
+        pub ai_chat_links_required: bool,
         pub invite_code: Option<String>,
         pub team_member_count_limit: i32,
         pub discord_webhook: Option<String>,

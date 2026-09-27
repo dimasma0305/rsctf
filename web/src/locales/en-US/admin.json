@@ -724,6 +724,11 @@
           "label": "AI chat links",
           "description": "Let teams attach AI chat share links to solved challenges for organizer review. Off by default."
         },
+        "ai_chat_links_required": {
+          "label": "Require disclosure after every solve",
+          "description": "Teams must add AI chat links or declare \"No AI used\" for each solved challenge. The challenge dialog stays open until they do; scoring is unaffected.",
+          "needs_links": "Turn on AI chat links first; the requirement only applies while they are enabled."
+        },
         "start_date": "Start Date",
         "start_time": "Start Time",
         "summary": {

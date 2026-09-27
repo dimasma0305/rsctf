@@ -433,7 +433,8 @@ pub async fn clone_game(
                ad_scoring_paused, vpn_access_required,
                vpn_behavior_telemetry_enabled, vpn_flag_scan_enabled,
                vpn_provider_dns_telemetry_enabled, vpn_source_asn_telemetry_enabled,
-               vpn_device_sharing_telemetry_enabled, ai_chat_links_enabled
+               vpn_device_sharing_telemetry_enabled, ai_chat_links_enabled,
+               ai_chat_links_required
            )
            SELECT $2, $3, $4, source.summary, source.content,
                   source.practice_mode, source.accept_without_review, FALSE,
@@ -455,7 +456,8 @@ pub async fn clone_game(
                   source.vpn_provider_dns_telemetry_enabled,
                   source.vpn_source_asn_telemetry_enabled,
                   source.vpn_device_sharing_telemetry_enabled,
-                  source.ai_chat_links_enabled
+                  source.ai_chat_links_enabled,
+                  source.ai_chat_links_required
              FROM "Games" source WHERE source.id = $1
          RETURNING id"#,
     )

@@ -270,6 +270,33 @@
     "unsaved": "Unsaved changes",
     "last_saved_by": "Last saved by {{user}}",
     "discard": "Discard",
-    "save": "Save links"
+    "save": "Save links",
+    "clear_warning": "Saving an empty list removes your disclosure. This event requires one, so this challenge will need a disclosure again.",
+    "no_ai": {
+      "button": "We did not use AI",
+      "cancel": "Cancel",
+      "change_hint": "Used AI after all? Add its share link above and save; the links replace this declaration.",
+      "confirm": "Declare that your team did not use any AI assistant for this challenge? Organizers can see this declaration and when it was made.",
+      "confirm_button": "Confirm: no AI used",
+      "declared": "Declared: no AI used",
+      "saved": "Declaration saved: no AI used"
+    },
+    "pending": {
+      "description": "This event requires a disclosure for every solved challenge. Add the AI chat links your team used, or declare that no AI was used.",
+      "title": "Disclosure required"
+    },
+    "replace_declaration": "Saving these links replaces the \"No AI used\" declaration.",
+    "requirement_label": "AI chat disclosure",
+    "timing": {
+      "both": "Solved at {{solved}}, disclosed at {{disclosed}}",
+      "solved": "Solved at {{solved}}"
+    }
+  },
+  "close_blocked": {
+    "both": "Rate this challenge and complete the {{requirement}} before closing",
+    "requirement": "Complete the {{requirement}} before closing"
+  },
+  "review": {
+    "submit_and_continue": "Submit & continue"
   }
 }

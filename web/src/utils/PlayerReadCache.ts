@@ -15,3 +15,9 @@ export const invalidatePlayerReads = (mutate: ScopedMutator, paths: readonly str
   const selected = new Set(paths)
   return mutate((key) => isPlayerReadPath(key, selected), undefined, { revalidate })
 }
+
+/** Revalidate matching reads in place; the current data stays visible until the refetch lands. */
+export const refreshPlayerReads = (mutate: ScopedMutator, paths: readonly string[]) => {
+  const selected = new Set(paths)
+  return mutate((key) => isPlayerReadPath(key, selected))
+}

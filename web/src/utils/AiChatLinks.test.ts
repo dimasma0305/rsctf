@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  aiChatDelay,
+  aiChatDisclosureBlocksClose,
   aiChatHostname,
   aiChatMatchOrder,
+  aiChatPendingChallenges,
+  aiChatPendingPath,
   compileAiChatPattern,
   matchAiChatProvider,
   normalizeAiChatUrl,
@@ -10,6 +14,7 @@ import {
   validateAiChatPattern,
   validateAiChatProviderKey,
 } from './AiChatLinks'
+import { challengeCloseBlock } from './ChallengeCloseGate'
 
 // Test-only copy of the contract's built-in list. At runtime the enabled list
 // always comes from the server.
@@ -171,4 +176,52 @@ test('admin pattern and key validation mirror the provider rules', () => {
   assert.equal(validateAiChatProviderKey('a'.repeat(41), existing), 'format')
   assert.equal(validateAiChatProviderKey('claude', existing), 'builtin')
   assert.equal(validateAiChatProviderKey('copilot', existing), 'duplicate')
+})
+
+test('a disclosure blocks closing only when loaded, required, pending, and still possible', () => {
+  const gate = { loaded: true, required: true, pending: true, editable: true }
+  assert.equal(aiChatDisclosureBlocksClose(gate), true)
+  // A failed/404 read or a feature-off event is never a reason to trap the dialog.
+  assert.equal(aiChatDisclosureBlocksClose({ ...gate, loaded: false }), false)
+  assert.equal(aiChatDisclosureBlocksClose({ ...gate, required: false }), false)
+  assert.equal(aiChatDisclosureBlocksClose({ ...gate, pending: false }), false)
+  // Deliberate tightening: after the edit window the server may still report
+  // pending, but the team can no longer disclose, so closing stays possible.
+  assert.equal(aiChatDisclosureBlocksClose({ ...gate, editable: false }), false)
+  for (const loaded of [true, false])
+    for (const required of [true, false])
+      for (const pending of [true, false])
+        for (const editable of [true, false])
+          assert.equal(
+            aiChatDisclosureBlocksClose({ loaded, required, pending, editable }),
+            loaded && required && pending && editable
+          )
+})
+
+test('the close gate names the review first, then the caller requirement', () => {
+  assert.equal(challengeCloseBlock(false, false), null)
+  assert.equal(challengeCloseBlock(true, false), 'review')
+  assert.equal(challengeCloseBlock(false, true), 'requirement')
+  assert.equal(challengeCloseBlock(true, true), 'both')
+})
+
+test('the pending banner lists only required, known challenges in catalog order', () => {
+  const catalog = [{ id: 3 }, { id: 1 }, { id: 2 }]
+  assert.deepEqual(aiChatPendingChallenges(undefined, catalog), [])
+  assert.deepEqual(aiChatPendingChallenges({ required: false, challengeIds: [1, 2] }, catalog), [])
+  assert.deepEqual(aiChatPendingChallenges({ required: true, challengeIds: [] }, catalog), [])
+  assert.deepEqual(aiChatPendingChallenges({ required: true, challengeIds: [2, 1, 99] }, catalog), [
+    { id: 1 },
+    { id: 2 },
+  ])
+  assert.equal(aiChatPendingPath(901), '/api/game/901/ai-chats/pending')
+})
+
+test('disclosure delays use whole units and clamp clock skew', () => {
+  assert.deepEqual(aiChatDelay(-5), { unit: 'seconds', count: 0 })
+  assert.deepEqual(aiChatDelay(59.9), { unit: 'seconds', count: 59 })
+  assert.deepEqual(aiChatDelay(240), { unit: 'minutes', count: 4 })
+  assert.deepEqual(aiChatDelay(3599), { unit: 'minutes', count: 59 })
+  assert.deepEqual(aiChatDelay(7200), { unit: 'hours', count: 2 })
+  assert.deepEqual(aiChatDelay(3 * 86400 + 5), { unit: 'days', count: 3 })
 })

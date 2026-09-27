@@ -151,3 +151,40 @@ export const validateAiChatProviderKey = (
   if (match) return match.builtin ? 'builtin' : 'duplicate'
   return null
 }
+
+/** Request path of the non-polled pending-disclosure read (refreshed after solves and saves). */
+export const aiChatPendingPath = (gameId: number) => `/api/game/${gameId}/ai-chats/pending`
+
+export interface AiChatDisclosureGate {
+  /** The player state read succeeded and is current (no load error). */
+  loaded: boolean
+  required: boolean
+  pending: boolean
+  /** The team can still disclose; an expired window must never trap the dialog. */
+  editable: boolean
+}
+
+/** The challenge dialog waits for a disclosure only when one is loaded, required, pending, and possible. */
+export const aiChatDisclosureBlocksClose = ({ loaded, required, pending, editable }: AiChatDisclosureGate): boolean =>
+  loaded && required && pending && editable
+
+/** Pending challenges to announce on the event page, in catalog order; empty when nothing is required. */
+export const aiChatPendingChallenges = <T extends { id: number }>(
+  pending: { required: boolean; challengeIds: readonly number[] } | undefined,
+  catalog: readonly T[]
+): T[] => {
+  if (!pending?.required || pending.challengeIds.length === 0) return []
+  const ids = new Set(pending.challengeIds)
+  return catalog.filter((challenge) => ids.has(challenge.id))
+}
+
+export type AiChatDelayUnit = 'seconds' | 'minutes' | 'hours' | 'days'
+
+/** Whole-unit delay for "N min after solve" style labels; negative clock skew reads as zero. */
+export const aiChatDelay = (seconds: number): { unit: AiChatDelayUnit; count: number } => {
+  const value = Math.max(0, Math.floor(seconds))
+  if (value < 60) return { unit: 'seconds', count: value }
+  if (value < 3600) return { unit: 'minutes', count: Math.floor(value / 60) }
+  if (value < 86400) return { unit: 'hours', count: Math.floor(value / 3600) }
+  return { unit: 'days', count: Math.floor(value / 86400) }
+}

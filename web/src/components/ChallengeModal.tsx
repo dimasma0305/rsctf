@@ -66,6 +66,7 @@ import { ContentPlaceholder, InlineMarkdown, Markdown } from '@Components/Markdo
 import { ScrollingText } from '@Components/ScrollingText'
 import { abbreviatedSha256, attachmentDownloadInfo, attachmentDownloadMode } from '@Utils/AttachmentDownload'
 import { attachmentGrantErrorMessage, downloadGrantedAttachment } from '@Utils/AttachmentGrant'
+import { challengeCloseBlock } from '@Utils/ChallengeCloseGate'
 import { FlagVerdictKind, FlagVerdictState } from '@Utils/FlagVerdict'
 import { useLanguage } from '@Utils/I18n'
 import { getServerNowMilliseconds, useServerClockTimeout } from '@Utils/ServerClock'
@@ -140,8 +141,17 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
   onDismissFlagVerdict?: () => void
   adStateOwner?: AdStateOwner
   /** Caller-owned content rendered below the review block once solved. It
-   * must not gate closing or take focus; the modal stays presentation-only. */
+   * never takes focus by itself; only `closeRequirement` can gate closing. */
   solvedExtras?: ReactNode
+  /** Caller-owned requirement that also blocks closing while set (for example
+   * a required disclosure). `focus` moves focus to where it can be completed. */
+  closeRequirement?: ChallengeCloseRequirement | null
+}
+
+export interface ChallengeCloseRequirement {
+  /** Short noun phrase naming what is left, e.g. "AI chat disclosure". */
+  label: string
+  focus: () => void
 }
 
 export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
@@ -185,6 +195,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     onDismissFlagVerdict,
     adStateOwner,
     solvedExtras,
+    closeRequirement,
     withOverlay = true,
     overlayProps,
     withCloseButton = true,
@@ -283,15 +294,38 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [(challenge as any)?.id])
 
-  // Block close only for challenges solved in this session that haven't been reviewed yet
+  // The review submit resolves asynchronously; read the caller's latest gate then.
+  const closeRequirementRef = useRef(closeRequirement)
+  closeRequirementRef.current = closeRequirement
+
+  // Block close for a fresh in-session solve that hasn't been reviewed yet, and
+  // while the caller reports an unmet requirement. One message names what is
+  // left; focus goes to the review first, then to the caller's requirement.
   const handleClose = () => {
-    if (justSolved && !reviewSubmitted) {
+    const requirement = closeRequirementRef.current
+    const block = challengeCloseBlock(Boolean(justSolved && !reviewSubmitted), Boolean(requirement))
+    if (block) {
       showNotification({
         color: 'orange',
-        message: t('challenge.review.required_to_close', 'Please rate this challenge before closing'),
+        message:
+          block === 'review'
+            ? t('challenge.review.required_to_close', 'Please rate this challenge before closing')
+            : block === 'both'
+              ? t(
+                  'challenge.close_blocked.both',
+                  'Rate this challenge and complete the {{requirement}} before closing',
+                  {
+                    requirement: requirement?.label,
+                  }
+                )
+              : t('challenge.close_blocked.requirement', 'Complete the {{requirement}} before closing', {
+                  requirement: requirement?.label,
+                }),
         icon: <Icon path={mdiAlertCircleOutline} size={1} />,
         autoClose: 3000,
       })
+      if (block === 'requirement') requirement?.focus()
+      else reviewStartRef.current?.focus()
       return
     }
     setFlag('')
@@ -792,8 +826,12 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
               if (reviewChallengeIdRef.current !== reviewChallengeId) return
               setReviewSubmitted(true)
               // Fresh-solve nudge: submit then close. When editing an existing
-              // review, keep the modal open so it stays editable.
-              if (justSolved) {
+              // review, keep the modal open so it stays editable. A pending
+              // caller requirement keeps it open and receives focus instead.
+              const requirement = closeRequirementRef.current
+              if (justSolved && requirement) {
+                window.requestAnimationFrame(() => requirement.focus())
+              } else if (justSolved) {
                 setFlag('')
                 modalProps.onClose()
               }
@@ -808,7 +846,9 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           }}
         >
           {justSolved
-            ? t('challenge.review.submit_and_close', 'Submit & Close')
+            ? closeRequirement
+              ? t('challenge.review.submit_and_continue', 'Submit & continue')
+              : t('challenge.review.submit_and_close', 'Submit & Close')
             : hasExistingReview
               ? t('challenge.review.update', 'Update review')
               : t('challenge.review.save', 'Save review')}

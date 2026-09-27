@@ -27,7 +27,7 @@ export function aiChatFixture(now = Date.now()) {
   const game = {
     id: 901, title: 'RSCTF Demo Finals', start: now - 3600000, end: now + 8000000, serverTime: now,
     status: 'Accepted', joined: true, teamCount: 48, userCount: 142, practiceMode: false, divisions: [],
-    writeupRequired: false, aiChatLinksEnabled: true,
+    writeupRequired: false, aiChatLinksEnabled: true, aiChatLinksRequired: true,
   }
   const titles = ['Heap Symphony', 'Cookie Jar', 'Cipher Garden', 'Minions', 'Signal Lost', 'Crown Hill']
   const categories = ['Pwn', 'Web', 'Crypto', 'Reverse', 'Misc', 'Misc']
@@ -51,28 +51,65 @@ export function aiChatFixture(now = Date.now()) {
     },
   ]
   const example = (key) => builtins.find((provider) => provider.key === key).examples[0]
-  const state = {
+  const solvedAt = now - 30000 - 600000
+  const baseState = {
     editable: true, solved: true, editableUntil: now + 8000000, maxLinks: 5,
     providers: providerModels.filter((p) => p.enabled).map(({ key, label, pattern }) => ({ key, label, pattern })),
-    links: [
-      { url: example('chatgpt'), providerKey: 'chatgpt', providerLabel: 'ChatGPT' },
-      { url: example('claude'), providerKey: 'claude', providerLabel: 'Claude' },
-    ],
-    revision: 2, updatedAt: now - 60000, submittedBy: 'aria',
+    links: [], revision: 0, updatedAt: null, submittedBy: null,
+    required: true, pending: false, declaredNoAi: false, solvedAt, firstDisclosedAt: null, editCount: 0,
   }
+  // Solved: 9001 pending (nothing disclosed), 9002 links edited once, 9003 "No AI used".
+  const states = {
+    9001: { ...baseState, pending: true },
+    9002: {
+      ...baseState,
+      links: [
+        { url: example('chatgpt'), providerKey: 'chatgpt', providerLabel: 'ChatGPT' },
+        { url: example('claude'), providerKey: 'claude', providerLabel: 'Claude' },
+      ],
+      revision: 2, updatedAt: now - 60000, submittedBy: 'aria', firstDisclosedAt: solvedAt + 240000, editCount: 1,
+    },
+    9003: { ...baseState, declaredNoAi: true, revision: 1, updatedAt: now - 300000, submittedBy: 'aria', firstDisclosedAt: solvedAt + 90000 },
+  }
+  const state = states[9002]
+  const stateFor = (id) => states[id] ?? { ...baseState, solved: false, editable: false, solvedAt: null }
   const teams = ['Packet Pioneers', 'Stack Underflow', 'Null Pointers', 'Byte Bandits']
   const records = [
-    { team: 0, challenge: 1, links: [['chatgpt', 'ChatGPT'], ['claude', 'Claude']], by: 'aria' },
-    { team: 1, challenge: 0, links: [['gemini', 'Gemini']], by: 'bima' },
-    { team: 2, challenge: 2, links: [['grok', 'Grok'], ['deepseek', 'DeepSeek']], by: 'citra' },
-    { team: 3, challenge: 1, links: [['perplexity', 'Perplexity']], by: 'dewi' },
-  ].map((record, i) => ({
-    participationId: 70 + i, teamId: 7 + i, teamName: teams[record.team],
-    challengeId: challenges[record.challenge].id, challengeTitle: challenges[record.challenge].title,
-    category: challenges[record.challenge].category,
-    links: record.links.map(([key, label]) => ({ url: example(key), providerKey: key, providerLabel: label, providerActive: !disabled.has(key) })),
-    submittedBy: record.by, updatedAt: now - (i + 1) * 420000, revision: 1,
+    { team: 0, challenge: 1, status: 'Links', links: [['chatgpt', 'ChatGPT'], ['claude', 'Claude']], by: 'aria', delay: 240, edits: 1, events: 4, revision: 1 },
+    { team: 1, challenge: 0, status: 'Links', links: [['gemini', 'Gemini']], by: 'bima', delay: 95, edits: 0, events: 1 },
+    { team: 2, challenge: 2, status: 'Links', links: [['grok', 'Grok'], ['deepseek', 'DeepSeek']], by: 'citra', delay: 5400, edits: 1, events: 2 },
+    { team: 3, challenge: 1, status: 'NoAi', links: [], by: 'dewi', delay: 30, edits: 0, events: 1 },
+    { team: 1, challenge: 2, status: 'Missing', links: [], by: null, delay: null, edits: 0, events: 0 },
+    { team: 3, challenge: 0, status: 'Missing', links: [], by: null, delay: null, edits: 1, events: 2 },
+  ].map((record, i) => {
+    const recordSolvedAt = now - (i + 2) * 900000
+    const disclosed = record.status !== 'Missing'
+    return {
+      participationId: 70 + record.team, teamId: 7 + record.team, teamName: teams[record.team],
+      challengeId: challenges[record.challenge].id, challengeTitle: challenges[record.challenge].title,
+      category: challenges[record.challenge].category,
+      links: record.links.map(([key, label]) => ({ url: example(key), providerKey: key, providerLabel: label, providerActive: !disabled.has(key) })),
+      submittedBy: record.by, updatedAt: disclosed ? now - (i + 1) * 420000 : null, revision: disclosed ? (record.revision ?? record.edits + 1) : 0,
+      status: record.status, declaredNoAi: record.status === 'NoAi', solvedAt: recordSolvedAt,
+      firstDisclosedAt: record.delay === null ? null : recordSolvedAt + record.delay * 1000, delaySeconds: record.delay,
+      editCount: record.edits, eventCount: record.events,
+    }
+  })
+  // Created -> Edited -> Cleared -> Created for Packet Pioneers on Cookie Jar.
+  const history = records[0]
+  const [gpt, claude] = history.links.map((link) => link.url)
+  const events = [
+    // Server semantics: a clear deletes the row (revision 0) and the next save starts at 1.
+    { action: 'Created', userName: 'aria', previousLinks: [], links: [gpt], added: [gpt], removed: [], at: 240, revision: 1 },
+    { action: 'Edited', userName: 'bima', previousLinks: [gpt], links: [gpt, claude], added: [claude], removed: [], at: 600, revision: 2 },
+    { action: 'Cleared', userName: 'aria', previousLinks: [gpt, claude], links: [], added: [], removed: [gpt, claude], at: 900, revision: 0 },
+    { action: 'Created', userName: 'aria', previousLinks: [], links: [gpt, claude], added: [gpt, claude], removed: [], at: 1260, revision: 1 },
+  ].map(({ at, ...event }, i) => ({
+    id: 500 + i, previousDeclaredNoAi: false, declaredNoAi: false,
+    solvedAt: history.solvedAt, secondsSinceSolve: at, networkHint: i === 1 ? '9f2c4e81a0b7' : '3b7d10c2e4f9',
+    occurredAt: history.solvedAt + at * 1000, ...event,
   }))
+  const eventsPath = `/api/game/901/ai-chats/${history.participationId}/${history.challengeId}/events`
   const config = {
     title: 'RSCTF', slogan: 'Capture the flag', portMapping: 'Default', allowRegister: true, allowPasswordRegistration: true,
     allowTeamCreation: true, emailConfirmationRequired: false, enableBrowserFingerprint: false,
@@ -93,7 +130,7 @@ export function aiChatFixture(now = Date.now()) {
     '/api/game/901/details/participant': { rank },
     '/api/game/901/notices': [],
     '/api/game/901/scoreboard': { updateTimeUtc: now, bloodBonus: 0, challenges: group(challenges), challengeCount: challenges.length, items: [rank], timelines: [], divisions: [] },
-    '/api/game/901/ai-chats': { total: records.length, items: records },
+    [eventsPath]: { items: events, truncated: false },
     '/api/admin/ai-chat-providers': { providers: providerModels, maxCustomProviders: 32 },
     '/api/admin/config': settings,
   }
@@ -103,18 +140,41 @@ export function aiChatFixture(now = Date.now()) {
       attempts: 0, hints: [], userRating: 2, userComment: 'Clean heap layout, fun tcache trick.',
     }
     responses[`/api/game/901/challenges/${c.id}/solvers/page`] = { data: [], total: c.solved }
-    responses[`/api/game/901/challenges/${c.id}/ai-chats`] = state
   }
+  const pendingIds = () => Object.entries(states).filter(([, value]) => value.pending).map(([id]) => Number(id))
+  const aiChatState = /^\/api\/game\/901\/challenges\/(\d+)\/ai-chats$/
   const writes = []
   const handle = (path, method = 'GET', body = '') => {
-    const p = new URL(path, 'http://localhost').pathname.toLowerCase()
+    const url = new URL(path, 'http://localhost')
+    const p = url.pathname.toLowerCase()
     if (['GET', 'HEAD'].includes(method)) {
+      if (aiChatState.test(p)) return { body: stateFor(Number(p.match(aiChatState)[1])) }
+      if (p === '/api/game/901/ai-chats/pending') return { body: { required: true, challengeIds: pendingIds() } }
+      if (p === '/api/game/901/ai-chats') {
+        const status = url.searchParams.get('status')
+        const items = records.filter((record) => !status || record.status === status)
+        return { body: { total: items.length, required: true, items } }
+      }
       return responses[p] === undefined ? { unknown: p, body: [] } : { body: responses[p] }
     }
     writes.push({ path: p, method, body })
-    if (/^\/api\/game\/901\/challenges\/\d+\/ai-chats$/.test(p) && method === 'PUT') {
+    if (aiChatState.test(p) && method === 'PUT') {
+      const id = Number(p.match(aiChatState)[1])
+      const current = stateFor(id)
       const model = JSON.parse(body)
-      return { body: { ...state, revision: model.expectedRevision + 1, links: model.links.map((url) => ({ url, providerKey: 'claude', providerLabel: 'Claude' })) } }
+      const disclosed = model.links.length > 0 || model.noAiUsed === true
+      const wasDisclosed = current.links.length > 0 || current.declaredNoAi
+      const provider = (url) => current.providers.find((rule) => new RegExp(`^(?:${rule.pattern})$`, 'u').test(url))
+      states[id] = {
+        ...current,
+        revision: model.expectedRevision + 1, updatedAt: now, submittedBy: 'aria',
+        links: model.links.map((url) => ({ url, providerKey: provider(url)?.key ?? 'claude', providerLabel: provider(url)?.label ?? 'Claude' })),
+        declaredNoAi: model.noAiUsed === true,
+        pending: current.required && !disclosed,
+        firstDisclosedAt: current.firstDisclosedAt ?? (disclosed ? now : null),
+        editCount: current.editCount + (wasDisclosed ? 1 : 0),
+      }
+      return { body: states[id] }
     }
     if (p.startsWith('/api/admin/ai-chat-providers/')) {
       const key = decodeURIComponent(p.split('/').pop())
@@ -124,5 +184,5 @@ export function aiChatFixture(now = Date.now()) {
     }
     return { status: 405, body: { title: 'Fixture mutation blocked', status: 405 } }
   }
-  return { profile, builtins, providerModels, state, records, handle, writes }
+  return { profile, builtins, providerModels, state, states, records, events, eventsPath, handle, writes }
 }

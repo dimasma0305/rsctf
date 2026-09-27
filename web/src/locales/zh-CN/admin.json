@@ -508,6 +508,11 @@
         "ai_chat_links": {
           "description": "允许队伍为已解出的题目附加 AI 对话分享链接，供主办方审阅。默认关闭。",
           "label": "AI 对话链接"
+        },
+        "ai_chat_links_required": {
+          "description": "每道已解出的题目都必须添加 AI 对话链接或声明“未使用 AI”。完成前题目窗口不会关闭；不影响计分。",
+          "label": "每次解题后必须披露",
+          "needs_links": "请先开启 AI 对话链接；该要求仅在其开启时生效。"
         }
       },
       "managers": {

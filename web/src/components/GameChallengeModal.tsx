@@ -8,8 +8,9 @@ import { useTranslation } from 'react-i18next'
 import { useSWRConfig } from 'swr'
 import type { AdStateOwner } from '@Components/AdChallengePanel'
 import { AiChatLinksSection } from '@Components/AiChatLinksSection'
-import { ChallengeModal, SolverInfo } from '@Components/ChallengeModal'
+import { ChallengeModal, type ChallengeCloseRequirement, SolverInfo } from '@Components/ChallengeModal'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
+import { aiChatPendingPath } from '@Utils/AiChatLinks'
 import {
   assertJsonResponse,
   captureChallengeReadFailure,
@@ -33,7 +34,12 @@ import {
   extendReconciledInstance,
   mergeExtendedInstanceContext,
 } from '@Utils/InstanceLifecycle'
-import { ACCOUNT_STATS_PATH, CHALLENGE_CATALOG_PATH, invalidatePlayerReads } from '@Utils/PlayerReadCache'
+import {
+  ACCOUNT_STATS_PATH,
+  CHALLENGE_CATALOG_PATH,
+  invalidatePlayerReads,
+  refreshPlayerReads,
+} from '@Utils/PlayerReadCache'
 import { httpErrorStatus } from '@Utils/ProfileRetry'
 import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
 import { showErrorMsg } from '@Utils/Shared'
@@ -355,6 +361,8 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   const [flag, setFlag] = useInputState('')
   const [receiptProof, setReceiptProof] = useInputState('')
   const [solvedChallengeId, setSolvedChallengeId] = useState<number | null>(null)
+  const [disclosurePending, setDisclosurePending] = useState(false)
+  const disclosureFocusRef = useRef<HTMLDivElement>(null)
   const [flagVerdict, dispatchFlagVerdict] = useReducer(flagVerdictReducer, null)
   const submitAttemptOwnerRef = useRef<FlagSubmitAttemptOwner | null>(null)
   const containerCreateOperationRef = useRef<ContainerOperationOwner | null>(null)
@@ -717,6 +725,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     if (data === AnswerResult.Accepted) {
       setSolvedChallengeId(identity.challengeId)
       void invalidatePlayerReads(mutateCache, [ACCOUNT_STATS_PATH, CHALLENGE_CATALOG_PATH])
+      if (aiChatLinksEnabled) void refreshPlayerReads(mutateCache, [aiChatPendingPath(identity.gameId)])
       updateNotification({
         id: 'flag-submitted',
         color: 'teal',
@@ -784,8 +793,25 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   const challengePollError = pollErrorMessage(challengeError, 'challenge')
   const aiChatLinks =
     aiChatLinksEnabled && readEnabled && challenge?.id === challengeId && AI_CHAT_LINK_TYPES.has(challenge.type) ? (
-      <AiChatLinksSection key={`${gameId}:${challengeId}`} gameId={gameId} challengeId={challengeId} />
+      <AiChatLinksSection
+        key={`${gameId}:${challengeId}`}
+        gameId={gameId}
+        challengeId={challengeId}
+        focusRef={disclosureFocusRef}
+        onPendingChange={setDisclosurePending}
+      />
     ) : undefined
+  // The section reports a loaded, required, pending, still-possible disclosure.
+  const disclosureRequirement = useMemo<ChallengeCloseRequirement | null>(
+    () =>
+      disclosurePending
+        ? {
+            label: t('challenge.ai_chat.requirement_label', 'AI chat disclosure'),
+            focus: () => disclosureFocusRef.current?.focus(),
+          }
+        : null,
+    [disclosurePending, t]
+  )
 
   return (
     <ChallengeModal
@@ -834,6 +860,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       }}
       adStateOwner={adStateOwner}
       solvedExtras={aiChatLinks}
+      closeRequirement={aiChatLinks ? disclosureRequirement : null}
     />
   )
 }

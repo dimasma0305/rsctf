@@ -3,6 +3,7 @@ import { mdiCheckCircleOutline, mdiCircleOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { memo, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { DisclosureNeededBadge } from '@Components/DisclosureNeededBadge'
 import { useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { ChallengeType, type ChallengeInfo } from '@Api'
 import classes from './Competition.module.css'
@@ -12,12 +13,15 @@ export const ChallengeList = memo(
   ({
     challenges,
     solvedIds,
+    disclosurePendingIds,
     selectedId,
     onSelect,
     sort,
   }: {
     challenges: ChallengeInfo[]
     solvedIds: ReadonlySet<number>
+    /** Solved challenges that still need an AI chat disclosure. */
+    disclosurePendingIds?: ReadonlySet<number>
     selectedId?: number
     onSelect: (challenge: ChallengeInfo) => void
     sort: ChallengeSort
@@ -94,6 +98,7 @@ export const ChallengeList = memo(
                           {solved ? t('common.workspace.solved', 'Solved') : t('game.arena.available', 'Available')}
                         </span>
                       </span>
+                      {disclosurePendingIds?.has(challenge.id) && <DisclosureNeededBadge />}
                     </td>
                   </tr>
                 )

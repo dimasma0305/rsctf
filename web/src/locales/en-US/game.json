@@ -672,9 +672,58 @@
     "all_challenges": "All challenges",
     "no_challenge_match": "No matching challenge",
     "empty_title": "No AI chat links yet",
-    "empty_filtered": "No team has attached links to this challenge.",
+    "empty_filtered": "No records match these filters.",
     "empty_description": "Links appear here after teams attach them to solved challenges.",
     "list_label": "AI chat link records",
-    "page_status": "Page {{page}} of {{pages}} · {{total}} records"
+    "page_status": "Page {{page}} of {{pages}} · {{total}} records",
+    "declared_no_ai": "Declared: no AI used",
+    "delay": {
+      "days": "{{count}} d after solve",
+      "hours": "{{count}} h after solve",
+      "minutes": "{{count}} min after solve",
+      "seconds": "{{count}} s after solve"
+    },
+    "disclosure_needed": "Disclosure needed",
+    "edit_count": "edited {{count}}×",
+    "first_disclosed_at": "first disclosed {{time}}",
+    "history": {
+      "action": {
+        "cleared": "Cleared",
+        "created": "Created",
+        "edited": "Edited"
+      },
+      "added": "Added",
+      "button": "History",
+      "by": "by {{user}}",
+      "declared_no_ai": "Declared: no AI used",
+      "empty": "No changes were recorded.",
+      "list_label": "Disclosure changes, oldest first",
+      "loading": "Loading history…",
+      "network": "Network",
+      "open": "History: {{team}} · {{challenge}}",
+      "removed": "Removed",
+      "revision": "revision {{revision}}",
+      "title": "Disclosure history",
+      "truncated": "Only the first 200 changes are shown.",
+      "unknown_user": "by an unknown user",
+      "withdrew_no_ai": "Withdrew the \"No AI used\" declaration"
+    },
+    "no_disclosure": "No disclosure",
+    "pending_banner": {
+      "description": "This event requires a disclosure after every solve. Open a challenge to add the AI chat links your team used, or declare that no AI was used.",
+      "open": "Add disclosure: {{title}}",
+      "title": "{{count}} solved challenges need an AI chat disclosure",
+      "title_one": "{{count}} solved challenge needs an AI chat disclosure",
+      "title_other": "{{count}} solved challenges need an AI chat disclosure"
+    },
+    "required_note": "This event requires a disclosure after every solve.",
+    "solved_at": "Solved {{time}}",
+    "status": {
+      "all": "All",
+      "links": "Links",
+      "missing": "Missing",
+      "no_ai": "No AI used"
+    },
+    "status_filter": "Status"
   }
 }

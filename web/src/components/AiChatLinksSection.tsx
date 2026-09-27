@@ -17,7 +17,9 @@ import { useClipboard } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import {
   mdiAlertCircleOutline,
+  mdiAlertOutline,
   mdiCheck,
+  mdiCheckCircleOutline,
   mdiChevronDown,
   mdiChevronUp,
   mdiContentCopy,
@@ -28,16 +30,33 @@ import {
   mdiRobotOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, FormEvent, useId, useMemo, useState } from 'react'
+import dayjs from 'dayjs'
+import localizedFormat from 'dayjs/plugin/localizedFormat'
+import { FC, FormEvent, Ref, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { aiChatHostname, matchAiChatProvider, normalizeAiChatUrl, safeAiChatHref } from '@Utils/AiChatLinks'
+import { useSWRConfig } from 'swr'
+import {
+  aiChatDisclosureBlocksClose,
+  aiChatHostname,
+  aiChatPendingPath,
+  matchAiChatProvider,
+  normalizeAiChatUrl,
+  safeAiChatHref,
+} from '@Utils/AiChatLinks'
 import { httpErrorStatus } from '@Utils/HttpError'
+import { refreshPlayerReads } from '@Utils/PlayerReadCache'
 import { showErrorMsg } from '@Utils/Shared'
 import api from '@Api'
+
+dayjs.extend(localizedFormat)
 
 export interface AiChatLinksSectionProps {
   gameId: number
   challengeId: number
+  /** Receives the "Disclosure required" notice so a blocked close can move focus there. */
+  focusRef?: Ref<HTMLDivElement>
+  /** Reports whether a loaded, required, pending, still-possible disclosure should keep the dialog open. */
+  onPendingChange?: (pending: boolean) => void
 }
 
 /** One non-polled read per mount; saves reconcile through the same cache entry. */
@@ -53,8 +72,9 @@ type DraftStatus = { kind: 'idle' } | { kind: 'ok'; url: string; provider: strin
 const sameLinks = (a: readonly string[], b: readonly string[]) =>
   a.length === b.length && a.every((url, index) => url === b[index])
 
-export const AiChatLinksSection: FC<AiChatLinksSectionProps> = ({ gameId, challengeId }) => {
+export const AiChatLinksSection: FC<AiChatLinksSectionProps> = ({ gameId, challengeId, focusRef, onPendingChange }) => {
   const { t } = useTranslation()
+  const { mutate: mutateCache } = useSWRConfig()
   // red.6 is 3.8:1 on white; keep the verdict at WCAG AA in both schemes.
   const dark = useComputedColorScheme('dark') === 'dark'
   const errorColor = dark ? 'red.4' : 'red.8'
@@ -71,10 +91,30 @@ export const AiChatLinksSection: FC<AiChatLinksSectionProps> = ({ gameId, challe
     mutate,
   } = api.game.useGameGetAiChatLinks(gameId, challengeId, AI_CHAT_READ_CONFIG, gameId > 0 && challengeId > 0)
 
-  const [expanded, setExpanded] = useState(false)
+  // A pending disclosure opens expanded until the player toggles it.
+  const [expandedChoice, setExpandedChoice] = useState<boolean | null>(null)
+  const expanded = expandedChoice ?? Boolean(state?.pending && state.editable)
   const [input, setInput] = useState('')
   const [draft, setDraft] = useState<string[] | null>(null)
   const [saving, setSaving] = useState(false)
+  const [confirmingNoAi, setConfirmingNoAi] = useState(false)
+  const headingRef = useRef<HTMLHeadingElement>(null)
+  const noAiRef = useRef<HTMLButtonElement>(null)
+  const confirmNoAiRef = useRef<HTMLButtonElement>(null)
+
+  const blocksClose = aiChatDisclosureBlocksClose({
+    loaded: state !== undefined && !error,
+    required: Boolean(state?.required),
+    pending: Boolean(state?.pending),
+    editable: Boolean(state?.editable),
+  })
+  useEffect(() => {
+    onPendingChange?.(blocksClose)
+  }, [blocksClose, onPendingChange])
+  useEffect(() => () => onPendingChange?.(false), [onPendingChange])
+  useEffect(() => {
+    if (confirmingNoAi) confirmNoAiRef.current?.focus()
+  }, [confirmingNoAi])
 
   const savedLinks = useMemo(() => state?.links.map((link) => link.url) ?? [], [state?.links])
   const links = draft ?? savedLinks
@@ -147,25 +187,35 @@ export const AiChatLinksSection: FC<AiChatLinksSectionProps> = ({ gameId, challe
     })
   }
 
-  const onSave = async () => {
-    if (!state || saving || !dirty) return
+  const save = async (nextLinks: string[], noAiUsed: boolean) => {
+    if (!state || saving) return
+    // Keep the panel open once the pending default no longer applies.
+    setExpandedChoice(true)
     setSaving(true)
     try {
       const { data } = await api.game.gameSaveAiChatLinks(gameId, challengeId, {
-        links,
+        links: nextLinks,
         expectedRevision: state.revision,
+        noAiUsed,
       })
       await mutate(data, { revalidate: false })
       setDraft(null)
+      setConfirmingNoAi(false)
+      // The event page's pending list is not polled; refresh it after each save.
+      void refreshPlayerReads(mutateCache, [aiChatPendingPath(gameId)])
       showNotification({
         color: 'teal',
-        message: t('challenge.ai_chat.saved', 'AI chat links saved'),
+        message: noAiUsed
+          ? t('challenge.ai_chat.no_ai.saved', 'Declaration saved: no AI used')
+          : t('challenge.ai_chat.saved', 'AI chat links saved'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
+      if (noAiUsed) window.requestAnimationFrame(() => headingRef.current?.focus())
     } catch (saveError) {
       if (httpErrorStatus(saveError) === 409) {
         await mutate().catch(() => undefined)
         setDraft(null)
+        setConfirmingNoAi(false)
         showNotification({
           color: 'orange',
           title: t('challenge.ai_chat.conflict.title', 'Links changed'),
@@ -183,11 +233,27 @@ export const AiChatLinksSection: FC<AiChatLinksSectionProps> = ({ gameId, challe
     }
   }
 
+  const onSave = () => {
+    if (dirty) void save(links, false)
+  }
+
+  const cancelNoAi = () => {
+    setConfirmingNoAi(false)
+    window.requestAnimationFrame(() => noAiRef.current?.focus())
+  }
+
+  const declared = Boolean(state?.declaredNoAi) && links.length === 0
+  const clearing = dirty && links.length === 0 && savedLinks.length > 0
+  const pendingNotice = Boolean(state?.pending && editable)
+  const formatTime = (time: number) => dayjs(time).format('L LT')
+
   const summary = !state
     ? isLoading
       ? t('challenge.ai_chat.loading', 'Loading…')
       : t('challenge.ai_chat.load_failed', 'AI chat links could not be loaded.')
-    : t('challenge.ai_chat.count', '{{count}} of {{max}} links', { count: links.length, max: maxLinks })
+    : declared && !dirty
+      ? t('challenge.ai_chat.no_ai.declared', 'Declared: no AI used')
+      : t('challenge.ai_chat.count', '{{count}} of {{max}} links', { count: links.length, max: maxLinks })
 
   return (
     <Stack gap="xs" component="section" aria-labelledby={headingId} data-ai-chat-links>
@@ -195,7 +261,7 @@ export const AiChatLinksSection: FC<AiChatLinksSectionProps> = ({ gameId, challe
       <Group justify="space-between" gap="xs" wrap="wrap">
         <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
           <Icon path={mdiRobotOutline} size={0.8} aria-hidden="true" />
-          <Title order={3} size="h5" id={headingId}>
+          <Title order={3} size="h5" id={headingId} ref={headingRef} tabIndex={-1}>
             {t('challenge.ai_chat.title', 'AI chat links')}
           </Title>
           <Text size="xs" c="dimmed">
@@ -209,7 +275,7 @@ export const AiChatLinksSection: FC<AiChatLinksSectionProps> = ({ gameId, challe
           aria-controls={panelId}
           disabled={!state}
           rightSection={<Icon path={expanded ? mdiChevronUp : mdiChevronDown} size={0.7} aria-hidden="true" />}
-          onClick={() => setExpanded((value) => !value)}
+          onClick={() => setExpandedChoice(!expanded)}
         >
           {expanded
             ? t('challenge.ai_chat.hide', 'Hide')
@@ -218,6 +284,26 @@ export const AiChatLinksSection: FC<AiChatLinksSectionProps> = ({ gameId, challe
               : t('challenge.ai_chat.show', 'Show')}
         </Button>
       </Group>
+      {pendingNotice && (
+        <Alert
+          ref={focusRef}
+          tabIndex={-1}
+          color="orange"
+          p="xs"
+          icon={<Icon path={mdiAlertOutline} size={0.8} aria-hidden="true" />}
+          data-ai-chat-pending
+        >
+          <Text size="sm" fw={700}>
+            {t('challenge.ai_chat.pending.title', 'Disclosure required')}
+          </Text>
+          <Text size="xs">
+            {t(
+              'challenge.ai_chat.pending.description',
+              'This event requires a disclosure for every solved challenge. Add the AI chat links your team used, or declare that no AI was used.'
+            )}
+          </Text>
+        </Alert>
+      )}
       {!state && !isLoading && (
         <Group gap="xs">
           <Button size="compact-xs" variant="default" onClick={() => void mutate()}>
@@ -233,6 +319,16 @@ export const AiChatLinksSection: FC<AiChatLinksSectionProps> = ({ gameId, challe
               'Share the public links of AI chats your team used for this challenge. Organizers may review them.'
             )}
           </Text>
+          {state.solvedAt !== null && (
+            <Text size="xs" c="dimmed" data-ai-chat-timing>
+              {state.firstDisclosedAt !== null
+                ? t('challenge.ai_chat.timing.both', 'Solved at {{solved}}, disclosed at {{disclosed}}', {
+                    solved: formatTime(state.solvedAt),
+                    disclosed: formatTime(state.firstDisclosedAt),
+                  })
+                : t('challenge.ai_chat.timing.solved', 'Solved at {{solved}}', { solved: formatTime(state.solvedAt) })}
+            </Text>
+          )}
           {!editable && (
             <Alert color="gray" p="xs" icon={<Icon path={mdiLockOutline} size={0.8} />}>
               <Text size="xs">
@@ -296,7 +392,26 @@ export const AiChatLinksSection: FC<AiChatLinksSectionProps> = ({ gameId, challe
                 })
               : t('challenge.ai_chat.no_providers', 'No AI providers are accepted right now.')}
           </Text>
-          {links.length === 0 ? (
+          {declared ? (
+            <Paper withBorder p="xs" radius="sm" data-ai-chat-declared>
+              <Group gap={6} wrap="nowrap" align="flex-start">
+                <Icon path={mdiCheckCircleOutline} size={0.8} aria-hidden="true" />
+                <Stack gap={2}>
+                  <Text size="sm" fw={600}>
+                    {t('challenge.ai_chat.no_ai.declared', 'Declared: no AI used')}
+                  </Text>
+                  {editable && (
+                    <Text size="xs" c="dimmed">
+                      {t(
+                        'challenge.ai_chat.no_ai.change_hint',
+                        'Used AI after all? Add its share link above and save; the links replace this declaration.'
+                      )}
+                    </Text>
+                  )}
+                </Stack>
+              </Group>
+            </Paper>
+          ) : links.length === 0 ? (
             <Text size="sm" c="dimmed">
               {t('challenge.ai_chat.empty', 'No links attached yet.')}
             </Text>
@@ -380,6 +495,55 @@ export const AiChatLinksSection: FC<AiChatLinksSectionProps> = ({ gameId, challe
               })}
             </Stack>
           )}
+          {editable && !state.declaredNoAi && links.length === 0 && !confirmingNoAi && (
+            <Group gap="xs">
+              <Button
+                ref={noAiRef}
+                variant="default"
+                size="compact-sm"
+                disabled={saving}
+                onClick={() => setConfirmingNoAi(true)}
+              >
+                {t('challenge.ai_chat.no_ai.button', 'We did not use AI')}
+              </Button>
+            </Group>
+          )}
+          {editable && confirmingNoAi && (
+            <Paper withBorder p="xs" radius="sm" data-ai-chat-no-ai-confirm>
+              <Stack gap="xs">
+                <Text size="sm">
+                  {t(
+                    'challenge.ai_chat.no_ai.confirm',
+                    'Declare that your team did not use any AI assistant for this challenge? Organizers can see this declaration and when it was made.'
+                  )}
+                </Text>
+                <Group gap="xs" justify="flex-end">
+                  <Button variant="default" size="compact-sm" disabled={saving} onClick={cancelNoAi}>
+                    {t('challenge.ai_chat.no_ai.cancel', 'Cancel')}
+                  </Button>
+                  <Button ref={confirmNoAiRef} size="compact-sm" loading={saving} onClick={() => void save([], true)}>
+                    {t('challenge.ai_chat.no_ai.confirm_button', 'Confirm: no AI used')}
+                  </Button>
+                </Group>
+              </Stack>
+            </Paper>
+          )}
+          {editable && dirty && (clearing ? state.required : state.declaredNoAi && links.length > 0) && (
+            <Group gap={6} wrap="nowrap" align="flex-start" data-ai-chat-save-warning>
+              <Icon path={mdiAlertOutline} size={0.7} aria-hidden="true" />
+              <Text size="xs">
+                {clearing
+                  ? t(
+                      'challenge.ai_chat.clear_warning',
+                      'Saving an empty list removes your disclosure. This event requires one, so this challenge will need a disclosure again.'
+                    )
+                  : t(
+                      'challenge.ai_chat.replace_declaration',
+                      'Saving these links replaces the "No AI used" declaration.'
+                    )}
+              </Text>
+            </Group>
+          )}
           {editable && (
             <Group justify="space-between" gap="xs" wrap="wrap">
               <Text size="xs" c={dirty ? 'orange' : 'dimmed'} role="status" aria-live="polite">
@@ -395,7 +559,7 @@ export const AiChatLinksSection: FC<AiChatLinksSectionProps> = ({ gameId, challe
                     {t('challenge.ai_chat.discard', 'Discard')}
                   </Button>
                 )}
-                <Button size="compact-sm" loading={saving} disabled={!dirty} onClick={() => void onSave()}>
+                <Button size="compact-sm" loading={saving} disabled={!dirty} onClick={onSave}>
                   {t('challenge.ai_chat.save', 'Save links')}
                 </Button>
               </Group>

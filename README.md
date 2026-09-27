@@ -44,7 +44,7 @@ The monitoring workspace correlates hard evidence, network/device signals, abnor
 
 ## AI chat links for solve review
 
-An event can ask teams to disclose the AI chats they used. After a team solves a Jeopardy challenge, its members can attach up to five public share links (ChatGPT, Claude, Gemini, and other accepted providers) to that challenge until the later of the event end and the writeup deadline. Monitors read every team's links in one list, and administrators decide which providers are accepted. The server validates each link against the provider list but never fetches it. The switch is off by default for each event.
+An event can ask teams to disclose the AI chats they used. After a team solves a Jeopardy challenge, its members can attach up to five public share links (ChatGPT, Claude, Gemini, and other accepted providers) to that challenge until the later of the event end and the writeup deadline. Monitors read every team's links in one list, and administrators decide which providers are accepted. The server validates each link against the provider list but never fetches it. Events can also require a disclosure after every solve (links or an explicit "No AI used"), and every create, edit, and removal is kept in an append-only history with server time, delay since the solve, the links added or removed, and a keyed network hash for cheat review. Both switches are off by default for each event.
 
 <p align="center">
   <img src="docs/public/screenshots/ai-chat-links-player.png" alt="Solved Jeopardy challenge card listing ChatGPT and Claude share links, each with a provider validation badge" width="640">
@@ -61,7 +61,7 @@ The [organizer guide](docs/organizers/games.md#ai-chat-links) covers the event s
 | Challenge delivery | Static challenges, real attachments, dynamic Docker or Kubernetes workloads, immutable build/pull status, on-demand image builds, lifecycle limits, practice instances, BYOC, and Linux or Windows trusted workers |
 | Networking | Direct host/port mappings, Platform Proxy with WSRX or copyable WSS URLs, integrated WireGuard, per-event VPN access gates, protected routes, and VPN-specific port behavior |
 | Scoring | Jeopardy dynamic scoring, divisions, optional blood bonuses, live scoreboards, A&D rounds/SLA/flag capture, and KotH crown-cycle scoring |
-| AI chat disclosure | Optional per-event AI chat share links on solved Jeopardy challenges, a monitor review list, and an administrator-managed allowlist of built-in and custom providers |
+| AI chat disclosure | Optional or required per-event AI chat disclosure on solved Jeopardy challenges (share links or "No AI used"), edit history with timing for cheat review, a monitor list with missing-disclosure filter, and an administrator-managed allowlist of built-in and custom providers |
 | Organizer operations | Event and challenge editors, real instance previews, Git repository bindings and imports, team/user administration, build and image inventory, safe pruning, worker enrollment, logs, traffic views, and event monitoring |
 | Guidance and accessibility | Permanent screenshot-based player handbook, resumable interactive coach marks, contextual container/VPN tips, keyboard navigation, screen-reader semantics, reduced motion, and layouts audited down to 320 px |
 | Platform services | PostgreSQL and Redis, bounded background reconciliation, SMTP, optional Trakteer donations and donor leaderboard, Docker Compose, Helm/Kubernetes, role-separated replicas, health checks, and verified release installers |

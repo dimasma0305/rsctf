@@ -64,10 +64,10 @@ import {
   type EventVpnOverrideRevokeOperation,
 } from '@Utils/EventVpnOverrideOperations'
 import { isRetryableHttpError } from '@Utils/HttpError'
+import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
 import { getInputNumber, randomInviteCode, showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { createUuid } from '@Utils/Uuid'
-import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
 import { useConfig } from '@Hooks/useConfig'
 import { useAdminGame } from '@Hooks/useGame'
 import { useUser } from '@Hooks/useUser'
@@ -989,6 +989,24 @@ const GameInfoEdit: FC = () => {
                     )
                   )}
                   onChange={(e) => game && setGame({ ...game, aiChatLinksEnabled: e.target.checked })}
+                />
+                <Switch
+                  disabled={disabled || !game?.aiChatLinksEnabled}
+                  checked={game?.aiChatLinksRequired ?? false}
+                  classNames={{ root: misc.switchVerticalMiddle }}
+                  label={SwitchLabel(
+                    t('admin.content.games.info.ai_chat_links_required.label', 'Require disclosure after every solve'),
+                    game?.aiChatLinksEnabled
+                      ? t(
+                          'admin.content.games.info.ai_chat_links_required.description',
+                          'Teams must add AI chat links or declare "No AI used" for each solved challenge. The challenge dialog stays open until they do; scoring is unaffected.'
+                        )
+                      : t(
+                          'admin.content.games.info.ai_chat_links_required.needs_links',
+                          'Turn on AI chat links first; the requirement only applies while they are enabled.'
+                        )
+                  )}
+                  onChange={(e) => game && setGame({ ...game, aiChatLinksRequired: e.target.checked })}
                 />
               </SimpleGrid>
               {isAdmin && config.allowCompetitionHistoryPurge && (

@@ -577,7 +577,7 @@
     "copied": "链接已复制",
     "copy": "复制链接",
     "empty_description": "队伍为已解出的题目附加链接后，会显示在这里。",
-    "empty_filtered": "还没有队伍为该题附加链接。",
+    "empty_filtered": "没有符合筛选条件的记录。",
     "empty_title": "暂无 AI 对话链接",
     "list_label": "AI 对话链接记录",
     "no_challenge_match": "没有匹配的题目",
@@ -587,6 +587,54 @@
     "submitted_by": "由 {{user}} 保存",
     "subtitle": "队伍为已解出题目附加的分享链接，按最新排序。链接会在新标签页中打开。",
     "team": "队伍",
-    "title": "AI 对话链接"
+    "title": "AI 对话链接",
+    "declared_no_ai": "已声明：未使用 AI",
+    "delay": {
+      "days": "解出后 {{count}} 天",
+      "hours": "解出后 {{count}} 小时",
+      "minutes": "解出后 {{count}} 分钟",
+      "seconds": "解出后 {{count}} 秒"
+    },
+    "disclosure_needed": "需要披露",
+    "edit_count": "已修改 {{count}} 次",
+    "first_disclosed_at": "首次披露于 {{time}}",
+    "history": {
+      "action": {
+        "cleared": "已清除",
+        "created": "已创建",
+        "edited": "已修改"
+      },
+      "added": "新增",
+      "button": "历史",
+      "by": "操作者 {{user}}",
+      "declared_no_ai": "已声明：未使用 AI",
+      "empty": "没有记录到任何变更。",
+      "list_label": "披露变更记录，按时间先后排序",
+      "loading": "正在加载历史…",
+      "network": "网络",
+      "open": "历史：{{team}} · {{challenge}}",
+      "removed": "移除",
+      "revision": "版本 {{revision}}",
+      "title": "披露历史",
+      "truncated": "仅显示前 200 条变更。",
+      "unknown_user": "操作者未知",
+      "withdrew_no_ai": "撤回了“未使用 AI”声明"
+    },
+    "no_disclosure": "未披露",
+    "pending_banner": {
+      "description": "本赛事要求每次解题后进行披露。打开题目以添加你们使用的 AI 对话链接，或声明未使用 AI。",
+      "open": "添加披露：{{title}}",
+      "title": "{{count}} 道已解出的题目需要 AI 对话披露",
+      "title_other": "{{count}} 道已解出的题目需要 AI 对话披露"
+    },
+    "required_note": "本赛事要求每次解题后进行披露。",
+    "solved_at": "解出于 {{time}}",
+    "status": {
+      "all": "全部",
+      "links": "链接",
+      "missing": "缺失",
+      "no_ai": "未使用 AI"
+    },
+    "status_filter": "状态"
   }
 }

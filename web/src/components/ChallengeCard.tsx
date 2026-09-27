@@ -4,6 +4,7 @@ import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
+import { DisclosureNeededBadge } from '@Components/DisclosureNeededBadge'
 import { useLanguage } from '@Utils/I18n'
 import { useServerNow } from '@Utils/ServerClock'
 import { BloodsTypes, PartialIconProps, useChallengeCategoryLabelMap } from '@Utils/Shared'
@@ -20,6 +21,8 @@ interface ChallengeCardProps {
   colorMap: Map<SubmissionType, string | undefined>
   teamId?: number
   rating?: { likes: number; dislikes: number }
+  /** Solved, but the event still needs this team's AI chat disclosure. */
+  disclosurePending?: boolean
 }
 
 const ChallengeCardContent: FC<ChallengeCardProps & { deadlinePassed: boolean }> = ({
@@ -31,6 +34,7 @@ const ChallengeCardContent: FC<ChallengeCardProps & { deadlinePassed: boolean }>
   teamId,
   rating,
   deadlinePassed,
+  disclosurePending,
 }) => {
   const { t } = useTranslation()
   const { locale } = useLanguage()
@@ -85,6 +89,11 @@ const ChallengeCardContent: FC<ChallengeCardProps & { deadlinePassed: boolean }>
           </span>
         )}
       </div>
+      {disclosurePending && (
+        <div className={classes.context}>
+          <DisclosureNeededBadge />
+        </div>
+      )}
       {contextLabel && (
         <Text size="xs" c="dimmed" className={classes.context}>
           {contextLabel}

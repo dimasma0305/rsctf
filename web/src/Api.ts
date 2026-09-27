@@ -1638,6 +1638,8 @@ export interface GameInfoModel {
   writeupRequired?: boolean;
   /** Let teams attach AI chat share links to solved Jeopardy challenges (off by default) */
   aiChatLinksEnabled?: boolean;
+  /** Require a disclosure (links or "No AI used") after every solve; effective only with aiChatLinksEnabled */
+  aiChatLinksRequired?: boolean;
   /**
    * Game invitation code
    * @maxLength 32
@@ -3499,14 +3501,73 @@ export interface AiChatLinkState {
   updatedAt: number | null;
   /** Username of the last saver */
   submittedBy: string | null;
+  /** Effective event requirement */
+  required: boolean;
+  /** required && solved inside the competition window && nothing disclosed yet */
+  pending: boolean;
+  /** The team declared "No AI used" */
+  declaredNoAi: boolean;
+  /** @format uint64 */
+  solvedAt: number | null;
+  /**
+   * First disclosure (server time)
+   * @format uint64
+   */
+  firstDisclosedAt: number | null;
+  /**
+   * Edits after the first disclosure
+   * @format int32
+   */
+  editCount: number;
 }
 
 /** Replace a team's AI chat links; an empty list removes the record */
 export interface AiChatLinkUpdateModel {
-  /** 0..maxLinks raw URLs */
+  /** 0..maxLinks raw URLs; must be empty when noAiUsed is true */
   links: string[];
   /** @format int64 */
   expectedRevision: number;
+  /** Declare "No AI used" (default false) */
+  noAiUsed?: boolean;
+}
+
+/** Solved challenges of the caller's team that still need a disclosure */
+export interface AiChatPendingModel {
+  required: boolean;
+  challengeIds: number[];
+}
+
+/** Disclosure status of one team/challenge record */
+export type AiChatLinkStatus = "Links" | "NoAi" | "Missing";
+
+/** One change to a team's disclosure (monitor telemetry) */
+export interface AiChatLinkEvent {
+  /** @format int64 */
+  id: number;
+  action: "Created" | "Edited" | "Cleared";
+  userName: string | null;
+  /** @format int64 */
+  revision: number;
+  previousLinks: string[];
+  links: string[];
+  added: string[];
+  removed: string[];
+  previousDeclaredNoAi: boolean;
+  declaredNoAi: boolean;
+  /** @format uint64 */
+  solvedAt: number | null;
+  /** @format int64 */
+  secondsSinceSolve: number | null;
+  /** 12 hex chars of a keyed network hash (correlation only) */
+  networkHint: string | null;
+  /** @format uint64 */
+  occurredAt: number;
+}
+
+/** Oldest-first disclosure history, at most 200 events */
+export interface AiChatLinkEventPage {
+  items: AiChatLinkEvent[];
+  truncated: boolean;
 }
 
 /** A saved link as seen by organizers */
@@ -3528,16 +3589,36 @@ export interface AiChatLinkRecord {
   category: string;
   links: AiChatLinkRecordLink[];
   submittedBy: string | null;
-  /** @format uint64 */
-  updatedAt: number;
-  /** @format int64 */
+  /**
+   * Null for Missing records
+   * @format uint64
+   */
+  updatedAt: number | null;
+  /**
+   * Zero for Missing records
+   * @format int64
+   */
   revision: number;
+  status: AiChatLinkStatus;
+  declaredNoAi: boolean;
+  /** @format uint64 */
+  solvedAt: number | null;
+  /** @format uint64 */
+  firstDisclosedAt: number | null;
+  /** First disclosure minus solve */
+  delaySeconds: number | null;
+  /** @format int32 */
+  editCount: number;
+  /** @format int32 */
+  eventCount: number;
 }
 
 /** Bounded, newest-first page of AI chat link records */
 export interface AiChatLinkRecordPage {
   /** @format int32 */
   total: number;
+  /** Effective event requirement */
+  required: boolean;
   items: AiChatLinkRecord[];
 }
 
@@ -3596,6 +3677,8 @@ export interface DetailedGameInfoModel {
   writeupRequired?: boolean;
   /** Whether teams may attach AI chat share links to solved Jeopardy challenges */
   aiChatLinksEnabled?: boolean;
+  /** Effective requirement (enabled && required): every solve needs a disclosure */
+  aiChatLinksRequired?: boolean;
   /** Game poster URL */
   poster?: string | null;
   /**
@@ -10825,6 +10908,8 @@ export class Api<
         skip?: number;
         /** @format int32 */
         challengeId?: number;
+        /** Omit for all records */
+        status?: AiChatLinkStatus;
       },
       params: RequestParams = {},
     ) =>
@@ -10841,12 +10926,88 @@ export class Api<
         count?: number;
         skip?: number;
         challengeId?: number;
+        status?: AiChatLinkStatus;
       },
       options?: SWRConfiguration,
       doFetch: boolean = true,
     ) =>
       useSWR<AiChatLinkRecordPage, RequestResponse>(
         doFetch ? [`/api/game/${id}/ai-chats`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Lists the caller team's solved challenges that still need an AI chat disclosure (not polled)
+     *
+     * @tags Game
+     * @name GameGetAiChatPending
+     * @summary Get pending AI chat disclosures
+     * @request GET:/api/game/{id}/ai-chats/pending
+     */
+    gameGetAiChatPending: (id: number, params: RequestParams = {}) =>
+      this.request<AiChatPendingModel, RequestResponse>({
+        path: `/api/game/${id}/ai-chats/pending`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Lists the caller team's solved challenges that still need an AI chat disclosure (not polled)
+     *
+     * @tags Game
+     * @name GameGetAiChatPending
+     * @summary Get pending AI chat disclosures
+     * @request GET:/api/game/{id}/ai-chats/pending
+     */
+    useGameGetAiChatPending: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<AiChatPendingModel, RequestResponse>(
+        doFetch ? `/api/game/${id}/ai-chats/pending` : null,
+        options,
+      ),
+
+    /**
+     * @description Lists one team's AI chat disclosure history for a challenge, oldest first; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetAiChatLinkEvents
+     * @summary Get AI chat disclosure history
+     * @request GET:/api/game/{id}/ai-chats/{participationId}/{challengeId}/events
+     */
+    gameGetAiChatLinkEvents: (
+      id: number,
+      participationId: number,
+      challengeId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<AiChatLinkEventPage, RequestResponse>({
+        path: `/api/game/${id}/ai-chats/${participationId}/${challengeId}/events`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Lists one team's AI chat disclosure history for a challenge, oldest first; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetAiChatLinkEvents
+     * @summary Get AI chat disclosure history
+     * @request GET:/api/game/{id}/ai-chats/{participationId}/{challengeId}/events
+     */
+    useGameGetAiChatLinkEvents: (
+      id: number,
+      participationId: number,
+      challengeId: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<AiChatLinkEventPage, RequestResponse>(
+        doFetch
+          ? `/api/game/${id}/ai-chats/${participationId}/${challengeId}/events`
+          : null,
         options,
       ),
 

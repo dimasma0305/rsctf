@@ -81,3 +81,28 @@ test('the AI chat links switch round-trips through the save payload and dirties 
   assert.equal(gameInfoDraftChanged(enabled, baseline), true)
   assert.equal(prepareGameInfoSave(enabled, null, () => 'operation').payload.aiChatLinksEnabled, true)
 })
+
+test('the required-disclosure switch round-trips independently of the AI chat links switch', () => {
+  const enabled = buildGameInfoUpdatePayload(
+    { ...saved, aiChatLinksEnabled: true, aiChatLinksRequired: false },
+    schedule,
+    false
+  )
+  const required = buildGameInfoUpdatePayload(
+    { ...saved, aiChatLinksEnabled: true, aiChatLinksRequired: true },
+    schedule,
+    false
+  )
+  // The server stores both flags as given; the requirement is effective only while links are enabled.
+  const storedWhileOff = buildGameInfoUpdatePayload(
+    { ...saved, aiChatLinksEnabled: false, aiChatLinksRequired: true },
+    schedule,
+    false
+  )
+
+  assert.equal(enabled.aiChatLinksRequired, false)
+  assert.equal(required.aiChatLinksRequired, true)
+  assert.equal(storedWhileOff.aiChatLinksRequired, true)
+  assert.equal(gameInfoDraftChanged(required, enabled), true)
+  assert.equal(prepareGameInfoSave(required, null, () => 'operation').payload.aiChatLinksRequired, true)
+})

@@ -38,3 +38,58 @@ test('fixture links, disabled providers, and mutations stay consistent', () => {
   assert.equal(saved.body.revision, 3)
   assert.equal(fixture.writes.length, 2)
 })
+
+test('disclosure fixtures cover pending, links, no-AI, missing, and a full history', () => {
+  const fixture = aiChatFixture(1_790_000_000_000)
+  const get = (path) => fixture.handle(path).body
+  assert.equal(get('/api/game/901').aiChatLinksRequired, true)
+  assert.deepEqual(get('/api/game/901/ai-chats/pending'), { required: true, challengeIds: [9001] })
+
+  const pending = get('/api/game/901/challenges/9001/ai-chats')
+  assert.equal(pending.pending, true)
+  assert.deepEqual(pending.links, [])
+  const edited = get('/api/game/901/challenges/9002/ai-chats')
+  assert.equal(edited.editCount, 1)
+  assert.ok(edited.firstDisclosedAt > edited.solvedAt)
+  assert.equal(get('/api/game/901/challenges/9003/ai-chats').declaredNoAi, true)
+  assert.equal(get('/api/game/901/challenges/9004/ai-chats').solved, false)
+
+  const all = get('/api/game/901/ai-chats?count=50&skip=0')
+  assert.equal(all.required, true)
+  assert.deepEqual([...new Set(all.items.map((record) => record.status))], ['Links', 'NoAi', 'Missing'])
+  const missing = get('/api/game/901/ai-chats?count=50&skip=0&status=Missing')
+  assert.equal(missing.total, missing.items.length)
+  for (const record of missing.items) {
+    assert.deepEqual(record.links, [])
+    assert.equal(record.updatedAt, null)
+    assert.equal(record.submittedBy, null)
+    assert.equal(record.revision, 0)
+  }
+
+  const history = get(fixture.eventsPath)
+  assert.deepEqual(history.items.map((event) => event.action), ['Created', 'Edited', 'Cleared', 'Created'])
+  assert.deepEqual(history.items.map((event) => event.revision), [1, 2, 0, 1], 'a clear restarts revisions')
+  const record = all.items.find((item) => item.status === 'Links' && item.eventCount === history.items.length)
+  assert.equal(record.editCount, history.items.filter((event) => event.action === 'Edited').length)
+  assert.equal(record.revision, history.items.at(-1).revision)
+  assert.ok(history.items.some((event) => event.added.length > 0))
+  assert.ok(history.items.some((event) => event.removed.length > 0))
+  for (const event of history.items) {
+    assert.match(event.networkHint, /^[0-9a-f]{12}$/)
+    assert.deepEqual(
+      [...event.previousLinks.filter((url) => !event.removed.includes(url)), ...event.added].sort(),
+      [...event.links].sort()
+    )
+  }
+
+  // Declaring "No AI used" releases the pending challenge.
+  const declared = fixture.handle(
+    '/api/game/901/challenges/9001/ai-chats',
+    'PUT',
+    JSON.stringify({ links: [], expectedRevision: 0, noAiUsed: true })
+  ).body
+  assert.equal(declared.declaredNoAi, true)
+  assert.equal(declared.pending, false)
+  assert.deepEqual(get('/api/game/901/ai-chats/pending').challengeIds, [])
+  assert.equal(get('/api/game/901/challenges/9001/ai-chats').revision, 1)
+})

@@ -115,6 +115,8 @@ const USERS_SCOPE: &str = r#"t.id IN (
      WHERE f.game_id = $1
     UNION SELECT a.submitted_by FROM "AiChatLinks" a
      WHERE a.game_id = $1 AND a.submitted_by IS NOT NULL
+    UNION SELECT e.user_id FROM "AiChatLinkEvents" e
+     WHERE e.game_id = $1 AND e.user_id IS NOT NULL
   )"#;
 
 const fn rows(

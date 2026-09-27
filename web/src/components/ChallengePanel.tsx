@@ -6,6 +6,7 @@ import { FC, useCallback, useEffect, useState, useMemo, useRef, type ReactNode }
 import { useTranslation } from 'react-i18next'
 import { useLocation, useParams } from 'react-router'
 import type { AdStateOwner } from '@Components/AdChallengePanel'
+import { AiChatPendingNotice, useAiChatPendingChallenges } from '@Components/AiChatPendingNotice'
 import { ChallengeCard } from '@Components/ChallengeCard'
 import { Empty } from '@Components/Empty'
 import { GameChallengeModal } from '@Components/GameChallengeModal'
@@ -217,6 +218,9 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
     () => new Set((teamInfo?.rank?.solvedChallenges ?? []).filter(isAcceptedSolve).map((item) => item.id)),
     [teamInfo?.rank?.solvedChallenges]
   )
+  // Not polled: one read per page, refreshed by solves and disclosure saves.
+  const aiChatPending = useAiChatPendingChallenges(numId, game?.aiChatLinksRequired === true, allChallenges)
+  const aiChatPendingIds = useMemo(() => new Set(aiChatPending.map((item) => item.id)), [aiChatPending])
   const { iconMap, colorMap } = SubmissionTypeIconMap(0.8)
   const [writeupSubmitOpened, setWriteupSubmitOpened] = useState(false)
   const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
@@ -453,6 +457,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
         data-detail-open={(detailOpened && inlineDetail) || undefined}
       >
         <div className={classes.panel}>
+          <AiChatPendingNotice challenges={aiChatPending} onOpen={openChallenge} />
           <ScrollArea
             pos="relative"
             offsetScrollbars
@@ -481,6 +486,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
               <ChallengeList
                 challenges={currentChallenges}
                 solvedIds={solvedIds}
+                disclosurePendingIds={aiChatPendingIds}
                 selectedId={challenge?.id}
                 onSelect={openChallenge}
                 sort={sort}
@@ -541,6 +547,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
                               colorMap={colorMap}
                               onClick={() => openChallenge(chal)}
                               solved={solved}
+                              disclosurePending={aiChatPendingIds.has(chal.id)}
                               teamId={teamInfo?.rank?.id}
                             />
                           )

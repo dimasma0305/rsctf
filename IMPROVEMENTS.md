@@ -78,6 +78,12 @@ Do not promise flawless connections under arbitrary client network conditions.
   from the challenge card; monitors review them under Monitoring → AI chats; admins
   toggle eight verified built-in matchers and add custom regex providers under
   Settings → AI links. Links are validated against the registry and never fetched.
+- [x] Required AI disclosure and edit telemetry (September 27, 2026): events can require
+  links or an explicit "No AI used" after every competitive solve (UI enforced; points
+  and submissions are never gated). Every create, edit, and clear is appended to
+  `AiChatLinkEvents` with server time, delay since solve, links before/after,
+  added/removed URLs, and a keyed network hash; monitors filter Missing disclosures and
+  open the full history.
 
 Acceptance: real database/worker tests where needed, deterministic scoring fixtures,
 and explicit permission before retroactively changing live competition data/rules.
