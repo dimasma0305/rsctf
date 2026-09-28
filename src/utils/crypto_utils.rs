@@ -107,13 +107,25 @@ mod tests {
 
     #[test]
     fn existing_password_hashes_still_verify_and_new_hashes_keep_the_format() {
-        assert!(super::verify_password("correct horse battery staple", STORED_HASH));
+        assert!(super::verify_password(
+            "correct horse battery staple",
+            STORED_HASH
+        ));
         assert!(!super::verify_password("wrong", STORED_HASH));
         assert!(!super::verify_password("x", "not a phc string"));
         let fresh = super::hash_password("correct horse battery staple").unwrap();
-        assert!(fresh.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"), "{fresh}");
-        assert_ne!(fresh, super::hash_password("correct horse battery staple").unwrap());
-        assert!(super::verify_password("correct horse battery staple", &fresh));
+        assert!(
+            fresh.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"),
+            "{fresh}"
+        );
+        assert_ne!(
+            fresh,
+            super::hash_password("correct horse battery staple").unwrap()
+        );
+        assert!(super::verify_password(
+            "correct horse battery staple",
+            &fresh
+        ));
     }
 
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
