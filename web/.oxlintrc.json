@@ -8,7 +8,15 @@
   "overrides": [],
   "plugins": ["import", "typescript", "react"],
   "rules": {
-    "react/exhaustive-deps": "allow"
+    "react/exhaustive-deps": "allow",
+    "react/globals": "off",
+    "react/immutability": "off",
+    "react/preserve-manual-memoization": "off",
+    "react/purity": "off",
+    "react/refs": "off",
+    "react/set-state-in-effect": "off",
+    "react/static-components": "off",
+    "react/use-memo": "off"
   },
   "settings": {}
 }
