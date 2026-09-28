@@ -1,7 +1,7 @@
 //! Password hashing, Ed25519 game-signature keys, and constant-time comparison.
 
-use argon2::password_hash::rand_core::OsRng;
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::phc::PasswordHash;
+use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use argon2::Argon2;
 use ed25519_dalek::{Signer, SigningKey};
 
@@ -38,9 +38,9 @@ pub fn game_sign(private_key_b64: &str, data: &str) -> Result<String, AppError> 
 /// Hash a password with Argon2id (RSCTF uses ASP.NET Identity's PBKDF2; this
 /// port intentionally upgrades to Argon2).
 pub fn hash_password(password: &str) -> Result<String, AppError> {
-    let salt = SaltString::generate(&mut OsRng);
+    // The default `getrandom` feature draws a fresh recommended-length salt.
     Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map(|h| h.to_string())
         .map_err(|e| AppError::internal(format!("password hash: {e}")))
 }
@@ -101,6 +101,21 @@ pub fn ct_eq(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A PHC string with the Argon2id defaults (m=19456, t=2, p=1) as stored by
+    /// earlier releases; upgrading the hashing crate must keep it verifiable.
+    const STORED_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$EgVem2TTgiaMcNK0lDWNgw$4kr3hs4ow8qhiz9ECxgYkS4xdyFW+uyS0ic64siCri8";
+
+    #[test]
+    fn existing_password_hashes_still_verify_and_new_hashes_keep_the_format() {
+        assert!(super::verify_password("correct horse battery staple", STORED_HASH));
+        assert!(!super::verify_password("wrong", STORED_HASH));
+        assert!(!super::verify_password("x", "not a phc string"));
+        let fresh = super::hash_password("correct horse battery staple").unwrap();
+        assert!(fresh.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"), "{fresh}");
+        assert_ne!(fresh, super::hash_password("correct horse battery staple").unwrap());
+        assert!(super::verify_password("correct horse battery staple", &fresh));
+    }
+
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
     use super::*;
