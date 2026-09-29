@@ -80,6 +80,7 @@ try {
     )
     assert.ok(await evaluate(`Array.from(document.querySelectorAll('[data-readiness-check]')).every(row => row.dataset.state && row.innerText.length > 20)`))
     assert.ok(await evaluate(`!!document.querySelector('[data-readiness-window]')`), 'the saved schedule is shown for confirmation')
+    if (language === 'en-US') assert.match(await evaluate(`document.querySelector('[data-readiness-verdict]').textContent`), /^2 of 5 checks need attention$/)
     if (name === 'compact') {
       await evaluate(`document.querySelector('[data-readiness-check="builds"]').scrollIntoView({block:'center'})`)
       await audit('compact-checks')

@@ -138,3 +138,16 @@ export function saveManualReadiness(eventId: number, keys: ManualReadinessKey[],
     // Private windows and blocked storage keep the in-memory ticks only.
   }
 }
+
+/** Whole days, hours, and minutes of a positive event window, for a compact label. */
+export function readinessDuration(start: number, end: number) {
+  const minutes = Math.max(0, Math.round((end - start) / 60_000))
+  return { days: Math.floor(minutes / 1440), hours: Math.floor((minutes % 1440) / 60), minutes: minutes % 60 }
+}
+
+/** The headline for the overview: attention first, then unverified, else all clear. */
+export function readinessVerdict(counts: Record<ReadinessState, number>) {
+  if (counts.attention) return { state: 'attention' as const, count: counts.attention }
+  if (counts.unverified) return { state: 'unverified' as const, count: counts.unverified }
+  return { state: 'checked' as const, count: counts.checked + counts.info }
+}

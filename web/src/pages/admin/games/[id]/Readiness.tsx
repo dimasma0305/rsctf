@@ -1,5 +1,24 @@
-import { Alert, Badge, Button, Checkbox, Group, Skeleton, Stack, Text, Title } from '@mantine/core'
-import { mdiAlertCircle, mdiCheckCircle, mdiHelpCircleOutline, mdiInformationOutline } from '@mdi/js'
+import {
+  Alert,
+  Badge,
+  Button,
+  Checkbox,
+  Group,
+  Paper,
+  Skeleton,
+  Stack,
+  Text,
+  Title,
+  VisuallyHidden,
+} from '@mantine/core'
+import {
+  mdiAlertCircle,
+  mdiCalendarClock,
+  mdiCheckCircle,
+  mdiHelpCircleOutline,
+  mdiInformationOutline,
+  mdiRefresh,
+} from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import { useMemo, useRef, useState } from 'react'
@@ -13,7 +32,9 @@ import {
   loadManualReadiness,
   manualReadinessItems,
   readinessCounts,
+  readinessDuration,
   readinessError,
+  readinessVerdict,
   saveManualReadiness,
   type ManualReadinessKey,
   type ReadinessState,
@@ -56,7 +77,6 @@ export default function EventReadiness() {
     (left, right) => priority[left.state] - priority[right.state]
   )
   const counts = readinessCounts(checks)
-  const attention = counts.attention
   const hasCompetitiveServices =
     hasSnapshot &&
     challenges.some(
@@ -65,14 +85,23 @@ export default function EventReadiness() {
   const root = `/admin/games/${eventId}`
   // Time of the snapshot on screen; a new read replaces both objects.
   const snapshotAt = useMemo(() => (game && challenges ? Date.now() : null), [game, challenges])
-  const scheduleWindow =
-    game && Number.isFinite(game.start) && Number.isFinite(game.end) && game.start < game.end
-      ? t('admin.readiness.schedule_window', {
-          start: dayjs(game.start).format('LLL'),
-          end: dayjs(game.end).format('LLL'),
-          zone: `UTC${dayjs(game.start).format('Z')}`,
-        })
-      : null
+  const scheduleValid = !!game && Number.isFinite(game.start) && Number.isFinite(game.end) && game.start < game.end
+  const scheduleLabel = (() => {
+    if (!game || !scheduleValid) return null
+    const start = dayjs(game.start)
+    const end = dayjs(game.end)
+    const range = start.isSame(end, 'day')
+      ? `${start.format('ll')} · ${start.format('LT')} – ${end.format('LT')}`
+      : `${start.format('ll LT')} – ${end.format('ll LT')}`
+    const { days, hours, minutes } = readinessDuration(game.start, game.end)
+    const duration = days
+      ? t(hours ? 'admin.readiness.duration.days' : 'admin.readiness.duration.days_only', { days, hours })
+      : hours
+        ? t(minutes ? 'admin.readiness.duration.hours' : 'admin.readiness.duration.hours_only', { hours, minutes })
+        : t('admin.readiness.duration.minutes', { minutes })
+    return `${range} (${duration}) · UTC${start.format('Z')}`
+  })()
+  const verdict = readinessVerdict(counts)
 
   const manualItems = hasSnapshot
     ? manualReadinessItems({
@@ -103,15 +132,16 @@ export default function EventReadiness() {
   }
 
   return (
-    <WithGameEditTab>
-      <Stack gap="lg" data-event-readiness>
-        <Group justify="space-between" align="center" gap="sm">
-          <Text size="sm" c="dimmed" maw="42rem">
+    <WithGameEditTab
+      head={
+        <>
+          <Text size="sm" c="dimmed" maw="40rem" style={{ flex: '1 1 16rem', alignSelf: 'center' }}>
             {t('admin.readiness.intro')}
           </Text>
           <Button
             variant="default"
             mih={44}
+            leftSection={<Icon path={mdiRefresh} size={0.8} aria-hidden="true" />}
             onClick={refresh}
             loading={refreshing}
             disabled={!validId}
@@ -119,7 +149,10 @@ export default function EventReadiness() {
           >
             {t('admin.readiness.refresh')}
           </Button>
-        </Group>
+        </>
+      }
+    >
+      <Stack gap="lg" data-event-readiness>
         {errorKind && (
           <Alert color="orange" role="alert" title={t('admin.readiness.load_failed')} data-readiness-error>
             <Stack gap="xs">
@@ -152,26 +185,63 @@ export default function EventReadiness() {
         )}
         {hasSnapshot && (
           <>
-            <section className={classes.snapshot} aria-labelledby="readiness-overview" data-readiness-snapshot>
-              <Stack gap="sm">
-                <Group justify="space-between" align="flex-start" gap="xs">
-                  <Title order={2} size="h4" id="readiness-overview" style={{ overflowWrap: 'anywhere', minWidth: 0 }}>
-                    {game.title}
-                  </Title>
-                  <Group gap={6}>
-                    <Badge variant="default" tt="none">
-                      {t(game.hidden ? 'admin.readiness.hidden' : 'admin.readiness.public')}
-                    </Badge>
-                    <Badge variant="default" tt="none">
-                      {t(game.practiceMode ? 'admin.readiness.practice' : 'admin.readiness.competition')}
-                    </Badge>
+            <Paper
+              withBorder
+              radius="md"
+              p="md"
+              component="section"
+              aria-labelledby="readiness-overview"
+              data-readiness-snapshot
+            >
+              <Stack gap="md">
+                <Stack gap={6}>
+                  <Group justify="space-between" align="flex-start" gap="xs">
+                    <Title order={2} size="h3" id="readiness-overview" className={classes.overviewTitle}>
+                      {game.title}
+                    </Title>
+                    <Group gap={6}>
+                      <Badge variant="outline" color="gray" tt="none">
+                        {t(game.hidden ? 'admin.readiness.hidden' : 'admin.readiness.public')}
+                      </Badge>
+                      <Badge variant="outline" color="gray" tt="none">
+                        {t(game.practiceMode ? 'admin.readiness.practice' : 'admin.readiness.competition')}
+                      </Badge>
+                    </Group>
                   </Group>
-                </Group>
-                {scheduleWindow && (
-                  <Text size="sm" c="dimmed" data-readiness-window>
-                    {scheduleWindow}
-                  </Text>
-                )}
+                  <Group gap="md" className={classes.meta}>
+                    {scheduleLabel && (
+                      <span className={classes.metaItem} data-readiness-window>
+                        <Icon path={mdiCalendarClock} size={0.7} aria-hidden="true" />
+                        <VisuallyHidden component="span">{t('admin.readiness.schedule_label')} </VisuallyHidden>
+                        {scheduleLabel}
+                      </span>
+                    )}
+                    {snapshotAt !== null && (
+                      <span className={classes.metaItem}>
+                        <Icon path={mdiRefresh} size={0.7} aria-hidden="true" />
+                        {t('admin.readiness.snapshot_time', { time: dayjs(snapshotAt).format('LTS') })}
+                      </span>
+                    )}
+                  </Group>
+                </Stack>
+                <div className={classes.verdict} data-state={errorKind ? 'unverified' : verdict.state}>
+                  <StateIcon state={errorKind ? 'unverified' : verdict.state} />
+                  <div>
+                    <Text fw={650} role="status" aria-live="polite" data-readiness-verdict>
+                      {refreshing
+                        ? t('admin.readiness.refreshing')
+                        : errorKind
+                          ? t('admin.readiness.stale')
+                          : t(`admin.readiness.verdict.${verdict.state}`, {
+                              count: verdict.count,
+                              total: checks.length,
+                            })}
+                    </Text>
+                    <Text size="sm" c="dimmed">
+                      {t('admin.readiness.runtime_reminder')}
+                    </Text>
+                  </div>
+                </div>
                 <ul className={classes.counts} aria-label={t('admin.readiness.counts_label')} data-readiness-counts>
                   {STATES.map((state) => (
                     <li key={state} className={classes.count} data-state={state} data-empty={counts[state] === 0}>
@@ -181,21 +251,11 @@ export default function EventReadiness() {
                     </li>
                   ))}
                 </ul>
-                <Text size="sm" fw={600} role="status" aria-live="polite">
-                  {refreshing
-                    ? t('admin.readiness.refreshing')
-                    : errorKind
-                      ? t('admin.readiness.stale')
-                      : t('admin.readiness.summary', { count: attention })}
-                </Text>
                 <Text size="xs" c="dimmed">
                   {t('admin.readiness.snapshot_note')}
-                  {snapshotAt !== null && (
-                    <> {t('admin.readiness.snapshot_time', { time: dayjs(snapshotAt).format('LTS') })}</>
-                  )}
                 </Text>
               </Stack>
-            </section>
+            </Paper>
             <div className={classes.checks}>
               {checks.map((check) => (
                 <section

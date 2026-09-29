@@ -12,10 +12,23 @@
     "public": "Public event",
     "practice": "Practice mode",
     "competition": "Competition mode",
-    "summary_one": "{{count}} configuration check needs attention. Runtime checks are still required.",
-    "summary_other": "{{count}} configuration checks need attention. Runtime checks are still required.",
     "snapshot_note": "This is a manual snapshot of saved settings and challenge metadata, not a launch guarantee. Refresh after making changes. Hidden events are valid for rehearsals.",
-    "schedule_window": "Runs {{start}} to {{end}} ({{zone}}, your browser's time zone).",
+    "schedule_label": "Schedule:",
+    "runtime_reminder": "Configuration only. Work through “Still to verify” below before players arrive.",
+    "verdict": {
+      "attention_one": "{{count}} of {{total}} checks needs attention",
+      "attention_other": "{{count}} of {{total}} checks need attention",
+      "unverified_one": "{{count}} check could not be confirmed yet",
+      "unverified_other": "{{count}} checks could not be confirmed yet",
+      "checked": "All {{total}} configuration checks look good"
+    },
+    "duration": {
+      "days": "{{days}} d {{hours}} h",
+      "hours": "{{hours}} h {{minutes}} min",
+      "days_only": "{{days}} d",
+      "hours_only": "{{hours}} h",
+      "minutes": "{{minutes}} min"
+    },
     "counts_label": "Check results",
     "snapshot_time": "Loaded at {{time}}.",
     "manual_progress": "{{done}} of {{total}} confirmed",

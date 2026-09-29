@@ -8,6 +8,8 @@ import {
   loadManualReadiness,
   manualReadinessItems,
   readinessCounts,
+  readinessDuration,
+  readinessVerdict,
   readinessError,
   saveManualReadiness,
 } from './EventReadiness'
@@ -157,4 +159,17 @@ test('manual ticks are per event, sanitized, and survive broken storage', () => 
   }
   assert.deepEqual(loadManualReadiness(19, throwing), [])
   assert.doesNotThrow(() => saveManualReadiness(19, ['teams'], throwing))
+})
+
+test('event windows format as whole days, hours, and minutes', () => {
+  assert.deepEqual(readinessDuration(0, 90 * 60_000), { days: 0, hours: 1, minutes: 30 })
+  assert.deepEqual(readinessDuration(0, 2 * 86_400_000 + 3 * 3_600_000), { days: 2, hours: 3, minutes: 0 })
+  assert.deepEqual(readinessDuration(10, 0), { days: 0, hours: 0, minutes: 0 })
+})
+
+test('the verdict prefers attention, then unverified, then all clear', () => {
+  const counts = (attention: number, unverified: number) => ({ attention, unverified, checked: 2, info: 1 })
+  assert.deepEqual(readinessVerdict(counts(2, 1)), { state: 'attention', count: 2 })
+  assert.deepEqual(readinessVerdict(counts(0, 1)), { state: 'unverified', count: 1 })
+  assert.deepEqual(readinessVerdict(counts(0, 0)), { state: 'checked', count: 3 })
 })

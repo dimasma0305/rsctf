@@ -12,10 +12,23 @@
     "public": "Event publik",
     "practice": "Mode latihan",
     "competition": "Mode kompetisi",
-    "summary_one": "{{count}} pemeriksaan konfigurasi memerlukan perhatian. Pemeriksaan layanan tetap diperlukan.",
-    "summary_other": "{{count}} pemeriksaan konfigurasi memerlukan perhatian. Pemeriksaan layanan tetap diperlukan.",
     "snapshot_note": "Ini adalah pemeriksaan manual atas pengaturan tersimpan dan metadata challenge, bukan jaminan event siap dijalankan. Perbarui setelah melakukan perubahan. Event tersembunyi dapat digunakan untuk latihan pengujian.",
-    "schedule_window": "Berlangsung {{start}} sampai {{end}} ({{zone}}, zona waktu browser Anda).",
+    "schedule_label": "Jadwal:",
+    "runtime_reminder": "Hanya konfigurasi. Selesaikan “Masih perlu diverifikasi” di bawah sebelum peserta masuk.",
+    "verdict": {
+      "attention_one": "{{count}} dari {{total}} pemeriksaan perlu perhatian",
+      "attention_other": "{{count}} dari {{total}} pemeriksaan perlu perhatian",
+      "unverified_one": "{{count}} pemeriksaan belum dapat dipastikan",
+      "unverified_other": "{{count}} pemeriksaan belum dapat dipastikan",
+      "checked": "Semua {{total}} pemeriksaan konfigurasi sudah baik"
+    },
+    "duration": {
+      "days": "{{days}} h {{hours}} j",
+      "hours": "{{hours}} j {{minutes}} mnt",
+      "days_only": "{{days}} h",
+      "hours_only": "{{hours}} j",
+      "minutes": "{{minutes}} mnt"
+    },
     "counts_label": "Hasil pemeriksaan",
     "snapshot_time": "Dimuat pukul {{time}}.",
     "manual_progress": "{{done}} dari {{total}} dikonfirmasi",
