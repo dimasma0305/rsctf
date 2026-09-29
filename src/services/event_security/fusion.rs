@@ -376,9 +376,13 @@ fn existing_family(rule: suspicion::SuspicionType) -> EvidenceFamily {
         StolenFlag | WrongFlagLeakage | FlagEgress | CrossTeamContainerAccess => {
             EvidenceFamily::CrossTeamPossession
         }
-        TokenAbuse | HoneypotCanaryFlag | HoneypotHit | HoneypotProtocolHit | HoneypotChain => {
-            EvidenceFamily::TrustedProvenance
-        }
+        TokenAbuse
+        | HoneypotCanaryFlag
+        | HoneypotHit
+        | HoneypotProtocolHit
+        | HoneypotChain
+        | AgentArtifact
+        | AiDeclarationContradiction => EvidenceFamily::TrustedProvenance,
     }
 }
 

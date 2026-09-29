@@ -574,6 +574,22 @@ pub async fn save_ai_chat_links(
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    if !clearing && model.no_ai_used {
+        // A "No AI used" declaration on a challenge whose own solver carries an
+        // agent artifact is a contradiction. Evidence only; never fails the save.
+        match crate::services::agent_artifacts::evaluate_contradiction(
+            &st,
+            id,
+            ctx.participation.id,
+            challenge_id,
+        )
+        .await
+        {
+            Ok(true) => crate::controllers::game::invalidate_cheat_report(&st, id).await,
+            Ok(false) => {}
+            Err(error) => tracing::warn!(%error, "AI declaration contradiction check failed"),
+        }
+    }
     Ok(private_json(
         load_state(&st, &ctx.game, ctx.participation.id, challenge_id).await?,
     ))

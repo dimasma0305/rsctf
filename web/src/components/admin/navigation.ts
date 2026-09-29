@@ -20,6 +20,7 @@ import {
   mdiHandHeart,
   mdiHeartPulse,
   mdiRobotOutline,
+  mdiFingerprint,
 } from '@mdi/js'
 import { Role, type ProfileUserInfoModel } from '@Api'
 
@@ -114,6 +115,11 @@ export const SETTINGS_SECTIONS = [
   { key: 'build_registry', icon: mdiHammerWrench, keywords: 'images build push registry' },
   { key: 'donations', icon: mdiHandHeart, keywords: 'payments' },
   { key: 'ai_links', icon: mdiRobotOutline, keywords: 'ai chat share links chatgpt claude gemini providers' },
+  {
+    key: 'agent_signatures',
+    icon: mdiFingerprint,
+    keywords: 'ai agent cheat detection claude code codex cursor scratchpad solver writeup scan',
+  },
   { key: 'diagnostics', icon: mdiHeartPulse, keywords: 'health proxy ip trust' },
 ] as const
 

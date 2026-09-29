@@ -21,6 +21,23 @@ export function builtinProviders(source = readFileSync(RUST_SOURCE, 'utf8')) {
   })
 }
 
+const AGENT_RUST_SOURCE = new URL('../../src/services/agent_artifacts/mod.rs', import.meta.url)
+
+/** Parse `BUILTIN_SIGNATURES` (key, label, pattern, examples) from Rust. */
+export function builtinAgentSignatures(source = readFileSync(AGENT_RUST_SOURCE, 'utf8')) {
+  const start = source.indexOf('pub const BUILTIN_SIGNATURES')
+  const array = source.slice(start, source.indexOf('\n];', start))
+  return array
+    .split('BuiltinSignature {')
+    .slice(1)
+    .map((block) => ({
+      key: block.match(/key: "([^"]+)"/)[1],
+      label: block.match(/label: "([^"]+)"/)[1],
+      pattern: block.match(/pattern: r"([^"]+)"/)[1],
+      examples: [...block.slice(block.indexOf('examples')).matchAll(/"([^"]+)"/g)].map((m) => m[1]),
+    }))
+}
+
 export function aiChatFixture(now = Date.now()) {
   const builtins = builtinProviders()
   const profile = { userId: '11111111-1111-4111-8111-111111111111', role: 'Admin', userName: 'aria', email: 'aria@example.invalid' }
@@ -166,6 +183,21 @@ export function aiChatFixture(now = Date.now()) {
     '/api/game/901/scoreboard': { updateTimeUtc: now, bloodBonus: 0, challenges: group(challenges), challengeCount: challenges.length, items: [rank], timelines: [], divisions: [] },
     [eventsPath]: { items: events, truncated: false },
     '/api/admin/ai-chat-providers': { providers: providerModels, maxCustomProviders: 32 },
+    '/api/admin/agent-signatures': {
+      signatures: [
+        ...builtinAgentSignatures().map((signature) => ({
+          ...signature,
+          builtin: true,
+          enabled: signature.key !== 'cursor-projects',
+          updatedAt: signature.key === 'cursor-projects' ? now - 7200000 : null,
+        })),
+        {
+          key: 'ctf-agent', label: 'Team agent runner', pattern: String.raw`/opt/ctf-agent/runs/[0-9]+`,
+          builtin: false, enabled: true, examples: [], updatedAt: now - 3600000,
+        },
+      ],
+      maxCustomSignatures: 32,
+    },
     '/api/admin/config': settings,
   }
   for (const c of challenges) {
@@ -221,5 +253,6 @@ export function aiChatFixture(now = Date.now()) {
     }
     return { status: 405, body: { title: 'Fixture mutation blocked', status: 405 } }
   }
-  return { profile, builtins, providerModels, state, states, records, events, eventsPath, solverRecords, handle, writes }
+  const agentSignatureCount = responses['/api/admin/agent-signatures'].signatures.length
+  return { profile, builtins, providerModels, state, states, records, events, eventsPath, solverRecords, agentSignatureCount, handle, writes }
 }

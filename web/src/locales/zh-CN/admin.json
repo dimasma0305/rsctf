@@ -583,7 +583,8 @@
         "registry_pull": "拉取凭证",
         "build_registry": "推送配置",
         "diagnostics": "诊断",
-        "ai_links": "AI 链接"
+        "ai_links": "AI 链接",
+        "agent_signatures": "智能体特征"
       },
       "account": {
         "allow_register": {
@@ -899,6 +900,43 @@
         },
         "title": "AI 对话链接",
         "updated": "已更新提供方"
+      },
+      "agent_signatures": {
+        "title": "智能体特征",
+        "description": "AI 智能体工具在文件中留下的痕迹，例如编码智能体的会话 scratchpad 路径。系统会扫描上传的解题脚本和题解（不会执行）；匹配结果会加入作弊报告供审核，若队伍对该题声明“未使用 AI”，还会标记为自相矛盾。匹配只说明文件经过哪种工具处理，并不代表违反规则。",
+        "builtin_title": "内置特征",
+        "custom_title": "自定义特征",
+        "custom_count": "{{count}} / {{max}}",
+        "custom_empty": "暂无自定义特征。",
+        "custom_limit": "已达到自定义特征数量上限。",
+        "enabled": "启用",
+        "enabled_for": "启用：{{signature}}",
+        "examples": "示例",
+        "edit": "编辑",
+        "edit_named": "编辑 {{signature}}",
+        "edit_title": "编辑 {{key}}",
+        "delete": "删除",
+        "delete_named": "删除 {{signature}}",
+        "delete_title": "删除 {{signature}}？",
+        "delete_message": "之后的上传将不再检查此痕迹。已记录的证据仍保留在作弊报告中。",
+        "deleted": "特征已删除",
+        "updated": "特征已更新",
+        "created": "特征已添加",
+        "add_title": "添加特征",
+        "add": "添加特征",
+        "save": "保存特征",
+        "key": "键",
+        "key_description": "小写，例如 my-agent",
+        "key_format": "使用 1–40 个小写字母、数字或连字符，并以字母或数字开头。",
+        "key_builtin": "此键属于内置特征。",
+        "key_duplicate": "已有自定义特征使用此键。",
+        "label": "名称",
+        "label_description": "在作弊报告中向主办方显示",
+        "label_invalid": "请输入 1–64 个字符的名称。",
+        "pattern": "匹配模式",
+        "pattern_description": "在文件任意位置搜索的正则表达式，例如 /opt/my-agent/runs/[0-9]+。不得匹配普通的解题脚本或题解文本。",
+        "pattern_length": "请输入 1–512 个字符的模式。",
+        "rescan_hint": "更改对之后的上传生效。要检查此前上传的文件，请在赛事的作弊检测页面使用“重新扫描上传”。"
       }
     },
     "show_all": "显示全部",

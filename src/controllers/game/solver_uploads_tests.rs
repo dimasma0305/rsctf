@@ -121,6 +121,7 @@ impl Fixture {
             },
         )
         .await
+        .map(|(_, version)| version)
     }
 }
 

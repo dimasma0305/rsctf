@@ -280,6 +280,23 @@ pub(super) async fn seed_event(st: &SharedState, pool: &sqlx::PgPool, admin: Uui
     .await
     .unwrap();
     sqlx::query(
+        r#"INSERT INTO "AgentArtifactMatches"
+             (game_id, participation_id, challenge_id, source, file_name, sha256,
+              signature_key, signature_label, location, byte_offset, snippet,
+              uploaded_by, uploaded_at)
+           VALUES ($1, $2, $3, 'Solver', 'solve.py', sha256('print'::bytea),
+                   'claude-code-scratchpad', 'Claude Code scratchpad path', 'Raw', 12,
+                   '/tmp/claude-0/p/0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0/scratchpad', $4, $5)"#,
+    )
+    .bind(game_id)
+    .bind(participation_id)
+    .bind(c1)
+    .bind(users[1])
+    .bind(now - chrono::Duration::hours(3))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
         r#"INSERT INTO "WriteupGrades"
              (game_id, participation_id, challenge_id, percentage, revision, operation_id, graded_by, updated_at)
            VALUES ($1, $2, $3, 80, 1, $4, $5, $6)"#,

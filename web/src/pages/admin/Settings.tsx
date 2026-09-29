@@ -48,9 +48,10 @@ import { ColorPreview } from '@Components/ColorPreview'
 import { IconTabs } from '@Components/IconTabs'
 import { LogoBox } from '@Components/LogoBox'
 import { AdminPage } from '@Components/admin/AdminPage'
+import { AgentSignaturesSettings, useAgentSignatures } from '@Components/admin/AgentSignaturesSettings'
 import { AiChatProvidersSettings, useAiChatProviders } from '@Components/admin/AiChatProvidersSettings'
-import { getSettingsSection, SETTINGS_SECTIONS, type SettingsSectionKey } from '@Components/admin/navigation'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
+import { getSettingsSection, SETTINGS_SECTIONS, type SettingsSectionKey } from '@Components/admin/navigation'
 import { webCryptoAvailable } from '@Utils/Crypto'
 import {
   clearSettingsOperation,
@@ -122,11 +123,14 @@ const Configs: FC = () => {
   const [searchParams, setSearchParams] = useSearchParams()
   const activeSection = getSettingsSection(searchParams.toString())
   const setActiveSection = (section: SectionKey) => {
-    setSearchParams((previous) => {
-      const next = new URLSearchParams(previous)
-      next.set('section', section)
-      return next
-    }, { preventScrollReset: true })
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous)
+        next.set('section', section)
+        return next
+      },
+      { preventScrollReset: true }
+    )
   }
   const initialSnapshotRef = useRef<ConfigEditModel | null>(null)
   const saveOwnerRef = useRef(false)
@@ -142,6 +146,8 @@ const Configs: FC = () => {
   const accountUniqueness = useMemo(() => getAccountUniquenessState(accountPolicy), [accountPolicy])
   const { data: aiChatProviders } = useAiChatProviders()
   const aiLinksConfigured = aiChatProviders?.providers.some((provider) => provider.enabled) ?? false
+  const { data: agentSignatures } = useAgentSignatures()
+  const agentSignaturesConfigured = agentSignatures?.signatures.some((signature) => signature.enabled) ?? false
 
   useEffect(() => {
     if (configs) {
@@ -253,10 +259,12 @@ const Configs: FC = () => {
           : 'attention'
         : 'inactive',
       ai_links: aiLinksConfigured ? 'configured' : 'inactive',
+      agent_signatures: agentSignaturesConfigured ? 'configured' : 'inactive',
       diagnostics: 'configured',
     }
   }, [
     aiLinksConfigured,
+    agentSignaturesConfigured,
     accountUniqueness,
     buildRegistry,
     email,
@@ -1525,6 +1533,7 @@ const Configs: FC = () => {
             </Stack>
           )}
           {activeSection === 'ai_links' && <AiChatProvidersSettings />}
+          {activeSection === 'agent_signatures' && <AgentSignaturesSettings />}
           {activeSection === 'diagnostics' && (
             <Stack gap="sm">
               <Group justify="space-between">

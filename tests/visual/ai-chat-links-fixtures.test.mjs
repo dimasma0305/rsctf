@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { aiChatFixture, builtinProviders } from './ai-chat-links-fixtures.mjs'
+import { aiChatFixture, builtinAgentSignatures, builtinProviders } from './ai-chat-links-fixtures.mjs'
 
 const matches = (pattern, url) => new RegExp(`^(?:${pattern})$`, 'u').test(url)
 
@@ -107,4 +107,19 @@ test('solver fixtures keep versions newest first and every record reviewable', (
     assert.deepEqual(versions, [...versions].sort((a, b) => b - a))
     for (const version of record.versions) assert.match(version.sha256, /^[0-9a-f]{64}$/)
   }
+})
+
+test('agent signature built-ins are parsed from the Rust source with matching examples', () => {
+  const signatures = builtinAgentSignatures()
+  assert.deepEqual(
+    signatures.map((signature) => signature.key),
+    ['claude-code-scratchpad', 'claude-code-trailer', 'claude-code-projects', 'codex-home', 'cursor-projects']
+  )
+  for (const signature of signatures) {
+    // Rust byte regexes: strip the ASCII-mode group, which JavaScript lacks.
+    const pattern = new RegExp(signature.pattern.replace('(?-u:[^/\\s])', '[^/\\s]'))
+    for (const example of signature.examples) assert.ok(pattern.test(example), `${signature.key} ${example}`)
+  }
+  const fixture = aiChatFixture(1_790_000_000_000)
+  assert.equal(fixture.handle('/api/admin/agent-signatures').body.signatures.length, fixture.agentSignatureCount)
 })

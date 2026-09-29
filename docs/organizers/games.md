@@ -200,14 +200,55 @@ address. A retried upload with the same operation id is stored only once.
 Review uploads under **Monitoring → Solvers**, most recent first, optionally
 filtered by challenge. Each entry lists every version of one team's solver for
 one challenge; **Download** saves a version as an attachment. The server
-stores the bytes in PostgreSQL but never unpacks, opens, or runs them, and the
-download is always sent as `application/octet-stream` with `nosniff` and a
-sandbox policy. A solver is untrusted code from a player: read it before you
+stores the bytes in PostgreSQL and never runs them; the
+[agent-trace scanner](#ai-agent-traces) only reads them as data. The download
+is always sent as `application/octet-stream` with `nosniff` and a sandbox
+policy. A solver is untrusted code from a player: read it before you
 run it, and run it only in a disposable environment. Uploads stay reviewable
 after the switch is turned off and are included in the competition data
 archive.
 
 ![Monitor solver list with team, challenge, versions, timing, and download buttons](/screenshots/solver-uploads-monitor.png)
+
+## AI agent traces
+
+Every solver upload and writeup PDF in a competition (non-practice) event is
+scanned for traces that AI agent tools leave in files, for example a coding
+agent's session scratchpad path such as
+`/tmp/claude-0/<project>/<session-id>/scratchpad/...`, its commit trailers, or
+its local project store. Scanning reads the file as data and never runs it:
+raw bytes, text recovered from PDF pages (including browser-printed PDFs), and
+the members of zip or gzip archives, all under fixed size and decompression
+limits. It runs in the background after an upload, so it never delays or fails
+the upload.
+
+A match adds two cheat-report rules, visible under **Monitoring → Cheat
+detection**:
+
+| Rule | When | Default weight | Tier |
+| --- | --- | --- | --- |
+| `AgentArtifact` | A solver version or the team's writeup contains a trace | 40 | Behavioral |
+| `AiDeclarationContradiction` | The team declared "No AI used" for a challenge whose own solver upload contains a trace | 60 | Strong |
+
+The contradiction is raised in either order: an upload after the declaration,
+or a declaration after the upload. Open a finding to see the matched file,
+version, SHA-256, signature, where it was found, the matched text, the
+uploader, and for a contradiction the team's declaration and when it was first
+made. Weights are adjustable like every other rule, and nothing is decided
+automatically.
+
+A trace shows which tool touched the file, not that a rule was broken. If your
+event allows AI, treat `AgentArtifact` as context and ask the team; the
+contradiction is about the team's own statement, so it holds regardless of
+your AI policy. Text drawn as outlines or hidden behind a font without a
+Unicode map cannot be recovered from a PDF, so a missing trace is not evidence
+of anything.
+
+Manage the signatures under
+[Settings → Agent signatures](../reference/configuration#agent-signatures).
+Files uploaded before a signature existed are not rescanned automatically: use
+**Rescan uploads** on the event's cheat detection page (administrators only).
+A rescan is idempotent and never duplicates evidence or score.
 
 ## A&D and KotH timing
 

@@ -921,6 +921,7 @@ pub(crate) mod cheat;
 mod cheat_compare;
 mod cheat_evidence;
 mod cheat_report_cache;
+pub(crate) use cheat_report_cache::invalidate_report as invalidate_cheat_report;
 mod combined_scoreboard;
 mod containers;
 mod lookups;

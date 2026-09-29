@@ -64,6 +64,12 @@ fn cache_key(game_id: i32) -> String {
     format!("_AntiCheatReportWireV1_{game_id}")
 }
 
+/// Drop the cached report so late evidence (for example a scan of a writeup
+/// uploaded after a sealed event) is visible on the next read.
+pub(crate) async fn invalidate_report(st: &SharedState, game_id: i32) {
+    st.cache.remove(&cache_key(game_id)).await;
+}
+
 fn semantic_version(raw: &[u8], scope: &str) -> Result<[u8; VERSION_LEN], String> {
     const GENERATED_AT: &[u8] = b"\"generatedAt\":";
     let start = raw

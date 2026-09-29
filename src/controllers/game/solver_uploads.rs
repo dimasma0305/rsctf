@@ -197,15 +197,16 @@ SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                  WHERE first_solve.participation_id = $2 AND first_solve.challenge_id = $3
                    AND submission.game_id = $1) AS submit_time_utc) solve
 ON CONFLICT (participation_id, operation_id) DO NOTHING
-RETURNING version
+RETURNING id, version
 "#;
 
-/// Append one solver version. A retried operation id returns the version it
-/// already created instead of storing a second copy.
+/// Append one solver version and return its `(id, version)`. A retried
+/// operation id returns the version it already created instead of storing a
+/// second copy.
 pub(super) async fn store_solver_upload(
     pool: &sqlx::PgPool,
     upload: NewSolverUpload<'_>,
-) -> AppResult<i32> {
+) -> AppResult<(i64, i32)> {
     if upload.content.is_empty() {
         return Err(AppError::bad_request("File is empty"));
     }
@@ -263,8 +264,8 @@ pub(super) async fn store_solver_upload(
     )
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let replay: Option<(i32, i32)> = sqlx::query_as(
-        r#"SELECT challenge_id, version FROM "SolverUploads"
+    let replay: Option<(i64, i32, i32)> = sqlx::query_as(
+        r#"SELECT id, challenge_id, version FROM "SolverUploads"
             WHERE participation_id = $1 AND operation_id = $2"#,
     )
     .bind(upload.participation_id)
@@ -272,13 +273,13 @@ pub(super) async fn store_solver_upload(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some((challenge_id, version)) = replay {
+    if let Some((id, challenge_id, version)) = replay {
         if challenge_id != upload.challenge_id {
             return Err(AppError::conflict(
                 "This operation id was already used for another challenge",
             ));
         }
-        return Ok(version);
+        return Ok((id, version));
     }
     let latest: i32 = sqlx::query_scalar(
         r#"SELECT COALESCE(MAX(version), 0) FROM "SolverUploads"
@@ -301,7 +302,7 @@ pub(super) async fn store_solver_upload(
             "Your team has reached its solver storage limit for this event",
         ));
     }
-    let version = sqlx::query_scalar::<_, i32>(INSERT_SQL)
+    let stored = sqlx::query_as::<_, (i64, i32)>(INSERT_SQL)
         .bind(upload.game_id)
         .bind(upload.participation_id)
         .bind(upload.challenge_id)
@@ -321,7 +322,7 @@ pub(super) async fn store_solver_upload(
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(version)
+    Ok(stored)
 }
 
 /// `POST /api/game/{id}/challenges/{challengeId}/solver-uploads` — append a
@@ -376,7 +377,7 @@ pub async fn submit_solver_upload(
             crate::services::anti_cheat::hash_ip_identity(st.config.as_ref(), &ip)
                 .map(|identity| identity.exact)
         });
-    store_solver_upload(
+    let (upload_id, _) = store_solver_upload(
         st.pg(),
         NewSolverUpload {
             game_id: id,
@@ -392,6 +393,8 @@ pub async fn submit_solver_upload(
         },
     )
     .await?;
+    // Scan the committed file for agent artifacts without delaying the reply.
+    crate::services::agent_artifacts::spawn_solver_scan(st.clone(), upload_id);
     Ok(private_json(
         load_state(&st, &ctx.game, ctx.participation.id, challenge_id).await?,
     ))
@@ -400,3 +403,7 @@ pub async fn submit_solver_upload(
 #[cfg(test)]
 #[path = "solver_uploads_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "solver_uploads_artifact_tests.rs"]
+mod artifact_tests;

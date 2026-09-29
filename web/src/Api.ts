@@ -3720,6 +3720,47 @@ export interface AiChatProviderDeleteResult {
   key: string;
 }
 
+/** A trace left by AI agent tooling, matched in uploaded solvers and writeups */
+export interface AgentSignatureModel {
+  key: string;
+  label: string;
+  /** Server-side byte regular expression */
+  pattern: string;
+  builtin: boolean;
+  enabled: boolean;
+  /** Sample matching text (built-ins only) */
+  examples: string[];
+  /** @format uint64 */
+  updatedAt: number | null;
+}
+
+/** Admin agent-artifact signature registry */
+export interface AgentSignatureListModel {
+  signatures: AgentSignatureModel[];
+  /** @format int32 */
+  maxCustomSignatures: number;
+}
+
+/** Create or update a signature; built-in keys accept only `enabled` */
+export interface AgentSignatureUpdateModel {
+  enabled: boolean;
+  label?: string;
+  pattern?: string;
+}
+
+/** Deleted signature key */
+export interface AgentSignatureDeleteResult {
+  key: string;
+}
+
+/** A background agent-artifact rescan request */
+export interface AgentArtifactRescanModel {
+  /** @format int32 */
+  gameId: number;
+  /** False when a rescan of this event is already running on the server */
+  started: boolean;
+}
+
 /** Player-facing challenge modes used by the joined-event catalog. */
 export type ChallengeCatalogMode = "jeopardy" | "koth" | "attackDefense";
 
@@ -6053,6 +6094,84 @@ export class Api<
       this.request<AiChatProviderDeleteResult, RequestResponse>({
         path: `/api/admin/ai-chat-providers/${encodeURIComponent(key)}`,
         method: "DELETE",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Lists built-in and custom agent-artifact signatures; requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminGetAgentSignatures
+     * @summary Get agent signatures
+     * @request GET:/api/admin/agent-signatures
+     */
+    adminGetAgentSignatures: (params: RequestParams = {}) =>
+      this.request<AgentSignatureListModel, RequestResponse>({
+        path: `/api/admin/agent-signatures`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    useAdminGetAgentSignatures: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<AgentSignatureListModel, RequestResponse>(
+        doFetch ? `/api/admin/agent-signatures` : null,
+        options,
+      ),
+
+    /**
+     * @description Toggles a signature, or creates/updates a custom signature; requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminSaveAgentSignature
+     * @summary Save an agent signature
+     * @request PUT:/api/admin/agent-signatures/{key}
+     */
+    adminSaveAgentSignature: (
+      key: string,
+      data: AgentSignatureUpdateModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<AgentSignatureModel, RequestResponse>({
+        path: `/api/admin/agent-signatures/${encodeURIComponent(key)}`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Deletes a custom agent signature; requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminDeleteAgentSignature
+     * @summary Delete an agent signature
+     * @request DELETE:/api/admin/agent-signatures/{key}
+     */
+    adminDeleteAgentSignature: (key: string, params: RequestParams = {}) =>
+      this.request<AgentSignatureDeleteResult, RequestResponse>({
+        path: `/api/admin/agent-signatures/${encodeURIComponent(key)}`,
+        method: "DELETE",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Rescans every solver upload and writeup of an event for agent artifacts in the background; requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminRescanAgentArtifacts
+     * @summary Rescan uploads for agent artifacts
+     * @request POST:/api/admin/games/{id}/agent-artifacts/rescan
+     */
+    adminRescanAgentArtifacts: (id: number, params: RequestParams = {}) =>
+      this.request<AgentArtifactRescanModel, RequestResponse>({
+        path: `/api/admin/games/${id}/agent-artifacts/rescan`,
+        method: "POST",
         format: "json",
         ...params,
       }),

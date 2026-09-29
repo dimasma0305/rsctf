@@ -457,6 +457,25 @@ are neither requested nor exposed. Provider responses are capped at 256 KiB and
 copy for provider outages, so public traffic does not fan out into one Trakteer
 request per page view.
 
+## Agent signatures
+
+**Settings → Agent signatures** lists the traces that the
+[agent-trace scanner](../organizers/games#ai-agent-traces) looks for in
+uploaded solvers and writeups. Built-in signatures cover Claude Code (session
+scratchpad path, commit trailers, project store), Codex (its home directory's
+session, shell-snapshot and worktree folders), and Cursor (its project store);
+each was checked against traces the tool leaves on a real machine. Switch a
+built-in off to stop matching it.
+
+Add up to 32 custom signatures with a key, a label shown in the cheat report,
+and a regular expression searched for anywhere in the file. A pattern must
+compile within size limits and must not match ordinary solver or writeup text,
+such as a plain `/tmp/` path or `import os`. Changes apply to new uploads;
+rescan an event to apply them to earlier files. Deleting a signature keeps the
+evidence it already produced.
+
+![Agent signatures settings with built-in signatures, their patterns, and examples](/screenshots/agent-signatures-settings.png)
+
 ## AI chat providers
 
 Events that turn on [AI chat links](../organizers/games#ai-chat-links) accept a
