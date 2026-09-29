@@ -2,7 +2,15 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { ChallengeType, type ChallengeInfoModel, type GameInfoModel } from '@Api'
-import { canShowReadinessCache, eventReadiness, readinessError } from './EventReadiness'
+import {
+  canShowReadinessCache,
+  eventReadiness,
+  loadManualReadiness,
+  manualReadinessItems,
+  readinessCounts,
+  readinessError,
+  saveManualReadiness,
+} from './EventReadiness'
 
 const game: GameInfoModel = {
   id: 19,
@@ -108,4 +116,45 @@ test('readiness stays read-only, manually refreshed, translated and linked into 
       .sort()
   assert.deepEqual(keys(en), keys(id))
   for (const row of eventReadiness(game, [challenge])) assert.ok(en.reasons[row.reason])
+})
+
+test('manual runtime checks list only the relevant items', () => {
+  const keys = (competitiveServices: boolean, vpnRequired: boolean) =>
+    manualReadinessItems({ competitiveServices, vpnRequired }).map((item) => item.key)
+  assert.deepEqual(keys(false, false), ['teams', 'attachments'])
+  assert.deepEqual(keys(true, true), ['teams', 'attachments', 'services', 'vpn'])
+})
+
+test('readiness counts every state, including empty ones', () => {
+  assert.deepEqual(readinessCounts([{ state: 'attention' }, { state: 'checked' }, { state: 'attention' }]), {
+    attention: 2,
+    unverified: 0,
+    checked: 1,
+    info: 0,
+  })
+})
+
+test('manual ticks are per event, sanitized, and survive broken storage', () => {
+  const values = new Map<string, string>()
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => void values.set(key, value),
+  }
+  saveManualReadiness(19, ['vpn', 'teams', 'teams'], storage)
+  assert.deepEqual(loadManualReadiness(19, storage), ['teams', 'vpn'])
+  assert.deepEqual(loadManualReadiness(20, storage), [])
+  values.set('rsctf-readiness-manual:21', '{not json')
+  assert.deepEqual(loadManualReadiness(21, storage), [])
+  values.set('rsctf-readiness-manual:22', JSON.stringify(['teams', 'unknown', 7]))
+  assert.deepEqual(loadManualReadiness(22, storage), ['teams'])
+  const throwing = {
+    getItem: () => {
+      throw new Error('blocked')
+    },
+    setItem: () => {
+      throw new Error('blocked')
+    },
+  }
+  assert.deepEqual(loadManualReadiness(19, throwing), [])
+  assert.doesNotThrow(() => saveManualReadiness(19, ['teams'], throwing))
 })

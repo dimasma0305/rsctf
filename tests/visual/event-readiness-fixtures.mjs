@@ -21,5 +21,9 @@ export function fixture(path, method = 'GET', scenario = 'normal', role = 'Admin
     ]
     return { body: pathname.endsWith('/challenges') ? scenario === 'empty' ? [] : challenges : game }
   }
+  if (pathname === '/api/edit/games/19/preflight') {
+    if (!['Admin', 'Manager'].includes(role)) return { status: 403, body: { title: 'forbidden' } }
+    return { body: { job: null, summary: null, results: [] } }
+  }
   return navigationFixture(path, method, role)
 }
