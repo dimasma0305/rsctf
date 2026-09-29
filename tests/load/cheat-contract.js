@@ -122,8 +122,8 @@ export const DETECTOR_CAPABILITIES = Object.freeze([
   ["InstantSubmitAfterAccess", "background", "jeopardyContainers"],
   ["SubmitterNeverAccessedContainer", "telemetryOnly", "jeopardyContainers"],
   ["AccessIpMismatchAtSubmission", "background", "jeopardyContainers"],
-  ["AgentArtifact", "active", "jeopardy"],
-  ["AiDeclarationContradiction", "active", "jeopardy"],
+  ["AgentArtifact", "background", "jeopardy"],
+  ["AiDeclarationContradiction", "background", "jeopardy"],
 ].map(([code, status, scope]) => Object.freeze({ code, status, scope })));
 
 const DETECTOR_CAPABILITY_BY_CODE = new Map(

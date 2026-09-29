@@ -23,6 +23,10 @@ const MAX_PAGES: usize = 2_000;
 const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_DEPTH: usize = 32;
 const MAX_CMAP_ENTRIES: usize = 65_536;
+/// Map writes (including overwrites) allowed across every CMap of a document.
+const MAX_CMAP_WORK: usize = 1_000_000;
+/// Page content bytes lexed across the whole document.
+const MAX_CONTENT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Every decoded stream plus the recovered page text.
 #[derive(Debug, Default)]
@@ -439,8 +443,16 @@ fn object_starts(data: &[u8]) -> Vec<(u32, usize)> {
 
 fn read_objects(data: &[u8], inflater: &mut Inflater) -> HashMap<u32, PdfObject> {
     let mut objects = HashMap::new();
-    for (number, body_start) in object_starts(data) {
-        let body_end = find(data, b"endobj", body_start).unwrap_or(data.len());
+    let starts = object_starts(data);
+    for (index, &(number, body_start)) in starts.iter().enumerate() {
+        // Bound every search by the next object header so a file without
+        // `endobj` keywords cannot make each object rescan the whole file.
+        let limit = starts
+            .get(index + 1)
+            .map(|(_, next)| *next)
+            .unwrap_or(data.len())
+            .max(body_start);
+        let body_end = find(&data[..limit], b"endobj", body_start).unwrap_or(limit);
         let body = &data[body_start..body_end];
         let (dict_bytes, stream_bytes) = match find(body, b"stream", 0) {
             Some(at) if !body[..at].ends_with(b"end") => {
@@ -554,14 +566,26 @@ fn code_of(bytes: &[u8]) -> u32 {
         .fold(0u32, |acc, byte| acc << 8 | u32::from(*byte))
 }
 
-fn parse_cmap(data: &[u8]) -> CMap {
+/// Record one mapping within the document-wide work budget. Returns false
+/// once the budget or the entry cap is exhausted, which ends parsing: repeated
+/// overlapping ranges would otherwise loop without growing the map.
+fn put(cmap: &mut CMap, work: &mut usize, code: u32, value: String) -> bool {
+    if *work == 0 || cmap.map.len() >= MAX_CMAP_ENTRIES {
+        return false;
+    }
+    *work -= 1;
+    cmap.map.insert(code, value);
+    true
+}
+
+fn parse_cmap(data: &[u8], work: &mut usize) -> CMap {
     let tokens = tokenize(data, 2_000_000);
     let mut cmap = CMap {
         code_len: 1,
         map: HashMap::new(),
     };
     let mut index = 0;
-    while index < tokens.len() && cmap.map.len() < MAX_CMAP_ENTRIES {
+    'tokens: while index < tokens.len() {
         match &tokens[index] {
             Token::Keyword(word) if word == b"begincodespacerange" => {
                 if let Some(Token::Str(low)) = tokens.get(index + 1) {
@@ -575,7 +599,9 @@ fn parse_cmap(data: &[u8]) -> CMap {
                     (tokens.get(index), tokens.get(index + 1))
                 {
                     cmap.code_len = source.len().clamp(1, 4);
-                    cmap.map.insert(code_of(source), utf16(target));
+                    if !put(&mut cmap, work, code_of(source), utf16(target)) {
+                        break 'tokens;
+                    }
                     index += 2;
                 }
             }
@@ -591,12 +617,11 @@ fn parse_cmap(data: &[u8]) -> CMap {
                             let mut units = target.clone();
                             for code in low..=high.min(low.saturating_add(MAX_CMAP_ENTRIES as u32))
                             {
-                                cmap.map.insert(code, utf16(&units));
+                                if !put(&mut cmap, work, code, utf16(&units)) {
+                                    break 'tokens;
+                                }
                                 if let Some(last) = units.last_mut() {
                                     *last = last.wrapping_add(1);
-                                }
-                                if cmap.map.len() >= MAX_CMAP_ENTRIES {
-                                    break;
                                 }
                             }
                             index += 3;
@@ -605,7 +630,9 @@ fn parse_cmap(data: &[u8]) -> CMap {
                             let mut code = low;
                             index += 3;
                             while let Some(Token::Str(target)) = tokens.get(index) {
-                                cmap.map.insert(code, utf16(target));
+                                if !put(&mut cmap, work, code, utf16(target)) {
+                                    break 'tokens;
+                                }
                                 code = code.saturating_add(1);
                                 index += 1;
                             }
@@ -643,6 +670,7 @@ fn page_fonts(
     objects: &HashMap<u32, PdfObject>,
     page: &Value,
     cmaps: &mut HashMap<u32, CMap>,
+    work: &mut usize,
 ) -> HashMap<Vec<u8>, Option<u32>> {
     // Resources may be inherited from ancestors in the page tree.
     let mut node = Some(page);
@@ -669,7 +697,9 @@ fn page_fonts(
                             .get(&number)
                             .and_then(|object| object.stream.as_deref())
                         {
-                            cmaps.entry(number).or_insert_with(|| parse_cmap(bytes));
+                            cmaps
+                                .entry(number)
+                                .or_insert_with(|| parse_cmap(bytes, work));
                         }
                     }
                     fonts.entry(name.clone()).or_insert(cmap_ref);
@@ -794,23 +824,35 @@ fn content_text(
     }
 }
 
-fn contents_of(objects: &HashMap<u32, PdfObject>, page: &Value) -> Vec<u8> {
+/// A page's content streams that have not been lexed yet, within the
+/// document-wide byte budget. Many pages may share one stream; each is lexed
+/// once so a small file cannot multiply the work.
+fn contents_of(
+    objects: &HashMap<u32, PdfObject>,
+    page: &Value,
+    seen: &mut std::collections::HashSet<u32>,
+    budget: &mut usize,
+) -> Vec<u8> {
+    let parts = match page.get(b"Contents") {
+        Some(Value::Arr(parts)) => parts.iter().collect::<Vec<_>>(),
+        Some(value) => vec![value],
+        None => Vec::new(),
+    };
     let mut content = Vec::new();
-    match page.get(b"Contents") {
-        Some(Value::Arr(parts)) => {
-            for part in parts {
-                if let Some(bytes) = stream_of(objects, part) {
-                    content.extend_from_slice(bytes);
-                    content.push(b'\n');
-                }
-            }
+    for part in parts {
+        let Value::Ref(number) = part else { continue };
+        if !seen.insert(*number) {
+            continue;
         }
-        Some(value) => {
-            if let Some(bytes) = stream_of(objects, value) {
-                content.extend_from_slice(bytes);
-            }
+        if let Some(bytes) = stream_of(objects, part) {
+            let take = bytes.len().min(*budget);
+            *budget -= take;
+            content.extend_from_slice(&bytes[..take]);
+            content.push(b'\n');
         }
-        None => {}
+        if *budget == 0 {
+            break;
+        }
     }
     content
 }
@@ -820,6 +862,9 @@ pub(super) fn extract(data: &[u8]) -> PdfContent {
     let mut inflater = Inflater { total: 0 };
     let objects = read_objects(data, &mut inflater);
     let mut cmaps = HashMap::new();
+    let mut cmap_work = MAX_CMAP_WORK;
+    let mut seen_content = std::collections::HashSet::new();
+    let mut content_budget = MAX_CONTENT_BYTES;
     let mut text = Vec::new();
     let mut pages = objects
         .iter()
@@ -829,10 +874,13 @@ pub(super) fn extract(data: &[u8]) -> PdfContent {
     pages.sort_unstable();
     for number in pages.into_iter().take(MAX_PAGES) {
         let page = &objects[&number].dict;
-        let fonts = page_fonts(&objects, page, &mut cmaps);
-        let content = contents_of(&objects, page);
+        let fonts = page_fonts(&objects, page, &mut cmaps, &mut cmap_work);
+        let content = contents_of(&objects, page, &mut seen_content, &mut content_budget);
         content_text(&content, &fonts, &cmaps, &mut text);
         text.push(b'\n');
+        if content_budget == 0 {
+            break;
+        }
         if text.len() >= MAX_TEXT_BYTES {
             text.truncate(MAX_TEXT_BYTES);
             break;

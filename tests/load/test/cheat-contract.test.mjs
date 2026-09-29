@@ -286,6 +286,8 @@ test("detector capability metadata covers every stable kind exactly once", () =>
       "DelayedSolveSubmission",
       "InstantSubmitAfterAccess",
       "AccessIpMismatchAtSubmission",
+      "AgentArtifact",
+      "AiDeclarationContradiction",
     ],
   );
   assert.deepEqual(

@@ -45,7 +45,7 @@ pub(super) fn detector_capabilities() -> Vec<Json> {
                     ("telemetryOnly", "platform")
                 }
                 T::WrongFlagLeakage => ("telemetryOnly", "jeopardy"),
-                T::AgentArtifact | T::AiDeclarationContradiction => ("active", "jeopardy"),
+                T::AgentArtifact | T::AiDeclarationContradiction => ("background", "jeopardy"),
                 T::FlagEgress => ("telemetryOnly", "jeopardyContainers"),
 
                 T::TokenAbuse | T::CollusionGroup | T::HoneypotCanaryFlag => {

@@ -13,6 +13,19 @@ use crate::app_state::SharedState;
 use crate::services::suspicion::{record_agent_artifact_event, SuspicionType};
 use crate::utils::error::{AppError, AppResult};
 
+/// Scans hold a file and its decoded content in memory (up to about 100 MiB
+/// for a large writeup), so at most two run at once per process; a burst of
+/// uploads at the writeup deadline queues instead of exhausting memory.
+static SCAN_SLOTS: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(2));
+
+async fn scan_slot() -> AppResult<tokio::sync::SemaphorePermit<'static>> {
+    SCAN_SLOTS
+        .acquire()
+        .await
+        .map_err(|error| AppError::internal(format!("artifact scan slots closed: {error}")))
+}
+
 /// Upper bound for a writeup read back from storage for scanning.
 const MAX_WRITEUP_SCAN_BYTES: usize = crate::utils::upload::WRITEUP_FILE_BYTES + 1024;
 
@@ -155,6 +168,7 @@ async fn scan_solver_with(
     signatures: &[CompiledSignature],
     upload_id: i64,
 ) -> AppResult<bool> {
+    let _slot = scan_slot().await?;
     let Some(row) = sqlx::query_as::<_, SolverRow>(
         r#"SELECT game_id, participation_id, challenge_id, file_name, sha256, content,
                   uploaded_by, uploaded_at
@@ -205,6 +219,7 @@ async fn scan_writeup_with(
     signatures: &[CompiledSignature],
     participation_id: i32,
 ) -> AppResult<bool> {
+    let _slot = scan_slot().await?;
     let Some(row) = sqlx::query_as::<_, WriteupRow>(
         r#"SELECT participation.game_id, file.name, file.hash, file.upload_time_utc
              FROM "Participations" participation

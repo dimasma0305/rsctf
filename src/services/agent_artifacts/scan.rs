@@ -1,6 +1,7 @@
 //! Pure, bounded scanning of one submitted file. Nothing here touches the
 //! database or runs the file; containers are opened only to read their bytes.
 
+use std::borrow::Cow;
 use std::io::Read;
 
 use super::{pdf, CompiledSignature};
@@ -43,11 +44,11 @@ pub struct ArtifactHit {
     pub snippet: String,
 }
 
-struct Segment {
+struct Segment<'a> {
     location: ArtifactLocation,
     /// Archive member name, shown in front of the snippet.
     member: Option<String>,
-    bytes: Vec<u8>,
+    bytes: Cow<'a, [u8]>,
 }
 
 fn snippet(bytes: &[u8], start: usize, end: usize, member: Option<&str>) -> String {
@@ -75,7 +76,7 @@ fn snippet(bytes: &[u8], start: usize, end: usize, member: Option<&str>) -> Stri
     clipped
 }
 
-fn zip_members(bytes: &[u8]) -> Vec<Segment> {
+fn zip_members(bytes: &[u8]) -> Vec<Segment<'static>> {
     let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
         return Vec::new();
     };
@@ -106,13 +107,13 @@ fn zip_members(bytes: &[u8]) -> Vec<Segment> {
         segments.push(Segment {
             location: ArtifactLocation::Stream,
             member: Some(name),
-            bytes: named,
+            bytes: Cow::Owned(named),
         });
     }
     segments
 }
 
-fn gzip_body(bytes: &[u8]) -> Option<Segment> {
+fn gzip_body(bytes: &[u8]) -> Option<Segment<'static>> {
     let cap = (bytes.len() as u64)
         .saturating_mul(MAX_MEMBER_RATIO)
         .min(MAX_MEMBER_BYTES as u64);
@@ -123,27 +124,27 @@ fn gzip_body(bytes: &[u8]) -> Option<Segment> {
     (!data.is_empty()).then_some(Segment {
         location: ArtifactLocation::Stream,
         member: None,
-        bytes: data,
+        bytes: Cow::Owned(data),
     })
 }
 
-fn segments(bytes: &[u8]) -> Vec<Segment> {
+fn segments(bytes: &[u8]) -> Vec<Segment<'_>> {
     let mut segments = vec![Segment {
         location: ArtifactLocation::Raw,
         member: None,
-        bytes: bytes.to_vec(),
+        bytes: Cow::Borrowed(bytes),
     }];
     if pdf::is_pdf(bytes) {
         let content = pdf::extract(bytes);
         segments.push(Segment {
             location: ArtifactLocation::Text,
             member: None,
-            bytes: content.text,
+            bytes: Cow::Owned(content.text),
         });
         segments.extend(content.streams.into_iter().map(|stream| Segment {
             location: ArtifactLocation::Stream,
             member: None,
-            bytes: stream,
+            bytes: Cow::Owned(stream),
         }));
     } else if bytes.starts_with(b"PK\x03\x04") {
         segments.extend(zip_members(bytes));

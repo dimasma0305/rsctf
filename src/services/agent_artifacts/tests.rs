@@ -223,3 +223,54 @@ fn malformed_pdfs_do_not_panic() {
         let _ = scan_file(&builtins(), &input);
     }
 }
+
+fn finishes_quickly(label: &str, input: &[u8]) {
+    let started = std::time::Instant::now();
+    let _ = pdf::extract(input);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "{label} took {elapsed:?}"
+    );
+}
+
+#[test]
+fn crafted_pdfs_cannot_multiply_parser_work() {
+    // Many object headers and no `endobj`: each body must stop at the next header.
+    let mut headers = b"%PDF-1.4\n".to_vec();
+    for _ in 0..200_000 {
+        headers.extend_from_slice(b"1 0 obj ");
+    }
+    finishes_quickly("objects without endobj", &headers);
+
+    // Overlapping ToUnicode ranges rewrite the same 65536 codes forever.
+    let mut ranges = b"30000 beginbfrange\n".to_vec();
+    for _ in 0..30_000 {
+        ranges.extend_from_slice(b"<0000> <FFFF> <0041>\n");
+    }
+    ranges.extend_from_slice(b"endbfrange\n");
+    let mut cmap_pdf = b"%PDF-1.4\n1 0 obj << /Type /Page /Resources << /Font << /F1 2 0 R >> >> /Contents 4 0 R >> endobj\n2 0 obj << /Type /Font /ToUnicode 3 0 R >> endobj\n3 0 obj << >> stream\n".to_vec();
+    cmap_pdf.extend_from_slice(&ranges);
+    cmap_pdf.extend_from_slice(
+        b"endstream endobj\n4 0 obj << >> stream\nBT /F1 12 Tf <0041> Tj ET\nendstream endobj\n",
+    );
+    finishes_quickly("overlapping CMap ranges", &cmap_pdf);
+
+    // Thousands of pages sharing one large content stream without text.
+    let mut shared = b"%PDF-1.4\n".to_vec();
+    for page in 0..2_000 {
+        shared.extend_from_slice(
+            format!(
+                "{} 0 obj << /Type /Page /Contents 9999 0 R >> endobj\n",
+                page + 1
+            )
+            .as_bytes(),
+        );
+    }
+    shared.extend_from_slice(b"9999 0 obj << >> stream\n");
+    for _ in 0..700_000 {
+        shared.extend_from_slice(b"0 0 m\n");
+    }
+    shared.extend_from_slice(b"endstream endobj\n");
+    finishes_quickly("pages sharing one content stream", &shared);
+}
