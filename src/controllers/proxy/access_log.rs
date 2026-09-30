@@ -35,7 +35,6 @@ fn database_error(error: sqlx::Error) -> AppError {
     AppError::internal(error.to_string())
 }
 
-#[cfg(test)]
 /// One incident per victim team and challenge: opening several teams'
 /// containers for the same challenge is several incidents, while reconnecting
 /// to the same one is not.
@@ -43,6 +42,7 @@ fn cross_team_evidence_key(challenge_id: i32, owner_participation_id: i32) -> St
     format!("challenge:{challenge_id}:owner:{owner_participation_id}")
 }
 
+#[cfg(test)]
 async fn persist_access_audit(pool: &sqlx::PgPool, audit: AccessAudit<'_>) -> AppResult<()> {
     let mut transaction = pool.begin().await.map_err(database_error)?;
     crate::services::suspicion::lock_participation_suspicion_writes(
