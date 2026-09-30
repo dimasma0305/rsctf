@@ -498,7 +498,10 @@ async fn source_review_resolves_direct_submission_identity_and_pair_ledgers() {
     for (label, expected) in [
         ("Admission sources", "Submission"),
         ("Teams", "Submitter"),
-        ("Masked identity hints", "not stored for submission addresses"),
+        (
+            "Masked identity hints",
+            "not stored for submission addresses",
+        ),
     ] {
         assert!(
             address_source

@@ -192,52 +192,71 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires migrated disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
     async fn postgres_stranded_sealed_games_settle_and_late_writes_stay_settled() {
-        use sqlx::postgres::PgPoolOptions;
+        use std::str::FromStr;
+
+        use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
             .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
-        let pool = PgPoolOptions::new()
+        let admin = PgPoolOptions::new()
             .max_connections(1)
             .connect(&database_url)
             .await
             .unwrap();
-        let game_id: i32 = sqlx::query_scalar(
-            r#"SELECT game_id FROM "AntiCheatReconciliationQueue" ORDER BY game_id LIMIT 1"#,
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("the disposable database needs one game");
-        let mut transaction = pool.begin().await.unwrap();
-        // A game sealed before this migration, stranded by a late event.
-        for sql in [
-            r#"UPDATE "SuspicionReconciliationState"
-                  SET evidence_closed_at_utc = COALESCE(evidence_closed_at_utc, clock_timestamp()),
-                      sealed_at_utc = COALESCE(sealed_at_utc, clock_timestamp())
-                WHERE game_id = $1"#,
-            r#"UPDATE "AntiCheatReconciliationQueue"
-                  SET desired_generation = applied_generation + 1,
-                      final_requested_at_utc = COALESCE(final_requested_at_utc, clock_timestamp()),
-                      final_applied_at_utc = COALESCE(final_applied_at_utc, clock_timestamp())
-                WHERE game_id = $1"#,
-            r#"INSERT INTO "AntiCheatReconciliationSources"
-                   (game_id, source_kind, dirty_version, applied_version, dirtied_at_utc)
-               VALUES ($1, 7, 3, 1, clock_timestamp())
-               ON CONFLICT (game_id, source_kind) DO UPDATE
-                 SET dirty_version = "AntiCheatReconciliationSources".applied_version + 2"#,
-        ] {
-            sqlx::query(sql)
-                .bind(game_id)
-                .execute(&mut *transaction)
-                .await
-                .unwrap();
-        }
-        sqlx::raw_sql(UP_SQL)
-            .execute(&mut *transaction)
+        let schema = format!("m0355_sealed_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
             .await
             .unwrap();
-        async fn settled(connection: &mut sqlx::PgConnection, game_id: i32) -> (i64, bool) {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                PgConnectOptions::from_str(&database_url)
+                    .unwrap()
+                    .options([("search_path", schema.as_str())]),
+            )
+            .await
+            .unwrap();
+        // Game 1 was sealed before this migration and stranded by a late
+        // event; game 2 is live with ordinary pending work.
+        sqlx::raw_sql(
+            r#"CREATE TABLE "AntiCheatReconciliationQueue" (
+                   game_id INTEGER PRIMARY KEY,
+                   desired_generation BIGINT NOT NULL DEFAULT 0,
+                   applied_generation BIGINT NOT NULL DEFAULT 0,
+                   final_requested_at_utc TIMESTAMPTZ NULL,
+                   final_applied_at_utc TIMESTAMPTZ NULL,
+                   available_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                   updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+               );
+               CREATE TABLE "SuspicionReconciliationState" (
+                   game_id INTEGER PRIMARY KEY,
+                   evidence_closed_at_utc TIMESTAMPTZ NULL,
+                   sealed_at_utc TIMESTAMPTZ NULL
+               );
+               CREATE TABLE "AntiCheatReconciliationSources" (
+                   game_id INTEGER NOT NULL, source_kind SMALLINT NOT NULL,
+                   dirty_version BIGINT NOT NULL, applied_version BIGINT NOT NULL,
+                   dirtied_at_utc TIMESTAMPTZ NULL, applied_at_utc TIMESTAMPTZ NULL,
+                   PRIMARY KEY (game_id, source_kind)
+               );
+               INSERT INTO "AntiCheatReconciliationQueue"
+                   (game_id, desired_generation, applied_generation,
+                    final_requested_at_utc, final_applied_at_utc)
+               VALUES (1, 3, 2, now(), now()), (2, 5, 4, NULL, NULL);
+               INSERT INTO "SuspicionReconciliationState" VALUES
+                   (1, now(), now()), (2, NULL, NULL);
+               INSERT INTO "AntiCheatReconciliationSources"
+                   (game_id, source_kind, dirty_version, applied_version)
+               VALUES (1, 7, 3, 1), (2, 7, 5, 4);"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(UP_SQL).execute(&pool).await.unwrap();
+        async fn state(pool: &sqlx::PgPool, game_id: i32) -> (i64, bool) {
             sqlx::query_as(
                 r#"SELECT (SELECT COUNT(*) FROM "AntiCheatReconciliationSources"
                             WHERE game_id = $1 AND dirty_version > applied_version),
@@ -245,32 +264,29 @@ mod tests {
                              FROM "AntiCheatReconciliationQueue" WHERE game_id = $1)"#,
             )
             .bind(game_id)
-            .fetch_one(connection)
+            .fetch_one(pool)
             .await
             .unwrap()
         }
-        assert_eq!(settled(&mut transaction, game_id).await, (0, true));
+        assert_eq!(state(&pool, 1).await, (0, true), "stranded game settled");
+        assert_eq!(state(&pool, 2).await, (1, false), "live work untouched");
 
-        // A later SuspicionEvents-style write is acknowledged in place.
-        sqlx::raw_sql(
-            r#"CREATE TEMP TABLE sealed_source7_probe (
-                   game_id INTEGER NOT NULL,
-                   reconciliation_version BIGINT NULL
-               ) ON COMMIT DROP;
-               CREATE TRIGGER sealed_source7_stamp
-               BEFORE INSERT ON sealed_source7_probe
-               FOR EACH ROW EXECUTE FUNCTION rsctf_stamp_anticheat_insert('7');"#,
-        )
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
-        sqlx::query("INSERT INTO sealed_source7_probe (game_id) VALUES ($1)")
-            .bind(game_id)
-            .execute(&mut *transaction)
+        // A later SuspicionEvents write on the sealed game is acknowledged in
+        // place; on the live game it still waits for the reconciler.
+        for game_id in [1, 2] {
+            sqlx::query("SELECT rsctf_next_anticheat_reconciliation_version($1, 7::smallint)")
+                .bind(game_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        assert_eq!(state(&pool, 1).await, (0, true));
+        assert_eq!(state(&pool, 2).await, (1, false));
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
             .await
             .unwrap();
-        assert_eq!(settled(&mut transaction, game_id).await, (0, true));
-        transaction.rollback().await.unwrap();
-        pool.close().await;
+        admin.close().await;
     }
 }
