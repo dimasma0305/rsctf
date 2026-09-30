@@ -89,6 +89,11 @@ pub struct SuspicionBreakdown {
 /// corroborate existing hard evidence, capped at Hard/2. Pre-cutover rows marked
 /// `legacy-untrusted:` remain auditable at zero but never consume incident caps,
 /// select a risk band, or provide corroboration.
+/// Pre-cutover rows that must never score, corroborate, or select a band.
+pub fn is_quarantined_evidence_key(evidence_key: &str) -> bool {
+    evidence_key.starts_with("legacy-untrusted:")
+}
+
 pub fn compute_breakdown(
     events: &[SuspicionEventRow],
     weight: impl Fn(&str) -> i32,
@@ -132,7 +137,7 @@ pub fn compute_breakdown(
         let mut newest_trusted_context_index = None;
 
         for e in ordered {
-            let is_untrusted = e.evidence_key.starts_with("legacy-untrusted:");
+            let is_untrusted = is_quarantined_evidence_key(&e.evidence_key);
             // m0052 assigned `legacy:<id>` evidence identities to pre-ledger
             // rows. m0091 freezes their score deltas, but the prefix must keep
             // the original one-incident-per-rule collision behavior.

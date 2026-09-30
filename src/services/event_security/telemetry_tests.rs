@@ -12,6 +12,27 @@ fn bounds_are_deliberately_small_and_gameplay_independent() {
 }
 
 #[test]
+fn flag_transports_keep_a_reserve_when_bulk_telemetry_fills_the_quota() {
+    let both = QuotaDecision {
+        keep_bulk: true,
+        keep_flags: true,
+    };
+    assert_eq!(quota_decision(0, 0, false, 192, 176), both);
+    // Bulk rows that would reach into the reserve are dropped; the flag
+    // transport arriving in the same batch is kept.
+    let event_limit = EVENT_LOGICAL_QUOTA_BYTES - FLAG_EVENT_RESERVE_BYTES;
+    let decision = quota_decision(event_limit - 100, 0, false, 192, 176);
+    assert!(!decision.keep_bulk && decision.keep_flags);
+    let global_limit = GLOBAL_LOGICAL_QUOTA_BYTES - FLAG_GLOBAL_RESERVE_BYTES;
+    let decision = quota_decision(0, global_limit, false, 192, 176);
+    assert!(!decision.keep_bulk && decision.keep_flags);
+    // Once bulk stopped, flags continue until the whole quota is used.
+    assert!(!quota_decision(0, 0, true, 192, 0).keep_bulk);
+    assert_eq!(quota_decision(event_limit, 0, true, 0, 176), both);
+    assert!(!quota_decision(EVENT_LOGICAL_QUOTA_BYTES - 100, 0, true, 0, 176).keep_flags);
+}
+
+#[test]
 fn invalid_bucket_and_raw_values_are_rejected_before_database_work() {
     let batch = TelemetryBatch {
         batch_id: Uuid::new_v4(),
@@ -84,7 +105,10 @@ fn internal_bulk_timestamps_are_rfc3339_not_wire_milliseconds() {
 
 #[test]
 fn trigger_stamped_telemetry_prefilters_exact_replays() {
-    let source = include_str!("telemetry.rs");
+    let source = concat!(
+        include_str!("telemetry.rs"),
+        include_str!("telemetry_rows.rs")
+    );
     assert_eq!(source.matches("deduped_input AS MATERIALIZED").count(), 3);
     assert_eq!(
         source

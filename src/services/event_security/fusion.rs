@@ -72,11 +72,25 @@ pub struct FindingRow {
     pub evidence_tier: i16,
     pub score_delta: i32,
     pub evidence_key: String,
+    #[serde(with = "crate::utils::datetime::millis")]
     pub occurred_at_utc: DateTime<Utc>,
     pub details: serde_json::Value,
     pub shadow: bool,
+    #[serde(with = "crate::utils::datetime::millis")]
     pub created_at_utc: DateTime<Utc>,
     pub latest_review_status: Option<i16>,
+}
+
+impl FindingRow {
+    /// A reviewer explained or dismissed this finding.
+    fn set_aside(&self) -> bool {
+        matches!(
+            self.latest_review_status,
+            Some(value)
+                if value == FindingReviewStatus::Explained as i16
+                    || value == FindingReviewStatus::Dismissed as i16
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -296,17 +310,10 @@ fn score_findings(findings: &[FindingRow]) -> AppResult<(i64, Vec<FamilyContribu
             existing_incidents: 0,
         });
         if tier == EvidenceTier::Context {
-            contribution.context_count += 1;
+            contribution.context_count += usize::from(!finding.set_aside());
             continue;
         }
-        if finding.shadow
-            || matches!(
-                finding.latest_review_status,
-                Some(value)
-                    if value == FindingReviewStatus::Explained as i16
-                        || value == FindingReviewStatus::Dismissed as i16
-            )
-        {
+        if finding.shadow || finding.set_aside() {
             continue;
         }
         match tier {
@@ -386,12 +393,81 @@ fn existing_family(rule: suspicion::SuspicionType) -> EvidenceFamily {
     }
 }
 
+type LedgerEventRow = (i16, String, DateTime<Utc>, Option<i32>);
+
+/// Count ledger incidents into their fusion families and return the families
+/// they make actionable. Quarantined pre-cutover rows stay auditable but never
+/// count, like in the ledger score itself.
+fn existing_incident_families(
+    old_raw: &[LedgerEventRow],
+    families: &mut Vec<FamilyContribution>,
+) -> std::collections::BTreeSet<EvidenceFamily> {
+    let mut existing_actionable = std::collections::BTreeSet::new();
+    for row in old_raw {
+        let Some(rule) = suspicion::SuspicionType::from_kind(row.0) else {
+            continue;
+        };
+        if suspicion::is_quarantined_evidence_key(&row.1) {
+            continue;
+        }
+        let family = existing_family(rule);
+        let contribution = if let Some(found) = families.iter_mut().find(|row| row.family == family)
+        {
+            found
+        } else {
+            families.push(FamilyContribution {
+                family,
+                behavioral: 0,
+                strong: 0,
+                hard: 0,
+                context_count: 0,
+                existing_incidents: 0,
+            });
+            families.last_mut().expect("family was inserted")
+        };
+        contribution.existing_incidents += 1;
+        if rule.tier() != suspicion::SuspicionTier::Context
+            && row.3.unwrap_or_else(|| rule.default_entry().0) > 0
+        {
+            existing_actionable.insert(family);
+        }
+    }
+    existing_actionable
+}
+
+/// The fused band: the stronger of the ledger band and the new findings.
+/// Context a reviewer explained or dismissed no longer sets it.
+fn fused_band(
+    existing: RiskBand,
+    findings: &[FindingRow],
+    families: &[FamilyContribution],
+    finding_score: i64,
+    actionable_families: usize,
+) -> RiskBand {
+    let has_context = findings
+        .iter()
+        .any(|finding| finding.evidence_tier == 0 && !finding.set_aside());
+    let has_new_hard = families.iter().any(|family| family.hard > 0);
+    let has_new_strong = families.iter().any(|family| family.strong > 0);
+    if existing == RiskBand::Evidenced || has_new_hard {
+        RiskBand::Evidenced
+    } else if existing == RiskBand::Investigate || has_new_strong || actionable_families >= 2 {
+        RiskBand::Investigate
+    } else if existing == RiskBand::Watch || finding_score > 0 {
+        RiskBand::Watch
+    } else if existing == RiskBand::Context || has_context {
+        RiskBand::Context
+    } else {
+        RiskBand::Clean
+    }
+}
+
 pub async fn fused_breakdown(
     st: &SharedState,
     game_id: i32,
     participation_id: i32,
 ) -> AppResult<FusedEvidenceBreakdown> {
-    let old_raw = sqlx::query_as::<_, (i16, String, DateTime<Utc>, Option<i32>)>(
+    let old_raw = sqlx::query_as::<_, LedgerEventRow>(
         r#"SELECT event.kind, event.evidence_key,
                   event.created_at, event.score_delta
              FROM "SuspicionEvents" event
@@ -458,33 +534,7 @@ pub async fn fused_breakdown(
     .fetch_all(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let mut existing_actionable = std::collections::BTreeSet::new();
-    for row in &old_raw {
-        let Some(rule) = suspicion::SuspicionType::from_kind(row.0) else {
-            continue;
-        };
-        let family = existing_family(rule);
-        let contribution = if let Some(found) = families.iter_mut().find(|row| row.family == family)
-        {
-            found
-        } else {
-            families.push(FamilyContribution {
-                family,
-                behavioral: 0,
-                strong: 0,
-                hard: 0,
-                context_count: 0,
-                existing_incidents: 0,
-            });
-            families.last_mut().expect("family was inserted")
-        };
-        contribution.existing_incidents += 1;
-        if rule.tier() != suspicion::SuspicionTier::Context
-            && row.3.unwrap_or_else(|| rule.default_entry().0) > 0
-        {
-            existing_actionable.insert(family);
-        }
-    }
+    let existing_actionable = existing_incident_families(&old_raw, &mut families);
     families.sort_by_key(|family| family.family);
     let actionable_families = existing_actionable
         .into_iter()
@@ -497,20 +547,13 @@ pub async fn fused_breakdown(
         .collect::<std::collections::BTreeSet<_>>()
         .len()
         .max(new_actionable_families);
-    let has_context = findings.iter().any(|finding| finding.evidence_tier == 0);
-    let has_new_hard = families.iter().any(|family| family.hard > 0);
-    let has_new_strong = families.iter().any(|family| family.strong > 0);
-    let band = if existing.band == RiskBand::Evidenced || has_new_hard {
-        RiskBand::Evidenced
-    } else if existing.band == RiskBand::Investigate || has_new_strong || actionable_families >= 2 {
-        RiskBand::Investigate
-    } else if existing.band == RiskBand::Watch || finding_score > 0 {
-        RiskBand::Watch
-    } else if existing.band == RiskBand::Context || has_context {
-        RiskBand::Context
-    } else {
-        RiskBand::Clean
-    };
+    let band = fused_band(
+        existing.band,
+        &findings,
+        &families,
+        finding_score,
+        actionable_families,
+    );
     Ok(FusedEvidenceBreakdown {
         participation_id,
         total: existing.total + finding_score,
@@ -803,6 +846,76 @@ mod tests {
         let (score, _, actionable) = score_findings(&rows).unwrap();
         assert_eq!(score, 32);
         assert_eq!(actionable, 2);
+    }
+
+    #[test]
+    fn set_aside_context_and_quarantined_ledger_rows_never_select_a_band() {
+        let mut dismissed = row(
+            EvidenceFamily::NetworkSession,
+            EvidenceTier::Context,
+            0,
+            true,
+        );
+        dismissed.latest_review_status = Some(FindingReviewStatus::Dismissed as i16);
+        let rows = [dismissed];
+        let (score, families, actionable) = score_findings(&rows).unwrap();
+        assert_eq!(families[0].context_count, 0);
+        assert_eq!(
+            fused_band(RiskBand::Clean, &rows, &families, score, actionable),
+            RiskBand::Clean
+        );
+        let open = [row(
+            EvidenceFamily::NetworkSession,
+            EvidenceTier::Context,
+            0,
+            true,
+        )];
+        assert_eq!(
+            fused_band(RiskBand::Clean, &open, &families, 0, 0),
+            RiskBand::Context
+        );
+
+        // Two quarantined rows in different families would otherwise make two
+        // actionable families and an Investigate band.
+        let now = Utc::now();
+        let quarantined = [
+            (
+                suspicion::SuspicionType::StolenFlag.kind(),
+                "legacy-untrusted:1".to_string(),
+                now,
+                Some(100),
+            ),
+            (
+                suspicion::SuspicionType::SharedFingerprint.kind(),
+                "legacy-untrusted:2".to_string(),
+                now,
+                Some(60),
+            ),
+        ];
+        let mut families = Vec::new();
+        assert!(existing_incident_families(&quarantined, &mut families).is_empty());
+        assert!(families.is_empty());
+        let trusted = [(
+            suspicion::SuspicionType::StolenFlag.kind(),
+            "submission:3".to_string(),
+            now,
+            Some(100),
+        )];
+        assert_eq!(existing_incident_families(&trusted, &mut families).len(), 1);
+        assert_eq!(families[0].existing_incidents, 1);
+    }
+
+    #[test]
+    fn finding_times_are_unix_milliseconds_on_the_wire() {
+        let json = serde_json::to_value(row(
+            EvidenceFamily::NetworkSession,
+            EvidenceTier::Context,
+            0,
+            true,
+        ))
+        .unwrap();
+        assert!(json["occurredAtUtc"].is_i64(), "{json}");
+        assert!(json["createdAtUtc"].is_i64(), "{json}");
     }
 
     #[test]
