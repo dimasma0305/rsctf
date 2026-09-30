@@ -212,15 +212,22 @@ archive.
 
 ## AI agent traces
 
-Every solver upload and writeup PDF in a competition (non-practice) event is
-scanned for traces that AI agent tools leave in files, for example a coding
-agent's session scratchpad path such as
+Solver uploads and writeups are scanned for traces that AI agent tools leave
+in files, for example a coding agent's session scratchpad path such as
 `/tmp/claude-0/<project>/<session-id>/scratchpad/...`, its commit trailers, or
-its local project store. Scanning reads the file as data and never runs it:
-raw bytes, text recovered from PDF pages (including browser-printed PDFs), and
-the members of zip or gzip archives, all under fixed size and decompression
-limits. It runs in the background after an upload, so it never delays or fails
-the upload.
+its local project store (Linux, macOS, and Windows paths). A solver is scanned
+when the team's solve of that challenge fell inside the event window; a
+writeup when the team was admitted to the competition. Keeping challenges
+playable after the end does not turn scanning off, but solves made after the
+end are not scanned.
+
+Scanning reads the file as data and never runs it: raw bytes, text recovered
+from PDF pages (including browser-printed PDFs, common stream filters, and
+pages wrapped by tools such as `pdfjam`, with wrapped lines joined), UTF-16
+text files, and the members of zip or gzip archives, all under fixed size and
+decompression limits. A writeup is scanned from the uploaded bytes, so
+replacing it quickly does not skip the first file. Scanning runs in the
+background after an upload, so it never delays or fails the upload.
 
 A match adds two cheat-report rules, visible under **Monitoring → Cheat
 detection**:
@@ -231,7 +238,8 @@ detection**:
 | `AiDeclarationContradiction` | The team declared "No AI used" for a challenge whose own solver upload contains a trace | 60 | Strong |
 
 The contradiction is raised in either order: an upload after the declaration,
-or a declaration after the upload. Open a finding to see the matched file,
+or a declaration after the upload. It uses the team's disclosure history, so a
+"No AI used" declaration that was later changed or cleared still counts. Open a finding to see the matched file,
 version, SHA-256, signature, where it was found, the matched text, the
 uploader, and for a contradiction the team's declaration and when it was first
 made. Weights are adjustable like every other rule, and nothing is decided
