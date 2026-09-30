@@ -98,11 +98,6 @@
   border-left-color: var(--mantine-color-brand-5);
 }
 
-/* ── User badge wrap ─────────────────────────────────── */
-.userWrap {
-  max-width: 14rem;
-}
-
 /* ── One-line truncation (was repeated inline) ───────── */
 .truncate {
   overflow: hidden;

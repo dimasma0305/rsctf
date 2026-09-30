@@ -481,68 +481,6 @@ const ReadableDetails: FC<{ details?: string | null; maxRows?: number }> = ({ de
 
 const MemoizedReadableDetails = React.memo(ReadableDetails)
 
-const UsersCell: FC<{ users?: string[]; relatedUsers?: string[] }> = ({ users, relatedUsers }) => {
-  const { t } = useTranslation()
-  const currentUsers = (users ?? []).filter(Boolean)
-  const others = (relatedUsers ?? []).filter(Boolean)
-
-  if (currentUsers.length === 0 && others.length === 0) {
-    return (
-      <Text size="xs" c="dimmed">
-        -
-      </Text>
-    )
-  }
-
-  const visible = [...currentUsers, ...others].slice(0, 3)
-  const hidden = [...currentUsers, ...others].slice(3)
-
-  return (
-    <Group gap={4} wrap="wrap" className={classes.userWrap}>
-      {visible.map((user, i) => (
-        <Badge
-          key={i}
-          size="xs"
-          color={currentUsers.includes(user) ? 'cyan' : 'gray'}
-          variant="light"
-          style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }}
-          title={user}
-        >
-          {user}
-        </Badge>
-      ))}
-      {hidden.length > 0 && (
-        <Popover width={260} position="top" withArrow shadow="md">
-          <Popover.Target>
-            <UnstyledButton
-              aria-label={t('game.cheat_analysis.show_all_users', 'Show all users, including {{count}} more', {
-                count: hidden.length,
-              })}
-            >
-              <Badge size="xs" color="gray" variant="outline">
-                {t('game.cheat_analysis.more', '+{{count}} more', { count: hidden.length })}
-              </Badge>
-            </UnstyledButton>
-          </Popover.Target>
-          <Popover.Dropdown>
-            <Text size="xs" fw={700} c="dimmed" mb={4}>
-              {t('game.cheat_analysis.all_users', 'All Users')}
-            </Text>
-            <Group gap={4} wrap="wrap">
-              {[...currentUsers, ...others].map((user, i) => (
-                <Badge key={i} size="xs" color={currentUsers.includes(user) ? 'cyan' : 'gray'} variant="light">
-                  {user}
-                </Badge>
-              ))}
-            </Group>
-          </Popover.Dropdown>
-        </Popover>
-      )}
-    </Group>
-  )
-}
-
-const MemoizedUsersCell = React.memo(UsersCell)
 
 // \u2500\u2500 Discord-style smart search \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
@@ -578,7 +516,6 @@ function parseSearchQuery(q: string): ParsedQuery {
 const IP_FILTER_DEFS: FilterDef[] = [
   { field: 'type', description: 'Anomaly type', color: 'orange', icon: mdiShieldAlert, example: '"shared ip"' },
   { field: 'ip', description: 'IP address / hash', color: 'blue', icon: mdiIpNetwork, example: '::ffff' },
-  { field: 'user', description: 'Username', color: 'cyan', icon: mdiAccountGroup, example: 'dimas' },
   { field: 'time', description: 'Date or relative time', color: 'violet', icon: mdiClockOutline, example: '2025' },
   {
     field: 'details',
@@ -617,7 +554,6 @@ const SUSPICION_FILTER_DEFS: FilterDef[] = [
 
 const GLOBAL_FILTER_DEFS: FilterDef[] = [
   { field: 'team', description: 'Team name (All tabs)', color: 'blue', icon: mdiAccountGroup, example: 'aaa' },
-  { field: 'user', description: 'Username (IP)', color: 'cyan', icon: mdiAccountGroup, example: 'dimas' },
   { field: 'ip', description: 'IP address (IP)', color: 'blue', icon: mdiIpNetwork, example: '192.168' },
   {
     field: 'type',
@@ -1028,9 +964,6 @@ const IpAnalysisRow = React.memo<{
         >
           {t(`game.cheat_analysis.ip_type.${item.type}`, meta.label)}
         </Badge>
-      </Table.Td>
-      <Table.Td miw="12rem">
-        <MemoizedUsersCell users={item.userNames} relatedUsers={item.relatedUsers} />
       </Table.Td>
       <Table.Td miw="9rem" style={{ maxWidth: '14rem', overflow: 'hidden' }}>
         <Group gap={4} wrap="nowrap">
@@ -1548,13 +1481,6 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
             case 'ip':
               if (!item.ip?.toLowerCase().includes(f.value)) return false
               break
-            case 'user':
-              if (
-                !item.userNames?.some((u: string) => u.toLowerCase().includes(f.value)) &&
-                !item.relatedUsers?.some((u: string) => u.toLowerCase().includes(f.value))
-              )
-                return false
-              break
             case 'details':
               if (!item.details?.toLowerCase().includes(f.value)) return false
               break
@@ -1572,9 +1498,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
           item.teamName?.toLowerCase().includes(q) ||
           item.type?.toLowerCase().includes(q) ||
           item.ip?.toLowerCase().includes(q) ||
-          item.details?.toLowerCase().includes(q) ||
-          item.userNames?.some((u: string) => u.toLowerCase().includes(q)) ||
-          item.relatedUsers?.some((u: string) => u.toLowerCase().includes(q))
+          item.details?.toLowerCase().includes(q)
         if (globalParsed.freeText && !checkFreeText(globalParsed.freeText.toLowerCase())) return false
         if (localParsed.freeText && !checkFreeText(localParsed.freeText.toLowerCase())) return false
 
@@ -1769,9 +1693,6 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
           case 'team':
             if (!item.teamNames?.some((name) => name.toLowerCase().includes(filter.value))) return false
             break
-          case 'user':
-            if (!item.userNames?.some((name) => name.toLowerCase().includes(filter.value))) return false
-            break
           case 'ip':
             if (item.kind !== 'ip' || !item.value?.toLowerCase().includes(filter.value)) return false
             break
@@ -1788,8 +1709,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
       return Boolean(
         item.kind?.toLowerCase().includes(query) ||
         item.value?.toLowerCase().includes(query) ||
-        item.teamNames?.some((name) => name.toLowerCase().includes(query)) ||
-        item.userNames?.some((name) => name.toLowerCase().includes(query))
+        item.teamNames?.some((name) => name.toLowerCase().includes(query))
       )
     })
   }, [globalParsed, report?.identityOverlaps])
@@ -2545,9 +2465,6 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
                         >
                           {t('game.cheat_analysis.type', 'Type')}
                         </ThSort>
-                        <Table.Th scope="col" w="14rem" miw="14rem">
-                          {t('game.cheat_analysis.users', 'Users')}
-                        </Table.Th>
                         <ThSort
                           sorted={ipSort.key === 'ip'}
                           reversed={ipSort.direction === 'desc'}
@@ -2884,9 +2801,6 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
                       <Table.Th scope="col" miw="16rem">
                         {t('common.label.team', 'Team')}
                       </Table.Th>
-                      <Table.Th scope="col" miw="14rem">
-                        {t('game.cheat_analysis.identity_users', 'Users')}
-                      </Table.Th>
                     </Table.Tr>
                   </Table.Thead>
                   <Table.Tbody>
@@ -2930,11 +2844,6 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
                         </Table.Td>
                         <Table.Td>
                           <Text size="xs">{(ov.teamNames ?? []).join(', ')}</Text>
-                        </Table.Td>
-                        <Table.Td>
-                          <Text size="xs" c="dimmed">
-                            {(ov.userNames ?? []).join(', ')}
-                          </Text>
                         </Table.Td>
                       </Table.Tr>
                     ))}

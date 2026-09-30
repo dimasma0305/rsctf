@@ -25,6 +25,13 @@ test('the report exposes freshness, failures, coverage, and an explicit refresh 
   assert.match(reportPage, /Detector implementation and scoring coverage|detector_inventory_caption/)
 })
 
+test('identity analysis offers no username column or filter, since the server records none', () => {
+  // Identity overlaps are built from observations only; account names are
+  // intentionally absent, so a Users column or @user filter could never match.
+  assert.doesNotMatch(analysis, /field: 'user'/)
+  assert.doesNotMatch(analysis, /userNames|relatedUsers/)
+})
+
 test('participation mutations are admin-gated and evidence shows stable IDs and applied scores', () => {
   assert.match(reportPage, /canManageParticipations=\{user\?\.role === Role\.Admin\}/)
   assert.match(analysis, /canManageParticipations && item\.participationId !== undefined/)

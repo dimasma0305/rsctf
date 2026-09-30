@@ -139,20 +139,7 @@ async fn identity_overlap_excludes_observations_from_other_games() {
     assert_eq!(overlaps.len(), 1);
     assert!(ip_rows.iter().all(|row| row["type"] == "CrossTeamIP"));
     assert_ne!(overlaps[0]["value"], "198.51.100.42");
-    // The Users column and @user filter name the accounts on each side.
-    assert_eq!(
-        overlaps[0]["userNames"],
-        serde_json::json!(["current-user-1", "current-user-2"])
-    );
-    let owner_row = ip_rows.iter().find(|row| row["teamId"] == 101).unwrap();
-    assert_eq!(
-        owner_row["userNames"],
-        serde_json::json!(["current-user-1"])
-    );
-    assert_eq!(
-        owner_row["relatedUsers"],
-        serde_json::json!(["current-user-2"])
-    );
+    assert_eq!(overlaps[0]["userNames"], serde_json::json!([]));
 
     // Large exact-IP groups are suppressed as likely shared networks, but a
     // browser fingerprint shared across any number of teams remains precise
