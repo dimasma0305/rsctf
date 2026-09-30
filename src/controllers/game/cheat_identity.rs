@@ -21,6 +21,8 @@ struct IdentityGroupRow {
     team_names: Vec<String>,
     edge_left_team_ids: Vec<i32>,
     edge_right_team_ids: Vec<i32>,
+    edge_left_user_names: Vec<String>,
+    edge_right_user_names: Vec<String>,
 }
 
 const IDENTITY_ANALYSIS_SQL: &str = r#"
@@ -157,19 +159,30 @@ const IDENTITY_ANALYSIS_SQL: &str = r#"
           FROM per_team
          GROUP BY kind, value_hash
     ), edge_lists AS (
-        SELECT kind, value_hash,
-               ARRAY_AGG(left_team_id
-                         ORDER BY left_team_id, right_team_id,
-                                  left_user_id, right_user_id) AS edge_left_team_ids,
-               ARRAY_AGG(right_team_id
-                         ORDER BY left_team_id, right_team_id,
-                                  left_user_id, right_user_id) AS edge_right_team_ids
-          FROM pair_edges
-         GROUP BY kind, value_hash
+        -- Account names are presentation labels read at report time, like
+        -- team names; a deleted account shows as an empty name.
+        SELECT edge.kind, edge.value_hash,
+               ARRAY_AGG(edge.left_team_id
+                         ORDER BY edge.left_team_id, edge.right_team_id,
+                                  edge.left_user_id, edge.right_user_id) AS edge_left_team_ids,
+               ARRAY_AGG(edge.right_team_id
+                         ORDER BY edge.left_team_id, edge.right_team_id,
+                                  edge.left_user_id, edge.right_user_id) AS edge_right_team_ids,
+               ARRAY_AGG(COALESCE(left_account.user_name, '')
+                         ORDER BY edge.left_team_id, edge.right_team_id,
+                                  edge.left_user_id, edge.right_user_id) AS edge_left_user_names,
+               ARRAY_AGG(COALESCE(right_account.user_name, '')
+                         ORDER BY edge.left_team_id, edge.right_team_id,
+                                  edge.left_user_id, edge.right_user_id) AS edge_right_user_names
+          FROM pair_edges edge
+          LEFT JOIN "AspNetUsers" left_account ON left_account.id = edge.left_user_id
+          LEFT JOIN "AspNetUsers" right_account ON right_account.id = edge.right_user_id
+         GROUP BY edge.kind, edge.value_hash
     )
     SELECT grouped.kind, grouped.value_hint, grouped.latest,
            grouped.team_ids, grouped.team_names,
-           edge_lists.edge_left_team_ids, edge_lists.edge_right_team_ids
+           edge_lists.edge_left_team_ids, edge_lists.edge_right_team_ids,
+           edge_lists.edge_left_user_names, edge_lists.edge_right_user_names
       FROM grouped
       JOIN edge_lists
         ON edge_lists.kind = grouped.kind
@@ -181,8 +194,8 @@ const IDENTITY_ANALYSIS_SQL: &str = r#"
 
 /// Build `ipAnalysis` and `identityOverlaps` exclusively from append-only login
 /// observations attributed to historical per-game memberships. Mutable global
-/// team rosters, current usernames, and rejection/block rows are intentionally
-/// absent. PostgreSQL deduplicates repeated logins, suppresses large shared
+/// team rosters and rejection/block rows are intentionally absent; team and
+/// account names are only labels for the observed identities. PostgreSQL deduplicates repeated logins, suppresses large shared
 /// networks, and bounds the result before any rows reach the application.
 pub(super) async fn build_identity_analysis(
     pool: &sqlx::PgPool,
@@ -206,18 +219,42 @@ pub(super) async fn build_identity_analysis(
                 "identity aggregate returned inconsistent team arrays",
             ));
         }
-        if group.edge_left_team_ids.len() != group.edge_right_team_ids.len() {
+        let edge_count = group.edge_left_team_ids.len();
+        if group.edge_right_team_ids.len() != edge_count
+            || group.edge_left_user_names.len() != edge_count
+            || group.edge_right_user_names.len() != edge_count
+        {
             return Err(AppError::internal(
                 "identity aggregate returned inconsistent edge arrays",
             ));
         }
         let teams: Vec<(i32, String)> = group.team_ids.into_iter().zip(group.team_names).collect();
         let team_names_by_id = teams.iter().cloned().collect::<BTreeMap<_, _>>();
+        // (team, user) on each side of every cross-team edge.
         let edge_pairs = group
             .edge_left_team_ids
             .into_iter()
-            .zip(group.edge_right_team_ids)
+            .zip(group.edge_left_user_names)
+            .zip(
+                group
+                    .edge_right_team_ids
+                    .into_iter()
+                    .zip(group.edge_right_user_names),
+            )
             .collect::<Vec<_>>();
+        let names = |names: BTreeSet<&String>| {
+            names
+                .into_iter()
+                .filter(|name| !name.is_empty())
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let all_users = names(
+            edge_pairs
+                .iter()
+                .flat_map(|((_, left), (_, right))| [left, right])
+                .collect(),
+        );
         let kind = if group.kind.eq_ignore_ascii_case("fingerprint") {
             "fingerprint"
         } else {
@@ -235,7 +272,7 @@ pub(super) async fn build_identity_analysis(
             "value": masked,
             "teamCount": teams.len(),
             "teamNames": teams.iter().map(|(_, name)| name).collect::<Vec<_>>(),
-            "userNames": Vec::<String>::new(),
+            "userNames": all_users,
         }));
 
         let label = if is_fingerprint {
@@ -244,18 +281,20 @@ pub(super) async fn build_identity_analysis(
             "IP network"
         };
         for (team_id, team_name) in &teams {
-            let related_ids = edge_pairs
-                .iter()
-                .filter_map(|(left_team_id, right_team_id)| {
-                    if left_team_id == team_id {
-                        Some(*right_team_id)
-                    } else if right_team_id == team_id {
-                        Some(*left_team_id)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<BTreeSet<_>>();
+            let mut related_ids = BTreeSet::new();
+            let (mut own_users, mut related_users) = (BTreeSet::new(), BTreeSet::new());
+            for ((left_team_id, left_user), (right_team_id, right_user)) in &edge_pairs {
+                let (own, other_team, other) = if left_team_id == team_id {
+                    (left_user, right_team_id, right_user)
+                } else if right_team_id == team_id {
+                    (right_user, left_team_id, left_user)
+                } else {
+                    continue;
+                };
+                related_ids.insert(*other_team);
+                own_users.insert(own);
+                related_users.insert(other);
+            }
             let related = related_ids
                 .into_iter()
                 .filter_map(|related_team_id| team_names_by_id.get(&related_team_id).cloned())
@@ -279,8 +318,8 @@ pub(super) async fn build_identity_analysis(
                     "time": group.latest.timestamp_millis(),
                     "details": details,
                     "relatedTeams": related,
-                    "userNames": Vec::<String>::new(),
-                    "relatedUsers": Vec::<String>::new(),
+                    "userNames": names(own_users),
+                    "relatedUsers": names(related_users),
                 }),
             ));
         }
