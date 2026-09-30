@@ -36,6 +36,13 @@ fn database_error(error: sqlx::Error) -> AppError {
 }
 
 #[cfg(test)]
+/// One incident per victim team and challenge: opening several teams'
+/// containers for the same challenge is several incidents, while reconnecting
+/// to the same one is not.
+fn cross_team_evidence_key(challenge_id: i32, owner_participation_id: i32) -> String {
+    format!("challenge:{challenge_id}:owner:{owner_participation_id}")
+}
+
 async fn persist_access_audit(pool: &sqlx::PgPool, audit: AccessAudit<'_>) -> AppResult<()> {
     let mut transaction = pool.begin().await.map_err(database_error)?;
     crate::services::suspicion::lock_participation_suspicion_writes(
@@ -130,7 +137,8 @@ async fn persist_access_audit_after_suspicion(
         .await
         .map_err(database_error)?;
         if game_is_live {
-            let evidence_key = format!("challenge:{}", audit.challenge_id);
+            let evidence_key =
+                cross_team_evidence_key(audit.challenge_id, audit.owner_participation_id);
             let enqueued = crate::services::suspicion::enqueue_direct_suspicion_evaluation(
                 transaction,
                 crate::services::suspicion::EvaluationSourceKind::ContainerAccess,
@@ -197,7 +205,22 @@ mod tests {
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
     use uuid::Uuid;
 
-    use super::{persist_access_audit, AccessAudit, INSERT_ACCESS_EVENT_SQL};
+    use super::{
+        cross_team_evidence_key, persist_access_audit, AccessAudit, INSERT_ACCESS_EVENT_SQL,
+    };
+
+    #[test]
+    fn each_victim_team_is_its_own_cross_team_incident() {
+        assert_eq!(cross_team_evidence_key(20, 10), "challenge:20:owner:10");
+        assert_ne!(
+            cross_team_evidence_key(20, 10),
+            cross_team_evidence_key(20, 12)
+        );
+        assert_ne!(
+            cross_team_evidence_key(20, 10),
+            cross_team_evidence_key(21, 10)
+        );
+    }
 
     #[test]
     fn access_insert_returns_source_identity_and_persists_immutable_request_context() {
@@ -477,15 +500,16 @@ mod tests {
         .await
         .expect("count paired evidence");
         assert_eq!(paired, (1, 1));
-        let (event_id, stored_hash, is_monitor, source_kind, source_id): (
+        let (event_id, stored_hash, is_monitor, source_kind, source_id, evidence_key): (
             i32,
             Vec<u8>,
             bool,
             i16,
             i32,
+            String,
         ) = sqlx::query_as(
             r#"SELECT event.id, event.remote_ip_hash, event.is_monitor,
-                          job.source_kind, job.source_id
+                          job.source_kind, job.source_id, job.evidence_key
                      FROM "ContainerAccessEvents" event
                      JOIN "SuspicionEvaluationOutbox" job
                        ON job.source_id = event.id"#,
@@ -497,6 +521,7 @@ mod tests {
         assert!(!is_monitor);
         assert_eq!(source_kind, 2);
         assert_eq!(source_id, event_id);
+        assert_eq!(evidence_key, "challenge:20:owner:10");
 
         let monitor_container = Uuid::new_v4();
         persist_access_audit(&pool, make_audit(monitor_container, "192.0.2.2", true))
