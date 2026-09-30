@@ -299,10 +299,16 @@ async fn insert_flows(
                    ON peer.id = input."peerId" AND peer.game_id = $1
                   AND peer.user_id = input."userId"
                   AND peer.participation_id = input."participationId"
-                  AND peer.revoked_at_utc IS NULL
+                  -- Rows reach ingest up to one flush after they were
+                  -- observed, so a peer revoked since (at the end, or when a
+                  -- member leaves) still owns what it did before revocation.
+                  AND (peer.revoked_at_utc IS NULL
+                       OR input."bucketStartUtc" < peer.revoked_at_utc)
                  JOIN "Games" game ON game.id = peer.game_id
                 WHERE game.vpn_behavior_telemetry_enabled = TRUE
-                  AND input."bucketStartUtc" >= game.start_time_utc
+                  -- Five-minute buckets are clock-aligned: the one holding
+                  -- the start began before it.
+                  AND input."bucketStartUtc" > game.start_time_utc - INTERVAL '5 minutes'
                   AND input."bucketStartUtc" < game.end_time_utc
                ON CONFLICT DO NOTHING RETURNING 1
            ) SELECT COUNT(*)::bigint FROM inserted"#,
@@ -379,7 +385,8 @@ async fn insert_dns(
                    ON peer.id = input."peerId" AND peer.game_id = $1
                   AND peer.user_id = input."userId"
                   AND peer.participation_id = input."participationId"
-                  AND peer.revoked_at_utc IS NULL
+                  AND (peer.revoked_at_utc IS NULL
+                       OR input."firstSeenAtUtc" < peer.revoked_at_utc)
                  JOIN "Games" game ON game.id = peer.game_id
                 WHERE game.vpn_provider_dns_telemetry_enabled = TRUE
                   AND input."firstSeenAtUtc" >= game.start_time_utc
@@ -475,7 +482,8 @@ async fn insert_networks(
                    ON peer.id = input."peerId" AND peer.game_id = $1
                   AND peer.user_id = input."userId"
                   AND peer.participation_id = input."participationId"
-                  AND peer.revoked_at_utc IS NULL
+                  AND (peer.revoked_at_utc IS NULL
+                       OR input."firstSeenAtUtc" < peer.revoked_at_utc)
                  JOIN "Games" game ON game.id = peer.game_id
                 WHERE game.vpn_source_asn_telemetry_enabled = TRUE
                   AND input."firstSeenAtUtc" >= game.start_time_utc
@@ -557,7 +565,8 @@ async fn insert_flags(
                    ON peer.id = input."peerId" AND peer.game_id = $1
                   AND peer.user_id = input."receivingUserId"
                   AND peer.participation_id = input."receivingParticipationId"
-                  AND peer.revoked_at_utc IS NULL
+                  AND (peer.revoked_at_utc IS NULL
+                       OR input."observedAtUtc" < peer.revoked_at_utc)
                  JOIN "Games" game ON game.id = peer.game_id
                  JOIN "GameChallenges" challenge
                    ON challenge.game_id = game.id AND challenge.id = input."challengeId"
@@ -900,6 +909,34 @@ async fn complete_batch(
     Ok(())
 }
 
+/// Delete a game's telemetry usage row and return its share of the global
+/// budget in the same statement. Every path that removes the row must use
+/// this, or the global total keeps counting deleted events until telemetry
+/// switches off for every future event. Lock order matches ingest: the game's
+/// usage row, then the global row.
+pub(crate) async fn release_game_usage(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+) -> AppResult<()> {
+    sqlx::query(
+        r#"WITH released AS (
+               DELETE FROM "AntiCheatTelemetryUsage" WHERE game_id = $1
+               RETURNING logical_bytes, row_count
+           )
+           UPDATE "AntiCheatTelemetryGlobalUsage" global
+              SET logical_bytes = GREATEST(0, global.logical_bytes - released.logical_bytes),
+                  row_count = GREATEST(0, global.row_count - released.row_count),
+                  updated_at_utc = clock_timestamp()
+             FROM released
+            WHERE global.id = 1"#,
+    )
+    .bind(game_id)
+    .execute(connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(())
+}
+
 pub async fn purge_game_telemetry(
     st: &SharedState,
     game_id: i32,
@@ -945,23 +982,7 @@ pub async fn purge_game_telemetry(
         .map_err(|error| AppError::internal(error.to_string()))?
         .rows_affected();
     let rows_removed = row_count.saturating_add(i64::try_from(drop_rows).unwrap_or(i64::MAX));
-    sqlx::query(r#"DELETE FROM "AntiCheatTelemetryUsage" WHERE game_id = $1"#)
-        .bind(game_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    sqlx::query(
-        r#"UPDATE "AntiCheatTelemetryGlobalUsage"
-              SET logical_bytes = GREATEST(0, logical_bytes - $1),
-                  row_count = GREATEST(0, row_count - $2),
-                  updated_at_utc = clock_timestamp()
-            WHERE id = 1"#,
-    )
-    .bind(logical_bytes)
-    .bind(row_count)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    release_game_usage(&mut transaction, game_id).await?;
     sqlx::query(
         r#"INSERT INTO "AntiCheatTelemetryPurges"
              (game_id, requested_by_user_id, reason, rows_removed, logical_bytes_removed)
