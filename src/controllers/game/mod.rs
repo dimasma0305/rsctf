@@ -429,6 +429,8 @@ pub struct CheatReport {
     pub pending_jobs: i64,
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub oldest_pending_at: Option<DateTime<Utc>>,
+    /// Captured evidence not yet applied by the reconciler.
+    pub reconciliation_pending: bool,
     pub last_error: Option<String>,
     pub ip_analysis: Vec<Json>,
     pub abnormal_solves: Vec<Json>,
@@ -920,6 +922,7 @@ mod catalog;
 pub(crate) mod cheat;
 mod cheat_compare;
 mod cheat_evidence;
+mod cheat_freshness;
 mod cheat_report_cache;
 pub(crate) use cheat_report_cache::invalidate_report as invalidate_cheat_report;
 mod combined_scoreboard;

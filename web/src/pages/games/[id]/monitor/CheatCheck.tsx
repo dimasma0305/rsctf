@@ -91,7 +91,7 @@ const CheatCheck: FC = () => {
   const { data: report, isLoading, isValidating, error, mutate } = useAntiCheatReport(numId, activeTab === 'analysis')
   const refresh = () => void mutate()
   const lastReconciledAt = report?.lastReconciledAt
-  const reportIsStale = isCheatReportStale(lastReconciledAt)
+  const reportIsStale = isCheatReportStale(report)
   const formatReportTime = (value: number | null | undefined) =>
     value != null && Number.isFinite(value)
       ? new Intl.DateTimeFormat(i18n.resolvedLanguage, {

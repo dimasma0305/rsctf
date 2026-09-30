@@ -113,6 +113,16 @@ impl CheatReportFixture {
               observed_at_utc TIMESTAMPTZ NOT NULL,
               completed_at_utc TIMESTAMPTZ NULL, last_error TEXT NULL
             );
+            CREATE TABLE "AntiCheatReconciliationQueue" (
+              game_id INTEGER PRIMARY KEY,
+              desired_generation BIGINT NOT NULL,
+              applied_generation BIGINT NOT NULL
+            );
+            CREATE TABLE "AntiCheatReconciliationSources" (
+              game_id INTEGER NOT NULL, source_kind SMALLINT NOT NULL,
+              dirty_version BIGINT NOT NULL, applied_version BIGINT NOT NULL,
+              PRIMARY KEY (game_id, source_kind)
+            );
 
             INSERT INTO "Games" VALUES
               (1, '2026-01-01T00:00:00Z', '2026-12-31T23:59:59Z', FALSE),
@@ -845,6 +855,8 @@ async fn report_queries_succeed_on_a_database_enforced_read_only_connection() {
           (1, 1, '2026-06-01T13:01:00Z', NULL, 'job retry'),
           (2, 1, '2026-06-01T13:02:00Z', '2026-06-01T13:03:00Z', NULL),
           (3, 1, '2026-12-31T23:59:59Z', NULL, 'out of window');
+        INSERT INTO "AntiCheatReconciliationQueue" VALUES (1, 3, 3), (2, 2, 2);
+        INSERT INTO "AntiCheatReconciliationSources" VALUES (1, 5, 4, 3), (2, 5, 1, 1);
         "#,
     )
     .execute(&fixture.pool)
@@ -875,6 +887,7 @@ async fn report_queries_succeed_on_a_database_enforced_read_only_connection() {
         abnormal.is_empty(),
         "quarantined rows stay out of projections"
     );
+    use super::super::cheat_freshness::load_reconciliation_report_state;
     let state = load_reconciliation_report_state(&pool, 1).await.unwrap();
     assert_eq!(state.pending_jobs, 1);
     assert_eq!(
@@ -887,6 +900,15 @@ async fn report_queries_succeed_on_a_database_enforced_read_only_connection() {
     );
     assert_eq!(state.last_error.as_deref(), Some("job retry"));
     assert!(state.sealed_at.is_none());
+    assert!(
+        state.reconciliation_pending,
+        "a dirty source is unapplied work"
+    );
+    let quiet = load_reconciliation_report_state(&pool, 2).await.unwrap();
+    assert!(
+        !quiet.reconciliation_pending,
+        "a quiet game has nothing to apply"
+    );
     pool.close().await;
     fixture.cleanup().await;
 }

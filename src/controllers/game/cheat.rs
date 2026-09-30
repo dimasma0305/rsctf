@@ -4,53 +4,6 @@ use super::cheat_compare::canonical_solves_bounded;
 use super::cheat_compare::{canonical_report_solves, collusion_metrics, CanonicalSolveRow};
 use super::*;
 
-#[derive(Debug, Default, sqlx::FromRow)]
-struct ReconciliationReportState {
-    evidence_closed_at: Option<DateTime<Utc>>,
-    last_reconciled_at: Option<DateTime<Utc>>,
-    sealed_at: Option<DateTime<Utc>>,
-    last_error: Option<String>,
-    pending_jobs: i64,
-    oldest_pending_at: Option<DateTime<Utc>>,
-}
-
-/// Load the persisted evaluator watermark and only the jobs that can still
-/// affect this game's competitive snapshot. Response generation is not an
-/// evaluation, so the monitor must never use its wall clock as freshness.
-async fn load_reconciliation_report_state(
-    pool: &sqlx::PgPool,
-    game_id: i32,
-) -> AppResult<ReconciliationReportState> {
-    sqlx::query_as::<_, ReconciliationReportState>(
-        r#"SELECT reconciliation.evidence_closed_at_utc AS evidence_closed_at,
-                  reconciliation.last_reconciled_at_utc AS last_reconciled_at,
-                  reconciliation.sealed_at_utc AS sealed_at,
-                  COALESCE(reconciliation.last_error, pending.pending_error) AS last_error,
-                  COALESCE(pending.pending_jobs, 0)::bigint AS pending_jobs,
-                  pending.oldest_pending_at
-             FROM "Games" game
-             LEFT JOIN "SuspicionReconciliationState" reconciliation
-               ON reconciliation.game_id = game.id
-             LEFT JOIN LATERAL (
-               SELECT COUNT(*)::bigint AS pending_jobs,
-                      MIN(job.observed_at_utc) AS oldest_pending_at,
-                      (ARRAY_AGG(job.last_error ORDER BY job.observed_at_utc, job.id)
-                         FILTER (WHERE job.last_error IS NOT NULL))[1] AS pending_error
-                 FROM "SuspicionEvaluationOutbox" job
-                WHERE job.game_id = game.id
-                  AND job.completed_at_utc IS NULL
-                  AND job.observed_at_utc >= game.start_time_utc
-                  AND job.observed_at_utc < game.end_time_utc
-             ) pending ON TRUE
-            WHERE game.id = $1"#,
-    )
-    .bind(game_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))
-    .map(|state| state.unwrap_or_default())
-}
-
 // ---------------------------------------------------------------------------
 // Canonical flag-sharing evidence.
 // ---------------------------------------------------------------------------
@@ -696,7 +649,8 @@ pub(super) async fn build_cheat_report(st: &SharedState, id: i32) -> AppResult<C
     let (suspicion_list, abnormal_solves) = build_suspicion_sections(st.pg(), id).await?;
     let (ip_analysis, identity_overlaps) =
         super::cheat_identity::build_identity_analysis(st.pg(), id).await?;
-    let reconciliation = load_reconciliation_report_state(st.pg(), id).await?;
+    let reconciliation =
+        super::cheat_freshness::load_reconciliation_report_state(st.pg(), id).await?;
 
     Ok(CheatReport {
         // Once sealed, this timestamp is deterministic across cache expiry and
@@ -707,6 +661,7 @@ pub(super) async fn build_cheat_report(st: &SharedState, id: i32) -> AppResult<C
         sealed_at: reconciliation.sealed_at,
         pending_jobs: reconciliation.pending_jobs,
         oldest_pending_at: reconciliation.oldest_pending_at,
+        reconciliation_pending: reconciliation.reconciliation_pending,
         last_error: reconciliation.last_error,
         collusion_groups,
         suspicion_list,

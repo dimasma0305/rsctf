@@ -73,7 +73,8 @@ pub const BUILTIN_SIGNATURES: &[BuiltinSignature] = &[
         examples: &[
             "/root/.claude/projects/-root-ctf-mevbot/0f3c2a1e.jsonl",
             r"C:\Users\player\.claude\projects\C--Users-player-ctf\0f3c2a1e.jsonl",
-            r#"{"path":"C:\\Users\\player\\.claude\\projects\\C--Users-player-ctf"}"#,
+            // As escaped inside a JSON transcript.
+            r"C:\\Users\\player\\.claude\\projects\\C--Users-player-ctf\\0f3c2a1e.jsonl",
         ],
     },
     BuiltinSignature {

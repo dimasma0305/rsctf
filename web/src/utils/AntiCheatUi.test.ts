@@ -13,7 +13,7 @@ const apiTypes = readFileSync('src/Api.ts', 'utf8')
 test('the report exposes freshness, failures, coverage, and an explicit refresh action', () => {
   assert.match(reportPage, /useAntiCheatReport\(numId, activeTab === 'analysis'\)/)
   assert.match(reportPage, /keepMounted=\{false\}/)
-  assert.match(reportPage, /isCheatReportStale\(lastReconciledAt\)/)
+  assert.match(reportPage, /isCheatReportStale\(report\)/)
   assert.match(reportPage, /Last evaluated: \{\{time\}\}/)
   assert.match(reportPage, /Refresh failed — showing the last report/)
   assert.match(reportPage, /Detector reconciliation failed/)

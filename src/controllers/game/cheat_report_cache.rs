@@ -11,7 +11,12 @@ const HEADER_LEN: usize = MAGIC.len() + 1 + VERSION_LEN;
 const MAX_REPORT_BUNDLE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REPORT_BODY_BYTES: usize = MAX_REPORT_BUNDLE_BYTES - HEADER_LEN;
 const LIVE_REPORT_TTL: std::time::Duration = std::time::Duration::from_secs(5);
-const SEALED_REPORT_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+/// Evidence writers and monitor actions invalidate explicitly; this bounds how
+/// long any other edit (a team or challenge rename, a rule weight) stays
+/// hidden on a sealed report. Unchanged content still answers 304.
+const SEALED_REPORT_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Outlives any report entry so a fill can always compare epochs.
+const EPOCH_TTL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 const REPORT_BUILD_CONCURRENCY: usize = 2;
 const CACHE_CONTROL: &str = "private, no-cache, max-age=0";
 const REPORT_VERSION_HEADER: &str = "x-anticheat-report-version";
@@ -60,14 +65,39 @@ where
     })
 }
 
-fn cache_key(game_id: i32) -> String {
-    format!("_AntiCheatReportWireV1_{game_id}")
+/// A game's cached report and its invalidation epoch. A fill records the
+/// epoch before building and discards its result if the epoch moved, so an
+/// invalidation that lands mid-build cannot be overwritten by stale data.
+struct ReportKeys {
+    report: String,
+    epoch: String,
+}
+
+impl ReportKeys {
+    fn for_game(game_id: i32) -> Self {
+        Self {
+            report: format!("_AntiCheatReportWireV1_{game_id}"),
+            epoch: format!("_AntiCheatReportEpochV1_{game_id}"),
+        }
+    }
+}
+
+async fn invalidate_keys(cache: &dyn crate::services::cache::Cache, keys: &ReportKeys) {
+    cache
+        .set_authoritative(
+            &keys.epoch,
+            uuid::Uuid::new_v4().as_bytes(),
+            Some(EPOCH_TTL),
+        )
+        .await;
+    cache.remove(&keys.report).await;
 }
 
 /// Drop the cached report so late evidence (for example a scan of a writeup
-/// uploaded after a sealed event) is visible on the next read.
+/// uploaded after a sealed event) or a monitor action is visible on the next
+/// read, including when a report build is already running.
 pub(crate) async fn invalidate_report(st: &SharedState, game_id: i32) {
-    st.cache.remove(&cache_key(game_id)).await;
+    invalidate_keys(st.cache.as_ref(), &ReportKeys::for_game(game_id)).await;
 }
 
 fn semantic_version(raw: &[u8], scope: &str) -> Result<[u8; VERSION_LEN], String> {
@@ -143,13 +173,14 @@ fn sealed_bundle(bundle: &[u8]) -> bool {
 
 async fn cached_report_bundle<Build, BuildFuture>(
     cache: std::sync::Arc<dyn crate::services::cache::Cache>,
-    key: String,
+    keys: ReportKeys,
     build: Build,
 ) -> Result<Bytes, ReportCacheError>
 where
     Build: FnOnce() -> BuildFuture + Send + 'static,
     BuildFuture: std::future::Future<Output = AppResult<CheatReport>> + Send + 'static,
 {
+    let ReportKeys { report: key, epoch } = keys;
     if let Some(bundle) = cache.get(&key).await {
         if valid_bundle(&bundle) {
             return Ok(bundle);
@@ -174,6 +205,7 @@ where
             let Ok(permit) = REPORT_BUILD_ADMISSION.clone().try_acquire_owned() else {
                 return ReportFill::Busy;
             };
+            let epoch_before = cache_for_fill.get_authoritative(&epoch).await;
             run_admitted_fill(permit, async move {
                 let model = match build().await {
                     Ok(model) => model,
@@ -202,6 +234,11 @@ where
                     LIVE_REPORT_TTL
                 };
                 cache_for_fill.set(&key_for_fill, &bundle, Some(ttl)).await;
+                // Evidence committed during the build invalidated the epoch;
+                // this caller still gets its answer, but nobody else reads it.
+                if cache_for_fill.get_authoritative(&epoch).await != epoch_before {
+                    cache_for_fill.remove(&key_for_fill).await;
+                }
                 ReportFill::Ready(bundle)
             })
             .await
@@ -281,9 +318,9 @@ pub(super) async fn serve_report(
     game_id: i32,
     headers: &HeaderMap,
 ) -> AppResult<Response> {
-    let key = cache_key(game_id);
     let state = st.clone();
-    let bundle = match cached_report_bundle(st.cache.clone(), key, move || async move {
+    let keys = ReportKeys::for_game(game_id);
+    let bundle = match cached_report_bundle(st.cache.clone(), keys, move || async move {
         super::cheat::build_cheat_report(&state, game_id).await
     })
     .await
@@ -307,6 +344,45 @@ mod tests {
         Arc,
     };
 
+    fn test_keys(key: &str) -> ReportKeys {
+        ReportKeys {
+            report: key.to_string(),
+            epoch: format!("{key}:epoch"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_invalidation_during_a_build_is_not_overwritten() {
+        let cache: Arc<dyn crate::services::cache::Cache> =
+            Arc::new(crate::services::cache::InMemoryCache::new());
+        let key = format!("anti-cheat-report-test:{}", uuid::Uuid::new_v4());
+        let started = Arc::new(tokio::sync::Notify::new());
+        let finish = Arc::new(tokio::sync::Notify::new());
+        let fill = tokio::spawn({
+            let (cache, keys) = (cache.clone(), test_keys(&key));
+            let (started, finish) = (started.clone(), finish.clone());
+            async move {
+                cached_report_bundle(cache, keys, move || async move {
+                    started.notify_one();
+                    finish.notified().await;
+                    let sealed_at = DateTime::from_timestamp(30, 0).unwrap();
+                    Ok(report(sealed_at, Some(sealed_at)))
+                })
+                .await
+                .unwrap()
+            }
+        });
+        // A monitor suspends a team while the sealed report is being built.
+        started.notified().await;
+        invalidate_keys(cache.as_ref(), &test_keys(&key)).await;
+        finish.notify_one();
+        assert!(valid_bundle(&fill.await.unwrap()));
+        assert!(
+            cache.get(&key).await.is_none(),
+            "a report built before the invalidation must not be served for the sealed TTL"
+        );
+    }
+
     fn report(generated_at: DateTime<Utc>, sealed_at: Option<DateTime<Utc>>) -> CheatReport {
         CheatReport {
             generated_at,
@@ -323,10 +399,10 @@ mod tests {
         let key = format!("anti-cheat-report-test:{}", uuid::Uuid::new_v4());
         let readers = (0..24).map(|_| {
             let cache = cache.clone();
-            let key = key.clone();
+            let keys = test_keys(&key);
             let builds = builds.clone();
             async move {
-                cached_report_bundle(cache, key, move || async move {
+                cached_report_bundle(cache, keys, move || async move {
                     builds.fetch_add(1, Ordering::SeqCst);
                     tokio::task::yield_now().await;
                     Ok(report(Utc::now(), None))
@@ -416,3 +492,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "cheat_report_cache_tests.rs"]
+mod db_tests;

@@ -1393,6 +1393,8 @@ export interface CheatReport {
   pendingJobs?: number;
   /** @format uint64 */
   oldestPendingAt?: number | null;
+  /** Captured evidence the detector reconciler has not applied yet. */
+  reconciliationPending?: boolean;
   /** Last detector reconciliation failure, when present. */
   lastError?: string | null;
   ipAnalysis: IpAnalysisResult[];
