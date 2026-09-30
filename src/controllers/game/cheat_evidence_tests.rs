@@ -530,6 +530,25 @@ async fn source_review_resolves_direct_submission_identity_and_pair_ledgers() {
         .iter()
         .any(|fact| fact.label == "Wrong attempts before solve" && fact.value == "0"));
 
+    // Wrong attempts flagged at 00:50, before the 01:00 solve: that later
+    // solve is not evidence for the incident.
+    let early_event = EventEvidenceRow {
+        game_id: 1,
+        participation_id: 2,
+        challenge_id: Some(10),
+        evidence_key: "challenge:10".to_string(),
+        created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 50, 0).unwrap(),
+        ..event(SuspicionType::HighWrongRate, "challenge:10")
+    };
+    let mut early_review = base_review(&early_event, SuspicionType::HighWrongRate);
+    sources::add_submission_source(&pool, &early_event, &mut early_review)
+        .await
+        .unwrap();
+    assert!(!early_review
+        .sources
+        .iter()
+        .any(|source| source.source_type == "submissionSnapshot"));
+
     let automated_event = EventEvidenceRow {
         game_id: 1,
         participation_id: 2,
