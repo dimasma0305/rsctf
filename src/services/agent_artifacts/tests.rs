@@ -274,3 +274,172 @@ fn crafted_pdfs_cannot_multiply_parser_work() {
     shared.extend_from_slice(b"endstream endobj\n");
     finishes_quickly("pages sharing one content stream", &shared);
 }
+
+const SCRATCHPAD: &str =
+    "/tmp/claude-0/-home-p-ctf/0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0/scratchpad/key.txt";
+
+/// A minimal PDF from `(number, dictionary, stream)` objects.
+fn build_pdf(objects: &[(u32, &str, Option<&[u8]>)]) -> Vec<u8> {
+    let mut out = b"%PDF-1.7\n".to_vec();
+    for (number, dict, stream) in objects {
+        out.extend_from_slice(format!("{number} 0 obj\n{dict}\n").as_bytes());
+        if let Some(stream) = stream {
+            out.extend_from_slice(b"stream\n");
+            out.extend_from_slice(stream);
+            out.extend_from_slice(b"\nendstream\n");
+        }
+        out.extend_from_slice(b"endobj\n");
+    }
+    out
+}
+
+fn deflate(bytes: &[u8]) -> Vec<u8> {
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+#[test]
+fn chained_and_abbreviated_filters_are_decoded() {
+    let content = format!("BT /F1 10 Tf ({SCRATCHPAD}) Tj ET");
+    let hex = hex::encode(deflate(content.as_bytes()));
+    for (filter, stream) in [
+        ("[/ASCIIHexDecode /FlateDecode]", hex.into_bytes()),
+        ("/Fl", deflate(content.as_bytes())),
+    ] {
+        let dict = format!("<< /Filter {filter} >>");
+        let bytes = build_pdf(&[
+            (1, "<< /Type /Page /Contents 2 0 R >>", None),
+            (2, &dict, Some(&stream)),
+        ]);
+        assert!(!bytes.windows(10).any(|window| window == b"scratchpad"));
+        let hits = scan_file(&builtins(), &bytes);
+        assert_eq!(keys(&hits), ["claude-code-scratchpad"], "{filter}");
+    }
+}
+
+#[test]
+fn text_inside_form_xobjects_is_recovered() {
+    // pdfjam wraps each page as a Form XObject whose own font draws glyph IDs.
+    let mut chars = SCRATCHPAD.chars().collect::<Vec<_>>();
+    chars.sort_unstable();
+    chars.dedup();
+    let code = |character: char| chars.iter().position(|c| *c == character).unwrap() + 1;
+    let mut cmap = format!("{} beginbfchar\n", chars.len());
+    for character in &chars {
+        cmap.push_str(&format!(
+            "<{:02X}> <{:04X}>\n",
+            code(*character),
+            *character as u32
+        ));
+    }
+    cmap.push_str("endbfchar\n");
+    let glyphs = SCRATCHPAD
+        .chars()
+        .map(|character| format!("{:02X}", code(character)))
+        .collect::<String>();
+    let form = format!("BT /F1 10 Tf <{glyphs}> Tj ET");
+    let bytes = build_pdf(&[
+        (
+            1,
+            "<< /Type /Page /Resources << /XObject << /Xf1 2 0 R >> >> /Contents 5 0 R >>",
+            None,
+        ),
+        (
+            2,
+            "<< /Type /XObject /Subtype /Form /Resources << /Font << /F1 3 0 R >> >> >>",
+            Some(form.as_bytes()),
+        ),
+        (3, "<< /Type /Font /ToUnicode 4 0 R >>", None),
+        (4, "<< >>", Some(cmap.as_bytes())),
+        (5, "<< >>", Some(b"q 0.5 0 0 0.5 0 0 cm /Xf1 Do Q")),
+    ]);
+    let hits = scan_file(&builtins(), &bytes);
+    assert_eq!(keys(&hits), ["claude-code-scratchpad"]);
+    assert_eq!(hits[0].location, ArtifactLocation::Text);
+}
+
+#[test]
+fn a_path_wrapped_onto_the_next_line_still_matches() {
+    let (head, tail) = SCRATCHPAD.split_at(40);
+    let content = format!("BT /F1 10 Tf ({head}) Tj 0 -12 Td (  {tail}) Tj ET");
+    let bytes = build_pdf(&[
+        (1, "<< /Type /Page /Contents 2 0 R >>", None),
+        (2, "<< >>", Some(content.as_bytes())),
+    ]);
+    let hits = scan_file(&builtins(), &bytes);
+    assert_eq!(keys(&hits), ["claude-code-scratchpad"]);
+    assert_eq!(hits[0].location, ArtifactLocation::Text);
+    assert!(
+        hits[0].snippet.starts_with("line breaks removed: "),
+        "{}",
+        hits[0].snippet
+    );
+}
+
+#[test]
+fn prefixed_archives_and_utf16_files_are_decoded() {
+    let mut archive = std::io::Cursor::new(b"junk".to_vec());
+    archive.set_position(4);
+    {
+        let mut writer = zip::ZipWriter::new(&mut archive);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file("notes.txt", options).unwrap();
+        writer.write_all(SCRATCHPAD.as_bytes()).unwrap();
+        writer.finish().unwrap();
+    }
+    let hits = scan_file(&builtins(), archive.get_ref());
+    assert_eq!(keys(&hits), ["claude-code-scratchpad"]);
+    assert_eq!(hits[0].location, ArtifactLocation::Stream);
+
+    // PowerShell 5 redirection writes UTF-16LE with a byte-order mark.
+    let mut utf16 = vec![0xff, 0xfe];
+    for unit in format!("log {SCRATCHPAD}\r\n").encode_utf16() {
+        utf16.extend_from_slice(&unit.to_le_bytes());
+    }
+    assert_eq!(
+        keys(&scan_file(&builtins(), &utf16)),
+        ["claude-code-scratchpad"]
+    );
+}
+
+#[test]
+fn nested_and_cyclic_forms_stay_bounded() {
+    // A form that draws itself, and a chain far deeper than any real document.
+    let cyclic = build_pdf(&[
+        (
+            1,
+            "<< /Type /Page /Resources 3 0 R /Contents 2 0 R >>",
+            None,
+        ),
+        (2, "<< /Subtype /Form /Resources 3 0 R >>", Some(b"/X Do")),
+        (3, "<< /XObject << /X 2 0 R >> >>", None),
+    ]);
+    finishes_quickly("cyclic form", &cyclic);
+    let mut chain = b"%PDF-1.7\n1 0 obj << /Type /Page /Resources << /XObject << /X 2 0 R >> >> /Contents 99999 0 R >> endobj\n99999 0 obj << >> stream\n/X Do\nendstream endobj\n".to_vec();
+    for number in 2..50_000u32 {
+        chain.extend_from_slice(
+            format!(
+                "{number} 0 obj << /Subtype /Form /Resources << /XObject << /X {} 0 R >> >> >> stream\n/X Do\nendstream endobj\n",
+                number + 1
+            )
+            .as_bytes(),
+        );
+    }
+    finishes_quickly("deep form chain", &chain);
+}
+
+#[test]
+fn a_full_writeup_scan_queue_is_refused_instead_of_growing() {
+    // Refusal makes the upload fall back to scanning the stored copy; upload
+    // capacity itself is never held by queued scans.
+    static QUEUE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(64);
+    let large = record::reserve_scan_queue(&QUEUE, 40 * 1024 * 1024).unwrap();
+    assert_eq!(QUEUE.available_permits(), 24);
+    assert!(record::reserve_scan_queue(&QUEUE, 30 * 1024 * 1024).is_none());
+    let small = record::reserve_scan_queue(&QUEUE, 10).unwrap();
+    assert_eq!(QUEUE.available_permits(), 23);
+    drop((large, small));
+    assert_eq!(QUEUE.available_permits(), 64);
+}

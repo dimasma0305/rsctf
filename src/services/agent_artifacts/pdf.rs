@@ -1,27 +1,23 @@
 //! Bounded, best-effort PDF text recovery for artifact scanning.
 //!
 //! This is not a renderer. It finds indirect objects (including those packed
-//! in object streams), inflates `FlateDecode` streams under hard size and ratio
-//! caps, and turns page content into text. Glyph-ID strings are decoded with
-//! each page font's `ToUnicode` CMap, which is how browser- and LaTeX-produced
-//! PDFs store text. Text drawn as vector outlines or behind a font without a
-//! `ToUnicode` map cannot be recovered and is simply missed.
+//! in object streams), decodes streams through their text filter chains under
+//! hard size and ratio caps, and turns page content into text, following Form
+//! XObjects such as the wrapped pages `pdfjam` produces. Glyph-ID strings are
+//! decoded with each font's `ToUnicode` CMap, which is how browser- and
+//! LaTeX-produced PDFs store text. Text drawn as vector outlines or images, or
+//! behind a font without a `ToUnicode` map, cannot be recovered and is missed.
 
-use std::collections::HashMap;
-use std::io::Read;
+use std::collections::{HashMap, HashSet};
 
-/// Largest decoded size of one stream.
-const MAX_STREAM_BYTES: usize = 8 * 1024 * 1024;
-/// Largest decoded size of all streams in one document.
-const MAX_TOTAL_INFLATED: usize = 64 * 1024 * 1024;
-/// A stream may not inflate beyond this multiple of its compressed size
-/// (plus a small allowance), which defeats decompression bombs early.
-const MAX_INFLATE_RATIO: usize = 200;
-const INFLATE_ALLOWANCE: usize = 64 * 1024;
+use super::pdf_filters::StreamDecoder;
+
 const MAX_OBJECTS: usize = 100_000;
 const MAX_PAGES: usize = 2_000;
 const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_DEPTH: usize = 32;
+/// Nesting of Form XObjects drawn from page content.
+const MAX_FORM_DEPTH: usize = 8;
 const MAX_CMAP_ENTRIES: usize = 65_536;
 /// Map writes (including overwrites) allowed across every CMap of a document.
 const MAX_CMAP_WORK: usize = 1_000_000;
@@ -344,46 +340,19 @@ struct PdfObject {
     stream: Option<Vec<u8>>,
 }
 
-struct Inflater {
-    total: usize,
-}
-
-impl Inflater {
-    fn inflate(&mut self, compressed: &[u8]) -> Option<Vec<u8>> {
-        let cap = compressed
-            .len()
-            .saturating_mul(MAX_INFLATE_RATIO)
-            .saturating_add(INFLATE_ALLOWANCE)
-            .min(MAX_STREAM_BYTES)
-            .min(MAX_TOTAL_INFLATED.saturating_sub(self.total));
-        if cap == 0 {
-            return None;
-        }
-        let mut out = Vec::new();
-        let mut decoder = flate2::read::ZlibDecoder::new(compressed).take(cap as u64);
-        if decoder.read_to_end(&mut out).is_err() && out.is_empty() {
-            // Raw deflate without a zlib header also appears in the wild.
-            let mut raw = flate2::read::DeflateDecoder::new(compressed).take(cap as u64);
-            out.clear();
-            raw.read_to_end(&mut out).ok()?;
-        }
-        self.total += out.len();
-        Some(out)
-    }
-}
-
-fn filters_supported(dict: &Value) -> Option<bool> {
-    // Some(true) = flate, Some(false) = no filter, None = other filters.
+/// A stream's filter names in the order they apply, or `None` when the
+/// `Filter` entry is neither a name nor an array of names.
+fn filter_names(dict: &Value) -> Option<Vec<&[u8]>> {
     match dict.get(b"Filter") {
-        None => Some(false),
-        Some(Value::Name(name)) if name == b"FlateDecode" => Some(true),
-        Some(Value::Arr(items)) if items.is_empty() => Some(false),
-        Some(Value::Arr(items))
-            if items.len() == 1
-                && matches!(&items[0], Value::Name(name) if name == b"FlateDecode") =>
-        {
-            Some(true)
-        }
+        None => Some(Vec::new()),
+        Some(Value::Name(name)) => Some(vec![name.as_slice()]),
+        Some(Value::Arr(items)) => items
+            .iter()
+            .map(|item| match item {
+                Value::Name(name) => Some(name.as_slice()),
+                _ => None,
+            })
+            .collect(),
         _ => None,
     }
 }
@@ -441,7 +410,7 @@ fn object_starts(data: &[u8]) -> Vec<(u32, usize)> {
     starts
 }
 
-fn read_objects(data: &[u8], inflater: &mut Inflater) -> HashMap<u32, PdfObject> {
+fn read_objects(data: &[u8], decoder: &mut StreamDecoder) -> HashMap<u32, PdfObject> {
     let mut objects = HashMap::new();
     let starts = object_starts(data);
     for (index, &(number, body_start)) in starts.iter().enumerate() {
@@ -469,11 +438,7 @@ fn read_objects(data: &[u8], inflater: &mut Inflater) -> HashMap<u32, PdfObject>
             _ => (body, None),
         };
         let dict = parse_object(dict_bytes);
-        let stream = stream_bytes.and_then(|raw| match filters_supported(&dict) {
-            Some(true) => inflater.inflate(raw),
-            Some(false) => Some(raw.to_vec()),
-            None => None,
-        });
+        let stream = stream_bytes.and_then(|raw| decoder.decode(raw, &filter_names(&dict)?));
         objects.insert(number, PdfObject { dict, stream });
     }
     // Objects packed into object streams (PDF 1.5+).
@@ -534,13 +499,6 @@ fn resolve<'a>(objects: &'a HashMap<u32, PdfObject>, value: &'a Value) -> Option
         }
     }
     None
-}
-
-fn stream_of<'a>(objects: &'a HashMap<u32, PdfObject>, value: &Value) -> Option<&'a [u8]> {
-    match value {
-        Value::Ref(number) => objects.get(number)?.stream.as_deref(),
-        _ => None,
-    }
 }
 
 // ─── ToUnicode CMaps ─────────────────────────────────────────────────────
@@ -666,52 +624,37 @@ fn decode_string(bytes: &[u8], cmap: Option<&CMap>) -> String {
     }
 }
 
-fn page_fonts(
-    objects: &HashMap<u32, PdfObject>,
-    page: &Value,
-    cmaps: &mut HashMap<u32, CMap>,
-    work: &mut usize,
-) -> HashMap<Vec<u8>, Option<u32>> {
-    // Resources may be inherited from ancestors in the page tree.
+/// Resources in effect for a page: its own, or the nearest ancestor's.
+fn page_resources<'a>(objects: &'a HashMap<u32, PdfObject>, page: &'a Value) -> Option<&'a Value> {
     let mut node = Some(page);
-    let mut fonts = HashMap::new();
     for _ in 0..MAX_DEPTH {
-        let Some(current) = node else { break };
+        let current = node?;
         if let Some(resources) = current
             .get(b"Resources")
             .and_then(|value| resolve(objects, value))
         {
-            if let Some(Value::Dict(entries)) = resources
-                .get(b"Font")
-                .and_then(|value| resolve(objects, value))
-            {
-                for (name, font_ref) in entries {
-                    let cmap_ref = resolve(objects, font_ref)
-                        .and_then(|font| font.get(b"ToUnicode"))
-                        .and_then(|value| match value {
-                            Value::Ref(number) => Some(*number),
-                            _ => None,
-                        });
-                    if let Some(number) = cmap_ref {
-                        if let Some(bytes) = objects
-                            .get(&number)
-                            .and_then(|object| object.stream.as_deref())
-                        {
-                            cmaps
-                                .entry(number)
-                                .or_insert_with(|| parse_cmap(bytes, work));
-                        }
-                    }
-                    fonts.entry(name.clone()).or_insert(cmap_ref);
-                }
-                break;
-            }
+            return Some(resources);
         }
         node = current
             .get(b"Parent")
             .and_then(|value| resolve(objects, value));
     }
-    fonts
+    None
+}
+
+/// The named entries of one resource category, such as `Font` or `XObject`.
+fn resource_entries<'a>(
+    objects: &'a HashMap<u32, PdfObject>,
+    resources: Option<&'a Value>,
+    category: &[u8],
+) -> &'a [(Vec<u8>, Value)] {
+    match resources
+        .and_then(|resources| resources.get(category))
+        .and_then(|value| resolve(objects, value))
+    {
+        Some(Value::Dict(entries)) => entries,
+        _ => &[],
+    }
 }
 
 #[derive(Debug)]
@@ -743,149 +686,224 @@ fn read_operand(lexer: &mut Lexer<'_>, token: Token, depth: usize) -> Option<Ope
     })
 }
 
-fn content_text(
-    content: &[u8],
-    fonts: &HashMap<Vec<u8>, Option<u32>>,
-    cmaps: &HashMap<u32, CMap>,
-    out: &mut Vec<u8>,
-) {
-    let mut lexer = Lexer::new(content);
-    let mut operands: Vec<Operand> = Vec::new();
-    let mut font: Option<&CMap> = None;
-    let mut line_y: Option<f64> = None;
-    while let Some(token) = lexer.next_token() {
-        if out.len() >= MAX_TEXT_BYTES {
-            return;
+/// Text recovery state shared by every page and form of one document, so
+/// the budgets are per document and each stream is lexed at most once.
+struct TextExtractor<'a> {
+    objects: &'a HashMap<u32, PdfObject>,
+    cmaps: HashMap<u32, CMap>,
+    cmap_work: usize,
+    seen: HashSet<u32>,
+    budget: usize,
+    text: Vec<u8>,
+}
+
+impl<'a> TextExtractor<'a> {
+    fn new(objects: &'a HashMap<u32, PdfObject>) -> Self {
+        Self {
+            objects,
+            cmaps: HashMap::new(),
+            cmap_work: MAX_CMAP_WORK,
+            seen: HashSet::new(),
+            budget: MAX_CONTENT_BYTES,
+            text: Vec::new(),
         }
-        let Token::Keyword(operator) = token else {
-            if let Some(operand) = read_operand(&mut lexer, token, 0) {
-                if operands.len() < 64 {
-                    operands.push(operand);
-                }
-            }
-            continue;
-        };
-        match operator.as_slice() {
-            b"Tf" => {
-                font = operands.iter().rev().find_map(|operand| match operand {
-                    Operand::Name(name) => fonts
-                        .get(name)
-                        .copied()
-                        .flatten()
-                        .and_then(|number| cmaps.get(&number)),
+    }
+
+    fn done(&self) -> bool {
+        self.budget == 0 || self.text.len() >= MAX_TEXT_BYTES
+    }
+
+    /// A content stream that has not been lexed yet, within the document's
+    /// byte budget. Many pages may share one stream or form; each is lexed
+    /// once so a small file cannot multiply the work.
+    fn claim(&mut self, number: u32) -> Option<&'a [u8]> {
+        if self.budget == 0 || !self.seen.insert(number) {
+            return None;
+        }
+        let bytes = self.objects.get(&number)?.stream.as_deref()?;
+        let take = bytes.len().min(self.budget);
+        self.budget -= take;
+        Some(&bytes[..take])
+    }
+
+    /// Font names mapped to their `ToUnicode` CMap object, parsing each CMap
+    /// once within the document-wide work budget.
+    fn fonts(&mut self, resources: Option<&'a Value>) -> HashMap<Vec<u8>, Option<u32>> {
+        let objects = self.objects;
+        let mut fonts = HashMap::new();
+        for (name, font_ref) in resource_entries(objects, resources, b"Font") {
+            let cmap_ref = resolve(objects, font_ref)
+                .and_then(|font| font.get(b"ToUnicode"))
+                .and_then(|value| match value {
+                    Value::Ref(number) => Some(*number),
                     _ => None,
                 });
-            }
-            b"Tj" | b"'" | b"\"" => {
-                if matches!(operator.as_slice(), b"'" | b"\"") {
-                    out.push(b'\n');
+            if let Some(number) = cmap_ref {
+                if let Some(bytes) = objects
+                    .get(&number)
+                    .and_then(|object| object.stream.as_deref())
+                {
+                    let work = &mut self.cmap_work;
+                    self.cmaps
+                        .entry(number)
+                        .or_insert_with(|| parse_cmap(bytes, work));
                 }
-                if let Some(Operand::Str(bytes)) = operands.last() {
-                    out.extend_from_slice(decode_string(bytes, font).as_bytes());
-                }
             }
-            b"TJ" => {
-                if let Some(Operand::Arr(items)) = operands.last() {
-                    for item in items {
-                        match item {
-                            Operand::Str(bytes) => {
-                                out.extend_from_slice(decode_string(bytes, font).as_bytes())
+            fonts.entry(name.clone()).or_insert(cmap_ref);
+        }
+        fonts
+    }
+
+    fn page(&mut self, page: &'a Value) {
+        let parts = match page.get(b"Contents") {
+            Some(Value::Arr(parts)) => parts.iter().collect::<Vec<_>>(),
+            Some(value) => vec![value],
+            None => Vec::new(),
+        };
+        let mut content = Vec::new();
+        for part in parts {
+            let Value::Ref(number) = part else { continue };
+            if let Some(bytes) = self.claim(*number) {
+                content.extend_from_slice(bytes);
+                content.push(b'\n');
+            }
+        }
+        self.content(&content, page_resources(self.objects, page), 0);
+        self.text.push(b'\n');
+    }
+
+    /// Draw a Form XObject named by `Do`: its content with its own resources,
+    /// or the caller's when it has none.
+    fn form(&mut self, name: &[u8], resources: Option<&'a Value>, depth: usize) {
+        let objects = self.objects;
+        let Some((_, Value::Ref(number))) = resource_entries(objects, resources, b"XObject")
+            .iter()
+            .find(|(key, _)| key.as_slice() == name)
+        else {
+            return;
+        };
+        let Some(object) = objects.get(number) else {
+            return;
+        };
+        if !object.dict.name_is(b"Subtype", b"Form") {
+            return;
+        }
+        let Some(content) = self.claim(*number) else {
+            return;
+        };
+        let own = object
+            .dict
+            .get(b"Resources")
+            .and_then(|value| resolve(objects, value))
+            .or(resources);
+        self.content(content, own, depth + 1);
+    }
+
+    fn content(&mut self, content: &[u8], resources: Option<&'a Value>, depth: usize) {
+        let fonts = self.fonts(resources);
+        let mut lexer = Lexer::new(content);
+        let mut operands: Vec<Operand> = Vec::new();
+        let mut font: Option<u32> = None;
+        let mut line_y: Option<f64> = None;
+        while let Some(token) = lexer.next_token() {
+            if self.text.len() >= MAX_TEXT_BYTES {
+                return;
+            }
+            let Token::Keyword(operator) = token else {
+                if let Some(operand) = read_operand(&mut lexer, token, 0) {
+                    if operands.len() < 64 {
+                        operands.push(operand);
+                    }
+                }
+                continue;
+            };
+            match operator.as_slice() {
+                b"Tf" => {
+                    font = operands.iter().rev().find_map(|operand| match operand {
+                        Operand::Name(name) => fonts.get(name).copied().flatten(),
+                        _ => None,
+                    });
+                }
+                b"Tj" | b"'" | b"\"" => {
+                    if matches!(operator.as_slice(), b"'" | b"\"") {
+                        self.text.push(b'\n');
+                    }
+                    if let Some(Operand::Str(bytes)) = operands.last() {
+                        let cmap = font.and_then(|number| self.cmaps.get(&number));
+                        self.text
+                            .extend_from_slice(decode_string(bytes, cmap).as_bytes());
+                    }
+                }
+                b"TJ" => {
+                    if let Some(Operand::Arr(items)) = operands.last() {
+                        let cmap = font.and_then(|number| self.cmaps.get(&number));
+                        for item in items {
+                            match item {
+                                Operand::Str(bytes) => self
+                                    .text
+                                    .extend_from_slice(decode_string(bytes, cmap).as_bytes()),
+                                // A large negative adjustment is a visual word gap.
+                                Operand::Num(value) if *value < -200.0 => self.text.push(b' '),
+                                _ => {}
                             }
-                            // A large negative adjustment is a visual word gap.
-                            Operand::Num(value) if *value < -200.0 => out.push(b' '),
-                            _ => {}
                         }
                     }
                 }
-            }
-            b"Td" | b"TD" | b"Tm" => {
-                let y = match operands.as_slice() {
-                    [.., Operand::Num(y)] if operator.as_slice() == b"Tm" => Some(*y),
-                    [.., Operand::Num(_), Operand::Num(y)] => Some(*y),
-                    _ => None,
-                };
-                let new_line = match (operator.as_slice(), y) {
-                    (b"Tm", Some(y)) => line_y.is_some_and(|previous| (previous - y).abs() > 0.5),
-                    (_, Some(y)) => y.abs() > 0.5,
-                    _ => true,
-                };
-                if operator.as_slice() == b"Tm" {
-                    line_y = y;
+                b"Td" | b"TD" | b"Tm" => {
+                    let y = match operands.as_slice() {
+                        [.., Operand::Num(y)] if operator.as_slice() == b"Tm" => Some(*y),
+                        [.., Operand::Num(_), Operand::Num(y)] => Some(*y),
+                        _ => None,
+                    };
+                    let new_line = match (operator.as_slice(), y) {
+                        (b"Tm", Some(y)) => {
+                            line_y.is_some_and(|previous| (previous - y).abs() > 0.5)
+                        }
+                        (_, Some(y)) => y.abs() > 0.5,
+                        _ => true,
+                    };
+                    if operator.as_slice() == b"Tm" {
+                        line_y = y;
+                    }
+                    if new_line {
+                        self.text.push(b'\n');
+                    }
                 }
-                if new_line {
-                    out.push(b'\n');
+                b"T*" | b"ET" => self.text.push(b'\n'),
+                b"Do" if depth < MAX_FORM_DEPTH => {
+                    if let Some(Operand::Name(name)) = operands.last() {
+                        self.form(name, resources, depth);
+                    }
                 }
+                b"ID" => lexer.skip_inline_image(),
+                _ => {}
             }
-            b"T*" | b"ET" => out.push(b'\n'),
-            b"ID" => lexer.skip_inline_image(),
-            _ => {}
-        }
-        operands.clear();
-    }
-}
-
-/// A page's content streams that have not been lexed yet, within the
-/// document-wide byte budget. Many pages may share one stream; each is lexed
-/// once so a small file cannot multiply the work.
-fn contents_of(
-    objects: &HashMap<u32, PdfObject>,
-    page: &Value,
-    seen: &mut std::collections::HashSet<u32>,
-    budget: &mut usize,
-) -> Vec<u8> {
-    let parts = match page.get(b"Contents") {
-        Some(Value::Arr(parts)) => parts.iter().collect::<Vec<_>>(),
-        Some(value) => vec![value],
-        None => Vec::new(),
-    };
-    let mut content = Vec::new();
-    for part in parts {
-        let Value::Ref(number) = part else { continue };
-        if !seen.insert(*number) {
-            continue;
-        }
-        if let Some(bytes) = stream_of(objects, part) {
-            let take = bytes.len().min(*budget);
-            *budget -= take;
-            content.extend_from_slice(&bytes[..take]);
-            content.push(b'\n');
-        }
-        if *budget == 0 {
-            break;
+            operands.clear();
         }
     }
-    content
 }
 
 /// Decoded streams and recovered page text of a PDF, within fixed limits.
 pub(super) fn extract(data: &[u8]) -> PdfContent {
-    let mut inflater = Inflater { total: 0 };
-    let objects = read_objects(data, &mut inflater);
-    let mut cmaps = HashMap::new();
-    let mut cmap_work = MAX_CMAP_WORK;
-    let mut seen_content = std::collections::HashSet::new();
-    let mut content_budget = MAX_CONTENT_BYTES;
-    let mut text = Vec::new();
+    let mut decoder = StreamDecoder::new();
+    let objects = read_objects(data, &mut decoder);
     let mut pages = objects
         .iter()
         .filter(|(_, object)| object.dict.name_is(b"Type", b"Page"))
         .map(|(number, _)| *number)
         .collect::<Vec<_>>();
     pages.sort_unstable();
-    for number in pages.into_iter().take(MAX_PAGES) {
-        let page = &objects[&number].dict;
-        let fonts = page_fonts(&objects, page, &mut cmaps, &mut cmap_work);
-        let content = contents_of(&objects, page, &mut seen_content, &mut content_budget);
-        content_text(&content, &fonts, &cmaps, &mut text);
-        text.push(b'\n');
-        if content_budget == 0 {
-            break;
+    let mut text = {
+        let mut extractor = TextExtractor::new(&objects);
+        for number in pages.into_iter().take(MAX_PAGES) {
+            extractor.page(&objects[&number].dict);
+            if extractor.done() {
+                break;
+            }
         }
-        if text.len() >= MAX_TEXT_BYTES {
-            text.truncate(MAX_TEXT_BYTES);
-            break;
-        }
-    }
+        extractor.text
+    };
+    text.truncate(MAX_TEXT_BYTES);
     PdfContent {
         streams: objects
             .into_values()

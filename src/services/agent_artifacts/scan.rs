@@ -128,6 +128,60 @@ fn gzip_body(bytes: &[u8]) -> Option<Segment<'static>> {
     })
 }
 
+/// A zip archive's end-of-central-directory record sits in the last 64 KiB,
+/// so this also finds archives with bytes prepended to them.
+fn has_zip_directory(bytes: &[u8]) -> bool {
+    let tail = &bytes[bytes.len().saturating_sub(64 * 1024 + 22)..];
+    tail.windows(4).any(|window| window == b"PK\x05\x06")
+}
+
+/// UTF-16 text with a byte-order mark, as Windows tools often write it.
+fn utf16_text(bytes: &[u8]) -> Option<Vec<u8>> {
+    let from_pair: fn([u8; 2]) -> u16 = match bytes.get(..2)? {
+        [0xff, 0xfe] => u16::from_le_bytes,
+        [0xfe, 0xff] => u16::from_be_bytes,
+        _ => return None,
+    };
+    let units = bytes[2..]
+        .chunks_exact(2)
+        .map(|pair| from_pair([pair[0], pair[1]]));
+    Some(
+        char::decode_utf16(units)
+            .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect::<String>()
+            .into_bytes(),
+    )
+}
+
+/// Page text with line breaks and the spacing around them removed, so a long
+/// path that wraps onto the next line is matched whole.
+fn join_lines(text: &[u8]) -> Option<Vec<u8>> {
+    if !text.contains(&b'\n') {
+        return None;
+    }
+    let mut joined = Vec::with_capacity(text.len());
+    let mut at_break = false;
+    for &byte in text {
+        match byte {
+            b'\n' | b'\r' => {
+                while joined
+                    .last()
+                    .is_some_and(|last| matches!(last, b' ' | b'\t'))
+                {
+                    joined.pop();
+                }
+                at_break = true;
+            }
+            b' ' | b'\t' if at_break => {}
+            _ => {
+                at_break = false;
+                joined.push(byte);
+            }
+        }
+    }
+    Some(joined)
+}
+
 fn segments(bytes: &[u8]) -> Vec<Segment<'_>> {
     let mut segments = vec![Segment {
         location: ArtifactLocation::Raw,
@@ -136,21 +190,47 @@ fn segments(bytes: &[u8]) -> Vec<Segment<'_>> {
     }];
     if pdf::is_pdf(bytes) {
         let content = pdf::extract(bytes);
+        let joined = join_lines(&content.text);
         segments.push(Segment {
             location: ArtifactLocation::Text,
             member: None,
             bytes: Cow::Owned(content.text),
         });
+        segments.extend(joined.map(|joined| Segment {
+            location: ArtifactLocation::Text,
+            member: Some("line breaks removed".to_string()),
+            bytes: Cow::Owned(joined),
+        }));
         segments.extend(content.streams.into_iter().map(|stream| Segment {
             location: ArtifactLocation::Stream,
             member: None,
             bytes: Cow::Owned(stream),
         }));
-    } else if bytes.starts_with(b"PK\x03\x04") {
-        segments.extend(zip_members(bytes));
     } else if bytes.starts_with(&[0x1f, 0x8b]) {
         segments.extend(gzip_body(bytes));
     }
+    // Checked apart from the PDF case: a PDF can also be a valid zip.
+    if has_zip_directory(bytes) {
+        segments.extend(zip_members(bytes));
+    }
+    let decoded = segments
+        .iter()
+        .filter_map(|segment| {
+            // Archive members carry their name and a newline in front.
+            let body = match &segment.member {
+                Some(name) if segment.location == ArtifactLocation::Stream => {
+                    segment.bytes.get(name.len() + 1..)?
+                }
+                _ => &segment.bytes,
+            };
+            utf16_text(body).map(|text| Segment {
+                location: segment.location,
+                member: segment.member.clone(),
+                bytes: Cow::Owned(text),
+            })
+        })
+        .collect::<Vec<_>>();
+    segments.extend(decoded);
     segments
 }
 

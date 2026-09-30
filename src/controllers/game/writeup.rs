@@ -166,11 +166,17 @@ pub async fn submit_writeup(
         format!("{team_name} successfully submitted {game_title} Write-Up"),
     )
     .await;
-    // Scan the committed writeup for agent artifacts in the background.
+    // Scan the committed writeup for agent artifacts in the background, from
+    // the uploaded bytes so a quick replacement cannot hide this file.
     crate::services::agent_artifacts::spawn_writeup_scan(
         st.clone(),
-        ctx.game.id,
-        ctx.participation.id,
+        crate::services::agent_artifacts::WriteupScan {
+            game_id: ctx.game.id,
+            participation_id: ctx.participation.id,
+            file_name: name,
+            bytes,
+            uploaded_at: now,
+        },
     );
 
     Ok(StatusCode::OK)

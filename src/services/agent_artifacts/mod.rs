@@ -6,6 +6,7 @@
 //! the file.
 
 mod pdf;
+mod pdf_filters;
 mod record;
 mod scan;
 
@@ -34,7 +35,8 @@ const BENIGN_SAMPLES: &[&str] = &[
 ];
 
 /// A signature shipped with the platform. Every pattern was checked against
-/// traces produced by the named tool on a real machine.
+/// traces produced by the named tool on a real machine; path patterns also
+/// accept Windows and JSON-escaped separators for the same layout.
 #[derive(Debug, Clone, Copy)]
 pub struct BuiltinSignature {
     pub key: &'static str,
@@ -65,23 +67,33 @@ pub const BUILTIN_SIGNATURES: &[BuiltinSignature] = &[
     BuiltinSignature {
         key: "claude-code-projects",
         label: "Claude Code project store",
-        pattern: r"\.claude/projects/-[A-Za-z0-9._-]{2,200}",
-        examples: &["/root/.claude/projects/-root-ctf-mevbot/0f3c2a1e.jsonl"],
+        // Project folders are the working path with every separator replaced
+        // by '-': `/root/ctf` is `-root-ctf`, `C:\ctf` is `C--ctf`.
+        pattern: r"\.claude[/\\]{1,2}projects[/\\]{1,2}(?:-|[A-Za-z]--)[A-Za-z0-9._-]{2,200}",
+        examples: &[
+            "/root/.claude/projects/-root-ctf-mevbot/0f3c2a1e.jsonl",
+            r"C:\Users\player\.claude\projects\C--Users-player-ctf\0f3c2a1e.jsonl",
+            r#"{"path":"C:\\Users\\player\\.claude\\projects\\C--Users-player-ctf"}"#,
+        ],
     },
     BuiltinSignature {
         key: "codex-home",
         label: "Codex agent home directory",
-        pattern: r"\.codex/(?:sessions|shell_snapshots|worktrees)/",
+        pattern: r"\.codex[/\\]{1,2}(?:sessions|shell_snapshots|worktrees)[/\\]",
         examples: &[
             "/root/.codex/shell_snapshots/01a0a836-3789-7c21-935c-498fe0e56e9d.1790661776803146567.sh",
             "/home/player/.codex/sessions/2026/09/28/",
+            r"C:\Users\player\.codex\sessions\2026\09\28\",
         ],
     },
     BuiltinSignature {
         key: "cursor-projects",
         label: "Cursor agent project store",
-        pattern: r"\.cursor/projects/[A-Za-z0-9._-]{2,200}",
-        examples: &["/root/.cursor/projects/root-writeup-ua-Task-6/terminals/1.txt"],
+        pattern: r"\.cursor[/\\]{1,2}projects[/\\]{1,2}[A-Za-z0-9._-]{2,200}",
+        examples: &[
+            "/root/.cursor/projects/root-writeup-ua-Task-6/terminals/1.txt",
+            r"C:\Users\player\.cursor\projects\c-Users-player-ctf\terminals\1.txt",
+        ],
     },
 ];
 

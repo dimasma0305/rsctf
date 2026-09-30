@@ -29,6 +29,20 @@ async fn scan_slot() -> AppResult<tokio::sync::SemaphorePermit<'static>> {
 /// Upper bound for a writeup read back from storage for scanning.
 const MAX_WRITEUP_SCAN_BYTES: usize = crate::utils::upload::WRITEUP_FILE_BYTES + 1024;
 
+const MIB: usize = 1024 * 1024;
+/// Uploaded writeup bytes waiting for a scan slot, in MiB across the process.
+/// This is apart from the upload budget, so a scan backlog at the deadline
+/// never makes new uploads fail.
+static WRITEUP_SCAN_QUEUE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(64);
+
+pub(super) fn reserve_scan_queue(
+    queue: &'static tokio::sync::Semaphore,
+    bytes: usize,
+) -> Option<tokio::sync::SemaphorePermit<'static>> {
+    let mib = u32::try_from(bytes.div_ceil(MIB).max(1)).ok()?;
+    queue.try_acquire_many(mib).ok()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Source {
     Solver,
@@ -141,14 +155,61 @@ async fn record_file(
     .await
 }
 
-async fn competitive_game(st: &SharedState, game_id: i32) -> AppResult<bool> {
-    let practice: Option<bool> =
-        sqlx::query_scalar(r#"SELECT practice_mode FROM "Games" WHERE id = $1"#)
-            .bind(game_id)
-            .fetch_optional(st.pg())
-            .await
-            .map_err(db_error)?;
-    Ok(practice == Some(false))
+/// Evidence must come from the competition, not from post-event practice
+/// (`practice_mode` only keeps challenges playable after the end). A solver
+/// counts when the team's canonical solve of that challenge fell inside the
+/// event window and the team was admitted to the competition (the database
+/// stamps that admission only before the end).
+async fn solve_is_competitive(
+    st: &SharedState,
+    game_id: i32,
+    participation_id: i32,
+    challenge_id: i32,
+) -> AppResult<bool> {
+    sqlx::query_scalar(
+        r#"SELECT EXISTS (
+               SELECT 1
+                 FROM "FirstSolves" first_solve
+                 JOIN "Submissions" submission ON submission.id = first_solve.submission_id
+                 JOIN "Games" game ON game.id = submission.game_id
+                 JOIN "Participations" participation
+                   ON participation.id = first_solve.participation_id
+                  AND participation.game_id = game.id
+                WHERE game.id = $1 AND first_solve.participation_id = $2
+                  AND first_solve.challenge_id = $3
+                  AND submission.submit_time_utc >= game.start_time_utc
+                  AND submission.submit_time_utc < game.end_time_utc
+                  AND participation.competitive_admitted_at_utc IS NOT NULL
+           )"#,
+    )
+    .bind(game_id)
+    .bind(participation_id)
+    .bind(challenge_id)
+    .fetch_one(st.pg())
+    .await
+    .map_err(db_error)
+}
+
+/// A writeup legitimately arrives after the end, so it counts when the team
+/// was admitted to the competition itself.
+async fn participation_is_competitive(
+    st: &SharedState,
+    game_id: i32,
+    participation_id: i32,
+) -> AppResult<bool> {
+    sqlx::query_scalar(
+        r#"SELECT EXISTS (
+               SELECT 1 FROM "Participations" participation
+                 JOIN "Games" game ON game.id = participation.game_id
+                WHERE game.id = $1 AND participation.id = $2
+                  AND participation.competitive_admitted_at_utc IS NOT NULL
+           )"#,
+    )
+    .bind(game_id)
+    .bind(participation_id)
+    .fetch_one(st.pg())
+    .await
+    .map_err(db_error)
 }
 
 #[derive(sqlx::FromRow)]
@@ -168,6 +229,19 @@ async fn scan_solver_with(
     signatures: &[CompiledSignature],
     upload_id: i64,
 ) -> AppResult<bool> {
+    let Some((game_id, participation_id, challenge_id)) = sqlx::query_as::<_, (i32, i32, i32)>(
+        r#"SELECT game_id, participation_id, challenge_id FROM "SolverUploads" WHERE id = $1"#,
+    )
+    .bind(upload_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(db_error)?
+    else {
+        return Ok(false);
+    };
+    if !solve_is_competitive(st, game_id, participation_id, challenge_id).await? {
+        return Ok(false);
+    }
     let _slot = scan_slot().await?;
     let Some(row) = sqlx::query_as::<_, SolverRow>(
         r#"SELECT game_id, participation_id, challenge_id, file_name, sha256, content,
@@ -181,9 +255,6 @@ async fn scan_solver_with(
     else {
         return Ok(false);
     };
-    if !competitive_game(st, row.game_id).await? {
-        return Ok(false);
-    }
     let hits = scan_blocking(signatures.to_vec(), row.content).await?;
     let mut changed = record_file(
         st,
@@ -206,6 +277,52 @@ async fn scan_solver_with(
     Ok(changed)
 }
 
+/// One writeup file as it was uploaded. The upload request hands its own
+/// bytes over, so replacing the writeup before the scan runs cannot hide the
+/// first file (whose blob is purged on replacement).
+pub struct WriteupScan {
+    pub game_id: i32,
+    pub participation_id: i32,
+    pub file_name: String,
+    pub bytes: axum::body::Bytes,
+    pub uploaded_at: DateTime<Utc>,
+}
+
+async fn scan_writeup_bytes(
+    st: &SharedState,
+    signatures: &[CompiledSignature],
+    writeup: WriteupScan,
+) -> AppResult<bool> {
+    if !participation_is_competitive(st, writeup.game_id, writeup.participation_id).await? {
+        return Ok(false);
+    }
+    let _slot = scan_slot().await?;
+    let sha256 = Sha256::digest(&writeup.bytes).to_vec();
+    let bytes = writeup.bytes;
+    let hits = tokio::task::spawn_blocking({
+        let signatures = signatures.to_vec();
+        move || scan_file(&signatures, &bytes)
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("artifact scan task failed: {error}")))?;
+    record_file(
+        st,
+        ScannedFile {
+            game_id: writeup.game_id,
+            participation_id: writeup.participation_id,
+            challenge_id: None,
+            source: Source::Writeup,
+            solver_upload_id: None,
+            file_name: &writeup.file_name,
+            sha256: &sha256,
+            uploaded_by: None,
+            uploaded_at: writeup.uploaded_at,
+        },
+        &hits,
+    )
+    .await
+}
+
 #[derive(sqlx::FromRow)]
 struct WriteupRow {
     game_id: i32,
@@ -214,12 +331,12 @@ struct WriteupRow {
     upload_time_utc: DateTime<Utc>,
 }
 
-async fn scan_writeup_with(
+/// Rescan the team's current writeup from storage.
+async fn scan_stored_writeup(
     st: &SharedState,
     signatures: &[CompiledSignature],
     participation_id: i32,
 ) -> AppResult<bool> {
-    let _slot = scan_slot().await?;
     let Some(row) = sqlx::query_as::<_, WriteupRow>(
         r#"SELECT participation.game_id, file.name, file.hash, file.upload_time_utc
              FROM "Participations" participation
@@ -233,29 +350,23 @@ async fn scan_writeup_with(
     else {
         return Ok(false);
     };
-    if !competitive_game(st, row.game_id).await? {
+    if !participation_is_competitive(st, row.game_id, participation_id).await? {
         return Ok(false);
     }
     let bytes = st
         .storage
         .load_bounded(&row.hash, MAX_WRITEUP_SCAN_BYTES)
         .await?;
-    let sha256 = Sha256::digest(&bytes).to_vec();
-    let hits = scan_blocking(signatures.to_vec(), bytes).await?;
-    record_file(
+    scan_writeup_bytes(
         st,
-        ScannedFile {
+        signatures,
+        WriteupScan {
             game_id: row.game_id,
             participation_id,
-            challenge_id: None,
-            source: Source::Writeup,
-            solver_upload_id: None,
-            file_name: &row.name,
-            sha256: &sha256,
-            uploaded_by: None,
+            file_name: row.name,
+            bytes: bytes.into(),
             uploaded_at: row.upload_time_utc,
         },
-        &hits,
     )
     .await
 }
@@ -266,15 +377,25 @@ pub async fn scan_solver_upload(st: &SharedState, upload_id: i64) -> AppResult<b
     scan_solver_with(st, &signatures, upload_id).await
 }
 
-/// Scan a team's current writeup. Returns whether new suspicion evidence was written.
+/// Scan a team's current writeup from storage. Returns whether new suspicion
+/// evidence was written.
 pub async fn scan_writeup(st: &SharedState, participation_id: i32) -> AppResult<bool> {
     let signatures = signatures(st).await?;
-    scan_writeup_with(st, &signatures, participation_id).await
+    scan_stored_writeup(st, &signatures, participation_id).await
+}
+
+/// Scan a writeup exactly as it was uploaded.
+pub async fn scan_uploaded_writeup(st: &SharedState, writeup: WriteupScan) -> AppResult<bool> {
+    let signatures = signatures(st).await?;
+    scan_writeup_bytes(st, &signatures, writeup).await
 }
 
 /// Raise `AiDeclarationContradiction` when the team declared "No AI used" for
-/// a challenge whose own solver upload carries an agent artifact. Called after
-/// a solver scan and after a "No AI used" declaration, so either order works.
+/// a challenge whose own competitive solver upload carries an agent artifact.
+/// The declaration is read from the append-only disclosure history as well as
+/// the current row, so clearing or replacing it later cannot hide it. Called
+/// after a solver scan and after a "No AI used" declaration, so either order
+/// works; solver matches only exist for competitive solves.
 pub async fn evaluate_contradiction(
     st: &SharedState,
     game_id: i32,
@@ -286,12 +407,16 @@ pub async fn evaluate_contradiction(
                SELECT 1 FROM "AgentArtifactMatches" artifact
                 WHERE artifact.game_id = $1 AND artifact.participation_id = $2
                   AND artifact.challenge_id = $3 AND artifact.source = 'Solver'
-           ) AND EXISTS (
-               SELECT 1 FROM "AiChatLinks" link
-                WHERE link.game_id = $1 AND link.participation_id = $2
-                  AND link.challenge_id = $3 AND link.declared_no_ai
-           ) AND EXISTS (
-               SELECT 1 FROM "Games" game WHERE game.id = $1 AND NOT game.practice_mode
+           ) AND (
+               EXISTS (
+                   SELECT 1 FROM "AiChatLinks" link
+                    WHERE link.game_id = $1 AND link.participation_id = $2
+                      AND link.challenge_id = $3 AND link.declared_no_ai
+               ) OR EXISTS (
+                   SELECT 1 FROM "AiChatLinkEvents" history
+                    WHERE history.game_id = $1 AND history.participation_id = $2
+                      AND history.challenge_id = $3 AND history.declared_no_ai
+               )
            )"#,
     )
     .bind(game_id)
@@ -337,9 +462,21 @@ pub fn spawn_solver_scan(st: SharedState, upload_id: i64) {
     });
 }
 
-pub fn spawn_writeup_scan(st: SharedState, game_id: i32, participation_id: i32) {
+/// Scan an uploaded writeup in the background from its uploaded bytes. When
+/// the bounded scan queue is full, the bytes are released and the stored copy
+/// is scanned instead.
+pub fn spawn_writeup_scan(st: SharedState, writeup: WriteupScan) {
+    let (game_id, participation_id) = (writeup.game_id, writeup.participation_id);
+    let queued = reserve_scan_queue(&WRITEUP_SCAN_QUEUE, writeup.bytes.len());
     tokio::spawn(async move {
-        match scan_writeup(&st, participation_id).await {
+        let result = match queued {
+            Some(_permit) => scan_uploaded_writeup(&st, writeup).await,
+            None => {
+                drop(writeup);
+                scan_writeup(&st, participation_id).await
+            }
+        };
+        match result {
             Ok(true) => crate::controllers::game::invalidate_cheat_report(&st, game_id).await,
             Ok(false) => {}
             Err(error) => tracing::warn!(%error, participation_id, "writeup artifact scan failed"),
@@ -388,7 +525,7 @@ pub async fn rescan_game(st: &SharedState, game_id: i32) -> AppResult<RescanSumm
     .map_err(db_error)?;
     for participation_id in participations {
         summary.writeups_scanned += 1;
-        match scan_writeup_with(st, &signatures, participation_id).await {
+        match scan_stored_writeup(st, &signatures, participation_id).await {
             Ok(changed) => summary.new_events += usize::from(changed),
             Err(error) => {
                 summary.failures += 1;

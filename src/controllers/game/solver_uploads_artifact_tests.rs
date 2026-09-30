@@ -72,6 +72,15 @@ impl Fixture {
     }
 
     async fn upload_solver(&self, user: &CurrentUser, content: &[u8]) -> i64 {
+        self.upload_solver_for(user, self.solved, content).await
+    }
+
+    async fn upload_solver_for(
+        &self,
+        user: &CurrentUser,
+        challenge_id: i32,
+        content: &[u8],
+    ) -> i64 {
         let (participation_id, team_id) = self.membership(user).await;
         store_solver_upload(
             &self.pool,
@@ -79,7 +88,7 @@ impl Fixture {
                 game_id: self.open_game,
                 team_id,
                 participation_id,
-                challenge_id: self.solved,
+                challenge_id,
                 user_id: user.id,
                 security_stamp: "stamp",
                 operation_id: Uuid::new_v4(),
@@ -94,6 +103,16 @@ impl Fixture {
     }
 
     async fn declare_no_ai(&self, user: &CurrentUser, revision: i32) {
+        self.save_disclosure(user, &[], true, revision).await;
+    }
+
+    async fn save_disclosure(
+        &self,
+        user: &CurrentUser,
+        links: &[&str],
+        no_ai: bool,
+        revision: i32,
+    ) {
         let response = super::super::ai_chats::save_ai_chat_links(
             State(self.st.clone()),
             user.clone(),
@@ -102,7 +121,7 @@ impl Fixture {
             axum::extract::ConnectInfo(std::net::SocketAddr::from(([203, 0, 113, 9], 40000))),
             axum::Json(
                 serde_json::from_value(serde_json::json!({
-                    "links": [], "noAiUsed": true, "expectedRevision": revision
+                    "links": links, "noAiUsed": no_ai, "expectedRevision": revision
                 }))
                 .unwrap(),
             ),
@@ -111,6 +130,69 @@ impl Fixture {
         .map(IntoResponse::into_response)
         .unwrap_or_else(IntoResponse::into_response);
         assert_eq!(response.status(), 200);
+    }
+
+    async fn evidence(&self, user: &CurrentUser, kind: i16) -> JsonValue {
+        let event_id: i32 = sqlx::query_scalar(
+            r#"SELECT event.id FROM "SuspicionEvents" event
+                 JOIN "UserParticipations" u ON u.participation_id = event.participation_id
+                WHERE u.user_id = $1 AND u.game_id = $2 AND event.kind = $3"#,
+        )
+        .bind(user.id)
+        .bind(self.open_game)
+        .bind(kind)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap();
+        let review = super::super::cheat_evidence::suspicion_event_evidence(
+            State(self.st.clone()),
+            MonitorUser(self.admin.clone()),
+            Path((self.open_game, event_id)),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        let bytes = axum::body::to_bytes(review.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let review: JsonValue = serde_json::from_slice(&bytes).unwrap();
+        match review.get("data") {
+            Some(data) => data.clone(),
+            None => review,
+        }
+    }
+
+    async fn store_writeup(&self, user: &CurrentUser, pdf: &[u8]) {
+        let (participation_id, team_id) = self.membership(user).await;
+        crate::services::blob_refs::store_and_replace_writeup(
+            &self.pool,
+            self.st.storage.as_ref(),
+            crate::services::live_roster::LiveParticipationIdentity {
+                user_id: user.id,
+                expected_security_stamp: "stamp",
+                game_id: self.open_game,
+                team_id,
+                participation_id,
+            },
+            &format!(
+                "Writeup-{}-{team_id}-{}.pdf",
+                self.open_game,
+                Uuid::new_v4()
+            ),
+            pdf,
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn set_practice_mode(&self) {
+        // Git-synced events keep challenges playable after the end by default.
+        sqlx::query(r#"UPDATE "Games" SET practice_mode = TRUE WHERE id = $1"#)
+            .bind(self.open_game)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+        super::super::scoreboard_board::invalidate_game_row_cache(self.open_game);
     }
 
     async fn events(&self, user: &CurrentUser) -> Vec<(i16, String, Option<i32>)> {
@@ -133,6 +215,7 @@ impl Fixture {
     }
 }
 
+const CHATGPT: &str = "https://chatgpt.com/share/6708d9f0-5b7c-8008-a2d4-3f2e1c0b9a77";
 const AGENT_ARTIFACT: i16 = 38;
 const CONTRADICTION: i16 = 39;
 
@@ -141,6 +224,8 @@ const CONTRADICTION: i16 = 39;
 async fn solver_artifacts_raise_events_and_a_contradiction_in_either_order() {
     let f = fixture().await;
     f.enable_uploads().await;
+    // Playable-after-the-end events are still competitions.
+    f.set_practice_mode().await;
 
     // A clean solver records nothing.
     let clean = f.upload_solver(&f.bob, CLEAN_SOLVER).await;
@@ -197,8 +282,10 @@ async fn solver_artifacts_raise_events_and_a_contradiction_in_either_order() {
     assert_eq!(f.matches().await, before);
     assert_eq!(f.events(&f.alice).await.len(), 2);
 
-    // Order B: "No AI used" first, then the artifact upload.
+    // Order B: "No AI used" first, later switched to a chat link, then the
+    // artifact upload. The earlier declaration stays in the history.
     f.declare_no_ai(&f.bob, 0).await;
+    f.save_disclosure(&f.bob, &[CHATGPT], false, 1).await;
     assert!(f.events(&f.bob).await.is_empty());
     let late = f.upload_solver(&f.bob, AGENT_SOLVER).await;
     assert!(agent_artifacts::scan_solver_upload(&f.st, late)
@@ -227,96 +314,154 @@ async fn solver_artifacts_raise_events_and_a_contradiction_in_either_order() {
     );
 
     // The evidence view shows the matched file, signature, and declaration.
-    let event_id: i32 = sqlx::query_scalar(
-        r#"SELECT event.id FROM "SuspicionEvents" event
-             JOIN "UserParticipations" u ON u.participation_id = event.participation_id
-            WHERE u.user_id = $1 AND event.kind = $2"#,
-    )
-    .bind(f.alice.id)
-    .bind(CONTRADICTION)
-    .fetch_one(&f.pool)
-    .await
-    .unwrap();
-    let review = super::super::cheat_evidence::suspicion_event_evidence(
-        State(f.st.clone()),
-        MonitorUser(f.admin.clone()),
-        Path((f.open_game, event_id)),
-    )
-    .await
-    .unwrap()
-    .into_response();
-    let bytes = axum::body::to_bytes(review.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let review: JsonValue = serde_json::from_slice(&bytes).unwrap();
-    let review = if review.get("data").is_some() {
-        &review["data"]
-    } else {
-        &review
-    };
+    let review = f.evidence(&f.alice, CONTRADICTION).await;
     let text = review.to_string();
     assert_eq!(review["detectorCode"], "AiDeclarationContradiction");
+    assert_eq!(review["sourceStatus"], "supporting");
     assert!(
         text.contains("aiDisclosure") && text.contains("agentArtifact"),
         "{text}"
     );
     assert!(text.contains("Claude Code scratchpad path"), "{text}");
     assert!(text.contains("grind_key.txt"), "{text}");
+
+    // Clearing the declaration afterwards cannot hide it from reviewers.
+    f.save_disclosure(&f.alice, &[], false, 1).await;
+    let text = f.evidence(&f.alice, CONTRADICTION).await.to_string();
+    assert!(
+        text.contains("aiDisclosure") && text.contains("First declared no AI"),
+        "{text}"
+    );
+    assert!(text.contains("Cleared"), "{text}");
     f.teardown().await;
 }
 
 #[tokio::test]
 #[ignore = "requires RSCTF_TEST_DATABASE_URL"]
-async fn writeups_uploaded_after_the_event_are_scanned_and_practice_is_skipped() {
+async fn writeups_are_scanned_as_uploaded_even_after_a_quick_replacement() {
     let f = fixture().await;
     f.enable_uploads().await;
+    f.set_practice_mode().await;
     let (participation_id, team_id) = f.membership(&f.alice).await;
-    let pdf = include_bytes!("../../services/agent_artifacts/fixtures/chrome-writeup-artifact.pdf");
-    crate::services::blob_refs::store_and_replace_writeup(
-        &f.pool,
-        f.st.storage.as_ref(),
-        crate::services::live_roster::LiveParticipationIdentity {
-            user_id: f.alice.id,
-            expected_security_stamp: "stamp",
-            game_id: f.open_game,
-            team_id,
-            participation_id,
-        },
-        &format!("Writeup-{}-{team_id}-{}.pdf", f.open_game, Uuid::new_v4()),
-        pdf,
-    )
-    .await
-    .unwrap();
-    assert!(agent_artifacts::scan_writeup(&f.st, participation_id)
+    let artifact =
+        include_bytes!("../../services/agent_artifacts/fixtures/chrome-writeup-artifact.pdf");
+    let clean = include_bytes!("../../services/agent_artifacts/fixtures/chrome-writeup-clean.pdf");
+    // The artifact writeup is replaced by a clean one before its scan runs;
+    // replacement purges the first blob, so the scan uses the uploaded bytes.
+    let first_name = format!("Writeup-{}-{team_id}-first.pdf", f.open_game);
+    f.store_writeup(&f.alice, artifact).await;
+    f.store_writeup(&f.alice, clean).await;
+    assert!(!agent_artifacts::scan_writeup(&f.st, participation_id)
         .await
         .unwrap());
+    assert!(agent_artifacts::scan_uploaded_writeup(
+        &f.st,
+        agent_artifacts::WriteupScan {
+            game_id: f.open_game,
+            participation_id,
+            file_name: first_name.clone(),
+            bytes: axum::body::Bytes::from_static(artifact),
+            uploaded_at: Utc::now(),
+        },
+    )
+    .await
+    .unwrap());
     let events = f.events(&f.alice).await;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].0, AGENT_ARTIFACT);
     assert!(events[0].1.starts_with("agent-artifact:writeup:"));
     assert_eq!(events[0].2, None, "a writeup is not tied to one challenge");
-    let (location, source): (String, String) = sqlx::query_as(
-        r#"SELECT location, source FROM "AgentArtifactMatches" WHERE participation_id = $1"#,
+    let (location, source, file_name): (String, String, String) = sqlx::query_as(
+        r#"SELECT location, source, file_name FROM "AgentArtifactMatches"
+            WHERE participation_id = $1"#,
     )
     .bind(participation_id)
     .fetch_one(&f.pool)
     .await
     .unwrap();
-    assert_eq!((location.as_str(), source.as_str()), ("Text", "Writeup"));
+    assert_eq!(
+        (location.as_str(), source.as_str(), file_name.as_str()),
+        ("Text", "Writeup", first_name.as_str())
+    );
+    assert_eq!(
+        f.evidence(&f.alice, AGENT_ARTIFACT).await["sourceStatus"],
+        "supporting"
+    );
 
-    // Practice events never raise cheat evidence.
-    sqlx::query(r#"UPDATE "Games" SET practice_mode = TRUE WHERE id = $1"#)
-        .bind(f.open_game)
-        .execute(&f.pool)
-        .await
-        .unwrap();
+    // Without a matched file the event row alone is not supporting evidence.
     sqlx::query(r#"DELETE FROM "AgentArtifactMatches""#)
         .execute(&f.pool)
         .await
         .unwrap();
-    assert!(!agent_artifacts::scan_writeup(&f.st, participation_id)
+    assert_ne!(
+        f.evidence(&f.alice, AGENT_ARTIFACT).await["sourceStatus"],
+        "supporting"
+    );
+
+    // A team never admitted to the competition is not scanned.
+    let (pending_participation, _) = f.membership(&f.pending).await;
+    assert!(!agent_artifacts::scan_uploaded_writeup(
+        &f.st,
+        agent_artifacts::WriteupScan {
+            game_id: f.open_game,
+            participation_id: pending_participation,
+            file_name: "Writeup-pending.pdf".into(),
+            bytes: axum::body::Bytes::from_static(artifact),
+            uploaded_at: Utc::now(),
+        },
+    )
+    .await
+    .unwrap());
+    assert_eq!(f.matches().await, 0);
+    f.teardown().await;
+}
+
+#[tokio::test]
+#[ignore = "requires RSCTF_TEST_DATABASE_URL"]
+async fn solvers_for_solves_after_the_end_are_not_scanned() {
+    let f = fixture().await;
+    f.enable_uploads().await;
+    f.set_practice_mode().await;
+    let (participation_id, team_id) = f.membership(&f.alice).await;
+    // Practice after the end: the canonical solve lands after the window.
+    let mut tx = f.pool.begin().await.unwrap();
+    sqlx::query("SELECT set_config('rsctf.identity_neutral_insert', '1', true)")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let submission: i32 = sqlx::query_scalar(
+        r#"INSERT INTO "Submissions"
+             (answer, status, submit_time_utc, user_id, team_id, participation_id, game_id,
+              challenge_id)
+           VALUES ('flag{x}', 1, now(), $1, $2, $3, $4, $5)
+        RETURNING id"#,
+    )
+    .bind(f.alice.id)
+    .bind(team_id)
+    .bind(participation_id)
+    .bind(f.open_game)
+    .bind(f.unsolved)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "FirstSolves" (participation_id, challenge_id, submission_id)
+           VALUES ($1, $2, $3)"#,
+    )
+    .bind(participation_id)
+    .bind(f.unsolved)
+    .bind(submission)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let upload = f
+        .upload_solver_for(&f.alice, f.unsolved, AGENT_SOLVER)
+        .await;
+    assert!(!agent_artifacts::scan_solver_upload(&f.st, upload)
         .await
         .unwrap());
     assert_eq!(f.matches().await, 0);
+    assert!(f.events(&f.alice).await.is_empty());
     f.teardown().await;
 }
