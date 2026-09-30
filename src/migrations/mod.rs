@@ -210,6 +210,7 @@ mod m0353_solver_uploads;
 mod m0354_agent_artifacts;
 mod m0355_sealed_late_evidence;
 mod m0356_telemetry_global_usage_repair;
+mod m0357_variant_flag_uniqueness;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -446,6 +447,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0354_agent_artifacts::Migration),
             Box::new(m0355_sealed_late_evidence::Migration),
             Box::new(m0356_telemetry_global_usage_repair::Migration),
+            Box::new(m0357_variant_flag_uniqueness::Migration),
         ]
     }
 }
@@ -677,6 +679,7 @@ mod tests {
                 "m0354_agent_artifacts",
                 "m0355_sealed_late_evidence",
                 "m0356_telemetry_global_usage_repair",
+                "m0357_variant_flag_uniqueness",
             ]
         );
     }
