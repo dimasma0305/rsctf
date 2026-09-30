@@ -63,6 +63,33 @@ const LOAD_SUBMISSION_IDENTITIES_SQL: &str = r#"
      ORDER BY submission.submit_time_utc, submission.id
 "#;
 
+/// The address each admitted user submitted from, once per (user, address) at
+/// its first in-window use. A player who joined before the start and never
+/// signed in again has no in-window login observation, so without this their
+/// team sharing an address with another team would never be seen.
+const LOAD_SUBMISSION_ADDRESSES_SQL: &str = r#"
+    SELECT DISTINCT ON (submission.participation_id, submission.user_id,
+                        submission.submit_remote_ip_hash)
+           0::BIGINT AS id, submission.user_id, participation.team_id,
+           submission.participation_id, 'Ip' AS kind,
+           submission.submit_remote_ip_hash AS value_hash,
+           NULL::BYTEA AS subnet_group_hash, NULL::BYTEA AS broad_network_hash,
+           submission.submit_time_utc AS observed_at_utc
+      FROM "Submissions" submission
+      JOIN "Participations" participation
+        ON participation.id = submission.participation_id
+       AND participation.game_id = submission.game_id
+     WHERE submission.game_id = $1
+       AND submission.submit_time_utc >= $2
+       AND submission.submit_time_utc < $3
+       AND submission.submit_remote_ip_hash IS NOT NULL
+       AND submission.user_id IS NOT NULL
+       AND participation.competitive_admitted_at_utc IS NOT NULL
+       AND participation.competitive_admitted_at_utc < $3
+     ORDER BY submission.participation_id, submission.user_id,
+              submission.submit_remote_ip_hash, submission.submit_time_utc
+"#;
+
 const LOAD_IDENTITY_EXEMPTIONS_SQL: &str = r#"
     SELECT exemption.user_a, exemption.user_b,
            exemption.kind, exemption.value_hash,
@@ -537,6 +564,25 @@ pub(super) async fn run_correlation_checks_for_snapshot(
                 let subnet = subnets.entry(subnet_hash.clone()).or_default();
                 subnet.observe(observation);
             }
+        }
+    }
+
+    // Submission addresses join only the cross-team exact-IP groups. They are
+    // kept out of the per-user churn/concurrency rules (a phone and a laptop
+    // are not churn), the UnknownIp baselines, and same-team sharing.
+    if final_identity_snapshot {
+        let addresses = sqlx::query_as::<_, Observation>(LOAD_SUBMISSION_ADDRESSES_SQL)
+            .bind(game_id)
+            .bind(start)
+            .bind(end)
+            .fetch_all(pool)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        for address in &addresses {
+            exact_ips
+                .entry(address.value_hash.clone())
+                .or_default()
+                .observe(address);
         }
     }
 

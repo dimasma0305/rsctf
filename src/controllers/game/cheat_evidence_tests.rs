@@ -471,6 +471,45 @@ async fn source_review_resolves_direct_submission_identity_and_pair_ledgers() {
         .iter()
         .any(|limitation| limitation.contains("latest 200 observations")));
 
+    // CrossTeamIp found only through submission addresses (no login in the
+    // window) still has reviewable rows: the submissions, without a hint.
+    let address_event = EventEvidenceRow {
+        game_id: 1,
+        participation_id: 2,
+        challenge_id: None,
+        evidence_key: format!("cross-team-ip:{}", "07".repeat(32)),
+        created_at: Utc.with_ymd_and_hms(2026, 1, 1, 2, 0, 0).unwrap(),
+        ..event(SuspicionType::CrossTeamIp, "cross-team-ip:")
+    };
+    let mut address_review = base_review(&address_event, SuspicionType::CrossTeamIp);
+    sources::add_identity_source(
+        &pool,
+        &address_event,
+        SuspicionType::CrossTeamIp,
+        &mut address_review,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        address_review.source_status,
+        EvidenceSourceStatus::Supporting
+    );
+    let address_source = address_review.sources.last().unwrap();
+    for (label, expected) in [
+        ("Admission sources", "Submission"),
+        ("Teams", "Submitter"),
+        ("Masked identity hints", "not stored for submission addresses"),
+    ] {
+        assert!(
+            address_source
+                .facts
+                .iter()
+                .any(|fact| fact.label == label && fact.value == expected),
+            "{label}: {:?}",
+            address_source.facts
+        );
+    }
+
     let challenge_event = EventEvidenceRow {
         game_id: 1,
         participation_id: 2,

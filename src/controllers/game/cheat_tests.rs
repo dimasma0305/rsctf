@@ -65,7 +65,8 @@ impl CheatReportFixture {
               id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
               participation_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
               team_id INTEGER NOT NULL, user_id UUID NULL, answer TEXT NOT NULL,
-              status SMALLINT NOT NULL, submit_time_utc TIMESTAMPTZ NOT NULL
+              status SMALLINT NOT NULL, submit_time_utc TIMESTAMPTZ NOT NULL,
+              submit_remote_ip_hash BYTEA NULL
             );
             CREATE TABLE "FirstSolves" (
               participation_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
@@ -499,6 +500,46 @@ async fn compare_rejects_more_than_the_canonical_solve_bound() {
     .unwrap();
     let result = canonical_solves_bounded(&fixture.pool, 1, &[201], 512, 1_024).await;
     assert!(matches!(result, Err(AppError::PayloadTooLarge(_))));
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn submission_addresses_show_teams_that_never_signed_in_during_the_event() {
+    let fixture = CheatReportFixture::create().await;
+    // Both players joined before the start: no in-window login observation,
+    // only the address their flag submissions came from.
+    let hash = vec![0xeeu8; 32];
+    for (id, participation, team, user, at) in [
+        (401, 201, 101, USER_1, "2026-06-01T12:00:00Z"),
+        (402, 202, 102, USER_2, "2026-06-01T12:03:00Z"),
+        (403, 201, 101, USER_1, "2026-06-01T12:09:00Z"),
+    ] {
+        sqlx::query(
+            r#"INSERT INTO "Submissions"
+                 (id, game_id, participation_id, challenge_id, team_id, user_id,
+                  answer, status, submit_time_utc, submit_remote_ip_hash)
+               VALUES ($1, 1, $2, 11, $3, $4, 'x', 2, $5::timestamptz, $6)"#,
+        )
+        .bind(id)
+        .bind(participation)
+        .bind(team)
+        .bind(Uuid::parse_str(user).unwrap())
+        .bind(at)
+        .bind(&hash)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+    }
+    let (ip_rows, overlaps) =
+        super::super::cheat_identity::build_identity_analysis(&fixture.pool, 1)
+            .await
+            .unwrap();
+    assert_eq!(overlaps.len(), 1, "{overlaps:?}");
+    assert_eq!(overlaps[0]["teamCount"], 2);
+    assert_eq!(overlaps[0]["value"], "masked");
+    assert_eq!(ip_rows.len(), 2);
+    assert!(ip_rows.iter().all(|row| row["type"] == "CrossTeamIP"));
     fixture.cleanup().await;
 }
 

@@ -396,97 +396,124 @@ fn subnet_edges_use_the_underlying_exact_ip_exemption_scope() {
     assert_eq!(candidates.len(), 2);
 }
 
+struct CorrelationFixture {
+    admin_pool: sqlx::PgPool,
+    pool: sqlx::PgPool,
+    schema: String,
+}
+
+impl CorrelationFixture {
+    async fn create() -> Self {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("rsctf_correlation_exemption_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin_pool)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE "Games" (
+              id INTEGER PRIMARY KEY, start_time_utc TIMESTAMPTZ NOT NULL,
+              end_time_utc TIMESTAMPTZ NOT NULL,
+              deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+            );
+            CREATE TABLE "Teams" (
+              id INTEGER PRIMARY KEY,
+              deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+            );
+            CREATE TABLE "Participations" (
+              id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, team_id INTEGER NOT NULL,
+              status SMALLINT NOT NULL, competitive_admitted_at_utc TIMESTAMPTZ,
+              suspicion_score INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE "UserParticipations" (
+              user_id UUID NOT NULL, game_id INTEGER NOT NULL, team_id INTEGER NOT NULL,
+              participation_id INTEGER NOT NULL, PRIMARY KEY (user_id, game_id)
+            );
+            CREATE TABLE "IdentityObservations" (
+              id BIGSERIAL PRIMARY KEY, user_id UUID NOT NULL, team_id INTEGER,
+              game_id INTEGER, participation_id INTEGER, kind TEXT NOT NULL,
+              value_hash BYTEA NOT NULL, subnet_group_hash BYTEA,
+              broad_network_hash BYTEA, observed_at_utc TIMESTAMPTZ NOT NULL
+            );
+            CREATE TABLE "Submissions" (
+              id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
+              participation_id INTEGER NOT NULL, user_id UUID,
+              submit_remote_ip_hash BYTEA, submit_time_utc TIMESTAMPTZ NOT NULL
+            );
+            CREATE TABLE "AntiCheatExemptions" (
+              user_a UUID NOT NULL, user_b UUID NOT NULL, kind TEXT NOT NULL,
+              value_hash BYTEA NOT NULL, created_at_utc TIMESTAMPTZ NOT NULL,
+              expires_at_utc TIMESTAMPTZ NOT NULL, revoked_at_utc TIMESTAMPTZ
+            );
+            CREATE TABLE "SuspicionRules" (
+              rule_code TEXT PRIMARY KEY, weight INTEGER NOT NULL
+            );
+            CREATE TABLE "SuspicionEvents" (
+              id BIGSERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
+              participation_id INTEGER NOT NULL, challenge_id INTEGER,
+              kind SMALLINT NOT NULL, evidence_key TEXT NOT NULL,
+              score_delta INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL,
+              UNIQUE (game_id, participation_id, kind, evidence_key)
+            );
+
+            INSERT INTO "Games" (id, start_time_utc, end_time_utc)
+            VALUES (1, '2026-06-01T00:00:00Z', '2026-06-10T00:00:00Z');
+            INSERT INTO "Teams" (id) VALUES (1), (2), (3);
+            INSERT INTO "Participations"
+              (id, game_id, team_id, status, competitive_admitted_at_utc)
+            VALUES
+              (101, 1, 1, 1, '2026-05-31T23:00:00Z'),
+              (102, 1, 2, 1, '2026-05-31T23:00:00Z'),
+              (103, 1, 3, 1, '2026-05-31T23:00:00Z');
+            INSERT INTO "UserParticipations"
+              (user_id, game_id, team_id, participation_id)
+            VALUES
+              ('00000000-0000-0000-0000-000000000001', 1, 1, 101),
+              ('00000000-0000-0000-0000-000000000002', 1, 2, 102),
+              ('00000000-0000-0000-0000-000000000003', 1, 3, 103);
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        Self {
+            admin_pool,
+            pool,
+            schema,
+        }
+    }
+
+    async fn drop(self) {
+        self.pool.close().await;
+        assert!(self.schema.starts_with("rsctf_correlation_exemption_"));
+        sqlx::query(&format!(r#"DROP SCHEMA "{}" CASCADE"#, self.schema))
+            .execute(&self.admin_pool)
+            .await
+            .unwrap();
+        self.admin_pool.close().await;
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn live_and_final_detectors_apply_temporal_pair_exemptions() {
-    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
-    let admin_pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&database_url)
-        .await
-        .unwrap();
-    let schema = format!("rsctf_correlation_exemption_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
-        .execute(&admin_pool)
-        .await
-        .unwrap();
-    let options = PgConnectOptions::from_str(&database_url)
-        .unwrap()
-        .options([("search_path", schema.as_str())]);
-    let pool = PgPoolOptions::new()
-        .max_connections(4)
-        .connect_with(options)
-        .await
-        .unwrap();
-    sqlx::raw_sql(
-        r#"
-        CREATE TABLE "Games" (
-          id INTEGER PRIMARY KEY, start_time_utc TIMESTAMPTZ NOT NULL,
-          end_time_utc TIMESTAMPTZ NOT NULL,
-          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
-        );
-        CREATE TABLE "Teams" (
-          id INTEGER PRIMARY KEY,
-          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
-        );
-        CREATE TABLE "Participations" (
-          id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, team_id INTEGER NOT NULL,
-          status SMALLINT NOT NULL, competitive_admitted_at_utc TIMESTAMPTZ,
-          suspicion_score INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE "UserParticipations" (
-          user_id UUID NOT NULL, game_id INTEGER NOT NULL, team_id INTEGER NOT NULL,
-          participation_id INTEGER NOT NULL, PRIMARY KEY (user_id, game_id)
-        );
-        CREATE TABLE "IdentityObservations" (
-          id BIGSERIAL PRIMARY KEY, user_id UUID NOT NULL, team_id INTEGER,
-          game_id INTEGER, participation_id INTEGER, kind TEXT NOT NULL,
-          value_hash BYTEA NOT NULL, subnet_group_hash BYTEA,
-          broad_network_hash BYTEA, observed_at_utc TIMESTAMPTZ NOT NULL
-        );
-        CREATE TABLE "Submissions" (
-          id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
-          participation_id INTEGER NOT NULL, submit_remote_ip_hash BYTEA,
-          submit_time_utc TIMESTAMPTZ NOT NULL
-        );
-        CREATE TABLE "AntiCheatExemptions" (
-          user_a UUID NOT NULL, user_b UUID NOT NULL, kind TEXT NOT NULL,
-          value_hash BYTEA NOT NULL, created_at_utc TIMESTAMPTZ NOT NULL,
-          expires_at_utc TIMESTAMPTZ NOT NULL, revoked_at_utc TIMESTAMPTZ
-        );
-        CREATE TABLE "SuspicionRules" (
-          rule_code TEXT PRIMARY KEY, weight INTEGER NOT NULL
-        );
-        CREATE TABLE "SuspicionEvents" (
-          id BIGSERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
-          participation_id INTEGER NOT NULL, challenge_id INTEGER,
-          kind SMALLINT NOT NULL, evidence_key TEXT NOT NULL,
-          score_delta INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL,
-          UNIQUE (game_id, participation_id, kind, evidence_key)
-        );
-
-        INSERT INTO "Games" (id, start_time_utc, end_time_utc)
-        VALUES (1, '2026-06-01T00:00:00Z', '2026-06-10T00:00:00Z');
-        INSERT INTO "Teams" (id) VALUES (1), (2), (3);
-        INSERT INTO "Participations"
-          (id, game_id, team_id, status, competitive_admitted_at_utc)
-        VALUES
-          (101, 1, 1, 1, '2026-05-31T23:00:00Z'),
-          (102, 1, 2, 1, '2026-05-31T23:00:00Z'),
-          (103, 1, 3, 1, '2026-05-31T23:00:00Z');
-        INSERT INTO "UserParticipations"
-          (user_id, game_id, team_id, participation_id)
-        VALUES
-          ('00000000-0000-0000-0000-000000000001', 1, 1, 101),
-          ('00000000-0000-0000-0000-000000000002', 1, 2, 102),
-          ('00000000-0000-0000-0000-000000000003', 1, 3, 103);
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
+    let fixture = CorrelationFixture::create().await;
+    let pool = fixture.pool.clone();
     let user_a = Uuid::from_u128(1);
     let user_b = Uuid::from_u128(2);
     let user_c = Uuid::from_u128(3);
@@ -632,11 +659,102 @@ async fn live_and_final_detectors_apply_temporal_pair_exemptions() {
     assert_eq!(final_participations, vec![101, 102]);
 
     drop(db);
-    pool.close().await;
-    assert!(schema.starts_with("rsctf_correlation_exemption_"));
-    sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
-        .execute(&admin_pool)
+    fixture.drop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn submission_addresses_reveal_cross_team_ips_without_login_observations() {
+    let fixture = CorrelationFixture::create().await;
+    let pool = fixture.pool.clone();
+    let (user_a, user_c) = (Uuid::from_u128(1), Uuid::from_u128(3));
+    let (shared, baseline) = (vec![0x81_u8; 32], vec![0x82_u8; 32]);
+    // Teams 1 and 2 joined before the start and never signed in during the
+    // event; they submit from one address. Team 3 signed in once, then
+    // submitted from four other addresses.
+    sqlx::query(
+        r#"INSERT INTO "IdentityObservations"
+             (user_id, team_id, game_id, participation_id, kind, value_hash,
+              observed_at_utc)
+           VALUES ($1, 3, 1, 103, 'Ip', $2, '2026-06-01T11:00:00Z')"#,
+    )
+    .bind(user_c)
+    .bind(&baseline)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let rows = [
+        (1, 101, user_a, shared.clone(), "2026-06-01T12:00:00Z"),
+        (
+            2,
+            102,
+            Uuid::from_u128(2),
+            shared.clone(),
+            "2026-06-01T12:05:00Z",
+        ),
+        (3, 101, user_a, shared.clone(), "2026-06-01T12:30:00Z"),
+        (4, 103, user_c, vec![0x91_u8; 32], "2026-06-01T12:00:00Z"),
+        (5, 103, user_c, vec![0x92_u8; 32], "2026-06-01T12:01:00Z"),
+        (6, 103, user_c, vec![0x93_u8; 32], "2026-06-01T12:02:00Z"),
+        (7, 103, user_c, vec![0x94_u8; 32], "2026-06-01T12:03:00Z"),
+    ];
+    for (id, participation_id, user_id, hash, at) in rows {
+        sqlx::query(
+            r#"INSERT INTO "Submissions"
+                 (id, game_id, participation_id, user_id, submit_remote_ip_hash,
+                  submit_time_utc)
+               VALUES ($1, 1, $2, $3, $4, $5::timestamptz)"#,
+        )
+        .bind(id)
+        .bind(participation_id)
+        .bind(user_id)
+        .bind(&hash)
+        .bind(at)
+        .execute(&pool)
         .await
         .unwrap();
-    admin_pool.close().await;
+    }
+    let db = SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone());
+    let events = || async {
+        sqlx::query_as::<_, (i16, i32, String)>(
+            r#"SELECT kind, participation_id, evidence_key FROM "SuspicionEvents"
+                ORDER BY kind, participation_id, evidence_key"#,
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    };
+    run_correlation_checks_for_snapshot(&db, 1, ReconciliationSnapshot::Live)
+        .await
+        .unwrap();
+    assert!(
+        !events()
+            .await
+            .iter()
+            .any(|event| event.0 == SuspicionType::CrossTeamIp.kind()),
+        "cross-team addresses are judged on the final population only"
+    );
+    run_correlation_checks_for_snapshot(&db, 1, ReconciliationSnapshot::BarrierBackedFinal)
+        .await
+        .unwrap();
+    let events = events().await;
+    let key = format!("cross-team-ip:{}", hex::encode(&shared));
+    let cross_team = events
+        .iter()
+        .filter(|event| event.0 == SuspicionType::CrossTeamIp.kind())
+        .map(|event| (event.1, event.2.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(cross_team, [(101, key.as_str()), (102, key.as_str())]);
+    // Four submission addresses are not IP churn, and they do not become
+    // baselines: team 3's first submission away from its login is unknown.
+    assert!(!events
+        .iter()
+        .any(|event| event.0 == SuspicionType::IpChurn.kind()));
+    assert!(events
+        .iter()
+        .any(|event| event.0 == SuspicionType::UnknownIp.kind()
+            && event.1 == 103
+            && event.2 == "submission:4"));
+    drop(db);
+    fixture.drop().await;
 }

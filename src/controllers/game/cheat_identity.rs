@@ -26,8 +26,11 @@ struct IdentityGroupRow {
 }
 
 const IDENTITY_ANALYSIS_SQL: &str = r#"
-    WITH recent AS MATERIALIZED (
-        SELECT observation.*
+    WITH recent_logins AS MATERIALIZED (
+        SELECT observation.id, observation.user_id, observation.kind,
+               observation.value_hash, observation.value_hint,
+               observation.observed_at_utc, observation.team_id,
+               observation.participation_id, observation.game_id
           FROM "IdentityObservations" observation
           JOIN "Games" game ON game.id = observation.game_id
          WHERE observation.game_id = $1
@@ -37,6 +40,33 @@ const IDENTITY_ANALYSIS_SQL: &str = r#"
            AND observation.observed_at_utc < game.end_time_utc
          ORDER BY observation.observed_at_utc DESC, observation.id DESC
          LIMIT $4
+    ), submission_addresses AS MATERIALIZED (
+        -- Players who joined before the start and never signed in during the
+        -- event appear only through the address they submitted from: first
+        -- use per (user, address), with its own row budget and no hint.
+        SELECT DISTINCT ON (submission.participation_id, submission.user_id,
+                            submission.submit_remote_ip_hash)
+               -submission.id::BIGINT AS id, submission.user_id, 'Ip'::TEXT AS kind,
+               submission.submit_remote_ip_hash AS value_hash, ''::TEXT AS value_hint,
+               submission.submit_time_utc AS observed_at_utc, participation.team_id,
+               submission.participation_id, submission.game_id
+          FROM "Submissions" submission
+          JOIN "Games" game ON game.id = submission.game_id
+          JOIN "Participations" participation
+            ON participation.id = submission.participation_id
+           AND participation.game_id = submission.game_id
+         WHERE submission.game_id = $1
+           AND submission.submit_remote_ip_hash IS NOT NULL
+           AND submission.user_id IS NOT NULL
+           AND submission.submit_time_utc >= game.start_time_utc
+           AND submission.submit_time_utc < game.end_time_utc
+         ORDER BY submission.participation_id, submission.user_id,
+                  submission.submit_remote_ip_hash, submission.submit_time_utc
+         LIMIT $4
+    ), recent AS (
+        SELECT * FROM recent_logins
+        UNION ALL
+        SELECT * FROM submission_addresses
     ), scoped_ranked AS (
         SELECT observation.id,
                observation.user_id,
@@ -72,7 +102,8 @@ const IDENTITY_ANALYSIS_SQL: &str = r#"
         SELECT scoped.kind, scoped.value_hash, scoped.user_id,
                scoped.team_id, scoped.team_name,
                (ARRAY_AGG(scoped.value_hint
-                          ORDER BY scoped.observed_at_utc DESC, scoped.id DESC))[1]
+                          ORDER BY scoped.value_hint = '',
+                                   scoped.observed_at_utc DESC, scoped.id DESC))[1]
                    AS value_hint,
                MIN(scoped.observed_at_utc) AS first_observed_at,
                ARRAY_AGG(scoped.observed_at_utc
@@ -151,7 +182,8 @@ const IDENTITY_ANALYSIS_SQL: &str = r#"
     ), grouped AS (
         SELECT kind, value_hash,
                (ARRAY_AGG(value_hint
-                          ORDER BY observed_at_utc DESC, user_id))[1] AS value_hint,
+                          ORDER BY value_hint = '', observed_at_utc DESC, user_id))[1]
+                   AS value_hint,
                MAX(observed_at_utc) AS latest,
                ARRAY_AGG(team_id ORDER BY team_id) AS team_ids,
                ARRAY_AGG(team_name ORDER BY team_id) AS team_names,
