@@ -142,9 +142,7 @@ fn utf16_text(bytes: &[u8]) -> Option<Vec<u8>> {
         [0xfe, 0xff] => u16::from_be_bytes,
         _ => return None,
     };
-    let units = bytes[2..]
-        .chunks_exact(2)
-        .map(|pair| from_pair([pair[0], pair[1]]));
+    let units = bytes[2..].as_chunks::<2>().0.iter().copied().map(from_pair);
     Some(
         char::decode_utf16(units)
             .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))

@@ -592,14 +592,11 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 184);
+        assert_eq!(names.len(), 187);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
             &names[names.len() - 80..],
             [
-                "m0105_manager_autocomplete_indexes",
-                "m0106_submission_idempotency",
-                "m0107_monitor_history_indexes",
                 "m0108_koth_observer_rotation_operations",
                 "m0109_operator_console_latest_rows",
                 "m0110_participation_review_indexes",

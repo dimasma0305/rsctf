@@ -354,7 +354,7 @@ pub(super) async fn delete_restricted_game_history(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     // The game's telemetry usage leaves the global budget with it.
-    crate::services::event_security::release_game_usage(&mut **tx, game_id).await?;
+    crate::services::event_security::release_game_usage(tx, game_id).await?;
     for statement in [
         r#"DELETE FROM "CheatInfo" WHERE game_id = $1"#,
         r#"DELETE FROM "SuspicionEvaluationOutbox" WHERE game_id = $1"#,
