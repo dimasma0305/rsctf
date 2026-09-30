@@ -465,3 +465,49 @@ async fn solvers_for_solves_after_the_end_are_not_scanned() {
     assert!(f.events(&f.alice).await.is_empty());
     f.teardown().await;
 }
+
+#[tokio::test]
+#[ignore = "requires RSCTF_TEST_DATABASE_URL"]
+async fn late_agent_artifacts_do_not_leave_a_sealed_game_dirty() {
+    let f = fixture().await;
+    f.enable_uploads().await;
+    // The final reconciliation sealed the event; solvers and writeups keep
+    // arriving afterwards and are scanned then.
+    for sql in [
+        r#"UPDATE "SuspicionReconciliationState"
+              SET evidence_closed_at_utc = COALESCE(evidence_closed_at_utc, clock_timestamp()),
+                  sealed_at_utc = COALESCE(sealed_at_utc, clock_timestamp())
+            WHERE game_id = $1"#,
+        r#"UPDATE "AntiCheatReconciliationQueue"
+              SET applied_generation = desired_generation,
+                  final_requested_at_utc = COALESCE(final_requested_at_utc, clock_timestamp()),
+                  final_applied_at_utc = COALESCE(final_applied_at_utc, clock_timestamp())
+            WHERE game_id = $1"#,
+        r#"UPDATE "AntiCheatReconciliationSources"
+              SET applied_version = dirty_version WHERE game_id = $1"#,
+    ] {
+        sqlx::query(sql)
+            .bind(f.open_game)
+            .execute(&f.pool)
+            .await
+            .unwrap();
+    }
+    let upload = f.upload_solver(&f.alice, AGENT_SOLVER).await;
+    assert!(agent_artifacts::scan_solver_upload(&f.st, upload)
+        .await
+        .unwrap());
+    assert_eq!(f.events(&f.alice).await[0].0, AGENT_ARTIFACT);
+    let (dirty_sources, clean_queue): (i64, bool) = sqlx::query_as(
+        r#"SELECT (SELECT COUNT(*) FROM "AntiCheatReconciliationSources"
+                    WHERE game_id = $1 AND dirty_version > applied_version),
+                  (SELECT desired_generation = applied_generation
+                     FROM "AntiCheatReconciliationQueue" WHERE game_id = $1)"#,
+    )
+    .bind(f.open_game)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(dirty_sources, 0, "nothing can reconcile a sealed game");
+    assert!(clean_queue, "a sealed game's queue stays settled");
+    f.teardown().await;
+}

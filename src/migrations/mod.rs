@@ -208,6 +208,7 @@ mod m0351_ai_chat_links;
 mod m0352_ai_chat_disclosure;
 mod m0353_solver_uploads;
 mod m0354_agent_artifacts;
+mod m0355_sealed_late_evidence;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -442,6 +443,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0352_ai_chat_disclosure::Migration),
             Box::new(m0353_solver_uploads::Migration),
             Box::new(m0354_agent_artifacts::Migration),
+            Box::new(m0355_sealed_late_evidence::Migration),
         ]
     }
 }
@@ -671,6 +673,7 @@ mod tests {
                 "m0352_ai_chat_disclosure",
                 "m0353_solver_uploads",
                 "m0354_agent_artifacts",
+                "m0355_sealed_late_evidence",
             ]
         );
     }

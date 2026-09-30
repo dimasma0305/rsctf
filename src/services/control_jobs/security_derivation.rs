@@ -208,6 +208,12 @@ pub(super) async fn continue_if_dirty(
             WHERE job.id = $1 AND job.status = 1 AND job.lease_token = $2
               AND job.input_revision = $3 AND job.input_revision < 1000000
               AND queue.game_id = $4
+              -- Nothing reconciles a sealed game, so never wait on it.
+              AND NOT EXISTS (
+                  SELECT 1 FROM "SuspicionReconciliationState" reconciliation
+                   WHERE reconciliation.game_id = queue.game_id
+                     AND reconciliation.sealed_at_utc IS NOT NULL
+              )
               AND (
                    queue.desired_generation > queue.applied_generation
                    OR (queue.final_requested_at_utc IS NOT NULL
