@@ -454,7 +454,7 @@ jobs:
           persist-credentials: false
 
       - name: Install pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.8.0
           package_json_file: web/package.json
@@ -675,7 +675,7 @@ jobs:
           persist-credentials: false
 
       - name: Install pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.8.0
           package_json_file: docs/package.json
@@ -792,7 +792,7 @@ jobs:
             echo "::error::Container publication must use native architecture runners, not QEMU."
             exit 1
           fi
-          test "$(grep -c 'docker/github-builder/.github/workflows/build.yml@a492c6d04fd3315f67230809b44d60cc0acd50b3' "$workflow")" -eq 2
+          test "$(grep -c 'docker/github-builder/.github/workflows/build.yml@58cb9f5b71b1836d6f690c1e95effdeb9b98cb8a' "$workflow")" -eq 2
           grep -q '^  workflow_dispatch:$' "$workflow"
           if grep -q '^    branches:' "$workflow" || grep -q '^  pull_request:' "$workflow"; then
             echo "::error::Native container builds must remain manual; normal pushes and pull requests use application CI only."
