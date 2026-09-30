@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useSWRConfig } from 'swr'
 import { LatestRequest } from '@Utils/LatestRequest'
 import { useChallengePolling } from '@Hooks/useChallengePolling'
 import { jitterPollingDelay } from '@Hooks/useCompletionPolling'
@@ -12,6 +13,9 @@ type FeedRead = {
   kind: 'initial' | 'delta'
   page: CheatIncidentPage
 }
+
+/** Process-wide, so a remounted feed never reuses an older mount's reads. */
+let nextFeedSession = 0
 
 export type CheatIncidentPageQuery = {
   limit: number
@@ -62,8 +66,16 @@ export const useCheatIncidentFeed = (
   const immediateDeltaPages = useRef(0)
   const olderRequest = useMemo(() => new LatestRequest(), [])
   const cadence = useMemo(() => jitterPollingDelay(INCIDENT_DELTA_INTERVAL_MS), [])
+  const { cache } = useSWRConfig()
+  // Every activation (tab shown again, log remounted, other game) is a new
+  // feed session with its own SWR entry. Reusing the shared entry would hand
+  // back its last read, usually a delta, to a feed that starts empty, and SWR
+  // would dedupe the refetch, leaving the log blank.
+  const session = useMemo(() => (nextFeedSession += 1), [active, gameId])
+  const key = active ? `/api/game/${gameId}/cheatinfo/page#feed:${session}` : null
 
-  useEffect(() => {
+  // A layout effect runs before SWR starts the session's first read.
+  useLayoutEffect(() => {
     checkpoint.current = null
     immediateDeltaPages.current = 0
     olderRequest.cancel()
@@ -72,8 +84,11 @@ export const useCheatIncidentFeed = (
     setHasOlder(false)
     setOlderError(undefined)
     setLoadingOlder(false)
-    return () => olderRequest.cancel()
-  }, [active, gameId, olderRequest])
+    return () => {
+      olderRequest.cancel()
+      if (key) cache.delete(key)
+    }
+  }, [cache, key, olderRequest])
 
   const request = useCallback(
     async (signal: AbortSignal): Promise<FeedRead> => {
@@ -89,7 +104,7 @@ export const useCheatIncidentFeed = (
   )
 
   const poll = useChallengePolling<FeedRead>({
-    key: active ? `/api/game/${gameId}/cheatinfo/page#feed` : null,
+    key,
     active,
     refreshInterval: cadence,
     request,
