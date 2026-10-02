@@ -137,7 +137,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
           (920, 2, 'repair-submit-participation', 9, 90, 0),
           (921, 1, 'repair-source-participation', 9, 91, 0);
         INSERT INTO "GameChallenges"
-          (id, game_id, title, content, category, "Type", is_enabled,
+          (id, game_id, title, content, category, "Type", released_hint_count, is_enabled,
            revision, ad_control_revision,
            submission_limit, accepted_count, submission_count,
            review_status, build_status, enable_traffic_capture,
@@ -146,7 +146,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
            ad_allow_self_reset, ad_ssh_requires_flag, ad_self_hosted,
            variant_mode, variant_generator_build_status, solve_receipt_mode)
         VALUES
-          (930, 9, 'repair-challenge', '', 0, 2, TRUE, 1, 1, 0, 0, 0, 0, 0,
+          (930, 9, 'repair-challenge', '', 0, 2, 0, TRUE, 1, 1, 0, 0, 0, 0, 0,
            FALSE, FALSE, FALSE, 100, 0.2, 1.0, 0, FALSE, FALSE,
            FALSE, FALSE, 0, 0, 0);
         INSERT INTO "Submissions"
@@ -181,9 +181,12 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
         .execute_unprepared(UP_SQL)
         .await
         .expect_err("non-cheat legacy provenance must fail closed");
-    assert!(migration_error
-        .to_string()
-        .contains("without a CheatDetected submission"));
+    assert!(
+        migration_error
+            .to_string()
+            .contains("without a CheatDetected submission"),
+        "unexpected migration error: {migration_error}"
+    );
     let preserved: (i16, i64) = sqlx::query_as(
         r#"SELECT submission.status, COUNT(cheat.id)::bigint
              FROM "Submissions" submission
@@ -441,7 +444,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
           (20, 1, 'submit-participation', 1, 10, 0),
           (21, 1, 'source-participation', 1, 11, 0);
         INSERT INTO "GameChallenges"
-          (id, game_id, title, content, category, "Type", is_enabled,
+          (id, game_id, title, content, category, "Type", released_hint_count, is_enabled,
            revision, ad_control_revision,
            submission_limit, accepted_count, submission_count,
            review_status, build_status, enable_traffic_capture,
@@ -450,7 +453,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
            ad_allow_self_reset, ad_ssh_requires_flag, ad_self_hosted,
            variant_mode, variant_generator_build_status, solve_receipt_mode)
         VALUES
-          (30, 1, 'challenge', '', 0, 2, TRUE, 1, 1, 0, 0, 0, 0, 0,
+          (30, 1, 'challenge', '', 0, 2, 0, TRUE, 1, 1, 0, 0, 0, 0, 0,
            FALSE, FALSE, FALSE, 100, 0.2, 1.0, 0, FALSE, FALSE,
            FALSE, FALSE, 0, 0, 0);
         INSERT INTO "Submissions"

@@ -587,6 +587,7 @@ mod clone_contract_tests {
               category SMALLINT NOT NULL,
               "Type" SMALLINT NOT NULL,
               hints JSONB NULL,
+              released_hint_count INTEGER NOT NULL DEFAULT 0,
               is_enabled BOOLEAN NOT NULL,
               revision BIGINT NOT NULL DEFAULT 0,
               ad_control_revision BIGINT NOT NULL DEFAULT 0,
