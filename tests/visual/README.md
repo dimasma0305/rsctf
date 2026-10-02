@@ -75,6 +75,32 @@ scripts/bounded-frontend.sh exec node ../tests/visual/audit.mjs \
 Stop the fixture server and preview afterward. Never supply a real credential
 to the fixture server.
 
+## Challenge card hash links
+
+`node tests/visual/challenge-links.mjs` checks the built client at
+`http://127.0.0.1:18080`: catalog and event card/list links, keyboard activation,
+focus restoration, copy/reload, Back/Forward, filtered and off-page challenges,
+unavailable/failed links, late responses after close, and login return URLs.
+It runs Axe and overflow checks at 320, 390, 768, 1440, and 1920 pixels.
+All API/hub traffic uses invented fixtures; writes are blocked. Backend access
+boundaries are tested separately against PostgreSQL in `catalog_tests.rs`.
+
+Set `RSCTF_CHALLENGE_LINK_TARGET=https://tcp.1pc.tf` to check released assets and
+`RSCTF_CHALLENGE_LINK_OUTPUT` to select the evidence directory. For the general
+full-content audit, run `node tests/visual/challenge-links-fixtures.mjs --serve`,
+then:
+
+```sh
+RSCTF_VISUAL_TARGET=http://127.0.0.1:63019 \
+RSCTF_VISUAL_PLAYER_JWT=local-fixture-not-a-credential \
+RSCTF_VISUAL_GAME_ID=901 \
+scripts/bounded-frontend.sh exec node ../tests/visual/audit.mjs \
+  --page =challenges--index --page =games--game--challenges \
+  --viewport desktop --viewport compact
+```
+
+Stop the fixture proxy after the audit. Never supply it with real credentials.
+
 ## Event readiness fixtures
 
 Start a frontend preview on `127.0.0.1:63017`, then run from the repository root:

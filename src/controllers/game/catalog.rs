@@ -212,6 +212,8 @@ pub struct ChallengeCatalogQuery {
     #[serde(default)]
     game_id: Option<i32>,
     #[serde(default)]
+    challenge_id: Option<i32>,
+    #[serde(default)]
     category: Option<ChallengeCategory>,
     #[serde(default)]
     mode: Option<ChallengeCatalogMode>,
@@ -228,6 +230,7 @@ impl Default for ChallengeCatalogQuery {
             skip: 0,
             search: None,
             game_id: None,
+            challenge_id: None,
             category: None,
             mode: None,
             challenge_type: None,
@@ -357,6 +360,7 @@ async fn load_challenge_catalog(
                    )
                    AND ($11::smallint IS NULL OR catalog.challenge_type = $11)
                    AND ($12::boolean IS NULL OR catalog.solved = $12)
+                   AND ($16::int IS NULL OR catalog.id = $16)
                  ORDER BY catalog.solved, catalog.game_start DESC,
                           catalog.game_id DESC, catalog.category, catalog.id
                  LIMIT $15
@@ -382,6 +386,7 @@ async fn load_challenge_catalog(
     .bind(query.skip.min(i64::MAX as u64) as i64)
     .bind(query.count.clamp(1, 100) as i64)
     .bind(MAX_COUNTED_CATALOG_ROWS)
+    .bind(query.challenge_id)
     .fetch_all(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;

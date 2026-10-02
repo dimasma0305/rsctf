@@ -3465,6 +3465,8 @@ export interface ChallengeCatalogQuery {
   search?: string;
   /** @format int32 */
   gameId?: number;
+  /** Exact challenge lookup, with the same catalog access checks. @format int32 */
+  challengeId?: number;
   category?: ChallengeCategory;
   mode?: ChallengeCatalogMode;
   type?: ChallengeType;

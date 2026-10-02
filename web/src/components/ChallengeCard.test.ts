@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { act, createElement } from 'react'
 import { I18nextProvider } from 'react-i18next'
+import { MemoryRouter } from 'react-router'
 import { ChallengeCategory, ChallengeType, type ChallengeInfo, type SubmissionType } from '../Api'
 import { installTestDom } from '../test/installDom'
 import { LanguageProvider } from '../utils/I18n'
@@ -46,11 +47,16 @@ test('challenge card fades when its deadline passes while mounted', async (conte
         createElement(
           LanguageProvider,
           null,
-          createElement(ChallengeCard, {
-            challenge: cardChallenge,
-            iconMap: new Map<SubmissionType, undefined>(),
-            colorMap: new Map<SubmissionType, undefined>(),
-          })
+          createElement(
+            MemoryRouter,
+            null,
+            createElement(ChallengeCard, {
+              challenge: cardChallenge,
+              href: `/challenges#challenge=${cardChallenge.id}`,
+              iconMap: new Map<SubmissionType, undefined>(),
+              colorMap: new Map<SubmissionType, undefined>(),
+            })
+          )
         )
       )
     )
@@ -62,6 +68,10 @@ test('challenge card fades when its deadline passes while mounted', async (conte
     const card = container.querySelector('article')
     assert.ok(card)
     assert.equal(card.getAttribute('data-faded'), null)
+    const link = card.querySelector('a')
+    assert.ok(link, 'the card must expose a native, copyable link')
+    assert.equal(link.href, 'https://rsctf.test/challenges#challenge=7')
+    assert.equal(link.getAttribute('aria-label'), 'Open challenge: Reactive deadline')
 
     await act(async () => context.mock.timers.tick(2_500))
     assert.equal(card.getAttribute('data-faded'), 'true')

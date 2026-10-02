@@ -3,6 +3,7 @@ import { mdiCheckCircleOutline, mdiCircleOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { memo, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Link } from 'react-router'
 import { DisclosureNeededBadge } from '@Components/DisclosureNeededBadge'
 import { useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { ChallengeType, type ChallengeInfo } from '@Api'
@@ -15,7 +16,7 @@ export const ChallengeList = memo(
     solvedIds,
     disclosurePendingIds,
     selectedId,
-    onSelect,
+    challengeHref,
     sort,
   }: {
     challenges: ChallengeInfo[]
@@ -23,7 +24,7 @@ export const ChallengeList = memo(
     /** Solved challenges that still need an AI chat disclosure. */
     disclosurePendingIds?: ReadonlySet<number>
     selectedId?: number
-    onSelect: (challenge: ChallengeInfo) => void
+    challengeHref: (challenge: ChallengeInfo) => string
     sort: ChallengeSort
   }) => {
     const { t } = useTranslation()
@@ -66,13 +67,13 @@ export const ChallengeList = memo(
                 return (
                   <tr key={challenge.id} data-selected={challenge.id === selectedId || undefined}>
                     <th scope="row">
-                      <button
-                        type="button"
+                      <Link
+                        to={challengeHref(challenge)}
+                        preventScrollReset
                         className={classes.listName}
-                        onClick={() => onSelect(challenge)}
                         data-challenge-row={challenge.id}
                         data-guide="challenge-card"
-                        aria-pressed={challenge.id === selectedId}
+                        aria-current={challenge.id === selectedId ? 'true' : undefined}
                       >
                         <span>{challenge.title}</span>
                         <small>
@@ -84,7 +85,7 @@ export const ChallengeList = memo(
                             </span>
                           )}
                         </small>
-                      </button>
+                      </Link>
                     </th>
                     <td className={classes.number}>
                       {isLiveChallenge(challenge) ? t('game.arena.live', 'Live') : challenge.score}

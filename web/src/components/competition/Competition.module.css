@@ -254,6 +254,7 @@
   background: var(--app-hover-surface);
 }
 .listName {
+  text-decoration: none;
   display: block;
   width: 100%;
   padding: 0.2rem;

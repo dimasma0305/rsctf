@@ -21,6 +21,7 @@ import {
   sortChallenges,
   type ChallengeView,
 } from '@Components/competition/model'
+import { eventChallengeHash } from '@Utils/ChallengeLinks'
 import { downloadEventVpnConfig } from '@Utils/EventVpnDownload'
 import { allowEventVpnReconnectRetry, isEventVpnAccessError } from '@Utils/EventVpnProof'
 import { showErrorMsg, SubmissionTypeIconMap, useChallengeCategoryLabelMap } from '@Utils/Shared'
@@ -37,7 +38,8 @@ type ChallengePanelProps = {
 }
 
 export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwner, activity }) => {
-  const { hash } = useLocation()
+  const { pathname, search: locationSearch, hash } = useLocation()
+  const challengeHref = (chal: ChallengeInfo) => pathname + locationSearch + eventChallengeHash(chal.id, chal.title)
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
 
@@ -188,7 +190,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
       openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
       setSelection({ gameId: numId, challengeId: chal.id })
       setDetailOpened(true)
-      window.location.hash = `#${chal.id}-${encodeURIComponent(chal.title?.replace(/ /g, '-') ?? '')}`
+      window.location.hash = eventChallengeHash(chal.id, chal.title)
     },
     [numId]
   )
@@ -279,11 +281,18 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
     if (challengeId === null) {
       setSelection(null)
       setDetailOpened(false)
+      if (openerRef.current?.isConnected) openerRef.current.focus({ preventScroll: true })
       return
     }
 
     // A hash is only a request to open a challenge. It becomes authoritative
     // after this game's current team response proves ownership.
+    if (
+      document.activeElement instanceof HTMLElement &&
+      document.activeElement.closest('[data-guide="challenge-card"]')
+    ) {
+      openerRef.current = document.activeElement
+    }
     setSelection({ gameId: numId, challengeId })
     setDetailOpened(true)
   }, [numId, ownedHashChallengeId])
@@ -460,7 +469,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
                 solvedIds={solvedIds}
                 disclosurePendingIds={aiChatPendingIds}
                 selectedId={challenge?.id}
-                onSelect={openChallenge}
+                challengeHref={challengeHref}
                 sort={sort}
               />
             ) : currentChallenges && currentChallenges.length ? (
@@ -517,7 +526,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
                               challenge={chal}
                               iconMap={iconMap}
                               colorMap={colorMap}
-                              onClick={() => openChallenge(chal)}
+                              href={challengeHref(chal)}
                               solved={solved}
                               disclosurePending={aiChatPendingIds.has(chal.id)}
                               teamId={teamInfo?.rank?.id}

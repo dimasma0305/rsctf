@@ -90,6 +90,27 @@ fn catalog_search_is_trimmed_bounded_and_optional() {
 }
 
 #[tokio::test]
+async fn challenge_catalog_query_accepts_an_exact_challenge_id() {
+    let app = Router::new().route(
+        "/",
+        get(|Query(query): Query<ChallengeCatalogQuery>| async move {
+            assert_eq!(query.challenge_id, Some(101));
+            StatusCode::NO_CONTENT
+        }),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/?challengeId=101")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn challenge_catalog_cannot_escape_join_start_visibility_deletion_or_division_boundaries() {
     let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
@@ -252,6 +273,23 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_deletion_or_divis
     assert_eq!(items.iter().find(|item| item.id == 102).unwrap().score, 0);
     assert_eq!(items.iter().find(|item| item.id == 103).unwrap().score, 0);
     assert!(!items.iter().any(|item| item.id == 106 || item.id == 1001));
+
+    // A copied link resolves exactly one authorized challenge, independently
+    // of the catalog page; IDs cannot bypass any existing visibility gate.
+    for challenge_id in [101, 701, 106, 201, 301, 401, 501, 601, 801, 901, 1001, 9999] {
+        let exact = ChallengeCatalogQuery {
+            count: 1,
+            challenge_id: Some(challenge_id),
+            ..Default::default()
+        };
+        let (linked, total) = load_challenge_catalog(&pool, player, &exact).await.unwrap();
+        let allowed = matches!(challenge_id, 101 | 701);
+        assert_eq!(total, i64::from(allowed), "challenge {challenge_id}");
+        assert_eq!(linked.len(), usize::from(allowed));
+        if allowed {
+            assert_eq!(linked[0].id, challenge_id);
+        }
+    }
 
     let jeopardy = ChallengeCatalogQuery {
         count: 50,

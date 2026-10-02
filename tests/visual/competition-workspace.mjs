@@ -92,7 +92,7 @@ try {
   await evaluate(`[...document.querySelectorAll('[role="option"]')].find(option => option.textContent === 'Highest points').click()`)
   const pointOrder = [...challenges].sort((a, b) => b.score - a.score || a.title.localeCompare(b.title) || a.id - b.id).map(item => item.title)
   await waitFor(`document.querySelector('[data-challenge-toolbar] input[role="combobox"]').value === 'Highest points'`)
-  assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('article[data-guide="challenge-card"] button')).map(button => button.textContent)`), pointOrder)
+  assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('article[data-guide="challenge-card"] a')).map(link => link.textContent)`), pointOrder)
   await inspect('cards-points-sorted')
   await selectView('list')
   assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('[data-challenge-row] > span')).map(span => span.textContent)`), pointOrder.slice(0, 10))
