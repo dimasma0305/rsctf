@@ -177,6 +177,27 @@ Screenshots and the request/Axe/overflow report are written to
 theme change; it does not own a poll, idle animation loop, or score calculation.
 Both desktop views reuse the existing challenge actions and their access gates.
 
+Cards are the default unless a player has saved another view. The harness also
+checks multi-word/category search, clear-search focus, shared card/list sorting,
+rejected attempts under the unsolved filter, and compact practice-event headers.
+`RSCTF_WORKSPACE_PREVIEW=https://tcp.1pc.tf` checks the published assets with the
+same browser-intercepted fixtures; no real player data or writes are used.
+
+For the standard full-page audit, start
+`node tests/visual/competition-fixtures.mjs --serve` alongside the preview. It
+serves a practice event on loopback port 63018 and blocks every API mutation:
+
+```sh
+RSCTF_VISUAL_TARGET=http://127.0.0.1:63018 \
+RSCTF_VISUAL_PLAYER_JWT=local-fixture-not-a-credential \
+RSCTF_VISUAL_GAME_ID=901 \
+scripts/bounded-frontend.sh exec node ../tests/visual/audit.mjs \
+  --page =/games/901/challenges --viewport desktop --viewport mobile --viewport compact \
+  --output visual-audit-output/challenge-full
+```
+
+Stop both temporary servers afterward. Never supply real credentials to fixtures.
+
 ## Repository and build administration fixtures
 
 With a frontend preview on `127.0.0.1:63017`, run:

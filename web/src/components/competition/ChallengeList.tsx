@@ -1,13 +1,13 @@
 import { Group, Pagination, Select, Text } from '@mantine/core'
 import { mdiCheckCircleOutline, mdiCircleOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { DisclosureNeededBadge } from '@Components/DisclosureNeededBadge'
 import { useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { ChallengeType, type ChallengeInfo } from '@Api'
 import classes from './Competition.module.css'
-import { challengePage, isLiveChallenge, sortChallenges, type ChallengeSort } from './model'
+import { challengePage, isLiveChallenge, type ChallengeSort } from './model'
 
 export const ChallengeList = memo(
   ({
@@ -30,8 +30,7 @@ export const ChallengeList = memo(
     const categories = useChallengeCategoryLabelMap()
     const [page, setPage] = useState(1)
     const [pageSize, setPageSize] = useState(10)
-    const sorted = useMemo(() => sortChallenges(challenges, sort), [challenges, sort])
-    const result = challengePage(sorted, page, pageSize)
+    const result = challengePage(challenges, page, pageSize)
     const identity = challenges.map((challenge) => challenge.id).join(',')
     useEffect(() => {
       setPage(1)

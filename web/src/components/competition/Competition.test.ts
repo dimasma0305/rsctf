@@ -7,6 +7,7 @@ import {
   focusHorizonNode,
   interpolateGlobeRotation,
   isAcceptedSolve,
+  matchesChallengeSearch,
   normalizeGlobeAngle,
   projectHorizonNode,
   projectSpherePoint,
@@ -25,11 +26,32 @@ const challenge = (id: number, type = ChallengeType.StaticAttachment): Challenge
   disableBloodBonus: true,
 })
 
-test('competition view defaults to the list on compact screens and rejects corrupt stored preferences', () => {
-  assert.equal(resolveChallengeView(null, true), 'list')
-  assert.equal(resolveChallengeView(null, false), 'globe')
-  assert.equal(resolveChallengeView('unexpected', false), 'globe')
-  assert.equal(resolveChallengeView('cards', true), 'cards')
+test('competition view defaults to cards and preserves valid saved views', () => {
+  assert.equal(resolveChallengeView(null), 'cards')
+  assert.equal(resolveChallengeView(undefined), 'cards')
+  assert.equal(resolveChallengeView('unexpected'), 'cards')
+  assert.equal(resolveChallengeView('cards'), 'cards')
+  assert.equal(resolveChallengeView('list'), 'list')
+  assert.equal(resolveChallengeView('globe'), 'globe')
+})
+
+test('challenge search matches every word across title, ID and translated category', () => {
+  const item = { ...challenge(27), title: 'Café Cookie Jar' }
+  assert.equal(matchesChallengeSearch(item, '  WEB café  '), true)
+  assert.equal(matchesChallengeSearch(item, '27 cookie'), true)
+  assert.equal(matchesChallengeSearch(item, 'cafe'), true)
+  assert.equal(matchesChallengeSearch(item, 'jaringan cookie', 'Jaringan'), true)
+  assert.equal(matchesChallengeSearch(item, 'cookie crypto'), false)
+  assert.equal(matchesChallengeSearch(item, ' '), true)
+})
+
+test('challenge filters only hide accepted solves and share one sort across views', () => {
+  const panel = readFileSync('src/components/ChallengePanel.tsx', 'utf8')
+  const list = readFileSync('src/components/competition/ChallengeList.tsx', 'utf8')
+  assert.match(panel, /solvedChallenges \?\? \[\]\)\.filter\(isAcceptedSolve\)/)
+  assert.match(panel, /!hideSolved \|\| !solvedIds\.has\(chal.id\)/)
+  assert.match(panel, /return sortChallenges\(/)
+  assert.doesNotMatch(list, /sortChallenges\(/)
 })
 
 test('competition pages bound one hundred nodes and retain every challenge exactly once', () => {
@@ -193,7 +215,8 @@ test('globe dominates its panel without changing the shared event shell or addin
 test('competition header groups event, team and navigation without an ended countdown', () => {
   const tabs = readFileSync('src/components/WithGameTab.tsx', 'utf8')
   assert.match(tabs, /data-event-workspace-header/)
-  assert.match(tabs, /if \(compact && finished\) return null/)
+  assert.match(tabs, /if \(compact && \(finished \|\| \(started && game\?\.practiceMode\)\)\) return null/)
+  assert.match(tabs, /game.arena.practice/)
   assert.doesNotMatch(
     tabs,
     /summary \? classes.masthead|summary \? 'underline'/,

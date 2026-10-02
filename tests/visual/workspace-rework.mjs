@@ -186,7 +186,7 @@ try {
     await waitFor(`document.activeElement.id === 'settings-tab-platform'`)
 
     await visit('/games/901/challenges', 'compact-challenge-interactions')
-    await evaluate(`document.querySelector('input[placeholder="Name or ID"]').focus()`)
+    await evaluate(`document.querySelector('#challenge-search').focus()`)
     await cdp.send('Input.insertText', { text: '9002' })
     await waitFor(`document.querySelectorAll('[data-guide="challenge-card"]').length === 1`)
     await cdp.send('Input.insertText', { text: '-no-match' })

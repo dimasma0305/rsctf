@@ -29,9 +29,9 @@ const GameCountdown: FC<{ game?: DetailedGameInfoModel; compact?: boolean }> = (
 
   const countdown = dayjs.duration(endTime.diff(now))
 
-  // An ended event already has a status badge. Do not leave a "time remaining"
-  // instrument showing a redundant end message in the competition header.
-  if (compact && finished) return null
+  // Ended and practice events are explained by the status badge, not a
+  // redundant end message or a multi-month competition countdown.
+  if (compact && (finished || (started && game?.practiceMode))) return null
 
   return (
     <Card
@@ -212,12 +212,17 @@ export const WithGameTab: FC<React.PropsWithChildren<{ summary?: React.ReactNode
                 <Text size="xs" c="dimmed" className={classes.eventId}>
                   {t('common.workspace.event_id', 'Event #{{id}}', { id: numId })}
                 </Text>
-                <Badge variant="light" color={finished ? 'gray' : started ? 'green' : 'blue'}>
-                  {finished
-                    ? t('game.arena.ended', 'Ended')
-                    : started
-                      ? t('game.arena.live', 'Live')
-                      : t('game.arena.upcoming', 'Upcoming')}
+                <Badge
+                  variant="light"
+                  color={started && game.practiceMode ? 'cyan' : finished ? 'gray' : started ? 'green' : 'blue'}
+                >
+                  {started && game.practiceMode
+                    ? t('game.arena.practice', 'Practice')
+                    : finished
+                      ? t('game.arena.ended', 'Ended')
+                      : started
+                        ? t('game.arena.live', 'Live')
+                        : t('game.arena.upcoming', 'Upcoming')}
                 </Badge>
               </Group>
               <Title className={classes.title}>{game.title}</Title>

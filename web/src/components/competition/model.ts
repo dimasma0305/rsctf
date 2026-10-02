@@ -3,8 +3,21 @@ import { ChallengeType, SubmissionType, type ChallengeInfo, type ChallengeItem }
 export type ChallengeView = 'globe' | 'list' | 'cards'
 export type ChallengeSort = 'name' | 'score' | 'solves'
 
-export const resolveChallengeView = (value: unknown, compact: boolean): ChallengeView =>
-  value === 'globe' || value === 'list' || value === 'cards' ? value : compact ? 'list' : 'globe'
+export const resolveChallengeView = (value: unknown): ChallengeView =>
+  value === 'globe' || value === 'list' || value === 'cards' ? value : 'cards'
+
+export const matchesChallengeSearch = (
+  challenge: Pick<ChallengeInfo, 'id' | 'title' | 'category'>,
+  search: string,
+  categoryLabel = challenge.category as string
+) => {
+  const normalize = (value: string) => value.normalize('NFKD').replace(/\p{M}/gu, '').toLocaleLowerCase()
+  const text = normalize(`${challenge.title} ${challenge.id} ${challenge.category} ${categoryLabel}`)
+  return normalize(search)
+    .trim()
+    .split(/\s+/)
+    .every((word) => text.includes(word))
+}
 
 export const isLiveChallenge = (challenge: Pick<ChallengeInfo, 'type'>) =>
   challenge.type === ChallengeType.AttackDefense || challenge.type === ChallengeType.KingOfTheHill

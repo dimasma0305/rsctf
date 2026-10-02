@@ -16,7 +16,9 @@ import { ChallengeList } from '@Components/competition/ChallengeList'
 import { ChallengeToolbar } from '@Components/competition/ChallengeToolbar'
 import {
   isAcceptedSolve,
+  matchesChallengeSearch,
   resolveChallengeView,
+  sortChallenges,
   type ChallengeView,
   type ChallengeSort,
 } from '@Components/competition/model'
@@ -53,7 +55,8 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
     defaultValue: null,
     getInitialValueInEffect: false,
   })
-  const view = resolveChallengeView(viewPreference, isCompact)
+  const view = resolveChallengeView(viewPreference)
+  const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
 
   const categories = useMemo(() => Object.keys(challenges ?? {}).sort(), [challenges])
   const [activeTab, setActiveTab] = useState<ChallengeCategory | 'All'>('All')
@@ -99,6 +102,11 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
     return all.sort((a, b) => a.id - b.id)
   }, [challenges])
 
+  const solvedIds = useMemo(
+    () => new Set((teamInfo?.rank?.solvedChallenges ?? []).filter(isAcceptedSolve).map((item) => item.id)),
+    [teamInfo?.rank?.solvedChallenges]
+  )
+
   // Switcher visibility — show only when there's more than one bucket to choose between.
   const { hasJeopardy, hasAd, hasKoth, kindsPresent } = useMemo(() => {
     let j = false,
@@ -123,57 +131,27 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
   }, [challengeKind, hasJeopardy, hasAd, hasKoth, setChallengeKind])
 
   const currentChallenges = useMemo(() => {
-    if (!challenges) return []
-
-    // Seeded RNG (Linear Congruential Generator)
-    const seed = teamInfo?.rank?.id ?? 0
-    const seededRandom = (s: number) => {
-      let t = s + 0x6d2b79f5
-      t = Math.imul(t ^ (t >>> 15), t | 1)
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-    }
-
-    // Create a deterministic shuffle for this team
-    const shuffle = (array: ChallengeInfo[]) => {
-      const shuffled = [...array] // Copy to match original array length
-      for (let i = shuffled.length - 1; i > 0; i--) {
-        // Generate a random index based on seed + current index + challenge ID to vary variance
-        // using a combination of teamID and index ensures order is fixed for this team
-        const r = seededRandom(seed + i * 997 + shuffled[i].id * 13)
-        const j = Math.floor(r * (i + 1))
-        const temp = shuffled[i]
-        shuffled[i] = shuffled[j]
-        shuffled[j] = temp
-      }
-      return shuffled
-    }
-
-    const processList = (list: ChallengeInfo[]) => {
-      const filtered = list.filter(
+    const candidates = activeTab === 'All' ? allChallenges : (challenges?.[activeTab] ?? [])
+    return sortChallenges(
+      candidates.filter(
         (chal) =>
           matchesKind(chal) &&
-          `${chal.title ?? ''} ${chal.id}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()) &&
-          (!hideSolved || (teamInfo && teamInfo.rank?.solvedChallenges?.find((c) => c.id === chal.id)) === undefined)
-      )
-      // Ensure base order is stable (by ID) before shuffling
-      filtered.sort((a, b) => a.id - b.id)
-      return shuffle(filtered)
-    }
-
-    if (activeTab !== 'All') {
-      return processList(challenges[activeTab] ?? [])
-    }
-
-    // Iterate over sorted categories and process each list separately
-    const result: ChallengeInfo[] = []
-    categories.forEach((cat) => {
-      if (challenges[cat]) {
-        result.push(...processList(challenges[cat]))
-      }
-    })
-    return result
-  }, [challenges, activeTab, allChallenges, hideSolved, teamInfo, categories, challengeKind, search])
+          matchesChallengeSearch(chal, search, challengeCategoryLabelMap.get(chal.category)?.name) &&
+          (!hideSolved || !solvedIds.has(chal.id))
+      ),
+      sort
+    )
+  }, [
+    challenges,
+    activeTab,
+    allChallenges,
+    hideSolved,
+    solvedIds,
+    challengeKind,
+    search,
+    sort,
+    challengeCategoryLabelMap,
+  ])
 
   // When the user is viewing "All" on a mixed game, split the rendered list
   // into kind-segregated sections (Jeopardy / A&D / KotH) with a visual
@@ -214,16 +192,11 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
     },
     [numId]
   )
-  const solvedIds = useMemo(
-    () => new Set((teamInfo?.rank?.solvedChallenges ?? []).filter(isAcceptedSolve).map((item) => item.id)),
-    [teamInfo?.rank?.solvedChallenges]
-  )
   // Not polled: one read per page, refreshed by solves and disclosure saves.
   const aiChatPending = useAiChatPendingChallenges(numId, game?.aiChatLinksRequired === true, allChallenges)
   const aiChatPendingIds = useMemo(() => new Set(aiChatPending.map((item) => item.id)), [aiChatPending])
   const { iconMap, colorMap } = SubmissionTypeIconMap(0.8)
   const [writeupSubmitOpened, setWriteupSubmitOpened] = useState(false)
-  const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
   const { t } = useTranslation()
   const [eventVpnDownloading, setEventVpnDownloading] = useState(false)
   const eventVpnDisconnected = Boolean(
