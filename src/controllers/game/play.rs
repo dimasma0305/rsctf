@@ -212,9 +212,8 @@ pub async fn game_details(
     let g = load_game_cached(&st, id).await?;
 
     let is_monitor = maybe.as_ref().is_some_and(|u| u.is_monitor());
-    if g.hidden && !is_monitor {
-        return Err(AppError::not_found("Game not found"));
-    }
+    // Hidden events are unlisted; direct links retain normal join and
+    // challenge-access rules.
 
     let team_count: i64 = sqlx::query_scalar(
         r#"SELECT COUNT(*)::bigint FROM "Participations"

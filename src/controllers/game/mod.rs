@@ -799,6 +799,9 @@ fn parse_answer_result(name: &str) -> Option<AnswerResult> {
 
 async fn load_game(st: &SharedState, id: i32) -> AppResult<game::Model> {
     game::Entity::find_by_id(id)
+        .filter(sea_orm::sea_query::Expr::cust(
+            "\"Games\".deletion_pending = FALSE",
+        ))
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("Game not found"))
@@ -927,6 +930,8 @@ mod cheat_report_cache;
 pub(crate) use cheat_report_cache::invalidate_report as invalidate_cheat_report;
 mod combined_scoreboard;
 mod containers;
+#[cfg(test)]
+mod hidden_events_tests;
 mod lookups;
 pub(crate) mod membership;
 mod participation_review;

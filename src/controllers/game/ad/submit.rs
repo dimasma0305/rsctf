@@ -73,8 +73,7 @@ const ACCEPTED_ATTACK_SQL: &str = r#"
                service.id AS victim_team_service_id,
                planted.id AS flag_id,
                checked_at.value AS submitted_at,
-               NOT game.hidden
-               AND NOT (
+               NOT (
                    game.freeze_time_utc IS NOT NULL
                    AND checked_at.value >= game.freeze_time_utc
                    AND checked_at.value < game.end_time_utc
@@ -900,7 +899,6 @@ mod tests {
                 "missing accepted-insert invariant: {fragment}"
             );
         }
-        assert!(ACCEPTED_ATTACK_SQL.contains("NOT game.hidden"));
         assert!(ACCEPTED_ATTACK_SQL.contains("game.freeze_time_utc IS NOT NULL"));
         assert_eq!(ACCEPTED_ATTACK_SQL.matches("INSERT INTO").count(), 1);
         assert!(!ACCEPTED_ATTACK_SQL.contains("COUNT("));

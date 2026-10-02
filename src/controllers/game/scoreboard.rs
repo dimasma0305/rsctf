@@ -214,9 +214,6 @@ pub async fn notices(
 ) -> AppResult<RequestResponse<Vec<GameNoticeModel>>> {
     let g = load_game(&st, id).await?;
     let is_monitor = maybe.as_ref().is_some_and(|u| u.is_monitor());
-    if g.hidden && !is_monitor {
-        return Err(AppError::not_found("Game not found"));
-    }
     // RSCTF `Notices` denies a not-yet-started game (no monitor exemption).
     if Utc::now() < g.start_time_utc {
         return Err(AppError::game_not_started());
@@ -374,9 +371,6 @@ pub async fn scoreboard(
 ) -> AppResult<Response> {
     let g = load_game_cached(&st, id).await?;
     let is_monitor = maybe.as_ref().is_some_and(|u| u.is_monitor());
-    if g.hidden && !is_monitor {
-        return Err(AppError::not_found("Game not found"));
-    }
     // RSCTF `Scoreboard` denies a not-yet-started game (no monitor exemption).
     if Utc::now() < g.start_time_utc {
         return Err(AppError::game_not_started());

@@ -605,11 +605,13 @@ async function assertHiddenEvent(ordinaryJwt) {
     const anonymous = await A.api('GET', path);
     const ordinary = await A.api('GET', path, { jwt: ordinaryJwt });
     const admin = await A.api('GET', path, { jwt: A.adminJwt() });
-    requireCondition(anonymous.status === 404 && ordinary.status === 404, `${path} exposed the hidden event`);
+    requireCondition(anonymous.status === 200 && ordinary.status === 200, `${path} blocked the unlisted event direct link`);
     requireCondition(admin.status === 200, `${path} is unavailable to the administrator`);
   }
   const operator = await A.api('GET', `/api/edit/games/${current.gameId}/ad/koth/state`, { jwt: A.adminJwt() });
   requireCondition(operator.status === 200, 'hidden KotH operator state is unavailable to the administrator');
+  const forbidden = await A.api('GET', `/api/edit/games/${current.gameId}/ad/koth/state`, { jwt: ordinaryJwt });
+  requireCondition(forbidden.status === 403, 'ordinary participant gained KotH operator access');
 }
 
 function capabilityState(participationId) {

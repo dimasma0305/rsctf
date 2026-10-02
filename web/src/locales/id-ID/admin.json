@@ -8,7 +8,7 @@
     "load_failed": "Pemeriksaan kesiapan tidak dapat diperbarui",
     "stale": "Menampilkan data sebelumnya. Kesiapan saat ini belum terverifikasi.",
     "sign_in": "Masuk kembali",
-    "hidden": "Event tersembunyi",
+    "hidden": "Event tidak terdaftar",
     "public": "Event publik",
     "practice": "Mode latihan",
     "competition": "Mode kompetisi",
@@ -790,7 +790,10 @@
   },
   "label": {
     "games": {
-      "hide": "Sembunyikan",
+      "hide": "Tidak terdaftar",
+      "hidden_state": "Tidak terdaftar · dapat diakses lewat tautan",
+      "visible_state": "Terdaftar secara publik",
+      "toggle_hidden": "Sembunyikan {{name}} dari daftar event publik",
       "summary": "Ringkasan",
       "notices": {
         "schedule": "Schedule for later",

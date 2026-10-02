@@ -4,7 +4,7 @@ A game is the event container for teams, divisions, notices, challenges, scorebo
 
 ## Core schedule and visibility
 
-Set the title, start time, end time, summary, content, and poster. Keep an unfinished game hidden. Verify the rendered public page with a non-admin account; administrator access can hide visibility mistakes.
+Set the title, start time, end time, summary, content, and poster. A hidden game is **unlisted**: it stays out of public event discovery, but anyone with its direct `/games/{id}` link can open it and signed-in users can join under the normal invitation-code, team, division, and review rules. Hidden is not an access restriction; keep unfinished challenges disabled and use an invitation code when registration should be restricted. Verify the rendered event page with a non-admin account; administrator access can hide permission mistakes.
 
 ## Participation policy
 

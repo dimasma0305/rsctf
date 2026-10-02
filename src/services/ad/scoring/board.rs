@@ -22,7 +22,6 @@ const TICK_SECONDS_DEFAULT: i64 = 60;
 
 #[derive(Debug, sqlx::FromRow)]
 struct AdScoreboardGameRow {
-    hidden: bool,
     epoch_ticks: i32,
     scoring_start_round: Option<i32>,
     flag_lifetime_ticks: Option<i32>,
@@ -444,9 +443,8 @@ fn merge_service_detail(
     }
 }
 
-/// Revision fence for a board the caller is authorized to observe. Public
-/// callers cannot distinguish a private game from an absent one; monitors can
-/// build and cache the private board in their separate cache namespace.
+/// Revision fence for an existing event, including unlisted events. Monitors
+/// retain a separate cache namespace for their unfrozen view.
 #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
 pub(crate) struct AdScoreboardRevision {
     pub(crate) revision: String,
@@ -456,17 +454,16 @@ pub(crate) struct AdScoreboardRevision {
 pub(crate) async fn ad_scoreboard_revision(
     pool: &PgPool,
     game_id: i32,
-    is_monitor: bool,
+    _is_monitor: bool,
 ) -> AppResult<Option<AdScoreboardRevision>> {
     sqlx::query_as::<_, AdScoreboardRevision>(
         r#"SELECT game.xmin::text AS revision,
                   (NOT game.practice_mode AND game.end_time_utc <= clock_timestamp())
                     AS immutable_final
              FROM "Games" AS game
-            WHERE game.id = $1 AND (game.hidden = FALSE OR $2)"#,
+            WHERE game.id = $1 AND game.deletion_pending = FALSE"#,
     )
     .bind(game_id)
-    .bind(is_monitor)
     .fetch_optional(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))
@@ -485,17 +482,14 @@ pub async fn build_ad_scoreboard(
     is_monitor: bool,
     now: DateTime<Utc>,
 ) -> AppResult<AdScoreboard> {
-    // Reject absent/unauthorized hidden games before entering the potentially
-    // writing rollup transaction. Public hidden misses are never cached, so
-    // without this preflight they could repeatedly contend on the per-game
-    // rollup lock. Monitors use a separate cache namespace.
+    // Reject absent/deleting games before entering the potentially writing
+    // rollup transaction. Unlisted events use the same standings rules.
     let visible_end = sqlx::query_scalar::<_, DateTime<Utc>>(
         r#"SELECT end_time_utc
              FROM "Games"
-            WHERE id = $1 AND (hidden = FALSE OR $2)"#,
+            WHERE id = $1 AND deletion_pending = FALSE"#,
     )
     .bind(game_id)
-    .bind(is_monitor)
     .fetch_optional(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -515,22 +509,19 @@ pub async fn build_ad_scoreboard(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     let game = sqlx::query_as::<_, AdScoreboardGameRow>(
-        r#"SELECT hidden, ad_epoch_ticks AS epoch_ticks,
+        r#"SELECT ad_epoch_ticks AS epoch_ticks,
                   ad_scoring_start_round AS scoring_start_round,
                   ad_flag_lifetime_ticks AS flag_lifetime_ticks,
                   ad_tick_seconds AS tick_seconds,
                   freeze_time_utc, end_time_utc
              FROM "Games"
-            WHERE id = $1"#,
+            WHERE id = $1 AND deletion_pending = FALSE"#,
     )
     .bind(game_id)
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Game not found"))?;
-    if game.hidden && !is_monitor {
-        return Err(AppError::not_found("Game not found"));
-    }
 
     // Event end is an evidence boundary for every viewer, including monitors.
     let cutoff =

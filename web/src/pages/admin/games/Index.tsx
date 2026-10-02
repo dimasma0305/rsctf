@@ -492,8 +492,8 @@ const Games: FC = () => {
                       </Text>
                       <Text size="sm" fw={650}>
                         {game.hidden
-                          ? t('admin.label.games.hidden_state', 'Hidden from players')
-                          : t('admin.label.games.visible_state', 'Visible to players')}
+                          ? t('admin.label.games.hidden_state', 'Unlisted · accessible by link')
+                          : t('admin.label.games.visible_state', 'Listed publicly')}
                       </Text>
                     </Stack>
                     <Switch

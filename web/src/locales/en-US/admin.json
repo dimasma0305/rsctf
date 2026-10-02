@@ -8,7 +8,7 @@
     "load_failed": "Readiness could not be refreshed",
     "stale": "Showing previous data. Current readiness is unverified.",
     "sign_in": "Sign in again",
-    "hidden": "Hidden event",
+    "hidden": "Unlisted event",
     "public": "Public event",
     "practice": "Practice mode",
     "competition": "Competition mode",
@@ -1521,7 +1521,10 @@
   },
   "label": {
     "games": {
-      "hide": "Hide",
+      "hide": "Unlisted",
+      "hidden_state": "Unlisted · accessible by link",
+      "visible_state": "Listed publicly",
+      "toggle_hidden": "Hide {{name}} from the public event list",
       "summary": "Summary",
       "notices": {
         "schedule": "Schedule for later",

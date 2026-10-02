@@ -48,12 +48,12 @@ test('conditional responses remain behind the existing authorization and lifecyc
   );
   const standardConditional = standardHandler.indexOf('scoreboard_encoding::scoped_response');
   assert.match(standardHandler, /headers:\s*HeaderMap/);
-  assert.ok(standardHandler.indexOf('g.hidden && !is_monitor') < standardConditional);
+  assert.ok(standardHandler.indexOf('load_game_cached') < standardConditional);
   assert.ok(standardHandler.indexOf('Utc::now() < g.start_time_utc') < standardConditional);
 
   const kothHandler = kothRoute.slice(kothRoute.indexOf('pub async fn scoreboard('));
   const kothConditional = kothHandler.indexOf('scoreboard_encoding::scoped_response');
   assert.match(kothHandler, /headers:\s*HeaderMap/);
   assert.ok(kothHandler.indexOf('load_game_cached') < kothConditional);
-  assert.ok(kothHandler.indexOf('can_view_koth_standings') < kothConditional);
+  assert.ok(kothHandler.indexOf('Utc::now() < game.start_time_utc') < kothConditional);
 });

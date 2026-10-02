@@ -307,13 +307,13 @@ async fn database_board_is_finite_bounded_and_serializable() {
         .bind(fixture.game_id)
         .execute(&fixture.pool)
         .await
-        .expect("make A&D fixture private");
+        .expect("make A&D fixture unlisted");
     assert!(
         ad_scoreboard_revision(&fixture.pool, fixture.game_id, false)
             .await
             .expect("read public revision")
-            .is_none(),
-        "a public caller discovered a private A&D game"
+            .is_some(),
+        "unlisted events must retain their public standings by direct link"
     );
     assert!(
         ad_scoreboard_revision(&fixture.pool, fixture.game_id, true)
@@ -322,13 +322,27 @@ async fn database_board_is_finite_bounded_and_serializable() {
             .is_some(),
         "a monitor could not fence a private A&D board build"
     );
+    build_ad_scoreboard(&fixture.pool, fixture.game_id, false, Utc::now())
+        .await
+        .expect("spectator builds an unlisted A&D board");
+    build_ad_scoreboard(&fixture.pool, fixture.game_id, true, Utc::now())
+        .await
+        .expect("monitor builds a private A&D board");
+    sqlx::query(r#"UPDATE "Games" SET deletion_pending = TRUE WHERE id = $1"#)
+        .bind(fixture.game_id)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+    assert!(
+        ad_scoreboard_revision(&fixture.pool, fixture.game_id, false)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(matches!(
         build_ad_scoreboard(&fixture.pool, fixture.game_id, false, Utc::now()).await,
         Err(AppError::NotFound(_))
     ));
-    build_ad_scoreboard(&fixture.pool, fixture.game_id, true, Utc::now())
-        .await
-        .expect("monitor builds a private A&D board");
     fixture.cleanup().await;
 }
 
