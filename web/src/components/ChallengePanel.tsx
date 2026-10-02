@@ -20,13 +20,13 @@ import {
   resolveChallengeView,
   sortChallenges,
   type ChallengeView,
-  type ChallengeSort,
 } from '@Components/competition/model'
 import { downloadEventVpnConfig } from '@Utils/EventVpnDownload'
 import { allowEventVpnReconnectRetry, isEventVpnAccessError } from '@Utils/EventVpnProof'
 import { showErrorMsg, SubmissionTypeIconMap, useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useGameStatus, useGameTeamInfo } from '@Hooks/useGame'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import { ChallengeInfo, ChallengeCategory, ChallengeType, SubmissionType } from '@Api'
 import classes from '@Styles/ChallengePanel.module.css'
 
@@ -49,25 +49,25 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
   // Measure the space left by the navigation rail, not the viewport. Keep a
   // useful results column beside the 26rem inspector even on expanded sidebars.
   const inlineDetail = workspaceWidth >= 1200
-  const [sort, setSort] = useState<ChallengeSort>('name')
+  const [sort, setSort] = useUrlTab('sort', ['name', 'score', 'solves'], 'name')
   const [viewPreference, setViewPreference] = useLocalStorage<ChallengeView | null>({
     key: 'challenge-explorer-view',
     defaultValue: null,
     getInitialValueInEffect: false,
   })
-  const view = resolveChallengeView(viewPreference)
+  // Retain the initial preference for Back navigation to the URL without a view.
+  const defaultView = useRef(resolveChallengeView(viewPreference)).current
+  const [view, setUrlView] = useUrlTab('view', ['cards', 'list', 'globe'], defaultView)
+  const setView = (next: ChallengeView) => {
+    setUrlView(next)
+    setViewPreference(next)
+  }
   const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
 
   const categories = useMemo(() => Object.keys(challenges ?? {}).sort(), [challenges])
-  const [activeTab, setActiveTab] = useState<ChallengeCategory | 'All'>('All')
+  const [selectedCategory, setActiveTab] = useUrlTab('category', ['All', ...Object.values(ChallengeCategory)], 'All')
+  const activeTab = selectedCategory === 'All' || categories.includes(selectedCategory) ? selectedCategory : 'All'
   const [search, setSearch] = useState('')
-
-  // Sync state if activeTab becomes invalid (e.g. after data load updates categories)
-  useEffect(() => {
-    if (activeTab !== 'All' && !categories.includes(activeTab)) {
-      setActiveTab('All')
-    }
-  }, [categories, activeTab])
 
   const [hideSolved, setHideSolved] = useLocalStorage({
     key: 'hide-solved',
@@ -268,7 +268,6 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
   ])
 
   useEffect(() => {
-    setActiveTab('All')
     setSearch('')
     setSelection(null)
     setDetailOpened(false)
@@ -401,7 +400,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
         search={search}
         onSearch={setSearch}
         view={view}
-        onView={setViewPreference}
+        onView={setView}
         sort={sort}
         onSort={setSort}
         category={activeTab}
@@ -453,7 +452,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
               <ChallengeGlobe
                 nodes={globeNodes}
                 scope={`${numId}:${activeTab}:${challengeKind}:${search}:${hideSolved}`}
-                onList={() => setViewPreference('list')}
+                onList={() => setView('list')}
               />
             ) : currentChallenges.length && view === 'list' ? (
               <ChallengeList

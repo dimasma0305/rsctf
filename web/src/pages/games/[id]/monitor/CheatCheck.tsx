@@ -18,14 +18,15 @@ import { mdiAlertCircle, mdiChartBox, mdiFileSearchOutline, mdiFlagVariant, mdiR
 import { Icon } from '@mdi/react'
 import { FC, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useParams, useSearchParams } from 'react-router'
+import { useParams } from 'react-router'
 import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { CheatInfo } from '@Components/monitor/CheatInfo'
 import { CheatSubmissionLog } from '@Components/monitor/CheatSubmissionLog'
-import { isCheatReportStale, normalizeCheatViewTab } from '@Utils/AntiCheat'
+import { isCheatReportStale } from '@Utils/AntiCheat'
 import { showErrorMsg, showSuccessMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useAntiCheatReport } from '@Hooks/useAntiCheatReport'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import { useUser } from '@Hooks/useUser'
 import api, { DetectorCapability, Role } from '@Api'
 
@@ -56,8 +57,7 @@ const CheatCheck: FC = () => {
   const { t, i18n } = useTranslation()
   const { user } = useUser()
   const isMobile = useIsMobile()
-  const [searchParams, setSearchParams] = useSearchParams()
-  const activeTab = normalizeCheatViewTab(searchParams.get('tab'))
+  const [activeTab, handleTabChange] = useUrlTab('tab', ['analysis', 'submissions'], 'analysis')
   const [rescanning, setRescanning] = useState(false)
 
   // Admin-only: rescan every solver upload and writeup for agent traces with
@@ -80,12 +80,6 @@ const CheatCheck: FC = () => {
     } finally {
       setRescanning(false)
     }
-  }
-
-  const handleTabChange = (value: string | null) => {
-    const next = new URLSearchParams(searchParams)
-    next.set('tab', normalizeCheatViewTab(value))
-    setSearchParams(next)
   }
 
   const { data: report, isLoading, isValidating, error, mutate } = useAntiCheatReport(numId, activeTab === 'analysis')

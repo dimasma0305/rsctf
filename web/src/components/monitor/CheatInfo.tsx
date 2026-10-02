@@ -74,6 +74,7 @@ import { evidenceContribution } from '@Utils/AntiCheat'
 import { useLanguage } from '@Utils/I18n'
 import { showErrorMsg, tryGetErrorMsg, useParticipationStatusMap } from '@Utils/Shared'
 import { useChallengePolling } from '@Hooks/useChallengePolling'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import type {
   AbnormalSolveResult,
   CheatReport,
@@ -480,7 +481,6 @@ const ReadableDetails: FC<{ details?: string | null; maxRows?: number }> = ({ de
 }
 
 const MemoizedReadableDetails = React.memo(ReadableDetails)
-
 
 // \u2500\u2500 Discord-style smart search \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
@@ -1251,7 +1251,11 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
   // Pair selection for drill-down
   const [teamAId, setTeamAId] = useState<number | null>(null)
   const [teamBId, setTeamBId] = useState<number | null>(null)
-  const [activeTab, setActiveTab] = useState<string | null>('suspicion')
+  const [activeTab, setActiveTab] = useUrlTab(
+    'section',
+    ['suspicion', 'network-device', 'abnormal-solves', 'collusion', 'identity'],
+    'suspicion'
+  )
   const evidenceTabsRef = useRef<HTMLDivElement>(null)
   const reducedMotion = useReducedMotion()
 
@@ -2163,8 +2167,8 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
           sub={t('game.cheat_analysis.card.ip_anomalies_sub', 'Probabilistic review context')}
           icon={mdiIpNetwork}
           color="cyan"
-          active={activeTab === 'ip'}
-          onClick={() => setActiveTab('ip')}
+          active={activeTab === 'network-device'}
+          onClick={() => setActiveTab('network-device')}
         />
         <SummaryCard
           label={t('game.cheat_analysis.card.abnormal_solves', 'Abnormal Solves')}
@@ -2172,8 +2176,8 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
           sub={t('game.cheat_analysis.card.abnormal_solves_sub', 'Solve-prerequisite signals')}
           icon={mdiGhost}
           color="orange"
-          active={activeTab === 'solve'}
-          onClick={() => setActiveTab('solve')}
+          active={activeTab === 'abnormal-solves'}
+          onClick={() => setActiveTab('abnormal-solves')}
         />
         <SummaryCard
           label={t('game.cheat_analysis.card.collusion_groups', 'Similarity Groups')}
@@ -2228,7 +2232,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
               {t('game.cheat_analysis.tab.suspicion', 'Suspicion')}
             </Tabs.Tab>
             <Tabs.Tab
-              value="ip"
+              value="network-device"
               rightSection={
                 <Badge
                   size="xs"
@@ -2243,7 +2247,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
               {t('game.cheat_analysis.tab.ip_analysis', 'Network / Device')}
             </Tabs.Tab>
             <Tabs.Tab
-              value="solve"
+              value="abnormal-solves"
               rightSection={
                 <Badge
                   size="xs"
@@ -2405,7 +2409,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
             )}
           </Tabs.Panel>
 
-          <Tabs.Panel value="ip" pt="md">
+          <Tabs.Panel value="network-device" pt="md">
             <Group justify="space-between" mb="md">
               <Group gap="xs">
                 <Title order={3}>{t('game.cheat_analysis.tab.ip_analysis', 'Network / Device Signals')}</Title>
@@ -2522,7 +2526,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
             )}
           </Tabs.Panel>
 
-          <Tabs.Panel value="solve" pt="md">
+          <Tabs.Panel value="abnormal-solves" pt="md">
             <Group justify="space-between" mb="md">
               <Group gap="xs">
                 <Title order={3}>{t('game.cheat_analysis.tab.abnormal_solves', 'Abnormal Solves')}</Title>

@@ -70,6 +70,7 @@ import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { createUuid } from '@Utils/Uuid'
 import { useConfig } from '@Hooks/useConfig'
 import { useAdminGame } from '@Hooks/useGame'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import { useUser } from '@Hooks/useUser'
 import api, { EventVpnOverrideModel, Role } from '@Api'
 import classes from '@Styles/AdminGameInfo.module.css'
@@ -770,7 +771,11 @@ const GameInfoEdit: FC = () => {
       label: t('admin.content.games.info.section.content', 'Description & media'),
     },
   ]
-  const [activeSection, setActiveSection] = useState('general')
+  const [activeSection, setActiveSection] = useUrlTab(
+    'section',
+    ['general', 'writeups', 'ad', 'security', 'content'],
+    'general'
+  )
 
   return (
     <WithGameEditTab

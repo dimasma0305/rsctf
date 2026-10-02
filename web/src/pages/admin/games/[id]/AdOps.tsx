@@ -79,6 +79,7 @@ import {
   useAdminOperatorEngines,
   type AdminKothHill,
 } from '@Hooks/useGame'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import api, {
   AdCheckStatus,
   AdFileBlob,
@@ -616,7 +617,7 @@ const SnapshotModal: FC<{
   const [debouncedFileSearch] = useDebouncedValue(fileSearch, 200)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [spawning, setSpawning] = useState(false)
-  const [tab, setTab] = useState<'changes' | 'history'>('changes')
+  const [tab, setTab] = useUrlTab('snapshotTab', ['changes', 'history'], 'changes')
   const sid = target?.cell.adTeamServiceId
   const hasSnapshot = !!target?.cell.snapshotAvailable
   const containerGuid = target?.cell.containerGuid
@@ -829,8 +830,9 @@ const SnapshotModal: FC<{
             <SegmentedControl
               size="xs"
               aria-label={t('admin.label.ad_ops.snapshot_view', 'Snapshot view')}
+              styles={{ label: { whiteSpace: 'normal' } }}
               value={tab}
-              onChange={(v) => setTab(v as 'changes' | 'history')}
+              onChange={setTab}
               data={[
                 { value: 'changes', label: t('admin.content.ad_ops.snapshot.tab_changes', 'Current changes') },
                 {
@@ -962,7 +964,7 @@ const AdOps: FC = () => {
   }, [numId])
   // Which side of the console is showing. A&D vs KotH challenges are disjoint
   // sets in a game; the switch only appears when both exist (see showViewSwitch).
-  const [view, setView] = useState<'ad' | 'koth'>('ad')
+  const [view, setView] = useUrlTab('view', ['ad', 'koth'], 'ad')
   const now = useServerNow()
   const { engineMetadata, error: engineError, mutate: mutateEngines } = useAdminOperatorEngines(numId)
   const activeView = adminOperatorView(view, engineMetadata)
@@ -1387,7 +1389,7 @@ const AdOps: FC = () => {
             <SegmentedControl
               aria-label={t('admin.label.ad_ops.game_mode', 'Game mode')}
               value={showKoth ? 'koth' : 'ad'}
-              onChange={(v) => setView(v as 'ad' | 'koth')}
+              onChange={setView}
               data={[
                 { value: 'ad', label: t('admin.content.ad_ops.view_ad', 'A&D') },
                 { value: 'koth', label: t('admin.content.ad_ops.view_koth', 'KotH') },

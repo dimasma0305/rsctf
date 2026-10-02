@@ -133,14 +133,26 @@ export const viewerIdentityMiddleware: Middleware = (useSWRNext) =>
     })
   }
 
+const ROUTE_PANEL_PARAMETERS: ReadonlyArray<readonly [RegExp, readonly string[]]> = [
+  [/^\/account\/profile$/, ['tab']],
+  [/^\/admin\/settings$/, ['section']],
+  [/^\/admin\/dashboard$/, ['activity', 'range']],
+  [/^\/admin\/builds$/, ['tab']],
+  [/^\/admin\/games\/\d+\/info$/, ['section']],
+  [/^\/admin\/games\/\d+\/writeups$/, ['tab']],
+  [/^\/admin\/games\/\d+\/adops$/, ['view', 'snapshotTab']],
+  [/^\/games\/\d+\/monitor\/cheatcheck$/, ['tab', 'section']],
+  [/^\/games\/\d+\/challenges$/, ['category', 'view', 'sort']],
+]
+
 export const routeLifecycleKey = (pathname: string, search: string, scope: string | null) => {
-  // These tabs switch panels within one form, not its account or data scope.
-  // Keep drafts while switching panels; all other query/path/viewer changes
-  // retain the hard lifecycle boundary below.
-  const panelParameter = pathname === '/account/profile' ? 'tab' : pathname === '/admin/settings' ? 'section' : null
-  if (panelParameter) {
+  // Only the named presentation parameters on these exact routes can retain
+  // drafts and request owners. Viewer, role, path, and data-scope queries still
+  // form hard lifecycle boundaries; never exempt a parameter globally.
+  const panelParameters = ROUTE_PANEL_PARAMETERS.find(([route]) => route.test(pathname))?.[1]
+  if (panelParameters) {
     const query = new URLSearchParams(search)
-    query.delete(panelParameter)
+    for (const parameter of panelParameters) query.delete(parameter)
     search = query.size ? `?${query}` : ''
   }
   return `${scope ?? 'unscoped'}\u0000${pathname}\u0000${search}`

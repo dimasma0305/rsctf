@@ -23,6 +23,7 @@ import { WriteupGradeRow } from '@Components/admin/WriteupGradeRow'
 import { downloadBlob } from '@Utils/ApiHelper'
 import { rankWriteupTeams, type GradingView } from '@Utils/WriteupGrading'
 import { OnceSWRConfig } from '@Hooks/useConfig'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import api from '@Api'
 import classes from '@Styles/WriteupGrading.module.css'
 
@@ -36,7 +37,7 @@ export default function GameWriteups() {
   const [division, setDivision] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [view, setView] = useState<GradingView>('Overall')
-  const [tab, setTab] = useState<string | null>('review')
+  const [tab, setTab] = useUrlTab('tab', ['review', 'ranking'], 'review')
   const [page, setPage] = useState(1)
   const [downloading, setDownloading] = useState(false)
   const [status, setStatus] = useState('')
