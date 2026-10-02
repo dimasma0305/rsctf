@@ -22,7 +22,7 @@ UPDATE "GameChallenges"
        revision = revision + 1
  WHERE id = $1 AND game_id = $2 AND revision = $3
    AND released_hint_count < CASE
-       WHEN jsonb_typeof(hints) = 'array' THEN jsonb_array_length(hints)
+       WHEN json_typeof(hints) = 'array' THEN json_array_length(hints)
        ELSE 0
    END
 RETURNING revision
@@ -83,8 +83,8 @@ pub async fn release_next(
     if replay.is_none() {
         let current = sqlx::query_as::<_, HintReleaseRow>(
             r#"SELECT revision, title, is_enabled, released_hint_count,
-                      CASE WHEN jsonb_typeof(hints) = 'array'
-                           THEN jsonb_array_length(hints) ELSE 0 END AS hint_count
+                      CASE WHEN json_typeof(hints) = 'array'
+                           THEN json_array_length(hints) ELSE 0 END AS hint_count
                  FROM "GameChallenges"
                 WHERE id = $1 AND game_id = $2 AND deletion_pending = FALSE
                 FOR UPDATE"#,
@@ -231,7 +231,7 @@ mod tests {
         sqlx::query(
             r#"CREATE TABLE "GameChallenges" (
                 id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
-                revision BIGINT NOT NULL, hints JSONB,
+                revision BIGINT NOT NULL, hints JSON,
                 released_hint_count INTEGER NOT NULL DEFAULT 0
             )"#,
         )
