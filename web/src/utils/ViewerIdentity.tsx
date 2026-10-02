@@ -134,12 +134,13 @@ export const viewerIdentityMiddleware: Middleware = (useSWRNext) =>
   }
 
 export const routeLifecycleKey = (pathname: string, search: string, scope: string | null) => {
-  // Profile tabs are presentation state, not a different account or data scope.
-  // Keep the form draft when opening stats; all other query/path/viewer changes
+  // These tabs switch panels within one form, not its account or data scope.
+  // Keep drafts while switching panels; all other query/path/viewer changes
   // retain the hard lifecycle boundary below.
-  if (pathname === '/account/profile') {
+  const panelParameter = pathname === '/account/profile' ? 'tab' : pathname === '/admin/settings' ? 'section' : null
+  if (panelParameter) {
     const query = new URLSearchParams(search)
-    query.delete('tab')
+    query.delete(panelParameter)
     search = query.size ? `?${query}` : ''
   }
   return `${scope ?? 'unscoped'}\u0000${pathname}\u0000${search}`

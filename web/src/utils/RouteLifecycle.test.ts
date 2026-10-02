@@ -4,19 +4,32 @@ import test from 'node:test'
 import { act, createElement, type FC, type PropsWithChildren, useState } from 'react'
 import type { Key, SWRConfiguration } from 'swr'
 import { challengeIdFromHash, ownedChallengeIdFromHash } from '../components/ChallengePanel'
-import {
-  containerOperationScope,
-  operationStorageKey,
-  shouldReadChallenge,
-} from '../components/GameChallengeModal'
+import { containerOperationScope, operationStorageKey, shouldReadChallenge } from '../components/GameChallengeModal'
 import { installTestDom } from '../test/installDom'
 import {
   RouteLifecycleBoundary,
+  routeLifecycleKey,
   viewerIdentityMiddleware,
   ViewerIdentityProvider,
   ViewerIdentityScope,
   viewerScopedKey,
 } from './ViewerIdentity'
+
+test('settings panels preserve drafts but account, role, path, and other query changes reset them', () => {
+  const key = (search: string, scope = 'user:a:Admin', path = '/admin/settings') =>
+    routeLifecycleKey(path, search, scope)
+  assert.equal(key(''), key('?section=platform'))
+  assert.equal(key('?section=platform'), key('?section=email'))
+  assert.equal(key('?other=1&section=platform'), key('?section=email&other=1'))
+  assert.notEqual(key('?other=1&section=email'), key('?other=2&section=email'))
+  for (const scope of ['user:b:Admin', 'user:a:User', 'anonymous', 'session-pending']) {
+    assert.notEqual(key('?section=email'), key('?section=email', scope))
+  }
+  assert.notEqual(key('?section=email'), key('?section=email', 'user:a:Admin', '/admin/users'))
+  for (const path of ['/admin/games/19/info', '/admin/settings-extra', '/account/profile']) {
+    assert.notEqual(key('?section=platform', 'user:a:Admin', path), key('?section=email', 'user:a:Admin', path))
+  }
+})
 
 type Deferred<T> = {
   promise: Promise<T>

@@ -1,5 +1,6 @@
-import { Anchor, Group, Skeleton, Stack, Text, Title } from '@mantine/core'
-import { mdiFlagCheckered, mdiAccountGroupOutline, mdiBookOpenPageVariantOutline } from '@mdi/js'
+import { Alert, Anchor, Button, Group, Skeleton, Stack, Text, Title } from '@mantine/core'
+import { mdiFlagCheckered, mdiAccountGroupOutline, mdiBookOpenPageVariantOutline, mdiAlertCircleOutline } from '@mdi/js'
+import { Icon } from '@mdi/react'
 import { FC } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
@@ -11,11 +12,9 @@ import { PostCard } from '@Components/PostCard'
 import { RecentGame } from '@Components/RecentGame'
 import { WithNavBar } from '@Components/WithNavbar'
 import { WorkspaceLinks } from '@Components/WorkspaceLinks'
-import { RecentGameCarousel } from '@Components/mobile/RecentGameCarousel'
 import { invalidatePostPageCaches, postFeedSWRConfig } from '@Utils/PostFeed'
 import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
-import { useIsMobile } from '@Utils/ThemeOverride'
 import { getGameStatus, useRecentGames } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import api, { PostInfoModel } from '@Api'
@@ -24,11 +23,10 @@ import classes from '@Styles/Index.module.css'
 const Home: FC = () => {
   const { t } = useTranslation()
   const { mutate: mutateCache } = useSWRConfig()
-  const { data: posts, mutate } = api.info.useInfoGetLatestPosts(postFeedSWRConfig)
-  const { recentGames } = useRecentGames()
+  const { data: posts, error: postsError, isValidating, mutate } = api.info.useInfoGetLatestPosts(postFeedSWRConfig)
+  const { recentGames, error: gamesError, mutate: retryGames } = useRecentGames()
   const now = useServerNow()
-  const isMobile = useIsMobile(900)
-  const showGames = isMobile ? recentGames : recentGames?.slice(0, 5)
+  const showGames = recentGames?.slice(0, 5)
   const liveCount = recentGames?.filter((game) => getGameStatus(game, now).status === GameStatus.OnGoing).length ?? 0
   const upcomingCount = recentGames?.filter((game) => getGameStatus(game, now).status === GameStatus.Coming).length ?? 0
 
@@ -69,30 +67,65 @@ const Home: FC = () => {
               label={t('common.workspace.start_here', 'Start here')}
               items={[
                 { to: '/games', icon: mdiFlagCheckered, title: t('game.title.index') },
-                { to: '/teams', icon: mdiAccountGroupOutline, title: t('team.title.index') },
+                { to: '/teams', icon: mdiAccountGroupOutline, title: t('common.tab.team') },
                 { to: '/guide', icon: mdiBookOpenPageVariantOutline, title: t('common.title.guide', 'Player guide') },
               ]}
             />
           }
         />
 
-        {isMobile && (
-          <div>
-            {gamesHeading}
-            {showGames === undefined ? (
-              <Skeleton h={230} radius="md" />
-            ) : showGames.length === 0 ? (
-              <Text size="sm" c="dimmed" py="md">
-                {t('common.content.home.no_recent_games', 'No recent games')}
-              </Text>
-            ) : (
-              <RecentGameCarousel games={showGames} />
-            )}
-          </div>
-        )}
-
         <div className={classes.dashboard}>
-          <section className={classes.feed} aria-labelledby="news-feed-title">
+          <aside
+            className={classes.games}
+            aria-labelledby="recent-games-title"
+            data-home-recent
+            aria-busy={(!showGames && !gamesError) || undefined}
+          >
+            {gamesHeading}
+            {(liveCount > 0 || upcomingCount > 0) && (
+              <Group gap="md" py="sm">
+                {liveCount > 0 && (
+                  <Text size="sm" c="dimmed">
+                    {t('game.content.live_count', '{{count}} live', { count: liveCount })}
+                  </Text>
+                )}
+                {upcomingCount > 0 && (
+                  <Text size="sm" c="dimmed">
+                    {t('game.content.upcoming_count', '{{count}} upcoming', { count: upcomingCount })}
+                  </Text>
+                )}
+              </Group>
+            )}
+            {gamesError && (
+              <Alert
+                mt="sm"
+                color="red"
+                role="alert"
+                title={t('game.content.load_failed', 'Events could not be loaded')}
+              >
+                <Button variant="outline" onClick={() => void retryGames().catch(() => undefined)}>
+                  {t('common.button.retry', 'Retry')}
+                </Button>
+              </Alert>
+            )}
+            <Stack gap="sm" mt="sm" className={classes.recentList}>
+              {showGames === undefined ? (
+                !gamesError && Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} h={102} radius="md" />)
+              ) : showGames.length === 0 ? (
+                <Text size="sm" c="dimmed" py="md">
+                  {t('common.content.home.no_recent_games', 'No recent games')}
+                </Text>
+              ) : (
+                showGames.map((game) => <RecentGame key={game.id} game={game} />)
+              )}
+            </Stack>
+          </aside>
+
+          <section
+            className={classes.feed}
+            aria-labelledby="news-feed-title"
+            aria-busy={(!posts && !postsError) || undefined}
+          >
             <Group justify="space-between" align="center" className={classes.sectionHeader}>
               <Title id="news-feed-title" order={2} size="h4">
                 {t('common.content.home.news', 'News & announcements')}
@@ -101,8 +134,28 @@ const Home: FC = () => {
                 {t('common.button.view_all', 'View all')}
               </Anchor>
             </Group>
+            {postsError && (
+              <Alert
+                mt="sm"
+                color="red"
+                icon={<Icon path={mdiAlertCircleOutline} size={0.9} aria-hidden="true" />}
+                title={t('common.content.home.news_unavailable', 'Announcements could not be refreshed')}
+                role="alert"
+              >
+                <Text size="sm">{t('common.content.home.retry_hint', 'Check your connection and try again.')}</Text>
+                <Button
+                  mt="sm"
+                  variant="outline"
+                  loading={isValidating}
+                  onClick={() => void mutate().catch(() => undefined)}
+                >
+                  {t('common.button.retry', 'Retry')}
+                </Button>
+              </Alert>
+            )}
             <Stack gap={0}>
               {!Array.isArray(posts) ? (
+                !postsError &&
                 Array.from({ length: 3 }).map((_, i) => (
                   <Stack key={i} gap={12} py="lg">
                     <Skeleton height={12} width="30%" radius="sm" />
@@ -119,37 +172,6 @@ const Home: FC = () => {
               )}
             </Stack>
           </section>
-
-          {!isMobile && (
-            <aside className={classes.games} aria-labelledby="recent-games-title">
-              {gamesHeading}
-              {(liveCount > 0 || upcomingCount > 0) && (
-                <Group gap="md" py="sm">
-                  {liveCount > 0 && (
-                    <Text size="sm" c="dimmed">
-                      {t('game.content.live_count', '{{count}} live', { count: liveCount })}
-                    </Text>
-                  )}
-                  {upcomingCount > 0 && (
-                    <Text size="sm" c="dimmed">
-                      {t('game.content.upcoming_count', '{{count}} upcoming', { count: upcomingCount })}
-                    </Text>
-                  )}
-                </Group>
-              )}
-              <Stack gap="sm" mt="sm">
-                {showGames === undefined ? (
-                  Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} h={102} radius="md" />)
-                ) : showGames.length === 0 ? (
-                  <Text size="sm" c="dimmed" py="md">
-                    {t('common.content.home.no_recent_games', 'No recent games')}
-                  </Text>
-                ) : (
-                  showGames.map((game) => <RecentGame key={game.id} game={game} />)
-                )}
-              </Stack>
-            </aside>
-          )}
         </div>
       </Stack>
     </WithNavBar>

@@ -62,7 +62,7 @@
 }
 
 .popularGameMobileRow {
-  color: inherit;
+  color: var(--app-text-primary);
   text-decoration: none;
   background: var(--app-raised-surface);
 }

@@ -91,6 +91,9 @@
     "find_my_team": "Find My Team"
   },
   "content": {
+    "starts_compact": "Starts {{time}}",
+    "ends_compact": "Ends {{time}}",
+    "ended_compact": "Ended {{time}}",
     "events_empty_title": "No matching events",
     "events_empty_description": "There are no events on this page with the current filters. Try another search, filter, or page.",
     "load_failed": "Events could not be loaded",

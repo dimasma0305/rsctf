@@ -342,6 +342,11 @@ body {
 }
 
 @media (max-width: 48em) {
+  /* Keep iOS from zooming the viewport when a compact form receives focus. */
+  .mantine-Input-input {
+    font-size: max(1rem, var(--input-fz, var(--mantine-font-size-sm)));
+  }
+
   body {
     background-size:
       auto,

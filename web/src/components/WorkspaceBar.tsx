@@ -1,5 +1,5 @@
-import { Anchor, Button, Kbd, Stack, Text, TextInput } from '@mantine/core'
-import { mdiArrowRight, mdiChevronRight, mdiMagnify } from '@mdi/js'
+import { ActionIcon, Anchor, Button, Group, Kbd, Stack, Text, TextInput } from '@mantine/core'
+import { mdiArrowRight, mdiChevronRight, mdiClose, mdiMagnify } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -12,6 +12,7 @@ import {
   SETTINGS_SECTIONS,
 } from '@Components/admin/navigation'
 import { getAdminNavigation, PRIMARY_NAVIGATION, canAccessNavigationItem } from '@Components/navigation'
+import { searchNavigation } from '@Utils/NavigationSearch'
 import { useConfig } from '@Hooks/useConfig'
 import { useUser } from '@Hooks/useUser'
 import { Role } from '@Api'
@@ -25,54 +26,59 @@ export const WorkspaceBar: FC = () => {
   const [opened, setOpened] = useState(false)
   const [query, setQuery] = useState('')
   const resultsRef = useRef<HTMLDivElement>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
   const isAdmin = location.pathname.startsWith('/admin/')
   const eventId = location.pathname.match(/^\/(?:admin\/)?games\/(\d+)(?:\/|$)/)?.[1]
   const context = getAdminEventContext(location.pathname)
   const items = useMemo(
-    () => [
-      ...(context
-        ? getEventAdminSections(user).map((item) => ({
-            ...item,
-            link: `/admin/games/${context.id}/${item.path}`,
-            title: t(item.label, item.fallback),
-            section: t('common.workspace.event_id', 'Event #{{id}}', { id: context.id }),
-            keywords: '',
-          }))
-        : []),
-      ...getAdminNavigation(user).map((item) => ({
-        ...item,
-        link: `/admin/${item.path}`,
-        title: t(item.label, item.fallback),
-        section: t('common.workspace.admin', 'Administration'),
-        keywords: '',
-      })),
-      ...(user?.role === Role.Admin
-        ? SETTINGS_SECTIONS.map((item) => ({
-            ...item,
-            link: `/admin/settings?section=${item.key}`,
-            title: t(`admin.content.settings.nav.${item.key}`),
-            section: t('admin.tab.settings'),
-          }))
-        : []),
-      ...PRIMARY_NAVIGATION.filter(
-        (item) => !item.admin && canAccessNavigationItem(item, user, config.donationsEnabled)
-      ).map((item) => ({
-        ...item,
-        title: t(item.label),
-        section: t('common.workspace.player', 'Player workspace'),
-        keywords: '',
-      })),
-    ],
-    [user, config.donationsEnabled, t, context?.id]
+    () =>
+      [
+        ...(context
+          ? getEventAdminSections(user).map((item) => ({
+              ...item,
+              link: `/admin/games/${context.id}/${item.path}`,
+              title: t(item.label, item.fallback),
+              section: t('common.workspace.event_id', 'Event #{{id}}', { id: context.id }),
+              keywords: '',
+            }))
+          : []),
+        ...getAdminNavigation(user).map((item) => ({
+          ...item,
+          link: `/admin/${item.path}`,
+          title: t(item.label, item.fallback),
+          section: t('common.workspace.admin', 'Administration'),
+          keywords: '',
+        })),
+        ...(user?.role === Role.Admin
+          ? SETTINGS_SECTIONS.map((item) => ({
+              ...item,
+              link: `/admin/settings?section=${item.key}`,
+              title: t(`admin.content.settings.nav.${item.key}`),
+              section: t('admin.tab.settings'),
+            }))
+          : []),
+        ...PRIMARY_NAVIGATION.filter(
+          (item) => !item.admin && canAccessNavigationItem(item, user, config.donationsEnabled)
+        ).map((item) => ({
+          ...item,
+          title: t(item.label),
+          section: t('common.workspace.player', 'Player workspace'),
+          keywords: '',
+        })),
+      ].sort(
+        (a, b) => Number(a.link.startsWith('/admin/') !== isAdmin) - Number(b.link.startsWith('/admin/') !== isAdmin)
+      ),
+    [user, config.donationsEnabled, t, context?.id, isAdmin]
   )
-  const results = items.filter((item) =>
-    `${item.title} ${item.section} ${item.link} ${item.keywords}`
-      .toLocaleLowerCase()
-      .includes(query.trim().toLocaleLowerCase())
-  )
+  const results = searchNavigation(items, query)
+  const resultGroups = Map.groupBy(results, (item) => item.section)
+  const clearSearch = () => {
+    setQuery('')
+    searchRef.current?.focus()
+  }
   const active = items
     .filter(
-      (item) => item.link !== '/' && (location.pathname === item.link || location.pathname.startsWith(`${item.link}/`))
+      (item) => location.pathname === item.link || (item.link !== '/' && location.pathname.startsWith(`${item.link}/`))
     )
     .sort((a, b) => b.link.length - a.link.length)[0]
 
@@ -166,21 +172,21 @@ export const WorkspaceBar: FC = () => {
             ))
           ) : (
             <>
-              <Anchor component={Link} to={isAdmin ? '/admin/games' : '/games'}>
-                {isAdmin
-                  ? t('common.workspace.admin', 'Administration')
-                  : t('common.workspace.player', 'Player workspace')}
+              <Anchor component={Link} to="/">
+                {t('common.workspace.player', 'Player workspace')}
               </Anchor>
               {active && (
                 <>
                   <Icon path={mdiChevronRight} size={0.65} aria-hidden="true" />
-                  <Text size="xs">{active.title}</Text>
+                  <Text size="xs" aria-current={eventId ? undefined : 'page'}>
+                    {active.title}
+                  </Text>
                 </>
               )}
               {eventId && (
                 <>
                   <Icon path={mdiChevronRight} size={0.65} aria-hidden="true" />
-                  <Anchor component={Link} to={isAdmin ? `/admin/games/${eventId}/info` : `/games/${eventId}`}>
+                  <Anchor component={Link} to={`/games/${eventId}`}>
                     {t('common.workspace.event_id', 'Event #{{id}}', { id: eventId })}
                   </Anchor>
                 </>
@@ -199,8 +205,9 @@ export const WorkspaceBar: FC = () => {
           }}
           aria-haspopup="dialog"
           aria-keyshortcuts="Control+k Meta+k"
+          aria-label={t('common.workspace.search_label', 'Search pages')}
         >
-          {t('common.workspace.jump', 'Go to…')} <Kbd className={classes.shortcut}>Ctrl / ⌘ K</Kbd>
+          {t('common.workspace.search_label', 'Search pages')} <Kbd className={classes.shortcut}>Ctrl / ⌘ K</Kbd>
         </Button>
       </div>
       <AccessibleModal
@@ -208,28 +215,51 @@ export const WorkspaceBar: FC = () => {
         onClose={() => setOpened(false)}
         title={t('common.workspace.quick_navigation', 'Go to a page')}
         size="lg"
+        classNames={{ body: classes.searchBody }}
         closeButtonProps={{ 'aria-label': t('common.button.close', 'Close') }}
       >
         <Stack gap="md">
           <TextInput
+            ref={searchRef}
             data-autofocus
             label={t('common.workspace.search_label', 'Search pages')}
             placeholder={t('common.workspace.search_placeholder', 'Events, teams, settings…')}
             value={query}
+            autoComplete="off"
+            spellCheck={false}
+            aria-controls="workspace-search-results"
             onChange={(event) => setQuery(event.currentTarget.value)}
             leftSection={<Icon path={mdiMagnify} size={0.9} aria-hidden="true" />}
+            rightSection={
+              query && (
+                <ActionIcon
+                  variant="subtle"
+                  size={32}
+                  onClick={clearSearch}
+                  aria-label={t('common.workspace.clear_search', 'Clear search')}
+                >
+                  <Icon path={mdiClose} size={0.8} aria-hidden="true" />
+                </ActionIcon>
+              )
+            }
             onKeyDown={(event) => {
-              if (event.key === 'ArrowDown') {
+              if (event.nativeEvent.isComposing) return
+              const links = resultsRef.current?.querySelectorAll<HTMLAnchorElement>('a')
+              if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
                 event.preventDefault()
-                resultsRef.current?.querySelector<HTMLElement>('a')?.focus()
+                links?.[event.key === 'ArrowDown' ? 0 : links.length - 1]?.focus()
+              } else if (event.key === 'Enter' && links?.length) {
+                event.preventDefault()
+                links[0].click()
               }
             }}
           />
-          <Text size="xs" c="dimmed" role="status">
+          <Text size="xs" c="dimmed" role="status" aria-atomic="true">
             {t('common.workspace.result_count', '{{count}} pages', { count: results.length })}
           </Text>
           <div
             ref={resultsRef}
+            id="workspace-search-results"
             className={classes.results}
             onKeyDown={(event) => {
               if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
@@ -242,23 +272,36 @@ export const WorkspaceBar: FC = () => {
                   ? 0
                   : event.key === 'End'
                     ? links.length - 1
-                    : (current + (event.key === 'ArrowDown' ? 1 : -1) + links.length) % links.length
-              links[next]?.focus()
+                    : current + (event.key === 'ArrowDown' ? 1 : -1)
+              if (next < 0 || next >= links.length) searchRef.current?.focus()
+              else links[next]?.focus()
             }}
           >
-            {results.map((item) => (
-              <Link key={item.link} to={item.link} className={classes.result} onClick={() => setOpened(false)}>
-                <Icon path={item.icon} size={0.95} aria-hidden="true" />
-                <Stack gap={1} miw={0}>
-                  <Text size="sm" fw={600}>
-                    {item.title}
-                  </Text>
-                  <Text size="xs" c="dimmed">
-                    {item.section}
-                  </Text>
-                </Stack>
-                <Icon className={classes.arrow} path={mdiArrowRight} size={0.75} aria-hidden="true" />
-              </Link>
+            {Array.from(resultGroups, ([section, pages]) => (
+              <div key={section} className={classes.resultGroup} role="group" aria-label={section}>
+                <Text size="xs" fw={650} c="dimmed" className={classes.groupLabel}>
+                  {section}
+                </Text>
+                {pages.map((item) => (
+                  <Link
+                    key={item.link}
+                    to={item.link}
+                    className={classes.result}
+                    onClick={() => setOpened(false)}
+                    aria-current={
+                      item.link === location.pathname + (item.link.includes('?') ? location.search : '')
+                        ? 'page'
+                        : undefined
+                    }
+                  >
+                    <Icon path={item.icon} size={0.95} aria-hidden="true" />
+                    <Text component="span" size="sm" fw={600} className={classes.resultTitle}>
+                      {item.title}
+                    </Text>
+                    <Icon className={classes.arrow} path={mdiArrowRight} size={0.75} aria-hidden="true" />
+                  </Link>
+                ))}
+              </div>
             ))}
             {!results.length && (
               <Text size="sm" c="dimmed" py="lg">
@@ -266,6 +309,17 @@ export const WorkspaceBar: FC = () => {
               </Text>
             )}
           </div>
+          <Group gap="md" className={classes.searchHelp} aria-hidden="true">
+            <span>
+              <Kbd>↑</Kbd> <Kbd>↓</Kbd> {t('common.workspace.navigate', 'Navigate')}
+            </span>
+            <span>
+              <Kbd>Enter</Kbd> {t('common.workspace.open_page', 'Open page')}
+            </span>
+            <span>
+              <Kbd>Esc</Kbd> {t('common.button.close', 'Close')}
+            </span>
+          </Group>
         </Stack>
       </AccessibleModal>
     </>

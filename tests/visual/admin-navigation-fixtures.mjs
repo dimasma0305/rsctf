@@ -19,6 +19,8 @@ export function fixture(path, method = 'GET', role = 'Admin') {
   if (p.startsWith('/api/edit/') && !['Admin', 'Manager'].includes(role)) return { status: 403, body: { title: 'forbidden' } }
   const responses = {
     '/api/admin/config': settings,
+    '/api/admin/ai-chat-providers': { providers: [], maxCustomProviders: 32 },
+    '/api/admin/agent-signatures': { signatures: [], maxCustomSignatures: 32 },
     '/api/admin/users': { data: [], total: 0, length: 0 },
     '/api/admin/teams': [],
     '/api/admin/dashboard': { systemStats: { userCount: 18, teamCount: 6, activeContainerCount: 0 }, topGames: [game] },

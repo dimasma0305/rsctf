@@ -5,6 +5,7 @@
 .dashboard {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(300px, 370px);
+  grid-template-areas: 'feed games';
   align-items: start;
   gap: clamp(1.25rem, 3vw, 3rem);
   padding-bottom: var(--mantine-spacing-xl);
@@ -15,7 +16,12 @@
   min-width: 0;
 }
 
+.feed {
+  grid-area: feed;
+}
+
 .games {
+  grid-area: games;
   position: sticky;
   top: 72px;
 }
@@ -34,6 +40,27 @@
 
 @media (max-width: 900px) {
   .dashboard {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'games' 'feed';
+    gap: 1.5rem;
+  }
+
+  .games {
+    position: static;
+  }
+
+  .recentList > :nth-child(n + 3) {
+    display: none;
+  }
+
+  .recentList {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 36em) {
+  .recentList {
     grid-template-columns: minmax(0, 1fr);
   }
 }

@@ -74,6 +74,9 @@
     "find_my_team": "Cari Tim Saya"
   },
   "content": {
+    "starts_compact": "Mulai {{time}}",
+    "ends_compact": "Berakhir {{time}}",
+    "ended_compact": "Selesai {{time}}",
     "events_empty_title": "Tidak ada aktivitas yang cocok",
     "events_empty_description": "Tidak ada aktivitas di halaman ini dengan filter yang dipilih. Coba pencarian, filter, atau halaman lain.",
     "load_failed": "Daftar event tidak dapat dimuat",
