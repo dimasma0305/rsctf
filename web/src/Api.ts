@@ -2679,7 +2679,7 @@ export interface ChallengeUpdateModel {
 }
 
 export interface HintReleaseModel {
-  /** Stable opaque identity retained across retry of this release. */
+  /** Stable opaque identity retained across retry of this publication change. */
   operationId: string;
   /** Challenge revision observed by the organizer. */
   expectedRevision: number;
@@ -8957,6 +8957,22 @@ export class Api<
     ) =>
       this.request<ChallengeEditDetailModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${cId}/hints/release`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /** Return the most recently released challenge hint to draft state. */
+    editUnreleaseLastChallengeHint: (
+      id: number,
+      cId: number,
+      data: HintReleaseModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeEditDetailModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/hints/unrelease`,
         method: "POST",
         body: data,
         type: ContentType.Json,

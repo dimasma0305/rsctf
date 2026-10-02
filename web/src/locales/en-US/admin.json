@@ -282,7 +282,8 @@
       "hint": {
         "add": "Add Hint",
         "delete": "Delete hint {{number}}",
-        "release": "Release hint {{number}}"
+        "release": "Release hint {{number}}",
+        "unrelease": "Unrelease hint {{number}}"
       },
       "import": "Import",
       "new": "New Challenge",
@@ -523,7 +524,7 @@
         "hint_number": "Hint {{number}}",
         "hint_released": "Released",
         "hint_draft": "Draft",
-        "hints_release_description": "Saved hints remain private drafts until you release them in order.",
+        "hints_release_description": "Release hints in order, or return the latest released hint to draft.",
         "memory_limit": {
           "description": "RAM limitation of containers",
           "label": "Memory Limit (MB)"
@@ -1613,6 +1614,7 @@
         },
         "updated": "Challenge updated",
         "hint_released": "Hint released to players.",
+        "hint_unreleased": "Hint returned to draft.",
         "batch_deleted": "Deleted {{count}} challenge(s)",
         "batch_deleted_partial": "Deleted {{ok}}, {{failed}} failed",
         "batch_enabled": "Activated {{count}} challenge(s)",

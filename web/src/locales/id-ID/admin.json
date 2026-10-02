@@ -269,7 +269,8 @@
       "hint": {
         "add": "Tambahkan hint",
         "delete": "Hapus hint {{number}}",
-        "release": "Rilis hint {{number}}"
+        "release": "Rilis hint {{number}}",
+        "unrelease": "Batalkan rilis hint {{number}}"
       },
       "new": "Challenge baru",
       "next": "Lanjut",
@@ -407,7 +408,7 @@
         "hint_number": "Hint {{number}}",
         "hint_released": "Sudah dirilis",
         "hint_draft": "Draf",
-        "hints_release_description": "Hint yang disimpan tetap menjadi draf privat sampai dirilis secara berurutan.",
+        "hints_release_description": "Rilis hint secara berurutan, atau kembalikan hint terakhir yang dirilis menjadi draf.",
         "memory_limit": {
           "description": "Limitasi RAM containers",
           "label": "Memory Limit (MB)"
@@ -849,7 +850,8 @@
           "flag_submitted": "Flag telah disubmit!"
         },
         "updated": "Challenge berhasil diperbarui",
-        "hint_released": "Hint dirilis kepada pemain."
+        "hint_released": "Hint dirilis kepada pemain.",
+        "hint_unreleased": "Hint dikembalikan menjadi draf."
       },
       "created": "Game telah dibuat",
       "divisions": {

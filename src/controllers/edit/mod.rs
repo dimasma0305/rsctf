@@ -782,6 +782,10 @@ pub fn router() -> Router<SharedState> {
             post(release_next_hint),
         )
         .route(
+            "/api/edit/games/{id}/challenges/{cId}/hints/unrelease",
+            post(unrelease_last_hint),
+        )
+        .route(
             "/api/edit/games/{id}/challenges/{cId}/approve",
             post(approve_challenge),
         )

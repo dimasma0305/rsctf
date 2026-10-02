@@ -148,7 +148,8 @@ const GameChallengeEdit: FC = () => {
 
   const [disabled, setDisabled] = useState(false)
   const [releasingHint, setReleasingHint] = useState(false)
-  const releaseHintInFlight = useRef(false)
+  const [unreleasingHint, setUnreleasingHint] = useState(false)
+  const hintPublicationInFlight = useRef(false)
   const rolloutPromiseRef = useRef<Promise<void> | null>(null)
   const rolloutAbortRef = useRef<AbortController | null>(null)
 
@@ -361,10 +362,10 @@ const GameChallengeEdit: FC = () => {
   }
 
   const onReleaseHint = async (index: number) => {
-    if (!challenge || dirty || releaseHintInFlight.current || index !== challenge.releasedHintCount) return
+    if (!challenge || dirty || hintPublicationInFlight.current || index !== challenge.releasedHintCount) return
     const expectedRevision = challengeRevision(challenge)
     if (expectedRevision === undefined) return
-    releaseHintInFlight.current = true
+    hintPublicationInFlight.current = true
     setReleasingHint(true)
     try {
       const res = await api.edit.editReleaseNextChallengeHint(numId, numCId, {
@@ -381,8 +382,41 @@ const GameChallengeEdit: FC = () => {
       showErrorMsg(e, t)
       await mutate().catch(() => undefined)
     } finally {
-      releaseHintInFlight.current = false
+      hintPublicationInFlight.current = false
       setReleasingHint(false)
+    }
+  }
+
+  const onUnreleaseHint = async (index: number) => {
+    if (
+      !challenge ||
+      dirty ||
+      hintPublicationInFlight.current ||
+      challenge.releasedHintCount <= 0 ||
+      index !== challenge.releasedHintCount - 1
+    )
+      return
+    const expectedRevision = challengeRevision(challenge)
+    if (expectedRevision === undefined) return
+    hintPublicationInFlight.current = true
+    setUnreleasingHint(true)
+    try {
+      const res = await api.edit.editUnreleaseLastChallengeHint(numId, numCId, {
+        operationId: createOperationId(),
+        expectedRevision,
+      })
+      showNotification({
+        color: 'teal',
+        message: t('admin.notification.games.challenges.hint_unreleased', 'Hint returned to draft.'),
+        icon: <Icon path={mdiCheck} size={1} />,
+      })
+      await Promise.all([mutate(res.data), mutateChals()])
+    } catch (e) {
+      showErrorMsg(e, t)
+      await mutate().catch(() => undefined)
+    } finally {
+      hintPublicationInFlight.current = false
+      setUnreleasingHint(false)
     }
   }
 
@@ -846,16 +880,18 @@ const GameChallengeEdit: FC = () => {
                   </Group>
                 }
                 hints={challengeInfo?.hints ?? []}
-                disabled={disabled || releasingHint}
+                disabled={disabled || releasingHint || unreleasingHint}
                 description={t(
                   'admin.content.games.challenges.hints_release_description',
-                  'Saved hints remain private drafts until you release them in order.'
+                  'Release hints in order, or return the latest released hint to draft.'
                 )}
                 height={240}
                 releasedHintCount={challenge?.releasedHintCount ?? 0}
                 releaseDisabled={dirty}
                 releasingHint={releasingHint}
+                unreleasingHint={unreleasingHint}
                 onReleaseHint={onReleaseHint}
+                onUnreleaseHint={onUnreleaseHint}
                 onChangeHint={(hints) => setChallengeInfo({ ...challengeInfo, hints })}
               />
             </Stack>

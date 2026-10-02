@@ -38,7 +38,7 @@ pub use audit::{
 pub use bulk::mutate_challenges_bulk;
 pub(crate) use bulk::recover_delete_jobs as recover_bulk_delete_jobs;
 pub(crate) use deletion::reject_pending_mutation;
-pub use hints::release_next as release_next_hint;
+pub use hints::{release_next as release_next_hint, unrelease_last as unrelease_last_hint};
 pub(crate) use lifecycle::destroy_challenge_containers;
 use lifecycle::destroy_test_container_locked;
 #[cfg(test)]

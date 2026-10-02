@@ -432,6 +432,10 @@ function authorizationProbeRequest(operation) {
       operationId: randomUUID(),
       expectedRevision: 0,
     },
+    edit_challenge_hint_unrelease: {
+      operationId: randomUUID(),
+      expectedRevision: 0,
+    },
     edit_challenge_import_github: {
       repoUrl: "https://github.com/dimasma0305/rsctf-challenges.git",
       subpath: "challenges/Jeopardy/Misc/static-handout",
@@ -664,11 +668,18 @@ async function prepareFutureFixture() {
       submissionLimit: 10,
     },
   });
-  await call("edit_challenge_hint_release", {
+  const releasedChallenge = await call("edit_challenge_hint_release", {
     jwt: identities.managerJwt,
     body: {
       operationId: randomUUID(),
       expectedRevision: updatedChallenge.model.revision,
+    },
+  });
+  await call("edit_challenge_hint_unrelease", {
+    jwt: identities.managerJwt,
+    body: {
+      operationId: randomUUID(),
+      expectedRevision: releasedChallenge.model.revision,
     },
   });
 

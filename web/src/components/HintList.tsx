@@ -1,5 +1,5 @@
 import { ActionIcon, Badge, Button, Group, Input, InputWrapperProps, ScrollArea, Stack, TextInput } from '@mantine/core'
-import { mdiClose, mdiLightbulbOnOutline, mdiPlus } from '@mdi/js'
+import { mdiClose, mdiLightbulbOffOutline, mdiLightbulbOnOutline, mdiPlus } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -11,8 +11,10 @@ interface HintListProps extends InputWrapperProps {
   height?: number
   releasedHintCount?: number
   onReleaseHint?: (index: number) => void
+  onUnreleaseHint?: (index: number) => void
   releaseDisabled?: boolean
   releasingHint?: boolean
+  unreleasingHint?: boolean
 }
 
 export const HintList: FC<HintListProps> = (props) => {
@@ -23,8 +25,10 @@ export const HintList: FC<HintListProps> = (props) => {
     height,
     releasedHintCount = 0,
     onReleaseHint,
+    onUnreleaseHint,
     releaseDisabled,
     releasingHint,
+    unreleasingHint,
     ...rest
   } = props
 
@@ -55,6 +59,7 @@ export const HintList: FC<HintListProps> = (props) => {
           {hintdict.map((kv) => {
             const released = kv.key < releasedHintCount
             const next = kv.key === releasedHintCount
+            const lastReleased = released && kv.key === releasedHintCount - 1
             return (
               <Stack gap={4} key={kv.key} mr={4}>
                 <TextInput
@@ -82,6 +87,21 @@ export const HintList: FC<HintListProps> = (props) => {
                       ? t('admin.content.games.challenges.hint_released', 'Released')
                       : t('admin.content.games.challenges.hint_draft', 'Draft')}
                   </Badge>
+                  {lastReleased && onUnreleaseHint && (
+                    <Button
+                      size="compact-xs"
+                      variant="light"
+                      color="gray"
+                      leftSection={<Icon path={mdiLightbulbOffOutline} size={0.8} />}
+                      disabled={disabled || releaseDisabled}
+                      loading={unreleasingHint}
+                      onClick={() => onUnreleaseHint(kv.key)}
+                    >
+                      {t('admin.button.challenges.hint.unrelease', 'Unrelease hint {{number}}', {
+                        number: kv.key + 1,
+                      })}
+                    </Button>
+                  )}
                   {!released && onReleaseHint && (
                     <Button
                       size="compact-xs"
