@@ -360,6 +360,16 @@ export const EDIT_OPERATIONS = Object.freeze([
     },
   ),
   operation(
+    "edit_challenge_hint_release",
+    "POST",
+    "/api/edit/games/{id}/challenges/{cId}/hints/release",
+    {
+      params: challenge,
+      mutation: true,
+      responseKind: "challenge",
+    },
+  ),
+  operation(
     "edit_challenge_approve",
     "POST",
     "/api/edit/games/{id}/challenges/{cId}/approve",
