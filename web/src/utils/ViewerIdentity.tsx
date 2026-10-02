@@ -146,6 +146,7 @@ const ROUTE_PANEL_PARAMETERS: ReadonlyArray<readonly [RegExp, readonly string[]]
 ]
 
 export const routeLifecycleKey = (pathname: string, search: string, scope: string | null) => {
+  // Keep legacy query bookmarks compatible while tabs migrate to fragments.
   // Only the named presentation parameters on these exact routes can retain
   // drafts and request owners. Viewer, role, path, and data-scope queries still
   // form hard lifecycle boundaries; never exempt a parameter globally.

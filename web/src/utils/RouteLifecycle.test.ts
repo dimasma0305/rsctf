@@ -87,6 +87,9 @@ const deferred = <T>(): Deferred<T> => {
 test('challenge hashes require ownership in the current response before any read is eligible', () => {
   assert.equal(challengeIdFromHash('#7-ret2win'), 7)
   assert.equal(challengeIdFromHash('#7'), 7)
+  assert.equal(challengeIdFromHash('#7&view=cards'), 7)
+  assert.equal(ownedChallengeIdFromHash('#7-title&view=cards&category=Pwn', [7]), 7)
+  assert.equal(ownedChallengeIdFromHash('#7-title&view=cards', [8]), null)
   for (const invalid of ['', '#', '#0-zero', '#-7', '#7wrong', '#9007199254740993-too-large']) {
     assert.equal(challengeIdFromHash(invalid), null, invalid)
   }

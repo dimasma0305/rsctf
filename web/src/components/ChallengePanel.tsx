@@ -21,7 +21,7 @@ import {
   sortChallenges,
   type ChallengeView,
 } from '@Components/competition/model'
-import { eventChallengeHash } from '@Utils/ChallengeLinks'
+import { closeEventChallengeHash, eventChallengeHash } from '@Utils/ChallengeLinks'
 import { downloadEventVpnConfig } from '@Utils/EventVpnDownload'
 import { allowEventVpnReconnectRetry, isEventVpnAccessError } from '@Utils/EventVpnProof'
 import { showErrorMsg, SubmissionTypeIconMap, useChallengeCategoryLabelMap } from '@Utils/Shared'
@@ -39,7 +39,8 @@ type ChallengePanelProps = {
 
 export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwner, activity }) => {
   const { pathname, search: locationSearch, hash } = useLocation()
-  const challengeHref = (chal: ChallengeInfo) => pathname + locationSearch + eventChallengeHash(chal.id, chal.title)
+  const challengeHref = (chal: ChallengeInfo) =>
+    pathname + locationSearch + eventChallengeHash(chal.id, chal.title, hash)
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
 
@@ -190,9 +191,9 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
       openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
       setSelection({ gameId: numId, challengeId: chal.id })
       setDetailOpened(true)
-      window.location.hash = eventChallengeHash(chal.id, chal.title)
+      window.location.hash = eventChallengeHash(chal.id, chal.title, hash)
     },
-    [numId]
+    [numId, hash]
   )
   // Not polled: one read per page, refreshed by solves and disclosure saves.
   const aiChatPending = useAiChatPendingChallenges(numId, game?.aiChatLinksRequired === true, allChallenges)
@@ -576,7 +577,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
             challengeOwned={selection?.gameId === numId && selection.challengeId === challenge.id}
             withCloseButton
             onClose={() => {
-              window.location.hash = ''
+              window.location.hash = closeEventChallengeHash(hash)
               setDetailOpened(false)
               setSelection(null)
               requestAnimationFrame(() => {
@@ -604,7 +605,7 @@ export const ChallengePanel: FC<ChallengePanelProps> = ({ teamState, adStateOwne
 }
 
 export const challengeIdFromHash = (hash: string): number | null => {
-  const match = /^#([1-9]\d*)(?:-|$)/.exec(hash)
+  const match = /^#([1-9]\d*)(?:-|&|$)/.exec(hash)
   if (!match) return null
   const id = Number(match[1])
   return Number.isSafeInteger(id) ? id : null

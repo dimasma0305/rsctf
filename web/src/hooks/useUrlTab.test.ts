@@ -4,6 +4,7 @@ import test from 'node:test'
 import { act, createElement, useState } from 'react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { installTestDom } from '../test/installDom'
+import { parseUrlFragment } from '../utils/UrlFragment'
 import { useUrlTab } from './useUrlTab'
 
 test('URL tabs restore deep links, preserve nested state and hashes, and support history without losing drafts', async () => {
@@ -40,11 +41,16 @@ test('URL tabs restore deep links, preserve nested state and hashes, and support
     await act(async () => setDraft('my draft'))
     await act(async () => setSection('network-device'))
     assert.equal(container.textContent, 'analysis/network-device/my draft')
-    assert.equal(router.state.location.hash, '#snapshot=12&file=%2Fetc%2Ftest')
+    assert.equal(router.state.location.hash, '#snapshot=12&file=%2Fetc%2Ftest&section=network-device')
     assert.equal(new URLSearchParams(router.state.location.search).get('other'), 'keep')
+    assert.equal(
+      new URLSearchParams(router.state.location.search).get('section'),
+      null,
+      'an explicit choice migrates the legacy query key'
+    )
     await act(async () => setTab('submissions'))
     assert.equal(container.textContent, 'submissions/network-device/my draft')
-    assert.equal(new URLSearchParams(router.state.location.search).get('section'), 'network-device')
+    assert.equal(parseUrlFragment(router.state.location.hash).params.get('section'), 'network-device')
     const key = router.state.location.key
     for (const value of ['submissions', null, 'https://untrusted.test', 'invalid']) {
       await act(async () => setTab(value))
@@ -74,15 +80,23 @@ test('URL tabs restore deep links, preserve nested state and hashes, and support
       'mount does not rewrite history'
     )
     await act(async () => setSection('suspicion'))
-    assert.equal(new URLSearchParams(reloaded.state.location.search).get('section'), 'suspicion')
+    assert.equal(reloaded.state.location.hash, '#challenge&section=suspicion', 'legacy anchors survive tab changes')
     await act(async () => reloaded!.navigate('/review'))
     assert.equal(container.textContent, 'analysis/suspicion/unsaved', 'legacy bare URLs retain their default view')
     await act(async () => setSection('suspicion'))
     assert.equal(
-      new URLSearchParams(reloaded.state.location.search).get('section'),
+      parseUrlFragment(reloaded.state.location.hash).params.get('section'),
       'suspicion',
       'explicitly choosing the current fallback makes it shareable'
     )
+    await act(async () => reloaded!.navigate('/review?section=suspicion#section=network-device&tab=submissions'))
+    assert.equal(container.textContent, 'submissions/network-device/unsaved', 'hash state wins over old query state')
+    await act(async () => reloaded!.navigate('/review?section=network-device#section=invalid'))
+    assert.equal(container.textContent, 'analysis/suspicion/unsaved', 'invalid hash state uses the safe default')
+    await act(async () => reloaded!.navigate('/review?section=suspicion#7-Title&view=cards'))
+    await act(async () => setSection('suspicion'))
+    assert.equal(reloaded.state.location.hash, '#7-Title&view=cards&section=suspicion')
+    assert.equal(reloaded.state.location.search, '', 'choosing a legacy active tab still writes the hash')
   } finally {
     await act(async () => root.unmount())
     router.dispose()

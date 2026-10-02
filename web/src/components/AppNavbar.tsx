@@ -343,7 +343,7 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
               ) : (
                 <Menu.Item
                   component={Link}
-                  to={`/account/login?from=${encodeURIComponent(location.pathname + location.search)}`}
+                  to={`/account/login?from=${encodeURIComponent(location.pathname + location.search + location.hash)}`}
                   leftSection={<Icon path={mdiLogin} size={0.9} />}
                   data-guide="account-login"
                 >

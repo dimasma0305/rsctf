@@ -5,7 +5,7 @@ import { fixture } from './admin-navigation-fixtures.mjs'
 import { launchBrowser } from './cdp.mjs'
 
 const target = process.env.RSCTF_ADMIN_NAV_TARGET || 'http://127.0.0.1:63017'
-assert.ok(['http://127.0.0.1:63017', 'https://intechfest.1pc.tf'].includes(target))
+assert.ok(['http://127.0.0.1:63017', 'http://127.0.0.1:18080', 'https://intechfest.1pc.tf', 'https://tcp.1pc.tf'].includes(target))
 const output = resolve(process.env.RSCTF_ADMIN_NAV_OUTPUT || '../visual-audit-output/admin-navigation-local')
 const screensOnly = process.argv.includes('--screens-only')
 mkdirSync(output, { recursive: true })
@@ -104,13 +104,13 @@ try {
     await click('[data-workspace-bar] button')
     await wait(`document.activeElement.matches('[role=dialog] input')`)
     await cdp.send('Input.insertText',{text:'smtp'})
-    await wait(`document.querySelectorAll('[role=dialog] a').length===1 && document.querySelector('[role=dialog] a[href="/admin/settings?section=email"]')`)
+    await wait(`document.querySelectorAll('[role=dialog] a').length===1 && document.querySelector('[role=dialog] a[href="/admin/settings#section=email"]')`)
     await audit('contextual-settings-search')
     await evaluate(`document.querySelector('[role=dialog] input').focus()`)
     await keyboard('ArrowDown',40)
-    assert.equal(await evaluate('document.activeElement.getAttribute("href")'),'/admin/settings?section=email')
+    assert.equal(await evaluate('document.activeElement.getAttribute("href")'),'/admin/settings#section=email')
     await keyboard('Enter',13)
-    await wait(`location.search==='?section=email' && document.querySelector('#settings-tab-email[aria-selected=true]')`)
+    await wait(`location.hash==='#section=email' && document.querySelector('#settings-tab-email[aria-selected=true]')`)
     await evaluate('window.__rsctfOldNavigationDocument = true')
     await cdp.send('Page.reload')
     await wait(`!window.__rsctfOldNavigationDocument && document.querySelector('#settings-tab-email[aria-selected=true]')`)
@@ -121,7 +121,7 @@ try {
     await wait(`document.querySelector('#settings-panel input[placeholder=RS]')?.value==='Unsaved fixture title'`)
     const readCount = reads.filter((p)=>p==='/api/admin/config').length
     await click('#settings-tab-email')
-    await wait(`location.search==='?section=email'`)
+    await wait(`location.hash==='#section=email'`)
     await evaluate('history.back()')
     await wait(`document.querySelector('#settings-panel input[placeholder=RS]')?.value==='Unsaved fixture title'`)
     assert.equal(reads.filter((p)=>p==='/api/admin/config').length,readCount,'switching settings sections does not fetch again')

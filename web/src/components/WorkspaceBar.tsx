@@ -52,7 +52,7 @@ export const WorkspaceBar: FC = () => {
         ...(user?.role === Role.Admin
           ? SETTINGS_SECTIONS.map((item) => ({
               ...item,
-              link: `/admin/settings?section=${item.key}`,
+              link: `/admin/settings#section=${item.key}`,
               title: t(`admin.content.settings.nav.${item.key}`),
               section: t('admin.tab.settings'),
             }))

@@ -69,6 +69,7 @@ import { httpErrorStatus } from '@Utils/HttpError'
 import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
 import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
+import { parseUrlFragment, updateUrlFragment } from '@Utils/UrlFragment'
 import { highlight } from '@Utils/marked/ShikiExtension'
 import { sanitizeMarkdownHtml } from '@Utils/sanitize'
 import {
@@ -994,16 +995,20 @@ const AdOps: FC = () => {
   //   #snapshot=<id>&file=<urlencoded path>  → + that file's content/diff
   const location = useLocation()
   const navigate = useNavigate()
-  const hashParams = new URLSearchParams(location.hash.replace(/^#/, ''))
+  const hashParams = parseUrlFragment(location.hash).params
   const rawSnap = hashParams.get('snapshot')
   const snapSid = rawSnap !== null && rawSnap !== '' ? parseInt(rawSnap, 10) : null
   const selectedPath = hashParams.get('file') // URLSearchParams already decodes it
 
-  const setHash = (frag: string) => navigate(`${location.pathname}${location.search}${frag ? `#${frag}` : ''}`)
-  const openSnapshot = (cell: AdTeamCellModel) => setHash(`snapshot=${cell.adTeamServiceId}`)
-  const closeSnapshot = () => setHash('')
+  const setHash = (changes: Record<string, string | null>) =>
+    navigate(
+      { pathname: location.pathname, search: location.search, hash: updateUrlFragment(location.hash, changes) },
+      { preventScrollReset: true, state: location.state }
+    )
+  const openSnapshot = (cell: AdTeamCellModel) => setHash({ snapshot: String(cell.adTeamServiceId), file: null })
+  const closeSnapshot = () => setHash({ snapshot: null, file: null })
   const selectFile = (path: string | null) =>
-    setHash(snapSid == null ? '' : `snapshot=${snapSid}${path ? `&file=${encodeURIComponent(path)}` : ''}`)
+    setHash({ snapshot: snapSid == null ? null : String(snapSid), file: snapSid == null ? null : path })
 
   // Rebuild the modal's target from the service id in the hash.
   const snapTarget = useMemo<SnapTarget | null>(() => {

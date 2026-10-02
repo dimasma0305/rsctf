@@ -48,7 +48,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         res.writeHead(r.status || 200, { 'Content-Type': 'application/json' })
         return res.end(JSON.stringify(r.body))
       }
-      const response = await fetch('http://127.0.0.1:63017' + req.url)
+      const response = await fetch((process.env.RSCTF_ADMIN_NAV_TARGET || 'http://127.0.0.1:63017') + req.url)
       res.writeHead(response.status, { 'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream' })
       res.end(Buffer.from(await response.arrayBuffer()))
     } catch { res.writeHead(502); res.end('Fixture proxy failed') }

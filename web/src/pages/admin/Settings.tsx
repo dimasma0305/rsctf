@@ -43,7 +43,6 @@ import {
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useSearchParams } from 'react-router'
 import { ColorPreview } from '@Components/ColorPreview'
 import { IconTabs } from '@Components/IconTabs'
 import { LogoBox } from '@Components/LogoBox'
@@ -51,7 +50,7 @@ import { AdminPage } from '@Components/admin/AdminPage'
 import { AgentSignaturesSettings, useAgentSignatures } from '@Components/admin/AgentSignaturesSettings'
 import { AiChatProvidersSettings, useAiChatProviders } from '@Components/admin/AiChatProvidersSettings'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
-import { getSettingsSection, SETTINGS_SECTIONS, type SettingsSectionKey } from '@Components/admin/navigation'
+import { SETTINGS_SECTIONS, type SettingsSectionKey } from '@Components/admin/navigation'
 import { webCryptoAvailable } from '@Utils/Crypto'
 import {
   clearSettingsOperation,
@@ -67,6 +66,7 @@ import {
 import { getInputNumber, showErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { OnceSWRConfig, useCaptchaConfig, useConfig } from '@Hooks/useConfig'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import api, {
   AccountPolicy,
   BrandingAction,
@@ -120,18 +120,11 @@ const Configs: FC = () => {
   // load is the comparison baseline — when any field diverges from
   // that snapshot, the sticky save bar lights up.
   type SectionKey = SettingsSectionKey
-  const [searchParams, setSearchParams] = useSearchParams()
-  const activeSection = getSettingsSection(searchParams.toString())
-  const setActiveSection = (section: SectionKey) => {
-    setSearchParams(
-      (previous) => {
-        const next = new URLSearchParams(previous)
-        next.set('section', section)
-        return next
-      },
-      { preventScrollReset: true }
-    )
-  }
+  const [activeSection, setActiveSection] = useUrlTab(
+    'section',
+    SETTINGS_SECTIONS.map((section) => section.key),
+    'platform'
+  )
   const initialSnapshotRef = useRef<ConfigEditModel | null>(null)
   const saveOwnerRef = useRef(false)
   const operationRef = useRef<SettingsOperationOwner | null>(loadSettingsOperation())

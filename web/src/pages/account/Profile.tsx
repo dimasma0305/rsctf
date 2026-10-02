@@ -23,7 +23,7 @@ import { mdiAccountOutline, mdiCameraOutline, mdiChartBox, mdiCheck, mdiClose, m
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link, useSearchParams } from 'react-router'
+import { Link, useLocation } from 'react-router'
 import { PageHeader } from '@Components/PageHeader'
 import { PasswordChangeModal } from '@Components/PasswordChangeModal'
 import { WithNavBar } from '@Components/WithNavbar'
@@ -35,23 +35,18 @@ import { profileErrorDisposition } from '@Utils/ProfileRetry'
 import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { usePageTitle } from '@Hooks/usePageTitle'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import { useUser } from '@Hooks/useUser'
 import api from '@Api'
 import misc from '@Styles/Misc.module.css'
 import classes from '@Styles/Profile.module.css'
 
 const Profile: FC = () => {
+  const location = useLocation()
   const [dropzoneOpened, setDropzoneOpened] = useState(false)
   const { user, error, mutate } = useUser()
 
-  const [searchParams, setSearchParams] = useSearchParams()
-  const activeTab = searchParams.get('tab') === 'stats' ? 'stats' : 'profile'
-  const setActiveTab = (tab: string | null) => {
-    const next = new URLSearchParams(searchParams)
-    if (tab === 'stats') next.set('tab', tab)
-    else next.delete('tab')
-    setSearchParams(next, { replace: true })
-  }
+  const [activeTab, setActiveTab] = useUrlTab('tab', ['profile', 'stats'], 'profile')
 
   const [profile, setProfile] = useState(() => profileFields(user))
   const previousUser = useRef(user)
@@ -360,7 +355,11 @@ const Profile: FC = () => {
           error ? (
             <Alert role="alert" title={t('account.profile_ui.load_error')} mt="lg">
               {profileErrorDisposition(error) === 'anonymous' ? (
-                <Button component={Link} to="/account/login?from=%2Faccount%2Fprofile" mt="sm">
+                <Button
+                  component={Link}
+                  to={`/account/login?from=${encodeURIComponent(location.pathname + location.search + location.hash)}`}
+                  mt="sm"
+                >
                   {t('account.button.login')}
                 </Button>
               ) : (

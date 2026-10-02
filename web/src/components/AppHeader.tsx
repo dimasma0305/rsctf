@@ -202,7 +202,7 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
                 ) : (
                   <UnstyledButton
                     component={Link}
-                    to={`/account/login?from=${encodeURIComponent(location.pathname + location.search)}`}
+                    to={`/account/login?from=${encodeURIComponent(location.pathname + location.search + location.hash)}`}
                     onClick={close}
                     className={classes.navLink}
                     data-guide="account-login"

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { catalogChallengeHash, catalogChallengeIdFromHash, eventChallengeHash } from './ChallengeLinks'
+import {
+  catalogChallengeHash,
+  catalogChallengeIdFromHash,
+  closeEventChallengeHash,
+  eventChallengeHash,
+} from './ChallengeLinks'
 
 test('catalog challenge hashes select bounded exact IDs, never ambiguous or malformed values', () => {
   for (const id of [1, 123, 2147483647]) {
@@ -40,4 +45,11 @@ test('event card links preserve existing title-slug bookmarks and encode special
     new URL('/games/19/challenges' + eventChallengeHash(123, 'One # /?&'), 'https://tcp.1pc.tf').pathname,
     '/games/19/challenges'
   )
+})
+
+test('opening, switching and closing event challenge cards retain hash-backed tabs', () => {
+  const hash = eventChallengeHash(123, 'First', '#category=Pwn&view=cards&sort=score')
+  assert.equal(hash, '#123-First&category=Pwn&view=cards&sort=score')
+  assert.equal(eventChallengeHash(456, 'Second', hash), '#456-Second&category=Pwn&view=cards&sort=score')
+  assert.equal(closeEventChallengeHash(hash), '#category=Pwn&view=cards&sort=score')
 })

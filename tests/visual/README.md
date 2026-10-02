@@ -101,6 +101,20 @@ scripts/bounded-frontend.sh exec node ../tests/visual/audit.mjs \
 
 Stop the fixture proxy after the audit. Never supply it with real credentials.
 
+## Section and tab hash links
+
+`node tests/visual/url-navigation.mjs` checks hash-backed sections, tabs, and
+challenge views, with legacy query bookmarks retained for compatibility. Examples
+include `#section=abnormal-solves`, `#tab=stats`, and
+`#snapshot=2&snapshotTab=history`. Existing challenge title-slug fragments can
+coexist with tabs, such as `#9001-Ret2win&category=Pwn&view=list`.
+
+The read-only fixtures cover reload, Back/Forward, keyboard navigation, preserving
+unsaved settings/profile/event drafts, nested snapshot/card selection, login
+return links, and retaining the anti-cheat report's existing request owner.
+Set `RSCTF_URL_NAV_TARGET` to the released origin and `RSCTF_URL_NAV_OUTPUT` to
+select the evidence directory. No form drafts or credentials are put in URLs.
+
 ## Event readiness fixtures
 
 Start a frontend preview on `127.0.0.1:63017`, then run from the repository root:
