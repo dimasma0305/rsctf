@@ -181,12 +181,9 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
         .execute_unprepared(UP_SQL)
         .await
         .expect_err("non-cheat legacy provenance must fail closed");
-    assert!(
-        migration_error
-            .to_string()
-            .contains("without a CheatDetected submission"),
-        "unexpected migration error: {migration_error}"
-    );
+    assert!(migration_error
+        .to_string()
+        .contains("without a CheatDetected submission"));
     let preserved: (i16, i64) = sqlx::query_as(
         r#"SELECT submission.status, COUNT(cheat.id)::bigint
              FROM "Submissions" submission
