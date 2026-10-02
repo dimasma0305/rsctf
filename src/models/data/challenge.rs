@@ -26,6 +26,8 @@ pub mod game_challenge {
         #[serde(rename = "type")]
         pub challenge_type: ChallengeType,
         pub hints: Option<Json>,
+        /// Number of leading hints explicitly released by an organizer.
+        pub released_hint_count: i32,
         pub is_enabled: bool,
         /// Optimistic concurrency and durable post-commit effect identity for
         /// ordinary challenge-definition edits.

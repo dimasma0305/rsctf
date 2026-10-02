@@ -2168,6 +2168,8 @@ export interface ChallengeEditDetailModel {
   type: ChallengeType;
   /** Challenge hints */
   hints?: string[];
+  /** Number of leading hints explicitly released to players. */
+  releasedHintCount: number;
   /**
    * Flag template, used to generate Flag based on Token and challenge, game information
    * @maxLength 120
@@ -2674,6 +2676,13 @@ export interface ChallengeUpdateModel {
   variantGeneratorDigest?: string | null;
   solveReceiptMode?: SolveReceiptMode | null;
   receiptVerifierIdentity?: string | null;
+}
+
+export interface HintReleaseModel {
+  /** Stable opaque identity retained across retry of this release. */
+  operationId: string;
+  /** Challenge revision observed by the organizer. */
+  expectedRevision: number;
 }
 
 /**
@@ -8933,6 +8942,22 @@ export class Api<
       this.request<ChallengeEditDetailModel, RequestResponse>({
         path: `/api/edit/games/${id}/challenges/${cId}`,
         method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /** Release the next saved challenge hint to players. */
+    editReleaseNextChallengeHint: (
+      id: number,
+      cId: number,
+      data: HintReleaseModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeEditDetailModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/hints/release`,
+        method: "POST",
         body: data,
         type: ContentType.Json,
         format: "json",

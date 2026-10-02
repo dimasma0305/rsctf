@@ -300,6 +300,7 @@ fn imported_challenge_model(
         category: Set(source.category),
         challenge_type: Set(source.challenge_type),
         hints: Set(source.hints.clone()),
+        released_hint_count: Set(0),
         flag_template: Set(source
             .flag_template
             .clone()

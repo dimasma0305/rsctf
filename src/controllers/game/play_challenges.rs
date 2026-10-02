@@ -182,6 +182,16 @@ pub async fn get_challenge(
         // non-leaking value until the five-second snapshot refreshes.
         .unwrap_or(0);
 
+    let authored_hints = variant_manifest
+        .as_ref()
+        .and_then(|manifest| manifest.hints.as_ref())
+        .map(|hints| serde_json::json!(hints))
+        .or_else(|| challenge.hints.clone());
+    let published_hints = crate::utils::challenge_hints::published(
+        authored_hints.as_ref(),
+        challenge.released_hint_count,
+    );
+
     let model = ChallengeDetailModel {
         id: challenge.id,
         title: challenge.title,
@@ -191,11 +201,7 @@ pub async fn get_challenge(
             .unwrap_or(challenge.content),
         category: challenge.category,
         challenge_type: challenge.challenge_type,
-        hints: variant_manifest
-            .as_ref()
-            .and_then(|manifest| manifest.hints.as_ref())
-            .map(|hints| serde_json::json!(hints))
-            .or(challenge.hints),
+        hints: published_hints,
         score: current_score,
         context,
         limit: challenge.submission_limit,

@@ -124,6 +124,8 @@ Keep new challenges disabled until another organizer reviews the description, do
 
 Repository bindings can import events and challenges from Git. A bound repository needs a `.gzevent`; standalone `challenge.yaml` files are not imported. A rescan preserves operator-edited game settings and updates challenges in place by binding-relative manifest path, retaining challenge IDs and solve/scoring history. Missing played manifests are retained as disabled tombstones or rejected while event state still depends on them; they are never silently cascade-deleted.
 
+Hints saved in the challenge editor or imported from `challenge.yaml` are private drafts. Use **Release hint** in the challenge editor to publish them to players in order. Appending a draft preserves the released prefix; editing or reordering a released hint retracts that hint and every later hint until an organizer releases them again. Hints on already-enabled challenges remain released when upgrading from a version without explicit hint publication; hints on staged, disabled challenges remain drafts.
+
 Private repositories use a PAT stored in PostgreSQL, so database backups are sensitive. Push-on-edit needs a writable branch and write-capable token. Automatic interval scans are not currently scheduled; use **Scan now** after repository changes.
 
 A checker may include `requirements.txt` beside `run.py`, but every entry must

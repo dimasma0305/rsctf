@@ -38,6 +38,7 @@ pub use audit::{
 pub use bulk::mutate_challenges_bulk;
 pub(crate) use bulk::recover_delete_jobs as recover_bulk_delete_jobs;
 pub(crate) use deletion::reject_pending_mutation;
+pub use hints::release_next as release_next_hint;
 pub(crate) use lifecycle::destroy_challenge_containers;
 use lifecycle::destroy_test_container_locked;
 #[cfg(test)]
@@ -319,13 +320,6 @@ pub async fn update_challenge(
     let was_shared_managed = update_policy::uses_shared_container(&challenge);
     let requested_final_enabled = model.is_enabled.unwrap_or(challenge.is_enabled);
     let requested_ad_self_hosted = model.ad_self_hosted.unwrap_or(was_ad_self_hosted);
-    // Whether the client's hints array differs from the stored one (RSCTF
-    // `hintUpdated`) — captured before `model.hints` is consumed below; drives the
-    // NewHint notice further down.
-    let hints_changed = model
-        .hints
-        .as_ref()
-        .is_some_and(|h| hints::updated(challenge.hints.as_ref(), h));
     let workload_update = workload::validate_update(&challenge, &model.workload_spec)?;
     let projected_workload_present = workload_update
         .as_ref()
@@ -745,7 +739,7 @@ pub async fn update_challenge(
             || was_ad_self_hosted != updated.ad_self_hosted
             || model.is_enabled == Some(false),
         "newChallengeNotice": updated.is_enabled && !notice_was_enabled && game.is_active(Utc::now()),
-        "newHintNotice": game.is_active(Utc::now()) && updated.is_enabled && hints_changed,
+        "newHintNotice": false,
     });
     sqlx::query(
         r#"INSERT INTO "ChallengeRevisionEffects"

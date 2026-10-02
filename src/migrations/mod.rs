@@ -211,6 +211,7 @@ mod m0354_agent_artifacts;
 mod m0355_sealed_late_evidence;
 mod m0356_telemetry_global_usage_repair;
 mod m0357_variant_flag_uniqueness;
+mod m0358_hint_publication;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -448,6 +449,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0355_sealed_late_evidence::Migration),
             Box::new(m0356_telemetry_global_usage_repair::Migration),
             Box::new(m0357_variant_flag_uniqueness::Migration),
+            Box::new(m0358_hint_publication::Migration),
         ]
     }
 }
@@ -592,10 +594,10 @@ mod tests {
             .map(|migration| migration.name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 187);
+        assert_eq!(names.len(), 188);
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
         assert_eq!(
-            &names[names.len() - 80..],
+            &names[names.len() - 81..],
             [
                 "m0108_koth_observer_rotation_operations",
                 "m0109_operator_console_latest_rows",
@@ -677,6 +679,7 @@ mod tests {
                 "m0355_sealed_late_evidence",
                 "m0356_telemetry_global_usage_repair",
                 "m0357_variant_flag_uniqueness",
+                "m0358_hint_publication",
             ]
         );
     }

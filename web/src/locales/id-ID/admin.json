@@ -267,7 +267,9 @@
       },
       "flush_scoreboard": "Segarkan papan skor",
       "hint": {
-        "add": "Tambahkan hint"
+        "add": "Tambahkan hint",
+        "delete": "Hapus hint {{number}}",
+        "release": "Rilis hint {{number}}"
       },
       "new": "Challenge baru",
       "next": "Lanjut",
@@ -402,6 +404,10 @@
           "title": "Manajemen flag"
         },
         "hints": "Hints",
+        "hint_number": "Hint {{number}}",
+        "hint_released": "Sudah dirilis",
+        "hint_draft": "Draf",
+        "hints_release_description": "Hint yang disimpan tetap menjadi draf privat sampai dirilis secara berurutan.",
         "memory_limit": {
           "description": "Limitasi RAM containers",
           "label": "Memory Limit (MB)"
@@ -842,7 +848,8 @@
           "attachment_downloaded": "Anggap saja lampiran sudah diunduh!",
           "flag_submitted": "Flag telah disubmit!"
         },
-        "updated": "Challenge berhasil diperbarui"
+        "updated": "Challenge berhasil diperbarui",
+        "hint_released": "Hint dirilis kepada pemain."
       },
       "created": "Game telah dibuat",
       "divisions": {

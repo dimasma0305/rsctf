@@ -40,7 +40,8 @@ WITH source AS MATERIALIZED (
      ORDER BY challenge.id
 ), inserted AS (
     INSERT INTO "GameChallenges" (
-        id, game_id, title, content, category, "Type", hints, is_enabled,
+        id, game_id, title, content, category, "Type", hints,
+        released_hint_count, is_enabled,
         deadline_utc, submission_limit, accepted_count, submission_count,
         container_image, memory_limit, storage_limit, cpu_count, expose_port,
         workload_spec, file_name, flag_template, review_status, review_note,
@@ -58,7 +59,7 @@ WITH source AS MATERIALIZED (
         ad_scoring_weight
     )
     SELECT source.clone_id, $2, source.title, source.content, source.category,
-           source."Type", source.hints, FALSE, NULL, source.submission_limit,
+           source."Type", source.hints, 0, FALSE, NULL, source.submission_limit,
            0, 0, source.container_image, source.memory_limit,
            source.storage_limit, source.cpu_count, source.expose_port,
            source.workload_spec, source.file_name, source.flag_template, $3,

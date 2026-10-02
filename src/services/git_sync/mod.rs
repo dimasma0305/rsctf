@@ -375,6 +375,14 @@ pub(super) async fn import_manifest_inner(
         ),
         _ => None,
     };
+    let released_hint_count = existing.as_ref().map_or(0, |challenge| {
+        let next = model.hints.as_deref().unwrap_or_default();
+        crate::utils::challenge_hints::retained_release_count(
+            challenge.hints.as_ref(),
+            next,
+            challenge.released_hint_count,
+        )
+    });
 
     let container = model.container.as_ref();
     let flag_template = container
@@ -714,6 +722,7 @@ pub(super) async fn import_manifest_inner(
     am.category = Set(category);
     am.challenge_type = Set(challenge_type);
     am.hints = Set(hints);
+    am.released_hint_count = Set(released_hint_count);
     // Record the manifest's durable path so later scans update this same row.
     // Existing repository rows keep their primary key, solve aggregates,
     // submissions, enabled/review state, and live runtime ownership fields.

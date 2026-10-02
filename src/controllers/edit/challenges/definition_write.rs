@@ -58,9 +58,16 @@ pub(super) async fn update(
         assign!("category", value as i16);
     }
     if let Some(value) = model.hints.as_ref() {
+        let retained = crate::utils::challenge_hints::retained_release_count(
+            base.hints.as_ref(),
+            value,
+            base.released_hint_count,
+        );
         let value = serde_json::to_value(value).unwrap_or(JsonValue::Null);
         updated.hints = Some(value.clone());
+        updated.released_hint_count = retained;
         assign!("hints", value);
+        assign!("released_hint_count", retained);
     }
     if let Some(value) = model.is_enabled {
         updated.is_enabled = value;

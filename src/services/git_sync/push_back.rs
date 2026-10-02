@@ -515,6 +515,7 @@ mod tests {
             category: ChallengeCategory::Pwn,
             challenge_type,
             hints: None,
+            released_hint_count: 0,
             is_enabled: false,
             revision: 1,
             ad_control_revision: 1,

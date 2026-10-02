@@ -104,6 +104,7 @@ struct PreparedChallenge {
     category: i16,
     challenge_type: i16,
     hints: Option<Json>,
+    released_hint_count: i32,
     attachment_id: Option<i32>,
     submission_limit: i32,
     deadline_utc: Option<DateTime<Utc>>,
@@ -132,6 +133,7 @@ impl PreparedChallengeGrant {
                 category: challenge.category as i16,
                 challenge_type: challenge.challenge_type as i16,
                 hints: challenge.hints.clone(),
+                released_hint_count: challenge.released_hint_count,
                 attachment_id: challenge.attachment_id,
                 submission_limit: challenge.submission_limit,
                 deadline_utc: challenge.deadline_utc,
@@ -384,6 +386,7 @@ struct ChallengePayloadRow {
     category: i16,
     challenge_type: i16,
     hints: Option<Json>,
+    released_hint_count: i32,
     attachment_id: Option<i32>,
     submission_limit: i32,
     deadline_utc: Option<DateTime<Utc>>,
@@ -442,6 +445,7 @@ fn challenge_payload_matches(current: &ChallengePayloadRow, expected: &PreparedC
         && current.category == expected.category
         && current.challenge_type == expected.challenge_type
         && current.hints == expected.hints
+        && current.released_hint_count == expected.released_hint_count
         && current.attachment_id == expected.attachment_id
         && current.submission_limit == expected.submission_limit
         && current.deadline_utc == expected.deadline_utc
@@ -609,6 +613,7 @@ async fn lock_challenge_payload_on(
 ) -> AppResult<bool> {
     let current = sqlx::query_as::<_, ChallengePayloadRow>(
         r#"SELECT title, content, category, "Type" AS challenge_type, hints,
+                  released_hint_count,
                   attachment_id, submission_limit, deadline_utc,
                   enable_shared_container, workload_spec, container_image,
                   expose_port, shared_container_id, ad_self_hosted
