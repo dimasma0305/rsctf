@@ -31,9 +31,14 @@ export const auditGlobeFocus = async (cdp, evaluate, waitFor, inspect, name) => 
     assert.equal(await evaluate(`document.querySelector('[data-globe-choice][aria-pressed="true"]').dataset.globeChoice`), id, 'card, navigator selection and camera agree')
   }
   const close = async () => {
+    const selected = await evaluate(`document.querySelector('[data-globe-choice][aria-pressed="true"]')?.dataset.globeChoice`)
     if (await evaluate(`!!document.querySelector('[role="dialog"]')`)) await press('Escape', 27)
     else await evaluate(`document.querySelector('[data-challenge-detail] button[aria-label="Close"]').click()`)
     await waitFor(`!document.querySelector('[data-challenge-detail], [role="dialog"]')`)
+    // The modal's deferred focus restoration must finish before the next keyboard
+    // action; otherwise it steals the immediately focused stage before Home lands.
+    await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
+    if (selected) await waitFor(`(document.activeElement.dataset.globeChoice || document.activeElement.dataset.globeNode) === ${JSON.stringify(selected)}`)
   }
   await focus(first)
   // Desktop can switch directly while details remain open. Mobile closes its modal first.

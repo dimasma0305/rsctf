@@ -140,7 +140,9 @@ test('vertical globe rotation moves pins with the surface and hides pins beyond 
   }
   const globe = readFileSync('src/components/competition/ChallengeGlobe.tsx', 'utf8')
   assert.match(globe, /projectHorizonNode\(index, yaw, pitch\)/)
-  assert.equal((globe.match(/projectSpherePoint\(x, y, z, yaw, pitch\)/g) ?? []).length, 2)
+  const surface = readFileSync('src/components/competition/globeSurface.ts', 'utf8')
+  assert.match(globe, /drawGlobeSurface\(element, yaw, pitch, scheme === 'dark'\)/)
+  assert.equal((surface.match(/projectSpherePoint\(x, y, z, yaw, pitch\)/g) ?? []).length, 2)
 })
 
 test('every globe page target can be centered in front of the visible horizon', () => {
@@ -208,8 +210,10 @@ test('globe dominates its panel without changing the shared event shell or addin
   assert.match(css, /@container \(max-width: 48rem\)/)
   assert.doesNotMatch(css, /animation:|backdrop-filter:/)
   assert.match(globe, /data-globe-stage/)
-  assert.match(globe, /element.width = size \* 1.5/)
-  assert.match(globe, /element.height = size \* 1.5/)
+  assert.match(globe, /drawGlobeSurface\(element, yaw, pitch, scheme === 'dark'\)/)
+  const surface = readFileSync('src/components/competition/globeSurface.ts', 'utf8')
+  assert.match(surface, /element.width = size \* 1.5/)
+  assert.match(surface, /element.height = size \* 1.5/)
 })
 
 test('competition header groups event, team and navigation without an ended countdown', () => {

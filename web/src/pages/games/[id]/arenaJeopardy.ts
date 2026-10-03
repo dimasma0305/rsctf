@@ -134,7 +134,7 @@ export function createJeopardy(deps: JeopDeps) {
 
     // desktop: side bands left/right of the wheel
     const pad = 12, wide = Math.min(leftBand, rightBand) >= 300, half = Math.ceil(N / 2)
-    const fsMode = (document as any).fullscreenElement === wrap
+    const fsMode = root.fullscreenElement === wrap
     CATEGORIES.forEach((cat: any, ci: number) => {
       const side = ci < half ? 'L' : 'R', left = side === 'L'
       const idx = left ? ci : ci - half
@@ -145,7 +145,7 @@ export function createJeopardy(deps: JeopDeps) {
       const thisBand = left ? leftBand : rightBand
       const bandX0 = left ? pad : wx0 + wsize + pad, bandW = thisBand - pad * 2
       const cellW = bandW / cols, cellX0 = bandX0 + col * cellW
-      const topPad = 8, cellH = (H - topPad * 2) / rows, cellY0 = topPad + row * cellH
+      const topPad = 64, bottomPad = 76, cellH = (H - topPad - bottomPad) / rows, cellY0 = topPad + row * cellH
       const M = cat.challenges.length
       cat._side = side
       cat._title = { x: cellX0 + 2, y: cellY0 + 15, anchor: 'start', grid: cols > 1 }
@@ -192,7 +192,7 @@ export function createJeopardy(deps: JeopDeps) {
   }
 
   // invisible hover/click hit target (the ONLY interactive element); always emitted on both paths
-  const hitCircle = (c: any) => `<circle class="chhit" data-cat="${c.cat}" data-i="${c.i}" cx="${c.x}" cy="${c.y}" r="${Math.max(c.r + 11, 14).toFixed(1)}" fill="#fff" opacity="0"/>`
+  const hitCircle = (c: any) => `<circle class="chhit" role="button" tabindex="0" aria-label="${esc(c.name)}: ${c.base} points" aria-describedby="jtip" data-cat="${c.cat}" data-i="${c.i}" cx="${c.x}" cy="${c.y}" r="${Math.max(c.r + 11, 14).toFixed(1)}" fill="#fff" opacity="0"/>`
 
   function drawChallenge(c: any) {
     // Pixi-active: the GPU draws the star/glow/crosshair/solved-ring; SVG keeps only the hit target.
@@ -235,10 +235,9 @@ export function createJeopardy(deps: JeopDeps) {
         }
       })
       const t = cat._title, tf = t.grid ? 9 : CATEGORIES.length > 6 ? 10 : 12, cf = t.grid ? 13 : 15
-      const hint = cat._labels ? '' : deps.isTouch ? ' · tap' : ' · hover'
       const done = cat.ch.filter((x: any) => x.solvers.length > 0).length
       const title = `<text x="${t.x.toFixed(1)}" y="${t.y.toFixed(1)}" text-anchor="${t.anchor}" fill="${cat.color}" font-family="'Press Start 2P'" font-size="${tf}" paint-order="stroke" stroke="#06050f" stroke-width="4">${esc(cat.name)}</text>`
-        + `<text id="jc-${cat.id}" x="${t.x.toFixed(1)}" y="${(t.y + (t.grid ? 14 : 17)).toFixed(1)}" text-anchor="${t.anchor}" fill="#8b88a8" font-family="'VT323'" font-size="${cf}" paint-order="stroke" stroke="#06050f" stroke-width="3">${done}/${cat.ch.length} SOLVED${hint}</text>`
+        + `<text id="jc-${cat.id}" x="${t.x.toFixed(1)}" y="${(t.y + (t.grid ? 14 : 17)).toFixed(1)}" text-anchor="${t.anchor}" fill="#8b88a8" font-family="'VT323'" font-size="${cf}" paint-order="stroke" stroke="#06050f" stroke-width="3">${done}/${cat.ch.length} SOLVED</text>`
       out += `<g id="jeop-${cat.id}">${lines}${stars}${labels}${title}</g>`
     })
     host.innerHTML = out
@@ -330,6 +329,7 @@ export function createJeopardy(deps: JeopDeps) {
     const host = $('jeop'), tip = $('jtip'), wrap = qs('.arena-wrap')
     if (!host || !tip || !wrap || host._hoverInit) return
     host._hoverInit = true
+    tip.setAttribute('role', 'tooltip')
     let pinned = false
     const find = (t: any) => { if (!t || !t.getAttribute) return null; const cc = t.getAttribute('data-cat'); if (cc == null) return null; return CHALLENGES.find((c) => c.cat === cc && c.i === +t.getAttribute('data-i')) }
     const showTip = (c: any) => {
@@ -343,6 +343,12 @@ export function createJeopardy(deps: JeopDeps) {
     host.addEventListener('mouseover', (e: any) => { if (pinned) return; const c = find(e.target); if (c) showTip(c) })
     host.addEventListener('mouseout', (e: any) => { if (!pinned && find(e.target)) tip.classList.remove('show') })
     host.addEventListener('click', (e: any) => { const c = find(e.target); if (c) { showTip(c); pinned = true; e.stopPropagation() } else { pinned = false; tip.classList.remove('show') } })
+    host.addEventListener('focusin', (e: FocusEvent) => { const c = find(e.target); if (c) showTip(c) })
+    host.addEventListener('focusout', () => { pinned = false; tip.classList.remove('show') })
+    host.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { pinned = false; tip.classList.remove('show'); e.preventDefault() }
+      if (e.key === 'Enter' || e.key === ' ') { const c = find(e.target); if (c) { showTip(c); pinned = true; e.preventDefault() } }
+    })
     _docClick = () => { if (pinned) { pinned = false; tip.classList.remove('show') } }
     document.addEventListener('click', _docClick)
   }

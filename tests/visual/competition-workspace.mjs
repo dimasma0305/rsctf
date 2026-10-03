@@ -51,8 +51,14 @@ const inspect = async (name) => {
   console.log(name, JSON.stringify(issues))
 }
 const selectView = async (view) => {
+  // Closing details updates the hash before React Router publishes its new
+  // location. Let that commit finish before another hash-owning control runs.
+  await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
   await evaluate(`document.querySelector('input[value="${view}"]').click()`)
   await waitFor(view === 'globe' ? `document.querySelector('[data-challenge-globe]')` : view === 'list' ? `document.querySelector('[data-challenge-list]')` : `document.querySelector('[data-guide="challenge-card"]')`)
+  // Let hash-driven detail cleanup and its deferred focus restoration settle
+  // before sending keyboard input into the newly selected presentation.
+  await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
 }
 try {
   await cdp.send('Page.enable'); await cdp.send('Runtime.enable')

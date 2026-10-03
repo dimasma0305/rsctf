@@ -1401,7 +1401,7 @@ dependencies = [
 
 [[package]]
 name = "rsctf-worker-agent"
-version = "0.1.126"
+version = "0.1.127"
 dependencies = [
  "async-trait",
  "bollard",
