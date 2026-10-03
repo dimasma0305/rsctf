@@ -92,7 +92,7 @@
     "vite": "^8.2.1",
     "vite-plugin-banner": "^0.8.1",
     "vite-plugin-optimize-css-modules": "^1.4.0",
-    "vite-plugin-pages": "^0.33.3",
+    "vite-plugin-pages": "0.33.3",
     "vite-plugin-webfont-dl": "^3.12.0"
   }
 }
