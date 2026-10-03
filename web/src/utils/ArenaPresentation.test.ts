@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { arenaTeamInitials, arenaTeamLabel, arenaTeamPosition, initialArenaRanking } from './arenaPresentation'
+import { arenaTeamInitials, arenaTeamLabel, arenaTeamPosition, initialArenaRanking } from '../pages/games/[id]/arenaPresentation'
+
+test('selected arena controls pair managed accent surfaces with contrast-safe text', () => {
+  const css = readFileSync('src/pages/games/[id]/arenaTheme.css', 'utf8')
+  for (const selector of ['.btn.on', '.rank-tabs button.on']) {
+    const rule = css.slice(css.indexOf(`${selector} {`)).split('}')[0]
+    assert.match(rule, /background: var\(--app-accent-surface\)/)
+    assert.match(rule, /color: var\(--app-accent-surface-text\)/)
+  }
+})
 
 test('arena defaults to a scoring mode that the event actually has', () => {
   assert.equal(initialArenaRanking(0, 0), 'jeopardy')

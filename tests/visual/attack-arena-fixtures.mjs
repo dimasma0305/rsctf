@@ -19,6 +19,9 @@ window.WebSocket = class extends EventTarget {
 
 export function createArenaFixture(mode = 'jeopardy', count = 49) {
   const { config, now } = createCompetitionFixture()
+  // Exercise a managed accent as well as the default theme. Focus-ring text
+  // over this red accent surface previously failed contrast in light mode.
+  config.customTheme = '#e33f3d'
   const names = Array.from({ length: count }, (_, i) => i === 0 ? 'Northern Lights / Long Team Name' : `Team ${String(i + 1).padStart(2, '0')}`)
   const teams = names.map((teamName, i) => ({ participationId: i + 1, teamName, rank: i + 1, settledTotal: 5000 - i * 70, projectedTotal: 5010 - i * 70, offenseRate: .8, defenseRate: .9, slaRate: 1 }))
   const ad = { teams: mode === 'mixed' ? teams : [], challenges: mode === 'mixed' ? [{ challengeId: 101, title: 'Relay', category: 'Web' }] : [], epochTicks: mode === 'mixed' ? 10 : 0, currentEpoch: 2, latestRound: 20, currentRoundEndsAt: now + 60000, tickSeconds: 60, evidence: { acceptedCaptures: 12 }, fullySettled: false, started: true, isFrozenView: false }

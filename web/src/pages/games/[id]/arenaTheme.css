@@ -236,7 +236,7 @@ a:hover {
 .btn.on {
   background: var(--app-accent-surface);
   border-color: var(--app-accent-border);
-  color: var(--cyan);
+  color: var(--app-accent-surface-text);
 }
 .btn:disabled {
   cursor: default;
@@ -315,7 +315,7 @@ a:hover {
   font-weight: 600;
 }
 .rank-tabs button.on {
-  color: var(--cyan);
+  color: var(--app-accent-surface-text);
   border-color: var(--app-accent-border);
   background: var(--app-accent-surface);
 }

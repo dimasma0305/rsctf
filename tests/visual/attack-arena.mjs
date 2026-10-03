@@ -87,9 +87,11 @@ try {
     await inspect(`width-${width}`)
     if (width < 400) { await evaluate(`${q('#rankingTitle')}.scrollIntoView({block:'start'})`); await inspect(`rankings-${width}`) }
   }
-  await cdp.send('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'reduce'}]})
   await cdp.send('Page.addScriptToEvaluateOnNewDocument', {source:`localStorage.setItem('mantine-color-scheme-value','light')`})
   await cdp.send('Emulation.setDeviceMetricsOverride', {width:1366,height:1000,deviceScaleFactor:1,mobile:false})
+  await navigate()
+  await inspect('light-managed-accent')
+  await cdp.send('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'reduce'}]})
   data = createArenaFixture('mixed', 8); await navigate()
   assert.equal(await evaluate(`${root}.host.dataset.motion`), 'off')
   assert.equal(await evaluate(`${q('#motionBtn')}.disabled`), true)
