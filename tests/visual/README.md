@@ -201,6 +201,35 @@ above remains necessary against the same candidate.
 
 ## Competition globe and list fixtures
 
+### Public conquest arena
+
+`attack-arena.mjs` verifies `/games/901/attack` using read-only invented public
+snapshots and a local WebSocket fixture. Run it from the repository root:
+
+```sh
+scripts/bounded-frontend.sh exec bash -c 'cd .. && exec node tests/visual/attack-arena.mjs'
+```
+
+It covers 49 teams, shared navigation/theme, the rotating 3D world, challenge
+islands, accepted-solve presentation, mouse/touch/keyboard rotation, far-side
+selection, hash bookmarks, fullscreen, reduced motion, live reconnect/recovery,
+and preview freeze/end. It checks Axe, overflow and runtime errors from 320px to
+1920px, including the managed red accent in light mode. Results go to
+`visual-audit-output/attack-arena/` by default.
+
+The arena composes `WithNavBar` and `PageHeader`; its isolated renderer inherits
+the application theme. The camera projects the ocean, raised island coasts,
+teams and hills in the same coordinate system. Locations are fictional. A
+Jeopardy island can have multiple accepted solvers; first-solve color is not
+exclusive ownership. The public snapshot remains authoritative, frozen feed
+updates cannot change an island, and ambiguous challenge titles await a poll.
+No scoring, authorization, endpoint or polling cadence changes are introduced.
+
+For the full-page audit, run `node tests/visual/attack-arena-fixtures.mjs --serve`
+alongside the preview, then target `http://127.0.0.1:63020` with game ID `901`.
+
+### Challenge workspace
+
 `competition-workspace.mjs` uses the same isolated loopback preview and intercepts
 all API calls. Its 100-challenge fixture covers category clustering, bounded globe
 pages, keyboard selection, search/reset, persistent Globe/List/Cards preferences,

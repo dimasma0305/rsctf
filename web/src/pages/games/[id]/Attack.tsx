@@ -9,16 +9,16 @@
  * live plain-WebSocket attack feed (/hub/attack/ws?game={id}) plus the public
  * A&D / KotH scoreboards under the canonical lowercase `/api/game/{id}` routes.
  *
- * The whole piece is a self-contained imperative SVG + canvas scene with its
- * own full-page CSS, so it is mounted into a Shadow DOM: that isolates its
- * styles and DOM from the React app shell completely (and a ShadowRoot still
- * supports getElementById, which the engine relies on). The engine runs in a
- * useEffect and tears itself down (WebSocket, timers, rAF) on unmount.
+ * Shared navigation and page header surround an isolated SVG/canvas scene.
+ * The Shadow DOM keeps legacy celebration effects scoped while inheriting the
+ * application theme. Public data, sockets and timers remain owned by this engine;
+ * arenaGlobe owns only camera, 3D projection and challenge-island presentation.
  */
-import { useComputedColorScheme } from '@mantine/core'
+import { Button, Group, Stack, useComputedColorScheme } from '@mantine/core'
 import { FC, useEffect, useRef } from 'react'
-import { useParams, useSearchParams } from 'react-router'
-import { drawGlobeSurface } from '@Components/competition/globeSurface'
+import { Link, useParams, useSearchParams } from 'react-router'
+import { PageHeader } from '@Components/PageHeader'
+import { WithNavBar } from '@Components/WithNavbar'
 import {
   ArenaHttpError,
   arenaLiveRoutes,
@@ -31,14 +31,15 @@ import { eventVpnFetch } from '@Utils/EventVpnProof'
 import { epochProgress } from '@Utils/epochProgress'
 import type { AdScoreboardModel } from '@Api'
 import arenaEffects from './arenaEffects.css?inline'
-import { createJeopardy, type JeopCategory } from './arenaJeopardy'
+import { createArenaGlobe } from './arenaGlobe'
+import { acceptedTerritorySolvers } from './arenaGlobeModel'
+import type { JeopCategory } from './arenaJeopardy'
 import { arenaTeamInitials, arenaTeamLabel, arenaTeamPosition, initialArenaRanking } from './arenaPresentation'
 import arenaTheme from './arenaTheme.css?inline'
 import { createSoundEngine } from './audio'
 import { createFbRenderer } from './fbRenderer'
 import { createFxRenderer } from './fxRenderer'
 import { createFzRenderer } from './fzRenderer'
-import { createJeopRenderer } from './jeopRenderer'
 import { KothDirector, statusFromCheck, type CaptureResult } from './kothCapture'
 import { createWinRenderer } from './winRenderer'
 
@@ -57,7 +58,6 @@ const ARENA_BODY = `
       <div class="brand">
         <a class="back-link" id="eventLink" href="/games"><span aria-hidden="true">←</span> Event</a>
         <div class="brand-copy">
-          <h1>Live arena</h1>
           <p class="logo" id="brandLogo">Competition spectator view</p>
         </div>
       </div>
@@ -70,6 +70,7 @@ const ARENA_BODY = `
     </div>
     <dl class="overview" aria-label="Arena overview">
       <div class="metric"><dt>Teams</dt><dd id="teamCount">0</dd></div>
+      <div class="metric"><dt>Challenge islands</dt><dd id="challengeCount">0</dd></div>
       <div class="metric"><dt>A&amp;D services</dt><dd id="serviceCount">0</dd></div>
       <div class="metric"><dt>KotH hills</dt><dd id="hillCount">0</dd></div>
     </dl>
@@ -98,22 +99,42 @@ const ARENA_BODY = `
     <div class="midrow">
       <section class="panel arena-wrap" aria-labelledby="globeTitle">
         <div class="map-heading">
-          <div><h2 id="globeTitle">Activity globe</h2><p>Team positions are schematic, not geographic.</p></div>
+          <div><h2 id="globeTitle">Conquest globe</h2><p>Drag or use arrow keys to explore. Fictional locations, live results.</p></div>
           <button id="fsBtn" class="fs-btn" title="Fullscreen globe" aria-label="Fullscreen globe">⛶</button>
         </div>
-        <svg id="jeop" preserveAspectRatio="none" aria-label="Jeopardy challenge constellation"></svg>
-        <div class="arena" id="arena">
+        <div class="arena" id="arena" tabindex="0" role="group" aria-label="3D conquest globe" aria-describedby="globeHelp">
           <canvas id="globeSurface" aria-hidden="true"></canvas>
+          <svg id="territories" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
+          <svg id="conquestRoutes" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
           <canvas id="fxbg" width="870" height="870" aria-hidden="true"></canvas>
           <svg id="svg" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
           <canvas id="fx" width="870" height="870" aria-hidden="true"></canvas>
+          <div id="globePins"></div>
         </div>
-        <div id="jeopSpace"></div>
-        <div id="jtip" class="jtip"></div>
+        <div class="globe-navigation" role="group" aria-label="Globe controls">
+          <button class="btn" id="globeUp" aria-label="Rotate globe up">↑</button>
+          <button class="btn" id="globeLeft" aria-label="Rotate globe left">←</button>
+          <button class="btn" id="globeReset">Reset view</button>
+          <button class="btn" id="globeRight" aria-label="Rotate globe right">→</button>
+          <button class="btn" id="globeDown" aria-label="Rotate globe down">↓</button>
+          <button class="btn" id="rotateBtn" aria-pressed="true">Pause rotation</button>
+        </div>
+        <p class="globe-help" id="globeHelp">Drag/swipe or use arrow keys to rotate; Home resets. Scroll outside the globe to move the page.</p>
         <div class="selection" aria-label="Highlighted team">
           <span class="selection-name" id="selectionName">Select a team in the rankings to highlight it.</span>
           <span class="selection-score" id="selectionScore"></span>
         </div>
+        <div class="territory-browser">
+          <div class="territory-directory">
+            <h3>Challenge islands</h3>
+            <p id="territorySummary" role="status">Loading islands</p>
+            <label for="territorySearch">Find a challenge</label>
+            <input id="territorySearch" type="search" placeholder="Name or category">
+            <div id="jeop" role="region" tabindex="0" aria-label="Challenge islands"></div>
+          </div>
+          <section id="territoryDetail" aria-label="Selected island" aria-live="polite"></section>
+        </div>
+        <p class="globe-help">◇ Unconquered · ⚑ Solved · Numbered outposts are teams. Every team can solve an island. Solved islands take the first team's color, not exclusive ownership.</p>
       </section>
       <div class="rightcol">
         <section class="panel rank" aria-labelledby="rankingTitle">
@@ -127,11 +148,11 @@ const ARENA_BODY = `
           </div>
           <div id="ranklist" role="region" tabindex="0" aria-label="Live team ranking"></div>
         </section>
+        <section class="panel log-panel" aria-labelledby="logTitle">
+          <div class="phead"><h2 class="t" id="logTitle">Recent activity</h2></div>
+          <div id="log" role="log" tabindex="0" aria-live="polite" aria-label="Battle event log"></div>
+        </section>
       </div>
-      <section class="panel log-panel" aria-labelledby="logTitle">
-        <div class="phead"><h2 class="t" id="logTitle">Recent activity</h2></div>
-        <div id="log" role="log" tabindex="0" aria-live="polite" aria-label="Battle event log"></div>
-      </section>
     </div>
   </div>
 
@@ -386,24 +407,17 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   const fzRenderer = createFzRenderer($('fzCanvas') as HTMLCanvasElement)
   // 2D-canvas VICTORY effects (god-rays + confetti + sparkles) for MATCH COMPLETE / podium.
   const winRenderer = createWinRenderer($('winCanvas') as HTMLCanvasElement)
-  const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0
-  // Pixi v8 WebGL renderer for the jeopardy constellation layer (its own overlay canvas on
-  // .arena-wrap, wrap-pixel space). When ready it takes over the star twinkle + lasers from the
-  // SVG (which kept 40 infinite CSS animations); SVG stays as the static text + hit-test layer.
-  const wrapEl: any = root.querySelector('.arena-wrap')
-  const jeopRenderer = createJeopRenderer(wrapEl, { onReady: () => jeop.syncPixi() })
-  const jeop = createJeopardy({
+  // One camera projects teams, hills and challenge islands onto the same world.
+  const jeop = createArenaGlobe({
     root,
-    arena,
-    isFrozen: () => frozen,
-    isTouch,
-    pixiReady: () => motionEnabled && jeopRenderer.ready,
-    onStars: (cats, dense) => jeopRenderer.setStars(cats, dense),
-    onBeam: (tx, ty, sx, sy, sr, col) => {
-      if (motionEnabled) jeopRenderer.beam(tx, ty, sx, sy, sr, col)
-    },
-    onFlash: (x, y, r, col) => {
-      if (motionEnabled) jeopRenderer.flash(x, y, r, col)
+    teams: () => TEAMS,
+    hills: () => HILLS,
+    frozen: () => frozen,
+    motion: () => motionEnabled,
+    selectTeam: (id) => {
+      selectedTeamId = id
+      updateSelection()
+      jeop.focusTeam(id)
     },
   })
   const logEl: any = $('log')
@@ -421,12 +435,13 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       <filter id="glow"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`
     svg.appendChild(defs)
 
-    // The shared globe is a static, bounded canvas; data nodes and live arcs sit above it.
+    // The globe controller positions these markers after each camera change.
     svg.setAttribute('data-dense', String(TEAMS.length > 16))
     HILLS.forEach((h) => svg.appendChild(buildHill(h)))
     TEAMS.forEach((t) => svg.appendChild(buildBase(t)))
     TEAMS.forEach((t) => renderSvc(t))
     updateSelection()
+    jeop.layout()
   }
 
   function buildHill(h: any) {
@@ -618,10 +633,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     fbRenderer.resize() // first-blood layer is viewport-sized; tracks the window
     fzRenderer.resize() // freeze frost is viewport-sized too
     winRenderer.resize() // victory confetti/rays viewport-sized too
-    jeop.layout() // re-place the jeopardy constellations (and hand the laid-out stars to jeopRenderer via onStars)
-    // size the wrap-space Pixi jeopardy canvas AFTER layout() (which may grow the wrap via #jeopSpace).
-    const wr = wrapEl.getBoundingClientRect()
-    if (wr.width > 1) jeopRenderer.resize(wr.width, wr.height, r.left - wr.left, r.top - wr.top, r.width)
+    jeop.layout()
   }
   // rAF-coalesce the window resize: a drag-burst (30-60/s) collapses to one sizeCanvas per frame,
   // each of which does forced reflows + a full jeopardy relayout/SVG rebuild + two Pixi resizes.
@@ -692,6 +704,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     // the colosseum ring is static SVG now (no rotating recon rings) — the ambient canvas
     // only carries the per-avatar breathing aura (replaces the per-avatar SVG bob)
     for (const t of TEAMS) {
+      if (t.globeVisible === false) continue
       const p = (Math.sin((T * TAU) / 2.8 + t.idx * 0.7) + 1) / 2
       const rad = 24 + 5 * p
       ctxbg.globalAlpha = 0.18 + 0.13 * p
@@ -1278,6 +1291,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       div.onclick = () => {
         selectedTeamId = selectedTeamId === t.id ? null : t.id
         updateSelection()
+        jeop.focusTeam(selectedTeamId)
       }
       div.id = 'rk-' + t.id
       div.className = 'rk'
@@ -1594,13 +1608,12 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     // draw only when there's something to draw: skip while the slam overlay covers the
     // board, while the tab is hidden, and while frozen with no active FX (idle freeze).
     const fxActive = shots.length || sparks.length || fxq.length
-    const jeopActive = jeopRenderer.active() // GPU jeopardy stars twinkling / lasers in flight
+    if (!slamCovering && !matchOver) jeop.tick(ts, dt)
     // !matchOver: after endMatch the opaque PODIUM win overlay (z97) covers the whole arena and
     // winRenderer runs its own loop on top — skip the ambient/jeop draw beneath it to save GPU.
-    if (motionEnabled && !slamCovering && !matchOver && !document.hidden && (fxActive || jeopActive || !frozen)) {
+    if (motionEnabled && !slamCovering && !matchOver && !document.hidden && (fxActive || !frozen)) {
       drawFX(dt) // advances FX physics + ambient; draws the 2D fallback only while !fxRenderer.ready
       if (fxRenderer.ready) fxRenderer.tick(dt, shots, sparks, fxq) // WebGL render of the same arrays
-      jeopRenderer.render(ts, frozen) // WebGL jeopardy star twinkle (30fps) + lasers; skips while frozen
     }
     // a first-crown owed but deferred past a running cinematic — fire it once free. Also hold
     // through a freeze (the FB overlay z95 sits under the frost z96 — it would play invisibly)
@@ -1780,10 +1793,12 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
           name: c.title,
           base: Math.round(c.score || 0),
           solveCount: c.solved || 0,
-          solvers: (c.bloods || []).map((b: any) => {
-            const tm = teamByName(b.name)
-            return { name: b.name || '', color: tm ? tm.color : '#7fd7ff' }
-          }),
+          solvers: acceptedTerritorySolvers(
+            c.id,
+            jp?.items || [],
+            c.bloods || [],
+            (name) => teamByName(name)?.color || '#7fd7ff'
+          ),
         })),
       })
     })
@@ -1896,7 +1911,6 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     applyKothRoundClock(koth)
     totalFlags = Math.max(0, Number(ad.evidence?.acceptedCaptures) || 0)
     jeop.setData(buildJeopCats(ad, jp))
-    jeop.initHover()
     applyAdRoundClock(ad)
     if (title) $('brandLogo').textContent = title
   }
@@ -2063,6 +2077,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     if (!vic && f.teamScore != null) pts = Math.max(0, Math.round(f.teamScore) - (atkr.jpScore || 0))
     const isFB = f.type === 'FirstBlood'
     if (isFB) {
+      if (!vic) jeop.solveByTitle(atkr.x, atkr.y, f.challengeTitle || '', { name: atkr.name, color: atkr.color })
       if (cinema) {
         resolveFlag(atkr, vic, svc, pts, true)
         return
@@ -2388,7 +2403,6 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       return { ...d, idx: i, ang, x: CX + HILLR * Math.cos(ang), y: CY + HILLR * Math.sin(ang), owner: null }
     })
     jeop.setData(genJeopCats(cfgJeop))
-    jeop.initHover()
   }
   // rebuild the whole preview model + arena for the current count knobs
   function rebuildPreview() {
@@ -2788,7 +2802,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       fzRenderer.stop()
       winRenderer.stop()
     }
-    jeop.syncPixi()
+    jeop.refreshMotion()
   }
   motionBtn.onclick = () => {
     motionRequested = !motionRequested
@@ -2838,7 +2852,6 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     document.removeEventListener('fullscreenchange', onFsChange)
     jeop.destroy()
     fxRenderer.destroy()
-    jeopRenderer.destroy()
     fbRenderer.destroy()
     fzRenderer.destroy()
     winRenderer.destroy()
@@ -2878,22 +2891,34 @@ const Attack: FC = () => {
     }
   }, [id, preview])
 
-  useEffect(() => {
-    const canvas = hostRef.current?.shadowRoot?.getElementById('globeSurface') as HTMLCanvasElement | null
-    if (canvas) drawGlobeSurface(canvas, 0.24, -0.18, scheme === 'dark')
-  }, [id, preview, scheme])
-
   return (
-    <div
-      ref={hostRef}
-      id="main-content"
-      role="main"
-      tabIndex={-1}
-      aria-label="Live competition arena"
-      data-arena-theme="globe"
-      data-arena-scheme={scheme}
-      style={{ position: 'fixed', inset: 0, zIndex: 100, colorScheme: scheme }}
-    />
+    <WithNavBar competition width="1600px">
+      <Stack gap="md">
+        <PageHeader
+          title="Live arena"
+          eyebrow="Competition workspace"
+          description="Explore the event as a living world of teams and challenge islands."
+          actions={
+            <Group gap="xs">
+              <Button component={Link} to={`/games/${id}/challenges`} variant="default">
+                Challenges
+              </Button>
+              <Button component={Link} to={`/games/${id}/scoreboard`} variant="default">
+                Scoreboard
+              </Button>
+            </Group>
+          }
+        />
+        <div
+          ref={hostRef}
+          role="region"
+          aria-label="Live competition arena"
+          data-arena-theme="globe"
+          data-arena-scheme={scheme}
+          style={{ minWidth: 0, colorScheme: scheme }}
+        />
+      </Stack>
+    </WithNavBar>
   )
 }
 

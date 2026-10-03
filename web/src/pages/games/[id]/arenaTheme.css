@@ -1,4 +1,4 @@
-/* Standalone spectator scene, using the same tokens as the competition workspace. */
+/* Isolated live renderer embedded in the shared competition workspace. */
 :host {
   --bg: var(--app-background);
   --panel: var(--app-raised-surface);
@@ -21,9 +21,7 @@
   --warn: var(--amber);
   --bad: var(--red);
   display: block;
-  position: absolute;
-  inset: 0;
-  overflow: auto;
+  position: relative;
   color: var(--text);
   color-scheme: inherit;
   background: var(--bg);
@@ -74,10 +72,7 @@ a:hover {
   outline-offset: 3px;
 }
 .shell {
-  min-height: 100dvh;
-  max-width: 2000px;
-  margin: auto;
-  padding: clamp(12px, 2vw, 28px);
+  width: 100%;
 }
 .topbar {
   position: relative;
@@ -275,7 +270,6 @@ a:hover {
 .midrow {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 340px;
-  grid-template-rows: minmax(320px, 1fr) 240px;
   gap: 16px;
   min-width: 0;
 }
@@ -321,12 +315,12 @@ a:hover {
 }
 .arena-wrap {
   grid-column: 1;
-  grid-row: 1 / 3;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 62px 16px 74px;
+  padding: 76px 16px 16px;
   overflow: hidden;
   background: radial-gradient(ellipse at 40% 42%, var(--arena-glow), transparent 72%), var(--panel);
 }
@@ -364,14 +358,22 @@ a:hover {
 .arena {
   position: relative;
   flex: 0 0 auto;
-  width: min(100%, 704px);
+  width: min(100%, 760px);
   aspect-ratio: 1;
   z-index: 5;
+  touch-action: none;
+  cursor: grab;
+}
+.arena:active {
+  cursor: grabbing;
 }
 #globeSurface,
 #fxbg,
 #svg,
-#fx {
+#fx,
+#territories,
+#conquestRoutes,
+#globePins {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -382,11 +384,143 @@ a:hover {
 }
 #globeSurface,
 #fxbg,
-#fx {
+#fx,
+#territories,
+#conquestRoutes,
+#globePins {
   pointer-events: none;
 }
 #svg {
   overflow: visible;
+  pointer-events: none;
+}
+.team-marker {
+  pointer-events: all;
+  cursor: pointer;
+}
+.island {
+  fill: var(--land-color);
+  stroke: #c5e1e3;
+  stroke-width: 1.2;
+  stroke-opacity: 0.65;
+}
+.island.is-selected {
+  stroke: #fff;
+  stroke-width: 3;
+}
+.island-cliff {
+  fill: #183b41;
+  stroke: #5e9192;
+  stroke-width: 6;
+}
+#conquestRoutes path {
+  fill: none;
+  stroke-width: 2.5;
+  stroke-dasharray: 6 5;
+}
+.island-pin {
+  --island-pin-half: 66px;
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  min-height: 36px;
+  width: 132px;
+  padding: 5px 8px;
+  border: 1px solid var(--app-control-border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  box-shadow: 0 3px 12px #0003;
+}
+.island-pin[aria-pressed='true'],
+.territory-choice[aria-pressed='true'] {
+  color: var(--app-accent-surface-text);
+  background: var(--app-accent-surface);
+  border-color: var(--app-accent-border);
+}
+.globe-navigation {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+  margin: 8px 0;
+}
+.globe-help {
+  width: 100%;
+  color: var(--dimmer);
+  font-size: 11px;
+  padding: 8px 0;
+}
+.territory-browser {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  width: 100%;
+  border-top: 1px solid var(--line2);
+  padding-top: 16px;
+  margin-top: 16px;
+}
+.territory-browser h3 {
+  font-size: 13px;
+  font-weight: 650;
+  margin-bottom: 6px;
+}
+.territory-browser p,
+.territory-browser li {
+  font-size: 12px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+.territory-browser ul {
+  padding-left: 18px;
+  max-height: 150px;
+  overflow: auto;
+}
+.territory-directory {
+  min-width: 0;
+}
+.territory-directory label {
+  display: block;
+  font-size: 12px;
+  margin-top: 10px;
+}
+.territory-directory input {
+  width: 100%;
+  min-height: 40px;
+  background: var(--app-subtle-surface);
+  color: var(--text);
+  border: 1px solid var(--app-control-border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 4px 0 8px;
+}
+.territory-choice {
+  width: 100%;
+  text-align: start;
+  min-height: 44px;
+  padding: 8px;
+  margin-bottom: 4px;
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--app-subtle-surface);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+#territoryDetail {
+  min-width: 0;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  background: var(--app-subtle-surface);
+  padding: 12px;
 }
 #svg text,
 #jeop text {
@@ -430,7 +564,9 @@ a:hover {
   stroke-width: 3px;
   font-size: 13px;
 }
-.fb-overlay, .fz-overlay, .win-overlay {
+.fb-overlay,
+.fz-overlay,
+.win-overlay {
   --amber: #f6c76e;
   color: #f1f5f9;
 }
@@ -450,11 +586,9 @@ a:hover {
   display: block;
 }
 .selection {
-  position: absolute;
+  position: relative;
   z-index: 9;
-  bottom: 14px;
-  left: 16px;
-  right: 16px;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -492,23 +626,18 @@ a:hover {
   font-size: 13px;
 }
 #jeop {
-  position: absolute;
-  inset: 0;
+  position: relative;
   width: 100%;
-  height: 100%;
-  z-index: 4;
-  pointer-events: none;
+  max-height: 210px;
+  overflow: auto;
 }
 #jeop .chhit {
   pointer-events: all;
   cursor: pointer;
 }
 #jeop .chhit:focus-visible {
-  opacity: 1;
-  fill: transparent;
-  stroke: var(--app-focus-ring);
-  stroke-width: 2;
-  outline: none;
+  outline: 3px solid var(--app-focus-ring);
+  outline-offset: -3px;
 }
 #jeopSpace {
   flex: 0 0 auto;
@@ -561,11 +690,15 @@ a:hover {
   grid-row: 1;
   min-height: 0;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-self: start;
 }
 .panel.rank {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  max-height: 640px;
 }
 .panel.rank.frozen .phead .t {
   color: var(--text);
@@ -663,11 +796,10 @@ a:hover {
   line-height: 1.5;
 }
 .log-panel {
-  grid-column: 2;
-  grid-row: 2;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  height: 240px;
 }
 #log {
   flex: 1;
@@ -766,11 +898,14 @@ a:hover {
   .arena-wrap {
     padding-inline: 8px;
   }
+  .territory-browser {
+    grid-template-columns: 1fr;
+  }
 }
 @media (max-width: 800px) {
   .midrow {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto 260px;
+    grid-template-rows: auto auto;
   }
   .arena-wrap {
     grid-column: 1;
@@ -833,9 +968,21 @@ a:hover {
     min-height: 40px;
   }
   .selection {
-    left: 10px;
-    right: 10px;
     padding: 8px;
+  }
+  .overview {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .metric {
+    border-bottom: 1px solid var(--line);
+  }
+  .island-pin {
+    --island-pin-half: 39px;
+    width: 78px;
+    min-height: 32px;
+    font-size: 10px;
+    padding: 4px;
   }
   .selection-name {
     font-size: 12px;
