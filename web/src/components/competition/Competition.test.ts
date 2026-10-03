@@ -212,8 +212,9 @@ test('globe dominates its panel without changing the shared event shell or addin
   assert.match(globe, /data-globe-stage/)
   assert.match(globe, /drawGlobeSurface\(element, yaw, pitch, scheme === 'dark'\)/)
   const surface = readFileSync('src/components/competition/globeSurface.ts', 'utf8')
-  assert.match(surface, /element.width = size \* 1.5/)
-  assert.match(surface, /element.height = size \* 1.5/)
+  assert.match(surface, /Math.min\(1200,/)
+  assert.match(surface, /element.width !== bitmap/)
+  assert.match(surface, /element.height !== bitmap/)
 })
 
 test('competition header groups event, team and navigation without an ended countdown', () => {

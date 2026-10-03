@@ -99,7 +99,7 @@ const ARENA_BODY = `
     <div class="midrow">
       <section class="panel arena-wrap" aria-labelledby="globeTitle">
         <div class="map-heading">
-          <div><h2 id="globeTitle">Conquest globe</h2><p>Drag or use arrow keys to explore. Fictional locations, live results.</p></div>
+          <div><h2 id="globeTitle">Conquest globe</h2><p>One world. Every challenge is an island to explore.</p></div>
           <button id="fsBtn" class="fs-btn" title="Fullscreen globe" aria-label="Fullscreen globe">⛶</button>
         </div>
         <div class="arena" id="arena" tabindex="0" role="group" aria-label="3D conquest globe" aria-describedby="globeHelp">
@@ -112,11 +112,13 @@ const ARENA_BODY = `
           <div id="globePins"></div>
         </div>
         <div class="globe-navigation" role="group" aria-label="Globe controls">
+          <div class="globe-directions" role="group" aria-label="Rotate view">
           <button class="btn" id="globeUp" aria-label="Rotate globe up">↑</button>
           <button class="btn" id="globeLeft" aria-label="Rotate globe left">←</button>
-          <button class="btn" id="globeReset">Reset view</button>
           <button class="btn" id="globeRight" aria-label="Rotate globe right">→</button>
           <button class="btn" id="globeDown" aria-label="Rotate globe down">↓</button>
+          </div>
+          <button class="btn" id="globeReset">Reset view</button>
           <button class="btn" id="rotateBtn" aria-pressed="true">Pause rotation</button>
         </div>
         <p class="globe-help" id="globeHelp">Drag/swipe or use arrow keys to rotate; Home resets. Scroll outside the globe to move the page.</p>
@@ -125,14 +127,21 @@ const ARENA_BODY = `
           <span class="selection-score" id="selectionScore"></span>
         </div>
         <div class="territory-browser">
+          <section id="territoryDetail" aria-label="Selected island" aria-live="polite"></section>
           <div class="territory-directory">
             <h3>Challenge islands</h3>
             <p id="territorySummary" role="status">Loading islands</p>
+            <progress id="territoryProgress" value="0" max="1" aria-label="Islands with an accepted solve"></progress>
             <label for="territorySearch">Find a challenge</label>
             <input id="territorySearch" type="search" placeholder="Name or category">
+            <div class="territory-filters" role="group" aria-label="Filter challenge islands">
+              <button class="btn" data-territory-filter="all" aria-pressed="true">All</button>
+              <button class="btn" data-territory-filter="open" aria-pressed="false">Unconquered</button>
+              <button class="btn" data-territory-filter="solved" aria-pressed="false">Solved</button>
+            </div>
+            <p id="territoryResults" role="status"></p>
             <div id="jeop" role="region" tabindex="0" aria-label="Challenge islands"></div>
           </div>
-          <section id="territoryDetail" aria-label="Selected island" aria-live="polite"></section>
         </div>
         <p class="globe-help">◇ Unconquered · ⚑ Solved · Numbered outposts are teams. Every team can solve an island. Solved islands take the first team's color, not exclusive ownership.</p>
       </section>

@@ -9,12 +9,14 @@ test('globe preserves snapshot/freeze boundaries, safe labels, focus and direct 
   const browser = new Window({ url: 'https://rsctf.test/games/27/attack#challenge=1' })
   const restore = installTestDom(browser)
   let frozen = false
+  let motion = false
   const host = document.createElement('div')
   document.body.append(host)
   const root = host.attachShadow({ mode: 'open' })
   root.innerHTML = `<div id="arena"><canvas id="globeSurface"></canvas><svg id="territories"></svg><svg id="conquestRoutes"></svg><div id="globePins"></div></div>
     <div id="jeop"></div><div id="territoryDetail"></div><input id="territorySearch">
-    <span id="challengeCount"></span><span id="territorySummary"></span>
+    <span id="challengeCount"></span><span id="territorySummary"></span><progress id="territoryProgress"></progress><p id="territoryResults"></p>
+    <button data-territory-filter="all"></button><button data-territory-filter="solved"></button><button data-territory-filter="open"></button>
     ${['rotateBtn', 'globeLeft', 'globeRight', 'globeUp', 'globeDown', 'globeReset'].map((id) => `<button id="${id}"></button>`).join('')}`
   const canvas = root.getElementById('globeSurface') as HTMLCanvasElement
   canvas.getContext = (() => null) as typeof canvas.getContext
@@ -24,7 +26,7 @@ test('globe preserves snapshot/freeze boundaries, safe labels, focus and direct 
     teams: () => teams,
     hills: () => [],
     frozen: () => frozen,
-    motion: () => false,
+    motion: () => motion,
     selectTeam: () => {},
   })
   const cats: JeopCategory[] = [
@@ -53,6 +55,18 @@ test('globe preserves snapshot/freeze boundaries, safe labels, focus and direct 
     frozen = false
     globe.solveByTitle(0, 0, cats[0].challenges[0].name, teams[0])
     assert.match(root.getElementById('territoryDetail')!.textContent!, /1 accepted solves/)
+    ;(root.querySelector('[data-territory-filter="open"]') as HTMLButtonElement).click()
+    assert.equal(choice.hidden, true)
+    assert.match(root.getElementById('territoryResults')!.textContent!, /No islands match/)
+    ;(root.querySelector('[data-territory-filter="solved"]') as HTMLButtonElement).click()
+    assert.equal(choice.hidden, false)
+    assert.equal((root.getElementById('territoryProgress') as HTMLProgressElement).value, 1)
+    ;(root.querySelector('[data-territory-filter="all"]') as HTMLButtonElement).click()
+    globe.focusTeam('p1')
+    const route = root.querySelector('#conquestRoutes path')
+    assert.ok(route)
+    globe.layout()
+    assert.equal(root.querySelector('#conquestRoutes path'), route, 'camera redraw reuses the existing route node')
     assert.equal(root.querySelectorAll('script,img').length, 0)
     globe.solveByTitle(0, 0, cats[0].challenges[0].name, teams[0])
     assert.match(
@@ -74,14 +88,38 @@ test('globe preserves snapshot/freeze boundaries, safe labels, focus and direct 
     )
     globe.refreshMotion()
     assert.equal((root.getElementById('rotateBtn') as HTMLButtonElement).disabled, true)
+    ;(root.getElementById('globeRight') as HTMLButtonElement).click()
     const yaw = root.getElementById('arena')!.dataset.globeYaw
     globe.tick(500, 0.05)
     assert.equal(root.getElementById('arena')!.dataset.globeYaw, yaw, 'motion off does not move the camera')
+    motion = true
+    globe.focusTeam('p1')
+    assert.equal(root.getElementById('arena')!.dataset.globeYaw, yaw, 'focus does not snap with motion on')
+    globe.tick(516, 0.016)
+    assert.notEqual(root.getElementById('arena')!.dataset.globeYaw, yaw)
+    globe.focusTeam(null)
+    const deselected = root.getElementById('arena')!.dataset.globeYaw
+    globe.tick(520, 0.004)
+    assert.equal(
+      root.getElementById('arena')!.dataset.globeYaw,
+      deselected,
+      'clearing selection cancels its transition'
+    )
+    globe.focusTeam('p1')
+    motion = false
+    globe.refreshMotion()
+    const settled = root.getElementById('arena')!.dataset.globeYaw
+    globe.tick(532, 0.016)
+    assert.equal(
+      root.getElementById('arena')!.dataset.globeYaw,
+      settled,
+      'disabling motion settles a pending transition'
+    )
     globe.destroy()
     root
       .getElementById('arena')!
       .dispatchEvent(new browser.KeyboardEvent('keydown', { key: 'ArrowRight' }) as unknown as Event)
-    assert.equal(root.getElementById('arena')!.dataset.globeYaw, yaw, 'teardown removes camera listeners')
+    assert.equal(root.getElementById('arena')!.dataset.globeYaw, settled, 'teardown removes camera listeners')
   } finally {
     globe.destroy()
     host.remove()

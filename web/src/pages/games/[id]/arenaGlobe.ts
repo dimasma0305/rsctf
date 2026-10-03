@@ -1,6 +1,6 @@
 import { drawGlobeSurface } from '@Components/competition/globeSurface'
-import { normalizeGlobeAngle } from '@Components/competition/model'
 import { catalogChallengeHash, catalogChallengeIdFromHash, eventChallengeHash } from '@Utils/ChallengeLinks'
+import { arenaHome, createArenaCamera } from './arenaCamera'
 import { faceLocation, islandCoast, projectGlobe, sphereLocation, type GlobePoint } from './arenaGlobeModel'
 import type { JeopCategory, JeopChallenge } from './arenaJeopardy'
 
@@ -55,12 +55,14 @@ export function createArenaGlobe(deps: GlobeDeps) {
   let selected: number | null = null
   let teamId: string | null = null
   let detailSignature = ''
-  let yaw = 0.24,
-    pitch = -0.18,
-    auto = true,
-    lastFrame = 0,
-    dirty = true
-  let drag: { id: number; x: number; y: number } | null = null
+  let filter = 'all'
+  const camera = createArenaCamera()
+  let stageWidth = stage.clientWidth || 560
+  const routePaths = new Map<number, SVGPathElement>()
+  let auto = true,
+    dirty = true,
+    destroyed = false
+  let drag: { id: number; x: number; y: number; yaw: number; pitch: number; width: number } | null = null
   const events = new AbortController()
   const listen = (target: EventTarget, type: string, listener: EventListener) =>
     target.addEventListener(type, listener, { signal: events.signal })
@@ -77,16 +79,13 @@ export function createArenaGlobe(deps: GlobeDeps) {
   }
   const focus = (location: GlobePoint) => {
     pause()
-    const view = faceLocation(location)
-    yaw = view.yaw
-    pitch = view.pitch
+    camera.focus(faceLocation(location), deps.motion())
     dirty = true
     paint()
   }
   const setRotation = (dx: number, dy: number) => {
     pause()
-    yaw = normalizeGlobeAngle(yaw + dx)
-    pitch = normalizeGlobeAngle(pitch + dy)
+    camera.nudge(dx, dy, deps.motion())
     dirty = true
     paint()
   }
@@ -104,18 +103,40 @@ export function createArenaGlobe(deps: GlobeDeps) {
       territory.choice.setAttribute('aria-pressed', String(active))
       territory.pin.setAttribute('aria-pressed', String(active))
       territory.shape.classList.toggle('is-selected', active)
-      const summary = `${territory.name} · ${territory.base} pts · ${territory.solveCount ? `${territory.solveCount} solves` : 'Unconquered'}`
-      territory.choice.textContent = summary
+      const summary = `${territory.name} · ${territory.category} · ${territory.base} pts · ${territory.solveCount ? `${territory.solveCount} solves` : 'Unconquered'}`
+      if (territory.choice.getAttribute('aria-label') !== summary) {
+        territory.choice.setAttribute('aria-label', summary)
+        const title = document.createElement('span'),
+          meta = document.createElement('span')
+        title.textContent = territory.name
+        title.className = 'territory-name'
+        meta.textContent = `${territory.category} · ${territory.base} pts · ${territory.solveCount ? `${territory.solveCount} solves` : 'Unconquered'}`
+        meta.className = 'territory-meta'
+        territory.choice.replaceChildren(title, meta)
+      }
       territory.pin.setAttribute('aria-label', summary)
       territory.pin.textContent = `${territory.solveCount ? '⚑' : '◇'} ${territory.name}`
       territory.pin.title = summary
-      territory.choice.hidden = !`${territory.name} ${territory.category}`
-        .toLowerCase()
-        .includes(search.value.trim().toLowerCase())
+      territory.choice.hidden =
+        (filter === 'open' && territory.solveCount > 0) ||
+        (filter === 'solved' && territory.solveCount === 0) ||
+        !`${territory.name} ${territory.category}`.toLowerCase().includes(search.value.trim().toLowerCase())
     }
     get('challengeCount').textContent = String(territories.length)
-    get('territorySummary').textContent =
-      `${territories.filter((t) => t.solveCount > 0).length} / ${territories.length} islands conquered`
+    const conquered = territories.filter((t) => t.solveCount > 0).length
+    const summary = `${conquered} / ${territories.length} islands conquered`
+    if (get('territorySummary').textContent !== summary) get('territorySummary').textContent = summary
+    const progress = get<HTMLProgressElement>('territoryProgress')
+    if (progress) {
+      progress.max = Math.max(1, territories.length)
+      progress.value = conquered
+    }
+    const results = get('territoryResults')
+    if (results) {
+      const count = territories.filter((t) => !t.choice.hidden).length
+      const message = count ? `${count} islands shown` : 'No islands match. Try another name or filter.'
+      if (results.textContent !== message) results.textContent = message
+    }
     const t = territories.find((t) => t.id === selected)
     dirty = true
     const signature = JSON.stringify(
@@ -133,6 +154,10 @@ export function createArenaGlobe(deps: GlobeDeps) {
       : 'Select a challenge on the globe or in the list to see its expedition history.'
     detail.append(heading, copy)
     if (t) {
+      const badge = document.createElement('span')
+      badge.className = 'territory-badge'
+      badge.textContent = t.solveCount ? '⚑ Conquered' : '◇ Unconquered'
+      detail.prepend(badge)
       const status = document.createElement('p')
       status.textContent = t.solveCount
         ? `First solve: ${t.solvers[0]?.name || 'Not available in the public snapshot'}`
@@ -152,6 +177,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
       const link = document.createElement('a')
       link.href = `${window.location.pathname.replace(/\/attack\/?$/, '/challenges')}${eventChallengeHash(t.id, t.name)}`
       link.textContent = 'Open challenge'
+      link.className = 'btn territory-open'
       detail.append(link)
       if (focusedLink) link.focus({ preventScroll: true })
     }
@@ -161,6 +187,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
   }
   // Clip surface polygons against the visible hemisphere before projection.
   function polygon(points: GlobePoint[], elevation: number) {
+    const { yaw, pitch } = camera.current
     const projected = points.map((p) => projectGlobe(p, yaw, pitch, elevation))
     const visible: { x: number; y: number }[] = []
     for (let i = 0; i < projected.length; i++) {
@@ -177,11 +204,19 @@ export function createArenaGlobe(deps: GlobeDeps) {
       : visible.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join('') + 'Z'
   }
   function paint() {
-    if (!dirty) return
+    if (!dirty || destroyed) return
     dirty = false
+    const { yaw, pitch } = camera.current
     stage.dataset.globeYaw = String(yaw)
     stage.dataset.globePitch = String(pitch)
-    drawGlobeSurface(canvas, yaw, pitch, root.host.getAttribute('data-arena-scheme') === 'dark')
+    stage.dataset.cameraMoving = String(camera.moving)
+    drawGlobeSurface(
+      canvas,
+      yaw,
+      pitch,
+      root.host.getAttribute('data-arena-scheme') === 'dark',
+      stageWidth * Math.max(1.25, window.devicePixelRatio || 1)
+    )
     // Screen-space lighting stays fixed while the world rotates beneath it.
     const context = canvas.getContext('2d')
     if (context) {
@@ -228,13 +263,19 @@ export function createArenaGlobe(deps: GlobeDeps) {
         marker.setAttribute('transform', `translate(${p.x} ${p.y}) scale(${0.65 + Math.max(0, p.z) * 0.35})`)
       }
     }
-    routes.replaceChildren()
+    const usedRoutes = new Set<number>()
     const teamIndex = deps.teams().findIndex((t) => t.id === teamId)
     if (teamIndex >= 0) {
       const team = deps.teams()[teamIndex],
         start = teamLocation(teamIndex)
       for (const territory of territories.filter((t) => t.solvers.some((s) => s.name === team.name))) {
-        const curve = path()
+        usedRoutes.add(territory.id)
+        let curve = routePaths.get(territory.id)
+        if (!curve) {
+          curve = path()
+          routePaths.set(territory.id, curve)
+          routes.append(curve)
+        }
         let d = '',
           connected = false
         for (let step = 0; step <= 36; step++) {
@@ -260,7 +301,12 @@ export function createArenaGlobe(deps: GlobeDeps) {
         }
         curve.setAttribute('d', d)
         curve.setAttribute('stroke', team.color)
-        routes.append(curve)
+      }
+    }
+    for (const [id, curve] of routePaths) {
+      if (!usedRoutes.has(id)) {
+        curve.remove()
+        routePaths.delete(id)
       }
     }
   }
@@ -313,34 +359,41 @@ export function createArenaGlobe(deps: GlobeDeps) {
     paint()
   }
   listen(stage, 'pointerdown', ((event: PointerEvent) => {
-    if (event.button !== 0 || (event.target as Element).closest('button')) return
+    if (!event.isPrimary || event.button !== 0 || drag || (event.target as Element).closest('button')) return
     const marker = (event.target as Element).closest('.team-marker')
     if (marker) {
       deps.selectTeam(marker.id.replace('base-', ''))
       return
     }
     pause()
+    camera.stop()
     stage.focus({ preventScroll: true })
     stage.setPointerCapture(event.pointerId)
-    drag = { id: event.pointerId, x: event.clientX, y: event.clientY }
+    drag = {
+      id: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      ...camera.current,
+      width: Math.max(240, stage.clientWidth),
+    }
   }) as EventListener)
   listen(stage, 'pointermove', ((event: PointerEvent) => {
     if (!drag || drag.id !== event.pointerId) return
     const dx = event.clientX - drag.x,
       dy = event.clientY - drag.y
-    yaw = normalizeGlobeAngle(yaw + dx * 0.008)
-    pitch = normalizeGlobeAngle(pitch - dy * 0.008)
-    drag.x = event.clientX
-    drag.y = event.clientY
+    camera.set({ yaw: drag.yaw + (dx * Math.PI) / drag.width, pitch: drag.pitch - (dy * Math.PI) / drag.width })
     dirty = true
-    paint()
+    // Coalesce high-frequency pointer events into the existing animation frame.
+    if (!deps.motion()) paint()
   }) as EventListener)
   for (const event of ['pointerup', 'pointercancel', 'lostpointercapture'])
-    listen(stage, event, (() => {
+    listen(stage, event, ((event: PointerEvent) => {
+      if (drag?.id !== event.pointerId) return
       drag = null
+      if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId)
     }) as EventListener)
   listen(stage, 'keydown', ((event: KeyboardEvent) => {
-    if (event.target !== stage) return
+    if (event.target !== stage || event.altKey || event.ctrlKey || event.metaKey) return
     const directions: Record<string, [number, number]> = {
       ArrowLeft: [-0.2, 0],
       ArrowRight: [0.2, 0],
@@ -358,8 +411,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
   }) as EventListener)
   const reset = () => {
     pause()
-    yaw = 0.24
-    pitch = -0.18
+    camera.focus(arenaHome, deps.motion())
     dirty = true
     paint()
   }
@@ -370,17 +422,27 @@ export function createArenaGlobe(deps: GlobeDeps) {
   get('globeReset').onclick = reset
   rotate.onclick = () => {
     auto = !auto
+    camera.stop()
     syncRotate()
   }
   listen(root, 'focusin', ((event: FocusEvent) => {
     if (stage.contains(event.target as Node)) pause()
   }) as EventListener)
   search.oninput = refreshDetails
+  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-territory-filter]')) {
+    listen(button, 'click', (() => {
+      filter = button.dataset.territoryFilter || 'all'
+      for (const item of root.querySelectorAll<HTMLButtonElement>('[data-territory-filter]'))
+        item.setAttribute('aria-pressed', String(item === button))
+      refreshDetails()
+    }) as EventListener)
+  }
   listen(window, 'hashchange', (() => {
     const id = catalogChallengeIdFromHash(window.location.hash)
     if (id !== null && territories.some((t) => t.id === id)) selectTerritory(id)
     else {
       selected = null
+      camera.stop()
       refreshDetails()
       paint()
     }
@@ -390,6 +452,13 @@ export function createArenaGlobe(deps: GlobeDeps) {
     paint()
   })
   theme.observe(root.host, { attributes: true, attributeFilter: ['data-arena-scheme'] })
+  const resize = new ResizeObserver(([entry]) => {
+    if (!entry || !entry.contentRect.width) return
+    stageWidth = entry.contentRect.width
+    dirty = true
+    paint()
+  })
+  resize.observe(stage)
   return {
     setData,
     hasData: () => territories.length > 0,
@@ -398,24 +467,21 @@ export function createArenaGlobe(deps: GlobeDeps) {
       paint()
     },
     refreshMotion() {
+      if (!deps.motion()) camera.settle()
       syncRotate()
       dirty = true
       paint()
     },
-    tick(ts: number, dt: number) {
-      if (ts - lastFrame < 33 || document.hidden) return
-      const elapsed = Math.min((ts - lastFrame) / 1000, 0.05)
-      lastFrame = ts
-      if (auto && deps.motion() && !deps.frozen() && !drag) {
-        yaw = normalizeGlobeAngle(yaw + Math.max(dt, elapsed) * 0.075)
-        dirty = true
-      }
+    tick(_ts: number, dt: number) {
+      if (document.hidden || destroyed) return
+      if (camera.step(dt, auto && deps.motion() && !deps.frozen() && !drag)) dirty = true
       paint()
     },
     focusTeam(id: string | null) {
       teamId = id
       const index = deps.teams().findIndex((t) => t.id === id)
       if (index >= 0) focus(teamLocation(index))
+      else camera.stop()
       dirty = true
       paint()
     },
@@ -434,8 +500,16 @@ export function createArenaGlobe(deps: GlobeDeps) {
       return { name: t.name, base: t.base }
     },
     destroy() {
+      destroyed = true
+      camera.stop()
+      drag = null
       events.abort()
       theme.disconnect()
+      resize.disconnect()
+      for (const id of ['globeLeft', 'globeRight', 'globeUp', 'globeDown', 'globeReset', 'rotateBtn'])
+        get(id).onclick = null
+      search.oninput = null
+      for (const territory of territories) territory.pin.onclick = territory.choice.onclick = null
     },
   }
 }

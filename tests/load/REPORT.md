@@ -14,6 +14,65 @@
 > offenders plus 95 clean controls; older six/94 and honeypot-score figures are
 > historical results, not acceptance expectations.
 
+## Smooth arena camera and bounded rendering — 3 October 2026
+
+Compared the v0.1.129 source (`b13d1534`) and v0.1.130 candidate production
+frontend builds on the same host, software-rendered Chromium and bounded runner
+(150% CPU). Both used 49 teams, 12 islands, 1600px and 390px viewports, device
+scale 1, and 12 seconds per phase. The focus phase delivered exactly 24 island
+selections at 2/second on each side. All APIs were intercepted by the same
+read-only fixture; no real solves, participation or scores were changed.
+No Cargo build ran concurrently with a browser measurement.
+
+Frame interval distributions (milliseconds; all requestAnimationFrame callbacks,
+not just changed globe frames):
+
+| Viewport / phase | Build | Average | p50 | p90 | p95 | p99 | Max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1600 / rotation | Before | 28.19 | 33.30 | 49.90 | 50.10 | 83.40 | 100.00 |
+| 1600 / rotation | After | 17.41 | 16.70 | 16.70 | 16.80 | 33.40 | 50.10 |
+| 1600 / focus | Before | 20.44 | 16.70 | 33.30 | 33.40 | 66.70 | 100.00 |
+| 1600 / focus | After | 17.99 | 16.70 | 16.80 | 33.30 | 50.00 | 116.60 |
+| 390 / rotation | Before | 17.16 | 16.70 | 16.70 | 16.80 | 33.40 | 66.60 |
+| 390 / rotation | After | 16.82 | 16.70 | 16.70 | 16.80 | 33.30 | 33.40 |
+| 390 / focus | Before | 16.70 | 16.70 | 16.70 | 16.80 | 16.80 | 33.40 |
+| 390 / focus | After | 16.90 | 16.70 | 16.70 | 16.70 | 33.30 | 33.40 |
+
+| Viewport / phase | Renderer task seconds | End-of-phase JS heap MiB | Long tasks ≥50ms | Maximum camera step, radians |
+| --- | ---: | ---: | ---: | ---: |
+| 1600 / rotation | 7.81 → 7.93 | 20.58 → 17.39 | 15 → 0 | 0.00375 → 0.00375 |
+| 1600 / focus | 1.97 → 6.88 | 18.78 → 23.62 | 8 → 6 | 2.05 → 0.49 |
+| 390 / rotation | 6.69 → 5.87 | 17.16 → 31.87 | 2 → 0 | 0.00375 → 0.00251 |
+| 390 / focus | 1.46 → 5.08 | 17.41 → 20.13 | 0 → 0 | 2.05 → 0.23 |
+
+During steady rotation, actual globe updates increased from
+24.73 to 57.45/second on desktop and
+29.89 to 59.47/second at 390px.
+The improvement comes from replacing the 33ms gate with display-cadence updates,
+using one interruptible 420ms shortest-path camera transition, coalescing pointer
+moves, retaining bounded geometry/route nodes, and avoiding canvas reallocation
+and a dynamic blur every frame. The animated bitmap follows viewport density
+within 400–1200px; the shared static globe retains its 1200px default.
+
+These are shared-host observations, not a universal 60 FPS guarantee. Desktop
+rotation task time increased slightly and focus task time increased on both
+viewports because the new camera draws intermediate frames instead of snapping.
+End-of-phase heap samples fluctuate with collection and are not peak-memory
+measurements; no general CPU or heap reduction is claimed. All four runs retained
+49 unique ranking entries and 12 islands, without browser errors or event writes.
+Detailed frame/paint/camera/long-task distributions remain in
+`visual-audit-output/arena-animation-before/report.json` and
+`visual-audit-output/arena-animation-release/report.json`.
+
+The independent pre-release public-read guardrail against production event 27
+completed 60/60 k6 arrivals at 2 requests/s for 30 seconds: HTTP p95 16.25ms,
+zero dropped arrivals, invalid responses or 5xx, exact health body `ok`, and
+unchanged duplicate-free rosters. Twelve application/PostgreSQL CPU/RAM samples
+were retained in `/tmp/rsctf-arena-read-before.json.resources.json`; the full
+HTTP distribution is in `/tmp/rsctf-arena-read-before.json`. This low-rate check
+is health/integrity acceptance, not a backend performance claim. Repeat it after
+the immutable rollout before declaring deployment complete.
+
 ## Bounded route-module prefetch benchmark — 3 September 2026
 
 The anonymous home-to-games transition was measured against the exact parent

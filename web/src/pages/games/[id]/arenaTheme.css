@@ -358,7 +358,7 @@ a:hover {
 .arena {
   position: relative;
   flex: 0 0 auto;
-  width: min(100%, 760px);
+  width: min(100%, 560px);
   aspect-ratio: 1;
   z-index: 5;
   touch-action: none;
@@ -379,8 +379,13 @@ a:hover {
   width: 100%;
   height: 100%;
 }
-#globeSurface {
-  filter: drop-shadow(0 0 24px var(--arena-shadow));
+.arena::before {
+  content: '';
+  position: absolute;
+  inset: 6.5%;
+  border-radius: 50%;
+  box-shadow: 0 0 32px var(--arena-shadow);
+  pointer-events: none;
 }
 #globeSurface,
 #fxbg,
@@ -450,8 +455,21 @@ a:hover {
   justify-content: center;
   flex-wrap: wrap;
   gap: 6px;
-  width: 100%;
+  width: fit-content;
+  max-width: 100%;
   margin: 8px 0;
+  padding: 6px;
+  border: 1px solid var(--line2);
+  border-radius: 10px;
+  background: var(--app-subtle-surface);
+}
+.globe-directions {
+  display: flex;
+  gap: 4px;
+}
+.globe-directions .btn {
+  min-width: 40px;
+  padding-inline: 8px;
 }
 .globe-help {
   width: 100%;
@@ -461,7 +479,8 @@ a:hover {
 }
 .territory-browser {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  align-items: start;
   gap: 16px;
   width: 100%;
   border-top: 1px solid var(--line2);
@@ -469,7 +488,7 @@ a:hover {
   margin-top: 16px;
 }
 .territory-browser h3 {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 650;
   margin-bottom: 6px;
 }
@@ -483,6 +502,7 @@ a:hover {
   padding-left: 18px;
   max-height: 150px;
   overflow: auto;
+  margin-block: 12px;
 }
 .territory-directory {
   min-width: 0;
@@ -515,12 +535,67 @@ a:hover {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+.territory-name,
+.territory-meta {
+  display: block;
+}
+.territory-name {
+  font-weight: 650;
+}
+.territory-meta {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--dim);
+}
+.territory-choice[aria-pressed='true'] .territory-meta {
+  color: inherit;
+}
+.territory-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+.territory-filters .btn {
+  min-height: 40px;
+  padding: 6px 8px;
+}
+.territory-filters [aria-pressed='true'] {
+  color: var(--app-accent-surface-text);
+  background: var(--app-accent-surface);
+  border-color: var(--app-accent-border);
+}
+#territoryProgress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  margin-top: 10px;
+  accent-color: var(--app-focus-ring);
+}
+#territoryResults {
+  margin-bottom: 8px;
+}
+.territory-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line2);
+  border-radius: 20px;
+  color: var(--dim);
+  font-size: 11px;
+}
+.territory-open {
+  display: inline-flex;
+  margin-top: 14px;
+  min-height: 44px;
+  align-items: center;
+}
 #territoryDetail {
   min-width: 0;
   border: 1px solid var(--line2);
   border-radius: 8px;
   background: var(--app-subtle-surface);
-  padding: 12px;
+  padding: 16px;
 }
 #svg text,
 #jeop text {
