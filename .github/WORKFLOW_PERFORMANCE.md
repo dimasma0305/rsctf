@@ -45,6 +45,44 @@ main CI. Tag jobs restore but do not save caches that the next tag cannot access
 ARM64 worker builds remain native and cold until a main job exists to warm that
 architecture; there is deliberately no cross-architecture cache fallback.
 
+The [v0.1.137 worker publication](https://github.com/dimasma0305/rsctf/actions/runs/37209627663)
+confirms that an extra ARM64 cache-warming job is not on this release's critical
+path: native ARM64 completed in 1m34s, AMD64 in 53s and Windows in 2m10s. The
+publisher then spent 12m06s waiting for the exact tagged image and its trusted
+attestation, while the already-running main image build finished. This wait is
+not repeated worker compilation; do not remove source/digest verification to
+shorten it. After image resolution, seven serial artifact-attestation checks
+took 22s. Bounded parallel verification was then measured separately with the
+same subjects, signed bundle and trust constraints, as recorded below.
+
+Four local full-subject trials, ordered serial, four workers, four workers,
+serial, verified all seven actual v0.1.137 release artifacts. Serial took
+29.12s/32.40s and parallel took 8.42s/9.06s: **71.6% lower mean step wall time**
+(30.76s to 8.74s). Both conditions used GitHub CLI 2.102.0, identical artifact
+and bundle hashes, a warmed trust-metadata cache, a two-CPU/1 GiB cgroup and a
+120-second per-step limit. The independent altered-artifact and wrong-tag controls
+both rejected the parallel step. Unit regressions execute the real workflow
+shell and require all seven subjects, every original trust constraint, bounded
+parallelism, failure propagation and complete process settlement.
+
+Before publication, three fresh trials per condition compared four with seven
+verifiers in order 4, 7, 7, 4, 4, 7. With the same subjects, bundle, CLI, warmed
+metadata and resource caps, four took 7.83/8.96/8.26s and seven took
+4.95/5.38/5.74s. Mean step time decreased **35.8%**, from 8.35s to 5.36s,
+exceeding the predeclared 10% acceptance threshold. Both real negative controls
+again rejected the step. This separate comparison does not combine percentages
+from the earlier serial/four-worker trials. Its scripts, exact inputs, six
+trials and controls are retained in `attestation-width.json` beside the first
+experiment; both owned temporary verification fixtures were removed.
+
+Publication now runs at most seven independent verifiers using `xargs`, one per
+subject; regression tests enforce this bound and child settlement. It still
+fails if any subject is missing or invalid. This reduces only the verification
+step, not compiler time or image availability. Network latency affects these
+local timings, and the next tagged Actions publication must verify its actual
+end-to-end result. Evidence is retained in
+`visual-audit-output/workflow-compiler-experiment/attestation-verification.json`.
+
 `cargo-audit` now uses a pinned tool cache; its advisory check still runs on every
 selected security job. Coverage retains its separate instrumented cache and
 pinned `cargo-llvm-cov`. Frontend installs retain frozen lockfiles, age/trust
@@ -202,7 +240,7 @@ The slim planner/aggregate jobs took 8s/7s. These are actual Actions observation
 on different runners, not a controlled percentage comparison. No checks were
 removed, and this PR run does not measure image compilation or deployment.
 
-## Release compiler experiment: not yet accepted
+## Release compiler experiment: faster candidates rejected
 
 Four matched cold-target builds used the same v0.1.137 source, release builder
 digest, Rust 1.97.1, two-core quota and 12 GiB limit. All completed without warnings:
@@ -244,12 +282,35 @@ both cold-build binary hashes reproduced exactly. It is faster than global
 ThinLTO/16 under both measured compile conditions, but strict runtime acceptance
 remains necessary. No production compiler profile has changed.
 
+The root-only partition candidate was subsequently **rejected** by its three
+paired runtime trials. All six fixed-rate runs passed functional, health and
+fixture-integrity checks, but the candidate increased mean application CPU by
+**5.91%**, sampled peak memory by **16.68%**, and the mean KotH timeline p95 by
+**5.47%**. The predeclared maximum regressions are 5% for CPU and every endpoint
+p95, and 10% for peak memory. Faster compilation does not override those gates.
+The previously compiled global ThinLTO/16 fallback then completed three fresh
+alternating baseline/candidate pairs. All six runs passed their functional,
+health and integrity checks, but mean CPU increased **7.48%**, Jeopardy scoreboard
+p95 **6.33%**, and KotH timeline p95 **5.53%**. Memory improved by 9.14%, which
+does not cancel the failed CPU/latency gates. This fallback is also **rejected**;
+production retains opt-level 3, fat LTO and one codegen unit. Rejected measurements
+are retained, not relabeled or reused as successful results. Full conditions and
+the load-harness corrections are in
+[the load report](../tests/load/REPORT.md#release-compiler-runtime-acceptance--4-october-2026).
+
 ### Additional cache and database checks
 
 An exact-version `cargo-chef prepare` inspection confirmed that the root package
 version is already normalized to `0.0.1` in both the generated manifest and lock.
 Do not add another version-rewriting layer: application version bumps alone do
 not change those dependency-recipe fields.
+
+That normalization deliberately stops at dependency preparation. The application
+build embeds its package version and a fingerprint over `Cargo.toml`, the lockfile,
+`build.rs` and `src/`; split-role topology compatibility uses that exact fingerprint.
+Reusing a prior-version application binary would change the existing version and
+replica-identity contract, not merely improve a cache key. This pass preserves that
+contract and only promotes verified same-commit application images.
 
 The GitHub cache inventory at 18:37 UTC contained 150 entries totaling about
 10 GiB: 5.95 GiB Rust caches, 3.73 GiB BuildKit data and 0.32 GiB other data.
@@ -340,5 +401,16 @@ unchanged exclusions and 40% floor. The pinned tool's `report` subcommand reject
 build-selection flags such as `--all-features`; those remain on compilation, not
 reporting. A first local report-only invocation exposed this CLI distinction;
 the successful tests/profiles were retained and the corrected report verified
-them without rerunning compilation. Actual GitHub timing for this pass remains
-unverified until the clean-room gate runs.
+them without rerunning compilation.
+
+The [fourth optimization PR gate](https://github.com/dimasma0305/rsctf/actions/runs/37233050429)
+passed all 16 selected checks in **7m39s** on 2026-10-04; PR #169 merged as
+`06dd6c75`. Coverage/database checks took **6m41s**, versus 7m57s in the previous
+PR run. All 431 selected database cases passed, default coverage profiles were
+retained, both partitions contributed new profiles, and line coverage remained
+57.35%, above the unchanged 40% floor. Rust compilation/tests took 5m45s,
+parallel lint 2m03s, and React 1m25s.
+The same-artifact Kubernetes and isolated anti-cheat consumers took 1m23s and
+1m22s. These are observed Actions durations on different runners/cache states,
+not a controlled percentage speedup or a measurement of image publication and
+production deployment.

@@ -5,8 +5,10 @@
 // bucket. One iteration performs exactly one HTTP request, making RATE directly
 // comparable to HTTP requests/second.
 import http from 'k6/http';
+import exec from 'k6/execution';
 import { Rate, Trend } from 'k6/metrics';
 import { validCombinedBoard } from '../combined-scoreboard.js';
+import { polledReadSelection } from '../polled-read-model.js';
 
 const TARGET = __ENV.TARGET || 'http://127.0.0.1:8080';
 const JEO_GAME = __ENV.JEO_GAME || '';
@@ -93,12 +95,9 @@ function sourceIp(index) {
 }
 
 export default function () {
-  const sequence = (__VU - 1) * 997 + __ITER;
-  const endpoint = endpoints[sequence % endpoints.length];
-  // Do not correlate a token cohort with one endpoint. In particular, binding
-  // the same fifth of the cohort to `/api/game` eventually measures its
-  // deliberate heavy-query quota instead of the application read path.
-  const tokenIndex = (sequence + Math.floor(sequence / endpoints.length)) % TOKENS.length;
+  const { endpointIndex, tokenIndex } =
+    polledReadSelection(exec.scenario.iterationInTest, endpoints.length, TOKENS.length);
+  const endpoint = endpoints[endpointIndex];
   const headers = {
     Authorization: `Bearer ${TOKENS[tokenIndex]}`,
     'X-Real-IP': sourceIp(tokenIndex),

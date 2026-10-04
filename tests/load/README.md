@@ -494,6 +494,15 @@ TARGET=https://ctf.example JEO_GAME=162 AD_GAME=163 RATE=300 \
   DURATION=60s npm run polled-read
 ```
 
+Endpoint/account selection uses k6's scenario-wide iteration number. Every
+endpoint visits the full account cohort once per complete cycle, independently
+of VU scheduling or common factors in the endpoint/account counts. The former
+stride-based selection could restrict an endpoint to 50 of 400 accounts and
+hit its real query quota. Do not disable rate limits to compensate for an
+unbalanced workload; zero 429 responses and zero dropped iterations remain
+mandatory. The exhaustive selection regression is
+`test/polled-read-selection.test.mjs`.
+
 `scoreboard-conditional` focuses on the maximum-roster standard and KotH
 fixtures. Each VU retains the validator returned by each authorized endpoint,
 advertises Brotli/gzip, and sends `If-None-Match` on later polls. The gate accepts
@@ -1467,6 +1476,12 @@ and the live ownership assertion are in
 [`REPORT.md`](REPORT.md#production-admin-instance-ownership-rollout--24-july-2026).
 
 ### Optimization ledger
+
+The 4 October release-compiler experiment is reported in
+[`REPORT.md`](REPORT.md#release-compiler-runtime-acceptance--4-october-2026).
+Both the root-only and global ThinLTO/16 candidates failed the frozen runtime
+regression limits despite faster compilation, so neither is an accepted
+optimization row. Production retains the original fat-LTO/one-unit profile.
 
 The 3 October globe comparison uses production frontend builds, the same host,
 Chromium, 49-team/12-island fixture, 12-second observation windows and two island
