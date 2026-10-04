@@ -475,7 +475,7 @@ plan. Repository conventions took 43s, harness contracts 32s, planning 9s and
 aggregation 8s, with independent jobs overlapping. This is the report-only path,
 not a claim that a full Rust or release workflow takes 55 seconds.
 
-The final cache audit found current main caches being read by that PR for server,
+The final cache audit found current main caches being read by PR #171 for server,
 coverage, lint, audit, BYOC, and both worker platforms. No user cache was deleted
 and no cache quota or paid runner was added. Temporary compiler-runtime and
 coverage containers, volumes and networks were confirmed absent; read-only
