@@ -41,6 +41,40 @@ jobs:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node scripts/ci-plan.mjs
 
+  rust-lint:
+    name: Rust formatting and Clippy
+    needs: plan
+    if: needs.plan.outputs.server == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpcap-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.98.0
+          components: clippy, rustfmt
+
+      - name: Restore lint metadata cache
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          # Check-only metadata must not race the executable job's cache save.
+          shared-key: server-lint
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
   rust:
     name: Rust
     needs: plan
@@ -80,7 +114,6 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: 1.98.0
-          components: clippy, rustfmt
 
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
@@ -88,14 +121,14 @@ jobs:
           shared-key: server
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      # Compiling the large library and its test harness simultaneously exceeds
+      # the bounded local runner's 12 GiB budget. Warm the normal library first;
+      # dependencies still build in parallel and the second pass reuses it.
+      - name: Build application binaries
+        run: cargo build --all-features --locked
 
-      - name: Run Clippy
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
-
-      - name: Build
-        run: cargo build --locked
+      - name: Build test targets
+        run: cargo build --all-targets --all-features --locked
 
       - name: Test Docker idempotent retry lifecycle
         run: |
@@ -732,7 +765,7 @@ jobs:
   required:
     name: Required CI checks
     if: always()
-    needs: [plan, rust, coverage, byoc-agent, worker-plane-linux, worker-plane-windows, helm-chart, kubernetes-callback, web, dependency-security, load-harness-contracts, cheat-acceptance, docs, repository-conventions]
+    needs: [plan, rust-lint, rust, coverage, byoc-agent, worker-plane-linux, worker-plane-windows, helm-chart, kubernetes-callback, web, dependency-security, load-harness-contracts, cheat-acceptance, docs, repository-conventions]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -906,7 +939,7 @@ jobs:
           require "yaml"
 
           image_jobs = YAML.load_file(".github/workflows/image.yml", aliases: true).fetch("jobs")
-          abort "server build must overlap quality checks" unless image_jobs.fetch("build-server").fetch("needs") == ["prepare", "build-agent"]
+          abort "server build must overlap quality and companion builds" unless image_jobs.fetch("build-server").fetch("needs") == ["prepare"]
           abort "image publication must remain quality-gated" unless image_jobs.fetch("finalize-main").fetch("needs") == ["prepare", "quality", "build-agent", "build-server"]
 
           ci_source = File.read(".github/workflows/ci.yml")

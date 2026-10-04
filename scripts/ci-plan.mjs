@@ -25,6 +25,7 @@ export function planChecks(paths, eventName) {
 }
 
 export const jobComponents = {
+  'rust-lint': 'server',
   rust: 'server',
   coverage: 'server',
   'cheat-acceptance': 'server',

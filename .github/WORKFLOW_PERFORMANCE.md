@@ -85,3 +85,49 @@ actual policy locally. Kind bootstrap on the shared host was blocked before the
 application tests by an exhausted fsnotify/inotify resource limit in containerd;
 the owned clusters were removed without changing host limits. The clean GitHub
 runner's real Kubernetes gate subsequently passed.
+
+## Second pass: remove serial critical-path work
+
+The [v0.1.137 publication](https://github.com/dimasma0305/rsctf/actions/runs/37208869415)
+took 26m43s for CI and images. This dependency-update run is not a controlled
+comparison with v0.1.136. Its Rust job spent 6m05s in Clippy before starting
+the 7m33s application build and 2m53s Docker/test compilation stage. The
+server's native jobs started about three minutes after the companion jobs started
+because of an unnecessary job dependency. ARM64 spent 3m01s cooking changed
+dependencies and 15m08s compiling the application.
+
+The next candidate removes those serial dependencies without changing production
+compiler settings:
+
+- Formatting/Clippy run beside compilation, with a separate metadata cache so
+  concurrent jobs cannot overwrite one another's cache contents. Both jobs remain
+  mandatory in the fail-closed aggregate. Build prepares application binaries and
+  then all test targets before running the same test suites.
+- Native server and companion builds start together. The intermediate server is
+  tagged `build-<sha>`, never accepted as the public `sha-<sha>` release candidate.
+- After both builds and full CI succeed, `deploy/Dockerfile.release` attaches the
+  immutable companion reference using metadata only. No filesystem instruction,
+  target executable, emulation, Cargo build, or frontend build runs in assembly.
+- Assembly regenerates SBOM/provenance for both platforms. Verification compares
+  base/assembled filesystem layers and unrelated runtime config, checks both
+  revisions/versions and companion metadata, then attests and promotes only the
+  assembled digest. Tag publication still requires that exact main attestation.
+
+These changes require a new observed Actions run before reporting a new duration.
+In particular, parallelism does not make the 15-minute Rust release compilation
+disappear, and a new lint cache will be cold on its first run.
+
+### Local findings, not an Actions speedup claim
+
+Combining the initial application and test-target compilations was rejected:
+the two large `rustc` processes exceeded the local 12 GiB cgroup limit. The
+application-first order reuses dependency parallelism while avoiding simultaneous
+code generation of the full library and its test harness. Do not raise shared-host
+limits or disable tests merely to improve a workflow timing.
+
+Metadata-only assembly with pinned BuildKit 0.32.2 and Syft scanner 1.12.0 passed
+an unpublished local AMD64/ARM64 OCI export. Both platforms retained all nine
+filesystem layers and the full original runtime config, including Docker's
+healthcheck extension, while generating 155-package SBOMs and SLSA provenance.
+The exact workflow verification shell also passed against the existing immutable
+release. GitHub execution and deployment of the candidate remain required.

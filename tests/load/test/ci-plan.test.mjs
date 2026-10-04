@@ -56,7 +56,9 @@ test('the aggregate gate accepts planned skips and rejects missing, failed, canc
   assert.throws(() => verifyChecks(plan, { ...results(plan), rust: { result: 'failure' } }))
   const full = Object.fromEntries(components.map((name) => [name, 'true']))
   for (const job of Object.keys(jobComponents)) {
-    assert.throws(() => verifyChecks(full, { ...results(full), [job]: { result: 'skipped' } }))
+    for (const result of ['failure', 'cancelled', 'skipped', undefined]) {
+      assert.throws(() => verifyChecks(full, { ...results(full), [job]: { result } }))
+    }
   }
 })
 
