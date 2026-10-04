@@ -85,8 +85,8 @@ Publication now runs at most seven independent verifiers using `xargs`, one per
 subject; regression tests enforce this bound and child settlement. It still
 fails if any subject is missing or invalid. This reduces only the verification
 step, not compiler time or image availability. Network latency affects these
-local timings, and the next tagged Actions publication must verify its actual
-end-to-end result. Evidence is retained in
+local timings. The v0.1.138 tagged Actions result is recorded below, separately
+from the matched local experiment. Evidence is retained in
 `visual-audit-output/workflow-compiler-experiment/attestation-verification.json`.
 
 `cargo-audit` now uses a pinned tool cache; its advisory check still runs on every
@@ -195,8 +195,8 @@ an unpublished local AMD64/ARM64 OCI export. Both platforms retained all nine
 filesystem layers and the full original runtime config, including Docker's
 healthcheck extension, while generating 155-package SBOMs and SLSA provenance.
 The exact workflow verification shell also passed against the existing immutable
-release. GitHub execution subsequently passed as recorded above; deployment of
-a new tagged release remains required.
+release. GitHub execution subsequently passed as recorded above; the v0.1.138
+publication and production verification below complete the tagged-release gate.
 
 ## Third pass: bounded test concurrency and lightweight orchestration
 
@@ -420,3 +420,65 @@ The same-artifact Kubernetes and isolated anti-cheat consumers took 1m23s and
 1m22s. These are observed Actions durations on different runners/cache states,
 not a controlled percentage speedup or a measurement of image publication and
 production deployment.
+
+## Verified publication and closing audit
+
+The [v0.1.138 full PR gate](https://github.com/dimasma0305/rsctf/actions/runs/37237466790)
+passed all 16 selected checks in **9m39s**. Its
+[main image publication](https://github.com/dimasma0305/rsctf/actions/runs/37238164617)
+then passed in **19m26s**, including the full reusable quality suite, native
+AMD64/ARM64 builds, metadata-only assembly, SBOM/provenance and attestation.
+Unlike the earlier 9m43s cached publication, this run compiled the changed
+application: AMD64 Cargo took **13m58s**, ARM64 **15m18s**, both without Rust
+warnings. Both architectures reused the cargo-chef dependency layer.
+
+The [tagged release](https://github.com/dimasma0305/rsctf/actions/runs/37238790479)
+passed in **10m53s**, overlapping the main image build. Its publisher spent
+**7m47s** resolving and verifying the exact tagged image; all seven artifact
+attestations then verified in **4s**. The Helm publication passed in 36s.
+These durations are observations, not controlled percentage improvements, and
+overlapping workflows must not be added together. From main workflow creation
+to completed release publication, elapsed time was **20m24s**, excluding rollout.
+
+Release `v0.1.138`, source `93bddb44e6b3f12f0e92f96904df698cd138cf1c`, was deployed to
+all four applicable production containers using the one immutable image:
+
+```text
+ghcr.io/dimasma0305/rsctf@sha256:feec2a7e07632ab00f01a0b4c9403b897537778d5d4df42fe37fe1d631678af7
+```
+
+The 22:36 UTC recheck on 2026-10-04 verified matching version, revision, image
+digest and binary hash on all four healthy containers, with zero restarts.
+`/healthz` returned HTTP 200 and exactly `ok`; public pages and their actual module
+asset loaded; anonymous admin access returned 401. Both public worker installers
+matched the reviewed source byte-for-byte. Linux syntax/help checks passed;
+Windows installer validation passed in Windows CI. Both log streams were checked
+for panic, migration errors and unexpected 5xx. PostgreSQL/Redis container IDs,
+start times and mounts were unchanged. Database and file backups were retained.
+
+The final [CI-selection implementation PR](https://github.com/dimasma0305/rsctf/pull/171)
+also passed its [full 16-job gate](https://github.com/dimasma0305/rsctf/actions/runs/37240447681)
+in **8m05s** before merge. All 431 database cases passed, 13 default coverage
+profiles were retained, both partitions supplied new profiles, and line coverage
+remained 57.35%. Its local harness passed 521 tests with one existing
+environment-only Traefik skip; 18 focused planner/workflow tests and Actionlint
+also passed. The previous planner's unnecessary full selection was reproduced.
+This PR changes only CI selection, its tests and this report; none is an input to
+the application, agent, installer or deployment bundle. It therefore needs no
+new application release, and production remains the verified v0.1.138 digest.
+
+The final cache audit found current main caches being read by that PR for server,
+coverage, lint, audit, BYOC, and both worker platforms. No user cache was deleted
+and no cache quota or paid runner was added. Temporary compiler-runtime and
+coverage containers, volumes and networks were confirmed absent; read-only
+database checks also confirmed removal of the two owned events and their
+synthetic users/teams.
+
+The remaining release critical path is application code generation, not a missed
+dependency cache or repeated quality workflow. The faster compiler candidates
+failed the unchanged runtime gates; tmpfs failed its improvement threshold.
+Extra worker-cache warming and another downstream test job have no demonstrated
+critical-path benefit. This audit does not claim a universal minimum build time:
+runner capacity, future source changes and new measured compiler approaches can
+change that boundary. It retains the current tests, coverage, runtime performance
+and publication trust requirements.
