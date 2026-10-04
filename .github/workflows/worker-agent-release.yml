@@ -353,22 +353,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for artifact in \
-            rsctf-worker-agent-linux-amd64.tar.gz \
-            rsctf-worker-agent-linux-arm64.tar.gz \
-            rsctf-worker-agent-windows-amd64.zip \
-            install-worker.sh \
-            install-worker.ps1 \
-            install.sh \
-            rsctf-deployment-bundle.tar.gz; do
-            gh attestation verify "dist/${artifact}" \
-              --bundle dist/rsctf-worker-agent-attestation.json \
-              --hostname github.com \
-              --repo "$GITHUB_REPOSITORY" \
-              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/worker-agent-release.yml" \
-              --source-ref "$GITHUB_REF" \
-              --deny-self-hosted-runners
-          done
+          # Independent subjects share one signed bundle. Bound verification
+          # concurrency and fail the step if any subject is missing or invalid.
+          printf '%s\0' \
+            dist/rsctf-worker-agent-linux-amd64.tar.gz \
+            dist/rsctf-worker-agent-linux-arm64.tar.gz \
+            dist/rsctf-worker-agent-windows-amd64.zip \
+            dist/install-worker.sh \
+            dist/install-worker.ps1 \
+            dist/install.sh \
+            dist/rsctf-deployment-bundle.tar.gz \
+            | xargs -0 -n1 -P7 bash -c '
+                exec gh attestation verify "$1" \
+                  --bundle dist/rsctf-worker-agent-attestation.json \
+                  --hostname github.com \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/worker-agent-release.yml" \
+                  --source-ref "$GITHUB_REF" \
+                  --deny-self-hosted-runners
+              ' _
 
       - name: Create a new draft release atomically
         id: release

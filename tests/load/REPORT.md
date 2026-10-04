@@ -14,6 +14,103 @@
 > offenders plus 95 clean controls; older six/94 and honeypot-score figures are
 > historical results, not acceptance expectations.
 
+## Release compiler runtime acceptance — 4 October 2026
+
+The root-only ThinLTO/16 compiler candidate was **rejected**, not deployed.
+It compiled the unchanged v0.1.137 source 22.1% faster from cold dependencies
+and 30.3% faster with warm dependencies, but failed its separate runtime gate.
+Both repeated builds were warning-free and reproduced their binary hashes.
+Compiler timings and workflow changes are recorded in
+[the workflow performance report](../../.github/WORKFLOW_PERFORMANCE.md).
+
+Three alternating baseline/candidate pairs ran on the same host, pinned release
+runtime image, database snapshot, 400-account cohort and ten-challenge fixture.
+Each application had a two-CPU/2 GiB cap; no local compilation overlapped.
+The isolated internal Docker network exposed no host ports or external egress.
+PostgreSQL and Redis were disposable physical services, with Redis reset before
+each trial. The development role bound only to container loopback; the clients
+joined that network namespace. Production and the source development services
+were not replaced or loaded by these trials.
+
+Each trial ran 15 seconds of warm-up followed by 90 seconds at a fixed
+300 polling reads/s plus 100 authenticated challenge-details reads/s. All six
+trials had zero request errors, 429s, dropped arrivals, health failures, invalid
+projections or fixture-integrity changes. No submissions or challenge instances
+were created. k6 2.0.0 can deliver one inclusive-deadline arrival: the verifier
+accepts exactly the scheduled count or one extra, never missing work, and requires
+every actual request to be sampled. This boundary was verified before candidate
+measurement; it does not relax any error or performance threshold.
+
+| Frozen acceptance metric | Fat LTO / 1 unit | ThinLTO / root 16 | Change | Maximum regression |
+| --- | ---: | ---: | ---: | ---: |
+| Mean application CPU (% of one core) | 25.480 | 26.984 | +5.91% | 5% |
+| Largest sampled application memory (MiB) | 151.7 | 177.0 | +16.68% | 10% |
+| Mean KotH timeline p95 (ms) | 1.739 | 1.834 | +5.47% | 5% |
+
+CPU is the equal-weight mean of three per-trial sample means; memory is the
+largest observed peak across three trials. Each endpoint's three p95 values are
+averaged separately. The other seven endpoint p95 comparisons met the 5% limit,
+but the failed metrics above independently reject the candidate. Retained raw
+summaries include avg/p50/p90/p95/p99/max and both application/PostgreSQL resource
+series; no outlier or failed attempt was discarded.
+
+The preflight also exposed a real polling-harness defect: its old token stride
+selected only 50 of 400 accounts for an endpoint, causing legitimate query-limit
+rejections. The corrected scenario-wide iteration model visits every
+endpoint/account pair once per cycle. Exhaustive tests cover multiple shared
+factors and VU-independent ordering. Both baseline and candidate were measured
+only after this correction; account count, rate, duration and application rate
+limits were unchanged. Earlier failed preflights remain separate evidence.
+
+Local evidence is retained under
+`visual-audit-output/workflow-compiler-experiment/`: `runtime-thinroot16-comparison.json`,
+the six `runtime-{fat,thinroot16}-{1,2,3}.json` records and their raw summaries/logs.
+The server hashes are
+`beb7c5440e5115cfa6cb659eef99ea8e34e129478ebf76c75b92c456caaf00fb` (baseline) and
+`2b2647d8882c5f3f52ee75948aa4c9e59fd223f8ec362f936e82462513be715e` (candidate).
+The global ThinLTO/16 fallback, already compile-confirmed at 17–22% faster, then
+completed a fresh three-pair runtime series with the same frozen gates. It was
+also **rejected**. No production compiler setting changes.
+
+The first fallback baseline stopped before measurement: during cold warm-up,
+k6 expanded from 100 to 112 polling VUs and dropped 12 scheduled arrivals.
+All 4,489 sent polling requests succeeded, but the run correctly failed and is
+retained as `runtime-fallback-fat-1*`, not performance evidence. Before any
+fallback candidate ran, the new series allocated 200 polling VUs initially
+(details remains 100), within the unchanged load-client CPU/memory cgroups.
+Both sides restart from fresh processes with this same allocation. Rates,
+account count, application/service caps, durations and all acceptance limits
+remain unchanged; no missing arrivals are accepted. This follows the documented
+[arrival-rate preallocation behavior](https://grafana.com/docs/k6/latest/using-k6/scenarios/concepts/arrival-rate-vu-allocation/).
+The new `runtime-fallback-vu200-*` series is kept separate from both the failed
+preflight and the rejected root-only candidate.
+
+All six completed fallback runs had zero request errors, 429s, dropped arrivals,
+health failures or integrity changes. The same per-trial aggregation rules yielded:
+
+| Frozen acceptance metric | Fresh fat-LTO baseline | Global ThinLTO / 16 | Change | Maximum regression |
+| --- | ---: | ---: | ---: | ---: |
+| Mean application CPU (% of one core) | 24.472 | 26.304 | +7.48% | 5% |
+| Largest sampled application memory (MiB) | 180.6 | 164.1 | -9.14% | 10% |
+| Mean Jeopardy scoreboard p95 (ms) | 1.433 | 1.523 | +6.33% | 5% |
+| Mean KotH timeline p95 (ms) | 1.595 | 1.683 | +5.53% | 5% |
+
+The six other endpoint p95 comparisons met the limit, but every gate must pass.
+The result is retained in `runtime-fallback-vu200-thin16-comparison.json`, with
+all six raw trial records and summaries. The candidate server hash is
+`bfb0bc19f17b64d52641ce92dc91924eeb3a37bbfedb927f012e9d0503700605`.
+These results apply to the matched local workload, not universal compiler
+performance. Neither rejected series justifies changing the production profile
+or lowering its acceptance limits.
+
+After measurement, all experiment application containers and the isolated
+PostgreSQL/Redis pair, volume and network were removed. The original development
+fixture's two hidden events (55 and 56), 400 synthetic accounts/teams and related
+rows were removed through the ownership-checked fixture cleanup. No benchmark
+challenge runtime existed. The exact pre-cleanup manifest and checker directory
+were retained with the reports; development service identities and production
+were unchanged. This cleanup removed only task-created disposable data.
+
 ## Detailed terrain and coordinated settlements — 4 October 2026
 
 Compared v0.1.134 (`9fb2f739`) with the v0.1.135 candidate using the same

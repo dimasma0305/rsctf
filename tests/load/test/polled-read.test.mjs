@@ -35,5 +35,5 @@ test('polled-read protects disposable credentials and avoids endpoint-correlated
   assert.doesNotMatch(runner, /\b(?:INSERT|UPDATE|DELETE)\b/);
   assert.match(runner, /writeFileSync\(tokenFile,\s*JSON\.stringify\(tokens\),\s*\{\s*mode:\s*0o600\s*\}\)/);
   assert.match(runner, /rmSync\(tokenDirectory,\s*\{\s*recursive:\s*true,\s*force:\s*true\s*\}\)/);
-  assert.match(scenario, /sequence \+ Math\.floor\(sequence \/ endpoints\.length\)/);
+  assert.match(scenario, /polledReadSelection\(exec\.scenario\.iterationInTest, endpoints\.length, TOKENS\.length\)/);
 });
