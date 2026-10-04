@@ -1,118 +1,151 @@
 import type { CountryGeometry } from './arenaGeography'
-import { projectGlobe, type GlobePoint } from './arenaGlobeModel'
+import { GLOBE_RADIUS, type GlobePoint } from './arenaGlobeModel'
+import { buildCountryScene, raised, type SceneObject } from './arenaSceneModel'
 
-const NS = 'http://www.w3.org/2000/svg'
-const raised = (p: GlobePoint, height: number) => ({
-  x: p.x * (1 + height),
-  y: p.y * (1 + height),
-  z: p.z * (1 + height),
-})
-const middle = (a: GlobePoint, b: GlobePoint) => {
-  const n = Math.hypot(a.x + b.x, a.y + b.y, a.z + b.z)
-  return { x: (a.x + b.x) / n, y: (a.y + b.y) / n, z: (a.z + b.z) / n }
+interface ScenicCountry extends CountryGeometry {
+  solvers?: { color: string }[]
 }
+export const MAX_SCENIC_COUNTRIES = 24
 
-/** Bounded decorative scene: real spherical foundations and radial extrusion,
- * rather than screen-facing city stickers. No listeners, animation loop or IO.
+/** One bounded bitmap, static cached meshes, and the existing camera's clock.
+ * This decorative layer never handles input, fetches data, or owns an animator.
  */
-export function createArenaSettlements(surface: SVGSVGElement) {
-  const layer = document.createElementNS(NS, 'g')
-  layer.classList.add('settlements')
-  layer.setAttribute('aria-hidden', 'true')
-  surface.append(layer)
-  const slots = Array.from({ length: 24 }, () => {
-    const group = document.createElementNS(NS, 'g')
-    group.classList.add('settlement')
-    group.style.display = 'none'
-    const paths = Array.from({ length: 5 }, () =>
-      ['wall', 'shade', 'roof', 'window'].map((kind) => {
-        const path = document.createElementNS(NS, 'path')
-        path.classList.add(`building-${kind}`)
-        group.append(path)
-        return path
-      })
-    )
-    layer.append(group)
-    return { group, paths }
-  })
-  return (
-    countries: readonly CountryGeometry[],
-    yaw: number,
-    pitch: number,
-    width: number,
-    selected: number | null
-  ) => {
+export function createArenaSettlements(canvas: HTMLCanvasElement) {
+  const scenes = new WeakMap<CountryGeometry, SceneObject[]>()
+  return (countries: readonly ScenicCountry[], yaw: number, pitch: number, width: number, selected: number | null) => {
+    const cy = Math.cos(yaw),
+      sy = Math.sin(yaw),
+      cp = Math.cos(pitch),
+      sp = Math.sin(pitch)
+    const project = (p: GlobePoint) => {
+      const z = p.z * cy - p.x * sy
+      return {
+        x: 500 + (p.x * cy + p.z * sy) * GLOBE_RADIUS,
+        y: 500 + (p.y * cp - z * sp) * GLOBE_RADIUS,
+        z: p.y * sp + z * cp,
+      }
+    }
     const visible = countries
-      .map((country) => ({ country, p: projectGlobe(country.location, yaw, pitch) }))
-      .filter(({ country, p }) => p.z > 0.18 && country.settlement.buildings[0]?.height * width > 1.8)
+      .map((country) => ({ country, p: project(country.location) }))
+      .filter(({ country, p }) => p.z > 0.12 && country.settlement.buildings[0]?.height * width > 1.8)
       .sort((a, b) => Number(b.country.id === selected) - Number(a.country.id === selected) || b.p.z - a.p.z)
-      .slice(0, slots.length)
+      .slice(0, MAX_SCENIC_COUNTRIES)
       .sort((a, b) => a.p.z - b.p.z)
-    layer.dataset.visibleSettlements = String(visible.length)
-    slots.forEach(({ group, paths }, i) => {
-      const item = visible[i]
-      group.style.display = item ? '' : 'none'
-      if (!item) return
-      const { country } = item
-      group.dataset.style = country.settlement.style
-      group.dataset.country = String(country.id)
-      // Paint complete buildings from far to near, so a rear building's windows
-      // cannot appear through a nearer wall just because they share a material.
-      const buildings = country.settlement.buildings.toSorted(
-        (a, b) =>
-          projectGlobe(middle(a.base[0], a.base[2]), yaw, pitch).z -
-          projectGlobe(middle(b.base[0], b.base[2]), yaw, pitch).z
-      )
-      paths.forEach((materials, index) => {
-        const building = buildings[index]
-        if (!building) {
-          materials.forEach((p) => p.setAttribute('d', ''))
-          return
+    canvas.dataset.visibleSettlements = String(visible.length)
+    const bitmap = Math.max(400, Math.min(1200, Math.ceil(width * Math.max(1.25, window.devicePixelRatio || 1))))
+    if (canvas.width !== bitmap) canvas.width = bitmap
+    if (canvas.height !== bitmap) canvas.height = bitmap
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.setTransform(bitmap / 1000, 0, 0, bitmap / 1000, 0, 0)
+    ctx.clearRect(0, 0, 1000, 1000)
+    ctx.lineCap = ctx.lineJoin = 'round'
+    const trace = (points: GlobePoint[], close = true) => {
+      ctx.beginPath()
+      let connected = false
+      for (const p of points) {
+        if (p.z < 0) {
+          connected = false
+          continue
         }
-        const faces: { points: GlobePoint[]; kind: number }[] = []
-        const base = building.base,
-          top = base.map((p) => raised(p, building.height))
-        for (let side = 0; side < 4; side++) {
-          const next = (side + 1) % 4
-          faces.push({ points: [base[side], base[next], top[next], top[side]], kind: side % 2 })
-          // A short window band is inset from each wall's edges.
-          const a = middle(base[side], base[next])
-          const left = middle(base[side], a),
-            right = middle(a, base[next])
-          faces.push({
-            points: [
-              raised(left, building.height * 0.5),
-              raised(right, building.height * 0.5),
-              raised(right, building.height * 0.64),
-              raised(left, building.height * 0.64),
-            ],
-            kind: 3,
-          })
-        }
-        if (building.pitched) {
-          const left = raised(middle(base[0], base[3]), building.height * 1.6)
-          const right = raised(middle(base[1], base[2]), building.height * 1.6)
-          faces.push(
-            { points: [top[0], top[1], right, left], kind: 2 },
-            { points: [top[2], top[3], left, right], kind: 2 },
-            { points: [top[1], top[2], right], kind: 0 },
-            { points: [top[3], top[0], left], kind: 1 }
-          )
-        } else faces.push({ points: top, kind: 2 })
-        const painted = faces
-          .map((face) => ({ ...face, projected: face.points.map((p) => projectGlobe(p, yaw, pitch)) }))
-          .filter(
-            ({ projected: p }) =>
-              p.every((v) => v.z > 0) &&
-              (p[1].x - p[0].x) * (p[2].y - p[0].y) - (p[1].y - p[0].y) * (p[2].x - p[0].x) > 0
-          )
-        // Four paths per building; at most 24 settlements / 120 buildings.
-        const commands = ['', '', '', '']
-        for (const face of painted)
-          commands[face.kind] +=
-            face.projected.map((p, j) => `${j ? 'L' : 'M'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join('') + 'Z'
-        materials.forEach((path, j) => path.setAttribute('d', commands[j]))
-      })
-    })
+        if (connected) ctx.lineTo(p.x, p.y)
+        else ctx.moveTo(p.x, p.y)
+        connected = true
+      }
+      if (close) ctx.closePath()
+    }
+    const objects: { object: SceneObject; z: number; alpha: number }[] = []
+    let peaks = 0,
+      trees = 0
+    for (const { country, p } of visible) {
+      const alpha = Math.min(1, (p.z - 0.12) / 0.2)
+      ctx.globalAlpha = alpha
+      for (const [i, patch] of country.landscape.meadows.entries()) {
+        const points = patch.map(project)
+        if (points.some((v) => v.z < 0)) continue
+        trace(points)
+        ctx.fillStyle = i ? '#a4ae663b' : '#335d4059'
+        ctx.fill()
+      }
+      const road = country.landscape.road.map(project),
+        river = country.landscape.river.map(project)
+      const scale = Math.min(1, country.settlement.buildings[0].height / 0.035)
+      for (const [points, color, thickness] of [
+        [river, '#243c3b', 3.5],
+        [river, '#77b7b8', 1.8],
+        [road, '#514e39', 4],
+        [road, '#d0bb89', 2],
+      ] as const) {
+        trace(points, false)
+        ctx.strokeStyle = color
+        ctx.lineWidth = thickness * scale
+        ctx.stroke()
+      }
+      let scene = scenes.get(country)
+      if (!scene) {
+        scene = buildCountryScene(country)
+        scenes.set(country, scene)
+      }
+      for (const object of scene) {
+        const z = project(object.center).z
+        // Sub-two-pixel relief adds raster work but no readable detail. Keep its
+        // ground patch and roads, with full meshes returning at larger sizes.
+        if (z <= 0.05 || object.height * width * 0.435 < 2) continue
+        objects.push({ object, z, alpha })
+        if (object.kind === 'mountain') peaks++
+        if (object.kind === 'tree') trees++
+      }
+    }
+    // Depth-sort ALL objects, not separate building/tree material layers.
+    objects.sort((a, b) => a.z - b.z)
+    for (const { object, alpha } of objects) {
+      ctx.globalAlpha = alpha
+      for (const face of object.faces) {
+        if (face.window && object.height * width * 0.435 < 12) continue
+        const p = face.points.map(project)
+        if (
+          p.some((v) => v.z < 0) ||
+          (p[1].x - p[0].x) * (p[2].y - p[0].y) - (p[1].y - p[0].y) * (p[2].x - p[0].x) <= 0
+        )
+          continue
+        trace(p)
+        ctx.fillStyle = face.color
+        ctx.fill()
+      }
+    }
+    // A flag marks a real accepted solve; the gold ring marks only selection.
+    for (const { country, p } of visible) {
+      if (country.id !== selected && !country.solvers?.length) continue
+      ctx.globalAlpha = Math.min(1, (p.z - 0.12) / 0.2)
+      const base = project(country.location),
+        top = project(raised(country.location, 0.1))
+      // At the front of an orthographic globe, a radial pole points at the camera.
+      // Keep a small upright pennant legible without claiming a physical location.
+      if (country.solvers?.length) {
+        top.y -= 12
+        ctx.strokeStyle = '#f4e3ac'
+        ctx.lineWidth = 1.6
+        trace([base, top], false)
+        ctx.stroke()
+        ctx.fillStyle = country.solvers[0].color
+        ctx.beginPath()
+        ctx.moveTo(top.x, top.y)
+        ctx.lineTo(top.x + 12, top.y + 4)
+        ctx.lineTo(top.x, top.y + 9)
+        ctx.closePath()
+        ctx.fill()
+      }
+      if (country.id === selected) {
+        ctx.strokeStyle = '#ffe3a0'
+        ctx.lineWidth = 2
+        ctx.beginPath()
+        ctx.arc(base.x, base.y, 7, 0, Math.PI * 2)
+        ctx.stroke()
+      }
+    }
+    ctx.globalAlpha = 1
+    canvas.dataset.visiblePeaks = String(peaks)
+    canvas.dataset.visibleTrees = String(trees)
+    canvas.dataset.visibleObjects = String(objects.length)
   }
 }

@@ -1,4 +1,5 @@
 import { sphereLocation, type GlobePoint } from './arenaGlobeModel'
+import { buildLandscape, type Landscape } from './arenaLandscape'
 
 interface Point {
   x: number
@@ -12,6 +13,7 @@ export interface CountryGeometry {
   id: number
   location: GlobePoint
   coast: GlobePoint[]
+  landscape: Landscape
   settlement: {
     style: 'modern' | 'town' | 'village'
     buildings: { base: GlobePoint[]; height: number; pitched: boolean }[]
@@ -205,6 +207,9 @@ export function buildArenaGeography(categories: readonly Category[]): ContinentG
           id: ids[i],
           location: onSphere(middle),
           coast: densify(cell).map(onSphere),
+          // Leave a margin for the piecewise-geodesic approximation of warped
+          // borders, especially for very small coastal countries.
+          landscape: buildLandscape(middle, clearance * 0.7, seedOf(`${category.id}:${ids[i]}`), onSphere),
           settlement: { style, buildings },
         }
       }),

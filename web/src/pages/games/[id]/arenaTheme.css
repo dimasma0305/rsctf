@@ -324,6 +324,7 @@ a:hover {
   cursor: grabbing;
 }
 #globeSurface,
+#worldScenery,
 #fxbg,
 #svg,
 #fx,
@@ -344,6 +345,7 @@ a:hover {
   pointer-events: none;
 }
 #globeSurface,
+#worldScenery,
 #fxbg,
 #fx,
 #territories,
@@ -360,12 +362,12 @@ a:hover {
   cursor: pointer;
 }
 .island {
-  fill: color-mix(in srgb, var(--land-color) var(--country-tone, 48%), #6c8c78);
+  fill: color-mix(in srgb, var(--land-color) var(--country-tone, 24%), #8b9b6b);
   pointer-events: visiblePainted;
   cursor: pointer;
 }
 .island.is-selected {
-  fill: color-mix(in srgb, var(--land-color) 74%, #9bbfa8);
+  fill: color-mix(in srgb, var(--land-color) 42%, #b5ba83);
 }
 .country-border,
 .country-border-light {
@@ -387,38 +389,16 @@ a:hover {
   stroke: #fff;
   stroke-width: 2.5;
 }
-.settlements {
+.settlements,
+.world-lighting {
   pointer-events: none;
 }
-.settlement {
-  --wall: #d3c4aa;
-  --shade: #8d8271;
-  --roof: #96513d;
-}
-.settlement[data-style='modern'] {
-  --wall: #b4d7df;
-  --shade: #4b7386;
-  --roof: #d9e6e9;
-}
-.settlement[data-style='village'] {
-  --wall: #dccb9e;
-  --shade: #99845d;
-  --roof: #705845;
-}
-.building-wall {
-  fill: var(--wall);
-}
-.building-shade {
-  fill: var(--shade);
-}
-.building-roof {
-  fill: var(--roof);
-}
-.building-window {
-  fill: #233747;
-}
 .continent-shelf {
-  fill: #355e61;
+  fill: none;
+  stroke: #71b8a559;
+  stroke-width: 18;
+  stroke-linejoin: round;
+  clip-path: url(#arenaOceanClip);
 }
 .continent-outline {
   fill: none;
@@ -431,6 +411,7 @@ a:hover {
 .continent-label {
   position: absolute;
   transform: translate(-50%, -100%);
+  width: max-content;
   max-width: 104px;
   padding: 3px 7px;
   border-radius: 4px;
@@ -476,6 +457,11 @@ a:hover {
   color: var(--app-accent-surface-text);
   background: var(--app-accent-surface);
   border-color: var(--app-accent-border);
+}
+/* Keep focused/selected challenges visible, and preserve every keyboard target. */
+.arena[data-labels='off'] .island-pin:not([aria-pressed='true']):not(:focus-visible) {
+  opacity: 0;
+  pointer-events: none;
 }
 .island-pin[data-compact='true']:not(:hover):not(:focus-visible) {
   transform: translate(-50%, -50%);
@@ -1065,7 +1051,7 @@ a:hover {
   white-space: nowrap;
   border: 0;
 }
-:host([data-motion='off']) canvas:not(#globeSurface) {
+:host([data-motion='off']) canvas:not(#globeSurface):not(#worldScenery) {
   visibility: hidden !important;
 }
 :host([data-motion='off']) .fb-overlay {

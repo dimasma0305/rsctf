@@ -14,6 +14,76 @@
 > offenders plus 95 clean controls; older six/94 and honeypot-score figures are
 > historical results, not acceptance expectations.
 
+## Immersive world scenery and bounded rendering — 4 October 2026
+
+Compared v0.1.133 (`a7f80fd4`) with the v0.1.134 candidate on the same
+loopback production-build host, software-rendered Chromium, 150% CPU bound,
+49 teams, 12 countries, four categories and 12-second phases. Country centers,
+input ordering and camera behavior are unchanged. Each focus phase received
+24 selections at 2/second. One baseline and two final-candidate trials are
+retained; these are bounded acceptance measurements, not a population estimate
+or a promise of 60 FPS on other hardware. No Cargo build ran during measurement.
+
+Frame intervals in milliseconds:
+
+| Viewport / phase | Build | Average | p50 | p90 | p95 | p99 | Max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1600 / rotation | Before | 18.08 | 16.70 | 16.80 | 33.30 | 50.00 | 66.70 |
+| 1600 / rotation | Final 1 | 17.58 | 16.70 | 16.70 | 16.80 | 33.40 | 83.30 |
+| 1600 / rotation | Final 2 | 17.50 | 16.70 | 16.70 | 16.80 | 50.00 | 83.30 |
+| 1600 / focus | Before | 18.11 | 16.70 | 16.80 | 33.30 | 49.90 | 50.00 |
+| 1600 / focus | Final 1 | 17.68 | 16.70 | 16.80 | 33.30 | 33.40 | 66.70 |
+| 1600 / focus | Final 2 | 17.60 | 16.70 | 16.80 | 16.80 | 33.40 | 50.10 |
+| 390 / rotation | Before | 16.85 | 16.70 | 16.70 | 16.80 | 33.30 | 33.40 |
+| 390 / rotation | Final 1 | 16.76 | 16.70 | 16.70 | 16.80 | 16.80 | 33.30 |
+| 390 / rotation | Final 2 | 17.00 | 16.70 | 16.70 | 16.80 | 33.40 | 33.40 |
+| 390 / focus | Before | 16.99 | 16.70 | 16.70 | 16.80 | 33.30 | 50.00 |
+| 390 / focus | Final 1 | 16.83 | 16.70 | 16.70 | 16.80 | 33.30 | 33.40 |
+| 390 / focus | Final 2 | 17.06 | 16.70 | 16.70 | 16.80 | 33.30 | 50.00 |
+
+Resource measurements below list **before / final 1 / final 2**:
+
+| Viewport / phase | Renderer task seconds | End-of-phase JS heap MiB | Long tasks ≥50ms |
+| --- | ---: | ---: | ---: |
+| 1600 / rotation | 9.81 / 8.05 / 8.10 | 16.56 / 20.17 / 16.07 | 5 / 3 / 5 |
+| 1600 / focus | 8.46 / 6.82 / 6.64 | 25.51 / 16.03 / 14.60 | 3 / 2 / 4 |
+| 390 / rotation | 7.37 / 6.56 / 6.51 | 14.10 / 16.93 / 17.04 | 0 / 0 / 0 |
+| 390 / focus | 6.38 / 5.55 / 5.71 | 16.38 / 14.30 / 16.51 | 1 / 0 / 1 |
+
+The static ocean is cached by size/theme; the old rotating grid and particle
+field are removed from this arena only. One bounded 400–1200px canvas replaces
+480 per-building SVG paths. World-space meshes are cached per country, with
+at most 24 scenic countries / 528 objects. Sub-two-pixel objects and unreadable
+window bands are culled; the map, labels, borders, directory and ground patches
+remain available. The new layer has no timers, IO, event listeners or scoring
+authority. Reduced motion preserves its static rendering. First-solver flags
+require a real accepted solver; selecting an unsolved country cannot invent one.
+
+Renderer task time decreased in all four phases in both final trials. Frame
+tails remain variable: desktop rotation's worst frame was 83.3ms in final 1,
+versus 66.7ms in the baseline, and final 1 desktop focus p95 remained 33.3ms.
+Mobile focus p95 was 16.8ms in both final trials; its averages bracketed the
+baseline. Heap samples fluctuate with collection and are not peak-memory
+measurements. Do not infer a backend throughput or memory improvement.
+
+An earlier, pre-detail-limit candidate had a 133.3ms mobile-focus worst frame
+and 33.4ms p95; it is retained in
+`visual-audit-output/immersive-animation-after/report.json`, not presented as
+the final result. One subsequent start attempt used stale development-server
+HTML and never loaded the arena; it produced no timing samples and is excluded
+(`visual-audit-output/immersive-animation-final/report.json`). Restarting the
+local asset server resolved that setup failure before the final two runs.
+
+Authoritative distributions, frame/paint/camera samples, integrity and request
+evidence: `visual-audit-output/immersive-animation-before/report.json`,
+`visual-audit-output/immersive-animation-final-v134/report.json` and
+`visual-audit-output/immersive-animation-repeat-v134/report.json`. All measured
+runs retained 49 teams and 12 countries, with zero runtime errors, event writes
+or route-node replacements. The independent spherical surface proof retained
+313,776 checked samples, zero mismatches and 1,727 negative-control mismatches.
+Unit tests check scenery foundations inside their country through 150-country
+cases, finite outward relief, fixed render bounds and static ocean caching.
+
 ## Surface clipping, country borders and settlements — 4 October 2026
 
 Compared v0.1.132 (`250e3415`) with the v0.1.133 candidate using the same

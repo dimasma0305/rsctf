@@ -13,13 +13,14 @@ test('globe preserves snapshot/freeze boundaries, safe labels, focus and direct 
   const host = document.createElement('div')
   document.body.append(host)
   const root = host.attachShadow({ mode: 'open' })
-  root.innerHTML = `<div id="arena"><canvas id="globeSurface"></canvas><svg id="territories"></svg><svg id="conquestRoutes"></svg><div id="globePins"></div></div>
+  root.innerHTML = `<div id="arena"><canvas id="globeSurface"></canvas><svg id="territories"></svg><canvas id="worldScenery" class="settlements" aria-hidden="true"></canvas><svg id="conquestRoutes"></svg><div id="globePins"></div></div>
     <div id="jeop"></div><div id="territoryDetail"></div><input id="territorySearch">
     <span id="challengeCount"></span><span id="territorySummary"></span><progress id="territoryProgress"></progress><p id="territoryResults"></p>
     <button data-territory-filter="all"></button><button data-territory-filter="solved"></button><button data-territory-filter="open"></button>
-    ${['rotateBtn', 'globeLeft', 'globeRight', 'globeUp', 'globeDown', 'globeReset'].map((id) => `<button id="${id}"></button>`).join('')}`
+    ${['rotateBtn', 'globeLeft', 'globeRight', 'globeUp', 'globeDown', 'globeReset'].map((id) => `<button id="${id}"></button>`).join('')}<button id="mapLabelsBtn" aria-pressed="true"></button>`
   const canvas = root.getElementById('globeSurface') as HTMLCanvasElement
   canvas.getContext = (() => null) as typeof canvas.getContext
+  ;(root.getElementById('worldScenery') as HTMLCanvasElement).getContext = (() => null) as typeof canvas.getContext
   const teams = [{ id: 'p1', name: '<img src=x onerror=alert(1)>', color: '#123456', x: 0, y: 0 }]
   const globe = createArenaGlobe({
     root,
@@ -46,7 +47,9 @@ test('globe preserves snapshot/freeze boundaries, safe labels, focus and direct 
     const originalCountry = root.querySelector('.country')
     const cityLayer = root.querySelector('.settlements')
     assert.equal(cityLayer?.getAttribute('aria-hidden'), 'true')
-    assert.equal(root.querySelectorAll('.settlement').length, 24)
+    assert.equal(root.querySelectorAll('.settlements').length, 1, 'one bitmap replaces the per-building DOM pool')
+    assert.ok(Number((cityLayer as HTMLElement).dataset.visibleSettlements) <= 24)
+    assert.equal(root.querySelector('.world-lighting')?.getAttribute('fill'), 'url(#arenaSunlight)')
     assert.equal(root.querySelectorAll('.country-border').length, 1)
     assert.equal(root.querySelector('.country-border')?.getAttribute('vector-effect'), 'non-scaling-stroke')
     const originalCoast = originalCountry?.getAttribute('d')

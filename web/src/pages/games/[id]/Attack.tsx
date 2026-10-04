@@ -101,6 +101,7 @@ const ARENA_BODY = `
         <div class="arena" id="arena" tabindex="0" role="group" aria-label="3D conquest globe" aria-describedby="globeHelp">
           <canvas id="globeSurface" aria-hidden="true"></canvas>
           <svg id="territories" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
+          <canvas id="worldScenery" class="settlements" aria-hidden="true"></canvas>
           <svg id="conquestRoutes" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
           <canvas id="fxbg" width="870" height="870" aria-hidden="true"></canvas>
           <svg id="svg" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
@@ -116,6 +117,7 @@ const ARENA_BODY = `
           </div>
           <button class="btn" id="globeReset">Reset view</button>
           <button class="btn" id="rotateBtn" aria-pressed="true">Pause rotation</button>
+          <button class="btn" id="mapLabelsBtn" aria-pressed="true">Labels on</button>
         </div>
         <p class="globe-help" id="globeHelp">Drag/swipe or use arrow keys to rotate; Home resets. Scroll outside the globe to move the page.</p>
         <div class="map-shortcuts" role="group" aria-label="Explore the map">
@@ -127,7 +129,7 @@ const ARENA_BODY = `
           <span class="selection-score" id="selectionScore"></span>
           <button class="btn" id="clearTeam">Clear team</button>
         </div>
-        <p class="globe-help map-legend">◇ Unconquered · ⚑ Solved · Borders separate challenge countries; coastlines group category continents. Numbered outposts are teams. A country's color marks its first solver, not exclusive ownership. City and village buildings are decorative, not player locations or game state.</p>
+        <p class="globe-help map-legend">◇ Unconquered · ⚑ Solved · Borders separate challenge countries; coastlines group category continents. Numbered outposts are teams. A country's tint and flag mark its first solver, not exclusive ownership. The gold ring marks your selection. Terrain, roads, and settlements are decorative, not player locations or game state.</p>
       </section>
       <aside class="panel inspector" aria-label="Arena explorer">
         <div class="inspector-tabs" role="tablist" aria-label="Explore the arena">

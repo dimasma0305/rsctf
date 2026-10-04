@@ -3,6 +3,7 @@ import test from 'node:test'
 import { buildArenaGeography } from '../pages/games/[id]/arenaGeography'
 import { faceLocation, type GlobePoint } from '../pages/games/[id]/arenaGlobeModel'
 import { projectSurface } from '../pages/games/[id]/arenaProjection'
+import { buildCountryScene } from '../pages/games/[id]/arenaSceneModel'
 
 test('land follows the spherical horizon instead of closing a straight chord inside the ocean', () => {
   // A cap centered on the right horizon: its visible sliver must reach x=935.
@@ -75,6 +76,30 @@ test('settlements have varied architecture with spherical foundations inside the
             )
           }
         }
+        const landscape = country.landscape
+        assert.equal(landscape.peaks.length, 3)
+        assert.equal(landscape.trees.length, 14)
+        for (const p of [
+          ...landscape.meadows.flat(),
+          ...landscape.road,
+          ...landscape.river,
+          ...landscape.peaks.flatMap((p) => p.base),
+          ...landscape.trees.flatMap((t) => t.base),
+        ]) {
+          assert.ok(Math.abs(Math.hypot(p.x, p.y, p.z) - 1) < 1e-10, 'scenery foundations hug the sphere')
+          assert.ok(
+            contains(country.coast, p, continent.location),
+            `terrain must stay in its own country: ${continent.id}/${country.id}`
+          )
+        }
+        const scene = buildCountryScene(country)
+        assert.ok(scene.length <= 22, 'bounded detail per country')
+        for (const object of scene)
+          for (const face of object.faces)
+            for (const p of face.points) {
+              const radius = Math.hypot(p.x, p.y, p.z)
+              assert.ok(Number.isFinite(radius) && radius >= 0.999 && radius < 1.11, 'finite outward-facing relief')
+            }
         const view = faceLocation(country.location)
         assert.ok(projectSurface(country.coast, view.yaw, view.pitch).fill)
       }

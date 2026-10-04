@@ -1,6 +1,6 @@
-import { drawGlobeSurface } from '@Components/competition/globeSurface'
 import { catalogChallengeHash, catalogChallengeIdFromHash, eventChallengeHash } from '@Utils/ChallengeLinks'
 import { parseUrlFragment, updateUrlFragment } from '@Utils/UrlFragment'
+import { addArenaLighting, createArenaOcean } from './arenaAtmosphere'
 import { arenaHome, createArenaCamera } from './arenaCamera'
 import { buildArenaGeography, type ContinentGeometry, type CountryGeometry } from './arenaGeography'
 import { faceLocation, projectGlobe, sphereLocation, type GlobePoint } from './arenaGlobeModel'
@@ -59,6 +59,8 @@ export function createArenaGlobe(deps: GlobeDeps) {
   const get = <T extends HTMLElement>(id: string) => root.getElementById(id) as T
   const stage = get('arena')
   const canvas = get<HTMLCanvasElement>('globeSurface')
+  const paintOcean = createArenaOcean(canvas)
+  const paintSettlements = createArenaSettlements(get<HTMLCanvasElement>('worldScenery'))
   const surface = root.getElementById('territories') as unknown as SVGSVGElement
   const routes = root.getElementById('conquestRoutes') as unknown as SVGSVGElement
   const pins = get('globePins')
@@ -69,7 +71,6 @@ export function createArenaGlobe(deps: GlobeDeps) {
   let territories: Territory[] = []
   let continents: Continent[] = []
   let topology = ''
-  let paintSettlements: ReturnType<typeof createArenaSettlements> | undefined
   let selected: number | null = null
   let teamId: string | null = null
   let detailSignature = ''
@@ -242,28 +243,13 @@ export function createArenaGlobe(deps: GlobeDeps) {
     stage.dataset.globeYaw = String(yaw)
     stage.dataset.globePitch = String(pitch)
     stage.dataset.cameraMoving = String(camera.moving)
-    drawGlobeSurface(
-      canvas,
-      yaw,
-      pitch,
+    paintOcean(
       root.host.getAttribute('data-arena-scheme') === 'dark',
       stageWidth * Math.max(1.25, window.devicePixelRatio || 1)
     )
-    // Screen-space lighting stays fixed while the world rotates beneath it.
-    const context = canvas.getContext('2d')
-    if (context) {
-      const shadow = context.createRadialGradient(285, 260, 80, 400, 400, 348)
-      shadow.addColorStop(0, '#ffffff0a')
-      shadow.addColorStop(0.55, '#03122200')
-      shadow.addColorStop(1, '#02071599')
-      context.fillStyle = shadow
-      context.beginPath()
-      context.arc(400, 400, 346, 0, Math.PI * 2)
-      context.fill()
-    }
     for (const continent of continents) {
       const projected = projectSurface(continent.coast, yaw, pitch)
-      continent.shelf.setAttribute('d', projected.fill)
+      continent.shelf.setAttribute('d', projected.edge)
       continent.outline.setAttribute('d', projected.edge)
       const p = projectGlobe(continent.labelLocation, yaw, pitch, 1.055)
       continent.label.hidden = !p.visible || p.z < 0.3
@@ -294,7 +280,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
       t.pin.style.zIndex = String(Math.round(p.z * 100))
       t.pin.dataset.conquered = String(t.solveCount > 0)
     }
-    paintSettlements?.(territories, yaw, pitch, stageWidth, selected)
+    paintSettlements(territories, yaw, pitch, stageWidth, selected)
     for (const [index, team] of deps.teams().entries()) {
       const p = projectGlobe(teamLocation(index), yaw, pitch, 1.008)
       team.x = p.x
@@ -418,7 +404,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
         borderLight.classList.add('country-border-light')
         for (const edge of [border, borderLight]) edge.setAttribute('vector-effect', 'non-scaling-stroke')
         shape.classList.add('island', 'country')
-        shape.style.setProperty('--country-tone', `${42 + (Math.abs(c.id * 17) % 5) * 5}%`)
+        shape.style.setProperty('--country-tone', `${18 + (Math.abs(c.id * 17) % 5) * 3}%`)
         shape.dataset.territory = String(c.id)
         shape.dataset.continent = c.categoryId
         surface.append(shape)
@@ -433,10 +419,10 @@ export function createArenaGlobe(deps: GlobeDeps) {
         continents.find((continent) => continent.id === c.categoryId)!.group.append(choice)
         return { ...c, ...country, shape, border, borderLight, pin, choice }
       })
+      addArenaLighting(surface)
       for (const country of territories) surface.append(country.border)
       for (const country of territories) surface.append(country.borderLight)
       for (const continent of continents) surface.append(continent.outline)
-      paintSettlements = createArenaSettlements(surface)
       if (focusedId) territories.find((t) => String(t.id) === focusedId)?.choice.focus({ preventScroll: true })
     }
     for (const continent of continents) {
@@ -545,6 +531,13 @@ export function createArenaGlobe(deps: GlobeDeps) {
     camera.stop()
     syncRotate()
   }
+  const labels = get<HTMLButtonElement>('mapLabelsBtn')
+  labels.onclick = () => {
+    const on = labels.getAttribute('aria-pressed') !== 'true'
+    labels.setAttribute('aria-pressed', String(on))
+    labels.textContent = on ? 'Labels on' : 'Labels off'
+    stage.dataset.labels = on ? 'on' : 'off'
+  }
   listen(root, 'focusin', ((event: FocusEvent) => {
     if (stage.contains(event.target as Node)) pause()
   }) as EventListener)
@@ -628,7 +621,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
       events.abort()
       theme.disconnect()
       resize.disconnect()
-      for (const id of ['globeLeft', 'globeRight', 'globeUp', 'globeDown', 'globeReset', 'rotateBtn'])
+      for (const id of ['globeLeft', 'globeRight', 'globeUp', 'globeDown', 'globeReset', 'rotateBtn', 'mapLabelsBtn'])
         get(id).onclick = null
       search.oninput = null
       for (const territory of territories) territory.pin.onclick = territory.choice.onclick = null
