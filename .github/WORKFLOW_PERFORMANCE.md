@@ -191,3 +191,154 @@ documents the single-core container runner's limits, and its
 includes the required Git, Node, shell and GitHub CLI tools. Local planner and
 aggregate tests also passed under a one-CPU, 1 GiB cgroup. Actual Actions startup
 latency must be observed; shorter queue time is not guaranteed.
+
+The [third optimization PR gate](https://github.com/dimasma0305/rsctf/actions/runs/37222365230)
+passed all 16 selected checks in **9m01s** on 2026-10-04; PR #168 merged as
+`54c45030`. React checks took 56s, including a 23s test step and 14s build.
+Coverage/database checks remained the critical path at 7m57s, including all
+431 selected database regressions. Rust compilation/tests took 6m14s; its
+parallel lint job took 2m11s after the separate main lint cache had been warmed.
+The slim planner/aggregate jobs took 8s/7s. These are actual Actions observations
+on different runners, not a controlled percentage comparison. No checks were
+removed, and this PR run does not measure image compilation or deployment.
+
+## Release compiler experiment: not yet accepted
+
+Four matched cold-target builds used the same v0.1.137 source, release builder
+digest, Rust 1.97.1, two-core quota and 12 GiB limit. All completed without warnings:
+
+| Release profile | Wall time | Sampled peak memory | Server binary bytes |
+| --- | ---: | ---: | ---: |
+| Fat LTO, one codegen unit (current) | 20m06s | 7,229 MiB | 60,631,568 |
+| ThinLTO, one codegen unit | 18m50s | 7,057 MiB | 63,483,536 |
+| ThinLTO, sixteen codegen units | 16m41s | 6,634 MiB | 85,115,984 |
+| ThinLTO, sixteen units only for `rsctf` | 15m40s | 6,462 MiB | 105,268,776 |
+
+ThinLTO alone improved wall time by only 6.3%, below the experiment's predeclared
+10% threshold, so it was rejected. The partitioned candidate improved this first
+cold trial by 17.0%, but its binary is larger and runtime effects are unverified.
+Neither compiler candidate is applied to the production profile. Warm-source
+confirmation and three paired fixed-arrival-rate runtime trials are required
+before accepting one; all existing test/security/release gates remain mandatory.
+
+Warm-source confirmation then passed in reversed order: ThinLTO/sixteen units
+took **11m28s**, followed by fat/one unit at **14m43s**, a **22.1%** reduction.
+Only the root package outputs were invalidated in each task-owned target;
+dependencies were retained. Both rebuilt the real application with zero warnings
+and reproduced both cold-build binary hashes exactly. This passes the compile
+threshold, not the runtime acceptance gate.
+
+The actual pinned release builder uses Rust 1.97.1, while host/CI use 1.98.0.
+Both sides of this experiment use the former; comparing builds across those
+versions would confound the result. Cargo timings identified the mechanism:
+partitioning reduced the root library stage from 501s to 280s, while the final
+server link/code-generation stage increased from 379s to 405s. This is a local
+compiler experiment, not a prediction that a GitHub publication now takes 16m41s.
+Those contrasting stages justify one additional scoped candidate: partition
+only package `rsctf`, retaining one codegen unit for dependencies. It is a
+predeclared experiment, not an applied profile. That cold build completed in
+940.37s, **22.1%** below the fat-LTO control, with zero warnings. It grew the
+binary further instead of reducing it. Its warm-source repeat then completed in
+**10m15s**, **30.3%** below the matched fat-LTO repeat, with zero warnings and
+both cold-build binary hashes reproduced exactly. It is faster than global
+ThinLTO/16 under both measured compile conditions, but strict runtime acceptance
+remains necessary. No production compiler profile has changed.
+
+### Additional cache and database checks
+
+An exact-version `cargo-chef prepare` inspection confirmed that the root package
+version is already normalized to `0.0.1` in both the generated manifest and lock.
+Do not add another version-rewriting layer: application version bumps alone do
+not change those dependency-recipe fields.
+
+The GitHub cache inventory at 18:37 UTC contained 150 entries totaling about
+10 GiB: 5.95 GiB Rust caches, 3.73 GiB BuildKit data and 0.32 GiB other data.
+About 2.7 GiB consisted of older Rust dependency-key variants, while current
+main caches were successfully reused by PR #168. Being near the cache quota is
+not, by itself, evidence of active-cache thrashing. No cache entries or repository
+storage limits were changed during this audit.
+
+The pinned [rust-cache implementation](https://github.com/Swatinem/rust-cache/tree/f0d9c3887740aee45f6153b24b3a6b815192ec16)
+already excludes incremental/workspace outputs by default and restores compatible
+dependency caches across lockfile changes. Whole-workspace caching was not enabled
+without a demonstrated benefit: it would add large project outputs and does not
+eliminate compilation when application sources or release versions change.
+
+The PR #168 Rust timeline also bounds the benefit of splitting out yet another
+test job: Docker retry and normal test execution took only 5s and 9s, while
+same-run artifact staging/upload took 4s and 6s. A new downstream test job would
+add its own startup, checkout and artifact download. No measured net gain justifies
+that extra split; the expensive 2m12s/2m45s application/test-target compilation
+remains separate from Clippy and its tested binaries are already shared.
+
+Four isolated PostgreSQL storage trials, ordered disk, tmpfs, tmpfs, disk,
+each passed the exact same 431 database tests without failures or skips. Disk
+trials took 212.96s/212.18s; a 2 GiB tmpfs took 206.44s/204.72s. The mean
+improvement was only **3.3%**, below the predeclared 10% threshold, so this
+candidate was rejected and CI retains its existing storage configuration.
+All trials used PostgreSQL 18.6, identical test-binary and selection hashes,
+equal resource caps, and `fsync`, `full_page_writes` and `synchronous_commit`
+enabled. Setup took about two seconds per trial and was recorded separately.
+All exact disposable service containers and disk volumes were removed after
+the trials; development and production databases were not part of this test.
+
+### Isolated database partitions: full local instrumentation proof passed
+
+Four further trials used the exact same executable and 431-case selection,
+ordered serial, two partitions, two partitions, serial. Serial tests took
+211.65s/213.62s; two serial partitions took 113.28s/114.63s: **46.4% lower
+mean test wall time**. Including service setup, sampling completion and cleanup,
+mean elapsed time fell from 217.45s to 120.85s (**44.4%**). These are matched
+local measurements, not a claim that the current GitHub workflow is faster yet.
+
+The partitions contain 216 and 215 exact test names. Each has its own disk-backed
+PostgreSQL and Redis instance; aggregate CPU/RAM caps remain equal to serial.
+Separate Redis database numbers would not suffice because one existing test
+intentionally disconnects Pub/Sub clients server-wide. All four runs passed
+every expected case, with zero failed/skipped/duplicate cases or sampling errors,
+enabled PostgreSQL durability, and verified cleanup of every owned container
+and volume. Development and production services were untouched.
+
+The instrumented path proved that default-suite coverage and both partitions'
+profiles are retained and merged before CI was changed. The all-target selection,
+ten existing environment exclusions and 40% line-coverage floor stay unchanged.
+The bounded local Cargo wrapper now honors an explicit `RUSTC_WRAPPER` (including
+an empty opt-out) instead of replacing a coverage wrapper with sccache. Its
+regression reproduces the previous conflict even on hosts without sccache;
+default caching and the shared CPU/RAM/build-lock limits remain intact.
+
+The isolated LLVM 22.1.8/Rust 1.98.0 known-case proof passed: serial and partitioned
+execution both covered all six functions and eighteen lines, with identical
+summaries and unchanged default-profile hashes. Removing one partition's profile
+made the 100% test gate fail; restoring it made the gate pass. This validates the
+coverage toolchain/merge mechanism, independently of the full RSCTF suite.
+
+The full all-feature/all-target proof then passed **1,809 default tests and 431
+database tests**. Serial and partitioned execution produced identical coverage:
+104,650/182,461 lines (57.3547%), 8,221/16,615 functions and identical per-file
+counts. All eight executable targets were discovered, including zero-ignored-case
+targets. The 61 existing raw profiles retained their exact hashes, and each of the
+two partitions supplied its own new profile. Serial-only profiles were moved
+outside the report target before evaluating the candidate, so they could not
+mask missing coverage. The instrumented database stage took 121.42s versus
+212.17s serial; this single functional confirmation is separate from the four
+matched uninstrumented timing trials above.
+
+The promoted `scripts/coverage/` implementation was then exercised again with
+fresh services. Discovery through the exact `show-env --export-prefix`/Bash
+transport reused the instrumented executables in 0.86s without recompiling the
+application. All 431 cases passed in 120.18s, and every per-file coverage summary
+and all totals exactly matched the serial reference. Both service pairs and
+their disk volumes were removed. The new process/partition regressions cover
+missing/duplicate tests, incomplete Cargo output, missing/changed profiles,
+shared services, timeouts, output limits, cancellation and descendant cleanup.
+
+CI now keeps the original concurrent default coverage build, then discovers the
+same all-target/all-feature/locked executables and runs two serial partitions
+against separate PostgreSQL and Redis servers. The final report uses the
+unchanged exclusions and 40% floor. The pinned tool's `report` subcommand rejects
+build-selection flags such as `--all-features`; those remain on compilation, not
+reporting. A first local report-only invocation exposed this CLI distinction;
+the successful tests/profiles were retained and the corrected report verified
+them without rerunning compilation. Actual GitHub timing for this pass remains
+unverified until the clean-room gate runs.

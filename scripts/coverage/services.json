@@ -1,0 +1,10 @@
+[
+  {
+    "postgres": "postgresql://postgres:postgres@127.0.0.1:5432/rsctf_test",
+    "redis": "redis://127.0.0.1:6379"
+  },
+  {
+    "postgres": "postgresql://postgres:postgres@127.0.0.1:5433/rsctf_test",
+    "redis": "redis://127.0.0.1:6380"
+  }
+]

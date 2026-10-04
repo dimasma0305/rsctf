@@ -32,4 +32,31 @@ if RSCTF_BOUNDED_CARGO_DRY_RUN=1 RSCTF_CARGO_TARGET_DIR=relative \
   exit 1
 fi
 
+# Coverage tools select their own rustc wrapper. An explicitly empty value is
+# Cargo's supported way to disable wrappers and must also remain untouched.
+for wrapper in /bounded-cargo-test/coverage-wrapper ''; do
+  output="$(
+    # Make the conflict reproducible even on hosts without sccache installed.
+    sccache() { return 99; }
+    export -f sccache
+    RUSTC_WRAPPER="$wrapper" RSCTF_BOUNDED_CARGO_DRY_RUN=1 \
+      scripts/bounded-cargo.sh check --all-targets
+  )"
+  if grep -Fq 'RUSTC_WRAPPER=' <<<"$output"; then
+    echo 'bounded-cargo replaced an explicitly selected rustc wrapper' >&2
+    exit 1
+  fi
+  grep -Fq 'cpu_quota=200%' <<<"$output"
+  grep -Fq 'memory_max=12G' <<<"$output"
+  grep -Fq 'rsctf-build.lock' <<<"$output"
+done
+
+output="$(
+  sccache() { return 99; }
+  export -f sccache
+  unset RUSTC_WRAPPER
+  RSCTF_BOUNDED_CARGO_DRY_RUN=1 scripts/bounded-cargo.sh check
+)"
+grep -Fq 'RUSTC_WRAPPER=sccache' <<<"$output"
+
 echo 'bounded-cargo contract: ok'

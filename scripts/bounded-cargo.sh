@@ -57,7 +57,8 @@ cargo_bin="$(command -v cargo)"
   echo "bounded-cargo: cargo is not available as an executable absolute path" >&2
   exit 2
 }
-if command -v sccache >/dev/null 2>&1; then
+# Honor explicit coverage/custom wrappers, including Cargo's empty opt-out.
+if [[ ! -v RUSTC_WRAPPER ]] && command -v sccache >/dev/null 2>&1; then
   command+=(
     "RUSTC_WRAPPER=$(command -v sccache)"
     "SCCACHE_CACHE_SIZE=${RSCTF_SCCACHE_SIZE:-20G}"
