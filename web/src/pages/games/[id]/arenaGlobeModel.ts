@@ -27,23 +27,6 @@ export function projectGlobe(point: GlobePoint, yaw: number, pitch: number, elev
 
 export const faceLocation = (p: GlobePoint) => ({ yaw: -Math.atan2(p.x, p.z), pitch: Math.asin(p.y) })
 
-/** A deterministic raised island on the sphere, not a screen-space polygon. */
-export function islandCoast(center: GlobePoint, index: number, count: number): GlobePoint[] {
-  const radius = Math.min(0.3, 0.95 / Math.sqrt(Math.max(1, count)))
-  const length = Math.hypot(center.x, center.z)
-  const east = { x: center.z / length, y: 0, z: -center.x / length }
-  const north = { x: center.y * east.z, y: center.z * east.x - center.x * east.z, z: -center.y * east.x }
-  return Array.from({ length: 16 }, (_, i) => {
-    const a = (i / 16) * Math.PI * 2
-    const r = radius * (0.78 + 0.16 * Math.sin(i * 2.7 + index * 1.8) + 0.06 * Math.cos(i * 5.1))
-    const x = center.x + r * (east.x * Math.cos(a) + north.x * Math.sin(a))
-    const y = center.y + r * north.y * Math.sin(a)
-    const z = center.z + r * (east.z * Math.cos(a) + north.z * Math.sin(a))
-    const n = Math.hypot(x, y, z)
-    return { x: x / n, y: y / n, z: z / n }
-  })
-}
-
 export interface PublicSolver {
   name: string
   color: string

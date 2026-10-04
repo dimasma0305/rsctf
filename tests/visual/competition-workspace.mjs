@@ -32,7 +32,8 @@ const waitFor = async (expression) => {
     if (await evaluate(`Boolean(${expression})`)) return
     await new Promise((resolve) => setTimeout(resolve, 200))
   }
-  throw new Error(`Timed out: ${expression}; ${await evaluate('document.body.innerText.slice(-2500)')}`)
+  const state = await evaluate(`({url:location.href,width:innerWidth,workspaceWidth:document.querySelector('[data-competition-workspace]')?.getBoundingClientRect().width,detail:!!document.querySelector('[data-challenge-detail]'),dialog:!!document.querySelector('[role="dialog"]'),active:document.activeElement?.outerHTML,selected:[...document.querySelectorAll('[data-challenge-row][aria-current="true"]')].map(e=>e.getAttribute('href'))})`)
+  throw new Error(`Timed out: ${expression}; ${JSON.stringify(state)}; ${await evaluate('document.body.innerText.slice(-2500)')}`)
 }
 const press = async (key) => {
   const vk = { Enter: 13, ' ': 32, Escape: 27, Tab: 9 }[key]

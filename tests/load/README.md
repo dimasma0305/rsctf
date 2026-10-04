@@ -1520,6 +1520,7 @@ metric regresses, so the ledger does not hide the cost of an optimization.
 
 | Date | Change | Held-rate throughput | Direct work reduction | App CPU-s | Stack CPU-s | Relevant p95 | Result |
 | --- | --- | ---: | --- | ---: | ---: | ---: | --- |
+| 2026-10-04 | Procedural category continents / challenge countries (visual acceptance) | 2 → 2 country selections/s | No optimization claim; membership-keyed geometry, richer coastlines and labels | — | — | Rotation frame p95 16.80 → 16.80 ms; desktop focus 16.80 → 33.30 ms | 0 browser/integrity errors; worse focus tail, task cost and heap variation disclosed in REPORT.md |
 | 2026-10-03 | Smooth arena camera and bounded globe rendering | 2 → 2 island selections/s | Canvas allocation on each repaint → only on size change; retained geometry/routes | — | — | Desktop steady globe updates 66.70 → 16.80 ms; 390px 33.40 → 16.80 ms | 0 browser/integrity errors; extra focus task time and heap variation disclosed in REPORT.md |
 | 2026-07-16 | Batch authenticated limiter policies | 429.20 → 429.72 req/s | Redis commands −12.01% | 157.47 → 155.20 | 345.88 → 339.48 | HTTP 9.13 → 9.17 ms | 0 5xx; clean |
 | 2026-07-16 | Cache KotH lifecycle with round fencing | 429.72 → 429.34 req/s | SQL calls −98.52% | 155.20 → 151.51 | 339.48 → 316.10 | KotH State 9.20 → 7.83 ms | 0 5xx; clean |

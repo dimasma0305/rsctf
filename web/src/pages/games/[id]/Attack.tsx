@@ -12,7 +12,7 @@
  * Shared navigation and page header surround an isolated SVG/canvas scene.
  * The Shadow DOM keeps legacy celebration effects scoped while inheriting the
  * application theme. Public data, sockets and timers remain owned by this engine;
- * arenaGlobe owns only camera, 3D projection and challenge-island presentation.
+ * arenaGlobe owns only camera, 3D projection and challenge-country presentation.
  */
 import { Stack, useComputedColorScheme } from '@mantine/core'
 import { FC, useEffect, useRef, useState } from 'react'
@@ -60,7 +60,7 @@ const ARENA_BODY = `
     <div class="arena-toolbar">
     <dl class="overview" aria-label="Arena overview">
       <div class="metric"><dt>Teams</dt><dd id="teamCount">0</dd></div>
-      <div class="metric"><dt>Challenge islands</dt><dd id="challengeCount">0</dd></div>
+      <div class="metric"><dt>Challenge countries</dt><dd id="challengeCount">0</dd></div>
       <div class="metric"><dt>A&amp;D services</dt><dd id="serviceCount">0</dd></div>
       <div class="metric"><dt>KotH hills</dt><dd id="hillCount">0</dd></div>
     </dl>
@@ -95,7 +95,7 @@ const ARENA_BODY = `
     <div class="midrow">
       <section class="panel arena-wrap" aria-labelledby="globeTitle">
         <div class="map-heading">
-          <div><h2 id="globeTitle">Conquest globe</h2><p>One world. Every challenge is an island to explore.</p></div>
+          <div><h2 id="globeTitle">Conquest globe</h2><p>Categories are continents. Challenges are countries.</p></div>
           <button id="fsBtn" class="fs-btn" title="Fullscreen globe" aria-label="Fullscreen globe">⛶</button>
         </div>
         <div class="arena" id="arena" tabindex="0" role="group" aria-label="3D conquest globe" aria-describedby="globeHelp">
@@ -119,7 +119,7 @@ const ARENA_BODY = `
         </div>
         <p class="globe-help" id="globeHelp">Drag/swipe or use arrow keys to rotate; Home resets. Scroll outside the globe to move the page.</p>
         <div class="map-shortcuts" role="group" aria-label="Explore the map">
-          <button class="btn" id="browseIslands">Browse islands</button>
+          <button class="btn" id="browseIslands">Browse countries</button>
           <button class="btn" id="browseTeams">Find a team</button>
         </div>
         <div class="selection" aria-label="Highlighted team" hidden>
@@ -127,31 +127,31 @@ const ARENA_BODY = `
           <span class="selection-score" id="selectionScore"></span>
           <button class="btn" id="clearTeam">Clear team</button>
         </div>
-        <p class="globe-help map-legend">◇ Unconquered · ⚑ Solved · Numbered outposts are teams. An island takes its first solver's color; every team can still solve it.</p>
+        <p class="globe-help map-legend">◇ Unconquered · ⚑ Solved · Borders separate challenge countries; coastlines group category continents. Numbered outposts are teams. A country's color marks its first solver, not exclusive ownership.</p>
       </section>
       <aside class="panel inspector" aria-label="Arena explorer">
         <div class="inspector-tabs" role="tablist" aria-label="Explore the arena">
-          <button type="button" role="tab" id="arena-tab-islands" data-arena-pane="islands" aria-controls="arena-pane-islands" aria-selected="true">Islands</button>
+          <button type="button" role="tab" id="arena-tab-islands" data-arena-pane="islands" aria-controls="arena-pane-islands" aria-selected="true">Countries</button>
           <button type="button" role="tab" id="arena-tab-teams" data-arena-pane="teams" aria-controls="arena-pane-teams" aria-selected="false" tabindex="-1">Teams</button>
           <button type="button" role="tab" id="arena-tab-activity" data-arena-pane="activity" aria-controls="arena-pane-activity" aria-selected="false" tabindex="-1">Activity</button>
         </div>
         <section class="territory-browser" id="arena-pane-islands" role="tabpanel" aria-labelledby="arena-tab-islands">
           <div>
-            <h2>Challenge islands</h2>
-            <p id="territorySummary" role="status">Loading islands</p>
-            <progress id="territoryProgress" value="0" max="1" aria-label="Islands with an accepted solve"></progress>
+            <h2>Challenge countries</h2>
+            <p id="territorySummary" role="status">Loading countries</p>
+            <progress id="territoryProgress" value="0" max="1" aria-label="Countries with an accepted solve"></progress>
           </div>
-          <section id="territoryDetail" aria-label="Selected island" aria-live="polite"></section>
+          <section id="territoryDetail" aria-label="Selected country" aria-live="polite"></section>
           <div class="territory-directory">
             <label for="territorySearch">Find a challenge</label>
             <input id="territorySearch" type="search" placeholder="Name or category">
-            <div class="territory-filters" role="group" aria-label="Filter challenge islands">
+            <div class="territory-filters" role="group" aria-label="Filter challenge countries">
               <button class="btn" data-territory-filter="all" aria-pressed="true">All</button>
               <button class="btn" data-territory-filter="open" aria-pressed="false">Unconquered</button>
               <button class="btn" data-territory-filter="solved" aria-pressed="false">Solved</button>
             </div>
             <p id="territoryResults" role="status"></p>
-            <div id="jeop" role="region" tabindex="0" aria-label="Challenge islands"></div>
+            <div id="jeop" role="region" tabindex="0" aria-label="Challenge countries grouped by continent"></div>
           </div>
         </section>
         <section class="rank" id="arena-pane-teams" role="tabpanel" aria-labelledby="arena-tab-teams" hidden>
@@ -433,7 +433,7 @@ function runArena(
   // 2D-canvas VICTORY effects (god-rays + confetti + sparkles) for MATCH COMPLETE / podium.
   const winRenderer = createWinRenderer($('winCanvas') as HTMLCanvasElement)
   const inspector = createArenaInspector(root)
-  // One camera projects teams, hills and challenge islands onto the same world.
+  // One camera projects teams, hills and challenge countries onto the same world.
   const jeop = createArenaGlobe({
     root,
     teams: () => TEAMS,

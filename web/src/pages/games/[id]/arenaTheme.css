@@ -360,19 +360,48 @@ a:hover {
   cursor: pointer;
 }
 .island {
-  fill: var(--land-color);
+  fill: color-mix(in srgb, var(--land-color) var(--country-tone, 48%), #6c8c78);
   stroke: #c5e1e3;
-  stroke-width: 1.2;
-  stroke-opacity: 0.65;
+  stroke-width: 1.5;
+  stroke-opacity: 0.85;
+  stroke-linejoin: round;
+  pointer-events: visiblePainted;
+  cursor: pointer;
 }
 .island.is-selected {
+  fill: color-mix(in srgb, var(--land-color) 74%, #9bbfa8);
   stroke: #fff;
   stroke-width: 3;
 }
-.island-cliff {
-  fill: #183b41;
-  stroke: #5e9192;
-  stroke-width: 6;
+.continent-shelf {
+  fill: #355e61;
+  stroke: #558788;
+  stroke-width: 7;
+  stroke-linejoin: round;
+}
+.continent-outline {
+  fill: none;
+  stroke: #b6cbb6;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+.continent-label {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  max-width: 104px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+  text-transform: uppercase;
+  text-align: center;
+  overflow-wrap: anywhere;
+  z-index: 101;
 }
 #conquestRoutes path {
   fill: none;
@@ -405,6 +434,43 @@ a:hover {
   color: var(--app-accent-surface-text);
   background: var(--app-accent-surface);
   border-color: var(--app-accent-border);
+}
+.island-pin[data-compact='true']:not(:hover):not(:focus-visible) {
+  z-index: 0 !important;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 0;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+.island-pin[data-compact='true']:not(:hover):not(:focus-visible)::after {
+  content: '';
+  display: block;
+  width: 6px;
+  height: 6px;
+  margin: 9px;
+  border: 1px solid var(--text);
+  background: var(--panel);
+  transform: rotate(45deg);
+}
+.island-pin[data-compact='true'][data-conquered='true']:not(:hover):not(:focus-visible)::after {
+  content: '⚑';
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  transform: none;
+  font-size: 13px;
+  line-height: 24px;
+}
+.island-pin:hover,
+.island-pin:focus-visible {
+  z-index: 102 !important;
 }
 .globe-navigation {
   display: flex;
@@ -527,6 +593,24 @@ a:hover {
   background: var(--app-subtle-surface);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+.continent-group + .continent-group {
+  margin-top: 10px;
+}
+.continent-choice {
+  width: 100%;
+  min-height: 40px;
+  margin-bottom: 5px;
+  padding: 7px 8px;
+  border: 1px solid var(--app-control-border);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--panel);
+  text-align: start;
+  font-size: 12px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+  cursor: pointer;
 }
 .territory-name,
 .territory-meta {

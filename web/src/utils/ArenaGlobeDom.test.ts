@@ -40,11 +40,18 @@ test('globe preserves snapshot/freeze boundaries, safe labels, focus and direct 
   try {
     globe.setData(cats)
     assert.equal(root.querySelector('.island-pin')?.getAttribute('aria-pressed'), 'true')
+    assert.equal(root.querySelectorAll('.continent-outline').length, 1)
+    assert.equal(root.querySelector('.country')?.getAttribute('data-continent'), 'Web')
+    assert.equal(root.querySelector('.continent-group')?.getAttribute('aria-label'), 'Web continent')
+    const originalCountry = root.querySelector('.country')
+    const originalCoast = originalCountry?.getAttribute('d')
     assert.equal(root.querySelectorAll('script,img').length, 0)
     const choice = root.querySelector<HTMLButtonElement>('.territory-choice')!
     choice.focus()
     globe.setData(cats)
     assert.equal(root.activeElement, choice, 'identical polls preserve directory focus')
+    assert.equal(root.querySelector('.country'), originalCountry, 'polls reuse geometry and DOM')
+    assert.equal(root.querySelector('.country')?.getAttribute('d'), originalCoast)
     const link = root.querySelector<HTMLAnchorElement>('#territoryDetail a')!
     link.focus()
     globe.setData(cats)
@@ -57,7 +64,7 @@ test('globe preserves snapshot/freeze boundaries, safe labels, focus and direct 
     assert.match(root.getElementById('territoryDetail')!.textContent!, /1 accepted solves/)
     ;(root.querySelector('[data-territory-filter="open"]') as HTMLButtonElement).click()
     assert.equal(choice.hidden, true)
-    assert.match(root.getElementById('territoryResults')!.textContent!, /No islands match/)
+    assert.match(root.getElementById('territoryResults')!.textContent!, /No countries match/)
     ;(root.querySelector('[data-territory-filter="solved"]') as HTMLButtonElement).click()
     assert.equal(choice.hidden, false)
     assert.equal((root.getElementById('territoryProgress') as HTMLProgressElement).value, 1)
@@ -81,11 +88,23 @@ test('globe preserves snapshot/freeze boundaries, safe labels, focus and direct 
       'public snapshot is authoritative'
     )
     globe.setData([{ ...cats[0], challenges: [...cats[0].challenges, { ...cats[0].challenges[0], id: 2 }] }])
+    assert.equal(root.querySelectorAll('.continent-group .territory-choice').length, 2)
+    assert.equal(root.querySelectorAll('.continent-outline').length, 1, 'same-category countries share one continent')
     assert.equal(
       globe.solveByTitle(0, 0, cats[0].challenges[0].name, teams[0]),
       false,
       'ambiguous feed titles must await snapshot'
     )
+    ;(root.querySelector('.continent-choice') as HTMLButtonElement).click()
+    assert.equal(window.location.hash, '#continent=Web')
+    assert.equal(root.querySelectorAll('.territory-choice[aria-pressed="true"]').length, 0)
+    globe.setData([{ ...cats[0], id: 'Crypto', name: 'Crypto', challenges: cats[0].challenges }])
+    assert.equal(
+      root.querySelector('.country')?.getAttribute('data-continent'),
+      'Crypto',
+      'category changes rebuild topology even when challenge IDs are unchanged'
+    )
+    assert.equal(root.querySelector('.continent-label')?.textContent, 'Crypto')
     globe.refreshMotion()
     assert.equal((root.getElementById('rotateBtn') as HTMLButtonElement).disabled, true)
     ;(root.getElementById('globeRight') as HTMLButtonElement).click()

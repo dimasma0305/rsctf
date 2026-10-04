@@ -11,6 +11,7 @@ const output = resolve(process.env.RSCTF_ANIMATION_OUTPUT || 'visual-audit-outpu
 mkdirSync(output, { recursive: true })
 const browser = await launchBrowser(), { cdp } = browser
 const data = createArenaFixture(), errors = [], requests = [], results = []
+let documentGeneration = 0, closing = false, retiredReads = 0
 const evaluate = async expression => {
   const response = await cdp.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
   if (response.exceptionDetails) throw Error(response.exceptionDetails.exception?.description || response.exceptionDetails.text)
@@ -22,12 +23,21 @@ try {
   await cdp.send('Page.addScriptToEvaluateOnNewDocument', {source: arenaBrowserSetup})
   await cdp.send('Fetch.enable', {patterns:[{urlPattern:`${target}/api/*`},{urlPattern:`${target}/hub*`}]})
   cdp.on('Fetch.requestPaused', async ({requestId, request}) => {
+    const generation = documentGeneration
     requests.push({url:request.url,method:request.method})
     const response = data.fixture(request.url, request.method)
-    await cdp.send('Fetch.fulfillRequest', {requestId,responseCode:response.status,responseHeaders:[{name:'Content-Type',value:'application/json'}],body:Buffer.from(JSON.stringify(response.body)).toString('base64')})
+    try {
+      await cdp.send('Fetch.fulfillRequest', {requestId,responseCode:response.status,responseHeaders:[{name:'Content-Type',value:'application/json'}],body:Buffer.from(JSON.stringify(response.body)).toString('base64')})
+    } catch (error) {
+      // Navigating to the next viewport retires pending old-document reads.
+      // Do not turn that expected cancellation into an unhandled rejection.
+      if (error.message.includes('Invalid InterceptionId') && (generation !== documentGeneration || closing)) retiredReads++
+      else errors.push(String(error))
+    }
   })
   for (const width of [1600,390]) {
     await cdp.send('Emulation.setDeviceMetricsOverride', {width,height:1100,deviceScaleFactor:1,mobile:false})
+    documentGeneration++
     await cdp.send('Page.navigate', {url:`${target}/games/901/attack`})
     await evaluate(`new Promise((resolve,reject)=>{let n=0;const timer=setInterval(()=>{const root=document.querySelector('[data-arena-theme]')?.shadowRoot;if(root?.querySelectorAll('.territory-choice').length===12){clearInterval(timer);resolve()}else if(++n>150){clearInterval(timer);reject(Error('arena did not load'))}},100)})`)
     for (const mode of ['rotation','focus']) {
@@ -60,6 +70,7 @@ try {
   assert.deepEqual(errors,[])
   assert.equal(requests.some(r=>!['GET','HEAD'].includes(r.method)&&!r.url.includes('/hub/user/negotiate')),false)
 } finally {
-  writeFileSync(`${output}/report.json`,JSON.stringify({scenario:{teams:49,islands:12,durationMs:12000,focusRatePerSecond:2},results,errors,requests},null,2))
+  closing = true
+  writeFileSync(`${output}/report.json`,JSON.stringify({scenario:{teams:49,islands:12,durationMs:12000,focusRatePerSecond:2},results,errors,requests,retiredReads},null,2))
   await browser.close()
 }

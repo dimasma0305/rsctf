@@ -14,6 +14,60 @@
 > offenders plus 95 clean controls; older six/94 and honeypot-score figures are
 > historical results, not acceptance expectations.
 
+## Procedural continents and challenge countries — 4 October 2026
+
+Compared the v0.1.131 production frontend (`fe0911c2`) with the v0.1.132
+candidate using the same loopback build host, software-rendered Chromium,
+150% CPU bounded runner, 49 teams, 12 challenges, four categories, and
+12-second phases. Focus input remained 24 selections at 2/second per phase.
+The same challenge roster now belongs to category continents, so list ordering,
+geographic positions and camera travel distances intentionally differ. This is
+held-rate UI acceptance, not an identical-distance camera comparison. No Cargo build ran
+concurrently, and all API data came from the same read-only fixture.
+
+Frame interval distributions (milliseconds):
+
+| Viewport / phase | Build | Average | p50 | p90 | p95 | p99 | Max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1600 / rotation | Before | 17.09 | 16.70 | 16.70 | 16.80 | 33.30 | 50.00 |
+| 1600 / rotation | After | 17.01 | 16.70 | 16.70 | 16.80 | 33.30 | 66.70 |
+| 1600 / focus | Before | 17.25 | 16.70 | 16.70 | 16.80 | 33.40 | 66.70 |
+| 1600 / focus | After | 17.68 | 16.70 | 16.80 | 33.30 | 33.40 | 50.10 |
+| 390 / rotation | Before | 16.90 | 16.70 | 16.70 | 16.80 | 33.30 | 50.00 |
+| 390 / rotation | After | 16.75 | 16.70 | 16.70 | 16.80 | 16.80 | 50.00 |
+| 390 / focus | Before | 16.88 | 16.70 | 16.70 | 16.80 | 33.30 | 33.40 |
+| 390 / focus | After | 16.86 | 16.70 | 16.70 | 16.80 | 33.30 | 33.40 |
+
+| Viewport / phase | Renderer task seconds | End-of-phase JS heap MiB | Long tasks ≥50ms |
+| --- | ---: | ---: | ---: |
+| 1600 / rotation | 8.02 → 8.45 | 12.74 → 17.99 | 3 → 1 |
+| 1600 / focus | 6.96 → 7.09 | 14.92 → 17.80 | 2 → 0 |
+| 390 / rotation | 6.21 → 6.51 | 13.26 → 15.45 | 1 → 1 |
+| 390 / focus | 5.16 → 5.26 | 17.96 → 15.87 | 0 → 0 |
+
+This is a visual-detail acceptance comparison, not a speed or memory improvement
+claim. Rotation and mobile-focus frame p95 remained at 16.8 ms. Desktop-focus
+p95 increased from 16.8 to 33.3 ms, while its median stayed at 16.7 ms and mean
+changed from 17.25 to 17.68 ms. Added coastline projection and country labels
+cost more renderer task time; the worse tail is retained rather than hidden.
+Heap samples fluctuate with collection and do not measure peak memory. Geography
+is generated only when category/challenge membership changes; score-only polls
+retain the geometry and interactive nodes. All runs retained 49 teams and
+12 challenges with zero runtime errors, event writes or route-node replacements.
+Raw frame/paint/camera distributions are in
+`visual-audit-output/country-animation-before/report.json` and
+`visual-audit-output/country-animation-ship/report.json`. An earlier measurement
+aborted when Chromium retired an old-document intercepted read during navigation.
+The harness now handles only that specific cancellation and still rejects all
+other interception errors; the complete rerun reported zero errors.
+
+Geometry regressions cover up to 500 countries, unit-sphere coordinates,
+determinism, shared boundaries, area coverage and non-overlapping continents.
+Browser cases also cover a 48-country continent, country-surface clicks,
+continent/challenge bookmarks, keyboard navigation and 320px layouts. The
+separate production `arena-read` guardrail must pass after immutable deployment;
+it does not establish a backend performance improvement.
+
 ## Smooth arena camera and bounded rendering — 3 October 2026
 
 Compared the v0.1.129 source (`b13d1534`) and v0.1.130 candidate production
