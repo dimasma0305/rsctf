@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import type { BrandingAction, ConfigEditModel } from '../Api'
@@ -51,6 +52,18 @@ test('request signature rotates when staged branding bytes change', async () => 
   const second = await settingsBrandingDigest(new Blob(['second']))
   assert.notEqual(first, second)
   assert.notEqual(settingsRequestSignature(request, first), settingsRequestSignature(request, second))
+})
+
+test('SHA-256 upgrades preserve binary branding and Unicode request fingerprints', async () => {
+  const bytes = new Uint8Array([0, 1, 127, 128, 254, 255])
+  const digest = await settingsBrandingDigest(new Blob([bytes]))
+  assert.equal(digest, createHash('sha256').update(bytes).digest('hex'))
+  const request: ConfigEditModel = { globalConfig: { title: 'CTF 🌏 — selamat datang' } }
+  assert.equal(
+    settingsRequestSignature(request, digest),
+    createHash('sha256').update(JSON.stringify([request, digest])).digest('hex')
+  )
+  assert.equal(await settingsBrandingDigest(new Blob(['abc'])), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
 })
 
 test('settings page owns one operation and reconciles branding with the same intent', () => {

@@ -52,7 +52,7 @@
     "i18next": "^26.4.2",
     "i18next-browser-languagedetector": "^8.2.1",
     "i18next-resources-to-backend": "^1.2.3",
-    "js-sha256": "^0.11.1",
+    "js-sha256": "^1.0.0",
     "jszip": "^3.10.2",
     "katex": "^0.18.7",
     "lz-string": "^1.5.0",
