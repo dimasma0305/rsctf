@@ -49,7 +49,7 @@ test('natural coastline and country borders tile a sphere without gaps or overla
   for (const count of [1, 2, 3, 12, 49, 150, 500]) {
     const [continent] = buildArenaGeography([category('Forensics', count)])
     assert.equal(continent.countries.length, count)
-    assert.equal(continent.coast.length, 192)
+    assert.equal(continent.coast.length, 256)
     const wholeArea = area(continent.coast, continent.location)
     const countryAreas = continent.countries.map((c) => area(c.coast, continent.location))
     assert.ok(

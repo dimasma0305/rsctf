@@ -12,6 +12,10 @@ export interface CountryGeometry {
   id: number
   location: GlobePoint
   coast: GlobePoint[]
+  settlement: {
+    style: 'modern' | 'town' | 'village'
+    buildings: { base: GlobePoint[]; height: number; pitched: boolean }[]
+  }
 }
 export interface ContinentGeometry {
   id: string
@@ -22,7 +26,7 @@ export interface ContinentGeometry {
 }
 
 const TAU = Math.PI * 2
-const COAST_SAMPLES = 192
+const COAST_SAMPLES = 256
 const disk = Array.from({ length: COAST_SAMPLES }, (_, i) => ({
   x: Math.cos((i * TAU) / COAST_SAMPLES),
   y: Math.sin((i * TAU) / COAST_SAMPLES),
@@ -114,23 +118,30 @@ export function buildArenaGeography(categories: readonly Category[]): ContinentG
       return Math.exp(-(delta * delta) / width)
     }
     const coastRadius = (angle: number) =>
-      0.8 +
-      0.1 * Math.sin(2 * angle + phase(seed, 1)) +
-      0.1 * Math.cos(3 * angle + phase(seed, 2)) +
-      0.035 * Math.sin(7 * angle + phase(seed, 3)) +
-      0.018 * Math.cos(13 * angle + phase(seed, 4)) +
-      0.01 * Math.sin(29 * angle + phase(seed, 5)) +
-      0.006 * Math.cos(53 * angle + phase(seed, 6)) -
-      0.22 * bay(angle, phase(seed, 10), 0.085) -
-      0.14 * bay(angle, phase(seed, 11), 0.045)
+      0.72 +
+      0.17 * Math.sin(2 * angle + phase(seed, 1)) +
+      0.09 * Math.cos(3 * angle + phase(seed, 2)) +
+      0.045 * Math.sin(7 * angle + phase(seed, 3)) +
+      0.016 * Math.cos(13 * angle + phase(seed, 4)) +
+      0.008 * Math.sin(29 * angle + phase(seed, 5)) +
+      0.004 * Math.cos(53 * angle + phase(seed, 6)) +
+      0.12 * bay(angle, phase(seed, 12), 0.055) -
+      0.32 * bay(angle, phase(seed, 10), 0.12) -
+      0.2 * bay(angle, phase(seed, 11), 0.04)
+    const maximum = Math.max(...disk.map((p) => coastRadius(Math.atan2(p.y, p.x)))) * 1.01
     const rotation = phase(seed, 7),
-      squeeze = 0.78 + 0.16 * Math.sin(phase(seed, 8)) ** 2
+      squeeze = 0.66 + 0.25 * Math.sin(phase(seed, 8)) ** 2
     const onSphere = (p: Point): GlobePoint => {
       const angle = Math.atan2(p.y, p.x)
-      const scale = coastRadius(angle) / 1.069
-      // A bounded, invertible warp: radial coastline followed by an ellipse/rotation.
-      const px = p.x * scale,
-        py = p.y * scale * squeeze
+      const scale = Math.max(0.13, coastRadius(angle)) / maximum
+      // Compose invertible radial, radius-dependent twist, and affine warps.
+      // The same transform applies to coast, countries and building foundations.
+      const r0 = Math.hypot(p.x, p.y)
+      // Positive radial derivative, with coastal detail fading toward the interior.
+      const distance = (r0 * scale) / (scale + (1 - scale) * r0)
+      const twisted = angle + 0.65 * distance * distance * Math.sin(phase(seed, 13))
+      const px = Math.cos(twisted) * distance,
+        py = Math.sin(twisted) * distance * squeeze
       const x = px * Math.cos(rotation) - py * Math.sin(rotation)
       const y = px * Math.sin(rotation) + py * Math.cos(rotation)
       const r = Math.hypot(x, y),
@@ -160,11 +171,43 @@ export function buildArenaGeography(categories: readonly Category[]): ContinentG
       location: center,
       labelLocation,
       coast,
-      countries: cells.map((cell, i) => ({
-        id: ids[i],
-        location: onSphere(centroid(cell)),
-        coast: densify(cell).map(onSphere),
-      })),
+      countries: cells.map((cell, i) => {
+        const middle = centroid(cell)
+        const clearance = Math.min(
+          ...cell.map((a, j) => {
+            const b = cell[(j + 1) % cell.length]
+            return (
+              Math.abs((b.x - a.x) * (middle.y - a.y) - (b.y - a.y) * (middle.x - a.x)) /
+              Math.max(1e-12, Math.hypot(b.x - a.x, b.y - a.y))
+            )
+          })
+        )
+        const style = (['modern', 'town', 'village'] as const)[seedOf(`${category.id}:${ids[i]}`) % 3]
+        const unit = Math.min(0.075, clearance * 0.18)
+        const buildings = Array.from({ length: style === 'village' ? 4 : 5 }, (_, b) => {
+          const x = middle.x + ((b % 3) - 1) * unit * 1.8
+          const y = middle.y + clearance * 0.22 + Math.floor(b / 3) * unit * 1.7
+          const size = unit * (style === 'modern' ? 0.55 : 0.68)
+          const base = [
+            [-1, -1],
+            [1, -1],
+            [1, 1],
+            [-1, 1],
+          ].map(([dx, dy]) => onSphere({ x: x + dx * size, y: y + dy * size }))
+          const width = Math.hypot(base[0].x - base[1].x, base[0].y - base[1].y, base[0].z - base[1].z)
+          return {
+            base,
+            height: Math.min(0.065, width * (style === 'modern' ? 1.8 + (b % 3) * 0.9 : 0.7)),
+            pitched: style !== 'modern',
+          }
+        })
+        return {
+          id: ids[i],
+          location: onSphere(middle),
+          coast: densify(cell).map(onSphere),
+          settlement: { style, buildings },
+        }
+      }),
     }
   })
 }

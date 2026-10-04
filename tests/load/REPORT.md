@@ -14,6 +14,58 @@
 > offenders plus 95 clean controls; older six/94 and honeypot-score figures are
 > historical results, not acceptance expectations.
 
+## Surface clipping, country borders and settlements — 4 October 2026
+
+Compared v0.1.132 (`250e3415`) with the v0.1.133 candidate using the same
+loopback production-build host, software-rendered Chromium, 150% CPU bound,
+49 teams, 12 challenges, four categories and 12-second phases. Each focus
+phase received 24 selections at 2/second. Category order and IDs are unchanged;
+new coastlines move country centers slightly, so camera distances are not an
+identical-distance comparison. Cargo did not run during either measurement.
+
+Frame intervals in milliseconds:
+
+| Viewport / phase | Build | Average | p50 | p90 | p95 | p99 | Max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1600 / rotation | Before | 17.16 | 16.70 | 16.70 | 16.80 | 33.40 | 50.00 |
+| 1600 / rotation | After | 17.93 | 16.70 | 16.70 | 33.30 | 50.00 | 116.60 |
+| 1600 / focus | Before | 17.47 | 16.70 | 16.70 | 16.80 | 33.40 | 66.70 |
+| 1600 / focus | After | 17.52 | 16.70 | 16.70 | 16.80 | 33.40 | 66.70 |
+| 390 / rotation | Before | 16.72 | 16.70 | 16.70 | 16.70 | 16.80 | 33.40 |
+| 390 / rotation | After | 16.93 | 16.70 | 16.70 | 16.80 | 33.30 | 33.40 |
+| 390 / focus | Before | 16.81 | 16.70 | 16.70 | 16.80 | 16.80 | 33.50 |
+| 390 / focus | After | 17.42 | 16.70 | 16.70 | 16.80 | 33.40 | 100.00 |
+
+| Viewport / phase | Renderer task seconds | End-of-phase JS heap MiB | Long tasks ≥50ms |
+| --- | ---: | ---: | ---: |
+| 1600 / rotation | 8.24 → 9.51 | 19.83 → 13.33 | 0 → 7 |
+| 1600 / focus | 7.42 → 8.01 | 16.32 → 15.21 | 2 → 1 |
+| 390 / rotation | 6.32 → 7.56 | 20.09 → 17.68 | 0 → 0 |
+| 390 / focus | 5.42 → 6.94 | 22.11 → 23.40 | 0 → 2 |
+
+This is visual-detail acceptance, **not a performance improvement claim**.
+The extra border layers and radially extruded buildings cost renderer time.
+Desktop rotation p95 increased to 33.3ms; mobile focus had a 100ms worst frame.
+Medians remained 16.7ms, but this does not guarantee 60 FPS on other devices.
+Heap snapshots fluctuate with collection, and are not peak-memory measurements.
+Rendering is bounded to 24 visible settlements / 120 buildings, with small or
+back-facing settlements omitted. There are no new timers, API reads or scores.
+Both runs retained 49 teams and 12 countries with zero runtime errors, event
+writes or route-node replacements. Raw frame/paint/camera distributions are in
+`visual-audit-output/settlement-animation-before/report.json` and
+`visual-audit-output/settlement-animation-after/report.json`.
+
+The independent `tests/visual/arena-surface.mjs` browser proof compares SVG fill
+hit-testing with inverse camera rays and a gnomonic spherical-polygon oracle.
+Across 313,776 checked samples it found zero candidate mismatches; the old
+straight-chord clipping negative control disagreed on 1,727 samples. It excludes
+720 samples within 0.75 SVG units of the true edge to avoid tessellation/rounding
+ambiguity; horizon gaps remain in scope. The control isolates clipping, without
+the old extra elevation. Evidence: `visual-audit-output/settlement-surface-proof/report.json`.
+Geometry tests also check shared country area, disjoint continents, determinism,
+unit-sphere foundations and buildings staying inside their country. The separate
+read-only production `arena-read` guardrail is required after deployment.
+
 ## Procedural continents and challenge countries — 4 October 2026
 
 Compared the v0.1.131 production frontend (`fe0911c2`) with the v0.1.132

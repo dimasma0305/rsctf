@@ -2,9 +2,11 @@ import { drawGlobeSurface } from '@Components/competition/globeSurface'
 import { catalogChallengeHash, catalogChallengeIdFromHash, eventChallengeHash } from '@Utils/ChallengeLinks'
 import { parseUrlFragment, updateUrlFragment } from '@Utils/UrlFragment'
 import { arenaHome, createArenaCamera } from './arenaCamera'
-import { buildArenaGeography, type ContinentGeometry } from './arenaGeography'
+import { buildArenaGeography, type ContinentGeometry, type CountryGeometry } from './arenaGeography'
 import { faceLocation, projectGlobe, sphereLocation, type GlobePoint } from './arenaGlobeModel'
 import type { JeopCategory, JeopChallenge } from './arenaJeopardy'
+import { projectSurface } from './arenaProjection'
+import { createArenaSettlements } from './arenaSettlements'
 
 interface Team {
   id: string
@@ -21,13 +23,15 @@ interface Hill {
   y: number
   owner?: Team
 }
-interface Territory extends JeopChallenge {
+interface Territory extends JeopChallenge, CountryGeometry {
   categoryId: string
   category: string
   color: string
   location: GlobePoint
   coast: GlobePoint[]
   shape: SVGPathElement
+  border: SVGPathElement
+  borderLight: SVGPathElement
   pin: HTMLButtonElement
   choice: HTMLButtonElement
 }
@@ -65,6 +69,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
   let territories: Territory[] = []
   let continents: Continent[] = []
   let topology = ''
+  let paintSettlements: ReturnType<typeof createArenaSettlements> | undefined
   let selected: number | null = null
   let teamId: string | null = null
   let detailSignature = ''
@@ -142,6 +147,8 @@ export function createArenaGlobe(deps: GlobeDeps) {
       territory.choice.setAttribute('aria-pressed', String(active))
       territory.pin.setAttribute('aria-pressed', String(active))
       territory.shape.classList.toggle('is-selected', active)
+      territory.border.classList.toggle('is-selected', active)
+      territory.borderLight.classList.toggle('is-selected', active)
       const summary = `${territory.name} · ${territory.category} · ${territory.base} pts · ${territory.solveCount ? `${territory.solveCount} solves` : 'Unconquered'}`
       if (territory.choice.getAttribute('aria-label') !== summary) {
         territory.choice.setAttribute('aria-label', summary)
@@ -228,24 +235,6 @@ export function createArenaGlobe(deps: GlobeDeps) {
         'No Jeopardy countries in the current public snapshot. Teams and KotH hills remain on the globe.'
     dirty = true
   }
-  // Clip surface polygons against the visible hemisphere before projection.
-  function polygon(points: GlobePoint[], elevation: number) {
-    const { yaw, pitch } = camera.current
-    const projected = points.map((p) => projectGlobe(p, yaw, pitch, elevation))
-    const visible: { x: number; y: number }[] = []
-    for (let i = 0; i < projected.length; i++) {
-      const a = projected[i],
-        b = projected[(i + 1) % projected.length]
-      if (a.z >= 0.015) visible.push(a)
-      if (a.z >= 0.015 !== b.z >= 0.015) {
-        const ratio = (0.015 - a.z) / (b.z - a.z)
-        visible.push({ x: a.x + (b.x - a.x) * ratio, y: a.y + (b.y - a.y) * ratio })
-      }
-    }
-    return visible.length < 3
-      ? ''
-      : visible.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join('') + 'Z'
-  }
   function paint() {
     if (!dirty || destroyed) return
     dirty = false
@@ -273,8 +262,9 @@ export function createArenaGlobe(deps: GlobeDeps) {
       context.fill()
     }
     for (const continent of continents) {
-      continent.shelf.setAttribute('d', polygon(continent.coast, 1.005))
-      continent.outline.setAttribute('d', polygon(continent.coast, 1.014))
+      const projected = projectSurface(continent.coast, yaw, pitch)
+      continent.shelf.setAttribute('d', projected.fill)
+      continent.outline.setAttribute('d', projected.edge)
       const p = projectGlobe(continent.labelLocation, yaw, pitch, 1.055)
       continent.label.hidden = !p.visible || p.z < 0.3
       continent.label.style.left = `clamp(52px, ${p.x / 10}%, calc(100% - 52px))`
@@ -285,9 +275,11 @@ export function createArenaGlobe(deps: GlobeDeps) {
       .map((t) => ({ t, p: projectGlobe(t.location, yaw, pitch, 1.017) }))
       .sort((a, b) => Number(b.t.id === selected) - Number(a.t.id === selected) || b.p.z - a.p.z)
     for (const { t, p } of projected) {
-      t.shape.setAttribute('d', polygon(t.coast, 1.014))
+      const land = projectSurface(t.coast, yaw, pitch)
+      t.shape.setAttribute('d', land.fill)
+      t.border.setAttribute('d', land.edge)
+      t.borderLight.setAttribute('d', land.edge)
       t.shape.style.setProperty('--land-color', t.solvers[0]?.color || t.color)
-      t.shape.setAttribute('fill-opacity', String(0.82 + Math.max(0, p.z) * 0.18))
       t.pin.hidden = !p.visible || p.z < 0.24
       const compact =
         t.id !== selected &&
@@ -302,6 +294,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
       t.pin.style.zIndex = String(Math.round(p.z * 100))
       t.pin.dataset.conquered = String(t.solveCount > 0)
     }
+    paintSettlements?.(territories, yaw, pitch, stageWidth, selected)
     for (const [index, team] of deps.teams().entries()) {
       const p = projectGlobe(teamLocation(index), yaw, pitch, 1.008)
       team.x = p.x
@@ -418,7 +411,12 @@ export function createArenaGlobe(deps: GlobeDeps) {
       const geometry = new Map(continents.flatMap((c) => c.countries.map((country) => [country.id, country] as const)))
       territories = incoming.map((c) => {
         const country = geometry.get(c.id)!
-        const shape = path()
+        const shape = path(),
+          border = path(),
+          borderLight = path()
+        border.classList.add('country-border')
+        borderLight.classList.add('country-border-light')
+        for (const edge of [border, borderLight]) edge.setAttribute('vector-effect', 'non-scaling-stroke')
         shape.classList.add('island', 'country')
         shape.style.setProperty('--country-tone', `${42 + (Math.abs(c.id * 17) % 5) * 5}%`)
         shape.dataset.territory = String(c.id)
@@ -433,9 +431,12 @@ export function createArenaGlobe(deps: GlobeDeps) {
         pin.onclick = choice.onclick = () => selectTerritory(c.id)
         pins.append(pin)
         continents.find((continent) => continent.id === c.categoryId)!.group.append(choice)
-        return { ...c, ...country, shape, pin, choice }
+        return { ...c, ...country, shape, border, borderLight, pin, choice }
       })
+      for (const country of territories) surface.append(country.border)
+      for (const country of territories) surface.append(country.borderLight)
       for (const continent of continents) surface.append(continent.outline)
+      paintSettlements = createArenaSettlements(surface)
       if (focusedId) territories.find((t) => String(t.id) === focusedId)?.choice.focus({ preventScroll: true })
     }
     for (const continent of continents) {

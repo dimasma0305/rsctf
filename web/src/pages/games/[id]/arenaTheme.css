@@ -361,29 +361,71 @@ a:hover {
 }
 .island {
   fill: color-mix(in srgb, var(--land-color) var(--country-tone, 48%), #6c8c78);
-  stroke: #c5e1e3;
-  stroke-width: 1.5;
-  stroke-opacity: 0.85;
-  stroke-linejoin: round;
   pointer-events: visiblePainted;
   cursor: pointer;
 }
 .island.is-selected {
   fill: color-mix(in srgb, var(--land-color) 74%, #9bbfa8);
-  stroke: #fff;
+}
+.country-border,
+.country-border-light {
+  fill: none;
+  stroke: #152333;
   stroke-width: 3;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+.country-border-light {
+  stroke: #f1f6e9;
+  stroke-width: 1;
+}
+.country-border.is-selected {
+  stroke-width: 5;
+}
+.country-border-light.is-selected {
+  stroke: #fff;
+  stroke-width: 2.5;
+}
+.settlements {
+  pointer-events: none;
+}
+.settlement {
+  --wall: #d3c4aa;
+  --shade: #8d8271;
+  --roof: #96513d;
+}
+.settlement[data-style='modern'] {
+  --wall: #b4d7df;
+  --shade: #4b7386;
+  --roof: #d9e6e9;
+}
+.settlement[data-style='village'] {
+  --wall: #dccb9e;
+  --shade: #99845d;
+  --roof: #705845;
+}
+.building-wall {
+  fill: var(--wall);
+}
+.building-shade {
+  fill: var(--shade);
+}
+.building-roof {
+  fill: var(--roof);
+}
+.building-window {
+  fill: #233747;
 }
 .continent-shelf {
   fill: #355e61;
-  stroke: #558788;
-  stroke-width: 7;
-  stroke-linejoin: round;
 }
 .continent-outline {
   fill: none;
   stroke: #b6cbb6;
   stroke-width: 2;
   stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
   pointer-events: none;
 }
 .continent-label {
@@ -411,7 +453,7 @@ a:hover {
 .island-pin {
   --island-pin-half: 66px;
   position: absolute;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, calc(-100% - 12px));
   pointer-events: auto;
   min-height: 36px;
   width: 132px;
@@ -436,6 +478,7 @@ a:hover {
   border-color: var(--app-accent-border);
 }
 .island-pin[data-compact='true']:not(:hover):not(:focus-visible) {
+  transform: translate(-50%, -50%);
   z-index: 0 !important;
   width: 26px;
   height: 26px;

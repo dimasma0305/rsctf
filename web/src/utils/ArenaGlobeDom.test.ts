@@ -44,6 +44,11 @@ test('globe preserves snapshot/freeze boundaries, safe labels, focus and direct 
     assert.equal(root.querySelector('.country')?.getAttribute('data-continent'), 'Web')
     assert.equal(root.querySelector('.continent-group')?.getAttribute('aria-label'), 'Web continent')
     const originalCountry = root.querySelector('.country')
+    const cityLayer = root.querySelector('.settlements')
+    assert.equal(cityLayer?.getAttribute('aria-hidden'), 'true')
+    assert.equal(root.querySelectorAll('.settlement').length, 24)
+    assert.equal(root.querySelectorAll('.country-border').length, 1)
+    assert.equal(root.querySelector('.country-border')?.getAttribute('vector-effect'), 'non-scaling-stroke')
     const originalCoast = originalCountry?.getAttribute('d')
     assert.equal(root.querySelectorAll('script,img').length, 0)
     const choice = root.querySelector<HTMLButtonElement>('.territory-choice')!
@@ -51,6 +56,7 @@ test('globe preserves snapshot/freeze boundaries, safe labels, focus and direct 
     globe.setData(cats)
     assert.equal(root.activeElement, choice, 'identical polls preserve directory focus')
     assert.equal(root.querySelector('.country'), originalCountry, 'polls reuse geometry and DOM')
+    assert.equal(root.querySelector('.settlements'), cityLayer, 'polls do not rebuild city decorations')
     assert.equal(root.querySelector('.country')?.getAttribute('d'), originalCoast)
     const link = root.querySelector<HTMLAnchorElement>('#territoryDetail a')!
     link.focus()

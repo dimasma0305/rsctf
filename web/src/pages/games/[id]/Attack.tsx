@@ -127,7 +127,7 @@ const ARENA_BODY = `
           <span class="selection-score" id="selectionScore"></span>
           <button class="btn" id="clearTeam">Clear team</button>
         </div>
-        <p class="globe-help map-legend">◇ Unconquered · ⚑ Solved · Borders separate challenge countries; coastlines group category continents. Numbered outposts are teams. A country's color marks its first solver, not exclusive ownership.</p>
+        <p class="globe-help map-legend">◇ Unconquered · ⚑ Solved · Borders separate challenge countries; coastlines group category continents. Numbered outposts are teams. A country's color marks its first solver, not exclusive ownership. City and village buildings are decorative, not player locations or game state.</p>
       </section>
       <aside class="panel inspector" aria-label="Arena explorer">
         <div class="inspector-tabs" role="tablist" aria-label="Explore the arena">

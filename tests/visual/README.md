@@ -1,5 +1,17 @@
 # Full-page visual audit
 
+For the arena's spherical coastline regression, run the independent SVG/ray oracle:
+
+```sh
+scripts/bounded-frontend.sh exec bash -c 'cd .. && exec node tests/visual/arena-surface.mjs'
+```
+
+It checks concave countries at 24 yaw angles and three pitches against spherical
+point containment, including points close to the globe's limb. A retained
+straight-chord negative control must fail. It uses an isolated blank browser,
+requires no server or credentials, and saves its report under
+`visual-audit-output/settlement-surface-proof/`.
+
 The visual audit renders every React page component at ultrawide (3440×1440),
 wide desktop (1920×1080), desktop (1440×1100), notebook (1366×768), laptop
 (1024×768), tablet (768×1024), mobile (390×844), and compact mobile (320×568)

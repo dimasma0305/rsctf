@@ -76,6 +76,18 @@ try {
   await waitFor(`${q('#arena')}.dataset.cameraMoving === 'false'`)
   assert.ok(Math.abs(Number(await evaluate(`${q('#arena')}.dataset.globeYaw`)) - Number(continentYaw)) < 1e-9, 'continent bookmark restores the camera')
   await inspect('bookmarked-web-continent')
+  assert.ok(await evaluate(`Number(${q('.settlements')}.dataset.visibleSettlements) > 0`), 'decorative settlements render on visible land')
+  assert.ok(await evaluate(`${root}.querySelectorAll('.settlement').length <= 24`), 'settlement DOM has a fixed bound')
+  assert.equal(await evaluate(`getComputedStyle(${q('.country-border')}).vectorEffect`), 'non-scaling-stroke')
+  assert.equal(await evaluate(`getComputedStyle(${q('.country-border')}).strokeWidth`), '3px')
+  assert.equal(await evaluate(`getComputedStyle(${q('.settlements')}).pointerEvents`), 'none')
+  await evaluate(`${q('#globeRight')}.click(); ${q('#globeRight')}.click(); ${q('#globeRight')}.click()`)
+  await waitFor(`${q('#arena')}.dataset.cameraMoving === 'false'`)
+  assert.ok(await evaluate(`[...${root}.querySelectorAll('.country')].some(p=>p.getAttribute('d').includes('A435,435'))`), 'limb land uses a curved spherical horizon')
+  assert.ok(await evaluate(`[...${root}.querySelectorAll('.country-border')].every(p=>!p.getAttribute('d').includes('A'))`), 'horizon clips never draw false borders')
+  await inspect('side-view-surface-and-settlements')
+  await evaluate(`${q('.continent-choice[data-continent="Web"]')}.click()`)
+  await waitFor(`${q('#arena')}.dataset.cameraMoving === 'false'`)
   const countryHit = await evaluate(`(() => {
     const root=${root}, stage=root.getElementById('arena').getBoundingClientRect();
     for(let y=stage.top+20;y<stage.bottom-20;y+=9) for(let x=stage.left+20;x<stage.right-20;x+=9){
