@@ -1,0 +1,9 @@
+# Assemble only metadata after both native builds finish. No RUN/COPY/ADD here:
+# the server's platform-specific filesystem layers must remain byte-identical.
+# The workflow requires an exact same-run registry digest for both inputs.
+ARG RSCTF_SERVER_IMAGE=scratch
+FROM ${RSCTF_SERVER_IMAGE}
+ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE
+LABEL org.opencontainers.image.rsctf.byoc-agent="${RSCTF_DEFAULT_BYOC_AGENT_IMAGE}"
+ENV RSCTF_DEFAULT_BYOC_AGENT_IMAGE="${RSCTF_DEFAULT_BYOC_AGENT_IMAGE}" \
+    RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH="true"

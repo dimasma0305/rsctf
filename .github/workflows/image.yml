@@ -128,16 +128,13 @@ jobs:
   build-server:
     name: Build server natively
     if: github.ref == 'refs/heads/main'
-    needs: [prepare, build-agent]
+    needs: [prepare]
     uses: docker/github-builder/.github/workflows/build.yml@58cb9f5b71b1836d6f690c1e95effdeb9b98cb8a # v1
     permissions:
       contents: read
       id-token: write
       packages: write
     with:
-      build-args: |
-        RSCTF_DEFAULT_BYOC_AGENT_IMAGE=${{ needs.prepare.outputs.ghcr-agent }}@${{ needs.build-agent.outputs.digest }}
-        RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH=true
       cache: true
       cache-mode: max
       cache-scope: rsctf-image
@@ -157,7 +154,7 @@ jobs:
       meta-flavor: latest=false
       meta-images: ${{ needs.prepare.outputs.ghcr }}
       meta-tags: |
-        type=sha,format=long,prefix=sha-
+        type=sha,format=long,prefix=build-
       output: image
       platforms: linux/amd64,linux/arm64
       push: true
@@ -185,8 +182,16 @@ jobs:
       id-token: write
       packages: write
     steps:
+      - name: Check out metadata-only release assembler
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          version: v0.36.1
+          driver-opts: image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -195,17 +200,46 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Require immutable same-run assembly inputs
+        shell: bash
+        env:
+          AGENT_DIGEST: ${{ needs.build-agent.outputs.digest }}
+          SERVER_BASE_DIGEST: ${{ needs.build-server.outputs.digest }}
+        run: |
+          [[ "$AGENT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$SERVER_BASE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+      # There are no target-architecture RUN commands: both executable images
+      # were built natively above. Only config/labels and fresh SBOM/provenance
+      # are assembled here, with no second Cargo or frontend build.
+      - name: Assemble immutable companion metadata
+        id: assemble
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/Dockerfile.release
+          build-args: |
+            RSCTF_SERVER_IMAGE=${{ needs.prepare.outputs.ghcr }}@${{ needs.build-server.outputs.digest }}
+            RSCTF_DEFAULT_BYOC_AGENT_IMAGE=${{ needs.prepare.outputs.ghcr-agent }}@${{ needs.build-agent.outputs.digest }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ needs.prepare.outputs.ghcr }}:sha-${{ github.sha }}
+          sbom: generator=docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
+          provenance: mode=max
+
       - name: Verify platforms, labels, and embedded agent
         shell: bash
         env:
           AGENT_DIGEST: ${{ needs.build-agent.outputs.digest }}
           AGENT_IMAGE: ${{ needs.prepare.outputs.ghcr-agent }}
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
-          SERVER_DIGEST: ${{ needs.build-server.outputs.digest }}
+          SERVER_BASE_DIGEST: ${{ needs.build-server.outputs.digest }}
+          SERVER_DIGEST: ${{ steps.assemble.outputs.digest }}
           SERVER_IMAGE: ${{ needs.prepare.outputs.ghcr }}
         run: |
           set -euo pipefail
           agent_ref="${AGENT_IMAGE}@${AGENT_DIGEST}"
+          server_base_ref="${SERVER_IMAGE}@${SERVER_BASE_DIGEST}"
           server_ref="${SERVER_IMAGE}@${SERVER_DIGEST}"
 
           verify_platforms() {
@@ -256,16 +290,35 @@ jobs:
           }
 
           verify_platforms "$agent_ref"
+          verify_platforms "$server_base_ref"
           verify_platforms "$server_ref"
           verify_labels "$AGENT_IMAGE" "$agent_ref"
+          verify_labels "$SERVER_IMAGE" "$server_base_ref"
           verify_labels "$SERVER_IMAGE" "$server_ref"
 
+          base_index="$(docker buildx imagetools inspect --raw "$server_base_ref")"
           server_index="$(docker buildx imagetools inspect --raw "$server_ref")"
-          while IFS= read -r digest; do
+          while IFS=$'\t' read -r arch digest; do
+            base_digest="$(jq -er --arg arch "$arch" '.manifests[]
+              | select(.platform.os == "linux" and .platform.architecture == $arch)
+              | .digest' <<< "$base_index")"
+            base_layers="$(docker buildx imagetools inspect --raw "${SERVER_IMAGE}@${base_digest}" | jq -ec '[.layers[].digest]')"
+            assembled_layers="$(docker buildx imagetools inspect --raw "${SERVER_IMAGE}@${digest}" | jq -ec '[.layers[].digest]')"
+            if [[ "$base_layers" != "$assembled_layers" ]]; then
+              echo "::error::Assembly changed server filesystem layers for ${arch}."
+              exit 1
+            fi
             config="$(
               docker buildx imagetools inspect "${SERVER_IMAGE}@${digest}" \
                 --format '{{ json .Image.Config }}'
             )"
+            base_config="$(docker buildx imagetools inspect "${SERVER_IMAGE}@${base_digest}" --format '{{ json .Image.Config }}')"
+            unchanged_config='del(.Labels["org.opencontainers.image.rsctf.byoc-agent"])
+              | .Env |= map(select(startswith("RSCTF_DEFAULT_BYOC_AGENT_IMAGE=") or startswith("RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH=") | not))'
+            if [[ "$(jq -Sc "$unchanged_config" <<< "$base_config")" != "$(jq -Sc "$unchanged_config" <<< "$config")" ]]; then
+              echo "::error::Assembly changed unrelated server runtime configuration for ${arch}."
+              exit 1
+            fi
             embedded="$(jq -er '.Labels["org.opencontainers.image.rsctf.byoc-agent"]' <<< "$config")"
             if [[ "$embedded" != "$agent_ref" ]]; then
               echo "::error::Server platform ${digest} embeds '${embedded}', expected '${agent_ref}'."
@@ -293,7 +346,7 @@ jobs:
             jq -r '.manifests[]?
               | select(.platform.os == "linux")
               | select(.platform.architecture == "amd64" or .platform.architecture == "arm64")
-              | .digest' <<< "$server_index"
+              | [.platform.architecture, .digest] | @tsv' <<< "$server_index"
           )
 
       - name: Attest GitHub Container Registry server image
@@ -301,7 +354,7 @@ jobs:
         continue-on-error: ${{ github.event.repository.visibility != 'public' }}
         with:
           subject-name: ${{ needs.prepare.outputs.ghcr }}
-          subject-digest: ${{ needs.build-server.outputs.digest }}
+          subject-digest: ${{ steps.assemble.outputs.digest }}
           push-to-registry: true
           create-storage-record: false
 
@@ -321,7 +374,7 @@ jobs:
           AGENT_IMAGE: ${{ needs.prepare.outputs.ghcr-agent }}
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REGISTRY_USER: ${{ github.actor }}
-          SERVER_DIGEST: ${{ needs.build-server.outputs.digest }}
+          SERVER_DIGEST: ${{ steps.assemble.outputs.digest }}
           SERVER_IMAGE: ${{ needs.prepare.outputs.ghcr }}
         run: |
           set -euo pipefail
@@ -391,7 +444,7 @@ jobs:
         env:
           AGENT_DIGEST: ${{ needs.build-agent.outputs.digest }}
           AGENT_IMAGE: ${{ needs.prepare.outputs.ghcr-agent }}
-          SERVER_DIGEST: ${{ needs.build-server.outputs.digest }}
+          SERVER_DIGEST: ${{ steps.assemble.outputs.digest }}
           SERVER_IMAGE: ${{ needs.prepare.outputs.ghcr }}
         run: |
           set -euo pipefail
@@ -421,7 +474,7 @@ jobs:
         continue-on-error: ${{ github.event.repository.visibility != 'public' }}
         with:
           subject-name: ${{ env.DOCKERHUB_IMAGE }}
-          subject-digest: ${{ needs.build-server.outputs.digest }}
+          subject-digest: ${{ steps.assemble.outputs.digest }}
           push-to-registry: true
           create-storage-record: false
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { jobComponents } from '../../../scripts/ci-plan.mjs'
@@ -50,6 +51,70 @@ test('manual and tag publication reuse one attested quality decision', () => {
   )
 })
 
+test('native server compilation does not wait for the companion image', () => {
+  const server = job(imageWorkflow, 'build-server')
+  assert.match(server, /needs: \[prepare\]/)
+  assert.doesNotMatch(server, /needs\.build-agent|RSCTF_DEFAULT_BYOC_AGENT_IMAGE=/)
+  assert.match(server, /prefix=build-/)
+  const finalize = job(imageWorkflow, 'finalize-main')
+  assert.match(finalize, /needs: \[prepare, quality, build-agent, build-server\]/)
+  assert.match(finalize, /RSCTF_SERVER_IMAGE=.*needs\.build-server\.outputs\.digest/)
+  assert.match(finalize, /RSCTF_DEFAULT_BYOC_AGENT_IMAGE=.*needs\.build-agent\.outputs\.digest/)
+  assert.match(finalize, /file: deploy\/Dockerfile\.release/)
+  assert.match(finalize, /sbom: generator=docker\/buildkit-syft-scanner:1\.12\.0@sha256:[a-f0-9]{64}/)
+  assert.match(finalize, /provenance: mode=max/)
+  assert.match(finalize, /subject-digest: \$\{\{ steps\.assemble\.outputs\.digest }}/)
+  assert.doesNotMatch(finalize, /subject-digest: \$\{\{ needs\.build-server\.outputs\.digest }}/)
+  assert.match(finalize, /Assembly changed server filesystem layers/)
+  assert.match(finalize, /Assembly changed unrelated server runtime configuration/)
+
+  const assembly = readFileSync(new URL('../../../deploy/Dockerfile.release', import.meta.url), 'utf8')
+  // Also forbids ENTRYPOINT/CMD/HEALTHCHECK/USER changes that an OCI-only
+  // config reader might omit when decoding Docker-specific extensions.
+  assert.deepEqual([...assembly.matchAll(/^([A-Z]+)\s/gm)].map((match) => match[1]),
+    ['ARG', 'FROM', 'ARG', 'LABEL', 'ENV'])
+  assert.match(assembly, /^FROM \$\{RSCTF_SERVER_IMAGE}$/m)
+  assert.match(assembly, /RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH="true"/)
+})
+
+test('assembly input guard rejects missing, mutable and malformed digests', () => {
+  const guard = job(imageWorkflow, 'finalize-main').split('name: Require immutable same-run assembly inputs')[1]
+  const script = guard.match(/run: \|\n((?:(?: {10}.*)?\n)+)/)?.[1]
+  assert.ok(script)
+  const valid = `sha256:${'a'.repeat(64)}`
+  const run = (agent, server) => spawnSync('bash', ['-e', '-o', 'pipefail', '-c', script], {
+    env: { PATH: process.env.PATH, AGENT_DIGEST: agent, SERVER_BASE_DIGEST: server },
+    encoding: 'utf8',
+  })
+  assert.equal(run(valid, valid).status, 0)
+  for (const invalid of ['', 'main', 'latest', `sha256:${'A'.repeat(64)}`, `${valid}\nother`, `${valid}extra`]) {
+    assert.notEqual(run(invalid, valid).status, 0)
+    assert.notEqual(run(valid, invalid).status, 0)
+  }
+})
+
+test('assembly config comparison permits only the companion fields to change', () => {
+  const filter = job(imageWorkflow, 'finalize-main').match(/unchanged_config='([^']+)'/)?.[1]
+  assert.ok(filter)
+  const normalize = (config) => execFileSync('jq', ['-Sc', filter], { input: JSON.stringify(config), encoding: 'utf8' })
+  const base = {
+    Env: ['RSCTF_BIND=0.0.0.0:8080', 'RSCTF_DEFAULT_BYOC_AGENT_IMAGE=', 'RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH=false'],
+    Labels: { 'org.opencontainers.image.revision': 'commit', 'org.opencontainers.image.rsctf.byoc-agent': '' },
+    Entrypoint: ['/usr/local/bin/rsctf'], WorkingDir: '/app',
+  }
+  const assembled = structuredClone(base)
+  assembled.Env[1] = `RSCTF_DEFAULT_BYOC_AGENT_IMAGE=ghcr.io/example/agent@sha256:${'a'.repeat(64)}`
+  assembled.Env[2] = 'RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH=true'
+  assembled.Labels['org.opencontainers.image.rsctf.byoc-agent'] = assembled.Env[1].split('=')[1]
+  assert.equal(normalize(assembled), normalize(base))
+  for (const changed of [
+    { ...assembled, Entrypoint: ['/other'] },
+    { ...assembled, Env: [...assembled.Env, 'UNEXPECTED=1'] },
+    { ...assembled, Labels: { ...assembled.Labels, 'org.opencontainers.image.revision': 'wrong' } },
+    { ...assembled, WorkingDir: '/other' },
+  ]) assert.notEqual(normalize(changed), normalize(base))
+})
+
 function job(source, name) {
   const match = source.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][a-z-]*:|$(?![\\s\\S]))`, 'm'))
   assert.ok(match, `missing ${name} job`)
@@ -72,7 +137,9 @@ test('every scoped check is selected by the planner and enforced by the always-r
 test('integration jobs use the exact same-run test outputs instead of compiling a third server', () => {
   const rust = job(ciWorkflow, 'rust')
   assert.match(rust, /cargo test --all-targets --all-features --locked/)
-  assert.match(rust, /cargo clippy --all-targets --all-features --locked -- -D warnings/)
+  assert.match(rust, /cargo build --all-targets --all-features --locked/)
+  assert.match(rust, /cargo build --all-features --locked[\s\S]*cargo build --all-targets --all-features --locked/)
+  assert.doesNotMatch(rust, /cargo clippy/)
   assert.doesNotMatch(rust, /cargo check/)
   assert.match(rust, /name: ci-server-\$\{\{ github\.sha }}/)
   assert.match(rust, /retention-days: 1/)
@@ -83,6 +150,22 @@ test('integration jobs use the exact same-run test outputs instead of compiling 
     assert.match(source, /source-sha\)" = "\$GITHUB_SHA"/)
     assert.doesNotMatch(source, /cargo (build|test)|rust-cache|rust-toolchain/)
   }
+})
+
+test('Rust lint runs beside compilation but remains a mandatory publication gate', () => {
+  const lint = job(ciWorkflow, 'rust-lint')
+  const rust = job(ciWorkflow, 'rust')
+  for (const source of [lint, rust]) {
+    assert.match(source, /^    needs: plan$/m)
+    assert.doesNotMatch(source, /needs:.*(?:rust-lint|rust\])/)
+    assert.match(source, /save-if: \$\{\{ github\.ref == 'refs\/heads\/main' }}/)
+  }
+  assert.match(lint, /cargo fmt --all -- --check/)
+  assert.match(lint, /cargo clippy --all-targets --all-features --locked -- -D warnings/)
+  assert.match(lint, /shared-key: server-lint/)
+  assert.match(rust, /shared-key: server\n/)
+  assert.equal(jobComponents['rust-lint'], 'server')
+  assert.match(job(ciWorkflow, 'required'), /needs: \[plan, rust-lint, rust,/)
 })
 
 test('documentation has one reusable build and no duplicate PR trigger', () => {
