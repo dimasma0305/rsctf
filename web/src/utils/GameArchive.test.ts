@@ -14,11 +14,12 @@ test('only ended non-practice games use the read-only archive experience', () =>
 
 test('ended challenge archives keep reads while hiding mutation controls', () => {
   const tabs = readFileSync('src/components/WithGameTab.tsx', 'utf8')
+  const header = readFileSync('src/components/GameWorkspaceHeader.tsx', 'utf8')
   const modal = readFileSync('src/components/ChallengeModal.tsx', 'utf8')
   const overview = readFileSync('src/pages/games/[id]/Index.tsx', 'utf8')
 
   assert.match(tabs, /location\.pathname\.includes\('challenges'\)[\s\S]*ParticipationStatus\.Accepted/)
-  assert.match(tabs, /game\?\.allowUserSubmissions === false \|\| archived/)
+  assert.match(header, /game\?\.allowUserSubmissions === false \|\| archived/)
   assert.match(modal, /readOnlyArchive[\s\S]*submissions and workloads are closed/)
   assert.match(modal, /!readOnlyArchive && \(\s*<>[\s\S]*<form/)
   assert.match(overview, /status === ParticipationStatus\.Accepted && started/)
@@ -33,7 +34,10 @@ test('event access, archives, and challenge modals use the server-corrected life
   const challengeEditor = readFileSync('src/pages/admin/games/[id]/challenges/[chalId]/Index.tsx', 'utf8')
   const archive = readFileSync('src/utils/gameArchive.ts', 'utf8')
 
-  assert.match(tabs, /const \{ started, finished, now \} = useGameStatus\(game\)/)
+  assert.match(tabs, /const \{ started, finished \} = useGameStatus\(game\)/)
+  const header = readFileSync('src/components/GameWorkspaceHeader.tsx', 'utf8')
+  assert.match(header, /const \{ started, finished, now \} = useGameStatus\(game\)/)
+  assert.match(header, /isReadOnlyGameArchive\(game, now.valueOf\(\)\)/)
   assert.match(tabs, /const clockReady = useServerClockReady\(\)/)
   assert.match(tabs, /const \{ game, liveReadReady, status \} = useGameAccess\(numId\)/)
   assert.match(tabs, /if \(game && clockReady && liveReadReady\)/)

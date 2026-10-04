@@ -219,18 +219,39 @@ test('globe dominates its panel without changing the shared event shell or addin
 
 test('competition header groups event, team and navigation without an ended countdown', () => {
   const tabs = readFileSync('src/components/WithGameTab.tsx', 'utf8')
-  assert.match(tabs, /data-event-workspace-header/)
-  assert.match(tabs, /if \(compact && \(finished \|\| \(started && game\?\.practiceMode\)\)\) return null/)
-  assert.match(tabs, /game.arena.practice/)
+  const header = readFileSync('src/components/GameWorkspaceHeader.tsx', 'utf8')
+  assert.match(header, /data-event-workspace-header/)
+  assert.match(header, /if \(finished \|\| \(started && game.practiceMode\)\) return null/)
+  assert.match(header, /game.arena.practice/)
   assert.doesNotMatch(
     tabs,
     /summary \? classes.masthead|summary \? 'underline'/,
     'the event header does not change between sections'
   )
   assert.ok(
-    tabs.indexOf('{summary &&') > tabs.indexOf('<IconTabs'),
+    tabs.indexOf('{summary &&') > tabs.indexOf('<GameWorkspaceHeader'),
     'route-specific team data stays below the stable navigation frame'
   )
+})
+
+test('live arena shares event navigation without inheriting player access checks or adding reads', () => {
+  const header = readFileSync('src/components/GameWorkspaceHeader.tsx', 'utf8')
+  const arena = readFileSync('src/pages/games/[id]/Attack.tsx', 'utf8')
+  assert.match(header, /path: 'scoreboard',[\s\S]*path: 'attack',[\s\S]*path: 'submit'/)
+  assert.match(header, /mode="navigation"/)
+  assert.match(header, /pathname.split\('\/'\)\[3\] === page.path/)
+  assert.match(header, /game\?\.status === ParticipationStatus.Accepted/)
+  assert.doesNotMatch(header, /useGameAccess\(|useGame\(|fetch\(|navigate\(/)
+  assert.match(arena, /<GameWorkspaceHeader gameId=\{Number\(id\)\} game=\{currentGame\}/)
+  assert.match(arena, /runArena\(shadow, id, preview, setGame\)/)
+  assert.match(arena, /!killed && game\?\.id === Number\(gameId\)/)
+  assert.match(arena, /game\?\.id === Number\(id\) \? game : undefined/)
+  assert.doesNotMatch(arena, /<WithGameTab|useGameAccess\(|useGame\(|scoreboardLink|eventLink|<PageHeader/)
+})
+
+test('scoreboard category headings use semantic foreground on both surface schemes', () => {
+  const scoreboard = readFileSync('src/components/ScoreboardTable.tsx', 'utf8')
+  assert.match(scoreboard, /c="var\(--app-text-primary\)"/)
 })
 
 test('competition panels reuse owned challenge reads and keep archives and mobile dialogs', () => {

@@ -97,7 +97,7 @@ const TableHeader = React.memo((table: Record<string, ChallengeInfo[]>) => {
             >
               <Group gap={4} wrap="nowrap" justify="center" w="100%">
                 <Icon path={cate.icon} size={1} color={theme.colors[cate.color][colorScheme === 'dark' ? 8 : 6]} />
-                <Text c={cate.color} className={classes.text} ff="text" fz="sm">
+                <Text c="var(--app-text-primary)" className={classes.text} ff="text" fz="sm">
                   {key}
                 </Text>
               </Group>

@@ -7,6 +7,7 @@ import { auditChallengeCategoryScroller } from './audit.mjs'
 import { auditGlobeRotation } from './globe-rotation.mjs'
 import { auditGlobeFocus } from './globe-focus.mjs'
 import { createCompetitionFixture } from './competition-fixtures.mjs'
+import { arenaBrowserSetup, createArenaFixture } from './attack-arena-fixtures.mjs'
 
 const target = process.env.RSCTF_WORKSPACE_PREVIEW || 'http://127.0.0.1:63017'
 const targetUrl = new URL(target)
@@ -14,6 +15,9 @@ assert.ok(targetUrl.origin === target && (targetUrl.hostname === '127.0.0.1' || 
 const output = resolve(process.env.RSCTF_WORKSPACE_OUTPUT || '../visual-audit-output/competition')
 mkdirSync(output, { recursive: true })
 const { now, profile, game, challenges, rank, config, responses } = createCompetitionFixture()
+const arena = createArenaFixture()
+arena.scoreboard.items = arena.scoreboard.items.map((team, index) => ({ ...team, rank: index + 1, solvedChallenges: [] }))
+for (const path of ['/api/game/901/ad/scoreboard', '/api/game/901/ad/koth/scoreboard', '/api/game/901/scoreboard']) responses[path] = arena.responses[path]
 const browser = await launchBrowser()
 const { cdp } = browser
 const reports = [], unknown = new Set(), requests = []
@@ -62,6 +66,7 @@ const selectView = async (view) => {
 }
 try {
   await cdp.send('Page.enable'); await cdp.send('Runtime.enable')
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: arenaBrowserSetup })
   cdp.on('Runtime.exceptionThrown', ({ exceptionDetails }) => errors.push(exceptionDetails.exception?.description ?? exceptionDetails.text))
   await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `if (location.origin === ${JSON.stringify(new URL(target).origin)}) { localStorage.setItem('language', JSON.stringify('en-US')); localStorage.setItem('mantine-color-scheme-value', 'dark'); localStorage.setItem('rsctf-player-guide:${profile.userId}', JSON.stringify({ interactiveEnabled:false, completedVersion:1, seenFeatures:[] })); }` })
   await cdp.send('Fetch.enable', { patterns: [{ urlPattern: `${target}/api/*` }, { urlPattern: `${target}/hub*` }] })
@@ -79,6 +84,32 @@ try {
   await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 100`)
   assert.equal(await evaluate(`document.querySelector('input[value="cards"]').checked`), true)
   await inspect('desktop-default-cards')
+  const eventTabs = '[data-event-tabs]'
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('${eventTabs} a')].slice(0,3).map(a=>a.getAttribute('href'))`), ['/games/901/challenges', '/games/901/scoreboard', '/games/901/attack'])
+  await evaluate(`document.querySelector('${eventTabs} a[href="/games/901/attack"]').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelector('[data-arena-theme]')?.shadowRoot?.querySelector('#connectionStatus')?.textContent === 'Connected'`)
+  assert.equal(await evaluate(`document.querySelector('${eventTabs} [aria-current="page"]').getAttribute('href')`), '/games/901/attack')
+  assert.equal(await evaluate('document.querySelector("h1").textContent'), game.title)
+  await inspect('desktop-arena-tab')
+  await evaluate(`document.querySelector('${eventTabs} a[href="/games/901/scoreboard"]').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelector('${eventTabs} [aria-current="page"]')?.getAttribute('href') === '/games/901/scoreboard'`)
+  await waitFor(`document.querySelector('table tbody tr')`)
+  assert.equal(await evaluate('arenaSockets.filter(s=>s.readyState===1).length'), 0, 'leaving the arena closes its socket')
+  await inspect('desktop-scoreboard-tab')
+  // Persist and reload so Mantine's hooks and the shared theme agree.
+  await evaluate(`localStorage.setItem('mantine-color-scheme-value','light')`)
+  const lightSetup = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('mantine-color-scheme-value','light')` })
+  await cdp.send('Page.reload')
+  await waitFor(`document.querySelector('table tbody tr')`)
+  await inspect('light-scoreboard-tab')
+  await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: lightSetup.identifier })
+  await cdp.send('Page.reload')
+  await waitFor(`document.querySelector('table tbody tr')`)
+  await evaluate(`document.querySelector('${eventTabs} a[href="/games/901/challenges"]').focus()`)
+  await press('Enter')
+  await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 100`)
   await evaluate(`document.querySelector('#challenge-search').focus()`)
   await cdp.send('Input.insertText', { text: 'pwn ret2win' })
   await waitFor(`document.querySelectorAll('article[data-guide="challenge-card"]').length === 1`)
@@ -270,6 +301,15 @@ try {
     assert.ok(await evaluate(`document.querySelector('[data-event-workspace-header]').textContent.includes('Practice')`))
     assert.equal(await evaluate(`!!document.querySelector('[data-event-workspace-header] [role="timer"]')`), false)
     await inspect(name)
+    if (width < 400) {
+      await evaluate(`document.querySelector('${eventTabs} a[href="/games/901/attack"]').focus()`)
+      await press('Enter')
+      await waitFor(`document.querySelector('[data-arena-theme]')?.shadowRoot?.querySelector('#connectionStatus')?.textContent === 'Connected'`)
+      assert.equal(await evaluate(`document.querySelector('${eventTabs} [aria-current="page"]').getAttribute('href')`), '/games/901/attack')
+      assert.equal(await evaluate(`!!document.querySelector('${eventTabs} a[href="/games/901/challenges"]')`), true)
+      assert.ok(await evaluate(`(() => { const r=document.querySelector('${eventTabs} [aria-current="page"]').getBoundingClientRect(); return r.left>=0 && r.right<=innerWidth; })()`), 'active arena tab stays visible on narrow screens')
+      await inspect(`${name}-arena-navigation`)
+    }
   }
   forbidden = true
   await cdp.send('Page.navigate', { url: `${target}/games/902/challenges#999999-hidden` })

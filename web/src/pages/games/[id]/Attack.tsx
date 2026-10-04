@@ -14,10 +14,10 @@
  * application theme. Public data, sockets and timers remain owned by this engine;
  * arenaGlobe owns only camera, 3D projection and challenge-island presentation.
  */
-import { Button, Group, Stack, useComputedColorScheme } from '@mantine/core'
-import { FC, useEffect, useRef } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router'
-import { PageHeader } from '@Components/PageHeader'
+import { Stack, useComputedColorScheme } from '@mantine/core'
+import { FC, useEffect, useRef, useState } from 'react'
+import { useParams, useSearchParams } from 'react-router'
+import { GameWorkspaceHeader } from '@Components/GameWorkspaceHeader'
 import { WithNavBar } from '@Components/WithNavbar'
 import {
   ArenaHttpError,
@@ -29,10 +29,13 @@ import {
 } from '@Utils/ArenaLive'
 import { eventVpnFetch } from '@Utils/EventVpnProof'
 import { epochProgress } from '@Utils/epochProgress'
-import type { AdScoreboardModel } from '@Api'
+import { usePageTitle } from '@Hooks/usePageTitle'
+import type { AdScoreboardModel, DetailedGameInfoModel } from '@Api'
+import workspace from '@Styles/GameWorkspace.module.css'
 import arenaEffects from './arenaEffects.css?inline'
 import { createArenaGlobe } from './arenaGlobe'
 import { acceptedTerritorySolvers } from './arenaGlobeModel'
+import { createArenaInspector } from './arenaInspector'
 import type { JeopCategory } from './arenaJeopardy'
 import { arenaTeamInitials, arenaTeamLabel, arenaTeamPosition, initialArenaRanking } from './arenaPresentation'
 import arenaTheme from './arenaTheme.css?inline'
@@ -54,28 +57,21 @@ const ARENA_CSS = arenaEffects + arenaTheme
 /* -------------------------------------------------------------------------- */
 const ARENA_BODY = `
   <div class="shell">
-    <div class="topbar">
-      <div class="brand">
-        <a class="back-link" id="eventLink" href="/games"><span aria-hidden="true">←</span> Event</a>
-        <div class="brand-copy">
-          <p class="logo" id="brandLogo">Competition spectator view</p>
-        </div>
-      </div>
-      <div class="topright">
-        <span class="connection" id="connectionStatus" role="status" data-state="connecting">Connecting</span>
-        <div class="freezepill" id="freezeTag">❄ Frozen</div>
-        <div class="countpill" id="countPill" role="timer" aria-label="Time remaining">0:00</div>
-        <div class="roundpill" id="roundPill">Tick 0</div>
-      </div>
-    </div>
+    <div class="arena-toolbar">
     <dl class="overview" aria-label="Arena overview">
       <div class="metric"><dt>Teams</dt><dd id="teamCount">0</dd></div>
       <div class="metric"><dt>Challenge islands</dt><dd id="challengeCount">0</dd></div>
       <div class="metric"><dt>A&amp;D services</dt><dd id="serviceCount">0</dd></div>
       <div class="metric"><dt>KotH hills</dt><dd id="hillCount">0</dd></div>
     </dl>
+    <div class="arena-actions">
+      <div class="topright">
+        <span class="connection" id="connectionStatus" role="status" data-state="connecting">Connecting</span>
+        <div class="freezepill" id="freezeTag">❄ Frozen</div>
+        <div class="countpill" id="countPill" role="timer" aria-label="Time until next tick">0:00</div>
+        <div class="roundpill" id="roundPill">Tick 0</div>
+      </div>
     <div class="devbar" role="group" aria-label="Spectator controls">
-      <span class="label">Spectator view</span>
       <button class="btn ghost" id="speedBtn" aria-pressed="false">Speed 1×</button>
       <button class="btn ghost" id="soundBtn" aria-pressed="false">Sound off</button>
       <button class="btn ghost on" id="motionBtn" aria-pressed="true">Motion on</button>
@@ -93,8 +89,8 @@ const ARENA_BODY = `
         <button class="btn frz" id="freezeBtn">Freeze</button>
         <button class="btn end" id="endBtn">End</button>
       </span>
-      <span class="sp"></span>
-      <a class="btn" id="scoreboardLink" href="/games">Scoreboard <span aria-hidden="true">↗</span></a>
+    </div>
+    </div>
     </div>
     <div class="midrow">
       <section class="panel arena-wrap" aria-labelledby="globeTitle">
@@ -122,16 +118,31 @@ const ARENA_BODY = `
           <button class="btn" id="rotateBtn" aria-pressed="true">Pause rotation</button>
         </div>
         <p class="globe-help" id="globeHelp">Drag/swipe or use arrow keys to rotate; Home resets. Scroll outside the globe to move the page.</p>
-        <div class="selection" aria-label="Highlighted team">
+        <div class="map-shortcuts" role="group" aria-label="Explore the map">
+          <button class="btn" id="browseIslands">Browse islands</button>
+          <button class="btn" id="browseTeams">Find a team</button>
+        </div>
+        <div class="selection" aria-label="Highlighted team" hidden>
           <span class="selection-name" id="selectionName">Select a team in the rankings to highlight it.</span>
           <span class="selection-score" id="selectionScore"></span>
+          <button class="btn" id="clearTeam">Clear team</button>
         </div>
-        <div class="territory-browser">
-          <section id="territoryDetail" aria-label="Selected island" aria-live="polite"></section>
-          <div class="territory-directory">
-            <h3>Challenge islands</h3>
+        <p class="globe-help map-legend">◇ Unconquered · ⚑ Solved · Numbered outposts are teams. An island takes its first solver's color; every team can still solve it.</p>
+      </section>
+      <aside class="panel inspector" aria-label="Arena explorer">
+        <div class="inspector-tabs" role="tablist" aria-label="Explore the arena">
+          <button type="button" role="tab" id="arena-tab-islands" data-arena-pane="islands" aria-controls="arena-pane-islands" aria-selected="true">Islands</button>
+          <button type="button" role="tab" id="arena-tab-teams" data-arena-pane="teams" aria-controls="arena-pane-teams" aria-selected="false" tabindex="-1">Teams</button>
+          <button type="button" role="tab" id="arena-tab-activity" data-arena-pane="activity" aria-controls="arena-pane-activity" aria-selected="false" tabindex="-1">Activity</button>
+        </div>
+        <section class="territory-browser" id="arena-pane-islands" role="tabpanel" aria-labelledby="arena-tab-islands">
+          <div>
+            <h2>Challenge islands</h2>
             <p id="territorySummary" role="status">Loading islands</p>
             <progress id="territoryProgress" value="0" max="1" aria-label="Islands with an accepted solve"></progress>
+          </div>
+          <section id="territoryDetail" aria-label="Selected island" aria-live="polite"></section>
+          <div class="territory-directory">
             <label for="territorySearch">Find a challenge</label>
             <input id="territorySearch" type="search" placeholder="Name or category">
             <div class="territory-filters" role="group" aria-label="Filter challenge islands">
@@ -142,11 +153,8 @@ const ARENA_BODY = `
             <p id="territoryResults" role="status"></p>
             <div id="jeop" role="region" tabindex="0" aria-label="Challenge islands"></div>
           </div>
-        </div>
-        <p class="globe-help">◇ Unconquered · ⚑ Solved · Numbered outposts are teams. Every team can solve an island. Solved islands take the first team's color, not exclusive ownership.</p>
-      </section>
-      <div class="rightcol">
-        <section class="panel rank" aria-labelledby="rankingTitle">
+        </section>
+        <section class="rank" id="arena-pane-teams" role="tabpanel" aria-labelledby="arena-tab-teams" hidden>
           <div class="phead">
             <h2 class="t" id="rankingTitle">Rankings</h2>
             <span class="rank-tabs" id="rankTabs" role="group" aria-label="Scoring mode">
@@ -157,11 +165,11 @@ const ARENA_BODY = `
           </div>
           <div id="ranklist" role="region" tabindex="0" aria-label="Live team ranking"></div>
         </section>
-        <section class="panel log-panel" aria-labelledby="logTitle">
+        <section class="log-panel" id="arena-pane-activity" role="tabpanel" aria-labelledby="arena-tab-activity" hidden>
           <div class="phead"><h2 class="t" id="logTitle">Recent activity</h2></div>
           <div id="log" role="log" tabindex="0" aria-live="polite" aria-label="Battle event log"></div>
         </section>
-      </div>
+      </aside>
     </div>
   </div>
 
@@ -220,8 +228,16 @@ const ARENA_BODY = `
 /* and returns a teardown function. Heavily uses `any` because this is a       */
 /* self-contained DOM/canvas scene, not app data flow.                        */
 /* -------------------------------------------------------------------------- */
-function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => void {
+function runArena(
+  root: ShadowRoot,
+  gameId: string,
+  preview: boolean,
+  onGame: (game: DetailedGameInfoModel) => void
+): () => void {
   let killed = false
+  const publishGame = (game: DetailedGameInfoModel | null) => {
+    if (!killed && game?.id === Number(gameId)) onGame(game)
+  }
   const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
   let motionRequested = true
   let motionEnabled = !motionQuery.matches
@@ -416,6 +432,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   const fzRenderer = createFzRenderer($('fzCanvas') as HTMLCanvasElement)
   // 2D-canvas VICTORY effects (god-rays + confetti + sparkles) for MATCH COMPLETE / podium.
   const winRenderer = createWinRenderer($('winCanvas') as HTMLCanvasElement)
+  const inspector = createArenaInspector(root)
   // One camera projects teams, hills and challenge islands onto the same world.
   const jeop = createArenaGlobe({
     root,
@@ -423,12 +440,20 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     hills: () => HILLS,
     frozen: () => frozen,
     motion: () => motionEnabled,
+    showIsland: () => inspector.show('islands'),
     selectTeam: (id) => {
+      inspector.show('teams')
       selectedTeamId = id
       updateSelection()
       jeop.focusTeam(id)
     },
   })
+  $('clearTeam').onclick = () => {
+    selectedTeamId = null
+    updateSelection()
+    jeop.focusTeam(null)
+    arena.focus({ preventScroll: true })
+  }
   const logEl: any = $('log')
   const rankEl: any = $('ranklist')
 
@@ -556,10 +581,13 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       row?.setAttribute('aria-pressed', String(active))
     }
     $('selectionName').textContent = selected ? selected.name : 'Select a team in the rankings to highlight it.'
+    $('selectionName').closest('.selection').hidden = !selected
     $('selectionScore').textContent = selected ? fmtAdScore(dispScore(selected)) + ' pts' : ''
     $('teamCount').textContent = String(TEAMS.length)
     $('serviceCount').textContent = String(SERVICES.length)
     $('hillCount').textContent = String(HILLS.length)
+    $('serviceCount').closest('.metric').hidden = SERVICES.length === 0
+    $('hillCount').closest('.metric').hidden = HILLS.length === 0
   }
 
   // service status → colour. def=Ok(green) vuln=Mumble(amber) down=Offline(grey)
@@ -1407,7 +1435,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     })
     const tag = $('freezeTag')
     if (tag) tag.classList.add('show')
-    const rp = root.querySelector('.panel.rank')
+    const rp = root.querySelector('.rank')
     if (rp) rp.classList.add('frozen')
     const fb = $('freezeBtn')
     if (fb) {
@@ -1433,7 +1461,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     snd.sfxUnfreeze()
     const tag = $('freezeTag')
     if (tag) tag.classList.remove('show')
-    const rp = root.querySelector('.panel.rank')
+    const rp = root.querySelector('.rank')
     if (rp) rp.classList.remove('frozen')
     const fb = $('freezeBtn')
     if (fb) {
@@ -1675,6 +1703,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     const progress = epochProgress(clock.round, clock.startRound, clock.epochTicks)
     const rp = $('roundPill')
     if (rp) {
+      rp.hidden = !preview && SERVICES.length === 0 && HILLS.length === 0
       rp.textContent = progress
         ? `R${Math.max(clock.round, 0)} · E${progress.epoch} ${progress.tick}/${progress.totalTicks}`
         : 'TICK ' + Math.max(clock.round, 0)
@@ -1683,7 +1712,10 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
         : `Round ${Math.max(clock.round, 0)}`
     }
     const cp = $('countPill')
-    if (cp) cp.textContent = fmtMS(Math.max(tickLeft, 0))
+    if (cp) {
+      cp.hidden = !preview && SERVICES.length === 0 && HILLS.length === 0
+      cp.textContent = fmtMS(Math.max(tickLeft, 0))
+    }
   }
 
   function applyAdRoundClock(ad: AdScoreboardModel) {
@@ -1838,7 +1870,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       }
     })
   }
-  function buildLiveModel(ad: AdScoreboardModel, koth: any, jp: any, title: string | null) {
+  function buildLiveModel(ad: AdScoreboardModel, koth: any, jp: any) {
     const previousTeams = new Map(TEAMS.map((team) => [team.id, team]))
     const kothHills = koth && koth.hills ? koth.hills : []
     const kothIds = new Set(kothHills.map((h: any) => h.challengeId))
@@ -1906,7 +1938,13 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       h.y = CY + HILLR * Math.sin(ang)
     })
 
-    if (!preview && !rankModeChosen) {
+    const categories = buildJeopCats(ad, jp)
+    const availableModes = {
+      ad: SERVICES.length > 0,
+      koth: HILLS.length > 0,
+      jeopardy: categories.some((category) => category.challenges.length > 0),
+    }
+    if (!preview && (!rankModeChosen || !availableModes[rankMode])) {
       rankMode = initialArenaRanking(SERVICES.length, HILLS.length)
       const tabs: any = $('rankTabs')
       if (tabs)
@@ -1916,12 +1954,16 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
           button.setAttribute('aria-pressed', String(selected))
         })
     }
+    const rankingModes = root.querySelectorAll<HTMLButtonElement>('#rankTabs button')
+    rankingModes.forEach((button) => {
+      button.hidden = !availableModes[button.dataset.rm as keyof typeof availableModes]
+    })
+    $('rankTabs').hidden = Object.values(availableModes).filter(Boolean).length < 2
     applyAuxScores(koth, jp)
     applyKothRoundClock(koth)
     totalFlags = Math.max(0, Number(ad.evidence?.acceptedCaptures) || 0)
-    jeop.setData(buildJeopCats(ad, jp))
+    jeop.setData(categories)
     applyAdRoundClock(ad)
-    if (title) $('brandLogo').textContent = title
   }
 
   function applyOfficialAdBoard(ad: AdScoreboardModel) {
@@ -1970,10 +2012,10 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     })
   }
 
-  function reconcileLiveModel(ad: AdScoreboardModel, koth: any, jp: any, title: string | null) {
+  function reconcileLiveModel(ad: AdScoreboardModel, koth: any, jp: any) {
     const signature = snapshotSignature(ad, koth, jp)
     if (signature !== liveModelSignature) {
-      buildLiveModel(ad, koth, jp, title)
+      buildLiveModel(ad, koth, jp)
       liveModelSignature = signature
       if (!TEAMS.length) {
         showNote('WAITING FOR THE OFFICIAL EVENT ROSTER')
@@ -1985,7 +2027,6 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       sizeCanvas()
     }
     applyLivePoll(ad, koth, jp)
-    if (title) $('brandLogo').textContent = title
   }
 
   function applyLivePoll(ad: AdScoreboardModel, koth: any, jp: any) {
@@ -2046,7 +2087,8 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       if (gi?.end) gameEndMs = new Date(gi.end).getTime()
       if (matchOver && gameEndMs != null && Date.now() < gameEndMs - 1500) reopenMatch()
       if (!killed && !controller.signal.aborted) {
-        reconcileLiveModel(ad, koth, jp, gi?.title || null)
+        publishGame(gi)
+        reconcileLiveModel(ad, koth, jp)
         if (!livePollStarted) livePollStarted = true
         connectWS()
       }
@@ -2266,15 +2308,14 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     try {
       jp = await fetchJSONWithTimeout(liveRoutes.scoreboard)
     } catch {}
-    let title: string | null = null
     try {
       const gi = await fetchJSONWithTimeout(liveRoutes.game)
-      title = gi && gi.title
+      publishGame(gi)
       if (gi && gi.end) gameEndMs = new Date(gi.end).getTime()
     } catch {}
     if (killed) return
 
-    buildLiveModel(ad, koth, jp, title)
+    buildLiveModel(ad, koth, jp)
     liveModelSignature = snapshotSignature(ad, koth, jp)
     if (!TEAMS.length) {
       setConnection('Waiting for teams', 'connecting')
@@ -2586,14 +2627,12 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     // Preview is a fully simulated battle driven by the TEAMS / A&D / KOTH / JEOP
     // knobs — it does NOT mirror live game data (use the non-preview view for that),
     // so the on-screen counts always match the inputs from the start.
-    let title: string | null = null
     try {
       const gi = await fetchJSONWithTimeout(liveRoutes.game)
-      title = gi && gi.title
+      publishGame(gi)
     } catch {}
     if (killed) return
     bootDemoModel()
-    if (title) $('brandLogo').textContent = title
     liveRoundEndsAt = null
     round = 1
     tickLeft = 30
@@ -2644,8 +2683,8 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       rebuildPreview()
     }
   })
-  // fullscreen the battle map (recompute wheel + constellations for the new size)
-  const fsWrap: any = root.querySelector('.arena-wrap')
+  // Keep the inspector reachable while exploring the fullscreen map.
+  const fsWrap: any = root.querySelector('.midrow')
   const onFsChange = () => {
     const fs = root.fullscreenElement === fsWrap
     const b = $('fsBtn')
@@ -2860,6 +2899,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     snd.close()
     document.removeEventListener('fullscreenchange', onFsChange)
     jeop.destroy()
+    inspector.destroy()
     fxRenderer.destroy()
     fbRenderer.destroy()
     fzRenderer.destroy()
@@ -2883,6 +2923,9 @@ const Attack: FC = () => {
   const preview = searchParams.has('preview')
   const hostRef = useRef<HTMLDivElement>(null)
   const cleanupRef = useRef<null | (() => void)>(null)
+  const [game, setGame] = useState<DetailedGameInfoModel>()
+  const currentGame = game?.id === Number(id) ? game : undefined
+  usePageTitle(currentGame?.title)
 
   useEffect(() => {
     const host = hostRef.current
@@ -2890,9 +2933,7 @@ const Attack: FC = () => {
 
     const shadow = host.shadowRoot ?? host.attachShadow({ mode: 'open' })
     shadow.innerHTML = `<style>${ARENA_CSS}</style>${ARENA_BODY}`
-    shadow.getElementById('eventLink')?.setAttribute('href', `/games/${encodeURIComponent(id)}`)
-    shadow.getElementById('scoreboardLink')?.setAttribute('href', `/games/${encodeURIComponent(id)}/scoreboard`)
-    cleanupRef.current = runArena(shadow, id, preview)
+    cleanupRef.current = runArena(shadow, id, preview, setGame)
 
     return () => {
       cleanupRef.current?.()
@@ -2902,22 +2943,8 @@ const Attack: FC = () => {
 
   return (
     <WithNavBar competition width="1600px">
-      <Stack gap="md">
-        <PageHeader
-          title="Live arena"
-          eyebrow="Competition workspace"
-          description="Explore the event as a living world of teams and challenge islands."
-          actions={
-            <Group gap="xs">
-              <Button component={Link} to={`/games/${id}/challenges`} variant="default">
-                Challenges
-              </Button>
-              <Button component={Link} to={`/games/${id}/scoreboard`} variant="default">
-                Scoreboard
-              </Button>
-            </Group>
-          }
-        />
+      <Stack className={workspace.competitionStack} gap="sm" style={{ containerType: 'inline-size' }}>
+        <GameWorkspaceHeader gameId={Number(id)} game={currentGame} />
         <div
           ref={hostRef}
           role="region"

@@ -36,6 +36,7 @@ interface GlobeDeps {
   frozen: () => boolean
   motion: () => boolean
   selectTeam: (id: string) => void
+  showIsland?: () => void
 }
 
 /** Presentation only: consumes the same public snapshots/feed as the spectator arena. */
@@ -90,6 +91,7 @@ export function createArenaGlobe(deps: GlobeDeps) {
     paint()
   }
   function selectTerritory(id: number) {
+    deps.showIsland?.()
     selected = id
     const hash = catalogChallengeHash(window.location.hash, id)
     window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}${hash}`)
