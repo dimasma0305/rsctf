@@ -19,13 +19,23 @@ test('anti-cheat monitor normalizes unsupported URL tabs and refreshes at a boun
   assert.equal(CHEAT_REPORT_STALE_AFTER_MS, 180_000)
 })
 
-test('anti-cheat report freshness uses the persisted reconciliation watermark', () => {
+test('anti-cheat report freshness is based on waiting work, never on a sealed or quiet report', () => {
   const now = 1_000_000
-  assert.equal(isCheatReportStale(undefined, now), true)
-  assert.equal(isCheatReportStale(null, now), true)
-  assert.equal(isCheatReportStale(Number.NaN, now), true)
-  assert.equal(isCheatReportStale(now - CHEAT_REPORT_STALE_AFTER_MS, now), false)
-  assert.equal(isCheatReportStale(now - CHEAT_REPORT_STALE_AFTER_MS - 1, now), true)
+  const old = now - CHEAT_REPORT_STALE_AFTER_MS - 1
+  const recent = now - CHEAT_REPORT_STALE_AFTER_MS
+  assert.equal(isCheatReportStale(undefined, now), false)
+  // A finished event keeps its final report; it never turns stale.
+  assert.equal(isCheatReportStale({ sealedAt: 1, lastReconciledAt: 1, reconciliationPending: true }, now), false)
+  // A quiet live event has nothing to evaluate.
+  assert.equal(isCheatReportStale({ lastReconciledAt: old, pendingJobs: 0 }, now), false)
+  assert.equal(isCheatReportStale({ lastReconciledAt: null, reconciliationPending: false }, now), false)
+  // Unapplied evidence waits on a reconciler that has not run recently.
+  assert.equal(isCheatReportStale({ lastReconciledAt: old, reconciliationPending: true }, now), true)
+  assert.equal(isCheatReportStale({ lastReconciledAt: recent, reconciliationPending: true }, now), false)
+  assert.equal(isCheatReportStale({ lastReconciledAt: Number.NaN, reconciliationPending: true }, now), true)
+  // Evaluation jobs waiting past the threshold.
+  assert.equal(isCheatReportStale({ lastReconciledAt: recent, pendingJobs: 2, oldestPendingAt: old }, now), true)
+  assert.equal(isCheatReportStale({ lastReconciledAt: old, pendingJobs: 2, oldestPendingAt: recent }, now), false)
 })
 
 test('evidence contribution distinguishes raw weight from points that actually count', () => {

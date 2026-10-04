@@ -5,12 +5,14 @@
 //! workload desired/observed transitions so every network-owner replica can
 //! recover state after a restart.
 
+mod capacity;
 mod maintenance;
 mod nodes;
 mod status;
 mod types;
 mod workloads;
 
+pub use capacity::WorkerCapacitySummary;
 pub use types::*;
 
 use sqlx::PgPool;

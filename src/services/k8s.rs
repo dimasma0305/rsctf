@@ -20,14 +20,16 @@
 //!    publicly node-published, but reachable by permitted cluster peers).
 //!    On service failure the pod is deleted before its isolating policy so a
 //!    half-created instance cannot become reachable during rollback.
+//!    Stable-operation failures retain the Pod and policy until an exact retry
+//!    can adopt a Service whose owner UID matches that Pod.
 //! 3. **destroy** — delete the Service, then the Pod, and only remove its
 //!    NetworkPolicy after the Pod is absent; a `404` is the desired end state.
 //! 4. **query** — get the Pod and map its `status.phase` to a coarse
 //!    [`ContainerStatus`].
 //!
-//! A live cluster is NOT available in this environment, so this module is
-//! compile-verified against the real crate APIs but cannot be exercised at
-//! runtime; genuinely-unrunnable glue is marked `// TODO`.
+//! Unit tests exercise the Kubernetes API wire contract, while CI also creates
+//! a disposable Kind cluster to prove cross-namespace managed KotH callback
+//! DNS and NetworkPolicy isolation.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -35,8 +37,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::{
-    Capabilities, Container, ContainerPort, EnvVar, Pod, PodSpec, ResourceRequirements,
-    SeccompProfile, SecurityContext, Service, ServicePort, ServiceSpec,
+    Container, ContainerPort, EnvVar, Pod, PodSpec, ResourceRequirements, Service, ServicePort,
+    ServiceSpec,
 };
 use k8s_openapi::api::networking::v1::NetworkPolicy;
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
@@ -50,13 +52,22 @@ use crate::services::container::{
     ContainerBackendKind, ContainerExecAdmission, ContainerExecError, ContainerInfo,
     ContainerLiveness, ContainerManager, ContainerSpec, ContainerStatus,
 };
-use crate::utils::codec::random_hex;
 use crate::utils::error::{AppError, AppResult};
 
+mod compat;
 mod exec;
+mod launch;
 mod metrics;
 mod network;
 mod orphans;
+#[cfg(test)]
+mod retry_tests;
+#[cfg(test)]
+use launch::sanitize_image;
+use launch::{
+    challenge_security_context, fingerprint_policy_labels, kubernetes_launch_fingerprint,
+    service_owner_matches_pod, service_type, stamp_policy_labels, workload_name_and_uid,
+};
 use metrics::{parse_cpu_cores, parse_memory_bytes};
 use network::{
     ad_network_config, ad_network_policy, isolated_network_policy, isolated_proxy_network_policy,
@@ -76,9 +87,61 @@ const DEFAULT_NAMESPACE: &str = "rsctf-challenges";
 /// Env var overriding the target namespace.
 const NAMESPACE_ENV: &str = "RSCTF_K8S_NAMESPACE";
 
+fn challenge_container_ports(expose_port: i32, private_competitive: bool) -> Vec<ContainerPort> {
+    if private_competitive {
+        return vec![
+            ContainerPort {
+                name: Some("challenge-tcp".to_string()),
+                container_port: expose_port,
+                protocol: Some("TCP".to_string()),
+                ..Default::default()
+            },
+            ContainerPort {
+                name: Some("challenge-udp".to_string()),
+                container_port: expose_port,
+                protocol: Some("UDP".to_string()),
+                ..Default::default()
+            },
+        ];
+    }
+    vec![ContainerPort {
+        container_port: expose_port,
+        ..Default::default()
+    }]
+}
+
+fn challenge_service_ports(expose_port: i32, private_competitive: bool) -> Vec<ServicePort> {
+    if private_competitive {
+        return vec![
+            ServicePort {
+                name: Some("challenge-tcp".to_string()),
+                port: expose_port,
+                protocol: Some("TCP".to_string()),
+                target_port: Some(IntOrString::Int(expose_port)),
+                ..Default::default()
+            },
+            ServicePort {
+                name: Some("challenge-udp".to_string()),
+                port: expose_port,
+                protocol: Some("UDP".to_string()),
+                target_port: Some(IntOrString::Int(expose_port)),
+                ..Default::default()
+            },
+        ];
+    }
+    vec![ServicePort {
+        port: expose_port,
+        target_port: Some(IntOrString::Int(expose_port)),
+        ..Default::default()
+    }]
+}
+
 /// Env var advertising the routable node/host IP for NodePort services
 /// (RSCTF `PublicEntry`). When set, [`ContainerInfo::ip`] is this value.
 const PUBLIC_ENTRY_ENV: &str = "RSCTF_K8S_PUBLIC_ENTRY";
+
+#[cfg(test)]
+static KUBERNETES_ENV_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Kubernetes-backed container manager.
 ///
@@ -234,6 +297,20 @@ impl KubernetesContainerManager {
         )
         .await;
     }
+
+    async fn rollback_operation_workload(&self, name: &str) {
+        if let Err(error) = orphans::rollback_owned(
+            self.pods(),
+            self.services(),
+            self.network_policies(),
+            name,
+            &self.scope,
+        )
+        .await
+        {
+            tracing::warn!(%error, %name, "failed to roll back rejected Kubernetes operation");
+        }
+    }
 }
 
 /// Whether a `kube` error is a Kubernetes `404 Not Found` (object already gone).
@@ -243,6 +320,10 @@ fn is_not_found(err: &kube::Error) -> bool {
 
 fn is_conflict(err: &kube::Error) -> bool {
     matches!(err, kube::Error::Api(ErrorResponse { code: 409, .. }))
+}
+
+fn is_ambiguous_create_error(error: &kube::Error) -> bool {
+    matches!(error, kube::Error::HyperError(_) | kube::Error::Service(_))
 }
 
 /// Map a pod `status.phase` string to a coarse lifecycle status, following the
@@ -266,71 +347,14 @@ fn phase_liveness(phase: Option<&str>) -> ContainerLiveness {
     }
 }
 
-/// Sanitize an image reference into an RFC1123-ish label fragment usable in a
-/// resource name (lowercase alphanumerics + `-`, non-empty). Mirrors RSCTF's
-/// `imageName.ToValidRFC1123String("chal")`.
-fn sanitize_image(image: &str) -> String {
-    // Take the last path segment, drop any tag/digest.
-    let last = image.rsplit('/').next().unwrap_or(image);
-    let base = last.split(':').next().unwrap_or(last);
-    let cleaned: String = base
-        .chars()
-        .map(|c| {
-            let c = c.to_ascii_lowercase();
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let trimmed = cleaned.trim_matches('-');
-    if trimmed.is_empty() {
-        "chal".to_string()
-    } else {
-        // RFC1123 label cap is 63 chars; leave room for the "-<suffix>" tail.
-        trimmed.chars().take(40).collect()
-    }
-}
-
-fn service_type(internal_only: bool) -> &'static str {
-    if internal_only {
-        "ClusterIP"
-    } else {
-        "NodePort"
-    }
-}
-
-fn challenge_security_context() -> SecurityContext {
-    let uid = std::env::var("RSCTF_K8S_CHALLENGE_UID")
-        .ok()
-        .and_then(|value| value.parse::<i64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(10_000);
-    SecurityContext {
-        allow_privilege_escalation: Some(false),
-        capabilities: Some(Capabilities {
-            // Challenge images commonly expose port 80. Preserve only the
-            // narrow capability needed for a non-root process to bind it.
-            add: Some(vec!["NET_BIND_SERVICE".to_string()]),
-            drop: Some(vec!["ALL".to_string()]),
-        }),
-        privileged: Some(false),
-        run_as_group: Some(uid),
-        run_as_non_root: Some(true),
-        run_as_user: Some(uid),
-        seccomp_profile: Some(SeccompProfile {
-            localhost_profile: None,
-            type_: "RuntimeDefault".to_string(),
-        }),
-        ..Default::default()
-    }
-}
-
 #[async_trait]
 impl ContainerManager for KubernetesContainerManager {
     fn backend_kind(&self) -> ContainerBackendKind {
         ContainerBackendKind::Kubernetes
+    }
+
+    fn managed_callback_routing_identity(&self) -> AppResult<Option<String>> {
+        network::configured_reporter_route_identity().map(Some)
     }
 
     async fn storage_quota_enforced(&self) -> Option<bool> {
@@ -346,19 +370,93 @@ impl ContainerManager for KubernetesContainerManager {
         }
         // Unique, DNS-safe resource name + the app label that ties the Service
         // to this pod (RSCTF uses a per-instance ResourceId label/selector).
-        let uid = spec.operation_id.as_ref().map_or_else(
-            || random_hex(8),
-            |operation| crate::utils::codec::sha256_str(operation)[..16].to_string(),
-        );
-        let name = format!("{}-{}", sanitize_image(&spec.image), uid);
+        let (default_name, default_uid) =
+            workload_name_and_uid(&spec.image, &self.scope, spec.operation_id.as_deref());
+        let discovered = if let Some(operation_id) = spec.operation_id.as_deref() {
+            orphans::find_operation_workload(
+                self.pods(),
+                self.services(),
+                self.network_policies(),
+                &self.scope,
+                operation_id,
+            )
+            .await?
+        } else {
+            None
+        };
+        let (name, uid) = discovered
+            .map(|identity| (identity.name, identity.uid))
+            .unwrap_or((default_name, default_uid));
         let ad_internal = spec.ad_network.is_some();
         let isolated = spec.network_mode == crate::utils::enums::NetworkMode::Isolated;
         let internal_only = ad_internal || spec.proxy_only;
         let ad_config = if ad_internal {
-            Some(ad_network_config()?)
+            Some(ad_network_config(
+                spec.allow_egress || !spec.control_plane_callback_ports.is_empty(),
+            )?)
         } else {
             None
         };
+        if !spec.control_plane_callback_ports.is_empty() {
+            let callback_configured = ad_config.as_ref().is_some_and(|config| {
+                config.control_namespace.is_some() && config.reporter_pod_selector.is_some()
+            });
+            if !callback_configured {
+                return Err(AppError::internal(
+                    "managed KotH reporting on Kubernetes requires RSCTF_K8S_CONTROL_NAMESPACE and RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR",
+                ));
+            }
+        }
+        let policy_labels = fingerprint_policy_labels();
+        let has_network_policy = network_policy_required(ad_internal, spec.proxy_only, isolated);
+        let mut private_policy = if let Some(config) = ad_config.as_ref() {
+            Some(ad_network_policy(
+                &name,
+                &policy_labels,
+                None,
+                spec.expose_port,
+                spec.allow_egress,
+                &spec.control_plane_callback_ports,
+                config,
+            ))
+        } else if spec.proxy_only && isolated {
+            Some(isolated_proxy_network_policy(
+                &name,
+                &policy_labels,
+                spec.expose_port,
+            )?)
+        } else if spec.proxy_only {
+            Some(proxy_network_policy(
+                &name,
+                &policy_labels,
+                spec.expose_port,
+            )?)
+        } else if isolated {
+            Some(isolated_network_policy(
+                &name,
+                &policy_labels,
+                spec.expose_port,
+            )?)
+        } else {
+            None
+        };
+        if let Some(policy) = private_policy.as_mut() {
+            // Namespaced API responses always populate this field. Rendering it
+            // up front keeps structural matching stable for legacy policies
+            // that predate the launch fingerprint label.
+            policy.metadata.namespace = Some(self.namespace.clone());
+        }
+        debug_assert_eq!(private_policy.is_some(), has_network_policy);
+        let security_context = challenge_security_context();
+        let ad_service_cidr = ad_config
+            .as_ref()
+            .map(|config| config.service_cidr.to_string());
+        let launch_fingerprint = kubernetes_launch_fingerprint(
+            &spec,
+            &security_context,
+            private_policy.as_ref(),
+            ad_service_cidr.as_deref(),
+        );
 
         // Environment: caller-supplied vars plus the dynamic flag contract.
         let mut env: Vec<EnvVar> = spec
@@ -409,24 +507,30 @@ impl ContainerManager for KubernetesContainerManager {
             Quantity(format!("{}Mi", spec.storage_limit.min(32))),
         );
 
-        let labels =
-            orphans::workload_labels(&name, &uid, &self.scope, spec.operation_id.as_deref());
+        let labels = orphans::workload_labels(
+            &name,
+            &uid,
+            &self.scope,
+            spec.operation_id.as_deref(),
+            &launch_fingerprint,
+        );
+        if let Some(policy) = private_policy.as_mut() {
+            stamp_policy_labels(policy, &labels);
+        }
         let app_label = labels[APP_LABEL].clone();
 
+        let container_ports = challenge_container_ports(spec.expose_port, ad_internal);
         let container = Container {
             name: name.clone(),
             image: Some(spec.image.clone()),
             env: Some(env),
-            ports: Some(vec![ContainerPort {
-                container_port: spec.expose_port,
-                ..Default::default()
-            }]),
+            ports: Some(container_ports),
             resources: Some(ResourceRequirements {
                 limits: Some(limits),
                 requests: Some(requests),
                 claims: None,
             }),
-            security_context: Some(challenge_security_context()),
+            security_context: Some(security_context),
             ..Default::default()
         };
 
@@ -451,30 +555,6 @@ impl ContainerManager for KubernetesContainerManager {
         // cluster or Internet. The unique selector makes a crash-orphaned policy
         // harmless; normal destroy/rollback still removes it by name.
         let policies = self.network_policies();
-        let has_network_policy = network_policy_required(ad_internal, spec.proxy_only, isolated);
-        let private_policy = if let Some(config) = ad_config.as_ref() {
-            Some(ad_network_policy(
-                &name,
-                &labels,
-                None,
-                spec.expose_port,
-                spec.allow_egress,
-                config,
-            ))
-        } else if spec.proxy_only && isolated {
-            Some(isolated_proxy_network_policy(
-                &name,
-                &labels,
-                spec.expose_port,
-            )?)
-        } else if spec.proxy_only {
-            Some(proxy_network_policy(&name, &labels, spec.expose_port)?)
-        } else if isolated {
-            Some(isolated_network_policy(&name, &labels, spec.expose_port)?)
-        } else {
-            None
-        };
-        debug_assert_eq!(private_policy.is_some(), has_network_policy);
         let mut policy_created = false;
         if let Some(policy) = private_policy {
             match policies.create(&PostParams::default(), &policy).await {
@@ -485,7 +565,9 @@ impl ContainerManager for KubernetesContainerManager {
                         &name,
                         &self.scope,
                         spec.operation_id.as_deref(),
+                        &launch_fingerprint,
                         "network policy",
+                        |actual| compat::legacy_policy_matches(actual, &policy),
                     )
                     .await?;
                 }
@@ -506,7 +588,9 @@ impl ContainerManager for KubernetesContainerManager {
                     &name,
                     &self.scope,
                     spec.operation_id.as_deref(),
+                    &launch_fingerprint,
                     "pod",
+                    |actual| compat::legacy_pod_matches(actual, &pod),
                 )
                 .await
                 {
@@ -526,26 +610,62 @@ impl ContainerManager for KubernetesContainerManager {
                 // when the client saw an error. Removing isolation here
                 // would expose that ambiguous Pod, so retain the policy for
                 // adoption or fail-closed orphan reconciliation.
+                if !is_ambiguous_create_error(&e) {
+                    self.rollback_operation_workload(&name).await;
+                }
                 return Err(AppError::internal(format!("failed to create pod: {e}")));
             }
         };
-        let pod_uid = created_pod.metadata.uid.clone();
+        let Some(pod_uid) = created_pod.metadata.uid.clone() else {
+            self.rollback_new_pod(&pods, &name, policy_created, adopted)
+                .await;
+            return Err(AppError::internal(
+                "Kubernetes did not return an ownership UID for the challenge Pod",
+            ));
+        };
+        let pod_phase = created_pod
+            .status
+            .as_ref()
+            .and_then(|status| status.phase.as_deref());
+        if phase_liveness(pod_phase) == ContainerLiveness::Stopped {
+            if adopted {
+                orphans::rollback_owned(
+                    pods.clone(),
+                    self.services(),
+                    self.network_policies(),
+                    &name,
+                    &self.scope,
+                )
+                .await
+                .map_err(|error| {
+                    AppError::internal(format!(
+                        "Kubernetes retry adopted a terminal Pod and cleanup failed: {error}"
+                    ))
+                })?;
+                return Err(AppError::conflict(
+                    "Kubernetes retry adopted a terminal Pod; retry with a new operation identity",
+                ));
+            }
+            self.rollback_new_pod(&pods, &name, policy_created, adopted)
+                .await;
+            return Err(AppError::internal(
+                "Kubernetes challenge Pod reached a terminal state before publication",
+            ));
+        }
 
         // Service exposing the challenge port: A&D and PlatformProxy are not
         // node-published; direct challenges retain NodePort. The Service is
         // owned by the pod; private-policy cleanup applies to A&D and proxy-only
         // Jeopardy workloads.
-        let mut owner_refs = None;
-        if let Some(uid) = pod_uid {
-            owner_refs = Some(vec![OwnerReference {
-                api_version: "v1".to_string(),
-                kind: "Pod".to_string(),
-                name: name.clone(),
-                uid,
-                ..Default::default()
-            }]);
-        }
+        let owner_refs = Some(vec![OwnerReference {
+            api_version: "v1".to_string(),
+            kind: "Pod".to_string(),
+            name: name.clone(),
+            uid: pod_uid.clone(),
+            ..Default::default()
+        }]);
 
+        let service_ports = challenge_service_ports(spec.expose_port, ad_internal);
         let service = Service {
             metadata: ObjectMeta {
                 name: Some(name.clone()),
@@ -561,11 +681,7 @@ impl ContainerManager for KubernetesContainerManager {
                 // address that an ingress IPBlock legitimately allows.
                 external_traffic_policy: (!internal_only && isolated).then(|| "Local".to_string()),
                 selector: Some(BTreeMap::from([(APP_LABEL.to_string(), app_label.clone())])),
-                ports: Some(vec![ServicePort {
-                    port: spec.expose_port,
-                    target_port: Some(IntOrString::Int(spec.expose_port)),
-                    ..Default::default()
-                }]),
+                ports: Some(service_ports),
                 ..Default::default()
             }),
             status: None,
@@ -581,11 +697,22 @@ impl ContainerManager for KubernetesContainerManager {
                         &name,
                         &self.scope,
                         spec.operation_id.as_deref(),
+                        &launch_fingerprint,
                         "service",
+                        |actual| compat::legacy_service_matches(actual, &service),
                     )
                     .await
                     {
-                        Ok(service) => (service, true),
+                        Ok(service) if service_owner_matches_pod(&service, &name, &pod_uid) => {
+                            (service, true)
+                        }
+                        Ok(_) => {
+                            self.rollback_new_pod(&pods, &name, policy_created, adopted)
+                                .await;
+                            return Err(AppError::conflict(
+                                "service operation identity references a different Pod",
+                            ));
+                        }
                         Err(error) => {
                             self.rollback_new_pod(&pods, &name, policy_created, adopted)
                                 .await;
@@ -594,9 +721,15 @@ impl ContainerManager for KubernetesContainerManager {
                     }
                 }
                 Err(e) => {
-                    // Roll back the pod so a failed service create doesn't leak it.
-                    self.rollback_new_pod(&pods, &name, policy_created, adopted)
-                        .await;
+                    // A transport or proxy failure can hide a successful API
+                    // write. Retain stable-operation resources so the exact
+                    // retry can adopt them without changing the Pod owner UID.
+                    if spec.operation_id.is_some() && !is_ambiguous_create_error(&e) {
+                        self.rollback_operation_workload(&name).await;
+                    } else if spec.operation_id.is_none() {
+                        self.rollback_new_pod(&pods, &name, policy_created, adopted)
+                            .await;
+                    }
                     return Err(AppError::internal(format!("failed to create service: {e}")));
                 }
             };
@@ -687,6 +820,18 @@ impl ContainerManager for KubernetesContainerManager {
             &self.scope,
         )
         .await
+    }
+
+    async fn find_operation_runtime(&self, operation_id: &str) -> AppResult<Option<String>> {
+        orphans::find_operation_workload(
+            self.pods(),
+            self.services(),
+            self.network_policies(),
+            &self.scope,
+            operation_id,
+        )
+        .await
+        .map(|identity| identity.map(|identity| identity.name))
     }
 
     async fn query(&self, id: &str) -> AppResult<ContainerStatus> {

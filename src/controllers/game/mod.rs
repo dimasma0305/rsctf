@@ -1,25 +1,27 @@
-//! Ported from RSCTF `Controllers/GameController.cs` (player-facing surface) plus
-//! `Services/FlagChecker.cs` and the Game/Participation/Submission/GameInstance
-//! repositories.
+//! Player-facing game surface and flag-checking behavior ported from RSCTF.
 //!
 //! Route prefix `/api/game`. Covers game listing/details, notices/events,
 //! participations, scoreboard, join, the challenge view, flag SUBMISSION (judged
-//! synchronously here — rsctf has no background channel worker, so the logic of
-//! `GameInstanceRepository.VerifyAnswer` runs inline in `submit`), submission
+//! synchronously here), submission
 //! status, container lifecycle, immutable cheat evidence/reporting, traffic
 //! capture, and writeups.
 
 pub mod ad;
 mod cheat_capabilities;
 mod cheat_identity;
+pub(crate) mod credential_operations;
 pub mod koth;
+mod monitor_history;
+#[cfg(test)]
+mod monitor_history_tests;
+mod submit_flag_policy;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::middlewares::rate_limiter::{limited, Policy};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -36,9 +38,9 @@ use uuid::Uuid;
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser, MonitorUser};
 use crate::models::data::{
-    attachment, challenge_review, container, division, division_challenge_config, flag_context,
-    game, game_challenge, game_event, game_instance, game_manager, game_notice, local_file,
-    participation, submission, team, team_member, user, user_participation,
+    attachment, challenge_review, container, division, division_challenge_config, game,
+    game_challenge, game_instance, game_notice, local_file, participation, submission, team,
+    team_member, user,
 };
 use crate::services::container::ContainerSpec;
 use crate::utils::crypto_utils::ct_eq;
@@ -50,9 +52,6 @@ use crate::utils::enums::{
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::flag_generator;
 use crate::utils::shared::{ArrayResponse, MessageResponse, PageParams, RequestResponse};
-
-/// RSCTF `Limits.MaxFlagLength`.
-const MAX_FLAG_LENGTH: usize = 127;
 
 // ---------------------------------------------------------------------------
 // DTOs (inline; camelCase on the wire to match RSCTF's JSON contract).
@@ -77,6 +76,8 @@ pub struct BasicGameInfoModel {
     pub start: DateTime<Utc>,
     #[serde(with = "crate::utils::datetime::millis")]
     pub end: DateTime<Utc>,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub server_time: DateTime<Utc>,
 }
 
 impl From<&game::Model> for BasicGameInfoModel {
@@ -95,6 +96,7 @@ impl From<&game::Model> for BasicGameInfoModel {
             participation_status: None,
             start: g.start_time_utc,
             end: g.end_time_utc,
+            server_time: Utc::now(),
         }
     }
 }
@@ -133,6 +135,9 @@ pub struct DetailedGameInfoModel {
     pub divisions: Option<Vec<DivisionInfo>>,
     pub invite_code_required: bool,
     pub writeup_required: bool,
+    pub ai_chat_links_enabled: bool,
+    pub ai_chat_links_required: bool,
+    pub solver_uploads_enabled: bool,
     pub poster: Option<String>,
     pub limit: i32,
     pub team_count: i64,
@@ -150,6 +155,8 @@ pub struct DetailedGameInfoModel {
     pub start: DateTime<Utc>,
     #[serde(with = "crate::utils::datetime::millis")]
     pub end: DateTime<Utc>,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub server_time: DateTime<Utc>,
 }
 
 /// RSCTF `GameNotice` response.
@@ -164,49 +171,14 @@ pub struct GameNoticeModel {
     pub time: DateTime<Utc>,
 }
 
-/// RSCTF `GameEvent` response (`FormattableDataOfEventType` + time/user/team).
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GameEventModel {
-    #[serde(rename = "type")]
-    pub event_type: crate::utils::enums::EventType,
-    pub values: Json,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub time: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub team: Option<String>,
-}
+/// One serializer is shared by polled, backfilled, and pushed monitor events.
+pub type GameEventModel = crate::services::game_event_feed::GameEventMessage;
 
-/// RSCTF `TeamWithDetailedUserInfo`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TeamWithDetailedUserInfo {
-    pub id: i32,
-    pub locked: bool,
-    pub captain_id: Uuid,
-    pub name: Option<String>,
-    pub bio: Option<String>,
-    pub avatar: Option<String>,
-    pub members: Vec<Json>,
-}
-
-/// RSCTF `ParticipationInfoModel` (Admin review).
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ParticipationInfoModel {
-    pub id: i32,
-    pub team: TeamWithDetailedUserInfo,
-    /// User-id GUIDs of the members registered for this participation
-    /// (RSCTF `part.Members.Select(m => m.UserId)`).
-    pub registered_members: Vec<Uuid>,
-    pub division_id: Option<i32>,
-    pub status: ParticipationStatus,
-}
+/// One serializer shared by polled, backfilled, and pushed monitor submissions.
+pub type MonitorSubmissionModel = crate::services::submission_feed::SubmissionMessage;
 
 /// RSCTF `ChallengeItem` (a solved cell on the scoreboard).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeItem {
     pub id: i32,
@@ -219,7 +191,7 @@ pub struct ChallengeItem {
 }
 
 /// RSCTF `ScoreboardItem`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardItem {
     pub id: i32,
@@ -332,22 +304,25 @@ pub struct GameJoinCheckInfoModel {
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientFlagContext {
+    /// Current accepted participation, used only to scope durable lifecycle
+    /// operation identities across account/team changes in the same tab.
+    pub participation_id: Option<i32>,
+    /// Immutable container UUID used to fence asynchronous lifecycle results.
+    pub instance_id: Option<Uuid>,
     pub instance_entry: Option<String>,
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub close_time: Option<DateTime<Utc>>,
     pub is_shared_instance: bool,
     pub url: Option<String>,
     pub file_size: Option<i64>,
-    /// SHA-256 of a local attachment. Clients can display/copy this before
-    /// downloading without making a separate metadata request.
+    /// SHA-256 displayed before downloading without another metadata request.
     pub sha256: Option<String>,
 }
 
 /// Port of RSCTF `GameChallenge.UsesSharedContainer`: true when a challenge serves
 /// ONE challenge-owned container to every team — a `StaticContainer` with
-/// `enable_shared_container` and a valid image/port. Such a challenge never gets a
-/// per-team `GameInstance`/container; the single shared container's id lives on
-/// `game_challenge.shared_container_id`.
+/// `enable_shared_container` and a valid image/port. It has no per-team
+/// `GameInstance`; its container id lives on `game_challenge.shared_container_id`.
 pub(crate) fn uses_shared_container(c: &game_challenge::Model) -> bool {
     c.challenge_type == ChallengeType::StaticContainer
         && c.enable_shared_container
@@ -375,6 +350,9 @@ pub struct ChallengeDetailModel {
     pub user_comment: Option<String>,
     pub solve_receipt_mode: SolveReceiptMode,
     pub receipt_verifier_identity: Option<String>,
+    /// Player-visible A&D runtime ownership. BYOC challenges need this even
+    /// before their first agent connection creates a team-service row.
+    pub ad_self_hosted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variant: Option<ClientChallengeVariant>,
 }
@@ -388,7 +366,7 @@ pub struct ClientChallengeVariant {
 }
 
 /// RSCTF `ContainerInfoModel`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContainerInfoModel {
     pub id: String,
@@ -451,6 +429,8 @@ pub struct CheatReport {
     pub pending_jobs: i64,
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub oldest_pending_at: Option<DateTime<Utc>>,
+    /// Captured evidence not yet applied by the reconciler.
+    pub reconciliation_pending: bool,
     pub last_error: Option<String>,
     pub ip_analysis: Vec<Json>,
     pub abnormal_solves: Vec<Json>,
@@ -502,22 +482,6 @@ pub struct CheatInfoModel {
     pub submission: SubmissionModel,
 }
 
-/// RSCTF `TrafficFlowDetail` (extends `TrafficFlowSummary`).
-#[derive(Debug, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct TrafficFlowDetail {
-    pub connection_port: i32,
-    pub first_seen_utc: String,
-    pub last_seen_utc: String,
-    pub peer_ip: String,
-    pub packets_in: i64,
-    pub packets_out: i64,
-    pub bytes_in: i64,
-    pub bytes_out: i64,
-    pub flag_hits: i64,
-    pub chunks: Vec<Json>,
-}
-
 /// RSCTF `GameJoinModel`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -533,12 +497,13 @@ pub struct GameJoinModel {
     pub fingerprint_proof: Option<String>,
 }
 
-/// RSCTF `FlagSubmitModel`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlagSubmitModel {
     pub flag: String,
-    /// Optional one-use proof minted by a configured trusted verifier.
+    /// Optional opaque client identity retained until the terminal verdict is recovered.
+    #[serde(default = "Uuid::new_v4")]
+    pub attempt_id: Uuid,
     #[serde(default)]
     pub proof: Option<String>,
 }
@@ -560,7 +525,8 @@ pub struct RecentQuery {
     pub limit: usize,
 }
 
-/// RSCTF `GameController.Events` query: `hideContainer`/`count`/`skip`/`search`.
+/// Monitor event query shared by two contracts: legacy `/events` preserves
+/// `count=0` as all retained rows, while `/events/page` applies hard bounds.
 /// Events has no `type` filter (that belongs to `Submissions`).
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -575,8 +541,9 @@ pub struct EventQuery {
     pub search: Option<String>,
 }
 
-/// RSCTF `GetChallengeSolvers` takes no paging; rsctf adds optional `count`/`skip`
-/// (count omitted or 0 ⇒ the whole solver list).
+/// Solver pagination shared by two contracts: the legacy `/solvers` route treats
+/// an omitted or zero `count` as all rows after `skip`, while `/solvers/page`
+/// applies its own default and hard bounds.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SolversQuery {
@@ -586,6 +553,8 @@ pub struct SolversQuery {
     pub skip: Option<u64>,
 }
 
+/// Monitor submission query shared by legacy `/submissions` and bounded
+/// `/submissions/page`; only the legacy route treats `count=0` as all rows.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmissionQuery {
@@ -720,40 +689,10 @@ pub(crate) async fn effective_permission(
     part: &participation::Model,
     challenge_id: i32,
 ) -> AppResult<GamePermission> {
-    let Some(div_id) = part.division_id else {
-        return Ok(GamePermission(GamePermission::ALL));
-    };
-
-    let cache_key = format!("effperm:v3:{}:{div_id}:{challenge_id}", part.game_id);
-    if let Some(bytes) = st.cache.get(&cache_key).await {
-        if let Ok(perm) = serde_json::from_slice::<GamePermission>(&bytes) {
-            return Ok(perm);
-        }
-    }
-
-    let stored: Option<i32> = sqlx::query_scalar(
-        r#"SELECT COALESCE(permission.permissions, division.default_permissions)
-             FROM "Divisions" division
-             LEFT JOIN "DivisionChallengeConfigs" permission
-               ON permission.division_id = division.id
-              AND permission.challenge_id = $3
-            WHERE division.id = $1 AND division.game_id = $2"#,
-    )
-    .bind(div_id)
-    .bind(part.game_id)
-    .bind(challenge_id)
-    .fetch_optional(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let perm = GamePermission(stored.unwrap_or(0));
-
-    if let Ok(json) = serde_json::to_vec(&perm) {
-        st.cache
-            .set(&cache_key, &json, Some(std::time::Duration::from_secs(10)))
-            .await;
-    }
-
-    Ok(perm)
+    Ok(effective_permissions_batch(st, part, &[challenge_id])
+        .await?
+        .remove(&challenge_id)
+        .unwrap_or(GamePermission(0)))
 }
 
 /// Batched permission resolution for the polled `/details` path.
@@ -802,29 +741,39 @@ async fn effective_permissions_batch(
     };
 
     let overrides_key = format!("div_overrides:v3:{}:{div_id}", part.game_id);
-    let overrides: std::collections::HashMap<i32, i32> =
-        if let Some(bytes) = st.cache.get(&overrides_key).await {
-            serde_json::from_slice(&bytes).unwrap_or_default()
-        } else {
-            let db_overrides: std::collections::HashMap<i32, i32> =
-                division_challenge_config::Entity::find()
-                    .filter(division_challenge_config::Column::DivisionId.eq(div_id))
-                    .all(&st.db)
-                    .await?
-                    .into_iter()
-                    .map(|c| (c.challenge_id, c.permissions))
-                    .collect();
-            if let Ok(json) = serde_json::to_vec(&db_overrides) {
-                st.cache
-                    .set(
-                        &overrides_key,
-                        &json,
-                        Some(std::time::Duration::from_secs(10)),
-                    )
-                    .await;
-            }
-            db_overrides
-        };
+    let overrides: std::collections::HashMap<i32, i32> = if let Some(bytes) =
+        st.cache.get(&overrides_key).await
+    {
+        serde_json::from_slice(&bytes).unwrap_or_default()
+    } else {
+        let rows = sqlx::query_as::<_, (i32, i32)>(
+            r#"SELECT challenge_id, permissions
+                     FROM "DivisionChallengeConfigs"
+                    WHERE division_id = $1
+                    ORDER BY challenge_id
+                    LIMIT 513"#,
+        )
+        .bind(div_id)
+        .fetch_all(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if rows.len() > 512 {
+            return Err(AppError::unavailable(
+                    "Division permissions exceed the supported bound; ask an administrator to repair them",
+                ));
+        }
+        let db_overrides: std::collections::HashMap<i32, i32> = rows.into_iter().collect();
+        if let Ok(json) = serde_json::to_vec(&db_overrides) {
+            st.cache
+                .set(
+                    &overrides_key,
+                    &json,
+                    Some(std::time::Duration::from_secs(10)),
+                )
+                .await;
+        }
+        db_overrides
+    };
 
     Ok(challenge_ids
         .iter()
@@ -850,6 +799,9 @@ fn parse_answer_result(name: &str) -> Option<AnswerResult> {
 
 async fn load_game(st: &SharedState, id: i32) -> AppResult<game::Model> {
     game::Entity::find_by_id(id)
+        .filter(sea_orm::sea_query::Expr::cust(
+            "\"Games\".deletion_pending = FALSE",
+        ))
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("Game not found"))
@@ -957,38 +909,65 @@ async fn find_participation(
 }
 
 /// Per-team scoreboard token: `{teamId}:Ed25519(privateKey, "RSCTF_TEAM_{teamId}")`.
-fn participation_token(g: &game::Model, team_id: i32) -> AppResult<String> {
+pub(crate) fn participation_token_from_key(private_key: &str, team_id: i32) -> AppResult<String> {
     let signature =
-        crate::utils::crypto_utils::game_sign(&g.private_key, &format!("RSCTF_TEAM_{team_id}"))?;
+        crate::utils::crypto_utils::game_sign(private_key, &format!("RSCTF_TEAM_{team_id}"))?;
     Ok(format!("{team_id}:{signature}"))
 }
 
+fn participation_token(g: &game::Model, team_id: i32) -> AppResult<String> {
+    participation_token_from_key(&g.private_key, team_id)
+}
+
+mod ai_chats;
+mod ai_chats_monitor;
 mod catalog;
 pub(crate) mod cheat;
+mod cheat_compare;
 mod cheat_evidence;
+mod cheat_freshness;
+mod cheat_report_cache;
+pub(crate) use cheat_report_cache::invalidate_report as invalidate_cheat_report;
 mod combined_scoreboard;
 mod containers;
+#[cfg(test)]
+mod hidden_events_tests;
 mod lookups;
-mod membership;
+pub(crate) mod membership;
+mod participation_review;
 mod play;
 mod scoreboard;
 mod scoreboard_board;
 mod scoreboard_encoding;
+mod scoreboard_live;
+mod solver_uploads;
+mod solver_uploads_monitor;
+mod submission_backfill;
 mod submit;
 mod traffic;
 mod vpn_access;
 mod writeup;
 
+pub use ai_chats::*;
+pub use ai_chats_monitor::*;
 pub use catalog::*;
 pub use cheat::*;
+pub use cheat_compare::*;
 pub use cheat_evidence::*;
 pub use combined_scoreboard::*;
 pub use containers::*;
-pub(crate) use containers::{prepare_queued_image, repair_missing_legacy_image};
+pub(crate) use containers::{
+    prepare_queued_image, repair_missing_legacy_image, sweep_container_operations,
+};
 use lookups::*;
+pub use participation_review::*;
 pub use play::*;
 pub use scoreboard::*;
 pub(crate) use scoreboard_board::*;
+pub(crate) use scoreboard_live::*;
+pub use solver_uploads::*;
+pub use solver_uploads_monitor::*;
+pub use submission_backfill::*;
 pub use submit::*;
 pub use traffic::*;
 pub use vpn_access::*;

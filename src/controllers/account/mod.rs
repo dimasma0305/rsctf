@@ -17,7 +17,7 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseTransaction, EntityTrait,
     PaginatorTrait, QueryFilter, Set,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::net::SocketAddr;
 use uuid::Uuid;
 
@@ -25,10 +25,8 @@ use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{
     clear_session_cookie, set_session_cookie, CurrentUser, MaybeUser,
 };
-use crate::models::data::{
-    config, first_solve, game, game_challenge, game_manager, submission, user,
-};
-use crate::models::request::account::*;
+use crate::models::data::{config, game_manager, user};
+use crate::models::request::account::{PasswordChangeModel, ProfileUpdateModel, RegisterModel};
 use crate::services::anti_cheat;
 use crate::services::captcha::CaptchaSettings;
 use crate::utils::crypto_utils::{hash_password_async, verify_password_async};
@@ -45,32 +43,30 @@ pub(super) const MAX_ENCODED_EMAIL_BYTES: usize = 1_024;
 const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$YBSHJA9ANNWFII7EsOe1rw$O5h6h9EwR/6Pyoe9wCcjK91HivbrgJZwb44fhsiqonw";
 pub(crate) const REGISTRATION_LOCK_ID: i64 = 0x5253_4354_4652_4547; // "RSCTFREG"
 
-fn registration_disposition(
-    is_first: bool,
-    active_on_register: bool,
-    email_confirmation_required: bool,
-) -> (bool, RegisterStatus) {
-    let session_eligible = is_first || (active_on_register && !email_confirmation_required);
-    let status = if session_eligible {
-        RegisterStatus::LoggedIn
-    } else if email_confirmation_required {
-        RegisterStatus::EmailConfirmationRequired
-    } else {
-        RegisterStatus::AdminConfirmationRequired
-    };
-    (session_eligible, status)
-}
-
 mod avatar;
 mod bootstrap;
+mod email_change_support;
 mod email_confirmation;
+mod email_policy;
+mod link_attempts;
+mod password_policy;
 mod profile_bounds;
 mod recovery;
+mod request_models;
+mod stats;
 pub use avatar::avatar;
+use bootstrap::registration_disposition;
 pub use email_confirmation::verify;
+pub(crate) use email_policy::*;
+pub(super) use password_policy::validate_password;
 use profile_bounds::load_user;
 pub(crate) use profile_bounds::validate_profile_fields;
 pub use recovery::*;
+use request_models::EmailChangeTicket;
+pub use request_models::{
+    AccountVerifyModel, LoginModel, MailChangeModel, PasswordResetModel, RecoveryModel,
+};
+pub use stats::stats;
 
 pub fn router() -> Router<SharedState> {
     Router::new()
@@ -110,83 +106,6 @@ pub fn router() -> Router<SharedState> {
         .route("/api/account/verify", post(verify))
 }
 
-// ---------------------------------------------------------------------------
-// Local request DTOs not shared elsewhere (camelCase, tolerant).
-// ---------------------------------------------------------------------------
-
-/// `LoginModel` — credentials plus the optional browser fingerprint the SPA
-/// collects (see `Api.ts`). The shared request DTO omits `fingerprint`, so we
-/// deserialize into this tolerant local copy to capture it at login. Shadows
-/// the glob-imported `models::request::account::LoginModel` within this module.
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LoginModel {
-    #[serde(default)]
-    pub user_name: String,
-    #[serde(default)]
-    pub password: String,
-    #[serde(default)]
-    pub fingerprint: Option<String>,
-    #[serde(default)]
-    pub fingerprint_proof: Option<String>,
-    /// Captcha token (`ModelWithCaptcha.challenge`); verified only when the live
-    /// `AccountPolicy:UseCaptcha` is on. Absent/`null` on captcha-off deployments.
-    #[serde(default)]
-    pub challenge: Option<String>,
-}
-
-/// `MailChangeModel` — new email address.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MailChangeModel {
-    #[serde(default)]
-    pub new_mail: String,
-    /// Current password re-authentication. A session bearer alone is not enough
-    /// to redirect future recovery mail to a new address.
-    #[serde(default)]
-    pub password: String,
-}
-
-/// `AccountVerifyModel` — email-confirmation / mail-change token.
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountVerifyModel {
-    #[serde(default)]
-    pub token: String,
-    #[serde(default)]
-    pub email: String,
-}
-
-/// `PasswordResetModel` — reset password using an emailed token.
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PasswordResetModel {
-    #[serde(default)]
-    pub password: String,
-    #[serde(default)]
-    pub email: String,
-    #[serde(default)]
-    pub r_token: String,
-}
-
-/// `RecoveryModel` — request a password-recovery email.
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecoveryModel {
-    #[serde(default)]
-    pub email: String,
-    #[serde(default)]
-    pub challenge: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(super) struct EmailChangeTicket {
-    pub user_id: Uuid,
-    pub new_email: String,
-    pub security_stamp: String,
-}
-
-// ---------------------------------------------------------------------------
 // Local response DTOs (camelCase; must match Api.ts interfaces exactly).
 // ---------------------------------------------------------------------------
 
@@ -260,6 +179,11 @@ pub async fn register(
     headers: HeaderMap,
     Json(model): Json<RegisterModel>,
 ) -> AppResult<Response> {
+    let mail_operation_id = model.operation_id;
+    if mail_operation_id.is_nil() {
+        return Err(AppError::bad_request("operationId is required"));
+    }
+    let request_ip = anti_cheat::client_ip(&headers, Some(peer.ip()));
     // Fail fast before policy loading, captcha verification, and Argon2.
     let is_first_preflight = bootstrap::preflight(&st, model.bootstrap_token.as_deref()).await?;
     // Load the live AccountPolicy from the `Configs` key/value table so the
@@ -287,7 +211,11 @@ pub async fn register(
     // `AccountPolicy:UseCaptcha` is on, so captcha-off registration is unaffected.
     let captcha = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
     let captcha_admission = captcha
-        .verify_local(model.challenge.as_deref().unwrap_or(""), st.cache.as_ref())
+        .verify_local(
+            model.challenge.as_deref().unwrap_or(""),
+            st.cache.as_ref(),
+            st.config.jwt_secret.as_bytes(),
+        )
         .await?;
 
     let user_name = model.user_name.trim().to_string();
@@ -362,6 +290,8 @@ pub async fn register(
                                 security_stamp,
                             },
                             captcha_admission,
+                            mail_operation_id,
+                            request_ip.as_deref(),
                         )
                         .await?;
                         return Ok(
@@ -391,7 +321,7 @@ pub async fn register(
         model.fingerprint_proof.as_deref(),
     )
     .await?;
-    let current_ip = anti_cheat::client_ip(&headers, Some(peer.ip()));
+    let current_ip = request_ip;
 
     let now = Utc::now();
     let id = Uuid::now_v7();
@@ -520,21 +450,44 @@ pub async fn register(
             },
         );
     }
-    let confirmation_token = if status == RegisterStatus::EmailConfirmationRequired {
+    if status == RegisterStatus::EmailConfirmationRequired {
         let database_now: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
             .fetch_one(&mut *txn)
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-        Some(email_confirmation::token_for_registration(
+        let token = email_confirmation::token_for_registration(
             st.config.as_ref(),
             id,
             &norm_email,
             &security_stamp,
             database_now,
-        ))
-    } else {
-        None
-    };
+            mail_operation_id,
+        );
+        let outcome = email_confirmation::enqueue_confirmation(
+            &st,
+            &mut txn,
+            mail_operation_id,
+            id,
+            &security_stamp,
+            &email,
+            &token,
+            current_ip.as_deref(),
+        )
+        .await?;
+        if outcome == crate::services::mail_outbox::EnqueueOutcome::Inserted {
+            link_attempts::stage(
+                &mut txn,
+                mail_operation_id,
+                &token,
+                link_attempts::Purpose::Registration,
+                id,
+                &security_stamp,
+                &norm_email,
+                database_now.timestamp() + 15 * 60,
+            )
+            .await?;
+        }
+    }
     txn.commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -544,14 +497,6 @@ pub async fn register(
         // pair-scoped exemption applies to this same account on its next login.
         // No session and no successful identity observation are created.
         return Ok(MessageResponse::new(anti_cheat::block_message(), 403).into_response());
-    }
-
-    if let Some(token) = confirmation_token {
-        // The pending account and signed token state are already durable. SMTP
-        // runs without a database connection or global registration lock; a
-        // delivery failure is recoverable by repeating this authenticated
-        // registration request, which mints a fresh token.
-        email_confirmation::deliver_confirmation(&st, &email, &token).await?;
     }
 
     // The bootstrap admin is the sole exception. For every later account,
@@ -610,7 +555,11 @@ pub async fn login(
     // the live `AccountPolicy:UseCaptcha` is on, so captcha-off login is unaffected.
     let captcha = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
     let captcha_admission = captcha
-        .verify_local(model.challenge.as_deref().unwrap_or(""), st.cache.as_ref())
+        .verify_local(
+            model.challenge.as_deref().unwrap_or(""),
+            st.cache.as_ref(),
+            st.config.jwt_secret.as_bytes(),
+        )
         .await?;
 
     let credentials_within_bounds =
@@ -742,127 +691,6 @@ pub async fn profile(
     )))
 }
 
-/// RSCTF `GameStatItem` — one game the user has solves in.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GameStatItem {
-    pub game_id: i32,
-    pub game_title: String,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub end_time_utc: chrono::DateTime<Utc>,
-    pub solves: i32,
-}
-
-/// RSCTF `UserStatsModel` — the "My Stats" tab payload.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserStatsModel {
-    pub total_solves: i32,
-    pub total_first_bloods: i32,
-    pub games_participated: i32,
-    pub solves_by_category: std::collections::BTreeMap<String, i32>,
-    pub games: Vec<GameStatItem>,
-}
-
-/// `GET /api/account/stats` -> `UserStatsModel` (RSCTF `Account.Stats`): the
-/// signed-in user's solve totals, first bloods, per-category and per-game solves.
-pub async fn stats(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-) -> AppResult<RequestResponse<UserStatsModel>> {
-    use crate::utils::enums::AnswerResult;
-    use sea_orm::ColumnTrait;
-    use std::collections::{BTreeMap, HashMap, HashSet};
-
-    let subs = submission::Entity::find()
-        .filter(submission::Column::UserId.eq(user.id))
-        .filter(submission::Column::Status.eq(AnswerResult::Accepted))
-        .all(&st.db)
-        .await?;
-
-    let challenge_ids: Vec<i32> = subs
-        .iter()
-        .map(|s| s.challenge_id)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    let game_ids: Vec<i32> = subs
-        .iter()
-        .map(|s| s.game_id)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-
-    // Challenge categories + game titles/ends for the solved set.
-    let cat_by_challenge: HashMap<i32, String> = game_challenge::Entity::find()
-        .filter(game_challenge::Column::Id.is_in(challenge_ids.clone()))
-        .all(&st.db)
-        .await?
-        .into_iter()
-        .map(|c| {
-            let label = serde_json::to_value(c.category)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default();
-            (c.id, label)
-        })
-        .collect();
-    let games_map: HashMap<i32, game::Model> = game::Entity::find()
-        .filter(game::Column::Id.is_in(game_ids.clone()))
-        .all(&st.db)
-        .await?
-        .into_iter()
-        .map(|g| (g.id, g))
-        .collect();
-
-    // First bloods: first-solve rows whose submission is one of this user's.
-    let sub_ids: HashSet<i32> = subs.iter().map(|s| s.id).collect();
-    // Count in SQL (WHERE submission_id IN …) instead of loading the entire
-    // first_solve table and counting in Rust. `is_in` on an empty set yields a
-    // 0 count, matching the old behaviour.
-    let total_first_bloods = first_solve::Entity::find()
-        .filter(first_solve::Column::SubmissionId.is_in(sub_ids.iter().copied()))
-        .count(&st.db)
-        .await? as i32;
-
-    // Distinct-challenge tallies per category and per game.
-    let mut by_category: BTreeMap<String, HashSet<i32>> = BTreeMap::new();
-    let mut by_game: HashMap<i32, HashSet<i32>> = HashMap::new();
-    for s in &subs {
-        if let Some(cat) = cat_by_challenge.get(&s.challenge_id) {
-            by_category
-                .entry(cat.clone())
-                .or_default()
-                .insert(s.challenge_id);
-        }
-        by_game.entry(s.game_id).or_default().insert(s.challenge_id);
-    }
-
-    let mut games: Vec<GameStatItem> = by_game
-        .iter()
-        .filter_map(|(gid, chals)| {
-            games_map.get(gid).map(|g| GameStatItem {
-                game_id: *gid,
-                game_title: g.title.clone(),
-                end_time_utc: g.end_time_utc,
-                solves: chals.len() as i32,
-            })
-        })
-        .collect();
-    games.sort_by_key(|game| std::cmp::Reverse(game.end_time_utc));
-
-    Ok(RequestResponse::ok(UserStatsModel {
-        total_solves: challenge_ids.len() as i32,
-        total_first_bloods,
-        games_participated: games.len() as i32,
-        solves_by_category: by_category
-            .into_iter()
-            .map(|(k, v)| (k, v.len() as i32))
-            .collect(),
-        games,
-    }))
-}
-
 /// `PUT /api/account/update` -> `void`.
 pub async fn update(
     State(st): State<SharedState>,
@@ -876,6 +704,8 @@ pub async fn update(
         model.real_name.as_deref(),
         model.std_number.as_deref(),
     )?;
+    let original_user_name = current.user_name.clone();
+    let mut user_name_changed = false;
     let mut am: user::ActiveModel = current.into();
 
     if let Some(name) = model.user_name {
@@ -897,6 +727,7 @@ pub async fn update(
             {
                 return Err(AppError::conflict("Username already taken"));
             }
+            user_name_changed = original_user_name.as_deref() != Some(name.as_str());
             am.normalized_user_name = Set(Some(norm));
             am.user_name = Set(Some(name));
         }
@@ -914,6 +745,12 @@ pub async fn update(
         am.std_number = Set(std_number);
     }
     am.update(&st.db).await?;
+    if user_name_changed {
+        if let Err(error) = crate::controllers::team::flush_scoreboard_for_user(&st, user.id).await
+        {
+            tracing::warn!(%error, user_id = %user.id, "post-rename scoreboard invalidation deferred");
+        }
+    }
 
     // RSCTF `AccountController` audit event (`Account_UserUpdated`). Best-effort.
     crate::services::audit::info(
@@ -951,43 +788,6 @@ pub(super) fn set_cookie(resp: &mut Response, cookie: &str) -> AppResult<()> {
     let value = HeaderValue::from_str(cookie)
         .map_err(|e| AppError::internal(format!("invalid Set-Cookie: {e}")))?;
     resp.headers_mut().insert(SET_COOKIE, value);
-    Ok(())
-}
-
-/// Mirror of RSCTF's ASP.NET Identity password policy (IdentityExtension:
-/// `RequireNonAlphanumeric = false`, `RequireDigit = true`, `RequireUppercase =
-/// true`, `RequireLowercase = true`, `RequiredLength = 6`). RSCTF runs this inside
-/// `UserManager.CreateAsync` / `ChangePasswordAsync` / `ResetPasswordAsync` and
-/// surfaces the first failing validator's description through `HandleIdentityError`
-/// as a 400. We reproduce Identity's `PasswordValidator` check order (length, then
-/// digit, lowercase, uppercase) and its default `IdentityError` descriptions so the
-/// 400 body matches RSCTF's.
-pub(super) fn validate_password(pw: &str) -> AppResult<()> {
-    if pw.len() > MAX_PASSWORD_BYTES {
-        return Err(AppError::bad_request(format!(
-            "Passwords cannot exceed {MAX_PASSWORD_BYTES} bytes."
-        )));
-    }
-    if pw.chars().count() < 6 {
-        return Err(AppError::bad_request(
-            "Passwords must be at least 6 characters.",
-        ));
-    }
-    if !pw.chars().any(|c| c.is_ascii_digit()) {
-        return Err(AppError::bad_request(
-            "Passwords must have at least one digit ('0'-'9').",
-        ));
-    }
-    if !pw.chars().any(char::is_lowercase) {
-        return Err(AppError::bad_request(
-            "Passwords must have at least one lowercase ('a'-'z').",
-        ));
-    }
-    if !pw.chars().any(char::is_uppercase) {
-        return Err(AppError::bad_request(
-            "Passwords must have at least one uppercase ('A'-'Z').",
-        ));
-    }
     Ok(())
 }
 

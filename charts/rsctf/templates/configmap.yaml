@@ -1,6 +1,7 @@
 {{- include "rsctf.validateValues" . }}
 {{- if ne .Values.runtimeRole "migrate" }}
 {{- $localBackend := include "rsctf.localContainerBackend" . | trim }}
+{{- $kothReporterPodSelector := include "rsctf.kothReporterPodSelector" . | trim }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -41,6 +42,7 @@ data:
   RSCTF_ADMIN_CONFIRM: {{ .Values.config.adminConfirm | quote }}
   RSCTF_ACTIVE_ON_REGISTER: {{ .Values.config.activeOnRegister | quote }}
   RSCTF_USE_CAPTCHA: {{ .Values.config.useCaptcha | quote }}
+  RSCTF_ALLOW_COMPETITION_HISTORY_PURGE: {{ .Values.config.allowCompetitionHistoryPurge | quote }}
   {{- if eq .Values.runtimeRole "all" }}
   RSCTF_MIGRATE: {{ ternary "1" "0" .Values.config.migrate | quote }}
   {{- end }}
@@ -51,6 +53,7 @@ data:
   RSCTF_CHECKER_PROCESS_BUDGET: {{ .Values.config.checkerProcessBudget | quote }}
   RSCTF_DISTRIBUTED_RATELIMIT: {{ ternary "false" "true" (eq .Values.runtimeRole "all") | quote }}
   RSCTF_AD_SUBMIT_BURST_FLAGS: {{ .Values.config.adSubmitBurstFlags | quote }}
+  RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE: {{ .Values.config.kothCapabilityIpAdmissionPerMinute | quote }}
   RSCTF_SUSPICION_RECONCILE_SECONDS: {{ .Values.config.suspicionReconcileSeconds | quote }}
   RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS: {{ .Values.config.suspicionFinalizeGraceSeconds | quote }}
   RSCTF_CONTAINER_MAX_MEMORY_MB: {{ .Values.config.containerMaxMemoryMb | quote }}
@@ -68,11 +71,20 @@ data:
   {{- with .Values.config.publicUrl }}
   RSCTF_PUBLIC_URL: {{ . | quote }}
   {{- end }}
+  {{- with .Values.config.kothReporterBaseUrl }}
+  RSCTF_KOTH_REPORTER_BASE_URL: {{ . | quote }}
+  {{- end }}
   {{- if eq $localBackend "kubernetes" }}
   RSCTF_K8S_NAMESPACE: {{ include "rsctf.challengeNamespace" . | quote }}
   RSCTF_K8S_CHALLENGE_UID: {{ .Values.kubernetes.challengeUid | quote }}
   RSCTF_K8S_CONTROL_NAMESPACE: {{ .Release.Namespace | quote }}
   RSCTF_K8S_CONTROL_POD_LABEL: {{ printf "app.kubernetes.io/name=%s" (include "rsctf.name" .) | quote }}
+  {{- with $kothReporterPodSelector }}
+  RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.kubernetes.dnsCidrs }}
+  RSCTF_K8S_DNS_CIDRS: {{ join "," . | quote }}
+  {{- end }}
   RSCTF_K8S_NETWORK_POLICY_ENFORCED: {{ .Values.kubernetes.networkPolicyEnforced | quote }}
   RSCTF_K8S_ISOLATED_POD_NETNS: {{ .Values.kubernetes.isolatedPodNetns | quote }}
   {{- with .Values.kubernetes.publicEntry }}

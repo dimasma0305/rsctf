@@ -4,6 +4,7 @@ use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 
 use crate::app_state::SharedState;
+use crate::utils::enums::FileType;
 use crate::utils::error::{AppError, AppResult};
 
 const MAX_ATTACHMENT_FILES: usize = 2_048;
@@ -11,27 +12,80 @@ const MAX_ATTACHMENT_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ATTACHMENT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ATTACHMENT_DEPTH: usize = 32;
 
-/// Package + attach a challenge's artifact, mirroring RSCTF `SyncAttachmentAsync`
-/// (Services/Transfer/ChallengeImportService.cs). The source is the explicit
-/// `provide:` path, or — when absent — the TCP1P `dist/` convention (which RSCTF's
-/// own code documents). A single file is uploaded as-is; a directory with one
-/// file uploads that file; a multi-file directory is zipped. Best-effort: any
-/// failure is logged and the challenge simply keeps no attachment (never fails
-/// the whole import). Path-escape + symlink guards mirror RSCTF's.
-pub(super) async fn sync_attachment(
+pub(super) enum AttachmentIntent {
+    Keep,
+    Clear,
+    Failed,
+    Staged(crate::services::blob_refs::StagedBlob),
+}
+
+enum PreparedAttachment {
+    Keep,
+    Clear,
+    Failed,
+    Bytes { filename: String, bytes: Vec<u8> },
+}
+
+#[derive(Default)]
+pub(super) struct AttachmentPostCommit {
+    purge_hash: Option<String>,
+    invalidate_hashes: Vec<String>,
+    receipt: Option<(uuid::Uuid, String)>,
+}
+
+pub(super) struct AttachmentPublishFailure {
+    pub(super) error: AppError,
+    pub(super) post_commit: AttachmentPostCommit,
+}
+
+impl AttachmentPublishFailure {
+    fn before_commit(error: AppError) -> Self {
+        Self {
+            error,
+            post_commit: AttachmentPostCommit::default(),
+        }
+    }
+}
+
+fn attachment_already_applied(
+    intent: &AttachmentIntent,
+    old_attachment_id: Option<i32>,
+    old_hash: Option<&str>,
+    expected_hash: Option<&str>,
+) -> bool {
+    match intent {
+        AttachmentIntent::Staged(_) => old_attachment_id.is_some() && old_hash == expected_hash,
+        AttachmentIntent::Clear => old_attachment_id.is_none(),
+        AttachmentIntent::Keep | AttachmentIntent::Failed => false,
+    }
+}
+
+/// Package and stage an attachment before any game/definition fence is taken.
+/// A malformed artifact remains best-effort (`Failed`), preserving the import
+/// contract while ensuring object-store I/O never occurs in the owner swap.
+pub(super) async fn stage_attachment(
     st: &SharedState,
-    challenge_id: i32,
+    game_id: i32,
     package_dir: &Path,
     provide: Option<&str>,
     replace_existing: bool,
-) -> bool {
+) -> AttachmentIntent {
+    let prepared = prepare_attachment_intent(package_dir, provide, replace_existing).await;
+    stage_prepared_attachment(st, game_id, prepared).await
+}
+
+async fn prepare_attachment_intent(
+    package_dir: &Path,
+    provide: Option<&str>,
+    replace_existing: bool,
+) -> PreparedAttachment {
     let has_explicit_source = provide.is_some_and(|value| !value.trim().is_empty());
     let implicit_source_absent = matches!(package_dir.join("dist").try_exists(), Ok(false));
     if !has_explicit_source && implicit_source_absent {
         return if replace_existing {
-            clear_attachment(st, challenge_id).await
+            PreparedAttachment::Clear
         } else {
-            true
+            PreparedAttachment::Keep
         };
     }
     let package_dir = package_dir.to_path_buf();
@@ -43,43 +97,234 @@ pub(super) async fn sync_attachment(
         Ok(packaged) => packaged,
         Err(error) => {
             tracing::warn!(%error, "git_sync: attachment packaging task failed");
-            return false;
+            return PreparedAttachment::Failed;
         }
     }) else {
-        return false;
+        return PreparedAttachment::Failed;
     };
-    if let Err(error) = crate::services::blob_refs::store_and_replace_challenge_attachment(
-        st.pg(),
-        st.storage.as_ref(),
-        challenge_id,
-        Some((&filename, &bytes)),
-        replace_existing,
-    )
-    .await
-    {
-        tracing::warn!(%error, "git_sync: attachment persistence failed");
-        return false;
-    }
-    tracing::info!(challenge_id, attachment = %filename, "git_sync: imported attachment");
-    true
+    PreparedAttachment::Bytes { filename, bytes }
 }
 
-/// An update with neither `provide:` nor an implicit `dist/` explicitly owns no
-/// attachment. The owner swap, old row delete, and blob release are one commit.
-async fn clear_attachment(st: &SharedState, challenge_id: i32) -> bool {
-    if let Err(error) = crate::services::blob_refs::store_and_replace_challenge_attachment(
+async fn stage_prepared_attachment(
+    st: &SharedState,
+    game_id: i32,
+    prepared: PreparedAttachment,
+) -> AttachmentIntent {
+    let (filename, bytes) = match prepared {
+        PreparedAttachment::Keep => return AttachmentIntent::Keep,
+        PreparedAttachment::Clear => return AttachmentIntent::Clear,
+        PreparedAttachment::Failed => return AttachmentIntent::Failed,
+        PreparedAttachment::Bytes { filename, bytes } => (filename, bytes),
+    };
+    match crate::services::blob_refs::stage_blob(
         st.pg(),
         st.storage.as_ref(),
-        challenge_id,
+        uuid::Uuid::new_v4(),
+        &format!("git-sync-attachment:{game_id}"),
         None,
-        true,
+        &filename,
+        &bytes,
     )
     .await
     {
-        tracing::warn!(%error, challenge_id, "git_sync: attachment removal failed");
-        return false;
+        Ok(stage) => AttachmentIntent::Staged(stage),
+        Err(error) => {
+            tracing::warn!(%error, "git_sync: attachment staging failed");
+            AttachmentIntent::Failed
+        }
     }
-    true
+}
+
+/// Publish a pre-staged attachment with its owner/ref metadata in one short
+/// transaction. Same-content imports consume the stage without acquiring a
+/// second reference or leaving a Ready lease behind.
+#[allow(clippy::result_large_err)]
+pub(super) async fn publish_attachment(
+    st: &SharedState,
+    challenge_id: i32,
+    intent: &AttachmentIntent,
+    replace_existing: bool,
+) -> Result<(bool, AttachmentPostCommit), AttachmentPublishFailure> {
+    match intent {
+        AttachmentIntent::Keep => return Ok((true, AttachmentPostCommit::default())),
+        AttachmentIntent::Failed => return Ok((false, AttachmentPostCommit::default())),
+        AttachmentIntent::Clear | AttachmentIntent::Staged(_) => {}
+    }
+    let expected_hash = match intent {
+        AttachmentIntent::Staged(stage) => Some(stage.blob.hash.as_str()),
+        _ => None,
+    };
+    let owner_scope = format!("challenge-attachment:{challenge_id}");
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
+        .await
+        .map_err(|error| {
+            AttachmentPublishFailure::before_commit(AppError::internal(error.to_string()))
+        })?;
+    let operation: AppResult<AttachmentPostCommit> = async {
+        let (old_attachment_id, old_hash) = sqlx::query_as::<_, (Option<i32>, Option<String>)>(
+            r#"SELECT challenge.attachment_id, file.hash
+                  FROM "GameChallenges" challenge
+                  LEFT JOIN "Attachments" attachment
+                    ON attachment.id = challenge.attachment_id
+                  LEFT JOIN "Files" file ON file.id = attachment.local_file_id
+                 WHERE challenge.id = $1
+                 FOR UPDATE OF challenge"#,
+        )
+        .bind(challenge_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .ok_or_else(|| AppError::not_found("Challenge not found"))?;
+
+        crate::services::blob_refs::lock_direct_hashes_locked(
+            &mut transaction,
+            old_hash.iter().map(String::as_str).chain(expected_hash),
+        )
+        .await?;
+        let mut invalidate_hashes = old_hash.iter().cloned().collect::<Vec<_>>();
+        if let Some(hash) = expected_hash {
+            if !invalidate_hashes.iter().any(|value| value == hash) {
+                invalidate_hashes.push(hash.to_string());
+            }
+        }
+        let already_applied = attachment_already_applied(
+            intent,
+            old_attachment_id,
+            old_hash.as_deref(),
+            expected_hash,
+        );
+        if already_applied {
+            if let AttachmentIntent::Staged(stage) = intent {
+                stage
+                    .consume_with_existing_reference_as(&mut transaction, &owner_scope)
+                    .await?;
+            }
+            return Ok(AttachmentPostCommit {
+                purge_hash: None,
+                invalidate_hashes,
+                receipt: match intent {
+                    AttachmentIntent::Staged(stage) => {
+                        Some((stage.operation_id, owner_scope.clone()))
+                    }
+                    _ => None,
+                },
+            });
+        }
+        if old_attachment_id.is_some() && !replace_existing {
+            return Err(AppError::conflict(
+                "challenge attachment was populated concurrently",
+            ));
+        }
+
+        let new_attachment_id = if let AttachmentIntent::Staged(stage) = intent {
+            let file_id = crate::services::blob_refs::publish_staged_blob_for_owner(
+                &mut transaction,
+                stage,
+                &owner_scope,
+            )
+            .await?;
+            Some(
+                sqlx::query_scalar::<_, i32>(
+                    r#"INSERT INTO "Attachments" ("Type", remote_url, local_file_id)
+                       VALUES ($1, NULL, $2)
+                       RETURNING id"#,
+                )
+                .bind(FileType::Local as i16)
+                .bind(file_id)
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?,
+            )
+        } else {
+            None
+        };
+        sqlx::query(r#"UPDATE "GameChallenges" SET attachment_id = $2 WHERE id = $1"#)
+            .bind(challenge_id)
+            .bind(new_attachment_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        let purge_hash = match old_attachment_id {
+            Some(attachment_id) => {
+                crate::services::blob_refs::delete_attachment_locked(
+                    &mut transaction,
+                    attachment_id,
+                )
+                .await?
+            }
+            None => None,
+        };
+        Ok(AttachmentPostCommit {
+            purge_hash,
+            invalidate_hashes,
+            receipt: match intent {
+                AttachmentIntent::Staged(stage) => Some((stage.operation_id, owner_scope.clone())),
+                _ => None,
+            },
+        })
+    }
+    .await;
+    let post_commit = match operation {
+        Ok(post_commit) => post_commit,
+        Err(error) => {
+            let _ = transaction.rollback().await;
+            return Err(AttachmentPublishFailure::before_commit(error));
+        }
+    };
+    if let Err(error) = transaction.commit().await {
+        // PostgreSQL may have committed even when the acknowledgement was
+        // lost. Return the exact old/new hashes and publication receipt so the
+        // caller can conservatively invalidate authorization gates and finish
+        // idempotent cleanup after releasing every domain fence.
+        return Err(AttachmentPublishFailure {
+            error: AppError::internal(error.to_string()),
+            post_commit,
+        });
+    }
+    Ok((true, post_commit))
+}
+
+pub(super) async fn discard_attachment(st: &SharedState, intent: &AttachmentIntent) {
+    let AttachmentIntent::Staged(stage) = intent else {
+        return;
+    };
+    if let Err(error) =
+        crate::services::blob_refs::discard_unpublished_stage(st.pg(), st.storage.as_ref(), stage)
+            .await
+    {
+        tracing::warn!(%error, hash = %stage.blob.hash, "git_sync: attachment stage cleanup deferred");
+    }
+}
+
+pub(super) async fn finish_attachment_post_commit(
+    st: &SharedState,
+    post_commit: AttachmentPostCommit,
+) {
+    for hash in &post_commit.invalidate_hashes {
+        crate::controllers::assets::invalidate_asset_gate(st, hash).await;
+    }
+    if let Some((operation_id, owner_scope)) = post_commit.receipt {
+        if let Err(error) = sqlx::query(
+            r#"DELETE FROM "BlobStagingOperations"
+                WHERE operation_id = $1 AND state = 'Published'
+                  AND published_owner_scope = $2"#,
+        )
+        .bind(operation_id)
+        .bind(owner_scope)
+        .execute(st.pg())
+        .await
+        {
+            tracing::warn!(%error, %operation_id, "git_sync: attachment receipt cleanup deferred");
+        }
+    }
+    if let Some(hash) = post_commit.purge_hash {
+        if let Err(error) =
+            crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
+                .await
+        {
+            tracing::warn!(%error, %hash, "git_sync: replaced attachment purge deferred");
+        }
+    }
 }
 
 fn prepare_attachment(package_dir: &Path, provide: Option<&str>) -> Option<(String, Vec<u8>)> {
@@ -145,7 +390,7 @@ pub async fn repair_missing_attachments(st: &SharedState) -> AppResult<u64> {
             // resolve again under that guard. This prevents startup repair from
             // packaging a tree while another role is replacing its files.
             let checkout = repos_root.join(binding_id.to_string());
-            let _checkout_lock = super::lock_checkout_distributed(st.pg(), &checkout).await?;
+            let checkout_lock = super::lock_checkout_distributed(st.pg(), &checkout).await?;
             let Ok(locked_checkout) = tokio::fs::canonicalize(&checkout).await else {
                 continue;
             };
@@ -173,8 +418,22 @@ pub async fn repair_missing_attachments(st: &SharedState) -> AppResult<u64> {
                 .and_then(|raw| serde_norway::from_str::<super::ChallengeYaml>(&raw).ok())
                 .and_then(|model| model.provide);
             let package_dir = manifest.parent().unwrap_or(locked_checkout.as_path());
-            if sync_attachment(st, challenge_id, package_dir, provide.as_deref(), false).await {
-                repaired += 1;
+            let prepared = prepare_attachment_intent(package_dir, provide.as_deref(), false).await;
+            drop(checkout_lock);
+            let intent = stage_prepared_attachment(st, 0, prepared).await;
+            match publish_attachment(st, challenge_id, &intent, false).await {
+                Ok((true, post_commit)) => {
+                    finish_attachment_post_commit(st, post_commit).await;
+                    repaired += 1;
+                }
+                Ok((false, post_commit)) => {
+                    finish_attachment_post_commit(st, post_commit).await;
+                }
+                Err(failure) => {
+                    tracing::warn!(error = %failure.error, challenge_id, "git_sync: attachment repair failed");
+                    finish_attachment_post_commit(st, failure.post_commit).await;
+                    discard_attachment(st, &intent).await;
+                }
             }
         }
     }
@@ -378,6 +637,22 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clearing_a_remote_attachment_is_not_mistaken_for_a_hash_noop() {
+        assert!(!attachment_already_applied(
+            &AttachmentIntent::Clear,
+            Some(41),
+            None,
+            None,
+        ));
+        assert!(attachment_already_applied(
+            &AttachmentIntent::Clear,
+            None,
+            None,
+            None,
+        ));
     }
 
     #[cfg(unix)]

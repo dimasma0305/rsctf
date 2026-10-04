@@ -213,7 +213,7 @@ pub(crate) async fn expire_overdue_round_finish(
     round_id: i32,
     lease: &RoundFinishLease,
 ) -> AppResult<bool> {
-    let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
+    let mut control = super::koth_auth::acquire_engine_game_lock(db, game_id).await?;
     let owned_overdue: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(
              SELECT 1 FROM "AdRounds" round
@@ -323,6 +323,8 @@ pub(crate) async fn prepared_round_snapshot(
               AND challenge.is_enabled = TRUE
               AND challenge.review_status = $4
               AND challenge."Type" = $5
+              AND OCTET_LENGTH(flag.flag) = 38
+              AND flag.flag ~ '^flag[{][A-Za-z0-9_-]{32}[}]$'
             ORDER BY service.id, flag.id"#,
     )
     .bind(round_id)

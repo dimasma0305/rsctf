@@ -1,0 +1,545 @@
+import { HeadlessMantineProvider } from '@mantine/core'
+import { mdiHelpCircleOutline } from '@mdi/js'
+import { Window } from 'happy-dom'
+import i18next from 'i18next'
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { act, createElement, Profiler, type FC, useState } from 'react'
+import { I18nextProvider } from 'react-i18next'
+import api, { ChallengeCategory, ChallengeType, SolveReceiptMode, type ChallengeDetailModel } from '../Api'
+import { installTestDom } from '../test/installDom'
+import { EventVpnAccessError } from '../utils/EventVpnProof'
+import type { FlagVerdictState } from '../utils/FlagVerdict'
+import { LanguageProvider } from '../utils/I18n'
+import type { ChallengeCategoryItemProps } from '../utils/Shared'
+import { ChallengeModal } from './ChallengeModal'
+
+test('challenge modal ticks only while an open deadline needs updates', async (context) => {
+  const browser = new Window({ url: 'https://rsctf.test/' })
+  const restoreDom = installTestDom(browser)
+  const startedAt = 2_000_000_000_100
+  context.mock.timers.enable({
+    apis: ['Date', 'setInterval', 'setTimeout'],
+    now: new Date(startedAt),
+  })
+
+  const i18n = i18next.createInstance()
+  await i18n.init({
+    lng: 'en-US',
+    fallbackLng: 'en-US',
+    resources: {
+      'en-US': {
+        translation: {
+          challenge: {
+            button: { submit_flag: 'Submit flag' },
+            content: {
+              deadline: { label: 'Deadline', remaining: 'Remaining' },
+              flag_placeholders: ['flag{answer}'],
+            },
+            label: { flag: 'Flag' },
+          },
+          common: { button: { close: 'Close' } },
+        },
+      },
+    },
+  })
+
+  const category: ChallengeCategoryItemProps = {
+    name: ChallengeCategory.Misc,
+    desrc: 'Miscellaneous',
+    icon: mdiHelpCircleOutline,
+    color: 'gray',
+    colors: Array(10).fill('#868e96') as ChallengeCategoryItemProps['colors'],
+  }
+  const baseChallenge: ChallengeDetailModel = {
+    id: 7,
+    title: 'Clock boundary',
+    content: 'Read the challenge.',
+    category: ChallengeCategory.Misc,
+    type: ChallengeType.StaticAttachment,
+    score: 100,
+    attempts: 0,
+  }
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const { createRoot } = await import('react-dom/client')
+  const root = createRoot(container)
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+  let commits = 0
+
+  const renderModal = (opened: boolean, deadline?: number) =>
+    createElement(
+      HeadlessMantineProvider,
+      null,
+      createElement(
+        I18nextProvider,
+        { i18n },
+        createElement(
+          LanguageProvider,
+          null,
+          createElement(
+            Profiler,
+            { id: 'challenge-modal', onRender: () => commits++ },
+            createElement(ChallengeModal, {
+              opened,
+              onClose: () => undefined,
+              transitionProps: { duration: 0 },
+              challenge: { ...baseChallenge, deadline },
+              cateData: category,
+              flag: '',
+              setFlag: () => undefined,
+              receiptProof: '',
+              setReceiptProof: () => undefined,
+              onCreate: () => undefined,
+              onDestroy: () => undefined,
+              onSubmitFlag: () => undefined,
+            })
+          )
+        )
+      )
+    )
+
+  try {
+    await act(async () => root.render(renderModal(false, startedAt + 1_250)))
+    await act(async () => new Promise<void>((resolve) => browser.requestAnimationFrame(() => resolve())))
+    const closedCommits = commits
+    await act(async () => context.mock.timers.tick(3_000))
+    assert.equal(commits, closedCommits, 'a retained closed modal must not subscribe to the ticker')
+
+    await act(async () => root.render(renderModal(true)))
+    const noDeadlineCommits = commits
+    await act(async () => context.mock.timers.tick(3_000))
+    assert.equal(commits, noDeadlineCommits, 'an open modal without a deadline must not subscribe to the ticker')
+
+    const liveDeadline = Date.now() + 1_250
+    await act(async () => root.render(renderModal(true, liveDeadline)))
+    const flagInput = browser.document.querySelector<HTMLInputElement>('form[data-guide="flag-submit"] input')
+    assert.ok(flagInput)
+    assert.equal(flagInput.disabled, false)
+    const deadlineCommits = commits
+
+    await act(async () => context.mock.timers.tick(2_500))
+    assert.ok(commits > deadlineCommits, 'an open deadline must remain reactive')
+    const expiredFlagInput = browser.document.querySelector<HTMLInputElement>('form[data-guide="flag-submit"] input')
+    assert.ok(expiredFlagInput)
+    assert.equal(expiredFlagInput.disabled, true)
+  } finally {
+    await act(async () => root.unmount())
+    context.mock.timers.reset()
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('a disconnected event VPN presents setup before challenge material', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/' })
+  const restoreDom = installTestDom(browser)
+  const i18n = i18next.createInstance()
+  await i18n.init({ lng: 'en-US', fallbackLng: 'en-US' })
+  const category: ChallengeCategoryItemProps = {
+    name: ChallengeCategory.Misc,
+    desrc: 'Miscellaneous',
+    icon: mdiHelpCircleOutline,
+    color: 'gray',
+    colors: Array(10).fill('#868e96') as ChallengeCategoryItemProps['colors'],
+  }
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const { createRoot } = await import('react-dom/client')
+  const root = createRoot(container)
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+  let downloads = 0
+  let retries = 0
+
+  try {
+    await act(async () => {
+      root.render(
+        createElement(
+          HeadlessMantineProvider,
+          null,
+          createElement(
+            I18nextProvider,
+            { i18n },
+            createElement(
+              LanguageProvider,
+              null,
+              createElement(ChallengeModal, {
+                opened: true,
+                onClose: () => undefined,
+                transitionProps: { duration: 0 },
+                challenge: { title: 'Serpent Circuit', content: 'Internal target: 10.13.37.59:5000' },
+                cateData: category,
+                loadError: 'Connect to the event VPN, then retry the challenge.',
+                eventVpnDisconnected: true,
+                onDownloadEventVpn: () => {
+                  downloads += 1
+                },
+                onRetryLoad: () => {
+                  retries += 1
+                },
+                flag: '',
+                setFlag: () => undefined,
+                receiptProof: '',
+                setReceiptProof: () => undefined,
+                onCreate: () => undefined,
+                onDestroy: () => undefined,
+                onSubmitFlag: () => undefined,
+              })
+            )
+          )
+        )
+      )
+    })
+
+    await act(async () => new Promise<void>((resolve) => browser.requestAnimationFrame(() => resolve())))
+    const alert = browser.document.querySelector('[role="alert"]')
+    assert.ok(alert)
+    assert.match(alert.textContent ?? '', /Connect to the event VPN first/)
+    assert.match(alert.textContent ?? '', /Challenge targets stay hidden until the VPN connection is verified/)
+    assert.doesNotMatch(
+      browser.document.querySelector('[data-guide="challenge-material"]')?.textContent ?? '',
+      /10\.13\.37\.59/
+    )
+
+    const buttons = Array.from(alert.querySelectorAll('button'))
+    const download = buttons.find((button) => button.textContent?.includes('Download event VPN'))
+    const retry = buttons.find((button) => button.textContent?.includes('connected'))
+    assert.ok(download)
+    assert.ok(retry)
+    await act(async () => download.click())
+    await act(async () => retry.click())
+    assert.equal(downloads, 1)
+    assert.equal(retries, 1)
+  } finally {
+    await act(async () => root.unmount())
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('form edits and verdict polling preserve animated Markdown until challenge identity or source changes', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/' })
+  const restoreDom = installTestDom(browser)
+  const i18n = i18next.createInstance()
+  await i18n.init({
+    lng: 'en-US',
+    fallbackLng: 'en-US',
+    resources: {
+      'en-US': {
+        translation: {
+          challenge: {
+            button: { submit_flag: 'Submit flag' },
+            content: { flag_placeholders: ['flag{answer}'] },
+            label: { flag: 'Flag' },
+          },
+          common: { button: { close: 'Close' } },
+        },
+      },
+    },
+  })
+  const category: ChallengeCategoryItemProps = {
+    name: ChallengeCategory.Misc,
+    desrc: 'Miscellaneous',
+    icon: mdiHelpCircleOutline,
+    color: 'gray',
+    colors: Array(10).fill('#868e96') as ChallengeCategoryItemProps['colors'],
+  }
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const { createRoot } = await import('react-dom/client')
+  const root = createRoot(container)
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+  let submissions = 0
+  let replaceContent: (() => void) | undefined
+  let switchChallenge: (() => void) | undefined
+  let setVerdictPolling: ((value: boolean) => void) | undefined
+  let setResult: ((value: FlagVerdictState | null) => void) | undefined
+  let setPresentation: ((value: 'modal' | 'drawer' | 'embedded') => void) | undefined
+
+  const Harness: FC = () => {
+    const [flag, setFlag] = useState('')
+    const [receipt, setReceipt] = useState('')
+    const [challengeId, setChallengeId] = useState(557)
+    const [verdictPolling, setPolling] = useState(false)
+    const [result, updateResult] = useState<FlagVerdictState | null>(null)
+    const [presentation, updatePresentation] = useState('modal')
+    const [content, setContent] = useState('<span class="tower-animation" data-frame="initial">animated tower</span>')
+    replaceContent = () => setContent('<span class="tower-animation">new animation</span>')
+    switchChallenge = () => setChallengeId(558)
+    setVerdictPolling = setPolling
+    setResult = updateResult
+    setPresentation = updatePresentation
+    return createElement(ChallengeModal, {
+      opened: true,
+      embedded: presentation === 'embedded',
+      drawer: presentation === 'drawer',
+      flagVerdict: result,
+      onDismissFlagVerdict: () => updateResult(null),
+      onClose: () => undefined,
+      transitionProps: { duration: 0 },
+      challenge: {
+        id: challengeId,
+        title: 'Tower of Babel',
+        content,
+        category: ChallengeCategory.Misc,
+        type: ChallengeType.StaticAttachment,
+        score: 100,
+        attempts: 0,
+        solveReceiptMode: SolveReceiptMode.Required,
+      },
+      cateData: category,
+      flag,
+      setFlag: (value) => {
+        if (typeof value === 'string') setFlag(value)
+        else if (value?.currentTarget) setFlag(value.currentTarget.value)
+      },
+      receiptProof: receipt,
+      setReceiptProof: (value) => {
+        if (typeof value === 'string') setReceipt(value)
+        else if (value?.currentTarget) setReceipt(value.currentTarget.value)
+      },
+      onCreate: () => undefined,
+      onDestroy: () => undefined,
+      onSubmitFlag: () => {
+        submissions += 1
+      },
+      disabled: verdictPolling,
+      submitting: verdictPolling,
+    })
+  }
+
+  try {
+    await act(async () => {
+      root.render(
+        createElement(
+          HeadlessMantineProvider,
+          { env: 'test' },
+          createElement(I18nextProvider, { i18n }, createElement(LanguageProvider, null, createElement(Harness)))
+        )
+      )
+    })
+    await act(async () => new Promise<void>((resolve) => browser.requestAnimationFrame(() => resolve())))
+    const form = browser.document.querySelector<HTMLFormElement>('form[data-guide="flag-submit"]')
+    const input = form?.querySelector<HTMLInputElement>('input')
+    const receipt = form?.querySelector<HTMLTextAreaElement>('textarea')
+    const initialAnimation = browser.document.querySelector<HTMLElement>('.tower-animation')
+    assert.ok(form)
+    assert.ok(input)
+    assert.ok(receipt)
+    assert.ok(initialAnimation)
+    // Model state owned by a challenge animation after it has started. React
+    // must retain this exact node and its runtime-owned state across form and
+    // verdict renders; no wall-clock delay is needed to prove that identity.
+    initialAnimation.dataset.frame = 'running'
+
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(browser.HTMLInputElement.prototype, 'value')?.set
+      assert.ok(setValue)
+      setValue.call(input, 'TCP1P{still_running}')
+      input.dispatchEvent(new browser.Event('input', { bubbles: true }))
+      input.dispatchEvent(new browser.Event('change', { bubbles: true }))
+    })
+    const afterTyping = browser.document.querySelector<HTMLElement>('.tower-animation')
+    assert.equal(afterTyping, initialAnimation)
+    assert.equal(afterTyping?.dataset.frame, 'running')
+
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(browser.HTMLTextAreaElement.prototype, 'value')?.set
+      assert.ok(setValue)
+      setValue.call(receipt, 'trusted-receipt-proof')
+      receipt.dispatchEvent(new browser.Event('input', { bubbles: true }))
+      receipt.dispatchEvent(new browser.Event('change', { bubbles: true }))
+    })
+    assert.equal(browser.document.querySelector('.tower-animation'), initialAnimation)
+    assert.equal(initialAnimation.dataset.frame, 'running')
+
+    await act(async () => setVerdictPolling?.(true))
+    assert.equal(browser.document.querySelector('.tower-animation'), initialAnimation)
+    assert.equal(initialAnimation.dataset.frame, 'running')
+    await act(async () => setVerdictPolling?.(false))
+
+    await act(async () => {
+      form.dispatchEvent(new browser.Event('submit', { bubbles: true, cancelable: true }))
+    })
+    assert.equal(submissions, 1)
+    assert.equal(browser.document.querySelector('.tower-animation'), initialAnimation)
+
+    for (const presentation of ['modal', 'drawer', 'embedded'] as const) {
+      await act(async () => setPresentation?.(presentation))
+      const material = browser.document.querySelector<HTMLElement>('.tower-animation')
+      const retainedForm = browser.document.querySelector('form[data-guide="flag-submit"]')
+      assert.ok(material)
+      material.dataset.frame = 'still-running'
+      for (const [sequence, kind] of ['wrong', 'success', 'wrong'].entries()) {
+        await act(async () => setResult?.({ kind: kind as FlagVerdictState['kind'], sequence }))
+        assert.ok(browser.document.querySelector('[data-flag-verdict]'))
+        assert.ok(
+          browser.document.querySelector('.tower-animation') === material,
+          `${presentation}: result must not unmount challenge content`
+        )
+        assert.ok(browser.document.querySelector('form[data-guide="flag-submit"]') === retainedForm)
+        assert.equal(material.dataset.frame, 'still-running')
+        assert.ok(material.closest('[inert]'), 'only the result accepts input while it is open')
+        await act(async () =>
+          browser.document.querySelector<HTMLButtonElement>('[data-flag-verdict] [data-autofocus]')?.click()
+        )
+        assert.ok(
+          browser.document.querySelector('.tower-animation') === material,
+          `${presentation}: dismissal must not rebuild the challenge`
+        )
+        assert.equal(material.closest('[inert]'), null)
+      }
+    }
+
+    await act(async () => switchChallenge?.())
+    const identityReplacement = browser.document.querySelector<HTMLElement>('.tower-animation')
+    assert.notEqual(identityReplacement, initialAnimation)
+    assert.equal(identityReplacement?.textContent, 'animated tower')
+    assert.equal(identityReplacement?.dataset.frame, 'initial')
+
+    await act(async () => replaceContent?.())
+    const replacedAnimation = browser.document.querySelector<HTMLElement>('.tower-animation')
+    assert.notEqual(replacedAnimation, identityReplacement)
+    assert.equal(replacedAnimation?.textContent, 'new animation')
+  } finally {
+    await act(async () => root.unmount())
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('a VPN-required event mints a download grant before the native attachment download', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/games/19/challenges' })
+  const restoreDom = installTestDom(browser)
+  const i18n = i18next.createInstance()
+  await i18n.init({ lng: 'en-US', fallbackLng: 'en-US' })
+  const category: ChallengeCategoryItemProps = {
+    name: ChallengeCategory.Misc,
+    desrc: 'Miscellaneous',
+    icon: mdiHelpCircleOutline,
+    color: 'gray',
+    colors: Array(10).fill('#868e96') as ChallengeCategoryItemProps['colors'],
+  }
+  const hash = 'c5a573e275a0fca6cf6929d324dcc0a6d20882bc922009f1ca0ca022d8e5709d'
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const { createRoot } = await import('react-dom/client')
+  const root = createRoot(container)
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+  const originalGrant = api.eventSecurity.gameAssetGrant
+  const grants: string[] = []
+  let grantFailure: unknown
+  api.eventSecurity.gameAssetGrant = (async (gameId: number, asset: string) => {
+    grants.push(`${gameId}:${asset}`)
+    if (grantFailure) throw grantFailure
+    return { data: { hash: asset, granted: true, expiresAtUtc: Date.now() + 300_000 } }
+  }) as typeof originalGrant
+  // Programmatic anchor clicks are the download itself; record them instead of
+  // letting happy-dom navigate.
+  const originalClick = browser.HTMLAnchorElement.prototype.click
+  const navigations: string[] = []
+  browser.HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) {
+    navigations.push(`${this.getAttribute('href')}|${this.getAttribute('download')}`)
+  }
+
+  const render = (eventVpnRequired: boolean) =>
+    createElement(
+      HeadlessMantineProvider,
+      null,
+      createElement(
+        I18nextProvider,
+        { i18n },
+        createElement(
+          LanguageProvider,
+          null,
+          createElement(ChallengeModal, {
+            opened: true,
+            onClose: () => undefined,
+            transitionProps: { duration: 0 },
+            gameId: 19,
+            eventVpnRequired,
+            challenge: {
+              id: 7,
+              title: 'Tunnel-only attachment',
+              content: 'Download the archive.',
+              category: ChallengeCategory.Misc,
+              type: ChallengeType.StaticAttachment,
+              score: 100,
+              attempts: 0,
+              context: { url: `/assets/${hash}/challenge.zip`, sha256: hash, fileSize: 512 },
+            },
+            cateData: category,
+            flag: '',
+            setFlag: () => undefined,
+            receiptProof: '',
+            setReceiptProof: () => undefined,
+            onCreate: () => undefined,
+            onDestroy: () => undefined,
+            onSubmitFlag: () => undefined,
+          })
+        )
+      )
+    )
+  const flush = async () => {
+    await act(async () => new Promise<void>((resolve) => browser.requestAnimationFrame(() => resolve())))
+    await act(async () => new Promise<void>((resolve) => setTimeout(resolve, 0)))
+  }
+  const downloadButton = () =>
+    browser.document.querySelector<HTMLAnchorElement>('[data-guide="challenge-attachment-download"]')
+  const click = (element: Element) => {
+    const event = new browser.MouseEvent('click', { bubbles: true, cancelable: true })
+    element.dispatchEvent(event)
+    return event.defaultPrevented
+  }
+
+  try {
+    // Without the VPN gate the plain resumable anchor is untouched.
+    await act(async () => root.render(render(false)))
+    await flush()
+    const plain = downloadButton()
+    assert.ok(plain)
+    assert.equal(plain.dataset.downloadMode, 'direct')
+    assert.equal(plain.getAttribute('href'), `/assets/${hash}/challenge.zip`)
+    assert.equal(plain.getAttribute('download'), 'challenge.zip')
+    assert.equal(click(plain), false)
+    assert.deepEqual(grants, [])
+
+    await act(async () => root.render(render(true)))
+    await flush()
+    const granted = downloadButton()
+    assert.ok(granted)
+    assert.equal(granted.dataset.downloadMode, 'granted')
+    assert.equal(granted.getAttribute('href'), `/assets/${hash}/challenge.zip`, 'the asset URL never carries the grant')
+    assert.equal(granted.getAttribute('download'), 'challenge.zip')
+    await act(async () => {
+      assert.equal(click(granted), true, 'the native navigation waits for the grant')
+    })
+    await flush()
+    assert.deepEqual(grants, [`19:${hash}`])
+    assert.deepEqual(navigations, [`/assets/${hash}/challenge.zip|challenge.zip`])
+    assert.equal(browser.document.querySelector('[data-guide="challenge-attachment-error"]'), null)
+
+    // A disconnected tunnel shows the shared Event-VPN copy and starts nothing.
+    grantFailure = new EventVpnAccessError('disconnected', 'Connect to the event VPN, then retry this request.', 0)
+    await act(async () => {
+      click(downloadButton()!)
+    })
+    await flush()
+    assert.equal(navigations.length, 1)
+    const error = browser.document.querySelector('[data-guide="challenge-attachment-error"]')
+    assert.ok(error)
+    assert.equal(error.getAttribute('role'), 'alert')
+    assert.match(error.textContent ?? '', /Connect to the event VPN/)
+    assert.equal(downloadButton()?.getAttribute('aria-describedby'), error.id)
+  } finally {
+    api.eventSecurity.gameAssetGrant = originalGrant
+    browser.HTMLAnchorElement.prototype.click = originalClick
+    await act(async () => root.unmount())
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})

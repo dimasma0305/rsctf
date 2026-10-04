@@ -38,6 +38,7 @@ impl Drop for CaptureDiskReservation {
 pub(super) struct LiveCaptureLimits {
     pub(super) max_file_bytes: u64,
     pub(super) max_directory_bytes: u64,
+    pub(super) max_directory_files: usize,
     pub(super) free_space_floor_bytes: u64,
     pub(super) max_file_duration: Duration,
 }
@@ -47,6 +48,7 @@ impl Default for LiveCaptureLimits {
         Self {
             max_file_bytes: 128 * 1024 * 1024,
             max_directory_bytes: 256 * 1024 * 1024,
+            max_directory_files: 256,
             free_space_floor_bytes: 512 * 1024 * 1024,
             max_file_duration: Duration::from_secs(3_600),
         }
@@ -95,8 +97,9 @@ pub(super) fn enforce_capture_directory_budget(
     directory: &Path,
     maximum: u64,
     reserve: u64,
-) -> AppResult<()> {
-    if reserve > maximum {
+    maximum_files: usize,
+) -> AppResult<Vec<PathBuf>> {
+    if reserve > maximum || maximum_files == 0 {
         return Err(AppError::internal(
             "capture file limit exceeds participation capture budget",
         ));
@@ -132,8 +135,11 @@ pub(super) fn enforce_capture_directory_budget(
             .cmp(&right.0)
             .then_with(|| left.1.as_os_str().cmp(right.1.as_os_str()))
     });
+    let mut file_count = files.len();
+    let mut removed = Vec::new();
     for (_, path, bytes) in files {
-        if total.saturating_add(reserve) <= maximum {
+        if total.saturating_add(reserve) <= maximum && file_count.saturating_add(1) <= maximum_files
+        {
             break;
         }
         std::fs::remove_file(&path).map_err(|error| {
@@ -143,13 +149,15 @@ pub(super) fn enforce_capture_directory_budget(
             ))
         })?;
         total = total.saturating_sub(bytes);
+        file_count = file_count.saturating_sub(1);
+        removed.push(path);
     }
-    if total.saturating_add(reserve) > maximum {
+    if total.saturating_add(reserve) > maximum || file_count.saturating_add(1) > maximum_files {
         return Err(AppError::internal(
             "capture participation budget could not be reclaimed",
         ));
     }
-    Ok(())
+    Ok(removed)
 }
 
 pub(super) fn rotated_capture_path(path: &Path) -> AppResult<PathBuf> {
@@ -202,16 +210,30 @@ mod tests {
         let newest = scratch.file("b.pcap", 60);
         let note = scratch.file("note.txt", 500);
 
-        enforce_capture_directory_budget(&scratch.0, 160, 80).unwrap();
+        let removed = enforce_capture_directory_budget(&scratch.0, 160, 80, 10).unwrap();
 
         assert!(!oldest.exists());
         assert!(newest.exists());
         assert!(note.exists());
+        assert_eq!(removed, vec![oldest]);
+    }
+
+    #[test]
+    fn directory_budget_enforces_a_file_count_cap() {
+        let scratch = ScratchDir::new();
+        let oldest = scratch.file("a.pcap", 1);
+        scratch.file("b.pcap", 1);
+
+        let removed = enforce_capture_directory_budget(&scratch.0, 1_000, 1, 2).unwrap();
+
+        assert_eq!(removed, vec![oldest]);
+        assert_eq!(std::fs::read_dir(&scratch.0).unwrap().flatten().count(), 1);
     }
 
     #[test]
     fn impossible_file_and_directory_limits_fail_closed() {
         let scratch = ScratchDir::new();
-        assert!(enforce_capture_directory_budget(&scratch.0, 10, 11).is_err());
+        assert!(enforce_capture_directory_budget(&scratch.0, 10, 11, 10).is_err());
+        assert!(enforce_capture_directory_budget(&scratch.0, 10, 1, 0).is_err());
     }
 }

@@ -1,5 +1,4 @@
 import {
-  ActionIcon,
   Box,
   Card,
   Center,
@@ -22,7 +21,6 @@ import { useDebouncedValue } from '@mantine/hooks'
 import {
   mdiThumbUp,
   mdiThumbDown,
-  mdiRefresh,
   mdiAccount,
   mdiClockOutline,
   mdiMagnify,
@@ -36,8 +34,10 @@ import { FC, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { ScrollingText } from '@Components/ScrollingText'
+import { ChallengeReviewsRefresh } from '@Components/admin/ChallengeReviewsRefresh'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
 import { useIsMobile } from '@Utils/ThemeOverride'
+import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { ReviewRating } from '@Api'
 import misc from '@Styles/Misc.module.css'
 
@@ -76,10 +76,10 @@ const ChallengeReviews: FC = () => {
       search: debouncedSearch,
       rating: getRatingFilterValue(),
     },
-    { refreshInterval: 0 }
+    OnceSWRConfig
   )
 
-  const { data: analytics } = api.edit.useEditGetReviewAnalytics(numId, { refreshInterval: 0 })
+  const { data: analytics, mutate: mutateAnalytics } = api.edit.useEditGetReviewAnalytics(numId, OnceSWRConfig)
 
   const reviews = reviewResponse?.data
   const totalCount = reviewResponse?.total ?? 0
@@ -321,15 +321,11 @@ const ChallengeReviews: FC = () => {
                 setPage(1)
               }}
             />
-            <ActionIcon
-              aria-label={t('common.button.refresh', 'Refresh reviews')}
-              onClick={() => {
-                mutate()
-                api.edit.useEditGetReviewAnalytics(numId).mutate()
-              }}
-            >
-              <Icon path={mdiRefresh} size={1} />
-            </ActionIcon>
+            <ChallengeReviewsRefresh
+              label={t('common.button.refresh', 'Refresh reviews')}
+              refreshReviews={mutate}
+              refreshAnalytics={mutateAnalytics}
+            />
           </Group>
         </Flex>
       }

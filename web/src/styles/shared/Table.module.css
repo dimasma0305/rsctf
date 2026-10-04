@@ -15,9 +15,9 @@
   & thead {
     position: sticky;
     top: 0;
-    z-index: 195;
+    z-index: 30;
 
-    background-color: light-dark(var(--mantine-color-white), var(--mantine-color-dark-7));
+    background-color: var(--app-subtle-surface);
 
     & tr::after {
       content: '';

@@ -67,6 +67,16 @@ containers stopped and preserves replica counts for a safe retry. Do not start
 an old image against the migrated database; restoring the pre-cutover database
 and files together is the rollback path.
 
+Container logs are bounded by `RSCTF_DOCKER_LOG_MAX_SIZE` (default `20m`) and
+`RSCTF_DOCKER_LOG_MAX_FILES` (default `5`). The rsctf application services,
+the proxy firewall, Caddy, and the event DNS forwarder use Docker's `local`
+logging driver, which keeps compressed bounded files that the daemon never has
+to re-parse as JSON for a `docker logs` client. PostgreSQL and Redis
+deliberately keep the `json-file` driver: Docker cannot change the logging
+driver of an existing container, so switching them would force the database
+container to be recreated during an application-only rollout. Change their
+driver only in a planned maintenance window that already recreates them.
+
 `COMPOSE_FILE` in `.env` automatically selects the requested features:
 
 - `compose.yml` is the safe base: rsctf, PostgreSQL 18, and bounded Redis.
@@ -91,6 +101,24 @@ and files together is the rollback path.
   rejects `true` because a shared bridge cannot safely isolate outbound access.
   Use the Kubernetes backend with per-workload NetworkPolicy when egress is a
   challenge requirement.
+- `compose.event-vpn-ingress.yml` adds split-horizon DNS and a private HTTPS
+  path for the same `RSCTF_DOMAIN`. Merge it after `compose.caddy.yml` and
+  `compose.ad-vpn.yml` on an all-in-one deployment. VPN profiles then resolve
+  the ordinary event hostname to Caddy inside the tunnel, so browser polling
+  and `ad_...` automation tokens arrive from the caller's exact personal peer.
+  The overlay opens only DNS on the WireGuard hub and HTTPS to the private
+  Caddy address; PostgreSQL, Redis, the application port, and other service
+  addresses remain unreachable. `RSCTF_EVENT_VPN_HUB_ADDRESS` must be the first
+  usable address of `RSCTF_AD_VPN_CLIENT_CIDR`; the backend and ingress IPs must
+  be unused hosts in `RSCTF_AD_VPN_SERVICES_CIDR`. Existing participants must
+  download the refreshed VPN profile once to receive the private resolver.
+  The overlay is optional for browser use of a VPN-gated event: API reads carry
+  the short-lived proof header, and challenge attachment downloads first mint a
+  path-scoped, `HttpOnly` download grant cookie from that proof
+  (`POST /api/game/{id}/assets/{hash}/grant`), so they no longer require the
+  request to arrive from the tunnel-internal address. The asset route still
+  enforces membership, division, challenge state, and the live peer, generation,
+  and policy revision named by the grant.
 - `compose.roles.yml` changes the public service to the `web` role and adds one
   checker-owning `control` owner. `web` keeps no Linux capabilities; `control`
   receives the same narrow checker/network set as `all`; the A&D VPN or capture

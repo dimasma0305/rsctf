@@ -73,6 +73,8 @@ import { ScrollingText } from '@Components/ScrollingText'
 import { evidenceContribution } from '@Utils/AntiCheat'
 import { useLanguage } from '@Utils/I18n'
 import { showErrorMsg, tryGetErrorMsg, useParticipationStatusMap } from '@Utils/Shared'
+import { useChallengePolling } from '@Hooks/useChallengePolling'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import type {
   AbnormalSolveResult,
   CheatReport,
@@ -480,69 +482,6 @@ const ReadableDetails: FC<{ details?: string | null; maxRows?: number }> = ({ de
 
 const MemoizedReadableDetails = React.memo(ReadableDetails)
 
-const UsersCell: FC<{ users?: string[]; relatedUsers?: string[] }> = ({ users, relatedUsers }) => {
-  const { t } = useTranslation()
-  const currentUsers = (users ?? []).filter(Boolean)
-  const others = (relatedUsers ?? []).filter(Boolean)
-
-  if (currentUsers.length === 0 && others.length === 0) {
-    return (
-      <Text size="xs" c="dimmed">
-        -
-      </Text>
-    )
-  }
-
-  const visible = [...currentUsers, ...others].slice(0, 3)
-  const hidden = [...currentUsers, ...others].slice(3)
-
-  return (
-    <Group gap={4} wrap="wrap" className={classes.userWrap}>
-      {visible.map((user, i) => (
-        <Badge
-          key={i}
-          size="xs"
-          color={currentUsers.includes(user) ? 'cyan' : 'gray'}
-          variant="light"
-          style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }}
-          title={user}
-        >
-          {user}
-        </Badge>
-      ))}
-      {hidden.length > 0 && (
-        <Popover width={260} position="top" withArrow shadow="md">
-          <Popover.Target>
-            <UnstyledButton
-              aria-label={t('game.cheat_analysis.show_all_users', 'Show all users, including {{count}} more', {
-                count: hidden.length,
-              })}
-            >
-              <Badge size="xs" color="gray" variant="outline">
-                {t('game.cheat_analysis.more', '+{{count}} more', { count: hidden.length })}
-              </Badge>
-            </UnstyledButton>
-          </Popover.Target>
-          <Popover.Dropdown>
-            <Text size="xs" fw={700} c="dimmed" mb={4}>
-              {t('game.cheat_analysis.all_users', 'All Users')}
-            </Text>
-            <Group gap={4} wrap="wrap">
-              {[...currentUsers, ...others].map((user, i) => (
-                <Badge key={i} size="xs" color={currentUsers.includes(user) ? 'cyan' : 'gray'} variant="light">
-                  {user}
-                </Badge>
-              ))}
-            </Group>
-          </Popover.Dropdown>
-        </Popover>
-      )}
-    </Group>
-  )
-}
-
-const MemoizedUsersCell = React.memo(UsersCell)
-
 // \u2500\u2500 Discord-style smart search \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 interface FilterDef {
@@ -577,7 +516,6 @@ function parseSearchQuery(q: string): ParsedQuery {
 const IP_FILTER_DEFS: FilterDef[] = [
   { field: 'type', description: 'Anomaly type', color: 'orange', icon: mdiShieldAlert, example: '"shared ip"' },
   { field: 'ip', description: 'IP address / hash', color: 'blue', icon: mdiIpNetwork, example: '::ffff' },
-  { field: 'user', description: 'Username', color: 'cyan', icon: mdiAccountGroup, example: 'dimas' },
   { field: 'time', description: 'Date or relative time', color: 'violet', icon: mdiClockOutline, example: '2025' },
   {
     field: 'details',
@@ -616,7 +554,6 @@ const SUSPICION_FILTER_DEFS: FilterDef[] = [
 
 const GLOBAL_FILTER_DEFS: FilterDef[] = [
   { field: 'team', description: 'Team name (All tabs)', color: 'blue', icon: mdiAccountGroup, example: 'aaa' },
-  { field: 'user', description: 'Username (IP)', color: 'cyan', icon: mdiAccountGroup, example: 'dimas' },
   { field: 'ip', description: 'IP address (IP)', color: 'blue', icon: mdiIpNetwork, example: '192.168' },
   {
     field: 'type',
@@ -1028,9 +965,6 @@ const IpAnalysisRow = React.memo<{
           {t(`game.cheat_analysis.ip_type.${item.type}`, meta.label)}
         </Badge>
       </Table.Td>
-      <Table.Td miw="12rem">
-        <MemoizedUsersCell users={item.userNames} relatedUsers={item.relatedUsers} />
-      </Table.Td>
       <Table.Td miw="9rem" style={{ maxWidth: '14rem', overflow: 'hidden' }}>
         <Group gap={4} wrap="nowrap">
           <Tooltip label={item.ip || '-'} withArrow disabled={!item.ip || item.ip.length <= 20} multiline maw={360}>
@@ -1317,7 +1251,11 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
   // Pair selection for drill-down
   const [teamAId, setTeamAId] = useState<number | null>(null)
   const [teamBId, setTeamBId] = useState<number | null>(null)
-  const [activeTab, setActiveTab] = useState<string | null>('suspicion')
+  const [activeTab, setActiveTab] = useUrlTab(
+    'section',
+    ['suspicion', 'network-device', 'abnormal-solves', 'collusion', 'identity'],
+    'suspicion'
+  )
   const evidenceTabsRef = useRef<HTMLDivElement>(null)
   const reducedMotion = useReducedMotion()
 
@@ -1374,15 +1312,29 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
     setSuspPage(1)
   }, [debouncedSuspSearch, suspSort])
 
+  const compareRequest = useCallback(
+    async (signal: AbortSignal) => {
+      if (teamAId === null || teamBId === null) throw new Error('Select two teams before comparing evidence')
+      return (await api.cheatReport.cheatReportCompare(gameId, teamAId, teamBId, { signal })).data
+    },
+    [gameId, teamAId, teamBId]
+  )
   const {
     data: drilledSolves,
     error: drillError,
     isLoading: isDrilling,
     isValidating: isDrillRefreshing,
     mutate: retryDrill,
-  } = api.cheatReport.useCheatReportCompare(gameId, teamAId, teamBId, {
-    keepPreviousData: false,
-    shouldRetryOnError: false,
+  } = useChallengePolling<CollusionCompareResult>({
+    key:
+      opened && teamAId !== null && teamBId !== null
+        ? `/api/game/${gameId}/cheatreport/compare?participationA=${teamAId}&participationB=${teamBId}#one-shot`
+        : null,
+    active: opened && teamAId !== null && teamBId !== null,
+    refreshInterval: 0,
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+    request: compareRequest,
   })
 
   const defaultTeamAId = selectedGroup?.teams?.[0]?.participationId
@@ -1533,13 +1485,6 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
             case 'ip':
               if (!item.ip?.toLowerCase().includes(f.value)) return false
               break
-            case 'user':
-              if (
-                !item.userNames?.some((u: string) => u.toLowerCase().includes(f.value)) &&
-                !item.relatedUsers?.some((u: string) => u.toLowerCase().includes(f.value))
-              )
-                return false
-              break
             case 'details':
               if (!item.details?.toLowerCase().includes(f.value)) return false
               break
@@ -1557,9 +1502,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
           item.teamName?.toLowerCase().includes(q) ||
           item.type?.toLowerCase().includes(q) ||
           item.ip?.toLowerCase().includes(q) ||
-          item.details?.toLowerCase().includes(q) ||
-          item.userNames?.some((u: string) => u.toLowerCase().includes(q)) ||
-          item.relatedUsers?.some((u: string) => u.toLowerCase().includes(q))
+          item.details?.toLowerCase().includes(q)
         if (globalParsed.freeText && !checkFreeText(globalParsed.freeText.toLowerCase())) return false
         if (localParsed.freeText && !checkFreeText(localParsed.freeText.toLowerCase())) return false
 
@@ -1754,9 +1697,6 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
           case 'team':
             if (!item.teamNames?.some((name) => name.toLowerCase().includes(filter.value))) return false
             break
-          case 'user':
-            if (!item.userNames?.some((name) => name.toLowerCase().includes(filter.value))) return false
-            break
           case 'ip':
             if (item.kind !== 'ip' || !item.value?.toLowerCase().includes(filter.value)) return false
             break
@@ -1773,8 +1713,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
       return Boolean(
         item.kind?.toLowerCase().includes(query) ||
         item.value?.toLowerCase().includes(query) ||
-        item.teamNames?.some((name) => name.toLowerCase().includes(query)) ||
-        item.userNames?.some((name) => name.toLowerCase().includes(query))
+        item.teamNames?.some((name) => name.toLowerCase().includes(query))
       )
     })
   }, [globalParsed, report?.identityOverlaps])
@@ -2228,8 +2167,8 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
           sub={t('game.cheat_analysis.card.ip_anomalies_sub', 'Probabilistic review context')}
           icon={mdiIpNetwork}
           color="cyan"
-          active={activeTab === 'ip'}
-          onClick={() => setActiveTab('ip')}
+          active={activeTab === 'network-device'}
+          onClick={() => setActiveTab('network-device')}
         />
         <SummaryCard
           label={t('game.cheat_analysis.card.abnormal_solves', 'Abnormal Solves')}
@@ -2237,8 +2176,8 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
           sub={t('game.cheat_analysis.card.abnormal_solves_sub', 'Solve-prerequisite signals')}
           icon={mdiGhost}
           color="orange"
-          active={activeTab === 'solve'}
-          onClick={() => setActiveTab('solve')}
+          active={activeTab === 'abnormal-solves'}
+          onClick={() => setActiveTab('abnormal-solves')}
         />
         <SummaryCard
           label={t('game.cheat_analysis.card.collusion_groups', 'Similarity Groups')}
@@ -2293,7 +2232,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
               {t('game.cheat_analysis.tab.suspicion', 'Suspicion')}
             </Tabs.Tab>
             <Tabs.Tab
-              value="ip"
+              value="network-device"
               rightSection={
                 <Badge
                   size="xs"
@@ -2308,7 +2247,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
               {t('game.cheat_analysis.tab.ip_analysis', 'Network / Device')}
             </Tabs.Tab>
             <Tabs.Tab
-              value="solve"
+              value="abnormal-solves"
               rightSection={
                 <Badge
                   size="xs"
@@ -2470,7 +2409,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
             )}
           </Tabs.Panel>
 
-          <Tabs.Panel value="ip" pt="md">
+          <Tabs.Panel value="network-device" pt="md">
             <Group justify="space-between" mb="md">
               <Group gap="xs">
                 <Title order={3}>{t('game.cheat_analysis.tab.ip_analysis', 'Network / Device Signals')}</Title>
@@ -2530,9 +2469,6 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
                         >
                           {t('game.cheat_analysis.type', 'Type')}
                         </ThSort>
-                        <Table.Th scope="col" w="14rem" miw="14rem">
-                          {t('game.cheat_analysis.users', 'Users')}
-                        </Table.Th>
                         <ThSort
                           sorted={ipSort.key === 'ip'}
                           reversed={ipSort.direction === 'desc'}
@@ -2590,7 +2526,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
             )}
           </Tabs.Panel>
 
-          <Tabs.Panel value="solve" pt="md">
+          <Tabs.Panel value="abnormal-solves" pt="md">
             <Group justify="space-between" mb="md">
               <Group gap="xs">
                 <Title order={3}>{t('game.cheat_analysis.tab.abnormal_solves', 'Abnormal Solves')}</Title>
@@ -2869,9 +2805,6 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
                       <Table.Th scope="col" miw="16rem">
                         {t('common.label.team', 'Team')}
                       </Table.Th>
-                      <Table.Th scope="col" miw="14rem">
-                        {t('game.cheat_analysis.identity_users', 'Users')}
-                      </Table.Th>
                     </Table.Tr>
                   </Table.Thead>
                   <Table.Tbody>
@@ -2915,11 +2848,6 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
                         </Table.Td>
                         <Table.Td>
                           <Text size="xs">{(ov.teamNames ?? []).join(', ')}</Text>
-                        </Table.Td>
-                        <Table.Td>
-                          <Text size="xs" c="dimmed">
-                            {(ov.userNames ?? []).join(', ')}
-                          </Text>
                         </Table.Td>
                       </Table.Tr>
                     ))}

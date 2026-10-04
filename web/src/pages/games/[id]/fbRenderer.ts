@@ -182,6 +182,7 @@ export function createFbRenderer(mount: ShadowRoot | HTMLElement) {
 
   return {
     get ready() { return ready },
+    stop() { playing = false; canvas.style.display = 'none' },
     play(durationMs = 5000, opts?: PlayOpts) {
       if (!ready || disposed) return
       // Accessibility: the first-blood / crown cinematic is a full-screen particle burst —

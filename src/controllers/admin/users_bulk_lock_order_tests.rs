@@ -40,7 +40,7 @@ async fn bulk_assignment_takes_game_fence_before_account_row_lock() {
     sqlx::raw_sql(
         r#"INSERT INTO "Games"
              (id, end_time_utc, ad_scoring_start_round, koth_scoring_start_round)
-           VALUES (30, clock_timestamp() + interval '1 hour', NULL, NULL);
+           VALUES (30, clock_timestamp() + interval '1 hour', 1, NULL);
            INSERT INTO "Participations" (game_id, team_id, status)
            VALUES (30, 10, 1), (30, 20, 1)"#,
     )
@@ -48,8 +48,10 @@ async fn bulk_assignment_takes_game_fence_before_account_row_lock() {
     .await
     .unwrap();
 
-    // Model public acceptance for a different team in the same game: it owns
-    // that roster and the shared game fence, then needs the joining account.
+    // Model public acceptance for a different team in the same game after it
+    // owns that roster and the shared game fence, but before it needs the
+    // joining account. The scoring marker makes the bulk pre-read select game
+    // 30 as a real roster blocker instead of taking the no-fence fast path.
     let mut public_accept = harness.pool.begin().await.unwrap();
     crate::utils::single_flight::acquire_transaction_advisory_lock(
         &mut public_accept,
@@ -57,9 +59,12 @@ async fn bulk_assignment_takes_game_fence_before_account_row_lock() {
     )
     .await
     .unwrap();
-    crate::controllers::team::ensure_roster_change_allowed(&mut public_accept, 20)
-        .await
-        .unwrap();
+    crate::utils::single_flight::acquire_transaction_advisory_lock(
+        &mut public_accept,
+        &crate::services::ad_engine::game_lock_key(30),
+    )
+    .await
+    .unwrap();
 
     let bulk = tokio::spawn({
         let pool = harness.pool.clone();
@@ -78,6 +83,18 @@ async fn bulk_assignment_takes_game_fence_before_account_row_lock() {
         !bulk.is_finished(),
         "bulk writer skipped the held game fence"
     );
+
+    // The blocker can end while both writers are ordered on the game fence.
+    // Once the fence is released, the bulk writer's mandatory predicate
+    // recheck should allow the otherwise valid assignment to finish.
+    sqlx::query(
+        r#"UPDATE "Games"
+              SET end_time_utc = clock_timestamp() - interval '1 second'
+            WHERE id = 30"#,
+    )
+    .execute(&harness.pool)
+    .await
+    .unwrap();
 
     // The fixed bulk path is waiting on game 30 without owning this row. The
     // former account-before-game order blocked here and formed a two-way cycle.

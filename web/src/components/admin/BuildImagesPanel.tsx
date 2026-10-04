@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Alert,
   Badge,
   Button,
   Center,
@@ -25,6 +26,7 @@ import relativeTime from 'dayjs/plugin/relativeTime'
 import { FC, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { showErrorMsg } from '@Utils/Shared'
+import { CompletionPollSWRConfig, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import api, { BuildImageModel } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
 
@@ -62,11 +64,31 @@ export const BuildImagesPanel: FC = () => {
     data: images,
     mutate,
     isLoading,
-  } = api.admin.useAdminListBuildImages({
-    refreshInterval: 30000,
+    error: imageError,
+    isValidating: imagesValidating,
+  } = api.admin.useAdminListBuildImages(CompletionPollSWRConfig)
+  const storageQuery = api.admin.useAdminBuildStorageStatus(CompletionPollSWRConfig)
+  const { data: storage, mutate: mutateStorage } = storageQuery
+
+  useCompletionPolling({
+    key: '/api/admin/builds/images',
+    phase: 'active-images-tab',
+    enabled: true,
+    data: images,
+    error: imageError,
+    isValidating: imagesValidating,
+    mutate,
+    successDelay: () => 30_000,
   })
-  const { data: storage, mutate: mutateStorage } = api.admin.useAdminBuildStorageStatus({
-    refreshInterval: 30000,
+  useCompletionPolling({
+    key: '/api/admin/builds/storage',
+    phase: 'active-images-tab',
+    enabled: true,
+    data: storage,
+    error: storageQuery.error,
+    isValidating: storageQuery.isValidating,
+    mutate: mutateStorage,
+    successDelay: () => 30_000,
   })
 
   const totalBytes = useMemo(() => (images ?? []).reduce((sum, img) => sum + img.sizeBytes, 0), [images])
@@ -167,7 +189,9 @@ export const BuildImagesPanel: FC = () => {
       <Group justify="space-between" align="flex-end" wrap="wrap">
         <Group gap="xs">
           <Icon path={mdiDatabaseOutline} size={0.9} />
-          <Title order={5}>{t('admin.content.builds.images.title', 'Images on disk')}</Title>
+          <Title order={2} size="h4">
+            {t('admin.content.builds.images.title', 'Images on disk')}
+          </Title>
           {images && (
             <Badge variant="light" color="gray" ff="monospace">
               {t('admin.content.builds.images.summary', {
@@ -233,17 +257,33 @@ export const BuildImagesPanel: FC = () => {
         </Paper>
       )}
 
+      {imageError && (
+        <Alert color="red" role="alert" title={t('admin.operations.images_error')}>
+          <Button size="xs" variant="default" onClick={() => void mutate()}>
+            {t('admin.operations.retry')}
+          </Button>
+        </Alert>
+      )}
+      {storageQuery.error && (
+        <Alert color="orange" role="alert" title={t('admin.operations.storage_error')}>
+          <Button size="xs" variant="default" onClick={() => void mutateStorage()}>
+            {t('admin.operations.retry')}
+          </Button>
+        </Alert>
+      )}
       {isLoading && !images ? (
         <Center py="sm">
           <Loader size="xs" />
         </Center>
-      ) : !images || images.length === 0 ? (
+      ) : imageError && !images ? null : !images || images.length === 0 ? (
         <Text size="sm" c="dimmed">
           {t('admin.content.builds.images.empty', 'No build images on disk.')}
         </Text>
       ) : (
         <Paper p="xs" withBorder>
-          <ScrollArea>
+          <ScrollArea
+            viewportProps={{ tabIndex: 0, 'aria-label': t('admin.content.builds.images.title', 'Images on disk') }}
+          >
             <Table
               withTableBorder
               striped

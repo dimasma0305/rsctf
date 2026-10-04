@@ -1,6 +1,6 @@
 import { Alert, Badge, Button, Card, Group, Loader, Select, Stack, Text, Textarea } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import api, {
@@ -30,6 +30,9 @@ const reviewOptions: Array<{ value: FindingReviewStatus; label: string }> = [
 
 const reviewLabels = reviewOptions.map(({ label }) => label)
 const tierLabels = ['Context / 0 points', 'Behavioral', 'Strong', 'Hard']
+const REVIEW_NOTE_LIMIT = 4_000
+
+export const truncateReviewNote = (value: string) => Array.from(value).slice(0, REVIEW_NOTE_LIMIT).join('')
 
 export function FusedEvidencePanel({ gameId, participationId }: { gameId: number; participationId: number }) {
   const { t } = useTranslation()
@@ -40,23 +43,52 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
   const [status, setStatus] = useState<FindingReviewStatus>('needsMoreEvidence')
   const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
+  const identity = `${gameId}:${participationId}`
+  const identityRef = useRef(identity)
+  const loadGeneration = useRef(0)
+  const loadAbort = useRef<AbortController | null>(null)
+  const savingRef = useRef(false)
+  const activeFindingRef = useRef<number | null>(null)
 
   const reload = useCallback(async () => {
+    const requestIdentity = `${gameId}:${participationId}`
+    const generation = ++loadGeneration.current
+    loadAbort.current?.abort()
+    const controller = new AbortController()
+    loadAbort.current = controller
     setLoading(true)
     setError(null)
     try {
-      const response = await api.eventSecurity.fusedBreakdown(gameId, participationId)
+      const response = await api.eventSecurity.fusedBreakdown(gameId, participationId, { signal: controller.signal })
+      if (identityRef.current !== requestIdentity || loadGeneration.current !== generation) return
       setResult(response.data)
     } catch (requestError) {
+      if (controller.signal.aborted || identityRef.current !== requestIdentity || loadGeneration.current !== generation)
+        return
       setError(tryGetErrorMsg(requestError, t))
     } finally {
-      setLoading(false)
+      if (identityRef.current === requestIdentity && loadGeneration.current === generation) setLoading(false)
     }
   }, [gameId, participationId, t])
 
   useEffect(() => {
+    identityRef.current = identity
+    loadGeneration.current += 1
+    loadAbort.current?.abort()
+    setResult(null)
+    setError(null)
+    setActiveFinding(null)
+    activeFindingRef.current = null
+    setStatus('needsMoreEvidence')
+    setNote('')
+    savingRef.current = false
+    setSaving(false)
     void reload()
-  }, [reload])
+    return () => {
+      loadGeneration.current += 1
+      loadAbort.current?.abort()
+    }
+  }, [identity, reload])
 
   const relationships = useMemo(() => {
     const counts = new Map<number, number>()
@@ -67,17 +99,25 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
   }, [result?.relationships])
 
   const saveReview = async (finding: AntiCheatFindingRow) => {
+    if (savingRef.current || activeFinding !== finding.id) return
+    const reviewIdentity = `${identity}:${finding.id}`
+    savingRef.current = true
     setSaving(true)
     try {
       await api.eventSecurity.reviewFinding(gameId, finding.id, { status, note: note.trim() || null })
+      if (`${identityRef.current}:${activeFindingRef.current}` !== reviewIdentity) return
       showNotification({ color: 'teal', message: 'Evidence review recorded' })
       setActiveFinding(null)
+      activeFindingRef.current = null
+      setStatus('needsMoreEvidence')
       setNote('')
       await reload()
     } catch (requestError) {
-      setError(tryGetErrorMsg(requestError, t))
+      if (`${identityRef.current}:${activeFindingRef.current}` === reviewIdentity)
+        setError(tryGetErrorMsg(requestError, t))
     } finally {
-      setSaving(false)
+      savingRef.current = false
+      if (identityRef.current === identity) setSaving(false)
     }
   }
 
@@ -149,7 +189,15 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
                   <Button
                     size="compact-xs"
                     variant="light"
-                    onClick={() => setActiveFinding(activeFinding === finding.id ? null : finding.id)}
+                    onClick={() => {
+                      const opening = activeFinding !== finding.id
+                      const nextFinding = opening ? finding.id : null
+                      activeFindingRef.current = nextFinding
+                      setActiveFinding(nextFinding)
+                      setStatus('needsMoreEvidence')
+                      setNote('')
+                      setError(null)
+                    }}
                   >
                     Review
                   </Button>
@@ -168,10 +216,10 @@ export function FusedEvidencePanel({ gameId, participationId }: { gameId: number
                     <Textarea
                       label="Reviewer note"
                       value={note}
-                      maxLength={4000}
-                      onChange={(event) => setNote(event.currentTarget.value)}
+                      description={`${Array.from(note).length} / ${REVIEW_NOTE_LIMIT}`}
+                      onChange={(event) => setNote(truncateReviewNote(event.currentTarget.value))}
                     />
-                    <Button size="xs" loading={saving} onClick={() => void saveReview(finding)}>
+                    <Button size="xs" loading={saving} disabled={saving} onClick={() => void saveReview(finding)}>
                       Record review
                     </Button>
                   </Stack>

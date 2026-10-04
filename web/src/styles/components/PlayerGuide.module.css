@@ -1,17 +1,21 @@
-.modal {
+.modal.modal {
   position: relative;
-  z-index: 7004;
-  max-height: min(22rem, calc(100dvh - 1rem));
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  height: auto;
+  max-height: min(20rem, calc(100dvh - 1rem));
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--mantine-primary-color-filled) 28%, var(--mantine-color-dark-4));
-  border-radius: var(--mantine-radius-lg);
-  box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 45%);
+  border: 1px solid var(--app-border);
+  border-top: 2px solid var(--mantine-primary-color-filled);
+  border-radius: 1rem;
+  background: var(--app-raised-surface);
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 28%);
 }
 
 .tutorialShade {
   position: fixed;
   inset: 0;
-  z-index: 6997;
   width: 100vw;
   height: 100dvh;
   pointer-events: none;
@@ -19,25 +23,22 @@
 
 .tutorialBlocker {
   position: fixed;
-  z-index: 6996;
   pointer-events: auto;
 }
 
 .tutorialSpotlight {
   position: fixed;
-  z-index: 6998;
   pointer-events: none;
-  border: 3px solid var(--mantine-primary-color-filled);
-  border-radius: var(--mantine-radius-md);
+  border: 2px solid var(--mantine-primary-color-filled);
+  border-radius: 0.65rem;
   box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--mantine-primary-color-filled) 30%, transparent),
-    0 0 2rem color-mix(in srgb, var(--mantine-primary-color-filled) 55%, transparent);
-  animation: tutorial-spotlight 1.8s ease-in-out infinite;
+    0 0 0 4px color-mix(in srgb, var(--mantine-primary-color-filled) 18%, transparent),
+    0 0 1rem color-mix(in srgb, var(--mantine-primary-color-filled) 25%, transparent);
+  animation: tutorial-spotlight 0.8s ease-out 1;
 }
 
 .tutorialCursor {
   position: fixed;
-  z-index: 6999;
   display: grid;
   width: 2.75rem;
   height: 2.75rem;
@@ -45,7 +46,12 @@
   color: white;
   pointer-events: none;
   filter: drop-shadow(0 2px 1px rgb(0 0 0 / 95%)) drop-shadow(0 0 8px var(--mantine-primary-color-filled));
-  animation: tutorial-cursor 1.8s cubic-bezier(0.22, 0.8, 0.25, 1) infinite;
+  animation: tutorial-cursor 0.8s cubic-bezier(0.22, 0.8, 0.25, 1) 1;
+}
+
+.tutorialCursor svg {
+  width: 1.6rem !important;
+  height: 1.6rem !important;
 }
 
 @keyframes tutorial-spotlight {
@@ -65,8 +71,8 @@
 
 @keyframes tutorial-cursor {
   0% {
-    opacity: 0;
-    transform: translate(3.5rem, 3.5rem) scale(0.82);
+    opacity: 0.35;
+    transform: translate(1rem, 1rem) scale(0.88);
   }
 
   32% {
@@ -87,37 +93,133 @@
   }
 }
 
-.modalHeader {
+.modalHeader.modalHeader {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   min-height: 2.75rem;
-  padding: 0.45rem 0.55rem 0.45rem 0.75rem;
-  border-bottom: 1px solid var(--mantine-color-default-border);
+  padding: 0.4rem 0.45rem 0.4rem 0.85rem;
+  border-bottom: 1px solid var(--app-border);
+  background: linear-gradient(100deg, var(--mantine-primary-color-light), transparent);
+}
+
+.modalHeading {
+  display: flex;
+  flex: 1;
+  gap: var(--mantine-spacing-xs);
+  align-items: center;
+  min-width: 0;
 }
 
 .modalHeader :global(.mantine-Modal-title) {
+  display: -webkit-box;
   overflow: hidden;
   font-size: var(--mantine-font-size-md);
   font-weight: 700;
   line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
-.modalBody {
+.modalProgress {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0;
+  left: 0.75rem;
+}
+
+.modalBody.modalBody {
+  display: flex;
+  flex: 0 1 auto;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
   padding: 0.65rem 0.75rem 0.75rem;
   overscroll-behavior: contain;
 }
 
 .tourBody {
+  flex: 0 1 auto;
+  width: 100%;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tourContent {
+  flex: 0 1 auto;
+  min-height: 0;
+  padding-inline-end: 0.15rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .stepBadge {
-  align-self: flex-start;
+  flex: 0 0 auto;
+}
+
+.stepPicker {
+  position: relative;
+  flex-shrink: 0;
+  min-height: 44px;
+  min-width: 60px;
+  display: grid;
+  place-items: center;
+  color: var(--mantine-primary-color-light-color);
+  border-radius: 0.4rem;
+}
+.stepPicker span {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.stepPicker select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.stepPicker:hover {
+  background: var(--app-hover-surface);
+}
+.stepPicker:focus-within,
+.stepDetails summary:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 2px;
+}
+.stepContent {
+  display: grid;
+  gap: 0.35rem;
+}
+.stepCopy {
+  animation: guide-step-in 140ms ease-out both;
+  line-height: 1.5;
+}
+.stepDetails summary {
+  min-height: 32px;
+  padding-block: 0.4rem;
+  color: var(--app-text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.stepDetails[open] summary {
+  color: var(--mantine-primary-color-light-color);
+}
+@keyframes guide-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .note {
@@ -125,16 +227,26 @@
   border-inline-start: 2px solid var(--mantine-primary-color-light-color);
 }
 
-.destinationNote {
-  padding: 0.4rem 0.55rem;
-  border: 1px solid color-mix(in srgb, var(--mantine-primary-color-filled) 35%, var(--mantine-color-default-border));
-  border-radius: var(--mantine-radius-md);
-  background: color-mix(in srgb, var(--mantine-primary-color-filled) 8%, var(--mantine-color-body));
+.targetPrompt {
+  display: flex;
+  align-items: center;
+  min-height: 1.25rem;
+  padding: 0;
+  color: var(--app-text-secondary);
+}
+
+.targetPromptIcon {
+  flex: 0 0 auto;
+  color: var(--mantine-primary-color-light-color);
 }
 
 .guideAction,
 .tourFooter button {
   min-height: 2.75rem;
+}
+
+.guideAction {
+  flex-shrink: 0;
 }
 
 .tourFooter > button {
@@ -146,6 +258,10 @@
   flex: 0 0 auto;
 }
 
+.tourFooter {
+  flex: 0 0 auto;
+}
+
 .tourFooter > div button {
   padding-inline: 0.55rem;
 }
@@ -154,9 +270,20 @@
   padding-inline-start: var(--mantine-spacing-md);
 }
 
+.command {
+  display: block;
+  padding: 0.45rem 0.6rem;
+  overflow-x: auto;
+  color: var(--mantine-color-text);
+  white-space: nowrap;
+  background: var(--mantine-color-default-hover);
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-sm);
+}
+
 @media (max-width: 48em) {
   .modal.modal {
-    max-height: min(19rem, 44dvh);
+    max-height: min(18rem, calc(100dvh - 10rem));
   }
 
   .tourFooter button {

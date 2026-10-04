@@ -3,7 +3,7 @@ use sea_orm::Set;
 use uuid::Uuid;
 
 use crate::models::data::game_challenge;
-use crate::utils::enums::ChallengeReviewStatus;
+use crate::utils::enums::{ChallengeReviewStatus, ChallengeType};
 use crate::utils::error::{AppError, AppResult};
 
 use super::ChallengeYaml;
@@ -20,7 +20,7 @@ pub enum ImportPolicy {
 pub(super) const MAX_PENDING_MANIFEST_BYTES: u64 = 1024 * 1024;
 pub(super) const MAX_PENDING_STATIC_FLAGS: usize = 64;
 pub(super) const MAX_PENDING_HINTS: usize = 64;
-const MAX_PENDING_FLAG_BYTES: usize = 4 * 1024;
+pub(crate) const MAX_PENDING_CHALLENGES_PER_USER_GAME: i64 = 10;
 const MAX_PENDING_HINT_BYTES: usize = 16 * 1024;
 
 impl ImportPolicy {
@@ -63,14 +63,9 @@ pub(super) fn validate_pending_manifest(model: &ChallengeYaml) -> AppResult<()> 
             "user-submitted manifests may define at most {MAX_PENDING_STATIC_FLAGS} flags"
         )));
     }
-    if model
-        .flags
-        .as_ref()
-        .is_some_and(|flags| flags.iter().any(|flag| flag.len() > MAX_PENDING_FLAG_BYTES))
-    {
-        return Err(AppError::bad_request(format!(
-            "user-submitted flags may be at most {MAX_PENDING_FLAG_BYTES} bytes"
-        )));
+    for flag in model.flags.as_deref().unwrap_or_default() {
+        crate::utils::flag_policy::validate_normal(flag)
+            .map_err(|error| AppError::bad_request(error.to_string()))?;
     }
     if model
         .hints
@@ -93,6 +88,24 @@ pub(super) fn validate_pending_manifest(model: &ChallengeYaml) -> AppResult<()> 
     Ok(())
 }
 
+pub(super) fn validate_flag_definition(
+    challenge_type: ChallengeType,
+    flag_template: Option<&str>,
+    static_flags: &[String],
+) -> AppResult<()> {
+    if challenge_type == ChallengeType::DynamicContainer {
+        if let Some(template) = flag_template {
+            crate::utils::flag_policy::validate_dynamic_template(template)
+                .map_err(|error| AppError::bad_request(error.to_string()))?;
+        }
+    }
+    for flag in static_flags {
+        crate::utils::flag_policy::validate_normal(flag)
+            .map_err(|error| AppError::bad_request(error.to_string()))?;
+    }
+    Ok(())
+}
+
 pub(super) fn initialize_new_import_review(
     challenge: &mut game_challenge::ActiveModel,
     policy: ImportPolicy,
@@ -107,4 +120,53 @@ pub(super) fn initialize_new_import_review(
     challenge.reviewed_at_utc = Set(policy.reviewed_at(now));
     challenge.submitted_at_utc = Set(Some(now));
     challenge.submitted_by_user_id = Set(policy.submitted_by_user_id());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_manifests_share_the_normal_submission_byte_policy() {
+        let mut manifest = ChallengeYaml {
+            flags: Some(vec!["x".repeat(127), "界".repeat(42)]),
+            ..Default::default()
+        };
+        assert!(validate_pending_manifest(&manifest).is_ok());
+
+        manifest.flags = Some(vec!["x".repeat(128)]);
+        assert!(validate_pending_manifest(&manifest).is_err());
+        manifest.flags = Some(vec!["界".repeat(43)]);
+        assert!(validate_pending_manifest(&manifest).is_err());
+        manifest.flags = Some(vec![" flag{not-canonical}".to_string()]);
+        assert!(validate_pending_manifest(&manifest).is_err());
+    }
+
+    #[test]
+    fn trusted_imports_share_static_and_expanded_template_boundaries() {
+        assert!(validate_flag_definition(
+            ChallengeType::StaticAttachment,
+            None,
+            &["x".repeat(127), "界".repeat(42)],
+        )
+        .is_ok());
+        assert!(validate_flag_definition(
+            ChallengeType::StaticAttachment,
+            None,
+            &["x".repeat(128)],
+        )
+        .is_err());
+        assert!(validate_flag_definition(
+            ChallengeType::StaticAttachment,
+            None,
+            &["flag{not-canonical} ".to_string()],
+        )
+        .is_err());
+        assert!(validate_flag_definition(
+            ChallengeType::DynamicContainer,
+            Some(&format!("flag{{{}}}", "[UUID]".repeat(4))),
+            &[],
+        )
+        .is_err());
+    }
 }

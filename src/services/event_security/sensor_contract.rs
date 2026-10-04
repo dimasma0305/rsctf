@@ -4,6 +4,24 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub(crate) struct SensorSnapshotCache {
+    value: tokio::sync::Mutex<Option<(tokio::time::Instant, SensorSnapshot)>>,
+}
+
+impl SensorSnapshotCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            value: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    pub(crate) async fn lock(
+        &self,
+    ) -> tokio::sync::MutexGuard<'_, Option<(tokio::time::Instant, SensorSnapshot)>> {
+        self.value.lock().await
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SensorSnapshot {
@@ -49,6 +67,9 @@ pub struct SensorFlagPattern {
     pub pattern: String,
     pub value_hash: String,
 }
+
+/// Snapshot memory ceiling independent of the number of games in PostgreSQL.
+pub const MAX_SENSOR_PEERS: usize = 100_000;
 
 pub const PROVIDER_OPENAI: i16 = 0;
 pub const PROVIDER_ANTHROPIC: i16 = 1;

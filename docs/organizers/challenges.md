@@ -100,8 +100,8 @@ Choose one format before official scoring; RSCTF freezes it with the hill:
   `/koth/king`, qualifies one holder, and scores acquisition, control, and
   reliability.
 - **Leaderboard KotH** is multi-team application or protocol KotH. Every
-  eligible team can score in each challenge-native finalized wave. A trusted
-  independent referee reports completed activity, ordered objective evidence,
+  eligible team can score in each challenge-native finalized wave. The
+  platform-managed target reports completed activity, ordered objective evidence,
   and a Crown only for one unique leader; RSCTF normalizes it and applies the
   constant 95% relative-performance plus 5% Crown formula. An exact top tie has
   no Crown.
@@ -111,9 +111,9 @@ provisional crown, or champion-cooldown score. It still uses pristine lifecycle
 resets, exact capability generations, an independent functional checker, and
 field-wide voids for platform failures.
 
-Configure the referee from the KotH operations table before official scoring.
-Keep its HMAC secret outside the player-facing application. See
-[Signed Leaderboard KotH referee](./koth-api-observer) for evidence design,
+Configure Leaderboard reporting from the KotH operations table before official scoring.
+Set the private managed-reporter origin on the lifecycle-owning rsctf role. See
+[Managed Leaderboard KotH reporting](./koth-api-observer) for evidence design,
 normalization, anti-cheat rules, the wire contract, and the runnable example.
 
 ## Review and enable
@@ -123,6 +123,8 @@ Keep new challenges disabled until another organizer reviews the description, do
 ## Import from GitHub
 
 Repository bindings can import events and challenges from Git. A bound repository needs a `.gzevent`; standalone `challenge.yaml` files are not imported. A rescan preserves operator-edited game settings and updates challenges in place by binding-relative manifest path, retaining challenge IDs and solve/scoring history. Missing played manifests are retained as disabled tombstones or rejected while event state still depends on them; they are never silently cascade-deleted.
+
+Hints saved in the challenge editor or imported from `challenge.yaml` are private drafts. Use **Release hint** in the challenge editor to publish them to players in order. Use **Unrelease hint** on the latest released hint to return it to draft; repeat from the end to retract more than one. Appending a draft preserves the released prefix, while editing or reordering a released hint retracts that hint and every later hint until an organizer releases them again. Hints on already-enabled challenges remain released when upgrading from a version without explicit hint publication; hints on staged, disabled challenges remain drafts.
 
 Private repositories use a PAT stored in PostgreSQL, so database backups are sensitive. Push-on-edit needs a writable branch and write-capable token. Automatic interval scans are not currently scheduled; use **Scan now** after repository changes.
 

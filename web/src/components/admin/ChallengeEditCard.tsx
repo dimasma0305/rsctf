@@ -31,10 +31,11 @@ import {
   mdiSwordCross,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { Dispatch, FC, SetStateAction, useEffect, useState } from 'react'
+import { Dispatch, FC, SetStateAction, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useParams } from 'react-router'
 import { useChallengeCategoryLabelMap, showErrorMsg } from '@Utils/Shared'
+import { createOperationId, startControlJob, waitForControlJob } from '@Utils/ControlJobs'
 import api, { ChallengeInfoModel, ChallengeCategory } from '@Api'
 import classes from '@Styles/ChallengeEditCard.module.css'
 
@@ -45,9 +46,8 @@ interface ChallengeEditCardProps {
    * Revalidate the parent challenge list. The card calls this after
    * triggering a Build so the badge + icon transition through
    * Queued → Building → Success/Failed without the operator having to
-   * reload the page. Used by a polling effect while a build is in
-   * flight; the parent list otherwise uses OnceSWRConfig and never
-   * refreshes on its own.
+   * reload the page. The parent owns the single compact build-status poller;
+   * cards never create timers of their own.
    */
   onMutate?: () => void
   /** When set, the card shows a selection checkbox (for batch actions). */
@@ -77,6 +77,8 @@ export const ChallengeEditCard: FC<ChallengeEditCardProps> = ({
 
   const [disabled, setDisabled] = useState(false)
   const [building, setBuilding] = useState(false)
+  const buildFlight = useRef<Promise<void> | null>(null)
+  const buildAbort = useRef(new AbortController())
   const { t } = useTranslation()
   const numId = parseInt(id ?? '-1')
 
@@ -93,37 +95,41 @@ export const ChallengeEditCard: FC<ChallengeEditCardProps> = ({
       challenge.type === 'KingOfTheHill') &&
     challenge.buildStatus !== 'NotApplicable'
 
-  const onBuildNow = async () => {
-    if (challenge.id == null) return
-    setBuilding(true)
-    try {
-      await api.edit.editRebuildChallengeImage(numId, challenge.id)
-      showNotification({
-        color: 'teal',
-        message: t('admin.notification.builds.enqueued'),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-      // Kick the parent list to revalidate so the badge / icon
-      // reflect the new Queued status without a manual reload.
-      onMutate?.()
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setBuilding(false)
-    }
+  useEffect(() => () => buildAbort.current.abort(), [])
+
+  const onBuildNow = () => {
+    if (challenge.id == null) return Promise.resolve()
+    if (buildFlight.current) return buildFlight.current
+    const operationId = createOperationId()
+    const task = (async () => {
+      setBuilding(true)
+      try {
+        const job = await startControlJob(
+          operationId,
+          () =>
+            api.edit.editRebuildChallengeImage(numId, challenge.id!, operationId, {
+              signal: buildAbort.current.signal,
+            }),
+          buildAbort.current.signal
+        )
+        showNotification({
+          color: 'teal',
+          message: t('admin.notification.builds.enqueued'),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+        await waitForControlJob(job, buildAbort.current.signal)
+        onMutate?.()
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+      } finally {
+        setBuilding(false)
+        buildFlight.current = null
+      }
+    })()
+    buildFlight.current = task
+    return task
   }
 
-  // Poll while a build is in flight so the parent list refreshes
-  // every 2s — mirrors the cadence used by the challenge-edit page's
-  // inline build-log section. Stops as soon as the status leaves
-  // Queued/Building.
-  useEffect(() => {
-    if (!inFlightBuild || !onMutate) return
-    const timer = window.setInterval(() => {
-      onMutate()
-    }, 2000)
-    return () => window.clearInterval(timer)
-  }, [inFlightBuild, onMutate])
   const { colorScheme } = useMantineColorScheme()
 
   const color = data?.color ?? theme.primaryColor

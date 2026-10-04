@@ -1,6 +1,7 @@
 import { Alert, Badge, Box, Button, Card, Divider, Group, Loader, Stack, Table, Text } from '@mantine/core'
-import type { FC } from 'react'
+import { useCallback, type FC } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useChallengePolling } from '@Hooks/useChallengePolling'
 import api from '@Api'
 
 interface SuspicionEvidenceReviewProps {
@@ -29,9 +30,17 @@ function displayTime(value?: number | null) {
 
 export const SuspicionEvidenceReviewPanel: FC<SuspicionEvidenceReviewProps> = ({ gameId, eventId }) => {
   const { t } = useTranslation()
-  const { data, error, isLoading, mutate } = api.cheatReport.useCheatReportEventEvidence(gameId, eventId, {
-    shouldRetryOnError: false,
+  const request = useCallback(
+    async (signal: AbortSignal) => (await api.cheatReport.cheatReportEventEvidence(gameId, eventId, { signal })).data,
+    [eventId, gameId]
+  )
+  const { data, error, isLoading, mutate } = useChallengePolling({
+    key: `/api/game/${gameId}/cheatreport/events/${eventId}#one-shot`,
+    active: true,
+    refreshInterval: 0,
     revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+    request,
   })
 
   if (isLoading && !data) {

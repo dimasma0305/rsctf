@@ -48,6 +48,79 @@ const AUTO_SPEED_INTERVAL_MS: i64 = 2 * 1000;
 const H_GROUP_MIN_WRONGS: usize = 5;
 /// FirstBloodAnomaly gap (`TimeSpan.FromHours(2)`), in milliseconds.
 const FIRST_BLOOD_GAP_MS: i64 = 2 * 60 * 60 * 1000;
+const AUTOMATED_PATTERN_CONTEXT_ROWS: i64 = (AUTO_SPEED_COUNT + 1) as i64;
+const MAX_INCREMENTAL_SUBMISSION_DELTAS: i64 = super::reconciliation::SOURCE_BATCH;
+
+const INCREMENTAL_AUTOMATED_PATTERN_SQL: &str = r#"
+    WITH changed_wrong AS MATERIALIZED (
+        SELECT job.id AS job_id, submission.id AS submission_id,
+               submission.participation_id, submission.challenge_id,
+               submission.submit_time_utc
+          FROM "SuspicionEvaluationOutbox" job
+          JOIN "Submissions" submission
+            ON submission.id = job.source_id
+           AND submission.game_id = job.game_id
+           AND submission.participation_id = job.participation_id
+           AND submission.challenge_id = job.challenge_id
+          JOIN "Games" game ON game.id = job.game_id
+          JOIN "Participations" participation
+            ON participation.id = submission.participation_id
+           AND participation.game_id = submission.game_id
+         WHERE job.game_id = $1
+           AND job.reconciliation_version > $2
+           AND job.reconciliation_version <= $3
+           AND job.completed_at_utc IS NOT NULL
+           AND job.job_kind = 0
+           AND job.challenge_id IS NOT NULL
+           AND submission.status = $4
+           AND job.observed_at_utc >= game.start_time_utc
+           AND job.observed_at_utc < game.end_time_utc
+           AND participation.competitive_admitted_at_utc IS NOT NULL
+           AND participation.competitive_admitted_at_utc < game.end_time_utc
+         ORDER BY job.reconciliation_version
+         LIMIT $6
+    ), bounded_windows AS MATERIALIZED (
+        SELECT changed.job_id, changed.participation_id,
+               changed.challenge_id, context.id,
+               context.submit_time_utc
+          FROM changed_wrong changed
+          JOIN LATERAL (
+              SELECT submission.id, submission.submit_time_utc
+                FROM "Submissions" submission
+                JOIN "Games" game ON game.id = submission.game_id
+               WHERE submission.game_id = $1
+                 AND submission.participation_id = changed.participation_id
+                 AND submission.challenge_id = changed.challenge_id
+                 AND submission.status = $4
+                 AND (submission.submit_time_utc, submission.id)
+                       <= (changed.submit_time_utc, changed.submission_id)
+                 AND submission.submit_time_utc >= game.start_time_utc
+                 AND submission.submit_time_utc < game.end_time_utc
+               ORDER BY submission.submit_time_utc DESC, submission.id DESC
+               LIMIT $5
+          ) context ON TRUE
+    ), intervals AS (
+        SELECT bounded.*,
+               bounded.submit_time_utc - LAG(bounded.submit_time_utc) OVER (
+                   PARTITION BY bounded.job_id
+                   ORDER BY bounded.submit_time_utc, bounded.id
+               ) AS cadence_interval
+          FROM bounded_windows bounded
+    ), qualifying_windows AS (
+        SELECT job_id, participation_id, challenge_id,
+               MAX(submit_time_utc) AS observed_at
+          FROM intervals
+         GROUP BY job_id, participation_id, challenge_id
+        HAVING COUNT(*) FILTER (
+                   WHERE cadence_interval >= INTERVAL '0 seconds'
+                     AND cadence_interval < INTERVAL '2 seconds'
+               ) >= 10
+    )
+    SELECT participation_id, challenge_id, MIN(observed_at)
+      FROM qualifying_windows
+     GROUP BY participation_id, challenge_id
+     ORDER BY participation_id, challenge_id
+"#;
 
 fn zero_wrong_snapshot_is_final(snapshot: super::detectors::ReconciliationSnapshot) -> bool {
     super::detectors::final_snapshot_ready(snapshot)
@@ -76,6 +149,45 @@ pub async fn run_abnormal_solve_checks(st: &SharedState, game_id: i32) -> AppRes
         super::detectors::ReconciliationSnapshot::Live,
     )
     .await
+}
+
+/// Evaluate only the cadence groups touched by a bounded completed-outbox
+/// slice. Stolen-flag, burst, high-wrong-rate, and hoarding rules already run
+/// once per durable submission job; this SQL aggregate supplies the one live
+/// abnormal-solve rule that needs a sequence of wrong attempts.
+pub(crate) async fn run_abnormal_solve_checks_incremental(
+    st: &SharedState,
+    game_id: i32,
+    cursor: super::reconciliation::SourceCursor,
+) -> AppResult<()> {
+    if cursor.after >= cursor.through {
+        return Ok(());
+    }
+    let hits: Vec<(i32, i32, DateTime<Utc>)> = sqlx::query_as(INCREMENTAL_AUTOMATED_PATTERN_SQL)
+        .bind(game_id)
+        .bind(cursor.after)
+        .bind(cursor.through)
+        .bind(crate::utils::enums::AnswerResult::WrongAnswer as i16)
+        .bind(AUTOMATED_PATTERN_CONTEXT_ROWS)
+        .bind(MAX_INCREMENTAL_SUBMISSION_DELTAS)
+        .fetch_all(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut codes = Vec::new();
+    for (participation_id, challenge_id, observed_at) in hits {
+        super::detectors::record_with_dedup_at(
+            &st.db,
+            game_id,
+            participation_id,
+            Some(challenge_id),
+            SuspicionType::AutomatedPattern,
+            &challenge_evidence_key(challenge_id),
+            observed_at,
+            &mut codes,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 pub(super) async fn run_abnormal_solve_checks_for_snapshot(
@@ -351,7 +463,10 @@ pub(super) async fn run_abnormal_solve_checks_for_snapshot(
 
 #[cfg(test)]
 mod tests {
-    use super::{first_blood_anomaly_observed_at, zero_wrong_snapshot_is_final};
+    use super::{
+        first_blood_anomaly_observed_at, zero_wrong_snapshot_is_final,
+        INCREMENTAL_AUTOMATED_PATTERN_SQL,
+    };
     use crate::services::suspicion::detectors::ReconciliationSnapshot;
 
     #[test]
@@ -392,5 +507,19 @@ mod tests {
     fn ambiguous_fast_solve_telemetry_has_no_incident_emitter() {
         let actionable_reference = ["SuspicionType", "::FastSolve"].concat();
         assert!(!include_str!("cheat_checks.rs").contains(&actionable_reference));
+    }
+
+    #[test]
+    fn live_cadence_is_delta_nominated_and_database_aggregated() {
+        assert!(INCREMENTAL_AUTOMATED_PATTERN_SQL.contains("job.reconciliation_version > $2"));
+        assert!(INCREMENTAL_AUTOMATED_PATTERN_SQL.contains("changed_wrong AS MATERIALIZED"));
+        assert!(INCREMENTAL_AUTOMATED_PATTERN_SQL.contains("JOIN LATERAL"));
+        assert!(INCREMENTAL_AUTOMATED_PATTERN_SQL.contains("LIMIT $5"));
+        assert!(INCREMENTAL_AUTOMATED_PATTERN_SQL.contains("LIMIT $6"));
+        assert!(INCREMENTAL_AUTOMATED_PATTERN_SQL
+            .contains("<= (changed.submit_time_utc, changed.submission_id)"));
+        assert!(INCREMENTAL_AUTOMATED_PATTERN_SQL.contains("HAVING COUNT(*) FILTER"));
+        assert!(!INCREMENTAL_AUTOMATED_PATTERN_SQL.contains("changed_groups"));
+        assert!(!INCREMENTAL_AUTOMATED_PATTERN_SQL.contains("SELECT submission.*"));
     }
 }

@@ -70,6 +70,7 @@ FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git libpcap0.8 iptables ipset iproute2 wireguard-tools \
        python3 python3-venv \
+    && install -d -o 65532 -g 65532 -m 0700 /var/lib/rsctf-event-sensor/spool \
     && rm -rf /var/lib/apt/lists/*
 ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE
 ARG RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH
@@ -90,4 +91,6 @@ EXPOSE 8080
 EXPOSE 9443
 # WireGuard hub UDP port teams dial (A&D VPN).
 EXPOSE 51820/udp
+HEALTHCHECK --interval=30s --timeout=3s --start-period=60s --start-interval=5s --retries=3 \
+  CMD ["/usr/local/bin/rsctf", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/rsctf"]

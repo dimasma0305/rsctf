@@ -273,6 +273,31 @@ async fn live_user(parts: &mut Parts, app: &SharedState) -> Result<CurrentUser, 
     if let Some(user) = parts.extensions.get::<CurrentUser>() {
         return Ok(user.clone());
     }
+    // Managed API tokens are a distinct authenticated principal whose live
+    // owner, role, security generation, audience, expiry, revocation, and
+    // method scope were resolved by the outer global middleware. Do not parse
+    // their opaque bearer bytes as a session JWT a second time.
+    if let Some(token) = parts
+        .extensions
+        .get::<crate::services::managed_api_token::VerifiedManagedApiToken>()
+    {
+        let user = token.user.clone();
+        if let Some(activity) = parts
+            .extensions
+            .get::<crate::middlewares::user_activity::RequestActivityContext>()
+        {
+            activity.mark_authenticated(user.id);
+        }
+        parts.extensions.insert(user.clone());
+        return Ok(user);
+    }
+    if parts
+        .extensions
+        .get::<crate::services::managed_api_token::RejectedManagedApiToken>()
+        .is_some()
+    {
+        return Err(AppError::Unauthorized);
+    }
     // A verified participation token is intentionally not a user session. The
     // optional-user extractor should not spend another HMAC verification trying
     // to reinterpret it as a JWT.

@@ -37,25 +37,22 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
 use sea_orm::EntityTrait;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use uuid::Uuid;
 
-use futures::{SinkExt, StreamExt};
-
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser};
-use crate::models::data::{container, game_instance, participation, user_participation};
+use crate::models::data::{container, game_instance};
 use crate::services::live_roster::LiveParticipationIdentity;
 use crate::services::worker::WorkerHandle;
-use crate::utils::enums::{ParticipationStatus, Role};
+use crate::utils::enums::ParticipationStatus;
 use rsctf_worker_protocol::{
     DataStreamRequest, TcpProxyRequest, ValidatedWorkloadSpec, WorkloadFence,
 };
@@ -64,6 +61,7 @@ mod access_log;
 mod authorization;
 mod capability;
 mod egress;
+mod session_lease;
 mod target;
 #[cfg(test)]
 mod tests;
@@ -71,19 +69,18 @@ mod transport;
 
 use access_log::log_container_access_on;
 use authorization::{
-    game_proxy_scope_is_valid, game_proxy_session_is_valid, try_acquire_game_proxy_open_fence,
-    GameProxyOpenFence, GameProxyTargetIdentity,
+    game_proxy_scope_is_valid, try_acquire_game_proxy_open_fence, GameProxyOpenFence,
+    GameProxyTargetIdentity,
 };
 use capability::{
     issue_instance_capability, issue_noinstance_capability, proxy_instance_latency_probe,
-    proxy_noinstance_latency_probe, proxy_user, ProxyCapabilityQuery,
+    proxy_noinstance_latency_probe, proxy_subject, proxy_user, ProxyCapabilityQuery,
 };
-use egress::{build_egress_scan, record_flag_egress, EgressScan, RollingFlagMatcher};
+use egress::{build_egress_scan, load_egress_participation, EgressMetadataRevision, EgressScan};
+use session_lease::{lease_is_valid, wait_for_revocation, InstanceLease, LeaseOwner};
 use target::{game_proxy_target_identity, proxy_target, resolve_noinstance_target, ProxyTarget};
-use transport::{close_cleanly, endpoint_unavailable_close, normal_close, transport_failure_close};
+use transport::{close_at_capacity, close_cleanly, endpoint_unavailable_close, proxy_pump};
 
-/// Buffer size for TCP→WebSocket reads, matching RSCTF's `BufferSize`.
-const BUFFER_SIZE: usize = 4096;
 /// Maximum client frame and reassembled message; raw TCP clients can segment writes.
 const MAX_CLIENT_MESSAGE_SIZE: usize = 64 * 1024;
 
@@ -133,16 +130,35 @@ async fn proxy_for_instance(
     ws: WebSocketUpgrade,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let user = proxy_user(&st, user, capability, id, false).await;
-    // Resolve the target BEFORE accepting the upgrade so a rejected/absent
-    // container just closes cleanly (never 500).
-    let access = resolve_instance_target(&st, MaybeUser(user), id).await;
-
     // Capture the connecting IP + User-Agent the same way the rest of rsctf does,
     // BEFORE the upgrade consumes the request. Used only for the access-event row
     // (best-effort forensics), never for access control.
     let remote_ip =
         crate::services::anti_cheat::client_ip(&headers, Some(peer.ip())).unwrap_or_default();
+    let admission_source = remote_ip.parse().unwrap_or_else(|_| peer.ip());
+    // Extract a capability subject with local signature work, then charge
+    // reconnect churn before the live-account and target database reads.
+    let subject = proxy_subject(&st, &user, &capability, id, false);
+    if let Some(subject) = subject {
+        if let Some(response) =
+            crate::middlewares::rate_limiter::admit_proxy_open(subject, &remote_ip, id, None).await
+        {
+            return response;
+        }
+    }
+    let user = proxy_user(&st, user, capability, id, false).await;
+    // Only admitted opens resolve container and participation state.
+    let access = resolve_instance_target(&st, MaybeUser(user), id).await;
+    if let Some(participation_id) = access.as_ref().and_then(|access| match &access.owner {
+        InstanceOwner::Game(game) => Some(game.accessing_participation_id),
+        InstanceOwner::Exercise(_) => None,
+    }) {
+        if let Some(response) =
+            crate::middlewares::rate_limiter::admit_proxy_participation(participation_id).await
+        {
+            return response;
+        }
+    }
     let event_vpn_source = remote_ip.parse::<Ipv4Addr>().ok();
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
@@ -158,12 +174,19 @@ async fn proxy_for_instance(
                 Some(a) => {
                     let (admission, scan, lease, open_fence) = match &a.owner {
                         InstanceOwner::Game(game) => {
-                            let Some(admission) = st_log.proxy_admission.try_acquire(
-                                a.accessing_user_id,
-                                game.accessing_participation_id,
-                                a.container_id,
-                            ) else {
-                                run_or_close(st_log, socket, None, None, None, None, None).await;
+                            let Some(admission) = st_log
+                                .proxy_admission
+                                .try_acquire_distributed(
+                                    st_log.pg(),
+                                    a.accessing_user_id,
+                                    game.accessing_participation_id,
+                                    game.game_id,
+                                    a.container_id,
+                                    admission_source,
+                                )
+                                .await
+                            else {
+                                close_at_capacity(socket).await;
                                 return;
                             };
                             // Egress metadata is preparatory only and may use a
@@ -198,21 +221,32 @@ async fn proxy_for_instance(
                             // Stage access evidence on that same transaction.
                             // A failed insert rolls the final authorization back;
                             // no unaudited backend stream is opened.
-                            if let Err(error) = log_container_access_on(
-                                open_fence.transaction_mut(),
-                                &st_log,
-                                &a,
-                                game,
-                                remote_ip,
-                                user_agent,
+                            let audit = tokio::time::timeout(
+                                Duration::from_secs(3),
+                                log_container_access_on(
+                                    open_fence.transaction_mut(),
+                                    &st_log,
+                                    &a,
+                                    game,
+                                    remote_ip,
+                                    user_agent,
+                                ),
                             )
-                            .await
-                            {
-                                tracing::warn!(
-                                    container = %a.container_id,
-                                    %error,
-                                    "container access evidence transaction failed"
-                                );
+                            .await;
+                            let audit_succeeded = match audit {
+                                Ok(Ok(())) => true,
+                                Ok(Err(error)) => {
+                                    tracing::warn!(container = %a.container_id, %error,
+                                        "container access evidence transaction failed");
+                                    false
+                                }
+                                Err(_) => {
+                                    tracing::warn!(container = %a.container_id,
+                                        "container access evidence transaction timed out");
+                                    false
+                                }
+                            };
+                            if !audit_succeeded {
                                 open_fence.rollback().await;
                                 run_or_close(st_log, socket, None, None, None, None, None).await;
                                 return;
@@ -234,12 +268,18 @@ async fn proxy_for_instance(
                             (admission, scan, lease, Some(open_fence))
                         }
                         InstanceOwner::Exercise(exercise) => {
-                            let Some(admission) = st_log.proxy_admission.try_acquire_exercise(
-                                a.accessing_user_id,
-                                exercise.exercise_instance_id,
-                                a.container_id,
-                            ) else {
-                                run_or_close(st_log, socket, None, None, None, None, None).await;
+                            let Some(admission) = st_log
+                                .proxy_admission
+                                .try_acquire_exercise_distributed(
+                                    st_log.pg(),
+                                    a.accessing_user_id,
+                                    exercise.exercise_instance_id,
+                                    a.container_id,
+                                    admission_source,
+                                )
+                                .await
+                            else {
+                                close_at_capacity(socket).await;
                                 return;
                             };
                             let lease = InstanceLease {
@@ -267,6 +307,7 @@ async fn proxy_for_instance(
             };
             run_or_close(st_log, socket, endpoint, scan, lease, admission, open_fence).await;
         })
+        .into_response()
 }
 
 /// `GET /api/proxy/noinst/{id}` — TCP-over-WebSocket proxy to an admin test
@@ -277,17 +318,54 @@ async fn proxy_for_noinstance(
     State(st): State<SharedState>,
     user: MaybeUser,
     Query(capability): Query<ProxyCapabilityQuery>,
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     ws: WebSocketUpgrade,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let target = if proxy_user(&st, user, capability, id, true).await.is_some() {
+    let remote_ip =
+        crate::services::anti_cheat::client_ip(&headers, Some(peer.ip())).unwrap_or_default();
+    let source = remote_ip.parse().unwrap_or_else(|_| peer.ip());
+    let subject = proxy_subject(&st, &user, &capability, id, true);
+    if let Some(subject) = subject {
+        if let Some(response) =
+            crate::middlewares::rate_limiter::admit_proxy_open(subject, &remote_ip, id, None).await
+        {
+            return response;
+        }
+    }
+    let principal = proxy_user(&st, user, capability, id, true).await;
+    let admission = match principal.as_ref() {
+        Some(principal) => {
+            st.proxy_admission
+                .try_acquire_preview_distributed(st.pg(), principal.id, id, source)
+                .await
+        }
+        None => None,
+    };
+    if principal.is_some() && admission.is_none() {
+        return (
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            [(axum::http::header::RETRY_AFTER, "2")],
+            "proxy capacity exceeded",
+        )
+            .into_response();
+    }
+    let target = if principal.is_some() {
         resolve_noinstance_target(&st, id).await
     } else {
         None
     };
+    let lease = principal.map(|principal| InstanceLease {
+        pool: st.pg().clone(),
+        user_id: principal.id,
+        security_stamp: principal.security_stamp,
+        owner: LeaseOwner::Preview { container_id: id },
+    });
     ws.max_frame_size(MAX_CLIENT_MESSAGE_SIZE)
         .max_message_size(MAX_CLIENT_MESSAGE_SIZE)
-        .on_upgrade(move |socket| run_or_close(st, socket, target, None, None, None, None))
+        .on_upgrade(move |socket| run_or_close(st, socket, target, None, lease, admission, None))
+        .into_response()
 }
 
 /// Everything needed both to proxy a player container AND to log the access +
@@ -315,6 +393,9 @@ struct GameAccess {
     owner_participation_id: i32,
     /// The accessing user's own participation in this game.
     accessing_participation_id: i32,
+    /// The exact per-instance flag row makes flag-egress metadata cache entries
+    /// immutable across dynamic flag rotations.
+    egress_revision: Option<EgressMetadataRevision>,
     target_identity: GameProxyTargetIdentity,
     /// Monitor/Admin — legitimately reaches any container, so never flagged.
     is_monitor: bool,
@@ -363,20 +444,7 @@ async fn resolve_instance_target(
         .one(&st.db)
         .await
         .ok()??;
-    let part = participation::Entity::find_by_id(instance.participation_id)
-        .one(&st.db)
-        .await
-        .ok()??;
-    if part.status != ParticipationStatus::Accepted {
-        return None;
-    }
-    let link = user_participation::Entity::find_by_id((user.id, part.game_id))
-        .one(&st.db)
-        .await
-        .ok()??;
-    if link.participation_id != part.id {
-        return None;
-    }
+    let part = load_egress_participation(st.pg(), instance.participation_id, user.id).await?;
     let target_identity = game_proxy_target_identity(&container, Some(instance.id));
     if !game_proxy_scope_is_valid(
         st.pg(),
@@ -407,7 +475,10 @@ async fn resolve_instance_target(
             accessing_team_id: part.team_id,
             challenge_id: instance.challenge_id,
             owner_participation_id: part.id,
-            accessing_participation_id: link.participation_id,
+            accessing_participation_id: part.id,
+            egress_revision: instance
+                .flag_id
+                .map(|flag_id| EgressMetadataRevision { flag_id }),
             target_identity,
             is_monitor: user.is_monitor(),
         }),
@@ -586,6 +657,8 @@ async fn resolve_shared_instance_target(
             challenge_id: row.challenge_id,
             owner_participation_id: row.participation_id,
             accessing_participation_id: row.participation_id,
+            // Shared containers intentionally have no per-team dynamic flag row.
+            egress_revision: None,
             target_identity,
             is_monitor: user.is_monitor(),
         }),
@@ -600,7 +673,7 @@ async fn run_or_close(
     target: Option<ProxyTarget>,
     scan: Option<EgressScan>,
     lease: Option<InstanceLease>,
-    _admission: Option<crate::services::proxy_admission::ProxyPermit>,
+    admission: Option<crate::services::proxy_admission::ProxyPermit>,
     open_fence: Option<GameProxyOpenFence>,
 ) {
     let Some(target) = target else {
@@ -610,6 +683,18 @@ async fn run_or_close(
         close_cleanly(socket).await;
         return;
     };
+
+    // Game sockets carry a transaction fence through backend open. Exercise
+    // and preview routes have no such fence, so revalidate their exact lease
+    // after the HTTP upgrade and immediately before dialing the backend.
+    if open_fence.is_none() {
+        if let Some(lease) = lease.as_ref() {
+            if !lease_is_valid(lease).await {
+                close_cleanly(socket).await;
+                return;
+            }
+        }
+    }
 
     // Whole session is bounded; player sessions additionally lose their pump as
     // soon as live account/participation ownership is revoked.
@@ -633,7 +718,8 @@ async fn run_or_close(
                 }
             }
             let _ = stream.set_nodelay(true);
-            let session = proxy_session(socket, stream, scan, lease);
+            let traffic = admission.as_ref().map(|permit| permit.traffic());
+            let session = proxy_session(socket, stream, scan, lease, traffic);
             let _ = tokio::time::timeout(SESSION_TIMEOUT, session).await;
         }
         ProxyTarget::Worker(handle) => {
@@ -678,7 +764,8 @@ async fn run_or_close(
                     return;
                 }
             }
-            let session = proxy_session(socket, stream, scan, lease);
+            let traffic = admission.as_ref().map(|permit| permit.traffic());
+            let session = proxy_session(socket, stream, scan, lease, traffic);
             let _ = tokio::time::timeout(SESSION_TIMEOUT, session).await;
         }
     }
@@ -689,17 +776,18 @@ async fn proxy_session<S>(
     stream: S,
     scan: Option<EgressScan>,
     lease: Option<InstanceLease>,
+    traffic: Option<crate::services::proxy_admission::ProxyTrafficPermit>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     match lease {
         Some(lease) => {
             tokio::select! {
-                _ = pump(socket, stream, scan) => {}
+                _ = proxy_pump(socket, stream, scan, traffic) => {}
                 _ = wait_for_revocation(lease) => {}
             }
         }
-        None => pump(socket, stream, scan).await,
+        None => proxy_pump(socket, stream, scan, traffic).await,
     }
 }
 
@@ -758,84 +846,7 @@ enum WorkerProxyOpenError {
     Worker(crate::services::worker::WorkerError),
 }
 
-struct InstanceLease {
-    pool: sqlx::PgPool,
-    user_id: Uuid,
-    security_stamp: String,
-    owner: LeaseOwner,
-}
-
-#[derive(Clone)]
-enum LeaseOwner {
-    Game {
-        game_id: i32,
-        team_id: i32,
-        participation_id: i32,
-        challenge_id: i32,
-        target_identity: GameProxyTargetIdentity,
-        event_vpn_source: Option<Ipv4Addr>,
-        bypass_event_vpn: bool,
-    },
-    Exercise {
-        exercise_instance_id: i32,
-        exercise_id: i32,
-        container_id: Uuid,
-    },
-}
-
-async fn wait_for_revocation(lease: InstanceLease) {
-    let mut tick = tokio::time::interval(Duration::from_secs(5));
-    tick.tick().await;
-    loop {
-        tick.tick().await;
-        let lease_valid = match &lease.owner {
-            LeaseOwner::Game {
-                game_id,
-                team_id,
-                participation_id,
-                challenge_id,
-                target_identity,
-                event_vpn_source,
-                bypass_event_vpn,
-            } => {
-                game_proxy_session_is_valid(
-                    &lease.pool,
-                    LiveParticipationIdentity {
-                        user_id: lease.user_id,
-                        expected_security_stamp: &lease.security_stamp,
-                        game_id: *game_id,
-                        team_id: *team_id,
-                        participation_id: *participation_id,
-                    },
-                    *challenge_id,
-                    target_identity,
-                    *event_vpn_source,
-                    *bypass_event_vpn,
-                )
-                .await
-            }
-            LeaseOwner::Exercise {
-                exercise_instance_id,
-                exercise_id,
-                container_id,
-            } => {
-                exercise_lease_is_valid(
-                    &lease.pool,
-                    lease.user_id,
-                    &lease.security_stamp,
-                    *exercise_instance_id,
-                    *exercise_id,
-                    *container_id,
-                )
-                .await
-            }
-        };
-        if !lease_valid {
-            return;
-        }
-    }
-}
-
+#[cfg(test)]
 const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
     SELECT 1
       FROM "ExerciseInstances" instance
@@ -859,103 +870,3 @@ const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
            OR container.exercise_instance_id = instance.id
        )
 )"#;
-
-async fn exercise_lease_is_valid(
-    pool: &sqlx::PgPool,
-    user_id: Uuid,
-    expected_security_stamp: &str,
-    exercise_instance_id: i32,
-    exercise_id: i32,
-    container_id: Uuid,
-) -> bool {
-    sqlx::query_scalar::<_, bool>(EXERCISE_LEASE_SQL)
-        .bind(exercise_instance_id)
-        .bind(exercise_id)
-        .bind(user_id)
-        .bind(container_id)
-        .bind(expected_security_stamp)
-        .bind(Role::Banned as i16)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(false)
-}
-
-/// Pump bytes bidirectionally between the WebSocket and the TCP stream until
-/// either side closes. Returns when the first direction finishes; dropping the
-/// other future cancels it (which drops its half of the connection).
-async fn pump<S>(socket: WebSocket, stream: S, scan: Option<EgressScan>)
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-{
-    let (mut ws_tx, mut ws_rx) = socket.split();
-    let (mut tcp_rd, mut tcp_wr) = tokio::io::split(stream);
-
-    // WebSocket → TCP: forward Binary/Text payloads; stop on Close/error.
-    // Ping/Pong are handled by axum and must NOT be forwarded into the TCP
-    // stream (they are protocol control frames, not application bytes).
-    let ws_to_tcp = async {
-        while let Some(Ok(msg)) = ws_rx.next().await {
-            let write = match msg {
-                Message::Binary(data) => tcp_wr.write_all(&data[..]).await,
-                Message::Text(text) => tcp_wr.write_all(text.as_str().as_bytes()).await,
-                Message::Close(_) => break,
-                Message::Ping(_) | Message::Pong(_) => continue,
-            };
-            if write.is_err() {
-                break;
-            }
-        }
-        // Signal EOF to the container so a half-closing client is honoured.
-        let _ = tcp_wr.shutdown().await;
-    };
-
-    // TCP → WebSocket: forward reads as Binary frames; on EOF/error send a Close.
-    let tcp_to_ws = async {
-        let mut buf = vec![0u8; BUFFER_SIZE];
-        let mut egress_recorded = false;
-        let mut egress_matcher = scan
-            .as_ref()
-            .map(|scan| RollingFlagMatcher::new(&scan.flag));
-        loop {
-            match tcp_rd.read(&mut buf).await {
-                Ok(0) => {
-                    let _ = ws_tx.send(normal_close()).await;
-                    break;
-                }
-                Err(_) => {
-                    let _ = ws_tx.send(transport_failure_close()).await;
-                    break;
-                }
-                Ok(n) => {
-                    // Flag-egress scan (admin-feed only, never scored): if the
-                    // container streams its OWN team flag out to the client, record
-                    // one windowed FlagEgressEvent per session. Fire-and-forget so
-                    // it never stalls the tunnel.
-                    if !egress_recorded {
-                        if let Some(sc) = &scan {
-                            let matched = egress_matcher
-                                .as_mut()
-                                .is_some_and(|matcher| matcher.contains(&sc.flag, &buf[..n]));
-                            if matched {
-                                egress_recorded = true;
-                                let sc = sc.clone();
-                                tokio::spawn(async move { record_flag_egress(&sc).await });
-                            }
-                        }
-                    }
-                    // `Message::from(Vec<u8>)` yields a Binary frame without
-                    // pulling in the `bytes` crate as a direct dependency.
-                    if ws_tx.send(Message::from(buf[..n].to_vec())).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    };
-
-    // Finish as soon as either direction ends; the other is cancelled on drop.
-    tokio::select! {
-        _ = ws_to_tcp => {}
-        _ = tcp_to_ws => {}
-    }
-}

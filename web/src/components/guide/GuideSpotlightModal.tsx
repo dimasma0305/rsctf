@@ -1,19 +1,13 @@
-import { Modal } from '@mantine/core'
-import { mdiCursorDefaultClickOutline } from '@mdi/js'
+import { Badge, Modal, Progress } from '@mantine/core'
+import { mdiChevronDown, mdiCursorDefaultClickOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { CSSProperties, FC, PropsWithChildren, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { coachmarkPlacement, guideLayerZIndex } from '@Utils/GuideLayout'
+import type { GuideTargetRect } from '@Utils/GuideLayout'
 import classes from '@Styles/PlayerGuide.module.css'
 
-interface GuideTargetRect {
-  left: number
-  top: number
-  right: number
-  bottom: number
-  width: number
-  height: number
-  viewportWidth: number
-  viewportHeight: number
-}
+const APPLICATION_SURFACE_SELECTOR =
+  '[role="dialog"], .mantine-Drawer-content, .mantine-Modal-content, .mantine-Menu-dropdown, .mantine-Popover-dropdown'
 
 interface GuideSpotlightModalProps extends PropsWithChildren {
   opened: boolean
@@ -23,6 +17,17 @@ interface GuideSpotlightModalProps extends PropsWithChildren {
   size: string
   overlayOpacity: number
   targetSelector?: string
+  onTargetActivate?: (target: string | undefined) => void
+  onTargetChange?: (target: string | undefined) => void
+  showTargetCursor?: boolean
+  progress?: {
+    current: number
+    total: number
+    label: string
+    steps?: string[]
+    onStepChange?: (index: number) => void
+    selectionLabel?: string
+  }
 }
 
 const sameRect = (left: GuideTargetRect | null, right: GuideTargetRect | null) => {
@@ -33,23 +38,56 @@ const sameRect = (left: GuideTargetRect | null, right: GuideTargetRect | null) =
     Math.abs(left.width - right.width) < 0.5 &&
     Math.abs(left.height - right.height) < 0.5 &&
     left.viewportWidth === right.viewportWidth &&
-    left.viewportHeight === right.viewportHeight
+    left.viewportHeight === right.viewportHeight &&
+    left.elevated === right.elevated &&
+    left.guideTarget === right.guideTarget
   )
 }
 
-const renderedTargets = (selector?: string) => {
-  if (!selector) return null
-  const elements = selector
-    .split(',')
-    .map((candidate) => candidate.trim())
-    .filter(Boolean)
-    .flatMap((candidate) => Array.from(document.querySelectorAll<HTMLElement>(candidate)))
-  return [...new Set(elements)].filter((element) => {
-    const rect = element.getBoundingClientRect()
-    const style = window.getComputedStyle(element)
-    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'
-  })
+const isRenderedElement = (element: HTMLElement) => {
+  const rect = element.getBoundingClientRect()
+  const style = window.getComputedStyle(element)
+  return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'
 }
+
+export const guideTargetAcceptsKeyboardEntry = (element: HTMLElement) =>
+  element.matches(
+    'input:not([type="button"]):not([type="submit"]):not([type="reset"]), textarea, select, [contenteditable="true"]'
+  )
+
+export const guideTargetHasKeyboardEntryFocus = (element: HTMLElement, activeElement: Element | null) =>
+  guideTargetAcceptsKeyboardEntry(element) &&
+  Boolean(activeElement && (element === activeElement || element.contains(activeElement)))
+
+export const guideTargetKeyboardActivation = (element: HTMLElement, activeElement: Element | null) =>
+  guideTargetHasKeyboardEntryFocus(element, activeElement) ? element.dataset.guide : undefined
+
+export const guideTargetMatchesActivation = (element: HTMLElement, eventTarget: EventTarget | null) => {
+  const view = element.ownerDocument.defaultView
+  if (!view || !(eventTarget instanceof view.Node) || !element.contains(eventTarget)) return false
+
+  const requiredValue = element.dataset.guideValue
+  if (!requiredValue) return true
+  if (!(eventTarget instanceof view.Element)) return false
+
+  const control = eventTarget.matches('input')
+    ? (eventTarget as HTMLInputElement)
+    : eventTarget.closest<HTMLLabelElement>('label')?.control
+  return control instanceof view.HTMLInputElement && control.value === requiredValue
+}
+
+const isEligibleTarget = (element: HTMLElement) =>
+  element.isConnected &&
+  !element.matches(':disabled') &&
+  !element.closest(
+    '[hidden], [inert], [aria-hidden="true"], [aria-disabled="true"], [data-guide-surface], [data-guide-layer]'
+  ) &&
+  isRenderedElement(element)
+
+const externalSurfaceIsOpen = () =>
+  Array.from(document.querySelectorAll<HTMLElement>(APPLICATION_SURFACE_SELECTOR)).some(
+    (element) => !element.closest('[data-guide-surface="coachmark"]') && isRenderedElement(element)
+  )
 
 const targetVisibleRatio = (element: HTMLElement) => {
   const rect = element.getBoundingClientRect()
@@ -73,17 +111,39 @@ const targetCenterIsUsable = (element: HTMLElement) => {
   return Boolean(topPageElement && (topPageElement === element || element.contains(topPageElement)))
 }
 
-const isUsableTarget = (element: HTMLElement) => targetVisibleRatio(element) >= 0.6 && targetCenterIsUsable(element)
+const isUsableTarget = (element: HTMLElement) => targetVisibleRatio(element) >= 0.75 && targetCenterIsUsable(element)
 
-const visibleTarget = (selector?: string) => {
-  const preferred = renderedTargets(selector)?.[0]
-  return preferred && isUsableTarget(preferred) ? preferred : null
+const targetIsElevated = (element: HTMLElement) => Boolean(element.closest(APPLICATION_SURFACE_SELECTOR))
+
+export const resolveGuideTarget = (selector?: string, previous: HTMLElement | null = null): HTMLElement | null => {
+  if (!selector) return null
+  const groups = selector
+    .split(',')
+    .map((candidate) => candidate.trim())
+    .filter(Boolean)
+    .map((candidate) => Array.from(document.querySelectorAll<HTMLElement>(candidate)).filter(isEligibleTarget))
+  // An application dialog owns interaction while it is open. Within that scope,
+  // selector order is semantic priority, including controls that load later.
+  const elevatedGroups = groups.map((elements) => elements.filter(targetIsElevated))
+  const candidates = (elevatedGroups.some((elements) => elements.length) ? elevatedGroups : groups).find(
+    (elements) => elements.length
+  )
+  if (!candidates) return null
+  // Keep the same card among equivalent matches, but never retain a fallback
+  // after the intended control appears, or a control that has become covered.
+  if (previous && candidates.includes(previous) && isUsableTarget(previous)) return previous
+  return candidates.find(isUsableTarget) ?? candidates[0]
 }
 
-const measureTarget = (selector?: string): GuideTargetRect | null => {
-  const element = visibleTarget(selector)
-  if (!element) return null
+const scrollableAncestor = (element: HTMLElement) => {
+  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+    const overflowY = window.getComputedStyle(parent).overflowY
+    if (/(auto|scroll|overlay)/.test(overflowY) && parent.scrollHeight > parent.clientHeight + 1) return parent
+  }
+  return document.scrollingElement instanceof HTMLElement ? document.scrollingElement : null
+}
 
+const measureTarget = (element: HTMLElement): GuideTargetRect => {
   const measured = element.getBoundingClientRect()
   const padding = 8
   const viewportWidth = window.innerWidth
@@ -101,28 +161,60 @@ const measureTarget = (selector?: string): GuideTargetRect | null => {
     height: Math.max(0, bottom - top),
     viewportWidth,
     viewportHeight,
+    elevated: targetIsElevated(element),
+    guideTarget: element.dataset.guide,
   }
 }
 
 const useGuideTarget = (opened: boolean, selector?: string) => {
-  const [target, setTarget] = useState<GuideTargetRect | null>(null)
+  const [measurement, setMeasurement] = useState<{
+    selector?: string
+    target: GuideTargetRect | null
+    element: HTMLElement | null
+  }>({ selector, target: null, element: null })
 
   useLayoutEffect(() => {
     if (!opened) {
-      setTarget(null)
+      setMeasurement({ selector, target: null, element: null })
       return
     }
 
     let frame = 0
-    let scrolledTarget: HTMLElement | null = null
+    let selectedTarget: HTMLElement | null = null
+    let lastScrolledTarget: HTMLElement | null = null
+    let lastScrolledAt = 0
+    const commit = (element: HTMLElement | null) => {
+      const next = element ? measureTarget(element) : null
+      setMeasurement((current) => {
+        if (current.selector === selector && current.element === element && sameRect(current.target, next))
+          return current
+        return { selector, target: next, element }
+      })
+    }
+    const stableTarget = () => {
+      selectedTarget = resolveGuideTarget(selector, selectedTarget)
+      return selectedTarget
+    }
+    const measureStableTarget = () => {
+      const element = stableTarget()
+      return element && isUsableTarget(element) ? element : null
+    }
     const scrollPreferredTarget = () => {
-      const preferredTarget = renderedTargets(selector)?.[0]
-      if (!preferredTarget || isUsableTarget(preferredTarget) || preferredTarget === scrolledTarget) return
+      const preferredTarget = stableTarget()
+      const now = Date.now()
+      if (
+        !preferredTarget ||
+        isUsableTarget(preferredTarget) ||
+        (preferredTarget === lastScrolledTarget && now - lastScrolledAt < 800)
+      ) {
+        return
+      }
 
-      scrolledTarget = preferredTarget
+      lastScrolledTarget = preferredTarget
+      lastScrolledAt = now
       const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
       const targetHeight = Math.min(preferredTarget.getBoundingClientRect().height, window.innerHeight)
-      const coachmarkBudget = Math.min(352, window.innerHeight * 0.44)
+      const coachmarkBudget = Math.min(320, window.innerHeight * 0.42)
       const bottomNavigationAllowance = window.innerWidth <= 768 ? 70 : 0
       const canCenterBoth = targetHeight + coachmarkBudget + 12 <= window.innerHeight - bottomNavigationAllowance
       preferredTarget.scrollIntoView({
@@ -132,27 +224,73 @@ const useGuideTarget = (opened: boolean, selector?: string) => {
       })
     }
     const update = () => {
+      const immediate = measureStableTarget()
+      if (immediate) {
+        window.cancelAnimationFrame(frame)
+        commit(immediate)
+        return
+      }
+
+      commit(null)
       scrollPreferredTarget()
       window.cancelAnimationFrame(frame)
       frame = window.requestAnimationFrame(() => {
-        const next = measureTarget(selector)
-        setTarget((current) => (sameRect(current, next) ? current : next))
+        commit(measureStableTarget())
       })
     }
 
     update()
     const refresh = window.setInterval(update, 300)
+    const observer = new MutationObserver(update)
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: [
+        'disabled',
+        'aria-disabled',
+        'aria-hidden',
+        'hidden',
+        'inert',
+        'data-guide',
+        'data-guide-stage',
+      ],
+    })
     window.addEventListener('resize', update)
     window.addEventListener('scroll', update, true)
     return () => {
       window.cancelAnimationFrame(frame)
       window.clearInterval(refresh)
+      observer.disconnect()
       window.removeEventListener('resize', update)
       window.removeEventListener('scroll', update, true)
     }
   }, [opened, selector])
 
-  return target
+  return opened && measurement.selector === selector ? measurement : { target: null, element: null }
+}
+
+const useExternalSurface = (opened: boolean) => {
+  const [externalSurface, setExternalSurface] = useState(false)
+
+  useLayoutEffect(() => {
+    if (!opened) {
+      setExternalSurface(false)
+      return
+    }
+
+    const update = () =>
+      setExternalSurface((current) => {
+        const next = externalSurfaceIsOpen()
+        return current === next ? current : next
+      })
+    update()
+    const observer = new MutationObserver(update)
+    observer.observe(document.body, { childList: true, subtree: true })
+    return () => observer.disconnect()
+  }, [opened])
+
+  return externalSurface
 }
 
 const shadePath = (target: GuideTargetRect) =>
@@ -160,30 +298,6 @@ const shadePath = (target: GuideTargetRect) =>
     `M0 0H${target.viewportWidth}V${target.viewportHeight}H0Z`,
     `M${target.left} ${target.top}V${target.bottom}H${target.right}V${target.top}Z`,
   ].join(' ')
-
-const coachmarkPlacement = (target: GuideTargetRect | null) => {
-  if (!target) return { placement: 'center', style: undefined }
-
-  const spaceAbove = target.top
-  const spaceBelow = target.viewportHeight - target.bottom
-  const placeAbove = spaceAbove >= spaceBelow
-  const mobile = target.viewportWidth <= 768
-  const targetOnRight = target.left + target.width / 2 > target.viewportWidth / 2
-  const availableHeight = Math.max(96, (placeAbove ? spaceAbove : spaceBelow) - 12)
-  const viewportHeightBudget = mobile ? target.viewportHeight * 0.44 : 352
-  const style: CSSProperties = {
-    position: 'fixed',
-    margin: 0,
-    maxHeight: Math.min(352, availableHeight, viewportHeightBudget),
-    top: placeAbove ? 'auto' : target.bottom + 12,
-    bottom: placeAbove ? target.viewportHeight - target.top + 12 : 'auto',
-    left: mobile ? '0.5rem' : targetOnRight ? '0.75rem' : 'auto',
-    right: mobile || targetOnRight ? 'auto' : '0.75rem',
-    width: 'var(--modal-size)',
-  }
-
-  return { placement: placeAbove ? 'above' : 'below', style }
-}
 
 export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
   opened,
@@ -193,27 +307,146 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
   size,
   overlayOpacity,
   targetSelector,
+  onTargetActivate,
+  onTargetChange,
+  showTargetCursor = true,
+  progress,
   children,
 }) => {
-  const target = useGuideTarget(opened, targetSelector)
+  const { target, element: targetElement } = useGuideTarget(opened, targetSelector)
+  const externalSurface = useExternalSurface(opened)
   const [animationKey, setAnimationKey] = useState(0)
   const contentRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
+  const focusedForOpening = useRef(false)
+  const separationAttempt = useRef<{ element: HTMLElement; key: string } | null>(null)
   const coachmark = coachmarkPlacement(target)
+  const guideZIndex = guideLayerZIndex(target)
+  const yielding = externalSurface && !target?.elevated
+  const surroundingInteractionAllowed = Boolean(target && targetElement?.closest('[data-guide-interaction-scope]'))
 
   useEffect(() => {
     if (opened) setAnimationKey((current) => current + 1)
-  }, [opened, targetSelector])
+  }, [opened, target?.guideTarget, targetSelector])
 
   useEffect(() => {
-    if (!opened) return
+    onTargetChange?.(opened ? target?.guideTarget : undefined)
+  }, [onTargetChange, opened, target?.guideTarget])
+
+  useEffect(() => {
+    if (!opened) {
+      focusedForOpening.current = false
+      return
+    }
+    if (yielding || focusedForOpening.current) return
+
+    focusedForOpening.current = true
     const frame = window.requestAnimationFrame(() => bodyRef.current?.focus({ preventScroll: true }))
     return () => window.cancelAnimationFrame(frame)
-  }, [opened, target, targetSelector])
+  }, [opened, yielding])
 
   useEffect(() => {
-    contentRef.current?.setAttribute('aria-modal', target ? 'false' : 'true')
-  }, [target])
+    contentRef.current?.setAttribute('aria-modal', target || yielding ? 'false' : 'true')
+  }, [target, yielding])
+
+  useLayoutEffect(() => {
+    separationAttempt.current = null
+  }, [opened, targetSelector])
+
+  useLayoutEffect(() => {
+    const content = contentRef.current
+    if (!opened || !target || !content || yielding) return
+
+    const separateTarget = () => {
+      const contentRect = content.getBoundingClientRect()
+      const overlapWidth = Math.max(
+        0,
+        Math.min(contentRect.right, target.right) - Math.max(contentRect.left, target.left)
+      )
+      const overlapHeight = Math.max(
+        0,
+        Math.min(contentRect.bottom, target.bottom) - Math.max(contentRect.top, target.top)
+      )
+      const targetArea = target.width * target.height
+      if (targetArea <= 0 || (overlapWidth * overlapHeight) / targetArea <= 0.1) return
+
+      const attemptKey = `${targetSelector ?? ''}:${target.guideTarget ?? ''}:${coachmark.placement}`
+      const element = targetElement
+      if (!element || !isEligibleTarget(element) || !isUsableTarget(element)) return
+      if (separationAttempt.current?.element === element && separationAttempt.current.key === attemptKey) return
+
+      separationAttempt.current = { element, key: attemptKey }
+      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      const scrollParent = scrollableAncestor(element)
+      if (!scrollParent) return
+
+      const gap = 12
+      const moveTargetAbove = Math.max(0, target.bottom - contentRect.top + gap)
+      const moveTargetBelow = Math.max(0, contentRect.bottom - target.top + gap)
+      const roomUp = scrollParent.scrollTop
+      const roomDown = scrollParent.scrollHeight - scrollParent.clientHeight - scrollParent.scrollTop
+      const scrollDelta =
+        roomDown >= moveTargetAbove
+          ? moveTargetAbove
+          : roomUp >= moveTargetBelow
+            ? -moveTargetBelow
+            : roomDown >= roomUp
+              ? roomDown
+              : -roomUp
+      if (Math.abs(scrollDelta) <= 1) return
+      scrollParent.scrollBy({ top: scrollDelta, behavior: reducedMotion ? 'auto' : 'smooth' })
+    }
+
+    separateTarget()
+    const settledCheck = window.setTimeout(separateTarget, 250)
+    return () => window.clearTimeout(settledCheck)
+  }, [coachmark.placement, opened, target, targetSelector, targetElement, yielding])
+
+  useEffect(() => {
+    if (!opened || !targetElement || !onTargetActivate) return
+
+    // Click, focus, outline and interaction scope must share one DOM identity.
+    // Re-querying here can advance a different card than the one highlighted.
+    const currentTarget = () =>
+      isEligibleTarget(targetElement) && isUsableTarget(targetElement) ? targetElement : null
+
+    const activatedTarget = (eventTarget: EventTarget | null) => {
+      const element = currentTarget()
+      if (!element || !guideTargetMatchesActivation(element, eventTarget)) return null
+
+      return element
+    }
+
+    const handleTargetClick = (event: MouseEvent) => {
+      const element = activatedTarget(event.target)
+      if (!element) return
+
+      const guideTarget = element.dataset.guide
+      onTargetActivate(guideTarget)
+    }
+
+    const handleTargetFocus = (event: FocusEvent) => {
+      const element = currentTarget()
+      if (!element) return
+
+      const activation = guideTargetKeyboardActivation(element, event.target instanceof Element ? event.target : null)
+      if (activation) onTargetActivate(activation)
+    }
+
+    document.addEventListener('click', handleTargetClick, true)
+    document.addEventListener('focusin', handleTargetFocus, true)
+    const focusedElement = currentTarget()
+    const focusedActivation = focusedElement
+      ? guideTargetKeyboardActivation(focusedElement, document.activeElement)
+      : undefined
+    if (focusedActivation) {
+      onTargetActivate(focusedActivation)
+    }
+    return () => {
+      document.removeEventListener('click', handleTargetClick, true)
+      document.removeEventListener('focusin', handleTargetFocus, true)
+    }
+  }, [onTargetActivate, opened, targetElement, target?.guideTarget])
 
   const targetStyle = target
     ? ({
@@ -225,8 +458,8 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
     : undefined
   const cursorStyle = target
     ? ({
-        left: target.left + target.width / 2,
-        top: target.top + target.height / 2,
+        left: Math.min(target.viewportWidth - 60, Math.max(8, target.left + target.width / 2)),
+        top: Math.min(target.viewportHeight - 60, Math.max(8, target.top + target.height / 2)),
       } satisfies CSSProperties)
     : undefined
   const blockerStyles = target
@@ -254,17 +487,23 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
       onClose={onClose}
       size={size}
       returnFocus
-      trapFocus={!target}
+      trapFocus={!target && !yielding}
+      lockScroll={!target && !yielding}
       closeOnEscape
       closeOnClickOutside={false}
-      onEnterTransitionEnd={() => bodyRef.current?.focus({ preventScroll: true })}
-      zIndex={7000}
+      onEnterTransitionEnd={() => {
+        if (!yielding && !focusedForOpening.current) {
+          focusedForOpening.current = true
+          bodyRef.current?.focus({ preventScroll: true })
+        }
+      }}
+      zIndex={guideZIndex}
     >
       <Modal.Overlay
         data-guide-layer="fallback-overlay"
-        backgroundOpacity={target ? 0 : overlayOpacity}
+        backgroundOpacity={target || yielding ? 0 : overlayOpacity}
         blur={0}
-        style={{ pointerEvents: target ? 'none' : undefined }}
+        style={{ pointerEvents: target || yielding ? 'none' : undefined, zIndex: guideZIndex }}
       />
       {target && (
         <>
@@ -274,6 +513,7 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
             viewBox={`0 0 ${target.viewportWidth} ${target.viewportHeight}`}
             preserveAspectRatio="none"
             aria-hidden="true"
+            style={{ zIndex: guideZIndex + 1 }}
           >
             <path
               d={shadePath(target)}
@@ -282,30 +522,34 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
               clipRule="evenodd"
             />
           </svg>
-          {blockerStyles.map((style, index) => (
-            <div
-              key={index}
-              className={classes.tutorialBlocker}
-              data-guide-layer="interaction-blocker"
-              style={style}
-              aria-hidden="true"
-            />
-          ))}
+          {!target.elevated &&
+            !surroundingInteractionAllowed &&
+            blockerStyles.map((style, index) => (
+              <div
+                key={index}
+                className={classes.tutorialBlocker}
+                data-guide-layer="interaction-blocker"
+                style={{ ...style, zIndex: guideZIndex }}
+                aria-hidden="true"
+              />
+            ))}
           <div
             className={classes.tutorialSpotlight}
             data-guide-layer="spotlight"
-            style={targetStyle}
+            style={{ ...targetStyle, zIndex: guideZIndex + 2 }}
             aria-hidden="true"
           />
-          <div
-            key={animationKey}
-            className={classes.tutorialCursor}
-            data-guide-layer="cursor"
-            style={cursorStyle}
-            aria-hidden="true"
-          >
-            <Icon path={mdiCursorDefaultClickOutline} size={1.7} />
-          </div>
+          {showTargetCursor && (
+            <div
+              key={animationKey}
+              className={classes.tutorialCursor}
+              data-guide-layer="cursor"
+              style={{ ...cursorStyle, zIndex: guideZIndex + 3 }}
+              aria-hidden="true"
+            >
+              <Icon path={mdiCursorDefaultClickOutline} size={1.7} />
+            </div>
+          )}
         </>
       )}
       <Modal.Content
@@ -313,12 +557,61 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
         className={classes.modal}
         data-guide-surface="coachmark"
         data-guide-placement={coachmark.placement}
-        style={coachmark.style}
+        data-guide-target={target?.guideTarget}
+        data-guide-yielding={yielding || undefined}
+        aria-hidden={yielding || undefined}
+        style={{
+          ...coachmark.style,
+          zIndex: guideZIndex + 4,
+          visibility: yielding ? 'hidden' : undefined,
+          pointerEvents: yielding ? 'none' : undefined,
+        }}
       >
-        <div className={classes.modalHeader}>
-          <Modal.Title>{title}</Modal.Title>
+        <Modal.Header role="presentation" className={classes.modalHeader}>
+          <div className={classes.modalHeading}>
+            <Modal.Title>{title}</Modal.Title>
+            {progress?.steps && progress.onStepChange ? (
+              <label className={classes.stepPicker}>
+                <span aria-hidden="true">
+                  {progress.current} / {progress.total}
+                  <Icon path={mdiChevronDown} size={0.65} />
+                </span>
+                <select
+                  data-guide-step-picker
+                  aria-label={progress.selectionLabel ?? progress.label}
+                  value={progress.current - 1}
+                  onChange={(event) => {
+                    const index = Number(event.currentTarget.value)
+                    if (Number.isInteger(index) && index >= 0 && index < progress.steps!.length) {
+                      progress.onStepChange?.(index)
+                    }
+                  }}
+                >
+                  {progress.steps.map((label, index) => (
+                    <option key={index} value={index}>
+                      {index + 1}. {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              progress && (
+                <Badge variant="light" size="sm" className={classes.stepBadge}>
+                  {progress.current} / {progress.total}
+                </Badge>
+              )
+            )}
+          </div>
           <Modal.CloseButton aria-label={closeLabel} />
-        </div>
+          {progress && (
+            <Progress
+              className={classes.modalProgress}
+              size={3}
+              value={(progress.current / progress.total) * 100}
+              aria-label={progress.label}
+            />
+          )}
+        </Modal.Header>
         <Modal.Body ref={bodyRef} className={classes.modalBody} tabIndex={0} data-autofocus aria-label={title}>
           {children}
         </Modal.Body>

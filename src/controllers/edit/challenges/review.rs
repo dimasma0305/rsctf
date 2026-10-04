@@ -1,4 +1,79 @@
 use super::*;
+use crate::services::ad::koth_capability_cache::finish_game_epoch_mutation_if_any;
+
+/// Newest review rows one read returns. The review page is mutation-driven
+/// (approve, reject, and delete each `mutate`), so an organizer never needs
+/// every historical rejection in one response.
+pub(super) const PENDING_CHALLENGE_LIMIT: i64 = 200;
+
+/// Pending rows first, then rejected; newest submission first within each
+/// status, with the row id as the deterministic tie-break.
+pub(super) const PENDING_CHALLENGES_SQL: &str = r#"SELECT challenge.id, challenge.title, challenge.category,
+              challenge."Type" AS challenge_type, challenge.review_status,
+              challenge.review_note, challenge.submitted_at_utc,
+              challenge.reviewed_at_utc, challenge.submitted_by_user_id,
+              submitter.user_name AS submitted_by_user_name
+         FROM "GameChallenges" challenge
+         LEFT JOIN "AspNetUsers" submitter
+           ON submitter.id = challenge.submitted_by_user_id
+        WHERE challenge.game_id = $1
+          AND challenge.review_status <> $2
+        ORDER BY challenge.review_status ASC, challenge.submitted_at_utc DESC,
+                 challenge.id DESC
+        LIMIT $3"#;
+
+#[derive(sqlx::FromRow)]
+struct PendingChallengeRow {
+    id: i32,
+    title: String,
+    category: i16,
+    challenge_type: i16,
+    review_status: i16,
+    review_note: Option<String>,
+    submitted_at_utc: Option<DateTime<Utc>>,
+    reviewed_at_utc: Option<DateTime<Utc>>,
+    submitted_by_user_id: Option<Uuid>,
+    submitted_by_user_name: Option<String>,
+}
+
+fn decode_enum<T: sea_orm::ActiveEnum<Value = i16>>(value: i16) -> AppResult<T> {
+    T::try_from_value(&value).map_err(|error| AppError::internal(error.to_string()))
+}
+
+impl TryFrom<PendingChallengeRow> for PendingChallengeModel {
+    type Error = AppError;
+
+    fn try_from(row: PendingChallengeRow) -> AppResult<Self> {
+        Ok(Self {
+            id: row.id,
+            title: row.title,
+            category: decode_enum(row.category)?,
+            challenge_type: decode_enum(row.challenge_type)?,
+            review_status: decode_enum(row.review_status)?,
+            review_note: row.review_note,
+            submitted_at_utc: row.submitted_at_utc,
+            reviewed_at_utc: row.reviewed_at_utc,
+            submitted_by_user_id: row.submitted_by_user_id,
+            submitted_by_user_name: row.submitted_by_user_name,
+        })
+    }
+}
+
+pub(super) async fn load_pending_challenges(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+) -> AppResult<Vec<PendingChallengeModel>> {
+    sqlx::query_as::<_, PendingChallengeRow>(PENDING_CHALLENGES_SQL)
+        .bind(game_id)
+        .bind(ChallengeReviewStatus::Active as i16)
+        .bind(PENDING_CHALLENGE_LIMIT)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .into_iter()
+        .map(PendingChallengeModel::try_from)
+        .collect()
+}
 
 /// `GET /api/edit/games/{id}/pendingchallenges` — Pending + Rejected rows.
 pub async fn list_pending_challenges(
@@ -8,30 +83,9 @@ pub async fn list_pending_challenges(
 ) -> AppResult<RequestResponse<Vec<PendingChallengeModel>>> {
     manager_or_admin(&st, &user, id).await?;
     load_game(&st, id).await?;
-    let rows = game_challenge::Entity::find()
-        .filter(game_challenge::Column::GameId.eq(id))
-        .filter(game_challenge::Column::ReviewStatus.ne(ChallengeReviewStatus::Active))
-        // RSCTF orders by ReviewStatus ASC first, then SubmittedAtUtc DESC.
-        .order_by_asc(game_challenge::Column::ReviewStatus)
-        .order_by_desc(game_challenge::Column::SubmittedAtUtc)
-        .all(&st.db)
-        .await?;
-
-    // Resolve submittedByUserName via a single batched join on `user`.
-    let user_ids: Vec<Uuid> = rows.iter().filter_map(|c| c.submitted_by_user_id).collect();
-    let user_names = load_user_names(&st, user_ids).await?;
-
-    let data = rows
-        .iter()
-        .map(|c| {
-            let mut m = PendingChallengeModel::from_challenge(c);
-            m.submitted_by_user_name = c
-                .submitted_by_user_id
-                .and_then(|uid| user_names.get(&uid).cloned());
-            m
-        })
-        .collect();
-    Ok(RequestResponse::ok(data))
+    Ok(RequestResponse::ok(
+        load_pending_challenges(st.pg(), id).await?,
+    ))
 }
 
 /// `POST /api/edit/games/{id}/challenges/{cId}/approve` — void.
@@ -41,19 +95,10 @@ pub async fn approve_challenge(
     Path((id, c_id)): Path<(i32, i32)>,
 ) -> AppResult<MessageResponse> {
     manager_or_admin(&st, &user, id).await?;
-    // Review activation/deactivation changes runtime eligibility. Retain the
-    // challenge-wide transition through checker/build publication or teardown
-    // so a concurrent approve/reject cannot overtake stale cleanup.
-    let runtime_transition =
-        crate::services::challenge_workloads::acquire_runtime_transition_lock(st.pg(), c_id)
-            .await?;
+    // Review activation/deactivation changes runtime eligibility.
     let mut challenge = load_challenge(&st, id, c_id).await?;
     deletion::reject_pending_mutation(st.pg(), id, c_id).await?;
     if challenge.review_status == ChallengeReviewStatus::Active {
-        runtime_transition
-            .release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
         return Ok(MessageResponse::ok(""));
     }
     if let Some(spec) = challenge.workload_spec.clone() {
@@ -62,32 +107,27 @@ pub async fn approve_challenge(
             spec,
         )?;
     }
-    let mut engine_control =
-        Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?);
-    let control = engine_control
-        .as_mut()
-        .expect("challenge approval holds the game control lock");
-    if competition_scoring_started_locked(control.transaction_mut(), id).await? {
-        return Err(AppError::bad_request(
-            "Challenge review state is locked after competition scoring has started.",
-        ));
-    }
-    crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id).await?;
-
-    // A submitted archive is immutable blob content. Prepare its reviewed
-    // process checker into a unique revision while holding the same distributed
-    // fence as checker GC. The row remains Pending/Rejected until the complete
-    // directory exists on shared storage.
-    let mut checker_artifact_guard = if challenge.challenge_type.uses_ad_engine() {
-        Some(crate::services::git_sync::acquire_checker_artifact_guard(&st).await?)
-    } else {
-        None
-    };
+    // A submitted archive is immutable blob content. Load and prepare it before
+    // acquiring either PostgreSQL-backed publication fence. A newly prepared
+    // revision is protected by the collector's age grace; an existing revision
+    // is already reachable from this pending challenge. The exact challenge is
+    // revalidated after both fences are acquired below.
     let checker_path = if challenge.challenge_type.uses_ad_engine() {
         crate::services::git_sync::prepare_reviewed_checker(&st, &challenge).await?
     } else {
         challenge.ad_checker_image.clone()
     };
+    let mut checker_artifact_guard = if challenge.challenge_type.uses_ad_engine() {
+        Some(crate::services::git_sync::acquire_checker_artifact_guard(&st).await?)
+    } else {
+        None
+    };
+    // Retain the challenge-wide transition only through the short publication
+    // and later runtime/build work; no blob-store read happens while it owns a
+    // pooled connection.
+    let runtime_transition =
+        crate::services::challenge_workloads::acquire_runtime_transition_lock(st.pg(), c_id)
+            .await?;
 
     // Pending local-container imports deliberately retain the complete reviewed
     // package and do not execute Docker. Before activation, publish the valid
@@ -117,6 +157,25 @@ pub async fn approve_challenge(
     } else {
         false
     };
+    let mut engine_control =
+        Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?);
+    let control = engine_control
+        .as_mut()
+        .expect("challenge approval holds the game control lock");
+    if competition_scoring_started_locked(control.transaction_mut(), id).await? {
+        return Err(AppError::bad_request(
+            "Challenge review state is locked after competition scoring has started.",
+        ));
+    }
+    crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id).await?;
+    let authoritative = load_challenge_locked(control.transaction_mut(), id, c_id).await?;
+    deletion::reject_pending_mutation(&mut **control.transaction_mut(), id, c_id).await?;
+    if authoritative != challenge {
+        return Err(AppError::conflict(
+            "Challenge changed while approval artifacts were prepared; reload and retry",
+        ));
+    }
+    challenge = authoritative;
     if needs_build {
         let staged = if let Some(control) = engine_control.as_mut() {
             sqlx::query(
@@ -225,6 +284,17 @@ pub async fn approve_challenge(
         ChallengeBuildStatus::Success
     };
 
+    let cache_mutation = if challenge.challenge_type == ChallengeType::KingOfTheHill {
+        Some(
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
+                st.cache.as_ref(),
+                id,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let updated = if let Some(control) = engine_control.as_mut() {
         sqlx::query(
             r#"UPDATE "GameChallenges"
@@ -253,8 +323,8 @@ pub async fn approve_challenge(
         .bind(challenge.build_context_subdir.as_deref())
         .execute(&mut **control.transaction_mut())
         .await
-        .map_err(|error| AppError::internal(error.to_string()))?
-        .rows_affected()
+        .map(|result| result.rows_affected())
+        .map_err(|error| AppError::internal(error.to_string()))
     } else {
         sqlx::query(
             r#"UPDATE "GameChallenges"
@@ -281,10 +351,21 @@ pub async fn approve_challenge(
         .bind(challenge.build_context_subdir.as_deref())
         .execute(st.pg())
         .await
-        .map_err(|error| AppError::internal(error.to_string()))?
-        .rows_affected()
+        .map(|result| result.rows_affected())
+        .map_err(|error| AppError::internal(error.to_string()))
+    };
+    let updated = match updated {
+        Ok(updated) => updated,
+        Err(error) => {
+            // A marked approval uses the still-uncommitted game transaction.
+            finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
+            return Err(error);
+        }
     };
     if updated != 1 {
+        // The guarded UPDATE made no write, so this marker does not need to
+        // remain fail-closed after the transaction rolls back on return.
+        finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
         return Err(AppError::bad_request(
             "Challenge review state changed; reload and retry.",
         ));
@@ -294,6 +375,7 @@ pub async fn approve_challenge(
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
     }
+    finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
     if let Some(guard) = checker_artifact_guard.take() {
         guard
             .release()
@@ -320,7 +402,7 @@ pub async fn reject_challenge(
     let runtime_transition =
         crate::services::challenge_workloads::acquire_runtime_transition_lock(st.pg(), c_id)
             .await?;
-    let challenge = load_challenge(&st, id, c_id).await?;
+    let _preflight = load_challenge(&st, id, c_id).await?;
     deletion::reject_pending_mutation(st.pg(), id, c_id).await?;
     let mut engine_control =
         Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?);
@@ -333,6 +415,19 @@ pub async fn reject_challenge(
         ));
     }
     crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id).await?;
+    let challenge = load_challenge_locked(control.transaction_mut(), id, c_id).await?;
+    deletion::reject_pending_mutation(&mut **control.transaction_mut(), id, c_id).await?;
+    let cache_mutation = if challenge.challenge_type == ChallengeType::KingOfTheHill {
+        Some(
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
+                st.cache.as_ref(),
+                id,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let rejected = sqlx::query(
         r#"UPDATE "GameChallenges"
               SET review_status = $3,
@@ -345,21 +440,30 @@ pub async fn reject_challenge(
     .bind(id)
     .bind(ChallengeReviewStatus::Rejected as i16)
     .bind(model.note)
-    .execute(st.pg())
+    .execute(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .rows_affected();
     if rejected != 1 {
+        finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
         return Err(AppError::conflict("Challenge is being deleted"));
     }
     if challenge.challenge_type == ChallengeType::KingOfTheHill {
-        crate::services::ad_engine::clear_challenge_control(&st.db, id, c_id).await?;
+        crate::services::ad_engine::clear_challenge_control_locked(
+            &mut **control.transaction_mut(),
+            id,
+            c_id,
+        )
+        .await?;
     }
     if let Some(lock) = engine_control {
         lock.release()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
     }
+    // The review state and cleared holder committed together. The token query
+    // now excludes this challenge even if later runtime cleanup fails.
+    finish_game_epoch_mutation_if_any(st.cache.as_ref(), id, cache_mutation).await;
     flush_game_scoreboards(&st, id).await;
     st.byoc.disconnect_challenge(&st.db, c_id).await?;
     crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
@@ -372,3 +476,7 @@ pub async fn reject_challenge(
         .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(MessageResponse::ok(""))
 }
+
+#[cfg(test)]
+#[path = "review_tests.rs"]
+mod tests;

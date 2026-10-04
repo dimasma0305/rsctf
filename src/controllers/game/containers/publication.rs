@@ -1,6 +1,196 @@
 use crate::app_state::SharedState;
 use crate::utils::error::{AppError, AppResult};
 
+#[cfg(test)]
+#[path = "publication_tests.rs"]
+mod tests;
+
+pub(super) struct TeamPublication<'a> {
+    pub container_id: uuid::Uuid,
+    pub backend_id: &'a str,
+    pub image: &'a str,
+    pub is_proxy: bool,
+    pub ip: &'a str,
+    pub port: i32,
+    pub participation_id: i32,
+    pub challenge_id: i32,
+    pub existing_instance_id: Option<i32>,
+    pub dynamic_flag: Option<&'a str>,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub expect_stop_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Publish the runtime owner, optional dynamic flag, and instance link as one
+/// conditional transaction on the caller's advisory-lock connection.
+pub(super) async fn publish_team_container_locked(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    publication: TeamPublication<'_>,
+) -> AppResult<crate::models::data::container::Model> {
+    let flag_id = match publication.dynamic_flag {
+        Some(flag) => Some(reserve_dynamic_flag_context(transaction, &publication, flag).await?),
+        None => None,
+    };
+    let instance_id = match publication.existing_instance_id {
+        Some(instance_id) => {
+            let owned: bool = sqlx::query_scalar(
+                r#"SELECT EXISTS(
+                       SELECT 1 FROM "GameInstances"
+                        WHERE id = $1 AND participation_id = $2
+                          AND challenge_id = $3 AND container_id IS NULL
+                   )"#,
+            )
+            .bind(instance_id)
+            .bind(publication.participation_id)
+            .bind(publication.challenge_id)
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+            if !owned {
+                return Err(AppError::conflict(
+                    "The challenge instance changed while the container was starting",
+                ));
+            }
+            instance_id
+        }
+        None => sqlx::query_scalar::<_, i32>(
+            r#"INSERT INTO "GameInstances"
+                       (challenge_id, participation_id, is_loaded,
+                        last_container_operation, flag_id, container_id)
+                   VALUES ($1, $2, TRUE, $3, $4, NULL)
+                RETURNING id"#,
+        )
+        .bind(publication.challenge_id)
+        .bind(publication.participation_id)
+        .bind(publication.started_at)
+        .bind(flag_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?,
+    };
+    sqlx::query(
+        r#"INSERT INTO "Containers"
+               (id, image, container_id, status, started_at, expect_stop_at,
+                is_proxy, ip, port, public_ip, public_port, game_instance_id,
+                exercise_instance_id, ad_team_service_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                   NULL, NULL, $10, NULL, NULL)"#,
+    )
+    .bind(publication.container_id)
+    .bind(publication.image)
+    .bind(publication.backend_id)
+    .bind(crate::utils::enums::ContainerStatus::Running as i16)
+    .bind(publication.started_at)
+    .bind(publication.expect_stop_at)
+    .bind(publication.is_proxy)
+    .bind(publication.ip)
+    .bind(publication.port)
+    .bind(instance_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let linked = sqlx::query(
+        r#"UPDATE "GameInstances"
+              SET container_id = $2, flag_id = $3, is_loaded = TRUE,
+                  last_container_operation = $4
+            WHERE id = $1 AND container_id IS NULL"#,
+    )
+    .bind(instance_id)
+    .bind(publication.container_id)
+    .bind(flag_id)
+    .bind(publication.started_at)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if linked.rows_affected() != 1 {
+        return Err(AppError::conflict(
+            "The challenge instance changed while the container was starting",
+        ));
+    }
+    Ok(crate::models::data::container::Model {
+        id: publication.container_id,
+        image: publication.image.to_owned(),
+        container_id: publication.backend_id.to_owned(),
+        status: crate::utils::enums::ContainerStatus::Running,
+        started_at: publication.started_at,
+        expect_stop_at: publication.expect_stop_at,
+        is_proxy: publication.is_proxy,
+        ip: publication.ip.to_owned(),
+        port: publication.port,
+        public_ip: None,
+        public_port: None,
+        game_instance_id: Some(instance_id),
+        exercise_instance_id: None,
+        ad_team_service_id: None,
+    })
+}
+
+/// A stable per-team flag keeps its original context (and solve history) when
+/// the team restarts its container. Never adopt a context owned by another
+/// instance, even when a template accidentally produces the same flag.
+async fn reserve_dynamic_flag_context(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    publication: &TeamPublication<'_>,
+    flag: &str,
+) -> AppResult<i32> {
+    let inserted = sqlx::query_scalar::<_, i32>(
+        r#"INSERT INTO "FlagContexts"
+               (flag, is_occupied, attachment_id, challenge_id, exercise_id)
+           VALUES ($1, TRUE, NULL, $2, NULL)
+           ON CONFLICT (challenge_id, flag)
+               WHERE challenge_id IS NOT NULL AND canonical_identity_enforced
+           DO NOTHING
+        RETURNING id"#,
+    )
+    .bind(flag)
+    .bind(publication.challenge_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some(id) = inserted {
+        return Ok(id);
+    }
+    let Some(existing_instance_id) = publication.existing_instance_id else {
+        return Err(AppError::conflict(
+            "Dynamic flag is already assigned to another challenge instance",
+        ));
+    };
+
+    // The INSERT may have waited for a concurrent transaction. A new SQL
+    // statement sees that transaction's committed row under READ COMMITTED.
+    // Lock the row until publication commits so its ownership cannot change.
+    let existing = sqlx::query_as::<_, (i32, bool, bool, bool)>(
+        r#"SELECT context.id, context.is_occupied,
+                  EXISTS (
+                      SELECT 1 FROM "GameInstances" instance
+                       WHERE instance.flag_id = context.id AND instance.id = $3
+                         AND instance.participation_id = $4
+                         AND instance.challenge_id = $1
+                  ),
+                  EXISTS (
+                      SELECT 1 FROM "GameInstances" instance
+                       WHERE instance.flag_id = context.id
+                         AND instance.participation_id <> $4
+                  )
+             FROM "FlagContexts" context
+            WHERE context.challenge_id = $1 AND context.flag = $2
+              AND context.canonical_identity_enforced
+            FOR UPDATE OF context"#,
+    )
+    .bind(publication.challenge_id)
+    .bind(flag)
+    .bind(existing_instance_id)
+    .bind(publication.participation_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    match existing {
+        Some((id, true, true, false)) => Ok(id),
+        _ => Err(AppError::conflict(
+            "Dynamic flag is already assigned to another challenge instance",
+        )),
+    }
+}
+
 /// Refresh a live KotH target's managed-container lease while its caller holds
 /// the challenge's shared-container lock. A missing bookkeeping row returns
 /// `false` so provisioning can revoke the stale endpoint and recreate it.
@@ -42,32 +232,6 @@ pub(super) async fn revoke_published_team_container(
         Some(instance_id),
         created_instance_id,
         created_flag_id,
-        false,
-    )
-    .await
-}
-
-/// Roll back a publication that may have failed between its non-transactional
-/// writes. Backend failure returns before any owner row is removed; successful
-/// destroy also permits removing a request-created instance that never linked.
-pub(super) async fn revoke_failed_team_container_publication(
-    st: &SharedState,
-    backend_id: &str,
-    container_id: uuid::Uuid,
-    instance_id: Option<i32>,
-    created_instance_id: Option<i32>,
-    created_flag_id: Option<i32>,
-) -> AppResult<()> {
-    crate::services::traffic::destroy_container_after_capture_fence(st, backend_id).await?;
-
-    clear_destroyed_team_container(
-        st,
-        backend_id,
-        container_id,
-        instance_id,
-        created_instance_id,
-        created_flag_id,
-        true,
     )
     .await
 }
@@ -79,7 +243,6 @@ async fn clear_destroyed_team_container(
     instance_id: Option<i32>,
     created_instance_id: Option<i32>,
     created_flag_id: Option<i32>,
-    allow_unlinked_created_instance: bool,
 ) -> AppResult<()> {
     let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
         .await
@@ -88,15 +251,10 @@ async fn clear_destroyed_team_container(
         Some(instance_id) if created_instance_id == Some(instance_id) => {
             sqlx::query(
                 r#"DELETE FROM "GameInstances"
-                    WHERE id = $1
-                      AND (
-                          container_id = $2
-                          OR ($3 AND container_id IS NULL)
-                      )"#,
+                    WHERE id = $1 AND container_id = $2"#,
             )
             .bind(instance_id)
             .bind(container_id)
-            .bind(allow_unlinked_created_instance)
             .execute(&mut *transaction)
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;

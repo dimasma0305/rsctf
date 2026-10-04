@@ -2,13 +2,16 @@
 
 use super::capture_policy::{LIVE_SET, REQUIRED_SET};
 use super::firewall::{PolicySets, ServiceRoute, IFNAME, QUARANTINE_SET, TRANSITION_BLOCK_SET};
+use super::SameOriginAccess;
 
-fn transition_block_rule() -> Vec<String> {
+const TARGET_PROTOCOLS: [&str; 2] = ["tcp", "udp"];
+
+fn transition_block_rule(protocol: &str) -> Vec<String> {
     vec![
         "-i".into(),
         IFNAME.into(),
         "-p".into(),
-        "tcp".into(),
+        protocol.into(),
         "-m".into(),
         "set".into(),
         "--match-set".into(),
@@ -19,12 +22,12 @@ fn transition_block_rule() -> Vec<String> {
     ]
 }
 
-fn capture_gate(interface: &str, endpoint_direction: &str) -> Vec<String> {
+fn capture_gate(interface: &str, endpoint_direction: &str, protocol: &str) -> Vec<String> {
     vec![
         interface.into(),
         IFNAME.into(),
         "-p".into(),
-        "tcp".into(),
+        protocol.into(),
         "-m".into(),
         "set".into(),
         "--match-set".into(),
@@ -41,7 +44,11 @@ fn capture_gate(interface: &str, endpoint_direction: &str) -> Vec<String> {
     ]
 }
 
-pub(super) fn forwarding_rule_plan(sets: &[PolicySets]) -> Vec<Vec<String>> {
+pub(super) fn forwarding_rule_plan(
+    all_peers: &str,
+    sets: &[PolicySets],
+    same_origin: Option<SameOriginAccess>,
+) -> Vec<Vec<String>> {
     let mut rules = vec![vec![
         "-m".into(),
         "conntrack".into(),
@@ -61,10 +68,14 @@ pub(super) fn forwarding_rule_plan(sets: &[PolicySets]) -> Vec<Vec<String>> {
         "-j".into(),
         "DROP".into(),
     ]);
-    rules.push(transition_block_rule());
-    rules.push(capture_gate("-i", "dst,dst"));
-    rules.push(capture_gate("-o", "src,src"));
-    for game in sets {
+    for protocol in TARGET_PROTOCOLS {
+        rules.push(transition_block_rule(protocol));
+    }
+    for protocol in TARGET_PROTOCOLS {
+        rules.push(capture_gate("-i", "dst,dst", protocol));
+        rules.push(capture_gate("-o", "src,src", protocol));
+    }
+    if let Some(access) = same_origin {
         rules.push(vec![
             "-i".into(),
             IFNAME.into(),
@@ -73,26 +84,12 @@ pub(super) fn forwarding_rule_plan(sets: &[PolicySets]) -> Vec<Vec<String>> {
             "-m".into(),
             "set".into(),
             "--match-set".into(),
-            game.cooldown_blocks.clone(),
-            "src,dst,dst".into(),
-            "-j".into(),
-            "DROP".into(),
-        ]);
-        rules.push(vec![
-            "-i".into(),
-            IFNAME.into(),
-            "-p".into(),
-            "tcp".into(),
-            "-m".into(),
-            "set".into(),
-            "--match-set".into(),
-            game.peers.clone(),
+            all_peers.into(),
             "src".into(),
-            "-m".into(),
-            "set".into(),
-            "--match-set".into(),
-            game.forward_targets.clone(),
-            "dst,dst".into(),
+            "-d".into(),
+            access.ingress.to_string(),
+            "--dport".into(),
+            "443".into(),
             "-m".into(),
             "conntrack".into(),
             "--ctstate".into(),
@@ -105,15 +102,14 @@ pub(super) fn forwarding_rule_plan(sets: &[PolicySets]) -> Vec<Vec<String>> {
             IFNAME.into(),
             "-p".into(),
             "tcp".into(),
+            "-s".into(),
+            access.ingress.to_string(),
+            "--sport".into(),
+            "443".into(),
             "-m".into(),
             "set".into(),
             "--match-set".into(),
-            game.forward_targets.clone(),
-            "src,src".into(),
-            "-m".into(),
-            "set".into(),
-            "--match-set".into(),
-            game.peers.clone(),
+            all_peers.into(),
             "dst".into(),
             "-m".into(),
             "conntrack".into(),
@@ -122,6 +118,67 @@ pub(super) fn forwarding_rule_plan(sets: &[PolicySets]) -> Vec<Vec<String>> {
             "-j".into(),
             "ACCEPT".into(),
         ]);
+    }
+    for game in sets {
+        for protocol in TARGET_PROTOCOLS {
+            rules.push(vec![
+                "-i".into(),
+                IFNAME.into(),
+                "-p".into(),
+                protocol.into(),
+                "-m".into(),
+                "set".into(),
+                "--match-set".into(),
+                game.cooldown_blocks.clone(),
+                "src,dst,dst".into(),
+                "-j".into(),
+                "DROP".into(),
+            ]);
+            rules.push(vec![
+                "-i".into(),
+                IFNAME.into(),
+                "-p".into(),
+                protocol.into(),
+                "-m".into(),
+                "set".into(),
+                "--match-set".into(),
+                game.peers.clone(),
+                "src".into(),
+                "-m".into(),
+                "set".into(),
+                "--match-set".into(),
+                game.forward_targets.clone(),
+                "dst,dst".into(),
+                "-m".into(),
+                "conntrack".into(),
+                "--ctstate".into(),
+                "NEW,ESTABLISHED".into(),
+                "-j".into(),
+                "ACCEPT".into(),
+            ]);
+            rules.push(vec![
+                "-o".into(),
+                IFNAME.into(),
+                "-p".into(),
+                protocol.into(),
+                "-m".into(),
+                "set".into(),
+                "--match-set".into(),
+                game.forward_targets.clone(),
+                "src,src".into(),
+                "-m".into(),
+                "set".into(),
+                "--match-set".into(),
+                game.peers.clone(),
+                "dst".into(),
+                "-m".into(),
+                "conntrack".into(),
+                "--ctstate".into(),
+                "ESTABLISHED,RELATED".into(),
+                "-j".into(),
+                "ACCEPT".into(),
+            ]);
+        }
     }
     rules.push(vec!["-j".into(), "DROP".into()]);
     rules
@@ -132,6 +189,7 @@ pub(super) fn input_rule_plan(
     sets: &[PolicySets],
     routes: &[ServiceRoute],
     guard_service_interfaces: bool,
+    same_origin: Option<SameOriginAccess>,
 ) -> Vec<Vec<String>> {
     let mut rules = vec![
         vec![
@@ -145,8 +203,10 @@ pub(super) fn input_rule_plan(
             "-j".into(),
             "DROP".into(),
         ],
-        transition_block_rule(),
-        capture_gate("-i", "dst,dst"),
+        transition_block_rule("tcp"),
+        transition_block_rule("udp"),
+        capture_gate("-i", "dst,dst", "tcp"),
+        capture_gate("-i", "dst,dst", "udp"),
         vec![
             "-i".into(),
             IFNAME.into(),
@@ -163,42 +223,65 @@ pub(super) fn input_rule_plan(
             "ACCEPT".into(),
         ],
     ];
+    if let Some(access) = same_origin {
+        for protocol in ["udp", "tcp"] {
+            rules.push(vec![
+                "-i".into(),
+                IFNAME.into(),
+                "-p".into(),
+                protocol.into(),
+                "-m".into(),
+                "set".into(),
+                "--match-set".into(),
+                all_peers.into(),
+                "src".into(),
+                "-d".into(),
+                access.dns.to_string(),
+                "--dport".into(),
+                "53".into(),
+                "-j".into(),
+                "ACCEPT".into(),
+            ]);
+        }
+    }
     for game in sets {
-        rules.push(vec![
-            "-i".into(),
-            IFNAME.into(),
-            "-p".into(),
-            "tcp".into(),
-            "-m".into(),
-            "set".into(),
-            "--match-set".into(),
-            game.cooldown_blocks.clone(),
-            "src,dst,dst".into(),
-            "-j".into(),
-            "DROP".into(),
-        ]);
-        rules.push(vec![
-            "-i".into(),
-            IFNAME.into(),
-            "-p".into(),
-            "tcp".into(),
-            "-m".into(),
-            "set".into(),
-            "--match-set".into(),
-            game.peers.clone(),
-            "src".into(),
-            "-m".into(),
-            "set".into(),
-            "--match-set".into(),
-            game.local_targets.clone(),
-            "dst,dst".into(),
-            "-m".into(),
-            "conntrack".into(),
-            "--ctstate".into(),
-            "NEW,ESTABLISHED".into(),
-            "-j".into(),
-            "ACCEPT".into(),
-        ]);
+        for protocol in TARGET_PROTOCOLS {
+            rules.push(vec![
+                "-i".into(),
+                IFNAME.into(),
+                "-p".into(),
+                protocol.into(),
+                "-m".into(),
+                "set".into(),
+                "--match-set".into(),
+                game.cooldown_blocks.clone(),
+                "src,dst,dst".into(),
+                "-j".into(),
+                "DROP".into(),
+            ]);
+            rules.push(vec![
+                "-i".into(),
+                IFNAME.into(),
+                "-p".into(),
+                protocol.into(),
+                "-m".into(),
+                "set".into(),
+                "--match-set".into(),
+                game.peers.clone(),
+                "src".into(),
+                "-m".into(),
+                "set".into(),
+                "--match-set".into(),
+                game.local_targets.clone(),
+                "dst,dst".into(),
+                "-m".into(),
+                "conntrack".into(),
+                "--ctstate".into(),
+                "NEW,ESTABLISHED".into(),
+                "-j".into(),
+                "ACCEPT".into(),
+            ]);
+        }
     }
     if guard_service_interfaces {
         let mut interfaces = Vec::new();
@@ -229,25 +312,27 @@ pub(super) fn input_rule_plan(
 pub(super) fn nat_rule_plan(sets: &[PolicySets]) -> Vec<Vec<String>> {
     let mut rules = Vec::new();
     for game in sets {
-        rules.push(vec![
-            "-p".into(),
-            "tcp".into(),
-            "-m".into(),
-            "set".into(),
-            "--match-set".into(),
-            game.peers.clone(),
-            "src".into(),
-            "-m".into(),
-            "set".into(),
-            "--match-set".into(),
-            game.nat_targets.clone(),
-            "dst,dst".into(),
-            "!".into(),
-            "-o".into(),
-            IFNAME.into(),
-            "-j".into(),
-            "MASQUERADE".into(),
-        ]);
+        for protocol in TARGET_PROTOCOLS {
+            rules.push(vec![
+                "-p".into(),
+                protocol.into(),
+                "-m".into(),
+                "set".into(),
+                "--match-set".into(),
+                game.peers.clone(),
+                "src".into(),
+                "-m".into(),
+                "set".into(),
+                "--match-set".into(),
+                game.nat_targets.clone(),
+                "dst,dst".into(),
+                "!".into(),
+                "-o".into(),
+                IFNAME.into(),
+                "-j".into(),
+                "MASQUERADE".into(),
+            ]);
+        }
     }
     rules.push(vec!["-j".into(), "RETURN".into()]);
     rules
@@ -259,7 +344,7 @@ mod tests {
 
     #[test]
     fn capture_gate_covers_new_and_established_both_directions() {
-        let rules = forwarding_rule_plan(&[])
+        let rules = forwarding_rule_plan("rsv_a_test", &[], None)
             .into_iter()
             .map(|rule| rule.join(" "))
             .collect::<Vec<_>>();

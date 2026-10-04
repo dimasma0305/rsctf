@@ -3,7 +3,7 @@ import { Turnstile, TurnstileInstance } from '@marsidev/react-turnstile'
 import { forwardRef, useImperativeHandle, useRef } from 'react'
 import { HashPow } from '@Components/HashPow'
 import { useCaptchaConfig } from '@Hooks/useConfig'
-import { CaptchaProvider } from '@Api'
+import { CaptchaProvider, type ClientCaptchaInfoModel } from '@Api'
 
 interface CaptchaProps extends BoxProps {
   action: string
@@ -17,6 +17,18 @@ export interface CaptchaResult {
 export interface CaptchaInstance {
   getToken: () => Promise<CaptchaResult>
   cleanUp?: (success?: boolean) => void
+}
+
+type RefreshCaptchaInfo = () => Promise<ClientCaptchaInfoModel | undefined>
+
+export const resolveCaptchaInfo = async (info: ClientCaptchaInfoModel | undefined, refresh: RefreshCaptchaInfo) => {
+  if (info) return info
+
+  try {
+    return await refresh()
+  } catch {
+    return undefined
+  }
 }
 
 export const useCaptchaRef = () => {
@@ -37,7 +49,7 @@ export const useCaptchaRef = () => {
 export const Captcha = forwardRef<CaptchaInstance, CaptchaProps>((props, ref) => {
   const { action, ...others } = props
 
-  const { info, error } = useCaptchaConfig()
+  const { info, error, mutate } = useCaptchaConfig()
   const { colorScheme } = useMantineColorScheme()
   const type = info?.type ?? CaptchaProvider.None
 
@@ -52,17 +64,26 @@ export const Captcha = forwardRef<CaptchaInstance, CaptchaProps>((props, ref) =>
     ref,
     () => ({
       getToken: async () => {
-        if (error || !info) {
+        // A first submit can race the initial `/api/captcha` request. Wait for
+        // the authoritative policy instead of reporting an unconfigured
+        // captcha as invalid. A failed refresh remains closed.
+        const currentInfo = await resolveCaptchaInfo(info, mutate)
+        if (!currentInfo) {
           return { valid: false }
         }
 
-        if (type === CaptchaProvider.HashPow) {
+        const currentType = currentInfo.type
+
+        if (currentType === CaptchaProvider.HashPow) {
           return backendRef.current?.getToken() ?? { valid: false }
         }
 
-        // following providers need siteKey
-        if (!info?.siteKey || type === CaptchaProvider.None) {
+        if (currentType === CaptchaProvider.None) {
           return { valid: true }
+        }
+
+        if (currentType !== CaptchaProvider.CloudflareTurnstile || !currentInfo.siteKey) {
+          return { valid: false }
         }
 
         // cloudflare turnstile
@@ -78,7 +99,7 @@ export const Captcha = forwardRef<CaptchaInstance, CaptchaProps>((props, ref) =>
         }
       },
     }),
-    [error, info, type]
+    [info, mutate, type]
   )
 
   if (type === CaptchaProvider.HashPow) {

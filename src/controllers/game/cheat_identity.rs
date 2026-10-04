@@ -9,6 +9,8 @@ use crate::utils::error::{AppError, AppResult};
 
 const MAX_SHARED_NETWORK_TEAMS: i64 = 4;
 const MAX_IDENTITY_GROUPS: i64 = 200;
+const MAX_IDENTITY_INPUT_ROWS: i64 = 2_000;
+const MAX_IDENTITY_ROWS_PER_VALUE: i64 = 64;
 
 #[derive(Debug, sqlx::FromRow)]
 struct IdentityGroupRow {
@@ -22,7 +24,48 @@ struct IdentityGroupRow {
 }
 
 const IDENTITY_ANALYSIS_SQL: &str = r#"
-    WITH scoped AS (
+    WITH recent_logins AS MATERIALIZED (
+        SELECT observation.id, observation.user_id, observation.kind,
+               observation.value_hash, observation.value_hint,
+               observation.observed_at_utc, observation.team_id,
+               observation.participation_id, observation.game_id
+          FROM "IdentityObservations" observation
+          JOIN "Games" game ON game.id = observation.game_id
+         WHERE observation.game_id = $1
+           AND observation.team_id IS NOT NULL
+           AND observation.participation_id IS NOT NULL
+           AND observation.observed_at_utc >= game.start_time_utc
+           AND observation.observed_at_utc < game.end_time_utc
+         ORDER BY observation.observed_at_utc DESC, observation.id DESC
+         LIMIT $4
+    ), submission_addresses AS MATERIALIZED (
+        -- Players who joined before the start and never signed in during the
+        -- event appear only through the address they submitted from: first
+        -- use per (user, address), with its own row budget and no hint.
+        SELECT DISTINCT ON (submission.participation_id, submission.user_id,
+                            submission.submit_remote_ip_hash)
+               -submission.id::BIGINT AS id, submission.user_id, 'Ip'::TEXT AS kind,
+               submission.submit_remote_ip_hash AS value_hash, ''::TEXT AS value_hint,
+               submission.submit_time_utc AS observed_at_utc, participation.team_id,
+               submission.participation_id, submission.game_id
+          FROM "Submissions" submission
+          JOIN "Games" game ON game.id = submission.game_id
+          JOIN "Participations" participation
+            ON participation.id = submission.participation_id
+           AND participation.game_id = submission.game_id
+         WHERE submission.game_id = $1
+           AND submission.submit_remote_ip_hash IS NOT NULL
+           AND submission.user_id IS NOT NULL
+           AND submission.submit_time_utc >= game.start_time_utc
+           AND submission.submit_time_utc < game.end_time_utc
+         ORDER BY submission.participation_id, submission.user_id,
+                  submission.submit_remote_ip_hash, submission.submit_time_utc
+         LIMIT $4
+    ), recent AS (
+        SELECT * FROM recent_logins
+        UNION ALL
+        SELECT * FROM submission_addresses
+    ), scoped_ranked AS (
         SELECT observation.id,
                observation.user_id,
                observation.kind,
@@ -30,19 +73,22 @@ const IDENTITY_ANALYSIS_SQL: &str = r#"
                observation.value_hint,
                observation.observed_at_utc,
                observation.team_id,
-               team.name AS team_name
-          FROM "IdentityObservations" observation
-          JOIN "Games" game ON game.id = observation.game_id
+               team.name AS team_name,
+               ROW_NUMBER() OVER (
+                   PARTITION BY observation.kind, observation.value_hash
+                   ORDER BY observation.observed_at_utc DESC, observation.id DESC
+               ) AS value_rank
+          FROM recent observation
           JOIN "Participations" participation
             ON participation.id = observation.participation_id
            AND participation.game_id = observation.game_id
            AND participation.team_id = observation.team_id
           JOIN "Teams" team ON team.id = observation.team_id
-         WHERE observation.game_id = $1
-           AND observation.team_id IS NOT NULL
-           AND observation.participation_id IS NOT NULL
-           AND observation.observed_at_utc >= game.start_time_utc
-           AND observation.observed_at_utc < game.end_time_utc
+    ), scoped AS (
+        SELECT id, user_id, kind, value_hash, value_hint,
+               observed_at_utc, team_id, team_name
+          FROM scoped_ranked
+         WHERE value_rank <= $5
     ), qualified AS (
         SELECT kind, value_hash, COUNT(DISTINCT team_id) AS team_count
           FROM scoped
@@ -54,7 +100,8 @@ const IDENTITY_ANALYSIS_SQL: &str = r#"
         SELECT scoped.kind, scoped.value_hash, scoped.user_id,
                scoped.team_id, scoped.team_name,
                (ARRAY_AGG(scoped.value_hint
-                          ORDER BY scoped.observed_at_utc DESC, scoped.id DESC))[1]
+                          ORDER BY scoped.value_hint = '',
+                                   scoped.observed_at_utc DESC, scoped.id DESC))[1]
                    AS value_hint,
                MIN(scoped.observed_at_utc) AS first_observed_at,
                ARRAY_AGG(scoped.observed_at_utc
@@ -133,7 +180,8 @@ const IDENTITY_ANALYSIS_SQL: &str = r#"
     ), grouped AS (
         SELECT kind, value_hash,
                (ARRAY_AGG(value_hint
-                          ORDER BY observed_at_utc DESC, user_id))[1] AS value_hint,
+                          ORDER BY value_hint = '', observed_at_utc DESC, user_id))[1]
+                   AS value_hint,
                MAX(observed_at_utc) AS latest,
                ARRAY_AGG(team_id ORDER BY team_id) AS team_ids,
                ARRAY_AGG(team_name ORDER BY team_id) AS team_names,
@@ -176,6 +224,8 @@ pub(super) async fn build_identity_analysis(
         .bind(game_id)
         .bind(MAX_SHARED_NETWORK_TEAMS)
         .bind(MAX_IDENTITY_GROUPS)
+        .bind(MAX_IDENTITY_INPUT_ROWS)
+        .bind(MAX_IDENTITY_ROWS_PER_VALUE)
         .fetch_all(pool)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -298,6 +348,8 @@ mod tests {
             IDENTITY_ANALYSIS_SQL.contains("observation.observed_at_utc >= game.start_time_utc")
         );
         assert!(IDENTITY_ANALYSIS_SQL.contains("observation.observed_at_utc < game.end_time_utc"));
+        assert!(IDENTITY_ANALYSIS_SQL.contains("LIMIT $4"));
+        assert!(IDENTITY_ANALYSIS_SQL.contains("WHERE value_rank <= $5"));
         assert!(!IDENTITY_ANALYSIS_SQL.contains("CURRENT_TIMESTAMP"));
         assert!(!IDENTITY_ANALYSIS_SQL.contains("NOW()"));
     }

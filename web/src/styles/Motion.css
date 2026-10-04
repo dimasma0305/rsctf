@@ -1,0 +1,44 @@
+/* Entrances decorate committed content; they never own visibility or lifetime.
+ * No fill-mode, delays, per-row staggering, or transforms on page containers.
+ * Keeping page geometry untouched also preserves fixed/sticky descendants. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-motion='page'],
+  .mantine-Table-table,
+  .mantine-Alert-root,
+  [role='tabpanel']:not([hidden]) {
+    animation: rsctf-content-in 180ms cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  [data-motion='surface'] {
+    animation: rsctf-surface-in 180ms cubic-bezier(0.2, 0, 0, 1);
+  }
+}
+
+@keyframes rsctf-content-in {
+  from {
+    opacity: 0.72;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes rsctf-surface-in {
+  from {
+    opacity: 0.8;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-motion],
+  .mantine-Table-table,
+  .mantine-Alert-root,
+  [role='tabpanel'] {
+    animation: none;
+  }
+}

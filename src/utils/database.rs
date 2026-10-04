@@ -3,6 +3,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 
 const READ_ONLY_REPEATABLE_READ_BEGIN: &str =
     "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY";
+const REPEATABLE_READ_BEGIN: &str = "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ";
 
 async fn begin_sqlx_transaction_with(
     pool: &PgPool,
@@ -58,6 +59,17 @@ pub(crate) async fn begin_read_only_repeatable_read(
     // the caller disappears, dropping the completed tracked Transaction queues
     // the normal rollback instead of returning poisoned row locks to the pool.
     begin_sqlx_transaction_with(pool, Some(READ_ONLY_REPEATABLE_READ_BEGIN)).await
+}
+
+/// Start a consistent snapshot that may take row locks while it is assembled.
+///
+/// This is intentionally distinct from [`begin_read_only_repeatable_read`]:
+/// PostgreSQL rejects `SELECT ... FOR SHARE` in a read-only transaction even
+/// when the caller never changes data.
+pub(crate) async fn begin_repeatable_read(
+    pool: &PgPool,
+) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
+    begin_sqlx_transaction_with(pool, Some(REPEATABLE_READ_BEGIN)).await
 }
 
 #[cfg(test)]
@@ -170,5 +182,41 @@ mod tests {
         for task in tasks {
             task.await.expect("read snapshot task");
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires RSCTF_TEST_DATABASE_URL"]
+    async fn lockable_snapshot_supports_share_locks() {
+        let url = std::env::var("RSCTF_TEST_DATABASE_URL").expect("test database URL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect test database");
+        let mut transaction = begin_repeatable_read(&pool)
+            .await
+            .expect("begin lockable snapshot");
+        let modes = sqlx::query_as::<_, (String, String)>(
+            r#"SELECT current_setting('transaction_isolation'),
+                      current_setting('transaction_read_only')"#,
+        )
+        .fetch_one(&mut *transaction)
+        .await
+        .expect("read transaction modes");
+        assert_eq!(modes, ("repeatable read".to_string(), "off".to_string()));
+        sqlx::query("CREATE TEMP TABLE rsctf_lock_probe (id INTEGER PRIMARY KEY) ON COMMIT DROP")
+            .execute(&mut *transaction)
+            .await
+            .expect("create lock probe");
+        sqlx::query("INSERT INTO rsctf_lock_probe VALUES (1)")
+            .execute(&mut *transaction)
+            .await
+            .expect("seed lock probe");
+        let value: i32 = sqlx::query_scalar("SELECT id FROM rsctf_lock_probe FOR SHARE")
+            .fetch_one(&mut *transaction)
+            .await
+            .expect("take a share lock inside the snapshot");
+        assert!(value > 0);
+        transaction.commit().await.expect("commit snapshot");
     }
 }

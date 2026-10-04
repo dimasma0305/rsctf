@@ -43,6 +43,8 @@ const definitions = [
   ["InstantSubmitAfterAccess", 50, "behavioral", 3],
   ["SubmitterNeverAccessedContainer", 30, "context", 3, 0],
   ["AccessIpMismatchAtSubmission", 30, "context", 3],
+  ["AgentArtifact", 40, "behavioral", 3],
+  ["AiDeclarationContradiction", 60, "strong", 3],
 ];
 
 export const SUSPICION_RULES = Object.freeze(
@@ -120,6 +122,8 @@ export const DETECTOR_CAPABILITIES = Object.freeze([
   ["InstantSubmitAfterAccess", "background", "jeopardyContainers"],
   ["SubmitterNeverAccessedContainer", "telemetryOnly", "jeopardyContainers"],
   ["AccessIpMismatchAtSubmission", "background", "jeopardyContainers"],
+  ["AgentArtifact", "background", "jeopardy"],
+  ["AiDeclarationContradiction", "background", "jeopardy"],
 ].map(([code, status, scope]) => Object.freeze({ code, status, scope })));
 
 const DETECTOR_CAPABILITY_BY_CODE = new Map(

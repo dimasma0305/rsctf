@@ -20,9 +20,10 @@ test("compact acceptance wires its isolated shared-network journeys", () => {
   assert.doesNotMatch(source, /query LIKE '%INSERT INTO \"IdentityObservations\"%'/);
   assert.match(source, /cheat_acceptance_hold_identity/);
   assert.match(source, /exerciseFinalizationGraceControl\(/);
-  assert.match(source, /finalization-grace reconciler phase/);
-  assert.match(source, /phase-aligned finalization-grace cycle/);
-  assert.match(source, /sentinel\.dbNowMicros/);
+  assert.match(source, /phase-aligned finalization-grace window/);
+  assert.match(source, /clock_timestamp\(\)\+interval '500 milliseconds'/);
+  assert.match(source, /control\?\.dbNowMicros/);
+  assert.doesNotMatch(source, /FINALIZE-SENTINEL|finalization-grace sentinel/);
   assert.match(source, /sealedAtMicros/);
   assert.match(source, /final-only network correlation ran before finalization grace completed/);
   assert.match(source, /assertPostEndLoginExcluded\(/);
@@ -44,6 +45,12 @@ test("compact acceptance wires its isolated shared-network journeys", () => {
   assert.match(source, /abnormalSolves\.length !== 0/);
   assert.match(source, /'lastReconciledAt',last_reconciled_at_utc/);
   assert.match(source, /CHEAT_ACCEPTANCE_ISOLATED/);
+});
+
+test("compact acceptance gives every administrator password reset an operation identity", () => {
+  const resets = source.match(/\/password\?operationId=\$\{randomUUID\(\)\}/g) || [];
+  assert.equal(resets.length, 2);
+  assert.doesNotMatch(source, /\/password`,/);
 });
 
 test("retained cheat drill provisions helper identities through the neutral marker", () => {

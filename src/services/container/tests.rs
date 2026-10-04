@@ -16,11 +16,11 @@ use super::docker::{
     RESTRICTED_TMPFS_OPTIONS, RESTRICTED_TMPFS_PATH,
 };
 use super::{
-    append_snapshot_chunk, bounded_log_config, bridge_network_matches, container_name,
-    docker_workload_scope, game_kind_for_challenge, labels_match_scope, managed_container_filters,
-    network_scope_matches, scoped_managed_labels, scoped_operation_id, should_use_platform_proxy,
-    validate_container_spec, ContainerLiveness, ContainerManager, ContainerResourceLimits,
-    ContainerSpec, DockerContainerManager, DEFAULT_CONTAINER_STORAGE_MB,
+    append_snapshot_chunk, bridge_network_matches, container_name, docker_workload_scope,
+    game_kind_for_challenge, labels_match_scope, managed_container_filters, network_scope_matches,
+    scoped_managed_labels, scoped_operation_id, should_use_platform_proxy, validate_container_spec,
+    ContainerLiveness, ContainerManager, ContainerResourceLimits, ContainerSpec,
+    DockerContainerManager, DEFAULT_CONTAINER_STORAGE_MB,
 };
 
 #[test]
@@ -149,7 +149,7 @@ fn inspected_container_state(status: ContainerStateStatusEnum) -> ContainerInspe
     }
 }
 
-fn fingerprint_spec() -> ContainerSpec {
+pub(super) fn fingerprint_spec() -> ContainerSpec {
     ContainerSpec {
         game_kind: rsctf_worker_protocol::GameKind::KingOfTheHill,
         image: format!("registry.example/hill@sha256:{}", "a".repeat(64)),
@@ -163,6 +163,7 @@ fn fingerprint_spec() -> ContainerSpec {
         flag: Some("flag-secret".to_string()),
         ad_network: Some("rsctf-ad".to_string()),
         allow_egress: false,
+        control_plane_callback_ports: Vec::new(),
         network_mode: crate::utils::enums::NetworkMode::Open,
         operation_id: Some("cycle:9".to_string()),
     }
@@ -381,6 +382,9 @@ fn launch_fingerprint_rejects_stale_runtime_configuration() {
     changed.allow_egress = true;
     assert_ne!(launch_spec_fingerprint(&changed), expected);
     changed = spec.clone();
+    changed.control_plane_callback_ports.push(8080);
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
+    changed = spec.clone();
     changed.network_mode = crate::utils::enums::NetworkMode::Isolated;
     assert_ne!(launch_spec_fingerprint(&changed), expected);
     changed = spec.clone();
@@ -538,6 +542,25 @@ fn proxy_only_spec_is_restricted_to_published_jeopardy() {
 }
 
 #[test]
+fn callback_ports_are_bounded_and_require_an_ad_network() {
+    let mut spec = fingerprint_spec();
+    spec.control_plane_callback_ports = vec![80, 8080];
+    assert!(validate_container_spec(&spec).is_ok());
+
+    spec.ad_network = None;
+    assert!(validate_container_spec(&spec).is_err());
+
+    spec.ad_network = Some("rsctf-ad".to_string());
+    spec.control_plane_callback_ports.push(8443);
+    assert!(validate_container_spec(&spec).is_err());
+
+    spec.control_plane_callback_ports = vec![0];
+    assert!(validate_container_spec(&spec).is_err());
+    spec.control_plane_callback_ports = vec![65_536];
+    assert!(validate_container_spec(&spec).is_err());
+}
+
+#[test]
 fn platform_proxy_selection_never_changes_competitive_direct_modes() {
     for game_kind in [
         rsctf_worker_protocol::GameKind::AttackDefense,
@@ -590,6 +613,18 @@ fn concurrent_adopter_start_never_authorizes_creator_cleanup() {
         FailedStartAction::RemoveOwned,
         "a unique non-adoptable failed create remains safe to clean up"
     );
+
+    for terminal in [
+        ContainerStateStatusEnum::EXITED,
+        ContainerStateStatusEnum::DEAD,
+    ] {
+        let inspected = inspected_container_state(terminal);
+        assert_eq!(
+            failed_start_action(true, Some(&inspected)),
+            FailedStartAction::RemoveOwned,
+            "a terminal stable-operation holder must be removed before rotating the key"
+        );
+    }
 
     let paused = inspected_container_state(ContainerStateStatusEnum::PAUSED);
     assert_eq!(
@@ -799,16 +834,6 @@ fn container_resource_limits_reject_invalid_values() {
 }
 
 #[test]
-fn challenge_container_logs_are_bounded() {
-    let log_config = bounded_log_config();
-    let options = log_config.config.expect("json-file options");
-
-    assert_eq!(log_config.typ.as_deref(), Some("json-file"));
-    assert_eq!(options.get("max-size").map(String::as_str), Some("5m"));
-    assert_eq!(options.get("max-file").map(String::as_str), Some("3"));
-}
-
-#[test]
 fn container_names_are_unique_for_identical_specs() {
     let env = vec![("RSCTF_TEAM_ID".to_string(), "7".to_string())];
     let first = container_name("registry.example/ctf/web:latest", &env, None);
@@ -846,7 +871,14 @@ fn recovery_operation_names_are_stable_and_scoped() {
         &env,
         next_operation.as_deref(),
     );
+    let changed_image = container_name(
+        "another.registry/renamed/image:latest",
+        &[("RSCTF_TEAM_ID".to_string(), "99".to_string())],
+        first_operation.as_deref(),
+    );
     assert_eq!(first, retry);
+    assert_eq!(first, changed_image);
+    assert!(first.starts_with("rsctf-operation-"));
     assert_ne!(first, foreign);
     assert_ne!(first, next);
 }

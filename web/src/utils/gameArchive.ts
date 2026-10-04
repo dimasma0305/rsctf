@@ -1,2 +1,2 @@
-export const isReadOnlyGameArchive = (game?: { end?: number; practiceMode?: boolean }, now: number = Date.now()) =>
+export const isReadOnlyGameArchive = (game: { end?: number; practiceMode?: boolean } | undefined, now: number) =>
   typeof game?.end === 'number' && !game.practiceMode && now >= game.end

@@ -141,13 +141,14 @@ pub(super) fn daemon_platform(info: &SystemInfo) -> Result<Platform, RuntimeErro
     })
 }
 
+/// Raw daemon host capacity. The client subtracts the documented reserve
+/// before advertising unless an operator override is set.
 pub(super) fn daemon_capacity(info: &SystemInfo, network_slots: u32) -> WorkerCapacity {
     let cpus = info.ncpu.unwrap_or(1).max(1) as u64;
     let memory = info.mem_total.unwrap_or(512 * 1024 * 1024).max(1) as u64;
     WorkerCapacity {
-        // Auto-detection leaves host headroom. Dedicated workers can lower it.
-        cpu_millis: cpus.saturating_mul(900),
-        memory_bytes: memory.saturating_mul(9) / 10,
+        cpu_millis: cpus.saturating_mul(1_000),
+        memory_bytes: memory,
         slots: network_slots,
     }
 }
@@ -430,9 +431,12 @@ pub(super) fn docker_port(port: u16) -> String {
     format!("{port}/tcp")
 }
 
+/// Workloads use Docker's `local` driver: bounded, compressed files the
+/// daemon never re-parses as JSON for a log client. Bounds match the local
+/// backend (5 MiB x 3).
 pub(super) fn bounded_log_config() -> HostConfigLogConfig {
     HostConfigLogConfig {
-        typ: Some("json-file".to_string()),
+        typ: Some("local".to_string()),
         config: Some(HashMap::from([
             ("max-size".to_string(), "5m".to_string()),
             ("max-file".to_string(), "3".to_string()),
@@ -456,6 +460,9 @@ pub(super) fn workload_host_config(
         memory_swap: (operating_system == OperatingSystem::Linux).then_some(memory_limit),
         nano_cpus: Some(i64::from(cpu_millis) * 1_000_000),
         pids_limit: (operating_system == OperatingSystem::Linux).then_some(512),
+        // A challenge PID 1 that forks without reaping must not accumulate
+        // zombies for the workload lifetime. Windows isolation rejects `Init`.
+        init: (operating_system == OperatingSystem::Linux).then_some(true),
         log_config: Some(bounded_log_config()),
         network_mode: Some(network.to_string()),
         // A challenge image must not inherit Docker's default capability set.
@@ -683,6 +690,24 @@ mod tests {
     }
 
     #[test]
+    fn workload_logs_use_the_bounded_local_driver() {
+        let config = bounded_log_config();
+        let options = config.config.clone().expect("local driver options");
+        assert_eq!(config.typ.as_deref(), Some("local"));
+        assert_eq!(options.get("max-size").map(String::as_str), Some("5m"));
+        assert_eq!(options.get("max-file").map(String::as_str), Some("3"));
+
+        let host = workload_host_config(
+            OperatingSystem::Linux,
+            "rsctf-test-network",
+            500,
+            256 * 1024 * 1024,
+            None,
+        );
+        assert_eq!(host.log_config, Some(config));
+    }
+
+    #[test]
     fn linux_workloads_replace_defaults_with_only_bind_service() {
         let config = workload_host_config(
             OperatingSystem::Linux,
@@ -694,6 +719,8 @@ mod tests {
 
         assert_eq!(config.cap_drop, Some(vec!["ALL".to_string()]));
         assert_eq!(config.cap_add, Some(vec!["NET_BIND_SERVICE".to_string()]));
+        assert_eq!(config.init, Some(true));
+        assert_eq!(config.pids_limit, Some(512));
         assert_eq!(config.memory_swap, config.memory);
         assert_eq!(
             config.security_opt,
@@ -715,6 +742,8 @@ mod tests {
         assert_eq!(config.cap_add, None);
         assert_eq!(config.security_opt, None);
         assert_eq!(config.memory_swap, None);
+        assert_eq!(config.init, None);
+        assert_eq!(config.pids_limit, None);
         assert_eq!(config.isolation, Some(HostConfigIsolationEnum::HYPERV));
         assert_eq!(
             config.storage_opt,

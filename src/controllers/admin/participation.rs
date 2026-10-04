@@ -10,7 +10,7 @@ use sqlx::Connection as _;
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::CurrentUser;
-use crate::utils::enums::ParticipationStatus;
+use crate::utils::enums::{ChallengeType, ParticipationStatus};
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::MessageResponse;
 
@@ -40,6 +40,21 @@ struct ParticipationIdentity {
     id: i32,
     game_id: i32,
     team_id: i32,
+}
+
+fn is_late_roster_admission(
+    scoring_started: bool,
+    current: ParticipationStatus,
+    requested: ParticipationStatus,
+) -> bool {
+    scoring_started
+        && requested == ParticipationStatus::Accepted
+        && matches!(
+            current,
+            ParticipationStatus::Pending
+                | ParticipationStatus::Rejected
+                | ParticipationStatus::Unsubmitted
+        )
 }
 
 /// Bounded cross-replica ownership of one team's review side effects.
@@ -110,10 +125,11 @@ impl ParticipationReviewLease {
 
 async fn persist_participation_status(
     lease: &mut ParticipationReviewLease,
+    cache: &dyn crate::services::cache::Cache,
     identity: ParticipationIdentity,
     requested_status: ParticipationStatus,
     requested_division_id: Option<Option<i32>>,
-) -> AppResult<()> {
+) -> AppResult<Option<crate::services::ad::koth_capability_cache::GameEpochMutation>> {
     let mut transaction = lease
         .connection_mut()
         .begin()
@@ -227,15 +243,41 @@ async fn persist_participation_status(
         identity.game_id,
     )
     .await?;
-    // Suspension and reinstatement are the only reversible status mutations
-    // after scoring starts. They retain the same participation and division;
-    // rejection remains subject to both the engine boundary and evidence fence.
-    crate::controllers::edit::ensure_ad_roster_status_mutable(
-        engine_scoring_started,
-        Some(live_status),
-        requested_status,
-    )?;
+    let late_roster_admission =
+        is_late_roster_admission(engine_scoring_started, live_status, requested_status);
+    // Ordinary status changes remain frozen after scoring starts. A manager's
+    // explicit acceptance is the one append-only exception: it enrolls the
+    // late team without rewriting an existing participation or prior score.
+    if !late_roster_admission {
+        crate::controllers::edit::ensure_ad_roster_status_mutable(
+            engine_scoring_started,
+            Some(live_status),
+            requested_status,
+        )?;
+    }
     ensure_scored_division_unchanged(competition_scoring_started, live_division_id, division_id)?;
+    if live_status != requested_status {
+        if live_status == ParticipationStatus::Accepted {
+            crate::services::ad::koth_api_capability::request_event_capability_revocation(
+                &mut transaction,
+                identity.game_id,
+                &[identity.id],
+            )
+            .await?;
+        }
+        if requested_status == ParticipationStatus::Accepted {
+            // A prior suspension may have committed its durable request before
+            // external teardown failed. Apply that exact generation before
+            // acceptance can make this participation visible again.
+            crate::services::ad::koth_api_capability::reconcile_pending_event_capabilities(
+                &mut transaction,
+                identity.game_id,
+                None,
+                Some(&[identity.id]),
+            )
+            .await?;
+        }
+    }
     sqlx::query(
         r#"UPDATE "Participations"
               SET status = $1, division_id = $2
@@ -248,12 +290,20 @@ async fn persist_participation_status(
     .execute(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    if late_roster_admission {
+        crate::services::ad::late_roster::admit_late_koth_participation(
+            &mut transaction,
+            identity.game_id,
+            identity.id,
+        )
+        .await?;
+    }
     if requested_status == ParticipationStatus::Accepted {
-        sqlx::query(r#"UPDATE "Teams" SET locked = TRUE WHERE id = $1"#)
-            .bind(identity.team_id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+        crate::controllers::team::roster_policy::lock_team_on_accept_if_enabled(
+            &mut transaction,
+            identity.team_id,
+        )
+        .await?;
         for user_id in linked_user_ids {
             crate::services::anti_cheat::snapshot_recent_global_observations_for_game(
                 &mut transaction,
@@ -264,11 +314,47 @@ async fn persist_participation_status(
             )
             .await?;
         }
+        crate::controllers::edit::enqueue_accepted_provisioning(
+            &mut transaction,
+            identity.game_id,
+            identity.id,
+        )
+        .await?;
+    } else {
+        crate::controllers::edit::cancel_accepted_provisioning(&mut transaction, identity.id)
+            .await?;
     }
+    let has_koth = if live_status != requested_status {
+        sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(
+                   SELECT 1 FROM "GameChallenges"
+                    WHERE game_id = $1 AND "Type" = $2
+               )"#,
+        )
+        .bind(identity.game_id)
+        .bind(ChallengeType::KingOfTheHill as i16)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+    } else {
+        false
+    };
+    let cache_mutation = if has_koth {
+        Some(
+            crate::services::ad::koth_capability_cache::begin_game_epoch_mutation(
+                cache,
+                identity.game_id,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     transaction
         .commit()
         .await
-        .map_err(|error| AppError::internal(error.to_string()))
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(cache_mutation)
 }
 
 async fn resolve_requested_division(
@@ -472,17 +558,36 @@ pub async fn update_participation(
 
     if let Some(requested_status) = model.status {
         let mut lease = ParticipationReviewLease::acquire(st.pg(), identity.team_id).await?;
-        persist_participation_status(&mut lease, identity, requested_status, model.division_id)
-            .await?;
+        let cache_mutation = persist_participation_status(
+            &mut lease,
+            st.cache.as_ref(),
+            identity,
+            requested_status,
+            model.division_id,
+        )
+        .await?;
+        if let Some(mutation) = cache_mutation {
+            crate::services::ad::koth_capability_cache::finish_game_epoch_mutation(
+                st.cache.as_ref(),
+                identity.game_id,
+                mutation,
+            )
+            .await;
+        }
 
         let effect = run_terminal_effect(&mut lease, identity, requested_status, || async {
             if requested_status == ParticipationStatus::Accepted {
-                crate::controllers::edit::provision_accepted_participation(
-                    &st,
-                    identity.game_id,
-                    identity.id,
-                )
-                .await
+                if let Err(error) =
+                    crate::controllers::edit::run_accepted_provisioning_job(&st, identity.id).await
+                {
+                    tracing::warn!(
+                        game = identity.game_id,
+                        participation = identity.id,
+                        %error,
+                        "accepted-participation provisioning remains queued"
+                    );
+                }
+                Ok(())
             } else {
                 crate::controllers::team::revoke_participation_capabilities(&st, identity.id).await
             }
@@ -504,8 +609,12 @@ pub async fn update_participation(
     for key in [
         format!("_ScoreBoard_{}", identity.game_id),
         format!("_ScoreBoardFrozen_{}", identity.game_id),
+        format!("_ScoreBoardWireV2_{}", identity.game_id),
+        format!("_ScoreBoardWireV2Frozen_{}", identity.game_id),
         format!("_KothScoreBoard_{}", identity.game_id),
         format!("_KothScoreBoardFrozen_{}", identity.game_id),
+        format!("_KothScoreBoardWireV2_{}", identity.game_id),
+        format!("_KothScoreBoardWireV2Frozen_{}", identity.game_id),
         format!("_KothTimeline_{}", identity.game_id),
         format!("_KothTimelineFrozen_{}", identity.game_id),
     ] {
@@ -514,6 +623,8 @@ pub async fn update_participation(
     crate::controllers::game::ad::hard_invalidate_ad_scoreboard(&st, identity.game_id).await;
     crate::controllers::game::ad::flush_participation_cache(&st, identity.game_id, identity.id)
         .await;
+    // Monitors suspend or accept teams from the cheat report and read it back.
+    crate::controllers::game::invalidate_cheat_report(&st, identity.game_id).await;
 
     Ok(MessageResponse::ok(""))
 }
@@ -521,3 +632,7 @@ pub async fn update_participation(
 #[cfg(test)]
 #[path = "participation_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "participation_late_admission_tests.rs"]
+mod late_admission_tests;

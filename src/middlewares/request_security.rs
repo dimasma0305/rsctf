@@ -12,7 +12,8 @@ use crate::utils::error::AppError;
 
 const CSP_VALUE: &str = "base-uri 'self'; frame-ancestors 'none'; object-src 'none'; \
     script-src 'self' https://challenges.cloudflare.com; \
-    worker-src 'self' blob:; frame-src https://challenges.cloudflare.com";
+    worker-src 'self' blob:; frame-src https://challenges.cloudflare.com \
+    https://www.youtube.com https://www.youtube-nocookie.com";
 
 /// Reject cross-origin browser mutations and cookie-authenticated WebSocket opens.
 /// Bearer clients are not CSRF-prone because browsers do not attach their token
@@ -54,7 +55,9 @@ pub async fn security_headers(req: Request, next: Next) -> Response {
         HeaderName::from_static("permissions-policy"),
         HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
     );
-    headers.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP_VALUE));
+    // Append, never replace: a handler's stricter policy (for example the
+    // `sandbox` on solver downloads) is enforced together with this one.
+    headers.append(CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP_VALUE));
     headers.insert(
         HeaderName::from_static("strict-transport-security"),
         HeaderValue::from_static("max-age=31536000"),
@@ -239,8 +242,36 @@ mod tests {
     fn csp_blocks_inline_and_untrusted_scripts_without_breaking_captcha_workers() {
         assert!(CSP_VALUE.contains("script-src 'self' https://challenges.cloudflare.com"));
         assert!(CSP_VALUE.contains("worker-src 'self' blob:"));
-        assert!(CSP_VALUE.contains("frame-src https://challenges.cloudflare.com"));
+        assert!(CSP_VALUE.contains(
+            "frame-src https://challenges.cloudflare.com https://www.youtube.com \
+            https://www.youtube-nocookie.com"
+        ));
         assert!(!CSP_VALUE.contains("'unsafe-inline'"));
         assert!(!CSP_VALUE.contains("'unsafe-eval'"));
+    }
+
+    #[tokio::test]
+    async fn handler_policies_are_kept_alongside_the_global_csp() {
+        use tower::ServiceExt;
+        let app = axum::Router::new()
+            .route(
+                "/sandboxed",
+                axum::routing::get(|| async { ([(CONTENT_SECURITY_POLICY, "sandbox")], "x") }),
+            )
+            .route("/plain", axum::routing::get(|| async { "x" }))
+            .layer(axum::middleware::from_fn(security_headers));
+        let policies = |response: Response| -> Vec<String> {
+            response
+                .headers()
+                .get_all(CONTENT_SECURITY_POLICY)
+                .iter()
+                .map(|value| value.to_str().unwrap().to_owned())
+                .collect()
+        };
+        let request = |path: &str| Request::builder().uri(path).body(Body::empty()).unwrap();
+        let sandboxed = app.clone().oneshot(request("/sandboxed")).await.unwrap();
+        assert_eq!(policies(sandboxed), ["sandbox", CSP_VALUE]);
+        let plain = app.oneshot(request("/plain")).await.unwrap();
+        assert_eq!(policies(plain), [CSP_VALUE]);
     }
 }

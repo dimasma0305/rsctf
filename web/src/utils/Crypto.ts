@@ -54,7 +54,7 @@ async function encryptData(plainTextBytes: Buffer, recipientPublicKeyBase64: str
   return result
 }
 
-export const webCryptoAvailable = !!window.crypto?.subtle
+export const webCryptoAvailable = typeof window !== 'undefined' && !!window.crypto?.subtle
 
 export async function encryptApiData(
   t: (key: string) => string,

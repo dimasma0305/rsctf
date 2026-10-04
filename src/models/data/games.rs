@@ -23,6 +23,18 @@ pub mod game {
         pub accept_without_review: bool,
         pub allow_user_submissions: bool,
         pub writeup_required: bool,
+        /// Opt-in AI chat link disclosure on solved Jeopardy challenges.
+        /// The explicit default keeps entity-derived DDL (fresh installs and
+        /// historical migration tests) insert-compatible without this column.
+        #[sea_orm(default_value = false)]
+        pub ai_chat_links_enabled: bool,
+        /// Every competitive solve must be followed by a disclosure (links or
+        /// an explicit "no AI used"). Effective only with `ai_chat_links_enabled`.
+        #[sea_orm(default_value = false)]
+        pub ai_chat_links_required: bool,
+        /// Opt-in solver uploads on solved Jeopardy challenges for review.
+        #[sea_orm(default_value = false)]
+        pub solver_uploads_enabled: bool,
         pub invite_code: Option<String>,
         pub team_member_count_limit: i32,
         pub discord_webhook: Option<String>,
@@ -35,6 +47,7 @@ pub mod game {
         pub blood_bonus_value: i64,
         pub repo_binding_id: Option<i32>,
         pub event_manifest_path: Option<String>,
+        pub challenge_configuration_revision: i64,
 
         // --- Event VPN access and bounded anti-cheat telemetry ---
         pub vpn_access_required: bool,
@@ -45,6 +58,7 @@ pub mod game {
         pub vpn_device_sharing_telemetry_enabled: bool,
         #[serde(skip)]
         pub vpn_policy_revision: i64,
+        pub configuration_revision: i64,
 
         // --- Attack-Defense / KotH engine tunables ---
         pub ad_warmup_seconds: Option<i32>,
@@ -59,6 +73,8 @@ pub mod game {
         pub ad_snapshot_retention_days: Option<i32>,
         pub ad_scoring_paused: bool,
         pub ad_scoring_paused_at: Option<DateTime<Utc>>,
+        /// Optimistic-concurrency fence for live scoring desired-state commands.
+        pub ad_control_revision: i64,
         /// Number of A&D ticks grouped into one scoring epoch (`1..=64`).
         pub ad_epoch_ticks: i32,
         /// First round included in official epoch scoring. Set once when ready.

@@ -5,9 +5,10 @@ import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
+import { RetryableMutationOwner } from '@Utils/RetryableMutationOwner'
 import { showErrorMsg } from '@Utils/Shared'
 import api, { GameInfoModel } from '@Api'
 
@@ -16,8 +17,9 @@ interface GameCreateModalProps extends ModalProps {
 }
 
 export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
-  const { onAddGame, ...modalProps } = props
+  const { onAddGame, onClose, ...modalProps } = props
   const [disabled, setDisabled] = useState(false)
+  const owner = useRef(new RetryableMutationOwner())
   const navigate = useNavigate()
   const [title, setTitle] = useInputState('')
   const [start, setStart] = useInputState(dayjs())
@@ -25,7 +27,18 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
 
   const { t } = useTranslation()
 
+  useEffect(
+    () => () => {
+      owner.current.cancel()
+    },
+    []
+  )
+
   const onCreate = async () => {
+    const digest = JSON.stringify({ title: title.trim(), start: start.valueOf(), end: end.valueOf() })
+    const lease = owner.current.claim(digest)
+    if (!lease) return
+    setDisabled(true)
     if (!title || end < start) {
       showNotification({
         color: 'red',
@@ -33,17 +46,23 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
         message: t('admin.notification.games.no_title_time'),
         icon: <Icon path={mdiClose} size={1} />,
       })
+      owner.current.settle(lease, true)
+      setDisabled(false)
       return
     }
 
-    setDisabled(true)
-
     try {
-      const res = await api.edit.editAddGame({
-        title,
-        start: start.valueOf(),
-        end: end.valueOf(),
-      })
+      const res = await api.edit.editAddGame(
+        {
+          title,
+          sourceRevision: 0,
+          start: start.valueOf(),
+          end: end.valueOf(),
+        },
+        lease.operationId,
+        { signal: lease.signal }
+      )
+      if (!owner.current.settle(lease, true)) return
       showNotification({
         color: 'teal',
         message: t('admin.notification.games.created'),
@@ -52,18 +71,40 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
       onAddGame(res.data)
       navigate(`/admin/games/${res.data.id}/info`)
     } catch (e) {
+      if (!owner.current.settle(lease, false)) return
       showErrorMsg(e, t)
       setDisabled(false)
     }
   }
 
+  const handleClose = () => {
+    if (owner.current.isActive()) return
+    owner.current.cancel()
+    onClose()
+  }
+
   return (
-    <Modal size="min(36rem, calc(100vw - 2rem))" title={t('admin.button.games.new')} {...modalProps}>
-      <Stack>
+    <Modal
+      size="min(36rem, calc(100vw - 2rem))"
+      title={t('admin.button.games.new')}
+      {...modalProps}
+      onClose={handleClose}
+      closeOnClickOutside={!disabled}
+      closeOnEscape={!disabled}
+      withCloseButton={!disabled}
+    >
+      <Stack
+        component="form"
+        onSubmit={(event) => {
+          event.preventDefault()
+          void onCreate()
+        }}
+      >
         <TextInput
           label={t('admin.content.games.info.title.label')}
           type="text"
           required
+          disabled={disabled}
           w="100%"
           value={title}
           onChange={setTitle}
@@ -82,6 +123,7 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
             }
           }}
           required
+          disabled={disabled}
         />
         <DateTimePicker
           label={t('admin.content.games.info.end_time')}
@@ -95,9 +137,10 @@ export const GameCreateModal: FC<GameCreateModalProps> = (props) => {
           }}
           error={end < start}
           required
+          disabled={disabled}
         />
         <Group grow m="auto" w="100%">
-          <Button fullWidth disabled={disabled} onClick={onCreate}>
+          <Button type="submit" fullWidth disabled={disabled}>
             {t('admin.button.games.new')}
           </Button>
         </Group>

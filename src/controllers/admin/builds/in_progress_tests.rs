@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
 
-use super::load_builds_in_progress;
+use super::{load_builds_in_progress, MAX_IN_PROGRESS_BUILDS};
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
@@ -78,6 +78,23 @@ async fn in_progress_excludes_finished_and_terminal_rows() {
         rows[1].started_at_utc,
         "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
     );
+
+    sqlx::query(
+        r#"INSERT INTO "BuildRecords"
+             (id, challenge_id, game_id, challenge_title, enqueued_at_utc,
+              trigger, kind, attempt, status)
+           SELECT 1000 + item, 1000 + item, 1, 'bulk-' || item,
+                  '2026-02-01T00:00:00Z'::timestamptz + item * interval '1 second',
+                  'Manual', 'Challenge', 1, 5
+             FROM generate_series(1, 250) item"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let bounded = load_builds_in_progress(&pool).await.unwrap();
+    assert_eq!(bounded.len(), MAX_IN_PROGRESS_BUILDS as usize);
+    assert_eq!(bounded.first().unwrap().audit_id, 1250);
+    assert_eq!(bounded.last().unwrap().audit_id, 1051);
 
     pool.close().await;
     sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

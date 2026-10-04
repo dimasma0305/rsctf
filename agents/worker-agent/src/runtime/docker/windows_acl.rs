@@ -102,14 +102,17 @@ impl DockerRuntime {
             .await
         {
             let _ = self
-                .docker
-                .remove_container(
-                    container_id,
-                    Some(bollard::container::RemoveContainerOptions {
-                        force: true,
-                        v: true,
-                        ..Default::default()
-                    }),
+                .admission
+                .lifecycle(
+                    "remove_container",
+                    self.docker.remove_container(
+                        container_id,
+                        Some(bollard::container::RemoveContainerOptions {
+                            force: true,
+                            v: true,
+                            ..Default::default()
+                        }),
+                    ),
                 )
                 .await;
             return Err(error);
@@ -145,14 +148,17 @@ impl DockerRuntime {
             Err(error) => Err(error),
         };
         let _ = self
-            .docker
-            .remove_container(
-                container_id,
-                Some(bollard::container::RemoveContainerOptions {
-                    force: true,
-                    v: true,
-                    ..Default::default()
-                }),
+            .admission
+            .lifecycle(
+                "remove_container",
+                self.docker.remove_container(
+                    container_id,
+                    Some(bollard::container::RemoveContainerOptions {
+                        force: true,
+                        v: true,
+                        ..Default::default()
+                    }),
+                ),
             )
             .await;
         result
@@ -175,9 +181,13 @@ impl DockerRuntime {
         network_name: &str,
     ) -> Result<(Uuid, String, String), RuntimeError> {
         let container = self
-            .docker
-            .inspect_container(container_id, None::<InspectContainerOptions>)
-            .await
+            .admission
+            .read(
+                "inspect_container",
+                self.docker
+                    .inspect_container(container_id, None::<InspectContainerOptions>),
+            )
+            .await?
             .map_err(|error| docker_error("inspect Windows workload endpoint", error))?;
         let labels = container
             .config
@@ -215,9 +225,13 @@ impl DockerRuntime {
             })?;
 
         let network = self
-            .docker
-            .inspect_network(network_name, None::<InspectNetworkOptions<String>>)
-            .await
+            .admission
+            .read(
+                "inspect_network",
+                self.docker
+                    .inspect_network(network_name, None::<InspectNetworkOptions<String>>),
+            )
+            .await?
             .map_err(|error| docker_error("inspect Windows workload network", error))?;
         super::validate_workload_network(
             &network,
@@ -263,22 +277,29 @@ impl DockerRuntime {
             ],
         );
         let containers = self
-            .docker
-            .list_containers(Some(ListContainersOptions {
-                all: true,
-                filters,
-                ..Default::default()
-            }))
-            .await
+            .admission
+            .read(
+                "list_containers",
+                self.docker.list_containers(Some(ListContainersOptions {
+                    all: true,
+                    filters,
+                    ..Default::default()
+                })),
+            )
+            .await?
             .map_err(|error| docker_error("audit Windows workload endpoints", error))?;
         for container in containers {
             let Some(container_id) = container.id.as_deref() else {
                 continue;
             };
             let inspected = self
-                .docker
-                .inspect_container(container_id, None::<InspectContainerOptions>)
-                .await
+                .admission
+                .read(
+                    "inspect_container",
+                    self.docker
+                        .inspect_container(container_id, None::<InspectContainerOptions>),
+                )
+                .await?
                 .map_err(|error| docker_error("inspect Windows workload network", error))?;
             let network_names = inspected
                 .network_settings
@@ -310,12 +331,15 @@ impl DockerRuntime {
                         continue;
                     }
                     if was_running {
-                        self.docker
-                            .start_container(
-                                container_id,
-                                None::<bollard::container::StartContainerOptions<String>>,
+                        self.admission
+                            .lifecycle(
+                                "start_container",
+                                self.docker.start_container(
+                                    container_id,
+                                    None::<bollard::container::StartContainerOptions<String>>,
+                                ),
                             )
-                            .await
+                            .await?
                             .map_err(|error| {
                                 docker_error("restart secured Windows workload", error)
                             })?;
@@ -339,9 +363,13 @@ impl DockerRuntime {
         }
         if let Some(id) = container.id.as_deref() {
             self.ready_containers.remove(id);
-            self.docker
-                .stop_container(id, Some(StopContainerOptions { t: 5 }))
-                .await
+            self.admission
+                .lifecycle(
+                    "stop_container",
+                    self.docker
+                        .stop_container(id, Some(StopContainerOptions { t: 5 })),
+                )
+                .await?
                 .map_err(|error| docker_error("stop unverified Windows workload", error))?;
         }
         Ok(())
@@ -355,16 +383,19 @@ impl DockerRuntime {
             return Ok(());
         };
         self.ready_containers.remove(id);
-        self.docker
-            .remove_container(
-                id,
-                Some(bollard::container::RemoveContainerOptions {
-                    force: true,
-                    v: true,
-                    ..Default::default()
-                }),
+        self.admission
+            .lifecycle(
+                "remove_container",
+                self.docker.remove_container(
+                    id,
+                    Some(bollard::container::RemoveContainerOptions {
+                        force: true,
+                        v: true,
+                        ..Default::default()
+                    }),
+                ),
             )
-            .await
+            .await?
             .map_err(|error| docker_error("remove unverified Windows workload", error))
     }
 }

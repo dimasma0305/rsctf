@@ -13,6 +13,10 @@ const FIRST_SOLVE_SCOREBOARD_SQL: &str = r#"SELECT submission.participation_id, 
            ON submission.id = first_solve.submission_id
           AND submission.participation_id = first_solve.participation_id
           AND submission.challenge_id = first_solve.challenge_id
+         JOIN "Games" game
+           ON game.id = submission.game_id
+          AND submission.submit_time_utc >= game.start_time_utc
+          AND submission.submit_time_utc < game.end_time_utc
          JOIN "GameChallenges" challenge
            ON challenge.id = submission.challenge_id
           AND challenge.game_id = submission.game_id
@@ -115,6 +119,23 @@ pub(crate) fn maximum_jeopardy_contribution(score: i32, bonus: i64, blood_eligib
         .fold(score, i32::max)
 }
 
+fn solve_contribution(
+    score: i32,
+    bonus: i64,
+    submission_type: SubmissionType,
+    blood_bonus_disabled: bool,
+) -> i32 {
+    if blood_bonus_disabled {
+        return score;
+    }
+    match submission_type {
+        SubmissionType::FirstBlood => blood_adjusted_score(score, bonus, 0),
+        SubmissionType::SecondBlood => blood_adjusted_score(score, bonus, 1),
+        SubmissionType::ThirdBlood => blood_adjusted_score(score, bonus, 2),
+        _ => score,
+    }
+}
+
 fn compare_scoreboard_rows(
     a: &(ScoreboardItem, DateTime<Utc>),
     b: &(ScoreboardItem, DateTime<Utc>),
@@ -161,32 +182,97 @@ fn build_timeline_series(item: &ScoreboardItem) -> Json {
 /// collapsing every client's ~10s `/details` + `/scoreboard` poll into at most one
 /// full recompute per variant per window (they were recomputed on every request).
 const SCOREBOARD_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+const PARTICIPANT_INDEX_MAX_GAMES: usize = 256;
 
-/// Cache keys keyed on `(game, is_monitor)`: `_ScoreBoard_{id}` (monitor/live) and
-/// `_ScoreBoardFrozen_{id}` (public, freeze-aware) — exactly the keys the cron /
-/// team / admin paths already invalidate.
-fn scoreboard_cache_key(g: &game::Model, is_monitor: bool) -> String {
-    if is_monitor {
-        format!("_ScoreBoard_{}", g.id)
-    } else {
-        format!("_ScoreBoardFrozen_{}", g.id)
+#[derive(Clone)]
+struct ParticipantScoreboardIndex {
+    expires_at: std::time::Instant,
+    items: std::sync::Arc<HashMap<i32, ScoreboardItem>>,
+}
+
+static PARTICIPANT_SCOREBOARD_INDEX: std::sync::LazyLock<
+    std::sync::RwLock<HashMap<String, ParticipantScoreboardIndex>>,
+> = std::sync::LazyLock::new(Default::default);
+
+static PARTICIPANT_SCOREBOARD_SF: std::sync::LazyLock<
+    crate::utils::single_flight::SingleFlight<Option<ParticipantScoreboardIndex>>,
+> = std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
+
+fn participant_index_from_board(board: &ScoreboardModel) -> ParticipantScoreboardIndex {
+    ParticipantScoreboardIndex {
+        expires_at: std::time::Instant::now() + SCOREBOARD_CACHE_TTL,
+        items: std::sync::Arc::new(
+            board
+                .items
+                .iter()
+                .cloned()
+                .map(|item| (item.id, item))
+                .collect(),
+        ),
     }
 }
 
-/// The scoreboard's wire body as a raw JSON string, from cache or freshly built.
+fn participant_index_get(key: &str) -> Option<ParticipantScoreboardIndex> {
+    let now = std::time::Instant::now();
+    let cached = PARTICIPANT_SCOREBOARD_INDEX
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(key)
+        .filter(|entry| entry.expires_at > now)
+        .cloned();
+    if cached.is_some() {
+        return cached;
+    }
+    PARTICIPANT_SCOREBOARD_INDEX
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .retain(|_, entry| entry.expires_at > now);
+    None
+}
+
+fn participant_index_store(key: String, index: ParticipantScoreboardIndex) {
+    let mut cache = PARTICIPANT_SCOREBOARD_INDEX
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let now = std::time::Instant::now();
+    cache.retain(|_, entry| entry.expires_at > now);
+    if cache.len() >= PARTICIPANT_INDEX_MAX_GAMES && !cache.contains_key(&key) {
+        if let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.expires_at)
+            .map(|(key, _)| key.clone())
+        {
+            cache.remove(&oldest);
+        }
+    }
+    cache.insert(key, index);
+}
+
+/// Versioned cache keys keep a rolling old standard-scoreboard replica (which
+/// expects raw JSON) from serving the new atomic bundle as JSON. Cron/team/admin
+/// invalidation removes both this namespace and the preceding raw namespace.
+fn scoreboard_cache_key(g: &game::Model, is_monitor: bool) -> String {
+    if is_monitor {
+        format!("_ScoreBoardWireV2_{}", g.id)
+    } else {
+        format!("_ScoreBoardWireV2Frozen_{}", g.id)
+    }
+}
+
+/// The scoreboard's wire body as one atomic raw/gzip/Brotli cache bundle.
 ///
-/// Our success responses are the **raw model** (no envelope), so the cached JSON
-/// string *is* the response body — on a hit it's returned verbatim, skipping the
-/// `deserialize -> Model -> re-serialize` round-trip a 2–3 KB board would
-/// otherwise pay on every request. The hot `/scoreboard` handler ships these
-/// bytes straight to the client. The public variant is freeze-aware *inside*
+/// Our success responses are the **raw model** (no envelope), so the bundle's
+/// identity slice remains the exact response body. A hit skips both the
+/// `deserialize -> Model -> re-serialize` round-trip and compression; the hot
+/// `/scoreboard` handler selects a zero-copy identity/gzip/Brotli slice. The
+/// public variant is freeze-aware *inside*
 /// [`build_scoreboard`], so a cached copy can never leak post-freeze solves (only
 /// ever up to `SCOREBOARD_CACHE_TTL` stale).
 /// Coalesces concurrent scoreboard recomputes so a cache-TTL-expiry stampede
 /// doesn't dogpile the DB — at 500 clients, every request in flight when the 5s
 /// cache expired used to rebuild the board (an all-submissions scan + scoring)
 /// simultaneously, spiking Postgres. Now one caller rebuilds per key, the rest
-/// await its JSON.
+/// await its bundle.
 static SCOREBOARD_SF: std::sync::LazyLock<
     crate::utils::single_flight::SingleFlight<Option<bytes::Bytes>>,
 > = std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
@@ -227,16 +313,29 @@ pub(crate) fn invalidate_game_row_cache(id: i32) {
     }
 }
 
-/// The scoreboard's wire body as raw bytes, from cache or freshly built. On a hit
-/// the returned `Bytes` is a refcount clone (no copy) and the handler ships it as
-/// the response body with zero copy.
-pub(crate) async fn build_scoreboard_json(
+async fn cached_scoreboard_bundle(st: &SharedState, key: &str) -> Option<bytes::Bytes> {
+    let bytes = st.cache.get(key).await?;
+    if super::scoreboard_encoding::valid_bundle(&bytes) {
+        return Some(bytes);
+    }
+    tracing::warn!(
+        cache_key = key,
+        "evicting corrupt standard scoreboard cache entry"
+    );
+    st.cache.remove(key).await;
+    None
+}
+
+/// The scoreboard's atomic encoding bundle, from cache or freshly built. On a
+/// hit the returned `Bytes` is a refcount clone and the handler selects the
+/// negotiated representation without hashing or recompressing it.
+pub(crate) async fn build_scoreboard_bundle(
     st: &SharedState,
     g: &game::Model,
     is_monitor: bool,
 ) -> AppResult<bytes::Bytes> {
     let key = scoreboard_cache_key(g, is_monitor);
-    if let Some(bytes) = st.cache.get(&key).await {
+    if let Some(bytes) = cached_scoreboard_bundle(st, &key).await {
         return Ok(bytes);
     }
     // Miss: single-flight the rebuild. A failed leader is broadcast as one
@@ -245,18 +344,42 @@ pub(crate) async fn build_scoreboard_json(
     let coalesced = SCOREBOARD_SF
         .run(&key, move || async move {
             // Another leader may have just populated the cache.
-            if let Some(bytes) = st2.cache.get(&key2).await {
+            if let Some(bytes) = cached_scoreboard_bundle(&st2, &key2).await {
                 return Some(bytes);
             }
             let model = build_scoreboard(&st2, &g2, is_monitor).await.ok()?;
-            let json = serde_json::to_vec(&model).ok()?;
-            st2.cache
-                .set(&key2, &json, Some(SCOREBOARD_CACHE_TTL))
-                .await;
-            Some(bytes::Bytes::from(json))
+            participant_index_store(key2.clone(), participant_index_from_board(&model));
+            let raw = bytes::Bytes::from(serde_json::to_vec(&model).ok()?);
+            let built = super::scoreboard_encoding::build_stable_bundle(
+                raw,
+                key2.clone(),
+                b"\"updateTimeUtc\":",
+            )
+            .await
+            .ok()?;
+            if built.cacheable {
+                let ttl = super::scoreboard_encoding::final_or_live_cache_ttl(
+                    !g2.practice_mode && Utc::now() >= g2.end_time_utc,
+                    SCOREBOARD_CACHE_TTL,
+                );
+                st2.cache.set(&key2, &built.bytes, Some(ttl)).await;
+            }
+            Some(built.bytes)
         })
         .await;
     coalesced.ok_or_else(|| AppError::internal("scoreboard cache fill failed"))
+}
+
+/// Identity JSON for internal projections. The body slice is zero-copy even
+/// though the shared cache entry also carries negotiated encodings and a stable
+/// validator.
+pub(crate) async fn build_scoreboard_json(
+    st: &SharedState,
+    g: &game::Model,
+    is_monitor: bool,
+) -> AppResult<bytes::Bytes> {
+    let bundle = build_scoreboard_bundle(st, g, is_monitor).await?;
+    super::scoreboard_encoding::identity_body(bundle)
 }
 
 /// [`build_scoreboard_json`] as a deserialized [`ScoreboardModel`], for callers
@@ -269,6 +392,42 @@ pub(crate) async fn build_scoreboard_cached(
 ) -> AppResult<ScoreboardModel> {
     let bytes = build_scoreboard_json(st, g, is_monitor).await?;
     serde_json::from_slice::<ScoreboardModel>(&bytes).map_err(|e| AppError::internal(e.to_string()))
+}
+
+/// Return one participant row without making every caller deserialize and scan
+/// the event-wide scoreboard. One replica builds this bounded index per shared
+/// scoreboard generation; synchronized misses coalesce on the scoreboard key.
+pub(crate) async fn build_participant_scoreboard_item(
+    st: &SharedState,
+    g: &game::Model,
+    is_monitor: bool,
+    team_id: i32,
+) -> AppResult<Option<ScoreboardItem>> {
+    let key = scoreboard_cache_key(g, is_monitor);
+    if let Some(index) = participant_index_get(&key) {
+        return Ok(index.items.get(&team_id).cloned());
+    }
+
+    let st = st.clone();
+    let game = g.clone();
+    let flight_key = key.clone();
+    let index = PARTICIPANT_SCOREBOARD_SF
+        .run(&key, move || async move {
+            if let Some(index) = participant_index_get(&flight_key) {
+                return Some(index);
+            }
+            let bytes = build_scoreboard_json(&st, &game, is_monitor).await.ok()?;
+            if let Some(index) = participant_index_get(&flight_key) {
+                return Some(index);
+            }
+            let board = serde_json::from_slice::<ScoreboardModel>(&bytes).ok()?;
+            let index = participant_index_from_board(&board);
+            participant_index_store(flight_key, index.clone());
+            Some(index)
+        })
+        .await
+        .ok_or_else(|| AppError::internal("participant scoreboard index fill failed"))?;
+    Ok(index.items.get(&team_id).cloned())
 }
 
 pub(crate) async fn build_scoreboard(
@@ -301,11 +460,13 @@ pub(crate) async fn build_scoreboard(
     let meta_of: HashMap<i32, &game_challenge::Model> =
         challenges.iter().map(|c| (c.id, c)).collect();
 
-    // FirstSolves is the canonical one-row-per-team-and-challenge scoring set.
-    // Joining back to its accepted submission provides the timestamp/user while
-    // bounding this hot read by teams × challenges instead of the unbounded
-    // submission history. The redundant key joins fail closed if legacy data is
-    // inconsistent; the Rust map below remains a defensive uniqueness guard.
+    // FirstSolves is the canonical one-row-per-team-and-challenge accepted set.
+    // Joining back to its submission provides the timestamp/user; joining Games
+    // enforces the official [start, end) score window even when practice mode lets
+    // players keep submitting after close. This bounds the hot read by teams ×
+    // challenges instead of the unbounded submission history. The redundant key
+    // joins fail closed if legacy data is inconsistent; the Rust map below remains
+    // a defensive uniqueness guard.
     let subs: Vec<(i32, i32, DateTime<Utc>, Option<Uuid>)> =
         sqlx::query_as(FIRST_SOLVE_SCOREBOARD_SQL)
             .bind(game_id)
@@ -344,6 +505,7 @@ pub(crate) async fn build_scoreboard(
     // The game's divisions (top-level `divisions` list; RSCTF `DivisionItem`: id + name).
     let divisions = division::Entity::find()
         .filter(division::Column::GameId.eq(game_id))
+        .order_by_asc(division::Column::Id)
         .all(&st.db)
         .await?;
     let divisions_json: Vec<Json> = divisions
@@ -409,8 +571,8 @@ pub(crate) async fn build_scoreboard(
     // inside the game window and before the challenge deadline; the division's
     // GamePermission then gates GetScore / AffectDynamicScore / GetBlood independently.
     // `accepted_count` (the dynamic solve count) is driven by AffectDynamicScore, not
-    // GetScore. Practice mode waives the game-window bound — a task-directed deviation
-    // from RSCTF, whose `GenScoreboard` window check is unconditional.
+    // GetScore. Practice mode keeps challenges playable after close, but official
+    // standings and dynamic decay always remain inside the event window.
     let mut accepted_count: HashMap<i32, i32> = HashMap::new();
     // (time, part_id, chal_id, score_eligible, blood_eligible, user_id)
     let mut solve_list: Vec<EligibleSolve> = Vec::new();
@@ -426,7 +588,7 @@ pub(crate) async fn build_scoreboard(
             if cutoff.is_some_and(|cut| *t >= cut) {
                 continue;
             }
-            let within_window = g.practice_mode || (*t >= g.start_time_utc && *t < g.end_time_utc);
+            let within_window = *t >= g.start_time_utc && *t < g.end_time_utc;
             let within_deadline = challenge.deadline_utc.is_none_or(|d| *t <= d);
             let within_valid = within_window && within_deadline;
             let perm = perm_of(p.division_id, *cid);
@@ -467,7 +629,11 @@ pub(crate) async fn build_scoreboard(
     let bonus = g.blood_bonus_value;
 
     // Assign blood tiers + per-solve contributions in submit-time order.
-    solve_list.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    solve_list.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
     let mut per_part_items: HashMap<i32, Vec<ChallengeItem>> = HashMap::new();
     // Last SCORE-ELIGIBLE solve time per participation (RSCTF only advances
     // LastSubmissionTime for scoring solves, so ineligible late solves can't push a
@@ -487,7 +653,7 @@ pub(crate) async fn build_scoreboard(
         // first/second/third-blood SLOT, which would downgrade the tier of every
         // legitimately-scoring solver after it (RSCTF gates blood on BloodEligible
         // && ScoreEligible).
-        if *blood_eligible && *score_eligible && !disable_blood {
+        if *blood_eligible && *score_eligible {
             let count = blood_count.entry(*chal_id).or_insert(0);
             if *count < 3 {
                 sub_type = match *count {
@@ -506,17 +672,11 @@ pub(crate) async fn build_scoreboard(
                 }
             }
         }
-        // Contribution: 0 when the division cannot score this challenge; otherwise the
-        // base score for Normal solves and the banker's-rounded blood-adjusted score
-        // for the three bloods. When the game's blood bonus is zero the factor is
-        // exactly 1.0, so this collapses to the base score (RSCTF `NoBonus` branch).
+        // Blood classification and the scoreboard badge are independent of the
+        // optional point multiplier. Disabling the bonus keeps the tier but uses
+        // the base score, matching the organizer-facing setting's meaning.
         let contribution = if *score_eligible {
-            match sub_type {
-                SubmissionType::FirstBlood => blood_adjusted_score(score, bonus, 0),
-                SubmissionType::SecondBlood => blood_adjusted_score(score, bonus, 1),
-                SubmissionType::ThirdBlood => blood_adjusted_score(score, bonus, 2),
-                _ => score,
-            }
+            solve_contribution(score, bonus, sub_type, disable_blood)
         } else {
             0
         };
@@ -642,6 +802,10 @@ pub(crate) async fn build_scoreboard(
 }
 
 #[cfg(test)]
+#[path = "scoreboard_wire_tests.rs"]
+mod scoreboard_wire_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use sqlx::Connection;
@@ -708,6 +872,19 @@ mod tests {
     }
 
     #[test]
+    fn disabled_blood_bonus_preserves_tier_without_extra_points() {
+        let bonus = 500_i64 << 20;
+        assert_eq!(
+            solve_contribution(100, bonus, SubmissionType::FirstBlood, false),
+            150
+        );
+        assert_eq!(
+            solve_contribution(100, bonus, SubmissionType::FirstBlood, true),
+            100
+        );
+    }
+
+    #[test]
     fn game_row_invalidation_fences_an_inflight_generation() {
         let game_id = i32::MIN;
         let before = game_row_cache_generation(game_id);
@@ -715,14 +892,40 @@ mod tests {
         assert_ne!(game_row_cache_generation(game_id), before);
     }
 
+    #[test]
+    fn participant_index_projects_one_team_without_rescanning_the_board() {
+        let first = row(7, 120, DateTime::<Utc>::MIN_UTC).0;
+        let second = row(9, 80, DateTime::<Utc>::MIN_UTC).0;
+        let board = ScoreboardModel {
+            update_time_utc: DateTime::<Utc>::MIN_UTC,
+            blood_bonus: 0,
+            timelines: Vec::new(),
+            items: vec![first, second],
+            divisions: Vec::new(),
+            challenges: BTreeMap::new(),
+            challenge_count: 0,
+            freeze: None,
+            is_frozen_view: false,
+        };
+
+        let index = participant_index_from_board(&board);
+        assert_eq!(index.items.len(), 2);
+        assert_eq!(index.items.get(&9).map(|item| item.score), Some(80));
+        assert!(index.items.get(&404).is_none());
+    }
+
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn canonical_first_solve_query_ignores_duplicate_accepted_history() {
+    async fn canonical_first_solve_query_ignores_history_outside_the_event_window() {
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
             .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
         let mut connection = sqlx::PgConnection::connect(&database_url).await.unwrap();
         sqlx::raw_sql(
-            r#"CREATE TEMP TABLE "GameChallenges" (
+            r#"CREATE TEMP TABLE "Games" (
+                 id INTEGER PRIMARY KEY, practice_mode BOOLEAN NOT NULL,
+                 start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL
+               );
+               CREATE TEMP TABLE "GameChallenges" (
                  id INTEGER PRIMARY KEY, game_id INTEGER,
                  is_enabled BOOLEAN, review_status SMALLINT
                );
@@ -735,11 +938,18 @@ mod tests {
                  participation_id INTEGER, challenge_id INTEGER,
                  submission_id INTEGER
                );
+               INSERT INTO "Games" VALUES (
+                 7, TRUE, '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z'
+               );
                INSERT INTO "GameChallenges" VALUES (9, 7, TRUE, 0);
                INSERT INTO "Submissions" VALUES
                  (101, 11, 9, 7, 1, '2026-01-01T00:00:00Z', NULL),
-                 (102, 11, 9, 7, 1, '2026-01-01T00:01:00Z', NULL);
-               INSERT INTO "FirstSolves" VALUES (11, 9, 101);"#,
+                 (102, 11, 9, 7, 1, '2026-01-01T00:01:00Z', NULL),
+                 (103, 12, 9, 7, 1, '2025-12-31T23:59:59.999Z', NULL),
+                 (104, 13, 9, 7, 1, '2026-01-01T01:00:00Z', NULL),
+                 (105, 14, 9, 7, 1, '2026-01-01T01:00:00.001Z', NULL);
+               INSERT INTO "FirstSolves" VALUES
+                 (11, 9, 101), (12, 9, 103), (13, 9, 104), (14, 9, 105);"#,
         )
         .execute(&mut connection)
         .await

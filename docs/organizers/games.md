@@ -4,7 +4,7 @@ A game is the event container for teams, divisions, notices, challenges, scorebo
 
 ## Core schedule and visibility
 
-Set the title, start time, end time, summary, content, and poster. Keep an unfinished game hidden. Verify the rendered public page with a non-admin account; administrator access can hide visibility mistakes.
+Set the title, start time, end time, summary, content, and poster. A hidden game is **unlisted**: it stays out of public event discovery, but anyone with its direct `/games/{id}` link can open it and signed-in users can join under the normal invitation-code, team, division, and review rules. Hidden is not an access restriction; keep unfinished challenges disabled and use an invitation code when registration should be restricted. Verify the rendered event page with a non-admin account; administrator access can hide permission mistakes.
 
 ## Participation policy
 
@@ -42,9 +42,221 @@ selector or live scoring-policy override.
 
 When at least two challenge formats are active, the public scoreboard opens on an **Overall** tab. RSCTF normalizes each format to 0-100 and gives it one fixed budget unit per enabled, approved challenge. Jeopardy is divided by the attainable score allowed by the team's division, including blood-bonus headroom; A&D and KotH use their official settled epoch totals. Dynamic Jeopardy values stay inside the Jeopardy component and never alter its outer challenge count. Challenge eligibility and counts lock at the competition boundary, and the formula is absolute rather than leader-relative, so field composition cannot rescale a team's result. See the [Overall scoreboard guide](../players/overall-scoreboard).
 
+## Back up and restore competition data
+
+Two buttons move one event's results between installations: **Export Data**
+on the game's Info page (game managers and administrators), and **Import
+Data** on the admin games list (administrators only). Export produces
+`game-{id}-data.zip`; Import accepts that archive and creates a new hidden game
+from it.
+
+The archive contains the game definition, its attachments and writeups, the
+roster (teams, members, participations), every Jeopardy record (submissions,
+first solves, events, notices, reviews, writeup grades, AI chat links in
+`aiChatLinks`, `aiChatLinkEvents`, solver uploads in `solverUploads`), every A&D and KotH
+record and rollup (rounds, flags, attacks, checks, cycles, tokens), cheat and
+anti-cheat evidence, and telemetry. Each table is written as JSON Lines under
+`data/`. Rendered scoreboards are stored under `scoreboards/`, and
+`manifest.json` records the row count of every table.
+
+The archive deliberately excludes password hashes, security stamps, VPN private
+keys, team and observer API tokens, lease tokens, and container references.
+An archive is therefore not a credential backup and cannot revive a running
+instance.
+
+Restore semantics:
+
+- Import always creates a **new hidden game**. It never overwrites an existing
+  game, so a restore can be inspected before anyone else sees it.
+- Import is only allowed for events whose end time has passed. An archive of
+  a running or future event is rejected.
+- Users are matched by id, then by email, then by username. Unmatched users are
+  created as placeholder accounts that keep their archived id and profile but
+  have no password; they regain access through password reset. Matched teams
+  gain any archived member they were missing.
+- Teams are matched by identical id and name; otherwise they are created.
+- Participation tokens are regenerated and solve counts are recomputed after
+  the rows are restored. Competitive admission timestamps are assigned by the
+  database and stay empty on the restored copy; the archive keeps the original
+  values for reference.
+- VPN telemetry, build records, challenge variants, solve-receipt audit rows,
+  and flag-delivery results are exported for reference but not restored.
+- Live hill indicators on the KotH board (current container, latest checker
+  verdict, reset phase) are not restored because container references are
+  never archived; every score, epoch, and rollup is.
+
+Bounds: at most 500,000 rows per table; the uploaded archive is limited to
+64 MiB and to 256 MiB when expanded; attachments plus writeups are limited to
+128 MiB. When the attachment files exceed that limit, Export Data offers to
+export without them (`?attachments=skip` on the API): every score and record is
+still included and the attachment metadata is kept, but the files are empty
+after a restore. Keep the challenge files in their repository or take a
+storage backup alongside.
+
+Use a PostgreSQL dump for full-platform disaster recovery (see
+[Back up and update](../deploy/operations)). Use this archive for per-event
+backups and for moving one event between installations.
+
+## Discord blood announcements
+
+Set the game's Discord webhook to an official HTTPS `discord.com/api/webhooks/...`
+URL to announce first, second, and third blood for Jeopardy challenges. Turning
+off a challenge's blood bonus removes only the extra points; the blood badge and
+announcement remain active. Announcements reached during a scoreboard freeze
+stay queued until the game ends so the webhook cannot leak frozen solves. The
+delivery worker retries temporary Discord failures with a bounded backoff, but
+does not replay bloods that occurred before webhook delivery was enabled.
+
 ## Writeups
 
 If writeups are required, set the deadline and explain the accepted format to players. The current server accepts one lowercase `.pdf` per team, up to 20 MiB; a replacement upload overwrites the previous submission.
+
+## AI chat links
+
+Turn on **AI chat links** on the game's Info page to let teams disclose the AI
+chats they used. The switch is off for new games, applies only to Jeopardy
+challenges, and can be changed at any time because it does not affect scoring.
+
+When it is on, a team that has solved a challenge sees an **AI chat links**
+section on that challenge card. Any member can attach, replace, or remove up to
+five public share links per challenge until the later of the event end and the
+writeup deadline. Unsolved challenges, A&D, and KotH challenges do not accept
+links. The server normalizes each link and accepts it only when it matches an
+enabled provider; administrators manage that list under
+[AI chat providers](../reference/configuration#ai-chat-providers).
+
+Users with the Monitor or Admin platform role review the links under
+**Monitoring → AI chats**, newest first. Each entry names the team, challenge,
+member who last saved it, and time. A link whose provider has since been
+switched off or deleted stays visible and is marked as no longer accepted.
+Turning the event switch off hides the section from players but keeps the saved
+links readable in the monitor.
+
+![Monitor AI chats list with team, challenge, provider, and saved links](/screenshots/ai-chat-links-monitor.png)
+
+### Requiring a disclosure
+
+Turn on **Require disclosure after every solve** (below the AI chat links
+switch) to make disclosure mandatory. After each Jeopardy solve inside the
+competition window, the team must either attach at least one share link or
+declare **No AI used**. Until it does:
+
+- the solved challenge card cannot be closed right after the solve and opens
+  its AI chat section with a "Disclosure required" notice;
+- the challenge page shows a banner listing every solved challenge that still
+  needs a disclosure, and those challenges carry a "Disclosure needed" badge;
+- monitors see the solve with status **Missing**.
+
+The requirement never withholds points or blocks flag submission; it records
+and surfaces non-compliance so organizers can act on it under the event rules.
+Turning it on mid-event also applies to earlier solves. Removing every link
+(without declaring No AI used) makes the disclosure pending again.
+
+### Disclosure telemetry
+
+Every create, edit, and clear of a team's disclosure is recorded for cheat
+review in an append-only history. Each entry stores:
+
+- who made the change and the server time it happened;
+- the team's solve time and the seconds elapsed since that solve;
+- the links before and after the change, and which links were added or
+  removed, plus any change to the No AI used declaration;
+- a keyed hash of the client network address (the raw address is never
+  stored), shown to monitors as a 12-character network hint for correlation.
+
+An identical re-save is not recorded. In **Monitoring → AI chats**, filter by
+status (**Links**, **No AI**, **Missing**); each entry shows the solve time,
+the first disclosure time and the delay between them, and the number of edits.
+**History** opens the full change log for that team and challenge. The history
+is included in the competition data archive.
+
+![AI chat disclosure history with created, edited, and cleared entries](/screenshots/ai-chat-links-history.png)
+
+The server stores the links but never fetches them, so it does not verify
+that a chat exists or what it contains. A share link opens content chosen by a
+player; open it in a separate browser profile that is not signed in to rsctf
+or to your own AI accounts.
+
+## Solver uploads
+
+Turn on **Solver uploads** on the game's Info page to let teams upload the
+solver they used, so you can verify a solve. It is off by default, it applies
+to Jeopardy challenges only, and uploading is always optional for teams: it
+never blocks the challenge card or affects points.
+
+When it is on, a team that has solved a challenge sees a **Solver** section on
+the challenge card. Any member can upload a file until the later of the event
+end and the writeup deadline:
+
+- at most 1 MiB per file, any file type;
+- each upload is a new, immutable version; teams cannot delete or replace
+  earlier versions;
+- at most 10 versions per challenge and 16 MiB per team for the whole event.
+
+Each version records the uploader, the server time, the seconds since the
+team's solve, the SHA-256 of the file, and a keyed hash of the client network
+address. A retried upload with the same operation id is stored only once.
+
+Review uploads under **Monitoring → Solvers**, most recent first, optionally
+filtered by challenge. Each entry lists every version of one team's solver for
+one challenge; **Download** saves a version as an attachment. The server
+stores the bytes in PostgreSQL and never runs them; the
+[agent-trace scanner](#ai-agent-traces) only reads them as data. The download
+is always sent as `application/octet-stream` with `nosniff` and a sandbox
+policy. A solver is untrusted code from a player: read it before you
+run it, and run it only in a disposable environment. Uploads stay reviewable
+after the switch is turned off and are included in the competition data
+archive.
+
+![Monitor solver list with team, challenge, versions, timing, and download buttons](/screenshots/solver-uploads-monitor.png)
+
+## AI agent traces
+
+Solver uploads and writeups are scanned for traces that AI agent tools leave
+in files, for example a coding agent's session scratchpad path such as
+`/tmp/claude-0/<project>/<session-id>/scratchpad/...`, its commit trailers, or
+its local project store (Linux, macOS, and Windows paths). A solver is scanned
+when the team's solve of that challenge fell inside the event window; a
+writeup when the team was admitted to the competition. Keeping challenges
+playable after the end does not turn scanning off, but solves made after the
+end are not scanned.
+
+Scanning reads the file as data and never runs it: raw bytes, text recovered
+from PDF pages (including browser-printed PDFs, common stream filters, and
+pages wrapped by tools such as `pdfjam`, with wrapped lines joined), UTF-16
+text files, and the members of zip or gzip archives, all under fixed size and
+decompression limits. A writeup is scanned from the uploaded bytes, so
+replacing it quickly does not skip the first file. Scanning runs in the
+background after an upload, so it never delays or fails the upload.
+
+A match adds two cheat-report rules, visible under **Monitoring → Cheat
+detection**:
+
+| Rule | When | Default weight | Tier |
+| --- | --- | --- | --- |
+| `AgentArtifact` | A solver version or the team's writeup contains a trace | 40 | Behavioral |
+| `AiDeclarationContradiction` | The team declared "No AI used" for a challenge whose own solver upload contains a trace | 60 | Strong |
+
+The contradiction is raised in either order: an upload after the declaration,
+or a declaration after the upload. It uses the team's disclosure history, so a
+"No AI used" declaration that was later changed or cleared still counts. Open a finding to see the matched file,
+version, SHA-256, signature, where it was found, the matched text, the
+uploader, and for a contradiction the team's declaration and when it was first
+made. Weights are adjustable like every other rule, and nothing is decided
+automatically.
+
+A trace shows which tool touched the file, not that a rule was broken. If your
+event allows AI, treat `AgentArtifact` as context and ask the team; the
+contradiction is about the team's own statement, so it holds regardless of
+your AI policy. Text drawn as outlines or hidden behind a font without a
+Unicode map cannot be recovered from a PDF, so a missing trace is not evidence
+of anything.
+
+Manage the signatures under
+[Settings → Agent signatures](../reference/configuration#agent-signatures).
+Files uploaded before a signature existed are not rescanned automatically: use
+**Rescan uploads** on the event's cheat detection page (administrators only).
+A rescan is idempotent and never duplicates evidence or score.
 
 ## A&D and KotH timing
 

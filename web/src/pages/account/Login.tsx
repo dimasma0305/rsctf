@@ -3,7 +3,7 @@ import { useDisclosure, useInputState } from '@mantine/hooks'
 import { showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import { AccountView } from '@Components/AccountView'
@@ -11,6 +11,8 @@ import { Captcha, useCaptchaRef } from '@Components/Captcha'
 import { OAuthButtons } from '@Components/OAuthButtons'
 import { TermsOfService } from '@Components/TermsOfService'
 import { encryptApiData } from '@Utils/Crypto'
+import { collectEncryptedFingerprintIdentity } from '@Utils/FingerprintIdentity'
+import { setAuthSession } from '@Utils/AuthState'
 import { tryGetClientError } from '@Utils/Shared'
 import { useConfig } from '@Hooks/useConfig'
 import { usePageTitle } from '@Hooks/usePageTitle'
@@ -28,26 +30,17 @@ const Login: FC = () => {
   const [unameError, setUnameError] = useState<string | null>(null)
   const [pwdError, setPwdError] = useState<string | null>(null)
   const [disabled, setDisabled] = useState(false)
-  const [needRedirect, setNeedRedirect] = useState(false)
   const [accepted, setAccepted] = useState(false)
   const [tosOpened, { open: openTos, close: closeTos }] = useDisclosure(false)
+  const loginOperationRef = useRef<{ controller: AbortController; running: boolean } | null>(null)
 
   const { captchaRef, getToken, cleanUp } = useCaptchaRef()
-  const { user, mutate } = useUser()
+  const { mutate } = useUser()
   const { config } = useConfig()
 
   const { t } = useTranslation()
 
   usePageTitle(t('account.title.login'))
-
-  useEffect(() => {
-    if (needRedirect && user) {
-      setNeedRedirect(false)
-      setTimeout(() => {
-        navigate(params.get('from') ?? '/')
-      }, 200)
-    }
-  }, [user, needRedirect])
 
   // Surface OAuth callback errors redirected here as ?error=oauth_* (the backend redirects
   // to /account/login on any external sign-in failure or admin-approval-pending outcome).
@@ -90,7 +83,17 @@ const Login: FC = () => {
     })
   }, [])
 
-  const executeLogin = async () => {
+  useEffect(() => () => loginOperationRef.current?.controller.abort(), [])
+
+  const executeLogin = async (consentGranted = false) => {
+    let operation = loginOperationRef.current
+    if (operation?.running) return
+    if (operation && !consentGranted) return
+    if (!operation) {
+      operation = { controller: new AbortController(), running: false }
+      loginOperationRef.current = operation
+    }
+
     const unameInvalid = uname.length === 0
     const pwdInvalid = pwd.length < 6
     if (unameInvalid || pwdInvalid) {
@@ -106,61 +109,42 @@ const Login: FC = () => {
         message: t('common.error.check_input'),
         icon: <Icon path={mdiClose} size={1} />,
       })
-      setDisabled(false)
+      loginOperationRef.current = null
       return
     }
 
     setUnameError(null)
     setPwdError(null)
 
-    if (config.enableBrowserFingerprint && !accepted) {
+    if (config.enableBrowserFingerprint && !accepted && !consentGranted) {
       openTos()
       return
     }
-
-    const { valid, token } = await getToken()
-
-    if (!valid) {
-      showNotification({
-        color: 'orange',
-        title: t('account.notification.captcha.not_valid'),
-        message: t('common.error.try_later'),
-        loading: true,
-      })
-      return
-    }
-
+    operation.running = true
     setDisabled(true)
 
-    showNotification({
-      color: 'orange',
-      id: 'login-status',
-      title: t('account.notification.captcha.request_sent.title'),
-      message: t('account.notification.captcha.request_sent.message'),
-      loading: true,
-      autoClose: false,
-    })
-
     try {
-      const fingerprintPayload = config.enableBrowserFingerprint
-        ? await (async () => {
-            // Avoid loading/running fingerprinting code unless the feature is enabled.
-            const challengeResponse = await api.account.accountFingerprintChallenge()
-            const challenge = challengeResponse.data.data
-            if (!challenge?.nonce || !challenge.requiredSignals) {
-              throw new Error('Invalid fingerprint challenge')
-            }
+      const { valid, token } = await getToken()
+      if (!valid) {
+        showNotification({
+          color: 'orange',
+          title: t('account.notification.captcha.not_valid'),
+          message: t('common.error.try_later'),
+        })
+        return
+      }
 
-            const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
-            const payload = await getFingerprintPayload({
-              nonce: challenge.nonce,
-              requiredSignals: challenge.requiredSignals,
-            })
-            return {
-              fingerprint: await encryptApiData(t, payload.fingerprint, config.apiPublicKey),
-              fingerprintProof: await encryptApiData(t, payload.proof, config.apiPublicKey),
-            }
-          })()
+      showNotification({
+        color: 'orange',
+        id: 'login-status',
+        title: t('account.notification.captcha.request_sent.title'),
+        message: t('account.notification.captcha.request_sent.message'),
+        loading: true,
+        autoClose: false,
+      })
+
+      const fingerprintPayload = config.enableBrowserFingerprint
+        ? await collectEncryptedFingerprintIdentity(t, config.apiPublicKey, operation.controller.signal)
         : undefined
 
       await api.account.accountLogIn({
@@ -180,10 +164,18 @@ const Login: FC = () => {
         autoClose: true,
         loading: false,
       })
+      // A profile probe can already be in flight from the anonymous login
+      // screen. Revalidating that SWR key here may reuse its stale 401 and leave
+      // the successful session on this page until the user submits again.
+      // Fetch once after Set-Cookie has been processed, then publish that exact
+      // authenticated profile into the shared cache before navigating.
+      const profile = await api.account.accountProfile()
+      setAuthSession(true)
+      await mutate(profile.data, { revalidate: false })
       cleanUp(true)
-      setNeedRedirect(true)
-      mutate()
+      navigate(params.get('from') ?? '/', { replace: true })
     } catch (err: any) {
+      if (operation.controller.signal.aborted) return
       const { title, message } = tryGetClientError(err, t)
       updateNotification({
         id: 'login-status',
@@ -196,6 +188,7 @@ const Login: FC = () => {
       })
       cleanUp(false)
     } finally {
+      if (loginOperationRef.current === operation) loginOperationRef.current = null
       setDisabled(false)
     }
   }
@@ -212,6 +205,7 @@ const Login: FC = () => {
       onSubmit={onLogin}
     >
       <TextInput
+        data-guide="account-access"
         required
         label={t('account.label.username_or_email')}
         placeholder="ctfer"
@@ -252,11 +246,15 @@ const Login: FC = () => {
       <TermsOfService
         confirmMode
         opened={tosOpened}
-        onClose={closeTos}
+        onClose={() => {
+          loginOperationRef.current?.controller.abort()
+          loginOperationRef.current = null
+          closeTos()
+        }}
         onAccept={() => {
           setAccepted(true)
           closeTos()
-          void executeLogin()
+          void executeLogin(true)
         }}
       />
       <Anchor fz="xs" className={misc.alignSelfEnd} component={Link} to="/account/recovery">
@@ -269,7 +267,7 @@ const Login: FC = () => {
           </Button>
         </Grid.Col>
         <Grid.Col span={2}>
-          <Button fullWidth disabled={disabled} onClick={onLogin}>
+          <Button type="submit" fullWidth disabled={disabled}>
             {t('account.button.login')}
           </Button>
         </Grid.Col>

@@ -280,6 +280,8 @@ validate_deployment_archive() {
     rsctf/scripts/kubernetes-maintenance-cutover.sh \
     rsctf/scripts/docker-proxy-firewall.sh \
     rsctf/deploy/compose.yml \
+    rsctf/deploy/compose.event-vpn-ingress.yml \
+    rsctf/deploy/event-vpn/Corefile \
     rsctf/deploy/release.env; do
     [[ $(grep -Fxc -- "$required" "$list_file") -eq 1 ]] \
       || die "the deployment bundle must contain exactly one ${required}"
@@ -569,6 +571,9 @@ compose_file_value() {
   if [[ "$MODE" == "caddy" ]]; then compose_files+=":compose.caddy.yml"; fi
   if [[ $AD_VPN -eq 1 ]]; then
     compose_files+=":compose.ad-vpn.yml"
+    if [[ "$MODE" == "caddy" ]]; then
+      compose_files+=":compose.event-vpn-ingress.yml"
+    fi
   elif [[ $DOCKER_BACKEND -eq 1 ]]; then
     compose_files+=":compose.docker.yml"
   fi
@@ -598,15 +603,18 @@ write_new_environment() {
     printf 'POSTGRES_PASSWORD=%s\n' "$postgres_password"
     printf 'RSCTF_JWT_SECRET=%s\n' "$jwt_secret"
     printf 'RSCTF_IDENTITY_HASH_KEY=%s\n' "$(random_hex 32)"
+    printf 'RSCTF_EVENT_VPN_CREDENTIAL_KEY=%s\n' "$(random_hex 32)"
     printf 'RSCTF_BOOTSTRAP_TOKEN=%s\n' "$(random_hex 32)"
     printf 'RSCTF_DOCKER_SCOPE=%s\n' "$(random_hex 16)"
     printf '\nRSCTF_PUBLIC_URL=%s\n' "$PUBLIC_URL"
     printf 'RSCTF_COOKIE_SECURE=%s\n' "$(cookie_secure_value)"
+    printf 'RSCTF_USE_CAPTCHA=false\n'
+    printf 'RSCTF_ALLOW_COMPETITION_HISTORY_PURGE=false\n'
     printf 'RSCTF_HTTP_BIND_IP=%s\n' "$HTTP_BIND_IP"
     printf 'RSCTF_HTTP_PORT=%s\n' "$HTTP_PORT"
     printf 'RSCTF_TRUSTED_PROXY_CIDRS=%s\n' "$TRUSTED_PROXY_CIDRS"
     printf '\nRUST_LOG=info\nREDIS_MAXMEMORY=256mb\n'
-    printf 'RSCTF_DB_MAX_CONNECTIONS=33\nRSCTF_PROVISIONING_CONCURRENCY=4\n'
+    printf 'RSCTF_DB_MAX_CONNECTIONS=50\nRSCTF_PROVISIONING_CONCURRENCY=4\n'
     printf 'RSCTF_CONTAINER_MAX_MEMORY_MB=4096\nRSCTF_CONTAINER_MAX_CPU_COUNT=8\n'
     printf '\nRSCTF_DOCKER_PUBLIC_ENTRY=%s\n' "${PUBLIC_ENTRY:-localhost}"
     printf 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24\n'
@@ -618,6 +626,9 @@ write_new_environment() {
     printf '\nRSCTF_AD_VPN_SERVICES_NETWORK=rsctf-ad\n'
     printf 'RSCTF_AD_VPN_CLIENT_CIDR=10.13.0.0/19\n'
     printf 'RSCTF_AD_VPN_SERVICES_CIDR=10.13.40.0/24\n'
+    printf 'RSCTF_EVENT_VPN_HUB_ADDRESS=10.13.0.1\n'
+    printf 'RSCTF_EVENT_VPN_BACKEND_IP=10.13.40.2\n'
+    printf 'RSCTF_EVENT_VPN_INGRESS_IP=10.13.40.253\n'
     printf 'RSCTF_AD_VPN_SERVER_ENDPOINT=%s:51820\n' "${PUBLIC_ENTRY:-localhost}"
     printf 'RSCTF_AD_VPN_PORT=51820\nRSCTF_AD_SSH_PORT=2222\n'
   } >"$ENV_FILE"
@@ -632,10 +643,33 @@ append_env_if_missing() {
   fi
 }
 
+migrate_legacy_env_default() {
+  local key=$1 old_value=$2 new_value=$3 assignment_count temporary
+  assignment_count=$(grep -c "^${key}=" "$ENV_FILE" || true)
+  [[ "$assignment_count" -le 1 ]] \
+    || die "$ENV_FILE contains duplicate $key assignments; keep one value before upgrading"
+  [[ "$assignment_count" -eq 1 ]] || return 0
+  [[ "$(env_get "$key")" == "$old_value" ]] || return 0
+  temporary=$(mktemp "${ENV_FILE}.migration.XXXXXX")
+  if ! awk -v before="${key}=${old_value}" -v after="${key}=${new_value}" \
+    '{ if ($0 == before) print after; else print }' "$ENV_FILE" >"$temporary"; then
+    rm -f -- "$temporary"
+    die "could not migrate the legacy $key default"
+  fi
+  chmod 600 "$temporary"
+  mv -- "$temporary" "$ENV_FILE"
+  info "Raised legacy default $key from $old_value to $new_value for the maintained pool budget"
+}
+
 complete_existing_environment() {
   local compose_project_name
-  warn "Keeping the existing $ENV_FILE; existing values and secrets will not be replaced"
+  warn "Keeping existing secrets and custom values in $ENV_FILE; recognized legacy safety defaults may be raised"
   umask 077
+  migrate_legacy_env_default RSCTF_DB_MAX_CONNECTIONS 33 34
+  migrate_legacy_env_default RSCTF_DB_MAX_CONNECTIONS 34 50
+  migrate_legacy_env_default RSCTF_CONTROL_DB_MAX_CONNECTIONS 21 22
+  migrate_legacy_env_default RSCTF_CONTROL_DB_MAX_CONNECTIONS 22 38
+  migrate_legacy_env_default RSCTF_WEB_DB_MAX_CONNECTIONS 26 27
   append_env_if_missing COMPOSE_PROJECT_NAME rsctf
   compose_project_name="$(env_get COMPOSE_PROJECT_NAME)"
   compose_project_name="${compose_project_name:-rsctf}"
@@ -646,10 +680,12 @@ complete_existing_environment() {
   append_env_if_missing POSTGRES_PASSWORD "$(random_hex 24)"
   append_env_if_missing RSCTF_JWT_SECRET "$(random_hex 32)"
   append_env_if_missing RSCTF_IDENTITY_HASH_KEY "$(random_hex 32)"
+  append_env_if_missing RSCTF_EVENT_VPN_CREDENTIAL_KEY "$(random_hex 32)"
   append_env_if_missing RSCTF_BOOTSTRAP_TOKEN "$(random_hex 32)"
   append_env_if_missing RSCTF_DOCKER_SCOPE "$(random_hex 16)"
   append_env_if_missing RSCTF_PUBLIC_URL "$PUBLIC_URL"
   append_env_if_missing RSCTF_COOKIE_SECURE "$(cookie_secure_value)"
+  append_env_if_missing RSCTF_USE_CAPTCHA false
   append_env_if_missing RSCTF_HTTP_BIND_IP "$HTTP_BIND_IP"
   append_env_if_missing RSCTF_HTTP_PORT "$HTTP_PORT"
   if [[ "$(env_get COMPOSE_FILE)" == *compose.caddy.yml* && -z "$TRUSTED_PROXY_CIDRS" ]]; then
@@ -658,7 +694,7 @@ complete_existing_environment() {
   append_env_if_missing RSCTF_TRUSTED_PROXY_CIDRS "$TRUSTED_PROXY_CIDRS"
   append_env_if_missing RUST_LOG info
   append_env_if_missing REDIS_MAXMEMORY 256mb
-  append_env_if_missing RSCTF_DB_MAX_CONNECTIONS 33
+  append_env_if_missing RSCTF_DB_MAX_CONNECTIONS 50
   append_env_if_missing RSCTF_PROVISIONING_CONCURRENCY 4
   append_env_if_missing RSCTF_CONTAINER_MAX_MEMORY_MB 4096
   append_env_if_missing RSCTF_CONTAINER_MAX_CPU_COUNT 8
@@ -672,6 +708,9 @@ complete_existing_environment() {
   append_env_if_missing RSCTF_AD_VPN_SERVICES_NETWORK "${compose_project_name}-ad"
   append_env_if_missing RSCTF_AD_VPN_CLIENT_CIDR 10.13.0.0/19
   append_env_if_missing RSCTF_AD_VPN_SERVICES_CIDR 10.13.40.0/24
+  append_env_if_missing RSCTF_EVENT_VPN_HUB_ADDRESS 10.13.0.1
+  append_env_if_missing RSCTF_EVENT_VPN_BACKEND_IP 10.13.40.2
+  append_env_if_missing RSCTF_EVENT_VPN_INGRESS_IP 10.13.40.253
   append_env_if_missing RSCTF_AD_VPN_SERVER_ENDPOINT "${PUBLIC_ENTRY:-localhost}:51820"
   append_env_if_missing RSCTF_AD_VPN_PORT 51820
   append_env_if_missing RSCTF_AD_SSH_PORT 2222
@@ -696,7 +735,7 @@ guard_missing_environment_with_existing_data() {
 
 check_environment_values() {
   local jwt identity_hash_key bootstrap_token password public_url files
-  local proxy_bind proxy_subnet proxy_bridge
+  local proxy_bind proxy_subnet proxy_bridge vpn_credential_key
   jwt=$(env_get RSCTF_JWT_SECRET)
   identity_hash_key=$(env_get RSCTF_IDENTITY_HASH_KEY)
   bootstrap_token=$(env_get RSCTF_BOOTSTRAP_TOKEN)
@@ -738,8 +777,17 @@ check_environment_values() {
       || die "RSCTF_CHALLENGE_PROXY_BRIDGE must be a Linux interface name of at most 15 characters"
   fi
   if [[ "$files" == *compose.ad-vpn.yml* ]]; then
+    vpn_credential_key=$(env_get RSCTF_EVENT_VPN_CREDENTIAL_KEY)
+    [[ ${#vpn_credential_key} -ge 32 && ! "$vpn_credential_key" =~ [[:space:]] ]] \
+      || die "A&D/KotH player VPN requires a persistent RSCTF_EVENT_VPN_CREDENTIAL_KEY with at least 32 non-whitespace characters"
+    [[ "$vpn_credential_key" != "$jwt" && "$vpn_credential_key" != "$identity_hash_key" ]] \
+      || die "RSCTF_EVENT_VPN_CREDENTIAL_KEY must be independent from the JWT and identity keys"
     [[ -n "$(env_get RSCTF_AD_VPN_SERVER_ENDPOINT)" ]] \
       || die "the A&D VPN requires RSCTF_AD_VPN_SERVER_ENDPOINT"
+  fi
+  if [[ "$files" == *compose.event-vpn-ingress.yml* ]]; then
+    [[ "$files" == *compose.caddy.yml* && "$files" == *compose.ad-vpn.yml* ]] \
+      || die "the event VPN ingress requires both the Caddy and A&D VPN overrides"
   fi
 }
 

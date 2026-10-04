@@ -1,6 +1,5 @@
-import { Button, Center, Group, Loader, Modal, SimpleGrid, Stack, Text, TextInput, Title } from '@mantine/core'
-import { showNotification } from '@mantine/notifications'
-import { mdiAccountMultiplePlus, mdiCheck, mdiClose, mdiHumanGreetingVariant } from '@mdi/js'
+import { Button, Center, Group, Loader, SimpleGrid, Stack, Text, Title } from '@mantine/core'
+import { mdiAccountMultiplePlus, mdiClose, mdiHumanGreetingVariant } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -10,25 +9,25 @@ import { PageHeader } from '@Components/PageHeader'
 import { TeamCard } from '@Components/TeamCard'
 import { TeamCreateModal } from '@Components/TeamCreateModal'
 import { TeamEditModal } from '@Components/TeamEditModal'
+import { TeamJoinModal } from '@Components/TeamJoinModal'
 import { WithNavBar } from '@Components/WithNavbar'
 import { WithRole } from '@Components/WithRole'
-import { showErrorMsg } from '@Utils/Shared'
-import { encryptApiData } from '@Utils/Crypto'
-import { useConfig } from '@Hooks/useConfig'
+import { usePlayerGuide } from '@Components/guide/PlayerGuide'
 import { useIsMobile } from '@Utils/ThemeOverride'
+import { useConfig } from '@Hooks/useConfig'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useTeams, useUser } from '@Hooks/useUser'
-import api, { Role, TeamInfoModel } from '@Api'
+import { Role, TeamInfoModel } from '@Api'
 import classes from '@Styles/Teams.module.css'
 
 const Teams: FC = () => {
   const { user, error: userError, mutate: mutateUser } = useUser()
   const { teams, mutate: mutateTeams, error: teamsError } = useTeams()
   const { config } = useConfig()
+  const { preferences: guidePreferences, completeTeamSetup } = usePlayerGuide()
 
   const [joinOpened, setJoinOpened] = useState(false)
   const [joinTeamCode, setJoinTeamCode] = useState('')
-  const [joining, setJoining] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
 
   // Auto-open join modal when arriving via invite link (?join=code)
@@ -46,8 +45,13 @@ const Teams: FC = () => {
 
   const [editTeam, setEditTeam] = useState<TeamInfoModel | null>(null)
 
+  useEffect(() => {
+    if ((teams?.length ?? 0) > 0 && guidePreferences.activeTourStep === 'team') completeTeamSetup()
+  }, [completeTeamSetup, guidePreferences.activeTourStep, teams?.length])
+
   const teamsOwned = teams?.filter((t) => t.members?.some((m) => m?.captain && m.id === user?.userId))
   const disallowCreate = (teamsOwned?.length ?? 0) >= 3
+  const allowTeamCreation = config.allowTeamCreation !== false
 
   const isMobile = useIsMobile()
 
@@ -60,57 +64,6 @@ const Teams: FC = () => {
     setEditOpened(true)
   }
 
-  const codePartten = /:\d+:[0-9a-f]{32}$/
-
-  const onJoinTeam = async () => {
-    if (!codePartten.test(joinTeamCode)) {
-      showNotification({
-        color: 'red',
-        title: t('common.error.encountered'),
-        message: t('team.notification.join.wrong_invite_code'),
-        icon: <Icon path={mdiClose} size={1} />,
-      })
-      return
-    }
-
-    setJoining(true)
-    try {
-      const identity = config.enableBrowserFingerprint
-        ? await (async () => {
-            const challengeResponse = await api.account.accountFingerprintChallenge()
-            const challenge = challengeResponse.data.data
-            if (!challenge?.nonce || !challenge.requiredSignals) {
-              throw new Error('Invalid fingerprint challenge')
-            }
-            const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
-            const payload = await getFingerprintPayload({
-              nonce: challenge.nonce,
-              requiredSignals: challenge.requiredSignals,
-            })
-            return {
-              code: joinTeamCode,
-              fingerprint: await encryptApiData(t, payload.fingerprint, config.apiPublicKey),
-              fingerprintProof: await encryptApiData(t, payload.proof, config.apiPublicKey),
-            }
-          })()
-        : { code: joinTeamCode }
-      await api.team.teamAccept(identity)
-      showNotification({
-        color: 'teal',
-        title: t('team.notification.join.success'),
-        message: t('team.notification.updated'),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-      mutateTeams()
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setJoining(false)
-      setJoinTeamCode('')
-      setJoinOpened(false)
-    }
-  }
-
   const teamActions = (className: string) => (
     <Group gap="sm" className={className}>
       <Button
@@ -121,14 +74,16 @@ const Teams: FC = () => {
       >
         {t('team.button.join')}
       </Button>
-      <Button
-        leftSection={<Icon path={mdiAccountMultiplePlus} size={1} />}
-        variant="filled"
-        onClick={() => setCreateOpened(true)}
-        data-guide="team-create"
-      >
-        {t('team.button.create')}
-      </Button>
+      {allowTeamCreation && (
+        <Button
+          leftSection={<Icon path={mdiAccountMultiplePlus} size={1} />}
+          variant="filled"
+          onClick={() => setCreateOpened(true)}
+          data-guide="team-create"
+        >
+          {t('team.button.create')}
+        </Button>
+      )}
     </Group>
   )
 
@@ -139,10 +94,14 @@ const Teams: FC = () => {
           <PageHeader
             eyebrow={t('team.content.workspace', 'Your workspace')}
             title={t('team.title.index')}
-            description={t(
-              'team.content.index_description',
-              'Create a team, join with an invite, and manage your roster.'
-            )}
+            description={
+              allowTeamCreation
+                ? t('team.content.index_description', 'Create a team, join with an invite, and manage your roster.')
+                : t(
+                    'team.content.index_description_organizer_managed',
+                    'Join a team with an organizer-provided invite and manage your roster.'
+                  )
+            }
             actions={teamActions(classes.headerActions)}
           />
           {teamsError || userError ? (
@@ -190,7 +149,14 @@ const Teams: FC = () => {
                     bordered
                     mdiPath={mdiAccountMultiplePlus}
                     title={t('team.content.no_team.title')}
-                    description={t('team.content.no_team.hint')}
+                    description={
+                      allowTeamCreation
+                        ? t('team.content.no_team.hint')
+                        : t(
+                            'team.content.no_team.organizer_managed',
+                            'Your organizer creates teams. Use the invitation code they provide to join yours.'
+                          )
+                    }
                     action={teamActions(classes.emptyActions)}
                   />
                 </div>
@@ -208,30 +174,31 @@ const Teams: FC = () => {
           )}
         </Stack>
 
-        <Modal opened={joinOpened} title={t('team.button.join')} onClose={() => setJoinOpened(false)}>
-          <Stack>
-            <Text size="sm">{t('team.content.join')}</Text>
-            <TextInput
-              label={t('team.label.invite_code')}
-              type="text"
-              placeholder="team:0:01234567890123456789012345678901"
-              w="100%"
-              value={joinTeamCode}
-              onChange={(event) => setJoinTeamCode(event.currentTarget.value)}
-            />
-            <Button fullWidth variant="outline" loading={joining} disabled={joining} onClick={onJoinTeam}>
-              {t('team.button.join')}
-            </Button>
-          </Stack>
-        </Modal>
-
-        <TeamCreateModal
-          opened={createOpened}
-          title={t('team.button.create')}
-          disallowCreate={disallowCreate ?? false}
-          onClose={() => setCreateOpened(false)}
+        <TeamJoinModal
+          opened={joinOpened}
+          title={t('team.button.join')}
+          code={joinTeamCode}
+          onCodeChange={setJoinTeamCode}
+          onClose={() => {
+            setJoinTeamCode('')
+            setJoinOpened(false)
+          }}
           mutate={mutateTeams}
+          onTeamReady={completeTeamSetup}
+          enableBrowserFingerprint={config.enableBrowserFingerprint}
+          apiPublicKey={config.apiPublicKey}
         />
+
+        {allowTeamCreation && (
+          <TeamCreateModal
+            opened={createOpened}
+            title={t('team.button.create')}
+            disallowCreate={disallowCreate ?? false}
+            onClose={() => setCreateOpened(false)}
+            mutate={mutateTeams}
+            onTeamReady={completeTeamSetup}
+          />
+        )}
 
         <TeamEditModal
           opened={editOpened}
@@ -239,6 +206,8 @@ const Teams: FC = () => {
           onClose={() => setEditOpened(false)}
           team={editTeam}
           isCaptain={editTeam?.members?.some((m) => m?.captain && m.id === user?.userId) ?? false}
+          teams={teams}
+          mutateTeams={mutateTeams}
         />
       </WithRole>
     </WithNavBar>

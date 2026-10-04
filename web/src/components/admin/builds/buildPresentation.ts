@@ -1,4 +1,16 @@
-import { ChallengeBuildStatus } from '@Api'
+import { ChallengeBuildStatus, type ChallengeBuildAuditModel } from '@Api'
+
+export const matchesBuildQuery = (build: ChallengeBuildAuditModel, query: string) => {
+  const needle = query.trim().toLocaleLowerCase()
+  return (
+    !needle ||
+    [build.challengeTitle, build.challengeId, build.gameId, build.imageRef, build.kind, build.trigger]
+      .filter((value) => value != null)
+      .join(' ')
+      .toLocaleLowerCase()
+      .includes(needle)
+  )
+}
 
 export const BUILD_STATUS_COLOR: Record<ChallengeBuildStatus, string> = {
   None: 'gray',

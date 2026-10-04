@@ -8,6 +8,7 @@ import {
   Loader,
   Modal,
   ModalProps,
+  MultiSelect,
   Paper,
   Radio,
   ScrollArea,
@@ -40,9 +41,18 @@ import {
   mdiUpload,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useCallback, useMemo, useState } from 'react'
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import {
+  AdminImportOperation,
+  adminImportRequestSignature,
+  clearAdminImportOperation,
+  readAdminImportOperation,
+  retainAdminImportOperation,
+} from '@Utils/AdminImportOperations'
 import { quoteSpreadsheetCsvCell } from '@Utils/Csv'
+import { httpErrorStatus, isRetryableHttpError } from '@Utils/HttpError'
+import api, { type Division } from '@Api'
 
 // ─── Backend response types ───────────────────────────────────────────────────
 
@@ -82,6 +92,10 @@ interface EmailSendResult {
 
 const NONE = '(none)'
 const PAGE_SIZE = 50
+const MAX_IMPORT_ROWS = 200
+const MAX_IMPORT_BYTES = 1024 * 1024
+const MAX_IMPORT_EVENTS = 10
+const MAX_TEAM_EVENT_ASSIGNMENTS = 200
 
 interface EditableRow {
   id: string
@@ -203,9 +217,7 @@ function buildCredentialsCsv(users: CsvImportUserResult[]): Blob {
     ...users
       .filter((u) => u.status !== 'skipped')
       .map((u) =>
-        [u.userName, u.password, u.email, u.realName, u.teamName ?? '', u.status]
-          .map(quoteSpreadsheetCsvCell)
-          .join(','),
+        [u.userName, u.password, u.email, u.realName, u.teamName ?? '', u.status].map(quoteSpreadsheetCsvCell).join(',')
       ),
   ]
   return new Blob([lines.join('\n')], { type: 'text/csv' })
@@ -226,35 +238,131 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   const { t } = useTranslation()
   const [step, setStep] = useState(0)
   const [rawText, setRawText] = useState('')
+  const [sourceName, setSourceName] = useState('imported-users.csv')
   const [headers, setHeaders] = useState<string[]>([])
   const [map, setMap] = useState<ColMap>({ realName: NONE, email: NONE, teamName: NONE, stdNumber: NONE, phone: NONE })
   const [editableRows, setEditableRows] = useState<EditableRow[]>([])
   const [filterText, setFilterText] = useState('')
   const [page, setPage] = useState(1)
   const [opts, setOpts] = useState<Options>({ emailConfirmed: true, teamMode: 'fromrow', singleTeamName: '' })
+  const [selectedEventIds, setSelectedEventIds] = useState<string[]>([])
+  const [eventDivisions, setEventDivisions] = useState<Record<string, Division[]>>({})
+  const [eventDivisionIds, setEventDivisionIds] = useState<Record<string, string | null>>({})
+  const [eventDivisionError, setEventDivisionError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [importResult, setImportResult] = useState<CsvImportResult | null>(null)
+  const [completedOperationId, setCompletedOperationId] = useState<string | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
+  const [importProgress, setImportProgress] = useState<{ completed: number; total: number } | null>(null)
   const [sendingEmail, setSendingEmail] = useState(false)
   const [emailSendResult, setEmailSendResult] = useState<EmailSendResult | null>(null)
+  const importInFlight = useRef(false)
+  const importOperation = useRef<AdminImportOperation | null>(null)
+  const importRecoveryAttempt = useRef<string | null>(null)
+  const onImportCompleteRef = useRef(onImportComplete)
+  const { data: importEventPage, error: importEventsError } = api.edit.useEditGetGames(
+    { count: 100, skip: 0 },
+    undefined,
+    props.opened
+  )
+
+  useEffect(() => {
+    onImportCompleteRef.current = onImportComplete
+  }, [onImportComplete])
+
+  useEffect(() => {
+    if (!props.opened || importResult || importInFlight.current) return
+    const retained = readAdminImportOperation(sessionStorage)
+    if (!retained || importRecoveryAttempt.current === retained.operationId) return
+    importRecoveryAttempt.current = retained.operationId
+    importOperation.current = retained
+    let cancelled = false
+    api.admin
+      .adminRecoverUserImport(retained.operationId)
+      .then((response) => {
+        if (cancelled) return
+        if (response.data.status === 'Completed' && response.data.result) {
+          setImportResult(response.data.result)
+          setCompletedOperationId(retained.operationId)
+          setImportError(null)
+          setStep(4)
+          clearAdminImportOperation(sessionStorage, retained.operationId)
+          importOperation.current = null
+          onImportCompleteRef.current?.()
+          return
+        }
+        setImportProgress({ completed: response.data.completed, total: response.data.total })
+        showNotification({
+          color: 'orange',
+          title: 'Previous import can be resumed',
+          message: `${response.data.completed} of ${response.data.total} rows completed. Re-select the same CSV and options to continue without issuing new passwords.`,
+        })
+      })
+      .catch((error) => {
+        if (cancelled) return
+        if (isRetryableHttpError(error) || httpErrorStatus(error) === 404) {
+          showNotification({
+            color: 'orange',
+            title: 'Previous import may still be starting',
+            message: 'Re-select the same CSV and options to safely resume it without issuing new passwords.',
+          })
+          return
+        }
+        clearAdminImportOperation(sessionStorage, retained.operationId)
+        importOperation.current = null
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [importResult, props.opened])
+
+  useEffect(() => {
+    if (!props.opened || opts.teamMode === 'none' || selectedEventIds.length === 0) return
+    const missing = selectedEventIds.filter((gameId) => eventDivisions[gameId] === undefined)
+    if (missing.length === 0) return
+    let cancelled = false
+    setEventDivisionError(null)
+    Promise.all(
+      missing.map(async (gameId) => [gameId, (await api.edit.editGetDivisions(Number(gameId))).data] as const)
+    )
+      .then((entries) => {
+        if (cancelled) return
+        setEventDivisions((current) => ({ ...current, ...Object.fromEntries(entries) }))
+      })
+      .catch(() => {
+        if (!cancelled) setEventDivisionError('Could not load divisions for the selected event. Try again.')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [eventDivisions, opts.teamMode, props.opened, selectedEventIds])
 
   // Step 0 → parse headers only
-  const process = useCallback((text: string) => {
+  const process = useCallback((text: string, fileName = 'imported-users.csv') => {
+    if (new Blob([text]).size > MAX_IMPORT_BYTES) {
+      showNotification({ message: 'CSV must be 1 MB or smaller', color: 'red' })
+      return
+    }
     const { headers: hdrs, rowCount } = parseCSVInfo(text)
     if (hdrs.length < 2 || rowCount < 1) {
       showNotification({ message: 'CSV must have at least a header row and one data row', color: 'red' })
       return
     }
+    if (rowCount > MAX_IMPORT_ROWS) {
+      showNotification({ message: `CSV may contain at most ${MAX_IMPORT_ROWS} users`, color: 'red' })
+      return
+    }
     setHeaders(hdrs)
     setMap(autoMap(hdrs))
     setRawText(text)
+    setSourceName(fileName.slice(0, 255))
     setStep(1)
   }, [])
 
   const onFile = (f: File | null) => {
     if (!f) return
     const r = new FileReader()
-    r.onload = (e) => process(e.target?.result as string)
+    r.onload = (e) => process(e.target?.result as string, f.name)
     r.readAsText(f)
   }
 
@@ -339,45 +447,101 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   }, [activeRows])
 
   const hasErrors = invalidEmails.length > 0 || duplicateEmails.size > 0
+  const importEventOptions = useMemo(
+    () =>
+      (importEventPage?.data ?? []).flatMap((game) =>
+        game.id == null ? [] : [{ value: String(game.id), label: game.title }]
+      ),
+    [importEventPage?.data]
+  )
+  const importTeamCount = useMemo(() => {
+    if (opts.teamMode === 'single') return opts.singleTeamName.trim() ? 1 : 0
+    if (opts.teamMode === 'none') return 0
+    return new Set(activeRows.map((row) => row.teamName.trim().toLowerCase()).filter(Boolean)).size
+  }, [activeRows, opts.singleTeamName, opts.teamMode])
+  const rowsMissingTeam =
+    selectedEventIds.length > 0 && opts.teamMode === 'fromrow' && activeRows.some((row) => !row.teamName.trim())
+  const eventAssignmentCount = importTeamCount * selectedEventIds.length
+  const eventAssignmentLimitExceeded = eventAssignmentCount > MAX_TEAM_EVENT_ASSIGNMENTS
+  const eventDivisionLoading = selectedEventIds.some((gameId) => eventDivisions[gameId] === undefined)
+  const eventDivisionMissing = selectedEventIds.some(
+    (gameId) => (eventDivisions[gameId]?.length ?? 0) > 0 && !eventDivisionIds[gameId]
+  )
 
   // Step 3 → run import
   const runImport = async () => {
+    if (importInFlight.current) return
+    importInFlight.current = true
     setLoading(true)
     setImportError(null)
     setStep(4)
 
     const rows = editableRows.filter((r) => !r.deleted)
+    setImportProgress({ completed: 0, total: rows.length })
+
+    const request = {
+      sourceName,
+      rows: rows.map((r) => ({
+        email: r.email,
+        realName: r.realName,
+        userNameOverride: r.userNameOverride || undefined,
+        teamName: r.teamName || undefined,
+        stdNumber: r.stdNumber || undefined,
+        phone: r.phone || undefined,
+      })),
+      teamMode: opts.teamMode,
+      singleTeamName: opts.teamMode === 'single' ? opts.singleTeamName : undefined,
+      eventAssignments: selectedEventIds
+        .map((gameId) => ({
+          gameId: Number(gameId),
+          divisionId: eventDivisionIds[gameId] ? Number(eventDivisionIds[gameId]) : undefined,
+        }))
+        .sort((left, right) => left.gameId - right.gameId),
+      emailConfirmed: opts.emailConfirmed,
+    }
+    let progressTimer: number | undefined
+    let progressStopped = false
 
     try {
-      const resp = await fetch('/api/admin/users/import', {
+      const signature = await adminImportRequestSignature(request)
+      const operation = retainAdminImportOperation(sessionStorage, signature, importOperation.current)
+      importOperation.current = operation
+      const responsePromise = fetch('/api/admin/users/import', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          rows: rows.map((r) => ({
-            email: r.email,
-            realName: r.realName,
-            userNameOverride: r.userNameOverride || undefined,
-            teamName: r.teamName || undefined,
-            stdNumber: r.stdNumber || undefined,
-            phone: r.phone || undefined,
-          })),
-          teamMode: opts.teamMode,
-          singleTeamName: opts.teamMode === 'single' ? opts.singleTeamName : undefined,
-          emailConfirmed: opts.emailConfirmed,
+          operationId: operation.operationId,
+          ...request,
         }),
       })
+      const pollProgress = async () => {
+        if (progressStopped) return
+        try {
+          const progress = await api.admin.adminRecoverUserImport(operation.operationId)
+          setImportProgress({ completed: progress.data.completed, total: progress.data.total })
+        } catch {
+          // The mutation response remains authoritative; polling is best effort.
+        }
+        if (!progressStopped) progressTimer = window.setTimeout(pollProgress, 1_000)
+      }
+      progressTimer = window.setTimeout(pollProgress, 500)
+      const resp = await responsePromise
 
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ title: 'Import failed' }))
-        throw new Error(err.title ?? err.message ?? 'Import failed')
+        throw Object.assign(new Error(err.title ?? err.message ?? 'Import failed'), { status: resp.status })
       }
 
       const result: CsvImportResult = await resp.json()
+      setImportProgress({ completed: result.total, total: result.total })
       setImportResult(result)
+      setCompletedOperationId(operation.operationId)
+      clearAdminImportOperation(sessionStorage, operation.operationId)
+      importOperation.current = null
 
       if (result.created > 0 || result.updated > 0) {
-        onImportComplete?.()
+        onImportCompleteRef.current?.()
         showNotification({
           message: `${result.created} users created, ${result.updated} updated`,
           color: 'teal',
@@ -385,9 +549,17 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
         })
       }
     } catch (e: any) {
+      const status = httpErrorStatus(e)
+      if (!isRetryableHttpError(e) && status !== 409 && importOperation.current) {
+        clearAdminImportOperation(sessionStorage, importOperation.current.operationId)
+        importOperation.current = null
+      }
       setImportError(e?.message ?? 'Import failed')
       showNotification({ message: e?.message ?? 'Import failed', color: 'red' })
     } finally {
+      progressStopped = true
+      if (progressTimer !== undefined) window.clearTimeout(progressTimer)
+      importInFlight.current = false
       setLoading(false)
     }
   }
@@ -395,17 +567,27 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   const reset = () => {
     setStep(0)
     setRawText('')
+    setSourceName('imported-users.csv')
     setHeaders([])
     setMap({ realName: NONE, email: NONE, teamName: NONE, stdNumber: NONE, phone: NONE })
     setEditableRows([])
     setFilterText('')
     setPage(1)
     setOpts({ emailConfirmed: true, teamMode: 'fromrow', singleTeamName: '' })
+    setSelectedEventIds([])
+    setEventDivisions({})
+    setEventDivisionIds({})
+    setEventDivisionError(null)
     setLoading(false)
     setImportResult(null)
+    setCompletedOperationId(null)
     setImportError(null)
+    setImportProgress(null)
     setSendingEmail(false)
     setEmailSendResult(null)
+    importInFlight.current = false
+    importOperation.current = readAdminImportOperation(sessionStorage)
+    importRecoveryAttempt.current = null
   }
 
   const goFixFailedRows = () => {
@@ -434,11 +616,21 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   // (used by the "Resend failed" button). On a partial failure the per-recipient
   // results are kept so the failed subset can be retried without re-emailing the
   // ones that already succeeded.
-  const sendCredentialsEmail = async (only?: { email: string; userName: string }[]) => {
+  const sendCredentialsEmail = async (onlyEmails?: string[]) => {
     if (!importResult) return
-    const items =
-      only ??
-      importResult.users.filter((u) => u.status !== 'skipped').map((u) => ({ email: u.email, userName: u.userName }))
+    const selected = onlyEmails ? new Set(onlyEmails.map((email) => email.toLowerCase())) : null
+    const items = importResult.users.flatMap((user, importRowIndex) =>
+      user.status === 'skipped' || (selected && !selected.has(user.email.toLowerCase()))
+        ? []
+        : [
+            {
+              email: user.email,
+              userName: user.userName,
+              importOperationId: completedOperationId ?? undefined,
+              importRowIndex: completedOperationId ? importRowIndex : undefined,
+            },
+          ]
+    )
     if (items.length === 0) return
 
     setSendingEmail(true)
@@ -483,8 +675,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   }
 
   const failedRecipients = emailSendResult?.results.filter((r) => !r.sent) ?? []
-  const resendFailed = () =>
-    sendCredentialsEmail(failedRecipients.map((r) => ({ email: r.email, userName: r.userName })))
+  const resendFailed = () => sendCredentialsEmail(failedRecipients.map((recipient) => recipient.email))
 
   return (
     <Modal
@@ -498,8 +689,12 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
         </Group>
       }
       size="90%"
+      closeOnClickOutside={!loading}
+      closeOnEscape={!loading}
+      withCloseButton={!loading}
       styles={{ body: { paddingTop: 0 } }}
       onClose={() => {
+        if (importInFlight.current) return
         reset()
         props.onClose()
       }}
@@ -519,7 +714,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
             <Dropzone
               onDrop={(files) => onFile(files[0])}
               accept={{ 'text/csv': ['.csv'], 'text/plain': ['.txt', '.csv'] }}
-              maxSize={10 * 1024 * 1024}
+              maxSize={MAX_IMPORT_BYTES}
             >
               <Group justify="center" gap="xl" mih={120} style={{ pointerEvents: 'none' }}>
                 <Dropzone.Accept>
@@ -536,7 +731,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                     Drag a CSV file here
                   </Text>
                   <Text size="sm" c="dimmed">
-                    Supports .csv and .txt — max 10 MB
+                    Supports .csv and .txt — max 1 MB / 200 users
                   </Text>
                 </Stack>
               </Group>
@@ -573,7 +768,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                     </Button>
                   )}
                 </FileButton>
-                <Button disabled={!rawText.trim()} onClick={() => process(rawText)}>
+                <Button disabled={!rawText.trim()} onClick={() => process(rawText, 'pasted-users.csv')}>
                   Parse & Continue →
                 </Button>
               </Group>
@@ -975,8 +1170,8 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                   (respecting any overrides) and secure passwords in a single atomic transaction.
                 </Text>
                 <Text size="xs" c="dimmed">
-                  Download the credentials CSV after import. The server keeps a temporary delivery copy for at most
-                  one hour so it can send email; the response itself is never browser/proxy cached.
+                  Download the credentials CSV after import. The server keeps a temporary delivery copy for at most one
+                  hour so it can send email; the response itself is never browser/proxy cached.
                 </Text>
               </Stack>
             </Alert>
@@ -1001,7 +1196,14 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                 </Text>
                 <Radio.Group
                   value={opts.teamMode}
-                  onChange={(v) => setOpts((o) => ({ ...o, teamMode: v as Options['teamMode'] }))}
+                  onChange={(v) => {
+                    const teamMode = v as Options['teamMode']
+                    setOpts((o) => ({ ...o, teamMode }))
+                    if (teamMode === 'none') {
+                      setSelectedEventIds([])
+                      setEventDivisionError(null)
+                    }
+                  }}
                 >
                   <Stack gap="sm">
                     <Radio value="fromrow" label="Use team name from each row (from the Team column in your CSV)" />
@@ -1022,6 +1224,90 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
               </Stack>
             </Paper>
 
+            <Paper p="md" withBorder>
+              <Stack gap="sm">
+                <div>
+                  <Text fw={600} size="sm">
+                    Event Enrollment
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    Optional. Enroll every imported team in one or more events as an accepted participant. Existing
+                    suspended or withdrawn participation remains unchanged. Accepted enrollment follows the platform's
+                    optional team-lock policy.
+                  </Text>
+                </div>
+                <MultiSelect
+                  label="Events for imported teams"
+                  description={`Select up to ${MAX_IMPORT_EVENTS} events. Leave empty to create teams without enrolling them.`}
+                  placeholder={opts.teamMode === 'none' ? 'Choose a team assignment first' : 'Select events'}
+                  data={importEventOptions}
+                  value={selectedEventIds}
+                  onChange={(gameIds) => {
+                    setSelectedEventIds(gameIds)
+                    setEventDivisionError(null)
+                  }}
+                  maxValues={MAX_IMPORT_EVENTS}
+                  disabled={opts.teamMode === 'none' || Boolean(importEventsError)}
+                  searchable
+                  clearable
+                  nothingFoundMessage="No events found"
+                  aria-label="Events for imported teams"
+                />
+                {importEventPage && (importEventPage.total ?? 0) > importEventPage.data.length && (
+                  <Alert color="orange" icon={<Icon path={mdiAlertCircleOutline} size={1} />}>
+                    Only the newest 100 events are available here. Archive or delete older events before assigning them
+                    through CSV import.
+                  </Alert>
+                )}
+                {importEventsError && (
+                  <Alert color="red" icon={<Icon path={mdiAlertCircleOutline} size={1} />}>
+                    Could not load events. You can still import users without event enrollment.
+                  </Alert>
+                )}
+                {selectedEventIds.map((gameId) => {
+                  const divisions = eventDivisions[gameId]
+                  if (!divisions?.length) return null
+                  const eventName =
+                    importEventOptions.find((event) => event.value === gameId)?.label ?? `Event #${gameId}`
+                  return (
+                    <Select
+                      key={gameId}
+                      label={`Division for ${eventName}`}
+                      placeholder="Select a division"
+                      data={divisions.map((division) => ({ value: String(division.id), label: division.name }))}
+                      value={eventDivisionIds[gameId] ?? null}
+                      onChange={(divisionId) =>
+                        setEventDivisionIds((current) => ({ ...current, [gameId]: divisionId }))
+                      }
+                      required
+                      searchable
+                    />
+                  )
+                })}
+                {eventDivisionLoading && selectedEventIds.length > 0 && (
+                  <Text size="xs" c="dimmed" aria-live="polite">
+                    Loading event divisions…
+                  </Text>
+                )}
+                {eventDivisionError && (
+                  <Alert color="red" icon={<Icon path={mdiAlertCircleOutline} size={1} />}>
+                    {eventDivisionError}
+                  </Alert>
+                )}
+                {rowsMissingTeam && (
+                  <Alert color="orange" icon={<Icon path={mdiAlertCircleOutline} size={1} />}>
+                    Every row needs a team name before events can be assigned.
+                  </Alert>
+                )}
+                {eventAssignmentLimitExceeded && (
+                  <Alert color="orange" icon={<Icon path={mdiAlertCircleOutline} size={1} />}>
+                    This would create {eventAssignmentCount} team-event assignments. Reduce the teams or events to at
+                    most {MAX_TEAM_EVENT_ASSIGNMENTS} assignments per import.
+                  </Alert>
+                )}
+              </Stack>
+            </Paper>
+
             <Group justify="space-between">
               <Button variant="outline" onClick={() => setStep(2)}>
                 ← Back to Edit
@@ -1029,7 +1315,14 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
               <Button
                 color="green"
                 leftSection={<Icon path={mdiUpload} size={0.9} />}
-                disabled={opts.teamMode === 'single' && !opts.singleTeamName.trim()}
+                disabled={
+                  (opts.teamMode === 'single' && !opts.singleTeamName.trim()) ||
+                  rowsMissingTeam ||
+                  eventAssignmentLimitExceeded ||
+                  eventDivisionLoading ||
+                  eventDivisionMissing ||
+                  Boolean(eventDivisionError)
+                }
                 onClick={runImport}
               >
                 Import {activeRows.length} Users
@@ -1046,6 +1339,12 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                 <Loader size="lg" />
                 <Text c="dimmed" size="sm">
                   Importing {activeRows.length} users — the server is generating credentials and creating accounts…
+                  {importProgress && (
+                    <Text component="span" inherit aria-live="polite">
+                      {' '}
+                      {importProgress.completed} of {importProgress.total} rows committed.
+                    </Text>
+                  )}
                 </Text>
               </Stack>
             )}
@@ -1119,8 +1418,8 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                 {importResult.created + importResult.updated > 0 && (
                   <Alert icon={<Icon path={mdiCheckCircleOutline} size={1} />} color="teal">
                     <Text size="sm">
-                      Import complete. Download the credentials CSV now — passwords are not stored and cannot be
-                      retrieved later.
+                      Import complete. Download the credentials CSV now. This tab can recover the encrypted result for
+                      one hour if the response is interrupted.
                     </Text>
                   </Alert>
                 )}

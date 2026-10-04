@@ -3,6 +3,14 @@
 use bollard::Docker;
 
 use crate::models::data::game_challenge;
+use crate::utils::error::{AppError, AppResult};
+
+pub(super) const FINALIZING_IMAGE_CLAIM_SQL: &str = r#"SELECT EXISTS (
+    SELECT 1 FROM "BuildImageOwnerships"
+     WHERE installation_scope = $1 AND canonical_ref = $2
+       AND cleanup_removal_started = TRUE
+       AND cleanup_claim_until > clock_timestamp()
+)"#;
 
 pub(crate) fn canonical_image_reference(image: Option<&str>) -> String {
     let Some(image) = image.map(str::trim).filter(|image| !image.is_empty()) else {
@@ -46,6 +54,32 @@ pub(crate) fn image_build_lock_key(image: Option<&str>) -> String {
 
 pub(super) fn build_lock_key(challenge: &game_challenge::Model) -> String {
     image_build_lock_key(challenge.container_image.as_deref())
+}
+
+/// Check the cleanup phase while holding the matching image advisory lock.
+/// Once cleanup enters its destructive phase, every cooperating image writer
+/// must wait for the claim to expire instead of beginning Docker work.
+pub(super) async fn ensure_cleanup_not_finalizing(
+    connection: &mut sqlx::PgConnection,
+    image: Option<&str>,
+) -> AppResult<()> {
+    let Some(canonical_ref) = image.and_then(canonical_managed_image_tag) else {
+        return Ok(());
+    };
+    let scope = crate::services::container::docker_installation_scope();
+    let finalizing = sqlx::query_scalar::<_, bool>(FINALIZING_IMAGE_CLAIM_SQL)
+        .bind(scope)
+        .bind(canonical_ref)
+        .fetch_one(connection)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if finalizing {
+        return Err(AppError::overloaded(
+            "Image cleanup is finalizing this build resource; retry shortly",
+            1,
+        ));
+    }
+    Ok(())
 }
 
 /// Canonical mutable tag managed by the local rsctf build pipeline. Registry

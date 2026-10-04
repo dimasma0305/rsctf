@@ -335,6 +335,7 @@ test('negotiate and ReceivedLog validators enforce the real wire contract', () =
     type: 1,
     target: 'ReceivedLog',
     arguments: [{
+      id: 17,
       time: 1_752_000_000_000,
       level: 'Information',
       msg: 'Successfully added 1 users',
@@ -350,6 +351,13 @@ test('negotiate and ReceivedLog validators enforce the real wire contract', () =
       userName: 'fixture-admin',
     }).msg,
     'Successfully added 1 users',
+  );
+  assert.throws(
+    () => assertReceivedLog(
+      { ...received, arguments: [{ ...received.arguments[0], id: undefined }] },
+      { message: 'Successfully added 1 users', userName: 'fixture-admin' },
+    ),
+    /missing its id/,
   );
   assert.throws(
     () => assertReceivedLog(received, { message: 'different', userName: 'fixture-admin' }),

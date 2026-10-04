@@ -6,9 +6,10 @@
   & thead tr th,
   & tbody tr :is(td, th) {
     text-align: center;
-    padding: 6px 4px;
+    padding: 9px 8px;
     white-space: nowrap;
-    font-size: 12px;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
   }
 }
 
@@ -18,7 +19,7 @@
 
 .left {
   position: sticky;
-  background-color: light-dark(var(--mantine-color-white), var(--mantine-color-dark-7));
+  background-color: var(--app-raised-surface);
 }
 
 .header {

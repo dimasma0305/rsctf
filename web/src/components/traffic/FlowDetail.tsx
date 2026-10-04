@@ -1,11 +1,12 @@
-import { Badge, Center, Flex, Group, Loader, SegmentedControl, Stack, Text } from '@mantine/core'
+import { Alert, Badge, Button, Center, Flex, Group, Loader, SegmentedControl, Stack, Text } from '@mantine/core'
 import dayjs from 'dayjs'
-import { FC, useEffect, useMemo, useState } from 'react'
+import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HunamizeSize } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
+import { useTrafficFlowDetail } from '@Hooks/useTrafficInspector'
 import { useUrlState } from '@Hooks/useUrlState'
-import api, { TrafficFlowChunk, TrafficFlowDetail, TrafficFlowDirection } from '@Api'
+import { TrafficFlowChunk, TrafficFlowDirection } from '@Api'
 import { HexAsciiView, ViewMode } from './HexAsciiView'
 
 interface FlowDetailProps {
@@ -13,6 +14,8 @@ interface FlowDetailProps {
   participationId: number
   filename: string
   connectionPort: number | null
+  flowId: string | null
+  snapshotVersion: string | null
 }
 
 const decodeBase64 = (s: string): Uint8Array => {
@@ -47,40 +50,30 @@ const concatChunks = (
   return { bytes: out, flagOffsets }
 }
 
-export const FlowDetail: FC<FlowDetailProps> = ({ challengeId, participationId, filename, connectionPort }) => {
+export const FlowDetail: FC<FlowDetailProps> = ({
+  challengeId,
+  participationId,
+  filename,
+  connectionPort,
+  flowId,
+  snapshotVersion,
+}) => {
   const { t } = useTranslation()
   const isCompact = useIsMobile(700)
-  const [detail, setDetail] = useState<TrafficFlowDetail | null>(null)
-  const [loading, setLoading] = useState(false)
   const [mode, setMode] = useUrlState<ViewMode>(
     'mode',
     (raw) => (raw === 'hex' ? 'hex' : 'ascii'),
     (v) => (v === 'hex' ? 'hex' : null)
   )
-
-  useEffect(() => {
-    if (connectionPort == null) {
-      setDetail(null)
-      return
-    }
-    let cancelled = false
-    setLoading(true)
-    setDetail(null)
-    api.game
-      .gameGetTrafficFlowDetail(challengeId, participationId, filename, connectionPort)
-      .then((res) => {
-        if (!cancelled) setDetail(res.data)
-      })
-      .catch(() => {
-        if (!cancelled) setDetail(null)
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [challengeId, participationId, filename, connectionPort])
+  const { detail, loading, error, retryAfterMs, retry } = useTrafficFlowDetail({
+    enabled: connectionPort !== null && flowId !== null,
+    challengeId,
+    participationId,
+    filename,
+    connectionPort,
+    flowId,
+    snapshotVersion,
+  })
 
   const out = useMemo(() => (detail ? concatChunks(detail.chunks, 'TeamToContainer') : null), [detail])
   const inn = useMemo(() => (detail ? concatChunks(detail.chunks, 'ContainerToTeam') : null), [detail])
@@ -106,15 +99,40 @@ export const FlowDetail: FC<FlowDetailProps> = ({ challengeId, participationId, 
   if (!detail) {
     return (
       <Center h="100%">
-        <Text c="dimmed" size="sm">
-          {t('game.label.flow.detail.empty')}
-        </Text>
+        {error ? (
+          <Alert color="orange" role="status" title={t('game.label.flow.detail.failed', 'Could not load flow detail')}>
+            <Stack gap="xs">
+              <Text size="sm">
+                {error}
+                {retryAfterMs !== null &&
+                  ` ${t('game.label.flow.retrying', {
+                    defaultValue: 'Retrying in {{seconds}} seconds.',
+                    seconds: Math.max(1, Math.ceil(retryAfterMs / 1000)),
+                  })}`}
+              </Text>
+              {retryAfterMs === null && (
+                <Button size="xs" variant="light" onClick={retry}>
+                  {t('common.retry', 'Retry')}
+                </Button>
+              )}
+            </Stack>
+          </Alert>
+        ) : (
+          <Text c="dimmed" size="sm">
+            {t('game.label.flow.detail.empty')}
+          </Text>
+        )}
       </Center>
     )
   }
 
   return (
     <Stack gap="xs" h="100%">
+      {detail.payloadTruncated && (
+        <Alert color="yellow" role="status">
+          {t('game.label.flow.detail.truncated', 'This flow exceeded the bounded payload-detail limit.')}
+        </Alert>
+      )}
       <Group justify="space-between" wrap={isCompact ? 'wrap' : 'nowrap'} align="flex-start">
         <Stack gap={0} style={{ minWidth: 0 }}>
           <Text size="sm" fw="bold" style={{ overflowWrap: 'anywhere' }}>

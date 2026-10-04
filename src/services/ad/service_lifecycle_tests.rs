@@ -6,8 +6,9 @@ use std::time::Duration;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 use super::{
-    acquire_publication_lock, drain_publications, publish_managed_backend_if_eligible,
-    retain_created_backend_identity, rollback_created_backend_with, ManagedBackendPublication,
+    acquire_publication_lock, drain_publications, ensure_scoring_placeholders,
+    publish_managed_backend_if_eligible, retain_created_backend_identity,
+    rollback_created_backend_with, ManagedBackendPublication,
 };
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationStatus};
 use crate::utils::error::AppError;
@@ -101,6 +102,55 @@ impl Harness {
             .await
             .unwrap();
     }
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn scoring_placeholders_include_unenrolled_teams_and_preserve_live_services() {
+    let harness = Harness::new().await;
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO "Teams" VALUES (5, FALSE), (6, FALSE);
+        INSERT INTO "Participations" VALUES (7, 1, 5, 1), (8, 1, 6, 2);
+        INSERT INTO "GameChallenges" VALUES
+          (9, 1, TRUE, 0, 4, TRUE, FALSE),
+          (10, 1, FALSE, 0, 4, TRUE, FALSE),
+          (11, 1, TRUE, 0, 5, FALSE, FALSE);
+        INSERT INTO "AdTeamServices"
+          (game_id, participation_id, challenge_id, host, port, status,
+           container_id, last_reset_at)
+        VALUES (1, 3, 4, '10.13.40.7', 8080, 0, 'runtime-a', NULL);
+        "#,
+    )
+    .execute(&harness.pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        ensure_scoring_placeholders(&harness.pool, 1).await.unwrap(),
+        3
+    );
+    assert_eq!(
+        ensure_scoring_placeholders(&harness.pool, 1).await.unwrap(),
+        0
+    );
+    let rows: Vec<(i32, i32, String, i32, i16, Option<String>)> = sqlx::query_as(
+        r#"SELECT participation_id, challenge_id, host, port, status, container_id
+             FROM "AdTeamServices" ORDER BY participation_id, challenge_id"#,
+    )
+    .fetch_all(&harness.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            (3, 4, "10.13.40.7".into(), 8080, 0, Some("runtime-a".into())),
+            (3, 9, String::new(), 0, 2, None),
+            (7, 4, String::new(), 0, 2, None),
+            (7, 9, String::new(), 0, 2, None),
+        ]
+    );
+    harness.cleanup().await;
 }
 
 #[tokio::test]

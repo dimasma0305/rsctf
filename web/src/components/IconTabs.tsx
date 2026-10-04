@@ -1,6 +1,6 @@
 import { Group, GroupProps, MantineColor, useMantineColorScheme, useMantineTheme } from '@mantine/core'
-import { clamp } from '@mantine/hooks'
-import React, { FC, useEffect, useRef, useState } from 'react'
+import { clamp, useReducedMotion } from '@mantine/hooks'
+import React, { FC, useLayoutEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { LogoHeader } from '@Components/LogoHeader'
 import classes from '@Styles/IconTabs.module.css'
@@ -24,6 +24,8 @@ interface IconTabsProps extends GroupProps {
   ariaLabel?: string
   mode?: 'tabs' | 'navigation'
   idPrefix?: string
+  orientation?: 'horizontal' | 'vertical'
+  appearance?: 'surface' | 'underline'
   onTabChange?: (tabIndex: number, tabKey: string) => void
 }
 
@@ -112,6 +114,8 @@ export const IconTabs: FC<IconTabsProps> = (props) => {
     idPrefix,
     position,
     grow,
+    orientation = 'horizontal',
+    appearance = 'surface',
     ...others
   } = props
   const [activeTab, setActiveTab] = useState(active ?? 0)
@@ -119,35 +123,48 @@ export const IconTabs: FC<IconTabsProps> = (props) => {
   const scrollerRef = useRef<HTMLDivElement>(null)
   const theme = useMantineTheme()
   const { colorScheme } = useMantineColorScheme()
+  const reducedMotion = useReducedMotion()
   const resolveColor = (color?: MantineColor) =>
     color ? theme.colors[theme.primaryColor][colorScheme === 'dark' ? 4 : 7] : undefined
-  const current = tabs.length > 0 ? clamp(activeTab, 0, tabs.length - 1) : -1
+  const current = tabs.length > 0 ? clamp(active ?? activeTab, 0, tabs.length - 1) : -1
 
-  useEffect(() => {
-    setActiveTab(active ?? 0)
-  }, [active])
-
-  useEffect(() => {
+  useLayoutEffect(() => {
     const scroller = scrollerRef.current
+    if (orientation === 'vertical') return
     const activeItem = scroller?.querySelector<HTMLElement>('[data-active]')
     if (!scroller || !activeItem) return
 
-    const target = activeItem.offsetLeft - (scroller.clientWidth - activeItem.offsetWidth) / 2
-    scroller.scrollTo({ left: Math.max(0, target), behavior: 'smooth' })
-  }, [current, mode, tabs.length])
+    const viewport = scroller.getBoundingClientRect()
+    const item = activeItem.getBoundingClientRect()
+    const overflow =
+      item.left < viewport.left
+        ? item.left - viewport.left
+        : item.right > viewport.right
+          ? item.right - viewport.right
+          : 0
+    // Do not recenter an already-visible tab every time a route mounts. Only
+    // reveal a clipped item, before paint, without panning the navigation bar.
+    if (overflow !== 0)
+      scroller.scrollTo({
+        left: Math.max(0, scroller.scrollLeft + overflow),
+        behavior: mode === 'navigation' || reducedMotion ? 'auto' : 'smooth',
+      })
+  }, [current, mode, tabs.length, orientation, reducedMotion])
 
   const selectTab = (index: number, focus = false) => {
     const tab = tabs[index]
     if (!tab || disabled) return
-    setActiveTab(index)
+    if (active === undefined) setActiveTab(index)
     onTabChange?.(index, tab.tabKey)
     if (focus) window.requestAnimationFrame(() => tabRefs.current[index]?.focus())
   }
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
     let next = index
-    if (event.key === 'ArrowLeft') next = index === 0 ? tabs.length - 1 : index - 1
-    else if (event.key === 'ArrowRight') next = index === tabs.length - 1 ? 0 : index + 1
+    if (event.key === (orientation === 'vertical' ? 'ArrowUp' : 'ArrowLeft'))
+      next = index === 0 ? tabs.length - 1 : index - 1
+    else if (event.key === (orientation === 'vertical' ? 'ArrowDown' : 'ArrowRight'))
+      next = index === tabs.length - 1 ? 0 : index + 1
     else if (event.key === 'Home') next = 0
     else if (event.key === 'End') next = tabs.length - 1
     else return
@@ -157,7 +174,7 @@ export const IconTabs: FC<IconTabsProps> = (props) => {
   }
 
   return (
-    <div className={classes.root}>
+    <div className={classes.root} data-orientation={orientation} data-appearance={appearance}>
       {(withIcon || aside) && (
         <div className={classes.context}>
           {withIcon && <LogoHeader className={classes.hidable} />}
@@ -168,6 +185,7 @@ export const IconTabs: FC<IconTabsProps> = (props) => {
         <Group
           component={mode === 'navigation' ? 'nav' : 'div'}
           role={mode === 'tabs' ? 'tablist' : undefined}
+          aria-orientation={mode === 'tabs' ? orientation : undefined}
           aria-label={ariaLabel}
           gap={4}
           wrap="nowrap"

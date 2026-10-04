@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   assertImmutableBuildRecord,
+  assertSuccessfulBuildJob,
   assertSuccessfulBuildResponse,
   companionByocAgentImage,
   isImmutableImageReference,
@@ -130,5 +131,34 @@ test("immutable rebuild acceptance requires both Success and its durable digest"
         "KotH",
       ),
     /different image definition/,
+  );
+});
+
+test("asynchronous immutable rebuilds accept only a successful terminal job result", () => {
+  assert.deepEqual(
+    assertSuccessfulBuildJob(
+      {
+        status: "Succeeded",
+        result: { buildStatus: "Success", imageDigest: localImage },
+      },
+      "KotH",
+    ),
+    { buildStatus: "Success", imageDigest: localImage },
+  );
+  assert.throws(
+    () => assertSuccessfulBuildJob({ status: "Running" }, "KotH"),
+    /ended as Running/,
+  );
+  assert.throws(
+    () =>
+      assertSuccessfulBuildJob(
+        { status: "Failed", error: "image pull failed" },
+        "KotH",
+      ),
+    /image pull failed/,
+  );
+  assert.throws(
+    () => assertSuccessfulBuildJob({ status: "Succeeded", result: {} }, "KotH"),
+    /immutable rebuild did not succeed/,
   );
 });

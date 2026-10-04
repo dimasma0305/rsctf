@@ -219,5 +219,102 @@
       "desrc": "每支队伍获得一个长驻容器，互相攻击并防御自身。按每回合的进攻、防守、SLA 综合计分。",
       "label": "攻防对抗"
     }
+  },
+  "ai_chat": {
+    "add": "添加",
+    "closed": "修改 AI 对话链接的时间已结束。",
+    "conflict": {
+      "message": "队友修改了这些链接。已显示最新列表，请重新添加你的更改。",
+      "title": "链接已变更"
+    },
+    "copied": "链接已复制",
+    "copy": "复制链接",
+    "count": "{{count}} / {{max}} 个链接",
+    "description": "分享你的队伍在本题中使用的 AI 对话公开链接。主办方可能会审阅这些链接。",
+    "discard": "放弃更改",
+    "empty": "尚未附加链接。",
+    "hide": "收起",
+    "input_label": "分享链接",
+    "last_saved_by": "最后由 {{user}} 保存",
+    "load_failed": "无法加载 AI 对话链接。",
+    "loading": "加载中…",
+    "manage": "管理",
+    "matched": "匹配 {{provider}}",
+    "no_providers": "当前不接受任何 AI 提供方。",
+    "open": "在新标签页中打开链接",
+    "provider_blocked": "该提供方已不再被接受",
+    "reason": {
+      "credentials": "不接受包含用户名或密码的链接",
+      "duplicate": "该链接已在列表中",
+      "full": "最多可附加 {{count}} 个链接",
+      "https_required": "仅接受 https:// 链接",
+      "invalid": "请输入以 https:// 开头的完整链接",
+      "port": "不接受带有自定义端口的链接",
+      "too_long": "链接过长",
+      "unsupported": "不接受该 AI 提供方"
+    },
+    "remove": "移除链接",
+    "save": "保存链接",
+    "saved": "AI 对话链接已保存",
+    "show": "查看",
+    "supported": "支持：{{providers}}",
+    "title": "AI 对话链接",
+    "unknown_provider": "未知提供方",
+    "unsaved": "有未保存的更改",
+    "unsaved_link": "未保存",
+    "unsolved": "解出本题后即可附加 AI 对话链接。",
+    "clear_warning": "保存空列表会移除你们的披露。本赛事要求披露，因此该题将再次需要披露。",
+    "no_ai": {
+      "button": "我们没有使用 AI",
+      "cancel": "取消",
+      "change_hint": "实际使用了 AI？在上方添加分享链接并保存，链接将替换此声明。",
+      "confirm": "确认声明你们的队伍在本题中未使用任何 AI 助手？主办方可以看到该声明及其提交时间。",
+      "confirm_button": "确认：未使用 AI",
+      "declared": "已声明：未使用 AI",
+      "saved": "声明已保存：未使用 AI"
+    },
+    "pending": {
+      "description": "本赛事要求为每道已解出的题目进行披露。请添加你们使用的 AI 对话链接，或声明未使用 AI。",
+      "title": "需要披露"
+    },
+    "replace_declaration": "保存这些链接将替换“未使用 AI”声明。",
+    "requirement_label": "AI 对话披露",
+    "timing": {
+      "both": "解出于 {{solved}}，披露于 {{disclosed}}",
+      "solved": "解出于 {{solved}}"
+    }
+  },
+  "close_blocked": {
+    "both": "关闭前请先评价本题并完成 {{requirement}}",
+    "requirement": "关闭前请先完成 {{requirement}}"
+  },
+  "review": {
+    "submit_and_continue": "提交并继续"
+  },
+  "solver": {
+    "title": "解题脚本",
+    "loading": "加载中…",
+    "load_failed": "无法加载解题脚本。",
+    "none": "可选",
+    "count": "{{count}} / {{max}} 个版本",
+    "hide": "收起",
+    "manage": "上传",
+    "show": "查看",
+    "description": "可选：上传队伍解出本题所用的脚本或笔记，便于主办方核实。每次上传都会保存为新版本，主办方可以看到所有版本及上传时间。",
+    "unsolved": "解出本题后才能上传解题脚本。",
+    "full": "队伍已达到版本数量上限。",
+    "quota_full": "队伍在本赛事的解题脚本存储空间已用完。",
+    "closed": "上传解题脚本的时间已结束。",
+    "select_label": "解题脚本文件",
+    "select_placeholder": "选择文件",
+    "limits": "单个文件最大 {{size}}。队伍在本赛事已使用 {{used}} / {{limit}}。",
+    "clear_file": "移除所选文件",
+    "upload": "上传解题脚本",
+    "uploaded": "解题脚本已上传",
+    "too_large": "文件不能超过 {{size}}。",
+    "empty": "文件为空。",
+    "empty_list": "尚未上传解题脚本。",
+    "version": "v{{version}}",
+    "uploaded_by": "由 {{user}} 于 {{time}} 上传"
   }
 }

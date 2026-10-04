@@ -24,6 +24,8 @@ pub use data::{DataConfig, WorkerDataStream};
 pub use error::{WorkerError, WorkerResult};
 pub use hybrid_backend::HybridWorkerContainerManager;
 pub use listener::{build_mtls_server_config, WorkerServerConfig, WorkerService};
+#[cfg(test)]
+pub(crate) use postgres::tests::AuthorityFixture;
 pub use postgres::PostgresWorkerAuthority;
 pub use reconciler::start_reconciler;
 pub use registry::{RegistryConfig, SessionContext, WorkerRegistry};

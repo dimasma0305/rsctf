@@ -18,6 +18,15 @@ const compose = readFileSync(
   join(root, "deploy/compose.development.yml"),
   "utf8",
 );
+const publicCompose = readFileSync(
+  join(root, "deploy/compose.development.public.yml"),
+  "utf8",
+);
+const fullRuntimeCompose = readFileSync(join(root, "compose.dev.yml"), "utf8");
+const developmentRuntimeImage = readFileSync(
+  join(root, "deploy/Dockerfile.development-runtime"),
+  "utf8",
+);
 const runner = readFileSync(join(root, "scripts/dev.mjs"), "utf8");
 const viteConfig = readFileSync(join(root, "web/vite.config.mts"), "utf8");
 const guide = readFileSync(
@@ -35,6 +44,19 @@ test("source development dependencies are isolated and loopback-only", () => {
     compose,
     /docker\.sock|network_mode|external:|rsctf:\s*$/m,
   );
+});
+
+test("full-runtime development mounts one local binary cache without publishing an image", () => {
+  assert.match(fullRuntimeCompose, /path: deploy\/compose\.development\.yml/);
+  assert.match(fullRuntimeCompose, /\.\/\.git\/rsctf-target\/debug/);
+  assert.match(fullRuntimeCompose, /\/opt\/rsctf-debug:ro/);
+  assert.match(fullRuntimeCompose, /127\.0\.0\.1:\$\{RSCTF_DEV_BACKEND_PORT:-18080\}:8080/);
+  assert.match(fullRuntimeCompose, /no-new-privileges:true/);
+  assert.match(fullRuntimeCompose, /NET_ADMIN/);
+  assert.match(fullRuntimeCompose, /rsctf-source-dev-ad/);
+  assert.match(developmentRuntimeImage, /^FROM ubuntu:24\.04@sha256:[0-9a-f]{64}$/m);
+  assert.doesNotMatch(developmentRuntimeImage, /cargo|rustc/);
+  assert.match(developmentRuntimeImage, /ENTRYPOINT \["\/opt\/rsctf-debug\/rsctf"\]/);
 });
 
 test("development runner rejects invalid and colliding ports", () => {
@@ -74,6 +96,23 @@ test("development gateway exposes the backend health contract", () => {
   assert.match(viteConfig, /'\/healthz': TARGET/);
 });
 
+test("development API proxy carries BYOC WebSocket upgrades", () => {
+  assert.match(viteConfig, /'\/api':\s*\{[\s\S]*?target: TARGET,[\s\S]*?ws: true/);
+});
+
+test("public development gateway preserves Traefik's authenticated client address", () => {
+  assert.match(
+    publicCompose,
+    /X-Forwarded-For: \{http\.request\.header\.X-Real-IP\}/,
+  );
+});
+
+test("development hub proxy preserves the browser origin for CSRF validation", () => {
+  assert.match(viteConfig, /'\/hub':\s*\{[\s\S]*?changeOrigin: true,[\s\S]*?ws: true/);
+  assert.doesNotMatch(viteConfig, /headers:\s*\{\s*origin:/);
+  assert.doesNotMatch(viteConfig, /rewriteWsOrigin:\s*true/);
+});
+
 test("development environment cannot inherit production RSCTF or Vite settings", () => {
   const directory = mkdtempSync(join(tmpdir(), "rsctf-source-dev-env-"));
   try {
@@ -98,7 +137,7 @@ test("development environment cannot inherit production RSCTF or Vite settings",
     assert.equal(environment.RSCTF_JWT_SECRET, secrets.jwtSecret);
     assert.equal(environment.RSCTF_CONTAINER_BACKEND, "none");
     assert.equal(environment.RSCTF_ROLE, "development");
-    assert.equal(environment.RSCTF_DB_MAX_CONNECTIONS, "28");
+    assert.equal(environment.RSCTF_DB_MAX_CONNECTIONS, "29");
     assert.equal(environment.RSCTF_BIND, "127.0.0.1:18080");
     assert.equal(environment.RSCTF_PUBLIC_URL, "http://localhost:16300");
     assert.equal(environment.RSCTF_TRAFFIC_CAPTURE_ENABLED, "false");
@@ -130,8 +169,12 @@ test("development secrets are stable, private, and independent", () => {
 test("development workflow documents hot reload, SSH forwarding, and the release boundary", () => {
   assert.match(runner, /spawnBackend/);
   assert.match(runner, /backendWatchers/);
+  assert.match(runner, /bounded-cargo\.sh/);
+  assert.match(runner, /rsctf-target/);
+  assert.doesNotMatch(runner, /spawn\("cargo"/);
   assert.match(runner, /vite/);
   assert.match(guide, /hot module replacement/i);
+  assert.match(guide, /shared bounded Cargo target/i);
   assert.match(guide, /ssh -L 63000:127\.0\.0\.1:63000/);
   assert.match(guide, /node scripts\/dev\.mjs --public/);
   assert.match(

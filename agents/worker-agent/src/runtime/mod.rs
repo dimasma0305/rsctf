@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::config::DoctorArgs;
 
-pub use docker::DockerRuntime;
+pub use docker::{DockerAdmissionLimits, DockerRuntime};
 
 #[async_trait]
 pub trait WorkerRuntime: Send + Sync {
@@ -47,6 +47,8 @@ pub struct RuntimeOptions {
     pub writable_layer_bytes: u64,
     pub minimum_free_bytes: u64,
     pub allow_unbounded_storage: bool,
+    /// Bounded concurrency and deadlines for short-lived Docker API calls.
+    pub docker_admission: DockerAdmissionLimits,
 }
 
 #[derive(Debug, Error)]

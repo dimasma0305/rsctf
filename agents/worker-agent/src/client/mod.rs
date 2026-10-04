@@ -14,6 +14,7 @@ use crate::runtime::{runtime_for, RuntimeOptions};
 use crate::tls::MtlsConnector;
 
 const SESSION_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
+const RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
     if arguments.runtime_concurrency == 0 {
@@ -75,6 +76,7 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
                 writable_layer_bytes: arguments.writable_layer_bytes,
                 minimum_free_bytes: arguments.minimum_free_bytes,
                 allow_unbounded_storage: arguments.allow_unbounded_storage,
+                docker_admission: arguments.docker_admission_limits(),
             },
         )
         .await
@@ -93,24 +95,38 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
     let connector = MtlsConnector::new(config.clone());
     backoff.reset();
     let detected_capacity = loop {
-        match runtime.probe().await {
-            Ok(()) => match runtime.capacity().await {
-                Ok(capacity) => break capacity,
-                Err(error) => {
-                    let delay = backoff.next_delay();
-                    tracing::warn!(%error, ?delay, "Docker capacity probe failed; retrying locally");
-                    tokio::time::sleep(delay).await;
+        match tokio::time::timeout(RUNTIME_PROBE_TIMEOUT, runtime.probe()).await {
+            Ok(Ok(())) => {
+                match tokio::time::timeout(RUNTIME_PROBE_TIMEOUT, runtime.capacity()).await {
+                    Ok(Ok(capacity)) => break capacity,
+                    Ok(Err(error)) => {
+                        let delay = backoff.next_delay();
+                        tracing::warn!(%error, ?delay, "Docker capacity probe failed; retrying locally");
+                        tokio::time::sleep(delay).await;
+                    }
+                    Err(_) => {
+                        let delay = backoff.next_delay();
+                        tracing::warn!(?delay, "Docker capacity probe timed out; retrying locally");
+                        tokio::time::sleep(delay).await;
+                    }
                 }
-            },
-            Err(error) => {
+            }
+            Ok(Err(error)) => {
                 let delay = backoff.next_delay();
                 tracing::warn!(%error, ?delay, "Docker is unavailable; retrying locally");
+                tokio::time::sleep(delay).await;
+            }
+            Err(_) => {
+                let delay = backoff.next_delay();
+                tracing::warn!(?delay, "Docker health probe timed out; retrying locally");
                 tokio::time::sleep(delay).await;
             }
         }
     };
     backoff.reset();
-    let configured_capacity = config.capacity.unwrap_or(detected_capacity);
+    let configured_capacity = config
+        .capacity
+        .unwrap_or_else(|| reserved_default(detected_capacity));
     let capacity = select_capacity(
         detected_capacity,
         configured_capacity,
@@ -150,11 +166,23 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
         control::OperationDispatcher::new(runtime.clone(), arguments.runtime_concurrency);
 
     loop {
-        if let Err(error) = runtime.probe().await {
-            let delay = backoff.next_delay();
-            tracing::warn!(%error, ?delay, "Docker became unavailable; not advertising worker capacity");
-            tokio::time::sleep(delay).await;
-            continue;
+        match tokio::time::timeout(RUNTIME_PROBE_TIMEOUT, runtime.probe()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let delay = backoff.next_delay();
+                tracing::warn!(%error, ?delay, "Docker became unavailable; not advertising worker capacity");
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+            Err(_) => {
+                let delay = backoff.next_delay();
+                tracing::warn!(
+                    ?delay,
+                    "Docker pre-connect probe timed out; not advertising worker capacity"
+                );
+                tokio::time::sleep(delay).await;
+                continue;
+            }
         }
         let connected_at = Instant::now();
         let result = control::run_session(
@@ -166,6 +194,15 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
         )
         .await;
         readiness.clear().await?;
+        if let Some(error) = result.as_ref().err().filter(|error| error.is_terminal()) {
+            // The shipped systemd unit uses Restart=on-failure. Returning an
+            // error would restart revoked, incompatible, or misconfigured
+            // identities every five seconds forever. A clean stop is the
+            // explicit quarantined state; an operator restarts the unit after
+            // replacing its credentials or configuration.
+            tracing::error!(%error, "worker control session is terminal; stopping without supervisor reconnect");
+            return Ok(());
+        }
         if connected_at.elapsed() >= Duration::from_secs(60) {
             backoff.reset();
         }
@@ -175,6 +212,35 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
             Err(error) => tracing::warn!(%error, ?delay, "worker control session failed"),
         }
         tokio::time::sleep(delay).await;
+    }
+}
+
+/// Share of the detected host kept back for Docker, the agent, networking,
+/// and maintenance when no operator override is configured.
+const RESERVE_DIVISOR: u64 = 10;
+/// Absolute reserve floors applied when the fractional share is smaller.
+const RESERVE_CPU_MILLIS: u64 = 1_000;
+const RESERVE_MEMORY_BYTES: u64 = 1024 * 1024 * 1024;
+/// A host at or below its reserve still advertises this much so a small
+/// development worker remains usable.
+const MINIMUM_CPU_MILLIS: u64 = 1_000;
+const MINIMUM_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Detected capacity minus the documented reserve: the larger of one tenth
+/// and the absolute floor for CPU and memory, never below the minimum.
+fn reserved_default(detected: WorkerCapacity) -> WorkerCapacity {
+    let cpu_reserve = (detected.cpu_millis / RESERVE_DIVISOR).max(RESERVE_CPU_MILLIS);
+    let memory_reserve = (detected.memory_bytes / RESERVE_DIVISOR).max(RESERVE_MEMORY_BYTES);
+    WorkerCapacity {
+        cpu_millis: detected
+            .cpu_millis
+            .saturating_sub(cpu_reserve)
+            .max(MINIMUM_CPU_MILLIS),
+        memory_bytes: detected
+            .memory_bytes
+            .saturating_sub(memory_reserve)
+            .max(MINIMUM_MEMORY_BYTES),
+        slots: detected.slots,
     }
 }
 
@@ -239,6 +305,33 @@ pub enum ClientError {
     Transport(String),
 }
 
+impl ClientError {
+    fn is_terminal(&self) -> bool {
+        match self {
+            Self::Protocol(_) | Self::Configuration(_) | Self::Config(_) | Self::Security(_) => {
+                true
+            }
+            Self::Tls(
+                crate::tls::TlsConnectorError::Rustls(_)
+                | crate::tls::TlsConnectorError::IdentityIo(_)
+                | crate::tls::TlsConnectorError::MissingCertificate
+                | crate::tls::TlsConnectorError::MissingPrivateKey
+                | crate::tls::TlsConnectorError::InvalidServerName
+                | crate::tls::TlsConnectorError::AlpnMismatch,
+            ) => true,
+            Self::Tls(
+                crate::tls::TlsConnectorError::TransportIo(_)
+                | crate::tls::TlsConnectorError::ConnectTimeout
+                | crate::tls::TlsConnectorError::HandshakeTimeout,
+            )
+            | Self::Runtime(_)
+            | Self::Readiness(_)
+            | Self::Frame(_)
+            | Self::Transport(_) => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,6 +364,49 @@ mod tests {
     }
 
     #[test]
+    fn auto_detected_capacity_subtracts_the_documented_reserve() {
+        assert_eq!(
+            reserved_default(DETECTED),
+            WorkerCapacity {
+                cpu_millis: 7_000,
+                memory_bytes: DETECTED.memory_bytes - DETECTED.memory_bytes / 10,
+                slots: 64,
+            }
+        );
+        let large = WorkerCapacity {
+            cpu_millis: 64_000,
+            memory_bytes: 256 * 1024 * 1024 * 1024,
+            slots: 64,
+        };
+        assert_eq!(reserved_default(large).cpu_millis, 57_600);
+        let tiny = WorkerCapacity {
+            cpu_millis: 1_000,
+            memory_bytes: 1024 * 1024 * 1024,
+            slots: 4,
+        };
+        assert_eq!(
+            reserved_default(tiny),
+            WorkerCapacity {
+                cpu_millis: MINIMUM_CPU_MILLIS,
+                memory_bytes: MINIMUM_MEMORY_BYTES,
+                slots: 4,
+            }
+        );
+        // An explicit override may use the whole detected host.
+        assert_eq!(
+            select_capacity(
+                DETECTED,
+                reserved_default(DETECTED),
+                Some(DETECTED.cpu_millis),
+                Some(DETECTED.memory_bytes),
+                None
+            )
+            .unwrap(),
+            DETECTED
+        );
+    }
+
+    #[test]
     fn capacity_overrides_cannot_overcommit_the_docker_host() {
         for result in [
             select_capacity(DETECTED, DETECTED, Some(8_001), None, None),
@@ -285,5 +421,13 @@ mod tests {
         ] {
             assert!(matches!(result, Err(ClientError::Configuration(_))));
         }
+    }
+
+    #[test]
+    fn terminal_control_failures_enter_supervisor_quarantine() {
+        assert!(ClientError::Protocol("unsupported revision".into()).is_terminal());
+        assert!(ClientError::Configuration("invalid worker identity".into()).is_terminal());
+        assert!(!ClientError::Transport("connection reset".into()).is_terminal());
+        assert!(!ClientError::Tls(crate::tls::TlsConnectorError::ConnectTimeout).is_terminal());
     }
 }

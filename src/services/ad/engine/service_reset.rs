@@ -74,8 +74,18 @@ pub(crate) async fn prepare_service_reset(
 ) -> AppResult<ServiceResetPreparation> {
     let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
     let tx = control.transaction_mut();
-    let current: Option<(Option<i32>, Option<String>, Option<String>)> = sqlx::query_as(
-        r#"SELECT round.id, flag.flag, service.container_id
+    #[allow(clippy::type_complexity)]
+    let current: Option<(Option<i32>, Option<String>, bool, Option<String>)> = sqlx::query_as(
+        r#"SELECT round.id,
+                  CASE WHEN OCTET_LENGTH(flag.flag) = 38
+                             AND flag.flag ~ '^flag[{][A-Za-z0-9_-]{32}[}]$'
+                       THEN flag.flag END,
+                  COALESCE(
+                    NOT (OCTET_LENGTH(flag.flag) = 38
+                         AND flag.flag ~ '^flag[{][A-Za-z0-9_-]{32}[}]$'),
+                    FALSE
+                  ) AS current_flag_invalid,
+                  service.container_id
              FROM "AdTeamServices" service
              JOIN "Participations" participation
                ON participation.id = service.participation_id
@@ -114,11 +124,21 @@ pub(crate) async fn prepare_service_reset(
     .fetch_optional(&mut **tx)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let Some((round_id, current_flag, retired_container_id)) = current else {
+    let Some((round_id, current_flag, current_flag_invalid, retired_container_id)) = current else {
         return Err(AppError::conflict(
             "A&D service is no longer eligible for replacement",
         ));
     };
+    if current_flag_invalid {
+        tracing::warn!(
+            game_id,
+            service_id,
+            "invalid A&D flag blocked during service reset"
+        );
+        return Err(AppError::unavailable(
+            "The current A&D flag is invalid; ask an administrator to repair it",
+        ));
+    }
     if round_id.is_some() && current_flag.is_none() {
         return Err(AppError::conflict(
             "The current round flag is not prepared; retry after round recovery",

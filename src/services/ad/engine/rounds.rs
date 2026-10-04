@@ -163,15 +163,22 @@ pub struct RoundCursor {
 type RoundRow = (i32, i32, chrono::DateTime<Utc>, chrono::DateTime<Utc>, bool);
 #[derive(Debug, sqlx::FromRow)]
 struct GameSettings {
-    private_key: String,
     ad_tick_seconds: Option<i32>,
     ad_warmup_seconds: Option<i32>,
     ad_min_grace_period_seconds: Option<i32>,
     start_time_utc: chrono::DateTime<Utc>,
     end_time_utc: chrono::DateTime<Utc>,
     ad_scoring_paused: bool,
+    practice_mode: bool,
     ad_scoring_start_round: Option<i32>,
     koth_scoring_start_round: Option<i32>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct RoundServiceRow {
+    id: i32,
+    checker_dir: Option<String>,
+    service_weight: f64,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -181,26 +188,72 @@ enum RoundTargetDisposition {
     Stale,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn complete_engine_scoring_roster(
+fn scoring_roster_size_ready(accepted_participations: &[i32], practice_mode: bool) -> bool {
+    accepted_participations.len() >= if practice_mode { 1 } else { 2 }
+}
+
+fn complete_ad_scoring_roster(
     accepted_participations: &[i32],
     ad_challenges: &[i32],
-    has_koth: bool,
-    koth_targets_ready: bool,
-    service_pairs: &HashSet<(i32, i32)>,
     checkers_ready: bool,
-    koth_lifecycle_ready: bool,
+    practice_mode: bool,
 ) -> bool {
     checkers_ready
-        && accepted_participations.len() >= 2
-        && (!ad_challenges.is_empty() || has_koth)
-        && (ad_challenges.is_empty()
-            || accepted_participations.iter().all(|participation_id| {
-                ad_challenges
-                    .iter()
-                    .all(|challenge_id| service_pairs.contains(&(*participation_id, *challenge_id)))
-            }))
-        && (!has_koth || (koth_targets_ready && koth_lifecycle_ready))
+        && scoring_roster_size_ready(accepted_participations, practice_mode)
+        && !ad_challenges.is_empty()
+}
+
+/// Find the first round containing flags for every service in the roster that
+/// is about to become official. This lets an upgraded scheduler recover a
+/// previously blocked event without discarding already-recorded Offline/SLA
+/// evidence. On a new event there is no earlier complete round, so the caller
+/// uses the round it is currently preparing.
+async fn earliest_complete_ad_roster_round<'e, E>(
+    executor: E,
+    game_id: i32,
+    latest_round: i32,
+    service_ids: &[i32],
+) -> AppResult<Option<i32>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    if service_ids.is_empty() {
+        return Ok(None);
+    }
+    sqlx::query_scalar(
+        r#"SELECT MIN(complete_round.number)::integer
+             FROM (
+                   SELECT round.number
+                     FROM "AdRounds" round
+                     JOIN "AdFlags" flag ON flag.round_id = round.id
+                    WHERE round.game_id = $1
+                      AND round.number <= $2
+                      AND flag.team_service_id = ANY($3::integer[])
+                    GROUP BY round.id, round.number
+                   HAVING COUNT(*) = CARDINALITY($3::integer[])
+             ) complete_round"#,
+    )
+    .bind(game_id)
+    .bind(latest_round)
+    .bind(service_ids)
+    .fetch_one(executor)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
+fn complete_koth_scoring_roster(
+    accepted_participations: &[i32],
+    has_koth: bool,
+    targets_ready: bool,
+    checkers_ready: bool,
+    lifecycle_ready: bool,
+    practice_mode: bool,
+) -> bool {
+    has_koth
+        && targets_ready
+        && checkers_ready
+        && lifecycle_ready
+        && scoring_roster_size_ready(accepted_participations, practice_mode)
 }
 
 fn prepared_checker_exists(path: Option<&str>) -> bool {
@@ -211,16 +264,18 @@ fn prepared_checker_exists(path: Option<&str>) -> bool {
     root.join("venv/bin/python3").is_file() && root.join("src/run.py").is_file()
 }
 
-fn valid_service_endpoint(host: &str, port: i32) -> bool {
-    !host.trim().is_empty() && (1..=65_535).contains(&port)
-}
-
 fn koth_scoring_lifecycle_ready(
     crown_shape_ready: bool,
     has_marker_hill: bool,
+    champion_cooldown_ticks: i32,
+    accepted_participation_count: usize,
     vpn_enabled: bool,
 ) -> bool {
-    crown_shape_ready && (!has_marker_hill || vpn_enabled)
+    crown_shape_ready
+        && (!has_marker_hill
+            || champion_cooldown_ticks == 0
+            || accepted_participation_count < 2
+            || vpn_enabled)
 }
 
 fn classify_round_target(
@@ -278,9 +333,42 @@ fn playable_round_window(
     } else {
         nominal.1.min(event_end)
     };
+    let end = absorb_short_terminal_tail(end, event_end, minimum_duration_seconds);
     (end > start
         && end.signed_duration_since(start) >= Duration::seconds(minimum_duration_seconds.max(1)))
     .then_some((start, end, reanchored))
+}
+
+fn absorb_short_terminal_tail(
+    round_end: chrono::DateTime<Utc>,
+    event_end: chrono::DateTime<Utc>,
+    minimum_duration_seconds: i64,
+) -> chrono::DateTime<Utc> {
+    let tail = event_end.signed_duration_since(round_end);
+    if tail > Duration::zero() && tail < Duration::seconds(minimum_duration_seconds.max(1)) {
+        event_end
+    } else {
+        round_end
+    }
+}
+
+fn minimum_round_duration_seconds(grace_seconds: i64, has_api_hill: bool) -> i64 {
+    let checker_minimum = grace_seconds.saturating_add(
+        i64::try_from(
+            super::FLAG_DELIVERY_PUBLICATION_RESERVE_SECONDS
+                + super::CHECKER_MINIMUM_RUNWAY_SECONDS
+                + super::CHECKER_SCHEDULER_OUTER_MARGIN_SECONDS,
+        )
+        .unwrap_or(i64::MAX),
+    );
+    if has_api_hill {
+        checker_minimum.max(
+            crate::services::ad::engine::koth_api::API_WAVE_SETTLEMENT_LAG_SECONDS
+                .saturating_add(1),
+        )
+    } else {
+        checker_minimum
+    }
 }
 
 /// Atomically finalize the expected current round and prepare its successor.
@@ -334,10 +422,10 @@ async fn prepare_round_transaction(
     _requested_at: chrono::DateTime<Utc>,
 ) -> AppResult<AdvancedRound> {
     let game_settings: GameSettings = sqlx::query_as(
-        r#"SELECT private_key, ad_tick_seconds, ad_warmup_seconds,
+        r#"SELECT ad_tick_seconds, ad_warmup_seconds,
                   ad_min_grace_period_seconds,
                   start_time_utc, end_time_utc,
-                  ad_scoring_paused, ad_scoring_start_round,
+                  ad_scoring_paused, practice_mode, ad_scoring_start_round,
                   koth_scoring_start_round
              FROM "Games"
             WHERE id = $1
@@ -413,6 +501,9 @@ async fn prepare_round_transaction(
     let has_marker_hill = engine_challenges
         .iter()
         .any(|challenge| challenge.1 == ChallengeType::KingOfTheHill as i16 && !challenge.4);
+    let has_api_hill = engine_challenges
+        .iter()
+        .any(|challenge| challenge.1 == ChallengeType::KingOfTheHill as i16 && challenge.4);
     let koth_challenge_ids: Vec<i32> = engine_challenges
         .iter()
         .filter(|challenge| challenge.1 == ChallengeType::KingOfTheHill as i16)
@@ -557,14 +648,7 @@ async fn prepare_round_transaction(
             .unwrap_or(super::DEFAULT_CHECKER_GRACE_SECONDS)
             .clamp(1, 60),
     );
-    let minimum_duration_seconds = grace_seconds.saturating_add(
-        i64::try_from(
-            super::FLAG_DELIVERY_PUBLICATION_RESERVE_SECONDS
-                + super::CHECKER_MINIMUM_RUNWAY_SECONDS
-                + super::CHECKER_SCHEDULER_OUTER_MARGIN_SECONDS,
-        )
-        .unwrap_or(i64::MAX),
-    );
+    let minimum_duration_seconds = minimum_round_duration_seconds(grace_seconds, has_api_hill);
     let (scheduled_start, requested_ends_at, reanchored) = playable_round_window(
         (nominal_start, nominal_end),
         game_settings.end_time_utc,
@@ -621,21 +705,15 @@ async fn prepare_round_transaction(
         .map_err(|error| AppError::internal(error.to_string()))?,
     };
 
-    #[allow(clippy::type_complexity)]
-    let services: Vec<(
-        i32,
-        i32,
-        i32,
-        Option<String>,
-        Option<String>,
-        f64,
-        String,
-        i32,
-    )> = sqlx::query_as(
-        r#"SELECT service.id, service.participation_id, service.challenge_id,
-                  service.container_id, challenge.ad_checker_image,
+    // Enrollment is not a scoring prerequisite. Freeze one durable Offline
+    // identity for every accepted team/challenge pair; service publication can
+    // fill that row before or after this transaction without changing identity.
+    super::super::service_lifecycle::ensure_scoring_placeholders(&mut **tx, game_id).await?;
+
+    let services = sqlx::query_as::<_, RoundServiceRow>(
+        r#"SELECT service.id, challenge.ad_checker_image AS checker_dir,
                   LEAST(1.2, GREATEST(0.8, challenge.ad_scoring_weight))
-                    AS service_weight, service.host, service.port
+                    AS service_weight
              FROM "AdTeamServices" service
              JOIN "Participations" participation
                ON participation.id = service.participation_id
@@ -664,8 +742,13 @@ async fn prepare_round_transaction(
         .filter(|challenge| challenge.1 == ChallengeType::AttackDefense as i16)
         .map(|challenge| challenge.0)
         .collect();
-    let checkers_ready = engine_challenges
+    let ad_checkers_ready = engine_challenges
         .iter()
+        .filter(|challenge| challenge.1 == ChallengeType::AttackDefense as i16)
+        .all(|challenge| prepared_checker_exists(challenge.2.as_deref()));
+    let koth_checkers_ready = engine_challenges
+        .iter()
+        .filter(|challenge| challenge.1 == ChallengeType::KingOfTheHill as i16)
         .all(|challenge| prepared_checker_exists(challenge.2.as_deref()));
     let accepted_participation_ids: Vec<i32> = sqlx::query_scalar(
         r#"SELECT id FROM "Participations"
@@ -700,11 +783,6 @@ async fn prepare_round_transaction(
     let koth_targets_ready = koth_challenge_ids
         .iter()
         .all(|challenge_id| koth_target_ids.contains(challenge_id));
-    let service_pairs: HashSet<(i32, i32)> = services
-        .iter()
-        .filter(|service| valid_service_endpoint(&service.6, service.7))
-        .map(|service| (service.1, service.2))
-        .collect();
     let crown_shape_ready = super::koth_cycle::valid_crown_shape(
         crown_settings.0,
         crown_settings.1,
@@ -714,66 +792,83 @@ async fn prepare_round_transaction(
     let koth_lifecycle_ready = koth_scoring_lifecycle_ready(
         crown_shape_ready,
         has_marker_hill,
+        crown_settings.2,
+        accepted_participation_ids.len(),
         crate::services::ad_vpn::enabled(),
     );
-    let scoring_roster_ready = complete_engine_scoring_roster(
+    let ad_scoring_ready = complete_ad_scoring_roster(
         &accepted_participation_ids,
         &ad_challenge_ids,
+        ad_checkers_ready,
+        game_settings.practice_mode,
+    );
+    let koth_scoring_ready = complete_koth_scoring_roster(
+        &accepted_participation_ids,
         has_koth,
         koth_targets_ready,
-        &service_pairs,
-        checkers_ready,
+        koth_checkers_ready,
         koth_lifecycle_ready,
+        game_settings.practice_mode,
     );
 
-    // A mutable template declares its boundary only when every engine challenge
-    // has a prepared checker, every A&D service and KotH target exists, at least
-    // two teams are frozen, and the crown-cycle configuration is valid.
-    // Boot2root marker hills additionally require the managed VPN because their
-    // champion cooldown is network-enforced; Leaderboard hills have no champion.
-    let scoring_boundary_missing = game_settings.ad_scoring_start_round.is_none()
-        || (has_koth && game_settings.koth_scoring_start_round.is_none());
-    if scoring_roster_ready && scoring_boundary_missing {
+    // A&D and KotH freeze independent scoring boundaries. An unavailable BYOC
+    // service is a scored Offline service and must not suppress A&D or a healthy
+    // shared hill. An unavailable hill must not suppress a prepared A&D checker.
+    // Practice events may freeze one accepted team; competitive events retain
+    // the two-team minimum.
+    if ad_scoring_ready && game_settings.ad_scoring_start_round.is_none() {
+        let service_ids: Vec<i32> = services.iter().map(|service| service.id).collect();
+        let scoring_start_round =
+            earliest_complete_ad_roster_round(&mut **tx, game_id, target_number, &service_ids)
+                .await?
+                .unwrap_or(target_number);
         sqlx::query(
             r#"UPDATE "Games"
-                  SET ad_scoring_start_round = COALESCE(ad_scoring_start_round, $2),
-                      koth_scoring_start_round = CASE WHEN $3
-                        THEN COALESCE(koth_scoring_start_round, $2)
-                        ELSE koth_scoring_start_round END
+                  SET ad_scoring_start_round = $2
                 WHERE id = $1
-                  AND (ad_scoring_start_round IS NULL
-                       OR ($3 AND koth_scoring_start_round IS NULL))"#,
+                  AND ad_scoring_start_round IS NULL"#,
         )
         .bind(game_id)
-        .bind(target_number)
-        .bind(has_koth)
+        .bind(scoring_start_round)
         .execute(&mut **tx)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-        if has_koth {
-            super::koth_cycle::snapshot_official_config(tx, game_id, target_number).await?;
-        }
+    }
+    if koth_scoring_ready {
+        let koth_start_round = match game_settings.koth_scoring_start_round {
+            Some(start_round) => start_round,
+            None => sqlx::query_scalar(
+                r#"UPDATE "Games"
+                          SET koth_scoring_start_round = $2
+                        WHERE id = $1
+                          AND koth_scoring_start_round IS NULL
+                    RETURNING koth_scoring_start_round"#,
+            )
+            .bind(game_id)
+            .bind(target_number)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?,
+        };
+        // This is intentionally idempotent so a round can repair a boundary
+        // whose official snapshot was interrupted on an older deployment.
+        super::koth_cycle::snapshot_official_config(tx, game_id, koth_start_round).await?;
     }
 
     if !services.is_empty() {
-        let salt = crate::utils::flag_generator::team_hash_salt(&game_settings.private_key);
-        let service_ids: Vec<i32> = services.iter().map(|service| service.0).collect();
+        let service_ids: Vec<i32> = services.iter().map(|service| service.id).collect();
         let checker_qualified: Vec<bool> = services
             .iter()
-            .map(|service| prepared_checker_exists(service.4.as_deref()))
+            .map(|service| prepared_checker_exists(service.checker_dir.as_deref()))
             .collect();
-        let service_weights: Vec<f64> = services.iter().map(|service| service.5).collect();
+        let service_weights: Vec<f64> = services
+            .iter()
+            .map(|service| service.service_weight)
+            .collect();
         let generated_flags: Vec<String> = services
             .iter()
-            .map(|service| {
-                let seed = crate::utils::flag_generator::team_challenge_hash(
-                    &salt,
-                    service.2,
-                    &format!("{}:{}", service.1, target_number),
-                );
-                crate::utils::flag_generator::generate_flag(None, &seed)
-            })
-            .collect();
+            .map(|_| crate::utils::flag_generator::generate_ad_flag())
+            .collect::<AppResult<Vec<_>>>()?;
         sqlx::query(
             r#"INSERT INTO "AdFlags"
                  (round_id, team_service_id, flag, planted_at, checker_qualified,
@@ -831,6 +926,8 @@ async fn prepare_round_transaction(
               AND challenge.is_enabled = TRUE
               AND challenge.review_status = $4
               AND challenge."Type" = $5
+              AND OCTET_LENGTH(flag.flag) = 38
+              AND flag.flag ~ '^flag[{][A-Za-z0-9_-]{32}[}]$'
             ORDER BY service.id, flag.id"#,
         )
         .bind(round.0)

@@ -2,6 +2,7 @@
 
 use serde::Deserialize;
 use std::fmt;
+use uuid::Uuid;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +25,8 @@ pub struct RegisterModel {
     /// table is empty. It is ignored after the bootstrap administrator exists.
     #[serde(default)]
     pub bootstrap_token: Option<String>,
+    /// Stable identity for reconciling an ambiguous registration/mail commit.
+    pub operation_id: Uuid,
 }
 
 impl fmt::Debug for RegisterModel {
@@ -46,6 +49,7 @@ impl fmt::Debug for RegisterModel {
                 "bootstrap_token",
                 &self.bootstrap_token.as_ref().map(|_| "<redacted>"),
             )
+            .field("operation_id", &self.operation_id)
             .finish()
     }
 }
@@ -70,6 +74,7 @@ pub struct PasswordChangeModel {
 #[cfg(test)]
 mod tests {
     use super::RegisterModel;
+    use uuid::Uuid;
 
     #[test]
     fn register_model_accepts_camel_case_bootstrap_token_and_redacts_debug() {
@@ -80,12 +85,17 @@ mod tests {
                 "email":"player@example.test",
                 "fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "fingerprintProof":"proof-secret",
-                "bootstrapToken":"top-secret"
+                "bootstrapToken":"top-secret",
+                "operationId":"00000000-0000-0000-0000-000000000123"
             }"#,
         )
         .unwrap();
 
         assert_eq!(model.bootstrap_token.as_deref(), Some("top-secret"));
+        assert_eq!(
+            model.operation_id,
+            Uuid::parse_str("00000000-0000-0000-0000-000000000123").unwrap()
+        );
         let debug = format!("{model:?}");
         assert!(!debug.contains("top-secret"));
         assert!(!debug.contains("Password1"));
@@ -99,10 +109,12 @@ mod tests {
             r#"{
                 "userName":"player",
                 "password":"Password1",
-                "email":"player@example.test"
+                "email":"player@example.test",
+                "operationId":"00000000-0000-0000-0000-000000000456"
             }"#,
         )
         .unwrap();
         assert!(model.bootstrap_token.is_none());
+        assert!(!model.operation_id.is_nil());
     }
 }

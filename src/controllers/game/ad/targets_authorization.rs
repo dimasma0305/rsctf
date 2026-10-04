@@ -108,6 +108,22 @@ async fn live_target_caller_is_authorized_on(
     authentication: &LiveTargetAuthentication,
     part: &participation::Model,
 ) -> AppResult<bool> {
+    let event_live: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM "Games"
+                WHERE id = $1
+                  AND deletion_pending = FALSE
+                  AND start_time_utc <= clock_timestamp()
+                  AND end_time_utc > clock_timestamp()
+             )"#,
+    )
+    .bind(part.game_id)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !event_live {
+        return Ok(false);
+    }
     match authentication {
         LiveTargetAuthentication::Session {
             user_id,
@@ -446,6 +462,40 @@ mod tests {
     async fn live_targets_reject_retained_members_stale_sessions_and_invalid_team_tokens() {
         let fixture = Fixture::new(3).await;
         let session = fixture.session_caller("current-stamp");
+        assert!(caller_is_live(&fixture, &session).await);
+
+        sqlx::query(
+            r#"UPDATE "Games"
+                  SET start_time_utc = clock_timestamp() + interval '1 hour',
+                      end_time_utc = clock_timestamp() + interval '2 hours'
+                WHERE id = $1"#,
+        )
+        .bind(fixture.game_id)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+        assert!(!caller_is_live(&fixture, &session).await);
+        sqlx::query(
+            r#"UPDATE "Games"
+                  SET start_time_utc = clock_timestamp() - interval '2 hours',
+                      end_time_utc = clock_timestamp() - interval '1 hour'
+                WHERE id = $1"#,
+        )
+        .bind(fixture.game_id)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+        assert!(!caller_is_live(&fixture, &session).await);
+        sqlx::query(
+            r#"UPDATE "Games"
+                  SET start_time_utc = clock_timestamp() - interval '1 hour',
+                      end_time_utc = clock_timestamp() + interval '1 hour'
+                WHERE id = $1"#,
+        )
+        .bind(fixture.game_id)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
         assert!(caller_is_live(&fixture, &session).await);
 
         sqlx::query(r#"DELETE FROM "TeamMembers" WHERE team_id = $1 AND user_id = $2"#)

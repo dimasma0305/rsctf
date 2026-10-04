@@ -67,10 +67,20 @@ function rowsForIteration() {
   }));
 }
 
+// A semantic k6 iteration owns one stable UUID-shaped batch identity. k6 may
+// repeat an HTTP request at the transport layer, and the server must replay
+// that exact result without charging quota or drop counters twice.
+function batchIdForIteration() {
+  const vu = (__VU >>> 0).toString(16).padStart(8, "0");
+  const iteration = (__ITER >>> 0).toString(16).padStart(12, "0");
+  return `${vu}-0000-4000-8000-${iteration}`;
+}
+
 export default function () {
   const response = http.post(
     `${TARGET}/api/internal/event-security/telemetry`,
     JSON.stringify({
+      batchId: batchIdForIteration(),
       gameId: fixture.gameId,
       flows: rowsForIteration(),
       dnsProviders: [],

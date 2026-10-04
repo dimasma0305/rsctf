@@ -3,7 +3,32 @@ use std::time::Duration;
 
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
-use super::{delete_ad_game_data, fence_game_for_deletion};
+use super::{
+    delete_ad_game_data, delete_detached_game_history, delete_restricted_game_history,
+    fence_game_for_deletion, fence_game_for_purge, purge_request_digest, validate_purge_request,
+    GamePurgeModel,
+};
+
+#[test]
+fn purge_request_requires_stable_identity_revision_and_exact_title() {
+    let valid = GamePurgeModel {
+        operation_id: uuid::Uuid::from_u128(7),
+        expected_configuration_revision: 4,
+        confirmation_title: "Archived finals".to_string(),
+    };
+    validate_purge_request(&valid).unwrap();
+    assert_eq!(purge_request_digest(9, &valid).unwrap().len(), 64);
+
+    let mut invalid = valid.clone();
+    invalid.operation_id = uuid::Uuid::nil();
+    assert!(validate_purge_request(&invalid).is_err());
+    invalid = valid.clone();
+    invalid.expected_configuration_revision = -1;
+    assert!(validate_purge_request(&invalid).is_err());
+    invalid = valid;
+    invalid.confirmation_title.clear();
+    assert!(validate_purge_request(&invalid).is_err());
+}
 
 struct DeletionFenceHarness {
     admin: sqlx::PgPool,
@@ -267,6 +292,44 @@ async fn game_deletion_fence_allows_only_future_games_without_evidence() {
             .await
             .unwrap(),
         1
+    );
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn explicit_purge_fence_blocks_new_play_but_accepts_existing_evidence() {
+    let harness = DeletionFenceHarness::new().await;
+    harness.add_game(7, true, true).await;
+    sqlx::query(r#"INSERT INTO "Submissions" VALUES (71, 7, 70, 700)"#)
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"INSERT INTO "AdRounds" VALUES (72, 7)"#)
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+
+    let mut purge = harness.pool.begin().await.unwrap();
+    fence_game_for_purge(&mut purge, 7).await.unwrap();
+    purge.commit().await.unwrap();
+
+    let state: (bool, bool, bool, bool) = sqlx::query_as(
+        r#"SELECT deletion_pending, hidden, NOT practice_mode,
+                  freeze_time_utc IS NULL
+             FROM "Games" WHERE id = 7"#,
+    )
+    .fetch_one(&harness.pool)
+    .await
+    .unwrap();
+    assert_eq!(state, (true, true, true, true));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Submissions" WHERE game_id = 7"#)
+            .fetch_one(&harness.pool)
+            .await
+            .unwrap(),
+        1,
+        "the fence must not erase evidence before atomic cleanup"
     );
     harness.cleanup().await;
 }
@@ -740,5 +803,174 @@ async fn game_cleanup_is_complete_scoped_and_idempotent() {
             .unwrap();
         assert_eq!(count, 1, "{table} should retain only game 2 data");
     }
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn purge_cleanup_removes_every_restrictive_history_branch_in_dependency_order() {
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to PostgreSQL");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::raw_sql(
+        r#"
+        CREATE TEMP TABLE "Games" (id INTEGER PRIMARY KEY);
+        CREATE TEMP TABLE "Submissions" (
+          id INTEGER PRIMARY KEY,
+          game_id INTEGER NOT NULL REFERENCES "Games"(id) ON DELETE CASCADE
+        );
+        CREATE TEMP TABLE "CheatInfo" (
+          game_id INTEGER NOT NULL,
+          submission_id INTEGER NOT NULL REFERENCES "Submissions"(id) ON DELETE RESTRICT
+        );
+        CREATE TEMP TABLE "SuspicionEvaluationOutbox" (
+          game_id INTEGER NOT NULL REFERENCES "Games"(id) ON DELETE RESTRICT
+        );
+        CREATE TEMP TABLE "AntiCheatTelemetryUsage" (
+          game_id INTEGER NOT NULL REFERENCES "Games"(id) ON DELETE RESTRICT,
+          logical_bytes BIGINT NOT NULL DEFAULT 0,
+          row_count BIGINT NOT NULL DEFAULT 0
+        );
+        CREATE TEMP TABLE "AntiCheatTelemetryGlobalUsage" (
+          id SMALLINT PRIMARY KEY, logical_bytes BIGINT NOT NULL,
+          row_count BIGINT NOT NULL, updated_at_utc TIMESTAMPTZ NOT NULL
+        );
+        CREATE TEMP TABLE "EventVpnGateOverrides" (
+          id INTEGER PRIMARY KEY,
+          game_id INTEGER NOT NULL REFERENCES "Games"(id) ON DELETE RESTRICT
+        );
+        CREATE TEMP TABLE "EventVpnOverrideOperations" (
+          game_id INTEGER NOT NULL REFERENCES "Games"(id) ON DELETE RESTRICT,
+          override_id INTEGER NOT NULL REFERENCES "EventVpnGateOverrides"(id) ON DELETE RESTRICT
+        );
+        CREATE TEMP TABLE "EventVpnOverrideExpirations" (
+          game_id INTEGER NOT NULL REFERENCES "Games"(id) ON DELETE RESTRICT,
+          override_id INTEGER NOT NULL REFERENCES "EventVpnGateOverrides"(id) ON DELETE CASCADE
+        );
+        CREATE TEMP TABLE "EventVpnPolicyAudit" (
+          game_id INTEGER NOT NULL REFERENCES "Games"(id) ON DELETE RESTRICT
+        );
+        CREATE TEMP TABLE "EventVpnUserPeers" (
+          id INTEGER PRIMARY KEY,
+          game_id INTEGER NOT NULL REFERENCES "Games"(id) ON DELETE RESTRICT
+        );
+        CREATE TEMP TABLE "VpnDnsProviderBuckets" (
+          game_id INTEGER NOT NULL,
+          peer_id INTEGER NOT NULL REFERENCES "EventVpnUserPeers"(id) ON DELETE RESTRICT
+        );
+        CREATE TEMP TABLE "VpnFlagTransportEvents" (
+          game_id INTEGER NOT NULL,
+          peer_id INTEGER NOT NULL REFERENCES "EventVpnUserPeers"(id) ON DELETE RESTRICT
+        );
+        CREATE TEMP TABLE "VpnFlowTelemetryBuckets" (
+          game_id INTEGER NOT NULL,
+          peer_id INTEGER NOT NULL REFERENCES "EventVpnUserPeers"(id) ON DELETE RESTRICT
+        );
+        CREATE TEMP TABLE "VpnPeerNetworkObservations" (
+          game_id INTEGER NOT NULL,
+          peer_id INTEGER NOT NULL REFERENCES "EventVpnUserPeers"(id) ON DELETE RESTRICT
+        );
+        CREATE TEMP TABLE "BuildRecords" (game_id INTEGER NOT NULL);
+        CREATE TEMP TABLE "ChallengeUpdateOperations" (game_id INTEGER NOT NULL);
+        CREATE TEMP TABLE "GameEvents" (game_id INTEGER NOT NULL);
+        CREATE TEMP TABLE "GameNotices" (game_id INTEGER NOT NULL);
+        CREATE TEMP TABLE "SuspicionEvents" (game_id INTEGER NOT NULL);
+        CREATE TEMP TABLE "IdentityObservations" (game_id INTEGER NOT NULL);
+        CREATE TEMP TABLE "UserParticipations" (game_id INTEGER NOT NULL);
+        CREATE TEMP TABLE "Participations" (game_id INTEGER NOT NULL);
+
+        INSERT INTO "Games" VALUES (1), (2);
+        INSERT INTO "Submissions" VALUES (11, 1), (22, 2);
+        INSERT INTO "CheatInfo" VALUES (1, 11), (2, 22);
+        INSERT INTO "SuspicionEvaluationOutbox" VALUES (1), (2);
+        INSERT INTO "AntiCheatTelemetryUsage" VALUES (1, 4096, 16), (2, 1024, 4);
+        INSERT INTO "AntiCheatTelemetryGlobalUsage" VALUES (1, 5120, 20, now());
+        INSERT INTO "EventVpnGateOverrides" VALUES (101, 1), (202, 2);
+        INSERT INTO "EventVpnOverrideOperations" VALUES (1, 101), (2, 202);
+        INSERT INTO "EventVpnOverrideExpirations" VALUES (1, 101), (2, 202);
+        INSERT INTO "EventVpnPolicyAudit" VALUES (1), (2);
+        INSERT INTO "EventVpnUserPeers" VALUES (111, 1), (222, 2);
+        INSERT INTO "VpnDnsProviderBuckets" VALUES (1, 111), (2, 222);
+        INSERT INTO "VpnFlagTransportEvents" VALUES (1, 111), (2, 222);
+        INSERT INTO "VpnFlowTelemetryBuckets" VALUES (1, 111), (2, 222);
+        INSERT INTO "VpnPeerNetworkObservations" VALUES (1, 111), (2, 222);
+        INSERT INTO "BuildRecords" VALUES (1), (2);
+        INSERT INTO "ChallengeUpdateOperations" VALUES (1), (2);
+        INSERT INTO "GameEvents" VALUES (1), (2);
+        INSERT INTO "GameNotices" VALUES (1), (2);
+        INSERT INTO "SuspicionEvents" VALUES (1), (2);
+        INSERT INTO "IdentityObservations" VALUES (1), (2);
+        INSERT INTO "UserParticipations" VALUES (1), (2);
+        INSERT INTO "Participations" VALUES (1), (2);
+        "#,
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+
+    let operation_id = uuid::Uuid::from_u128(81);
+    delete_restricted_game_history(&mut tx, 1, operation_id)
+        .await
+        .unwrap();
+    delete_restricted_game_history(&mut tx, 1, operation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT current_setting('rsctf.event_history_purge_operation')",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap(),
+        operation_id.to_string()
+    );
+    sqlx::query(r#"DELETE FROM "Games" WHERE id = 1"#)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    delete_detached_game_history(&mut tx, 1).await.unwrap();
+
+    for table in [
+        "Games",
+        "Submissions",
+        "CheatInfo",
+        "SuspicionEvaluationOutbox",
+        "AntiCheatTelemetryUsage",
+        "EventVpnGateOverrides",
+        "EventVpnOverrideOperations",
+        "EventVpnOverrideExpirations",
+        "EventVpnPolicyAudit",
+        "EventVpnUserPeers",
+        "VpnDnsProviderBuckets",
+        "VpnFlagTransportEvents",
+        "VpnFlowTelemetryBuckets",
+        "VpnPeerNetworkObservations",
+        "BuildRecords",
+        "ChallengeUpdateOperations",
+        "GameEvents",
+        "GameNotices",
+        "SuspicionEvents",
+        "IdentityObservations",
+        "UserParticipations",
+        "Participations",
+    ] {
+        let count: i64 = sqlx::query_scalar(&format!(r#"SELECT COUNT(*) FROM "{table}""#))
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "{table} should retain only game 2 data");
+    }
+    // The deleted game's telemetry share left the global budget exactly once.
+    let global: (i64, i64) =
+        sqlx::query_as(r#"SELECT logical_bytes, row_count FROM "AntiCheatTelemetryGlobalUsage""#)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(global, (1024, 4));
     tx.rollback().await.unwrap();
 }

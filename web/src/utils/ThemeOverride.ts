@@ -39,6 +39,7 @@ import { useLocalStorage, useMediaQuery } from '@mantine/hooks'
 import { useEffect, useState } from 'react'
 import { useConfig } from '@Hooks/useConfig'
 import tooltipClasses from '@Styles/Tooltip.module.css'
+import { DIALOG_TRANSITION, DRAWER_TRANSITION, POPOVER_TRANSITION } from './Motion'
 import { buildSemanticAccentColors } from './ThemeContrast'
 
 const CustomTheme: MantineThemeOverride = {
@@ -117,17 +118,17 @@ const CustomTheme: MantineThemeOverride = {
   respectReducedMotion: true,
   defaultRadius: 'md',
   fontFamily:
-    'Lexend, -apple-system, BlinkMacSystemFont, Helvetica Neue, PingFang SC, Microsoft YaHei, Source Han Sans SC, Noto Sans CJK SC, sans-serif',
+    '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica Neue, PingFang SC, Microsoft YaHei, Source Han Sans SC, Noto Sans CJK SC, sans-serif',
   fontFamilyMonospace:
     'JetBrains Mono, ui-monospace, SFMono-Regular, Monaco, Consolas, Courier New, monospace, sans-serif',
   headings: {
     fontFamily: 'Lexend, sans-serif',
-    fontWeight: '720',
+    fontWeight: '650',
     textWrap: 'balance',
     sizes: {
       h1: { fontSize: 'clamp(1.75rem, 3vw, 2.5rem)', lineHeight: '1.15' },
-      h2: { fontSize: 'clamp(1.4rem, 2vw, 1.9rem)', lineHeight: '1.2' },
-      h3: { fontSize: 'clamp(1.15rem, 1.5vw, 1.45rem)', lineHeight: '1.25' },
+      h2: { fontSize: 'clamp(1.25rem, 1.7vw, 1.6rem)', lineHeight: '1.3' },
+      h3: { fontSize: 'clamp(1.1rem, 1.4vw, 1.3rem)', lineHeight: '1.35' },
     },
   },
   radius: {
@@ -180,7 +181,8 @@ const CustomTheme: MantineThemeOverride = {
       defaultProps: {
         centered: true,
         radius: 'lg',
-        overlayProps: { backgroundOpacity: 0.62, blur: 6 },
+        overlayProps: { backgroundOpacity: 0.62 },
+        transitionProps: DIALOG_TRANSITION,
         styles: {
           title: {
             fontWeight: 'bold',
@@ -188,13 +190,18 @@ const CustomTheme: MantineThemeOverride = {
         },
       },
     }),
+    ModalRoot: Modal.Root.extend({
+      defaultProps: { transitionProps: DIALOG_TRANSITION },
+    }),
     Drawer: Drawer.extend({
       defaultProps: {
-        overlayProps: { backgroundOpacity: 0.62, blur: 6 },
+        overlayProps: { backgroundOpacity: 0.62 },
+        transitionProps: DRAWER_TRANSITION,
       },
     }),
     Popover: Popover.extend({
       defaultProps: {
+        transitionProps: POPOVER_TRANSITION,
         withinPortal: true,
         shadow: 'lg',
       },
@@ -229,7 +236,7 @@ const CustomTheme: MantineThemeOverride = {
       },
       styles: {
         root: {
-          fontWeight: 680,
+          fontWeight: 600,
         },
       },
     }),
@@ -253,6 +260,7 @@ const CustomTheme: MantineThemeOverride = {
     }),
     Accordion: Accordion.extend({
       defaultProps: {
+        transitionDuration: 180,
         radius: 'md',
         variant: 'separated',
       },
@@ -306,6 +314,7 @@ const CustomTheme: MantineThemeOverride = {
     }),
     Menu: Menu.extend({
       defaultProps: {
+        transitionProps: POPOVER_TRANSITION,
         radius: 'md',
         shadow: 'lg',
       },
@@ -324,6 +333,7 @@ const CustomTheme: MantineThemeOverride = {
     }),
     Tooltip: Tooltip.extend({
       defaultProps: {
+        transitionProps: POPOVER_TRANSITION,
         withArrow: true,
       },
       classNames: tooltipClasses,
@@ -435,7 +445,11 @@ export const useCustomTheme = () => {
 
 export const useIsMobile = (limit?: number) => {
   const theme = useMantineTheme()
-  const isMobile = useMediaQuery(`(max-width: ${limit ? `${limit}px` : theme.breakpoints.sm})`)
+  // Resolve the actual viewport on the first render, including route remounts.
+  // Starting with the desktop shell and correcting it in an effect shifts every page.
+  const isMobile = useMediaQuery(`(max-width: ${limit ? `${limit}px` : theme.breakpoints.sm})`, undefined, {
+    getInitialValueInEffect: false,
+  })
   return isMobile
 }
 

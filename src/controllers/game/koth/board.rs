@@ -33,12 +33,14 @@ struct HillRow {
     title: String,
     category: i16,
     is_enabled: bool,
+    control_revision: i64,
     container_ip: Option<String>,
     container_port: Option<i32>,
     container_id: Option<String>,
     holder_participation_id: Option<i32>,
     holder_team_name: Option<String>,
     claim_source: String,
+    managed_crown_cycle: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -48,6 +50,57 @@ struct RosterRow {
     team_name: String,
     division: Option<String>,
 }
+
+const LATEST_CONTROL_SQL: &str = r#"SELECT challenge.id AS challenge_id,
+                  latest.status,
+                  latest.round_number,
+                  confirmed.id AS confirmed_participation_id,
+                  confirmed_team.name AS confirmed_team_name
+             FROM "GameChallenges" challenge
+             JOIN LATERAL (
+                  SELECT result.status, round.number AS round_number,
+                         result.confirmed_participation_id
+                    FROM "KothControlResults" result
+                    JOIN "AdRounds" round
+                      ON round.id = result.ad_round_id
+                     AND round.game_id = result.game_id
+                    JOIN "KothCrownCycles" cycle
+                      ON cycle.id = result.cycle_id
+                     AND cycle.game_id = result.game_id
+                     AND cycle.challenge_id = result.challenge_id
+                     AND $6 BETWEEN cycle.planned_start_round AND cycle.planned_end_round
+                    JOIN LATERAL (
+                         SELECT audit.attempt
+                           FROM "KothCycleAuditReceipts" audit
+                          WHERE audit.cycle_id = cycle.id
+                            AND ($3::timestamptz IS NULL OR audit.created_at <= $3)
+                          ORDER BY audit.attempt DESC, audit.created_at DESC, audit.id DESC
+                          LIMIT 1
+                    ) capability_window
+                      ON capability_window.attempt = result.token_window_attempt
+                    JOIN "KothCycleAuditReceipts" activation
+                      ON activation.cycle_id = cycle.id
+                     AND activation.phase = 'FirewallPending'
+                     AND activation.attempt = capability_window.attempt
+                     AND ($3::timestamptz IS NULL OR activation.created_at <= $3)
+                   WHERE result.game_id = $1
+                     AND result.challenge_id = challenge.id
+                     AND ($2::timestamptz IS NULL OR result.is_scorable = TRUE)
+                     AND ($2::timestamptz IS NULL
+                          OR (NOT $4 AND round.start_time_utc <= $2)
+                          OR ($4 AND round.start_time_utc < $2))
+                     AND ($3::timestamptz IS NULL OR result.checked_at <= $3)
+                   ORDER BY result.checked_at DESC, result.id DESC
+                   LIMIT 1
+             ) latest ON TRUE
+        LEFT JOIN "Participations" confirmed
+               ON confirmed.id = latest.confirmed_participation_id
+              AND confirmed.game_id = challenge.game_id
+              AND confirmed.status = $5
+        LEFT JOIN "Teams" confirmed_team ON confirmed_team.id = confirmed.team_id
+            WHERE challenge.game_id = $1 AND challenge."Type" = $7
+              AND ($8 OR challenge.review_status = $9)
+            ORDER BY challenge.id"#;
 
 fn challenge_category(value: i16) -> AppResult<ChallengeCategory> {
     <ChallengeCategory as sea_orm::ActiveEnum>::try_from_value(&value)
@@ -74,6 +127,15 @@ pub(super) async fn compute_koth_hill_state(
     game_id: i32,
 ) -> AppResult<KothBoard> {
     compute_koth_board_inner(st, game_id, None, false, false).await
+}
+
+/// Operational hill metadata including disabled/unreviewed challenges, without
+/// rebuilding the epoch scoring projection used by the shared player board.
+pub(super) async fn compute_koth_admin_hill_state(
+    st: &SharedState,
+    game_id: i32,
+) -> AppResult<KothBoard> {
+    compute_koth_board_inner(st, game_id, None, true, false).await
 }
 
 async fn compute_koth_board_inner(
@@ -128,55 +190,19 @@ async fn compute_koth_board_inner(
     .map_err(|error| AppError::internal(error.to_string()))?;
     let latest_round = round_clock.as_ref().map_or(0, |round| round.number);
     let current_round_ends_at = round_clock.as_ref().map(|round| round.end_time_utc);
-    let latest_controls = sqlx::query_as::<_, LatestControlRow>(
-        r#"SELECT DISTINCT ON (result.challenge_id)
-                  result.challenge_id,
-                  result.status,
-                  round.number AS round_number,
-                  confirmed.id AS confirmed_participation_id,
-                  confirmed_team.name AS confirmed_team_name
-             FROM "KothControlResults" result
-             JOIN "AdRounds" round ON round.id = result.ad_round_id
-             JOIN "KothCrownCycles" cycle
-               ON cycle.id = result.cycle_id
-              AND cycle.game_id = result.game_id
-              AND cycle.challenge_id = result.challenge_id
-              AND $6 BETWEEN cycle.planned_start_round AND cycle.planned_end_round
-             JOIN LATERAL (
-                  SELECT audit.attempt
-                    FROM "KothCycleAuditReceipts" audit
-                   WHERE audit.cycle_id = cycle.id
-                     AND ($3::timestamptz IS NULL OR audit.created_at <= $3)
-                   ORDER BY audit.attempt DESC, audit.created_at DESC, audit.id DESC
-                   LIMIT 1
-             ) capability_window
-               ON capability_window.attempt = result.token_window_attempt
-             JOIN "KothCycleAuditReceipts" activation
-               ON activation.cycle_id = cycle.id
-              AND activation.phase = 'FirewallPending'
-              AND activation.attempt = capability_window.attempt
-              AND ($3::timestamptz IS NULL OR activation.created_at <= $3)
-        LEFT JOIN "Participations" confirmed
-               ON confirmed.id = result.confirmed_participation_id
-              AND confirmed.game_id = result.game_id
-              AND confirmed.status = $5
-        LEFT JOIN "Teams" confirmed_team ON confirmed_team.id = confirmed.team_id
-            WHERE result.game_id = $1 AND round.game_id = result.game_id
-              AND ($2::timestamptz IS NULL
-                   OR (NOT $4 AND round.start_time_utc <= $2)
-                   OR ($4 AND round.start_time_utc < $2))
-              AND ($3::timestamptz IS NULL OR result.checked_at <= $3)
-            ORDER BY result.challenge_id, round.number DESC, result.id DESC"#,
-    )
-    .bind(game_id)
-    .bind(cutoff)
-    .bind(checker_cutoff)
-    .bind(event_ended)
-    .bind(ParticipationStatus::Accepted as i16)
-    .bind(latest_round)
-    .fetch_all(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    let latest_controls = sqlx::query_as::<_, LatestControlRow>(LATEST_CONTROL_SQL)
+        .bind(game_id)
+        .bind(cutoff)
+        .bind(checker_cutoff)
+        .bind(event_ended)
+        .bind(ParticipationStatus::Accepted as i16)
+        .bind(latest_round)
+        .bind(ChallengeType::KingOfTheHill as i16)
+        .bind(include_unreviewed)
+        .bind(ChallengeReviewStatus::Active as i16)
+        .fetch_all(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     let latest_control_by_challenge: HashMap<i32, (String, i32)> = latest_controls
         .iter()
         .map(|row| {
@@ -204,6 +230,7 @@ async fn compute_koth_board_inner(
     let challenge_rows = sqlx::query_as::<_, HillRow>(
         r#"SELECT challenge.id AS challenge_id, challenge.title,
                   challenge.category, challenge.is_enabled,
+                  challenge.ad_control_revision AS control_revision,
                   address.host AS container_ip, address.port AS container_port,
                   address.container_id,
                   holder_participation.id AS holder_participation_id,
@@ -213,7 +240,12 @@ async fn compute_koth_board_inner(
                       THEN COALESCE(NULLIF(frozen.item->>'claimSource', ''), 'Marker')
                     WHEN observer.challenge_id IS NOT NULL THEN 'Api'
                     ELSE 'Marker'
-                  END AS claim_source
+                  END AS claim_source,
+                  EXISTS (
+                      SELECT 1 FROM "KothCrownCycles" crown
+                       WHERE crown.game_id = challenge.game_id
+                         AND crown.challenge_id = challenge.id
+                    ) AS managed_crown_cycle
              FROM "GameChallenges" challenge
         LEFT JOIN "KothOfficialConfigs" config
                ON config.game_id = challenge.game_id
@@ -298,10 +330,12 @@ async fn compute_koth_board_inner(
                 title: row.title,
                 category: challenge_category(row.category)?,
                 is_enabled: row.is_enabled,
+                control_revision: row.control_revision,
                 container_ip: row.container_ip,
                 container_port: row.container_port,
                 container_id: row.container_id,
                 claim_source: row.claim_source,
+                managed_crown_cycle: row.managed_crown_cycle,
             })
         })
         .collect::<AppResult<_>>()?;
@@ -390,6 +424,10 @@ pub(super) fn build_team_rows(board: &KothBoard, hills: &[&KothHillInfo]) -> Vec
                         challenge_id: h.challenge_id,
                         settled_points: cell.map_or(0.0, |cell| cell.settled_points),
                         projected_points: cell.map_or(0.0, |cell| cell.projected_points),
+                        settled_normalized_points: cell
+                            .map_or(0.0, |cell| cell.settled_normalized_points),
+                        projected_normalized_points: cell
+                            .map_or(0.0, |cell| cell.projected_normalized_points),
                         acquisition_rate: cell.map_or(0.0, |cell| cell.acquisition_rate),
                         control_rate: cell.map_or(0.0, |cell| cell.control_rate),
                         reliability_rate: cell.map_or(0.0, |cell| cell.reliability_rate),
@@ -425,14 +463,6 @@ pub(super) fn build_team_rows(board: &KothBoard, hills: &[&KothHillInfo]) -> Vec
                 division: m.division.clone(),
                 settled_total: aggregate.map_or(0.0, |aggregate| aggregate.settled_total),
                 projected_total: aggregate.map_or(0.0, |aggregate| aggregate.projected_total),
-                settled_epoch_points: aggregate
-                    .map_or(0.0, |aggregate| aggregate.settled_epoch_points),
-                settled_epoch_weight: aggregate
-                    .map_or(0.0, |aggregate| aggregate.settled_epoch_weight),
-                projected_epoch_points: aggregate
-                    .map_or(0.0, |aggregate| aggregate.projected_epoch_points),
-                projected_epoch_weight: aggregate
-                    .map_or(0.0, |aggregate| aggregate.projected_epoch_weight),
                 acquisition_rate: aggregate.map_or(0.0, |aggregate| aggregate.acquisition_rate),
                 control_rate: aggregate.map_or(0.0, |aggregate| aggregate.control_rate),
                 reliability_rate: aggregate.map_or(0.0, |aggregate| aggregate.reliability_rate),
@@ -488,12 +518,14 @@ pub(super) struct KothHillInfo {
     pub(super) title: String,
     pub(super) category: ChallengeCategory,
     pub(super) is_enabled: bool,
+    pub(super) control_revision: i64,
     pub(super) container_ip: Option<String>,
     pub(super) container_port: Option<i32>,
     /// Docker container id of the shared hill container (for the admin shell).
     pub(super) container_id: Option<String>,
     /// `Marker` is exclusive boot2root control; `Api` is a multi-team arena.
     pub(super) claim_source: String,
+    pub(super) managed_crown_cycle: bool,
 }
 
 /// One team eligible to appear on the board.
@@ -532,6 +564,26 @@ pub(super) struct KothBoard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::{Connection, PgConnection};
+
+    async fn load_latest_controls(
+        connection: &mut PgConnection,
+        cutoff: Option<DateTime<Utc>>,
+    ) -> Vec<LatestControlRow> {
+        sqlx::query_as::<_, LatestControlRow>(LATEST_CONTROL_SQL)
+            .bind(41_i32)
+            .bind(cutoff)
+            .bind(cutoff)
+            .bind(false)
+            .bind(ParticipationStatus::Accepted as i16)
+            .bind(2_i32)
+            .bind(ChallengeType::KingOfTheHill as i16)
+            .bind(false)
+            .bind(ChallengeReviewStatus::Active as i16)
+            .fetch_all(connection)
+            .await
+            .unwrap()
+    }
 
     #[test]
     fn raw_challenge_categories_keep_the_domain_enum() {
@@ -539,6 +591,89 @@ mod tests {
         assert_eq!(challenge_category(9).unwrap(), ChallengeCategory::Ppc);
         assert_eq!(challenge_category(12).unwrap(), ChallengeCategory::Osint);
         assert!(challenge_category(13).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn live_status_uses_functional_checks_without_freezing_unscorable_evidence() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let mut connection = PgConnection::connect(&database_url).await.unwrap();
+        sqlx::raw_sql(
+            r#"CREATE TEMP TABLE "GameChallenges" (
+                 id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
+                 "Type" SMALLINT NOT NULL, review_status SMALLINT NOT NULL
+               );
+               CREATE TEMP TABLE "AdRounds" (
+                 id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
+                 number INTEGER NOT NULL, start_time_utc TIMESTAMPTZ NOT NULL
+               );
+               CREATE TEMP TABLE "KothCrownCycles" (
+                 id BIGINT PRIMARY KEY, game_id INTEGER NOT NULL,
+                 challenge_id INTEGER NOT NULL,
+                 planned_start_round INTEGER NOT NULL,
+                 planned_end_round INTEGER NOT NULL
+               );
+               CREATE TEMP TABLE "KothCycleAuditReceipts" (
+                 id BIGINT PRIMARY KEY, cycle_id BIGINT NOT NULL,
+                 attempt INTEGER NOT NULL, phase TEXT NOT NULL,
+                 created_at TIMESTAMPTZ NOT NULL
+               );
+               CREATE TEMP TABLE "KothControlResults" (
+                 id BIGINT PRIMARY KEY, game_id INTEGER NOT NULL,
+                 challenge_id INTEGER NOT NULL, ad_round_id INTEGER NOT NULL,
+                 cycle_id BIGINT NOT NULL, status SMALLINT NOT NULL,
+                 confirmed_participation_id INTEGER,
+                 token_window_attempt INTEGER NOT NULL,
+                 is_scorable BOOLEAN NOT NULL,
+                 checked_at TIMESTAMPTZ NOT NULL
+               );
+               CREATE TEMP TABLE "Participations" (
+                 id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
+                 status SMALLINT NOT NULL, team_id INTEGER NOT NULL
+               );
+               CREATE TEMP TABLE "Teams" (
+                 id INTEGER PRIMARY KEY, name TEXT NOT NULL
+               );"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        sqlx::query(r#"INSERT INTO "GameChallenges" VALUES ($1, 41, $2, $3)"#)
+            .bind(5_i32)
+            .bind(ChallengeType::KingOfTheHill as i16)
+            .bind(ChallengeReviewStatus::Active as i16)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"INSERT INTO "AdRounds" VALUES
+                 (1, 41, 1, NOW() - INTERVAL '120 seconds'),
+                 (2, 41, 2, NOW() - INTERVAL '60 seconds');
+               INSERT INTO "KothCrownCycles" VALUES (7, 41, 5, 1, 2);
+               INSERT INTO "KothCycleAuditReceipts" VALUES
+                 (8, 7, 0, 'FirewallPending', NOW() - INTERVAL '180 seconds');
+               INSERT INTO "KothControlResults" VALUES
+                 (9, 41, 5, 1, 7, 2, NULL, 0, TRUE, NOW() - INTERVAL '50 seconds'),
+                 (10, 41, 5, 2, 7, 0, NULL, 0, FALSE, NOW() - INTERVAL '40 seconds');"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+
+        let live = load_latest_controls(&mut connection, None).await;
+        assert_eq!(live.len(), 1);
+        assert_eq!((live[0].status, live[0].round_number), (0, 2));
+
+        let frozen = load_latest_controls(&mut connection, Some(now)).await;
+        assert_eq!(frozen.len(), 1);
+        assert_eq!((frozen[0].status, frozen[0].round_number), (2, 1));
     }
 
     fn team_row(
@@ -557,10 +692,6 @@ mod tests {
             division: None,
             settled_total: settled,
             projected_total: projected,
-            settled_epoch_points: settled,
-            settled_epoch_weight: 1.0,
-            projected_epoch_points: projected,
-            projected_epoch_weight: 1.0,
             acquisition_rate: 0.0,
             control_rate: control,
             reliability_rate: reliability,
@@ -568,6 +699,8 @@ mod tests {
                 challenge_id: 1,
                 settled_points: settled,
                 projected_points: projected,
+                settled_normalized_points: settled,
+                projected_normalized_points: projected,
                 acquisition_rate: 0.0,
                 control_rate: control,
                 reliability_rate: reliability,
@@ -604,19 +737,21 @@ mod tests {
     }
 
     #[test]
-    fn team_score_wire_exposes_the_event_average_basis() {
-        let mut row = team_row(7, 0.9259259259259259, 0.9237875288683602, 0.5, 0.5, 5);
-        row.settled_epoch_points = 25.0;
-        row.settled_epoch_weight = 27.0;
-        row.projected_epoch_points = 25.0;
-        row.projected_epoch_weight = 27.0625;
+    fn team_score_wire_exposes_normalized_hill_points_not_an_epoch_basis() {
+        let mut row = team_row(7, 70.0, 72.5, 0.5, 0.5, 5);
+        row.hills[0].settled_points = 56.0;
+        row.hills[0].settled_normalized_points = 70.0;
+        row.hills[0].projected_points = 58.0;
+        row.hills[0].projected_normalized_points = 72.5;
 
         let value = serde_json::to_value(row).unwrap();
-        assert_eq!(value["settledEpochPoints"], 25.0);
-        assert_eq!(value["settledEpochWeight"], 27.0);
-        assert_eq!(value["projectedEpochPoints"], 25.0);
-        assert_eq!(value["projectedEpochWeight"], 27.0625);
-        assert!(value.get("settled_epoch_points").is_none());
+        assert_eq!(value["settledTotal"], 70.0);
+        assert_eq!(value["hills"][0]["settledPoints"], 56.0);
+        assert_eq!(value["hills"][0]["settledNormalizedPoints"], 70.0);
+        assert_eq!(value["hills"][0]["projectedNormalizedPoints"], 72.5);
+        assert!(value.get("settledEpochPoints").is_none());
+        assert!(value.get("settled_normalized_points").is_none());
+        assert!(value["hills"][0].get("settled_normalized_points").is_none());
     }
 
     #[test]

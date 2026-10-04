@@ -34,6 +34,40 @@ fn game_creation_keeps_every_supplied_ad_timing_field() {
 }
 
 #[test]
+fn game_info_server_time_is_response_owned_and_uses_unix_milliseconds() {
+    let now = chrono::Utc::now();
+    let mut model: GameInfoModel = serde_json::from_value(serde_json::json!({
+        "serverTime": now.timestamp_millis()
+    }))
+    .unwrap();
+
+    assert_eq!(model.server_time, None);
+    model.server_time = Some(now);
+    let serialized = serde_json::to_value(model).unwrap();
+    assert_eq!(serialized["serverTime"], now.timestamp_millis());
+}
+
+#[test]
+fn game_delete_stamps_server_time_after_delayed_teardown() {
+    let source = include_str!("games/deletion_handlers.rs");
+    let delete_start = source
+        .find("pub async fn delete_game(")
+        .expect("delete_game controller exists");
+    let delete = &source[delete_start..];
+    let final_teardown = delete
+        .rfind("flush_game_scoreboards(&st, id).await;")
+        .expect("delete_game completes its final cache teardown");
+    let response_stamp = delete
+        .rfind("GameInfoModel::from_game(&g)")
+        .expect("delete_game stamps its response model");
+
+    assert!(
+        response_stamp > final_teardown,
+        "delete_game captured serverTime before its slow teardown completed"
+    );
+}
+
+#[test]
 fn clone_challenge_defaults_match_non_nullable_schema_defaults() {
     use crate::models::data::game_challenge;
     use crate::utils::enums::{
@@ -261,7 +295,7 @@ fn schedule_preserves_recorded_activity_but_allows_end_extension() {
         false,
         false,
     )
-    .is_err());
+    .is_ok());
     assert!(validate_schedule_transition(
         start,
         end,
@@ -275,19 +309,72 @@ fn schedule_preserves_recorded_activity_but_allows_end_extension() {
 }
 
 #[test]
-fn finalized_or_koth_snapshotted_schedule_is_immutable() {
+fn finalized_schedule_can_extend_but_koth_snapshot_preserves_its_start() {
     let start = chrono::Utc::now();
     let end = start + chrono::Duration::hours(1);
-    for (evidence_closed, koth_snapshotted) in [(true, false), (false, true)] {
-        assert!(validate_schedule_transition(
-            start,
-            end,
-            start,
-            end + chrono::Duration::minutes(1),
-            false,
-            evidence_closed,
-            koth_snapshotted,
-        )
-        .is_err());
-    }
+    assert!(validate_schedule_transition(
+        start,
+        end,
+        start,
+        end + chrono::Duration::minutes(1),
+        false,
+        true,
+        false,
+    )
+    .is_ok());
+    assert!(validate_schedule_transition(
+        start,
+        end,
+        start,
+        end + chrono::Duration::minutes(1),
+        true,
+        false,
+        true,
+    )
+    .is_ok());
+    assert!(validate_schedule_transition(
+        start,
+        end,
+        start + chrono::Duration::minutes(1),
+        end + chrono::Duration::minutes(1),
+        true,
+        false,
+        true,
+    )
+    .is_err());
+    assert!(validate_schedule_transition(
+        start,
+        end,
+        start,
+        end - chrono::Duration::minutes(1),
+        true,
+        false,
+        true,
+    )
+    .is_err());
+}
+
+#[test]
+fn schedule_cannot_retroactively_exclude_recorded_activity() {
+    let now = chrono::Utc::now();
+    assert!(validate_schedule_transition(
+        now - chrono::Duration::hours(2),
+        now + chrono::Duration::hours(1),
+        now - chrono::Duration::hours(2),
+        now - chrono::Duration::minutes(1),
+        true,
+        false,
+        false,
+    )
+    .is_err());
+    assert!(validate_schedule_transition(
+        now - chrono::Duration::hours(2),
+        now - chrono::Duration::hours(1),
+        now - chrono::Duration::hours(2),
+        now + chrono::Duration::hours(1),
+        true,
+        true,
+        false,
+    )
+    .is_ok());
 }

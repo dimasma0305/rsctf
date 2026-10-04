@@ -2,6 +2,84 @@
 
 rsctf is a Rust platform for running Capture-the-Flag competitions with a React and Mantine frontend. It supports accounts, teams, Jeopardy challenges, dynamic containers, scoreboards, event administration, Attack & Defense, and King of the Hill.
 
+<p align="center">
+  <img src="web/public/static/guide/games.webp" alt="RSCTF event catalog with search, lifecycle groups, and event cards" width="960">
+</p>
+
+## Three competition engines
+
+One installation can host ordinary Jeopardy events, infrastructure-heavy Attack & Defense matches, and King of the Hill arenas. Each engine has its own player workflow, scoring model, admin controls, and live scoreboard.
+
+### Jeopardy
+
+Run static or dynamic challenges with categories, attachments, hints, flags, deadlines, first-blood bonuses, per-division scoring, and practice archives. Dynamic challenges can build on demand, run on a trusted worker, and expose either a direct port, an event VPN endpoint, or a Platform Proxy/WSRX connection.
+
+<p align="center">
+  <img src="web/public/static/guide/challenge.webp" alt="Jeopardy challenge board with category filters, solve counts, and point values" width="960">
+</p>
+
+### Attack & Defense
+
+RSCTF provisions per-team services, distributes rotating flags, runs checker rounds, tracks SLA and attack/defense results, manages patch and reset workflows, and gives players scoped API tokens, SSH access, targets, and WireGuard profiles.
+
+<p align="center">
+  <img src="docs/public/screenshots/ad-scoreboard-journal.png" alt="Attack and Defense scoreboard showing captures, settled score, offense, defense, and SLA" width="1200">
+</p>
+
+### King of the Hill
+
+KotH supports shared hills, timed crown cycles, health and control checks, cooldown/reset phases, token-based control, and an epoch-aware scoreboard. A hill can be a managed network service or an API arena with server-verified objectives.
+
+<p align="center">
+  <img src="docs/public/screenshots/koth-scoreboard-desktop.png" alt="King of the Hill scoreboard showing crown cycles, hill health, control, and team ranking" width="1200">
+</p>
+
+## Evidence-backed cheat review
+
+The monitoring workspace correlates hard evidence, network/device signals, abnormal solve order, timing similarity, identity overlap, suspicious submissions, flag transport, VPN telemetry, and traffic-capture health. Organizers can inspect the source evidence and detector coverage, record reviews or exemptions, and apply blocks with an audit trail. Signals are presented for human review; the platform does not treat one heuristic as proof.
+
+<p align="center">
+  <img src="docs/public/screenshots/cheat-analysis-overview.png" alt="RSCTF cheat analysis workspace with detector coverage, evidence families, filters, and suspicion rankings" width="1200">
+</p>
+
+## AI chat links for solve review
+
+An event can ask teams to disclose the AI chats they used. After a team solves a Jeopardy challenge, its members can attach up to five public share links (ChatGPT, Claude, Gemini, and other accepted providers) to that challenge until the later of the event end and the writeup deadline. Monitors read every team's links in one list, and administrators decide which providers are accepted. The server validates each link against the provider list but never fetches it. Events can also require a disclosure after every solve (links or an explicit "No AI used"), and every create, edit, and removal is kept in an append-only history with server time, delay since the solve, the links added or removed, and a keyed network hash for cheat review. Both switches are off by default for each event.
+
+<p align="center">
+  <img src="docs/public/screenshots/ai-chat-links-player.png" alt="Solved Jeopardy challenge card listing ChatGPT and Claude share links, each with a provider validation badge" width="640">
+</p>
+
+The [organizer guide](docs/organizers/games.md#ai-chat-links) covers the event switch, monitor review, and provider settings.
+
+## Solver uploads for solve verification
+
+An event can also let teams upload the solver they used. After a team solves a Jeopardy challenge, any member can upload the script or notes from the challenge card (up to 1 MiB per file). Each upload is kept as a new version, with up to 10 versions per challenge and 16 MiB per team per event. Monitors see every version with its uploader, server time, delay since the solve and SHA-256, and download files as plain attachments. The server stores the bytes but never unpacks, opens or runs them. Uploading is optional for teams, and the switch is off by default for each event.
+
+<p align="center">
+  <img src="docs/public/screenshots/solver-uploads-player.png" alt="Solved Jeopardy challenge card with a Solver section listing two uploaded versions and a file picker" width="640">
+</p>
+
+The [organizer guide](docs/organizers/games.md#solver-uploads) covers the switch and monitor review.
+
+## Feature overview
+
+| Area | Included capabilities |
+| --- | --- |
+| Players and teams | Password or OAuth registration, optional OAuth-only registration, email confirmation, invitations, team membership, divisions, participation approval, responsive navigation, and light/dark themes |
+| Event discovery | Searchable event catalog, joined/not-joined filters and badges, schedules, notices, rules, webhooks, global challenge search restricted to joined events, and read-only post-event archives |
+| Challenge delivery | Static challenges, real attachments, dynamic Docker or Kubernetes workloads, immutable build/pull status, on-demand image builds, lifecycle limits, practice instances, BYOC, and Linux or Windows trusted workers |
+| Networking | Direct host/port mappings, Platform Proxy with WSRX or copyable WSS URLs, integrated WireGuard, per-event VPN access gates, protected routes, and VPN-specific port behavior |
+| Scoring | Jeopardy dynamic scoring, divisions, optional blood bonuses, live scoreboards, A&D rounds/SLA/flag capture, and KotH crown-cycle scoring |
+| AI chat disclosure | Optional or required per-event AI chat disclosure on solved Jeopardy challenges (share links or "No AI used"), edit history with timing for cheat review, a monitor list with missing-disclosure filter, and an administrator-managed allowlist of built-in and custom providers |
+| Solver verification | Optional per-event solver uploads on solved Jeopardy challenges, immutable versions with solve-relative timing and SHA-256, and a monitor list with inert attachment downloads |
+| AI agent traces | Solver uploads and writeup PDFs are scanned (never run) for traces AI agent tools leave, such as a coding agent's scratchpad path; matches become cheat-report findings, and a "No AI used" declaration that contradicts a team's own solver is flagged separately. Signatures are admin-managed |
+| Organizer operations | Event and challenge editors, real instance previews, Git repository bindings and imports, team/user administration, build and image inventory, safe pruning, worker enrollment, logs, traffic views, and event monitoring |
+| Guidance and accessibility | Permanent screenshot-based player handbook, resumable interactive coach marks, contextual container/VPN tips, keyboard navigation, screen-reader semantics, reduced motion, and layouts audited down to 320 px |
+| Platform services | PostgreSQL and Redis, bounded background reconciliation, SMTP, optional Trakteer donations and donor leaderboard, Docker Compose, Helm/Kubernetes, role-separated replicas, health checks, and verified release installers |
+
+The [documentation](docs/index.md) covers player workflows, organizer operations, deployment, security, configuration, backups, updates, and troubleshooting.
+
 ## Install
 
 Users do not need to clone the repository or compile the application. Verify

@@ -3,11 +3,11 @@ import { FC } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ActionIconWithConfirm } from '@Components/ActionIconWithConfirm'
 import { useParticipationStatusMap } from '@Utils/Shared'
-import { ParticipationEditModel, ParticipationInfoModel } from '@Api'
+import { ParticipationEditModel, ParticipationReviewSummaryModel } from '@Api'
 
 interface ParticipationStatusControlProps extends GroupProps {
   disabled: boolean
-  participation: Pick<ParticipationInfoModel, 'id' | 'status' | 'divisionId'>
+  participation: Pick<ParticipationReviewSummaryModel, 'id' | 'status' | 'divisionId'>
   size?: MantineSpacing
   setParticipation: (id: number, model: ParticipationEditModel) => Promise<void>
 }

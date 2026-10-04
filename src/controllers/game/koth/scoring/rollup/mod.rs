@@ -752,6 +752,8 @@ mod tests {
         let cell = KothCellAggregate {
             settled_points: 50.0,
             projected_points: 50.0,
+            settled_normalized_points: 50.0,
+            projected_normalized_points: 50.0,
             acquisition_rate: 0.5,
             control_rate: 0.5,
             reliability_rate: 1.0,
@@ -769,10 +771,6 @@ mod tests {
                 KothTeamAggregate {
                     settled_total: 50.0,
                     projected_total: 50.0,
-                    settled_epoch_points: 50.0,
-                    settled_epoch_weight: 1.0,
-                    projected_epoch_points: 50.0,
-                    projected_epoch_weight: 1.0,
                     acquisition_rate: 0.5,
                     control_rate: 0.5,
                     reliability_rate: 1.0,
@@ -787,6 +785,7 @@ mod tests {
                     }],
                 },
             )]),
+            hills: std::collections::BTreeMap::new(),
             fully_settled: false,
         };
         let previous_teams = HashMap::from([(
@@ -868,6 +867,7 @@ mod tests {
                     ..KothTeamAggregate::default()
                 },
             )]),
+            hills: std::collections::BTreeMap::new(),
             fully_settled: false,
         };
 

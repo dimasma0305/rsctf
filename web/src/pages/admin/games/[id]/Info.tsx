@@ -29,6 +29,7 @@ import {
   mdiClipboard,
   mdiClose,
   mdiContentSaveOutline,
+  mdiDatabaseExportOutline,
   mdiDeleteOutline,
   mdiDiceMultiple,
   mdiDotsHorizontal,
@@ -40,45 +41,101 @@ import {
   mdiTextBoxOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
+import axios from 'axios'
 import dayjs from 'dayjs'
 import localizedFormat from 'dayjs/plugin/localizedFormat'
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router'
 import { IconTabs } from '@Components/IconTabs'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { requireApiCollection } from '@Utils/ApiCollection'
 import { downloadBlob } from '@Utils/ApiHelper'
+import { BlobUploadOperation, retainBlobUploadOperation } from '@Utils/BlobUploadOperations'
+import { controlJobResultCount, createOperationId, waitForControlJob } from '@Utils/ControlJobs'
+import {
+  clearEventVpnOverrideCreateOperation,
+  clearEventVpnOverrideRevokeOperation,
+  readEventVpnOverrideOperations,
+  retainEventVpnOverrideCreateOperation,
+  retainEventVpnOverrideRevokeOperation,
+  type EventVpnOverrideCreateOperation,
+  type EventVpnOverrideRevokeOperation,
+} from '@Utils/EventVpnOverrideOperations'
+import { isRetryableHttpError } from '@Utils/HttpError'
+import { RetryableOperationKey } from '@Utils/RetryableOperationKey'
 import { getInputNumber, randomInviteCode, showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
+import { createUuid } from '@Utils/Uuid'
+import { useConfig } from '@Hooks/useConfig'
 import { useAdminGame } from '@Hooks/useGame'
+import { useUrlTab } from '@Hooks/useUrlTab'
 import { useUser } from '@Hooks/useUser'
-import api, { EventVpnOverrideModel, GameInfoModel, Role } from '@Api'
+import api, { EventVpnOverrideModel, Role } from '@Api'
 import classes from '@Styles/AdminGameInfo.module.css'
 import misc from '@Styles/Misc.module.css'
-import { buildGameInfoUpdatePayload, gameInfoDraftChanged } from './gameInfoDraft'
+import {
+  buildGameInfoUpdatePayload,
+  competitionScheduleChange,
+  CompatibleGameInfoModel,
+  GameInfoSaveOperation,
+  gameInfoDraftChanged,
+  prepareGameInfoSave,
+} from './gameInfoDraft'
 
 dayjs.extend(localizedFormat)
+
+const vpnOverrideSnapshot = (payload: unknown) => {
+  const overrides = requireApiCollection<EventVpnOverrideModel>(payload, {
+    itemKeys: ['overrides'],
+    label: 'VPN override list',
+  }).items
+  const policyRevision =
+    payload &&
+    typeof payload === 'object' &&
+    Number.isSafeInteger((payload as { policyRevision?: unknown }).policyRevision)
+      ? ((payload as { policyRevision: number }).policyRevision ?? null)
+      : null
+  return { overrides, policyRevision }
+}
 
 const GameInfoEdit: FC = () => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const { game: gameSource, mutate } = useAdminGame(numId)
   const { user } = useUser()
-  const [game, setGame] = useState<GameInfoModel>()
+  const { config } = useConfig()
+  const [game, setGame] = useState<CompatibleGameInfoModel>()
   const navigate = useNavigate()
 
   const [disabled, setDisabled] = useState(false)
   const [generatingVariants, setGeneratingVariants] = useState(false)
   const [eventSecurityAction, setEventSecurityAction] = useState<string | null>(null)
+  const variantJobRef = useRef<Promise<void> | null>(null)
+  const derivationJobRef = useRef<Promise<void> | null>(null)
+  const controlJobAbortRef = useRef(new AbortController())
   const [vpnOverrides, setVpnOverrides] = useState<EventVpnOverrideModel[]>([])
+  const [vpnPolicyRevision, setVpnPolicyRevision] = useState<number>(1)
+  const vpnMutationOwner = useRef(false)
+  const createOverrideOperation = useRef<EventVpnOverrideCreateOperation | null>(null)
+  const revokeOverrideOperations = useRef(new Map<string, EventVpnOverrideRevokeOperation>())
   const [overrideReason, setOverrideReason] = useState('')
   const [overrideMinutes, setOverrideMinutes] = useState<number | string>(15)
   const [purgeReason, setPurgeReason] = useState('')
+  const [purgeConfirmation, setPurgeConfirmation] = useState('')
+  const purgeOperation = useRef<{
+    signature: string
+    owner: RetryableOperationKey
+  } | null>(null)
   const [start, setStart] = useInputState(dayjs())
   const [end, setEnd] = useInputState(dayjs())
   const [freeze, setFreeze] = useState<dayjs.Dayjs | null>(null)
   const [wpddl, setWpddl] = useInputState(3)
+  const saveOwner = useRef(false)
+  const saveOperation = useRef<GameInfoSaveOperation | null>(null)
+  const saveAbort = useRef<AbortController | null>(null)
+  const posterOperation = useRef<BlobUploadOperation | null>(null)
 
   const modals = useModals()
   const clipboard = useClipboard()
@@ -178,6 +235,37 @@ const GameInfoEdit: FC = () => {
     }
   }, [id, gameSource])
 
+  useEffect(
+    () => () => {
+      saveAbort.current?.abort()
+    },
+    []
+  )
+
+  useEffect(() => {
+    posterOperation.current = null
+  }, [numId])
+
+  useEffect(() => {
+    if (numId < 0) {
+      createOverrideOperation.current = null
+      revokeOverrideOperations.current.clear()
+      setOverrideReason('')
+      setOverrideMinutes(15)
+      return
+    }
+    const recovered = readEventVpnOverrideOperations(sessionStorage, numId)
+    createOverrideOperation.current = recovered.create
+    revokeOverrideOperations.current = new Map(recovered.revokes.map((operation) => [operation.overrideId, operation]))
+    if (recovered.create) {
+      setOverrideReason(recovered.create.reason)
+      setOverrideMinutes(recovered.create.durationMinutes)
+    } else {
+      setOverrideReason('')
+      setOverrideMinutes(15)
+    }
+  }, [numId])
+
   useEffect(() => {
     let cancelled = false
     if (!isAdmin || numId < 0) {
@@ -187,7 +275,11 @@ const GameInfoEdit: FC = () => {
     api.eventSecurity
       .listVpnOverrides(numId)
       .then((response) => {
-        if (!cancelled) setVpnOverrides(response.data)
+        if (!cancelled) {
+          const snapshot = vpnOverrideSnapshot(response.data)
+          setVpnOverrides(snapshot.overrides)
+          if (snapshot.policyRevision !== null) setVpnPolicyRevision(snapshot.policyRevision)
+        }
       })
       .catch(() => {
         if (!cancelled) setVpnOverrides([])
@@ -211,7 +303,9 @@ const GameInfoEdit: FC = () => {
     })
 
     try {
-      const res = await api.edit.editUpdateGamePoster(game.id!, { file })
+      posterOperation.current = retainBlobUploadOperation(posterOperation.current, file)
+      const res = await api.edit.editUpdateGamePoster(game.id!, { file }, posterOperation.current.id)
+      posterOperation.current = null
       updateNotification({
         id: 'upload-poster',
         color: 'teal',
@@ -237,7 +331,7 @@ const GameInfoEdit: FC = () => {
   }
 
   const onUpdateInfo = async () => {
-    if (!dirty || !updatePayload) return
+    if (!dirty || !updatePayload || saveOwner.current) return
     if (!game?.title) {
       showNotification({
         color: 'orange',
@@ -270,21 +364,65 @@ const GameInfoEdit: FC = () => {
       })
       return
     }
-    setDisabled(true)
+    const controller = new AbortController()
+    saveAbort.current?.abort()
+    saveAbort.current = controller
+    saveOwner.current = true
 
     try {
-      await api.edit.editUpdateGame(game.id!, updatePayload)
+      const scheduleChange = gameSource && competitionScheduleChange(gameSource, updatePayload, Date.now())
+      if (scheduleChange?.confirm) {
+        const confirmed = await new Promise<boolean>((resolve) => {
+          modals.openConfirmModal({
+            closeButtonProps: { 'aria-label': t('common.close', 'Close') },
+            title: scheduleChange.reopening
+              ? t('admin.schedule.reopen_title', 'Reopen this competition?')
+              : t('admin.schedule.change_title', 'Change the competition schedule?'),
+            children: (
+              <Stack gap="sm">
+                <Text size="sm">
+                  {t(
+                    'admin.schedule.confirm_description',
+                    'Scoring will use the revised time window. Earlier practice submissions inside that window can count. Existing evidence and findings are retained; anti-cheat resumes and finalizes again at the new deadline. Missing telemetry from the closed period cannot be recovered.'
+                  )}
+                </Text>
+                <Text size="sm">
+                  {dayjs(gameSource?.end).format('LLL')} → {end.format('LLL')}
+                </Text>
+              </Stack>
+            ),
+            labels: {
+              confirm: t('admin.schedule.confirm', 'Save schedule'),
+              cancel: t('common.modal.cancel', 'Cancel'),
+            },
+            onConfirm: () => resolve(true),
+            onCancel: () => resolve(false),
+            onClose: () => resolve(false),
+          })
+        })
+        if (!confirmed || controller.signal.aborted) return
+      }
+      setDisabled(true)
+      const prepared = prepareGameInfoSave(updatePayload, saveOperation.current)
+      saveOperation.current = prepared.operation
+      const response = await api.edit.editUpdateGame(game.id!, prepared.payload, { signal: controller.signal })
+      if (saveAbort.current !== controller) return
+      saveOperation.current = null
       showNotification({
         color: 'teal',
         message: t('admin.notification.games.info.info_updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
-      await mutate()
+      await mutate(response.data, { revalidate: false })
       api.game.mutateGameGames()
     } catch (e) {
-      showErrorMsg(e, t)
+      if (!controller.signal.aborted) showErrorMsg(e, t)
     } finally {
-      setDisabled(false)
+      if (saveAbort.current === controller) {
+        saveAbort.current = null
+        saveOwner.current = false
+        setDisabled(false)
+      }
     }
   }
 
@@ -304,6 +442,50 @@ const GameInfoEdit: FC = () => {
     }
   }
 
+  const onConfirmPurge = async () => {
+    if (!gameSource?.id || purgeConfirmation !== gameSource.title) return
+    const expectedConfigurationRevision = gameSource.configurationRevision ?? 0
+    const signature = JSON.stringify({
+      gameId: gameSource.id,
+      expectedConfigurationRevision,
+      confirmationTitle: purgeConfirmation,
+    })
+    const previous = purgeOperation.current
+    const operationOwner =
+      previous?.signature === signature
+        ? previous
+        : {
+            signature,
+            owner: new RetryableOperationKey(
+              createOperationId,
+              `rsctf:event-purge:${gameSource.id}:${expectedConfigurationRevision}`
+            ),
+          }
+    purgeOperation.current = operationOwner
+    const operationId = operationOwner.owner.claim()
+    setDisabled(true)
+    try {
+      await api.edit.editPurgeGame(gameSource.id, {
+        operationId,
+        expectedConfigurationRevision,
+        confirmationTitle: purgeConfirmation,
+      })
+      operationOwner.owner.complete(operationId)
+      purgeOperation.current = null
+      showNotification({
+        color: 'teal',
+        message: t('admin.notification.games.info.purged', 'Event and competition history permanently deleted'),
+        icon: <Icon path={mdiCheck} size={1} />,
+      })
+      navigate('/admin/games')
+    } catch (error) {
+      operationOwner.owner.release()
+      showErrorMsg(error, t)
+    } finally {
+      setDisabled(false)
+    }
+  }
+
   const onCopyPublicKey = () => {
     clipboard.copy(game?.publicKey || '')
     showNotification({
@@ -314,56 +496,138 @@ const GameInfoEdit: FC = () => {
   }
 
   const onExportGame = async () => {
-    if (!game?.id) return
+    const gameId = game?.id
+    if (!gameId) return
 
-    await downloadBlob(api.edit.editExportGame(game.id, { format: 'blob' }), setDisabled, t)
+    await downloadBlob(
+      `admin:game-export:${gameId}`,
+      () => api.edit.editExportGame(gameId, { format: 'blob' }),
+      setDisabled,
+      t
+    )
   }
+
+  const confirmExportWithoutAttachments = () =>
+    new Promise<boolean>((resolve) => {
+      modals.openConfirmModal({
+        title: t('admin.content.games.export_data.attachments_too_large.title'),
+        children: <Text size="sm">{t('admin.content.games.export_data.attachments_too_large.body')}</Text>,
+        labels: {
+          confirm: t('admin.content.games.export_data.attachments_too_large.confirm'),
+          cancel: t('common.modal.cancel', 'Cancel'),
+        },
+        onConfirm: () => resolve(true),
+        onCancel: () => resolve(false),
+        onClose: () => resolve(false),
+      })
+    })
+
+  const onExportGameData = async () => {
+    const gameId = game?.id
+    if (!gameId) return
+
+    await downloadBlob(
+      `admin:game-data-export:${gameId}`,
+      async () => {
+        try {
+          return await api.edit.editExportGameData(gameId, undefined, { format: 'blob' })
+        } catch (err) {
+          // The bundle cap (413) is recoverable: the organizer can keep every
+          // score and record and leave the attachment files out.
+          if (!axios.isAxiosError(err) || err.response?.status !== 413) throw err
+          if (!(await confirmExportWithoutAttachments())) throw err
+          return await api.edit.editExportGameData(gameId, { attachments: 'skip' }, { format: 'blob' })
+        }
+      },
+      setDisabled,
+      t
+    )
+  }
+
+  useEffect(() => () => controlJobAbortRef.current.abort(), [])
 
   const onGenerateVariants = async () => {
     if (!game?.id) return
-    setGeneratingVariants(true)
-    try {
-      const response = await api.eventSecurity.generateVariants(game.id)
-      showNotification({
-        color: 'teal',
-        message: t('admin.event_security.variants_generated', '{{count}} deterministic variants generated', {
-          count: response.data.generated,
-        }),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-    } catch (error) {
-      showErrorMsg(error, t)
-    } finally {
-      setGeneratingVariants(false)
-    }
+    if (variantJobRef.current) return variantJobRef.current
+    const gameId = game.id
+    const operationId = createOperationId()
+    const task = (async () => {
+      setGeneratingVariants(true)
+      try {
+        let job
+        try {
+          job = (await api.eventSecurity.generateVariants(gameId, operationId)).data
+        } catch (startError) {
+          try {
+            job = (await api.eventSecurity.getControlJobByOperation(operationId)).data
+          } catch {
+            throw startError
+          }
+        }
+        const completed = await waitForControlJob(job, controlJobAbortRef.current.signal)
+        showNotification({
+          color: 'teal',
+          message: t('admin.event_security.variants_generated', '{{count}} deterministic variants generated', {
+            count: controlJobResultCount(completed, 'generated'),
+          }),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) showErrorMsg(error, t)
+      } finally {
+        setGeneratingVariants(false)
+        variantJobRef.current = null
+      }
+    })()
+    variantJobRef.current = task
+    return task
   }
 
   const onDeriveFindings = async () => {
     if (!game?.id) return
-    setEventSecurityAction('derive')
-    try {
-      const response = await api.eventSecurity.deriveFindings(game.id)
-      showNotification({
-        color: 'teal',
-        message: t('admin.event_security.findings_derived', '{{count}} new context findings derived', {
-          count: response.data.inserted,
-        }),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-    } catch (error) {
-      showErrorMsg(error, t)
-    } finally {
-      setEventSecurityAction(null)
-    }
+    if (derivationJobRef.current) return derivationJobRef.current
+    const gameId = game.id
+    const operationId = createOperationId()
+    const task = (async () => {
+      setEventSecurityAction('derive')
+      try {
+        let job
+        try {
+          job = (await api.eventSecurity.deriveFindings(gameId, operationId)).data
+        } catch (startError) {
+          try {
+            job = (await api.eventSecurity.getControlJobByOperation(operationId)).data
+          } catch {
+            throw startError
+          }
+        }
+        const completed = await waitForControlJob(job, controlJobAbortRef.current.signal)
+        showNotification({
+          color: 'teal',
+          message: t('admin.event_security.findings_derived', '{{count}} new context findings derived', {
+            count: controlJobResultCount(completed, 'inserted'),
+          }),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) showErrorMsg(error, t)
+      } finally {
+        setEventSecurityAction(null)
+        derivationJobRef.current = null
+      }
+    })()
+    derivationJobRef.current = task
+    return task
   }
 
   const onCreateVpnOverride = async () => {
-    if (!game?.id) return
+    if (!game?.id || vpnMutationOwner.current) return
     const reason = overrideReason.trim()
     const durationMinutes = Number(overrideMinutes)
+    const reasonCharacters = Array.from(reason).length
     if (
-      reason.length < 8 ||
-      reason.length > 512 ||
+      reasonCharacters < 8 ||
+      reasonCharacters > 512 ||
       !Number.isInteger(durationMinutes) ||
       durationMinutes < 1 ||
       durationMinutes > 60
@@ -378,11 +642,35 @@ const GameInfoEdit: FC = () => {
       })
       return
     }
+    vpnMutationOwner.current = true
     setEventSecurityAction('override')
+    const signature = `${reason}\0${durationMinutes}`
+    const operation = retainEventVpnOverrideCreateOperation(
+      sessionStorage,
+      {
+        gameId: game.id,
+        signature,
+        reason,
+        durationMinutes,
+        expectedPolicyRevision: vpnPolicyRevision,
+      },
+      createOverrideOperation.current,
+      createUuid
+    )
+    createOverrideOperation.current = operation
     try {
-      await api.eventSecurity.createVpnOverride(game.id, { reason, durationMinutes })
+      await api.eventSecurity.createVpnOverride(game.id, {
+        reason,
+        durationMinutes,
+        operationId: operation.operationId,
+        expectedPolicyRevision: operation.expectedPolicyRevision,
+      })
       const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
-      setVpnOverrides(refreshed.data)
+      const snapshot = vpnOverrideSnapshot(refreshed.data)
+      setVpnOverrides(snapshot.overrides)
+      if (snapshot.policyRevision !== null) setVpnPolicyRevision(snapshot.policyRevision)
+      clearEventVpnOverrideCreateOperation(sessionStorage, game.id, operation.operationId)
+      createOverrideOperation.current = null
       setOverrideReason('')
       showNotification({
         color: 'orange',
@@ -390,27 +678,72 @@ const GameInfoEdit: FC = () => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch (error) {
+      try {
+        const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
+        const snapshot = vpnOverrideSnapshot(refreshed.data)
+        setVpnOverrides(snapshot.overrides)
+        if (snapshot.policyRevision !== null) setVpnPolicyRevision(snapshot.policyRevision)
+      } catch {
+        // Preserve the known operation for an explicit retry when reconciliation is unavailable.
+      }
+      if (!isRetryableHttpError(error)) {
+        clearEventVpnOverrideCreateOperation(sessionStorage, game.id, operation.operationId)
+        createOverrideOperation.current = null
+      }
       showErrorMsg(error, t)
     } finally {
+      vpnMutationOwner.current = false
       setEventSecurityAction(null)
     }
   }
 
   const onRevokeVpnOverride = async (overrideId: string) => {
-    if (!game?.id) return
+    if (!game?.id || vpnMutationOwner.current) return
+    vpnMutationOwner.current = true
     setEventSecurityAction(`revoke:${overrideId}`)
+    const operation = retainEventVpnOverrideRevokeOperation(
+      sessionStorage,
+      {
+        gameId: game.id,
+        overrideId,
+        expectedPolicyRevision: vpnPolicyRevision,
+      },
+      revokeOverrideOperations.current.get(overrideId) ?? null,
+      createUuid
+    )
+    revokeOverrideOperations.current.set(overrideId, operation)
     try {
-      await api.eventSecurity.revokeVpnOverride(game.id, overrideId)
+      await api.eventSecurity.revokeVpnOverride(game.id, overrideId, {
+        operationId: operation.operationId,
+        expectedPolicyRevision: operation.expectedPolicyRevision,
+      })
       const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
-      setVpnOverrides(refreshed.data)
+      const snapshot = vpnOverrideSnapshot(refreshed.data)
+      setVpnOverrides(snapshot.overrides)
+      if (snapshot.policyRevision !== null) setVpnPolicyRevision(snapshot.policyRevision)
+      clearEventVpnOverrideRevokeOperation(sessionStorage, game.id, overrideId, operation.operationId)
+      revokeOverrideOperations.current.delete(overrideId)
       showNotification({
         color: 'teal',
         message: t('admin.event_security.override_revoked', 'Event VPN bypass revoked.'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch (error) {
+      try {
+        const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
+        const snapshot = vpnOverrideSnapshot(refreshed.data)
+        setVpnOverrides(snapshot.overrides)
+        if (snapshot.policyRevision !== null) setVpnPolicyRevision(snapshot.policyRevision)
+      } catch {
+        // Preserve the known operation for an explicit retry when reconciliation is unavailable.
+      }
+      if (!isRetryableHttpError(error)) {
+        clearEventVpnOverrideRevokeOperation(sessionStorage, game.id, overrideId, operation.operationId)
+        revokeOverrideOperations.current.delete(overrideId)
+      }
       showErrorMsg(error, t)
     } finally {
+      vpnMutationOwner.current = false
       setEventSecurityAction(null)
     }
   }
@@ -471,7 +804,11 @@ const GameInfoEdit: FC = () => {
       label: t('admin.content.games.info.section.content', 'Description & media'),
     },
   ]
-  const [activeSection, setActiveSection] = useState('general')
+  const [activeSection, setActiveSection] = useUrlTab(
+    'section',
+    ['general', 'writeups', 'ad', 'security', 'content'],
+    'general'
+  )
 
   return (
     <WithGameEditTab
@@ -503,6 +840,14 @@ const GameInfoEdit: FC = () => {
             variant="outline"
           >
             {t('admin.button.games.export')}
+          </Button>
+          <Button
+            leftSection={<Icon path={mdiDatabaseExportOutline} size={1} />}
+            disabled={disabled}
+            onClick={onExportGameData}
+            variant="outline"
+          >
+            {t('admin.button.games.export_data')}
           </Button>
           <Button leftSection={<Icon path={mdiClipboard} size={1} />} disabled={disabled} onClick={onCopyPublicKey}>
             {t('admin.button.games.copy_public_key')}
@@ -616,6 +961,10 @@ const GameInfoEdit: FC = () => {
                 />
                 <DateTimePicker
                   label={t('admin.content.games.info.end_time')}
+                  description={t(
+                    'admin.schedule.end_description',
+                    'Extend even after the event ends to resume competition. You can also move a live deadline earlier if it stays in the future. Check the freeze time and writeup deadline below.'
+                  )}
                   size="sm"
                   disabled={disabled}
                   minDate={start.toDate()}
@@ -670,7 +1019,99 @@ const GameInfoEdit: FC = () => {
                   )}
                   onChange={(e) => game && setGame({ ...game, allowUserSubmissions: e.target.checked })}
                 />
+                <Switch
+                  disabled={disabled}
+                  checked={game?.aiChatLinksEnabled ?? false}
+                  classNames={{ root: misc.switchVerticalMiddle }}
+                  label={SwitchLabel(
+                    t('admin.content.games.info.ai_chat_links.label', 'AI chat links'),
+                    t(
+                      'admin.content.games.info.ai_chat_links.description',
+                      'Let teams attach AI chat share links to solved challenges for organizer review. Off by default.'
+                    )
+                  )}
+                  onChange={(e) => game && setGame({ ...game, aiChatLinksEnabled: e.target.checked })}
+                />
+                <Switch
+                  disabled={disabled || !game?.aiChatLinksEnabled}
+                  checked={game?.aiChatLinksRequired ?? false}
+                  classNames={{ root: misc.switchVerticalMiddle }}
+                  label={SwitchLabel(
+                    t('admin.content.games.info.ai_chat_links_required.label', 'Require disclosure after every solve'),
+                    game?.aiChatLinksEnabled
+                      ? t(
+                          'admin.content.games.info.ai_chat_links_required.description',
+                          'Teams must add AI chat links or declare "No AI used" for each solved challenge. The challenge dialog stays open until they do; scoring is unaffected.'
+                        )
+                      : t(
+                          'admin.content.games.info.ai_chat_links_required.needs_links',
+                          'Turn on AI chat links first; the requirement only applies while they are enabled.'
+                        )
+                  )}
+                  onChange={(e) => game && setGame({ ...game, aiChatLinksRequired: e.target.checked })}
+                />
+                <Switch
+                  disabled={disabled}
+                  checked={game?.solverUploadsEnabled ?? false}
+                  classNames={{ root: misc.switchVerticalMiddle }}
+                  label={SwitchLabel(
+                    t('admin.content.games.info.solver_uploads.label', 'Solver uploads'),
+                    t(
+                      'admin.content.games.info.solver_uploads.description',
+                      'Let teams upload the solver they used for a solved challenge so organizers can verify it. Optional for teams; off by default.'
+                    )
+                  )}
+                  onChange={(e) => game && setGame({ ...game, solverUploadsEnabled: e.target.checked })}
+                />
               </SimpleGrid>
+              {isAdmin && config.allowCompetitionHistoryPurge && (
+                <Paper withBorder p="md" radius="md">
+                  <Stack gap="sm">
+                    <Text fw={600} c="red">
+                      {t('admin.content.games.info.purge.title', 'Permanently delete competition history')}
+                    </Text>
+                    <Text size="sm" c="dimmed">
+                      {t(
+                        'admin.content.games.info.purge.description',
+                        'This cannot be undone. Hide the event, disable every challenge, then type the exact current event title.'
+                      )}
+                    </Text>
+                    <TextInput
+                      label={t('admin.content.games.info.purge.confirmation', 'Exact event title')}
+                      value={purgeConfirmation}
+                      disabled={disabled}
+                      autoComplete="off"
+                      onChange={(event) => setPurgeConfirmation(event.currentTarget.value)}
+                    />
+                    <Button
+                      color="red"
+                      variant="filled"
+                      disabled={disabled || !gameSource?.hidden || purgeConfirmation !== gameSource?.title}
+                      onClick={() =>
+                        modals.openConfirmModal({
+                          title: t('admin.content.games.info.purge.confirm_title', 'Delete all event history?'),
+                          children: (
+                            <Text size="sm">
+                              {t(
+                                'admin.content.games.info.purge.confirm_description',
+                                'All scores, submissions, teams, audit evidence, and challenge resources owned by this event will be permanently erased.'
+                              )}
+                            </Text>
+                          ),
+                          labels: {
+                            confirm: t('admin.content.games.info.purge.confirm_button', 'Permanently delete'),
+                            cancel: t('common.cancel', 'Cancel'),
+                          },
+                          confirmProps: { color: 'red' },
+                          onConfirm: onConfirmPurge,
+                        })
+                      }
+                    >
+                      {t('admin.content.games.info.purge.button', 'Permanently delete event')}
+                    </Button>
+                  </Stack>
+                </Paper>
+              )}
             </Stack>
           )}
           {activeSection === 'writeups' && (

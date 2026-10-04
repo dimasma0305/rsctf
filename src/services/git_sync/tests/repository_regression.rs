@@ -83,7 +83,6 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         summary: Set(String::new()),
         content: Set(String::new()),
         hidden: Set(false),
-        // Pre-start practice alone must not freeze repository grading.
         practice_mode: Set(true),
         accept_without_review: Set(false),
         allow_user_submissions: Set(false),
@@ -98,8 +97,11 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         blood_bonus_value: Set(0),
         repo_binding_id: Set(Some(binding.id)),
         event_manifest_path: Set(Some("event/.gzevent".to_string())),
+        challenge_configuration_revision: Set(1),
+        configuration_revision: Set(0),
         ad_allow_snapshot_download: Set(true),
         ad_scoring_paused: Set(false),
+        ad_control_revision: Set(1),
         ad_epoch_ticks: Set(8),
         koth_epoch_ticks: Set(12),
         koth_cycle_ticks: Set(3),
@@ -252,7 +254,6 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
     .execute(state.pg())
     .await
     .expect("record challenge progress");
-    // A legacy replica path must migrate in place without losing solve history.
     let legacy_replica_path = format!(
         "/different-node/storage/repos/{}/event/web/challenge.yaml",
         binding.id
@@ -434,7 +435,6 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         .unwrap(),
         Some(replacement_attachment_id)
     );
-    // Removing both attachment sources must stop serving stale repository data.
     tokio::fs::write(
         &manifest,
         "name: Renamed\ndescription: attachment removed\ntype: StaticAttachment\ncategory: Misc\nflags:\n  - flag{new}\n",
@@ -462,7 +462,6 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
             .unwrap(),
         0
     );
-    // Reject domain-type mutation at a stable historical identity.
     tokio::fs::write(
         &manifest,
         "name: Renamed\ntype: DynamicAttachment\ncategory: Misc\n",

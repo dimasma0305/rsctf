@@ -11,7 +11,7 @@ Restart rsctf after changing a startup value. Settings changed in **Admin → Se
 | `RSCTF_ROLE` | `all` | `all`, `web`, `control`, `engine`, `network`, one-shot `migrate`, or loopback-only `development`; see the [scaling guide](../deploy/scaling) and [source-development guide](./source-development) |
 | `RSCTF_BIND` | `0.0.0.0:8080` | HTTP listen address inside the process/container |
 | `RSCTF_DATABASE_URL` | Local development URL | PostgreSQL connection URL; required in deployment |
-| `RSCTF_DB_MAX_CONNECTIONS` | `33` | Per-process database connection cap; computed minimum described below |
+| `RSCTF_DB_MAX_CONNECTIONS` | `50` | Per-process database connection cap; computed minimum and KotH authentication headroom described below |
 | `RSCTF_REDIS_URL` | Unset | Redis cache URL; when configured, Redis is required for readiness and reconnects after an outage |
 | `RSCTF_DISTRIBUTED_RATELIMIT` | `false` | Share rate limits through Redis for multiple replicas |
 | `RSCTF_AD_SUBMIT_BURST_FLAGS` | `400` | Immediate per-participation A&D flag-work budget before the fixed 10 flags/s refill (`100..3200`) |
@@ -19,6 +19,7 @@ Restart rsctf after changing a startup value. Settings changed in **Admin → Se
 | `RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS` | `360` | Pause after configured game end before the barrier-backed final anti-cheat pass (`1..3600` seconds) |
 | `RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE` | `120000` | High shared-source ceiling after credential validation (`12000..1000000`) |
 | `RSCTF_CREDENTIAL_IP_ADMISSION_PER_MINUTE` | `30000` | Cheap shared-source ceiling before bearer verification/token lookup (`3000..1000000`) |
+| `RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE` | `6000` | Dedicated shared-arena ceiling before managed Leaderboard KotH capability lookup (`3000..1000000`) |
 | `RSCTF_JWT_SECRET` | Insecure development placeholder | Session signing secret; deployment validation requires at least 32 bytes and rejects known defaults |
 | `RSCTF_IDENTITY_HASH_KEY` | Required | Dedicated 32+ byte HMAC key for pseudonymous identity evidence; keep stable across replicas, restarts, and JWT rotations |
 | `RSCTF_JWT_TTL_SECS` | `604800` | Session lifetime in seconds; must be positive |
@@ -94,8 +95,21 @@ validation and must retain the same short authorization window.
 | `RSCTF_BOOTSTRAP_TOKEN` | Unset | 32+ character secret required for the first administrator while the user table is empty; ignored for later registrations |
 | `RSCTF_EMAIL_CONFIRM` | `false` | Require email-confirmation behavior for later accounts |
 | `RSCTF_ACTIVE_ON_REGISTER` | `true` | Make later registered users active immediately |
+| `RSCTF_USE_CAPTCHA` | `false` | Startup fallback for CAPTCHA enforcement. The installer writes the disabled default explicitly; a policy saved in the Admin UI takes precedence |
 
-`RSCTF_ADMIN_CONFIRM` and `RSCTF_USE_CAPTCHA` are loaded into one startup config structure, but the current live registration/captcha paths do not consistently consume them. Configure the active account/CAPTCHA policy in the Admin UI and test it with a normal account.
+## Irreversible event purge
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RSCTF_ALLOW_COMPETITION_HISTORY_PURGE` | `false` | Allow a platform administrator to call `POST /api/edit/games/{id}/purge`. The request must carry a stable `operationId`, the current `expectedConfigurationRevision`, and the exact current event title in `confirmationTitle`; the event must already be hidden and every challenge disabled. This permanently erases competition evidence and cannot be undone. |
+
+Keep this disabled on ordinary and production deployments. The regular
+`DELETE /api/edit/games/{id}` endpoint continues refusing to erase an event
+that started or recorded competition evidence, regardless of this setting.
+
+`RSCTF_ADMIN_CONFIRM` is loaded into the startup configuration, but the current
+live registration path does not consume it. Configure account approval with the
+active account policy in the Admin UI and test it with a normal account.
 
 ## Dynamic containers
 
@@ -112,11 +126,45 @@ validation and must retain the same short authorization window.
 | `RSCTF_DOCKER_SCOPE` | Hash of `RSCTF_JWT_SECRET` | Stable installation identity for Docker workload labels and recovery names; use one value across replicas and a different value for every installation sharing a daemon |
 | `RSCTF_K8S_NETWORK_POLICY_ENFORCED` | Required `true` for Kubernetes backend | Operator acknowledgement that a cross-Pod probe proved the cluster CNI enforces `networking.k8s.io/v1` NetworkPolicy; startup fails without it |
 | `RSCTF_PROVISIONING_CONCURRENCY` | `4` | Concurrent provisioning operations |
+| `RSCTF_DOCKER_READ_CONCURRENCY` | `16` | Concurrent short-lived Docker read calls (`inspect`, one-shot `stats`, `list`, bounded `logs`/file downloads, `df`, `info`) per process (`1..256`) |
+| `RSCTF_DOCKER_READ_DEADLINE_SECS` | `5` | Deadline for one Docker read call; the response stream is dropped on expiry (`1..3600`) |
+| `RSCTF_DOCKER_READ_QUEUE_WAIT_SECS` | `2` | Longest a Docker read waits for a free slot before the request receives a retryable `503` with `Retry-After` (`1..3600`) |
+| `RSCTF_DOCKER_LIFECYCLE_CONCURRENCY` | `4` | Concurrent Docker lifecycle calls (`create`, `start`, `remove`, network create, image remove/prune, pull) per process (`1..256`) |
+| `RSCTF_DOCKER_LIFECYCLE_DEADLINE_SECS` | `30` | Deadline for one Docker lifecycle call other than a pull (`1..3600`) |
+| `RSCTF_DOCKER_LIFECYCLE_QUEUE_WAIT_SECS` | `15` | Longest a Docker lifecycle call waits for a free slot before it is rejected as retryable overload (`1..3600`) |
+| `RSCTF_DOCKER_PULL_DEADLINE_SECS` | `600` | Deadline for one immutable image pull; the pull holds a lifecycle slot (`1..3600`) |
+| `RSCTF_LOCAL_CONTAINER_CPU_MILLIS` | Host CPUs minus the reserve | Aggregate millicores every local Docker challenge container counts against; an explicit value is used verbatim (`1..4096000`) |
+| `RSCTF_LOCAL_CONTAINER_MEMORY_BYTES` | Host memory minus the reserve | Aggregate memory ceiling in bytes for local Docker challenge containers; an explicit value is used verbatim |
+| `RSCTF_LOCAL_CONTAINER_SLOTS` | 8 per admitted CPU (`8..2048`) | Maximum simultaneously reserved local Docker containers (`1..65535`) |
+| `RSCTF_LOCAL_CONTAINER_RESERVE_FRACTION` | `0.25` | Share of the Docker host kept back for Docker, rsctf, PostgreSQL, Redis, networking, and maintenance when the ceiling is derived (`0..0.9`) |
+| `RSCTF_LOCAL_CONTAINER_RESERVE_CPU_MILLIS` | `1000` | Absolute CPU reserve floor used when the fractional reserve is smaller |
+| `RSCTF_LOCAL_CONTAINER_RESERVE_MEMORY_BYTES` | `2147483648` | Absolute memory reserve floor (2 GiB) used when the fractional reserve is smaller |
 | `RSCTF_REPO_SCAN_CONCURRENCY` | `1` | Concurrent long-lived shared checkout scans per process (`1..4`) |
 | `RSCTF_TRAFFIC_CAPTURE_ENABLED` | `false` | Allow the singleton `all`/`control`/`network` worker to collect packet captures for challenges that enable it; Compose deployments must also select the matching capture overlay that grants `NET_RAW` |
 | `RSCTF_CAPTURE_DEVICE` | `any` | libpcap device used by the singleton capture owner |
 | `RSCTF_CAPTURE_RECONCILE_SECONDS` | `2` | Durable capture desired-state recovery interval (`1..60` seconds) |
 | `DOCKER_HOST` | Local socket | Docker daemon endpoint used by the Docker backend |
+
+### Local Docker aggregate capacity
+
+The local Docker backend admits every challenge container (player, exercise,
+shared, A&D/KotH services, and admin tests) against one durable per-host
+ceiling before the workload is created. Each admission reserves the requested
+CPU, memory, and one running-container slot in PostgreSQL under the host's
+capacity row lock, keyed by the container operation identity, so control
+replicas that share one daemon (`RSCTF_DOCKER_SCOPE`) can never both admit the
+last slot and an exact retry never double counts. Exhausted capacity returns
+the same retryable `503` with `Retry-After` that busy provisioning already
+uses; a request larger than the whole ceiling returns a non-retryable `503`.
+
+Derived defaults subtract the larger of the fractional and absolute reserve,
+and a small development host always keeps at least 1 CPU, 1 GiB, and 8 slots.
+Explicit ceilings are validated at startup and are not reduced by the reserve.
+Reservations are released when the container is removed or its launch fails;
+the periodic orphan sweep reconciles the rest against the labeled runtime
+inventory (a launch that crashed before recording its container id is adopted
+by operation label, vanished containers are released after a five-minute grace,
+and abandoned pre-launch rows age out). Startup fails on an invalid value.
 
 ### On-demand image builds and bounded cleanup
 
@@ -146,6 +194,20 @@ bounded sweep and returns the actual reclaimed-byte report. These controls
 require the Docker backend and a local Unix Docker socket; Kubernetes and
 remote-daemon installations must use their registry/runtime retention policy.
 
+Short-lived Docker Engine API work runs behind two admission classes with the
+bounds above. Reads and lifecycle calls have separate concurrency slots, queue
+waits, and per-call deadlines; an invalid or out-of-range override is logged
+once and replaced by the default. A request that cannot obtain a slot in time
+receives the platform's retryable overload response (`503` with `Retry-After`),
+and a call that exceeds its deadline drops its daemon response stream before
+returning the same retryable shape. Background sweeps log one warning per class
+per 30-second window instead of retrying immediately. Interactive exec sessions,
+A&D snapshot exports, and variant-generator exit waits keep their own admission
+and cancellation owners and are not subject to these deadlines. Per-class
+in-flight, queued, admitted, completed, overloaded, timeout, cancellation,
+queue-wait, and daemon-latency counters are exposed under `docker` in
+`GET /api/admin/realtime/metrics`.
+
 If the selected explicit backend is unavailable, startup fails. `auto` can fall back to no container manager and is prohibited when the integrated VPN is enabled. rsctf hashes the Docker scope before writing it to labels. Set an explicit scope before rotating the JWT secret so already-running workloads remain discoverable; all replicas and the control owner must use the same scope.
 
 Live packet collection currently requires the Docker backend, visibility of the
@@ -169,17 +231,18 @@ uses S3.
 | --- | --- | --- |
 | `RSCTF_AD_VPN_ENABLED` | `false` | Enable integrated VPN policy coordination; an `all`/`control`/`network` role owns the WireGuard hub |
 | `RSCTF_AD_VPN_REQUIRED` | `false` | Fail startup if VPN initialization fails; requires VPN enabled |
-| `RSCTF_AD_VPN_CLIENT_CIDR` | `10.13.37.0/24` in code | Address pool for team peers; deployment templates may choose a larger non-overlapping range |
+| `RSCTF_AD_VPN_CLIENT_CIDR` | `10.13.37.0/24` in code | Shared address pool for personal player and BYOC hosting peers, including reserved historical personal addresses; size for players, not only teams |
 | `RSCTF_AD_VPN_SERVICES_CIDR` | `10.13.40.0/24` | Docker A&D service network |
 | `RSCTF_AD_VPN_SERVICES_NETWORK` | `<Compose project>-ad` (`rsctf-ad` outside Compose) | Docker A&D service network name; keep it unique per installation sharing a daemon |
 | `RSCTF_AD_VPN_EGRESS_NETWORK` | `rsctf-ad-egress` | Legacy Docker bridge name; competitive Docker egress now fails closed and never joins this shared bridge |
 | `RSCTF_AD_VPN_LISTEN_PORT` | `51820` | WireGuard UDP listen port |
 | `RSCTF_AD_VPN_SERVER_ENDPOINT` | Derived | Public `host:port` placed in player configurations |
-| `RSCTF_AD_VPN_DNS` | `1.1.1.1` | DNS server placed in generated WireGuard profiles |
-| `RSCTF_AD_VPN_ALLOWED_IPS` | Derived routes | Optional explicit routes in player profiles |
-| `RSCTF_EVENT_VPN_CREDENTIAL_KEY` | Unset | Independent 32+ character key for event peer private-key encryption and short-lived proof signing |
-| `RSCTF_EVENT_VPN_PROOF_URL` | Unset | HTTPS rsctf origin reachable only over an event split route; required before an event can enable its VPN gate |
-| `RSCTF_EVENT_VPN_ALLOWED_IPS` | VPN client CIDR plus service routes | Additional narrow split-tunnel routes in event profiles; default routes are rejected |
+| `RSCTF_AD_VPN_DNS` | `1.1.1.1` | DNS server placed in BYOC hosting profiles; personal profiles use the same-origin VPN DNS hub when configured |
+| `RSCTF_AD_VPN_ALLOWED_IPS` | Derived routes | Optional additional routes in BYOC hosting profiles; personal profiles use `RSCTF_EVENT_VPN_ALLOWED_IPS` |
+| `RSCTF_KOTH_REPORTER_BASE_URL` | Unset | Private absolute HTTP(S) origin, without a path/query/credentials, that managed Leaderboard targets use for capability exchange, context reads, and evidence submission. Configure the same value on the lifecycle-owning role and web roles that serve organizer status; web roles treat it only as a capability flag. Kubernetes requires a cross-namespace Service origin such as `http://rsctf-network.rsctf-system.svc:8080`; callback policy allows that Service port and rsctf's configured bind/target port to cover Service translation. Leaving it unset keeps legacy external reporting only. |
+| `RSCTF_EVENT_VPN_CREDENTIAL_KEY` | Unset | Independent persistent 32+ character key for personal peer encryption and short-lived proof signing; required for player Toolkit downloads even with the API VPN gate off |
+| `RSCTF_EVENT_VPN_PROOF_URL` | Unset | Public HTTPS rsctf browser origin used after a live WireGuard handshake; required before an event can enable its VPN gate |
+| `RSCTF_EVENT_VPN_ALLOWED_IPS` | VPN client CIDR plus service routes | Additional narrow event-service routes; never include the WireGuard endpoint address, and default routes are rejected |
 | `RSCTF_EVENT_SENSOR_TOKEN` | Unset | Independent 32+ character bearer credential shared only by the network owner and optional sensor sidecar |
 | `RSCTF_EVENT_SENSOR_API_URL` | `http://127.0.0.1:8080` | Loopback HTTP or HTTPS machine API used by the sidecar |
 | `RSCTF_EVENT_SENSOR_INTERFACE` | `wg0` | Capture interface for aggregate event telemetry |
@@ -207,6 +270,12 @@ platform-attributed voids, while a started failed attempt is participant-attribu
 Offline evidence. Each publication randomizes target order so database/service ID
 order cannot repeatedly decide who reaches admission. Size concurrency only after
 load-testing the container runtime; increasing it blindly can overload Docker.
+
+For platform-managed A&D and KotH targets, `container.exposePort` is one numeric service
+port for both TCP and UDP. The VPN owner admits only that exact target IP and port pair for
+both protocols, including capture and crown-transition fences. Kubernetes creates matching
+TCP and UDP Service ports and NetworkPolicy entries. Health and checker probes remain TCP;
+a UDP-only challenge must also provide a small TCP health protocol on the declared port.
 
 `allowEgress: true` is supported only by the Kubernetes container backend,
 which creates a per-workload NetworkPolicy. The Docker backend rejects it for
@@ -252,32 +321,43 @@ lock connections while it issues nested queries. A checker-bearing repository
 scan can briefly retain checkout, game-control, checker-publication, and
 challenge-definition guards while its model write needs a fifth connection. Let `R` be
 `RSCTF_REPO_SCAN_CONCURRENCY` and `P` be
-`RSCTF_PROVISIONING_CONCURRENCY`. The per-process pool floor is:
+`RSCTF_PROVISIONING_CONCURRENCY`. The per-process deadlock-safe base pool floor is:
 
-| Process mode | Minimum `RSCTF_DB_MAX_CONNECTIONS` |
+| Process mode | Base connections before API headroom |
 | --- | ---: |
 | One-shot `migrate` | `2` |
 | `engine` | `5R + 2P + 3` |
 | `web` | `5R + 2P + 13` |
-| Non-VPN `control` | `5R + 2P + 5` |
-| Active VPN-owning `control` | `5R + 2P + 8` |
-| Non-VPN `network` | `5R + 2P + 3` |
-| Active VPN-owning `network` | `5R + 2P + 6` |
-| Non-VPN `all` | `5R + 2P + 17` |
-| Active VPN-owning `all` | `5R + 2P + 20` |
+| Non-VPN `control` | `5R + 2P + 6` |
+| Active VPN-owning `control` | `5R + 2P + 9` |
+| Non-VPN `network` | `5R + 2P + 4` |
+| Active VPN-owning `network` | `5R + 2P + 7` |
+| Non-VPN `all` | `5R + 2P + 18` |
+| Active VPN-owning `all` | `5R + 2P + 21` |
 
 The migration role uses only the pool's two baseline connections. A network
-owner retains both the network/BYOC lease and the traffic-capture lease even
-without VPN, plus one progress connection. The VPN allowance additionally
-covers its `LISTEN` connection and nested kernel/allocation reconciliation.
+owner retains the network/BYOC lease, the traffic-capture lease, and an isolated
+capture-heartbeat connection even without VPN, plus one progress connection.
+The VPN allowance additionally covers its `LISTEN` connection and nested
+kernel/allocation reconciliation.
 Monolithic and web roles reserve eight connections for bounded roster and
 account lifecycle operations, plus four for the independently bounded runtime
 transition path; each can retain a lock while issuing nested work. The
 all/development/control/engine suspicion reconciler reserves one fence plus one nested
-checkout. At the defaults (`R=1`, `P=4`), engine needs 16 connections, web
-needs 26, control needs 18 without VPN or 21 with it, network needs 16 or 19,
-`development` needs 28, and `all` needs 30 or 33. Keep additional headroom for
-ordinary request bursts where practical.
+checkout. At the defaults (`R=1`, `P=4`), these base floors are 16 connections
+for engine, 26 for web, 19/22 for non-VPN/VPN control, 17/20 for network, 28
+for development, and 31/34 for `all`.
+
+Every API role that serves the managed KotH capability callback (`all`,
+`development`, `web`, `control`, or `network`) must add at least one connection
+above its base floor. rsctf admits capability lookups only against that extra
+headroom, capped at 16 concurrent lookups, so an invalid-capability flood cannot
+consume connections reserved for control and scoring work. The maintained
+defaults provide all 16 slots where callbacks normally terminate: 50 for the
+VPN `all` role and 38 for VPN `control`. A split web replica uses at least 27;
+when a network role is the callback target, use 36 with VPN or 33 without VPN
+to provide the full 16-slot admission budget. Keep further database capacity
+for ordinary request bursts and deployment overlap.
 
 Checker and flag work is bounded by the persisted round deadline. Evidence that
 finishes at or after that deadline is excluded, and unresolved samples become
@@ -309,6 +389,20 @@ shared-source backstop is configured with
 before signature or database verification. Login, recovery, registration, mail,
 and OAuth-start limits remain strictly IP-scoped.
 
+Managed Leaderboard KotH capability exchange has a separate source bucket,
+`RSCTF_KOTH_CAPABILITY_IP_ADMISSION_PER_MINUTE` (default `6000`, valid
+`3000..1000000`). The default bucket refills at the maintained 2,000-team
+fixed-rate profile of 100 authentications/second and holds three complete waves.
+Each API process derives up to 16 concurrent capability lookups from PostgreSQL
+pool headroom above its role's deadlock-safe floor. At most 128 total lookup
+requests may wait or run, and waiting for a database slot is limited to two
+seconds. Work beyond either bound receives `429` with `Retry-After`. After a
+capability is verified, the ordinary 150 requests/minute allowance is applied to
+its canonical game, challenge, and participation. Reporter context and
+observation traffic therefore keeps a separate rate-limit budget during a
+shared-source login wave.
+The Helm equivalent is `config.kothCapabilityIpAdmissionPerMinute`.
+
 A&D submission is charged by distinct plausible flags, not HTTP requests. The
 default permits four immediate maximum-size batches for one participation, then
 refills at 10 flags/second. Repeating one flag in a batch costs one token. Keep
@@ -326,6 +420,8 @@ explicit isolated load campaign, not as a scoring or event-size setting.
 | `RSCTF_K8S_ISOLATED_POD_NETNS` | `false` | Explicit confirmation of an ordinary isolated Pod network namespace |
 | `RSCTF_K8S_CONTROL_NAMESPACE` | Service-account namespace fallback | Namespace containing the rsctf control Pod |
 | `RSCTF_K8S_CONTROL_POD_LABEL` | `app.kubernetes.io/name=rsctf` | `key=value` selector allowed to reach A&D services |
+| `RSCTF_K8S_KOTH_REPORTER_POD_SELECTOR` | Unset | Comma-separated exact callback Service pod selector for managed KotH egress. It must include `app.kubernetes.io/name`, `app.kubernetes.io/instance`, and `app.kubernetes.io/component`; copying the Service's complete `.spec.selector` prevents a challenge from reaching unrelated rsctf roles. The control namespace, canonical selector, and resolver peers are part of the lifecycle routing revision, so changing any of them rotates the target credential and prevents crash-orphan adoption. The Helm chart derives this for `all`, `control`, and `network`; a split `engine` must set `kubernetes.kothReporterPodSelector` to the `network` Service selector. |
+| `RSCTF_K8S_DNS_CIDRS` | Nameservers in `/etc/resolv.conf` | Comma-separated exact resolver IPs or host-prefix CIDRs admitted on TCP/UDP 53. This supports ordinary CoreDNS Service routing and NodeLocal DNSCache without assuming a single Pod label. Set `kubernetes.dnsCidrs` when rsctf runs outside the challenge cluster or uses a different resolver path. Broad resolver subnets and loopback addresses are rejected. |
 | `RSCTF_K8S_AD_INGRESS_CIDRS` | Empty | Extra exact CIDRs allowed into A&D service policies |
 | `RSCTF_K8S_ISOLATED_INGRESS_CIDRS` | Unset | Required for direct `Isolated` NodePorts; exact post-NAT source CIDRs admitted to the challenge port |
 | `RSCTF_K8S_POD_CIDRS` | Unset | Required for direct `Isolated` NodePorts; all cluster Pod CIDRs, excluded from every admitted source block |
@@ -360,6 +456,116 @@ are neither requested nor exposed. Provider responses are capped at 256 KiB and
 200 rows. Successful projections are cached for five minutes, with a bounded stale
 copy for provider outages, so public traffic does not fan out into one Trakteer
 request per page view.
+
+## Agent signatures
+
+**Settings → Agent signatures** lists the traces that the
+[agent-trace scanner](../organizers/games#ai-agent-traces) looks for in
+uploaded solvers and writeups. Built-in signatures cover Claude Code (session
+scratchpad path, commit trailers, project store), Codex (its home directory's
+session, shell-snapshot and worktree folders), and Cursor (its project store);
+each was checked against traces the tool leaves on a real machine. Switch a
+built-in off to stop matching it.
+
+Add up to 32 custom signatures with a key, a label shown in the cheat report,
+and a regular expression searched for anywhere in the file. A pattern must
+compile within size limits and must not match ordinary solver or writeup text,
+such as a plain `/tmp/` path or `import os`. Changes apply to new uploads;
+rescan an event to apply them to earlier files. Deleting a signature keeps the
+evidence it already produced.
+
+![Agent signatures settings with built-in signatures, their patterns, and examples](/screenshots/agent-signatures-settings.png)
+
+## AI chat providers
+
+Events that turn on [AI chat links](../organizers/games#ai-chat-links) accept a
+share link only when it matches an enabled provider. Administrators manage the
+list under **Admin → Settings → AI links** (`/api/admin/ai-chat-providers`).
+The list is platform-wide and stored in PostgreSQL; changes apply to the next
+link a player saves.
+
+![AI chat providers settings with built-in switches, a custom provider, and its pattern](/screenshots/ai-chat-links-providers.png)
+
+### Link normalization
+
+Before matching, the server normalizes each submitted link:
+
+- Surrounding whitespace is trimmed and the link must be an absolute `https`
+  URL with a domain name as its host.
+- A username or password is rejected. An explicit port is rejected unless it is
+  the default `:443`, which the parser removes.
+- The host is lowercased and the fragment (`#...`) is removed. The path and
+  query string are kept as the URL parser serializes them.
+- The normalized link may be at most 2048 characters.
+
+A pattern is matched against the whole normalized link, as if it were written
+`^(?:pattern)$`. Built-in providers are checked first in the order below, then
+custom providers by key; the first enabled match records the provider key and
+label with the link.
+
+### Built-in providers
+
+Built-in patterns ship with the release and cannot be edited or deleted. Each
+ends with `(?:\?[!-~]*)?`, which also accepts an optional query string.
+
+- `chatgpt` (ChatGPT): `https://(?:chatgpt\.com|chat\.openai\.com)/share/[A-Za-z0-9-]{8,128}(?:\?[!-~]*)?`
+- `claude` (Claude): `https://claude\.ai/share/[A-Za-z0-9-]{8,128}(?:\?[!-~]*)?`
+- `gemini` (Gemini): `https://(?:gemini\.google\.com/share|g\.co/gemini/share)/[A-Za-z0-9_-]{6,128}(?:\?[!-~]*)?`
+- `grok` (Grok): `https://grok\.com/share/[A-Za-z0-9_-]{8,160}(?:\?[!-~]*)?`
+- `deepseek` (DeepSeek): `https://chat\.deepseek\.com/share/[A-Za-z0-9_-]{6,128}(?:\?[!-~]*)?`
+- `perplexity` (Perplexity): `https://(?:www\.)?perplexity\.ai/search/[A-Za-z0-9._~%-]{6,256}(?:\?[!-~]*)?`
+- `kimi` (Kimi): `https://(?:www\.)?kimi\.com/share/[A-Za-z0-9_-]{6,128}(?:\?[!-~]*)?`
+- `huggingchat` (HuggingChat): `https://(?:hf\.co|huggingface\.co)/chat/r/[A-Za-z0-9_-]{4,64}(?:\?[!-~]*)?`
+
+Every built-in is enabled until an administrator switches it off.
+
+### Enable and disable
+
+Switching a provider off rejects new links that match only that provider. Links
+already saved are kept: players and monitors still see them, marked as no
+longer accepted, and the monitor list keeps the provider label that was
+recorded when the link was saved. A team that edits its links must remove or
+replace a blocked link before it can save again. Switching the provider back on
+clears the marker. Deleting a custom provider has the same effect on saved
+links as switching it off.
+
+### Custom providers
+
+Add a provider when a service you want to accept is not built in. The rules are:
+
+- **Key:** 1 to 40 characters, lowercase letters, digits, and hyphens, starting
+  with a letter or digit. It cannot reuse a built-in key and cannot be changed
+  later; saving an existing key updates that provider.
+- **Label:** 1 to 64 characters, shown to players and monitors.
+- **Pattern:** 1 to 512 characters. It must start with the literal `https://`,
+  optionally followed by `(?:www\.)?`, then an escaped literal host such as
+  `chat\.example\.com` and a `/`. This ties each provider to one site and
+  rules out catch-all patterns. Do not add `^` or `$`; the server anchors the
+  pattern itself.
+- **Syntax:** use only syntax that both the Rust `regex` crate and a
+  JavaScript `u` regular expression accept, because the browser uses the same
+  pattern for live feedback. Lookaround and backreferences are rejected. Do not
+  use inline flags such as `(?i)`: the server accepts them, but the browser's
+  live check cannot compile them.
+- At most 32 custom providers can exist.
+
+Write the pattern against the normalized form: lowercase host, no fragment, no
+port. Add `(?:\?[!-~]*)?` at the end if links from that provider can carry a
+query string.
+
+The following patterns are ready to paste for providers whose share-link format
+could not be verified when this release shipped. Verify each one against a real
+share link before enabling it:
+
+| Label | Suggested key | Pattern |
+| --- | --- | --- |
+| Microsoft Copilot | `copilot` | `https://copilot\.microsoft\.com/shares/[A-Za-z0-9_-]{6,128}` |
+| Poe | `poe` | `https://poe\.com/s/[A-Za-z0-9_-]{6,64}` |
+| Qwen | `qwen` | `https://chat\.qwen\.ai/s/[A-Za-z0-9_-]{6,128}` |
+| Mistral | `mistral` | `https://chat\.mistral\.ai/chat/[A-Za-z0-9-]{8,64}` |
+
+The server never fetches a share link, so a matching pattern proves only the
+link's shape, not that the chat exists or is public.
 
 ## OAuth
 

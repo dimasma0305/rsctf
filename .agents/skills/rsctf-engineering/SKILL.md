@@ -38,8 +38,9 @@ review does not authorize source changes or deployment.
 5. Add a regression test for the failure or boundary being changed. Authorization
    work needs negative cases; concurrency work needs race/integrity checks; UI work
    needs keyboard, responsive, and accessibility coverage.
-6. Run focused checks early, then the full checks required by the selected references.
-   Fix warnings rather than suppressing them without a documented reason.
+6. Follow the local-first feedback loop in the verification reference: reproduce and
+   test locally before using GitHub as the clean-room gate. Fix warnings rather than
+   suppressing them without a documented reason.
 7. If a released artifact changed, publish and deploy one immutable release digest to
    every applicable `tcp.1pc.tf` replica, then perform live health, smoke, digest, and
    log checks. A commit, tag, or green workflow alone is not completion.
@@ -55,6 +56,8 @@ review does not authorize source changes or deployment.
   storage without a bound?
 - Is the UI operable at 320px and by keyboard/screen reader, with focus restored after
   dialogs and motion reduced when requested?
+- Which established component or nearby workflow was checked for semantic and visual
+  fit, and was it reused or composed instead of introducing a look-alike?
 - Is there a regression test that fails on the previous behavior?
 - If an artifact changed, what exact immutable digest is live and what proves all
   replicas and smoke tests match it?

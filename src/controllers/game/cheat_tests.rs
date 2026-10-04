@@ -65,7 +65,8 @@ impl CheatReportFixture {
               id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
               participation_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
               team_id INTEGER NOT NULL, user_id UUID NULL, answer TEXT NOT NULL,
-              status SMALLINT NOT NULL, submit_time_utc TIMESTAMPTZ NOT NULL
+              status SMALLINT NOT NULL, submit_time_utc TIMESTAMPTZ NOT NULL,
+              submit_remote_ip_hash BYTEA NULL
             );
             CREATE TABLE "FirstSolves" (
               participation_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
@@ -112,6 +113,16 @@ impl CheatReportFixture {
               id BIGINT PRIMARY KEY, game_id INTEGER NOT NULL,
               observed_at_utc TIMESTAMPTZ NOT NULL,
               completed_at_utc TIMESTAMPTZ NULL, last_error TEXT NULL
+            );
+            CREATE TABLE "AntiCheatReconciliationQueue" (
+              game_id INTEGER PRIMARY KEY,
+              desired_generation BIGINT NOT NULL,
+              applied_generation BIGINT NOT NULL
+            );
+            CREATE TABLE "AntiCheatReconciliationSources" (
+              game_id INTEGER NOT NULL, source_kind SMALLINT NOT NULL,
+              dirty_version BIGINT NOT NULL, applied_version BIGINT NOT NULL,
+              PRIMARY KEY (game_id, source_kind)
             );
 
             INSERT INTO "Games" VALUES
@@ -232,7 +243,117 @@ async fn report_survives_rotation_and_paginates_by_stable_incident_id() {
     assert_eq!(page_two.len(), 1);
     assert_eq!(page_two[0].answer, "flag-one");
 
-    let canonical = canonical_solves(&fixture.pool, 1, &[]).await.unwrap();
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO "Submissions" VALUES
+          (314, 1, 202, 11, 102, NULL, 'older-high-id', 3,
+           '2026-06-01T11:00:00Z');
+        INSERT INTO "CheatInfo" VALUES
+          (500, 1, 314, 202, 201, 11, 'submission:314',
+           '2026-06-01T11:00:00Z', '{}', 1);
+        "#,
+    )
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+
+    let first_page = load_cheat_incident_page_rows(
+        &fixture.pool,
+        1,
+        CheatIncidentWindow::Descending {
+            before_observed_at: None,
+            before_id: None,
+        },
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first_page.len(), 2, "page loader uses a MAX + 1 probe");
+    let stable_before = (first_page[0].observed_at_utc, first_page[0].incident_id);
+    assert_eq!(stable_before.1, 402);
+    assert_eq!(first_page[0].checkpoint_id, 500);
+
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO "Submissions" VALUES
+          (311, 1, 202, 11, 102,
+           '00000000-0000-0000-0000-000000000002', 'flag-three', 3,
+           '2026-06-01T12:02:00Z');
+        INSERT INTO "CheatInfo" VALUES
+          (501, 1, 311, 202, 201, 11, 'submission:311',
+           '2026-06-01T12:02:00Z', '{}', 1);
+        "#,
+    )
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+    let older = load_cheat_incident_page_rows(
+        &fixture.pool,
+        1,
+        CheatIncidentWindow::Descending {
+            before_observed_at: Some(stable_before.0.timestamp_millis()),
+            before_id: Some(stable_before.1),
+        },
+        100,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        older.iter().map(|row| row.incident_id).collect::<Vec<_>>(),
+        vec![401, 500],
+        "a concurrent insert cannot duplicate or displace an older keyset page"
+    );
+    let delta = load_cheat_incident_page_rows(
+        &fixture.pool,
+        1,
+        CheatIncidentWindow::Delta { after_id: 500 },
+        100,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        delta.iter().map(|row| row.incident_id).collect::<Vec<_>>(),
+        vec![501]
+    );
+
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO "Submissions" VALUES
+          (312, 1, 202, 11, 102, NULL, 'same-ms-a', 3,
+           '2026-06-01T12:03:00.000100Z'),
+          (313, 1, 202, 11, 102, NULL, 'same-ms-b', 3,
+           '2026-06-01T12:03:00.000900Z');
+        INSERT INTO "CheatInfo" VALUES
+          (502, 1, 312, 202, 201, 11, 'submission:312',
+           '2026-06-01T12:03:00.000100Z', '{}', 1),
+          (503, 1, 313, 202, 201, 11, 'submission:313',
+           '2026-06-01T12:03:00.000900Z', '{}', 1);
+        "#,
+    )
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+    let same_millisecond = load_cheat_incident_page_rows(
+        &fixture.pool,
+        1,
+        CheatIncidentWindow::Descending {
+            before_observed_at: Some(
+                "2026-06-01T12:03:00Z"
+                    .parse::<DateTime<Utc>>()
+                    .unwrap()
+                    .timestamp_millis(),
+            ),
+            before_id: Some(503),
+        },
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(same_millisecond[0].incident_id, 502);
+
+    let canonical = canonical_solves_bounded(&fixture.pool, 1, &[201, 202], 512, 1_024)
+        .await
+        .unwrap();
     assert_eq!(canonical.len(), 1, "accepted replay must not inflate RSI");
     assert_eq!(
         canonical[0].submit_time_utc.to_rfc3339(),
@@ -262,14 +383,16 @@ async fn report_survives_rotation_and_paginates_by_stable_incident_id() {
     .execute(&fixture.pool)
     .await
     .unwrap();
-    let practice = canonical_solves(&fixture.pool, 2, &[]).await.unwrap();
+    let practice = canonical_solves_bounded(&fixture.pool, 2, &[203, 204], 512, 1_024)
+        .await
+        .unwrap();
     assert_eq!(
         practice.len(),
         1,
         "practice solves at/after end stay out of reports"
     );
     assert_eq!(practice[0].challenge_id, 13);
-    let compared = canonical_solves(&fixture.pool, 2, &[203, 204])
+    let compared = canonical_solves_bounded(&fixture.pool, 2, &[203, 204], 512, 1_024)
         .await
         .unwrap();
     assert_eq!(
@@ -311,7 +434,7 @@ async fn report_survives_rotation_and_paginates_by_stable_incident_id() {
         .unwrap();
     assert_eq!(
         global_cheats.len(),
-        3,
+        7,
         "admin feed uses the same strict window"
     );
     sqlx::query(
@@ -353,330 +476,30 @@ async fn ordinary_suspicion_events_are_not_stolen_flag_reports() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-async fn identity_overlap_excludes_observations_from_other_games() {
+async fn compare_rejects_more_than_the_canonical_solve_bound() {
     let fixture = CheatReportFixture::create().await;
-    let hash = vec![0xabu8; 32];
-    for (user, game, team, participation) in [
-        (USER_1, 1, 101, 201),
-        (USER_3, 2, 103, 203),
-        (USER_4, 2, 104, 204),
-    ] {
-        sqlx::query(
-            r#"INSERT INTO "IdentityObservations"
-                 (user_id, team_id, game_id, participation_id, kind, value_hash,
-                  value_hint, observed_at_utc)
-               VALUES ($1, $2, $3, $4, 'Ip', $5, '198.51.100.42',
-                       '2026-06-01T12:00:00Z')"#,
-        )
-        .bind(Uuid::parse_str(user).unwrap())
-        .bind(team)
-        .bind(game)
-        .bind(participation)
-        .bind(&hash)
-        .execute(&fixture.pool)
-        .await
-        .unwrap();
-    }
-
-    // A non-practice game's end is exclusive. Even two matching observations
-    // at exactly `end_time_utc` must not appear in that game's report.
-    let boundary_hash = vec![0xcdu8; 32];
-    for (user, team, participation) in [(USER_1, 101, 201), (USER_2, 102, 202)] {
-        sqlx::query(
-            r#"INSERT INTO "IdentityObservations"
-                 (user_id, team_id, game_id, participation_id, kind, value_hash,
-                  value_hint, observed_at_utc)
-               VALUES ($1, $2, 1, $3, 'Ip', $4, '203.0.113.8',
-                       '2026-12-31T23:59:59Z')"#,
-        )
-        .bind(Uuid::parse_str(user).unwrap())
-        .bind(team)
-        .bind(participation)
-        .bind(&boundary_hash)
-        .execute(&fixture.pool)
-        .await
-        .unwrap();
-    }
-
-    let (ip_rows, overlaps) =
-        super::super::cheat_identity::build_identity_analysis(&fixture.pool, 1)
-            .await
-            .unwrap();
-    assert!(ip_rows.is_empty());
-    assert!(overlaps.is_empty());
-
-    // Post-end practice observations are a negative control: reports retain the
-    // configured competition window rather than expanding as practice continues.
-    let (practice_ip_rows, practice_overlaps) =
-        super::super::cheat_identity::build_identity_analysis(&fixture.pool, 2)
-            .await
-            .unwrap();
-    assert!(practice_ip_rows.is_empty());
-    assert!(practice_overlaps.is_empty());
-
-    sqlx::query(
-        r#"INSERT INTO "IdentityObservations"
-             (user_id, team_id, game_id, participation_id, kind, value_hash,
-              value_hint, observed_at_utc)
-           VALUES ($1, 102, 1, 202, 'Ip', $2, '198.51.100.42',
-                   '2026-06-01T12:01:00Z')"#,
-    )
-    .bind(Uuid::parse_str(USER_2).unwrap())
-    .bind(&hash)
-    .execute(&fixture.pool)
-    .await
-    .unwrap();
-
-    // The observation is an immutable membership snapshot. Leaving after the
-    // login must not erase the historical relationship from the report.
-    sqlx::query(
-        r#"DELETE FROM "UserParticipations"
-            WHERE user_id = $1 AND game_id = 1"#,
-    )
-    .bind(Uuid::parse_str(USER_2).unwrap())
-    .execute(&fixture.pool)
-    .await
-    .unwrap();
-    let (ip_rows, overlaps) =
-        super::super::cheat_identity::build_identity_analysis(&fixture.pool, 1)
-            .await
-            .unwrap();
-    assert_eq!(ip_rows.len(), 2);
-    assert_eq!(overlaps.len(), 1);
-    assert!(ip_rows.iter().all(|row| row["type"] == "CrossTeamIP"));
-    assert_ne!(overlaps[0]["value"], "198.51.100.42");
-    assert_eq!(overlaps[0]["userNames"], serde_json::json!([]));
-
-    // Large exact-IP groups are suppressed as likely shared networks, but a
-    // browser fingerprint shared across any number of teams remains precise
-    // identity evidence and must stay visible.
     sqlx::raw_sql(
         r#"
-        INSERT INTO "Teams" VALUES
-          (111, 'Fingerprint 1', NULL), (112, 'Fingerprint 2', NULL),
-          (113, 'Fingerprint 3', NULL), (114, 'Fingerprint 4', NULL),
-          (115, 'Fingerprint 5', NULL);
-        INSERT INTO "Participations" VALUES
-          (211, 1, 111, 1, NULL), (212, 1, 112, 1, NULL),
-          (213, 1, 113, 1, NULL), (214, 1, 114, 1, NULL),
-          (215, 1, 115, 1, NULL);
-        INSERT INTO "IdentityObservations"
-          (user_id, team_id, game_id, participation_id, kind, value_hash,
-           value_hint, observed_at_utc)
-        VALUES
-          ('00000000-0000-0000-0000-000000000011', 111, 1, 211, 'Fingerprint',
-           decode(repeat('ef', 32), 'hex'), 'abcdef012345', '2026-06-01T12:00:00Z'),
-          ('00000000-0000-0000-0000-000000000012', 112, 1, 212, 'Fingerprint',
-           decode(repeat('ef', 32), 'hex'), 'abcdef012345', '2026-06-01T12:01:00Z'),
-          ('00000000-0000-0000-0000-000000000013', 113, 1, 213, 'Fingerprint',
-           decode(repeat('ef', 32), 'hex'), 'abcdef012345', '2026-06-01T12:02:00Z'),
-          ('00000000-0000-0000-0000-000000000014', 114, 1, 214, 'Fingerprint',
-           decode(repeat('ef', 32), 'hex'), 'abcdef012345', '2026-06-01T12:03:00Z'),
-          ('00000000-0000-0000-0000-000000000015', 115, 1, 215, 'Fingerprint',
-           decode(repeat('ef', 32), 'hex'), 'abcdef012345', '2026-06-01T12:04:00Z');
-        INSERT INTO "IdentityObservations"
-          (user_id, team_id, game_id, participation_id, kind, value_hash,
-           value_hint, observed_at_utc)
-        SELECT user_id, team_id, game_id, participation_id, 'Ip',
-               decode(repeat('ad', 32), 'hex'), '203.0.113.x', observed_at_utc
-          FROM "IdentityObservations"
-         WHERE kind = 'Fingerprint';
+        INSERT INTO "GameChallenges" (id, game_id, title)
+        SELECT 1000 + n, 1, 'bounded-' || n::text
+          FROM generate_series(1, 513) n;
+        INSERT INTO "Submissions"
+          (id, game_id, participation_id, challenge_id, team_id, user_id,
+           answer, status, submit_time_utc)
+        SELECT 2000 + n, 1, 201, 1000 + n, 101, NULL,
+               'answer-' || n::text, 1,
+               '2026-06-01T00:00:00Z'::timestamptz + n * interval '1 second'
+          FROM generate_series(1, 513) n;
+        INSERT INTO "FirstSolves" (participation_id, challenge_id, submission_id)
+        SELECT 201, 1000 + n, 2000 + n
+          FROM generate_series(1, 513) n;
         "#,
     )
     .execute(&fixture.pool)
     .await
     .unwrap();
-    let (identity_rows, overlaps) =
-        super::super::cheat_identity::build_identity_analysis(&fixture.pool, 1)
-            .await
-            .unwrap();
-    assert_eq!(
-        identity_rows
-            .iter()
-            .filter(|row| row["type"] == "SharedFingerprint")
-            .count(),
-        5
-    );
-    assert!(overlaps
-        .iter()
-        .any(|row| { row["kind"] == "fingerprint" && row["teamCount"] == 5 }));
-    assert!(!overlaps
-        .iter()
-        .any(|row| { row["kind"] == "ip" && row["teamCount"] == 5 }));
-    fixture.cleanup().await;
-}
-
-#[tokio::test]
-#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-async fn identity_report_applies_exemptions_to_temporal_pairs_not_whole_hashes() {
-    let fixture = CheatReportFixture::create().await;
-    let user_a = Uuid::parse_str(USER_1).unwrap();
-    let user_b = Uuid::parse_str(USER_2).unwrap();
-    let user_c = Uuid::parse_str(USER_3).unwrap();
-    let fingerprint_hash = vec![0x61_u8; 32];
-
-    sqlx::raw_sql(
-        r#"
-        INSERT INTO "Teams" VALUES (105, 'Unexempt third', NULL);
-        INSERT INTO "Participations" VALUES (205, 1, 105, 1, NULL);
-        "#,
-    )
-    .execute(&fixture.pool)
-    .await
-    .unwrap();
-    for (user_id, team_id, participation_id, observed_at) in [
-        (user_a, 101, 201, "2026-06-01T12:01:00Z"),
-        (user_b, 102, 202, "2026-06-01T12:02:00Z"),
-    ] {
-        sqlx::query(
-            r#"INSERT INTO "IdentityObservations"
-                 (user_id, team_id, game_id, participation_id, kind,
-                  value_hash, value_hint, observed_at_utc)
-               VALUES ($1, $2, 1, $3, 'Fingerprint', $4,
-                       'abcdef012345', $5::timestamptz)"#,
-        )
-        .bind(user_id)
-        .bind(team_id)
-        .bind(participation_id)
-        .bind(&fingerprint_hash)
-        .bind(observed_at)
-        .execute(&fixture.pool)
-        .await
-        .unwrap();
-    }
-    sqlx::query(
-        r#"INSERT INTO "AntiCheatExemptions"
-             (user_a, user_b, kind, value_hash, created_at_utc, expires_at_utc)
-           VALUES ($1, $2, 'Fingerprint', $3,
-                   '2026-06-01T12:00:00Z', '2026-06-01T13:00:00Z')"#,
-    )
-    .bind(user_a)
-    .bind(user_b)
-    .bind(&fingerprint_hash)
-    .execute(&fixture.pool)
-    .await
-    .unwrap();
-
-    let (ip_rows, overlaps) =
-        super::super::cheat_identity::build_identity_analysis(&fixture.pool, 1)
-            .await
-            .unwrap();
-    assert!(ip_rows.is_empty());
-    assert!(overlaps.is_empty());
-
-    sqlx::query(
-        r#"INSERT INTO "IdentityObservations"
-             (user_id, team_id, game_id, participation_id, kind,
-              value_hash, value_hint, observed_at_utc)
-           VALUES ($1, 105, 1, 205, 'Fingerprint', $2,
-                   'abcdef012345', '2026-06-01T12:03:00Z')"#,
-    )
-    .bind(user_c)
-    .bind(&fingerprint_hash)
-    .execute(&fixture.pool)
-    .await
-    .unwrap();
-    let (ip_rows, overlaps) =
-        super::super::cheat_identity::build_identity_analysis(&fixture.pool, 1)
-            .await
-            .unwrap();
-    assert_eq!(ip_rows.len(), 3, "the unexempt A-C and B-C edges remain");
-    assert_eq!(overlaps.len(), 1);
-    assert_eq!(overlaps[0]["teamCount"], 3);
-    let team_a_row = ip_rows.iter().find(|row| row["teamId"] == 101).unwrap();
-    let team_b_row = ip_rows.iter().find(|row| row["teamId"] == 102).unwrap();
-    let team_c_row = ip_rows.iter().find(|row| row["teamId"] == 105).unwrap();
-    assert_eq!(
-        team_a_row["relatedTeams"],
-        serde_json::json!(["Unexempt third"]),
-        "the exempt A-B edge must not leak back through the retained group"
-    );
-    assert_eq!(
-        team_b_row["relatedTeams"],
-        serde_json::json!(["Unexempt third"])
-    );
-    assert_eq!(
-        team_c_row["relatedTeams"],
-        serde_json::json!(["Owner current", "Submit current"])
-    );
-
-    sqlx::query(r#"DELETE FROM "IdentityObservations""#)
-        .execute(&fixture.pool)
-        .await
-        .unwrap();
-    sqlx::query(r#"DELETE FROM "AntiCheatExemptions""#)
-        .execute(&fixture.pool)
-        .await
-        .unwrap();
-    let ip_hash = vec![0x62_u8; 32];
-    for (user_id, team_id, participation_id, observed_at) in [
-        (user_a, 101, 201, "2026-06-01T12:01:00Z"),
-        (user_b, 102, 202, "2026-06-01T12:02:00Z"),
-    ] {
-        sqlx::query(
-            r#"INSERT INTO "IdentityObservations"
-                 (user_id, team_id, game_id, participation_id, kind,
-                  value_hash, value_hint, observed_at_utc)
-               VALUES ($1, $2, 1, $3, 'Ip', $4,
-                       '198.51.100.x', $5::timestamptz)"#,
-        )
-        .bind(user_id)
-        .bind(team_id)
-        .bind(participation_id)
-        .bind(&ip_hash)
-        .bind(observed_at)
-        .execute(&fixture.pool)
-        .await
-        .unwrap();
-    }
-    sqlx::query(
-        r#"INSERT INTO "AntiCheatExemptions"
-             (user_a, user_b, kind, value_hash, created_at_utc, expires_at_utc)
-           VALUES ($1, $2, 'Ip', $3,
-                   '2026-06-01T12:00:00Z', '2026-06-01T13:00:00Z')"#,
-    )
-    .bind(user_a)
-    .bind(user_b)
-    .bind(&ip_hash)
-    .execute(&fixture.pool)
-    .await
-    .unwrap();
-    let (ip_rows, overlaps) =
-        super::super::cheat_identity::build_identity_analysis(&fixture.pool, 1)
-            .await
-            .unwrap();
-    assert!(
-        ip_rows.is_empty(),
-        "later reconciliation cannot revive the edge"
-    );
-    assert!(overlaps.is_empty());
-
-    sqlx::query(
-        r#"INSERT INTO "IdentityObservations"
-             (user_id, team_id, game_id, participation_id, kind,
-              value_hash, value_hint, observed_at_utc)
-           VALUES ($1, 102, 1, 202, 'Ip', $2,
-                   '198.51.100.x', '2026-06-01T13:00:00Z')"#,
-    )
-    .bind(user_b)
-    .bind(&ip_hash)
-    .execute(&fixture.pool)
-    .await
-    .unwrap();
-    let (ip_rows, overlaps) =
-        super::super::cheat_identity::build_identity_analysis(&fixture.pool, 1)
-            .await
-            .unwrap();
-    assert_eq!(ip_rows.len(), 2);
-    assert_eq!(overlaps.len(), 1);
-    assert_eq!(
-        ip_rows[0]["time"],
-        "2026-06-01T13:00:00Z"
-            .parse::<chrono::DateTime<chrono::Utc>>()
-            .unwrap()
-            .timestamp_millis()
-    );
-
+    let result = canonical_solves_bounded(&fixture.pool, 1, &[201], 512, 1_024).await;
+    assert!(matches!(result, Err(AppError::PayloadTooLarge(_))));
     fixture.cleanup().await;
 }
 
@@ -704,6 +527,8 @@ async fn report_queries_succeed_on_a_database_enforced_read_only_connection() {
           (1, 1, '2026-06-01T13:01:00Z', NULL, 'job retry'),
           (2, 1, '2026-06-01T13:02:00Z', '2026-06-01T13:03:00Z', NULL),
           (3, 1, '2026-12-31T23:59:59Z', NULL, 'out of window');
+        INSERT INTO "AntiCheatReconciliationQueue" VALUES (1, 3, 3), (2, 2, 2);
+        INSERT INTO "AntiCheatReconciliationSources" VALUES (1, 5, 4, 3), (2, 5, 1, 1);
         "#,
     )
     .execute(&fixture.pool)
@@ -717,7 +542,13 @@ async fn report_queries_succeed_on_a_database_enforced_read_only_connection() {
             .len(),
         2
     );
-    assert_eq!(canonical_solves(&pool, 1, &[]).await.unwrap().len(), 1);
+    assert_eq!(
+        canonical_solves_bounded(&pool, 1, &[201, 202], 512, 1_024)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     let _ = super::super::cheat_identity::build_identity_analysis(&pool, 1)
         .await
         .unwrap();
@@ -728,6 +559,7 @@ async fn report_queries_succeed_on_a_database_enforced_read_only_connection() {
         abnormal.is_empty(),
         "quarantined rows stay out of projections"
     );
+    use super::super::cheat_freshness::load_reconciliation_report_state;
     let state = load_reconciliation_report_state(&pool, 1).await.unwrap();
     assert_eq!(state.pending_jobs, 1);
     assert_eq!(
@@ -740,8 +572,88 @@ async fn report_queries_succeed_on_a_database_enforced_read_only_connection() {
     );
     assert_eq!(state.last_error.as_deref(), Some("job retry"));
     assert!(state.sealed_at.is_none());
+    assert!(
+        state.reconciliation_pending,
+        "a dirty source is unapplied work"
+    );
+    let quiet = load_reconciliation_report_state(&pool, 2).await.unwrap();
+    assert!(
+        !quiet.reconciliation_pending,
+        "a quiet game has nothing to apply"
+    );
     pool.close().await;
     fixture.cleanup().await;
+}
+
+#[test]
+fn incident_page_query_caps_and_rejects_ambiguous_cursors() {
+    let (limit, window) = bounded_cheat_incident_window(&CheatInfoPageQuery {
+        limit: Some(u64::MAX),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(limit, CHEAT_INCIDENT_PAGE_MAX as i64);
+    assert!(matches!(window, CheatIncidentWindow::Descending { .. }));
+
+    let ambiguous = bounded_cheat_incident_window(&CheatInfoPageQuery {
+        after_id: Some(4),
+        before_id: Some(3),
+        before_observed_at: Some(1_000),
+        ..Default::default()
+    });
+    assert!(matches!(ambiguous, Err(AppError::BadRequest(_))));
+    let partial = bounded_cheat_incident_window(&CheatInfoPageQuery {
+        before_id: Some(3),
+        ..Default::default()
+    });
+    assert!(matches!(partial, Err(AppError::BadRequest(_))));
+}
+
+#[test]
+fn report_pair_count_and_total_lcs_work_are_bounded() {
+    let mut too_many_pairs = BTreeMap::new();
+    for id in 0..=MAX_REPORT_PAIRS as i32 {
+        too_many_pairs.insert(
+            (id * 2, id * 2 + 1),
+            (
+                (id * 2, id * 2, format!("left-{id}")),
+                (id * 2 + 1, id * 2 + 1, format!("right-{id}")),
+            ),
+        );
+    }
+    assert!(matches!(
+        validate_report_pair_count(&too_many_pairs),
+        Err(AppError::PayloadTooLarge(_))
+    ));
+
+    let pair_count = MAX_REPORT_LCS_CELLS / (512 * 512) + 1;
+    let mut pairs = BTreeMap::new();
+    let mut solves = Vec::new();
+    for pair in 0..pair_count as i32 {
+        let left = pair * 2;
+        let right = left + 1;
+        pairs.insert(
+            (left, right),
+            (
+                (left, left, format!("left-{pair}")),
+                (right, right, format!("right-{pair}")),
+            ),
+        );
+        for challenge in 0..512 {
+            for participation_id in [left, right] {
+                solves.push(CanonicalSolveRow {
+                    participation_id,
+                    challenge_id: challenge,
+                    challenge_title: format!("challenge-{challenge}"),
+                    submit_time_utc: DateTime::from_timestamp(i64::from(challenge), 0).unwrap(),
+                });
+            }
+        }
+    }
+    assert!(matches!(
+        build_collusion_groups(pairs, solves),
+        Err(AppError::PayloadTooLarge(_))
+    ));
 }
 
 #[test]
@@ -749,7 +661,7 @@ fn report_routes_keep_monitor_and_admin_role_extractors_and_no_sweeps() {
     let game_source = include_str!("cheat.rs");
     let report_start = game_source.find("pub async fn cheat_report(").unwrap();
     let report_end = game_source[report_start..]
-        .find("pub async fn cheat_report_compare(")
+        .find("const MAX_REPORT_INCIDENTS")
         .map(|offset| report_start + offset)
         .unwrap();
     let report_handler = &game_source[report_start..report_end];
@@ -760,7 +672,18 @@ fn report_routes_keep_monitor_and_admin_role_extractors_and_no_sweeps() {
     assert!(!report_handler.contains("run_container_access_checks"));
     assert!(!report_handler.contains("run_honeypot_chain_checks"));
 
+    let compare_source = include_str!("cheat_compare.rs");
+    let compare_start = compare_source
+        .find("pub async fn cheat_report_compare(")
+        .unwrap();
+    let compare_handler = &compare_source[compare_start..];
+    assert!(compare_handler.contains("_user: MonitorUser"));
+    assert!(compare_handler.contains("spawn_blocking"));
+
     let admin_source = include_str!("../admin/anti_cheat.rs");
     assert!(admin_source.contains("_admin: AdminUser"));
     assert!(admin_source.contains("AdminUser(admin): AdminUser"));
 }
+
+#[path = "cheat_identity_tests.rs"]
+mod identity;

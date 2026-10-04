@@ -23,7 +23,11 @@ done
 make_fixture() {
   local fixture=$1 package="$TEMP_DIRECTORY/package"
   rm -rf -- "$package"
-  mkdir -p "$fixture" "$package/rsctf/deploy/postgres/init" "$package/rsctf/scripts"
+  mkdir -p \
+    "$fixture" \
+    "$package/rsctf/deploy/event-vpn" \
+    "$package/rsctf/deploy/postgres/init" \
+    "$package/rsctf/scripts"
   install -m 0644 "$REPOSITORY_ROOT"/deploy/compose*.yml "$package/rsctf/deploy/"
   install -m 0644 \
     "$REPOSITORY_ROOT/deploy/Caddyfile" \
@@ -31,6 +35,9 @@ make_fixture() {
     "$REPOSITORY_ROOT/deploy/.env.example" \
     "$REPOSITORY_ROOT/deploy/.gitignore" \
     "$package/rsctf/deploy/"
+  install -m 0644 \
+    "$REPOSITORY_ROOT/deploy/event-vpn/Corefile" \
+    "$package/rsctf/deploy/event-vpn/"
   install -m 0644 \
     "$REPOSITORY_ROOT/deploy/postgres/init/00-pg-stat-statements.sql" \
     "$package/rsctf/deploy/postgres/init/"
@@ -108,8 +115,117 @@ test "$local_identity_key" != "$local_jwt"
 grep -Fxq 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_DOCKER_PROXY_BIND=172.31.253.1' "$local_checkout/deploy/.env"
 grep -Fxq 'RSCTF_CHALLENGE_PROXY_BRIDGE=rsctf-proxy0' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_USE_CAPTCHA=false' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_ALLOW_COMPETITION_HISTORY_PURGE=false' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=50' "$local_checkout/deploy/.env"
 grep -Fq 'The first-administrator setup token is stored only in' \
   "$TEMP_DIRECTORY/local.out"
+
+vpn_checkout="$TEMP_DIRECTORY/vpn-checkout"
+mkdir -p "$vpn_checkout/scripts"
+cp -a "$REPOSITORY_ROOT/deploy" "$vpn_checkout/deploy"
+install -m 0755 "$REPOSITORY_ROOT/scripts/install.sh" "$vpn_checkout/scripts/install.sh"
+env \
+  PATH="$TEST_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  RSCTF_INSTALLER_FIXTURE="$VALID_FIXTURE" \
+  RSCTF_TEST_CURL_LOG="$TEMP_DIRECTORY/local-curl.log" \
+  RSCTF_TEST_GH_LOG="$TEMP_DIRECTORY/gh.log" \
+  bash "$vpn_checkout/scripts/install.sh" \
+    --image "$PINNED_IMAGE" \
+    --mode caddy \
+    --domain ctf.example.test \
+    --with-ad-vpn \
+    --public-entry ctf.example.test \
+    --non-interactive \
+    --configure-only \
+    >"$TEMP_DIRECTORY/vpn.out" 2>&1
+grep -Fxq \
+  'COMPOSE_FILE=compose.yml:compose.caddy.yml:compose.ad-vpn.yml:compose.event-vpn-ingress.yml' \
+  "$vpn_checkout/deploy/.env"
+grep -Fxq 'RSCTF_EVENT_VPN_HUB_ADDRESS=10.13.0.1' "$vpn_checkout/deploy/.env"
+grep -Fxq 'RSCTF_EVENT_VPN_BACKEND_IP=10.13.40.2' "$vpn_checkout/deploy/.env"
+grep -Fxq 'RSCTF_EVENT_VPN_INGRESS_IP=10.13.40.253' "$vpn_checkout/deploy/.env"
+test -f "$vpn_checkout/deploy/event-vpn/Corefile"
+vpn_credential_key="$(sed -n 's/^RSCTF_EVENT_VPN_CREDENTIAL_KEY=//p' "$vpn_checkout/deploy/.env")"
+test "${#vpn_credential_key}" -eq 64
+test "$vpn_credential_key" != "$(sed -n 's/^RSCTF_JWT_SECRET=//p' "$vpn_checkout/deploy/.env")"
+! grep -Fq -- "$vpn_credential_key" "$TEMP_DIRECTORY/vpn.out"
+
+# Simulate a legacy install without personal VPN credentials. Upgrades must
+# generate a missing key once, then preserve it on every subsequent invocation.
+sed -i '/^RSCTF_EVENT_VPN_CREDENTIAL_KEY=/d' "$local_checkout/deploy/.env"
+
+sed -i \
+  -e 's/^RSCTF_DB_MAX_CONNECTIONS=50$/RSCTF_DB_MAX_CONNECTIONS=33/' \
+  -e 's/^RSCTF_PROVISIONING_CONCURRENCY=4$/RSCTF_PROVISIONING_CONCURRENCY=7/' \
+  "$local_checkout/deploy/.env"
+printf 'RSCTF_CONTROL_DB_MAX_CONNECTIONS=21\n' >>"$local_checkout/deploy/.env"
+printf 'RSCTF_WEB_DB_MAX_CONNECTIONS=26\n' >>"$local_checkout/deploy/.env"
+env \
+  PATH="$TEST_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  RSCTF_INSTALLER_FIXTURE="$VALID_FIXTURE" \
+  RSCTF_TEST_CURL_LOG="$TEMP_DIRECTORY/local-curl.log" \
+  RSCTF_TEST_GH_LOG="$TEMP_DIRECTORY/gh.log" \
+  bash "$local_checkout/scripts/install.sh" \
+    --image "$PINNED_IMAGE" \
+    --mode local \
+    --without-docker \
+    --non-interactive \
+    --configure-only \
+    >"$TEMP_DIRECTORY/local-upgrade.out" 2>&1
+grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=50' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_CONTROL_DB_MAX_CONNECTIONS=38' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_WEB_DB_MAX_CONNECTIONS=27' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_PROVISIONING_CONCURRENCY=7' "$local_checkout/deploy/.env"
+upgraded_vpn_key="$(sed -n 's/^RSCTF_EVENT_VPN_CREDENTIAL_KEY=//p' "$local_checkout/deploy/.env")"
+test "${#upgraded_vpn_key}" -eq 64
+test "$upgraded_vpn_key" != "$local_jwt"
+! grep -Fq -- "$upgraded_vpn_key" "$TEMP_DIRECTORY/local-upgrade.out"
+
+sed -i \
+  -e 's/^RSCTF_DB_MAX_CONNECTIONS=50$/RSCTF_DB_MAX_CONNECTIONS=51/' \
+  -e 's/^RSCTF_CONTROL_DB_MAX_CONNECTIONS=38$/RSCTF_CONTROL_DB_MAX_CONNECTIONS=39/' \
+  -e 's/^RSCTF_WEB_DB_MAX_CONNECTIONS=27$/RSCTF_WEB_DB_MAX_CONNECTIONS=28/' \
+  "$local_checkout/deploy/.env"
+env \
+  PATH="$TEST_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  RSCTF_INSTALLER_FIXTURE="$VALID_FIXTURE" \
+  RSCTF_TEST_CURL_LOG="$TEMP_DIRECTORY/local-curl.log" \
+  RSCTF_TEST_GH_LOG="$TEMP_DIRECTORY/gh.log" \
+  bash "$local_checkout/scripts/install.sh" \
+    --image "$PINNED_IMAGE" \
+    --mode local \
+    --without-docker \
+    --non-interactive \
+    --configure-only \
+    >"$TEMP_DIRECTORY/local-custom.out" 2>&1
+grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=51' "$local_checkout/deploy/.env"
+test "$(sed -n 's/^RSCTF_EVENT_VPN_CREDENTIAL_KEY=//p' "$local_checkout/deploy/.env")" = "$upgraded_vpn_key"
+grep -Fxq 'RSCTF_CONTROL_DB_MAX_CONNECTIONS=39' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_WEB_DB_MAX_CONNECTIONS=28' "$local_checkout/deploy/.env"
+
+cp "$local_checkout/deploy/.env" "$TEMP_DIRECTORY/local-before-duplicate.env"
+printf 'RSCTF_DB_MAX_CONNECTIONS=33\n' >>"$local_checkout/deploy/.env"
+cp "$local_checkout/deploy/.env" "$TEMP_DIRECTORY/local-with-duplicate.env"
+if env \
+  PATH="$TEST_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  RSCTF_INSTALLER_FIXTURE="$VALID_FIXTURE" \
+  RSCTF_TEST_CURL_LOG="$TEMP_DIRECTORY/local-curl.log" \
+  RSCTF_TEST_GH_LOG="$TEMP_DIRECTORY/gh.log" \
+  bash "$local_checkout/scripts/install.sh" \
+    --image "$PINNED_IMAGE" \
+    --mode local \
+    --without-docker \
+    --non-interactive \
+    --configure-only \
+    >"$TEMP_DIRECTORY/local-duplicate.out" 2>&1; then
+  printf 'installer accepted duplicate pool assignments\n' >&2
+  exit 1
+fi
+grep -Fq 'contains duplicate RSCTF_DB_MAX_CONNECTIONS assignments' \
+  "$TEMP_DIRECTORY/local-duplicate.out"
+cmp "$TEMP_DIRECTORY/local-with-duplicate.env" "$local_checkout/deploy/.env"
+mv "$TEMP_DIRECTORY/local-before-duplicate.env" "$local_checkout/deploy/.env"
 
 output="$TEMP_DIRECTORY/success.out"
 target="$TEMP_DIRECTORY/installed-rsctf"
@@ -131,6 +247,9 @@ test "$identity_key" != "$jwt"
 grep -Fxq 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24' "$target/deploy/.env"
 grep -Fxq 'RSCTF_DOCKER_PROXY_BIND=172.31.253.1' "$target/deploy/.env"
 grep -Fxq 'RSCTF_CHALLENGE_PROXY_BRIDGE=rsctf-proxy0' "$target/deploy/.env"
+grep -Fxq 'RSCTF_USE_CAPTCHA=false' "$target/deploy/.env"
+grep -Fxq 'RSCTF_ALLOW_COMPETITION_HISTORY_PURGE=false' "$target/deploy/.env"
+grep -Fxq 'RSCTF_DB_MAX_CONNECTIONS=50' "$target/deploy/.env"
 for helper in \
   compose-maintenance-cutover.sh \
   kubernetes-maintenance-cutover.sh \
@@ -166,6 +285,7 @@ mkdir "$target"
 RSCTF_TEST_ENV_ARGS=(RSCTF_TEST_GH_VERIFY=1 RSCTF_TEST_LATEST_TAG=v1.2.3)
 run_installer "$VALID_FIXTURE" "$target" "$output"
 test -f "$target/deploy/compose.yml"
+test -f "$target/deploy/event-vpn/Corefile"
 grep -Fq 'releases/latest' "$TEMP_DIRECTORY/curl.log"
 
 bad_target="$TEMP_DIRECTORY/bad-latest"

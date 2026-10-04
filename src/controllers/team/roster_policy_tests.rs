@@ -17,6 +17,18 @@ async fn remove_if_allowed(pool: &sqlx::PgPool, team_id: i32, user_id: Uuid) -> 
     roster.release().await
 }
 
+async fn add_if_allowed(pool: &sqlx::PgPool, team_id: i32, user_id: Uuid) -> AppResult<()> {
+    let mut roster = super::super::acquire_roster_mutation(pool, team_id).await?;
+    ensure_roster_addition_allowed(roster.transaction_mut(), team_id).await?;
+    sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES ($1, $2)"#)
+        .bind(team_id)
+        .bind(user_id)
+        .execute(&mut **roster.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    roster.release().await
+}
+
 async fn membership_exists(pool: &sqlx::PgPool, team_id: i32, user_id: Uuid) -> bool {
     sqlx::query_scalar(
         r#"SELECT EXISTS(
@@ -59,6 +71,10 @@ async fn public_roster_removal_obeys_scoring_and_active_lock_fences() {
           id INTEGER PRIMARY KEY,
           locked BOOLEAN NOT NULL
         );
+        CREATE TABLE "Configs" (
+          config_key TEXT PRIMARY KEY,
+          value TEXT
+        );
         CREATE TABLE "Games" (
           id INTEGER PRIMARY KEY,
           end_time_utc TIMESTAMPTZ NOT NULL,
@@ -81,7 +97,8 @@ async fn public_roster_removal_obeys_scoring_and_active_lock_fences() {
         );
         INSERT INTO "Teams" (id, locked) VALUES
           (10, FALSE), (11, FALSE), (12, TRUE), (13, FALSE),
-          (14, FALSE), (15, FALSE), (16, FALSE), (17, FALSE);
+          (14, FALSE), (15, FALSE), (16, FALSE), (17, FALSE),
+          (18, FALSE), (19, FALSE);
         INSERT INTO "Games"
           (id, end_time_utc, ad_scoring_start_round, koth_scoring_start_round)
         VALUES
@@ -101,6 +118,36 @@ async fn public_roster_removal_obeys_scoring_and_active_lock_fences() {
     .execute(&pool)
     .await
     .expect("create roster policy fixture");
+
+    let mut transaction = pool.begin().await.unwrap();
+    assert!(!lock_team_on_accept_if_enabled(&mut transaction, 18)
+        .await
+        .unwrap());
+    transaction.commit().await.unwrap();
+    assert!(
+        !sqlx::query_scalar::<_, bool>(r#"SELECT locked FROM "Teams" WHERE id = 18"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    );
+    sqlx::query(
+        r#"INSERT INTO "Configs" (config_key, value)
+           VALUES ('AccountPolicy:LockTeamOnEventAccept', 'true')"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut transaction = pool.begin().await.unwrap();
+    assert!(lock_team_on_accept_if_enabled(&mut transaction, 19)
+        .await
+        .unwrap());
+    transaction.commit().await.unwrap();
+    assert!(
+        sqlx::query_scalar::<_, bool>(r#"SELECT locked FROM "Teams" WHERE id = 19"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    );
 
     let members = std::array::from_fn::<_, 8, _>(|_| Uuid::new_v4());
     for (team_id, user_id) in (10..=17).zip(members) {
@@ -124,6 +171,14 @@ async fn public_roster_removal_obeys_scoring_and_active_lock_fences() {
         assert!(membership_exists(&pool, team_id, user_id).await);
     }
 
+    for team_id in [10, 11] {
+        let late_member = Uuid::new_v4();
+        add_if_allowed(&pool, team_id, late_member)
+            .await
+            .expect("official scoring rejected a late teammate addition");
+        assert!(membership_exists(&pool, team_id, late_member).await);
+    }
+
     let suspended_error = remove_if_allowed(&pool, 17, members[7])
         .await
         .expect_err("suspension allowed an official scoring roster to change");
@@ -139,6 +194,15 @@ async fn public_roster_removal_obeys_scoring_and_active_lock_fences() {
     assert_eq!(locked_error.status(), axum::http::StatusCode::BAD_REQUEST);
     assert_eq!(locked_error.to_string(), "Team is locked by an active game");
     assert!(membership_exists(&pool, 12, members[2]).await);
+    let locked_late_member = Uuid::new_v4();
+    let locked_add_error = add_if_allowed(&pool, 12, locked_late_member)
+        .await
+        .expect_err("an explicitly locked team allowed a late teammate");
+    assert_eq!(
+        locked_add_error.to_string(),
+        "Team is locked by an active game"
+    );
+    assert!(!membership_exists(&pool, 12, locked_late_member).await);
 
     remove_if_allowed(&pool, 13, members[3])
         .await

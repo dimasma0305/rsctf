@@ -28,20 +28,23 @@ import { Icon } from '@mdi/react'
 import { CSSProperties, FC, useEffect, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { Link, useNavigate, useParams } from 'react-router'
+import { useSWRConfig } from 'swr'
 import { GameColorMap, getGameStatusLabel } from '@Components/GameCard'
 import { GameJoinModal } from '@Components/GameJoinModal'
 import { GameProgress } from '@Components/GameProgress'
 import { Markdown } from '@Components/MarkdownRenderer'
 import { WithNavBar } from '@Components/WithNavbar'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
-import { encryptApiData } from '@Utils/Crypto'
+import { downloadEventVpnConfig } from '@Utils/EventVpnDownload'
+import { collectEncryptedFingerprintIdentity } from '@Utils/FingerprintIdentity'
 import { useLanguage } from '@Utils/I18n'
+import { CHALLENGE_CATALOG_PATH, invalidatePlayerReads } from '@Utils/PlayerReadCache'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useConfig } from '@Hooks/useConfig'
-import { getGameStatus, useGame } from '@Hooks/useGame'
+import { shouldRedirectGameLandingError, useGame, useGameStatus } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
-import { useTeams, useUser } from '@Hooks/useUser'
+import { useTeamSelector, useUser } from '@Hooks/useUser'
 import api, { GameJoinModel, ParticipationStatus } from '@Api'
 import classes from '@Styles/GameDetail.module.css'
 
@@ -95,18 +98,19 @@ const GameDetail: FC = () => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const navigate = useNavigate()
+  const { mutate: mutateCache } = useSWRConfig()
 
   const { game, error, mutate, status } = useGame(numId)
 
   const theme = useMantineTheme()
 
-  const { startTime, endTime, finished, started, progress, status: gameStatus } = getGameStatus(game)
+  const { startTime, endTime, finished, started, progress, status: gameStatus } = useGameStatus(game)
 
   const { locale } = useLanguage()
   const { config } = useConfig()
 
   const { user } = useUser()
-  const { teams } = useTeams()
+  const { teams } = useTeamSelector(Boolean(user))
 
   const modals = useModals()
   const isMobile = useIsMobile()
@@ -114,13 +118,14 @@ const GameDetail: FC = () => {
   const { t } = useTranslation()
 
   usePageTitle(game?.title)
+  const hasLoadedGame = game !== undefined
 
   useEffect(() => {
-    if (error) {
+    if (shouldRedirectGameLandingError(error, hasLoadedGame)) {
       showErrorMsg(error, t)
       navigate('/games')
     }
-  }, [error, navigate])
+  }, [error, hasLoadedGame, navigate, t])
 
   const [joinModalOpen, setJoinModalOpen] = useState(false)
 
@@ -132,37 +137,26 @@ const GameDetail: FC = () => {
     [ParticipationStatus.Unsubmitted, t('game.participation.actions.unsubmitted')],
   ])
 
-  const onSubmitJoin = async (info: GameJoinModel) => {
+  const onSubmitJoin = async (info: GameJoinModel, signal: AbortSignal) => {
     try {
-      if (!numId) return
+      if (!numId) return false
 
       const identity = config.enableBrowserFingerprint
-        ? await (async () => {
-            const challengeResponse = await api.account.accountFingerprintChallenge()
-            const challenge = challengeResponse.data.data
-            if (!challenge?.nonce || !challenge.requiredSignals) {
-              throw new Error('Invalid fingerprint challenge')
-            }
-            const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
-            const payload = await getFingerprintPayload({
-              nonce: challenge.nonce,
-              requiredSignals: challenge.requiredSignals,
-            })
-            return {
-              fingerprint: await encryptApiData(t, payload.fingerprint, config.apiPublicKey),
-              fingerprintProof: await encryptApiData(t, payload.proof, config.apiPublicKey),
-            }
-          })()
+        ? await collectEncryptedFingerprintIdentity(t, config.apiPublicKey, signal)
         : {}
-      await api.game.gameJoinGame(numId, { ...info, ...identity })
+      await api.game.gameJoinGame(numId, { ...info, ...identity }, { signal })
       showNotification({
         color: 'teal',
         message: t('game.notification.joined'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
-      mutate()
+      await mutate()
+      await invalidatePlayerReads(mutateCache, [CHALLENGE_CATALOG_PATH])
+      return true
     } catch (err) {
-      return showErrorMsg(err, t)
+      if (signal.aborted) return false
+      showErrorMsg(err, t)
+      return false
     }
   }
 
@@ -177,6 +171,7 @@ const GameDetail: FC = () => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
       mutate()
+      await invalidatePlayerReads(mutateCache, [CHALLENGE_CATALOG_PATH])
     } catch (err) {
       return showErrorMsg(err, t)
     }
@@ -184,16 +179,7 @@ const GameDetail: FC = () => {
 
   const onDownloadVpnConfig = async () => {
     try {
-      const response = await api.eventSecurity.gameVpnConfig(numId)
-      const blob = new Blob([response.data], { type: 'text/plain;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = `rsctf-event-${numId}.conf`
-      document.body.appendChild(anchor)
-      anchor.click()
-      anchor.remove()
-      URL.revokeObjectURL(url)
+      await downloadEventVpnConfig(numId)
     } catch (err) {
       showErrorMsg(err, t)
     }
@@ -233,7 +219,7 @@ const GameDetail: FC = () => {
         </Stack>
       ),
       onConfirm: () => setJoinModalOpen(true),
-      confirmProps: { color: theme.primaryColor },
+      confirmProps: { color: theme.primaryColor, 'data-guide': 'event-join-confirm' },
     })
 
   const onLeave = () =>
@@ -475,6 +461,7 @@ const GameDetail: FC = () => {
           withCloseButton
           onClose={() => setJoinModalOpen(false)}
           onSubmitJoin={onSubmitJoin}
+          teams={teams}
         />
       </Container>
     </WithNavBar>

@@ -50,6 +50,10 @@ async fn create_and_transfer_recheck_live_accounts_atomically() {
           team_id INTEGER NOT NULL,
           user_id UUID NOT NULL
         );
+        CREATE TABLE "Configs" (
+          config_key TEXT PRIMARY KEY,
+          value TEXT
+        );
         CREATE TABLE "Games" (id INTEGER PRIMARY KEY, end_time_utc TIMESTAMPTZ NOT NULL);
         CREATE TABLE "Participations" (team_id INTEGER NOT NULL, game_id INTEGER NOT NULL);
         "#,
@@ -92,6 +96,29 @@ async fn create_and_transfer_recheck_live_accounts_atomically() {
         .await
         .expect_err("banned account created a team");
     assert_eq!(error.status(), StatusCode::FORBIDDEN);
+
+    let mut policy_transaction = pool.begin().await.unwrap();
+    ensure_player_team_creation_allowed(&mut policy_transaction)
+        .await
+        .expect("missing policy should preserve self-service team creation");
+    policy_transaction.rollback().await.unwrap();
+    sqlx::query(
+        r#"INSERT INTO "Configs" (config_key, value)
+           VALUES ('AccountPolicy:AllowTeamCreation', 'false')"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut policy_transaction = pool.begin().await.unwrap();
+    let error = ensure_player_team_creation_allowed(&mut policy_transaction)
+        .await
+        .expect_err("disabled self-service policy allowed player team creation");
+    assert_eq!(error.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        error.to_string(),
+        "Team creation is managed by an administrator"
+    );
+    policy_transaction.rollback().await.unwrap();
 
     for user_id in [member, banned] {
         sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES ($1, $2)"#)

@@ -836,6 +836,14 @@ async fn acquire_checker_uid(
         })
 }
 
+fn sandbox_launcher_path() -> std::io::Result<std::path::PathBuf> {
+    let proc_self = std::path::PathBuf::from("/proc/self/exe");
+    if cfg!(target_os = "linux") && proc_self.exists() {
+        return Ok(proc_self);
+    }
+    std::env::current_exe()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     venv_python: &str,
@@ -868,7 +876,9 @@ pub async fn run(
             ));
         }
     };
-    let self_exe = std::env::current_exe()?;
+    // /proc/self/exe retains the running inode after an atomic development
+    // relink; current_exe() may instead return a stale "(deleted)" path.
+    let self_exe = sandbox_launcher_path()?;
     let cpu_s = timeout.as_secs().max(1) + 2; // CPU rlimit ≥ wall timeout
                                               // Fresh writable scratch owned by the checker uid — the only persistent
                                               // place it can write (tempfiles/cache/cookies). Isolated per run and

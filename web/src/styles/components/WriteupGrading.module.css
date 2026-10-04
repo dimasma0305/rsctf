@@ -1,0 +1,30 @@
+.reviewLayout {
+  display: grid;
+  grid-template-columns: minmax(230px, 0.8fr) minmax(0, 1.2fr);
+  gap: var(--mantine-spacing-md);
+  align-items: start;
+}
+.errorText {
+  color: light-dark(var(--mantine-color-red-9), var(--mantine-color-red-3));
+}
+.tableScroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.tableScroll table {
+  min-width: 550px;
+}
+.teamButton {
+  height: auto;
+  min-height: 32px;
+  text-align: left;
+}
+.teamButton span {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 1100px) {
+  .reviewLayout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

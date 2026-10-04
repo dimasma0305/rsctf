@@ -2,6 +2,7 @@ import execution from "k6/execution";
 import http from "k6/http";
 import { check } from "k6";
 import { Counter, Trend } from "k6/metrics";
+import { submitAttemptId } from "../submit-attempt-id.js";
 
 const CONFIG_PATH = __ENV.CHEAT_CONFIG;
 if (!CONFIG_PATH) throw new Error("CHEAT_CONFIG is required");
@@ -94,9 +95,12 @@ function record(response, expected, label) {
 }
 
 function submit(actor, flag, label) {
+  const attemptId = submitAttemptId(
+    `cheat:${execution.scenario.name}:${execution.scenario.iterationInTest}:${actor.userId}:${label}`,
+  );
   return http.post(
     `${C.target}/api/game/${C.gameId}/challenges/${C.challengeId}`,
-    JSON.stringify({ flag }),
+    JSON.stringify({ flag, attemptId }),
     params(actor, { operation: label }),
   );
 }

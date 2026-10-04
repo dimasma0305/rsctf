@@ -9,7 +9,7 @@ pub(super) async fn persist_deadline_access_revocation(
     connection: &mut sqlx::PgConnection,
     game_id: i32,
     challenge_id: i32,
-) -> AppResult<()> {
+) -> AppResult<bool> {
     let protected_phase = sqlx::query_scalar::<_, String>(
         r#"SELECT owner.phase
              FROM "KothCycleCooldowns" cooldown
@@ -32,7 +32,7 @@ pub(super) async fn persist_deadline_access_revocation(
         )));
     }
 
-    sqlx::query(
+    let revoked = sqlx::query(
         r#"UPDATE "KothTokens" token
               SET revoked_at = COALESCE(token.revoked_at, clock_timestamp())
              FROM "KothCrownCycles" owner
@@ -44,7 +44,8 @@ pub(super) async fn persist_deadline_access_revocation(
     .bind(challenge_id)
     .execute(&mut *connection)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
 
     // A missing enforcement receipt means no network policy was installed.
     // Terminal cleanup removes only pre-activation intent instead of inventing
@@ -77,5 +78,5 @@ pub(super) async fn persist_deadline_access_revocation(
     .execute(connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(())
+    Ok(revoked > 0)
 }

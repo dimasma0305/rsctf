@@ -15,6 +15,7 @@ use super::scoring_formula::{
 };
 use crate::utils::database::begin_read_only_repeatable_read;
 use crate::utils::error::{AppError, AppResult};
+use crate::utils::scoring::{field_best_multiplier, normalize_to_field_best};
 
 #[derive(Clone, Debug, FromRow)]
 struct HillEpochMetaRow {
@@ -51,8 +52,15 @@ struct TeamEvidenceRow {
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct KothCellAggregate {
+    /// Event-average local hill score from finalized epochs, before field-best
+    /// normalization.
     pub(super) settled_points: f64,
+    /// Event-average local hill score including open epochs.
     pub(super) projected_points: f64,
+    /// `settled_points` scaled by the hill's settled field-best multiplier.
+    pub(super) settled_normalized_points: f64,
+    /// `projected_points` scaled by the hill's projected field-best multiplier.
+    pub(super) projected_normalized_points: f64,
     pub(super) acquisition_rate: f64,
     pub(super) control_rate: f64,
     pub(super) reliability_rate: f64,
@@ -79,12 +87,11 @@ pub(super) struct KothEpochAggregate {
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct KothTeamAggregate {
+    /// Official event score: the hill-share weighted mean of every hill's
+    /// field-best normalized settled score.
     pub(super) settled_total: f64,
+    /// Live projection of the same aggregate including open epochs.
     pub(super) projected_total: f64,
-    pub(super) settled_epoch_points: f64,
-    pub(super) settled_epoch_weight: f64,
-    pub(super) projected_epoch_points: f64,
-    pub(super) projected_epoch_weight: f64,
     pub(super) acquisition_rate: f64,
     pub(super) control_rate: f64,
     pub(super) reliability_rate: f64,
@@ -92,9 +99,24 @@ pub(super) struct KothTeamAggregate {
     pub(super) epochs: Vec<KothEpochAggregate>,
 }
 
+/// Field-wide normalization facts for one hill, identical for every team.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct KothHillNormalization {
+    /// Best settled event-average local score any roster team reached.
+    pub(super) settled_field_best: f64,
+    pub(super) projected_field_best: f64,
+    /// Capped factor that maps the settled field best onto 100 points.
+    pub(super) settled_multiplier: f64,
+    pub(super) projected_multiplier: f64,
+    /// Hill weight times finalized evidence weight, as a share of the event total.
+    pub(super) settled_share: f64,
+    pub(super) projected_share: f64,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct KothScoringSnapshot {
     pub(super) teams: HashMap<i32, KothTeamAggregate>,
+    pub(super) hills: BTreeMap<i32, KothHillNormalization>,
     pub(super) fully_settled: bool,
 }
 
@@ -312,9 +334,9 @@ fn score_evidence_rows(
                 .collect::<Vec<_>>(),
         )
         .map_err(|error| AppError::internal(error.to_string()))?;
-        team.projected_total = projected.average;
-        team.projected_epoch_points = projected.points_numerator;
-        team.projected_epoch_weight = projected.epoch_weight;
+        // Raw epoch average of this evidence slice. `merge_rollup_prefix` replaces
+        // the official totals with the field-best normalized hill aggregate.
+        team.projected_total = projected;
 
         let settled = weighted_epoch_average(
             &team
@@ -325,9 +347,7 @@ fn score_evidence_rows(
                 .collect::<Vec<_>>(),
         )
         .map_err(|error| AppError::internal(error.to_string()))?;
-        team.settled_total = settled.average;
-        team.settled_epoch_points = settled.points_numerator;
-        team.settled_epoch_weight = settled.epoch_weight;
+        team.settled_total = settled;
 
         let mut team_rate_weight = 0.0;
         for aggregate in team.cells.values_mut() {
@@ -366,8 +386,86 @@ fn score_evidence_rows(
             .all(|hills| hills.values().all(|(_, _, finalized)| *finalized));
     Ok(KothScoringSnapshot {
         teams,
+        hills: BTreeMap::new(),
         fully_settled,
     })
+}
+
+/// Normalize every hill's event-average score to the field best and fold the
+/// hills into each team's official event score.
+///
+/// The best event average any roster team reached on a hill maps to 100 unless
+/// [`crate::utils::scoring::MAX_FIELD_BEST_MULTIPLIER`] caps the factor; every
+/// other team on that hill scales by the same factor, so winning a hill that
+/// nobody could sustain is rewarded without handing a full budget to one
+/// isolated wave. Evidence fractions are hill-epoch properties, so every team
+/// carries the same hill weights and the resulting shares are published once.
+/// A hill without any scorable field evidence keeps a zero share.
+fn apply_field_best_normalization(
+    teams: &mut HashMap<i32, KothTeamAggregate>,
+) -> BTreeMap<i32, KothHillNormalization> {
+    #[derive(Default)]
+    struct HillField {
+        settled_best: f64,
+        projected_best: f64,
+        settled_weight: f64,
+        projected_weight: f64,
+    }
+    let mut fields = BTreeMap::<i32, HillField>::new();
+    for team in teams.values() {
+        for (&challenge_id, cell) in &team.cells {
+            let field = fields.entry(challenge_id).or_default();
+            if cell.settled_weight > 0.0 {
+                field.settled_best = field.settled_best.max(cell.settled_points);
+                field.settled_weight = field
+                    .settled_weight
+                    .max(cell.service_weight * cell.settled_weight);
+            }
+            if cell.projected_weight > 0.0 {
+                field.projected_best = field.projected_best.max(cell.projected_points);
+                field.projected_weight = field
+                    .projected_weight
+                    .max(cell.service_weight * cell.projected_weight);
+            }
+        }
+    }
+    let settled_total_weight: f64 = fields.values().map(|field| field.settled_weight).sum();
+    let projected_total_weight: f64 = fields.values().map(|field| field.projected_weight).sum();
+    let hills: BTreeMap<i32, KothHillNormalization> = fields
+        .iter()
+        .map(|(&challenge_id, field)| {
+            (
+                challenge_id,
+                KothHillNormalization {
+                    settled_field_best: field.settled_best,
+                    projected_field_best: field.projected_best,
+                    settled_multiplier: field_best_multiplier(field.settled_best),
+                    projected_multiplier: field_best_multiplier(field.projected_best),
+                    settled_share: ratio(field.settled_weight, settled_total_weight),
+                    projected_share: ratio(field.projected_weight, projected_total_weight),
+                },
+            )
+        })
+        .collect();
+
+    for team in teams.values_mut() {
+        let mut settled_total = 0.0;
+        let mut projected_total = 0.0;
+        for (challenge_id, cell) in team.cells.iter_mut() {
+            let Some(hill) = hills.get(challenge_id) else {
+                continue;
+            };
+            cell.settled_normalized_points =
+                normalize_to_field_best(cell.settled_points, hill.settled_field_best);
+            cell.projected_normalized_points =
+                normalize_to_field_best(cell.projected_points, hill.projected_field_best);
+            settled_total += hill.settled_share * cell.settled_normalized_points;
+            projected_total += hill.projected_share * cell.projected_normalized_points;
+        }
+        team.settled_total = settled_total.clamp(0.0, 100.0);
+        team.projected_total = projected_total.clamp(0.0, 100.0);
+    }
+    hills
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -405,9 +503,7 @@ fn merge_rollup_prefix(
         let previous = rollup_teams.get(&participation_id);
         let mut aggregate = KothTeamAggregate::default();
         let mut points_numerator = previous.map_or(0.0, |row| row.cumulative_points_numerator);
-        let mut settled_points_numerator = points_numerator;
         let mut projected_epoch_weight = previous.map_or(0.0, |row| row.cumulative_epoch_weight);
-        let mut settled_epoch_weight = projected_epoch_weight;
         let mut acquisition_numerator =
             previous.map_or(0.0, |row| row.cumulative_acquisition_numerator);
         let mut control_numerator = previous.map_or(0.0, |row| row.cumulative_control_numerator);
@@ -426,6 +522,8 @@ fn merge_rollup_prefix(
                         row.cumulative_points_numerator,
                         row.cumulative_score_weight,
                     ),
+                    settled_normalized_points: 0.0,
+                    projected_normalized_points: 0.0,
                     acquisition_rate: ratio(
                         row.cumulative_acquisition_numerator,
                         row.cumulative_rate_weight,
@@ -455,10 +553,6 @@ fn merge_rollup_prefix(
             projected_epoch_weight += epoch.epoch_weight;
             epoch.cumulative_points_numerator = points_numerator;
             epoch.cumulative_epoch_weight = projected_epoch_weight;
-            if epoch.finalized {
-                settled_points_numerator += epoch.points * epoch.epoch_weight;
-                settled_epoch_weight += epoch.epoch_weight;
-            }
         }
         let raw_rate_weight = raw_team
             .cells
@@ -504,12 +598,9 @@ fn merge_rollup_prefix(
             cell.service_weight = raw_cell.service_weight;
         }
 
-        aggregate.projected_total = ratio(points_numerator, projected_epoch_weight);
-        aggregate.settled_total = ratio(settled_points_numerator, settled_epoch_weight);
-        aggregate.projected_epoch_points = points_numerator;
-        aggregate.projected_epoch_weight = projected_epoch_weight;
-        aggregate.settled_epoch_points = settled_points_numerator;
-        aggregate.settled_epoch_weight = settled_epoch_weight;
+        // Official totals are assigned by `apply_field_best_normalization` once
+        // every team's hill cells are known; the epoch prefix above only feeds
+        // the timeline's raw running average.
         aggregate.acquisition_rate = ratio(acquisition_numerator, rate_weight);
         aggregate.control_rate = ratio(control_numerator, rate_weight);
         aggregate.reliability_rate = ratio(reliability_numerator, rate_weight);
@@ -531,8 +622,10 @@ fn merge_rollup_prefix(
         teams.insert(participation_id, aggregate);
     }
 
+    let hills = apply_field_best_normalization(&mut teams);
     KothScoringSnapshot {
         teams,
+        hills,
         fully_settled: event_ended
             && current_epoch > 0
             && rollup_header.is_some_and(|header| header.epoch >= current_epoch),
