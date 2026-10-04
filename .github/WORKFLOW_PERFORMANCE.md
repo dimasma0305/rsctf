@@ -3,7 +3,7 @@
 ## Baseline and scope
 
 The successful [v0.1.136 main publication](https://github.com/dimasma0305/rsctf/actions/runs/37203108162)
-on 2026-10-04 took about 20 minutes. Rust CI took 8m16s, coverage 7m34s,
+on 2026-10-04 took 21m45s. Rust CI took 8m16s, coverage 7m34s,
 and Kubernetes added 4m06s after Rust. A frontend-only
 [PR run](https://github.com/dimasma0305/rsctf/actions/runs/37205246021)
 still ran Rust for 9m12s followed by Kubernetes for 4m10s, although its
@@ -65,3 +65,23 @@ states. Exercise `scripts/test-kubernetes-koth-callback.sh` with
 Compare actual Actions runs with matching scope and cache state before claiming
 a speedup. A dependency update that changes compiler inputs is not a controlled
 before/after benchmark; retain queue time separately from job execution time.
+
+### First verified runs
+
+The [full optimization PR gate](https://github.com/dimasma0305/rsctf/actions/runs/37206899144)
+passed in 9m28s wall time (including orchestration). Its same-run artifact consumers
+passed the real Kubernetes and anti-cheat tests in 1m11s and 1m12s respectively,
+versus 4m10s and 3m55s in the earlier frontend PR gate. This is observed Actions
+timing, not a controlled host-performance benchmark.
+
+The subsequent [frontend-only SHA-256 PR gate](https://github.com/dimasma0305/rsctf/actions/runs/37207679763)
+passed in 1m45s wall time. React checks took 1m26s; planner, harness contracts,
+repository conventions and the aggregate gate passed, while unrelated jobs were
+explicitly skipped by the tested plan. Publication still requests the full suite.
+
+Local validation passed Actionlint, 11 focused workflow tests and 482 harness
+contracts (one environment-only skip). The stripped test artifact emitted the
+actual policy locally. Kind bootstrap on the shared host was blocked before the
+application tests by an exhausted fsnotify/inotify resource limit in containerd;
+the owned clusters were removed without changing host limits. The clean GitHub
+runner's real Kubernetes gate subsequently passed.
