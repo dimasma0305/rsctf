@@ -31,6 +31,8 @@ test('runner proves large-history idle work is zero, operations coalesce, and re
   assert.match(runner, /idleAfter\[key\] !== idleBaseline\[key\]/);
   assert.match(runner, /docker', \['stats'/);
   assert.match(runner, /docker', \['top'/);
+  assert.match(runner, /'pid,tid'/, 'Docker requires a named PID field to filter thread rows');
+  assert.match(runner, /Math\.floor\(Math\.random\(\) \* 500\)/, 'busy retries have bounded jitter');
   assert.match(runner, /CPUPerc/);
   assert.match(runner, /MAX_CPU_PERCENT/);
   assert.match(runner, /pg_stat_activity/);

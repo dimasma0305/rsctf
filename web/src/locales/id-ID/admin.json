@@ -1,4 +1,11 @@
 {
+  "schedule": {
+    "reopen_title": "Buka kembali kompetisi ini?",
+    "change_title": "Ubah jadwal kompetisi?",
+    "confirm": "Simpan jadwal",
+    "confirm_description": "Skor akan mengikuti rentang waktu yang baru. Submission latihan sebelumnya yang masuk dalam rentang tersebut bisa ikut dihitung. Bukti dan temuan lama tetap disimpan; anti-cheat berjalan lagi dan difinalisasi setelah deadline baru. Telemetri yang tidak direkam saat event ditutup tidak dapat dipulihkan.",
+    "end_description": "Perpanjang deadline, termasuk setelah event selesai, untuk melanjutkan kompetisi. Deadline yang masih berjalan juga bisa dimajukan selama tetap di masa depan. Periksa waktu pembekuan skor dan deadline writeup di bawah."
+  },
   "readiness": {
     "title": "Kesiapan",
     "intro": "Periksa konfigurasi event yang tersimpan dan buka tautan terkait untuk menyelesaikan masalah sebelum peserta masuk.",

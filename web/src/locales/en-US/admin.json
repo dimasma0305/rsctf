@@ -1,4 +1,11 @@
 {
+  "schedule": {
+    "reopen_title": "Reopen this competition?",
+    "change_title": "Change the competition schedule?",
+    "confirm": "Save schedule",
+    "confirm_description": "Scoring will use the revised time window. Earlier practice submissions inside that window can count. Existing evidence and findings are retained; anti-cheat resumes and finalizes again at the new deadline. Missing telemetry from the closed period cannot be recovered.",
+    "end_description": "Extend even after the event ends to resume competition. You can also move a live deadline earlier if it stays in the future. Check the freeze time and writeup deadline below."
+  },
   "readiness": {
     "title": "Readiness",
     "intro": "Review saved event configuration and follow the links to resolve issues before players arrive.",

@@ -326,6 +326,7 @@ pub(crate) async fn process_configuration_effects(state: &SharedState) -> AppRes
         }
         if effect.invalidate_scoreboards {
             flush_game_scoreboards(state, effect.game_id).await;
+            crate::controllers::game::invalidate_cheat_report(state, effect.game_id).await;
         }
         let deleted = sqlx::query(
             r#"DELETE FROM "GameConfigurationEffects"

@@ -546,4 +546,6 @@ pub use honeypot::*;
 pub(crate) use outbox::seal_reconciled_game_for_test;
 pub use outbox::*;
 pub(crate) use reconciliation::{execute_game_reconciliation, SourceCursor, SOURCE_BATCH};
+mod schedule;
+pub(crate) use schedule::record_schedule_change;
 pub use scoring::*;

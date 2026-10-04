@@ -139,9 +139,10 @@ const sampleResources = () => {
     }
     resourceSamples.push({ at: Date.now(), name: row.Name, cpuPercent, memory });
   }
-  const top = spawnSync('docker', ['top', RSCTF, '-eLo', 'tid='], { encoding: 'utf8' });
+  // Docker filters host ps rows using the named PID column, even for threads.
+  const top = spawnSync('docker', ['top', RSCTF, '-eLo', 'pid,tid'], { encoding: 'utf8' });
   if (top.status !== 0) throw new Error(`docker top failed: ${(top.stderr || top.stdout || '').trim()}`);
-  const tasks = top.stdout.split('\n').filter((line) => /^\s*\d+\s*$/.test(line)).length;
+  const tasks = top.stdout.split('\n').filter((line) => /^\s*\d+\s+\d+\s*$/.test(line)).length;
   if (tasks < 1) throw new Error('runtime task/thread sample is empty');
   resourceSamples.push({ at: Date.now(), name: `${RSCTF}:tasks`, tasks });
   databaseSamples.push({ at: Date.now(), ...databaseSample() });
@@ -284,7 +285,9 @@ const postManual = async (operationId, token) => {
       throw new Error(`manual derivation failed: HTTP ${response.status} ${text.slice(0, 300)}`);
     }
     const retrySeconds = Math.min(2, Math.max(1, Number(response.headers.get('retry-after')) || 1));
-    await sleep(retrySeconds * 1_000);
+    // Distinct operation IDs contend for the same short admission fence. Do
+    // not synchronize every retry into another sixteen-request collision.
+    await sleep(retrySeconds * 1_000 + Math.floor(Math.random() * 500));
   }
   throw new Error('unreachable manual derivation retry state');
 };

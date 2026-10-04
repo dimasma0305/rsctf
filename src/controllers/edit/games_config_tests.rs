@@ -295,7 +295,7 @@ fn schedule_preserves_recorded_activity_but_allows_end_extension() {
         false,
         false,
     )
-    .is_err());
+    .is_ok());
     assert!(validate_schedule_transition(
         start,
         end,
@@ -309,7 +309,7 @@ fn schedule_preserves_recorded_activity_but_allows_end_extension() {
 }
 
 #[test]
-fn finalized_schedule_is_immutable_but_koth_snapshot_allows_only_extension() {
+fn finalized_schedule_can_extend_but_koth_snapshot_preserves_its_start() {
     let start = chrono::Utc::now();
     let end = start + chrono::Duration::hours(1);
     assert!(validate_schedule_transition(
@@ -321,7 +321,7 @@ fn finalized_schedule_is_immutable_but_koth_snapshot_allows_only_extension() {
         true,
         false,
     )
-    .is_err());
+    .is_ok());
     assert!(validate_schedule_transition(
         start,
         end,
@@ -352,4 +352,29 @@ fn finalized_schedule_is_immutable_but_koth_snapshot_allows_only_extension() {
         true,
     )
     .is_err());
+}
+
+#[test]
+fn schedule_cannot_retroactively_exclude_recorded_activity() {
+    let now = chrono::Utc::now();
+    assert!(validate_schedule_transition(
+        now - chrono::Duration::hours(2),
+        now + chrono::Duration::hours(1),
+        now - chrono::Duration::hours(2),
+        now - chrono::Duration::minutes(1),
+        true,
+        false,
+        false,
+    )
+    .is_err());
+    assert!(validate_schedule_transition(
+        now - chrono::Duration::hours(2),
+        now - chrono::Duration::hours(1),
+        now - chrono::Duration::hours(2),
+        now + chrono::Duration::hours(1),
+        true,
+        true,
+        false,
+    )
+    .is_ok());
 }
