@@ -191,3 +191,27 @@ test('worker release restores main caches and does not export unusable per-tag c
   assert.match(job(releaseWorkflow, 'build-linux'), /'worker-plane-linux'/)
   assert.match(job(releaseWorkflow, 'build-windows'), /shared-key: worker-plane-windows/)
 })
+
+test('only short unprivileged bookkeeping jobs use single-core container runners', () => {
+  const validation = readFileSync(new URL('../../../.github/workflows/release-validation.yml', import.meta.url), 'utf8')
+  for (const [source, names] of [
+    [ciWorkflow, ['plan', 'required']],
+    [imageWorkflow, ['prepare']],
+    [releaseWorkflow, ['validate-release-state']],
+    [validation, ['validate-release']],
+  ]) {
+    const slimJobs = [...source.matchAll(/^  ([a-z][a-z-]*):\n/gm)]
+      .map((match) => match[1]).filter((name) => /^    runs-on: ubuntu-slim$/m.test(job(source, name)))
+    assert.deepEqual(slimJobs, names)
+    for (const name of names) {
+      const selected = job(source, name)
+      assert.match(selected, /^    timeout-minutes: 5$/m)
+      assert.doesNotMatch(selected, /\bsudo\b|docker (?:build|run)|cargo (?:build|test)|services:/)
+    }
+  }
+  // Changing the runner must never change source-validation or fail-closed gates.
+  assert.match(job(validation, 'validate-release'), /git merge-base --is-ancestor "\$GITHUB_SHA"/)
+  assert.match(job(releaseWorkflow, 'validate-release-state'), /refusing to build/)
+  assert.match(job(ciWorkflow, 'required'), /if: always\(\)/)
+  assert.match(job(ciWorkflow, 'required'), /node scripts\/ci-plan\.mjs verify/)
+})

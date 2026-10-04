@@ -6,6 +6,10 @@ import { build } from 'esbuild'
 import { spawn } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
+import { testConcurrency } from './test-concurrency.mjs'
+
+// Reject invalid limits before discovering or compiling any test modules.
+const concurrency = testConcurrency()
 
 function findTests(dir, acc = []) {
   for (const name of readdirSync(dir)) {
@@ -81,7 +85,7 @@ try {
   // turn, which lets the finally block remove files that a test still resolves
   // relative to import.meta.url. A bounded child runner gives cleanup an exact
   // completion boundary and avoids unbounded per-file worker churn.
-  const testArgs = ['--test', '--test-concurrency=2']
+  const testArgs = ['--test', `--test-concurrency=${concurrency}`]
   const namePattern = process.env.RSCTF_WEB_TEST_NAME_PATTERN?.trim()
   if (namePattern) testArgs.push(`--test-name-pattern=${namePattern}`)
   testArgs.push(...outFiles)

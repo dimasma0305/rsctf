@@ -20,7 +20,7 @@ permissions:
 jobs:
   validate-release:
     name: Validate publication source
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:
       - name: Skip validation when no release policy applies
