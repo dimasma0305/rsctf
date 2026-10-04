@@ -4,6 +4,12 @@ use uuid::Uuid;
 
 use crate::utils::error::{AppError, AppResult};
 
+#[derive(Default, sqlx::FromRow)]
+struct EvidenceBoundary {
+    evidence_closed_at_utc: Option<DateTime<Utc>>,
+    sealed_at_utc: Option<DateTime<Utc>>,
+}
+
 /// The editor owns Games FOR UPDATE. Claims take Games FOR SHARE before their
 /// queue lease, so a schedule cannot change beneath a running detector pass.
 /// Evidence rows and completed outbox receipts are deliberately never rewritten.
@@ -16,7 +22,7 @@ pub(crate) async fn record_schedule_change(
     previous: (DateTime<Utc>, DateTime<Utc>),
     requested: (DateTime<Utc>, DateTime<Utc>),
 ) -> AppResult<()> {
-    let boundary: Option<(Option<DateTime<Utc>>, Option<DateTime<Utc>>)> = sqlx::query_as(
+    let boundary = sqlx::query_as::<_, EvidenceBoundary>(
         r#"SELECT evidence_closed_at_utc, sealed_at_utc
              FROM "SuspicionReconciliationState" WHERE game_id = $1 FOR UPDATE"#,
     )
@@ -37,7 +43,7 @@ pub(crate) async fn record_schedule_change(
             "Anti-cheat reconciliation is finishing. Retry the schedule change shortly.",
         ));
     }
-    let (closed_at, sealed_at) = boundary.unwrap_or_default();
+    let boundary = boundary.unwrap_or_default();
     sqlx::query(
         r#"INSERT INTO "GameScheduleChanges"
              (operation_id, game_id, actor_user_id, configuration_revision,
@@ -53,8 +59,8 @@ pub(crate) async fn record_schedule_change(
     .bind(previous.1)
     .bind(requested.0)
     .bind(requested.1)
-    .bind(closed_at)
-    .bind(sealed_at)
+    .bind(boundary.evidence_closed_at_utc)
+    .bind(boundary.sealed_at_utc)
     .execute(&mut *connection)
     .await
     .map_err(database_error)?;
